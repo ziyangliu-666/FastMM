@@ -1,0 +1,162 @@
+{
+  "context": {
+    "date": "2026-09-13T16:44:25+00:00",
+    "executable": "build/release-native/bin/bench/bench_risk",
+    "num_cpus": 8,
+    "mhz_per_cpu": 4192,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [3.32471,5.86816,5.55371],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_Risk_CheckNew_Pass_mean",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Pass",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 7.9952024132373367e+00,
+      "cpu_time": 7.8782317624186646e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Pass_median",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Pass",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 8.0570173828524450e+00,
+      "cpu_time": 7.8799528844898461e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Pass_stddev",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Pass",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1.7492527545373623e-01,
+      "cpu_time": 2.9392574416499208e-02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Pass_cv",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Pass",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 2.1878780099940865e-02,
+      "cpu_time": 3.7308593226096595e-03,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Killed_mean",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Killed",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 4.5156023508889609e-01,
+      "cpu_time": 4.4067668146385042e-01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Killed_median",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Killed",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 4.5115026131952263e-01,
+      "cpu_time": 4.4029011483796576e-01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Killed_stddev",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Killed",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 2.1531897473217503e-03,
+      "cpu_time": 2.1017212906206690e-03,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Risk_CheckNew_Killed_cv",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Risk_CheckNew_Killed",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 4.7683333916633827e-03,
+      "cpu_time": 4.7693045242128999e-03,
+      "time_unit": "ns"
+    }
+  ]
+}

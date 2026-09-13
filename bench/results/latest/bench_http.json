@@ -1,0 +1,170 @@
+{
+  "context": {
+    "date": "2026-09-13T16:42:10+00:00",
+    "executable": "build/release-native/bin/bench/bench_http",
+    "num_cpus": 8,
+    "mhz_per_cpu": 4192,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [11.3428,7.8501,6.05908],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_HttpRoundTripLoopback/real_time_mean",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpRoundTripLoopback/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1.4159985220402697e+04,
+      "cpu_time": 1.4147554623067010e+04,
+      "time_unit": "ns",
+      "items_per_second": 7.0621935263543855e+04
+    },
+    {
+      "name": "BM_HttpRoundTripLoopback/real_time_median",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpRoundTripLoopback/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1.4153612396184302e+04,
+      "cpu_time": 1.4149518725837625e+04,
+      "time_unit": "ns",
+      "items_per_second": 7.0653340787373250e+04
+    },
+    {
+      "name": "BM_HttpRoundTripLoopback/real_time_stddev",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpRoundTripLoopback/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.7339239025483749e+01,
+      "cpu_time": 2.5819119162270646e+01,
+      "time_unit": "ns",
+      "items_per_second": 1.8611700416834213e+02
+    },
+    {
+      "name": "BM_HttpRoundTripLoopback/real_time_cv",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpRoundTripLoopback/real_time",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 2.6369546609189085e-03,
+      "cpu_time": 1.8249881234014551e-03,
+      "time_unit": "ns",
+      "items_per_second": 2.6353993766072654e-03
+    },
+    {
+      "name": "BM_HttpParseResponse_mean",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpParseResponse",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1.4946284361975020e+02,
+      "cpu_time": 1.4946063897494645e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 1.0839032877142017e+09
+    },
+    {
+      "name": "BM_HttpParseResponse_median",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpParseResponse",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1.4946785395351162e+02,
+      "cpu_time": 1.4946549658776249e+02,
+      "time_unit": "ns",
+      "bytes_per_second": 1.0838621869153430e+09
+    },
+    {
+      "name": "BM_HttpParseResponse_stddev",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpParseResponse",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.8876434438501034e-01,
+      "cpu_time": 3.8883872794383101e-01,
+      "time_unit": "ns",
+      "bytes_per_second": 2.8224132861365289e+06
+    },
+    {
+      "name": "BM_HttpParseResponse_cv",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_HttpParseResponse",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 2.6010768627824942e-03,
+      "cpu_time": 2.6016129103329380e-03,
+      "time_unit": "ns",
+      "bytes_per_second": 2.6039346112590898e-03
+    }
+  ]
+}

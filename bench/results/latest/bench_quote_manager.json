@@ -1,0 +1,162 @@
+{
+  "context": {
+    "date": "2026-09-13T16:44:17+00:00",
+    "executable": "build/release-native/bin/bench/bench_quote_manager",
+    "num_cpus": 8,
+    "mhz_per_cpu": 4192,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [3.44043,5.93359,5.57324],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_QuoteManager_Reconcile_6Orders1Change_mean",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_6Orders1Change",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.7237699504148388e+01,
+      "cpu_time": 3.7971561658905230e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_6Orders1Change_median",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_6Orders1Change",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.7250402907332983e+01,
+      "cpu_time": 3.7984620602392361e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_6Orders1Change_stddev",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_6Orders1Change",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 2.5121663281208151e-01,
+      "cpu_time": 2.5554849120635031e-01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_6Orders1Change_cv",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_6Orders1Change",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 6.7462984061111312e-03,
+      "cpu_time": 6.7299968724467271e-03,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_NoChange_mean",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_NoChange",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 2.4724026123631365e+01,
+      "cpu_time": 2.5211272937497927e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_NoChange_median",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_NoChange",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 2.4712580761025766e+01,
+      "cpu_time": 2.5200158572409549e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_NoChange_stddev",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_NoChange",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 1.3521314452898664e-01,
+      "cpu_time": 1.3798829615656233e-01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_QuoteManager_Reconcile_NoChange_cv",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_QuoteManager_Reconcile_NoChange",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 5.4688966858738725e-03,
+      "cpu_time": 5.4732776285693124e-03,
+      "time_unit": "ns"
+    }
+  ]
+}

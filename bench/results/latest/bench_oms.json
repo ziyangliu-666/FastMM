@@ -1,0 +1,162 @@
+{
+  "context": {
+    "date": "2026-09-13T16:44:09+00:00",
+    "executable": "build/release-native/bin/bench/bench_oms",
+    "num_cpus": 8,
+    "mhz_per_cpu": 4192,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [3.60791,6.05078,5.60693],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_Oms_Lifecycle_mean",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Lifecycle",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 9.9744339779529724e+01,
+      "cpu_time": 9.9742241871483643e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Lifecycle_median",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Lifecycle",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 9.9617598494746034e+01,
+      "cpu_time": 9.9615256669938276e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Lifecycle_stddev",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Lifecycle",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.6933897178259367e-01,
+      "cpu_time": 3.6861124073638468e-01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Lifecycle_cv",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Lifecycle",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 3.7028564487866030e-03,
+      "cpu_time": 3.6956382152642476e-03,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Submit_mean",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Submit",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.2131744494713821e+01,
+      "cpu_time": 3.2130683606798684e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Submit_median",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Submit",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 3.2119024551662910e+01,
+      "cpu_time": 3.2118533346399737e+01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Submit_stddev",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Submit",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 2.0722037771108764e-01,
+      "cpu_time": 2.0733150079663515e-01,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Oms_Submit_cv",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Oms_Submit",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 6.4490858174593877e-03,
+      "cpu_time": 6.4527572252700179e-03,
+      "time_unit": "ns"
+    }
+  ]
+}
