@@ -85,10 +85,38 @@ uses replace when the venue supports it.
 
 ## Registering and testing
 
-1. Register the strategy next to the built-in ones so the apps and the Python package can create it
-   by name (see the registration file in `src/backtest/`).
-2. Add `tests/strategies/my_quoter_test.cpp`: run it through the backtester on synthetic data with a
-   fixed seed and assert invariants, for example that inventory never exceeds the limit and both
-   sides are quoted most of the time.
-3. Call `compute`-style pure functions directly in unit tests where you can. `BasicMM::compute_quotes`
-   is an example.
+1. **Register it for simulation, backtests, replay and Python.** Strategies are registered
+   explicitly, never through static initialisers: an object file inside a static library is only
+   linked when something references it, so a self-registering strategy would silently disappear
+   from some binaries. Add a factory and one `add` call to `src/backtest/registrations.cpp`:
+
+   ```cpp
+   #include "fastmm/strategies/my_quoter.hpp"
+
+   std::unique_ptr<IEngineRunner> make_my_quoter(TransportKind k, RunnerDeps& d) {
+     return sim::make_sim_or_replay_runner<MyQuoter>(k, d);
+   }
+
+   // inside register_builtin_strategies():
+   static_cast<void>(r.add(StrategyEntry{MyQuoter::name(), &MyQuoter::schema(), make_my_quoter}));
+   ```
+
+   `fastmm-backtest`, `fastmm-replay`, the tests and the Python module all call
+   `fastmm::bt::register_builtin_strategies()`, so the strategy is then available everywhere by
+   name, and `fastmm.strategies()` in Python lists its parameter schema.
+
+2. **Test it** in `tests/strategies/my_quoter_test.cpp`. Unit-test the pure quoting logic directly
+   (`BasicMM::compute_quotes` and `BasicMM::clamp_to_touch` are examples), then run the strategy
+   through `fastmm::bt::run_backtest<MyQuoter>(config)` on synthetic data with a fixed seed and
+   assert invariants: inventory never exceeds the limit, there are no post-only rejects, both
+   sides are quoted most of the time, and two runs with the same seed give the same
+   `outbound_sha256`.
+
+3. **Try it** without writing any C++ driver:
+
+   ```bash
+   ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic \
+       --strategy my_quoter --param half_spread_bps=0.02
+   ```
+
+   `examples/cpp/custom_strategy.cpp` shows the same flow as a self-contained program.
