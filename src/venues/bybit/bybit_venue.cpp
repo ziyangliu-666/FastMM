@@ -672,8 +672,11 @@ void BybitVenue::send_command(const OrderCommand& cmd) {
     shadow = shadows_.find(cmd.cl_ord_id);
   }
   if (cfg_.ws_order_api && trade_conn_.is_live()) {
+    const Cycles before_encode = rdtscp();
     const std::size_t n = encoder_->encode_ws(cmd, shadow, venue_time_ms(), request_buf_);
+    const Cycles after_encode = rdtscp();
     if (n > 0 && trade_conn_.send_text(std::string_view(request_buf_, n))) {
+      wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
       rate_.on_sent(1, now, !is_cancel);
       switch (cmd.kind) {
         case OrderCommandKind::New:
@@ -696,6 +699,7 @@ void BybitVenue::send_command(const OrderCommand& cmd) {
 void BybitVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow) {
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
   RestRequest rr;
+  const Cycles before_encode = rdtscp();
   if (rest_ == nullptr || rest_hard_stopped_ || !encoder_->encode_rest(cmd, shadow, rr)) {
     if (is_cancel) {
       emit_cancel_reject(*order_sink_,
@@ -719,6 +723,7 @@ void BybitVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* s
     return;
   }
   const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
+  const Cycles after_encode = rdtscp();
   OrderCommand copy = cmd;
   copy.venue_order_id = nullptr;
   copy.header = nullptr;
@@ -749,6 +754,7 @@ void BybitVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* s
     ++stats_.order_send_failures;
     return;
   }
+  wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
   rate_.on_sent(1, now_ns(), rr.is_order);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -1054,6 +1060,8 @@ void BybitVenue::publish_status() noexcept {
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;
   stats_.rate_limit_cooldowns = rate_.cooldowns();
   stats_.clock_offset_ms = clock_offset_ms_.load(std::memory_order_relaxed);
+  wire_.summarize(
+      tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
 }
 

@@ -7,6 +7,8 @@
 
 #include "fake_venue_util.hpp"
 
+#include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
 
 #include <atomic>
@@ -198,10 +200,12 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
   MsgRing outbound(1U << 16);
   net::Reactor reactor;
   SymbolTable symbols;
+  const Seqlocked<TscCalibration> tsc(calibrate_tsc(milliseconds(10)));
   {
     BybitVenueConfig cfg = make_bybit_config(h.section(true), false);
     cfg.ws_private_url = h.srv.ws_base() + "/v5/private";
     BybitVenue venue(kVenue, cfg);
+    venue.set_tsc_calibration_source(&tsc);
     REQUIRE(venue.load_reference_data(instruments));
     CHECK(instruments.get(kBtc).tick == Price::from_decimal("0.1").value());
     CHECK(instruments.get(kBtc).lot == Qty::from_decimal("0.000001").value());
@@ -249,15 +253,22 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
     }));
     CHECK(venue.md_feed()->resync_count() == 1);
 
+    // The new order carries the last snapshot's receive stamp (as if the strategy placed it in
+    // response to that book update); the amend and the cancel below carry none.
+    const Cycles trigger_t0 = mdc.last<BookDeltaMsg>(EventType::BookSnapshot)->hdr.t0_cycles;
+    REQUIRE(trigger_t0.v != 0);
     OutNewOrderMsg n{};
     init_header(n, EventType::OutNewOrder, kBtc, kVenue);
+    n.hdr.t0_cycles = trigger_t0;
     n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
     n.side = Side::Buy;
     n.type = OrderType::PostOnly;
     n.price = Price::from_decimal("60000.1").value();
     n.qty = Qty::from_decimal("0.001").value();
     REQUIRE(outbound.try_push(&n, n.hdr.len));
+    const Cycles before_wake = rdtscp();
     venue.on_wake();
+    const Cycles after_wake = rdtscp();
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
       return oc.count(EventType::OrderAck) >= 2;
@@ -305,6 +316,24 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
       if (f.find("order.cancel") != std::string::npos) cancel_frame = f;
     }
     CHECK(cancel_frame.find(R"("orderId":"2012345678901234567")") != std::string::npos);
+
+    // Network-thread latency: three messages encoded and sent, one receive-to-wire sample
+    // bracketed by the receive-to-on_wake and receive-to-after-on_wake intervals.
+    venue.on_timer(net::Reactor::now_ns());
+    const VenueStatus st = venue.status();
+    CHECK(st.order_encode.count == 3);
+    CHECK(st.order_send.count == 3);
+    CHECK(st.wire_tick_to_trade.count == 1);
+    const TscClock conv(tsc.load());
+    if (conv.calibration().use_tsc) {
+      CHECK(st.wire_tick_to_trade.p50_ns >=
+            static_cast<std::uint64_t>(conv.cycles_to_ns(before_wake - trigger_t0)));
+      CHECK(st.wire_tick_to_trade.p50_ns <=
+            static_cast<std::uint64_t>(conv.cycles_to_ns(after_wake - trigger_t0)));
+      CHECK(st.order_encode.p50_ns > 0);
+      CHECK(st.order_send.p50_ns > 0);
+      CHECK(st.order_send.p50_ns < 1'000'000'000);
+    }
 
     venue.request_open_orders();
     REQUIRE(pump_until(reactor, [&] {

@@ -1,0 +1,92 @@
+# fastmm-sim-exchange: the Binance Spot-compatible simulated exchange (docs/sim-exchange.md).
+#   ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml     # 127.0.0.1:9080 / :9443
+#   ./build/release/bin/fastmm-live --config configs/sim-local.toml       # engine against it
+#
+# Only [[instruments]] and [sim] are read. Instrument filters mirror configs/sim-local.toml, so
+# exchangeInfo agrees with the engine-side config.
+
+[venues.sim]
+kind = "sim"                 # declares the venue the instruments below belong to (no URLs needed)
+
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "100"
+min_notional = "5"
+enabled = true
+
+[sim]
+seed = 7                     # generator seed (--seed overrides)
+start_mid = "60000"
+bind = "127.0.0.1"           # --bind 0.0.0.0 in containers
+port = 9080                  # REST + WebSocket (plain)
+tls_port = 9443              # REST + WebSocket (TLS, self-signed fixture certificate)
+tls_cert = "tests/fixtures/tls/cert.pem"
+tls_key = "tests/fixtures/tls/key.pem"
+depth_update_ms = 100        # <sym>@depth@100ms aggregation window (U/u batches)
+depth_snapshot = "live"      # GET /api/v3/depth: "live" book (Binance) or "flushed" (last batch)
+driver_tick_ms = 2           # generator / aggregator poll period
+clock_offset_ms = 0          # server clock = wall clock + offset (exercise -1021 handling)
+start_time_ms = 0            # 0 = wall clock; fixed epoch ms for reproducible timestamps
+ping_interval_ms = 20000     # server-initiated WebSocket pings
+pong_timeout_ms = 60000
+
+[sim.account]
+# HMAC key the engine signs with. configs/sim-local.toml reads ${FASTMM_SIM_API_KEY} /
+# ${FASTMM_SIM_API_SECRET}; the same variables override these values here.
+api_key = "sim-key"
+api_secret = "sim-secret"
+
+[sim.account.balances]
+BTC = "100"
+USDT = "10000000"
+
+[sim.fees]
+maker_bps = 1.0
+taker_bps = 4.0
+
+[sim.limits]
+weight_per_minute = 6000     # REQUEST_WEIGHT / 1 MINUTE (X-MBX-USED-WEIGHT-1M)
+orders_per_10s = 1000        # ORDERS / 10 SECOND (Binance: 50; generous so requote bursts pass)
+orders_per_day = 1000000
+max_recv_window_ms = 60000
+
+[sim.generator]
+# Counter-party flow (sim::MarketGenerator). The generator's touch sits base_spread_ticks from
+# its latent mid (29.90 USDT at tick 0.01), so BasicMM's 5 bps quotes (30 USDT) rest just behind
+# the best generator levels and are reached by the larger market orders.
+enabled = true
+seed_levels = 20
+limit_rate_per_s = 100.0
+cancel_rate_per_order_s = 0.5
+market_rate_per_s = 4.0
+mid_step_rate_per_s = 2.0
+offset_p = 0.01
+base_spread_ticks = 2990
+limit_qty_median_lots = 200.0
+limit_qty_sigma = 0.8
+market_qty_median_lots = 1000.0
+market_qty_sigma = 1.0
+regimes = true
+regime_switch_rate_per_s = 0.02
+volatile_mult = 4.0
+max_resting = 4000
+
+[sim.faults]
+# One-shot faults, seconds after the listeners open (0 = off).
+drop_md_after_s = 0            # close every market-data WebSocket
+drop_ws_api_after_s = 0        # close order-entry WS API connections (user streams stay)
+skip_depth_update_after_s = 0  # omit one depthUpdate: the connector must detect the gap
+timestamp_error_after_s = 0    # the next signed request answers -1021
+rest_unresponsive_after_s = 0  # REST requests are swallowed (client timeouts) ...
+rest_unresponsive_for_s = 0    # ... for this long (0 = for good)
+# Persistent / counted faults.
+delay_ack_ms = 0               # delay WS API order responses and their executionReports
+reject_next_orders = 0         # the next K new orders answer -2010
+rate_limit_next = 0            # the next K REST requests answer 429 / -1003 + Retry-After

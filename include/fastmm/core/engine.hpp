@@ -34,6 +34,7 @@
 #include "fastmm/core/transport.hpp"
 
 #include <atomic>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -72,6 +73,8 @@ struct EngineStats {
   std::uint64_t unknown_order_cancels = 0;
   std::uint64_t kills = 0;
   std::uint64_t steps = 0;
+  std::uint64_t clock_reanchors = 0;  // TscClock picked up a recalibration continuously
+  std::uint64_t clock_steps = 0;      // ... or had to step (old mapping off by > threshold)
 };
 
 template <class Strategy, ClockLike Clock, TransportLike Transport, FeedLike Feed = RingFeed>
@@ -153,6 +156,7 @@ class Engine {
       process(h);
       feed_.release();
     }
+    refresh_clock();
     const Timestamp now = clock_.now();
     n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
     if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
@@ -523,9 +527,13 @@ class Engine {
         risk_.reset();
         quoting_enabled_ = true;
         break;
-      case ControlCommand::Reload:
       case ControlCommand::RecalibrateTsc:
-        break;  // handled by the control thread
+        // The calibrator publishes new calibrations and step() picks them up anyway; this
+        // applies a just-published one before the rest of the step runs.
+        refresh_clock();
+        break;
+      case ControlCommand::Reload:
+        break;  // not implemented: configuration changes need a restart
       case ControlCommand::FlushStats:
         publish_latency(clock_.now());
         break;
@@ -790,6 +798,36 @@ class Engine {
       sent_in_event_ = true;
       latency_.record(LatencyInterval::TickToTrade,
                       static_cast<std::uint64_t>(clock_.cycles_to_ns(t5 - event_t0_)));
+    }
+  }
+
+  // ---- clock ------------------------------------------------------------------------------------
+
+  // Clocks with a refresh() (TscClock) take recalibrations published by the calibrator thread
+  // here, once per step next to the timer poll rather than per event. SimClock has none.
+  void refresh_clock() noexcept {
+    if constexpr (requires {
+                    { clock_.refresh() } -> std::same_as<TscRefresh>;
+                  }) {
+      const TscRefresh r = clock_.refresh();
+      if (FASTMM_LIKELY(r == TscRefresh::None)) return;
+      switch (r) {
+        case TscRefresh::Reanchored:
+        case TscRefresh::Adopted:
+          ++stats_.clock_reanchors;
+          break;
+        case TscRefresh::Stepped:
+          ++stats_.clock_steps;
+          FASTMM_LOG_WARN("TSC recalibration stepped the engine clock by {} ns (threshold {} ns)",
+                          clock_.last_offset_ns(),
+                          clock_.step_threshold().ns);
+          break;
+        case TscRefresh::Rejected:
+          FASTMM_LOG_WARN("ignoring a published TSC calibration without a TSC mapping");
+          break;
+        case TscRefresh::None:
+          break;
+      }
     }
   }
 

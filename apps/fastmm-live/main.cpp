@@ -184,10 +184,12 @@ int main(int argc, char** argv) {
       return kExitUsage;
     }
   }
+  register_live_strategies();
   if (list) {
-    for (const LiveRunnerBuilder& b : live_runner_builders()) {
-      std::printf("%.*s\n", static_cast<int>(b.name.size()), b.name.data());
-      for (const ParamDesc& d : b.schema()) {
+    for (const StrategyEntry& e : list_strategies()) {
+      if (!e.supports(TransportKind::Live)) continue;
+      std::printf("%.*s\n", static_cast<int>(e.name.size()), e.name.data());
+      for (const ParamDesc& d : *e.schema) {
         std::printf("  %-26s %-6s default=%-10g [%g, %g]  %s\n",
                     d.name,
                     std::string(to_string(d.type)).c_str(),

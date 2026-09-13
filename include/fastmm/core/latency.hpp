@@ -2,8 +2,11 @@
 // Latency measurement (5.9): log-linear histogram (no allocation, ~6 % bucket granularity)
 // and the per-hop tracker that the engine feeds with rdtscp deltas.
 //
-// Hops: T0 recv returned, T1 decoded, T2 book applied, T3 strategy decided,
-//       T4 order serialised, T5 send returned.
+// Hops: T0 recv returned and T1 decoded (network thread, carried in the event header),
+//       T2 book applied and T3 strategy decided (engine), T4/T5 around the engine's
+//       transport.send(): live, that is the handoff into the venue's outbound ring, so
+//       TickToTrade stops at the ring. The network thread measures the rest (encode, the
+//       WebSocket/REST send call and receive-to-wire) in venues::WireLatencyRecorder.
 #include "fastmm/core/config_macros.hpp"
 
 #include <bit>
@@ -106,9 +109,9 @@ enum class LatencyInterval : std::uint8_t {
   Decode = 0,       // T0 -> T1
   BookApply = 1,    // T1 -> T2
   Strategy = 2,     // T2 -> T3
-  Serialize = 3,    // T3 -> T4
-  Send = 4,         // T4 -> T5
-  TickToTrade = 5,  // T0 -> T5
+  Serialize = 3,    // T3 -> T4 (strategy decision to batch handoff)
+  Send = 4,         // T4 -> T5 (transport.send(): live, the push into the outbound ring)
+  TickToTrade = 5,  // T0 -> T5 (live: receive to outbound ring)
   WireToBook = 6,   // T0 -> T2
   Count = 7,
 };

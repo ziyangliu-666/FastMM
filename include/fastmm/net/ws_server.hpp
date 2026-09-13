@@ -60,9 +60,9 @@ class WsSessionHandler {
 };
 
 struct WsServerConfig {
-  std::size_t recv_capacity = 1024 * 1024;
-  std::size_t send_capacity = 4 * 1024 * 1024;  // market-data fan-out bursts
-  std::size_t max_message_bytes = 0;            // 0 = recv_capacity - kWsMaxHeaderSize
+  std::size_t recv_capacity = std::size_t{1024} * 1024;
+  std::size_t send_capacity = std::size_t{4} * 1024 * 1024;  // market-data fan-out bursts
+  std::size_t max_message_bytes = 0;                         // 0 = recv_capacity - kWsMaxHeaderSize
 };
 
 template <ByteStream Stream>

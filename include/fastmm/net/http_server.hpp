@@ -71,9 +71,9 @@ struct HttpServerResponse {
 using HttpRouteHandler = std::function<HttpServerResponse(const HttpRequest&)>;
 
 struct HttpServerConfig {
-  std::size_t recv_capacity = 1024 * 1024;  // head + body must fit
-  std::size_t send_capacity = 1024 * 1024;
-  std::size_t max_body_bytes = 512 * 1024;
+  std::size_t recv_capacity = std::size_t{1024} * 1024;  // head + body must fit
+  std::size_t send_capacity = std::size_t{1024} * 1024;
+  std::size_t max_body_bytes = std::size_t{512} * 1024;
   WsServerConfig ws;
 };
 
@@ -123,7 +123,7 @@ class HttpServer {
   using WsConn = WsServerConnection<Stream>;
 
   HttpServer(Reactor& reactor, StreamFactory factory, HttpServerConfig cfg = {})
-      : reactor_(reactor), factory_(std::move(factory)), cfg_(std::move(cfg)), acceptor_(*this) {}
+      : reactor_(reactor), factory_(std::move(factory)), cfg_(cfg), acceptor_(*this) {}
   ~HttpServer() {
     if (listener_.valid()) reactor_.remove(listener_.fd());
     // Connections detach from the reactor in their destructors.
@@ -143,8 +143,11 @@ class HttpServer {
   }
   std::uint16_t port() const noexcept { return port_; }
 
-  void route(std::string method, std::string path, HttpRouteHandler handler) {
-    routes_[method + " " + path] = std::move(handler);
+  void route(std::string_view method, std::string_view path, HttpRouteHandler handler) {
+    std::string key;
+    key.reserve(method.size() + 1 + path.size());
+    key.append(method).append(" ").append(path);
+    routes_[std::move(key)] = std::move(handler);
   }
   void set_default_handler(HttpRouteHandler handler) { default_ = std::move(handler); }
   void set_ws_handler(WsSessionHandler* handler) noexcept { ws_handler_ = handler; }
@@ -280,12 +283,20 @@ class HttpServer {
     }
 
     void write_response(const HttpServerResponse& resp, bool close) {
-      std::string head = "HTTP/1.1 " + std::to_string(resp.status) + " " +
-                         std::string(http_reason_phrase(resp.status)) +
-                         "\r\nContent-Type: " + resp.content_type +
-                         "\r\nContent-Length: " + std::to_string(resp.body.size()) +
-                         "\r\nConnection: " + (close ? "close" : "keep-alive") + "\r\n";
-      for (const auto& [k, v] : resp.headers) head += k + ": " + v + "\r\n";
+      std::string head;
+      head.reserve(160 + resp.content_type.size());
+      head.append("HTTP/1.1 ")
+          .append(std::to_string(resp.status))
+          .append(" ")
+          .append(http_reason_phrase(resp.status))
+          .append("\r\nContent-Type: ")
+          .append(resp.content_type)
+          .append("\r\nContent-Length: ")
+          .append(std::to_string(resp.body.size()))
+          .append("\r\nConnection: ")
+          .append(close ? "close" : "keep-alive")
+          .append("\r\n");
+      for (const auto& [k, v] : resp.headers) head.append(k).append(": ").append(v).append("\r\n");
       head += "\r\n";
       if (!tx_.append(head) || !tx_.append(resp.body)) {
         finish();  // response larger than the send buffer: nothing sensible to do

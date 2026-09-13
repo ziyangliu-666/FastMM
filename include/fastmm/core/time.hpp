@@ -2,10 +2,12 @@
 // Time primitives. Timestamp is ns since the Unix epoch; Cycles is a raw TSC reading.
 //
 // TscClock converts rdtsc to wall-clock ns with a 32.32 fixed-point multiplier calibrated
-// against CLOCK_REALTIME. On machines without constant_tsc it transparently falls back to
+// against CLOCK_REALTIME, refreshed at run time through a Seqlocked<TscCalibration> without
+// letting time go backwards. On machines without constant_tsc it transparently falls back to
 // clock_gettime (detected once from /proc/cpuinfo, see src/core/time.cpp). SimClock is the
 // deterministic replacement for backtests/replay: same interface, time only moves when told.
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/seqlock.hpp"
 
 #include <x86intrin.h>
 
@@ -83,15 +85,134 @@ struct TscCalibration {
 // Measures the TSC frequency against CLOCK_REALTIME over `window` (spins). src/core/time.cpp
 [[nodiscard]] TscCalibration calibrate_tsc(Duration window = milliseconds(50)) noexcept;
 
+// Outcome of TscClock::refresh() / reanchor().
+enum class TscRefresh : std::uint8_t {
+  None = 0,    // no new calibration published (the common case)
+  Adopted,     // the clock had no TSC mapping yet: took the published one as is
+  Reanchored,  // continuous: same time at the refresh point, new rate from there on
+  Stepped,     // old mapping disagreed with the measurement by more than the threshold
+  Rejected,    // the published calibration is unusable (no TSC); kept the current mapping
+};
+[[nodiscard]] constexpr const char* to_string(TscRefresh r) noexcept {
+  switch (r) {
+    case TscRefresh::None:
+      return "none";
+    case TscRefresh::Adopted:
+      return "adopted";
+    case TscRefresh::Reanchored:
+      return "reanchored";
+    case TscRefresh::Stepped:
+      return "stepped";
+    case TscRefresh::Rejected:
+      return "rejected";
+  }
+  return "?";
+}
+
+// TSC reading -> wall ns under `c`. Signed, so readings taken before the anchor (e.g. a
+// network-thread receive stamp converted after a re-anchor) map to earlier times.
+[[nodiscard]] FASTMM_FORCE_INLINE std::int64_t tsc_to_ns(const TscCalibration& c,
+                                                         std::uint64_t tsc) noexcept {
+  const auto dc = static_cast<std::int64_t>(tsc - c.tsc0);
+  return c.ns0 + static_cast<std::int64_t>(
+                     (static_cast<Int128>(dc) * static_cast<Int128>(c.ns_per_cycle_q32)) >> 32);
+}
+
+// Periodic recalibration (see docs/architecture.md, "Clock calibration"): a calibrator thread
+// measures with calibrate_tsc() and publishes into a Seqlocked<TscCalibration>; every TscClock
+// user keeps its own copy and calls refresh() from its loop. A clock is owned by one thread:
+// refresh() and the time accessors must not race.
 class TscClock {
  public:
+  static constexpr Duration kDefaultStepThreshold = milliseconds(1);
+  static constexpr Duration kDefaultSlewHorizon = seconds(10);
+  // Upper bound on the rate adjustment used to absorb an offset (a clock servo, not a jump).
+  static constexpr std::int64_t kMaxSlewPpm = 500;
+
   TscClock() noexcept = default;
   explicit TscClock(const TscCalibration& c) noexcept : calib_(c) {}
 
-  // Blocking; call once at startup (or from the control thread to refresh).
+  // Blocking; call once at startup, before the clock is shared with another thread.
   void calibrate(Duration window = milliseconds(50)) noexcept { calib_ = calibrate_tsc(window); }
   void set_calibration(const TscCalibration& c) noexcept { calib_ = c; }
   [[nodiscard]] const TscCalibration& calibration() const noexcept { return calib_; }
+
+  // Subscribes to published calibrations. The next refresh() takes whatever is published
+  // (even the version that was current at attach time); after that only new versions.
+  // `slew_horizon` should match the calibrator's period: each re-anchor absorbs the measured
+  // offset over that horizon (see reanchor()); zero disables slewing.
+  void attach_calibration_source(const Seqlocked<TscCalibration>* src,
+                                 Duration step_threshold = kDefaultStepThreshold,
+                                 Duration slew_horizon = kDefaultSlewHorizon) noexcept {
+    src_ = src;
+    seen_version_ = kNoVersion;
+    step_threshold_ns_ = step_threshold.ns;
+    slew_horizon_ns_ = slew_horizon.ns > 0 ? slew_horizon.ns : 0;
+  }
+  [[nodiscard]] const Seqlocked<TscCalibration>* calibration_source() const noexcept {
+    return src_;
+  }
+
+  // Cheap when nothing changed (one atomic load); copies and re-anchors on a new version.
+  // A write in progress is skipped and picked up by a later call.
+  FASTMM_FORCE_INLINE TscRefresh refresh() noexcept {
+    if (FASTMM_LIKELY(src_ == nullptr || src_->version() == seen_version_)) return TscRefresh::None;
+    return refresh_slow();
+  }
+
+  // Switches to `fresh` at TSC reading `at` (refresh() passes rdtsc()). If both mappings use
+  // the TSC and agree at `at` within the step threshold, the clock re-anchors at the old
+  // mapping's time for `at`, so time never jumps, and runs at the fresh rate plus a bounded
+  // correction that absorbs the measured offset over the slew horizon: offset * rate / horizon,
+  // so after `horizon` ns the mapping agrees with `fresh` (clamped to kMaxSlewPpm). Without the
+  // correction the offset would accumulate across re-anchors until it forced a step. If the
+  // offset exceeds the threshold the clock steps to `fresh` instead.
+  TscRefresh reanchor(const TscCalibration& fresh, Cycles at) noexcept {
+    if (!fresh.use_tsc || fresh.ns_per_cycle_q32 == 0) {
+      if (calib_.use_tsc) return TscRefresh::Rejected;
+      calib_ = fresh;
+      return TscRefresh::Adopted;
+    }
+    if (!calib_.use_tsc) {
+      calib_ = fresh;
+      return TscRefresh::Adopted;
+    }
+    const std::int64_t old_ns = tsc_to_ns(calib_, at.v);
+    last_offset_ns_ = tsc_to_ns(fresh, at.v) - old_ns;
+    if (last_offset_ns_ > step_threshold_ns_ || last_offset_ns_ < -step_threshold_ns_) {
+      calib_ = fresh;
+      ++steps_;
+      return TscRefresh::Stepped;
+    }
+    std::uint64_t rate = fresh.ns_per_cycle_q32;
+    slew_ppb_ = 0;
+    if (slew_horizon_ns_ > 0 && last_offset_ns_ != 0) {
+      const Int128 max_adj = static_cast<Int128>(rate) * kMaxSlewPpm / 1'000'000;
+      Int128 adj = static_cast<Int128>(last_offset_ns_) * static_cast<Int128>(rate) /
+                   static_cast<Int128>(slew_horizon_ns_);
+      if (adj > max_adj) adj = max_adj;
+      if (adj < -max_adj) adj = -max_adj;
+      rate = static_cast<std::uint64_t>(static_cast<Int128>(rate) + adj);
+      slew_ppb_ = static_cast<std::int64_t>(adj * 1'000'000'000 /
+                                            static_cast<Int128>(fresh.ns_per_cycle_q32));
+    }
+    calib_.tsc0 = at.v;
+    calib_.ns0 = old_ns;
+    calib_.ns_per_cycle_q32 = rate;
+    calib_.ghz = fresh.ghz;
+    ++reanchors_;
+    return TscRefresh::Reanchored;
+  }
+
+  // Diagnostics (owner thread, or after the owner stopped).
+  [[nodiscard]] std::uint64_t steps() const noexcept { return steps_; }
+  [[nodiscard]] std::uint64_t reanchors() const noexcept { return reanchors_; }
+  // fresh - old at the last re-anchor or step, in ns.
+  [[nodiscard]] std::int64_t last_offset_ns() const noexcept { return last_offset_ns_; }
+  [[nodiscard]] Duration step_threshold() const noexcept { return Duration{step_threshold_ns_}; }
+  [[nodiscard]] Duration slew_horizon() const noexcept { return Duration{slew_horizon_ns_}; }
+  // Rate correction applied at the last re-anchor, in parts per billion of the fresh rate.
+  [[nodiscard]] std::int64_t slew_ppb() const noexcept { return slew_ppb_; }
 
   FASTMM_FORCE_INLINE Timestamp now() const noexcept {
     if (FASTMM_LIKELY(calib_.use_tsc)) return to_timestamp(rdtsc());
@@ -102,12 +223,7 @@ class TscClock {
     return Cycles{static_cast<std::uint64_t>(wall_now().ns)};
   }
   [[nodiscard]] FASTMM_FORCE_INLINE Timestamp to_timestamp(Cycles c) const noexcept {
-    if (FASTMM_LIKELY(calib_.use_tsc)) {
-      const std::uint64_t dc = c.v - calib_.tsc0;
-      const auto dns =
-          static_cast<std::int64_t>((static_cast<Uint128>(dc) * calib_.ns_per_cycle_q32) >> 32);
-      return Timestamp{calib_.ns0 + dns};
-    }
+    if (FASTMM_LIKELY(calib_.use_tsc)) return Timestamp{tsc_to_ns(calib_, c.v)};
     return Timestamp{static_cast<std::int64_t>(c.v)};
   }
   [[nodiscard]] FASTMM_FORCE_INLINE std::int64_t cycles_to_ns(std::uint64_t dc) const noexcept {
@@ -118,7 +234,26 @@ class TscClock {
   }
 
  private:
+  static constexpr std::uint32_t kNoVersion = UINT32_MAX;
+
+  FASTMM_NOINLINE TscRefresh refresh_slow() noexcept {
+    TscCalibration fresh;
+    std::uint32_t version = 0;
+    if (!src_->try_load(fresh, version)) return TscRefresh::None;
+    seen_version_ = version;
+    return reanchor(fresh, rdtsc());
+  }
+
   TscCalibration calib_{};
+  const Seqlocked<TscCalibration>* src_ = nullptr;
+  std::uint32_t seen_version_ = kNoVersion;
+  std::int64_t step_threshold_ns_ = kDefaultStepThreshold.ns;
+  std::int64_t slew_horizon_ns_ =
+      0;  // 0 until attach_calibration_source(): reanchor() alone does not slew
+  std::int64_t slew_ppb_ = 0;
+  std::int64_t last_offset_ns_ = 0;
+  std::uint64_t steps_ = 0;
+  std::uint64_t reanchors_ = 0;
 };
 
 // Deterministic clock for sim/backtest/replay. 1 cycle == 1 ns.
