@@ -336,7 +336,7 @@ TEST_CASE("core.time: a host wall-clock step is reported and does not distort th
   CHECK(r.host_step_ns == 1'550'000'000);
   CHECK(std::llabs(r.drift_ns - 1'550'000'000) < 1'000);
   CHECK(std::llabs(q32_error(r.calibration)) <= kPpmOfQuarter);  // rate from CLOCK_MONOTONIC_RAW
-  CHECK(r.calibration.ns0 == r.calibration.ns0);                 // anchored on realtime
+  CHECK(r.calibration.ns0 > fake_clock::g_wall_offset_ns);       // anchored on CLOCK_REALTIME
 }
 
 TEST_CASE("core.time: anchor jitter costs a few ppm over a long baseline") {
