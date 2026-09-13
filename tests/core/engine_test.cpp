@@ -375,6 +375,9 @@ TEST_CASE("core.engine: reconcile marks unseen orders cancelled and suppresses q
   CHECK_FALSE(f.engine->reconciling());
   CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.003"));
   CHECK(f.engine->oms().open_count() == 1);  // the ask (unseen) was marked cancelled
+  // The venue still has the bid, so reconciliation cleared its pending cancel (the pull's cancel
+  // was lost). Quotes are pulled during reconciliation, so the quote manager cancels it again.
   CHECK(f.engine->oms().get(f.engine->oms().find(bid.cl_ord_id)).state ==
-        OrderState::Live);  // pending cancel cleared
+        OrderState::PendingCancel);
+  CHECK(f.transport.count(EventType::OutCancel) == 3);
 }

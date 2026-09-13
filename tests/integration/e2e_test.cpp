@@ -105,6 +105,7 @@ TEST_CASE("sim_exchange e2e: market-data drop pulls quotes and order-channel los
       [&] { return status().books_synced == 1 && fx.server.stats().open_orders >= 1; }, 20000));
 
   // 1. Market-data connection dropped: quotes are pulled, the stream reconnects and resyncs.
+  const std::uint64_t open_before_md = fx.server.stats().open_orders;
   fx.server.mark();
   fx.server.drop_market_data_connections();
   REQUIRE(wait_until(
@@ -122,7 +123,8 @@ TEST_CASE("sim_exchange e2e: market-data drop pulls quotes and order-channel los
   sim::server::SimServerStats s = fx.server.stats();
   CHECK(s.md_connections_dropped == 1);
   CHECK(s.min_open_orders_since_mark == 0);
-  CHECK(s.cancels_since_mark >= 1);
+  // Quotes can all have filled by the time of the drop; then there is nothing to cancel.
+  if (open_before_md > 0) CHECK(s.cancels_since_mark >= 1);
   const bool md_resumed = wait_until([&] { return fx.server.stats().open_orders >= 1; }, 10000);
 
   // 2. Order channel (the WS API connection without the user stream) lost: the connector

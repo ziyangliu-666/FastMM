@@ -50,7 +50,8 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     double var = 0.0;        // EWMA variance per second (price units^2)
     double mean_dist = 0.0;  // EWMA |trade px - mid| for kappa estimation
     double kappa_est = 0.0;
-    Price last_mid{};
+    Price last_mid{};    // previous mid sample for the variance estimate (every book update)
+    Price quoted_mid{};  // mid of the last requote; cleared to force the next one
     Timestamp last_ts{};
     Timestamp start_ts{};
     bool have_var = false;
@@ -75,11 +76,11 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     State& s = st_[id.value];
     const Timestamp now = ctx.now();
     update_variance(s, mid, now, inst);
-    if (s.last_mid.is_positive() &&
-        (mid - s.last_mid).abs().raw < params_.requote_threshold_ticks * inst.tick.raw) {
+    if (s.quoted_mid.is_positive() &&
+        (mid - s.quoted_mid).abs().raw < params_.requote_threshold_ticks * inst.tick.raw) {
       return;
     }
-    s.last_mid = mid;
+    s.quoted_mid = mid;
     ctx.set_quotes(id, compute_quotes(id, mid, ctx.position(id).qty, inst, now));
   }
 
@@ -90,7 +91,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
     for (const Instrument& inst : ctx.instruments()) {
       if (inst.venue != m.hdr.venue) continue;
-      st_[inst.id.value].last_mid = Price{};
+      st_[inst.id.value].quoted_mid = Price{};
       if (m.state == ConnState::Live) on_book(ctx, inst.id, ctx.book(inst.id));
     }
   }
@@ -172,7 +173,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
       s.have_var = true;
     }
     s.last_ts = now;
-    if (!s.last_mid.is_positive()) s.last_mid = mid;
+    s.last_mid = mid;
   }
   [[nodiscard]] double horizon_left(Timestamp now) const noexcept {
     const double elapsed = static_cast<double>((now - start_).ns) / 1e9;

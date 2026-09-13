@@ -54,6 +54,17 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- A quote slot could stop quoting for good after a connection loss. After a replace the quote
+  manager still remembered the order's original id, so the terminal update of a later cancel was
+  dropped and the slot waited for it forever. Slots now recognise their order by handle, instrument
+  and tag, and a slot without a live order never waits. Found on a 2-core CI runner, where the
+  market-data end-to-end test stopped quoting after the reconnect.
+- Orders still pending when quotes were pulled (a New or a replace awaiting its ack) stayed on the
+  book once acknowledged. They are now cancelled as soon as they become working.
+- The quote manager could take a stale handle for the order that later reused its slot and
+  replace or cancel that order.
+- Avellaneda-Stoikov never requoted on the first book update after a reconnect: its variance
+  update wrote the mid back into the field that gates requotes. The two are separate now.
 - Several sources used `<algorithm>` and `<cstdio>` functions without including those headers.
   They compiled against libstdc++ 13 through transitive includes but not against libstdc++ 14, which
   clang picks up on the GitHub ubuntu-24.04 image.

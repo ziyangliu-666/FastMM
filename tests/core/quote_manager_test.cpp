@@ -126,7 +126,7 @@ TEST_CASE("core.quote_manager: place, hysteresis, interval, cancel-then-new sequ
     init_header(m, EventType::OrderCancelAck);
     m.cl_ord_id = o.cl_ord_id;
     auto u = h.oms.on_cancel_ack(m);
-    qm.on_order_update(u, inst, now, h);
+    qm.on_order_update(u, inst, h.oms, now, h);
   }
   CHECK(h.count(QuoteActionKind::New) == 2);
   CHECK(h.oms.open_count() == 2);
@@ -162,7 +162,7 @@ TEST_CASE("core.quote_manager: place, hysteresis, interval, cancel-then-new sequ
     OrderCancelAckMsg m{};
     init_header(m, EventType::OrderCancelAck);
     m.cl_ord_id = o.cl_ord_id;
-    qm.on_order_update(h.oms.on_cancel_ack(m), inst, now, h);
+    qm.on_order_update(h.oms.on_cancel_ack(m), inst, h.oms, now, h);
   }
   CHECK(h.oms.open_count() == 0);
   CHECK(h.count(QuoteActionKind::New) == 0);
@@ -198,4 +198,102 @@ TEST_CASE("core.quote_manager: replace when the venue supports it, multi-level")
   CHECK(qm.stats().replaces == 6);
   // all pending replace now: untouched
   CHECK(qm.reconcile(inst, d, h.oms, Timestamp{2}, h) == 0);
+}
+
+namespace {
+std::vector<ClientOrderId> ids_in_state(const Oms& oms, OrderState state, bool pending_id = false) {
+  std::vector<ClientOrderId> ids;
+  oms.for_each_open_order([&](Handle<Order>, const Order& o) {
+    if (o.state == state) ids.push_back(pending_id ? o.pending_cl_ord_id : o.cl_ord_id);
+  });
+  return ids;
+}
+OrderAckMsg ack_msg(ClientOrderId id) {
+  OrderAckMsg m{};
+  init_header(m, EventType::OrderAck);
+  m.cl_ord_id = id;
+  m.venue_order_id = "v";
+  return m;
+}
+OrderCancelAckMsg cancel_ack_msg(ClientOrderId id) {
+  OrderCancelAckMsg m{};
+  init_header(m, EventType::OrderCancelAck);
+  m.cl_ord_id = id;
+  return m;
+}
+}  // namespace
+
+TEST_CASE("core.quote_manager: pulling a replaced quote frees its slot for the next requote") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  p.supports_replace = true;
+  QuoteManager qm(p);
+  Harness h;
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+  h.ack_all();
+  REQUIRE(qm.reconcile(inst, quotes("98.00", "102.00"), h.oms, Timestamp{1}, h) == 2);
+  REQUIRE(h.count(QuoteActionKind::Replace) == 2);
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingReplace, true))
+    qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, Timestamp{1}, h);
+  qm.pull_quotes(inst, h.oms, h);  // the connection dropped
+  REQUIRE(h.count(QuoteActionKind::Cancel) == 2);
+  // The cancel acks carry the replacement ids, not the ids the slots were created with.
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+    qm.on_order_update(h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, Timestamp{2}, h);
+  CHECK(h.oms.open_count() == 0);
+  // Back online: both levels are quoted again (the slots used to wait for a terminal update
+  // forever and never place another order).
+  CHECK(qm.reconcile(inst, quotes("98.50", "101.50"), h.oms, Timestamp{3}, h) == 2);
+  CHECK(h.count(QuoteActionKind::New) == 4);
+  CHECK(h.oms.open_count() == 2);
+}
+
+TEST_CASE("core.quote_manager: an order that becomes working after a pull is cancelled") {
+  const Instrument inst = make_inst();
+  QuoteManager qm;
+  Harness h;
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);  // both PendingNew
+  qm.pull_quotes(inst, h.oms, h);
+  CHECK(h.count(QuoteActionKind::Cancel) == 0);  // pending orders cannot be cancelled yet
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+    qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, Timestamp{}, h);
+  CHECK(h.count(QuoteActionKind::Cancel) == 2);
+  CHECK(ids_in_state(h.oms, OrderState::PendingCancel).size() == 2);
+  // A requote after the pull quotes normally again.
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+    qm.on_order_update(h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, Timestamp{}, h);
+  CHECK(qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{1}, h) == 2);
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+    qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, Timestamp{1}, h);
+  CHECK(h.count(QuoteActionKind::Cancel) == 2);
+  CHECK(h.oms.open_count() == 2);
+}
+
+TEST_CASE("core.quote_manager: an order that reuses a stale slot handle is not adopted") {
+  const Instrument inst = make_inst();
+  QuoteManager qm;
+  Harness h;
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+  h.ack_all();
+  const Handle<Order> bid = qm.slot_handle(inst.id, Side::Buy, 0);
+  REQUIRE(bid.valid());
+  // The bid is cancelled at the venue without the manager hearing about it (the handle goes
+  // stale), and an unrelated order takes over the freed order slot.
+  REQUIRE(h.oms.request_cancel(bid).has_value());
+  const ClientOrderId bid_id = h.oms.get(bid).cl_ord_id;
+  static_cast<void>(h.oms.on_cancel_ack(cancel_ack_msg(bid_id)));
+  NewOrderRequest r{};
+  r.instrument = inst.id;
+  r.side = Side::Buy;
+  r.price = px("50.00");
+  r.qty = qt("1");
+  const Handle<Order> manual = *h.oms.submit(r, h.oms.next_cl_ord_id(), {});
+  REQUIRE(manual.idx == bid.idx);
+  h.actions.clear();
+  CHECK(qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{1}, h) == 1);
+  REQUIRE(h.actions.size() == 1);
+  CHECK(h.actions[0].kind == QuoteActionKind::New);  // a new bid, not a replace of the manual order
+  CHECK(h.oms.get(manual).state == OrderState::PendingNew);
+  CHECK(h.oms.get(manual).price == px("50.00"));
 }

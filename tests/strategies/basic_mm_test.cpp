@@ -5,6 +5,8 @@
 #include "fastmm/strategies/avellaneda_stoikov.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#include <array>
+
 using namespace fastmm;
 
 namespace {
@@ -136,4 +138,65 @@ TEST_CASE("strategies.registry: one factory per transport kind, lookup, listing"
   CHECK_FALSE(reg.add("x", &BasicMM::schema(), TransportKind::Sim, nullptr));
   CHECK(reg.find("x") == nullptr);
   CHECK(to_string(TransportKind::Live) == "live");
+}
+
+namespace {
+struct FakeBook {
+  Price bid, ask;
+  bool is_valid() const { return true; }
+  Price mid() const { return Price::from_raw((bid.raw + ask.raw) / 2); }
+  Level best_bid() const { return Level{bid, qt("1")}; }
+  Level best_ask() const { return Level{ask, qt("1")}; }
+};
+struct FakePosition {
+  Qty qty{};
+};
+struct QuoteCtx {
+  std::array<Instrument, 1> list{[] {
+    Instrument i = inst();
+    i.venue = VenueId{0};
+    return i;
+  }()};
+  FakeBook b{px("100.00"), px("100.10")};
+  int set_quotes_calls = 0;
+  const std::array<Instrument, 1>& instruments() const { return list; }
+  const Instrument& instrument(InstrumentId) const { return list[0]; }
+  const FakeBook& book(InstrumentId) const { return b; }
+  Timestamp now() const { return Timestamp{}; }
+  FakePosition position(InstrumentId) const { return {}; }
+  void set_quotes(InstrumentId, const DesiredQuotes&) { ++set_quotes_calls; }
+  void pull_quotes(InstrumentId) {}
+};
+ConnectionStateMsg connection(ConnState state) {
+  ConnectionStateMsg m{};
+  m.hdr.venue = VenueId{0};
+  m.state = state;
+  return m;
+}
+}  // namespace
+
+TEST_CASE("strategies: a connection change forces the next requote even if the mid is unchanged") {
+  const auto check = [](auto& strategy) {
+    QuoteCtx ctx;
+    const InstrumentId id{0};
+    strategy.on_book(ctx, id, ctx.b);
+    strategy.on_book(ctx, id, ctx.b);
+    CHECK(ctx.set_quotes_calls == 1);  // mid unchanged: no requote
+    strategy.on_connection(ctx, connection(ConnState::Disconnected));
+    CHECK(ctx.set_quotes_calls == 1);
+    strategy.on_book(ctx, id, ctx.b);
+    CHECK(ctx.set_quotes_calls == 2);  // the drop forgot the last quoted mid
+    strategy.on_connection(ctx, connection(ConnState::Live));
+    CHECK(ctx.set_quotes_calls == 3);  // Live again: requote at once
+    strategy.on_book(ctx, id, ctx.b);
+    CHECK(ctx.set_quotes_calls == 3);
+  };
+  SUBCASE("basic_mm") {
+    BasicMM s;
+    check(s);
+  }
+  SUBCASE("avellaneda_stoikov") {  // used to fail: the variance update re-set the gating mid
+    AvellanedaStoikov s;
+    check(s);
+  }
 }

@@ -8,6 +8,10 @@
 //     price and whose leaves cover min_qty_bps of the desired quantity;
 //   * never re-quote a slot within min_requote_interval of its last change;
 //   * orders in a Pending* state are never touched;
+//   * a slot only counts an order as its own if it is live and carries the slot's tag (order
+//     slots are reused, and a replace changes the order's id);
+//   * while an instrument is pulled, an order that becomes working late (its ack arrived after
+//     the pull) is cancelled at once;
 //   * venues with supports_replace get a single Replace; otherwise Cancel now and New
 //     only once the cancel's terminal update arrives via on_order_update() (cancel-then-new
 //     keeps momentary exposure down and never double-quotes a level).
@@ -107,7 +111,7 @@ class QuoteManager {
         Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
         const bool has_want = lvl < want.size() && want[lvl].qty.is_positive();
         const Level target = has_want ? want[lvl] : Level{};
-        if (slot.handle.valid() && oms.is_live(slot.handle)) {
+        if (owns(oms, inst, side, lvl, slot)) {
           const Order& o = oms.get(slot.handle);
           if (is_pending(o.state)) {
             ++stats_.skipped_pending;
@@ -152,14 +156,13 @@ class QuoteManager {
           }
           continue;
         }
-        // No resting order in this slot.
+        // No resting order in this slot. A cancel still in flight keeps the order live (Pending*,
+        // handled above), so any earlier order is final in the OMS and there is nothing left to
+        // wait for, even if its terminal update never reached on_order_update().
         slot.handle = Handle<Order>{};
+        slot.awaiting_terminal = false;
+        slot.renew_after_cancel = false;
         if (!has_want) continue;
-        if (slot.awaiting_terminal) {  // cancel in flight: New goes out on the terminal update
-          slot.want = target;
-          slot.renew_after_cancel = true;
-          continue;
-        }
         actions += submit_new(inst, side, lvl, slot, target, now, place);
       }
     }
@@ -178,7 +181,7 @@ class QuoteManager {
       for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
         Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
         slot.renew_after_cancel = false;
-        if (!slot.handle.valid() || !oms.is_live(slot.handle)) continue;
+        if (!owns(oms, inst, side, lvl, slot)) continue;
         const Order& o = oms.get(slot.handle);
         if (!o.is_working()) continue;  // pending: cannot touch; a later pull will catch it
         actions += cancel(inst, side, lvl, slot, place);
@@ -187,20 +190,31 @@ class QuoteManager {
     return actions;
   }
 
-  // Feed every OmsUpdate here. On a terminal update of a slot order, the slot is freed and,
-  // if a replacement was queued (cancel-then-new), the New is placed now.
+  // Feed every OmsUpdate here. A terminal update frees the slot it belonged to and, if a
+  // replacement was queued (cancel-then-new), places the New now. While the instrument is pulled,
+  // an order that has just become working is cancelled.
   template <class Placer>
   void on_order_update(const OmsUpdate& u,
                        const Instrument& inst,
+                       const Oms& oms,
                        Timestamp now,
                        Placer&& place) noexcept {
-    if (!u.terminal || !is_quote_tag(u.order.user_tag)) return;
+    if (!is_quote_tag(u.order.user_tag)) return;
     const Side side = static_cast<Side>((u.order.user_tag >> 8) & 1U);
     const std::uint32_t lvl = u.order.user_tag & 0xFFU;
     if (lvl >= kMaxQuoteLevels || u.order.instrument != inst.id) return;
     InstState& st = state_[inst.id.value];
     Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
-    if (slot.cl_ord_id != u.order.cl_ord_id) return;  // stale/other order
+    if (!u.terminal) {
+      if (st.pulled && u.handle.valid() && slot.handle.idx == u.handle.idx &&
+          owns(oms, inst, side, lvl, slot) && u.order.is_working())
+        static_cast<void>(cancel(inst, side, lvl, slot, place));
+      return;
+    }
+    // The terminal order was this slot's unless the slot already holds a newer live order. Ids
+    // are not compared: a replace changes the order's id, and a stale id used to drop the update
+    // and leave the slot waiting for a terminal state forever.
+    if (owns(oms, inst, side, lvl, slot)) return;
     slot.handle = Handle<Order>{};
     slot.cl_ord_id = ClientOrderId{};
     slot.awaiting_terminal = false;
@@ -232,6 +246,17 @@ class QuoteManager {
     DesiredQuotes desired;
     bool pulled = false;
   };
+
+  // The slot's order is live and really the slot's: order slots are reused by later orders.
+  [[nodiscard]] static bool owns(const Oms& oms,
+                                 const Instrument& inst,
+                                 Side side,
+                                 std::uint32_t lvl,
+                                 const Slot& slot) noexcept {
+    if (!slot.handle.valid() || !oms.is_live(slot.handle)) return false;
+    const Order& o = oms.get(slot.handle);
+    return o.instrument == inst.id && o.user_tag == make_tag(side, lvl);
+  }
 
   template <class Placer>
   std::uint32_t cancel(

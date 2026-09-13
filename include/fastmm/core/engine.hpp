@@ -450,10 +450,10 @@ class Engine {
     }
     if (u.known && u.handle.valid() && instruments_.contains(u.order.instrument)) {
       Placer place{this};
-      quotes_.on_order_update(u, instruments_.get(u.order.instrument), clock_.now(), place);
+      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, clock_.now(), place);
     } else if (u.terminal && instruments_.contains(u.order.instrument)) {
       Placer place{this};
-      quotes_.on_order_update(u, instruments_.get(u.order.instrument), clock_.now(), place);
+      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, clock_.now(), place);
     }
     if (u.changed) {
       if constexpr (requires { strategy_.on_order_update(ctx_, u); })
