@@ -131,10 +131,59 @@ Cancels are always allowed, including after the kill switch trips.
 | `file` | string | | Log file; empty logs to stderr only |
 | `mirror_level` | string | `"warn"` | Records at or above this level are also written to stderr |
 
-## `[sim]` and `[backtest]`
+## `[backtest]`
 
-These tables are passed as free-form key/value maps to the simulator and backtester, which document
-their own keys. See `configs/backtest-example.toml` and `configs/sim.toml` for complete examples.
+Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module
+(`src/backtest/backtest_config.cpp`). The engine, risk and strategy settings come from the sections
+above; fees come from the first venue's `fees` table, self-trade prevention follows `[risk] stp`,
+and in-place replace follows `[engine] supports_replace`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `source` | string | `""` | `synthetic`, `journal` or `csv`. When empty, the format is inferred from `path` |
+| `path` | string | `""` | Data file. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
+| `seed` | int | `[sim] seed`, else `1` | Seed for the simulator and the strategy random generator |
+| `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data; must be positive |
+| `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties |
+| `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do |
+| `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue and acknowledgements back |
+| `latency_jitter_us` | int | `50` | Random jitter added to that latency, seeded |
+| `latency_md_us` | int | `0` | Fixed market-data latency |
+| `latency_md_jitter_us` | int | `0` | Market-data latency jitter |
+| `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost; exercises reconciliation |
+| `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio |
+| `initial_capital` | number | `0` | Starting capital, used for percentage drawdown |
+| `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
+| `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
+
+Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`,
+`--out`) override these values; run it with `--help` for the full list.
+
+## `[sim]`
+
+Parameters of the synthetic market used when the data source is synthetic. Prices and sizes use the
+first instrument's `tick` and `lot`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `seed` | int | `1` | Used when `[backtest] seed` is not set |
+| `duration_s` | int | `60` | Used when `[backtest] duration_s` is not set |
+| `start_mid` | decimal | `"60000"` | Initial mid price |
+| `seed_levels` | int | `20` | Price levels populated before the run starts |
+| `limit_rate_per_s` | number | `200` | Limit-order arrivals per second |
+| `cancel_rate_per_order_s` | number | `0.5` | Cancellation hazard of each resting order, per second |
+| `market_rate_per_s` | number | `10` | Market-order arrivals per second |
+| `mid_step_rate_per_s` | number | `2` | Steps of one tick in the latent mid price, per second |
+| `offset_p` | number | `0.35` | In (0, 1]. Limit orders land k ticks from the touch with probability p(1-p)^k |
+| `base_spread_ticks` | int | `1` | Distance of the touch from the latent mid, at least 1 |
+| `limit_qty_median_lots` | number | `200` | Median limit-order size in lots (log-normal) |
+| `market_qty_median_lots` | number | `100` | Median market-order size in lots (log-normal) |
+| `regimes` | bool | `true` | Switch between a calm and a volatile regime |
+| `volatile_mult` | number | `4.0` | Multiplier on mid steps and market orders in the volatile regime |
+| `depth_update_ms` | int | `100` | Book changes are aggregated into one depth diff per interval, like Binance `@depth@100ms` |
+| `book_ticker` | bool | `true` | Also publish top-of-book updates |
+
+`configs/backtest-example.toml` is a complete, tuned example of both sections.
 
 ## Failure handling
 
