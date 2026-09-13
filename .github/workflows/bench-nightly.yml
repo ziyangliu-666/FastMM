@@ -10,7 +10,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev zlib1g-dev && pip install cmake
       - uses: actions/cache@v4
-        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
       - name: bench (release, portable flags; hosted runners are noisy)
         run: CPM_SOURCE_CACHE=~/.cache/CPM ./scripts/bench.sh --preset release --cpu 1 --min-time 0.2s
       - name: compare to baseline (advisory)

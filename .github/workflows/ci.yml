@@ -23,7 +23,9 @@ jobs:
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)
           ! grep -rnE 'TEST_CASE\("[^"]*;' tests || (echo "';' in a TEST_CASE name breaks doctest_discover_tests filters" && exit 1)
       - uses: actions/cache@v4
-        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
       - name: clang-tidy
         run: cmake --preset debug -DFASTMM_BUILD_BENCH=OFF && RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
 
@@ -44,9 +46,12 @@ jobs:
       - name: install
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev zlib1g-dev ccache && pip install cmake
       - uses: hendrikmuhs/ccache-action@v1.2
-        with: { key: ${{ matrix.name }} }
+        with:
+          key: ${{ matrix.name }}
       - uses: actions/cache@v4
-        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
       - name: configure
         run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTMM_WERROR=ON
       - name: build
@@ -71,7 +76,9 @@ jobs:
       - name: install
         run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build && pip install cmake build pytest numpy
       - uses: actions/cache@v4
-        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
       - name: wheel
         run: CXX=g++-13 pip wheel . -w dist --no-deps -v && pip install dist/*.whl
       - name: pytest
