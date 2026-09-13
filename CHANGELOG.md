@@ -4,6 +4,8 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-14
+
 ### Added
 - Repository skeleton: CMake + CPM with pinned dependencies, presets (debug, release, release-native,
   asan, tsan, coverage, clang, python), GitHub Actions CI, clang-format / clang-tidy, pre-commit.
@@ -52,6 +54,11 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- Several sources used `<algorithm>` and `<cstdio>` functions without including those headers.
+  They compiled against libstdc++ 13 through transitive includes but not against libstdc++ 14, which
+  clang picks up on the GitHub ubuntu-24.04 image.
+- CI sized for the private-repository runner (2 vCPUs): builds and tests use the core count, the
+  build job limit is 60 minutes, and integration tests run serially.
 - The clang-tsan build did not link: the hot-path allocation harness replaces global `operator new`,
   which the TSan runtime also defines. The harness is no longer built under TSan.
 - Under TSan every concurrent `Seqlocked` store and load was reported as a data race. The optimistic
