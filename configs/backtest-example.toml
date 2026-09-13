@@ -44,13 +44,14 @@ min_notional = "5"
 [strategy]
 name = "basic_mm"
 
-# BasicMM works in centi-bps of mid: at 60000, 0.01 bps = 0.06 = 6 ticks. The inventory cap of
-# one quote_qty keeps the skewed quote from ever crossing the touch (post-only rejects).
+# BasicMM works in centi-bps of mid: at 60000, 0.01 bps = 0.06 = 6 ticks. Skewed quotes are kept
+# one tick inside the touch, so the inventory cap can hold several quote sizes and both sides stay
+# quoted most of the time.
 [strategy.params]
 half_spread_bps = 0.01
 skew_bps_per_unit = 0.01
 quote_qty = 0.002
-max_inventory = 0.002
+max_inventory = 0.01
 requote_threshold_ticks = 2
 pull_on_stale_ms = 0
 levels = 1
