@@ -23,6 +23,7 @@ build-dir = "build/py-{wheel_tag}"
 wheel.packages = ["python/fastmm"]
 sdist.include = ["cmake/", "include/", "src/", "python/", "CMakeLists.txt", "CMakePresets.json"]
 editable.mode = "redirect"
+install.components = ["python"]
 
 [tool.scikit-build.cmake.define]
 FASTMM_BUILD_PYTHON = "ON"

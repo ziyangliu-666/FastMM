@@ -4,7 +4,9 @@ fastmm_target_defaults(fastmm_py)
 target_link_libraries(fastmm_py PRIVATE fastmm::backtest)
 set_target_properties(fastmm_py PROPERTIES OUTPUT_NAME _core)
 if(SKBUILD)
-  install(TARGETS fastmm_py DESTINATION fastmm)
+  # Component-scoped so the wheel holds only the module (pyproject install.components):
+  # third-party install rules (fmt, toml++) must not leak headers/archives into site-packages.
+  install(TARGETS fastmm_py LIBRARY DESTINATION fastmm COMPONENT python)
 else()
   # In-tree use: python -c "import sys; sys.path.insert(0,'python'); import fastmm"
   set_target_properties(fastmm_py PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/python/fastmm)
