@@ -36,6 +36,9 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- Order book sync resynced needlessly on Binance when no buffered delta was newer than the REST
+  snapshot: the first live delta was checked with the "follows exactly" rule and an overlapping
+  delta (U <= L+1 <= u) looked like a gap. It is now checked with the first-delta rule.
 - Stack buffer overflow when a `BookDeltaMsg` was built by value: its `hdr.len` is longer than the
   struct. Messages are now always built in correctly sized buffers.
 - Division by zero in the L3 book benchmark on longer runs.

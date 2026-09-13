@@ -122,6 +122,7 @@ class BookSyncer {
   // Begin (or restart) synchronisation.
   void start() noexcept {
     reset_buffer();
+    awaiting_first_ = false;
     state_ = SyncState::Buffering;
     if constexpr (Traits::kNeedsRestSnapshot) sink_.request_snapshot();
   }
@@ -155,6 +156,22 @@ class BookSyncer {
         }
         return;
       case SyncState::Synced:
+        if constexpr (Traits::kBuffersDeltas) {
+          // No buffered delta was newer than the snapshot, so the first live one must be checked
+          // with the first-delta rule: it may overlap the snapshot (U <= L+1 <= u on Binance
+          // spot) rather than follow it exactly, and must not be mistaken for a gap.
+          if (FASTMM_UNLIKELY(awaiting_first_)) {
+            if (Traits::is_stale(d, prev_u_)) return;
+            if (!Traits::first_applies(d, prev_u_)) {
+              resync(SyncReason::SequenceGap);
+              return;
+            }
+            awaiting_first_ = false;
+            prev_u_ = d.last_update_id;
+            sink_.on_delta(d);
+            return;
+          }
+        }
         if (FASTMM_LIKELY(Traits::next_applies(d, prev_u_))) {
           prev_u_ = d.last_update_id;
           sink_.on_delta(d);
@@ -200,6 +217,7 @@ class BookSyncer {
         prev_u_ = d.last_update_id;
         sink_.on_delta(d);
       }
+      awaiting_first_ = first;  // nothing newer than the snapshot was buffered
       reset_buffer();
     } else {
       sink_.on_snapshot(snap);
@@ -238,6 +256,7 @@ class BookSyncer {
 
   Sink& sink_;
   SyncState state_ = SyncState::Idle;
+  bool awaiting_first_ = false;  // Synced, but the first-delta rule has not been applied yet
   std::uint64_t prev_u_ = 0;
   std::uint32_t resyncs_ = 0;
   std::unique_ptr<std::byte[]> buf_;

@@ -2,6 +2,7 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <new>
 #include <string>
@@ -163,4 +164,52 @@ TEST_CASE("core.book_syncer: bybit in-stream snapshot, strictly increasing u, u=
   CHECK(s.synced());
   s.resync(SyncReason::Explicit);
   CHECK(s.state() == SyncState::Buffering);
+}
+
+TEST_CASE(
+    "core.book_syncer: binance spot first live delta after an empty buffer may overlap the "
+    "snapshot") {
+  SUBCASE("overlapping first delta is applied, then deltas chain normally") {
+    RecordingSink sink;
+    BookSyncer<BinanceSpotSyncTraits, RecordingSink> s(sink);
+    s.start();
+    s.on_snapshot(snapshot(9));  // nothing buffered: synced, first live delta not seen yet
+    CHECK(s.state() == SyncState::Synced);
+    s.on_delta(delta(8, 12));  // U=8 <= L+1=10 <= u=12: overlaps the snapshot
+    s.on_delta(delta(13, 15));
+    CHECK(s.state() == SyncState::Synced);
+    CHECK(s.resync_count() == 0);
+    CHECK(sink.events.back() == "delta:13-15");
+    CHECK(std::find(sink.events.begin(), sink.events.end(), "delta:8-12") != sink.events.end());
+  }
+  SUBCASE("stale deltas are dropped until one brackets the snapshot") {
+    RecordingSink sink;
+    BookSyncer<BinanceSpotSyncTraits, RecordingSink> s(sink);
+    s.start();
+    s.on_snapshot(snapshot(9));
+    s.on_delta(delta(5, 9));    // u <= L: already in the snapshot
+    s.on_delta(delta(10, 11));  // U = L+1
+    CHECK(s.resync_count() == 0);
+    CHECK(sink.events.back() == "delta:10-11");
+  }
+  SUBCASE("a real gap before the first live delta still resyncs") {
+    RecordingSink sink;
+    BookSyncer<BinanceSpotSyncTraits, RecordingSink> s(sink);
+    s.start();
+    s.on_snapshot(snapshot(9));
+    s.on_delta(delta(11, 12));  // update 10 is missing
+    CHECK(s.resync_count() == 1);
+    CHECK(s.state() == SyncState::Buffering);
+  }
+}
+
+TEST_CASE("core.book_syncer: binance futures first live delta after an empty buffer ignores pu") {
+  RecordingSink sink;
+  BookSyncer<BinanceFuturesSyncTraits, RecordingSink> s(sink);
+  s.start();
+  s.on_snapshot(snapshot(100));
+  s.on_delta(delta(95, 105, 90));    // U <= L <= u; pu refers to an update before the snapshot
+  s.on_delta(delta(106, 110, 105));  // then pu chaining
+  CHECK(s.resync_count() == 0);
+  CHECK(sink.events.back() == "delta:106-110");
 }
