@@ -38,7 +38,7 @@ Every FastMM binary reads one TOML file passed with `--config path.toml`. The pa
 | `max_events_per_step` | int | `64` | Events processed per engine step before timers are checked |
 | `crossed_grace_ms` | int | `100` | How long a crossed book is tolerated before quotes are pulled |
 | `latency_publish_ms` | int | `1000` | How often latency histograms are published |
-| `tsc_recalibrate_s` | int | `10` | `fastmm-live` remeasures the TSC against the wall clock this often, logs the drift and hands the result to the engine and the venues; `0` disables it. The engine's clock stays continuous unless it was more than 1 ms off, in which case it steps and logs a warning |
+| `tsc_recalibrate_s` | int | `10` | `fastmm-live` remeasures the TSC against the wall clock this often, logs the drift and hands the result to the engine and the venues; `0` disables it. The engine's clock stays continuous and slews each measured offset away over one period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off |
 | `min_requote_ticks` | int | `1` | Keep a resting quote whose price is within this many ticks of the desired price |
 | `min_requote_interval_ms` | int | `50` | Never change the same quote slot more often than this |
 | `min_qty_bps` | int | `8000` | Keep a resting quote whose remaining quantity covers this share of the desired quantity, in bps (8000 = 80%) |

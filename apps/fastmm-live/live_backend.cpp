@@ -230,7 +230,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // Calibrations measured by the main thread; the engine refreshes `clock` from it on its own
   // thread and the venues convert their latency histograms with it.
   Seqlocked<TscCalibration> tsc_pub(clock.calibration());
-  clock.attach_calibration_source(&tsc_pub);
+  // Slew each measured offset away over one recalibration period instead of accumulating it.
+  clock.attach_calibration_source(&tsc_pub,
+                                  TscClock::kDefaultStepThreshold,
+                                  cfg.engine.tsc_recalibrate_s > 0
+                                      ? seconds(cfg.engine.tsc_recalibrate_s)
+                                      : TscClock::kDefaultSlewHorizon);
   TscCalibration last_tsc = clock.calibration();  // main thread's copy of the latest publish
   LiveTransport transport;
   RingFeed feed;

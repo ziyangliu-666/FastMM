@@ -43,7 +43,8 @@ TEST_CASE("core.time: refresh copies a published calibration only when its versi
   Seqlocked<TscCalibration> pub(a);
   TscClock clk;
   CHECK(clk.refresh() == TscRefresh::None);  // no source attached
-  clk.attach_calibration_source(&pub);
+  // Slewing off: this test is about versioning, and checks the adopted rate exactly.
+  clk.attach_calibration_source(&pub, TscClock::kDefaultStepThreshold, Duration{0});
   CHECK(clk.calibration_source() == &pub);
   CHECK(clk.refresh() == TscRefresh::Adopted);  // no TSC mapping yet: taken as is
   CHECK(clk.calibration().tsc0 == a.tsc0);
@@ -182,7 +183,8 @@ TEST_CASE("core.time: calibrator thread publishing while a reader refreshes and 
   std::uint64_t torn = 0;
   std::uint64_t backwards = 0;
   TscClock clk(base);
-  clk.attach_calibration_source(&pub);
+  // Slewing off: torn copies are detected by the published rate, which slewing would adjust.
+  clk.attach_calibration_source(&pub, TscClock::kDefaultStepThreshold, Duration{0});
   Timestamp prev = clk.now();
   bool last_pass = false;
   while (true) {
@@ -205,4 +207,63 @@ TEST_CASE("core.time: calibrator thread publishing while a reader refreshes and 
   CHECK(backwards == 0);
   CHECK(clk.steps() == 0);
   CHECK(clk.calibration().ns_per_cycle_q32 == rate_for(kPublications));
+}
+
+TEST_CASE("core.time: slewing absorbs the measured offset over the horizon without a jump") {
+  const TscCalibration old = synthetic(0, 1'700'000'000'000'000'000, 0.4);
+  const std::uint64_t at = 1'000'000'000'000;
+  const Duration horizon = seconds(10);
+  const std::uint64_t horizon_cycles = static_cast<std::uint64_t>(10e9 / 0.4);
+  for (const std::int64_t offset : {std::int64_t{400'000}, std::int64_t{-400'000}}) {
+    CAPTURE(offset);
+    Seqlocked<TscCalibration> pub(old);
+    TscClock clk(old);
+    clk.attach_calibration_source(&pub, TscClock::kDefaultStepThreshold, horizon);
+    const TscCalibration fresh = shifted(old, at, offset, 0.4);  // same rate, offset only
+    const Timestamp at_old = clk.to_timestamp(Cycles{at});
+    CHECK(clk.reanchor(fresh, Cycles{at}) == TscRefresh::Reanchored);
+    CHECK(clk.to_timestamp(Cycles{at}) == at_old);  // no jump at the refresh point
+    // 400 us over 10 s is 40'000 ppb; allow 1 ppb of integer rounding.
+    CHECK(std::llabs(clk.slew_ppb() - offset / 10) <= 1);
+    // One horizon later the clock agrees with the fresh measurement.
+    const std::int64_t err =
+        clk.to_timestamp(Cycles{at + horizon_cycles}).ns - tsc_to_ns(fresh, at + horizon_cycles);
+    CHECK(std::llabs(err) < 100);
+  }
+}
+
+TEST_CASE("core.time: the slew rate correction is bounded") {
+  const TscCalibration old = synthetic(0, 1'700'000'000'000'000'000, 0.4);
+  const std::uint64_t at = 1'000'000'000'000;
+  Seqlocked<TscCalibration> pub(old);
+  TscClock clk(old);
+  clk.attach_calibration_source(&pub, TscClock::kDefaultStepThreshold, seconds(1));
+  // 900 us over 1 s would be 900 ppm; the servo caps it at kMaxSlewPpm.
+  CHECK(clk.reanchor(shifted(old, at, 900'000, 0.4), Cycles{at}) == TscRefresh::Reanchored);
+  CHECK(std::llabs(clk.slew_ppb() - TscClock::kMaxSlewPpm * 1'000) <= 1);  // integer rounding
+  const std::uint64_t one_second = static_cast<std::uint64_t>(1e9 / 0.4);
+  const std::int64_t gained =
+      clk.to_timestamp(Cycles{at + one_second}).ns - tsc_to_ns(old, at + one_second);
+  CHECK(std::llabs(gained - 500'000) < 100);  // only 500 us absorbed in the first second
+}
+
+TEST_CASE("core.time: repeated recalibrations converge on a drifting clock without steps") {
+  // The "true" wall mapping runs 80 ppm faster than the clock's initial calibration and starts
+  // 100 us ahead; the calibrator measures it exactly every 10 s.
+  const TscCalibration initial = synthetic(0, 1'700'000'000'000'000'000, 0.4);
+  const TscCalibration truth = shifted(initial, 0, 100'000, 0.4 * (1 + 80e-6));
+  Seqlocked<TscCalibration> pub(initial);
+  TscClock clk(initial);
+  clk.attach_calibration_source(&pub, TscClock::kDefaultStepThreshold, seconds(10));
+  const std::uint64_t period = static_cast<std::uint64_t>(10e9 / 0.4);
+  std::int64_t first_offset = 0;
+  for (std::uint64_t k = 1; k <= 12; ++k) {
+    const std::uint64_t at = k * period;
+    const TscCalibration measured = shifted(truth, at, 0, 0.4 * (1 + 80e-6));
+    REQUIRE(clk.reanchor(measured, Cycles{at}) == TscRefresh::Reanchored);
+    if (k == 1) first_offset = clk.last_offset_ns();
+  }
+  CHECK(std::llabs(first_offset) > 500'000);        // 100 us start + 800 us of drift in 10 s
+  CHECK(std::llabs(clk.last_offset_ns()) < 1'000);  // converged
+  CHECK(clk.steps() == 0);
 }

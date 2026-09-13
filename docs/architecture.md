@@ -82,11 +82,13 @@ mapping drifts over a long session; stale-market-data checks and timers read it.
   `TscClock::refresh()` once per loop iteration next to the timer poll (not per event).
   `refresh()` is one atomic load when nothing was published; on a new version it copies the
   calibration. `ControlCommand::RecalibrateTsc` makes the engine refresh immediately.
-* Re-anchoring keeps time continuous: at the refresh point the clock computes the old mapping's
-  time for the current TSC reading, anchors there, and continues at the new rate. Successive
-  `now()` calls therefore never go backwards. If the old mapping disagrees with the fresh
-  measurement by more than 1 ms, the clock steps to the measured anchor instead, counts the step
-  (`EngineStats::clock_steps`) and the engine logs a warning.
+* Re-anchoring keeps time continuous: at the refresh point the clock computes the old mapping's time
+  for the current TSC reading and anchors there, so successive `now()` calls never go backwards.
+  From there it runs at the newly measured rate plus a bounded correction that absorbs the measured
+  offset over one recalibration period (offset × rate ÷ period, at most 500 ppm), so the mapping
+  converges on the measurements instead of accumulating error. If the old mapping disagrees with the
+  fresh measurement by more than 1 ms, the clock steps to the measured anchor instead, counts the
+  step (`EngineStats::clock_steps`) and the engine logs a warning.
 * The venues read the latest calibration when they publish their status, to convert their
   cycle-based latency histograms to ns.
 
