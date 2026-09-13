@@ -85,6 +85,58 @@ struct TscCalibration {
 // Measures the TSC frequency against CLOCK_REALTIME over `window` (spins). src/core/time.cpp
 [[nodiscard]] TscCalibration calibrate_tsc(Duration window = milliseconds(50)) noexcept;
 
+// Clock readings used by TscCalibrator. Plain function pointers so tests can inject a
+// deterministic clock; system_clock_readings() reads rdtsc, CLOCK_REALTIME and CLOCK_MONOTONIC_RAW.
+struct ClockReadings {
+  std::uint64_t (*tsc)() noexcept = nullptr;
+  std::int64_t (*realtime_ns)() noexcept = nullptr;
+  std::int64_t (*monotonic_raw_ns)() noexcept = nullptr;
+  bool check_invariant_tsc = true;  // false for injected clocks
+};
+[[nodiscard]] ClockReadings system_clock_readings() noexcept;
+
+// One simultaneous reading of the three clocks (the TSC is the midpoint of a tight bracket).
+struct TscAnchor {
+  std::uint64_t tsc = 0;
+  std::int64_t realtime_ns = 0;
+  std::int64_t raw_ns = 0;
+};
+
+struct TscRecalibration {
+  TscCalibration calibration;     // to publish
+  std::int64_t drift_ns = 0;      // CLOCK_REALTIME at the new anchor minus the old mapping's value
+  std::int64_t host_step_ns = 0;  // realtime change minus monotonic-raw change over the baseline
+  double elapsed_s = 0.0;         // baseline length
+  double rate_change_ppm = 0.0;
+  bool ok = false;  // false: no TSC, or the baseline since the previous anchor is too short
+};
+
+// Long-baseline TSC calibration for the calibrator (control) thread. start() measures an initial
+// rate over a short spin. update() takes only a fresh anchor and derives the rate from the whole
+// interval since the previous anchor, against CLOCK_MONOTONIC_RAW:
+//  * anchor jitter (clock_gettime latency spikes of tens of microseconds on a busy or virtualised
+//    host) costs a few ppm over a 10 s baseline instead of thousands of ppm over a 50 ms window,
+//    which used to drift the mapping by milliseconds between recalibrations and force steps;
+//  * NTP slews and host wall-clock steps (WSL2 resynchronising with Windows) cannot distort the
+//    rate. A wall-clock step is reported separately in host_step_ns; the published anchor still
+//    follows CLOCK_REALTIME, so TscClock steps with the host when it has to.
+class TscCalibrator {
+ public:
+  static constexpr Duration kMinBaseline = milliseconds(500);
+
+  explicit TscCalibrator(ClockReadings readings = system_clock_readings()) noexcept
+      : r_(readings) {}
+  [[nodiscard]] TscCalibration start(Duration window = milliseconds(50)) noexcept;
+  [[nodiscard]] TscRecalibration update() noexcept;
+  [[nodiscard]] const TscCalibration& current() const noexcept { return current_; }
+
+ private:
+  [[nodiscard]] TscAnchor sample() const noexcept;
+  ClockReadings r_;
+  TscAnchor last_{};
+  TscCalibration current_{};
+};
+
 // Outcome of TscClock::refresh() / reanchor().
 enum class TscRefresh : std::uint8_t {
   None = 0,    // no new calibration published (the common case)

@@ -46,6 +46,11 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- TSC recalibration re-measured the rate over a 50 ms window every time. On a virtualised host the
+  resulting rate noise (hundreds to thousands of ppm) drifted the engine clock by milliseconds
+  between recalibrations and stepped it every 10 s. The rate is now measured over the whole
+  interval since the previous anchor against `CLOCK_MONOTONIC_RAW`, and host wall-clock steps are
+  reported separately.
 - A requested shutdown logged a spurious "cancel-all failed" error: closing the order channel
   started an asynchronous cancel-all that the disconnect then aborted. It is skipped during an
   intentional disconnect, and a kill switch requested by the control thread logs a warning

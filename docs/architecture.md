@@ -73,6 +73,12 @@ the backtest library registers the Sim and Replay factories
 The rate is only as good as that measurement, and the wall clock is itself slewed by NTP, so the
 mapping drifts over a long session; stale-market-data checks and timers read it.
 
+* Only startup uses a short measurement window. Afterwards `TscCalibrator` takes a fresh anchor
+  (a tight rdtsc bracket around `CLOCK_REALTIME` and `CLOCK_MONOTONIC_RAW`) and computes the rate
+  over the whole interval since the previous anchor, against `CLOCK_MONOTONIC_RAW`. Tens of
+  microseconds of `clock_gettime` jitter then cost a few ppm instead of thousands, and NTP slews or
+  host clock steps cannot distort the rate. Re-measuring the rate over 50 ms every time used to
+  drift the mapping by milliseconds between recalibrations on WSL2 and force steps.
 * The main thread recalibrates every `[engine] tsc_recalibrate_s` seconds (default 10, 0 turns
   it off), logs how far the previous calibration had drifted
   (`tsc recalibrated: drift <ns> over <s> (<ppm>) ...`) and publishes the result in a

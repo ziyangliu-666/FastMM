@@ -107,32 +107,36 @@ bool push_control(MsgRing& ring, ControlCommand cmd) {
   return ring.try_push(&m, m.hdr.len);
 }
 
-// Measures a fresh TSC calibration on the calling (main) thread, logs how far the previous one
-// had drifted, and publishes it; the engine's and the venues' clocks pick it up themselves.
-void recalibrate_tsc(Seqlocked<TscCalibration>& pub, TscCalibration& last) {
-  const TscCalibration fresh = calibrate_tsc();
-  if (!fresh.use_tsc) {
-    FASTMM_LOG_WARN("TSC recalibration failed (wall clock stepped?); keeping the previous one");
+// Long-baseline recalibration on the calling (main) thread: logs how far the previous mapping had
+// drifted and any host wall-clock step, then publishes; the engine's and the venues' clocks pick it
+// up themselves.
+void recalibrate_tsc(TscCalibrator& calibrator,
+                     Seqlocked<TscCalibration>& pub,
+                     TscCalibration& last) {
+  const TscRecalibration r = calibrator.update();
+  if (!r.ok) {
+    FASTMM_LOG_WARN("TSC recalibration skipped (no TSC mapping or baseline too short)");
     return;
   }
-  // Wall time at the fresh anchor minus what the previous calibration predicted for the same
-  // TSC reading.
-  const std::int64_t drift_ns = fresh.ns0 - tsc_to_ns(last, fresh.tsc0);
-  const double elapsed_s = static_cast<double>(fresh.ns0 - last.ns0) / 1e9;
-  const double drift_ppm = elapsed_s > 0 ? static_cast<double>(drift_ns) / elapsed_s / 1e3 : 0.0;
-  const double rate_ppm =
-      (static_cast<double>(fresh.ns_per_cycle_q32) - static_cast<double>(last.ns_per_cycle_q32)) /
-      static_cast<double>(last.ns_per_cycle_q32) * 1e6;
+  if (r.host_step_ns > 1'000'000 || r.host_step_ns < -1'000'000) {
+    FASTMM_LOG_WARN(
+        "host wall clock stepped by {} ns relative to CLOCK_MONOTONIC_RAW within {:.1f} s; the "
+        "engine clock follows it",
+        r.host_step_ns,
+        r.elapsed_s);
+  }
+  const double drift_ppm =
+      r.elapsed_s > 0 ? static_cast<double>(r.drift_ns - r.host_step_ns) / r.elapsed_s / 1e3 : 0.0;
   FASTMM_LOG_INFO(
-      "tsc recalibrated: drift {} ns over {:.1f} s ({:.3f} ppm), rate change {:.3f} ppm, {:.6f} "
-      "GHz",
-      drift_ns,
-      elapsed_s,
+      "tsc recalibrated: drift {} ns over {:.1f} s ({:.3f} ppm excluding host steps), rate change "
+      "{:.3f} ppm, {:.6f} GHz",
+      r.drift_ns,
+      r.elapsed_s,
       drift_ppm,
-      rate_ppm,
-      fresh.ghz);
-  pub.store(fresh);
-  last = fresh;
+      r.rate_change_ppm,
+      r.calibration.ghz);
+  pub.store(r.calibration);
+  last = r.calibration;
 }
 
 void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, bool final) {
@@ -226,7 +230,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
 
   // ---- rings, transport, feed -----------------------------------------------------------
   TscClock clock;
-  clock.calibrate();
+  TscCalibrator tsc_calibrator;  // long-baseline recalibration (main thread only)
+  clock.set_calibration(tsc_calibrator.start());
   // Calibrations measured by the main thread; the engine refreshes `clock` from it on its own
   // thread and the venues convert their latency histograms with it.
   Seqlocked<TscCalibration> tsc_pub(clock.calibration());
@@ -378,7 +383,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
     if (recalibrate_ns > 0 && last_tsc.use_tsc && now >= next_recalibration) {
-      recalibrate_tsc(tsc_pub, last_tsc);
+      recalibrate_tsc(tsc_calibrator, tsc_pub, last_tsc);
       next_recalibration = steady_now().ns + recalibrate_ns;
     }
     if (now >= next_tick) {

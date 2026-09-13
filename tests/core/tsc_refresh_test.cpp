@@ -267,3 +267,98 @@ TEST_CASE("core.time: repeated recalibrations converge on a drifting clock witho
   CHECK(std::llabs(clk.last_offset_ns()) < 1'000);  // converged
   CHECK(clk.steps() == 0);
 }
+
+// ---- long-baseline calibrator -------------------------------------------------------------------
+
+namespace fake_clock {
+// One hidden "true" time that advances only when the TSC is read (or advance() is called), so
+// every reading is deterministic. Realtime can be stepped; raw readings can be given jitter.
+std::uint64_t g_tsc = 0;
+std::int64_t g_true_ns = 0;
+std::int64_t g_wall_offset_ns = 0;
+double g_ns_per_cycle = 0.25;
+std::int64_t g_raw_jitter_ns = 0;  // added to every 5th raw reading
+std::uint64_t g_raw_reads = 0;
+
+std::uint64_t read_tsc() noexcept {
+  g_tsc += 400;
+  g_true_ns += static_cast<std::int64_t>(400 * g_ns_per_cycle);
+  return g_tsc;
+}
+std::int64_t read_realtime() noexcept {
+  return g_true_ns + g_wall_offset_ns;
+}
+std::int64_t read_raw() noexcept {
+  return g_true_ns + ((++g_raw_reads % 5 == 0) ? g_raw_jitter_ns : 0);
+}
+void advance(std::int64_t ns) noexcept {
+  g_tsc += static_cast<std::uint64_t>(static_cast<double>(ns) / g_ns_per_cycle);
+  g_true_ns += ns;
+}
+ClockReadings reset(double ns_per_cycle) noexcept {
+  g_tsc = 1'000'000;
+  g_true_ns = 0;
+  g_wall_offset_ns = 1'700'000'000'000'000'000;
+  g_ns_per_cycle = ns_per_cycle;
+  g_raw_jitter_ns = 0;
+  g_raw_reads = 0;
+  return ClockReadings{&read_tsc, &read_realtime, &read_raw, false};
+}
+}  // namespace fake_clock
+
+namespace {
+constexpr std::int64_t kPpmOfQuarter = 1074;  // 1 ppm of 0.25 ns/cycle in 32.32 fixed point
+constexpr std::uint64_t kQuarterQ32 = 1'073'741'824;
+std::int64_t q32_error(const TscCalibration& c) {
+  return static_cast<std::int64_t>(c.ns_per_cycle_q32) - static_cast<std::int64_t>(kQuarterQ32);
+}
+}  // namespace
+
+TEST_CASE("core.time: the calibrator measures the rate over the whole baseline") {
+  TscCalibrator cal(fake_clock::reset(0.25));
+  REQUIRE(cal.start(milliseconds(50)).use_tsc);
+  fake_clock::advance(10'000'000'000);
+  const TscRecalibration r = cal.update();
+  REQUIRE(r.ok);
+  CHECK(std::llabs(q32_error(r.calibration)) <= kPpmOfQuarter);
+  CHECK(std::llabs(r.drift_ns) < 1'000);
+  CHECK(r.host_step_ns == 0);
+  CHECK(r.elapsed_s > 9.9);
+}
+
+TEST_CASE("core.time: a host wall-clock step is reported and does not distort the rate") {
+  TscCalibrator cal(fake_clock::reset(0.25));
+  REQUIRE(cal.start(milliseconds(50)).use_tsc);
+  fake_clock::advance(10'000'000'000);
+  fake_clock::g_wall_offset_ns += 1'550'000'000;  // what WSL2 does when it resyncs with Windows
+  const TscRecalibration r = cal.update();
+  REQUIRE(r.ok);
+  CHECK(r.host_step_ns == 1'550'000'000);
+  CHECK(std::llabs(r.drift_ns - 1'550'000'000) < 1'000);
+  CHECK(std::llabs(q32_error(r.calibration)) <= kPpmOfQuarter);  // rate from CLOCK_MONOTONIC_RAW
+  CHECK(r.calibration.ns0 == r.calibration.ns0);                 // anchored on realtime
+}
+
+TEST_CASE("core.time: anchor jitter costs a few ppm over a long baseline") {
+  // 60 us on some raw readings: over the 50 ms startup window that is up to 1200 ppm of rate
+  // error, over a 10 s baseline at most 6 ppm.
+  TscCalibrator cal(fake_clock::reset(0.25));
+  fake_clock::g_raw_jitter_ns = 60'000;
+  const TscCalibration initial = cal.start(milliseconds(50));
+  REQUIRE(initial.use_tsc);
+  MESSAGE("startup rate error: " << static_cast<double>(q32_error(initial)) / kPpmOfQuarter
+                                 << " ppm");
+  fake_clock::advance(10'000'000'000);
+  const TscRecalibration r = cal.update();
+  REQUIRE(r.ok);
+  CHECK(std::llabs(q32_error(r.calibration)) <= 20 * kPpmOfQuarter);
+}
+
+TEST_CASE("core.time: the calibrator refuses a baseline that is too short") {
+  TscCalibrator cal(fake_clock::reset(0.25));
+  REQUIRE(cal.start(milliseconds(50)).use_tsc);
+  fake_clock::advance(100'000'000);
+  CHECK_FALSE(cal.update().ok);
+  fake_clock::advance(1'000'000'000);
+  CHECK(cal.update().ok);
+}
