@@ -101,9 +101,16 @@ class Logger {
     return static_cast<LogLevel>(g_log_level.load());
   }
 
-  // Allocates (heap) and registers a ring for the calling thread. Call during warm-up on
-  // every thread that logs; it is otherwise done lazily on the first log statement.
+  // Gives the calling thread a ring: a drained ring released by an exited thread if one exists,
+  // otherwise a new one (heap). Call during warm-up on every thread that logs; it is otherwise
+  // done lazily on the first log statement. Returns nullptr once kLogMaxThreads rings are in
+  // use at the same time.
   LogRing* attach_current_thread();
+  // Returns the calling thread's ring to the pool. Runs automatically when a thread that logged
+  // exits, so short-lived threads (sweep workers, Python callers) never exhaust the slots.
+  void detach_current_thread() noexcept;
+  // Number of rings allocated so far; reused rings are not counted again.
+  [[nodiscard]] std::size_t thread_slots() const noexcept;
 
   // Sink control. `out` defaults to stderr. Records at >= mirror_level are also copied to
   // stderr when `out` is a different stream.
@@ -141,6 +148,8 @@ namespace detail {
 
 inline thread_local LogRing* t_log_ring = nullptr;
 inline thread_local std::uint32_t t_log_tid = 0;
+inline thread_local std::uint32_t t_log_slot = 0;
+inline thread_local bool t_log_thread_exiting = false;  // set once thread-local teardown began
 
 // Compile-time floor check, written as a function so -Wtype-limits stays quiet when the
 // floor is 0.

@@ -99,6 +99,31 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     }
   }
 
+  // Post-only quotes must not cross the market. Inventory skew can push the unwinding side
+  // through the touch (a skewed bid above the best ask); the venue would reject it and that side
+  // would stop quoting. Shift the whole ladder back so level 0 sits one tick inside the touch,
+  // keeping the spacing between levels. An empty opposite side (price 0) imposes no limit.
+  static void clamp_to_touch(DesiredQuotes& q,
+                             Price best_bid,
+                             Price best_ask,
+                             Price tick) noexcept {
+    if (!q.bids.empty() && best_ask.is_positive()) {
+      const Price limit = best_ask - tick;
+      if (q.bids[0].price > limit) {
+        const Price shift = q.bids[0].price - limit;
+        for (auto& l : q.bids) l.price = l.price - shift;
+        while (!q.bids.empty() && !q.bids[q.bids.size() - 1].price.is_positive()) q.bids.pop_back();
+      }
+    }
+    if (!q.asks.empty() && best_bid.is_positive()) {
+      const Price limit = best_bid + tick;
+      if (q.asks[0].price < limit) {
+        const Price shift = limit - q.asks[0].price;
+        for (auto& l : q.asks) l.price = l.price + shift;
+      }
+    }
+  }
+
   // Pure quoting function; exposed for deterministic tests.
   [[nodiscard]] DesiredQuotes compute_quotes(Price mid,
                                              Qty position,
@@ -138,7 +163,8 @@ class BasicMM : public StrategyBase<BasicMMParams> {
   template <class Ctx, class Book>
   void requote(Ctx& ctx, InstrumentId id, const Book& book, const Instrument& inst) noexcept {
     const Price mid = book.mid();
-    const DesiredQuotes q = compute_quotes(mid, ctx.position(id).qty, inst);
+    DesiredQuotes q = compute_quotes(mid, ctx.position(id).qty, inst);
+    clamp_to_touch(q, book.best_bid().price, book.best_ask().price, inst.tick);
     ctx.set_quotes(id, q);
     last_mid_[id.value] = mid;
   }

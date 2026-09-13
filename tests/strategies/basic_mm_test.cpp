@@ -77,6 +77,36 @@ std::unique_ptr<IEngineRunner> fake_factory(TransportKind, RunnerDeps&) {
 }  // namespace
 FASTMM_REGISTER_STRATEGY(BasicMM, fake_factory);
 
+TEST_CASE("strategies.basic_mm: skewed quotes are clamped inside the touch") {
+  const Price tick = Price::from_decimal("0.01").value();
+  const Qty q1 = Qty::from_decimal("1").value();
+  auto lvl = [&](const char* p) { return Level{Price::from_decimal(p).value(), q1}; };
+
+  DesiredQuotes q;
+  static_cast<void>(q.bids.push_back(lvl("100.20")));  // skewed through the 100.05 ask
+  static_cast<void>(q.bids.push_back(lvl("100.15")));
+  static_cast<void>(q.asks.push_back(lvl("100.30")));
+  BasicMM::clamp_to_touch(
+      q, Price::from_decimal("100.00").value(), Price::from_decimal("100.05").value(), tick);
+  REQUIRE(q.bids.size() == 2);
+  CHECK(q.bids[0].price == Price::from_decimal("100.04").value());  // one tick inside the ask
+  CHECK(q.bids[1].price == Price::from_decimal("99.99").value());   // spacing preserved
+  CHECK(q.asks[0].price == Price::from_decimal("100.30").value());  // already passive
+
+  DesiredQuotes a;
+  static_cast<void>(a.asks.push_back(lvl("99.90")));  // skewed through the 100.00 bid
+  static_cast<void>(a.bids.push_back(lvl("99.80")));
+  BasicMM::clamp_to_touch(
+      a, Price::from_decimal("100.00").value(), Price::from_decimal("100.05").value(), tick);
+  CHECK(a.asks[0].price == Price::from_decimal("100.01").value());
+  CHECK(a.bids[0].price == Price::from_decimal("99.80").value());
+
+  DesiredQuotes empty_book;
+  static_cast<void>(empty_book.bids.push_back(lvl("100.20")));
+  BasicMM::clamp_to_touch(empty_book, Price{}, Price{}, tick);  // no opposite side: unchanged
+  CHECK(empty_book.bids[0].price == Price::from_decimal("100.20").value());
+}
+
 TEST_CASE("strategies.registry: registration, lookup, listing") {
   const auto& entries = list_strategies();
   REQUIRE_FALSE(entries.empty());

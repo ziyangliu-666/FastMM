@@ -125,6 +125,28 @@ TEST_CASE("core.log: multiple threads each get their own ring") {
   std::fclose(f);
 }
 
+TEST_CASE("core.log: exited threads release their ring for reuse") {
+  std::FILE* f = std::tmpfile();
+  REQUIRE(f != nullptr);
+  Logger& lg = Logger::instance();
+  const LogLevel prev_level = lg.level();
+  lg.set_level(LogLevel::Info);
+  lg.start(f, LogLevel::Off);
+  const std::uint64_t dropped_before = lg.dropped();
+  // Three times the slot limit, one after another. Without reuse the limit is hit after
+  // kLogMaxThreads threads and every later record is dropped.
+  const int n = static_cast<int>(3 * kLogMaxThreads);
+  for (int i = 0; i < n; ++i) {
+    std::thread([i] { FASTMM_LOG_INFO("short-lived thread {}", i); }).join();
+    lg.flush();  // a ring is reusable only after the sink has written its records
+  }
+  CHECK(lg.dropped() == dropped_before);
+  CHECK(lg.thread_slots() < kLogMaxThreads);
+  lg.stop();
+  lg.set_level(prev_level);
+  std::fclose(f);
+}
+
 TEST_CASE("core.log: format_record handles malformed argument count gracefully") {
   static constexpr LogDescriptor desc{"a={} b={}", __FILE__, __LINE__, LogLevel::Info};
   LogRecord r{};

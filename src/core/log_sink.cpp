@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -20,6 +21,8 @@ struct Logger::Impl {
   std::mutex mu;                                // protects ring registration only
   std::vector<std::unique_ptr<LogRing>> rings;  // index == registration order, never shrinks
   std::atomic<std::size_t> ring_count{0};
+  // in_use[i] is true while a live thread owns rings[i]; an idle ring is reusable once drained.
+  std::array<std::atomic<bool>, kLogMaxThreads> in_use{};
   std::FILE* out = stderr;
   LogLevel mirror_level = LogLevel::Warn;
   std::thread sink;
@@ -43,16 +46,57 @@ Logger::~Logger() {
   if (running()) stop();
 }
 
+namespace {
+// Destroyed when a thread that logged exits; hands its ring back to the pool.
+struct ThreadSlotRelease {
+  bool armed = false;
+  ThreadSlotRelease() = default;
+  ThreadSlotRelease(const ThreadSlotRelease&) = delete;
+  ThreadSlotRelease& operator=(const ThreadSlotRelease&) = delete;
+  ~ThreadSlotRelease() {
+    if (armed) Logger::instance().detach_current_thread();
+    detail::t_log_thread_exiting = true;  // later thread_local destructors must not re-attach
+  }
+};
+thread_local ThreadSlotRelease t_slot_release;
+}  // namespace
+
 LogRing* Logger::attach_current_thread() {
   if (detail::t_log_ring != nullptr) return detail::t_log_ring;
+  if (detail::t_log_thread_exiting) return nullptr;
   Impl& im = *impl_;
   std::lock_guard<std::mutex> lock(im.mu);
-  if (im.rings.size() >= kLogMaxThreads) return nullptr;
-  im.rings.push_back(std::make_unique<LogRing>());
-  detail::t_log_ring = im.rings.back().get();
+  // Reuse a ring whose owner has exited and whose records the sink has already written. The
+  // previous owner cleared its ring pointer before releasing the slot, so it can no longer
+  // produce: the single-producer invariant holds across successive owners.
+  std::size_t slot = im.rings.size();
+  for (std::size_t i = 0; i < im.rings.size(); ++i) {
+    if (!im.in_use[i].load(std::memory_order_acquire) && im.rings[i]->empty_approx()) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot == im.rings.size()) {
+    if (im.rings.size() >= kLogMaxThreads) return nullptr;
+    im.rings.push_back(std::make_unique<LogRing>());
+    im.ring_count.store(im.rings.size(), std::memory_order_release);
+  }
+  im.in_use[slot].store(true, std::memory_order_release);
+  t_slot_release.armed = true;
+  detail::t_log_slot = static_cast<std::uint32_t>(slot);
   detail::t_log_tid = static_cast<std::uint32_t>(::syscall(SYS_gettid));
-  im.ring_count.store(im.rings.size(), std::memory_order_release);
+  detail::t_log_ring = im.rings[slot].get();
   return detail::t_log_ring;
+}
+
+void Logger::detach_current_thread() noexcept {
+  if (detail::t_log_ring == nullptr) return;
+  detail::t_log_ring = nullptr;  // stop producing first, then publish the slot as free
+  impl_->in_use[detail::t_log_slot].store(false, std::memory_order_release);
+}
+
+std::size_t Logger::thread_slots() const noexcept {
+  return impl_->ring_count.load(std::memory_order_acquire);
 }
 
 namespace {
