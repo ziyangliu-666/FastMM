@@ -1,6 +1,7 @@
 name: bench-nightly
+# Manual only: hosted-runner numbers are advisory, and a daily 40-minute run would spend most of a
+# private repository's Actions minutes. Add a schedule back (e.g. weekly) if the repository is public.
 on:
-  schedule: [{ cron: "0 3 * * *" }]
   workflow_dispatch:
 jobs:
   bench:

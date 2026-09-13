@@ -52,6 +52,13 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- The clang-tsan build did not link: the hot-path allocation harness replaces global `operator new`,
+  which the TSan runtime also defines. The harness is no longer built under TSan.
+- Under TSan every concurrent `Seqlocked` store and load was reported as a data race. The optimistic
+  copy is racy by design, so TSan builds now serialise it with a spinlock; other builds are unchanged.
+- `scripts/tidy.sh` also analysed dependency sources in the CPM cache, whose paths contain `src/`.
+- The seqlock torn-write test failed on one core or under a loaded `ctest -j`, because the writer
+  could finish before the reader was first scheduled.
 - TSC recalibration re-measured the rate over a 50 ms window every time. On a virtualised host the
   resulting rate noise (hundreds to thousands of ppm) drifted the engine clock by milliseconds
   between recalibrations and stepped it every 10 s. The rate is now measured over the whole
