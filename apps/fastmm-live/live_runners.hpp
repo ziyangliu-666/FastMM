@@ -1,9 +1,9 @@
 #pragma once
-// App-local live runner builders. The global StrategyRegistry keeps one factory per name and
-// the backtest library owns the Sim/Replay registrations for basic_mm and
-// avellaneda_stoikov, so fastmm-live does NOT register those names; it instantiates
-// Engine<S, TscClock, LiveTransport, RingFeed> through this table instead (one .cpp per
-// strategy keeps the heavy template instantiations in parallel compile units).
+// App-local live runner builders: fastmm-live instantiates Engine<S, TscClock, LiveTransport,
+// RingFeed> through this table (one .cpp per strategy keeps the heavy template instantiations in
+// parallel compile units). The StrategyRegistry holds one factory per transport kind, so these
+// builders could also be registered there under TransportKind::Live next to the backtest
+// library's Sim and Replay factories.
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"

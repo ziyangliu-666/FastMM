@@ -1,10 +1,13 @@
 #pragma once
-// Strategy registry (5.6, 8.6): name -> schema + factory producing an IEngineRunner for a
-// given transport kind. Registrations live in the apps (one .cpp per strategy) so the
-// core library never instantiates Engine<...> for backends it does not know about:
+// Strategy registry (5.6, 8.6): name -> parameter schema + one factory per transport kind,
+// each producing an IEngineRunner. The library that knows a backend registers that backend's
+// factory (the backtest library registers Sim and Replay, a live app registers Live), so core
+// never instantiates Engine<...> for backends it does not know about, and two libraries can
+// register the same strategy name for different transports without one silently replacing the
+// other:
 //
 //   std::unique_ptr<IEngineRunner> make_basic_mm(TransportKind k, RunnerDeps& d) { ... }
-//   FASTMM_REGISTER_STRATEGY(BasicMM, make_basic_mm);
+//   registry.add(BasicMM::name(), &BasicMM::schema(), TransportKind::Sim, make_basic_mm);
 //
 // make_engine_runner<S>() is the helper the factories use once they have built the
 // clock/transport/feed for the requested backend.
@@ -13,6 +16,8 @@
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
+#include <array>
+#include <cstddef>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -44,11 +49,18 @@ struct RunnerDeps {
   void* backend = nullptr;
 };
 
+inline constexpr std::size_t kTransportKinds = static_cast<std::size_t>(TransportKind::Count);
+
 struct StrategyEntry {
   using Factory = std::unique_ptr<IEngineRunner> (*)(TransportKind, RunnerDeps&);
   std::string_view name;
-  const ParamSchema* schema;
-  Factory factory;
+  const ParamSchema* schema = nullptr;
+  std::array<Factory, kTransportKinds> factories{};  // indexed by TransportKind
+
+  [[nodiscard]] bool supports(TransportKind k) const noexcept {
+    const auto i = static_cast<std::size_t>(k);
+    return i < kTransportKinds && factories[i] != nullptr;
+  }
 };
 
 class StrategyRegistry {
@@ -57,8 +69,23 @@ class StrategyRegistry {
     static StrategyRegistry r;
     return r;
   }
-  bool add(const StrategyEntry& e) {
-    if (find(e.name) != nullptr) return false;
+  // Registers `factory` for one transport kind. Returns false (and changes nothing) when the
+  // factory is null, the kind is invalid, that kind is already registered for `name`, or `name`
+  // is already registered with a different parameter schema.
+  bool add(std::string_view name,
+           const ParamSchema* schema,
+           TransportKind kind,
+           StrategyEntry::Factory factory) {
+    const auto k = static_cast<std::size_t>(kind);
+    if (factory == nullptr || k >= kTransportKinds || schema == nullptr) return false;
+    for (auto& e : entries_) {
+      if (e.name != name) continue;
+      if (e.schema != schema || e.factories[k] != nullptr) return false;
+      e.factories[k] = factory;
+      return true;
+    }
+    StrategyEntry e{name, schema, {}};
+    e.factories[k] = factory;
     entries_.push_back(e);
     return true;
   }
@@ -73,7 +100,8 @@ class StrategyRegistry {
                                                     TransportKind kind,
                                                     RunnerDeps& deps) const {
     const StrategyEntry* e = find(name);
-    return e == nullptr ? nullptr : e->factory(kind, deps);
+    if (e == nullptr || !e->supports(kind)) return nullptr;
+    return e->factories[static_cast<std::size_t>(kind)](kind, deps);
   }
 
  private:
@@ -102,8 +130,10 @@ std::unique_ptr<IEngineRunner> make_engine_runner(RunnerDeps& deps,
 
 }  // namespace fastmm
 
-#define FASTMM_REGISTER_STRATEGY(S, FactoryFn)                                   \
-  namespace {                                                                    \
-  const bool fastmm_registered_##S = ::fastmm::StrategyRegistry::instance().add( \
-      ::fastmm::StrategyEntry{S::name(), &S::schema(), FactoryFn});              \
+// Static registration for executables. Do not use it inside a static library: an object file
+// that nothing references is not linked, and the registration silently disappears.
+#define FASTMM_REGISTER_STRATEGY(S, Kind, FactoryFn)                                      \
+  namespace {                                                                             \
+  const bool fastmm_registered_##S##_##Kind = ::fastmm::StrategyRegistry::instance().add( \
+      S::name(), &S::schema(), ::fastmm::TransportKind::Kind, FactoryFn);                 \
   }

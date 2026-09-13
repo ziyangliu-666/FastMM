@@ -97,8 +97,10 @@ uses replace when the venue supports it.
      return sim::make_sim_or_replay_runner<MyQuoter>(k, d);
    }
 
-   // inside register_builtin_strategies():
-   static_cast<void>(r.add(StrategyEntry{MyQuoter::name(), &MyQuoter::schema(), make_my_quoter}));
+   // inside register_builtin_strategies(), which registers the Sim and Replay factories:
+   for (const TransportKind k : {TransportKind::Sim, TransportKind::Replay}) {
+     static_cast<void>(r.add(MyQuoter::name(), &MyQuoter::schema(), k, make_my_quoter));
+   }
    ```
 
    `fastmm-backtest`, `fastmm-replay`, the tests and the Python module all call

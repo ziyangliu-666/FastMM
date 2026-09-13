@@ -23,9 +23,11 @@ std::unique_ptr<IEngineRunner> make_avellaneda_stoikov(TransportKind k, RunnerDe
 std::size_t register_builtin_strategies() {
   StrategyRegistry& r = StrategyRegistry::instance();
   // add() refuses duplicates, so repeated calls are harmless.
-  static_cast<void>(r.add(StrategyEntry{BasicMM::name(), &BasicMM::schema(), make_basic_mm}));
-  static_cast<void>(r.add(StrategyEntry{
-      AvellanedaStoikov::name(), &AvellanedaStoikov::schema(), make_avellaneda_stoikov}));
+  for (const TransportKind k : {TransportKind::Sim, TransportKind::Replay}) {
+    static_cast<void>(r.add(BasicMM::name(), &BasicMM::schema(), k, make_basic_mm));
+    static_cast<void>(
+        r.add(AvellanedaStoikov::name(), &AvellanedaStoikov::schema(), k, make_avellaneda_stoikov));
+  }
   return r.entries().size();
 }
 

@@ -2,6 +2,7 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/strategies/avellaneda_stoikov.hpp"
 #include "fastmm/strategies/registry.hpp"
 
 using namespace fastmm;
@@ -75,7 +76,7 @@ std::unique_ptr<IEngineRunner> fake_factory(TransportKind, RunnerDeps&) {
   return nullptr;
 }
 }  // namespace
-FASTMM_REGISTER_STRATEGY(BasicMM, fake_factory);
+FASTMM_REGISTER_STRATEGY(BasicMM, Live, fake_factory);
 
 TEST_CASE("strategies.basic_mm: skewed quotes are clamped inside the touch") {
   const Price tick = Price::from_decimal("0.01").value();
@@ -107,18 +108,32 @@ TEST_CASE("strategies.basic_mm: skewed quotes are clamped inside the touch") {
   CHECK(empty_book.bids[0].price == Price::from_decimal("100.20").value());
 }
 
-TEST_CASE("strategies.registry: registration, lookup, listing") {
-  const auto& entries = list_strategies();
-  REQUIRE_FALSE(entries.empty());
-  const StrategyEntry* e = StrategyRegistry::instance().find("basic_mm");
+TEST_CASE("strategies.registry: one factory per transport kind, lookup, listing") {
+  StrategyRegistry& reg = StrategyRegistry::instance();
+  REQUIRE_FALSE(list_strategies().empty());
+  const StrategyEntry* e = reg.find("basic_mm");
   REQUIRE(e != nullptr);
   CHECK(e->schema == &BasicMM::schema());
-  CHECK(StrategyRegistry::instance().find("nope") == nullptr);
+  CHECK(e->supports(TransportKind::Live));  // the static registration above
+  CHECK(reg.find("nope") == nullptr);
+
   RunnerDeps deps;
-  CHECK(StrategyRegistry::instance().make("basic_mm", TransportKind::Sim, deps) ==
-        nullptr);  // fake factory
-  CHECK(StrategyRegistry::instance().make("nope", TransportKind::Sim, deps) == nullptr);
-  CHECK_FALSE(StrategyRegistry::instance().add(
-      StrategyEntry{"basic_mm", &BasicMM::schema(), fake_factory}));  // dup
+  CHECK(reg.make("basic_mm", TransportKind::Live, deps) == nullptr);  // fake factory result
+  CHECK(reg.make("nope", TransportKind::Live, deps) == nullptr);
+
+  // Same name and kind again: refused, nothing replaced.
+  CHECK_FALSE(reg.add("basic_mm", &BasicMM::schema(), TransportKind::Live, fake_factory));
+  // Same name, different kind: accepted alongside the existing one.
+  const bool had_replay = e->supports(TransportKind::Replay);
+  CHECK(reg.add("basic_mm", &BasicMM::schema(), TransportKind::Replay, fake_factory) != had_replay);
+  CHECK(reg.find("basic_mm")->supports(TransportKind::Replay));
+  CHECK(reg.find("basic_mm")->supports(TransportKind::Live));
+  // Same name with a different schema: refused.
+  static const ParamSchema& other = AvellanedaStoikov::schema();
+  CHECK_FALSE(reg.add("basic_mm", &other, TransportKind::Sim, fake_factory));
+  // Invalid input: refused.
+  CHECK_FALSE(reg.add("x", &BasicMM::schema(), TransportKind::Count, fake_factory));
+  CHECK_FALSE(reg.add("x", &BasicMM::schema(), TransportKind::Sim, nullptr));
+  CHECK(reg.find("x") == nullptr);
   CHECK(to_string(TransportKind::Live) == "live");
 }
