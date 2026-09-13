@@ -115,7 +115,7 @@ static void BM_L3_AddCancelExecMix(benchmark::State& state) {
   auto b = std::make_unique<L3Book<1U << 16, 1U << 20>>(kTick);
   Xoshiro256ss rng(7);
   std::vector<std::uint64_t> live;
-  live.reserve(1 << 16);
+  live.reserve(1 << 16);  // > kHigh + 1: no reallocation in the timed loop
   std::uint64_t next = 1;
   for (int i = 0; i < 20000; ++i) {
     const Side s = (i & 1) ? Side::Buy : Side::Sell;
@@ -126,9 +126,20 @@ static void BM_L3_AddCancelExecMix(benchmark::State& state) {
            Qty::from_int(1 + static_cast<std::int64_t>(rng.uniform(10))));
     live.push_back(next++);
   }
+  // Keep the resting population inside a fixed band. An unconditional 1/3 add, 2/3 remove mix
+  // drifts to an empty book on long runs (then `% live.size()` divides by zero), and growing
+  // past the reserve would allocate inside the timed loop.
+  static constexpr std::size_t kLow = 10'000;
+  static constexpr std::size_t kHigh = 30'000;
   for (auto _ : state) {
     const std::uint64_t r = rng.next();
-    switch (r % 3) {
+    std::uint64_t op = r % 3;
+    if (live.size() < kLow) {
+      op = 0;
+    } else if (live.size() > kHigh) {
+      op = 1;
+    }
+    switch (op) {
       case 0: {
         const Side s = (r & 8) ? Side::Buy : Side::Sell;
         b->add(next,

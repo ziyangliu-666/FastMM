@@ -1,14 +1,17 @@
-# p50 latency budgets (ns) from the design (plan §5.12). check_budgets.py allows +25% slack.
-# Keys are Google Benchmark names (without the _median suffix). Filled/tuned once the benches exist.
+# p50 latency budgets in ns, from the design (plan section 5.12). tools/check_budgets.py fails a
+# benchmark whose median exceeds budget * (1 + slack), default slack 25%.
+# Keys are the exact Google Benchmark names (without the _median aggregate suffix).
+# Benchmarks not present in a results directory are reported as "missing" and do not fail.
 [p50_ns]
-"BM_L2Book_UpdateTop" = 30
-"BM_L2Book_ApplyDelta20" = 300
-"BM_L3Book_AddCancel" = 60
-"BM_Risk_CheckNew" = 100
-"BM_Oms_SubmitAckFill" = 120
-"BM_QuoteManager_Reconcile" = 200
-"BM_MsgRing_PingPong" = 150
-"BM_Log_Emit3Args" = 40
-"BM_Journal_Enqueue1KiB" = 80
-"BM_TickToOrder_Sim" = 2000
-"BM_Ws_DecodeFrame16K" = 200
+"BM_L2_UpdateNearTop" = 30
+"BM_L2_ApplyDelta/20" = 300
+"BM_L3_AddCancelExecMix" = 60
+"BM_Risk_CheckNew_Pass" = 100
+"BM_Oms_Lifecycle" = 120
+"BM_QuoteManager_Reconcile_6Orders1Change" = 200
+"BM_SpscRing_PingPong/real_time" = 300          # round trip = two cross-core hops
+"BM_Log_Emit_3Args" = 40
+"BM_Journal_Record/1024" = 80
+"BM_WsAssemble/16384" = 200
+"BM_TickToOrder_Sim" = 2000                     # bench/bench_tick_to_order.cpp
+"BM_Json_BinanceDepth20" = 1500                 # bench/bench_json.cpp
