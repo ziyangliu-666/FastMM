@@ -46,6 +46,13 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- Binance and Bybit connectors did not reconcile open orders after the order channel reconnected,
+  and the user/private streams re-queried open orders every time a quiet stream returned from
+  Stale. Reconciliation now runs exactly on real reconnects.
+- After a reconnect BasicMM and Avellaneda-Stoikov stayed unquoted until the mid moved past the
+  requote threshold; they now requote as soon as the venue is Live again.
+- `fastmm-live` lost the PnL and fee figures of its final summary to the logger's string-argument
+  cap; the summary is logged as numbers, and truncated string arguments now end in `...`.
 - Order book sync resynced needlessly on Binance when no buffered delta was newer than the REST
   snapshot: the first live delta was checked with the "follows exactly" rule and an overlapping
   delta (U <= L+1 <= u) looked like a gap. It is now checked with the first-delta rule.

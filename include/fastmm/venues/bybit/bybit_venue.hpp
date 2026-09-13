@@ -200,6 +200,7 @@ class BybitVenue final : public Venue {
   bool connected_ = false;
   bool rest_hard_stopped_ = false;
   bool private_was_live_ = false;
+  bool trade_was_live_ = false;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;
   ConnState trade_state_ = ConnState::Disconnected;

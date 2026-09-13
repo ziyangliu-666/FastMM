@@ -159,13 +159,9 @@ TEST_CASE("sim_exchange e2e: market-data drop pulls quotes and order-channel los
                             << s.cancel_all_since_mark << " open_orders_queries="
                             << s.open_orders_queries_since_mark << " orders=" << s.orders_since_mark
                             << " cancel_rejects=" << s.cancel_rejects);
-  // Known engine/strategy behaviour: Engine::on_connection_state pulls quotes without telling
-  // BasicMM, which keeps its last quoted mid and requotes only after the mid moves by
-  // requote_threshold_ticks; on a quiet book quoting can stay off for a long time.
-  WARN_MESSAGE(md_resumed, "quoting did not resume within 10 s of the market-data reconnect");
-  WARN_MESSAGE(resumed, "quoting did not resume within 10 s of the order-channel reconnect");
-  // Plan 6.7 expects request_open_orders -> ReconcileMsg once the order channel is back.
-  // Known connector gap: BinanceVenue::on_order_state(Live) only drains the outbound ring, so a
-  // reconciliation happens only incidentally (a cancel rejected with -2011 during the outage).
-  WARN_MESSAGE(reconciled, "no openOrders reconciliation after the order channel came back");
+  // Strategies requote as soon as the venue is Live again (on_connection), and the connector
+  // reconciles open orders after the order channel reconnects (plan 6.7).
+  CHECK_MESSAGE(md_resumed, "quoting did not resume within 10 s of the market-data reconnect");
+  CHECK_MESSAGE(resumed, "quoting did not resume within 10 s of the order-channel reconnect");
+  CHECK_MESSAGE(reconciled, "no openOrders reconciliation after the order channel came back");
 }

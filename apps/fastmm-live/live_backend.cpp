@@ -437,7 +437,24 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   if (journal) journal->stop();
 
   const RunnerStats rs = runner->stats();
-  FASTMM_LOG_INFO("fastmm-live: {}", format_runner_stats(rs));
+  // Numeric arguments: string arguments are capped at kLogMaxStrBytes, which used to cut the PnL.
+  FASTMM_LOG_INFO(
+      "fastmm-live: events={} book_updates={} orders={} cancels={} replaces={} fills={} "
+      "risk_rejects={}",
+      rs.events,
+      rs.book_updates,
+      rs.orders_sent,
+      rs.cancels_sent,
+      rs.replaces_sent,
+      rs.fills,
+      rs.risk_rejects);
+  FASTMM_LOG_INFO(
+      "fastmm-live: realized_pnl={} unrealized_pnl={} fees={} tick_to_trade p50={} ns p99={} ns",
+      Notional::from_raw(rs.realized_pnl_raw),
+      Notional::from_raw(rs.unrealized_pnl_raw),
+      Notional::from_raw(rs.fees_raw),
+      rs.tick_to_trade_p50_ns,
+      rs.tick_to_trade_p99_ns);
   for (auto& s : slots) {
     const venues::VenueStatus st = s->venue->status();
     FASTMM_LOG_INFO(

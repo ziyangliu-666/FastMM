@@ -410,7 +410,8 @@ void BybitVenue::on_private_state(net::ConnState s) {
   if (mapped == ConnState::Live) {
     emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
     FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
-    if (private_was_live_) request_open_orders();  // 6.7: reconcile after a reconnect
+    // 6.7: reconcile after a reconnect, not when a quiet channel returns from Stale.
+    if (private_was_live_ && prev != ConnState::Stale) request_open_orders();
     private_was_live_ = true;
   } else if ((mapped == ConnState::Disconnected || mapped == ConnState::Connecting) &&
              (prev == ConnState::Live || prev == ConnState::Stale)) {
@@ -522,9 +523,14 @@ void BybitVenue::on_trade_state(net::ConnState s) {
   const ConnState prev = trade_state_;
   trade_state_ = mapped;
   if (mapped == ConnState::Live) {
+    // 6.7: orders were cancelled over REST while the trade channel was down; reconcile on a real
+    // reconnect (not the first connect, not a return from Stale).
+    const bool reconnected = trade_was_live_ && prev != ConnState::Stale;
+    trade_was_live_ = true;
     emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
     FASTMM_LOG_INFO("{}: trade channel -> Live", cfg_.name);
     drain_outbound();
+    if (reconnected && !cfg_.dry_run) request_open_orders();
     return;
   }
   if (mapped == ConnState::Stale) return;

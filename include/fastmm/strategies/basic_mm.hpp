@@ -125,6 +125,20 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     }
   }
 
+  // The engine pulls a venue's quotes when a connection drops. Forget the last quoted mid so the
+  // next book update requotes even if the mid has not moved, and requote at once when the venue
+  // is Live again (otherwise a quiet book could leave the strategy unquoted indefinitely).
+  template <class Ctx>
+  void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
+    for (const Instrument& inst : ctx.instruments()) {
+      if (inst.venue != m.hdr.venue) continue;
+      last_mid_[inst.id.value] = Price{};
+      if (m.state != ConnState::Live) continue;
+      const auto& book = ctx.book(inst.id);
+      if (book.is_valid()) requote(ctx, inst.id, book, inst);
+    }
+  }
+
   // Pure quoting function; exposed for deterministic tests.
   [[nodiscard]] DesiredQuotes compute_quotes(Price mid,
                                              Qty position,

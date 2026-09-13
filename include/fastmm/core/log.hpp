@@ -226,6 +226,7 @@ struct ArgPacker {
     *p++ = static_cast<std::uint8_t>(t);
     *p++ = static_cast<std::uint8_t>(len);
     std::memcpy(p, s.data(), len);
+    if (len < s.size() && len >= 3) std::memcpy(p + len - 3, "...", 3);  // make the cut visible
     p += len;
     ++n;
     return true;

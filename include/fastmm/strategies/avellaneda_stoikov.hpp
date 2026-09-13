@@ -83,6 +83,18 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     ctx.set_quotes(id, compute_quotes(id, mid, ctx.position(id).qty, inst, now));
   }
 
+  // The engine pulls a venue's quotes when a connection drops. Forget the last quoted mid so the
+  // next book update requotes even if the mid has not moved, and requote at once when the venue
+  // is Live again (otherwise a quiet book could leave the strategy unquoted indefinitely).
+  template <class Ctx>
+  void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
+    for (const Instrument& inst : ctx.instruments()) {
+      if (inst.venue != m.hdr.venue) continue;
+      st_[inst.id.value].last_mid = Price{};
+      if (m.state == ConnState::Live) on_book(ctx, inst.id, ctx.book(inst.id));
+    }
+  }
+
   template <class Ctx>
   void on_trade(Ctx& ctx, const TradeMsg& t) noexcept {
     if (!params_.estimate_kappa) return;

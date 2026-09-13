@@ -238,6 +238,7 @@ class BinanceVenue final : public Venue {
   ConnState user_state_ = ConnState::Disconnected;
   ConnState order_state_ = ConnState::Disconnected;
   bool order_was_live_ = false;
+  bool user_was_live_ = false;
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 
