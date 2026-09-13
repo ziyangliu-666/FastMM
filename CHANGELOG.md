@@ -24,6 +24,12 @@ All notable changes are recorded here (Keep a Changelog format).
   order entry with REST fallback, HMAC and Ed25519 auth, reconciliation, rate limiting) with
   fixtures recorded from both testnets and scripted in-process fake exchanges; `fastmm-live` with
   dry-run, raw recording, journaling and a kill switch that cancels everything on shutdown.
+- `fastmm-sim-exchange`: a Binance-compatible simulated exchange (REST, combined market-data
+  streams, WS API order entry, user data stream, legacy listenKey) over TCP and TLS, driven by the
+  matching engine and a seeded market generator, with signature, `recvWindow` and rate-limit checks
+  and one-shot or counted fault injection (dropped connections, skipped depth updates, `-1021`,
+  unresponsive REST, delayed acks, rejects, 429s). Conformance and end-to-end tests run
+  `fastmm-live` against it; `scripts/run-sim.sh` and `docker compose up` start both.
 - Connector-specific venue keys (`stale_ms`, `order_api`, `depth`, ...) are validated and documented
   instead of being reported as unknown.
 - The strategy registry keeps one factory per transport kind, so backtest and live registrations of

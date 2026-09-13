@@ -9,10 +9,10 @@ the abstractions are built for equities, futures, options and FX (FIX 4.4, ITCH/
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: v0.1 in progress.** The core engine, networking stack, simulator, backtester, Binance
-> and Bybit testnet connectors and the Python research bindings are implemented and tested. The
-> Binance-compatible simulated exchange with end-to-end tests is landing now. Testnets are the default.
-> Nothing here is investment advice. Live trading is at your own risk.
+> **Status: v0.1.** The core engine, networking stack, simulator, backtester, Binance and Bybit
+> testnet connectors, a Binance-compatible simulated exchange with end-to-end tests, and the Python
+> research bindings are implemented and tested. Testnets are the default. Nothing here is
+> investment advice. Live trading is at your own risk.
 
 ## Latency
 
@@ -69,6 +69,10 @@ cmake --build --preset release -j && ctest --preset release
 ./scripts/run-sim.sh --duration 30s                      # sim exchange + live engine on localhost
 ```
 
+Or without a local toolchain: `docker compose up --build` starts the simulated exchange and the
+engine in two containers. The simulator and its fault injection are described in
+[`docs/sim-exchange.md`](docs/sim-exchange.md).
+
 Python research bindings, in a virtual environment:
 
 ```bash
@@ -86,6 +90,7 @@ python examples/python/backtest_quickstart.py
 | Networking | `include/fastmm/net` | hand-written epoll reactor, OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
 | Venues | `include/fastmm/venues` | Binance Spot and Bybit v5 connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting |
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
+| Sim exchange | `apps/fastmm-sim-exchange` | Binance-compatible REST, market-data WebSocket, WS API and user stream over TCP or TLS, with fault injection (disconnects, dropped diffs, delayed acks, clock skew) |
 | Backtesting | `include/fastmm/backtest` | journal / CSV / numpy sources, fees, PnL, Sharpe, drawdown, parameter sweeps |
 | Strategies | `include/fastmm/strategies` | BasicMM with inventory skew, Avellaneda-Stoikov |
 | Python | `python/` | `fastmm.run_backtest`, `fastmm.sweep`, zero-copy numpy in and out |
@@ -134,7 +139,7 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [x] Matching engine, backtester, deterministic replay
 - [x] Binance Spot and Bybit v5 testnet connectors, `fastmm-live`
 - [x] Python research bindings (backtests, sweeps, zero-copy numpy)
-- [ ] Binance-compatible simulated exchange with end-to-end tests
+- [x] Binance-compatible simulated exchange with fault injection and end-to-end tests
 - [ ] Python package on PyPI
 - [ ] FIX 4.4, Nasdaq ITCH 5.0 / OUCH, CME MDP 3.0 SBE codecs
 - [ ] Deribit options with greeks-aware quoting
