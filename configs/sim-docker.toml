@@ -1,0 +1,93 @@
+# FastMM: BasicMM against fastmm-sim-exchange inside docker-compose (service "sim-exchange").
+#   docker compose up --build
+# Same as configs/sim-local.toml, with the simulator reached by its compose service name.
+
+[engine]
+name = "sim-docker"
+cpu = -1                     # pin the engine thread (e.g. 2) on bare metal; -1 on WSL2
+net_cpus = []                # one entry per venue when pinning
+spin_mode = "adaptive"       # "busy" on dedicated cores
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 1
+min_requote_interval_ms = 50
+min_qty_bps = 8000
+post_only = true
+supports_replace = true
+
+[venues.sim]
+kind = "binance_spot"
+ws_url = "ws://sim-exchange:9080/stream"
+ws_api_url = "ws://sim-exchange:9080/ws-api/v3"
+rest_url = "http://sim-exchange:9080"
+api_key = "${FASTMM_SIM_API_KEY}"
+api_secret = "${FASTMM_SIM_API_SECRET}"
+testnet = true
+supports_replace = true      # Binance cancelReplace
+insecure_tls = true          # self-signed certificate on :9443
+recv_window_ms = 3000
+
+[venues.sim.fees]
+maker_bps = 1.0
+taker_bps = 4.0
+
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"                # strings are parsed exactly (no double)
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "100"
+min_notional = "5"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 5.0
+skew_bps_per_unit = 1.0
+quote_qty = 0.001
+max_inventory = 0.01
+requote_threshold_ticks = 1
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.01"
+max_order_notional = "1000"
+max_position = "0.02"
+max_open_orders = 8
+price_collar_bps = 100
+fat_finger_bps = 500
+stale_md_ms = 2000
+max_loss = "50"
+orders_per_sec = 20
+burst = 10
+stp = true
+
+[logging]
+level = "info"
+file = ""                     # empty = stderr
+mirror_level = "warn"
+
+[sim]
+seed = 7
+duration_s = 60
+start_mid = "60000"
+tick = "0.01"
+depth_update_ms = 100
+latency_fixed_us = 250
+latency_jitter_us = 50
+p_drop = 0.0
