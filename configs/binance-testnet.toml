@@ -1,0 +1,91 @@
+# FastMM: BasicMM on the Binance Spot testnet (https://testnet.binance.vision).
+#   ./build/release/bin/fastmm-live --config configs/binance-testnet.toml --dry-run --duration 60s
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/binance-testnet.toml
+# Testnet endpoints: https://developers.binance.com/docs/binance-spot-api-docs (testnet):
+#   REST https://testnet.binance.vision, streams wss://stream.testnet.binance.vision,
+#   WebSocket API wss://ws-api.testnet.binance.vision/ws-api/v3.
+# Keys are only read from the environment; never put secrets in this file.
+
+[engine]
+name = "binance-testnet"
+cpu = -1                     # pin the engine thread on bare metal; -1 on WSL2
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 2
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+supports_replace = true
+
+[venues.binance]
+kind = "binance_spot"
+ws_url = "wss://stream.testnet.binance.vision/stream"
+ws_api_url = "wss://ws-api.testnet.binance.vision/ws-api/v3"
+rest_url = "https://testnet.binance.vision"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = true      # order.cancelReplace (STOP_ON_FAILURE)
+recv_window_ms = 3000
+# The testnet BTCUSDT feed can be silent for several seconds; with the 2 s default every
+# quiet spell is reported as Stale, which clears the engine book and forces a resync.
+stale_ms = 10000
+
+[venues.binance.fees]
+maker_bps = 10.0
+taker_bps = 10.0
+
+# Tick/lot/min_notional are overwritten from GET /api/v3/exchangeInfo at startup.
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "9000"
+min_notional = "5"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 10.0
+skew_bps_per_unit = 50.0
+quote_qty = 0.0002
+max_inventory = 0.001
+requote_threshold_ticks = 5
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.001"
+max_order_notional = "100"
+max_position = "0.002"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

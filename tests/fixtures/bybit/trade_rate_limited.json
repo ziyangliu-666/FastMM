@@ -1,0 +1,1 @@
+{"reqId":"nfm000100000004","retCode":10006,"retMsg":"Too many visits. Exceeded the API Rate Limit.","op":"order.create","data":{},"retExtInfo":{},"header":{"X-Bapi-Limit":"20","X-Bapi-Limit-Status":"0","X-Bapi-Limit-Reset-Timestamp":"1789299701000","Traceid":"38b7977b430f9bd228f4b19724794e00","Timenow":"1789299700212"},"connId":"cnt5leec0hvan15eukcg-2v"}

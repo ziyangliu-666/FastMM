@@ -1,0 +1,93 @@
+# FastMM: BasicMM on the Bybit v5 spot testnet.
+#   ./build/release/bin/fastmm-live --config configs/bybit-testnet.toml --dry-run --duration 60s
+#   export FASTMM_BYBIT_API_KEY=... FASTMM_BYBIT_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/bybit-testnet.toml
+# Endpoints (https://bybit-exchange.github.io/docs/v5/guide, .../v5/ws/connect):
+#   REST https://api-testnet.bybit.com, public wss://stream-testnet.bybit.com/v5/public/spot,
+#   private wss://stream-testnet.bybit.com/v5/private (derived from ws_url),
+#   trade wss://stream-testnet.bybit.com/v5/trade.
+
+[engine]
+name = "bybit-testnet"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 2
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.bybit]
+kind = "bybit"
+ws_url = "wss://stream-testnet.bybit.com/v5/public/spot"
+ws_api_url = "wss://stream-testnet.bybit.com/v5/trade"
+rest_url = "https://api-testnet.bybit.com"
+api_key = "${FASTMM_BYBIT_API_KEY}"
+api_secret = "${FASTMM_BYBIT_API_SECRET}"
+testnet = true
+# order.amend is implemented, but whether amend `qty` includes the filled quantity is not
+# documented (VERIFY), so quotes are replaced with cancel + new by default.
+supports_replace = false
+recv_window_ms = 5000
+# The testnet BTCUSDT feed can be silent for several seconds; with the 2 s default every
+# quiet spell is reported as Stale, which clears the engine book and forces a resync.
+stale_ms = 10000
+
+[venues.bybit.fees]
+maker_bps = 10.0
+taker_bps = 10.0
+
+# Tick/lot/min_notional are overwritten from GET /v5/market/instruments-info at startup.
+[[instruments]]
+venue = "bybit"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.1"
+lot = "0.000001"
+min_qty = "0.000001"
+max_qty = "10"
+min_notional = "5"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 10.0
+skew_bps_per_unit = 50.0
+quote_qty = 0.0002
+max_inventory = 0.001
+requote_threshold_ticks = 5
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.001"
+max_order_notional = "100"
+max_position = "0.002"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

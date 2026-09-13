@@ -1,0 +1,17 @@
+{
+ "_source": "recorded",
+ "_recorded_from": "wss://stream.testnet.binance.vision/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker/btcusdt@trade and https://testnet.binance.vision/api/v3/{exchangeInfo,depth,time}",
+ "_recorded_at": "2026-09-13T10:25Z",
+ "files": {
+  "exchange_info.json": "recorded (GET /api/v3/exchangeInfo?symbols=[\"BTCUSDT\"])",
+  "depth_snapshot.json": "recorded (GET /api/v3/depth?symbol=BTCUSDT&limit=100)",
+  "depth_update.json": "recorded (combined stream frame)",
+  "depth_update_20.json": "synthesised from depth_snapshot.json levels (20 levels)",
+  "depth_update_100.json": "synthesised from depth_snapshot.json levels (100 levels)",
+  "book_ticker.json": "recorded",
+  "trade.json": "recorded",
+  "server_time.json": "recorded",
+  "raw_md_stream.jsonl": "recorded, one frame per line",
+  "exec_report_*.json, outbound_account_position.json, ws_api_*.json, open_orders.json, listen_key.json, error_*.json": "docs-example (hand-written following https://github.com/binance/binance-spot-api-docs user-data-stream.md / web-socket-api.md, with FastMM client ids)"
+ }
+}

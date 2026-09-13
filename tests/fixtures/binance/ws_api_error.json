@@ -1,0 +1,1 @@
+{"id":"nfm000100000002","status":400,"error":{"code":-2010,"msg":"Order would immediately match and take."},"rateLimits":[{"rateLimitType":"ORDERS","interval":"SECOND","intervalNum":10,"limit":50,"count":2},{"rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000,"count":15}]}

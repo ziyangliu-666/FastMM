@@ -1,0 +1,23 @@
+{
+ "_source": "mixed",
+ "_recorded_from": "wss://stream-testnet.bybit.com/v5/public/spot (subscribe orderbook.50.BTCUSDT, orderbook.1.BTCUSDT, publicTrade.BTCUSDT; op ping) and https://api-testnet.bybit.com/v5/market/{instruments-info?category=spot&symbol=BTCUSDT,time}",
+ "_recorded_at": "2026-09-13T11:40Z",
+ "files": {
+  "raw_md_stream.jsonl": "recorded, one frame per line (25 s session; includes the rejected subscribe for NOSUCHSYM at the end)",
+  "orderbook50_snapshot.json": "recorded",
+  "orderbook50_delta.json": "recorded",
+  "orderbook1_snapshot.json": "recorded",
+  "public_trade.json": "recorded",
+  "subscribe_ok.json": "recorded",
+  "subscribe_error.json": "recorded",
+  "pong.json": "recorded",
+  "instruments_info.json": "recorded",
+  "server_time.json": "recorded",
+  "orderbook50_delta_u1.json": "synthesised from orderbook50_delta.json with data.u = 1 (venue restart marker)",
+  "orderbook50_malformed.json": "synthesised (level with a missing size)",
+  "public_trade_unknown_symbol.json": "synthesised from public_trade.json with the symbol replaced",
+  "private_order_*.json, private_execution.json, private_wallet.json, private_auth_ok.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/order, .../execution, .../wallet, .../ws/connect) rewritten for category=spot with FastMM orderLinkIds",
+  "auth_ok.json, auth_error.json, trade_create_ok.json, trade_create_reject.json, trade_cancel_unknown.json, trade_rate_limited.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/trade/guideline) with spot symbols, FastMM reqIds and retCodes from https://bybit-exchange.github.io/docs/v5/error",
+  "rest_open_orders.json, rest_error.json": "docs-example (https://bybit-exchange.github.io/docs/v5/order/open-order, .../error) with FastMM orderLinkIds"
+ }
+}

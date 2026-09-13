@@ -1,0 +1,1 @@
+{"reqId":"nfm000100000002","retCode":170218,"retMsg":"The LIMIT-MAKER order is rejected due to invalid price.","op":"order.create","data":{},"retExtInfo":{},"header":{"X-Bapi-Limit":"20","X-Bapi-Limit-Status":"18","X-Bapi-Limit-Reset-Timestamp":"1789299700208","Traceid":"38b7977b430f9bd228f4b19724794dfe","Timenow":"1789299700210"},"connId":"cnt5leec0hvan15eukcg-2v"}

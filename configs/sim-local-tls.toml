@@ -1,9 +1,9 @@
-# FastMM: BasicMM against the local Binance-compatible simulator (fastmm-sim-exchange).
-#   ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml     # 127.0.0.1:9080 / :9443
-#   ./build/release/bin/fastmm-live --config configs/sim-local.toml
+# FastMM: BasicMM against the local Binance-compatible simulator over TLS (self-signed cert).
+#   ./build/release/apps/fastmm-sim-exchange --config configs/sim.toml     # 127.0.0.1:9080 / :9443
+#   ./build/release/bin/fastmm-live --config configs/sim-local-tls.toml
 
 [engine]
-name = "sim-local"
+name = "sim-local-tls"
 cpu = -1                     # pin the engine thread (e.g. 2) on bare metal; -1 on WSL2
 net_cpus = []                # one entry per venue when pinning
 spin_mode = "adaptive"       # "busy" on dedicated cores
@@ -25,14 +25,15 @@ supports_replace = true
 
 [venues.sim]
 kind = "binance_spot"
-ws_url = "ws://127.0.0.1:9080/stream"
-ws_api_url = "ws://127.0.0.1:9080/ws-api/v3"
-rest_url = "http://127.0.0.1:9080"
+ws_url = "wss://127.0.0.1:9443/stream"
+ws_api_url = "wss://127.0.0.1:9443/ws-api/v3"
+rest_url = "https://127.0.0.1:9443"
 api_key = "${FASTMM_SIM_API_KEY}"
 api_secret = "${FASTMM_SIM_API_SECRET}"
 testnet = true
 supports_replace = true      # Binance cancelReplace
-insecure_tls = true          # self-signed certificate on :9443
+insecure_tls = false         # verify against ca_file instead
+ca_file = "tests/fixtures/tls/cert.pem"
 recv_window_ms = 3000
 
 [venues.sim.fees]
