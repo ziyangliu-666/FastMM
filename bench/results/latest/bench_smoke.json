@@ -1,6 +1,6 @@
 {
   "context": {
-    "date": "2026-09-13T16:44:33+00:00",
+    "date": "2026-09-13T18:09:55+00:00",
     "executable": "build/release-native/bin/bench/bench_smoke",
     "num_cpus": 8,
     "mhz_per_cpu": 4192,
@@ -32,7 +32,7 @@
         "num_sharing": 8
       }
     ],
-    "load_avg": [3.12061,5.74023,5.51514],
+    "load_avg": [9.38916,10.4238,6.81494],
     "library_version": "v1.9.5",
     "library_build_type": "release",
     "json_schema_version": 1
@@ -49,8 +49,8 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.9768106971181648e-01,
-      "cpu_time": 2.0564484309281078e-01,
+      "real_time": 1.9614080779915946e-01,
+      "cpu_time": 2.1145101226040958e-01,
       "time_unit": "ns"
     },
     {
@@ -64,8 +64,8 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.9338582858739400e-01,
-      "cpu_time": 2.0573829784276354e-01,
+      "real_time": 1.9388907045320969e-01,
+      "cpu_time": 2.1118077048666520e-01,
       "time_unit": "ns"
     },
     {
@@ -79,8 +79,8 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 7.5887590293612518e-03,
-      "cpu_time": 6.7686444045553218e-04,
+      "real_time": 3.7607109491262372e-03,
+      "cpu_time": 6.7487079874729015e-04,
       "time_unit": "ns"
     },
     {
@@ -94,8 +94,8 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 3.8388901073958676e-02,
-      "cpu_time": 3.2914243327271404e-03,
+      "real_time": 1.9173526362637694e-02,
+      "cpu_time": 3.1916177252259374e-03,
       "time_unit": "ns"
     }
   ]

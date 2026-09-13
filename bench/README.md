@@ -9,59 +9,59 @@ All benchmarks report `allocs/op` from the counting allocator; hot-path benches 
 
 | Benchmark | median | stddev | p50 / p99 (if measured) | throughput |
 |---|---:|---:|---:|---:|
-| `BM_Crc32c_1MiB` | 81.43 µs | 223.8 ns |  | 12.88 GB/s |
-| `BM_EngineStep_Sim` | 8.86 µs | 44.5 ns |  | 3.3 Mops/s |
-| `BM_Fixed_FromDecimal` | 8.3 ns | 0.1 ns |  |  |
-| `BM_Fixed_Mul` | 1.9 ns | 0.0 ns |  |  |
+| `BM_Crc32c_1MiB` | 77.80 µs | 146.1 ns |  | 12.61 GB/s |
+| `BM_EngineStep_Sim` | 9.22 µs | 25.5 ns |  | 3.3 Mops/s |
+| `BM_Fixed_FromDecimal` | 8.0 ns | 0.0 ns |  |  |
+| `BM_Fixed_Mul` | 1.8 ns | 0.0 ns |  |  |
 | `BM_Fixed_RoundToTick` | 0.6 ns | 0.0 ns |  |  |
-| `BM_Fixed_ToDecimal` | 11.7 ns | 0.1 ns |  |  |
-| `BM_Histogram_Percentile` | 47.9 ns | 0.1 ns |  |  |
-| `BM_Histogram_Record` | 2.7 ns | 0.0 ns |  |  |
-| `BM_HttpParseResponse` | 149.5 ns | 0.4 ns |  | 1.08 GB/s |
-| `BM_HttpRoundTripLoopback/real_time` | 14.15 µs | 37.3 ns |  | 0.1 Mops/s |
-| `BM_Journal_Record/1024` | 13.6 ns | 0.1 ns |  | 75.56 GB/s |
-| `BM_Journal_Record/128` | 3.5 ns | 0.0 ns |  | 36.76 GB/s |
-| `BM_Json_BinanceBookTicker` | 123.8 ns | 0.3 ns |  | 1.16 GB/s |
-| `BM_Json_BinanceDepth100` | 2.90 µs | 5.6 ns |  | 1.15 GB/s |
-| `BM_Json_BinanceDepth20` | 667.6 ns | 2.9 ns |  | 1.15 GB/s |
-| `BM_Json_BinanceExecutionReport` | 277.9 ns | 0.8 ns |  | 1.80 GB/s |
-| `BM_Json_BinanceTrade` | 110.7 ns | 0.7 ns |  | 1.37 GB/s |
-| `BM_Json_BybitOrderbook20` | 645.4 ns | 6.3 ns |  | 1.12 GB/s |
-| `BM_L2_ApplyDelta/100` | 2.80 µs | 22.2 ns |  | 71.3 Mops/s |
-| `BM_L2_ApplyDelta/20` | 272.1 ns | 1.5 ns |  | 147.0 Mops/s |
-| `BM_L2_Features` | 6.3 ns | 0.0 ns |  |  |
-| `BM_L2_InsertEraseTop` | 2.9 ns | 0.0 ns |  |  |
-| `BM_L2_PriceForQty` | 5.1 ns | 0.0 ns |  |  |
-| `BM_L2_UpdateNearTop` | 2.1 ns | 0.0 ns |  |  |
-| `BM_L3_AddCancelExecMix` | 29.5 ns | 0.7 ns |  |  |
+| `BM_Fixed_ToDecimal` | 11.3 ns | 0.0 ns |  |  |
+| `BM_Histogram_Percentile` | 42.6 ns | 0.2 ns |  |  |
+| `BM_Histogram_Record` | 2.6 ns | 0.0 ns |  |  |
+| `BM_HttpParseResponse` | 141.3 ns | 1.2 ns |  | 1.11 GB/s |
+| `BM_HttpRoundTripLoopback/real_time` | 13.72 µs | 178.7 ns |  | 0.1 Mops/s |
+| `BM_Journal_Record/1024` | 12.5 ns | 0.0 ns |  | 76.67 GB/s |
+| `BM_Journal_Record/128` | 3.3 ns | 0.0 ns |  | 36.56 GB/s |
+| `BM_Json_BinanceBookTicker` | 120.8 ns | 2.4 ns |  | 1.10 GB/s |
+| `BM_Json_BinanceDepth100` | 2.81 µs | 5.7 ns |  | 1.10 GB/s |
+| `BM_Json_BinanceDepth20` | 630.1 ns | 3.4 ns |  | 1.13 GB/s |
+| `BM_Json_BinanceExecutionReport` | 293.5 ns | 7.0 ns |  | 1.79 GB/s |
+| `BM_Json_BinanceTrade` | 126.4 ns | 0.2 ns |  | 1.26 GB/s |
+| `BM_Json_BybitOrderbook20` | 735.7 ns | 20.4 ns |  | 1.09 GB/s |
+| `BM_L2_ApplyDelta/100` | 2.80 µs | 31.5 ns |  | 70.2 Mops/s |
+| `BM_L2_ApplyDelta/20` | 264.4 ns | 4.0 ns |  | 144.7 Mops/s |
+| `BM_L2_Features` | 6.0 ns | 0.0 ns |  |  |
+| `BM_L2_InsertEraseTop` | 2.8 ns | 0.0 ns |  |  |
+| `BM_L2_PriceForQty` | 4.9 ns | 0.0 ns |  |  |
+| `BM_L2_UpdateNearTop` | 2.0 ns | 0.0 ns |  |  |
+| `BM_L3_AddCancelExecMix` | 28.1 ns | 0.6 ns |  |  |
 | `BM_Log_Disabled_Level` | 0.2 ns | 0.0 ns |  |  |
-| `BM_Log_Emit_3Args` | 19.3 ns | 0.1 ns |  |  |
-| `BM_Log_FormatRecord` | 431.3 ns | 1.7 ns |  |  |
-| `BM_Matching_GeneratorMix` | 75.9 ns | 0.2 ns |  | 12.9 Mops/s |
-| `BM_Matching_MarketSweepFifo/10` | 655.9 ns | 21.8 ns |  | 14.5 Mops/s |
-| `BM_Matching_MarketSweepFifo/100` | 1.53 µs | 20.4 ns |  | 63.7 Mops/s |
-| `BM_Matching_SubmitCancel` | 54.9 ns | 0.6 ns |  | 36.4 Mops/s |
-| `BM_Matching_Sweep/1` | 601.1 ns | 2.9 ns |  | 1.7 Mops/s |
-| `BM_Matching_Sweep/10` | 709.6 ns | 3.3 ns |  | 14.1 Mops/s |
-| `BM_Matching_Sweep/100` | 1.85 µs | 67.9 ns |  | 54.0 Mops/s |
-| `BM_MsgRing_PushPop_128B` | 7.0 ns | 0.0 ns |  |  |
-| `BM_Oms_Lifecycle` | 99.6 ns | 0.4 ns |  |  |
-| `BM_Oms_Submit` | 32.1 ns | 0.2 ns |  |  |
-| `BM_QuoteManager_Reconcile_6Orders1Change` | 37.3 ns | 0.3 ns |  |  |
-| `BM_QuoteManager_Reconcile_NoChange` | 24.7 ns | 0.1 ns |  |  |
-| `BM_Risk_CheckNew_Killed` | 0.5 ns | 0.0 ns |  |  |
+| `BM_Log_Emit_3Args` | 18.6 ns | 0.0 ns |  |  |
+| `BM_Log_FormatRecord` | 399.6 ns | 1.5 ns |  |  |
+| `BM_Matching_GeneratorMix` | 72.0 ns | 0.1 ns |  | 12.8 Mops/s |
+| `BM_Matching_MarketSweepFifo/10` | 688.2 ns | 21.9 ns |  | 14.5 Mops/s |
+| `BM_Matching_MarketSweepFifo/100` | 1.38 µs | 28.1 ns |  | 67.3 Mops/s |
+| `BM_Matching_SubmitCancel` | 53.6 ns | 1.3 ns |  | 35.9 Mops/s |
+| `BM_Matching_Sweep/1` | 586.2 ns | 17.6 ns |  | 1.6 Mops/s |
+| `BM_Matching_Sweep/10` | 659.1 ns | 0.5 ns |  | 13.9 Mops/s |
+| `BM_Matching_Sweep/100` | 1.68 µs | 17.0 ns |  | 56.5 Mops/s |
+| `BM_MsgRing_PushPop_128B` | 6.9 ns | 0.0 ns |  |  |
+| `BM_Oms_Lifecycle` | 91.7 ns | 0.4 ns |  |  |
+| `BM_Oms_Submit` | 29.1 ns | 0.1 ns |  |  |
+| `BM_QuoteManager_Reconcile_6Orders1Change` | 38.6 ns | 0.2 ns |  |  |
+| `BM_QuoteManager_Reconcile_NoChange` | 26.8 ns | 0.1 ns |  |  |
+| `BM_Risk_CheckNew_Killed` | 0.4 ns | 0.0 ns |  |  |
 | `BM_Risk_CheckNew_Pass` | 8.1 ns | 0.2 ns |  |  |
 | `BM_Smoke_Noop` | 0.2 ns | 0.0 ns |  |  |
-| `BM_SpscRing_PingPong/real_time` | 132.7 ns | 2.1 ns |  |  |
-| `BM_SpscRing_Throughput` | 3.7 ns | 0.2 ns |  | 253.2 Mops/s |
-| `BM_TickToOrder_Sim` | 1.16 µs | 35.1 ns | 639.0 ns / 1.15 µs |  |
-| `BM_TscClock_Now` | 7.2 ns | 0.0 ns |  |  |
-| `BM_WallClock_Now` | 18.0 ns | 0.1 ns |  |  |
-| `BM_WsAssemble/16384` | 131.8 ns | 1.8 ns |  | 120.89 GB/s |
-| `BM_WsAssemble/64` | 6.5 ns | 0.1 ns |  | 10.14 GB/s |
-| `BM_WsAssembleMasked16K` | 285.1 ns | 3.3 ns |  | 55.99 GB/s |
+| `BM_SpscRing_PingPong/real_time` | 129.4 ns | 1.1 ns |  |  |
+| `BM_SpscRing_Throughput` | 4.0 ns | 0.2 ns |  | 229.4 Mops/s |
+| `BM_TickToOrder_Sim` | 1.21 µs | 12.0 ns | 639.0 ns / 1.09 µs |  |
+| `BM_TscClock_Now` | 6.8 ns | 0.0 ns |  |  |
+| `BM_WallClock_Now` | 17.3 ns | 0.1 ns |  |  |
+| `BM_WsAssemble/16384` | 129.0 ns | 1.9 ns |  | 120.09 GB/s |
+| `BM_WsAssemble/64` | 6.1 ns | 0.2 ns |  | 10.52 GB/s |
+| `BM_WsAssembleMasked16K` | 269.5 ns | 0.4 ns |  | 56.08 GB/s |
 | `BM_WsDecodeHeader_Small` | 1.4 ns | 0.0 ns |  |  |
-| `BM_WsEncodeMask1K` | 27.4 ns | 6.1 ns |  | 36.90 GB/s |
+| `BM_WsEncodeMask1K` | 25.8 ns | 6.1 ns |  | 36.62 GB/s |
 
 ## Reproduce
 

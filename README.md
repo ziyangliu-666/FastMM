@@ -21,12 +21,12 @@ one core, median of 5 runs. Full table and methodology: [`bench/README.md`](benc
 
 | Hot-path operation | Median |
 |---|---:|
-| L2 book: change the quantity of one of the top 4 levels | 2.1 ns |
+| L2 book: change the quantity of one of the top 4 levels | 2.0 ns |
 | Pre-trade risk check (15 checks) | 8.1 ns |
-| OMS submit → ack → fill lifecycle | 99.6 ns |
-| SPSC ping-pong between two cores (round trip, two hops) | 132.7 ns |
+| OMS submit → ack → fill lifecycle | 91.7 ns |
+| SPSC ping-pong between two cores (round trip, two hops) | 129.4 ns |
 | Tick-to-order in simulation (book delta in → order serialized, ticks that sent orders) | 639.0 ns |
-| Binance depth diff JSON → normalized event (20 levels) | 667.6 ns |
+| Binance depth diff JSON → normalized event (20 levels) | 630.1 ns |
 
 ## Architecture
 

@@ -1,6 +1,6 @@
 {
   "context": {
-    "date": "2026-09-13T16:44:36+00:00",
+    "date": "2026-09-13T18:09:59+00:00",
     "executable": "build/release-native/bin/bench/bench_spsc",
     "num_cpus": 8,
     "mhz_per_cpu": 4192,
@@ -32,7 +32,7 @@
         "num_sharing": 8
       }
     ],
-    "load_avg": [3.03076,5.67773,5.49609],
+    "load_avg": [9.11768,10.3501,6.81055],
     "library_version": "v1.9.5",
     "library_build_type": "release",
     "json_schema_version": 1
@@ -49,10 +49,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 3.6682795046015237e+00,
-      "cpu_time": 3.9053985459535689e+00,
+      "real_time": 3.9066530032600739e+00,
+      "cpu_time": 4.2649408307400325e+00,
       "time_unit": "ns",
-      "items_per_second": 2.5664944578590724e+08
+      "items_per_second": 2.3512063545245311e+08
     },
     {
       "name": "BM_SpscRing_Throughput_median",
@@ -65,10 +65,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 3.7091222204253720e+00,
-      "cpu_time": 3.9489240748063410e+00,
+      "real_time": 3.9934998263197423e+00,
+      "cpu_time": 4.3597326394693381e+00,
       "time_unit": "ns",
-      "items_per_second": 2.5323353426313749e+08
+      "items_per_second": 2.2937186352824584e+08
     },
     {
       "name": "BM_SpscRing_Throughput_stddev",
@@ -81,10 +81,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.9137035131087865e-01,
-      "cpu_time": 2.0371646530789023e-01,
+      "real_time": 2.2236937056565620e-01,
+      "cpu_time": 2.4280638090314866e-01,
       "time_unit": "ns",
-      "items_per_second": 1.4230956467674617e+07
+      "items_per_second": 1.4296004702492232e+07
     },
     {
       "name": "BM_SpscRing_Throughput_cv",
@@ -97,10 +97,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 5.2168966697009295e-02,
-      "cpu_time": 5.2162785157730790e-02,
+      "real_time": 5.6920686423926191e-02,
+      "cpu_time": 5.6930773611932634e-02,
       "time_unit": "ns",
-      "items_per_second": 5.5449005253437593e-02
+      "items_per_second": 6.0802849885897056e-02
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_mean",
@@ -113,10 +113,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.3234294125965593e+02,
-      "cpu_time": 1.3734146024565729e+02,
+      "real_time": 1.2988700038184928e+02,
+      "cpu_time": 1.4145497215120764e+02,
       "time_unit": "ns",
-      "hop_ns": 6.6171470629827986e-08
+      "hop_ns": 6.4943500190924643e-08
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_median",
@@ -129,10 +129,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.3274091640964031e+02,
-      "cpu_time": 1.3741187229885423e+02,
+      "real_time": 1.2939988207767439e+02,
+      "cpu_time": 1.4102391868878286e+02,
       "time_unit": "ns",
-      "hop_ns": 6.6370458204820135e-08
+      "hop_ns": 6.4699941038837190e-08
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_stddev",
@@ -145,10 +145,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2.0534830509434037e+00,
-      "cpu_time": 3.8746990163155492e-01,
+      "real_time": 1.0823729050834248e+00,
+      "cpu_time": 1.0810900664302341e+00,
       "time_unit": "ns",
-      "hop_ns": 1.0267415254709526e-09
+      "hop_ns": 5.4118645254001180e-10
     },
     {
       "name": "BM_SpscRing_PingPong/real_time_cv",
@@ -161,10 +161,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 1.5516377612573108e-02,
-      "cpu_time": 2.8212158290621256e-03,
+      "real_time": 8.3331888634074428e-03,
+      "cpu_time": 7.6426445107536248e-03,
       "time_unit": "ns",
-      "hop_ns": 1.5516377612561784e-02
+      "hop_ns": 8.3331888633812572e-03
     },
     {
       "name": "BM_MsgRing_PushPop_128B_mean",
@@ -177,8 +177,8 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 6.9926565205154514e+00,
-      "cpu_time": 7.2392284471733372e+00,
+      "real_time": 6.9336759248418263e+00,
+      "cpu_time": 7.4370250582116340e+00,
       "time_unit": "ns"
     },
     {
@@ -192,8 +192,8 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 6.9939500114831956e+00,
-      "cpu_time": 7.2406478863981807e+00,
+      "real_time": 6.9311746768803983e+00,
+      "cpu_time": 7.4343313394544470e+00,
       "time_unit": "ns"
     },
     {
@@ -207,8 +207,8 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2.0860922895981786e-02,
-      "cpu_time": 2.1623935231984720e-02,
+      "real_time": 1.0898051079841752e-02,
+      "cpu_time": 1.1678958529287185e-02,
       "time_unit": "ns"
     },
     {
@@ -222,8 +222,8 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 2.9832614879307779e-03,
-      "cpu_time": 2.9870497097557549e-03,
+      "real_time": 1.5717566263511748e-03,
+      "cpu_time": 1.5703804193037908e-03,
       "time_unit": "ns"
     }
   ]
