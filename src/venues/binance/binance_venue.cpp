@@ -570,7 +570,9 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     encoder_->set_session_authenticated(false);
     emit_connection_state(Channel::Order, ConnState::Disconnected);
     // 6.7 "order channel down": cancel everything through REST immediately.
-    if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run) cancel_all_async();
+    // disconnect() clears connected_ before closing the channels: a requested shutdown already
+    // runs the synchronous cancel_all(), and an async request would only be aborted.
+    if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run && connected_) cancel_all_async();
   }
 }
 
@@ -1205,7 +1207,7 @@ void BinanceVenue::cancel_all_async() {
     std::weak_ptr<int> alive = alive_;
     rest_->request(
         "DELETE", target, api_headers(), {}, [this, alive, id](const net::HttpResponse& r) {
-          if (alive.expired()) return;
+          if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
           int code = 0;

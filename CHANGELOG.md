@@ -46,6 +46,10 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- A requested shutdown logged a spurious "cancel-all failed" error: closing the order channel
+  started an asynchronous cancel-all that the disconnect then aborted. It is skipped during an
+  intentional disconnect, and a kill switch requested by the control thread logs a warning
+  instead of an error.
 - Binance and Bybit connectors did not reconcile open orders after the order channel reconnected,
   and the user/private streams re-queried open orders every time a quiet stream returned from
   Stale. Reconciliation now runs exactly on real reconnects.

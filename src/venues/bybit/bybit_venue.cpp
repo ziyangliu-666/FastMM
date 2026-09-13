@@ -537,7 +537,9 @@ void BybitVenue::on_trade_state(net::ConnState s) {
   if (prev == ConnState::Live || prev == ConnState::Stale) {
     emit_connection_state(*order_sink_, id_, 1, ConnState::Disconnected);
     FASTMM_LOG_WARN("{}: trade channel lost", cfg_.name);
-    if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run) cancel_all_async();
+    // disconnect() clears connected_ before closing the channels: a requested shutdown already
+    // runs the synchronous cancel_all(), and an async request would only be aborted.
+    if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run && connected_) cancel_all_async();
   }
 }
 
@@ -974,7 +976,7 @@ void BybitVenue::cancel_all_async() {
     std::weak_ptr<int> alive = alive_;
     static_cast<void>(rest_->request(
         "POST", rr.target(), headers, rr.body, [this, alive, id](const net::HttpResponse& r) {
-          if (alive.expired()) return;
+          if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
           int code = -1;

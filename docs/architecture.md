@@ -89,6 +89,9 @@ mapping drifts over a long session; stale-market-data checks and timers read it.
   converges on the measurements instead of accumulating error. If the old mapping disagrees with the
   fresh measurement by more than 1 ms, the clock steps to the measured anchor instead, counts the
   step (`EngineStats::clock_steps`) and the engine logs a warning.
+* The calibration follows `CLOCK_REALTIME`. If the host steps its wall clock (NTP corrections, or
+  WSL2 resynchronising with Windows, which can jump by hundreds of milliseconds), the next
+  recalibration steps the engine clock with it and counts it in `EngineStats::clock_steps`.
 * The venues read the latest calibration when they publish their status, to convert their
   cycle-based latency histograms to ns.
 

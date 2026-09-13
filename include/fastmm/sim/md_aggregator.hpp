@@ -15,10 +15,12 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
+#include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/sim/matching_engine.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -45,7 +47,7 @@ class MdAggregator {
                Timestamp start)
       : cfg_(cfg),
         me_(me),
-        count_(instruments == 0 ? 1 : instruments),
+        count_(std::clamp<std::size_t>(instruments, 1, kMaxInstruments)),
         st_(new InstState[count_]),
         buf_(new std::byte[BookDeltaMsg::size_for(kMaxAggLevels, kMaxAggLevels)]),
         next_flush_(start + cfg.interval) {}

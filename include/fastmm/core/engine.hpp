@@ -521,7 +521,7 @@ class Engine {
         break;
       case ControlCommand::TripKill:
         risk_.trip();
-        on_kill();
+        on_kill(/*requested=*/true);
         break;
       case ControlCommand::ResetKill:
         risk_.reset();
@@ -579,11 +579,18 @@ class Engine {
     }
   }
 
-  void on_kill() noexcept {
+  // `requested`: the control thread asked for it (shutdown, operator); otherwise a risk limit or
+  // an internal failure tripped it, which is an error.
+  void on_kill(bool requested = false) noexcept {
     ++stats_.kills;
     quoting_enabled_ = false;
-    FASTMM_LOG_ERROR("kill switch engaged (flags={:#x}); pulling quotes and cancelling all",
-                     risk_.kill_flags());
+    if (requested) {
+      FASTMM_LOG_WARN("kill switch requested (flags={:#x}); pulling quotes and cancelling all",
+                      risk_.kill_flags());
+    } else {
+      FASTMM_LOG_ERROR("kill switch engaged (flags={:#x}); pulling quotes and cancelling all",
+                       risk_.kill_flags());
+    }
     pull_all_quotes();
     mass_cancel();
   }
