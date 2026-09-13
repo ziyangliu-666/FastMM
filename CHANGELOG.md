@@ -17,6 +17,11 @@ All notable changes are recorded here (Keep a Changelog format).
   synthetic market generator, simulated transport and driver, journal replay with an outbound hash.
 - `fastmm::backtest`: journal, CSV, numpy-array and synthetic data sources, fees, PnL and metrics,
   parameter sweeps; `fastmm-backtest` and `fastmm-replay` apps; golden replay fixture.
+- Python research bindings (`pip install -e .`): `run_backtest` and `sweep` with the GIL released,
+  zero-copy numpy inputs and result columns, pandas conversion, an `OrderBook` research class,
+  strategy parameter schemas, `enable_logging` for the C++ logger, and quickstart / sweep examples.
+- Simulated venue rejects are broken down by cause (post-only cross, level table full, invalid,
+  duplicate, other).
 - Benchmarks for books, rings, OMS, risk, quote manager, logger, journal, WebSocket, HTTP, matching
   and tick-to-order, with p50 budgets checked by `tools/check_budgets.py`.
 - Documentation: architecture overview, ADR 0001-0011, configuration reference, strategy and venue
@@ -32,6 +37,11 @@ All notable changes are recorded here (Keep a Changelog format).
   kept one tick inside the touch.
 - Replay hashes included latency stamps and differed between the original run and the replay.
 - Recorded-data fills applied level increases before decreases within one update.
+- The example backtest capped inventory at one quote size, so one side stopped quoting whenever
+  the strategy held inventory (0.3% quote uptime); it now allows five and keeps both sides quoted.
+- Examples and sweep tables no longer headline an annualised Sharpe computed from minutes of
+  synthetic data; they show the per-bar Sharpe and split PnL into spread and maker rebates.
+- sim, backtest and bindings build cleanly under clang `-Werror` and clang-tidy.
 - CI: invalid workflow YAML, TSan on high-entropy ASLR kernels, clang `-Werror` failures, clang-tidy
   errors, redundant `pip install cmake`, oversized Docker build context, bootstrap treating CMake 4
   as too old.
