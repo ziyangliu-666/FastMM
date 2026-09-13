@@ -232,3 +232,18 @@ def test_sweep_errors(example_config):
         fastmm.sweep(example_config, {"half_spread_bps": [1]}, data="missing.csv")
     with pytest.raises(ValueError, match="outside"):
         fastmm.sweep(_short(example_config, 1), {"half_spread_bps": [-1]}, data="synthetic")
+
+
+def test_transport_reject_breakdown_sums_to_total():
+    from pathlib import Path
+
+    cfg = fastmm.BacktestConfig.from_toml(
+        Path(__file__).resolve().parents[2] / "configs" / "backtest-example.toml"
+    )
+    cfg.fill_model = "matching"
+    cfg.duration_s = 60
+    cfg.seed = 7
+    t = fastmm.run_backtest(cfg, data="synthetic").transport_stats()
+    parts = ("post_only", "level_full", "invalid", "duplicate", "other")
+    assert sum(t[f"rejects_{p}"] for p in parts) == t["rejects"]
+

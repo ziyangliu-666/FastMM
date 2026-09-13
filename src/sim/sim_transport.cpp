@@ -518,6 +518,25 @@ void SimTransport::emit_reject(ClientOrderId id,
                                RejectReason r,
                                Timestamp ts) noexcept {
   ++stats_.rejects;
+  switch (r) {
+    case RejectReason::PostOnlyWouldCross:
+      ++stats_.rejects_post_only;
+      break;
+    case RejectReason::VenueReject:
+      ++stats_.rejects_level_full;
+      break;
+    case RejectReason::InvalidTick:
+    case RejectReason::InvalidLot:
+    case RejectReason::InstrumentDisabled:
+      ++stats_.rejects_invalid;
+      break;
+    case RejectReason::DuplicateId:
+      ++stats_.rejects_duplicate;
+      break;
+    default:
+      ++stats_.rejects_other;
+      break;
+  }
   OrderRejectMsg m{};
   init_header(m, EventType::OrderReject, inst, cfg_.venue);
   m.cl_ord_id = id;

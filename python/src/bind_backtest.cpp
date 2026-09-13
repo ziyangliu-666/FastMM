@@ -162,6 +162,11 @@ py::dict transport_dict(const sim::SimTransportStats& s) {
   d["wire_full"] = s.wire_full;
   d["acks"] = s.acks;
   d["rejects"] = s.rejects;
+  d["rejects_post_only"] = s.rejects_post_only;
+  d["rejects_level_full"] = s.rejects_level_full;
+  d["rejects_invalid"] = s.rejects_invalid;
+  d["rejects_duplicate"] = s.rejects_duplicate;
+  d["rejects_other"] = s.rejects_other;
   d["fills"] = s.fills;
   d["cancel_acks"] = s.cancel_acks;
   d["cancel_rejects"] = s.cancel_rejects;

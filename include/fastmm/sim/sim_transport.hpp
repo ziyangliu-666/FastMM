@@ -69,6 +69,12 @@ struct SimTransportStats {
   std::uint64_t wire_full = 0;       // venue -> engine message dropped (should be 0)
   std::uint64_t acks = 0;
   std::uint64_t rejects = 0;
+  // Rejects broken down by cause; these five always sum to `rejects`.
+  std::uint64_t rejects_post_only = 0;   // PostOnlyWouldCross: crossed the live book on arrival
+  std::uint64_t rejects_level_full = 0;  // VenueReject: simulated price-level table full
+  std::uint64_t rejects_invalid = 0;     // InvalidTick / InvalidLot / InstrumentDisabled
+  std::uint64_t rejects_duplicate = 0;   // DuplicateId
+  std::uint64_t rejects_other = 0;
   std::uint64_t fills = 0;
   std::uint64_t cancel_acks = 0;
   std::uint64_t cancel_rejects = 0;
