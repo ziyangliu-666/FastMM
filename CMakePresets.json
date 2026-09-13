@@ -1,0 +1,364 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CPM_SOURCE_CACHE": "$env{CPM_SOURCE_CACHE}",
+        "FASTMM_USE_CCACHE": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug (gcc)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FASTMM_HOT_PATH_NOALLOC_CHECK": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release (gcc, portable, LTO)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "release-native",
+      "inherits": "release",
+      "displayName": "Release -march=native (benchmarks)",
+      "cacheVariables": {
+        "FASTMM_NATIVE_ARCH": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "ASan+UBSan (gcc)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FASTMM_ENABLE_ASAN": "ON",
+        "FASTMM_ENABLE_UBSAN": "ON",
+        "FASTMM_WERROR": "ON"
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "displayName": "TSan (gcc)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FASTMM_ENABLE_TSAN": "ON"
+      }
+    },
+    {
+      "name": "coverage",
+      "inherits": "base",
+      "displayName": "Coverage",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FASTMM_ENABLE_COVERAGE": "ON",
+        "FASTMM_BUILD_BENCH": "OFF"
+      }
+    },
+    {
+      "name": "clang-release",
+      "inherits": "release",
+      "displayName": "Release (clang)",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "clang-asan",
+      "inherits": "asan",
+      "displayName": "ASan+UBSan (clang)",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "clang-tsan",
+      "inherits": "tsan",
+      "displayName": "TSan (clang)",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "python",
+      "inherits": "base",
+      "displayName": "Python module only",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "FASTMM_BUILD_PYTHON": "ON",
+        "FASTMM_BUILD_TESTS": "OFF",
+        "FASTMM_BUILD_BENCH": "OFF",
+        "FASTMM_BUILD_APPS": "OFF",
+        "FASTMM_BUILD_EXAMPLES": "OFF",
+        "FASTMM_BUILD_NET": "OFF",
+        "FASTMM_INSTALL": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "release-native",
+      "configurePreset": "release-native"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "clang-release",
+      "configurePreset": "clang-release"
+    },
+    {
+      "name": "clang-asan",
+      "configurePreset": "clang-asan"
+    },
+    {
+      "name": "clang-tsan",
+      "configurePreset": "clang-tsan"
+    },
+    {
+      "name": "python",
+      "configurePreset": "python"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "base-test",
+      "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 8,
+        "timeout": 300
+      },
+      "filter": {
+        "exclude": {
+          "label": "live"
+        }
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base-test",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "inherits": "base-test",
+      "configurePreset": "release"
+    },
+    {
+      "name": "release-native",
+      "inherits": "base-test",
+      "configurePreset": "release-native"
+    },
+    {
+      "name": "asan",
+      "inherits": "base-test",
+      "configurePreset": "asan",
+      "filter": {
+        "exclude": {
+          "label": "live|noalloc"
+        }
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "base-test",
+      "configurePreset": "tsan",
+      "filter": {
+        "exclude": {
+          "label": "live|noalloc|bench-smoke"
+        }
+      }
+    },
+    {
+      "name": "coverage",
+      "inherits": "base-test",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "clang-release",
+      "inherits": "base-test",
+      "configurePreset": "clang-release"
+    },
+    {
+      "name": "clang-asan",
+      "inherits": "base-test",
+      "configurePreset": "clang-asan",
+      "filter": {
+        "exclude": {
+          "label": "live|noalloc"
+        }
+      }
+    },
+    {
+      "name": "clang-tsan",
+      "inherits": "base-test",
+      "configurePreset": "clang-tsan",
+      "filter": {
+        "exclude": {
+          "label": "live|noalloc|bench-smoke"
+        }
+      }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "debug",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "debug"
+        },
+        {
+          "type": "build",
+          "name": "debug"
+        },
+        {
+          "type": "test",
+          "name": "debug"
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "release"
+        },
+        {
+          "type": "build",
+          "name": "release"
+        },
+        {
+          "type": "test",
+          "name": "release"
+        }
+      ]
+    },
+    {
+      "name": "asan",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "asan"
+        },
+        {
+          "type": "build",
+          "name": "asan"
+        },
+        {
+          "type": "test",
+          "name": "asan"
+        }
+      ]
+    },
+    {
+      "name": "tsan",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "tsan"
+        },
+        {
+          "type": "build",
+          "name": "tsan"
+        },
+        {
+          "type": "test",
+          "name": "tsan"
+        }
+      ]
+    },
+    {
+      "name": "clang-release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "clang-release"
+        },
+        {
+          "type": "build",
+          "name": "clang-release"
+        },
+        {
+          "type": "test",
+          "name": "clang-release"
+        }
+      ]
+    },
+    {
+      "name": "clang-asan",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "clang-asan"
+        },
+        {
+          "type": "build",
+          "name": "clang-asan"
+        },
+        {
+          "type": "test",
+          "name": "clang-asan"
+        }
+      ]
+    },
+    {
+      "name": "clang-tsan",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "clang-tsan"
+        },
+        {
+          "type": "build",
+          "name": "clang-tsan"
+        },
+        {
+          "type": "test",
+          "name": "clang-tsan"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# fastmm_sim: matching engine, latency models, virtual clock/transport (no network deps).
+# The Binance-compatible sim *server* (sim/server/*) lives in fastmm_sim_server and needs fastmm::net.
+file(GLOB FASTMM_SIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+file(GLOB FASTMM_SIM_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/fastmm/sim/*.hpp)
+add_library(fastmm_sim STATIC ${FASTMM_SIM_SOURCES} ${FASTMM_SIM_HEADERS})
+add_library(fastmm::sim ALIAS fastmm_sim)
+set_target_properties(fastmm_sim PROPERTIES EXPORT_NAME sim)
+fastmm_target_defaults(fastmm_sim)
+target_link_libraries(fastmm_sim PUBLIC fastmm::core)
+
+if(FASTMM_BUILD_NET)
+  file(GLOB FASTMM_SIM_SERVER_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/server/*.cpp)
+  file(GLOB FASTMM_SIM_SERVER_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/fastmm/sim/server/*.hpp)
+  if(FASTMM_SIM_SERVER_SOURCES)
+    add_library(fastmm_sim_server STATIC ${FASTMM_SIM_SERVER_SOURCES} ${FASTMM_SIM_SERVER_HEADERS})
+    add_library(fastmm::sim_server ALIAS fastmm_sim_server)
+    set_target_properties(fastmm_sim_server PROPERTIES EXPORT_NAME sim_server)
+    fastmm_target_defaults(fastmm_sim_server)
+    target_link_libraries(fastmm_sim_server PUBLIC fastmm::sim fastmm::net PRIVATE simdjson::simdjson)
+  endif()
+endif()

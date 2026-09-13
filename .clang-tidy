@@ -1,0 +1,42 @@
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  cppcoreguidelines-*,
+  clang-analyzer-*,
+  misc-*,
+  concurrency-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-avoid-c-arrays,
+  -modernize-avoid-c-arrays,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -misc-non-private-member-variables-in-classes,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-do-while,
+  -misc-include-cleaner,
+  -readability-convert-member-functions-to-static
+WarningsAsErrors: 'bugprone-*,performance-*'
+HeaderFilterRegex: '^.*/(include|src|apps)/.*'
+CheckOptions:
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.PrivateMemberSuffix: _
+  readability-identifier-naming.ConstexprVariablePrefix: k
+  readability-identifier-naming.ConstexprVariableCase: CamelCase
+  readability-identifier-naming.EnumConstantPrefix: ''
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.MacroDefinitionCase: UPPER_CASE
+  readability-identifier-naming.MacroDefinitionPrefix: FASTMM_
+  readability-identifier-naming.TemplateParameterCase: CamelCase

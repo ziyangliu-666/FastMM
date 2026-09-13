@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-json
+      - id: detect-private-key
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: no-inline-secrets
+        name: no inline API secrets in configs
+        entry: bash -c 'if grep -rEn "api_(key|secret)\s*=\s*\"[A-Za-z0-9]{20,}\"" configs/ ; then echo "inline secret found"; exit 1; fi'
+        language: system
+        pass_filenames: false

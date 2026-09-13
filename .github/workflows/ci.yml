@@ -1,0 +1,77 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CPM_SOURCE_CACHE: ~/.cache/CPM
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: install tools
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18 clang-tidy-18 ninja-build libssl-dev zlib1g-dev && pip install cmake
+      - name: clang-format
+        run: CLANG_FORMAT=clang-format-18 ./scripts/format.sh --check
+      - name: forbidden patterns
+        run: |
+          ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)
+      - uses: actions/cache@v4
+        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+      - name: clang-tidy
+        run: cmake --preset debug -DFASTMM_BUILD_BENCH=OFF && RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
+
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: gcc-release,   preset: release,       cxx: g++-13,     pkgs: "g++-13" }
+          - { name: gcc-asan,      preset: asan,          cxx: g++-13,     pkgs: "g++-13" }
+          - { name: clang-release, preset: clang-release, cxx: clang++-18, pkgs: "clang-18 lld-18" }
+          - { name: clang-tsan,    preset: clang-tsan,    cxx: clang++-18, pkgs: "clang-18 lld-18" }
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev zlib1g-dev ccache && pip install cmake
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with: { key: ${{ matrix.name }} }
+      - uses: actions/cache@v4
+        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+      - name: configure
+        run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTMM_WERROR=ON
+      - name: build
+        run: cmake --build --preset ${{ matrix.preset }} -j4
+      - name: test
+        env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
+        run: ctest --preset ${{ matrix.preset }}
+      - name: install + consumer
+        if: matrix.name == 'gcc-release'
+        run: |
+          cmake --install build/release --prefix build/install
+          cmake -S tests/install-consumer -B build/consumer -G Ninja -DCMAKE_PREFIX_PATH=$PWD/build/install -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          cmake --build build/consumer && ./build/consumer/consumer
+
+  python:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build && pip install cmake build pytest numpy
+      - uses: actions/cache@v4
+        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+      - name: wheel
+        run: CXX=g++-13 pip wheel . -w dist --no-deps -v && pip install dist/*.whl
+      - name: pytest
+        run: pytest python/tests

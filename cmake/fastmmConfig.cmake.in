@@ -1,0 +1,11 @@
+@PACKAGE_INIT@
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+find_dependency(fmt)
+if(@FASTMM_BUILD_NET@)
+  find_dependency(OpenSSL 3.0)
+  find_dependency(ZLIB)
+  find_dependency(simdjson)
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/fastmmTargets.cmake")
+check_required_components(fastmm)

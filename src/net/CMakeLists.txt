@@ -1,0 +1,7 @@
+file(GLOB_RECURSE FASTMM_NET_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+file(GLOB_RECURSE FASTMM_NET_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/fastmm/net/*.hpp)
+add_library(fastmm_net STATIC ${FASTMM_NET_SOURCES} ${FASTMM_NET_HEADERS})
+add_library(fastmm::net ALIAS fastmm_net)
+set_target_properties(fastmm_net PROPERTIES EXPORT_NAME net)
+fastmm_target_defaults(fastmm_net)
+target_link_libraries(fastmm_net PUBLIC fastmm::core OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "fastmm"
+dynamic = ["version"]
+description = "Ultra-low-latency multi-asset market-making engine (research bindings)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+plot = ["matplotlib>=3.7"]
+dev = ["pytest>=7", "pandas>=2.0", "pybind11-stubgen"]
+
+[tool.scikit-build]
+cmake.version = ">=3.25"
+cmake.build-type = "Release"
+build-dir = "build/py-{wheel_tag}"
+wheel.packages = ["python/fastmm"]
+sdist.include = ["cmake/", "include/", "src/", "python/", "CMakeLists.txt", "CMakePresets.json"]
+editable.mode = "redirect"
+
+[tool.scikit-build.cmake.define]
+FASTMM_BUILD_PYTHON = "ON"
+FASTMM_BUILD_TESTS = "OFF"
+FASTMM_BUILD_BENCH = "OFF"
+FASTMM_BUILD_APPS = "OFF"
+FASTMM_BUILD_EXAMPLES = "OFF"
+FASTMM_BUILD_NET = "OFF"
+FASTMM_INSTALL = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = "project\\(fastmm\\s+VERSION\\s+(?P<value>[0-9.]+)"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

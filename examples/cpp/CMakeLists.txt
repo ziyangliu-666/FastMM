@@ -1,0 +1,7 @@
+file(GLOB _ex CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+foreach(src ${_ex})
+  get_filename_component(name ${src} NAME_WE)
+  add_executable(example_${name} ${src})
+  fastmm_target_defaults(example_${name})
+  target_link_libraries(example_${name} PRIVATE fastmm::backtest)
+endforeach()

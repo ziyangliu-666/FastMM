@@ -1,0 +1,30 @@
+# build
+build/
+.cpm-cache/
+compile_commands.json
+*.o
+*.a
+*.so
+# runtime artifacts
+runs/
+*.fmj
+!tests/fixtures/journals/*.fmj
+*.log
+# python
+.venv/
+__pycache__/
+*.pyc
+dist/
+*.egg-info/
+python/fastmm/_core*.so
+# bench results are committed only as baselines / latest
+bench/results/*
+!bench/results/baseline-*.json
+!bench/results/latest/
+# secrets
+.env
+# editors
+.vscode/
+.idea/
+.cache/
+.DS_Store

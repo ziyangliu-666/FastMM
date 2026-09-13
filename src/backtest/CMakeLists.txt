@@ -1,0 +1,7 @@
+file(GLOB_RECURSE FASTMM_BACKTEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+file(GLOB_RECURSE FASTMM_BACKTEST_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/fastmm/backtest/*.hpp)
+add_library(fastmm_backtest STATIC ${FASTMM_BACKTEST_SOURCES} ${FASTMM_BACKTEST_HEADERS})
+add_library(fastmm::backtest ALIAS fastmm_backtest)
+set_target_properties(fastmm_backtest PROPERTIES EXPORT_NAME backtest)
+fastmm_target_defaults(fastmm_backtest)
+target_link_libraries(fastmm_backtest PUBLIC fastmm::sim)
