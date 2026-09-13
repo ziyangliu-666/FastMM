@@ -144,7 +144,7 @@ and in-place replace follows `[engine] supports_replace`.
 | `path` | string | `""` | Data file. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
 | `seed` | int | `[sim] seed`, else `1` | Seed for the simulator and the strategy random generator |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data; must be positive |
-| `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties |
+| `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties. `l2_queue` checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`; treat its results as optimistic |
 | `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do |
 | `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue and acknowledgements back |
 | `latency_jitter_us` | int | `50` | Random jitter added to that latency, seeded |
@@ -181,7 +181,7 @@ first instrument's `tick` and `lot`.
 | `regimes` | bool | `true` | Switch between a calm and a volatile regime |
 | `volatile_mult` | number | `4.0` | Multiplier on mid steps and market orders in the volatile regime |
 | `depth_update_ms` | int | `100` | Book changes are aggregated into one depth diff per interval, like Binance `@depth@100ms` |
-| `book_ticker` | bool | `true` | Also publish top-of-book updates |
+| `book_ticker` | bool | `true` | Also publish top-of-book updates. They are emitted at the same flush as the depth diff, so they add no information the diff does not already carry |
 
 `configs/backtest-example.toml` is a complete, tuned example of both sections.
 

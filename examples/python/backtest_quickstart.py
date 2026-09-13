@@ -27,9 +27,22 @@ def main() -> None:
     print(result.summary_table())
 
     stats = result.stats()
+    venue = result.transport_stats()
+    # Fees are negative when the venue pays a maker rebate, so -fees is rebate income.
     print(
-        f"fills={stats['fills']}  net_pnl={stats['net_pnl']:.4f}  "
-        f"sharpe={stats['sharpe_annualized']:.2f}  uptime={stats['quote_uptime']:.1%}"
+        f"fills={stats['fills']}  net_pnl={stats['net_pnl']:.4f} "
+        f"(spread and inventory {stats['realized_pnl'] + stats['unrealized_pnl']:.4f}, "
+        f"maker rebates {-stats['fees']:.4f})"
+    )
+    # A per-bar Sharpe on 1 s bars is the honest number here; annualising minutes of synthetic
+    # data (stats['sharpe_annualized']) produces meaningless four-digit values.
+    print(f"sharpe per 1s bar={stats['sharpe_bar']:.3f}  quote uptime={stats['quote_uptime']:.1%}")
+    # Quotes are priced from the last aggregated depth update (every 100 ms, like Binance
+    # @depth@100ms). When the market moves before the order arrives, a post-only order would cross
+    # and the venue rejects it instead of letting it take liquidity.
+    print(
+        f"orders={venue['orders_sent']}  post-only rejects={venue['rejects_post_only']} "
+        f"({venue['rejects_post_only'] / max(1, venue['orders_sent']):.1%})"
     )
 
     try:
