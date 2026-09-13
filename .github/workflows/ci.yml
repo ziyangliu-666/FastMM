@@ -82,6 +82,24 @@ jobs:
           cmake -S tests/install-consumer -B build/consumer -G Ninja -DCMAKE_PREFIX_PATH=$PWD/build/install -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
           cmake --build build/consumer && ./build/consumer/consumer
 
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the image
+        run: docker compose build
+      - name: smoke test (simulated exchange + engine, 20 s)
+        run: |
+          docker compose up -d sim-exchange
+          docker compose run --rm engine --config /fastmm/configs/sim-docker.toml --duration 20s
+      - name: simulator log
+        if: always()
+        run: docker compose logs sim-exchange | tail -40
+      - name: stop
+        if: always()
+        run: docker compose down
+
   python:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

@@ -1,5 +1,6 @@
 services:
   sim-exchange:
+    image: fastmm:local  # both services share one image, built once
     build: { context: ., dockerfile: docker/Dockerfile }
     entrypoint: ["fastmm-sim-exchange"]
     command: ["--config", "/fastmm/configs/sim.toml", "--bind", "0.0.0.0",
@@ -10,6 +11,7 @@ services:
     ports: ["9080:9080", "9443:9443"]
     healthcheck: { test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9080"], interval: 2s, retries: 10 }
   engine:
+    image: fastmm:local
     build: { context: ., dockerfile: docker/Dockerfile }
     depends_on: { sim-exchange: { condition: service_healthy } }
     command: ["--config", "/fastmm/configs/sim-docker.toml", "--duration", "120s"]
