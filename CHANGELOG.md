@@ -54,6 +54,10 @@ All notable changes are recorded here (Keep a Changelog format).
   guides.
 
 ### Fixed
+- `Logger::instance()` wired its implementation with an unsynchronised null check, so threads
+  that logged for the first time at the same moment (parallel sweep workers warming up their
+  engines) raced on it and on the ring table. It now relies on thread-safe static
+  initialisation, which also destroys the logger before the state its destructor uses.
 - A quote slot could stop quoting for good after a connection loss. After a replace the quote
   manager still remembered the order's original id, so the terminal update of a later cancel was
   dropped and the slot waited for it forever. Slots now recognise their order by handle, instrument

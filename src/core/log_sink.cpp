@@ -19,6 +19,7 @@
 namespace fastmm {
 
 struct Logger::Impl {
+  Impl() { rings.reserve(kLogMaxThreads); }
   std::mutex mu;                                // protects ring registration only
   std::vector<std::unique_ptr<LogRing>> rings;  // index == registration order, never shrinks
   std::atomic<std::size_t> ring_count{0};
@@ -34,12 +35,15 @@ struct Logger::Impl {
 };
 
 Logger& Logger::instance() noexcept {
-  static Logger logger;  // never destroyed before the process ends (rings outlive threads)
-  if (logger.impl_ == nullptr) {
-    static Impl impl;
-    logger.impl_ = &impl;
-    impl.rings.reserve(kLogMaxThreads);
-  }
+  // The first calls can come from several threads at once (sweep workers warm up their engines
+  // concurrently). Function-local statics are initialised exactly once and concurrent callers
+  // wait for it, so impl_ is wired before anyone gets past `wired`. It used to be a plain
+  // null check, a data race. Construction order also fixes destruction order: the logger (whose
+  // destructor may stop the sink) is destroyed before the Impl it uses.
+  static Impl impl;
+  static Logger logger;
+  static const bool wired = (logger.impl_ = &impl, true);
+  static_cast<void>(wired);
   return logger;
 }
 
