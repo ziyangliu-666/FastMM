@@ -1,0 +1,14 @@
+# p50 latency budgets (ns) from the design (plan §5.12). check_budgets.py allows +25% slack.
+# Keys are Google Benchmark names (without the _median suffix). Filled/tuned once the benches exist.
+[p50_ns]
+"BM_L2Book_UpdateTop" = 30
+"BM_L2Book_ApplyDelta20" = 300
+"BM_L3Book_AddCancel" = 60
+"BM_Risk_CheckNew" = 100
+"BM_Oms_SubmitAckFill" = 120
+"BM_QuoteManager_Reconcile" = 200
+"BM_MsgRing_PingPong" = 150
+"BM_Log_Emit3Args" = 40
+"BM_Journal_Enqueue1KiB" = 80
+"BM_TickToOrder_Sim" = 2000
+"BM_Ws_DecodeFrame16K" = 200

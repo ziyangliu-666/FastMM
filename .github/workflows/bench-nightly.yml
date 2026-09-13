@@ -1,0 +1,19 @@
+name: bench-nightly
+on:
+  schedule: [{ cron: "0 3 * * *" }]
+  workflow_dispatch:
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev zlib1g-dev && pip install cmake
+      - uses: actions/cache@v4
+        with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
+      - name: bench (release, portable flags; hosted runners are noisy)
+        run: CPM_SOURCE_CACHE=~/.cache/CPM ./scripts/bench.sh --preset release --cpu 1 --min-time 0.2s
+      - name: compare to baseline (advisory)
+        run: python3 tools/bench_compare.py bench/results/baseline-ci bench/results/latest || true
+      - uses: actions/upload-artifact@v4
+        with: { name: bench-results, path: bench/results/latest }
