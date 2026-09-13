@@ -13,4 +13,25 @@ All notable changes are recorded here (Keep a Changelog format).
   Avellaneda-Stoikov strategies, TOML configuration with env-var secrets.
 - `fastmm::net`: epoll reactor, non-blocking TCP, OpenSSL TLS over BIO pairs, WebSocket client and
   server, HTTP/1.1 client and server, reconnecting connection state machine.
-- Documentation: architecture overview, ADR 0001-0011, configuration, venue and strategy guides.
+- `fastmm::sim`: price-time matching engine, seeded latency model, queue-position fill model,
+  synthetic market generator, simulated transport and driver, journal replay with an outbound hash.
+- `fastmm::backtest`: journal, CSV, numpy-array and synthetic data sources, fees, PnL and metrics,
+  parameter sweeps; `fastmm-backtest` and `fastmm-replay` apps; golden replay fixture.
+- Benchmarks for books, rings, OMS, risk, quote manager, logger, journal, WebSocket, HTTP, matching
+  and tick-to-order, with p50 budgets checked by `tools/check_budgets.py`.
+- Documentation: architecture overview, ADR 0001-0011, configuration reference, strategy and venue
+  guides.
+
+### Fixed
+- Stack buffer overflow when a `BookDeltaMsg` was built by value: its `hdr.len` is longer than the
+  struct. Messages are now always built in correctly sized buffers.
+- Division by zero in the L3 book benchmark on longer runs.
+- Logger ring slots were never released by exiting threads, so repeated sweeps eventually dropped
+  all log records.
+- BasicMM could skew a post-only quote through the market and have it rejected; quotes are now
+  kept one tick inside the touch.
+- Replay hashes included latency stamps and differed between the original run and the replay.
+- Recorded-data fills applied level increases before decreases within one update.
+- CI: invalid workflow YAML, TSan on high-entropy ASLR kernels, clang `-Werror` failures, clang-tidy
+  errors, redundant `pip install cmake`, oversized Docker build context, bootstrap treating CMake 4
+  as too old.
