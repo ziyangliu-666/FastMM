@@ -20,6 +20,14 @@ All notable changes are recorded here (Keep a Changelog format).
 - Python research bindings (`pip install -e .`): `run_backtest` and `sweep` with the GIL released,
   zero-copy numpy inputs and result columns, pandas conversion, an `OrderBook` research class,
   strategy parameter schemas, `enable_logging` for the C++ logger, and quickstart / sweep examples.
+- `fastmm::venues`: Binance Spot and Bybit v5 connectors (snapshot and delta book sync, WebSocket
+  order entry with REST fallback, HMAC and Ed25519 auth, reconciliation, rate limiting) with
+  fixtures recorded from both testnets and scripted in-process fake exchanges; `fastmm-live` with
+  dry-run, raw recording, journaling and a kill switch that cancels everything on shutdown.
+- Connector-specific venue keys (`stale_ms`, `order_api`, `depth`, ...) are validated and documented
+  instead of being reported as unknown.
+- The strategy registry keeps one factory per transport kind, so backtest and live registrations of
+  the same strategy coexist.
 - Simulated venue rejects are broken down by cause (post-only cross, level table full, invalid,
   duplicate, other).
 - Benchmarks for books, rings, OMS, risk, quote manager, logger, journal, WebSocket, HTTP, matching

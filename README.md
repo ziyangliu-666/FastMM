@@ -9,8 +9,9 @@ the abstractions are built for equities, futures, options and FX (FIX 4.4, ITCH/
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: v0.1 in progress.** Core, networking, simulation and backtesting are implemented and
-> tested; venue connectors and the Python package are landing now. Testnets are the default.
+> **Status: v0.1 in progress.** The core engine, networking stack, simulator, backtester, Binance
+> and Bybit testnet connectors and the Python research bindings are implemented and tested. The
+> Binance-compatible simulated exchange with end-to-end tests is landing now. Testnets are the default.
 > Nothing here is investment advice. Live trading is at your own risk.
 
 ## Latency
@@ -131,7 +132,9 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [x] Core engine, journal, risk, OMS, strategies
 - [x] Networking stack (TLS, WebSocket, HTTP)
 - [x] Matching engine, backtester, deterministic replay
-- [ ] Binance and Bybit testnet connectors, Binance-compatible sim exchange server
+- [x] Binance Spot and Bybit v5 testnet connectors, `fastmm-live`
+- [x] Python research bindings (backtests, sweeps, zero-copy numpy)
+- [ ] Binance-compatible simulated exchange with end-to-end tests
 - [ ] Python package on PyPI
 - [ ] FIX 4.4, Nasdaq ITCH 5.0 / OUCH, CME MDP 3.0 SBE codecs
 - [ ] Deribit options with greeks-aware quoting
