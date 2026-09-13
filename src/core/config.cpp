@@ -264,6 +264,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "max_events_per_step", e.max_events_per_step);
     get(*t, "crossed_grace_ms", e.crossed_grace_ms);
     get(*t, "latency_publish_ms", e.latency_publish_ms);
+    get(*t, "tsc_recalibrate_s", e.tsc_recalibrate_s);
+    if (e.tsc_recalibrate_s < 0)
+      fail_at(*t->get("tsc_recalibrate_s"), "tsc_recalibrate_s must be >= 0 (0 disables)");
     get(*t, "min_requote_ticks", e.min_requote_ticks);
     get(*t, "min_requote_interval_ms", e.min_requote_interval_ms);
     get(*t, "min_qty_bps", e.min_qty_bps);

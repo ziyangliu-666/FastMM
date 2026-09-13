@@ -56,6 +56,7 @@ struct EngineSection {
   std::uint32_t max_events_per_step = 64;
   int crossed_grace_ms = 100;
   int latency_publish_ms = 1000;
+  int tsc_recalibrate_s = 10;  // fastmm-live: TSC recalibration period, 0 = never
   int min_requote_ticks = 1;
   int min_requote_interval_ms = 50;
   int min_qty_bps = 8000;

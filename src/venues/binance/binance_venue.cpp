@@ -774,8 +774,11 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
     return;
   }
   if (cfg_.ws_order_api && order_conn_.is_live()) {
+    const Cycles before_encode = rdtscp();
     const std::size_t n = encoder_->encode_ws(cmd, shadow, venue_time_ms(), request_buf_);
+    const Cycles after_encode = rdtscp();
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
+      wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
       rate_.on_sent(1, now, is_order);
       switch (cmd.kind) {
         case OrderCommandKind::New:
@@ -808,17 +811,20 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow*
     return;
   }
   RestRequest rr;
+  const Cycles before_encode = rdtscp();
   if (!encoder_->encode_rest(cmd, shadow, venue_time_ms(), rr)) {
     emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::VenueReject, 0, "encode failed");
     return;
   }
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const std::string headers = api_headers();
+  const Cycles after_encode = rdtscp();
   OrderCommand copy = cmd;
   copy.venue_order_id = nullptr;
   copy.header = nullptr;
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      rr.method, target, api_headers(), {}, [this, alive, copy](const net::HttpResponse& r) {
+      rr.method, target, headers, {}, [this, alive, copy](const net::HttpResponse& r) {
         if (alive.expired()) return;
         handle_rest_order_response(copy, r);
       });
@@ -827,6 +833,7 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow*
     ++stats_.order_send_failures;
     return;
   }
+  wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
   rate_.on_sent(rr.weight, now_ns(), rr.is_order);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -1284,6 +1291,8 @@ void BinanceVenue::publish_status() noexcept {
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;
   stats_.rate_limit_cooldowns = rate_.cooldowns();
   stats_.clock_offset_ms = clock_offset_ms_;
+  wire_.summarize(
+      tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
 }
 

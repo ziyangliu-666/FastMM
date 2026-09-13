@@ -232,3 +232,10 @@ TEST_CASE("core.config: shipped venue configs load without warnings") {
     CHECK(cfg.warnings.empty());
   }
 }
+
+TEST_CASE("core.config: engine tsc_recalibrate_s defaults to 10, 0 disables, negative rejected") {
+  CHECK(Config::parse("[engine]\nname = \"x\"\n").engine.tsc_recalibrate_s == 10);
+  CHECK(Config::parse("[engine]\ntsc_recalibrate_s = 0\n").engine.tsc_recalibrate_s == 0);
+  CHECK(Config::parse("[engine]\ntsc_recalibrate_s = 3\n").warnings.empty());
+  CHECK_THROWS_AS(Config::parse("[engine]\ntsc_recalibrate_s = -1\n"), ConfigError);
+}

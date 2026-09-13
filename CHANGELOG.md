@@ -28,6 +28,15 @@ All notable changes are recorded here (Keep a Changelog format).
   instead of being reported as unknown.
 - The strategy registry keeps one factory per transport kind, so backtest and live registrations of
   the same strategy coexist.
+- Periodic TSC recalibration in `fastmm-live` (`[engine] tsc_recalibrate_s`, default 10 s): the
+  main thread measures and publishes calibrations through a seqlock, and the engine's clock
+  re-anchors without going backwards (it steps, counts and logs when it was more than 1 ms off).
+  `ControlCommand::RecalibrateTsc` applies a published calibration immediately.
+- Network-thread order latency for Binance and Bybit: encode, send and receive-to-wire
+  tick-to-trade per venue in `VenueStatus`, printed by `fastmm-live` in the stats line and the
+  final summary.
+- `fastmm-live` registers its strategies as `TransportKind::Live` factories in the strategy
+  registry; `--list-strategies` lists what supports live trading.
 - Simulated venue rejects are broken down by cause (post-only cross, level table full, invalid,
   duplicate, other).
 - Benchmarks for books, rings, OMS, risk, quote manager, logger, journal, WebSocket, HTTP, matching

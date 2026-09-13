@@ -6,10 +6,12 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/oms.hpp"
+#include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/net/reactor.hpp"
+#include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/symbology.hpp"
 #include "fastmm/venues/venue_factory.hpp"
@@ -24,6 +26,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -104,6 +107,57 @@ bool push_control(MsgRing& ring, ControlCommand cmd) {
   return ring.try_push(&m, m.hdr.len);
 }
 
+// Measures a fresh TSC calibration on the calling (main) thread, logs how far the previous one
+// had drifted, and publishes it; the engine's and the venues' clocks pick it up themselves.
+void recalibrate_tsc(Seqlocked<TscCalibration>& pub, TscCalibration& last) {
+  const TscCalibration fresh = calibrate_tsc();
+  if (!fresh.use_tsc) {
+    FASTMM_LOG_WARN("TSC recalibration failed (wall clock stepped?); keeping the previous one");
+    return;
+  }
+  // Wall time at the fresh anchor minus what the previous calibration predicted for the same
+  // TSC reading.
+  const std::int64_t drift_ns = fresh.ns0 - tsc_to_ns(last, fresh.tsc0);
+  const double elapsed_s = static_cast<double>(fresh.ns0 - last.ns0) / 1e9;
+  const double drift_ppm = elapsed_s > 0 ? static_cast<double>(drift_ns) / elapsed_s / 1e3 : 0.0;
+  const double rate_ppm =
+      (static_cast<double>(fresh.ns_per_cycle_q32) - static_cast<double>(last.ns_per_cycle_q32)) /
+      static_cast<double>(last.ns_per_cycle_q32) * 1e6;
+  FASTMM_LOG_INFO(
+      "tsc recalibrated: drift {} ns over {:.1f} s ({:.3f} ppm), rate change {:.3f} ppm, {:.6f} "
+      "GHz",
+      drift_ns,
+      elapsed_s,
+      drift_ppm,
+      rate_ppm,
+      fresh.ghz);
+  pub.store(fresh);
+  last = fresh;
+}
+
+void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, bool final) {
+  const std::string_view tag = final ? std::string_view("final ") : std::string_view();
+  if (st.wire_tick_to_trade.count != 0) {
+    FASTMM_LOG_INFO(
+        "[{}] {}order latency: wire_t2t p50={}ns p99={}ns n={} encode p50={}ns send p50={}ns n={}",
+        venue,
+        tag,
+        st.wire_tick_to_trade.p50_ns,
+        st.wire_tick_to_trade.p99_ns,
+        st.wire_tick_to_trade.count,
+        st.order_encode.p50_ns,
+        st.order_send.p50_ns,
+        st.order_send.count);
+  } else if (st.order_send.count != 0) {
+    FASTMM_LOG_INFO("[{}] {}order latency: encode p50={}ns send p50={}ns n={}",
+                    venue,
+                    tag,
+                    st.order_encode.p50_ns,
+                    st.order_send.p50_ns,
+                    st.order_send.count);
+  }
+}
+
 const char* short_state(venues::ChannelState s) {
   switch (s) {
     case venues::ChannelState::Down:
@@ -133,12 +187,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     std::fprintf(stderr, "fastmm-live: no [[instruments]] configured\n");
     return kExitConfig;
   }
-  const LiveRunnerBuilder* builder = find_live_runner(cfg.strategy.name);
-  if (builder == nullptr) {
+  const StrategyEntry* strategy = StrategyRegistry::instance().find(cfg.strategy.name);
+  if (strategy == nullptr || !strategy->supports(TransportKind::Live)) {
     std::fprintf(
         stderr, "fastmm-live: unknown strategy '%s' (available:", cfg.strategy.name.c_str());
-    for (const LiveRunnerBuilder& b : live_runner_builders())
-      std::fprintf(stderr, " %.*s", static_cast<int>(b.name.size()), b.name.data());
+    for (const StrategyEntry& e : list_strategies()) {
+      if (e.supports(TransportKind::Live))
+        std::fprintf(stderr, " %.*s", static_cast<int>(e.name.size()), e.name.data());
+    }
     std::fprintf(stderr, ")\n");
     return kExitConfig;
   }
@@ -171,6 +227,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // ---- rings, transport, feed -----------------------------------------------------------
   TscClock clock;
   clock.calibrate();
+  // Calibrations measured by the main thread; the engine refreshes `clock` from it on its own
+  // thread and the venues convert their latency histograms with it.
+  Seqlocked<TscCalibration> tsc_pub(clock.calibration());
+  clock.attach_calibration_source(&tsc_pub);
+  TscCalibration last_tsc = clock.calibration();  // main thread's copy of the latest publish
   LiveTransport transport;
   RingFeed feed;
   MsgRing control_ring(1U << 16);
@@ -192,6 +253,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     transport.set_venue(
         vid, s.outbound.get(), s.venue->caps().supports_replace && cfg.venues[i].supports_replace);
     s.venue->attach(symbols, instruments, s.md_sink, s.order_sink, s.outbound.get());
+    s.venue->set_tsc_calibration_source(&tsc_pub);
     std::vector<InstrumentId> mine;
     for (const Instrument& inst : instruments) {
       if (inst.venue == vid) mine.push_back(inst.id);
@@ -246,7 +308,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     info.tsc = clock.calibration();
     info.config_hash = cfg.hash;
     info.rng_seed = cfg.engine.rng_seed;
-    info.strategy = builder->name;
+    info.strategy = strategy->name;
     info.instruments = &instruments;
     journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info);
     if (!journal->ok()) {
@@ -257,11 +319,18 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_INFO("journal: {}", path);
   }
 
+  LiveBackend backend{&clock, &transport, &feed};
+  deps.backend = &backend;
   std::unique_ptr<IEngineRunner> runner;
   try {
-    runner = builder->make(deps, clock, transport, feed);
+    runner = StrategyRegistry::instance().make(strategy->name, TransportKind::Live, deps);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "fastmm-live: %s\n", e.what());
+    return kExitConfig;
+  }
+  if (runner == nullptr) {
+    std::fprintf(
+        stderr, "fastmm-live: cannot build a live runner for '%s'\n", cfg.strategy.name.c_str());
     return kExitConfig;
   }
 
@@ -277,7 +346,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   FASTMM_LOG_INFO(
       "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={}",
       deps.engine.session_id,
-      builder->name,
+      strategy->name,
       slots.size(),
       instruments.size(),
       opts.dry_run,
@@ -286,6 +355,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // ---- control loop -----------------------------------------------------------------------
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
+  const std::int64_t recalibrate_ns =
+      static_cast<std::int64_t>(cfg.engine.tsc_recalibrate_s) * 1'000'000'000;
+  std::int64_t next_recalibration = start + recalibrate_ns;
+  if (recalibrate_ns > 0 && !last_tsc.use_tsc)
+    FASTMM_LOG_INFO("no invariant TSC: the clock uses clock_gettime; TSC recalibration is off");
   int reason = 0;  // 1 duration, 2 signal
   while (reason == 0) {
     sleep_for(milliseconds(50));
@@ -297,6 +371,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         FASTMM_LOG_ERROR("order ring overflow on {}: tripping the kill switch", s->venue->name());
         reason = 3;
       }
+    }
+    if (recalibrate_ns > 0 && last_tsc.use_tsc && now >= next_recalibration) {
+      recalibrate_tsc(tsc_pub, last_tsc);
+      next_recalibration = steady_now().ns + recalibrate_ns;
     }
     if (now >= next_tick) {
       next_tick += 1'000'000'000;
@@ -324,6 +402,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
             st.rest_errors,
             st.reconnects,
             st.clock_offset_ms);
+        log_wire_latency(v->name(), st, false);
       }
     }
   }
@@ -368,7 +447,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         st.cancels_sent,
         st.order_events,
         st.reconnects);
+    log_wire_latency(s->venue->name(), st, true);
   }
+  // The engine thread has stopped, so its clock can be read here.
+  FASTMM_LOG_INFO("fastmm-live: tsc clock re-anchors={} steps={} last_offset_ns={}",
+                  clock.reanchors(),
+                  clock.steps(),
+                  clock.last_offset_ns());
   const std::int64_t shutdown_ms = (steady_now().ns - shutdown_start) / 1'000'000;
   FASTMM_LOG_INFO(
       "fastmm-live: shutdown took {} ms (cancel_all {})", shutdown_ms, cancel_ok ? "ok" : "FAILED");

@@ -31,11 +31,17 @@ class Seqlocked {
 
   // Reader side: single attempt. Returns false if a write was in flight.
   [[nodiscard]] bool try_load(T& out) const noexcept {
+    std::uint32_t version = 0;
+    return try_load(out, version);
+  }
+  // Same, and on success reports the version() of the snapshot that was copied.
+  [[nodiscard]] bool try_load(T& out, std::uint32_t& version) const noexcept {
     const std::uint32_t s1 = seq_.load(std::memory_order_acquire);
     if (s1 & 1U) return false;
     std::memcpy(&out, &data_, sizeof(T));
     std::atomic_thread_fence(std::memory_order_acquire);
     const std::uint32_t s2 = seq_.load(std::memory_order_relaxed);
+    version = s1 >> 1;
     return s1 == s2;
   }
 
@@ -48,6 +54,7 @@ class Seqlocked {
     return out;
   }
 
+  // Number of completed store() calls (a store in progress is not counted yet).
   [[nodiscard]] std::uint32_t version() const noexcept {
     return seq_.load(std::memory_order_acquire) >> 1;
   }

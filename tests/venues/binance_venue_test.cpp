@@ -6,6 +6,8 @@
 
 #include "fake_venue_util.hpp"
 
+#include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
 
 #include <atomic>
@@ -135,8 +137,10 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
   MsgRing outbound(1U << 16);
   net::Reactor reactor;
   SymbolTable symbols;
+  const Seqlocked<TscCalibration> tsc(calibrate_tsc(milliseconds(10)));
   {
     BinanceVenue venue(VenueId{0}, h.config(false));
+    venue.set_tsc_calibration_source(&tsc);
     REQUIRE(venue.load_reference_data(instruments));
     CHECK(instruments.get(InstrumentId{0}).tick == Price::from_decimal("0.01").value());
     REQUIRE(symbols.build(instruments));
@@ -198,16 +202,23 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
     CHECK(saw_resyncing);
     CHECK(venue.md_feed()->resync_count() >= 1);
 
-    // Order entry over the WS API; acks and fills from the response and the user stream.
+    // Order entry over the WS API; acks and fills from the response and the user stream. The
+    // order carries the last trade's receive stamp, as the engine does for an order its
+    // strategy placed in response to that trade; the cancel below carries none.
+    const Cycles trigger_t0 = mdc.last<TradeMsg>(EventType::Trade)->hdr.t0_cycles;
+    REQUIRE(trigger_t0.v != 0);
     OutNewOrderMsg n{};
     init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+    n.hdr.t0_cycles = trigger_t0;
     n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
     n.side = Side::Buy;
     n.type = OrderType::PostOnly;
     n.price = Price::from_decimal("70000").value();
     n.qty = Qty::from_decimal("0.001").value();
     REQUIRE(outbound.try_push(&n, n.hdr.len));
+    const Cycles before_wake = rdtscp();
     venue.on_wake();
+    const Cycles after_wake = rdtscp();
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
       return oc.count(EventType::OrderAck) >= 2 && oc.count(EventType::OrderFill) == 1;
@@ -244,6 +255,27 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
     const auto* cx = oc.last<OrderCancelAckMsg>(EventType::OrderCancelAck);
     CHECK(cx->cl_ord_id == n.cl_ord_id);
     CHECK(cx->cum_qty == Qty::from_decimal("0.0004").value());
+
+    // Network-thread latency, published with the status: both messages were encoded and sent,
+    // only the triggered order has a receive-to-wire sample, and it lies between the
+    // receive-to-on_wake and receive-to-after-on_wake intervals.
+    venue.on_timer(net::Reactor::now_ns());
+    const VenueStatus st = venue.status();
+    CHECK(st.order_encode.count == 2);
+    CHECK(st.order_send.count == 2);
+    CHECK(st.wire_tick_to_trade.count == 1);
+    const TscClock conv(tsc.load());
+    if (conv.calibration().use_tsc) {
+      CHECK(st.wire_tick_to_trade.p50_ns >=
+            static_cast<std::uint64_t>(conv.cycles_to_ns(before_wake - trigger_t0)));
+      CHECK(st.wire_tick_to_trade.p50_ns <=
+            static_cast<std::uint64_t>(conv.cycles_to_ns(after_wake - trigger_t0)));
+      CHECK(st.wire_tick_to_trade.p99_ns >= st.wire_tick_to_trade.p50_ns);
+      CHECK(st.order_encode.p50_ns > 0);
+      CHECK(st.order_send.p50_ns > 0);
+      CHECK(st.order_encode.p50_ns < 1'000'000'000);
+      CHECK(st.order_send.p50_ns < 1'000'000'000);
+    }
 
     venue.request_open_orders();
     REQUIRE(pump_until(reactor, [&] {

@@ -241,6 +241,7 @@ class BinanceVenue final : public Venue {
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 
+  WireLatencyRecorder wire_;  // reactor thread; summarized into stats_ by publish_status()
   VenueStatus stats_{};
   Seqlocked<VenueStatus> published_{};
 };

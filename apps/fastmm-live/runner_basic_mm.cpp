@@ -4,17 +4,15 @@
 
 namespace fastmm::live {
 
-std::unique_ptr<IEngineRunner> make_live_basic_mm(RunnerDeps& deps,
-                                                  TscClock& clock,
-                                                  LiveTransport& transport,
-                                                  RingFeed& feed) {
-  return make_engine_runner<BasicMM>(deps, clock, transport, feed);
+namespace {
+std::unique_ptr<IEngineRunner> make_basic_mm(TransportKind kind, RunnerDeps& deps) {
+  return make_live_runner<BasicMM>(kind, deps);
 }
-const ParamSchema& basic_mm_schema() {
-  return BasicMM::schema();
-}
-std::string_view basic_mm_name() noexcept {
-  return BasicMM::name();
+}  // namespace
+
+void register_live_basic_mm(StrategyRegistry& registry) {
+  static_cast<void>(
+      registry.add(BasicMM::name(), &BasicMM::schema(), TransportKind::Live, &make_basic_mm));
 }
 
 }  // namespace fastmm::live

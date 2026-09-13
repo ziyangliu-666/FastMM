@@ -37,6 +37,11 @@ struct OrderCommand {
   Qty qty{};
   const EventHeader* header = nullptr;
 
+  // Receive stamp of the inbound event that triggered the order (0 when none, e.g. timers).
+  [[nodiscard]] Cycles t0_cycles() const noexcept {
+    return header != nullptr ? header->t0_cycles : Cycles{};
+  }
+
   // nullopt for any non-outbound message type.
   [[nodiscard]] static std::optional<OrderCommand> from(const EventHeader& h) noexcept {
     OrderCommand c;

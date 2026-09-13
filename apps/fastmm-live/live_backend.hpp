@@ -7,11 +7,16 @@
 //   fm-engine    Engine<S, TscClock, LiveTransport, RingFeed>::run() (pinned / spin mode from
 //                [engine] cpu / spin_mode)
 //   fm-journal   JournalFileWriter drain thread (when journaling)
-//   main thread  control: posts Venue::on_timer every second, prints stats, handles
-//                SIGINT/SIGTERM and --duration: kill switch -> cancel_all on every venue over
-//                an independent REST connection -> stop, all within ~5 s
+//   log sink     Logger::start(): formats and writes log records from every thread's ring
+//   main thread  control: posts Venue::on_timer every second, prints stats, recalibrates the
+//                TSC every [engine] tsc_recalibrate_s and publishes it (the engine and the
+//                venues pick it up), handles SIGINT/SIGTERM and --duration: kill switch ->
+//                cancel_all on every venue over an independent REST connection -> stop, all
+//                within ~5 s
 //
 // The thread set is fixed for the whole session (the logger keeps a ring per thread).
+// Strategies come from the StrategyRegistry's TransportKind::Live factories
+// (register_live_strategies() in live_runners.hpp, called by main()).
 #include "fastmm/config/config.hpp"
 
 #include <cstdint>

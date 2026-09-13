@@ -7,31 +7,35 @@ replay.**
 
 ```
              ┌──────────────────────────── net thread (per venue) ────────────────────────────┐
- Venue WS ──►│ epoll ET ─ TLS (OpenSSL memory BIO) ─ WebSocket frames ─ simdjson ─ BookSyncer │──► MsgRing ──┐
- Venue REST◄─│ HTTP/1.1 keep-alive ◄──────────── OrderGateway encoder ◄───────────────────── MsgRing ◄──┐   │
-             └────────────────────────────────────────────────────────────────────────────────┘        │   │
-                                                                                                       │   ▼
-   ┌──────────────────────────────── engine thread (pinned, busy-spin) ─────────────────────────────┐  │
-   │  dispatch(switch on EventType) → L2/L3 book apply → Strategy hooks → QuoteManager diff         │  │
-   │  → RiskEngine.check_new (O(1)) → OMS state machine → Transport.send(batch) ─────────────────────┼──┘
+ Venue WS ──►│ epoll ─ TLS (OpenSSL memory BIO) ─ WebSocket frames ─ simdjson ─ book sync      │──► md / order MsgRing ──┐
+ Venue WS/REST◄ WebSocket write / HTTP/1.1 keep-alive ◄── order encoder + signer ◄──────────────│◄── outbound MsgRing ◄─┐ │
+             └────────────────────────────────────────────────────────────────────────────────┘                        │ │
+                                                                                                                        │ ▼
+   ┌──────────────────────────────── engine thread (pinned, busy-spin) ─────────────────────────────┐                  │
+   │  dispatch(switch on EventType) → L2/L3 book apply → Strategy hooks → QuoteManager diff         │                  │
+   │  → RiskEngine.check_new (O(1)) → OMS state machine → Transport.send(batch) ─────────────────────┼──────────────────┘
    │  TimerWheel · PositionTracker · LatencyTracker(T0..T5) · JournalWriter(seq) · Seqlocked snapshots│
    └───────────────────────────────────────────┬────────────────────────────────────────────────────┘
-                                               │ JournalRing / LogRing
-                                               ▼
-                       journal thread: .fmj mmap append (1 MiB blocks, CRC32C) · async fmt logger
-                       control thread: REST snapshots, reconciliation, listenKey keepalive, stats export
+                                               │ journal ring            per-thread log rings
+                                               ▼                                 ▼
+                       journal thread: .fmj append (CRC32C)      log sink thread: fmt formatting, FILE*
+                       main thread: control, stats, TSC recalibration, kill switch
 
    Backtest / replay: SimClock + SimTransport(MatchingEngine + LatencyModel) + InlineFeed/JournalFeed
 ```
 
 ## Threads
 
+The live application (`fastmm-live`, `apps/fastmm-live/live_backend.cpp`) runs a fixed set of
+threads for the whole session:
+
 | Thread | Owns | Waits by |
 |---|---|---|
-| `net-<venue>` | sockets, TLS, WS/HTTP parsers, JSON decode, book sync FSM, order encoder, rate limiter | `epoll_wait(0)` spin, adaptive back-off to 1 ms on WSL2 |
-| `engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing | busy-spin with `_mm_pause` |
-| `journal` | `.fmj` file, log formatting | spin then `nanosleep` |
-| `control` | REST (snapshots, open orders), listenKey, TSC recalibration, stats | blocking |
+| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait`, busy (`spin_mode = busy`) or with a 1 ms timeout (`adaptive`) |
+| `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing, its `TscClock` copy | busy-spin, adaptive back-off with `spin_mode = adaptive` |
+| `fm-journal` (when journaling) | `JournalFileWriter`: drains the journal ring into the `.fmj` file | spin, then short sleeps |
+| log sink (`Logger::start`) | formats log records from every thread's ring and writes them | spin, then short sleeps |
+| main thread | control: parses the config, loads reference data, starts and stops the other threads, posts `Venue::on_timer` and prints the stats line every second, recalibrates the TSC every `[engine] tsc_recalibrate_s`, handles SIGINT/SIGTERM and `--duration` (kill switch, `cancel_all` on every venue over an independent REST connection) | 50 ms sleeps |
 
 All queues are single-producer/single-consumer (`MsgRing`, byte-oriented, variable-length
 64-byte-aligned messages). N producers means N rings; the engine polls them round-robin with a
@@ -51,17 +55,71 @@ the canonical order and is what the journal records, so replay is exact.
 ## Determinism
 
 `Clock` and `Transport` are compile-time policies. Live uses `TscClock` (rdtsc calibrated against
-`CLOCK_REALTIME`) and `LiveTransport` (writes into the venue's outbound ring). Backtests use
-`SimClock` (virtual time driven by event timestamps) and `SimTransport` (in-process matching engine
-plus a seeded latency model). Timers and RNG are virtualised the same way. The `fastmm-replay`
-tool feeds a recorded journal through the engine and verifies that the outbound stream is
-byte-identical.
+`CLOCK_REALTIME`, see below) and `LiveTransport` (writes into the venue's outbound ring). Backtests
+use `SimClock` (virtual time driven by event timestamps) and `SimTransport` (in-process matching
+engine plus a seeded latency model). Timers and RNG are virtualised the same way. The
+`fastmm-replay` tool feeds a recorded journal through the engine and verifies that the outbound
+stream is byte-identical.
+
+Strategies are built through the `StrategyRegistry`, which keeps one factory per transport kind:
+the backtest library registers the Sim and Replay factories
+(`bt::register_builtin_strategies()`), and `fastmm-live` registers the Live ones
+(`register_live_strategies()`), both explicitly at startup.
+
+## Clock calibration
+
+`TscClock` maps a TSC reading to wall-clock ns with a 32.32 fixed-point rate and an anchor
+(`TscCalibration`). `calibrate_tsc()` measures both against `CLOCK_REALTIME` over a 50 ms spin.
+The rate is only as good as that measurement, and the wall clock is itself slewed by NTP, so the
+mapping drifts over a long session; stale-market-data checks and timers read it.
+
+* The main thread recalibrates every `[engine] tsc_recalibrate_s` seconds (default 10, 0 turns
+  it off), logs how far the previous calibration had drifted
+  (`tsc recalibrated: drift <ns> over <s> (<ppm>) ...`) and publishes the result in a
+  `Seqlocked<TscCalibration>`.
+* Nobody else's clock is written from the main thread. Every user owns a copy: the engine's
+  `TscClock` is attached to the seqlock (`attach_calibration_source`) and the engine calls
+  `TscClock::refresh()` once per loop iteration next to the timer poll (not per event).
+  `refresh()` is one atomic load when nothing was published; on a new version it copies the
+  calibration. `ControlCommand::RecalibrateTsc` makes the engine refresh immediately.
+* Re-anchoring keeps time continuous: at the refresh point the clock computes the old mapping's
+  time for the current TSC reading, anchors there, and continues at the new rate. Successive
+  `now()` calls therefore never go backwards. If the old mapping disagrees with the fresh
+  measurement by more than 1 ms, the clock steps to the measured anchor instead, counts the step
+  (`EngineStats::clock_steps`) and the engine logs a warning.
+* The venues read the latest calibration when they publish their status, to convert their
+  cycle-based latency histograms to ns.
 
 ## Latency instrumentation
 
-`rdtscp` stamps at T0 (recv returned), T1 (decoded), T2 (book applied), T3 (strategy decided),
-T4 (order serialised), T5 (send returned). Per-hop deltas go into allocation-free log-linear
-histograms (`LogLinearHistogram`, 40 x 16 buckets) published once per second via a seqlock.
+Stamps are `rdtscp` readings (`Cycles`); intervals go into allocation-free log-linear histograms
+(`LogLinearHistogram`, 40 x 16 buckets).
+
+| Stamp | Thread | Where |
+|---|---|---|
+| T0 | network | the frame was received (carried as `EventHeader::t0_cycles`) |
+| T1 | network | decoded into an engine message (`t1_delta`) |
+| T2 | engine | book (or position/OMS) updated |
+| T3 | engine | strategy hook returned |
+| T4, T5 | engine | around `transport.send()` of the outbound batch; live, that is the push into the venue's outbound ring |
+
+The engine's `LatencyTracker` (decode, book apply, strategy, serialize = T3 to T4, send = T4 to
+T5, tick-to-trade = T0 to T5, wire-to-book = T0 to T2) is published through a seqlock every
+`latency_publish_ms`. Live, the engine's tick-to-trade therefore ends when the order is handed to
+the network thread. The engine copies the triggering event's `t0_cycles` into every outbound
+message header, and the network thread measures the rest in `venues::WireLatencyRecorder`: for
+each outbound order message it stamps before encoding, after encoding and signing, and after the
+WebSocket write (or REST request call) returned, and records
+
+* encode: JSON encoding and signing,
+* send: the WebSocket/REST send call,
+* wire tick-to-trade: after-send minus `t0_cycles`, for orders triggered by an inbound event
+  (`t0_cycles != 0`; orders from timers are not counted).
+
+These histograms stay in cycles on the network thread and are converted to ns with the published
+calibration when the venue publishes its `VenueStatus` (once per stats interval). `fastmm-live`
+prints the wire tick-to-trade p50/p99 and the encode/send p50 per venue in its stats line and in
+the final summary.
 
 ## Failure handling
 

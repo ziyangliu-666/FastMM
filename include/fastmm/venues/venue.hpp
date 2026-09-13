@@ -13,10 +13,13 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/result.hpp"
+#include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/core/time.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/symbology.hpp"
+#include "fastmm/venues/wire_latency.hpp"
 
 #include <cstdint>
 #include <span>
@@ -70,6 +73,11 @@ struct VenueStatus {
   std::int64_t clock_offset_ms = 0;  // venue - local
   std::uint64_t reconnects = 0;
   std::int64_t last_md_rx_ns = 0;  // reactor clock
+  // Network-thread order latency (wire_latency.hpp), cumulative for the session. The ns
+  // percentiles need a calibration source (Venue::set_tsc_calibration_source); counts do not.
+  WireLatencyStats wire_tick_to_trade;  // inbound receive (t0_cycles) -> send call returned
+  WireLatencyStats order_encode;        // JSON encoding + signing
+  WireLatencyStats order_send;          // WebSocket write / REST request call
 };
 
 class Venue {
@@ -113,6 +121,22 @@ class Venue {
   virtual bool cancel_all() = 0;
 
   [[nodiscard]] virtual VenueStatus status() const noexcept = 0;
+
+  // Published TSC calibrations used to convert the network thread's cycle histograms to ns
+  // when the status is published. Set before connect(); the source must outlive the venue's
+  // reactor thread.
+  void set_tsc_calibration_source(const Seqlocked<TscCalibration>* src) noexcept {
+    tsc_source_ = src;
+  }
+
+ protected:
+  // Latest published calibration, or a calibration with use_tsc == false without a source.
+  [[nodiscard]] TscCalibration tsc_calibration() const noexcept {
+    return tsc_source_ != nullptr ? tsc_source_->load() : TscCalibration{};
+  }
+
+ private:
+  const Seqlocked<TscCalibration>* tsc_source_ = nullptr;
 };
 
 }  // namespace fastmm::venues
