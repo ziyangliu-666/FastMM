@@ -4,7 +4,7 @@ FastMM core bindings: backtests, parameter sweeps, order book research helpers
 from __future__ import annotations
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'ConfigError', 'OrderBook', 'build_info', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'ConfigError', 'OrderBook', 'build_info', 'disable_logging', 'enable_logging', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -426,6 +426,14 @@ class OrderBook:
 def build_info() -> str:
     """
     Compiler, flags and build type of the native module.
+    """
+def disable_logging() -> None:
+    """
+    Flush pending log records, stop the logger thread and close the log file.
+    """
+def enable_logging(level: str = 'warn', path: typing.Any = None) -> None:
+    """
+    Start writing C++ log records at `level` or above to `path` (appending) or to stderr. Calling it again restarts the logger with the new settings.
     """
 def inspect_journal(path: typing.Any) -> dict:
     """

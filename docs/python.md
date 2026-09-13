@@ -88,3 +88,12 @@ Regenerate the type stub after changing the bindings:
 ```bash
 .venv/bin/pybind11-stubgen fastmm._core -o /tmp/stubs && cp /tmp/stubs/fastmm/_core.pyi python/fastmm/
 ```
+
+
+## Logging
+
+The C++ engine logs through an asynchronous logger that has no output until it is started. From
+Python, call `fastmm.enable_logging(level="warn", path=None)` to write records at `level` or above to
+a file (appended) or to stderr; warnings and errors are always mirrored to stderr as well. Call
+`fastmm.disable_logging()` to flush and stop. The logger is stopped automatically at interpreter exit.
+\n
