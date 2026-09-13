@@ -29,7 +29,7 @@ SWEEP_STATS: Tuple[str, ...] = (
     "net_pnl",
     "realized_pnl",
     "fees",
-    "sharpe_annualized",
+    "sharpe_bar",  # per 1 s bar; annualising short synthetic runs gives meaningless values
     "max_drawdown",
     "fills",
     "fill_ratio",
