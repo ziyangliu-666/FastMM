@@ -21,11 +21,26 @@ else
 fi
 
 # --- cmake / ninja ---
-if ! command -v cmake >/dev/null || [[ "$(cmake --version | head -1 | awk '{print $3}' | cut -d. -f2)" -lt 25 ]]; then
-  say "cmake >= 3.25 not found; installing via pip (user site)"
-  python3 -m pip install --user "cmake>=3.25" || die "install cmake manually: sudo apt install cmake"
+CMAKE_MIN=3.25
+# version_ge A B: true when version A >= version B (full dotted comparison, so 4.0 > 3.25).
+version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" == "$2" ]]; }
+cmake_ok() { command -v cmake >/dev/null && version_ge "$(cmake --version | head -1 | awk '{print $3}')" "$CMAKE_MIN"; }
+# Inside a virtualenv pip installs into it; outside, use the user site. Distro Pythons that are
+# PEP 668 "externally managed" refuse both, so the error message points at apt or pipx instead.
+pip_install() {
+  if [[ -n "${VIRTUAL_ENV:-}" || -n "${CONDA_PREFIX:-}" ]]; then python3 -m pip install "$@"
+  else python3 -m pip install --user "$@"; fi
+}
+if ! cmake_ok; then
+  say "cmake >= $CMAKE_MIN not found; installing via pip"
+  pip_install "cmake>=$CMAKE_MIN" || die "install cmake >= $CMAKE_MIN: sudo apt install cmake, or pipx install cmake"
+  hash -r
+  cmake_ok || die "cmake is still older than $CMAKE_MIN on PATH ($(command -v cmake))"
 fi
-command -v ninja >/dev/null || { say "installing ninja via pip"; python3 -m pip install --user ninja || die "sudo apt install ninja-build"; }
+if ! command -v ninja >/dev/null; then
+  say "installing ninja via pip"
+  pip_install ninja || die "install ninja: sudo apt install ninja-build, or pipx install ninja"
+fi
 
 # --- system libs ---
 [[ -f /usr/include/openssl/ssl.h || -n "${OPENSSL_ROOT_DIR:-}" ]] || die "OpenSSL headers missing: sudo apt install libssl-dev"

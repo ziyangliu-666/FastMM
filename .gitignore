@@ -17,9 +17,10 @@ __pycache__/
 dist/
 *.egg-info/
 python/fastmm/_core*.so
-# bench results are committed only as baselines / latest
+# bench results are committed only as baselines / latest (both are directories of JSON files,
+# see scripts/bench.sh, tools/bench_compare.py and .github/workflows/bench-nightly.yml)
 bench/results/*
-!bench/results/baseline-*.json
+!bench/results/baseline-*/
 !bench/results/latest/
 # secrets
 .env
