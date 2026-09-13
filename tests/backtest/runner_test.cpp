@@ -177,11 +177,15 @@ initial_capital = 1000
                                      "kind = \"sim\"\n") +
                          extra);
   };
-  CHECK_THROWS_AS(BacktestConfig::from_config(with("[backtest]\nfill_model = \"magic\"\n")),
-                  ConfigError);
-  CHECK_THROWS_AS(BacktestConfig::from_config(with("[backtest]\nequity_bar_s = 0\n")), ConfigError);
-  CHECK_THROWS_AS(BacktestConfig::from_config(with("[backtest]\nqueue_conservatism = 2\n")),
-                  ConfigError);
+  CHECK_THROWS_AS(
+      static_cast<void>(BacktestConfig::from_config(with("[backtest]\nfill_model = \"magic\"\n"))),
+      ConfigError);
+  CHECK_THROWS_AS(
+      static_cast<void>(BacktestConfig::from_config(with("[backtest]\nequity_bar_s = 0\n"))),
+      ConfigError);
+  CHECK_THROWS_AS(
+      static_cast<void>(BacktestConfig::from_config(with("[backtest]\nqueue_conservatism = 2\n"))),
+      ConfigError);
 }
 
 TEST_CASE("backtest.sweep: cartesian grid runs in parallel and returns results in grid order") {

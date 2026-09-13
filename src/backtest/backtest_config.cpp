@@ -2,6 +2,8 @@
 
 #include "fastmm/backtest/fill_model.hpp"
 
+#include <cmath>
+
 namespace fastmm::bt {
 
 namespace {
@@ -49,7 +51,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.fill_model = *fm;
   const double c = bt.get_double("queue_conservatism", 1.0);
   if (!(c >= 0.0 && c <= 1.0)) throw ConfigError("backtest.queue_conservatism must be in [0, 1]");
-  t.queue_conservatism_bps = static_cast<std::int64_t>(c * 10'000.0 + 0.5);
+  t.queue_conservatism_bps = static_cast<std::int64_t>(std::llround(c * 10'000.0));
   const double p_drop = bt.get_double("p_drop", 0.0);
   if (!(p_drop >= 0.0 && p_drop < 1.0)) throw ConfigError("backtest.p_drop must be in [0, 1)");
   const Duration fixed = microseconds(non_negative(bt, "latency_fixed_us", 200));

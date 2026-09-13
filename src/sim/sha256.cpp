@@ -1,5 +1,6 @@
 #include "fastmm/sim/sha256.hpp"
 
+#include <cstddef>
 #include <cstring>
 
 namespace fastmm::sim {
@@ -35,7 +36,7 @@ void Sha256::reset() noexcept {
 
 void Sha256::transform(const std::uint8_t block[64]) noexcept {
   std::uint32_t w[64];
-  for (int i = 0; i < 16; ++i) {
+  for (std::size_t i = 0; i < 16; ++i) {
     w[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
            (static_cast<std::uint32_t>(block[i * 4 + 1]) << 16) |
            (static_cast<std::uint32_t>(block[i * 4 + 2]) << 8) |
@@ -100,7 +101,7 @@ void Sha256::digest(std::uint8_t out[32]) const noexcept {
   std::uint8_t len_be[8];
   for (int i = 0; i < 8; ++i) len_be[i] = static_cast<std::uint8_t>(bits >> (56 - 8 * i));
   c.update(len_be, 8);
-  for (int i = 0; i < 8; ++i) {
+  for (std::size_t i = 0; i < 8; ++i) {
     out[i * 4] = static_cast<std::uint8_t>(c.h_[i] >> 24);
     out[i * 4 + 1] = static_cast<std::uint8_t>(c.h_[i] >> 16);
     out[i * 4 + 2] = static_cast<std::uint8_t>(c.h_[i] >> 8);

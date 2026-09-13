@@ -10,6 +10,7 @@
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <string_view>
 
@@ -51,8 +52,8 @@ class BasicMM : public StrategyBase<BasicMMParams> {
   template <class Ctx>
   void on_start(Ctx& ctx) noexcept {
     // Config doubles -> fixed point exactly once, here.
-    half_spread_cbps_ = static_cast<std::int64_t>(params_.half_spread_bps * 100.0 + 0.5);
-    skew_cbps_ = static_cast<std::int64_t>(params_.skew_bps_per_unit * 100.0 + 0.5);
+    half_spread_cbps_ = static_cast<std::int64_t>(std::llround(params_.half_spread_bps * 100.0));
+    skew_cbps_ = static_cast<std::int64_t>(std::llround(params_.skew_bps_per_unit * 100.0));
     quote_qty_ = Qty::from_double(params_.quote_qty);
     max_inventory_ = Qty::from_double(params_.max_inventory);
     for (auto& m : last_mid_) m = Price{};
