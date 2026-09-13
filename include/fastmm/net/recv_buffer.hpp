@@ -25,7 +25,7 @@ class RecvBuffer {
  public:
   // Equals SIMDJSON_PADDING; simdjson must not be included here (net does not depend on it).
   static constexpr std::size_t kPadding = 64;
-  static constexpr std::size_t kCompactBelow = 64 * 1024;
+  static constexpr std::size_t kCompactBelow = std::size_t{64} * 1024;
   static constexpr std::size_t kAlignment = 64;
 
   explicit RecvBuffer(std::size_t capacity)

@@ -2,6 +2,8 @@
 
 #include "test_support.hpp"
 
+#include <cstddef>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -27,20 +29,31 @@ struct RecordingSink {
   }
 };
 
-BookDeltaMsg delta(std::uint64_t U, std::uint64_t u, std::uint64_t pu = 0, bool snapshot = false) {
-  BookDeltaMsg d{};
-  init_header(d,
+// BookDeltaMsg must never live by value: hdr.len (128 for zero levels) is longer than the 96-byte
+// struct, and the syncer copies hdr.len bytes. Each test message owns a correctly sized buffer.
+struct MsgBuf {
+  alignas(64) std::byte bytes[BookDeltaMsg::size_for(0, 0)]{};
+  // NOLINTNEXTLINE(google-explicit-constructor): lets tests pass delta(...) straight to the syncer
+  operator const BookDeltaMsg&() const noexcept {
+    return *reinterpret_cast<const BookDeltaMsg*>(bytes);
+  }
+};
+
+MsgBuf delta(std::uint64_t U, std::uint64_t u, std::uint64_t pu = 0, bool snapshot = false) {
+  MsgBuf b;
+  auto* d = new (b.bytes) BookDeltaMsg{};
+  init_header(*d,
               snapshot ? EventType::BookSnapshot : EventType::BookDelta,
               InstrumentId{0},
               VenueId{0},
               BookDeltaMsg::size_for(0, 0));
-  d.first_update_id = U;
-  d.last_update_id = u;
-  d.prev_update_id = pu;
-  if (snapshot) d.hdr.flags |= EventHeader::kSnapshot;
-  return d;
+  d->first_update_id = U;
+  d->last_update_id = u;
+  d->prev_update_id = pu;
+  if (snapshot) d->hdr.flags |= EventHeader::kSnapshot;
+  return b;
 }
-BookDeltaMsg snapshot(std::uint64_t L) {
+MsgBuf snapshot(std::uint64_t L) {
   return delta(0, L, 0, true);
 }
 }  // namespace

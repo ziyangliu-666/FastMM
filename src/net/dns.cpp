@@ -39,7 +39,7 @@ ResolveResult resolve_sync(std::string_view host, std::uint16_t port) {
 }
 
 AsyncResolver::AsyncResolver(Reactor& reactor)
-    : reactor_(reactor), thread_([this](std::stop_token st) { worker(st); }) {}
+    : reactor_(reactor), thread_([this](const std::stop_token& st) { worker(st); }) {}
 
 AsyncResolver::~AsyncResolver() {
   thread_.request_stop();
@@ -55,7 +55,7 @@ void AsyncResolver::resolve(std::string host, std::uint16_t port, Callback cb) {
   cv_.notify_one();
 }
 
-void AsyncResolver::worker(std::stop_token st) {
+void AsyncResolver::worker(const std::stop_token& st) {
   for (;;) {
     Request req;
     {

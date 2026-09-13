@@ -313,12 +313,12 @@ FASTMM_FORCE_INLINE void log_emit(const LogDescriptor& d, const Args&... args) n
   } while (0)
 
 #define FASTMM_LOG_TRACE(fmt_str, ...) \
-  FASTMM_LOG_IMPL(::fastmm::LogLevel::Trace, fmt_str, ##__VA_ARGS__)
+  FASTMM_LOG_IMPL(::fastmm::LogLevel::Trace, fmt_str __VA_OPT__(, ) __VA_ARGS__)
 #define FASTMM_LOG_DEBUG(fmt_str, ...) \
-  FASTMM_LOG_IMPL(::fastmm::LogLevel::Debug, fmt_str, ##__VA_ARGS__)
+  FASTMM_LOG_IMPL(::fastmm::LogLevel::Debug, fmt_str __VA_OPT__(, ) __VA_ARGS__)
 #define FASTMM_LOG_INFO(fmt_str, ...) \
-  FASTMM_LOG_IMPL(::fastmm::LogLevel::Info, fmt_str, ##__VA_ARGS__)
+  FASTMM_LOG_IMPL(::fastmm::LogLevel::Info, fmt_str __VA_OPT__(, ) __VA_ARGS__)
 #define FASTMM_LOG_WARN(fmt_str, ...) \
-  FASTMM_LOG_IMPL(::fastmm::LogLevel::Warn, fmt_str, ##__VA_ARGS__)
+  FASTMM_LOG_IMPL(::fastmm::LogLevel::Warn, fmt_str __VA_OPT__(, ) __VA_ARGS__)
 #define FASTMM_LOG_ERROR(fmt_str, ...) \
-  FASTMM_LOG_IMPL(::fastmm::LogLevel::Error, fmt_str, ##__VA_ARGS__)
+  FASTMM_LOG_IMPL(::fastmm::LogLevel::Error, fmt_str __VA_OPT__(, ) __VA_ARGS__)

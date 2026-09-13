@@ -4,6 +4,7 @@
 // "full jitter" scheme (recommended: spreads a thundering herd of reconnects after a venue
 // outage), jitter = 0 is deterministic (useful in tests).
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <random>
 
@@ -31,7 +32,7 @@ class ExponentialBackoff {
     const double random_span = static_cast<double>(cap) * cfg_.jitter;
     std::uniform_real_distribution<double> dist(0.0, 1.0);
     const double delay = fixed + random_span * dist(rng_);
-    return static_cast<std::uint32_t>(delay + 0.5);
+    return static_cast<std::uint32_t>(std::llround(delay));
   }
 
   void reset() noexcept { attempt_ = 0; }

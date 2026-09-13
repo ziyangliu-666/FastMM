@@ -324,8 +324,7 @@ class Engine {
 
   void dispatch(const EventHeader* h) noexcept {
     switch (h->type) {
-      case EventType::BookDelta:
-      [[likely]]
+      [[likely]] case EventType::BookDelta:
       case EventType::BookSnapshot:
         on_book_delta(msg_cast<BookDeltaMsg>(h));
         break;

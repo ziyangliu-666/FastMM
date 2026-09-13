@@ -40,6 +40,8 @@ class OpenHashMap {
   static constexpr std::size_t kCapacity = N;
   static constexpr std::size_t kMaxSize = N - N / 8;  // 87.5 % load cap
 
+  // Construction happens at startup only; failing to allocate the table is fatal by design.
+  // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new)
   OpenHashMap() noexcept : slots_(new Slot[N]), used_(new std::uint8_t[N]()) {}
   OpenHashMap(const OpenHashMap&) = delete;
   OpenHashMap& operator=(const OpenHashMap&) = delete;

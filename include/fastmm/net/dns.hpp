@@ -44,7 +44,7 @@ class AsyncResolver {
     std::uint16_t port;
     Callback cb;
   };
-  void worker(std::stop_token st);
+  void worker(const std::stop_token& st);
 
   Reactor& reactor_;
   std::mutex mutex_;

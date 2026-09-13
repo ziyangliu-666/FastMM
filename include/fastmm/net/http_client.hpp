@@ -38,8 +38,8 @@ struct HttpResponse {
 using HttpResponseCallback = std::function<void(const HttpResponse&)>;
 
 struct HttpClientConfig {
-  std::size_t recv_capacity = 1024 * 1024;
-  std::size_t send_capacity = 256 * 1024;
+  std::size_t recv_capacity = std::size_t{1024} * 1024;
+  std::size_t send_capacity = std::size_t{256} * 1024;
   std::uint32_t timeout_ms = 5000;  // per request, from the moment it is written
   std::size_t max_queue = 8;        // in-flight + waiting
 };

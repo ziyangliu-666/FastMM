@@ -199,6 +199,11 @@ TEST_CASE("connection: max_lifetime rollover is make-before-break") {
   Events ev;
   ConnectionConfig cfg = fast_config("ws://127.0.0.1:" + std::to_string(server.port()) + "/");
   cfg.max_lifetime_ms = 60;
+  // This test is about rollover, not health checks. The server never sends traffic, so with the
+  // 80 ms stale / 200 ms dead defaults a slow run (sanitizers) legitimately goes Stale -> Live or
+  // declares the old session dead, which would add Live transitions unrelated to rollover.
+  cfg.stale_ms = 10'000;
+  cfg.dead_ms = 20'000;
   Connection<PlainStream, Events> conn(reactor, cfg, ev);
   ev.subscribe = [&] { conn.send_text("SUBSCRIBE"); };
   conn.connect();
@@ -210,6 +215,8 @@ TEST_CASE("connection: max_lifetime rollover is make-before-break") {
   CHECK(conn.stats().rollovers >= 2);
   CHECK(conn.stats().reconnects == 0);
   CHECK(ev.count(ConnState::Backoff) == 0);
+  CHECK(conn.stats().stale_events == 0);
+  CHECK(conn.stats().dead_events == 0);
   CHECK(ev.count(ConnState::Live) == 1);  // rollover never leaves Live
   CHECK(ev.subscriptions_sent >= 3);      // each new session re-subscribes
   // Every SUBSCRIBE went to a distinct session (the newest one).

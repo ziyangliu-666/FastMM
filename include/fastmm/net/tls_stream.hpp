@@ -64,7 +64,7 @@ enum class TlsOp : std::uint8_t { Ok, WantRead, WantWrite, Closed, Error };
 // Non-template OpenSSL state machine (SSL + BIO pair); lives in tls_stream.cpp.
 class TlsEngine {
  public:
-  static constexpr std::size_t kBioBufferSize = 64 * 1024;
+  static constexpr std::size_t kBioBufferSize = std::size_t{64} * 1024;
 
   // Client mode: SNI + hostname verification for `host` (IP literals verified as IPs).
   TlsEngine(TlsContext& ctx, std::string_view host);  // throws std::runtime_error

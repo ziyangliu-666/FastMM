@@ -52,6 +52,9 @@ jobs:
         with:
           path: ~/.cache/CPM
           key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      - name: allow TSan on high-entropy ASLR kernels
+        if: contains(matrix.preset, 'tsan')
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: configure
         run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTMM_WERROR=ON
       - name: build

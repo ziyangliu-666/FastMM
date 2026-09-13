@@ -15,6 +15,7 @@
 
 namespace fastmm::net {
 
+// NOLINTNEXTLINE(performance-enum-size): same width as the epoll event mask it is converted to
 enum class IoEvent : std::uint32_t { None = 0, Read = 1, Write = 2, ReadWrite = 3 };
 
 constexpr IoEvent operator|(IoEvent a, IoEvent b) noexcept {

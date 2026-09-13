@@ -123,9 +123,7 @@ void validate_table(const toml::table& t,
 template <class T>
 void get(const toml::table& t, std::string_view key, T& out) {
   if (const auto* n = t.get(key)) {
-    if constexpr (std::is_same_v<T, std::string>) {
-      out = n->value_or(out);
-    } else if constexpr (std::is_same_v<T, bool>) {
+    if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, bool>) {
       out = n->value_or(out);
     } else if constexpr (std::is_integral_v<T>) {
       const auto v = n->value<std::int64_t>();

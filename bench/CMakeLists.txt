@@ -1,5 +1,6 @@
-# Each bench_*.cpp becomes its own executable, registered as a "bench-smoke" ctest entry that runs
-# with a tiny min_time so CI verifies every benchmark builds and runs.
+# Each bench_*.cpp becomes its own executable, registered as a "bench-smoke" ctest entry so CI
+# verifies every benchmark builds and runs. The smoke run is short but not minimal: 0.05 s x 2
+# repetitions. A 0.01 s single run once hid a benchmark that only crashed on longer runs.
 #
 # Benchmarks link only the library they measure. A core benchmark must not depend on sim, backtest
 # or networking, so a change there cannot break (or slow the link of) the core numbers.
@@ -34,7 +35,7 @@ foreach(src ${_benches})
   target_link_libraries(${name} PRIVATE fastmm_bench_main ${_lib})
   set_target_properties(${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
   if(FASTMM_BUILD_TESTS)
-    add_test(NAME bench.${name}.smoke COMMAND ${name} --benchmark_min_time=0.01s --benchmark_repetitions=1)
+    add_test(NAME bench.${name}.smoke COMMAND ${name} --benchmark_min_time=0.05s --benchmark_repetitions=2)
     set_tests_properties(bench.${name}.smoke PROPERTIES LABELS "bench-smoke")
   endif()
 endforeach()

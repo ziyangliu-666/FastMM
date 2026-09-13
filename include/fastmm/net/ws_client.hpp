@@ -53,9 +53,10 @@ concept WsClientHandler = requires(H& h,
 };
 
 struct WsClientConfig {
-  std::size_t recv_capacity = 4 * 1024 * 1024;  // RecvBuffer; bounds the largest message
-  std::size_t send_capacity = 1024 * 1024;      // WireBuffer for outgoing frames
-  std::size_t max_message_bytes = 0;            // 0 = recv_capacity - kWsMaxHeaderSize
+  std::size_t recv_capacity =
+      std::size_t{4} * 1024 * 1024;                      // RecvBuffer; bounds the largest message
+  std::size_t send_capacity = std::size_t{1024} * 1024;  // WireBuffer for outgoing frames
+  std::size_t max_message_bytes = 0;                     // 0 = recv_capacity - kWsMaxHeaderSize
 };
 
 struct WsStats {

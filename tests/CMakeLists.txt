@@ -1,4 +1,5 @@
 # One test executable per library; doctest subcases inside. Labels drive ctest presets.
+
 add_library(fastmm_test_support STATIC support/doctest_main.cpp)
 target_link_libraries(fastmm_test_support PUBLIC doctest::doctest fastmm::core)
 target_include_directories(fastmm_test_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/support)

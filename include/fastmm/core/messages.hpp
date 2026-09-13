@@ -78,6 +78,12 @@ constexpr void init_header(M& m,
 
 // Bids then asks follow the fixed part as a flexible array of Level (bid_count + ask_count).
 // Used both for deltas (qty == 0 means delete) and full snapshots (flag kSnapshot).
+//
+// Never construct a BookDeltaMsg by value, not even with zero levels. The fixed part is 96
+// bytes but hdr.len is rounded to the 64-byte message granule, so size_for(0, 0) == 128.
+// Everything that forwards a message copies hdr.len bytes (MsgRing, journal, BookSyncer), so a
+// stack or member BookDeltaMsg is read 32 bytes past its end. Build it in place instead:
+//   alignas(64) std::byte buf[BookDeltaMsg::size_for(bids, asks)];   or   ring.try_reserve(len)
 struct BookDeltaMsg {
   EventHeader hdr;
   std::uint32_t bid_count;

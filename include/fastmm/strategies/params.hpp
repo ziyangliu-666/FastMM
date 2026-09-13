@@ -141,14 +141,27 @@ inline std::optional<std::string> apply_params(const ParamSchema& schema,
                                                const ParamMap& m) {
   for (const auto& [key, value] : m) {
     const ParamDesc* d = schema.find(key);
-    if (d == nullptr) return "unknown parameter '" + key + "'";
+    std::string err;  // built with append: startup path, but no needless temporaries
+    if (d == nullptr) return err.append("unknown parameter '").append(key).append("'");
     const auto v = parse_param_value(d->type, value);
-    if (!v)
-      return "parameter '" + key + "': cannot parse '" + value + "' as " +
-             std::string(to_string(d->type));
+    if (!v) {
+      return err.append("parameter '")
+          .append(key)
+          .append("': cannot parse '")
+          .append(value)
+          .append("' as ")
+          .append(to_string(d->type));
+    }
     if (*v < d->min || *v > d->max) {
-      return "parameter '" + key + "': value " + value + " outside [" + std::to_string(d->min) +
-             ", " + std::to_string(d->max) + "]";
+      return err.append("parameter '")
+          .append(key)
+          .append("': value ")
+          .append(value)
+          .append(" outside [")
+          .append(std::to_string(d->min))
+          .append(", ")
+          .append(std::to_string(d->max))
+          .append("]");
     }
     d->set(obj, *v);
   }
