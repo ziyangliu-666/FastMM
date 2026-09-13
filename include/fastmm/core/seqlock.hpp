@@ -9,6 +9,17 @@
 #include <cstring>
 #include <type_traits>
 
+// Under ThreadSanitizer the copies are serialised by a spinlock. The optimistic copy is racy by
+// design (a torn copy is detected through the sequence and discarded), which TSan cannot know, so
+// it would report every concurrent store()/load(). Other builds are lock-free as documented.
+#if defined(__SANITIZE_THREAD__)
+#define FASTMM_SEQLOCK_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define FASTMM_SEQLOCK_TSAN 1
+#endif
+#endif
+
 namespace fastmm {
 
 template <class T>
@@ -21,6 +32,9 @@ class Seqlocked {
 
   // Writer side (one thread only).
   void store(const T& v) noexcept {
+#ifdef FASTMM_SEQLOCK_TSAN
+    const CopyGuard guard(copy_lock_);
+#endif
     const std::uint32_t s = seq_.load(std::memory_order_relaxed);
     seq_.store(s + 1, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_release);
@@ -38,6 +52,9 @@ class Seqlocked {
   [[nodiscard]] bool try_load(T& out, std::uint32_t& version) const noexcept {
     const std::uint32_t s1 = seq_.load(std::memory_order_acquire);
     if (s1 & 1U) return false;
+#ifdef FASTMM_SEQLOCK_TSAN
+    const CopyGuard guard(copy_lock_);
+#endif
     std::memcpy(&out, &data_, sizeof(T));
     std::atomic_thread_fence(std::memory_order_acquire);
     const std::uint32_t s2 = seq_.load(std::memory_order_relaxed);
@@ -60,6 +77,21 @@ class Seqlocked {
   }
 
  private:
+#ifdef FASTMM_SEQLOCK_TSAN
+  class CopyGuard {
+   public:
+    explicit CopyGuard(std::atomic_flag& flag) noexcept : flag_(flag) {
+      while (flag_.test_and_set(std::memory_order_acquire)) __builtin_ia32_pause();
+    }
+    ~CopyGuard() { flag_.clear(std::memory_order_release); }
+    CopyGuard(const CopyGuard&) = delete;
+    CopyGuard& operator=(const CopyGuard&) = delete;
+
+   private:
+    std::atomic_flag& flag_;
+  };
+  mutable std::atomic_flag copy_lock_ = ATOMIC_FLAG_INIT;
+#endif
   alignas(kCacheLine) std::atomic<std::uint32_t> seq_;
   T data_;
 };
