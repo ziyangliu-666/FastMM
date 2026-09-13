@@ -68,7 +68,8 @@ jobs:
       - name: configure
         run: cmake --preset ${{ matrix.preset }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DFASTMM_WERROR=ON
       - name: build
-        run: cmake --build --preset ${{ matrix.preset }} -j4
+        # -k 0: report every compile error in one run instead of stopping at the first one
+        run: cmake --build --preset ${{ matrix.preset }} -j4 -- -k 0
       - name: test
         env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
         run: ctest --preset ${{ matrix.preset }}

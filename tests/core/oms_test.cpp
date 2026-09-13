@@ -2,7 +2,9 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 using namespace fastmm;

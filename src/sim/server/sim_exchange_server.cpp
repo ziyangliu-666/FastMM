@@ -4,6 +4,7 @@
 
 #include "fastmm/core/log.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>

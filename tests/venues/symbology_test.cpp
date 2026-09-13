@@ -2,6 +2,8 @@
 
 #include "test_support.hpp"
 
+#include <cstdio>
+
 using namespace fastmm;
 using namespace fastmm::venues;
 

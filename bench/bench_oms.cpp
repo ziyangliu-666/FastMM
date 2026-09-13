@@ -2,6 +2,8 @@
 
 #include <benchmark/benchmark.h>
 
+#include <cstdio>
+
 using namespace fastmm;
 
 // submit -> ack -> fill (full lifecycle, three messages).

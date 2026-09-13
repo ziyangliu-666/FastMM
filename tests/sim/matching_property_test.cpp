@@ -6,6 +6,7 @@
 #include "fastmm/core/rng.hpp"
 #include "fastmm/sim/matching_engine.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <deque>
 #include <map>

@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <filesystem>
 #include <vector>
 

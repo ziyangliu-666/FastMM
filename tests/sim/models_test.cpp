@@ -8,6 +8,7 @@
 #include "fastmm/sim/queue_model.hpp"
 #include "fastmm/sim/sha256.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
