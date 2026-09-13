@@ -12,7 +12,7 @@ struct AllocStats {
   std::uint64_t bytes = 0;
 };
 
-AllocStats alloc_stats() noexcept;         // for the calling thread
+AllocStats alloc_stats() noexcept;           // for the calling thread
 void set_alloc_trap(bool enabled) noexcept;  // abort() on the next allocation in this thread
 
 class NoAllocScope {

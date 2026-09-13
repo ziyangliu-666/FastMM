@@ -1,12 +1,14 @@
-#include <memory>
-#include <vector>
-
 #include "alloc_counter.hpp"
 #include "test_support.hpp"
 
+#include <memory>
+#include <vector>
+
 namespace {
 // Prevent the optimizer from eliding an unused heap allocation (clang does this at -O3).
-inline void escape(void* p) { asm volatile("" : : "g"(p) : "memory"); }
+inline void escape(void* p) {
+  asm volatile("" : : "g"(p) : "memory");
+}
 }  // namespace
 
 TEST_CASE("hotpath.smoke: alloc counter sees heap allocations") {

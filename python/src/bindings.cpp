@@ -1,7 +1,7 @@
 // Placeholder pybind11 module; real bindings land in phase E.
-#include <pybind11/pybind11.h>
-
 #include "fastmm/version.hpp"
+
+#include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 

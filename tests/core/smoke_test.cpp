@@ -1,4 +1,5 @@
 #include "test_support.hpp"
+
 #include "fastmm/version.hpp"
 
 TEST_CASE("core.smoke: version string is populated") {

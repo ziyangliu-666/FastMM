@@ -21,6 +21,7 @@ jobs:
       - name: forbidden patterns
         run: |
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)
+          ! grep -rnE 'TEST_CASE\("[^"]*;' tests || (echo "';' in a TEST_CASE name breaks doctest_discover_tests filters" && exit 1)
       - uses: actions/cache@v4
         with: { path: ~/.cache/CPM, key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }} }
       - name: clang-tidy

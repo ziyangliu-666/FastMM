@@ -1,0 +1,564 @@
+#pragma once
+// Order management (5.8): a Pool<Order> + OpenHashMap<ClientOrderId, Handle> + a ring of
+// recently terminal ids used to classify late venue messages.
+//
+// State machine (terminal states free the slot and go to the recently-terminal ring):
+//   submit           -> PendingNew
+//   ack              PendingNew -> Live; PendingReplace -> Live/PartiallyFilled (replace ok)
+//   reject           PendingNew -> Rejected; PendingReplace -> back to previous working state
+//   cancel request   Live/PartiallyFilled -> PendingCancel
+//   cancel ack       any open -> Canceled (unsolicited if we did not ask)
+//   cancel reject    PendingCancel -> back; >3 rejects -> ReconcileNeeded; VenueUnknownOrder ->
+//   Canceled fill             cum >= qty -> Filled, else PartiallyFilled (pending states keep
+//   pending) expired          any open -> Expired
+// Races: fill after cancel ack -> LateFill (position still updated); cancel-reject after
+// fill -> ignored; ack for unknown id -> CancelUnknown (never leave an unknown live order);
+// duplicate exec_id -> Duplicate; duplicate ack -> Ignored.
+#include "fastmm/core/book/book_view.hpp"
+#include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/open_hash_map.hpp"
+#include "fastmm/core/containers/pool.hpp"
+#include "fastmm/core/containers/ring_buffer.hpp"
+#include "fastmm/core/enums.hpp"
+#include "fastmm/core/instrument.hpp"
+#include "fastmm/core/messages.hpp"
+#include "fastmm/core/order.hpp"
+#include "fastmm/core/result.hpp"
+
+#include <cstdint>
+#include <cstdio>
+#include <string>
+
+namespace fastmm {
+
+inline constexpr std::size_t kMaxOpenOrders = 4096;
+inline constexpr std::size_t kRecentlyTerminal = 4096;
+
+enum class OmsAction : std::uint8_t {
+  None = 0,
+  Ignored,          // message did not apply (duplicate ack, late cancel-reject, ...)
+  Duplicate,        // duplicate exec_id
+  CancelUnknown,    // ack/fill for an id we do not know: engine must cancel it
+  LateFill,         // fill for a recently terminal order: update position only
+  UnknownFill,      // fill for a completely unknown id: update position, alert
+  ReconcileNeeded,  // too many cancel rejects
+};
+
+struct OmsUpdate {
+  Order order{};           // snapshot after the transition (valid if known)
+  Handle<Order> handle{};  // invalid once terminal (slot freed) or unknown
+  OrderState prev = OrderState::PendingNew;
+  OmsAction action = OmsAction::None;
+  bool known = false;     // the id mapped to an order (open or recently terminal)
+  bool changed = false;   // state or quantities changed
+  bool terminal = false;  // the order reached a terminal state in this update
+  Qty fill_qty{};         // for fills
+  Price fill_px{};
+};
+
+struct OmsStats {
+  std::uint32_t open = 0;
+  std::uint64_t submitted = 0;
+  std::uint64_t acked = 0;
+  std::uint64_t rejected = 0;
+  std::uint64_t canceled = 0;
+  std::uint64_t filled = 0;
+  std::uint64_t fills = 0;
+  std::uint64_t expired = 0;
+  std::uint64_t unknown_ids = 0;
+  std::uint64_t duplicates = 0;
+  std::uint64_t late_fills = 0;
+  std::uint64_t unsolicited_cancels = 0;
+};
+
+enum class OrderClass : std::uint8_t { Open, RecentlyTerminal, Unknown };
+
+// Persists the 16-bit session epoch so ClientOrderIds never repeat across restarts.
+class SessionEpochStore {
+ public:
+  // Reads the stored epoch, increments, writes back. Returns the new epoch (1 on first run).
+  static std::uint16_t next_epoch(const std::string& path) {
+    unsigned prev = 0;
+    if (std::FILE* f = std::fopen(path.c_str(), "r")) {
+      if (std::fscanf(f, "%u", &prev) != 1) prev = 0;
+      std::fclose(f);
+    }
+    const auto next = static_cast<std::uint16_t>((prev + 1U) & 0xFFFFU);
+    if (std::FILE* f = std::fopen(path.c_str(), "w")) {
+      std::fprintf(f, "%u\n", static_cast<unsigned>(next));
+      std::fclose(f);
+    }
+    return next == 0 ? 1 : next;
+  }
+};
+
+class Oms {
+ public:
+  explicit Oms(std::uint16_t session_epoch = 1) noexcept : epoch_(session_epoch) {
+    for (auto& per_inst : best_own_) per_inst[0] = per_inst[1] = Price{};
+    for (auto& per_inst : open_qty_) per_inst[0] = per_inst[1] = Qty{};
+  }
+  Oms(const Oms&) = delete;
+  Oms& operator=(const Oms&) = delete;
+
+  [[nodiscard]] std::uint16_t session_epoch() const noexcept { return epoch_; }
+  [[nodiscard]] ClientOrderId next_cl_ord_id() noexcept { return make_cl_ord_id(epoch_, ++seq_); }
+  [[nodiscard]] const OmsStats& stats() const noexcept { return stats_; }
+  [[nodiscard]] std::uint32_t open_count() const noexcept { return stats_.open; }
+  [[nodiscard]] std::uint32_t open_count(InstrumentId id) const noexcept {
+    return open_per_inst_[id.value];
+  }
+  // Sum of leaves of open orders on (instrument, side): "in-flight same-side exposure".
+  [[nodiscard]] Qty open_qty(InstrumentId id, Side s) const noexcept {
+    return open_qty_[id.value][static_cast<std::size_t>(s)];
+  }
+  // Best price among our own open orders on (instrument, side); Price{} if none. For STP.
+  [[nodiscard]] Price best_own_px(InstrumentId id, Side s) const noexcept {
+    return best_own_[id.value][static_cast<std::size_t>(s)];
+  }
+
+  // ---- outbound ---------------------------------------------------------------------------
+
+  Result<Handle<Order>, RejectReason> submit(const NewOrderRequest& req,
+                                             ClientOrderId id,
+                                             Timestamp now) noexcept {
+    if (FASTMM_UNLIKELY(req.instrument.value >= kMaxInstruments))
+      return fail(RejectReason::InstrumentDisabled);
+    if (FASTMM_UNLIKELY(by_id_.contains(id))) return fail(RejectReason::DuplicateId);
+    const Handle<Order> h = pool_.allocate();
+    if (FASTMM_UNLIKELY(!h.valid())) return fail(RejectReason::PoolExhausted);
+    if (FASTMM_UNLIKELY(by_id_.insert(id, h).first == nullptr)) {
+      pool_.free(h);
+      return fail(RejectReason::PoolExhausted);
+    }
+    Order& o = pool_.get(h);
+    o = Order{};
+    o.cl_ord_id = id;
+    o.instrument = req.instrument;
+    o.venue = req.venue;
+    o.side = req.side;
+    o.type = req.type;
+    o.tif = req.tif;
+    o.flags = static_cast<std::uint8_t>((req.post_only ? Order::kPostOnly : 0) |
+                                        (req.reduce_only ? Order::kReduceOnly : 0));
+    o.state = OrderState::PendingNew;
+    o.price = req.price;
+    o.qty = req.qty;
+    o.created = now;
+    o.user_tag = req.user_tag;
+    ++stats_.submitted;
+    ++stats_.open;
+    ++open_per_inst_[o.instrument.value];
+    open_qty_[o.instrument.value][static_cast<std::size_t>(o.side)] += o.qty;
+    Price& best = best_own_[o.instrument.value][static_cast<std::size_t>(o.side)];
+    if (best.is_zero() || better(o.side, o.price, best)) best = o.price;
+    return h;
+  }
+
+  Result<void, RejectReason> request_cancel(Handle<Order> h) noexcept {
+    if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
+    Order& o = pool_.get(h);
+    if (!o.is_working()) return fail(RejectReason::InvalidState);
+    o.state = OrderState::PendingCancel;
+    return {};
+  }
+
+  // new_id may equal the current id for venues that amend in place.
+  Result<void, RejectReason> request_replace(Handle<Order> h,
+                                             ClientOrderId new_id,
+                                             Price px,
+                                             Qty qty) noexcept {
+    if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
+    Order& o = pool_.get(h);
+    if (!o.is_working()) return fail(RejectReason::InvalidState);
+    if (new_id != o.cl_ord_id) {
+      if (by_id_.contains(new_id)) return fail(RejectReason::DuplicateId);
+      if (by_id_.insert(new_id, h).first == nullptr) return fail(RejectReason::PoolExhausted);
+    }
+    o.pending_cl_ord_id = new_id;
+    o.pending_price = px;
+    o.pending_qty = qty;
+    o.state = OrderState::PendingReplace;
+    return {};
+  }
+
+  // ---- inbound ----------------------------------------------------------------------------
+
+  OmsUpdate on_ack(const OrderAckMsg& m) noexcept {
+    OmsUpdate u;
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    if (!h.valid()) {
+      if (!u.known) {
+        u.action = OmsAction::CancelUnknown;  // a live order we do not know: cancel it
+        ++stats_.unknown_ids;
+      } else {
+        u.action = OmsAction::Ignored;  // late ack for a terminal order
+      }
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    switch (o.state) {
+      case OrderState::PendingNew:
+        o.state = OrderState::Live;
+        o.venue_order_id = m.venue_order_id;
+        ++stats_.acked;
+        u.changed = true;
+        break;
+      case OrderState::PendingReplace:
+        if (m.cl_ord_id == o.pending_cl_ord_id || m.cl_ord_id == o.cl_ord_id) {
+          apply_replace(o, m.cl_ord_id != o.cl_ord_id);
+          o.venue_order_id = m.venue_order_id;
+          u.changed = true;
+        } else {
+          u.action = OmsAction::Ignored;
+        }
+        break;
+      default:
+        u.action = OmsAction::Ignored;  // duplicate ack
+        break;
+    }
+    finish_update(u, h, o);
+    return u;
+  }
+
+  OmsUpdate on_reject(const OrderRejectMsg& m) noexcept {
+    OmsUpdate u;
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    if (!h.valid()) {
+      u.action = OmsAction::Ignored;
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    if (o.state == OrderState::PendingNew) {
+      o.reject_reason = m.reason;
+      ++stats_.rejected;
+      terminate(u, h, o, OrderState::Rejected);
+      return u;
+    }
+    if (o.state == OrderState::PendingReplace && m.cl_ord_id == o.pending_cl_ord_id) {
+      // Replace failed. If the venue already cancelled the original (cancel-then-new
+      // style replace) the order is gone; otherwise it keeps working unchanged.
+      if (o.has(Order::kReplaceOldCanceled)) {
+        clear_pending(o);
+        terminate(u, h, o, OrderState::Canceled);
+        return u;
+      }
+      clear_pending(o);
+      o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
+      u.changed = true;
+      finish_update(u, h, o);
+      return u;
+    }
+    u.action = OmsAction::Ignored;
+    finish_update(u, h, o);
+    return u;
+  }
+
+  OmsUpdate on_cancel_ack(const OrderCancelAckMsg& m) noexcept {
+    OmsUpdate u;
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    if (!h.valid()) {
+      u.action = OmsAction::Ignored;
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    if (m.cum_qty > o.cum_qty) o.cum_qty = m.cum_qty;
+    if (o.state == OrderState::PendingReplace && m.cl_ord_id == o.cl_ord_id) {
+      // Old leg of a cancel-then-new replace: wait for the new leg's ack/reject.
+      o.flags |= Order::kReplaceOldCanceled;
+      finish_update(u, h, o);
+      return u;
+    }
+    if (o.state != OrderState::PendingCancel) {
+      o.flags |= Order::kUnsolicitedCancel;
+      ++stats_.unsolicited_cancels;
+    }
+    terminate(u, h, o, OrderState::Canceled);
+    return u;
+  }
+
+  OmsUpdate on_cancel_reject(const OrderCancelRejectMsg& m) noexcept {
+    OmsUpdate u;
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    if (!h.valid()) {
+      u.action = OmsAction::Ignored;  // e.g. already filled: ignore
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    if (o.state != OrderState::PendingCancel) {
+      u.action = OmsAction::Ignored;
+      finish_update(u, h, o);
+      return u;
+    }
+    if (m.reason == RejectReason::VenueUnknownOrder) {
+      // The venue has no such order: it is gone (filled/cancelled elsewhere).
+      terminate(u, h, o, OrderState::Canceled);
+      return u;
+    }
+    o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
+    o.cancel_attempts = static_cast<std::uint8_t>(o.cancel_attempts + 1);
+    if (o.cancel_attempts > 3) u.action = OmsAction::ReconcileNeeded;
+    u.changed = true;
+    finish_update(u, h, o);
+    return u;
+  }
+
+  OmsUpdate on_fill(const OrderFillMsg& m) noexcept {
+    OmsUpdate u;
+    u.fill_qty = m.qty;
+    u.fill_px = m.price;
+    if (!m.exec_id.empty() && !remember_exec(m)) {
+      u.action = OmsAction::Duplicate;
+      ++stats_.duplicates;
+      return u;
+    }
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    ++stats_.fills;
+    if (!h.valid()) {
+      if (u.known) {
+        u.action = OmsAction::LateFill;
+        ++stats_.late_fills;
+      } else {
+        u.action = OmsAction::UnknownFill;
+        ++stats_.unknown_ids;
+      }
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    const Qty before = o.cum_qty;
+    Qty cum = m.cum_qty.is_positive() ? m.cum_qty : o.cum_qty + m.qty;
+    if (cum < before) cum = before;  // out-of-order cum: never go backwards
+    if (cum > o.qty) cum = o.qty;
+    open_qty_[o.instrument.value][static_cast<std::size_t>(o.side)] -= (cum - before);
+    o.cum_qty = cum;
+    if (o.venue_order_id.empty()) o.venue_order_id = m.venue_order_id;
+    u.changed = true;
+    if (o.cum_qty >= o.qty) {
+      ++stats_.filled;
+      terminate(u, h, o, OrderState::Filled);
+      return u;
+    }
+    if (o.state == OrderState::Live || o.state == OrderState::PendingNew)
+      o.state = OrderState::PartiallyFilled;
+    finish_update(u, h, o);
+    return u;
+  }
+
+  OmsUpdate on_expired(const OrderExpiredMsg& m) noexcept {
+    OmsUpdate u;
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    if (!h.valid()) {
+      u.action = OmsAction::Ignored;
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    if (m.cum_qty > o.cum_qty) o.cum_qty = m.cum_qty;
+    ++stats_.expired;
+    terminate(u, h, o, OrderState::Expired);
+    return u;
+  }
+
+  // ---- reconciliation ---------------------------------------------------------------------
+
+  void reconcile_begin() noexcept {
+    pool_.for_each([](Handle<Order>, Order& o) {
+      o.flags &= static_cast<std::uint8_t>(~Order::kSeenInReconcile);
+    });
+  }
+  // Venue reports an open order. Unknown -> CancelUnknown (engine cancels by venue id).
+  OmsUpdate reconcile_open_order(const ReconcileMsg& m) noexcept {
+    OmsUpdate u;
+    Handle<Order> h = lookup(m.cl_ord_id, u);
+    if (!h.valid()) {
+      u.action = OmsAction::CancelUnknown;
+      ++stats_.unknown_ids;
+      return u;
+    }
+    Order& o = pool_.get(h);
+    u.prev = o.state;
+    o.flags |= Order::kSeenInReconcile | Order::kReconciled;
+    if (!o.venue_order_id.empty() || !m.venue_order_id.empty()) o.venue_order_id = m.venue_order_id;
+    if (m.cum_qty > o.cum_qty) {
+      open_qty_[o.instrument.value][static_cast<std::size_t>(o.side)] -= (m.cum_qty - o.cum_qty);
+      o.cum_qty = m.cum_qty;
+      u.changed = true;
+    }
+    if (o.state == OrderState::PendingNew || o.state == OrderState::PendingCancel ||
+        o.state == OrderState::PendingReplace) {
+      clear_pending(o);
+      o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
+      u.changed = true;
+    }
+    finish_update(u, h, o);
+    return u;
+  }
+  // Every open order the venue did not report is marked Canceled. F(const OmsUpdate&).
+  template <class F>
+  void reconcile_end(F&& f) noexcept {
+    pool_.for_each([&](Handle<Order> h, Order& o) {
+      if (o.has(Order::kSeenInReconcile)) return;
+      OmsUpdate u;
+      u.prev = o.state;
+      o.flags |= Order::kReconciled;
+      terminate(u, h, o, OrderState::Canceled);
+      f(u);
+    });
+  }
+
+  // ---- queries ----------------------------------------------------------------------------
+
+  [[nodiscard]] const Order& get(Handle<Order> h) const noexcept { return pool_.get(h); }
+  [[nodiscard]] Order& get(Handle<Order> h) noexcept { return pool_.get(h); }
+  [[nodiscard]] bool is_live(Handle<Order> h) const noexcept { return pool_.is_live(h); }
+  [[nodiscard]] Handle<Order> find(ClientOrderId id) const noexcept {
+    const Handle<Order>* p = by_id_.find(id);
+    return p == nullptr ? Handle<Order>{} : *p;
+  }
+  [[nodiscard]] OrderClass classify(ClientOrderId id) const noexcept {
+    if (by_id_.contains(id)) return OrderClass::Open;
+    if (recently_terminal_.find_if([&](const TerminalRecord& r) { return r.cl_ord_id == id; }) !=
+        nullptr) {
+      return OrderClass::RecentlyTerminal;
+    }
+    return OrderClass::Unknown;
+  }
+  // Ascending handle order (deterministic). F(Handle<Order>, const Order&).
+  template <class F>
+  void for_each_open_order(F&& f) const noexcept {
+    pool_.for_each([&](Handle<Order> h, const Order& o) { f(h, o); });
+  }
+  template <class F>
+  void for_each_open_order(InstrumentId id, F&& f) const noexcept {
+    pool_.for_each([&](Handle<Order> h, const Order& o) {
+      if (o.instrument == id) f(h, o);
+    });
+  }
+  void warm_up() noexcept { pool_.warm_up(); }
+
+ private:
+  struct TerminalRecord {
+    ClientOrderId cl_ord_id;
+    OrderState state;
+    Qty cum_qty;
+  };
+
+  // Finds an open order; sets u.known if the id is open or recently terminal.
+  Handle<Order> lookup(ClientOrderId id, OmsUpdate& u) noexcept {
+    const Handle<Order>* p = by_id_.find(id);
+    if (p != nullptr) {
+      u.known = true;
+      u.handle = *p;
+      return *p;
+    }
+    if (recently_terminal_.find_if([&](const TerminalRecord& r) { return r.cl_ord_id == id; }) !=
+        nullptr) {
+      u.known = true;
+    }
+    return Handle<Order>{};
+  }
+
+  void finish_update(OmsUpdate& u, Handle<Order> h, const Order& o) noexcept {
+    u.order = o;
+    u.handle = h;
+  }
+
+  void apply_replace(Order& o, bool new_venue_order) noexcept {
+    const std::size_t s = static_cast<std::size_t>(o.side);
+    Qty& open = open_qty_[o.instrument.value][s];
+    open -= o.leaves_qty();
+    if (new_venue_order) {
+      by_id_.erase(o.cl_ord_id);
+      o.cl_ord_id = o.pending_cl_ord_id;
+      o.cum_qty = Qty{};
+    }
+    const Price old_px = o.price;
+    o.price = o.pending_price;
+    o.qty = o.pending_qty;
+    if (o.cum_qty > o.qty) o.cum_qty = o.qty;
+    open += o.leaves_qty();
+    o.pending_cl_ord_id = ClientOrderId{};
+    o.pending_price = Price{};
+    o.pending_qty = Qty{};
+    o.flags &= static_cast<std::uint8_t>(~Order::kReplaceOldCanceled);
+    o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
+    Price& best = best_own_[o.instrument.value][s];
+    if (best.is_zero() || better(o.side, o.price, best)) {
+      best = o.price;
+    } else if (old_px == best) {
+      recompute_best_own(o.instrument, o.side);
+    }
+  }
+  void clear_pending(Order& o) noexcept {
+    if (o.pending_cl_ord_id.valid() && o.pending_cl_ord_id != o.cl_ord_id)
+      by_id_.erase(o.pending_cl_ord_id);
+    o.pending_cl_ord_id = ClientOrderId{};
+    o.pending_price = Price{};
+    o.pending_qty = Qty{};
+    o.flags &= static_cast<std::uint8_t>(~Order::kReplaceOldCanceled);
+  }
+
+  void terminate(OmsUpdate& u, Handle<Order> h, Order& o, OrderState final_state) noexcept {
+    o.state = final_state;
+    if (final_state == OrderState::Canceled) ++stats_.canceled;
+    --stats_.open;
+    --open_per_inst_[o.instrument.value];
+    const std::size_t s = static_cast<std::size_t>(o.side);
+    open_qty_[o.instrument.value][s] -= o.leaves_qty();
+    by_id_.erase(o.cl_ord_id);
+    if (o.pending_cl_ord_id.valid() && o.pending_cl_ord_id != o.cl_ord_id)
+      by_id_.erase(o.pending_cl_ord_id);
+    recently_terminal_.push(TerminalRecord{o.cl_ord_id, final_state, o.cum_qty});
+    u.order = o;
+    u.handle = Handle<Order>{};
+    u.changed = true;
+    u.terminal = true;
+    const InstrumentId inst = o.instrument;
+    const Side side = o.side;
+    const Price px = o.price;
+    pool_.free(h);
+    if (px == best_own_[inst.value][s]) recompute_best_own(inst, side);
+  }
+
+  void recompute_best_own(InstrumentId inst, Side side) noexcept {
+    Price best{};
+    pool_.for_each([&](Handle<Order>, const Order& o) {
+      if (o.instrument != inst || o.side != side) return;
+      if (best.is_zero() || better(side, o.price, best)) best = o.price;
+    });
+    best_own_[inst.value][static_cast<std::size_t>(side)] = best;
+  }
+
+  // exec_id dedupe: hash(exec_id, cl_ord_id) kept in a map with ring eviction.
+  bool remember_exec(const OrderFillMsg& m) noexcept {
+    const std::uint64_t key = m.exec_id.hash() ^ (m.cl_ord_id.value * 0x9E3779B97F4A7C15ULL);
+    if (exec_seen_.contains(key)) return false;
+    if (exec_ring_.full()) {
+      std::uint64_t old = 0;
+      exec_ring_.pop(old);
+      exec_seen_.erase(old);
+    }
+    exec_ring_.push(key);
+    exec_seen_.insert(key, 1);
+    return true;
+  }
+
+  std::uint16_t epoch_;
+  std::uint32_t seq_ = 0;
+  OmsStats stats_{};
+  Pool<Order, kMaxOpenOrders> pool_;
+  OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
+  RingBuffer<TerminalRecord, kRecentlyTerminal> recently_terminal_;
+  OpenHashMap<std::uint64_t, std::uint8_t, kRecentlyTerminal * 2> exec_seen_;
+  RingBuffer<std::uint64_t, kRecentlyTerminal> exec_ring_;
+  Price best_own_[kMaxInstruments][2];
+  Qty open_qty_[kMaxInstruments][2];
+  std::uint32_t open_per_inst_[kMaxInstruments] = {};
+};
+
+}  // namespace fastmm

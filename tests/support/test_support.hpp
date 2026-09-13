@@ -10,8 +10,12 @@
 
 namespace fastmm::test {
 
-inline std::filesystem::path fixtures_dir() { return FASTMM_FIXTURES_DIR; }
-inline std::filesystem::path tmp_dir() { return FASTMM_TEST_TMP_DIR; }
+inline std::filesystem::path fixtures_dir() {
+  return FASTMM_FIXTURES_DIR;
+}
+inline std::filesystem::path tmp_dir() {
+  return FASTMM_TEST_TMP_DIR;
+}
 
 inline std::string read_file(const std::filesystem::path& p) {
   std::ifstream in(p, std::ios::binary);
@@ -21,6 +25,8 @@ inline std::string read_file(const std::filesystem::path& p) {
   return ss.str();
 }
 
-inline std::string fixture(const std::string& rel) { return read_file(fixtures_dir() / rel); }
+inline std::string fixture(const std::string& rel) {
+  return read_file(fixtures_dir() / rel);
+}
 
 }  // namespace fastmm::test

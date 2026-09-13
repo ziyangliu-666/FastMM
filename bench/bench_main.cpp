@@ -1,6 +1,7 @@
 // Shared benchmark main: pins the process to a core (--cpu=N or FASTMM_BENCH_CPU) before
 // running so results are stable, then delegates to Google Benchmark.
 #include <benchmark/benchmark.h>
+
 #include <sched.h>
 
 #include <cstdio>
@@ -12,7 +13,8 @@ void pin_to_cpu(int cpu) {
   cpu_set_t set;
   CPU_ZERO(&set);
   CPU_SET(static_cast<unsigned>(cpu), &set);
-  if (sched_setaffinity(0, sizeof(set), &set) != 0) std::fprintf(stderr, "warning: cannot pin to cpu %d\n", cpu);
+  if (sched_setaffinity(0, sizeof(set), &set) != 0)
+    std::fprintf(stderr, "warning: cannot pin to cpu %d\n", cpu);
 }
 }  // namespace
 

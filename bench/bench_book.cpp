@@ -1,0 +1,165 @@
+// Order book micro-benchmarks (plan 5.12 budget: L2 near-top update 15-30 ns, 20-level
+// delta ~300 ns, L3 add/cancel/execute 30-60 ns).
+#include "fastmm/core/book/book_features.hpp"
+#include "fastmm/core/book/l2_book.hpp"
+#include "fastmm/core/book/l3_book.hpp"
+#include "fastmm/core/rng.hpp"
+
+#include <benchmark/benchmark.h>
+
+#include <memory>
+#include <vector>
+
+using namespace fastmm;
+
+namespace {
+const Price kTick = Price::from_decimal("0.01").value();
+Price px(std::int64_t t) {
+  return Price::from_raw(t * kTick.raw);
+}
+
+template <std::size_t D>
+void fill_book(L2Book<D>& b, int levels) {
+  for (int i = 0; i < levels; ++i) {
+    b.apply_level(Side::Buy, px(10000 - i), Qty::from_int(1 + i));
+    b.apply_level(Side::Sell, px(10001 + i), Qty::from_int(1 + i));
+  }
+  b.mark_snapshot();
+}
+
+std::vector<std::byte> make_delta(int levels_per_side, std::int64_t offset, Xoshiro256ss& rng) {
+  const auto n = static_cast<std::uint32_t>(levels_per_side);
+  std::vector<std::byte> buf(BookDeltaMsg::size_for(n, n));
+  auto* d = reinterpret_cast<BookDeltaMsg*>(buf.data());
+  init_header(*d,
+              EventType::BookDelta,
+              InstrumentId{0},
+              VenueId{0},
+              static_cast<std::uint32_t>(buf.size()));
+  d->bid_count = d->ask_count = n;
+  for (std::uint32_t i = 0; i < n; ++i) {
+    d->levels()[i] = Level{px(10000 - offset - static_cast<std::int64_t>(i)),
+                           Qty::from_int(static_cast<std::int64_t>(rng.uniform(50)))};
+    d->levels()[n + i] = Level{px(10001 + offset + static_cast<std::int64_t>(i)),
+                               Qty::from_int(static_cast<std::int64_t>(rng.uniform(50)))};
+  }
+  return buf;
+}
+}  // namespace
+
+static void BM_L2_UpdateNearTop(benchmark::State& state) {
+  L2Book<256> b;
+  fill_book(b, 100);
+  benchmark::DoNotOptimize(&b);  // escape so ClobberMemory() applies to the book
+  std::int64_t i = 0;
+  for (auto _ : state) {
+    // update one of the top 4 bid levels in place (no memmove), rotating the level
+    b.apply_level(Side::Buy, px(10000 - (i & 3)), Qty::from_int(1 + (i & 7)));
+    ++i;
+    benchmark::DoNotOptimize(b.best_bid());
+    benchmark::ClobberMemory();
+  }
+}
+BENCHMARK(BM_L2_UpdateNearTop);
+
+static void BM_L2_InsertEraseTop(benchmark::State& state) {
+  L2Book<256> b;
+  fill_book(b, 100);
+  bool in = false;
+  for (auto _ : state) {
+    b.apply_level(
+        Side::Sell, px(10000), in ? Qty{} : Qty::from_int(3));  // new best ask then delete
+    in = !in;
+    benchmark::DoNotOptimize(b.best_ask());
+  }
+}
+BENCHMARK(BM_L2_InsertEraseTop);
+
+static void BM_L2_ApplyDelta(benchmark::State& state) {
+  const int n = static_cast<int>(state.range(0));
+  L2Book<256> b;
+  fill_book(b, 150);
+  Xoshiro256ss rng(1);
+  std::vector<std::vector<std::byte>> deltas;
+  for (int i = 0; i < 64; ++i) deltas.push_back(make_delta(n, 0, rng));
+  std::size_t k = 0;
+  for (auto _ : state) {
+    b.apply_delta(*reinterpret_cast<const BookDeltaMsg*>(deltas[k & 63].data()));
+    ++k;
+    benchmark::DoNotOptimize(b.seq());
+  }
+  state.SetItemsProcessed(state.iterations() * n * 2);
+}
+BENCHMARK(BM_L2_ApplyDelta)->Arg(20)->Arg(100);
+
+static void BM_L2_PriceForQty(benchmark::State& state) {
+  L2Book<256> b;
+  fill_book(b, 100);
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(b.price_for_qty(Side::Buy, Qty::from_int(100)));
+  }
+}
+BENCHMARK(BM_L2_PriceForQty);
+
+static void BM_L2_Features(benchmark::State& state) {
+  L2Book<256> b;
+  fill_book(b, 100);
+  for (auto _ : state) {
+    benchmark::DoNotOptimize(imbalance(b, 5));
+    benchmark::DoNotOptimize(microprice(b));
+  }
+}
+BENCHMARK(BM_L2_Features);
+
+static void BM_L3_AddCancelExecMix(benchmark::State& state) {
+  auto b = std::make_unique<L3Book<1U << 16, 1U << 20>>(kTick);
+  Xoshiro256ss rng(7);
+  std::vector<std::uint64_t> live;
+  live.reserve(1 << 16);
+  std::uint64_t next = 1;
+  for (int i = 0; i < 20000; ++i) {
+    const Side s = (i & 1) ? Side::Buy : Side::Sell;
+    b->add(next,
+           s,
+           px(s == Side::Buy ? 10000 - static_cast<std::int64_t>(rng.uniform(50))
+                             : 10001 + static_cast<std::int64_t>(rng.uniform(50))),
+           Qty::from_int(1 + static_cast<std::int64_t>(rng.uniform(10))));
+    live.push_back(next++);
+  }
+  for (auto _ : state) {
+    const std::uint64_t r = rng.next();
+    switch (r % 3) {
+      case 0: {
+        const Side s = (r & 8) ? Side::Buy : Side::Sell;
+        b->add(next,
+               s,
+               px(s == Side::Buy ? 10000 - static_cast<std::int64_t>((r >> 8) % 50)
+                                 : 10001 + static_cast<std::int64_t>((r >> 8) % 50)),
+               Qty::from_int(1 + static_cast<std::int64_t>((r >> 16) % 10)));
+        live.push_back(next++);
+        break;
+      }
+      case 1: {
+        const std::size_t k = (r >> 8) % live.size();
+        b->cancel(live[k]);
+        live[k] = live.back();
+        live.pop_back();
+        break;
+      }
+      default: {
+        const std::size_t k = (r >> 8) % live.size();
+        const L3Order* o = b->order(live[k]);
+        if (o != nullptr && o->qty > Qty::from_int(1)) {
+          b->execute(live[k], Qty::from_int(1));
+        } else {
+          b->execute(live[k], Qty::from_int(1));
+          live[k] = live.back();
+          live.pop_back();
+        }
+        break;
+      }
+    }
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+}
+BENCHMARK(BM_L3_AddCancelExecMix);

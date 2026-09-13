@@ -1,0 +1,122 @@
+#pragma once
+// Declarative config schema (8.7): every known key with its section, type and whether it
+// is required. config.cpp validates the parsed TOML against this table and reports
+// errors with line numbers; unknown keys are warnings so configs stay forward compatible.
+// Sections "sim" and "backtest" are free-form (owned by the sim/backtest libraries).
+#include <cstddef>
+#include <span>
+#include <string_view>
+
+namespace fastmm {
+
+enum class KeyType : unsigned char { String, Int, Float, Bool, IntArray, StringArray, Table, Any };
+
+struct KeySpec {
+  std::string_view section;  // "engine", "venues.*", "instruments[]", "strategy", ...
+  std::string_view key;
+  KeyType type;
+  bool required;
+  std::string_view doc;
+};
+
+inline constexpr KeySpec kConfigSchema[] = {
+    // [engine]
+    {"engine", "name", KeyType::String, false, "session name (journal file prefix)"},
+    {"engine", "cpu", KeyType::Int, false, "engine thread CPU (-1 = unpinned)"},
+    {"engine", "net_cpus", KeyType::IntArray, false, "net thread CPUs, one per venue"},
+    {"engine", "spin_mode", KeyType::String, false, "busy | adaptive"},
+    {"engine", "journal", KeyType::Bool, false, "write .fmj journal"},
+    {"engine", "journal_dir", KeyType::String, false, "directory for journals"},
+    {"engine", "epoch_file", KeyType::String, false, "session epoch persistence file"},
+    {"engine", "rng_seed", KeyType::Int, false, "seed for the engine RNG"},
+    {"engine", "md_ring_bytes", KeyType::Int, false, "market data ring size per venue"},
+    {"engine", "order_ring_bytes", KeyType::Int, false, "order event ring size per venue"},
+    {"engine", "journal_ring_bytes", KeyType::Int, false, "journal ring size"},
+    {"engine", "max_events_per_step", KeyType::Int, false, "events per engine iteration"},
+    {"engine", "crossed_grace_ms", KeyType::Int, false, "tolerate crossed books for this long"},
+    {"engine", "latency_publish_ms", KeyType::Int, false, "latency snapshot interval"},
+    {"engine", "min_requote_ticks", KeyType::Int, false, "QuoteManager hysteresis in ticks"},
+    {"engine",
+     "min_requote_interval_ms",
+     KeyType::Int,
+     false,
+     "QuoteManager minimum requote interval"},
+    {"engine", "min_qty_bps", KeyType::Int, false, "leaves/desired qty ratio to keep a quote"},
+    {"engine", "post_only", KeyType::Bool, false, "quote with post-only orders"},
+    {"engine",
+     "supports_replace",
+     KeyType::Bool,
+     false,
+     "use cancel-replace where the venue allows"},
+    // [venues.<name>]
+    {"venues.*", "kind", KeyType::String, true, "binance_spot | binance_futures | bybit | sim"},
+    {"venues.*", "ws_url", KeyType::String, false, "market data websocket URL"},
+    {"venues.*", "ws_api_url", KeyType::String, false, "order websocket API URL"},
+    {"venues.*", "rest_url", KeyType::String, false, "REST base URL"},
+    {"venues.*", "api_key", KeyType::String, false, "API key (use ${ENV})"},
+    {"venues.*", "api_secret", KeyType::String, false, "API secret (use ${ENV})"},
+    {"venues.*", "testnet", KeyType::Bool, false, "testnet endpoints"},
+    {"venues.*", "supports_replace", KeyType::Bool, false, "venue offers cancel-replace / amend"},
+    {"venues.*", "insecure_tls", KeyType::Bool, false, "skip certificate verification (sim only)"},
+    {"venues.*", "ca_file", KeyType::String, false, "CA bundle for self-signed sim certificates"},
+    {"venues.*", "recv_window_ms", KeyType::Int, false, "signed request validity window"},
+    {"venues.*", "fees", KeyType::Table, false, "[venues.<x>.fees] maker_bps / taker_bps"},
+    {"venues.*.fees", "maker_bps", KeyType::Float, false, "maker fee in bps (negative = rebate)"},
+    {"venues.*.fees", "taker_bps", KeyType::Float, false, "taker fee in bps"},
+    // [[instruments]]
+    {"instruments[]", "venue", KeyType::String, true, "venue name"},
+    {"instruments[]", "symbol", KeyType::String, true, "venue symbol"},
+    {"instruments[]", "base", KeyType::String, false, "base asset"},
+    {"instruments[]", "quote", KeyType::String, false, "quote asset"},
+    {"instruments[]",
+     "asset_class",
+     KeyType::String,
+     false,
+     "spot | perpetual | future | option | fx | equity"},
+    {"instruments[]", "tick", KeyType::Any, true, "price increment (string for exactness)"},
+    {"instruments[]", "lot", KeyType::Any, true, "quantity increment"},
+    {"instruments[]", "min_qty", KeyType::Any, false, "minimum order quantity"},
+    {"instruments[]", "max_qty", KeyType::Any, false, "maximum order quantity"},
+    {"instruments[]", "min_notional", KeyType::Any, false, "minimum order notional"},
+    {"instruments[]",
+     "contract_multiplier",
+     KeyType::Any,
+     false,
+     "units of underlying per contract"},
+    {"instruments[]", "enabled", KeyType::Bool, false, "trade this instrument"},
+    {"instruments[]", "price_decimals", KeyType::Int, false, "venue price formatting"},
+    {"instruments[]", "expiry", KeyType::String, false, "ISO-8601 expiry (derivatives)"},
+    {"instruments[]", "strike", KeyType::Any, false, "option strike"},
+    {"instruments[]", "option_type", KeyType::String, false, "call | put"},
+    // [strategy]
+    {"strategy", "name", KeyType::String, true, "registered strategy name"},
+    {"strategy", "params", KeyType::Table, false, "[strategy.params] key = value"},
+    {"strategy.params", "*", KeyType::Any, false, "strategy parameters (validated by the schema)"},
+    // [risk]
+    {"risk", "max_order_qty", KeyType::Any, false, ""},
+    {"risk", "max_order_notional", KeyType::Any, false, ""},
+    {"risk", "max_position", KeyType::Any, false, ""},
+    {"risk", "max_open_orders", KeyType::Int, false, "per instrument"},
+    {"risk", "price_collar_bps", KeyType::Int, false, ""},
+    {"risk", "fat_finger_bps", KeyType::Int, false, ""},
+    {"risk", "stale_md_ms", KeyType::Int, false, ""},
+    {"risk", "max_loss", KeyType::Any, false, "net pnl loss that trips the kill switch"},
+    {"risk", "orders_per_sec", KeyType::Int, false, ""},
+    {"risk", "burst", KeyType::Int, false, ""},
+    {"risk", "stp", KeyType::Bool, false, "self-trade prevention"},
+    // [logging]
+    {"logging", "level", KeyType::String, false, "trace | debug | info | warn | error"},
+    {"logging", "file", KeyType::String, false, "log file path (empty = stderr)"},
+    {"logging", "mirror_level", KeyType::String, false, "also copy records >= this to stderr"},
+    // free-form
+    {"sim", "*", KeyType::Any, false, "simulator settings"},
+    {"sim.*", "*", KeyType::Any, false, "simulator sub-tables"},
+    {"backtest", "*", KeyType::Any, false, "backtester settings"},
+    {"backtest.*", "*", KeyType::Any, false, "backtester sub-tables"},
+};
+
+[[nodiscard]] inline std::span<const KeySpec> config_schema() noexcept {
+  return kConfigSchema;
+}
+
+}  // namespace fastmm
