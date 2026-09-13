@@ -331,8 +331,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         get(*fees, "taker_bps", v.fees.taker_bps);
       }
       for (const auto& [k, val] : *t) {
-        if (find_spec("venues.*", k.str()) == nullptr)
-          v.extra[std::string(k.str())] = stringify(val);
+        const KeySpec* spec = find_spec("venues.*", k.str());
+        if (spec == nullptr || spec->passthrough) v.extra[std::string(k.str())] = stringify(val);
       }
       cfg.venues.push_back(std::move(v));
     }

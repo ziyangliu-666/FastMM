@@ -190,3 +190,45 @@ TEST_CASE("core.config: validation errors carry line numbers, unknown keys warn"
   CHECK(t.get(InstrumentId{0}).contract_multiplier == Qty::from_decimal("0.01").value());
   CHECK(t.get(InstrumentId{0}).is_derivative());
 }
+
+TEST_CASE("core.config: connector-specific venue keys pass through to extra without warnings") {
+  const Config cfg = Config::parse(R"(
+[venues.b]
+kind = "binance_spot"
+stale_ms = 10000
+order_api = "rest"
+cancel_on_order_channel_loss = false
+not_a_real_key = 1
+
+[[instruments]]
+venue = "b"
+symbol = "BTCUSDT"
+tick = "0.01"
+lot = "0.00001"
+)");
+  const VenueSection& v = cfg.venues.at(0);
+  CHECK(v.extra.at("stale_ms") == "10000");
+  CHECK(v.extra.at("order_api") == "rest");
+  CHECK(v.extra.at("cancel_on_order_channel_loss") == "false");
+  CHECK(v.extra.count("not_a_real_key") == 1);  // unknown keys are still forwarded
+  REQUIRE(cfg.warnings.size() == 1);            // but only they warn
+  CHECK(cfg.warnings[0].find("not_a_real_key") != std::string::npos);
+  CHECK_THROWS_AS(static_cast<void>(Config::parse(R"(
+[venues.b]
+kind = "binance_spot"
+stale_ms = "soon"
+)")),
+                  ConfigError);  // passthrough keys are still type-checked
+}
+
+TEST_CASE("core.config: shipped venue configs load without warnings") {
+  ConfigLoadOptions opts;
+  opts.substitute_env = false;  // keep ${FASTMM_*} references; no secrets needed to validate
+  for (const char* name :
+       {"binance-testnet.toml", "bybit-testnet.toml", "sim-local.toml", "sim-local-tls.toml"}) {
+    const Config cfg = Config::load((configs_dir() / name).string(), opts);
+    INFO(name);
+    for (const auto& w : cfg.warnings) MESSAGE(w);
+    CHECK(cfg.warnings.empty());
+  }
+}

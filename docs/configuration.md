@@ -63,8 +63,29 @@ One table per venue; `<name>` is how instruments refer to it.
 | `recv_window_ms` | int | `3000` | Signed-request validity window |
 | `fees.maker_bps`, `fees.taker_bps` | number | `0` | Fee model used for PnL; negative means rebate |
 
-Any other key in a venue table is passed through to that connector (and produces an "unknown key"
-warning from the generic parser). Connector-specific keys are listed in `docs/venues.md`.
+Connector-specific keys are validated like the ones above and handed to the connector unchanged:
+
+| Key | Type | Venues | Meaning |
+|---|---|---|---|
+| `stale_ms` | int | all | No traffic for this long marks the feed stale and pulls quotes |
+| `dead_ms` | int | all | No traffic for this long forces a reconnect |
+| `order_api` | string | all | `ws` (default) or `rest` for order entry |
+| `cancel_on_order_channel_loss` | bool | all | Cancel everything when order entry drops; default `true` |
+| `emit_ack_from_response` | bool | all | Acknowledge from the order response rather than the event stream; default `true` |
+| `allow_offline_reference_data` | bool | all | Start without REST reference data, using the configured tick and lot |
+| `depth_limit` | int | Binance | REST snapshot depth, 5 to 5000 |
+| `key_type` | string | Binance | `hmac` (default) or `ed25519` |
+| `private_key_file` | string | Binance | Ed25519 private key in PEM, when `key_type = "ed25519"` |
+| `user_stream` | string | Binance | `ws_api` (default), `listen_key` or `none` |
+| `position_from_balance` | bool | Binance | Derive positions from account balances |
+| `depth` | int | Bybit | Order book subscription depth, 1 to 1000 |
+| `ws_private_url` | string | Bybit | Private WebSocket URL; derived from `ws_url` when empty |
+| `ping_interval_ms` | int | Bybit | Application-level ping interval, at least 1000 |
+| `orders_per_second` | int | Bybit | Client-side order rate cap |
+| `position_from_wallet` | bool | Bybit | Derive positions from the wallet |
+
+A key that is not listed anywhere is still forwarded to the connector but produces an "unknown key"
+warning. Details of each connector are in `docs/venues.md`.
 
 ## `[[instruments]]`
 
