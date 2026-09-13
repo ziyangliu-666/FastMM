@@ -38,9 +38,10 @@ if(FASTMM_BUILD_NET)
   endif()
 endif()
 
-# Hot-path no-allocation harness: the ONLY binary that overrides global operator new.
+# Hot-path no-allocation harness: the ONLY binary that overrides global operator new. Not built
+# under TSan: its runtime defines operator new/delete itself and the link fails on duplicates.
 file(GLOB _hot CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/hotpath/*.cpp)
-if(_hot)
+if(_hot AND NOT FASTMM_ENABLE_TSAN)
   add_executable(fastmm_hotpath_tests ${_hot} support/alloc_counter.cpp)
   fastmm_target_defaults(fastmm_hotpath_tests)
   target_link_libraries(fastmm_hotpath_tests PRIVATE fastmm_test_support fastmm::backtest)

@@ -7,4 +7,6 @@ BUILD="${1:-build/debug}"
 RCT="${RUN_CLANG_TIDY:-$(command -v run-clang-tidy-18 || command -v run-clang-tidy)}"
 # gcc-only warning flags (-Wlogical-op, -Wuseless-cast, ...) in a gcc compile database are
 # unknown to clang; with -Werror they would become errors in every file.
-"$RCT" -p "$BUILD" -j"$(nproc)" -quiet -extra-arg=-Wno-unknown-warning-option "src/|apps/"
+# The file regex is anchored at the repository root: dependency sources in the CPM cache
+# (~/.cache/CPM/<pkg>/<hash>/src/...) would otherwise match "src/" too.
+"$RCT" -p "$BUILD" -j"$(nproc)" -quiet -extra-arg=-Wno-unknown-warning-option "^$(pwd)/(src|apps)/"
