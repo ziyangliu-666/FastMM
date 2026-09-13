@@ -21,7 +21,11 @@ TEST_CASE("core.seqlock: readers never observe torn writes") {
   std::atomic<bool> stop{false};
   std::atomic<std::uint64_t> reads{0};
   std::atomic<std::uint64_t> torn{0};
+  std::atomic<bool> reader_ready{false};
   std::thread writer([&] {
+    // Without this the writer can finish all stores before the reader is first scheduled (one
+    // core, or a loaded ctest -j run), and the test would check nothing.
+    while (!reader_ready.load(std::memory_order_relaxed)) std::this_thread::yield();
     Snapshot s{};
     for (std::uint64_t i = 1; i < 2'000'000; ++i) {
       s.a = i;
@@ -35,6 +39,7 @@ TEST_CASE("core.seqlock: readers never observe torn writes") {
     while (!stop.load(std::memory_order_relaxed)) {
       const Snapshot s = sl.load();
       reads.fetch_add(1, std::memory_order_relaxed);
+      reader_ready.store(true, std::memory_order_relaxed);
       if (s.b != s.a * 3) torn.fetch_add(1);
       for (auto p : s.pad) {
         if (p != s.a) torn.fetch_add(1);
