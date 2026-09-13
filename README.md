@@ -96,15 +96,17 @@ python examples/python/backtest_quickstart.py
 schema automatically. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md).
 
 ```cpp
-class MyQuoter : public StrategyBase<MyQuoterParams> {
- public:
-  static constexpr std::string_view name() { return "my_quoter"; }
-  void on_book(StrategyContext& ctx, InstrumentId id) {
-    const auto& book = ctx.book(id);
-    if (!book.is_valid()) return ctx.pull_quotes(id);
-    ctx.set_quotes(id, symmetric_quotes(book.mid(), params().half_spread_bps, params().quote_qty));
-  }
-};
+template <class Ctx, class Book>
+void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
+  if (!book.is_valid()) return ctx.pull_quotes(id);
+  const Instrument& inst = ctx.instrument(id);
+  const Price mid = book.mid();
+  const Price half = Price::from_raw(static_cast<std::int64_t>(Int128{mid.raw} * half_cbps_ / 1'000'000));
+  DesiredQuotes q;
+  static_cast<void>(q.bids.push_back(Level{inst.round_price(mid - half, Side::Buy), qty_}));
+  static_cast<void>(q.asks.push_back(Level{inst.round_price(mid + half, Side::Sell), qty_}));
+  ctx.set_quotes(id, q);  // QuoteManager diffs against live orders: minimal new/cancel/replace
+}
 ```
 
 **Add a venue** with a market-data parser, an order gateway and a control-path class; binary
