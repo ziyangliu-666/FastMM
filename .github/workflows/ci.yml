@@ -15,19 +15,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install tools
-        run: sudo apt-get update && sudo apt-get install -y clang-format-18 clang-tidy-18 ninja-build libssl-dev zlib1g-dev && pip install cmake
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18
       - name: clang-format
         run: CLANG_FORMAT=clang-format-18 ./scripts/format.sh --check
       - name: forbidden patterns
         run: |
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)
           ! grep -rnE 'TEST_CASE\("[^"]*;' tests || (echo "';' in a TEST_CASE name breaks doctest_discover_tests filters" && exit 1)
+
+  clang-tidy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: install tools
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy-18 ninja-build libssl-dev zlib1g-dev && cmake --version
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
           key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
-      - name: clang-tidy
-        run: cmake --preset debug -DFASTMM_BUILD_BENCH=OFF && RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
+      - name: configure (compile_commands.json)
+        run: cmake --preset debug -DFASTMM_BUILD_BENCH=OFF
+      - name: clang-tidy (bugprone-* and performance-* fail the job)
+        run: RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
 
   build-test:
     runs-on: ubuntu-24.04
@@ -44,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev zlib1g-dev ccache && pip install cmake
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev zlib1g-dev ccache && cmake --version
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ matrix.name }}

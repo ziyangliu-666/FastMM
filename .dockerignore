@@ -1,0 +1,15 @@
+# Keep the Docker build context small and reproducible: only sources go in.
+build/
+.cpm-cache/
+.venv/
+runs/
+dist/
+**/__pycache__/
+*.egg-info/
+python/fastmm/_core*.so
+bench/results/
+.git/
+.cache/
+.idea/
+.vscode/
+.env
