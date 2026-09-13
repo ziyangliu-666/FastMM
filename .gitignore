@@ -29,3 +29,6 @@ bench/results/*
 .idea/
 .cache/
 .DS_Store
+
+# Claude Code agent worktrees and local state
+.claude/
