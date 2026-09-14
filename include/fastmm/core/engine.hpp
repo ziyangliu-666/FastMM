@@ -11,6 +11,10 @@
 // Strategy hooks are optional member functions, checked in the constructor and dispatched at
 // compile time through the table in strategies/hooks.hpp: a hook with a wrong signature is a
 // build error, not a silent no-op. Instrument-scoped hooks fire only for instruments in the table.
+//
+// Time: the engine reads its clock once per consumed event, once per fired timer and once at start
+// and finish, and uses that value for every decision and Out* stamp inside (now()). The journal
+// records it, so a replay on SimClock sees exactly the times the original run saw.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
@@ -188,26 +192,37 @@ class Engine {
   void start() noexcept {
     if (started_) return;
     started_ = true;
+    latch_clock();
+    // The rate limiter refills from the start time, not from construction (replay constructs the
+    // engine at a different time).
+    risk_.bucket().rebase(now_);
     FASTMM_LOG_INFO(
         "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
     [[maybe_unused]] const bool quoting_before = quoting_enabled();
     if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
     if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
     flush_out();
+    unlatch_clock();
   }
   void finish() noexcept {
     if (!started_ || finished_) return;
     finished_ = true;
+    latch_clock();
     if constexpr (has_hook(Hook::Stop)) strategy_.on_stop(ctx_);
     flush_out();
-    publish_latency(clock_.now());
+    publish_latency(now_);
+    unlatch_clock();
   }
   void stop() noexcept { stop_.store(true, std::memory_order_release); }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
 
   // ---- strategy-facing API ------------------------------------------------------------------
 
-  [[nodiscard]] Timestamp now() const noexcept { return clock_.now(); }
+  // The time of the event, timer, start or finish being processed; outside those (direct calls
+  // from tests or tools) the clock itself.
+  [[nodiscard]] FASTMM_FORCE_INLINE Timestamp now() const noexcept {
+    return FASTMM_LIKELY(latched_) ? now_ : clock_.now();
+  }
   [[nodiscard]] const Book& book(InstrumentId id) const noexcept { return books_[id.value]; }
   [[nodiscard]] Book& book_mut(InstrumentId id) noexcept { return books_[id.value]; }
   [[nodiscard]] const Position& position(InstrumentId id) const noexcept {
@@ -295,7 +310,7 @@ class Engine {
     if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
     const Instrument& inst = instruments_.get(id);
     Placer place{this};
-    quotes_.reconcile(inst, q, oms_, clock_.now(), place);
+    quotes_.reconcile(inst, q, oms_, now(), place);
     flush_out();
     return true;
   }
@@ -321,7 +336,7 @@ class Engine {
   [[nodiscard]] TimerId add_timer(Duration period,
                                   bool repeat,
                                   std::uint64_t user_data = 0) noexcept {
-    return timers_.add(clock_.now(), period, repeat, user_data);
+    return timers_.add(now(), period, repeat, user_data);
   }
   bool cancel_timer(TimerId id) noexcept { return timers_.cancel(id); }
 
@@ -366,6 +381,7 @@ class Engine {
 
   void process(const EventHeader* h) noexcept {
     ++stats_.events;
+    latch_clock();
     if (journal_.enabled()) {
       auto r = journal_.record(*h);
       if (FASTMM_UNLIKELY(!r)) {
@@ -385,6 +401,7 @@ class Engine {
     } else {
       dispatch(h);
     }
+    unlatch_clock();
   }
 
   void dispatch(const EventHeader* h) noexcept {
@@ -461,7 +478,7 @@ class Engine {
     ++stats_.book_updates;
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
-    const Timestamp now = clock_.now();
+    const Timestamp now = now_;
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_LIKELY(b.is_valid())) {
       const Price mid = b.mid();
@@ -534,10 +551,10 @@ class Engine {
     }
     if (u.known && u.handle.valid() && instruments_.contains(u.order.instrument)) {
       Placer place{this};
-      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, clock_.now(), place);
+      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now(), place);
     } else if (u.terminal && instruments_.contains(u.order.instrument)) {
       Placer place{this};
-      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, clock_.now(), place);
+      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now(), place);
     }
     if (u.changed) {
       if constexpr (has_hook(Hook::OrderUpdate)) strategy_.on_order_update(ctx_, u);
@@ -661,7 +678,7 @@ class Engine {
       case ControlCommand::Reload:
         break;  // not implemented: configuration changes need a restart
       case ControlCommand::FlushStats:
-        publish_latency(clock_.now());
+        publish_latency(now());
         break;
     }
   }
@@ -718,7 +735,7 @@ class Engine {
   void resume_quotes() noexcept {
     Placer place{this};
     const bool enabled = quoting_enabled();
-    const Timestamp now = clock_.now();
+    const Timestamp now = this->now();
     for (const Instrument& inst : instruments_) {
       if (!quotes_.resumable(inst.id)) continue;
       if (enabled && books_[inst.id.value].is_valid()) {
@@ -756,9 +773,11 @@ class Engine {
   // ---- timers ---------------------------------------------------------------------------------
 
   void on_timer_fired(TimerId id, std::uint64_t user_data) noexcept {
+    latch_clock();
     [[maybe_unused]] const bool quoting_before = quoting_enabled();
     fire_timer(id, user_data);
     if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
+    unlatch_clock();
   }
   void fire_timer(TimerId id, std::uint64_t user_data) noexcept {
     ++stats_.timers_fired;
@@ -768,7 +787,7 @@ class Engine {
       init_header(t, EventType::Timer);
       t.timer_id = id;
       t.user_data = user_data;
-      t.fire_ts = clock_.now();
+      t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
       if (!journal_.record(t.hdr)) {
         ++stats_.journal_overflows;
@@ -816,7 +835,7 @@ class Engine {
     if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
       return fail(RejectReason::InstrumentDisabled);
     const Instrument& inst = instruments_.get(req.instrument);
-    const Timestamp now = clock_.now();
+    const Timestamp now = this->now();
     OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty};
     RiskInputs in{now,
                   &positions_.get(req.instrument),
@@ -854,7 +873,7 @@ class Engine {
     const Order& o = oms_.get(h);
     OutCancelMsg m{};
     init_header(m, EventType::OutCancel, o.instrument, o.venue);
-    m.hdr.recv_ts = clock_.now();
+    m.hdr.recv_ts = now();
     m.cl_ord_id = o.cl_ord_id;
     m.venue_order_id = o.venue_order_id;
     queue_out(m.hdr);
@@ -868,7 +887,7 @@ class Engine {
     if (!o.is_working()) return fail(RejectReason::InvalidState);
     if (!transport_.supports_replace(o.venue)) return fail(RejectReason::VenueReject);
     const Instrument& inst = instruments_.get(o.instrument);
-    const Timestamp now = clock_.now();
+    const Timestamp now = this->now();
     OrderIntent oi{o.instrument, o.venue, o.side, o.type, px, qty};
     RiskInputs in{now,
                   &positions_.get(o.instrument),
@@ -902,7 +921,7 @@ class Engine {
     ++stats_.unknown_order_cancels;
     OutCancelMsg m{};
     init_header(m, EventType::OutCancel, h.instrument, h.venue);
-    m.hdr.recv_ts = clock_.now();
+    m.hdr.recv_ts = now();
     if (h.type == EventType::OrderAck) {
       const auto& a = msg_cast<OrderAckMsg>(&h);
       m.cl_ord_id = a.cl_ord_id;
@@ -964,6 +983,13 @@ class Engine {
   }
 
   // ---- clock ------------------------------------------------------------------------------------
+
+  // One clock read per event / fired timer / start / finish; now() returns it until unlatched.
+  FASTMM_FORCE_INLINE void latch_clock() noexcept {
+    now_ = clock_.now();
+    latched_ = true;
+  }
+  FASTMM_FORCE_INLINE void unlatch_clock() noexcept { latched_ = false; }
 
   // Clocks with a refresh() (TscClock) take recalibrations published by the calibrator thread
   // here, once per step next to the timer poll rather than per event. SimClock has none.
@@ -1063,6 +1089,7 @@ class Engine {
   Seqlocked<LatencySnapshot> latency_pub_;
   Seqlocked<EngineLiveStats> live_pub_;
   Timestamp last_publish_{};
+  Timestamp now_{};  // valid while latched_
 
   alignas(kCacheLine) std::byte out_storage_[kOutBatch * kOutSlotBytes] = {};
   StaticVector<const EventHeader*, kOutBatch> out_batch_;
@@ -1071,6 +1098,7 @@ class Engine {
   Cycles event_t1_{};
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
+  bool latched_ = false;
   bool quoting_enabled_;
   bool reconciling_ = false;
   bool started_ = false;

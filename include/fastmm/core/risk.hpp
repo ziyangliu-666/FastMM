@@ -65,6 +65,8 @@ class TokenBucket {
     tokens_ -= kScale;
     return true;
   }
+  // Moves the refill reference to `now` without adding tokens (the engine's start time).
+  void rebase(Timestamp now) noexcept { last_ = now; }
   [[nodiscard]] std::int64_t tokens() const noexcept { return tokens_ / kScale; }
   [[nodiscard]] std::int64_t tokens_micro() const noexcept { return tokens_; }
 
