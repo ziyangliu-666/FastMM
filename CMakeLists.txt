@@ -63,6 +63,7 @@ add_subdirectory(src/codecs)
 if(FASTMM_BUILD_NET)
   add_subdirectory(src/net)
   add_subdirectory(src/venues)
+  add_subdirectory(src/live)
 endif()
 
 if(FASTMM_BUILD_APPS)
