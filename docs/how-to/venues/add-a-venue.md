@@ -285,7 +285,8 @@ Name the tests after the Bybit ones; they are picked up by the `fastmm_venues_te
 | `tests/venues/foo_order_encoder_test.cpp` | Golden request strings, signatures against an independent implementation, response decoding and the error map |
 | `tests/venues/foo_private_parser_test.cpp` | Every order status, fills with the commission asset, positions, foreign client ids |
 | `tests/venues/foo_venue_test.cpp` | The whole connector against `FakeVenueServer` (`tests/venues/fake_venue_util.hpp`): config mapping, reference data, subscribe, order round trip, reconciliation, channel loss and the blocking `cancel_all()` |
-| `tests/venues/live_foo_test.cpp` | Opt-in testnet check with `tests/venues/live_test_util.hpp`: skipped unless `FASTMM_LIVE_TESTS=1` |
+| `tests/venues/live_foo_test.cpp` | Opt-in testnet check with `tests/venues/live_test_util.hpp`: skipped unless `FASTMM_LIVE_TESTS=1`. Name the test cases `live.foo: ...`; the `venues.live.` prefix gives them the ctest label `live` instead of `unit` and `fixture` |
+| `tests/hotpath/venues_noalloc_test.cpp` | A test case for the market-data parser, the private parser and the order encoder: after a warm-up pass over the fixtures, no allocation (binary `fastmm_hotpath_tests`, label `noalloc`) |
 | `tests/core/book_syncer_test.cpp` | New sync traits, if you add them to `book_syncer.hpp` |
 
 Run them:
@@ -295,10 +296,9 @@ cmake --build --preset release -j --target fastmm_venues_tests
 ctest --preset release -R 'foo\.'
 ```
 
-Two gaps in the shipped connectors that a new venue should not copy: no venue parser or encoder has
-a no-allocation test (the `tests/hotpath/` binary does not link `fastmm::venues`), and only
-`BM_Json_BinanceDepth20` has a p50 budget in `bench/ci_budget.toml` (`bench/bench_json.cpp` also
-measures Bybit without one). Add both for your venue.
+Benchmarks: add the parsers to `bench/bench_json.cpp` and the order encoder to
+`bench/bench_order_encoders.cpp`, then a p50 budget for each in `bench/ci_budget.toml`, as the
+shipped venues have.
 
 ## 13. Conformance checklist
 

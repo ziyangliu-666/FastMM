@@ -32,14 +32,38 @@ function(fastmm_test name)
   doctest_discover_tests(fastmm_${name}_tests TEST_PREFIX "${name}." PROPERTIES LABELS "${T_LABELS}" ${_serial})
 endfunction()
 
+# fastmm_relabel_tests(<target> <name regex> <labels>): the discovered tests of <target> whose ctest
+# name matches get <labels> instead of the binary's labels. Test names are only known after the
+# build (doctest_discover_tests), so this runs as a ctest include file after the discovered list.
+function(fastmm_relabel_tests target regex labels)
+  set(_file "${CMAKE_CURRENT_BINARY_DIR}/${target}_relabel.cmake")
+  file(WRITE "${_file}"
+    "foreach(_t IN LISTS ${target}_TESTS)\n"
+    "  if(_t MATCHES [==[${regex}]==])\n"
+    "    set_tests_properties(\"\${_t}\" PROPERTIES LABELS [==[${labels}]==])\n"
+    "  endif()\n"
+    "endforeach()\n")
+  set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${_file}")
+endfunction()
+
 fastmm_test(core      LABELS "unit;property" LIBS fastmm::core)
 fastmm_test(strategies LABELS "unit"         LIBS fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
 fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim)
+# Shipped configs/*.toml: load, schema and [strategy.params] through the registry (label config).
+fastmm_test(config    LABELS "config"        LIBS fastmm::backtest)
+if(TARGET fastmm_config_tests)
+  target_compile_definitions(fastmm_config_tests PRIVATE FASTMM_CONFIGS_DIR="${PROJECT_SOURCE_DIR}/configs")
+endif()
 if(FASTMM_BUILD_NET)
   fastmm_test(net       LABELS "unit"           LIBS fastmm::net)
   fastmm_test(venues    LABELS "unit;fixture"   LIBS fastmm::venues)
+  # Opt-in testnet checks (tests/venues/live_*_test.cpp): `ctest -L live` selects them, the test
+  # presets exclude the label, and without FASTMM_LIVE_TESTS=1 they skip.
+  if(TARGET fastmm_venues_tests)
+    fastmm_relabel_tests(fastmm_venues_tests "^venues\\.live\\." "live")
+  endif()
   if(TARGET fastmm::sim_server)
     fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::backtest)
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
@@ -59,6 +83,11 @@ endif()
 if(TARGET fastmm_hotpath_tests AND TARGET fastmm::net)
   target_link_libraries(fastmm_hotpath_tests PRIVATE fastmm::net)
   target_compile_definitions(fastmm_hotpath_tests PRIVATE FASTMM_HOTPATH_NET=1)
+endif()
+# Venue parsers and encoders (hotpath/venues_noalloc_test.cpp) need the venues library.
+if(TARGET fastmm_hotpath_tests AND TARGET fastmm::venues)
+  target_link_libraries(fastmm_hotpath_tests PRIVATE fastmm::venues)
+  target_compile_definitions(fastmm_hotpath_tests PRIVATE FASTMM_HOTPATH_VENUES=1)
 endif()
 
 # Compile-fail tests (label compile_fail): each case must fail to build with the expected fastmm
@@ -131,4 +160,13 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
   add_test(NAME tools.pnl_report.self_test COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/tools/pnl_report.py --self-test)
   set_tests_properties(tools.pnl_report.self_test PROPERTIES LABELS "unit")
+endif()
+
+# fastmm-top --once messages: missing file, unpublished segment, segment of another version.
+if(Python3_Interpreter_FOUND AND TARGET fastmm-top)
+  add_test(NAME apps.fastmm-top.messages
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/fastmm_top_messages.py
+            $<TARGET_FILE:fastmm-top> ${PROJECT_SOURCE_DIR}/include/fastmm/core/status_segment.hpp
+            ${CMAKE_CURRENT_BINARY_DIR}/tmp)
+  set_tests_properties(apps.fastmm-top.messages PROPERTIES LABELS "unit")
 endif()

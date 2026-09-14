@@ -217,10 +217,11 @@ bool StatusReader::open(const std::string& path, std::string* error) {
       std::memcpy(&magic, header + sizeof(std::uint64_t), sizeof magic);
       std::memcpy(&version, header + kHeaderBytes - sizeof version, sizeof version);
     }
+    const bool other_version = magic == kStatusMagic && version != kStatusVersion;
+    if (other_version) refused_version_ = version;
     if (error != nullptr) {
-      *error = magic == kStatusMagic && version != kStatusVersion
-                   ? status_version_mismatch(version)
-                   : std::string("file too small for a status segment");
+      *error = other_version ? status_version_mismatch(version)
+                             : std::string("file too small for a status segment");
     }
     ::close(fd);
     return false;
@@ -248,7 +249,7 @@ bool StatusReader::read(StatusSnapshot& out) const noexcept {
 }
 
 std::uint32_t StatusReader::segment_version() const noexcept {
-  if (seg_ == nullptr) return 0;
+  if (seg_ == nullptr) return refused_version_;
   std::uint64_t magic = 0;
   std::uint32_t version = 0;
   const auto* base = reinterpret_cast<const std::uint8_t*>(&seg_->data);
@@ -258,6 +259,7 @@ std::uint32_t StatusReader::segment_version() const noexcept {
 }
 
 void StatusReader::close() noexcept {
+  refused_version_ = 0;
   if (seg_ == nullptr) return;
   ::munmap(const_cast<void*>(static_cast<const void*>(seg_)), kSegmentBytes);
   seg_ = nullptr;

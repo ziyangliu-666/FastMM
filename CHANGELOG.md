@@ -5,10 +5,14 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- The opt-in testnet tests (`venues.live.*` in `fastmm_venues_tests`) carry the ctest label `live`
+  instead of `unit` and `fixture`: `ctest -L live` selects them, the test presets exclude them, and
+  they still skip unless `FASTMM_LIVE_TESTS=1`.
 - **Status segment version 2** (`venue_rejects` and per-reason reject counts). `fastmm-top` and
-  `fastmm-live` must come from the same build; a mismatch is reported as `status segment version
-  <n> is not readable by this build` instead of being misread. `fastmm-top` shows the reject
-  counters on a `rejects` line instead of the `engine` line.
+  `fastmm-live` must come from the same build; `fastmm-top` reports a mismatch as `<file> was
+  written by a different FastMM build (status segment version <n>, this fastmm-top reads version
+  <m>)` (exit code 3 with `--once`) instead of misreading it or saying there is no status segment.
+  `fastmm-top` shows the reject counters on a `rejects` line instead of the `engine` line.
 - **Journal format v2 (ADR-0010).** Every consumed event and fired timer carries the engine clock
   (an int32 ns delta in `EventHeader::reserved0`, flag `kEngineTime`; `EngineTimeMsg` records hold
   absolute values at start, finish and on overflow). The header holds the session epoch, quoting
@@ -139,6 +143,24 @@ All notable changes are recorded here (Keep a Changelog format).
 - Binance Spot Demo Mode: `configs/binance-demo.toml`, and `FASTMM_BINANCE_ENV=demo` for the live
   test. The live test passed against Demo Mode (book sync, far post-only order, cancel, cancel-all).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
+- **Shipped config test** (ctest label `config`, `fastmm_config_tests`): every `configs/*.toml` is
+  loaded with placeholder values for the `${VAR}` it references, checked against the schema, and
+  its strategy is configured through the registry, so a bad `[strategy.params]` value or key, a
+  schema error or an unknown strategy in a shipped config fails the build's tests. A second case
+  checks that mutated copies (`quote_qty = "abc"`, an unknown parameter, a string where the schema
+  wants an integer, an unknown strategy) are reported.
+- **Venue hot-path coverage.** `tests/hotpath/venues_noalloc_test.cpp` (label `noalloc`): after a
+  warm-up pass over the recorded fixtures, the market-data parser, the private parser and the order
+  encoder (new, cancel, replace) of Binance, Bybit and Deribit decode and encode 200 rounds without
+  an allocation; `fastmm_hotpath_tests` now links `fastmm::venues`. Benchmarks for the Bybit trade,
+  Bybit execution, Deribit book change, option ticker, trades, user order and user trade frames
+  (`bench_json`) and the three order encoders (`bench_order_encoders`), with p50 budgets in
+  `bench/ci_budget.toml` for these, the Binance execution report and the Bybit order book. Measured
+  p50 (release, pinned, median of three runs): Bybit trade 144 ns, Bybit orderbook 20 levels 703 ns,
+  Deribit book change 620 ns, option ticker 398 ns, three trades 398 ns; private Binance execution
+  report 309 ns, Bybit execution 380 ns, Deribit user order 294 ns, user trade 431 ns; encoders
+  Binance order.place with HMAC signature 1474 ns, Bybit order.create 312 ns, Deribit private/buy
+  319 ns.
 
 ### Fixed
 - **Live session journals replay exactly.** `fastmm-replay --journal <live journal> --verify`

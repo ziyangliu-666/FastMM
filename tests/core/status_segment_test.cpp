@@ -225,6 +225,10 @@ TEST_CASE("core.status_segment: a segment of another version is refused, not mis
   CHECK(err == status_version_mismatch(1));
   CHECK(err.find("version 1 ") != std::string::npos);
   CHECK(err.find("(version 2)") != std::string::npos);
+  CHECK_FALSE(r.is_open());
+  CHECK(r.segment_version() == 1);  // fastmm-top reports the refused version on its own
+  CHECK_FALSE(r.open(tmp_path("no-such.status"), &err));
+  CHECK(r.segment_version() == 0);
   std::remove(old_path.c_str());
   std::remove(path.c_str());
 }
