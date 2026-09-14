@@ -159,7 +159,9 @@ TEST_CASE("sim.replay_driver: the clock follows the journal, backwards too") {
     REQUIRE(reader.open(path));
     JournalFeed feed(reader);
     SimClock clock(kT0);
-    Probe probe{&clock, &feed};
+    Probe probe;
+    probe.clock = &clock;
+    probe.feed = &feed;
     ReplayDriver driver(clock, feed, probe_hooks(probe));
     CHECK(driver.run_all() == 3);
     driver.finish();
@@ -176,7 +178,9 @@ TEST_CASE("sim.replay_driver: the clock follows the journal, backwards too") {
     REQUIRE(reader.open(path));
     JournalFeed feed(reader);
     SimClock clock(kT0);
-    Probe probe{&clock, &feed};
+    Probe probe;
+    probe.clock = &clock;
+    probe.feed = &feed;
     ReplayDriver driver(clock, feed, probe_hooks(probe));
     CHECK(driver.run_all() == 3);
     driver.finish();

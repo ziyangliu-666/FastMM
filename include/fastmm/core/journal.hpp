@@ -171,10 +171,9 @@ class JournalWriter {
   // Outbound copy; `dropped` marks a message the transport did not accept.
   Result<std::uint64_t, JournalError> record_outbound(const EventHeader& msg,
                                                       bool dropped = false) noexcept {
-    return put(
-        msg,
-        static_cast<std::uint8_t>(EventHeader::kOutbound | (dropped ? EventHeader::kDropped : 0U)),
-        0);
+    std::uint8_t flags = EventHeader::kOutbound;
+    if (dropped) flags = static_cast<std::uint8_t>(flags | EventHeader::kDropped);
+    return put(msg, flags, 0);
   }
 
  private:

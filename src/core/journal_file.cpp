@@ -53,7 +53,7 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   h.block_bytes = kJournalBlockBytes;
   const std::size_t n =
       info.strategy.size() < sizeof(h.strategy) - 1 ? info.strategy.size() : sizeof(h.strategy) - 1;
-  std::memcpy(h.strategy, info.strategy.data(), n);
+  if (n > 0) std::memcpy(h.strategy, info.strategy.data(), n);  // an empty view may be null
   if (info.has_session) {
     h.header_flags |= kHeaderSession;
     h.session_epoch = info.session_epoch;
