@@ -401,3 +401,49 @@ TEST_CASE("core.engine: serialize latency starts at the decision of the same eve
   CHECK(serialize.count() > after_book);
   CHECK(serialize.percentile(1.0) < 500'000'000ULL);
 }
+
+TEST_CASE(
+    "core.engine: commission in the base asset adjusts the position and is valued at the fill") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const auto& bid = f.transport.at<OutNewOrderMsg>(0);
+  REQUIRE(bid.side == Side::Buy);
+  const auto push_fill = [&](ClientOrderId id,
+                             Side side,
+                             const char* p,
+                             const char* q,
+                             const char* fee,
+                             FeeAsset asset,
+                             const char* exec) {
+    OrderFillMsg m{};
+    init_header(m, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+    m.cl_ord_id = id;
+    m.side = side;
+    m.price = px(p);
+    m.qty = qt(q);
+    m.cum_qty = qt(q);
+    m.exec_id = exec;
+    m.liquidity = Liquidity::Maker;
+    m.fee = Notional::from_decimal(fee).value();
+    m.fee_asset = asset;
+    f.push(m);
+    f.drain();
+  };
+  // Buy 0.01 at 99.90 paying 0.00001 base: we hold 0.00999, and the fee is 0.00001 * 99.90.
+  push_fill(bid.cl_ord_id, Side::Buy, "99.90", "0.01", "0.00001", FeeAsset::Base, "b1");
+  const Position& pos = f.engine->position(InstrumentId{0});
+  CHECK(pos.qty == qt("0.00999"));
+  CHECK(pos.fees == Notional::from_decimal("0.000999").value());
+  // A quote-asset fee is booked as is and does not change the quantity.
+  push_fill(ClientOrderId{0x1234}, Side::Sell, "100.10", "0.004", "0.0004", FeeAsset::Quote, "s1");
+  CHECK(pos.qty == qt("0.00599"));
+  CHECK(pos.fees == Notional::from_decimal("0.001399").value());
+  // A fee in another asset (BNB) is counted, not booked.
+  push_fill(ClientOrderId{0x1235}, Side::Sell, "100.10", "0.001", "0.00002", FeeAsset::Other, "s2");
+  CHECK(pos.qty == qt("0.00499"));
+  CHECK(pos.fees == Notional::from_decimal("0.001399").value());
+  CHECK(f.engine->stats().unconverted_fees == 1);
+}

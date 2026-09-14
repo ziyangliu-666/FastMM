@@ -322,6 +322,10 @@ enum class ConnState : std::uint8_t {
   return "?";
 }
 
+// The asset a fill's commission is charged in. Binance spot charges a buy in the base asset
+// (you receive less), a sell in the quote asset, and either in BNB when the discount is enabled.
+enum class FeeAsset : std::uint8_t { Quote = 0, Base = 1, Other = 2 };
+
 enum class Liquidity : std::uint8_t { Unknown = 0, Maker = 1, Taker = 2 };
 [[nodiscard]] constexpr std::string_view to_string(Liquidity l) noexcept {
   switch (l) {

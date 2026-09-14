@@ -217,11 +217,15 @@ MdDecodeResult BybitPrivateParser::decode(std::string_view json,
       std::string_view price_s;
       std::string_view qty_s;
       std::string_view fee_s;
+      std::string_view fee_ccy;
+      std::string_view fee_rate_s;
       std::string_view order_qty_s;
       std::string_view leaves_s;
       std::string_view time_s;
       bool maker = false;
       if (o["execFee"].get_string().get(fee_s) != sj::SUCCESS) fee_s = {};
+      if (o["feeCurrency"].get_string().get(fee_ccy) != sj::SUCCESS) fee_ccy = {};
+      if (o["feeRate"].get_string().get(fee_rate_s) != sj::SUCCESS) fee_rate_s = {};
       if (o["execId"].get_string().get(exec_id) != sj::SUCCESS) return malformed();
       if (o["execPrice"].get_string().get(price_s) != sj::SUCCESS) return malformed();
       if (o["execQty"].get_string().get(qty_s) != sj::SUCCESS) return malformed();
@@ -243,6 +247,24 @@ MdDecodeResult BybitPrivateParser::decode(std::string_view json,
       m->leaves_qty = qty_or_zero(leaves_s);
       m->cum_qty = qty_or_zero(order_qty_s) - m->leaves_qty;
       if (const auto fee = parse_notional(fee_s)) m->fee = *fee;
+      // Spot fee currency (enum page, "Spot Fee Currency Instruction"): with a positive fee rate
+      // (and always for takers) a buy pays in the base coin and a sell in the quote coin; a maker
+      // with a negative rate is the other way round. feeCurrency names it when present; recorded
+      // testnet executions omit it, so the rule decides then.
+      {
+        const Instrument& in = instruments_.get(inst);
+        if (m->fee.is_zero()) {
+          m->fee_asset = FeeAsset::Quote;
+        } else if (!fee_ccy.empty()) {
+          m->fee_asset = iequals_symbol(in.quote.view(), fee_ccy)  ? FeeAsset::Quote
+                         : iequals_symbol(in.base.view(), fee_ccy) ? FeeAsset::Base
+                                                                   : FeeAsset::Other;
+        } else {
+          const bool rebate = maker && !fee_rate_s.empty() && fee_rate_s.front() == '-';
+          const bool base = (side == Side::Buy) != rebate;
+          m->fee_asset = base ? FeeAsset::Base : FeeAsset::Quote;
+        }
+      }
       m->side = side;
       m->liquidity = maker ? Liquidity::Maker : Liquidity::Taker;
       const auto t = parse_int64(time_s);

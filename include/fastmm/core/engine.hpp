@@ -72,6 +72,7 @@ struct EngineStats {
   std::uint64_t crossed_pulls = 0;
   std::uint64_t unknown_order_cancels = 0;
   std::uint64_t kills = 0;
+  std::uint64_t unconverted_fees = 0;  // fills whose commission asset is neither base nor quote
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;  // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;      // ... or had to step (old mapping off by > threshold)
@@ -500,7 +501,29 @@ class Engine {
     const Side side = u.known ? u.order.side : f.side;
     if (instruments_.contains(id)) {
       const Instrument& inst = instruments_.get(id);
-      positions_.on_fill(id, side, f.price, f.qty, f.fee, inst);
+      // Commission in the base asset changes what we hold (a buy receives qty - fee, a sell
+      // delivers qty + fee) and costs fee * price in quote terms; commission in another asset
+      // (BNB) cannot be valued here and is counted instead of being booked as quote.
+      Qty held = f.qty;
+      Notional fee = f.fee;
+      if (f.fee_asset == FeeAsset::Base) {
+        const Qty fee_base = Qty::from_raw(f.fee.raw);
+        fee = inst.notional(f.price, fee_base);
+        held = side == Side::Buy ? f.qty - fee_base : f.qty + fee_base;
+      } else if (f.fee_asset == FeeAsset::Other) {
+        if (stats_.unconverted_fees++ == 0) {
+          FASTMM_LOG_WARN(
+              "fill commission in an asset other than base or quote is not included in "
+              "fees or positions (first on order {})",
+              encode_cl_ord_id(f.cl_ord_id));
+        }
+        fee = Notional{};
+      }
+      if (held.raw > 0) {
+        positions_.on_fill(id, side, f.price, held, fee, inst);
+      } else {
+        positions_.on_fill(id, side, f.price, f.qty, fee, inst);
+      }
       if (risk_.on_pnl(positions_.net_pnl())) on_kill();
     }
     if (u.action == OmsAction::UnknownFill) {

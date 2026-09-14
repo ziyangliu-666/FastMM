@@ -71,6 +71,7 @@ TEST_CASE("bybit.private_parser: execution -> fill, wallet -> position, control 
   CHECK(f.leaves_qty.is_zero());
   CHECK(f.fee == Notional::from_decimal("0.000001").value());
   CHECK(f.side == Side::Buy);
+  CHECK(f.fee_asset == FeeAsset::Base);  // a spot buy without feeCurrency: fee in BTC
   CHECK(f.liquidity == Liquidity::Taker);
   CHECK(f.hdr.exch_ts.ns == 1789299703453LL * 1'000'000);
 

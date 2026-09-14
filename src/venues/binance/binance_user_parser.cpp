@@ -228,12 +228,24 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
       m->qty = *last_qty;
       m->cum_qty = *cum;
       m->leaves_qty = *order_qty - *cum;
-      // Commission is quoted in `N` (the commission asset); it is stored as-is - the fee
-      // asset can be base, quote or BNB, and the engine only aggregates it for reporting.
+      // Commission `n` is in the asset `N`: the base asset for a buy (you receive less), the quote
+      // asset for a sell, or BNB with the discount enabled. The engine converts base commission
+      // at the fill price and adjusts the position; it cannot convert other assets.
       if (const auto fee = parse_notional(x.fee)) {
         m->fee = *fee;
       } else {
         m->fee = Notional{};
+      }
+      {
+        const Instrument& in = instruments_.get(inst);
+        if (x.fee_asset.empty() || m->fee.is_zero() ||
+            iequals_symbol(in.quote.view(), x.fee_asset)) {
+          m->fee_asset = FeeAsset::Quote;
+        } else if (iequals_symbol(in.base.view(), x.fee_asset)) {
+          m->fee_asset = FeeAsset::Base;
+        } else {
+          m->fee_asset = FeeAsset::Other;
+        }
       }
       m->side = side;
       m->liquidity = x.maker ? Liquidity::Maker : Liquidity::Taker;

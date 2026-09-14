@@ -189,10 +189,11 @@ struct OrderFillMsg {
   Qty qty;      // this execution
   Qty cum_qty;  // cumulative after this execution
   Qty leaves_qty;
-  Notional fee;  // >= 0 paid, < 0 rebate
+  Notional fee;  // >= 0 paid, < 0 rebate; in units of fee_asset
   Side side;
   Liquidity liquidity;
-  std::uint8_t pad_[54];
+  FeeAsset fee_asset;  // Quote: `fee` is a quote amount; Base: base units; Other: not convertible
+  std::uint8_t pad_[53];
 };
 static_assert(sizeof(OrderFillMsg) == 256);
 

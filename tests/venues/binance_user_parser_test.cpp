@@ -56,6 +56,7 @@ TEST_CASE("binance.user: executionReport TRADE -> OrderFillMsg") {
   CHECK(m.cum_qty == Qty::from_decimal("0.0004").value());
   CHECK(m.leaves_qty == Qty::from_decimal("0.0006").value());
   CHECK(m.fee == Notional::from_decimal("0.0000004").value());
+  CHECK(m.fee_asset == FeeAsset::Base);  // N = "BTC": a buy pays commission in the base asset
   CHECK(m.side == Side::Buy);
   CHECK(m.liquidity == Liquidity::Maker);
   CHECK(m.hdr.exch_ts.ns == 1789295200990LL * 1'000'000);
@@ -151,4 +152,27 @@ TEST_CASE("binance.user: outboundAccountPosition -> PositionUpdateMsg per base a
   CHECK(m.qty == Qty::from_decimal("1.2355").value());  // free 1.2345 + locked 0.001
   CHECK(m.avg_px.is_zero());
   CHECK(m.hdr.exch_ts.ns == 1789295201001LL * 1'000'000);
+}
+
+TEST_CASE("binance.user: the commission asset of a fill is classified as base, quote or other") {
+  TestUniverse u;
+  BinanceUserParser p(u.symbols, u.instruments, VenueId{0});
+  Scratch s;
+  const auto fill_with = [&](const char* n, const char* asset) {
+    const std::string json =
+        std::string(
+            R"({"e":"executionReport","E":1,"s":"BTCUSDT","c":"fm000100000001","S":"SELL","o":"LIMIT_MAKER","f":"GTC","q":"0.001","p":"70000","C":"","x":"TRADE","X":"FILLED","r":"NONE","i":9,"l":"0.001","z":"0.001","L":"70000","n":")") +
+        n + R"(","N":)" + asset + R"(,"T":2,"t":11,"m":true})";
+    const PaddedJson padded(json);
+    REQUIRE(p.decode(padded.view(), kRecv, kT0, s.span()).status == ParseStatus::Ok);
+    return s.as<OrderFillMsg>();
+  };
+  auto m = fill_with("0.07", R"("USDT")");
+  CHECK(m.fee_asset == FeeAsset::Quote);
+  CHECK(m.fee == Notional::from_decimal("0.07").value());
+  m = fill_with("0.0001", R"("BNB")");
+  CHECK(m.fee_asset == FeeAsset::Other);
+  m = fill_with("0", "null");
+  CHECK(m.fee_asset == FeeAsset::Quote);
+  CHECK(m.fee.is_zero());
 }
