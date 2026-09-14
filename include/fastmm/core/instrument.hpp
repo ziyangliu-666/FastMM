@@ -60,6 +60,8 @@ struct alignas(kCacheLine) Instrument {
     return round_to_tick(p, tick, side);
   }
   [[nodiscard]] constexpr Qty round_qty(Qty q) const noexcept { return round_to_lot(q, lot); }
+  // n ticks as a price distance (tick * n).
+  [[nodiscard]] constexpr Price ticks(std::int64_t n) const noexcept { return tick * n; }
   [[nodiscard]] constexpr bool valid_price(Price p) const noexcept {
     return p.is_positive() && on_tick(p, tick);
   }

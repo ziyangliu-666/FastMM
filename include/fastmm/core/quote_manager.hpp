@@ -51,6 +51,19 @@ struct DesiredQuotes {
     return s == Side::Buy ? bids : asks;
   }
   [[nodiscard]] bool empty() const noexcept { return bids.empty() && asks.empty(); }
+  // Append the next level of a side (index 0 first). A non-positive price or quantity is dropped,
+  // as is a level beyond kMaxQuoteLevels; returns whether the level was added.
+  bool bid(Price px, Qty qty) noexcept {
+    return px.is_positive() && qty.is_positive() && bids.push_back(Level{px, qty});
+  }
+  bool ask(Price px, Qty qty) noexcept {
+    return px.is_positive() && qty.is_positive() && asks.push_back(Level{px, qty});
+  }
+  // Never cross ourselves at level 0: an ask at or below the best bid moves one tick above it.
+  void uncross(Price tick) noexcept {
+    if (!bids.empty() && !asks.empty() && bids[0].price >= asks[0].price)
+      asks[0].price = bids[0].price + tick;
+  }
 };
 
 struct QuoteParams {

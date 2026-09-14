@@ -58,7 +58,7 @@ void list_strategies_to(std::FILE* out) {
     std::fprintf(out, "%.*s\n", static_cast<int>(e.name.size()), e.name.data());
     for (const fastmm::ParamDesc& d : *e.schema) {
       std::fprintf(out,
-                   "  %-26s %-6s default=%-10g [%g, %g]  %s\n",
+                   "  %-26s %-7s default=%-10g [%g, %g]  %s\n",
                    d.name,
                    std::string(to_string(d.type)).c_str(),
                    d.def,

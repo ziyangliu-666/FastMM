@@ -58,9 +58,13 @@ struct OptionsMMParams {
   FASTMM_PARAM(
       double, half_spread_vol, 1.0, 0.0, 100.0, "half spread in vol points (x option vega)")
   FASTMM_PARAM(int, min_half_spread_ticks, 1, 0, 1000000, "floor for the half spread, ticks")
-  FASTMM_PARAM(double, quote_qty, 1.0, 0.0, 1e9, "contracts per side")
-  FASTMM_PARAM(
-      double, max_position, 10.0, 0.0, 1e9, "per-option |position| cap, contracts (0 = none)")
+  FASTMM_PARAM(Qty, quote_qty, 1_qty, 0_qty, 1000000000_qty, "contracts per side")
+  FASTMM_PARAM(Qty,
+               max_position,
+               10_qty,
+               0_qty,
+               1000000000_qty,
+               "per-option |position| cap, contracts (0 = none)")
   FASTMM_PARAM(double,
                max_delta,
                5.0,
@@ -95,12 +99,11 @@ struct OptionsMMParams {
                0,
                1,
                "inverse (coin-quoted) options: delta minus the coin premium")
-  FASTMM_PARAM(int,
-               pull_on_stale_ms,
-               5000,
-               0,
-               3600000,
-               "pull an option's quotes when its ticker is older than this (0 = never)")
+  FASTMM_PARAM_MS(pull_on_stale_ms,
+                  milliseconds(5000),
+                  milliseconds(0),
+                  milliseconds(3600000),
+                  "pull an option's quotes when its ticker is older than this (0 = never)")
 };
 
 class OptionsMM : public StrategyBase<OptionsMMParams> {
@@ -142,9 +145,9 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
 
   template <class Ctx>
   void on_start(Ctx& ctx) noexcept {
-    quote_qty_ = Qty::from_double(params_.quote_qty);
     for (auto& s : st_) s = State{};
-    if (params_.pull_on_stale_ms > 0) stale_timer_ = ctx.every(milliseconds(250), kStaleTimer);
+    if (params().pull_on_stale_ms > Duration{})
+      stale_timer_ = ctx.every(milliseconds(250), kStaleTimer);
   }
 
   template <class Ctx>
@@ -169,7 +172,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
       s.quoted_theo = Price{};
       return;
     }
-    if (params_.use_venue_iv) {
+    if (params().use_venue_iv) {
       // Tickers drive the quotes; a book update only matters for an option not quoted yet (its
       // book just became two-sided).
       if (!s.quoted_theo.is_positive()) requote(ctx, id, false);
@@ -187,12 +190,13 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
 
   template <class Ctx>
   void on_timer(Ctx& ctx, TimerId, std::uint64_t user_data) noexcept {
-    if (user_data != kStaleTimer || params_.pull_on_stale_ms <= 0) return;
+    if (user_data != kStaleTimer || params().pull_on_stale_ms <= Duration{}) return;
     const Timestamp now = ctx.now();
     for (const Instrument& inst : ctx.instruments()) {
       if (inst.asset_class != AssetClass::Option) continue;
       State& s = st_[inst.id.value];
-      if (!s.have_ticker || (now - s.last_ticker).millis() <= params_.pull_on_stale_ms) continue;
+      if (!s.have_ticker || (now - s.last_ticker).millis() <= params().pull_on_stale_ms.millis())
+        continue;
       ctx.pull_quotes(inst.id);
       s.quoted_theo = Price{};
       s.have_ticker = false;
@@ -264,10 +268,11 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
     const State& s = st_[inst.id.value];
     if (!(s.forward > 0.0)) return p;
     p.sigma = s.venue_iv;
-    if (!params_.use_venue_iv && s.own_iv > 0.0) p.sigma = s.own_iv;
+    if (!params().use_venue_iv && s.own_iv > 0.0) p.sigma = s.own_iv;
     if (!(p.sigma > 0.0) || !std::isfinite(p.sigma)) return p;
     p.t_years = options::year_fraction(inst.expiry_ns, now_ns);
-    if (!(p.t_years > 0.0) || p.t_years * options::kSecondsPerYear < params_.min_expiry_s) return p;
+    if (!(p.t_years > 0.0) || p.t_years * options::kSecondsPerYear < params().min_expiry_s)
+      return p;
     const options::CallPut cp =
         inst.option_type == OptionType::Put ? options::CallPut::Put : options::CallPut::Call;
     const options::Greeks g =
@@ -277,7 +282,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
     p.theo = g.price * scale;
     p.vega_px = g.vega / 100.0 * scale;
     p.unit_delta =
-        coin && params_.premium_adjusted_delta ? options::coin_delta(g.delta, p.theo) : g.delta;
+        coin && params().premium_adjusted_delta ? options::coin_delta(g.delta, p.theo) : g.delta;
     const double mult = inst.contract_multiplier.to_double();
     p.contract_delta = p.unit_delta * mult;
     p.contract_vega = g.vega / 100.0 * mult;
@@ -290,44 +295,41 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
                                              const Pricing& p,
                                              double position,
                                              const Exposure& e) const noexcept {
+    const OptionsMMParams& cfg = params();
     DesiredQuotes q;
-    if (!p.valid || quote_qty_.is_zero()) return q;
+    if (!p.valid || cfg.quote_qty.is_zero()) return q;
     const double tick = inst.tick.to_double();
     if (!(tick > 0.0)) return q;
-    double half = std::max(params_.half_spread_vol * p.vega_px,
-                           static_cast<double>(params_.min_half_spread_ticks) * tick);
-    if (params_.max_vega > 0.0)
-      half *= 1.0 + params_.vega_widen * std::min(1.0, std::fabs(e.vega) / params_.max_vega);
+    double half = std::max(cfg.half_spread_vol * p.vega_px,
+                           static_cast<double>(cfg.min_half_spread_ticks) * tick);
+    if (cfg.max_vega > 0.0)
+      half *= 1.0 + cfg.vega_widen * std::min(1.0, std::fabs(e.vega) / cfg.max_vega);
     double reservation = p.theo;
-    if (params_.max_delta > 0.0) {
-      const double d = std::clamp(e.delta / params_.max_delta, -1.0, 1.0);
-      reservation -= params_.delta_skew_ticks * tick * d * p.unit_delta;
+    if (cfg.max_delta > 0.0) {
+      const double d = std::clamp(e.delta / cfg.max_delta, -1.0, 1.0);
+      reservation -= cfg.delta_skew_ticks * tick * d * p.unit_delta;
     }
-    const double qq = quote_qty_.to_double();
-    if (qq > 0.0) reservation -= params_.inventory_skew_ticks * tick * (position / qq);
+    const double qq = cfg.quote_qty.to_double();
+    if (qq > 0.0) reservation -= cfg.inventory_skew_ticks * tick * (position / qq);
 
-    const Qty qty = inst.round_qty(quote_qty_);
+    const Qty qty = inst.round_qty(cfg.quote_qty);
     if (!qty.is_positive()) return q;
     const double dq = qty.to_double();
     const auto within = [](double now, double after, double limit) {
       return limit <= 0.0 || std::fabs(after) <= limit || std::fabs(after) < std::fabs(now);
     };
-    const bool can_buy = within(position, position + dq, params_.max_position) &&
-                         within(e.delta, e.delta + dq * p.contract_delta, params_.max_delta) &&
-                         within(e.vega, e.vega + dq * p.contract_vega, params_.max_vega);
-    const bool can_sell = within(position, position - dq, params_.max_position) &&
-                          within(e.delta, e.delta - dq * p.contract_delta, params_.max_delta) &&
-                          within(e.vega, e.vega - dq * p.contract_vega, params_.max_vega);
-    if (can_buy && reservation - half >= tick) {
-      const Price bid = inst.round_price(Price::from_double(reservation - half), Side::Buy);
-      if (bid.is_positive()) static_cast<void>(q.bids.push_back(Level{bid, qty}));
-    }
-    if (can_sell && reservation + half >= tick) {
-      const Price ask = inst.round_price(Price::from_double(reservation + half), Side::Sell);
-      if (ask.is_positive()) static_cast<void>(q.asks.push_back(Level{ask, qty}));
-    }
-    if (!q.bids.empty() && !q.asks.empty() && q.bids[0].price >= q.asks[0].price)
-      q.asks[0].price = q.bids[0].price + inst.tick;
+    const double max_position = cfg.max_position.to_double();
+    const bool can_buy = within(position, position + dq, max_position) &&
+                         within(e.delta, e.delta + dq * p.contract_delta, cfg.max_delta) &&
+                         within(e.vega, e.vega + dq * p.contract_vega, cfg.max_vega);
+    const bool can_sell = within(position, position - dq, max_position) &&
+                          within(e.delta, e.delta - dq * p.contract_delta, cfg.max_delta) &&
+                          within(e.vega, e.vega - dq * p.contract_vega, cfg.max_vega);
+    if (can_buy && reservation - half >= tick)
+      q.bid(inst.round_price(Price::from_double(reservation - half), Side::Buy), qty);
+    if (can_sell && reservation + half >= tick)
+      q.ask(inst.round_price(Price::from_double(reservation + half), Side::Sell), qty);
+    q.uncross(inst.tick);
     return q;
   }
 
@@ -348,7 +350,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
       s.own_iv = iv.vol;
     } else {
       const double dt = static_cast<double>(now.ns - s.own_iv_ns) / 1e9;
-      const double alpha = 1.0 - std::exp(-dt * std::numbers::ln2 / params_.iv_halflife_s);
+      const double alpha = 1.0 - std::exp(-dt * std::numbers::ln2 / params().iv_halflife_s);
       s.own_iv += alpha * (iv.vol - s.own_iv);
     }
     s.own_iv_ns = now.ns;
@@ -356,7 +358,9 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
 
   [[nodiscard]] const State& state(InstrumentId id) const noexcept { return st_[id.value]; }
 
-  // Post-only quotes must not cross the market (see BasicMM::clamp_to_touch).
+  // Post-only quotes must not cross the market. Unlike keep_passive (BasicMM), only level 0 moves:
+  // a bid at or above the best ask goes one tick below it (or is dropped when that is not a
+  // positive price), an ask at or below the best bid one tick above it.
   static void clamp_to_touch(DesiredQuotes& q,
                              Price best_bid,
                              Price best_ask,
@@ -405,7 +409,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
     }
     const Price theo = Price::from_double(p.theo);
     if (!force && s.quoted_theo.is_positive() &&
-        (theo - s.quoted_theo).abs().raw < params_.requote_threshold_ticks * inst.tick.raw)
+        (theo - s.quoted_theo).abs().raw < params().requote_threshold_ticks * inst.tick.raw)
       return;
     DesiredQuotes q = compute_quotes(inst, p, ctx.position(id).qty.to_double(), exposure(ctx));
     clamp_to_touch(q, book.best_bid().price, book.best_ask().price, inst.tick);
@@ -416,7 +420,6 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
     s.quoted_theo = theo.is_positive() ? theo : Price::from_raw(1);
   }
 
-  Qty quote_qty_{};
   TimerId stale_timer_{};
   State st_[kMaxInstruments] = {};
 };

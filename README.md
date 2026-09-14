@@ -106,15 +106,17 @@ python examples/python/backtest_quickstart.py
 readable build error) and Python sees the parameter schema automatically. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md).
 
 ```cpp
-template <class Ctx, class Book>
-void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
+// FASTMM_PARAM_BPS(half_spread_bps, 5_bps, 0_bps, 1000_bps, "half spread around mid")
+// FASTMM_PARAM(Qty, quote_qty, 0.001_qty, 0_qty, 1000_qty, "quantity per side")
+void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
   if (!book.is_valid()) return ctx.pull_quotes(id);
   const Instrument& inst = ctx.instrument(id);
   const Price mid = book.mid();
-  const Price half = Price::from_raw(static_cast<std::int64_t>(Int128{mid.raw} * half_cbps_ / 1'000'000));
+  const Price half = mid * params().half_spread_bps;  // exact integer math, no doubles
+  const Qty qty = inst.round_qty(params().quote_qty);
   DesiredQuotes q;
-  static_cast<void>(q.bids.push_back(Level{inst.round_price(mid - half, Side::Buy), qty_}));
-  static_cast<void>(q.asks.push_back(Level{inst.round_price(mid + half, Side::Sell), qty_}));
+  q.bid(inst.round_price(mid - half, Side::Buy), qty);
+  q.ask(inst.round_price(mid + half, Side::Sell), qty);
   ctx.set_quotes(id, q);  // QuoteManager diffs against live orders: minimal new/cancel/replace
 }
 ```

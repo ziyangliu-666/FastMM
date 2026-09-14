@@ -3,10 +3,12 @@
 // MicropriceMM quotes one level each side around the size-weighted microprice
 //   micro = (bid * ask_qty + ask * bid_qty) / (bid_qty + ask_qty)
 // `edge_ticks` away, and stops quoting the side that would push |position| past the limit.
-// No registration is needed for run_backtest<S>(); docs/adding-a-strategy.md shows how to make it
-// visible to the apps and Python. A hook with a wrong signature is a compile error.
+// Parameters are exact (Qty is parsed from the config string, never through a double), and the
+// hot path is integer-only. No registration is needed for run_backtest<S>();
+// docs/adding-a-strategy.md shows how to make it visible to the apps and Python. A hook with a
+// wrong signature is a compile error.
 #include "fastmm/backtest/backtest_runner.hpp"
-#include "fastmm/strategies/strategy.hpp"
+#include "fastmm/strategy.hpp"
 
 #include <cstdio>
 
@@ -15,42 +17,42 @@ using namespace fastmm;
 struct MicropriceParams {
   FASTMM_PARAMS(MicropriceParams)
   FASTMM_PARAM(int, edge_ticks, 2, 0, 1000, "distance from the microprice, ticks")
-  FASTMM_PARAM(double, quote_qty, 0.002, 0.0, 1e9, "quantity per side")
-  FASTMM_PARAM(double, max_position, 0.004, 0.0, 1e9, "absolute inventory limit")
+  FASTMM_PARAM(Qty, quote_qty, 0.002_qty, 0_qty, 1000_qty, "quantity per side")
+  FASTMM_PARAM(Qty, max_position, 0.004_qty, 0_qty, 1000_qty, "inventory limit (0 = none)")
+
+  // Cross-field check, run once all parameters are applied.
+  [[nodiscard]] std::optional<std::string> validate() const {
+    if (max_position.is_positive() && quote_qty > max_position)
+      return "quote_qty must not exceed max_position";
+    return std::nullopt;
+  }
 };
 
 class MicropriceMM : public StrategyBase<MicropriceParams> {
  public:
   static constexpr std::string_view name() noexcept { return "microprice_mm"; }
 
-  template <class Ctx, class Book>
-  void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
+  void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
     if (!book.is_valid()) return ctx.pull_quotes(id);
+    const MicropriceParams& p = params();
     const Instrument& inst = ctx.instrument(id);
-    const Level bid = book.best_bid();
-    const Level ask = book.best_ask();
-    const Int128 w = static_cast<Int128>(bid.qty.raw) + ask.qty.raw;  // integer microprice
-    const auto micro = Price::from_raw(
-        static_cast<std::int64_t>((static_cast<Int128>(bid.price.raw) * ask.qty.raw +
-                                   static_cast<Int128>(ask.price.raw) * bid.qty.raw) /
-                                  w));
-    const Price edge = inst.tick * params_.edge_ticks;
-    const Qty qty = inst.round_qty(Qty::from_double(params_.quote_qty));
-    const Qty limit = Qty::from_double(params_.max_position);
+    const Price micro = microprice(book.best_bid(), book.best_ask());
+    const Price edge = inst.ticks(p.edge_ticks);
+    const Qty qty = inst.round_qty(p.quote_qty);
     const Qty pos = ctx.position(id).qty;
 
     DesiredQuotes q;
-    if (pos + qty <= limit)
-      static_cast<void>(q.bids.push_back({inst.round_price(micro - edge, Side::Buy), qty}));
-    if (pos - qty >= -limit)
-      static_cast<void>(q.asks.push_back({inst.round_price(micro + edge, Side::Sell), qty}));
+    if (inventory_allows(Side::Buy, pos, qty, p.max_position))
+      q.bid(inst.round_price(micro - edge, Side::Buy), qty);
+    if (inventory_allows(Side::Sell, pos, qty, p.max_position))
+      q.ask(inst.round_price(micro + edge, Side::Sell), qty);
     ctx.set_quotes(id, q);  // QuoteManager diffs against resting orders
   }
 };
+static_assert(verify_strategy<MicropriceMM>());
 
 int main() {
-  auto cfg = bt::BacktestConfig::single_instrument(
-      "BTCUSDT", Price::from_decimal("0.01").value(), Qty::from_decimal("0.00001").value());
+  auto cfg = bt::BacktestConfig::single_instrument("BTCUSDT", 0.01_px, 0.00001_qty);
   cfg.duration = seconds(60);
   cfg.set_seed(7);
   cfg.generator.limit_rate_per_s = 400;  // a busier synthetic market than the defaults

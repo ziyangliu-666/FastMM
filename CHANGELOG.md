@@ -38,6 +38,20 @@ All notable changes are recorded here (Keep a Changelog format).
   implemented hook set.
 - BasicMM, AvellanedaStoikov and OptionsMM requote when quoting resumes and remember a quoted
   mid or theo only when `set_quotes` took the quotes. Their golden outbound hashes are unchanged.
+- **Breaking, strategy parameters (ADR-0012).** `FASTMM_PARAM` accepts `Price`, `Qty` and
+  `Notional` fields (schema type `decimal`, parsed exactly); `FASTMM_PARAM_BPS` declares a `Ratio`
+  configured in bps (type `bps`, up to 4 decimals) and `FASTMM_PARAM_MS` a `Duration` configured in
+  whole milliseconds (type `ms`). Exact values accept exponent notation (`2e-05`). `ParamDesc::parse`
+  and `format` replace `set` and `get`; range checks use the typed values. An optional
+  `validate() const` on the params struct runs after all keys; `configure()` leaves the previous
+  values in place on any error. `StrategyBase::params()` is read-only and `params_` is private.
+  `describe_params()` prints exact, shortest values (`gamma=0.5`). Config keys and values are
+  unchanged; Python reports `decimal` and `bps` as float and `ms` as int.
+- BasicMM, AvellanedaStoikov and OptionsMM use the typed parameters and the quoting helpers. BasicMM
+  bps parameters keep four decimals instead of two (0.003 bps was rounded to 0), which changes the
+  `basic_mm` golden hashes, whose test market uses 0.003 bps; with 0 bps the old hashes are
+  reproduced. A non-positive price or quantity level is dropped instead of sent. The
+  AvellanedaStoikov, OptionsMM and `sample_1000` hashes are unchanged.
 
 ### Added
 - **Rejects per reason.** The engine counts risk and venue rejects per `RejectReason`
@@ -65,6 +79,13 @@ All notable changes are recorded here (Keep a Changelog format).
   `pull_quotes`/`resume_quotes`, `advance` and `working_orders`.
 - Compile-fail tests (`tests/compile_fail/`, ctest label `compile_fail`) for the hook checker, each
   with a control build, and golden outbound hashes for the three built-in strategies.
+- `Ratio` (1 bp = raw 10,000) with `value * ratio` through Int128 and one truncation toward zero,
+  `ratio(num, den)`, `Ratio::from_bps`, `to_bps`; exact literals `100.25_px`, `0.01_qty`, `5_bps`
+  (too many decimals is a compile error); `Fixed::parse` for decimals in exponent notation.
+- `include/fastmm/strategies/quoting.hpp`: `mid`, `microprice`, `spread_ratio`, `away_from`,
+  `inventory_allows`, `keep_passive`; `Instrument::ticks(n)`; `DesiredQuotes::bid`, `ask` and
+  `uncross`. `include/fastmm/strategy.hpp` includes everything a strategy header needs.
+- `docs/reference/fixed-point.md`; `bench_strategies` (`BM_BasicMM_ComputeQuotes`).
 - Deribit connector (`kind = "deribit"`), JSON-RPC 2.0 over WebSocket for options and futures:
   reference data from public/get_instruments (tick_size_steps, contract_size, inverse), book sync on
   change_id/prev_change_id with resubscribe on gaps, ticker and trades, client_credentials auth with

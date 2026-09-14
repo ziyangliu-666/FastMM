@@ -429,3 +429,39 @@ harness part of section 8, with these clarifications:
   section 5 stays for step 5.
 - **Golden hashes** (`tests/backtest/golden_strategies_test.cpp`) were recorded on main before
   step 3 and did not change in it.
+
+Step 4 (sections 3 and 4) follows the decision, with these clarifications:
+
+- **Exponent parsing** is a new `Fixed::parse`; `Fixed::from_decimal` stays strict (no exponent) for
+  venue strings. Parameters use `parse` for `decimal` values and the same scaled parser for `bps`
+  (4 decimals) and `ms` (whole milliseconds). `double` parameters use `std::from_chars` and reject
+  non-finite values; integer parameters accept `3.0` and `3e0`.
+- **Literals** live in `fastmm::literals`, declared as an inline namespace so the built-in strategy
+  headers (inside `namespace fastmm`) use them without a using-directive; `using namespace
+  fastmm::literals` works as specified. `_px` and `_qty` keep their integer overloads; literals
+  accept digit separators and exponents. `Ratio * Ratio` is also defined. `from_bps` and `to_bps`
+  are members of `Fixed` constrained to the `Ratio` tag.
+- **`DesiredQuotes::bid/ask`** drop a non-positive quantity as well as a non-positive price, and a
+  level beyond `kMaxQuoteLevels`. A zero-quantity level (`quote_qty` below the lot) is therefore no
+  longer sent, an addition to the intended differences in section 3.
+- **`FASTMM_PARAM_MS`** bounds are `Duration`s (`milliseconds(2000)`). BasicMM and OptionsMM keep
+  comparing whole milliseconds (`.millis()`) in their stale checks, so the behaviour is unchanged.
+- **`configure()`** applies the keys to a copy, runs `validate()`, and only then replaces the
+  parameters, so an error leaves the previous values. A `validate` that is not `const` or does not
+  return `std::optional<std::string>` is a compile error.
+- **Migration scope.** BasicMM: both bps parameters are `Ratio`, `quote_qty` and `max_inventory` are
+  `Qty`, `pull_on_stale_ms` is `Duration`. AvellanedaStoikov: `quote_qty` and `max_inventory` are
+  `Qty`; its seconds-valued parameters stay `double` because their keys are in seconds. OptionsMM:
+  `quote_qty` and `max_position` are `Qty` and `pull_on_stale_ms` is `Duration`; `max_delta` and
+  `max_vega` stay `double` (they are not quantities). No built-in strategy gained a `validate()`,
+  so existing configurations behave as before; the docs example and `custom_strategy.cpp` show one.
+- **Golden hashes.** A test (`strategies.basic_mm: compute_quotes is bit-identical ...`) compares
+  the port with the old centi-bps function on random inputs. The AvellanedaStoikov, OptionsMM and
+  `sample_1000` hashes did not change. `basic_mm/coupled` and `basic_mm/l2_queue` changed for the
+  first intended difference: their market (`tests/backtest/backtest_test_util.hpp`) configures
+  `half_spread_bps = 0.003`, which the centi-bps code rounded to 0. With `half_spread_bps = 0` the
+  new code reproduces both old hashes; the first differing outbound message is #0, the first bid,
+  at `px=60000` before and `px=59999.98` after. They were re-baselined in a separate commit.
+  `tests/hotpath/noalloc_sim_test.cpp` and `bench/bench_tick_to_order.cpp` used the same 0.003 bps;
+  they now configure 0 bps, which is what they ran before, so the no-allocation window still
+  contains fills and the benchmark compares like for like.

@@ -8,41 +8,45 @@ signature is a compile error.
 ```cpp
 // include/fastmm/strategies/my_quoter.hpp
 #pragma once
-#include "fastmm/core/fixed_point.hpp"
-#include "fastmm/core/instrument.hpp"
-#include "fastmm/core/quote_manager.hpp"
-#include "fastmm/strategies/strategy.hpp"
+#include "fastmm/strategy.hpp"  // fixed point and literals, instruments, quotes, params, hooks, logs
 
-#include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace fastmm {
 
 struct MyQuoterParams {
   FASTMM_PARAMS(MyQuoterParams)
-  FASTMM_PARAM(double, half_spread_bps, 5.0, 0.0, 1000.0, "half spread around mid, basis points")
-  FASTMM_PARAM(double, quote_qty, 0.001, 0.0, 1e9, "quantity per side, base units")
+  FASTMM_PARAM_BPS(half_spread_bps, 5_bps, 0_bps, 1000_bps, "half spread around mid, basis points")
+  FASTMM_PARAM(Qty, quote_qty, 0.001_qty, 0_qty, 1000_qty, "quantity per side, base units")
+  FASTMM_PARAM(Qty, max_inventory, 0.01_qty, 0_qty, 1000_qty, "position limit (0 = none)")
+
+  // Optional cross-field check, run by configure() once every key is applied.
+  std::optional<std::string> validate() const {
+    if (max_inventory.is_positive() && quote_qty > max_inventory)
+      return "quote_qty must not exceed max_inventory";
+    return std::nullopt;
+  }
 };
 
 class MyQuoter : public StrategyBase<MyQuoterParams> {
  public:
   static constexpr std::string_view name() noexcept { return "my_quoter"; }
 
-  // Convert config doubles to fixed point once. Nothing below touches floating point.
-  void on_start(auto&) noexcept {
-    half_cbps_ = static_cast<std::int64_t>(params().half_spread_bps * 100.0 + 0.5);
-    qty_ = Qty::from_double(params().quote_qty);
-  }
-
   void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
     if (!book.is_valid()) return ctx.pull_quotes(id);
+    const MyQuoterParams& p = params();
     const Instrument& inst = ctx.instrument(id);
     const Price mid = book.mid();
-    const Price half =
-        Price::from_raw(static_cast<std::int64_t>(Int128{mid.raw} * half_cbps_ / 1'000'000));
+    const Price half = mid * p.half_spread_bps;  // Int128 inside, one truncation toward zero
+    const Qty qty = inst.round_qty(p.quote_qty);
+    const Qty pos = ctx.position(id).qty;
     DesiredQuotes q;
-    static_cast<void>(q.bids.push_back(Level{inst.round_price(mid - half, Side::Buy), inst.round_qty(qty_)}));
-    static_cast<void>(q.asks.push_back(Level{inst.round_price(mid + half, Side::Sell), inst.round_qty(qty_)}));
+    if (inventory_allows(Side::Buy, pos, qty, p.max_inventory))
+      q.bid(inst.round_price(mid - half, Side::Buy), qty);  // a non-positive level is dropped
+    if (inventory_allows(Side::Sell, pos, qty, p.max_inventory))
+      q.ask(inst.round_price(mid + half, Side::Sell), qty);
     ctx.set_quotes(id, q);  // false while quoting is disabled
   }
 
@@ -51,10 +55,6 @@ class MyQuoter : public StrategyBase<MyQuoterParams> {
     if (!enabled) return;
     for (const Instrument& inst : ctx.instruments()) on_book(ctx, inst.id, ctx.book(inst.id));
   }
-
- private:
-  std::int64_t half_cbps_ = 0;  // centi-bps keeps two decimals of the config value
-  Qty qty_{};
 };
 
 static_assert(StrategyLike<MyQuoter>);
@@ -62,6 +62,10 @@ static_assert(verify_strategy<MyQuoter>());  // checks the hooks now, not when a
 
 }  // namespace fastmm
 ```
+
+Parameters arrive as exact `Qty` and `Ratio` values, so there is no `on_start` conversion and no
+floating point on the event path. Outside `namespace fastmm`, add `using namespace fastmm::literals;`
+for `5_bps` and `0.001_qty`.
 
 ## Hooks
 
@@ -169,6 +173,49 @@ hedge_id_ = *id;
 `NewOrderRequest::limit` builds a GTC limit order; `.post_only()`, `.reduce_only()`, `.ioc()` and
 `.tag(n)` refine it. Tags in the quote manager's range are refused with `RejectReason::InvalidTag`.
 Logs are not journaled: strategy logic must not depend on them.
+
+## Parameters
+
+Each `FASTMM_PARAM*` line declares a field, its default, its range and a doc string. The schema
+drives config validation, `--list-strategies`, `--param k=v` and `fastmm.strategies()` in Python.
+Parameters are set at startup only; hooks read them through `params()`, which is read-only.
+
+| Declaration | Field | Schema type | Config value |
+|---|---|---|---|
+| `FASTMM_PARAM(int, levels, 1, 1, 8, "...")` | any integer type | `int` | whole number: `3`, `3.0`, `3e0` |
+| `FASTMM_PARAM(double, gamma, 0.1, 0.0, 10.0, "...")` | `double` | `double` | any finite number |
+| `FASTMM_PARAM(bool, hedge, false, false, true, "...")` | `bool` | `bool` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` |
+| `FASTMM_PARAM(Qty, quote_qty, 0.01_qty, 0_qty, 1000_qty, "...")` | `Price`, `Qty`, `Notional` | `decimal` | exact, up to 8 decimals |
+| `FASTMM_PARAM_BPS(half_spread_bps, 5_bps, 0_bps, 1000_bps, "...")` | `Ratio` | `bps` | basis points, exact, up to 4 decimals |
+| `FASTMM_PARAM_MS(stale_ms, milliseconds(2000), milliseconds(0), milliseconds(60000), "...")` | `Duration` | `ms` | whole milliseconds |
+
+- `decimal`, `bps` and `ms` values are parsed exactly, never through a double. Exponent notation is
+  accepted, because a TOML float such as `quote_qty = 0.00002` reaches the parser as `2e-05` and a
+  Python float through `repr`. A value is rejected only if more decimals remain than the type holds
+  (`0.000000001` for a `Qty`, `0.00001` for bps).
+- Ranges are checked on the typed value: `parameter 'quote_qty': value 1000.5 outside [0, 1000]`.
+- `std::optional<std::string> validate() const` on the params struct, when present, runs after all
+  keys of a `configure()` call are applied. Return a message to reject the combination. On any
+  error `configure()` leaves the previous values in place.
+- `describe_params()` prints `name=value` pairs that parse back to the same values.
+- Python reports `decimal` and `bps` defaults and bounds as `float` and `ms` as `int`.
+
+## Fixed-point helpers
+
+`fastmm/strategy.hpp` brings in the helpers from `core/fixed_point.hpp` and
+`strategies/quoting.hpp`; [reference/fixed-point.md](reference/fixed-point.md) has the rounding
+rules and limits.
+
+| Helper | Use |
+|---|---|
+| `100.25_px`, `0.01_qty`, `5_bps`, `0.25_bps` | exact compile-time literals; too many decimals is a compile error |
+| `price * ratio`, `ratio(num, den)` | scale by a `Ratio` through Int128, one truncation toward zero |
+| `mid(bid, ask)`, `microprice(bid_level, ask_level)`, `spread_ratio(bid, ask)` | reference prices |
+| `inst.ticks(n)`, `away_from(ref, side, dist)` | distances in ticks, on the passive side |
+| `inventory_allows(side, position, qty, limit)` | the inventory cap check (0 = no cap) |
+| `q.bid(px, qty)`, `q.ask(px, qty)` | append a level, dropping non-positive prices and quantities |
+| `q.uncross(tick)` | never cross yourself at level 0 |
+| `keep_passive(q, best_bid, best_ask, tick)` | shift skewed ladders back inside the touch |
 
 ## Registering and testing
 

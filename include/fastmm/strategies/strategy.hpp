@@ -23,13 +23,20 @@ class StrategyBase {
  public:
   using params_type = Params;
   static const ParamSchema& schema() { return Params::schema(); }
-  // Applies string parameters; returns an error message on failure (startup only).
-  std::optional<std::string> configure(const ParamMap& m) { return params_.apply(m); }
+  // Applies string parameters, then runs `validate() const` when the params struct declares one.
+  // Returns the first error message; the parameters are unchanged then (startup only).
+  std::optional<std::string> configure(const ParamMap& m) {
+    Params next = params_;
+    if (auto err = next.apply(m)) return err;
+    if (auto err = detail::validate_params(next)) return err;
+    params_ = next;
+    return std::nullopt;
+  }
+  // Read-only: parameters change only through configure().
   [[nodiscard]] const Params& params() const noexcept { return params_; }
-  [[nodiscard]] Params& params() noexcept { return params_; }
   [[nodiscard]] std::string describe_params() const { return params_.describe(); }
 
- protected:
+ private:
   Params params_{};
 };
 

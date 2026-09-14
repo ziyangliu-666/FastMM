@@ -114,6 +114,10 @@ fastmm_compile_fail(ambiguous_bases EXPECT fail REGEX
   "${_cf_prefix}on_quoting has the wrong signature or is not public")
 fastmm_compile_fail(data_member_hook_name EXPECT fail REGEX
   "${_cf_prefix}on_connection has the wrong signature or is not public")
+fastmm_compile_fail(literal_qty_nine_decimals EXPECT fail REGEX
+  "${_cf_prefix}_qty literal needs more than 8 decimals")
+fastmm_compile_fail(literal_bps_five_decimals EXPECT fail REGEX
+  "${_cf_prefix}_bps literal needs more than 4 decimals")
 
 # fastmm-top without a running engine: a clear message and exit code 3.
 if(TARGET fastmm-top)
