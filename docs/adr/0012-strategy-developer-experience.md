@@ -551,3 +551,41 @@ Step 6 (section 7) follows the decision, with these clarifications:
   end, 1.31 M events/s against 2.02 M for C++ `basic_mm`, because the simulator dominates.
 - **Stubs.** `python/fastmm/_core.pyi` is regenerated with pybind11-stubgen; arguments taken as
   `py::handle` (instruments, prices, ladders) appear as `typing.Any`.
+Step 7 (section 8, C++ side; step 6 added the Python pages) follows the decision, with these
+clarifications:
+
+- **Layout.** `architecture.md` and `benchmarks.md` moved to `explanation/`; `configuration.md`,
+  `venues.md`, `sim-exchange.md`, `options.md` and the codec pages (`reference/codecs/`) to
+  `reference/`; `monitoring.md` to `how-to/operations/monitor-with-fastmm-top.md`;
+  `dependencies.md` to `contributing/`. `adding-a-strategy.md` became `reference/strategy-api.md`
+  and the `adding-a-venue.md` pointer was deleted: moved pages leave no pointer, every link was
+  updated, and `docs/README.md` is the index. The Python pages keep the places step 6 gave them.
+- **Quick start.** `examples/quickstart/` is 29 lines of code (the header and `main`, without
+  comments, blank lines and snippet markers). The default synthetic market gives no fills to a
+  quote 0.005 bps from the mid, so `main` sets one generator value. Its `CMakeLists.txt` uses the
+  existing `fastmm::` targets inside FastMM's build and otherwise `FetchContent` with
+  `FASTMM_BUILD_NET=OFF`; ctest `examples.quickstart` passes on a non-zero fill count.
+- **Tutorial.** The strategy is `first_mm` (`examples/cpp/tutorial/`, distinct from the external
+  project's `microprice_mm`); its programs go to `<build>/bin`. `configs/tutorial-sim.toml` serves
+  both processes, because `fastmm-sim-exchange` reads only `[[instruments]]` and `[sim]` and loads
+  without `${VAR}` substitution. The command-line backtest uses `configs/backtest-example.toml`
+  with `--strategy first_mm`, since the tutorial config's `[sim]` belongs to the exchange. The
+  harness test uses plain checks like the external project. `scripts/docs/tutorial.sh` holds every
+  shell step in `--8<--` regions; ctest `tutorial.script` runs it `--through sim --skip-build`
+  (serial, not under sanitizers). The Binance Demo page is documented only.
+- **Strategy API doc test.** Field types are pinned with `decltype(Type::member)`, method types
+  with `decltype` on an lvalue of `StrategyContext<Harness::EngineType>`. `on_book_ticker` and
+  `on_option_ticker` fire through `StrategyHarness::push`, `on_stop` through `engine().finish()`.
+- **Generated references.** Generated content sits between `<!-- BEGIN <kind> <arg> -->` and
+  `<!-- END <kind> -->`. The configuration tables come from the `schema.hpp` doc strings, which now
+  state units and defaults; `[backtest]` and `[sim]` stay hand-written because the schema treats
+  them as free-form, and `--check` also fails when a schema key is in no table. The shipped-config
+  test fails on any load warning and registers the tutorial's strategy module.
+- **Public headers.** Manifest lines are `tier1|tier2 [net] <path>`. ctest `docs.public_headers`
+  builds an `EXCLUDE_FROM_ALL` object library with one translation unit per header, under the
+  compile-fail resource lock and not under sanitizers; `venues/raw_recorder.hpp` gained its
+  missing `<cstdint>`.
+- **CI.** The lint job runs the snippet, link and configuration checks; gcc-release checks the
+  command-line reference after its build. Deferred: the how-to pages for testing, patterns,
+  recorded-data backtests, sweeps, binary protocols, fixtures and latency tuning, a log catalogue
+  check, Markdown linting, and a scheduled Binance Demo dry run.

@@ -122,6 +122,24 @@ All notable changes are recorded here (Keep a Changelog format).
 - `KillReason` records why each kill flag was first set (`Engine::kill_reason()`,
   `venue_kill_reason(venue)`); `EngineLiveStats` carries the reasons and `venue_kills` and is
   published as soon as a flag changes.
+- **Quick start and tutorial (ADR-0012 step 7).** `examples/quickstart/`: one strategy header and
+  a `main` that calls `bt::run_backtest<MyMM>(cfg, source)`, 29 lines, built inside FastMM or with
+  `FetchContent` (ctest `examples.quickstart`). `examples/cpp/tutorial/`: the strategy `first_mm`,
+  its harness unit test, a C++ backtest, a registration file and `tutorial-backtest`,
+  `tutorial-replay` and `tutorial-live` (label `tutorial`), with `configs/tutorial-sim.toml` (the
+  simulated exchange with a market-data disconnect fault) and `configs/tutorial-binance-demo.toml`
+  (tight risk limits). `scripts/docs/tutorial.sh` runs the tutorial's shell steps; ctest
+  `tutorial.script` runs them up to the simulated exchange, including a verified replay of the live
+  journal. The C++ examples now run as tests (label `examples`).
+- **Docs checks.** `tools/doc_snippets.py` keeps code blocks marked `<!-- snippet: path#region -->`
+  identical to their source regions; `tools/docs_links.py` checks relative links and anchors
+  offline; `tools/docs_cli_help.py` and `tools/docs_config_ref.py` generate the command-line and
+  configuration references from `--help` and `schema.hpp`. All four have `--check`, run in CI
+  (lint, and gcc-release for the command lines).
+- `tests/docs/strategy_api_doc_test.cpp` (label `docs`): a strategy with every documented hook runs
+  in the harness and every hook must fire; `static_assert`s pin each documented context method,
+  `Fill` and message field, parameter kind and helper. `docs/api/public-headers.txt` lists the
+  tier 1 and tier 2 headers, and ctest `docs.public_headers` compiles each one alone.
 - `fastmm-live --strategy <name>` and `--param key=value`. A strategy other than the config's
   ignores `[strategy.params]` (as in `fastmm-backtest`), parameter names are checked before any
   venue is contacted, and the journal embeds and hashes the configuration after the overrides, so
@@ -303,6 +321,20 @@ All notable changes are recorded here (Keep a Changelog format).
 - `.env.example` lists the Deribit key variables and `FASTMM_BINANCE_ENV`.
 
 ### Documentation
+- **Docs reorganised (ADR-0012 step 7).** `docs/README.md` is the index; pages live in
+  `getting-started/`, `tutorials/`, `how-to/`, `reference/`, `explanation/` and `contributing/`.
+  Moved: `architecture.md` and `benchmarks.md` to `explanation/`; `configuration.md`, `venues.md`,
+  `sim-exchange.md`, `options.md` and the codec pages to `reference/`; `monitoring.md` to
+  `how-to/operations/monitor-with-fastmm-top.md`; `dependencies.md` to `contributing/`;
+  `adding-a-strategy.md` became `reference/strategy-api.md`. Moved pages leave no pointer.
+- New pages: install, quick start, the nine-page tutorial "Your first market maker" (through the
+  simulated exchange and Binance Demo), reference pages for the strategy API, public API and header
+  tiers, command lines, journal format, status file and a glossary, explanation pages for event
+  flow, determinism and the risk model, and a guide to writing docs. The README's strategy example
+  is now the quick start's header.
+- The configuration reference's key tables are generated from `schema.hpp`, whose doc strings now
+  give units and defaults. The shipped-config test fails on load warnings.
+  `venues/raw_recorder.hpp` includes `<cstdint>`, so it compiles on its own.
 - `docs/how-to/venues/add-a-venue.md` replaces `docs/adding-a-venue.md`, which pointed to a
   registration directory and X-macro that do not exist and gave outdated concept signatures. The
   new guide follows the Binance, Bybit and Deribit connectors: threading contract, file layout,
