@@ -81,6 +81,9 @@ bool SyntheticSource::produce() {
 const EventHeader* SyntheticSource::next() {
   if (!produce()) return nullptr;
   const std::byte* p = queue_.try_peek();
+  if (p == nullptr)
+    return nullptr;  // produce() guarantees an event; this keeps gcc's
+                     // -Wnull-dereference quiet where it cannot see that
   const auto* h = reinterpret_cast<const EventHeader*>(p);
   std::memcpy(buf_.bytes, p, h->len);
   queue_.release();
