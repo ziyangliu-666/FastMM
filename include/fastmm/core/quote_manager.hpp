@@ -12,6 +12,9 @@
 //     slots are reused, and a replace changes the order's id);
 //   * while an instrument is pulled, an order that becomes working late (its ack arrived after
 //     the pull) is cancelled at once;
+//   * a New rejected by the venue (other than a post-only cross) blocks new orders on that side
+//     for reject_backoff, doubling on each further reject up to reject_backoff_max and reset by
+//     an ack on that side, so an unfundable side is not resent on every requote;
 //   * venues with supports_replace get a single Replace; otherwise Cancel now and New
 //     only once the cancel's terminal update arrives via on_order_update() (cancel-then-new
 //     keeps momentary exposure down and never double-quotes a level).
@@ -52,6 +55,8 @@ struct QuoteParams {
   std::int64_t min_qty_bps = 8000;  // leaves >= 80 % of desired -> qty ok
   bool supports_replace = false;
   bool post_only = true;
+  Duration reject_backoff = milliseconds(1000);  // 0 = no backoff after venue rejects
+  Duration reject_backoff_max = milliseconds(60000);
 };
 
 enum class QuoteActionKind : std::uint8_t { New, Cancel, Replace };
@@ -76,6 +81,8 @@ struct QuoteStats {
   std::uint64_t kept_interval = 0;
   std::uint64_t skipped_pending = 0;
   std::uint64_t rejected = 0;
+  std::uint64_t reject_backoffs = 0;  // venue rejects that started or extended a side backoff
+  std::uint64_t kept_backoff = 0;     // News withheld because their side was backing off
 };
 
 class QuoteManager {
@@ -163,6 +170,10 @@ class QuoteManager {
         slot.awaiting_terminal = false;
         slot.renew_after_cancel = false;
         if (!has_want) continue;
+        if (backing_off(st, side, now)) {
+          ++stats_.kept_backoff;
+          continue;
+        }
         actions += submit_new(inst, side, lvl, slot, target, now, place);
       }
     }
@@ -206,11 +217,15 @@ class QuoteManager {
     InstState& st = state_[inst.id.value];
     Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
     if (!u.terminal) {
+      if (u.prev == OrderState::PendingNew && u.order.is_working())
+        st.backoff[static_cast<std::size_t>(side)] = Duration{};  // the venue takes this side
       if (st.pulled && u.handle.valid() && slot.handle.idx == u.handle.idx &&
           owns(oms, inst, side, lvl, slot) && u.order.is_working())
         static_cast<void>(cancel(inst, side, lvl, slot, place));
       return;
     }
+    if (u.order.state == OrderState::Rejected && u.prev == OrderState::PendingNew)
+      on_venue_reject(st, side, u.order.reject_reason, now);
     // The terminal order was this slot's unless the slot already holds a newer live order. Ids
     // are not compared: a replace changes the order's id, and a stale id used to drop the update
     // and leave the slot waiting for a terminal state forever.
@@ -221,6 +236,10 @@ class QuoteManager {
     if (st.pulled) return;
     if (slot.renew_after_cancel) {
       slot.renew_after_cancel = false;
+      if (backing_off(st, side, now)) {
+        ++stats_.kept_backoff;
+        return;
+      }
       submit_new(inst, side, lvl, slot, slot.want, now, place);
     }
   }
@@ -245,7 +264,26 @@ class QuoteManager {
     Slot slots[2][kMaxQuoteLevels];
     DesiredQuotes desired;
     bool pulled = false;
+    Duration backoff[2] = {};         // current backoff per side (0 = none)
+    Timestamp blocked_until[2] = {};  // no News on the side before this
   };
+
+  [[nodiscard]] static bool backing_off(const InstState& st, Side side, Timestamp now) noexcept {
+    const auto i = static_cast<std::size_t>(side);
+    return st.backoff[i].ns > 0 && now < st.blocked_until[i];
+  }
+  void on_venue_reject(InstState& st, Side side, RejectReason reason, Timestamp now) noexcept {
+    // A post-only cross is a stale price, fixed by the next requote; other venue rejects (no
+    // balance, filters, permissions) repeat until something changes.
+    if (params_.reject_backoff.ns <= 0 || reason == RejectReason::PostOnlyWouldCross) return;
+    const auto i = static_cast<std::size_t>(side);
+    Duration next = st.backoff[i].ns <= 0 ? params_.reject_backoff : st.backoff[i] + st.backoff[i];
+    if (params_.reject_backoff_max.ns > 0 && next.ns > params_.reject_backoff_max.ns)
+      next = params_.reject_backoff_max;
+    st.backoff[i] = next;
+    st.blocked_until[i] = now + next;
+    ++stats_.reject_backoffs;
+  }
 
   // The slot's order is live and really the slot's: order slots are reused by later orders.
   [[nodiscard]] static bool owns(const Oms& oms,

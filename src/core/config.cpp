@@ -270,6 +270,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "min_requote_ticks", e.min_requote_ticks);
     get(*t, "min_requote_interval_ms", e.min_requote_interval_ms);
     get(*t, "min_qty_bps", e.min_qty_bps);
+    get(*t, "reject_backoff_ms", e.reject_backoff_ms);
+    get(*t, "reject_backoff_max_ms", e.reject_backoff_max_ms);
     get(*t, "post_only", e.post_only);
     get(*t, "supports_replace", e.supports_replace);
     for (std::size_t b : {e.md_ring_bytes, e.order_ring_bytes, e.journal_ring_bytes}) {
@@ -467,6 +469,8 @@ QuoteParams Config::quote_params() const {
   q.min_qty_bps = engine.min_qty_bps;
   q.post_only = engine.post_only;
   q.supports_replace = engine.supports_replace;
+  q.reject_backoff = milliseconds(engine.reject_backoff_ms);
+  q.reject_backoff_max = milliseconds(engine.reject_backoff_max_ms);
   return q;
 }
 
@@ -501,6 +505,8 @@ std::string Config::redacted() const {
   kv("min_requote_ticks", engine.min_requote_ticks);
   kv("min_requote_interval_ms", engine.min_requote_interval_ms);
   kv("min_qty_bps", engine.min_qty_bps);
+  kv("reject_backoff_ms", engine.reject_backoff_ms);
+  kv("reject_backoff_max_ms", engine.reject_backoff_max_ms);
   kv("post_only", engine.post_only);
   kv("supports_replace", engine.supports_replace);
   for (const auto& v : venues) {

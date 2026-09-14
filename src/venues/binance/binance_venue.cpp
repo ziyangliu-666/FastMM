@@ -481,7 +481,8 @@ void BinanceVenue::on_user_state(net::ConnState s) {
   const ConnState prev = user_state_;
   user_state_ = mapped;
   if (mapped == ConnState::Live) {
-    emit_connection_state(Channel::User, ConnState::Live);
+    // A quiet stream goes Stale without an event, so coming back from Stale is not news either.
+    if (prev != ConnState::Stale) emit_connection_state(Channel::User, ConnState::Live);
     // 6.7: after a user-stream reconnect the OMS view may be stale. The old condition relied on
     // stats_.reconnects, which only market-data backoffs increment, and fired on every
     // Stale -> Live flip of a quiet stream.
@@ -559,7 +560,8 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     // returns from Stale, which would query open orders on every idle period.
     const bool reconnected = order_was_live_ && prev != ConnState::Stale;
     order_was_live_ = true;
-    emit_connection_state(Channel::Order, ConnState::Live);
+    // Stale is not reported for a quiet order channel, so neither is the return from it.
+    if (prev != ConnState::Stale) emit_connection_state(Channel::Order, ConnState::Live);
     drain_outbound();  // anything queued while the channel was down
     if (reconnected && !cfg_.dry_run) request_open_orders();
     return;

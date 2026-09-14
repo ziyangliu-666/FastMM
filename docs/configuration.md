@@ -41,6 +41,8 @@ Every FastMM binary reads one TOML file passed with `--config path.toml`. The pa
 | `tsc_recalibrate_s` | int | `10` | `fastmm-live` remeasures the TSC against the wall clock this often, logs the drift and hands the result to the engine and the venues; `0` disables it. The engine's clock stays continuous and slews each measured offset away over one period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off |
 | `min_requote_ticks` | int | `1` | Keep a resting quote whose price is within this many ticks of the desired price |
 | `min_requote_interval_ms` | int | `50` | Never change the same quote slot more often than this |
+| `reject_backoff_ms` | int | `1000` | After the venue rejects a new quote (other than a post-only cross), place no new orders on that side for this long; doubles on each further reject; `0` disables |
+| `reject_backoff_max_ms` | int | `60000` | Upper bound of that doubling backoff; an accepted order on the side resets it |
 | `min_qty_bps` | int | `8000` | Keep a resting quote whose remaining quantity covers this share of the desired quantity, in bps (8000 = 80%) |
 | `post_only` | bool | `true` | Send quotes as post-only (maker only) |
 | `supports_replace` | bool | `true` | Allow the quote manager to amend orders in place; it is still disabled for any venue that does not support replace |

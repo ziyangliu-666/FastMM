@@ -297,3 +297,67 @@ TEST_CASE("core.quote_manager: an order that reuses a stale slot handle is not a
   CHECK(h.oms.get(manual).state == OrderState::PendingNew);
   CHECK(h.oms.get(manual).price == px("50.00"));
 }
+
+TEST_CASE("core.quote_manager: a venue reject backs off new orders on that side") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  p.reject_backoff = milliseconds(1000);
+  p.reject_backoff_max = milliseconds(3000);
+  QuoteManager qm(p);
+  Harness h;
+  const auto reject_ask = [&](RejectReason reason, Timestamp now) {
+    for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew)) {
+      if (h.oms.get(h.oms.find(id)).side != Side::Sell) continue;
+      OrderRejectMsg m{};
+      init_header(m, EventType::OrderReject);
+      m.cl_ord_id = id;
+      m.reason = reason;
+      qm.on_order_update(h.oms.on_reject(m), inst, h.oms, now, h);
+    }
+  };
+  const auto news = [&](Side side) {
+    std::size_t n = 0;
+    for (const auto& a : h.actions) n += (a.kind == QuoteActionKind::New && a.side == side) ? 1 : 0;
+    return n;
+  };
+  const Timestamp t0 = Timestamp{} + milliseconds(10'000);
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0, h);
+  reject_ask(RejectReason::InsufficientBalance, t0);  // e.g. no base asset to sell
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+    qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, t0, h);  // the bid is accepted
+  REQUIRE(news(Side::Sell) == 1);
+
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(500), h);
+  CHECK(news(Side::Sell) == 1);  // within the first backoff
+  CHECK(qm.stats().kept_backoff == 1);
+  CHECK(news(Side::Buy) == 1);  // the bid side is unaffected and still resting
+
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(1100), h);
+  CHECK(news(Side::Sell) == 2);  // retried after 1 s
+  reject_ask(RejectReason::InsufficientBalance, t0 + milliseconds(1100));
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(2600), h);
+  CHECK(news(Side::Sell) == 2);  // second reject doubled the backoff to 2 s
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(3200), h);
+  CHECK(news(Side::Sell) == 3);
+  reject_ask(RejectReason::VenueReject, t0 + milliseconds(3200));
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(6100), h);
+  CHECK(news(Side::Sell) == 3);  // capped at 3 s, not 4 s
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(6300), h);
+  CHECK(news(Side::Sell) == 4);
+  CHECK(qm.stats().reject_backoffs == 3);
+
+  // An accepted ask resets the backoff; a post-only cross does not start one.
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+    qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, t0 + milliseconds(6300), h);
+  qm.pull_quotes(inst, h.oms, h);
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+    qm.on_order_update(
+        h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, t0 + milliseconds(6400), h);
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(6500), h);
+  CHECK(news(Side::Sell) == 5);
+  reject_ask(RejectReason::PostOnlyWouldCross, t0 + milliseconds(6500));
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, t0 + milliseconds(6600), h);
+  CHECK(news(Side::Sell) == 6);
+  CHECK(qm.stats().reject_backoffs == 3);
+}

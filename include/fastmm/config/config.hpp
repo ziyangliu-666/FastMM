@@ -62,6 +62,8 @@ struct EngineSection {
   int min_qty_bps = 8000;
   bool post_only = true;
   bool supports_replace = true;
+  int reject_backoff_ms = 1000;       // QuoteManager: pause a side after a venue reject (0 = off)
+  int reject_backoff_max_ms = 60000;  // doubling cap
 };
 
 struct FeesSection {

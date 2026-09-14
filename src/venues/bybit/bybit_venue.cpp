@@ -408,7 +408,8 @@ void BybitVenue::on_private_state(net::ConnState s) {
   const ConnState prev = private_state_;
   private_state_ = mapped;
   if (mapped == ConnState::Live) {
-    emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+    // Stale is not reported for these channels, so neither is the return from it.
+    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
     FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
     // 6.7: reconcile after a reconnect, not when a quiet channel returns from Stale.
     if (private_was_live_ && prev != ConnState::Stale) request_open_orders();
@@ -527,7 +528,8 @@ void BybitVenue::on_trade_state(net::ConnState s) {
     // reconnect (not the first connect, not a return from Stale).
     const bool reconnected = trade_was_live_ && prev != ConnState::Stale;
     trade_was_live_ = true;
-    emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+    // Stale is not reported for these channels, so neither is the return from it.
+    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
     FASTMM_LOG_INFO("{}: trade channel -> Live", cfg_.name);
     drain_outbound();
     if (reconnected && !cfg_.dry_run) request_open_orders();

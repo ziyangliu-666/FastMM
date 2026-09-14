@@ -56,6 +56,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Bool,
      false,
      "use cancel-replace where the venue allows"},
+    {"engine",
+     "reject_backoff_ms",
+     KeyType::Int,
+     false,
+     "pause new orders on a side after a venue reject (0 = off)"},
+    {"engine", "reject_backoff_max_ms", KeyType::Int, false, "cap of the doubling reject backoff"},
     // [venues.<name>]
     {"venues.*", "kind", KeyType::String, true, "binance_spot | binance_futures | bybit | sim"},
     {"venues.*", "ws_url", KeyType::String, false, "market data websocket URL"},
