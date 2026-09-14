@@ -36,16 +36,32 @@ usage: fastmm-live --config <file.toml> [options]
 API keys come from the environment through ${VAR} references in [venues.*],
 e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.
 SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.
+A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue
+killed) does the same and exits with code 6, unless [engine] on_kill = "stay".
+
+Exit codes:
+  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
+  2  bad command line, or a venue has no API keys
+  3  bad config, strategy or parameters
+  4  venue reference data failed to load
+  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error
+  6  kill switch tripped by the engine (on_kill = "exit"), cancel_all ok
 ```
 <!-- END cli-help -->
 
+### Exit codes
+
 | Exit code | Meaning |
 |---:|---|
-| 0 | normal stop (duration elapsed or signal) and `cancel_all ok` |
+| 0 | stopped by `--duration` or SIGINT/SIGTERM (also after a kill with `on_kill = "stay"`), `cancel_all ok` |
 | 2 | bad command line, or a venue has no keys and there is no `--dry-run` |
-| 3 | bad configuration, unknown strategy or parameter, a strategy name registered twice |
+| 3 | bad configuration (including an invalid `on_kill`), unknown strategy or parameter, a strategy name registered twice |
 | 4 | a venue's reference data failed to load |
 | 5 | runtime failure: `cancel_all FAILED`, the journal cannot be opened, a ring overflowed, an uncaught error |
+| 6 | the engine tripped the kill switch itself (`max_loss`, a full ring, every venue killed) with `on_kill = "exit"`, and `cancel_all ok` |
+
+A failed cancel-all takes precedence: code 5 whenever orders may still be resting. A test
+(`apps.fastmm-live.exit_codes_documented`) checks that this table lists the codes of `--help`.
 
 - `--strategy` with a strategy other than the configuration's ignores `[strategy.params]` and says
   so; `--param key=value` then sets the new strategy's parameters.

@@ -46,7 +46,7 @@ engine's pre-trade checks refuse anything beyond these limits:
 | `max_order_notional` | `25` | no order above 25 USDT |
 | `max_position` | `0.0004` | position plus same-side open orders stays within 0.0004 BTC |
 | `max_open_orders` | `2` | at most 2 open orders |
-| `max_loss` | `5` | the kill switch trips when net PnL reaches -5 USDT |
+| `max_loss` | `5` | the kill switch trips when net PnL reaches -5 USDT; `tutorial-live` then cancels everything and exits with code 6 |
 | `orders_per_sec`, `burst` | `2`, `4` | order rate, far below Binance's limits |
 
 The Demo account charges 10 bps per fill and `first_mm` quotes 5 bps from the microprice, so

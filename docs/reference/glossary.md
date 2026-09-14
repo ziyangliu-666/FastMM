@@ -24,7 +24,7 @@ Terms as FastMM's code and docs use them, in alphabetical order.
 | **hysteresis** | the quote manager keeps a resting quote whose price or quantity is close enough to the desired one (`min_requote_ticks`, `min_qty_bps`) |
 | **instrument table** | the instruments of a session, indexed by `InstrumentId` |
 | **journal (`.fmj`)** | the file of every event a session consumed, in order, with the engine clock ([Journal format](journal-format.md)) |
-| **kill switch** | a flag that stops all new orders and replaces while cancels still pass; tripped by shutdown, `max_loss` and internal failures |
+| **kill switch** | a flag that stops all new orders and replaces while cancels still pass; the global switch is tripped by shutdown, `max_loss`, internal failures and every venue killed, a venue's own switch by an error that makes that venue unusable. After a kill it tripped itself, `fastmm-live` exits with code 6 unless `[engine] on_kill = "stay"` |
 | **late fill** | a fill for an order that was already terminal (for example cancelled) |
 | **level** | one price with its quantity (`Level{price, qty}`); level 0 is the best |
 | **lot** | the quantity increment of an instrument; quantities are multiples of it |

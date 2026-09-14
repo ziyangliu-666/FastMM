@@ -53,21 +53,30 @@ The first failing check decides the reason.
 ## The kill switch
 
 The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, bit 1 + v is venue
-v. While a bit is set, checks 1 and 2 refuse every new order and replace. Tripping it also turns
-quoting off (`on_quoting(false)`), pulls every quote and cancels every working order.
+v. While a bit is set, checks 1 and 2 refuse every new order and replace. Tripping the global bit
+also turns quoting off (`on_quoting(false)`), pulls every quote and cancels every working order;
+tripping a venue's bit does that for that venue's instruments only, and the other venues keep
+trading. The engine records why each bit was first set (a `KillReason`, shown by `fastmm-top`).
 
-It trips when:
+The global switch trips when:
 
 - the session shuts down: Ctrl-C, SIGTERM, `--duration` or an order ring overflow (the control
   thread requests it, then cancels all orders on every venue over a separate REST connection);
 - `[risk] max_loss` is reached: net PnL (realised plus unrealised, marked at the mid, minus fees)
   is re-evaluated on every book update and fill;
 - the outbound ring to a venue or the journal ring is full, because the engine can no longer
-  guarantee that what it sends is what it records.
+  guarantee that what it sends is what it records;
+- every venue with instruments has been killed.
 
-The last two leave the process running with quoting off, so an operator can inspect it; nothing
-resets the kill switch automatically. [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)
-has the log lines and the shutdown sequence.
+A venue's switch trips when its connector reports an error that makes the venue unusable: a bad
+key, signature or permission, failed authentication, or a Binance IP ban. The command travels
+through the venue's order ring, so it is journaled and a replay trips it at the same point.
+
+After a kill the engine tripped itself (the last three causes), `fastmm-live` runs the normal
+shutdown and exits with code 6; with `[engine] on_kill = "stay"` it keeps running with quoting off
+so an operator can inspect it. Nothing resets a kill switch automatically.
+[Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) has the log lines and
+the shutdown sequence.
 
 ## What the layer does not do
 

@@ -374,7 +374,8 @@ if(Python3_Interpreter_FOUND AND TARGET fastmm-live)
     COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/exit_codes_doc.py
             $<TARGET_FILE:fastmm-live>
             ${PROJECT_SOURCE_DIR}/docs/how-to/operations/kill-switch-and-shutdown.md
-            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/troubleshooting.md)
+            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/troubleshooting.md
+            ${PROJECT_SOURCE_DIR}/docs/reference/cli.md)
   set_tests_properties(apps.fastmm-live.exit_codes_documented PROPERTIES LABELS "unit;cli")
 endif()
 
