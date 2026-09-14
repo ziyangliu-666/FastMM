@@ -291,11 +291,13 @@ class Engine {
   }
 
   Result<ClientOrderId, RejectReason> send_order(const NewOrderRequest& req) noexcept {
+    enter_api();
     auto r = submit_new(req);
     flush_out();
     return r;
   }
   Result<void, RejectReason> cancel_order(ClientOrderId id) noexcept {
+    enter_api();
     const Handle<Order> h = oms_.find(id);
     if (!h.valid()) return fail(RejectReason::UnknownOrder);
     auto r = submit_cancel(h);
@@ -303,6 +305,7 @@ class Engine {
     return r;
   }
   Result<void, RejectReason> replace_order(ClientOrderId id, Price px, Qty qty) noexcept {
+    enter_api();
     const Handle<Order> h = oms_.find(id);
     if (!h.valid()) return fail(RejectReason::UnknownOrder);
     auto r = submit_replace(h, px, qty);
@@ -312,24 +315,28 @@ class Engine {
   // False when the quotes are ignored: quoting is disabled or the instrument is not in the table.
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
     if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
+    enter_api();
     const Instrument& inst = instruments_.get(id);
     Placer place{this};
-    quotes_.reconcile(inst, q, oms_, now(), place);
+    quotes_.reconcile(inst, q, oms_, now_, place);
     flush_out();
     return true;
   }
   void pull_quotes(InstrumentId id) noexcept {
+    enter_api();
     Placer place{this};
     quotes_.pull_quotes(instruments_.get(id), oms_, place);
     flush_out();
   }
   void pull_all_quotes() noexcept {
+    enter_api();
     Placer place{this};
     for (const Instrument& inst : instruments_) quotes_.pull_quotes(inst, oms_, place);
     flush_out();
   }
   // Cancels every working order (kill switch / control). Cancels are always allowed.
   void mass_cancel() noexcept {
+    enter_api();
     StaticVector<Handle<Order>, kMaxOpenOrders> handles;
     oms_.for_each_open_order([&](Handle<Order> h, const Order& o) {
       if (o.is_working()) static_cast<void>(handles.push_back(h));
@@ -556,10 +563,10 @@ class Engine {
     }
     if (u.known && u.handle.valid() && instruments_.contains(u.order.instrument)) {
       Placer place{this};
-      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now(), place);
+      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now_, place);
     } else if (u.terminal && instruments_.contains(u.order.instrument)) {
       Placer place{this};
-      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now(), place);
+      quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now_, place);
     }
     if (u.changed) {
       if constexpr (has_hook(Hook::OrderUpdate)) strategy_.on_order_update(ctx_, u);
@@ -740,7 +747,7 @@ class Engine {
   void resume_quotes() noexcept {
     Placer place{this};
     const bool enabled = quoting_enabled();
-    const Timestamp now = this->now();
+    const Timestamp now = now_;
     for (const Instrument& inst : instruments_) {
       if (!quotes_.resumable(inst.id)) continue;
       if (enabled && books_[inst.id.value].is_valid()) {
@@ -840,7 +847,7 @@ class Engine {
     if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
       return fail(RejectReason::InstrumentDisabled);
     const Instrument& inst = instruments_.get(req.instrument);
-    const Timestamp now = this->now();
+    const Timestamp now = now_;
     OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty};
     RiskInputs in{now,
                   &positions_.get(req.instrument),
@@ -878,7 +885,7 @@ class Engine {
     const Order& o = oms_.get(h);
     OutCancelMsg m{};
     init_header(m, EventType::OutCancel, o.instrument, o.venue);
-    m.hdr.recv_ts = now();
+    m.hdr.recv_ts = now_;
     m.cl_ord_id = o.cl_ord_id;
     m.venue_order_id = o.venue_order_id;
     queue_out(m.hdr);
@@ -892,7 +899,7 @@ class Engine {
     if (!o.is_working()) return fail(RejectReason::InvalidState);
     if (!transport_.supports_replace(o.venue)) return fail(RejectReason::VenueReject);
     const Instrument& inst = instruments_.get(o.instrument);
-    const Timestamp now = this->now();
+    const Timestamp now = now_;
     OrderIntent oi{o.instrument, o.venue, o.side, o.type, px, qty};
     RiskInputs in{now,
                   &positions_.get(o.instrument),
@@ -926,7 +933,7 @@ class Engine {
     ++stats_.unknown_order_cancels;
     OutCancelMsg m{};
     init_header(m, EventType::OutCancel, h.instrument, h.venue);
-    m.hdr.recv_ts = now();
+    m.hdr.recv_ts = now_;
     if (h.type == EventType::OrderAck) {
       const auto& a = msg_cast<OrderAckMsg>(&h);
       m.cl_ord_id = a.cl_ord_id;
@@ -997,6 +1004,11 @@ class Engine {
     latched_ = true;
   }
   FASTMM_FORCE_INLINE void unlatch_clock() noexcept { latched_ = false; }
+  // Engine API called outside an event, timer, start or finish (tests, tools): take the clock now,
+  // so the internal paths can read now_ unconditionally.
+  void enter_api() noexcept {
+    if (FASTMM_UNLIKELY(!latched_)) now_ = clock_.now();
+  }
 
   // Clocks with a refresh() (TscClock) take recalibrations published by the calibrator thread
   // here, once per step next to the timer poll rather than per event. SimClock has none.
