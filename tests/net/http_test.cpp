@@ -360,8 +360,8 @@ void client_scenario(Reactor& reactor, Server& server, MakeStream make_stream) {
 
 }  // namespace
 
-TEST_CASE("http: client/server over PlainStream") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("http: client/server over PlainStream", test_http_1) {
+  Reactor reactor(backend);
   HttpServer<PlainStream> server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
   install_routes(server);
   REQUIRE(server.listen(SockAddr::loopback_v4(0)));
@@ -369,8 +369,8 @@ TEST_CASE("http: client/server over PlainStream") {
       reactor, server, [&] { return connect_plain(server.port()); });
 }
 
-TEST_CASE("http: client/server over TlsStream") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("http: client/server over TlsStream", test_http_2) {
+  Reactor reactor(backend);
   TlsContext sctx =
       TlsContext::server(tls_fixture("cert.pem").string(), tls_fixture("key.pem").string());
   TlsContext cctx;
@@ -385,8 +385,8 @@ TEST_CASE("http: client/server over TlsStream") {
   });
 }
 
-TEST_CASE("http: server rejects malformed and oversized requests") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("http: server rejects malformed and oversized requests", test_http_3) {
+  Reactor reactor(backend);
   HttpServerConfig cfg;
   cfg.max_body_bytes = 16;
   HttpServer<PlainStream> server(

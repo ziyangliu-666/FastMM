@@ -254,6 +254,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "spin_mode", e.spin_mode);
     if (e.spin_mode != "busy" && e.spin_mode != "adaptive")
       fail_at(*t->get("spin_mode"), "spin_mode must be busy|adaptive");
+    get(*t, "net_backend", e.net_backend);
+    if (e.net_backend != "epoll" && e.net_backend != "io_uring")
+      fail_at(*t->get("net_backend"), "net_backend must be epoll|io_uring");
     get(*t, "journal", e.journal);
     get(*t, "journal_dir", e.journal_dir);
     get(*t, "epoch_file", e.epoch_file);
@@ -496,6 +499,7 @@ std::string Config::redacted() const {
   kq("name", engine.name);
   kv("cpu", engine.cpu);
   kq("spin_mode", engine.spin_mode);
+  kq("net_backend", engine.net_backend);
   kv("journal", engine.journal);
   kq("journal_dir", engine.journal_dir);
   kq("epoch_file", engine.epoch_file);

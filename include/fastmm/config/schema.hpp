@@ -28,6 +28,7 @@ inline constexpr KeySpec kConfigSchema[] = {
     {"engine", "cpu", KeyType::Int, false, "engine thread CPU (-1 = unpinned)"},
     {"engine", "net_cpus", KeyType::IntArray, false, "net thread CPUs, one per venue"},
     {"engine", "spin_mode", KeyType::String, false, "busy | adaptive"},
+    {"engine", "net_backend", KeyType::String, false, "network reactor: epoll | io_uring"},
     {"engine", "journal", KeyType::Bool, false, "write .fmj journal"},
     {"engine", "journal_dir", KeyType::String, false, "directory for journals"},
     {"engine", "epoch_file", KeyType::String, false, "session epoch persistence file"},

@@ -3,6 +3,7 @@
 // from the [[instruments]] and [sim] sections of a FastMM TOML file (configs/sim.toml), or
 // built in code by tests (SimServerConfig::defaults()).
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/net/reactor.hpp"
 #include "fastmm/sim/market_generator.hpp"
 
 #include <cstdint>
@@ -53,6 +54,8 @@ struct SimServerConfig {
   int tls_port = 9443;  // 0 = ephemeral, < 0 = disabled
   std::string tls_cert = "tests/fixtures/tls/cert.pem";
   std::string tls_key = "tests/fixtures/tls/key.pem";
+  // [engine] net_backend; io_uring falls back to epoll (with a warning) when unsupported.
+  net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
 
   // the single trading account (HMAC key); the secret is never logged
   std::string api_key = "sim-key";

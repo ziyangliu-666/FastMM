@@ -50,6 +50,15 @@ inline std::filesystem::path repo_root() {
   return (fastmm::test::fixtures_dir() / ".." / "..").lexically_normal();
 }
 
+// FASTMM_TEST_NET_BACKEND=io_uring runs the simulator's and the connector's reactors on io_uring
+// (epoll when unset, or when io_uring is not available).
+inline net::ReactorBackend test_net_backend() {
+  net::ReactorBackend backend = net::ReactorBackend::Epoll;
+  if (const char* env = std::getenv("FASTMM_TEST_NET_BACKEND"); env != nullptr)
+    static_cast<void>(net::parse_reactor_backend(env, backend));
+  return net::Reactor::resolve_backend(backend);
+}
+
 // Ephemeral ports, the fixture certificate, a faster counter-party flow than configs/sim.toml
 // so fills happen within a second or two, and frequent server pings.
 inline sim::server::SimServerConfig test_server_config(bool tls = false) {
@@ -66,6 +75,7 @@ inline sim::server::SimServerConfig test_server_config(bool tls = false) {
   // Serve depth snapshots at batch boundaries: deterministic first sync. The live-book mode is
   // covered by its own conformance test (see the BookSyncer note there).
   c.snapshot_at_flush = true;
+  c.net_backend = test_net_backend();
   return c;
 }
 
@@ -204,6 +214,7 @@ class LiveEngine {
 
   explicit LiveEngine(Config cfg)
       : cfg_(std::move(cfg)),
+        reactor_(test_net_backend()),
         md_ring_(ring_bytes(cfg_.engine.md_ring_bytes)),
         order_ring_(ring_bytes(cfg_.engine.order_ring_bytes)),
         outbound_(ring_bytes(cfg_.engine.order_ring_bytes)),

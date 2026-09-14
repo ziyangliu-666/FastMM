@@ -72,7 +72,7 @@ struct VenueHarness {
   RecordingSink md{8U << 20};
   RecordingSink orders{1U << 20, SinkPolicy::Spin};
   MsgRing outbound{1U << 16};
-  net::Reactor reactor;
+  net::Reactor reactor{test_net_backend()};
   std::unique_ptr<BinanceVenue> venue;
   Collected mdc;
   Collected oc;

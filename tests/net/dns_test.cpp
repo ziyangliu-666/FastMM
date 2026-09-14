@@ -37,8 +37,8 @@ TEST_CASE("dns: resolve_sync") {
   }
 }
 
-TEST_CASE("dns: AsyncResolver delivers on the reactor thread") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("dns: AsyncResolver delivers on the reactor thread", test_dns_1) {
+  Reactor reactor(backend);
   AsyncResolver resolver(reactor);
   const auto main_thread = std::this_thread::get_id();
   int done = 0;
@@ -58,8 +58,9 @@ TEST_CASE("dns: AsyncResolver delivers on the reactor thread") {
   CHECK(got.addrs[0].port() == 443);
 }
 
-TEST_CASE("dns: AsyncResolver destructor with a queued request does not hang") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("dns: AsyncResolver destructor with a queued request does not hang",
+                    test_dns_2) {
+  Reactor reactor(backend);
   {
     AsyncResolver resolver(reactor);
     resolver.resolve("localhost", 1, [](ResolveResult) {});
