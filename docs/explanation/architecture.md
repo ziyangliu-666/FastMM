@@ -87,7 +87,7 @@ The io_uring backend talks to the kernel through the raw `io_uring_setup` / `io_
 
 ## Determinism
 
-`Clock` and `Transport` are compile-time policies. Live uses `TscClock` (rdtsc calibrated against `CLOCK_REALTIME`, see below) and `LiveTransport` (writes into the venue's outbound ring). Backtests use `SimClock` (virtual time driven by event timestamps) and `SimTransport` (in-process matching engine plus a seeded latency model). Timers and RNG are virtualised the same way. The `fastmm-replay` tool feeds a recorded journal through the engine and verifies that the outbound stream is byte-identical. See [Determinism](determinism.md) and [Event flow](event-flow.md).
+`Clock` and `Transport` are compile-time policies. Live uses `TscClock` (rdtsc anchored to `CLOCK_REALTIME`, see below) and `LiveTransport` (writes into the venue's outbound ring). Backtests use `SimClock` (virtual time driven by event timestamps) and `SimTransport` (in-process matching engine plus a seeded latency model). Timers and RNG are virtualised the same way. The `fastmm-replay` tool feeds a recorded journal through the engine and verifies that the outbound stream is byte-identical. See [Determinism](determinism.md) and [Event flow](event-flow.md).
 
 ## Strategy registration
 
@@ -95,7 +95,7 @@ Strategies are built through the `StrategyRegistry`, which keeps one factory per
 
 ## Clock calibration
 
-`TscClock` maps a TSC reading to wall-clock ns with a 32.32 fixed-point rate and an anchor (`TscCalibration`). `calibrate_tsc()` measures both against `CLOCK_REALTIME` over a 50 ms spin. The rate is only as good as that measurement, and the wall clock is itself slewed by NTP, so the mapping drifts over a long session; stale-market-data checks and timers read it.
+`TscClock` maps a TSC reading to wall-clock ns with a 32.32 fixed-point rate and an anchor (`TscCalibration`). `calibrate_tsc()` takes the anchor from `CLOCK_REALTIME` and measures the rate against `CLOCK_MONOTONIC_RAW` over a 50 ms spin, so a wall-clock step inside the window does not change the rate. The rate is only as good as that measurement, so the mapping drifts over a long session; stale-market-data checks and timers read it.
 
 * Only startup uses a short measurement window. Afterwards `TscCalibrator` takes a fresh anchor (a tight rdtsc bracket around `CLOCK_REALTIME` and `CLOCK_MONOTONIC_RAW`) and computes the rate over the whole interval since the previous anchor, against `CLOCK_MONOTONIC_RAW`. Tens of microseconds of `clock_gettime` jitter then cost a few ppm instead of thousands, and NTP slews or host clock steps cannot distort the rate.
 * The main thread recalibrates every `[engine] tsc_recalibrate_s` seconds (default 10, 0 turns it off), logs how far the previous calibration had drifted (`tsc recalibrated: drift <ns> over <s> (<ppm>) ...`) and publishes the result in a `Seqlocked<TscCalibration>`.
