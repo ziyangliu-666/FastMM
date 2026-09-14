@@ -13,7 +13,7 @@ list(REMOVE_ITEM _benches ${CMAKE_CURRENT_SOURCE_DIR}/bench_main.cpp)
 
 # name regex -> extra library. First match wins; no match means core only.
 set(_bench_net_regex      "^bench_(ws|http|reactor)$")
-set(_bench_venues_regex   "^bench_json$")
+set(_bench_venues_regex   "^bench_(json|order_encoders)$")
 set(_bench_backtest_regex "^bench_(matching|tick_to_order|backtest)$")
 set(_bench_codecs_regex   "^bench_codecs")
 

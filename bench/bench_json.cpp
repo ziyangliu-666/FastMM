@@ -6,6 +6,9 @@
 #include "fastmm/venues/binance/binance_md_parser.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
 #include "fastmm/venues/bybit/bybit_md_parser.hpp"
+#include "fastmm/venues/bybit/bybit_private_parser.hpp"
+#include "fastmm/venues/deribit/deribit_md_parser.hpp"
+#include "fastmm/venues/deribit/deribit_private_parser.hpp"
 #include "fastmm/venues/padded_json.hpp"
 
 #include <benchmark/benchmark.h>
@@ -134,5 +137,102 @@ void BM_Json_BybitOrderbook20(benchmark::State& state) {
   run_decode(state, bybit_delta(10), p);
 }
 BENCHMARK(BM_Json_BybitOrderbook20);
+
+// Recorded Bybit and Deribit frames (tests/fixtures/{bybit,deribit}), verbatim.
+const char* kBybitTrade =
+    R"({"topic":"publicTrade.BTCUSDT","ts":1789299660724,"type":"snapshot","data":[{"i":"2100000000188691524","T":1789299660688,"p":"77140.5","v":"0.00389","S":"Sell","seq":2189232173,"s":"BTCUSDT","BT":false,"RPI":false}]})";
+const char* kBybitExecution =
+    R"({"topic":"execution","id":"386825804_BTCUSDT_140612148849382","creationTime":1789299703460,"data":[{"category":"spot","symbol":"BTCUSDT","execFee":"0.000001","execId":"0ab1bdf7-4219-438b-b30a-32ec863018f7","execPrice":"77140.5","execQty":"0.001","execType":"Trade","execValue":"77.1405","feeRate":"0.001","orderId":"2012345678901234569","orderLinkId":"fm000100000003","orderPrice":"77200","orderQty":"0.001","side":"Buy","leavesQty":"0","execTime":"1789299703453","isMaker":false,"seq":140612148849382}]})";
+const char* kDeribitBookChange =
+    R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"book.BTC-PERPETUAL.100ms","data":{"timestamp":1789344931639,"type":"change","change_id":118850969743,"instrument_name":"BTC-PERPETUAL","bids":[["change",76914.0,1.0002e6],["new",76899.0,10.0],["delete",76893.0,0.0],["new",76871.5,3.0e6],["delete",76867.0,0.0],["change",38458.5,10.0],["new",38457.0,10.0]],"asks":[["new",77023.0,10.0],["delete",77027.5,0.0],["new",115372.0,10.0]],"prev_change_id":118850968930}}})";
+const char* kDeribitTickerOption =
+    R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"ticker.BTC-15SEP26-77000-C.100ms","data":{"timestamp":1789344931096,"state":"open","stats":{"high":0.0118,"low":0.0065,"price_change":-38.6792,"volume":1555.0,"volume_usd":1268694.68},"greeks":{"delta":0.47736,"gamma":2.8e-4,"vega":18.43602,"theta":-217.49347,"rho":1.31068},"index_price":76900.24,"instrument_name":"BTC-15SEP26-77000-C","last_price":0.0065,"settlement_price":0.00897474,"min_price":0.0001,"max_price":0.0365,"open_interest":534.4,"mark_price":0.0069,"interest_rate":0.0,"estimated_delivery_price":76900.24,"best_ask_price":0.0075,"best_bid_price":0.0065,"mark_iv":31.2,"bid_iv":29.57,"ask_iv":33.74,"underlying_price":76904.4,"underlying_index":"BTC-15SEP26","best_ask_amount":10.0,"best_bid_amount":10.0}}})";
+const char* kDeribitTrades =
+    R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"trades.BTC-PERPETUAL.100ms","data":[{"timestamp":1789344933994,"price":76917.5,"amount":8450.0,"direction":"buy","index_price":76906.67,"instrument_name":"BTC-PERPETUAL","trade_seq":140284854,"mark_price":76917.12,"tick_direction":0,"starbase_match_id":225046781992378368,"trade_id":"267258393","contracts":845.0,"starbase_timestamp":1789344933994718924},{"timestamp":1789344933994,"price":76918.5,"amount":6000.0,"direction":"buy","index_price":76906.67,"instrument_name":"BTC-PERPETUAL","trade_seq":140284855,"mark_price":76917.12,"tick_direction":0,"starbase_match_id":225046781992378369,"trade_id":"267258394","contracts":600.0,"starbase_timestamp":1789344933994718924},{"timestamp":1789344933994,"price":76919.5,"amount":6000.0,"direction":"buy","index_price":76906.67,"instrument_name":"BTC-PERPETUAL","trade_seq":140284856,"mark_price":76917.12,"tick_direction":0,"starbase_match_id":225046781992378370,"trade_id":"267258395","contracts":600.0,"starbase_timestamp":1789344933994718924}]}})";
+const char* kDeribitUserOrder =
+    R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.orders.option.BTC.raw","data":{"time_in_force":"good_til_cancelled","reduce_only":false,"price":0.0065,"post_only":true,"order_type":"limit","order_state":"open","order_id":"42710123456","max_show":1.0,"last_update_timestamp":1789345400123,"label":"fm000100000001","is_rebalance":false,"is_liquidation":false,"instrument_name":"BTC-15SEP26-77000-C","filled_amount":0.0,"direction":"buy","creation_timestamp":1789345400100,"average_price":0.0,"api":true,"amount":1.0,"contracts":1.0,"reject_post_only":true,"replaced":false,"mmp":false,"risk_reducing":false,"web":false}}})";
+const char* kDeribitUserTrade =
+    R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.trades.option.BTC.raw","data":[{"trade_seq":1966,"trade_id":"267259001","timestamp":1789345401234,"tick_direction":0,"state":"open","reduce_only":false,"price":0.006,"post_only":true,"order_type":"limit","order_id":"42710123456","matching_id":null,"mark_price":0.0061,"liquidity":"M","label":"fm000100000001","iv":30.8,"instrument_name":"BTC-15SEP26-77000-C","index_price":76950.1,"fee_currency":"BTC","fee":0.00015,"direction":"buy","amount":0.5,"contracts":0.5,"underlying_price":76955.0,"api":true,"mmp":false,"risk_reducing":false,"profit_loss":0.0}]}})";
+
+// Deribit: 0 BTC-15SEP26-77000-C (option), 1 BTC-PERPETUAL (10 USD contracts), as in
+// tests/venues/deribit_md_parser_test.cpp.
+struct DeribitUniverse {
+  InstrumentTable instruments;
+  SymbolTable symbols;
+  DeribitUniverse() {
+    Instrument call{};
+    call.symbol = "BTC-15SEP26-77000-C";
+    call.venue = VenueId{2};
+    call.base = "BTC";
+    call.quote = "BTC";
+    call.asset_class = AssetClass::Option;
+    call.option_type = OptionType::Call;
+    call.flags = Instrument::kEnabled;
+    call.tick = Price::from_decimal("0.0001").value();
+    call.lot = Qty::from_decimal("0.1").value();
+    static_cast<void>(instruments.add(call));
+    Instrument perp{};
+    perp.symbol = "BTC-PERPETUAL";
+    perp.venue = VenueId{2};
+    perp.base = "BTC";
+    perp.quote = "USD";
+    perp.asset_class = AssetClass::Perpetual;
+    perp.flags = Instrument::kEnabled;
+    perp.tick = Price::from_decimal("0.5").value();
+    perp.lot = Qty::from_int(1);
+    perp.contract_multiplier = Qty::from_int(10);
+    static_cast<void>(instruments.add(perp));
+    static_cast<void>(symbols.build(instruments));
+  }
+};
+
+void BM_Json_BybitTrade(benchmark::State& state) {
+  Universe u;
+  bybit::BybitMdParser p(u.symbols, VenueId{1});
+  run_decode(state, kBybitTrade, p);
+}
+BENCHMARK(BM_Json_BybitTrade);
+
+void BM_Json_BybitExecution(benchmark::State& state) {
+  Universe u;
+  bybit::BybitPrivateParser p(u.symbols, u.instruments, VenueId{1});
+  run_decode(state, kBybitExecution, p);
+}
+BENCHMARK(BM_Json_BybitExecution);
+
+void BM_Json_DeribitBookChange(benchmark::State& state) {
+  DeribitUniverse u;
+  deribit::DeribitMdParser p(u.symbols, u.instruments, VenueId{2});
+  run_decode(state, kDeribitBookChange, p);
+}
+BENCHMARK(BM_Json_DeribitBookChange);
+
+void BM_Json_DeribitTickerOption(benchmark::State& state) {
+  DeribitUniverse u;
+  deribit::DeribitMdParser p(u.symbols, u.instruments, VenueId{2});
+  run_decode(state, kDeribitTickerOption, p);
+}
+BENCHMARK(BM_Json_DeribitTickerOption);
+
+void BM_Json_DeribitTrades3(benchmark::State& state) {
+  DeribitUniverse u;
+  deribit::DeribitMdParser p(u.symbols, u.instruments, VenueId{2});
+  run_decode(state, kDeribitTrades, p);
+}
+BENCHMARK(BM_Json_DeribitTrades3);
+
+void BM_Json_DeribitUserOrder(benchmark::State& state) {
+  DeribitUniverse u;
+  deribit::DeribitPrivateParser p(u.symbols, u.instruments, VenueId{2});
+  run_decode(state, kDeribitUserOrder, p);
+}
+BENCHMARK(BM_Json_DeribitUserOrder);
+
+void BM_Json_DeribitUserTrade(benchmark::State& state) {
+  DeribitUniverse u;
+  deribit::DeribitPrivateParser p(u.symbols, u.instruments, VenueId{2});
+  run_decode(state, kDeribitUserTrade, p);
+}
+BENCHMARK(BM_Json_DeribitUserTrade);
 
 }  // namespace

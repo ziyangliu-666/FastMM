@@ -167,13 +167,17 @@ Then confirm on the venue's website that no orders are left open. If the line sa
 
 The `live.*` test cases in `tests/venues/live_binance_test.cpp`, `live_bybit_test.cpp` and
 `live_deribit_test.cpp` run each connector against its testnet: book sync, then a far post-only
-order that is placed and cancelled. They are part of the venue test binary and pass without doing
-anything unless `FASTMM_LIVE_TESTS=1` is set; the order steps also need the key variables above.
-`FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode instead of the testnet.
+order that is placed and cancelled. They are part of the venue test binary with the ctest label
+`live`: the test presets (`ctest --preset release`, ...) exclude that label, and a plain `ctest`
+runs them but they pass without doing anything unless `FASTMM_LIVE_TESTS=1` is set; the order steps
+also need the key variables above. `FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode
+instead of the testnet.
 
 ```bash
 cmake --build --preset release -j --target fastmm_venues_tests
-FASTMM_LIVE_TESTS=1 FASTMM_BINANCE_ENV=demo ctest --test-dir build/release -R 'venues\.live\.' --output-on-failure
+FASTMM_LIVE_TESTS=1 FASTMM_BINANCE_ENV=demo ctest --test-dir build/release -L live --output-on-failure
+# one venue only
+FASTMM_LIVE_TESTS=1 ctest --test-dir build/release -L live -R 'venues\.live\.bybit' --output-on-failure
 ```
 
 ## Next

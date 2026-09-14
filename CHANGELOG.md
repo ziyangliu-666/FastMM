@@ -5,6 +5,9 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- The opt-in testnet tests (`venues.live.*` in `fastmm_venues_tests`) carry the ctest label `live`
+  instead of `unit` and `fixture`: `ctest -L live` selects them, the test presets exclude them, and
+  they still skip unless `FASTMM_LIVE_TESTS=1`.
 - **Status segment version 2** (`venue_rejects` and per-reason reject counts). `fastmm-top` and
   `fastmm-live` must come from the same build; `fastmm-top` reports a mismatch as `<file> was
   written by a different FastMM build (status segment version <n>, this fastmm-top reads version
@@ -146,6 +149,18 @@ All notable changes are recorded here (Keep a Changelog format).
   schema error or an unknown strategy in a shipped config fails the build's tests. A second case
   checks that mutated copies (`quote_qty = "abc"`, an unknown parameter, a string where the schema
   wants an integer, an unknown strategy) are reported.
+- **Venue hot-path coverage.** `tests/hotpath/venues_noalloc_test.cpp` (label `noalloc`): after a
+  warm-up pass over the recorded fixtures, the market-data parser, the private parser and the order
+  encoder (new, cancel, replace) of Binance, Bybit and Deribit decode and encode 200 rounds without
+  an allocation; `fastmm_hotpath_tests` now links `fastmm::venues`. Benchmarks for the Bybit trade,
+  Bybit execution, Deribit book change, option ticker, trades, user order and user trade frames
+  (`bench_json`) and the three order encoders (`bench_order_encoders`), with p50 budgets in
+  `bench/ci_budget.toml` for these, the Binance execution report and the Bybit order book. Measured
+  p50 (release, pinned, median of three runs): Bybit trade 144 ns, Bybit orderbook 20 levels 703 ns,
+  Deribit book change 620 ns, option ticker 398 ns, three trades 398 ns; private Binance execution
+  report 309 ns, Bybit execution 380 ns, Deribit user order 294 ns, user trade 431 ns; encoders
+  Binance order.place with HMAC signature 1474 ns, Bybit order.create 312 ns, Deribit private/buy
+  319 ns.
 
 ### Fixed
 - **Live session journals replay exactly.** `fastmm-replay --journal <live journal> --verify`

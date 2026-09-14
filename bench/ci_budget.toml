@@ -30,3 +30,19 @@
 "BM_Mdp3_DecodeBook46_4Entries" = 110     # packet with 4 book entries, decoded into the ring
 "BM_Mdp3_ArbitrationAB_Heartbeat" = 25    # per packet copy
 "BM_Mdp3_FeedAB_Book46_4Entries" = 120    # A plus its duplicate on B, full feed path
+
+# Venue connectors (bench/bench_json.cpp, bench/bench_order_encoders.cpp). Budgets are about twice
+# the median of three runs (release preset, pinned with taskset, scripts/bench.sh settings) on a
+# shared 8-core desktop under WSL2; the measured p50 is in the comment.
+"BM_Json_BybitOrderbook20" = 1500         # 703 ns, 10 bids + 10 asks delta
+"BM_Json_BybitTrade" = 300                # 144 ns
+"BM_Json_DeribitBookChange" = 1300        # 620 ns, 7 bids + 3 asks, exponent amounts
+"BM_Json_DeribitTickerOption" = 800       # 398 ns, BookTicker + OptionTicker
+"BM_Json_DeribitTrades3" = 800            # 398 ns, three trades in one frame
+"BM_Json_BinanceExecutionReport" = 650    # 309 ns, private: partial fill
+"BM_Json_BybitExecution" = 800            # 380 ns, private: fill
+"BM_Json_DeribitUserOrder" = 600          # 294 ns, private: user.orders open
+"BM_Json_DeribitUserTrade" = 900          # 431 ns, private: user.trades fill
+"BM_Encode_BinanceOrderPlace" = 3000      # 1474 ns, order.place with HMAC-SHA256 signature
+"BM_Encode_BybitOrderCreate" = 650        # 312 ns, order.create
+"BM_Encode_DeribitBuy" = 650              # 319 ns, private/buy
