@@ -368,13 +368,11 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(tools.pnl_report.self_test PROPERTIES LABELS "unit")
 endif()
 
-# fastmm-live --help and the operations docs list the same exit codes.
+# fastmm-live --help and docs/reference/cli.md (the one exit-code table) list the same codes.
 if(Python3_Interpreter_FOUND AND TARGET fastmm-live)
   add_test(NAME apps.fastmm-live.exit_codes_documented
     COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/exit_codes_doc.py
             $<TARGET_FILE:fastmm-live>
-            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/kill-switch-and-shutdown.md
-            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/troubleshooting.md
             ${PROJECT_SOURCE_DIR}/docs/reference/cli.md)
   set_tests_properties(apps.fastmm-live.exit_codes_documented PROPERTIES LABELS "unit;cli")
 endif()

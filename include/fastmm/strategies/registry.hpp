@@ -97,7 +97,7 @@ class StrategyRegistry {
   }
 
   // Registers `factory` for one transport kind of `name`. Registering the same schema and factory
-  // again is harmless (AlreadyPresent); anything that would replace or disagree with an existing
+  // again does nothing (AlreadyPresent); anything that would replace or disagree with an existing
   // registration changes nothing and returns Conflict.
   AddResult try_add(std::string_view name,
                     const ParamSchema* schema,

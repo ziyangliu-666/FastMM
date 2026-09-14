@@ -88,7 +88,7 @@ void register_strategy(StrategyRegistry& r, Transports transports) {
   if (has(transports, Transports::Live)) add(TransportKind::Live, &live_factory<S>);
 }
 
-// Adds the Sim, Replay and Live factories of S. Registering the same strategy twice is harmless;
+// Adds the Sim, Replay and Live factories of S. Registering the same strategy again does nothing;
 // throws StrategyConflict when another strategy already uses the name.
 template <class S>
 void register_strategy(StrategyRegistry& r) {

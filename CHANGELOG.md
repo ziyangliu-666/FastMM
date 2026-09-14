@@ -17,7 +17,7 @@ All notable changes are recorded here (Keep a Changelog format).
   pulled, REST cancel-all on every venue, summary, status file, journal trailer) and exits with the
   new exit code 6 (5 if a cancel-all failed). `"stay"` keeps the previous behaviour and logs an
   ERROR line every 10 s while killed. `fastmm-live --help` lists every exit code; a test checks the
-  list against the operations docs.
+  list against docs/reference/cli.md.
 - Status segment version 3 (kill reasons, per-venue kill flags, `venue_kills`); `fastmm-top` shows
   `KILLED (<reason>)` or `VENUE KILLED` next to the state and a `kill` column per venue. A
   `fastmm-top` of another build refuses the file.
@@ -321,6 +321,12 @@ All notable changes are recorded here (Keep a Changelog format).
 - `.env.example` lists the Deribit key variables and `FASTMM_BINANCE_ENV`.
 
 ### Documentation
+- Subtraction pass over README.md and docs/ (59,673 → 52,442 words; README 195 → 85 lines): removed
+  meta-commentary, reassurance, restated tables and output, promotional wording and repeated
+  warnings; each shutdown, secrets, `stale_ms` and exit-code fact now has one page that the others
+  link to. `docs/contributing/writing-docs.md` has the style rules. Corrected claims: tick-to-order
+  is a p50 over ticks that sent orders, only heap allocation is enforced on the hot path, the
+  FIX/ITCH/MDP3 codecs are not connected to a venue, and the exit codes in `docs/reference/cli.md`.
 - **Docs reorganised (ADR-0012 step 7).** `docs/README.md` is the index; pages live in
   `getting-started/`, `tutorials/`, `how-to/`, `reference/`, `explanation/` and `contributing/`.
   Moved: `architecture.md` and `benchmarks.md` to `explanation/`; `configuration.md`, `venues.md`,

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
-FastMM is a market-making engine in C++20. One engine thread owns all trading state, every input is
+FastMM is a fast market-making engine in C++20. One engine thread owns all trading state, every input is
 journaled, and the same strategy code runs in backtests, against a simulated exchange, in replay and
 on venues. Connectors: Binance Spot (testnet and Demo Mode), Bybit v5 spot and Deribit. The FIX 4.4,
 Nasdaq ITCH/OUCH and CME MDP 3.0 codecs are not connected to a venue. Version 0.1: the configs

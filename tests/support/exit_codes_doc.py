@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fastmm-live --help and the operations docs list the same exit codes.
+"""fastmm-live --help and the exit-code table in the docs list the same codes.
 
 usage: exit_codes_doc.py <fastmm-live> <doc.md>...
 

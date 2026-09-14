@@ -7,8 +7,8 @@ namespace fastmm {
 
 class StrategyRegistry;
 
-// Registers the Sim, Replay and Live factories of every built-in strategy. Repeated calls are
-// harmless; throws StrategyConflict if another strategy already took one of their names.
+// Registers the Sim, Replay and Live factories of every built-in strategy. Repeated calls do
+// nothing; throws StrategyConflict if another strategy already took one of their names.
 void register_builtin_strategies(StrategyRegistry& r);
 
 }  // namespace fastmm
