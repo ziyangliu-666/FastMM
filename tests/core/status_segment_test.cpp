@@ -2,6 +2,8 @@
 
 #include "test_support.hpp"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 
@@ -113,4 +115,116 @@ TEST_CASE("core.status_segment: the dashboard shows state, engine, latency and v
   char tiny[4];
   set_status_name(tiny, "abcdef");
   CHECK(std::string(tiny) == "abc");
+}
+
+TEST_CASE("core.status_segment: reject reasons round trip and show on the dashboard") {
+  StatusSnapshot s = sample();
+  std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("risk_rejects=0 venue_rejects=0") != std::string::npos);
+
+  RejectCounts risk;
+  for (int i = 0; i < 5; ++i) risk.add(RejectReason::RateLimit);
+  for (int i = 0; i < 12; ++i) risk.add(RejectReason::MaxPosition);
+  RejectCounts venue;
+  for (int i = 0; i < 3; ++i) venue.add(RejectReason::PostOnlyWouldCross);
+  s.risk_rejects = risk.total();
+  s.venue_rejects = venue.total();
+  set_status_rejects(s.risk_reject_reasons, risk);
+  set_status_rejects(s.venue_reject_reasons, venue);
+
+  const std::string path = tmp_path("rejects.status");
+  StatusWriter w;
+  std::string err;
+  REQUIRE_MESSAGE(w.open(path, &err), err);
+  StatusReader r;
+  REQUIRE_MESSAGE(r.open(path, &err), err);
+  w.publish(s);
+  StatusSnapshot got;
+  REQUIRE(r.read(got));
+  CHECK(got.risk_rejects == 17);
+  CHECK(got.venue_rejects == 3);
+  CHECK(got.risk_reject_reasons[0].reason == static_cast<std::uint8_t>(RejectReason::MaxPosition));
+  CHECK(got.risk_reject_reasons[0].count == 12);
+  CHECK(got.risk_reject_reasons[1].reason == static_cast<std::uint8_t>(RejectReason::RateLimit));
+  CHECK(got.risk_reject_reasons[1].count == 5);
+  CHECK(got.risk_reject_reasons[2].count == 0);
+  CHECK(got.venue_reject_reasons[0].count == 3);
+  frame = format_status(got, got.updated_ns, false);
+  INFO(frame);
+  CHECK(frame.find("risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 "
+                   "(PostOnlyWouldCross 3)") != std::string::npos);
+  w.close();
+  std::remove(path.c_str());
+
+  // More reasons than entries: the least frequent are summed as "other".
+  RejectCounts many;
+  const RejectReason reasons[] = {RejectReason::InvalidTick,
+                                  RejectReason::InvalidLot,
+                                  RejectReason::StaleMarketData,
+                                  RejectReason::PriceCollar,
+                                  RejectReason::FatFinger,
+                                  RejectReason::MaxOrderQty,
+                                  RejectReason::MaxPosition,
+                                  RejectReason::RateLimit};
+  std::uint64_t n = 10;
+  for (const RejectReason reason : reasons) {
+    for (std::uint64_t i = 0; i < n; ++i) many.add(reason);
+    --n;  // 10, 9, ..., 3
+  }
+  s.risk_rejects = many.total();
+  set_status_rejects(s.risk_reject_reasons, many);
+  CHECK(s.risk_reject_reasons[kStatusMaxRejectReasons - 1].reason ==
+        static_cast<std::uint8_t>(RejectReason::MaxOrderQty));
+  CHECK(format_status_rejects(s.risk_reject_reasons, s.risk_rejects) ==
+        "InvalidTick 10, InvalidLot 9, StaleMarketData 8, PriceCollar 7, FatFinger 6, "
+        "MaxOrderQty 5, other 7");
+  CHECK(format_status_rejects(s.risk_reject_reasons, 0).empty());
+}
+
+TEST_CASE("core.status_segment: a segment of another version is refused, not misread") {
+  // Same layout size, other version: what a reader of another build sees, since every version
+  // keeps the magic and the version at the same offsets.
+  const std::string path = tmp_path("other-version.status");
+  std::string err;
+  {
+    StatusWriter w;
+    REQUIRE_MESSAGE(w.open(path, &err), err);
+    w.publish(sample());
+  }
+  StatusReader r;
+  REQUIRE_MESSAGE(r.open(path, &err), err);
+  StatusSnapshot got;
+  REQUIRE(r.read(got));
+  CHECK(r.segment_version() == kStatusVersion);
+  std::FILE* f = std::fopen(path.c_str(), "r+b");
+  REQUIRE(f != nullptr);
+  const std::uint32_t other = kStatusVersion + 1;
+  REQUIRE(std::fseek(f, sizeof(std::uint64_t) + offsetof(StatusSnapshot, version), SEEK_SET) == 0);
+  REQUIRE(std::fwrite(&other, sizeof other, 1, f) == 1);
+  std::fclose(f);
+  CHECK_FALSE(r.read(got));
+  CHECK(r.segment_version() == other);
+  r.close();
+
+  // A smaller file with the header of version 1 (the layout before per-reason rejects): open
+  // names both versions instead of reporting a short file.
+  const std::string old_path = tmp_path("v1.status");
+  f = std::fopen(old_path.c_str(), "wb");
+  REQUIRE(f != nullptr);
+  const std::uint64_t seq = 2;
+  const std::uint64_t magic = kStatusMagic;
+  const std::uint32_t v1 = 1;
+  std::fwrite(&seq, sizeof seq, 1, f);
+  std::fwrite(&magic, sizeof magic, 1, f);
+  std::fwrite(&v1, sizeof v1, 1, f);
+  const std::string rest(512, '\0');
+  std::fwrite(rest.data(), 1, rest.size(), f);
+  std::fclose(f);
+  CHECK_FALSE(r.open(old_path, &err));
+  INFO(err);
+  CHECK(err == status_version_mismatch(1));
+  CHECK(err.find("version 1 ") != std::string::npos);
+  CHECK(err.find("(version 2)") != std::string::npos);
+  std::remove(old_path.c_str());
+  std::remove(path.c_str());
 }

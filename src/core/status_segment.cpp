@@ -23,6 +23,9 @@ struct SegmentLayout {
 };
 
 constexpr std::size_t kSegmentBytes = sizeof(SegmentLayout);
+// The part every version shares: sequence, magic, version.
+constexpr std::size_t kHeaderBytes =
+    sizeof(std::uint64_t) + offsetof(StatusSnapshot, version) + sizeof(std::uint32_t);
 
 std::string errno_text(const char* what) {
   return fmt::format("{}: {}", what, std::strerror(errno));
@@ -108,6 +111,44 @@ StatusLatency to_status_latency(const LatencyStats& s) noexcept {
   return StatusLatency{s.count, s.p50, s.p99, s.max};
 }
 
+std::string status_version_mismatch(std::uint32_t version) {
+  return fmt::format(
+      "status segment version {} is not readable by this build (version {}); use "
+      "fastmm-top from the same build as fastmm-live",
+      version,
+      kStatusVersion);
+}
+
+void set_status_rejects(StatusRejectCount* dst, const RejectCounts& c) {
+  const auto reasons = nonzero_rejects(c);
+  for (std::size_t i = 0; i < kStatusMaxRejectReasons; ++i) {
+    dst[i] = StatusRejectCount{};
+    if (i < reasons.size()) {
+      dst[i].reason = static_cast<std::uint8_t>(reasons[i].first);
+      dst[i].count = reasons[i].second;
+    }
+  }
+}
+
+std::string format_status_rejects(const StatusRejectCount* entries, std::uint64_t total) {
+  std::string out;
+  if (total == 0) return out;
+  std::uint64_t shown = 0;
+  for (std::size_t i = 0; i < kStatusMaxRejectReasons; ++i) {
+    const StatusRejectCount& e = entries[i];
+    if (e.count == 0) continue;
+    fmt::format_to(std::back_inserter(out),
+                   "{}{} {}",
+                   out.empty() ? "" : ", ",
+                   to_string(static_cast<RejectReason>(e.reason)),
+                   e.count);
+    shown += e.count;
+  }
+  if (total > shown)
+    fmt::format_to(std::back_inserter(out), "{}other {}", out.empty() ? "" : ", ", total - shown);
+  return out;
+}
+
 std::string default_status_path(std::string_view engine_name) {
   return fmt::format("/dev/shm/fastmm-{}.status", engine_name);
 }
@@ -167,7 +208,20 @@ bool StatusReader::open(const std::string& path, std::string* error) {
   }
   const off_t size = ::lseek(fd, 0, SEEK_END);
   if (size < static_cast<off_t>(kSegmentBytes)) {
-    if (error != nullptr) *error = "file too small for a status segment";
+    // Possibly an older, smaller layout: say so rather than "too small".
+    std::uint8_t header[kHeaderBytes];
+    std::uint64_t magic = 0;
+    std::uint32_t version = 0;
+    if (size >= static_cast<off_t>(kHeaderBytes) &&
+        ::pread(fd, header, kHeaderBytes, 0) == static_cast<ssize_t>(kHeaderBytes)) {
+      std::memcpy(&magic, header + sizeof(std::uint64_t), sizeof magic);
+      std::memcpy(&version, header + kHeaderBytes - sizeof version, sizeof version);
+    }
+    if (error != nullptr) {
+      *error = magic == kStatusMagic && version != kStatusVersion
+                   ? status_version_mismatch(version)
+                   : std::string("file too small for a status segment");
+    }
     ::close(fd);
     return false;
   }
@@ -191,6 +245,16 @@ bool StatusReader::read(StatusSnapshot& out) const noexcept {
     return out.magic == kStatusMagic && out.version == kStatusVersion && s1 != 0;
   }
   return false;
+}
+
+std::uint32_t StatusReader::segment_version() const noexcept {
+  if (seg_ == nullptr) return 0;
+  std::uint64_t magic = 0;
+  std::uint32_t version = 0;
+  const auto* base = reinterpret_cast<const std::uint8_t*>(&seg_->data);
+  std::memcpy(&magic, base + offsetof(StatusSnapshot, magic), sizeof magic);
+  std::memcpy(&version, base + offsetof(StatusSnapshot, version), sizeof version);
+  return magic == kStatusMagic ? version : 0;
 }
 
 void StatusReader::close() noexcept {
@@ -221,16 +285,23 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  static_cast<double>(std::max<std::int64_t>(age_ns, 0)) / 1e9);
   fmt::format_to(std::back_inserter(out),
                  "engine     events={} book_updates={} orders={} cancels={} replaces={} fills={} "
-                 "risk_rejects={} kills={} kill_flags={:#x}\n",
+                 "kills={} kill_flags={:#x}\n",
                  s.events,
                  s.book_updates,
                  s.orders_sent,
                  s.cancels_sent,
                  s.replaces_sent,
                  s.fills,
-                 s.risk_rejects,
                  s.kills,
                  s.kill_flags);
+  const auto rejects = [](std::uint64_t total, const StatusRejectCount* entries) {
+    return total == 0 ? std::string("0")
+                      : fmt::format("{} ({})", total, format_status_rejects(entries, total));
+  };
+  fmt::format_to(std::back_inserter(out),
+                 "rejects    risk_rejects={} venue_rejects={}\n",
+                 rejects(s.risk_rejects, s.risk_reject_reasons),
+                 rejects(s.venue_rejects, s.venue_reject_reasons));
   fmt::format_to(std::back_inserter(out),
                  "pnl        realized={} unrealized={} fees={}\n\n",
                  money(s.realized_pnl_raw),

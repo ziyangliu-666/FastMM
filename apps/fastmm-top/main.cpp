@@ -9,6 +9,7 @@
 #include <atomic>
 #include <charconv>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -98,11 +99,26 @@ int main(int argc, char** argv) {
       }
     }
     std::string frame;
+    // A writer of another build: its layout differs, so say so instead of waiting silently.
+    const std::uint32_t version = reader.is_open() ? reader.segment_version() : 0;
     if (reader.is_open() && reader.read(snap)) {
       frame = fastmm::format_status(snap, fastmm::wall_now().ns, color);
+    } else if (version != 0 && version != fastmm::kStatusVersion) {
+      error = fastmm::status_version_mismatch(version);
+      if (once) {
+        std::fprintf(stderr, "fastmm-top: %s: %s\n", path.c_str(), error.c_str());
+        return 3;
+      }
+      frame.append("fastmm-top: ").append(path).append(": ").append(error).append("\n");
     } else if (once) {
       std::fprintf(stderr, "fastmm-top: no status segment at %s yet\n", path.c_str());
       return 3;
+    } else if (!reader.is_open() && !error.empty()) {
+      frame.append("fastmm-top: waiting for ")
+          .append(path)
+          .append(" (")
+          .append(error)
+          .append(") ...\n");
     } else {
       frame = "fastmm-top: waiting for " + path + " ...\n";
     }

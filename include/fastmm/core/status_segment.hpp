@@ -6,8 +6,11 @@
 // the engine thread only ever touches its own Seqlocked publications.
 //
 // The layout is plain old data with explicit sizes; a magic number and a version guard against
-// reading a file written by an incompatible build.
+// reading a file written by an incompatible build. Bump kStatusVersion on every layout change: the
+// magic and the version sit at the same offsets in every version, so a reader of another version
+// refuses the file instead of misreading it.
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/reject_counters.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -19,8 +22,10 @@
 namespace fastmm {
 
 inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTAT1" little-endian
-inline constexpr std::uint32_t kStatusVersion = 1;
+// 2: venue_rejects and the per-reason reject counts.
+inline constexpr std::uint32_t kStatusVersion = 2;
 inline constexpr std::size_t kStatusMaxVenues = 8;
+inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
 enum class StatusRunState : std::uint8_t { Starting = 0, Running = 1, Stopping = 2, Stopped = 3 };
 [[nodiscard]] std::string_view to_string(StatusRunState s) noexcept;
@@ -32,6 +37,13 @@ struct StatusLatency {
   std::uint64_t p50_ns = 0;
   std::uint64_t p99_ns = 0;
   std::uint64_t max_ns = 0;
+};
+
+// One reason's reject count (`reason` holds a RejectReason value); count 0 marks an unused entry.
+struct StatusRejectCount {
+  std::uint64_t count = 0;
+  std::uint8_t reason = 0;
+  std::uint8_t pad_[7] = {};
 };
 
 struct StatusVenue {
@@ -82,10 +94,17 @@ struct StatusSnapshot {
   std::int64_t realized_pnl_raw = 0;  // Notional raw (1e-8)
   std::int64_t unrealized_pnl_raw = 0;
   std::int64_t fees_raw = 0;
+  std::uint64_t venue_rejects = 0;
+  // The most frequent reasons, most frequent first; the totals above include reasons that did not
+  // fit (set_status_rejects).
+  StatusRejectCount risk_reject_reasons[kStatusMaxRejectReasons];
+  StatusRejectCount venue_reject_reasons[kStatusMaxRejectReasons];
   StatusLatency latency[static_cast<std::size_t>(LatencyInterval::Count)];
   StatusVenue venues[kStatusMaxVenues];
 };
 static_assert(std::is_trivially_copyable_v<StatusSnapshot>);
+// Every version keeps the magic and the version at these offsets (after the 8-byte sequence).
+static_assert(offsetof(StatusSnapshot, magic) == 0 && offsetof(StatusSnapshot, version) == 8);
 
 // Copies `s` into a fixed char array, truncating and always NUL-terminating.
 void set_status_name(char* dst, std::size_t capacity, std::string_view s) noexcept;
@@ -94,6 +113,15 @@ void set_status_name(char (&dst)[N], std::string_view s) noexcept {
   set_status_name(dst, N, s);
 }
 [[nodiscard]] StatusLatency to_status_latency(const LatencyStats& s) noexcept;
+// Fills `dst` with the kStatusMaxRejectReasons most frequent non-zero reasons of `c`.
+void set_status_rejects(StatusRejectCount* dst, const RejectCounts& c);
+// "MaxPosition 12, RateLimit 5" from the entries, plus "other <n>" for rejects of reasons that did
+// not fit; empty if `total` is 0.
+[[nodiscard]] std::string format_status_rejects(const StatusRejectCount* entries,
+                                                std::uint64_t total);
+
+// The error for a status segment of `version` when this build reads kStatusVersion.
+[[nodiscard]] std::string status_version_mismatch(std::uint32_t version);
 
 // "/dev/shm/fastmm-<engine name>.status"
 [[nodiscard]] std::string default_status_path(std::string_view engine_name);
@@ -122,11 +150,16 @@ class StatusReader {
   StatusReader(const StatusReader&) = delete;
   StatusReader& operator=(const StatusReader&) = delete;
   ~StatusReader();
+  // Fails for a file too small for this version's layout; if that file holds a status segment of
+  // another version, `error` names both versions.
   [[nodiscard]] bool open(const std::string& path, std::string* error);
   [[nodiscard]] bool is_open() const noexcept { return seg_ != nullptr; }
   // A consistent copy, or false if the writer kept it busy for all retries or the file does not
   // hold a compatible snapshot.
   [[nodiscard]] bool read(StatusSnapshot& out) const noexcept;
+  // The version of the status segment in the open file, 0 if it holds none (not yet published or
+  // not a status file). Differs from kStatusVersion when a writer of another build owns the file.
+  [[nodiscard]] std::uint32_t segment_version() const noexcept;
   void close() noexcept;
 
  private:

@@ -165,6 +165,23 @@ void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, boo
   }
 }
 
+// Log lines carry at most kLogMaxStrBytes of a string argument, so a long breakdown is split over
+// several lines with the same prefix, cut between reasons.
+void log_reject_breakdown(std::string_view kind, const RejectCounts& c) {
+  std::string line;
+  const auto emit = [&] {
+    if (!line.empty())
+      FASTMM_LOG_INFO("fastmm-live: {} by reason: {}", kind, std::string_view(line));
+    line.clear();
+  };
+  for (const auto& [reason, count] : nonzero_rejects(c)) {
+    std::string item = std::string(to_string(reason)) + " " + std::to_string(count);
+    if (!line.empty() && line.size() + 2 + item.size() > kLogMaxStrBytes) emit();
+    line += line.empty() ? item : ", " + item;
+  }
+  emit();
+}
+
 const char* short_state(venues::ChannelState s) {
   switch (s) {
     case venues::ChannelState::Down:
@@ -417,6 +434,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.replaces_sent = live.stats.replaces_sent;
     snap.fills = live.stats.fills;
     snap.risk_rejects = live.stats.risk_rejects;
+    snap.venue_rejects = live.stats.venue_rejects;
+    set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
+    set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
     snap.kills = live.kills;
     snap.kill_flags = live.kill_flags;
     snap.realized_pnl_raw = live.stats.realized_pnl_raw;
@@ -542,14 +562,17 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // Numeric arguments: string arguments are capped at kLogMaxStrBytes, which used to cut the PnL.
   FASTMM_LOG_INFO(
       "fastmm-live: events={} book_updates={} orders={} cancels={} replaces={} fills={} "
-      "risk_rejects={}",
+      "risk_rejects={} venue_rejects={}",
       rs.events,
       rs.book_updates,
       rs.orders_sent,
       rs.cancels_sent,
       rs.replaces_sent,
       rs.fills,
-      rs.risk_rejects);
+      rs.risk_rejects,
+      rs.venue_rejects);
+  log_reject_breakdown("risk_rejects", rs.risk_rejects_by_reason);
+  log_reject_breakdown("venue_rejects", rs.venue_rejects_by_reason);
   FASTMM_LOG_INFO(
       "fastmm-live: realized_pnl={} unrealized_pnl={} fees={} tick_to_trade p50={} ns p99={} ns",
       Notional::from_raw(rs.realized_pnl_raw),
