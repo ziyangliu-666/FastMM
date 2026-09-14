@@ -5,6 +5,12 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- `ctx.request_stop()` ends a backtest: `sim::EngineHooks` gains a nullable `stopped` callback that
+  `SimDriver` checks after every engine step. `ReplayDriver` ignores it and always drains the
+  journal. The golden hashes are unchanged.
+- `fastmm.run_backtest` is a Python function with a `params=` argument applied on top of
+  `config.params`; `strategy=` also takes a `fastmm.Strategy` subclass or instance. The existing
+  call forms are unchanged.
 - **Breaking, strategy registration (ADR-0012).** A strategy library exports one registration
   function that calls `fastmm::register_strategy<S>(r)` per strategy; that call adds the Sim,
   Replay and Live factories, whose templates are declared in `strategies/module.hpp` and defined in
@@ -83,6 +89,19 @@ All notable changes are recorded here (Keep a Changelog format).
   AvellanedaStoikov, OptionsMM and `sample_1000` hashes are unchanged.
 
 ### Added
+- **Python strategies in backtests (ADR-0012, section 7).** Subclass `fastmm.Strategy` with the C++
+  hook names (`on_book(ctx, inst, book)`, `on_fill(ctx, fill)`, `on_quoting(ctx, enabled)`, ...) and
+  `fastmm.Param` parameters (typed, C++ error messages), then
+  `fastmm.run_backtest(cfg, data, strategy=MyStrategy, params={...})`. The `PyStrategy` adapter,
+  compiled only into `fastmm._core`, is an ordinary strategy of the C++ engine: undefined hooks are
+  never called, views are reused and raise `fastmm.StaleViewError` outside their hook, the context
+  mirrors `StrategyContext` (`set_quotes` with passive tick rounding, `set_quotes_raw`, `send` raising
+  `fastmm.OrderRejected`, `every`/`once`, `random()`), and a raising hook stops the run with
+  `fastmm.StrategyError` (traceback as `__cause__`, partial result as `.result`). Results and journals
+  name the strategy `py:<QualName>`. `examples/python/strategies/basic_mm_exact.py`, an integer port
+  of BasicMM, reproduces the C++ outbound hash in CI; `skew_mm.py` is a float example;
+  `docs/reference/python-api.md` documents the API, number model, determinism rules and measured
+  cost; `bench/python/bench_py_strategy.py` measures it.
 - `fastmm-live --strategy <name>` and `--param key=value`. A strategy other than the config's
   ignores `[strategy.params]` (as in `fastmm-backtest`), parameter names are checked before any
   venue is contacted, and the journal embeds and hashes the configuration after the overrides, so

@@ -52,7 +52,29 @@ Array columns: `ts` int64 (ns), `type` uint8 (0 snapshot level, 1 delta level, 2
 slice raises `ValueError` instead of being copied. `fastmm.load_csv(path)` reads a CSV into
 exact int64 columns (identical outbound hash to running the file by path).
 
-The GIL is released while the C++ backtest runs, so several runs can proceed in Python threads.
+The GIL is released while a C++ strategy's backtest runs, so several runs can proceed in Python
+threads. A strategy written in Python holds the GIL for its whole run.
+
+## Python strategies
+
+Subclass `fastmm.Strategy`, define the hooks you need and pass the class as `strategy=`:
+
+```python
+class Joiner(fastmm.Strategy):
+    qty = fastmm.Param(0.002, min=0.0, doc="size per side")
+
+    def on_book(self, ctx, inst, book):
+        if book.valid:
+            ctx.set_quotes(inst, [(book.best_bid[0], self.qty)], [(book.best_ask[0], self.qty)])
+
+cfg.clear_params()                     # the example file configures basic_mm
+r = fastmm.run_backtest(cfg, data="synthetic", strategy=Joiner, params={"qty": 0.001})
+```
+
+The hooks, context, views, number model, determinism rules, error handling and performance are in
+[reference/python-api.md](reference/python-api.md). `examples/python/strategies/basic_mm_exact.py`
+is an integer port of the C++ BasicMM with the same outbound hash; `skew_mm.py` is a float
+market maker.
 
 ### Results
 
