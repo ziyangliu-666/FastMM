@@ -35,8 +35,9 @@ memory-mapped file every 250 ms. The file is `/dev/shm/fastmm-<engine name>.stat
 The file stays after the session ends, so the last frame shows `stopped` with the final numbers.
 The layout is versioned (magic number and version field); a monitor built from a different
 version refuses to read it instead of showing garbage. `fastmm-top` then reports
-`status segment version <n> is not readable by this build (version <m>)`; use the `fastmm-top`
-of the same build as `fastmm-live`. A `fastmm-top` from before version 2 (per-reason rejects)
+`<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads
+version <m>); use fastmm-top from the same build as fastmm-live` (with `--once`, exit code 3, as
+for a missing file); use the `fastmm-top` of the same build as `fastmm-live`. A `fastmm-top` from before version 2 (per-reason rejects)
 keeps showing `waiting for <file>` for a newer session.
 
 ## Why orders are rejected

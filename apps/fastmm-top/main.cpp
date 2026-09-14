@@ -33,6 +33,14 @@ void usage(std::FILE* out) {
       out);
 }
 
+std::string other_build_message(const std::string& path, std::uint32_t version) {
+  return "fastmm-top: " + path +
+         " was written by a different FastMM build (status segment version " +
+         std::to_string(version) + ", this fastmm-top reads version " +
+         std::to_string(fastmm::kStatusVersion) +
+         "); use fastmm-top from the same build as fastmm-live";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -89,7 +97,9 @@ int main(int argc, char** argv) {
   std::string error;
   bool first = true;
   while (g_signal.load() == 0) {
-    if (!reader.is_open() && !reader.open(path, &error)) {
+    // A segment of another version is refused by open() (smaller layout) or fails read() (same
+    // size or larger); either way segment_version() names it.
+    if (!reader.is_open() && !reader.open(path, &error) && reader.segment_version() == 0) {
       if (once) {
         std::fprintf(stderr,
                      "fastmm-top: no status segment at %s (%s); is fastmm-live running?\n",
@@ -100,16 +110,16 @@ int main(int argc, char** argv) {
     }
     std::string frame;
     // A writer of another build: its layout differs, so say so instead of waiting silently.
-    const std::uint32_t version = reader.is_open() ? reader.segment_version() : 0;
+    const std::uint32_t version = reader.segment_version();
     if (reader.is_open() && reader.read(snap)) {
       frame = fastmm::format_status(snap, fastmm::wall_now().ns, color);
     } else if (version != 0 && version != fastmm::kStatusVersion) {
-      error = fastmm::status_version_mismatch(version);
+      const std::string message = other_build_message(path, version);
       if (once) {
-        std::fprintf(stderr, "fastmm-top: %s: %s\n", path.c_str(), error.c_str());
+        std::fprintf(stderr, "%s\n", message.c_str());
         return 3;
       }
-      frame.append("fastmm-top: ").append(path).append(": ").append(error).append("\n");
+      frame.append(message).append("\n");
     } else if (once) {
       std::fprintf(stderr, "fastmm-top: no status segment at %s yet\n", path.c_str());
       return 3;

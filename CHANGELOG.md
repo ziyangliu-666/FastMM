@@ -6,9 +6,10 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ### Changed
 - **Status segment version 2** (`venue_rejects` and per-reason reject counts). `fastmm-top` and
-  `fastmm-live` must come from the same build; a mismatch is reported as `status segment version
-  <n> is not readable by this build` instead of being misread. `fastmm-top` shows the reject
-  counters on a `rejects` line instead of the `engine` line.
+  `fastmm-live` must come from the same build; `fastmm-top` reports a mismatch as `<file> was
+  written by a different FastMM build (status segment version <n>, this fastmm-top reads version
+  <m>)` (exit code 3 with `--once`) instead of misreading it or saying there is no status segment.
+  `fastmm-top` shows the reject counters on a `rejects` line instead of the `engine` line.
 - **Journal format v2 (ADR-0010).** Every consumed event and fired timer carries the engine clock
   (an int32 ns delta in `EventHeader::reserved0`, flag `kEngineTime`; `EngineTimeMsg` records hold
   absolute values at start, finish and on overflow). The header holds the session epoch, quoting

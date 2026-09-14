@@ -137,3 +137,12 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME tools.pnl_report.self_test COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/tools/pnl_report.py --self-test)
   set_tests_properties(tools.pnl_report.self_test PROPERTIES LABELS "unit")
 endif()
+
+# fastmm-top --once messages: missing file, unpublished segment, segment of another version.
+if(Python3_Interpreter_FOUND AND TARGET fastmm-top)
+  add_test(NAME apps.fastmm-top.messages
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/fastmm_top_messages.py
+            $<TARGET_FILE:fastmm-top> ${PROJECT_SOURCE_DIR}/include/fastmm/core/status_segment.hpp
+            ${CMAKE_CURRENT_BINARY_DIR}/tmp)
+  set_tests_properties(apps.fastmm-top.messages PROPERTIES LABELS "unit")
+endif()

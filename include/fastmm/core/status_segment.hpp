@@ -159,12 +159,14 @@ class StatusReader {
   [[nodiscard]] bool read(StatusSnapshot& out) const noexcept;
   // The version of the status segment in the open file, 0 if it holds none (not yet published or
   // not a status file). Differs from kStatusVersion when a writer of another build owns the file.
+  // After open() refused a file because it holds a segment of another version, that version.
   [[nodiscard]] std::uint32_t segment_version() const noexcept;
   void close() noexcept;
 
  private:
   struct Segment;
   const Segment* seg_ = nullptr;
+  std::uint32_t refused_version_ = 0;
 };
 
 // Human-readable dashboard frame. `now_ns` is the wall clock; a running engine that has not
