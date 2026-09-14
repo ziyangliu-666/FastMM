@@ -137,3 +137,5 @@ jobs:
         run: |
           python examples/python/backtest_quickstart.py
           python examples/python/sweep_spread.py
+          python examples/python/strategies/basic_mm_exact.py
+          python examples/python/strategies/skew_mm.py

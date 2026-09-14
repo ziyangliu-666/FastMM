@@ -421,6 +421,37 @@ void bind_backtest(py::module_& m) {
       "strategy: registry name; defaults to config.strategy.");
 
   m.def(
+      "_run_strategy",
+      [](const BacktestConfig& config,
+         const py::object& data,
+         const py::object& instance,
+         const std::string& name,
+         const std::vector<std::string>& hooks,
+         const py::dict& params) {
+        DataSpec spec = parse_data(data);
+        BacktestConfig cfg = config;
+        cfg.strategy = name;  // journal header (truncated to its field) and result name
+        ParamMap effective;
+        for (const auto& [k, v] : params)
+          effective[py::str(k).cast<std::string>()] = py::str(v).cast<std::string>();
+        cfg.params = std::move(effective);
+        std::unique_ptr<bt::MdSource> source;
+        {
+          py::gil_scoped_release release;
+          source = open_spec(spec, cfg);
+        }
+        return run_python_strategy(cfg, source.get(), instance, name, hooks);
+      },
+      py::arg("config"),
+      py::arg("data"),
+      py::arg("instance"),
+      py::arg("name"),
+      py::arg("hooks"),
+      py::arg("params"),
+      "Internal: backtest of a fastmm.Strategy instance with the GIL held; use "
+      "fastmm.run_backtest(config, data, strategy=MyStrategy).");
+
+  m.def(
       "sweep",
       [](const BacktestConfig& config,
          const py::dict& grid,

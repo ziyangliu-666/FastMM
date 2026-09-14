@@ -504,3 +504,50 @@ Step 5 (sections 5 and 6) follows the decision, with these clarifications:
   component before `find_dependency`, so `cmake.find_package.live_without_net` tests the message
   with a config generated for `FASTMM_BUILD_NET=OFF` instead of a second install.
 - **Integration tests** keep their own live wiring until the `LiveSession` class (section 6) exists.
+
+Step 6 (section 7) follows the decision, with these clarifications:
+
+- **Adapter.** `PyStrategy` (`python/src/py_strategy.hpp`) declares every hook with the C++
+  signature and checks a bitmask of the hooks the class defines; `static_assert(verify_strategy<
+  PyStrategy>())` holds. Because every hook is compiled in, the engine always takes its `on_quoting`
+  and `Fill` paths for a Python strategy; they record latency and build the view only, so the
+  outbound stream is unchanged. The hooks forward to `PyRun` (`bind_strategy_api.cpp`), which calls
+  the bound methods with `PyObject_Vectorcall` and `PY_VECTORCALL_ARGUMENTS_OFFSET`.
+- **Views** are pybind11 objects created once per run (book and position per instrument, one per
+  event type otherwise) and share a guard with an epoch that advances when an outermost hook starts
+  and when it returns; a view stamped with an older epoch raises `StaleViewError`. `ctx.book(inst)`
+  re-stamps the instrument's view, so a book kept from an earlier hook is valid again after that
+  call. The context also checks that it runs on the backtest's thread.
+- **Arguments.** Hooks receive an `Instrument` value (id, symbol, tick, lot, rounding helpers) and
+  context methods accept it or an integer id; views report instruments as ids. Sides and liquidity
+  are the integers of the result columns (`fastmm.BUY`, `SELL`, `MAKER`, `TAKER`); order and
+  connection states and reject reasons are their C++ names as strings. Timers take nanoseconds
+  (`every(period_ns, tag)`, `once(delay_ns, tag)`), and `randint(lo, hi)` is inclusive like
+  `random.randint` and `Xoshiro256ss::between`.
+- **Orders.** `send` and `replace` raise `OrderRejected(reason)`; `cancel` returns `False` instead
+  of raising, because cancelling an order that just ended is routine. Float `send`/`replace` prices
+  round passively like `set_quotes`; `_raw` variants take ints.
+- **Parameters.** `params=` is applied on top of `config.params` for registered names too. A Python
+  strategy sees `config.params`, so the TOML example's BasicMM keys must be cleared first (as a
+  different C++ strategy would require); the integer port uses the same names and runs on the file
+  unchanged. Messages are the C++ texts prefixed with `py:<QualName>:`; doubles format like
+  `std::to_chars`; an unbounded side prints as `-inf`/`inf`. `Strategy.validate()` mirrors the
+  optional C++ `validate()`. Python checks hook signatures and warns about the C++ near-miss names.
+- **Errors and signals.** `KeyboardInterrupt` and `SystemExit` from a hook propagate unchanged with
+  `.result` instead of being wrapped in `StrategyError`, so `except Exception` does not swallow
+  Ctrl-C. Signals are also checked every 4,096 driver steps through `EngineHooks::stopped`, so a
+  strategy whose hooks rarely run can still be interrupted. After a failure no hook is called,
+  including `on_stop`.
+- **Journals.** `BacktestConfig::strategy` is set to `py:<QualName>`; the journal writer truncates
+  it to 31 characters. Replaying such a journal is deferred with the rest of replay support.
+- **Proof.** Besides `sample_1000` (54 outbound messages), the parity tests compare the port with
+  C++ `basic_mm` on 30 s synthetic runs with fills, three levels, skew and stale-book timers (L2
+  queue) and with the coupled matching market; all hashes match.
+- **Hooks in tests.** A raise is tested in every hook the simulator can drive (`on_quoting` through
+  the max-loss kill switch); `on_connection` and `on_option_ticker` share the same code path but
+  have no event source in a backtest.
+- **Cost** (`bench/python/bench_py_strategy.py`, 1,356,426 events): an empty hook adds about 40 ns
+  per call and the integer BasicMM port about 3.1 µs per `on_book`/`on_fill` call over C++; end to
+  end, 1.31 M events/s against 2.02 M for C++ `basic_mm`, because the simulator dominates.
+- **Stubs.** `python/fastmm/_core.pyi` is regenerated with pybind11-stubgen; arguments taken as
+  `py::handle` (instruments, prices, ladders) appear as `typing.Any`.

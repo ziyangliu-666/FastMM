@@ -97,7 +97,7 @@ python examples/python/backtest_quickstart.py
 | Sim exchange | `apps/fastmm-sim-exchange` | Binance-compatible REST, market-data WebSocket, WS API and user stream over TCP or TLS, with fault injection (disconnects, dropped diffs, delayed acks, clock skew) |
 | Backtesting | `include/fastmm/backtest` | journal / CSV / numpy sources, fees, PnL, Sharpe, drawdown, parameter sweeps |
 | Strategies | `include/fastmm/strategies` | BasicMM with inventory skew, Avellaneda-Stoikov, OptionsMM (Black-76, delta and vega limits) |
-| Python | `python/` | `fastmm.run_backtest`, `fastmm.sweep`, zero-copy numpy in and out |
+| Python | `python/` | `fastmm.run_backtest`, `fastmm.sweep`, zero-copy numpy in and out, strategies written in Python ([API](docs/reference/python-api.md)) |
 
 ## Extending
 
@@ -158,6 +158,7 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [x] Matching engine, backtester, deterministic replay
 - [x] Binance Spot and Bybit v5 testnet connectors, `fastmm-live`
 - [x] Python research bindings (backtests, sweeps, zero-copy numpy)
+- [x] Python strategies in backtests (`fastmm.Strategy`, bit-identical BasicMM port)
 - [x] Binance-compatible simulated exchange with fault injection and end-to-end tests
 - [ ] Python package on PyPI (wheels build in CI; publishing is a manual step)
 - [x] FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0

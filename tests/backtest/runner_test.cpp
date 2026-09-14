@@ -236,3 +236,30 @@ TEST_CASE("backtest.sweep: cartesian grid runs in parallel and returns results i
   ParamGrid bad = {{"no_such_param", {"1"}}};
   CHECK_THROWS_AS(sweep_by_name(base, "basic_mm", bad, {}, 2), std::invalid_argument);
 }
+
+namespace {
+// Asks the engine to stop from a hook after a fixed number of book updates.
+class StopAfterBooks : public StrategyBase<BasicMMParams> {
+ public:
+  static constexpr std::string_view name() noexcept { return "stop_after_books"; }
+  static constexpr int kBooks = 50;
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId, const Book&) noexcept {
+    if (++seen_ == kBooks) ctx.request_stop();
+  }
+
+ private:
+  int seen_ = 0;
+};
+}  // namespace
+
+TEST_CASE("backtest.runner: ctx.request_stop() ends a backtest after the step that asked") {
+  BacktestConfig cfg = synthetic_config(7, seconds(10));
+  cfg.transport.fill_model = sim::FillModel::L2Queue;
+  const BacktestResult full = run_backtest<BasicMM>(cfg);
+  const BacktestResult r = run_backtest<StopAfterBooks>(cfg);
+  CHECK(r.engine.book_updates == StopAfterBooks::kBooks);
+  CHECK(r.md_events < full.md_events);
+  CHECK(r.end_ts < full.end_ts);
+  CHECK(r.metrics.bars > 0);  // the partial run still samples its last bar
+}

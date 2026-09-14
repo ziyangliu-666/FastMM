@@ -4,6 +4,14 @@
 #include <pybind11/pybind11.h>
 
 #include <string>
+#include <vector>
+
+namespace fastmm::bt {
+struct BacktestConfig;
+}  // namespace fastmm::bt
+namespace fastmm::sim {
+class MdSource;
+}  // namespace fastmm::sim
 
 namespace fastmm::py_bind {
 
@@ -13,6 +21,16 @@ void bind_config(py::module_& m);
 void bind_backtest(py::module_& m);
 void bind_book(py::module_& m);
 void bind_strategies(py::module_& m);
+void bind_strategy_api(py::module_& m);
+
+// Backtest of a fastmm.Strategy instance with the GIL held (bind_strategy_api.cpp). `hooks` names
+// the hooks the class defines. Returns (BacktestResult, None) or (BacktestResult, (exception, hook,
+// now_ns, engine_events)) when a hook raised; the run stopped early then.
+py::tuple run_python_strategy(const bt::BacktestConfig& cfg,
+                              sim::MdSource* source,
+                              const py::object& instance,
+                              const std::string& name,
+                              const std::vector<std::string>& hooks);
 
 // str / int / float / bool (and numpy scalars) -> the exact string form the C++ parameter
 // parser accepts. Throws TypeError / ValueError.
