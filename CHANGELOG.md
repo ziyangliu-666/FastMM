@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `fastmm::codecs` (M3), a core-only library for exchange wire protocols. FIX 4.4: zero-copy
+  `FixView`, `FixBuilder` with BodyLength/CheckSum backfill, framer, initiator/acceptor session
+  (logon, heartbeats, test requests, gap detection with resend, PossDup and GapFill, sequence
+  resets) over a bounded message store, ExecutionReport/OrderCancelReject/market-data decoding and
+  NewOrderSingle/cancel/cancel-replace encoding. A simulation test drives a session against the
+  matching engine with 2% message loss and checks fills, positions, open orders and the book.
+- `net::Reactor` io_uring backend (`ReactorBackend::IoUring`) on raw io_uring syscalls: multishot
+  polls, poll updates, nanosecond timeouts, syscall-free busy polling, and a kernel probe.
+  `[engine] net_backend = "epoll" | "io_uring"` selects it for fastmm-live and the simulated
+  exchange, falling back to epoll when unavailable. Reactor, WebSocket, HTTP, TLS, DNS and
+  connection tests run on both backends; `bench_reactor` shows the same loopback echo p50 for both
+  on WSL2 (the syscalls dominate).
 - `fastmm-top`: a terminal dashboard for live sessions. `fastmm-live` publishes its state to
   `/dev/shm/fastmm-<engine>.status` every 250 ms (`--status`, `--no-status`) from a seqlocked copy
   of the engine's counters, PnL, kill-switch state and latency, plus every venue's status.
@@ -17,6 +29,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
 
 ### Fixed
+- `be*_t`/`le*_t` wire fields held an integer, so a field at an odd offset of a packed layout was
+  misaligned and UBSan reported member calls on it; they are byte arrays now.
+- gcc 13 with `-Werror` and without LTO rejected `MatchingEngine::remove_resting` for a potential
+  null dereference (the assert is compiled out); the missing-level case is handled explicitly.
 - Serialize latency was measured from the previous event's strategy decision (about 100 ms with
   BasicMM's stale timer). T3 is now stamped when the strategy calls the order API.
 - Binance and Bybit order/user channels reported "Live" again after a silent Stale, which read
