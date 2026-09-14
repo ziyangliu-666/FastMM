@@ -139,6 +139,12 @@ All notable changes are recorded here (Keep a Changelog format).
 - Binance Spot Demo Mode: `configs/binance-demo.toml`, and `FASTMM_BINANCE_ENV=demo` for the live
   test. The live test passed against Demo Mode (book sync, far post-only order, cancel, cancel-all).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
+- **Shipped config test** (ctest label `config`, `fastmm_config_tests`): every `configs/*.toml` is
+  loaded with placeholder values for the `${VAR}` it references, checked against the schema, and
+  its strategy is configured through the registry, so a bad `[strategy.params]` value or key, a
+  schema error or an unknown strategy in a shipped config fails the build's tests. A second case
+  checks that mutated copies (`quote_qty = "abc"`, an unknown parameter, a string where the schema
+  wants an integer, an unknown strategy) are reported.
 
 ### Fixed
 - **Live session journals replay exactly.** `fastmm-replay --journal <live journal> --verify`
