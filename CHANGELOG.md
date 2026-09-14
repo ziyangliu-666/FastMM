@@ -254,6 +254,12 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- The OMS no longer completes a replace on a duplicate ack for the original id. Binance acks every
+  new order twice (WS API response and user-stream NEW); a requote between the two made the second
+  ack look like the replace's ack, so the new price was booked unconfirmed, the old leg's cancel
+  then ended the order and left the new id mapped to a freed slot, and the new order stayed live at
+  the venue untracked (a debug build asserted in `Oms::on_ack`). Only the replacement id's ack
+  completes a replace now.
 - `calibrate_tsc()` (and `TscClock::calibrate()`) measures the TSC rate against
   `CLOCK_MONOTONIC_RAW`, like `TscCalibrator::start()`, instead of `CLOCK_REALTIME`. A host
   wall-clock step inside its 50 ms window (WSL2 steps by 0.5-1.5 s every 10-40 s) made the clock run

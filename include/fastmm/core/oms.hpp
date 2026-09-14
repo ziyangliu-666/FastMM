@@ -14,7 +14,8 @@
 // Races: fill after cancel ack -> LateFill (position still updated from the terminal record's
 // instrument and side); cancel-reject after fill -> ignored; ack for unknown id -> CancelUnknown
 // (never leave an unknown live order); ack for an order reconciliation marked cancelled ->
-// CancelUnknown; duplicate exec_id -> Duplicate; duplicate ack -> Ignored.
+// CancelUnknown; duplicate exec_id -> Duplicate; duplicate ack -> Ignored (also for the original
+// id while a replace to a new id is pending: only the new id's ack completes the replace).
 // Reconciliation (per venue): a cancel or replace still in flight stays pending; orders sent after
 // the snapshot was requested (above the Begin's sent watermark) are not marked cancelled.
 #include "fastmm/core/book/book_view.hpp"
@@ -217,8 +218,13 @@ class Oms {
         u.changed = true;
         break;
       case OrderState::PendingReplace:
-        if (m.cl_ord_id == o.pending_cl_ord_id || m.cl_ord_id == o.cl_ord_id) {
-          apply_replace(o, m.cl_ord_id != o.cl_ord_id);
+        // Only the replacement's ack completes it (the same id for an in-place amend). An ack that
+        // repeats the current id while a replace to a new id is in flight is a duplicate of the
+        // original ack (Binance sends one from the WS API response and one from the user stream):
+        // applying it would take the replace for confirmed, leave the new id mapped after the order
+        // ends and let the new leg's ack read a freed slot while that order stays live untracked.
+        if (m.cl_ord_id == o.pending_cl_ord_id) {
+          apply_replace(o, o.pending_cl_ord_id != o.cl_ord_id);
           o.venue_order_id = m.venue_order_id;
           u.changed = true;
         } else {
