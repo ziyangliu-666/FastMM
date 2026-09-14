@@ -1,14 +1,11 @@
 # 8. Trade on the simulated exchange
 
-In this page you trade `first_mm` through the live engine against `fastmm-sim-exchange`, a local
-exchange that speaks the Binance Spot API. Fifteen seconds in, the exchange drops every
-market-data connection; you watch the strategy lose and regain its quotes, then replay the live
-journal exactly. Nothing leaves your machine.
+`fastmm-sim-exchange` is a local exchange that speaks the Binance Spot API.
 
 ## Start the exchange
 
 `configs/tutorial-sim.toml` configures both processes: the exchange reads `[[instruments]]` and
-`[sim]`, the engine reads the rest. Its fault section closes the market-data WebSockets once:
+`[sim]`, the engine reads the rest. Its fault section:
 
 ```toml
 [sim.faults]
@@ -22,8 +19,8 @@ Start the exchange in a second terminal, or in the background as here:
 "$BIN"/fastmm-sim-exchange --config configs/tutorial-sim.toml --duration 90s > runs/tutorial/sim-exchange.log 2>&1 &
 ```
 
-It listens on 127.0.0.1:9080 (plain) and 9443 (TLS) and runs for at most 90 s. The
-[Simulated exchange](../../reference/sim-exchange.md) reference lists every fault.
+It listens on 127.0.0.1:9080 (plain) and 9443 (TLS). The
+[Simulated exchange](../../reference/sim-exchange.md) reference lists the faults.
 
 ## Trade for 40 seconds
 
@@ -34,10 +31,10 @@ export FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret
   --journal runs/tutorial/sim.fmj --log runs/tutorial/sim-live.log
 ```
 
-- The key and secret are the simulator's; the configuration reads them from these variables, never
-  from the file.
-- `--duration 40s` stops the session like Ctrl-C: the kill switch pulls the quotes and every venue
-  cancels all open orders over REST.
+- The key and secret are the simulator's; the configuration reads them from these variables
+  ([Configuration](../../reference/configuration.md#general-rules)).
+- `--duration 40s` stops the session like Ctrl-C
+  ([Kill switch and shutdown](../../how-to/operations/kill-switch-and-shutdown.md)).
 - `--journal` records the session; `--log` writes the log to a file and still prints warnings.
 
 While it runs, `./build/release/bin/fastmm-top --name tutorial-sim` in another terminal shows
@@ -65,14 +62,13 @@ INFO  fastmm-live: realized_pnl=1.24543742 unrealized_pnl=0.0472925 fees=0.38399
 INFO  fastmm-live: shutdown took 320 ms (cancel_all ok)
 ```
 
-(Timestamps and thread ids removed.) Channel 0 is market data, channel 1 order entry. When market
-data dropped, the engine cleared the book and pulled the quotes before `on_connection` ran; the
-connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book` quoted again.
-PnL and fees are in USDT. `shutdown took ... (cancel_all ok)` is the line to look for at the end of
-every session.
+(Timestamps and thread ids removed.) Channel 0 is market data, channel 1 order entry. After the
+disconnect the connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book`
+requoted. PnL and fees are in USDT.
 
-On WSL2 and in virtual machines you may also see `TSC recalibration stepped the engine clock`
-warnings: the host's wall clock jumped, and the engine clock followed it.
+On WSL2 and in virtual machines the terminal may also show `TSC recalibration stepped the engine
+clock` warnings: the host's wall clock jumped
+([Troubleshooting](../../how-to/operations/troubleshooting.md)).
 
 ## Replay the live session
 
@@ -91,9 +87,8 @@ replayed outbound 712 msgs sha256 1116a9bdbd8604cfe3881af988501b44624a2ca9989c88
 replay MATCH
 ```
 
-A live session is not deterministic: network timing decides the order of events. The journal
-records the order in which the engine consumed them and the engine clock at each one (journal
-format version 2), so the replay reproduces every decision, including the disconnect, byte for
-byte. If a session ever misbehaves, its journal is the reproduction.
+The journal stores the order in which the engine consumed events and its clock at each one, so the
+replay reproduces the live session, disconnect included
+([Determinism](../../explanation/determinism.md)).
 
 Next: [9. Trade on Binance Demo](09-binance-demo.md)

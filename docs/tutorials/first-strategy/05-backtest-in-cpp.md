@@ -1,8 +1,7 @@
 # 5. Backtest in C++
 
-In this page you run `first_mm` for 60 s of simulated time on a synthetic market, from a C++
-program, and check three properties of the result. The program is
-`examples/cpp/tutorial/first_mm_backtest.cpp`; like the quick start, it needs no registration.
+`examples/cpp/tutorial/first_mm_backtest.cpp` backtests `first_mm` for 60 s on a synthetic market
+and checks the result; like the quick start, it needs no registration.
 
 ## The configuration
 
@@ -18,12 +17,9 @@ cfg.transport.fees = sim::FeeModel::from_bps(-0.5, 3.0);  // maker rebate 0.5 bp
 cfg.params = {{"edge_bps", "0.002"}, {"max_position", "0.004"}, {"report_ms", "0"}};
 ```
 
-- `single_instrument` builds a configuration with one instrument on a simulated venue.
-- The seed fixes the synthetic market and the latency model, so every run sees the same events.
-- The synthetic market's spread is one tick (0.01 USDT) at 60,000 USDT, so the edge is tiny here:
-  0.002 bps of 60,000 is 0.012 USDT, about one tick. On the simulated exchange (page 8) and on
-  Binance Demo the edge is 5 bps.
-- `cfg.params` takes the same strings as a configuration file.
+The synthetic market's spread is one tick (0.01 USDT) at 60,000 USDT, so the edge is 0.002 bps:
+0.012 USDT, about one tick. Pages 8 and 9 use 5 bps. `cfg.params` takes the same strings as a
+configuration file.
 
 ## Run and check
 
@@ -45,12 +41,7 @@ expect(first.outbound_sha256 == second.outbound_sha256, "two runs sent the same 
 return failures == 0 ? 0 : 1;
 ```
 
-`run_backtest` returns fills, orders, an equity curve and summary metrics. The program asserts:
-
-- the strategy traded (`fills > 0`);
-- the largest position at the end of each 1 s bar stayed within `max_position` (0.004 BTC);
-- a second run with the same configuration sent exactly the same order messages, compared through
-  the SHA-256 of the outbound stream.
+`run_backtest` returns fills, orders, an equity curve and summary metrics.
 
 <!-- snippet: scripts/docs/tutorial.sh#cpp-backtest -->
 ```bash
@@ -70,11 +61,7 @@ ok    : the position stayed within max_position
 ok    : two runs sent the same orders
 ```
 
-Negative fees are rebates: the configuration pays makers 0.5 bps. All amounts are in USDT, the
-position in BTC.
-
-A backtest is a model. The matching engine and the synthetic flow are simplifications, and the
-result says little about real profitability; its value here is a fast, repeatable check that the
-strategy behaves as designed.
+Negative fees are rebates. Amounts are in USDT, the position in BTC. The fill model and the
+synthetic flow are simplified; the PnL does not predict live results.
 
 Next: [6. Register it](06-register.md)

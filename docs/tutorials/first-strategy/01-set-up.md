@@ -1,7 +1,6 @@
 # 1. Set up
 
-In this page you build FastMM with the tutorial's programs and check that they run. Run every
-command in this tutorial from the repository root.
+Run the commands in this tutorial from the repository root.
 
 ## Build
 
@@ -12,11 +11,10 @@ cmake --build --preset release -j
 ```
 
 `bootstrap.sh` checks the toolchain and configures the `release` preset
-([Install](../../getting-started/install.md) lists the requirements). The build includes the
-tutorial, because FastMM builds its examples when it is the top-level project.
+([Install](../../getting-started/install.md) lists the requirements). A top-level build includes
+the tutorial.
 
-The commands on the following pages refer to the build directory through two shell variables. Set
-them once in your terminal:
+Later pages use these variables:
 
 <!-- snippet: scripts/docs/tutorial.sh#bin -->
 ```bash
@@ -31,7 +29,7 @@ BIN=$BUILD/bin
 "$BIN"/fastmm-backtest --list-strategies
 ```
 
-The output lists the built-in strategies and their parameters:
+Output (abridged):
 
 ```text
 basic_mm
@@ -43,7 +41,7 @@ options_mm
   ...
 ```
 
-The tutorial's own programs are next to FastMM's in `build/release/bin/`:
+The tutorial's programs are in `build/release/bin/`:
 
 | Program | Source | Page |
 |---|---|---|

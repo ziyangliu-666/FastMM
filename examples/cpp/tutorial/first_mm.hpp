@@ -38,7 +38,7 @@ struct FirstMMParams {
 // [end:params]
 
 // [start:compute_quotes]
-// The quotes for one book: pure integer arithmetic, no engine needed, so it is easy to test.
+// The quotes for one book: integer arithmetic on plain values, no engine state.
 [[nodiscard]] inline DesiredQuotes compute_quotes(const FirstMMParams& p,
                                                   const Instrument& inst,
                                                   Level best_bid,
