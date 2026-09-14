@@ -4,7 +4,7 @@ Status: accepted (2026-09)
 
 ## Context
 
-The Python module must reuse the exact CMake tree and flags, support editable installs and eventually cibuildwheel.
+The Python module must reuse the same CMake tree and flags and support editable installs.
 
 ## Decision
 

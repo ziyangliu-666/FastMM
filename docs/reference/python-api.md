@@ -2,7 +2,7 @@
 
 Strategies written in Python run inside the C++ engine in backtests. They use the same engine, risk
 checks, OMS, quote manager, journal and outbound hash as C++ strategies (ADR-0012, section 7).
-Running backtests, data sources and results are covered in [../python.md](../python.md).
+Backtests, data sources and results: [Python](../python.md).
 
 Scope: in-process backtests only. Replay of Python strategies, process-pool sweeps, live trading and
 the simulated exchange over the network are not supported.
@@ -121,10 +121,9 @@ before the engine is touched; a non-positive price or a zero quantity drops the 
 
 ## Views and values
 
-Views are reused: the adapter keeps one per instrument (`BookView`, `PositionView`) and one per
-event type, and repoints it before each hook. A view is valid only inside the hook that received
-it, or the hook that called `ctx.book()` / `ctx.position()`; reading it later raises
-`fastmm.StaleViewError` (a `RuntimeError`). Copy the numbers you want to keep.
+Views are reused between hooks. A view is valid only inside the hook that received it, or the hook
+that called `ctx.book()` / `ctx.position()`; reading it later raises `fastmm.StaleViewError` (a
+`RuntimeError`). Copy the numbers you want to keep.
 
 | View | Fields |
 |---|---|
@@ -152,9 +151,9 @@ C++ `Price::raw` and of the result columns. There is no `Decimal`.
 - `set_quotes`, `send` and `replace` take floats: prices are converted to 1e-8 (half away from
   zero) and rounded to the tick passively (bids down, asks up), quantities down to the lot.
 - `set_quotes_raw`, `send_raw` and `replace_raw` take ints and use them as given.
-- Floats are fine for research. For a strategy you intend to port to C++ with identical orders, use
-  the raw values and reproduce the C++ operators: `Fixed * Ratio` truncates toward zero (Python's
-  `//` floors; see `tdiv` and `mul_ratio` in `examples/python/strategies/basic_mm_exact.py`).
+- To send the same orders as a C++ port, use the raw values and the C++ operators: `Fixed * Ratio`
+  truncates toward zero (Python's `//` floors; see `tdiv` and `mul_ratio` in
+  `examples/python/strategies/basic_mm_exact.py`).
 
 ## Errors
 
@@ -172,8 +171,8 @@ except fastmm.StrategyError as e:
 ```
 
 `KeyboardInterrupt` and `SystemExit` propagate unchanged, with the partial result as `.result`.
-Ctrl-C works: every 1,024 hook calls and every 4,096 engine steps the adapter runs
-`PyErr_CheckSignals()` and releases the GIL briefly.
+The adapter checks for Ctrl-C (`PyErr_CheckSignals()`, GIL released briefly) every 1,024 hook
+calls and every 4,096 engine steps.
 
 ## Determinism
 
@@ -204,14 +203,11 @@ of the synthetic L2 queue market; gcc 13 release module, Python 3.12, WSL2 on an
 
 The end-to-end numbers include the synthetic market and the simulated venue, which dominate here.
 Per call: an empty hook adds about 40 ns, reading two or three fields about 250 ns, and
-`BasicMMExact` about 3.1 µs per `on_book` or `on_fill` call over C++ `basic_mm`. Most of a
-strategy's cost is its own Python arithmetic and attribute access, so define only the hooks you
-need and return early.
+`BasicMMExact` about 3.1 µs per `on_book` or `on_fill` call over C++ `basic_mm`.
 
 ## Limits
 
-- Backtests only: no replay of Python strategies (`fastmm.replay`), no process-pool sweeps
-  (`fastmm.sweep` takes registered names), no live trading; `fastmm-live` never links Python.
+- `fastmm.sweep` takes registered C++ strategy names only; `fastmm-live` never links Python.
 - The simulator produces no connection state changes and the numpy source no option tickers, so
   `on_connection` and `on_option_ticker` fire only with data sources that contain them.
 - One thread: a hook must not start threads that call the context.

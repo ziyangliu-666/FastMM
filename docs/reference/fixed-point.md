@@ -13,7 +13,7 @@ headers are `include/fastmm/core/fixed_point.hpp` and `include/fastmm/strategies
 | `Notional` | price times quantity, fees, PnL | 0.00000001 | same |
 | `Ratio` | dimensionless factor; 1.0 is raw 100,000,000 | 0.0001 bp | +-922,337,203 x |
 
-The types do not mix by accident: `Price * Qty` does not compile, `Price + Qty` does not compile.
+The types do not mix: `Price * Qty` and `Price + Qty` do not compile.
 `.raw` is the integer; `from_raw`, `from_int`, `zero`, `max` and `min` build values.
 
 ## Arithmetic
@@ -41,7 +41,7 @@ To the tick and lot grid, rounding is passive:
 | `inst.round_price(p, Side::Buy)` / `round_to_tick(p, tick, Buy)` | down (floor) |
 | `inst.round_price(p, Side::Sell)` | up (ceiling) |
 | `round_to_tick_nearest(p, tick)` | nearest, half away from zero |
-| `inst.round_qty(q)` / `round_to_lot(q, lot)` | down, so an order is never larger than intended |
+| `inst.round_qty(q)` / `round_to_lot(q, lot)` | down |
 | `inst.ticks(n)` | `tick * n` as a price distance |
 
 ## Literals
@@ -73,12 +73,12 @@ literal; use `Notional::from_int(1000)` or `mul(price, qty)`.
 | `Fixed::parse(s)` | the same plus an exponent: `2e-05`, `1.5E3` | configuration values |
 | `p.to_decimal(buf)` | | exact, trailing zeros trimmed |
 | `Fixed::from_double(d)`, `to_double()` | | startup and diagnostics only, never per event |
-| `Ratio::from_bps(double)`, `r.to_bps()` | | startup only, diagnostics only |
+| `Ratio::from_bps(double)`, `r.to_bps()` | | startup and diagnostics only |
 
 `parse` rejects a value only when more decimals remain after applying the exponent than the type
 holds: `2e-05` is raw 2,000, `1.5e-8` is an error. TOML floats reach strategy parameters formatted
-by fmt (`0.00002` becomes `2e-05`) and Python floats through `repr`, which is why exponents matter
-there. Parameters are described in [adding a strategy](strategy-api.md#parameters).
+by fmt (`0.00002` becomes `2e-05`) and Python floats through `repr`
+([Strategy API](strategy-api.md#parameters)).
 
 ## Quoting helpers
 
@@ -128,7 +128,7 @@ q.uncross(inst.tick);
 ## Limits
 
 - `Ratio * k` is a plain int64 multiply: `skew * inventory_units` overflows past about 9.2e10
-  units at 1 bp. Keep `quote_qty` sensible relative to positions.
+  units at 1 bp.
 - A `Ratio` product with a value truncates once. `mid * a * b` truncates twice; write
   `mid * (a * b)` only when the precision of `a * b` (1e-8) is enough, otherwise scale in one step.
 - Ranges are checked where values enter (instrument load, parameter parsing, literals), not on

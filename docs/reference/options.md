@@ -1,9 +1,8 @@
 # Options
 
-FastMM quotes options with the same engine, OMS, risk checks and QuoteManager as every other
-instrument. Three pieces are option specific: the option market-data event, the Black-76 library
-in core, and the `options_mm` strategy. Deribit (`kind = "deribit"`, see [venues.md](venues.md))
-is the connector that produces the event today.
+Options use the same engine, OMS, risk checks and QuoteManager as other instruments. Deribit
+(`kind = "deribit"`, see [venues.md](venues.md)) is the only connector that emits option market
+data.
 
 ## Instruments
 
@@ -25,7 +24,7 @@ Deribit BTC options are inverse. They are quoted in BTC per 1 BTC of underlying 
 `0.0069` is 0.0069 BTC), sized in BTC, and above a price of 0.005 their tick grows from 0.0001 to
 0.0005.
 
-Quantities are contracts throughout the engine. The Deribit connector sends `contracts` rather than
+The Deribit connector sends `contracts` rather than
 `amount`, and converts book, trade and fill amounts back to contracts. Position PnL is
 `(price − avg) × qty × multiplier`, which is the BTC PnL for inverse options. The engine's generic
 notional risk limits are not inverse-aware, so size `max_order_notional` in the option's price unit.
@@ -77,7 +76,7 @@ trips across moneyness, vol and tenor, and the recorded Deribit ticker.
 
 `include/fastmm/strategies/options_mm.hpp`, registered as `options_mm` for Sim, Replay and Live.
 For each option it prices on every `OptionTicker`. With `use_venue_iv = false` it also reprices on
-every book update. The pricing steps are:
+every book update.
 
 ```
 F      = ticker underlying_price,  r = ticker interest_rate,  T = (expiry − now) / 365 d
@@ -100,13 +99,11 @@ Portfolio greeks are summed over the positions of every instrument in the contex
 
 A side is not quoted when a fill of `quote_qty` would push |portfolio delta| above `max_delta`,
 |portfolio vega| above `max_vega`, or |position| above `max_position`. A fill that reduces the
-exposure is always allowed, so a portfolio beyond a limit can trade back inside it. A fill requotes
-every option, since the skews and limits depend on the whole portfolio.
+exposure is allowed. A fill requotes every option.
 
-An option is quoted only while its book is two-sided. The engine's stale-market-data check needs a
-valid book, and a quote placed before one exists would be rejected without the strategy seeing it.
-Tickers keep updating the option's greeks meanwhile, and the first valid book update places its
-quotes.
+An option is quoted only while its book is two-sided, because the stale-market-data check rejects
+quotes for an instrument without a valid book and the strategy does not see those rejects. Tickers
+keep updating the option's greeks meanwhile; the first valid book update places its quotes.
 
 `OptionTicker` counts as market data for journal sources (`JournalSource`), so a journal recorded
 with `fastmm-live` against Deribit can drive a Sim backtest or a replay of `options_mm`.
@@ -143,5 +140,4 @@ expire: `load_reference_data` refuses an expired symbol.
   contributes no greeks.
 * Delta hedging with futures is not automated. Futures positions only enter the delta used for
   skews and limits.
-* Like `avellaneda_stoikov`, OptionsMM evaluates its model in `double` and rounds the result back
-  onto the tick grid; `Price`/`Qty` arithmetic stays fixed point.
+* OptionsMM evaluates its model in `double` and rounds the result onto the tick grid.

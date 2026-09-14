@@ -4,7 +4,7 @@ Status: accepted (2026-09); amended by format version 2 (2026-09)
 
 ## Context
 
-Deterministic replay needs every inbound event (market data, order events, timers, connection states) in the exact consumption order.
+Deterministic replay needs every inbound event (market data, order events, timers, connection states) in consumption order.
 
 ## Decision
 
@@ -51,8 +51,8 @@ outbound message. The events were complete, but three inputs of the engine were 
   `header_flags` (u8, `kHeaderSession` when the three session fields are valid), `config_bytes`
   (u32), `replace_venues` (u64, bit v set when venue v traded with cancel-replace) and
   `config_crc32c` (u32). `rng_seed` is the engine seed of the session.
-- **Embedded configuration.** `Config::effective_toml()` (complete, deterministic TOML of the
-  configuration after command-line overrides, without `api_key` and `api_secret`) follows the
+- **Embedded configuration.** `Config::effective_toml()` (deterministic TOML of every configuration
+  value, defaults included, after command-line overrides, without `api_key` and `api_secret`) follows the
   instrument table, zero-padded to a multiple of 64 bytes and covered by `config_crc32c`;
   `header_bytes` includes it. `config_hash` is the FNV-1a hash of that text, so it identifies the
   effective configuration rather than the file's formatting, secrets or environment.

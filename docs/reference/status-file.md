@@ -1,9 +1,8 @@
 # Status file
 
-`fastmm-live` publishes its live state in a small memory-mapped file that monitors such as
-`fastmm-top` read without slowing the engine. This page describes the file; the code is
-`include/fastmm/core/status_segment.hpp`, and
-[Monitor a session](../how-to/operations/monitor-with-fastmm-top.md) shows how to use `fastmm-top`.
+`fastmm-live` publishes its live state in a memory-mapped file that monitors such as `fastmm-top`
+read. Code: `include/fastmm/core/status_segment.hpp`. Usage:
+[Monitor a session](../how-to/operations/monitor-with-fastmm-top.md).
 
 ## Location and lifetime
 
@@ -25,8 +24,8 @@ counter is even and unchanged across the copy, and retries otherwise; it never b
   same offsets in every version. A reader of another version refuses the file:
   `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>,
   this fastmm-top reads version <m>)`.
-- Use `fastmm-top` from the same build as `fastmm-live`; the layout is plain data with explicit
-  sizes but is not a stable interface ([Public API](public-api.md): internal).
+- Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal
+  ([Public API](public-api.md)).
 
 ## Snapshot fields
 

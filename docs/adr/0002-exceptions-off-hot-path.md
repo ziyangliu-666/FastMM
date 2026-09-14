@@ -4,7 +4,7 @@ Status: accepted (2026-09)
 
 ## Context
 
-simdjson, fmt, toml++ and pybind11 require exceptions/RTTI. `-fno-exceptions` gives near-zero speedup on the non-throwing path with zero-cost tables.
+simdjson, fmt, toml++ and pybind11 require exceptions/RTTI. With zero-cost exception tables, `-fno-exceptions` does not speed up the non-throwing path.
 
 ## Decision
 

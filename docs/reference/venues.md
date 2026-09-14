@@ -1,8 +1,8 @@
 # Venue connectors
 
 FastMM ships three connectors behind the control-path `fastmm::venues::Venue` interface
-(`include/fastmm/venues/venue.hpp`): **Binance Spot** (testnet or the local Binance-compatible
-simulator), **Bybit v5 spot** (testnet) and **Deribit** options and futures (testnet).
+(`include/fastmm/venues/venue.hpp`): Binance Spot (testnet or the local Binance-compatible
+simulator), Bybit v5 spot (testnet) and Deribit options and futures (testnet).
 `make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
 
 | kind | connector |
@@ -37,11 +37,13 @@ re-snapshots (at most once per `min_snapshot_interval`, 2 s by default).
 
 ### What a Binance-compatible simulator must implement
 
-This is exactly what `BinanceVenue` uses; anything else is optional.
+`BinanceVenue` uses only the following.
 
-**REST** (query-string parameters; signed requests carry `timestamp`, `recvWindow`,
+#### REST
+
+Parameters go in the query string. Signed requests carry `timestamp`, `recvWindow`,
 `signature` = lowercase hex HMAC-SHA256(secret, query without `&signature=...`) and the
-`X-MBX-APIKEY` header):
+`X-MBX-APIKEY` header.
 
 | method + path | request | response the connector reads |
 |---|---|---|
@@ -56,16 +58,20 @@ This is exactly what `BinanceVenue` uses; anything else is optional.
 Headers read: `X-MBX-USED-WEIGHT-1M`, `X-MBX-ORDER-COUNT-10S`, `Retry-After` (429/418).
 Error envelope: `{"code":-NNNN,"msg":"..."}`.
 
-**Market-data WebSocket**: `/stream?streams=...` sending `{"stream":"<name>","data":{...}}`:
+#### Market-data WebSocket
+
+`/stream?streams=...` sends `{"stream":"<name>","data":{...}}`:
 
 * `<sym>@depth@100ms`: `{"e":"depthUpdate","E":ms,"s":"SYM","U":first,"u":last,"b":[["px","qty"]],"a":[...]}` (qty `"0"` deletes)
 * `<sym>@bookTicker`: `{"u":id,"s":"SYM","b":"px","B":"qty","a":"px","A":"qty"}`
 * `<sym>@trade`: `{"e":"trade","E":ms,"s":"SYM","t":id,"p":"px","q":"qty","T":ms,"m":bool}` (`m` = buyer is maker, so the seller aggressed)
 
-A raw `/ws/<stream>` payload without the wrapper is also accepted. Server pings are answered
-automatically; the connector treats any frame or ping as liveness.
+A raw `/ws/<stream>` payload without the wrapper is also accepted. Server pings are answered;
+the connector treats any frame or ping as liveness.
 
-**WebSocket API**: `<ws_api_url>` (e.g. `/ws-api/v3`). Requests are
+#### WebSocket API
+
+`<ws_api_url>` (e.g. `/ws-api/v3`). Requests are
 `{"id":"<string>","method":"...","params":{...}}` with params in alphabetical order, `apiKey`,
 `timestamp`, `recvWindow` and `signature` (HMAC over the sorted `k=v&...` string). Responses:
 `{"id":..,"status":HTTP,"result":..|"error":{"code","msg","data"?},"rateLimits":[{rateLimitType,interval,intervalNum,limit,count}]}`.
@@ -83,7 +89,9 @@ automatically; the connector treats any frame or ping as liveness.
 Request ids for orders are `n|c|r` + the 14-character client id (`fm` + 12 hex), so the
 simulator only has to echo `id`.
 
-**User data events** arrive on the subscribed WS API connection as
+#### User data events
+
+User data events arrive on the subscribed WS API connection as
 `{"subscriptionId":0,"event":{...}}` (legacy `/ws/<listenKey>` raw events are also accepted):
 
 * `executionReport`: `E,s,c,S,q,p,C,x,X,r,i,l,z,L,n,N,T,t,m`, with `x` in `NEW`, `CANCELED` (the cancelled id is in `C`), `REPLACED`, `REJECTED`, `TRADE`, `EXPIRED`, `TRADE_PREVENTION`
@@ -126,31 +134,41 @@ and recorded testnet responses (`tests/fixtures/deribit/fixtures.meta.json`).
 | private | `ws_private_url` (default `ws_url`), a second connection | `public/auth` (client_credentials, refresh_token), `public/set_heartbeat`, `private/enable_cancel_on_disconnect`, `private/subscribe` `user.orders.KIND.CURRENCY.raw` + `user.trades.KIND.CURRENCY.raw`; order entry `private/buy`, `private/sell`, `private/edit`, `private/cancel`, `private/cancel_by_label`; reconciliation `private/get_open_orders_by_currency` |
 | rest | `rest_url` | `public/get_time`, `public/get_instruments?currency=C&kind=option|future`; kill switch `private/cancel_all_by_instrument` with `Authorization: Basic base64(client_id:client_secret)` |
 
-**Messages.** Requests are `{"jsonrpc":"2.0","id":..,"method":..,"params":{..}}`. Order requests use
+### Messages
+
+Requests are `{"jsonrpc":"2.0","id":..,"method":..,"params":{..}}`. Order requests use
 the string id `n|c|r` + the 14-character client id (the testnet echoes string ids); control
 requests use small integers. Notifications are `{"method":"subscription","params":{"channel","data"}}`,
 and responses carry `result` or `error {code, message, data}`. Prices and amounts are JSON numbers,
 often with exponents (`1.0002e6`), and are parsed exactly from the raw token.
 
-**Units.** Engine quantities are contracts: `contract_multiplier` = Deribit `contract_size`
+### Units
+
+Engine quantities are contracts: `contract_multiplier` = Deribit `contract_size`
 (1 BTC for BTC options, 10 USD for BTC-PERPETUAL). Orders are sent with `contracts`, and book, trade
 and fill amounts are divided by the contract size. The label is the FastMM client id, and
-`post_only` is always sent explicitly because the documented default is `true`. Post-only orders
+`post_only` is always sent (Deribit defaults it to `true`). Post-only orders
 set `reject_post_only` (config `reject_post_only`), so a crossing order is rejected (11054) rather
 than repriced. Prices are rounded passively onto `tick_size_steps` (BTC options: 0.0001, and
 0.0005 from 0.005).
 
-**Book sync.** The first `book.NAME.interval` notification is a full snapshot. Every later change
+### Book sync
+
+The first `book.NAME.interval` notification is a full snapshot. Every later change
 must have `prev_change_id` equal to the previous `change_id` (the ids are not consecutive
 integers). A mismatch emits `ConnectionState{Resyncing}` and sends `public/unsubscribe` then
 `public/subscribe` for that book channel, which yields a new snapshot. A missing snapshot (10 s)
 does the same, at most once per 2 s per instrument. Snapshots deeper than 1024 levels per side
 are truncated to the best levels.
 
-**Options data.** Each option ticker yields a `BookTicker` and an `OptionTicker` (mark, IVs,
+### Options data
+
+Each option ticker yields a `BookTicker` and an `OptionTicker` (mark, IVs,
 greeks, underlying price; see [options.md](options.md)).
 
-**Session.** Both connections enable heartbeats (interval >= 10 s; smaller values are refused
+### Session
+
+Both connections enable heartbeats (interval >= 10 s; smaller values are refused
 with -32602) and answer every `test_request` with `public/test`. The access token goes into
 `params.access_token` of every private request. It is refreshed with `grant_type=refresh_token`
 at 80 % of `expires_in`, and an order answered with 13009 re-authenticates. After a private
@@ -159,30 +177,36 @@ reconnect the venue reconciles open orders across all configured currencies (one
 instrument over REST (`cancel_on_order_channel_loss`), in addition to the venue-side
 cancel-on-disconnect.
 
-**Edits.** `private/edit` keeps the order id and label, and its `contracts` is the new total
+### Edits
+
+`private/edit` keeps the order id and label, and its `contracts` is the new total
 including fills. The engine receives an ack for its new client id. While the edit is in flight, a
 `user.orders` "open" update for the old label is not acked; later updates and fills for the old
 label map to the new id. Fills get `cum_qty`/`leaves_qty` from the venue's order shadow, because
 `user.trades` has no cumulative quantity.
 
-**Rate limits.** The credit model is from the rate-limits article: order requests use a leaky
+### Rate limits
+
+The credit model is from the rate-limits article: order requests use a leaky
 bucket sized by `matching_engine_rate` / `matching_engine_burst` (Tier 4 default 5/s, burst 20);
 check `private/get_account_summary` `limits` for the account's tier. New orders and edits are
 refused locally when the bucket is empty; cancels are always sent. A 10028 `too_many_requests`
 (after which the venue drops the session) drains the bucket.
 
-**Errors.** `deribit_error_map.hpp` follows the "Complete RPC Error Codes Reference" table. Among
+### Errors
+
+`deribit_error_map.hpp` follows the "Complete RPC Error Codes Reference" table. Among
 others: 11054 post_only_reject, 10009/10039 insufficient funds, 10004/11044 unknown order (10004
 reconciles), 10043/10026 tick, 10005-10007 price bands, 10028 rate limit, 13004/13021 fatal, 13009
 re-authenticate, and 10040/10041/10047/11051/13028 back off.
 
 ## Configuration keys
 
-Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` (always
-`${ENV_VAR}`), `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`.
+Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret`
+([secrets](configuration.md#general-rules)), `supports_replace`, `insecure_tls`, `ca_file`,
+`recv_window_ms`.
 
-Venue-specific keys are read from the section's extra keys. The core schema warns
-"unknown key ... ignored", but they are applied:
+Venue-specific keys ([Configuration](configuration.md#connector-specific-keys)):
 
 * Binance: `user_stream` (`ws_api` | `listen_key` | `none`), `key_type` (`ed25519`),
   `private_key_file`, `order_api` (`ws` | `rest`), `depth_limit`, `stale_ms`, `dead_ms`,
@@ -200,9 +224,14 @@ Venue-specific keys are read from the section's extra keys. The core schema warn
   `dead_ms`, `allow_offline_reference_data`, `emit_ack_from_response`. Example:
   `configs/deribit-testnet.toml`.
 
-The testnet configs set `stale_ms = 10000`: testnet BTCUSDT is often silent for more than 2 s, and
-with the default every quiet spell is reported as Stale, which clears the engine book and
-forces a resync.
+`stale_ms` defaults to 2000 ms for Binance and Bybit and 10000 ms for Deribit. `dead_ms` is raised
+to at least 45000 ms on Binance (the venue pings every 20 s), twice `ping_interval_ms` plus 5000 ms
+on Bybit (45000 ms by default) and three heartbeat intervals on Deribit (30000 ms by default).
+A market-data connection without
+traffic for `stale_ms` is reported `Stale`: the engine pulls the venue's quotes and clears its
+books, and the connector fetches a new snapshot when data returns. Testnet BTCUSDT is often silent
+for more than 2 s, so the testnet and Demo configs set `stale_ms = 10000`
+(`configs/deribit-testnet.toml`: 15000).
 
 ## Open questions (`VERIFY:` in the code)
 

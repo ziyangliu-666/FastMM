@@ -8,7 +8,7 @@ The codebase is template-heavy; test compile time matters across four CI configu
 
 ## Decision
 
-doctest: single header, ~10x faster compiles than gtest, `SUBCASE` fits state-machine tests, `doctest_discover_tests` gives per-case ctest entries.
+doctest: single header, lighter to compile than gtest (not measured here), `SUBCASE` fits state-machine tests, `doctest_discover_tests` gives per-case ctest entries.
 
 ## Consequences
 

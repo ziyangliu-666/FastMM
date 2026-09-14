@@ -1,11 +1,8 @@
 # FIX 4.4 codec (`fastmm::codecs::fix`)
 
-A tag=value FIX 4.4 implementation for the M3 protocol layer (plan section 7): framing, a
-zero-copy message view, a message builder, the session layer for initiators and acceptors, and
-the application decoder and encoder that map FIX order entry, execution reports and market data
-to the engine's normalised messages. There is no XML dictionary: the tags and enumerations the
-codec uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`, each checked against the
-FIX 4.4 dictionary (see [Sources](#sources)).
+A tag=value FIX 4.4 codec: framing, session layer for initiators and acceptors, and a decoder and
+encoder between FIX messages and the engine's normalised messages. There is no XML dictionary: the
+tags and enumerations the codec uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`.
 
 Everything on the hot path is `noexcept` and allocation-free after construction
 (`tests/hotpath/codecs_fix_noalloc_test.cpp` checks it). The library depends on core only.
@@ -39,25 +36,32 @@ OrderCommand ─► FixEncoder.encode ─► FixSession.send_app ─► MessageS
 * Values cannot be empty. The data fields SecureData(91), RawData(96), XmlData(213) and
   EncodedText(355) may contain SOH; their length comes from the preceding length field.
 
-**FixFramer** finds `8=FIX`, reads BodyLength and checks that `10=ddd|` sits exactly where
+### FixFramer
+
+`FixFramer` finds `8=FIX`, reads BodyLength and checks that `10=ddd|` sits exactly where
 BodyLength says. It returns `kMessage` frames (payload = one message) or `kGarbage` frames
 (bytes that cannot start a message), and "need more" on partial input. Garbage before a message,
 a non-numeric BodyLength, a misplaced CheckSum field or a message over `max_message` (64 KiB by
 default) are skipped until the next `8=FIX`.
 
-**FixView::parse** validates the framing above plus the CheckSum value, then indexes every field
+### FixView
+
+`FixView::parse` validates the framing above plus the CheckSum value, then indexes every field
 as (tag, offset, length) into the caller's bytes. Tags below 1024 get O(1) lookups. Getters
 return `std::optional`: `get_int`, `get_char`, `get_bool` (Y/N), `get_price` / `get_qty` (exact
-decimal to the 1e-8 fixed point; `+` and exponents rejected as FIX floats do not allow them),
+decimal to the 1e-8 fixed point; `+` and exponents rejected),
 `get_timestamp_ns`. `FixGroupReader` walks a repeating group: entries start with the group's first
 tag, end at the next first tag, at a tag outside an optional member list, or at CheckSum, and
 `complete()` checks NumInGroup.
 
-**UTCTimestamp** is `YYYYMMDD-HH:MM:SS` or `YYYYMMDD-HH:MM:SS.sss` in FIX 4.4. The parser also
-accepts 6 and 9 fraction digits, which later FIX versions and many venues send; the builder writes
-milliseconds.
+### UTCTimestamp
 
-**FixBuilder** writes into a caller buffer: `begin_header(type, sender, target, seq, now)` emits
+`YYYYMMDD-HH:MM:SS` or `YYYYMMDD-HH:MM:SS.sss` in FIX 4.4. The parser also accepts 6 and 9 fraction
+digits; the builder writes milliseconds.
+
+### FixBuilder
+
+`FixBuilder` writes into a caller buffer: `begin_header(type, sender, target, seq, now)` emits
 8, 9 (three placeholder digits), 35, 49, 56, 34, 43 + 122 for retransmissions, and 52. `finish()`
 writes the real BodyLength (shifting the body when it is not three digits) and appends CheckSum.
 Overflow latches `!ok()` and `finish()` returns 0.
@@ -94,7 +98,9 @@ CheckSum are ignored (not counted against sequence numbers). A wrong BeginString
 CompID mismatch (Reject 373=9 + Logout) or a missing MsgSeqNum end the session. Acceptors drop
 anything but Logon while down.
 
-**MessageStore.** `send_app()` appends each outbound application message (MsgType, original
+### MessageStore
+
+`send_app()` appends each outbound application message (MsgType, original
 SendingTime, body bytes after the standard header) to a store preallocated at construction
 (`store_max_messages` entries, `store_max_bytes` arena). It is append-only and bounded: once full,
 further messages are not kept. On ResendRequest each stored message in the range is sent again with
@@ -119,7 +125,7 @@ reserved with `BookDeltaMsg::size_for` and filled in place). `hdr.venue_seq` = M
 | 150=F Trade (and pre-4.3 1/2) | `OrderFill` (LastQty 32, LastPx 31, CumQty 14, LeavesQty 151, ExecID 17, Side 54, LastLiquidityInd 851: 1 Maker, 2 Taker) |
 | 150=6, A, E, D, I, G, H | ignored |
 | OrderCancelReject (9), CxlRejResponseTo(434)=1 | `OrderCancelReject` for OrigClOrdID (CxlRejReason 102=1 VenueUnknownOrder, else VenueReject) |
-| OrderCancelReject, 434=2 | `OrderReject` for the replacement ClOrdID (how the OMS resolves a pending replace; same as the Binance connector's failed cancelReplace) |
+| OrderCancelReject, 434=2 | `OrderReject` for the replacement ClOrdID |
 | MarketDataSnapshotFullRefresh (W) | one `BookSnapshot` (kSnapshot) with MDEntryType 0 bids and 1 offers |
 | MarketDataIncrementalRefresh (X) | one `BookDelta` per run of book entries on one instrument (MDUpdateAction 2 Delete = qty 0); one `Trade` per MDEntryType 2 entry (trade id = numeric MDEntryID 278) |
 
@@ -179,9 +185,7 @@ CompID checks.
   --benchmark_report_aggregates_only=true --benchmark_min_time=0.5s
 ```
 
-Most of the decode time over the parse is the field lookups and exact decimal parsing of five
-quantities, plus a linear scan of the 256-entry ExecID history; none of these benchmarks has a
-budget in `bench/ci_budget.toml` yet.
+Budgets: `bench/ci_budget.toml`.
 
 ## Sources
 
@@ -201,30 +205,26 @@ budget in `bench/ci_budget.toml` yet.
 * B2BITS FIXopaedia FIX 4.4 data types (UTCTimestamp, int, float, Boolean, MultipleValueString):
   <https://www.b2bits.com/fixopaedia/fixdic44/data_types.html>
 * FIX Trading Community, FIX session-level test cases and expected behaviours (MsgSeqNum too low,
-  PossDup handling, OrigSendingTime later than SendingTime), as summarised in search results; the
-  document itself could not be retrieved (HTTP 429/403).
+  PossDup handling, OrigSendingTime later than SendingTime), from secondary summaries only.
 * Known-answer check: the ExecutionReport example of the Wikipedia article "Financial Information
   eXchange" (BodyLength 178, CheckSum 128).
 
 ## Limitations and unverified details
 
-* The FIX 4.4 Volume 2 PDF (session protocol) and the FIX Session Layer online page could not be
-  fetched. Session rules were taken from the dictionary's message descriptions and secondary
-  summaries of the session test cases. Not confirmed against the primary text: that GapFill messages
-  sent in reply to a ResendRequest carry PossDupFlag=Y (common engine practice, implemented); the 20%
-  "reasonable transmission time" (a configurable default); that a ResendRequest or Logout with a
-  too-high MsgSeqNum is still acted on (implemented: serve or confirm, then request the gap); and that
-  an acceptor silently drops non-Logon first messages.
+* Session rules come from the dictionary's message descriptions and secondary summaries of the
+  session test cases. Not confirmed against FIX 4.4 Volume 2 (session protocol):
+  * GapFill messages sent in reply to a ResendRequest carry PossDupFlag=Y (implemented);
+  * the 20% "reasonable transmission time" (a configurable default);
+  * a ResendRequest or Logout with a too-high MsgSeqNum is still acted on (implemented: serve or
+    confirm, then request the gap);
+  * an acceptor silently drops non-Logon first messages.
 * Session: no persistent sequence numbers or store (in memory, per process); no NextExpectedMsgSeqNum
   (789), Username/Password, encryption or Logon-time TestRequest; a lost ResendRequest is not
   retried until another too-high message arrives; messages arriving above the gap are discarded, not
-  queued; only the standard header fields listed above survive a resend; `Reject` is gap-filled like
-  other administrative messages.
+  queued; `Reject` is gap-filled like other administrative messages.
 * Decoder: FIX 4.4 market data has no aggressor side, so `TradeMsg::aggressor` is always Buy;
   incremental entries must carry MDEntryType and MDEntryPx (entries addressed only by MDEntryID are
   not supported); trades in W snapshots are ignored; Commission(12) is not mapped, so `fee` is 0;
-  pending, restated, order-status and trade-correction reports are ignored; ExecID dedup remembers
-  256 executions.
-* Encoder: cancel ClOrdIDs are `<id>c<n>`; orders not encoded by this instance need `remember()`;
-  `reduce_only` is dropped; Account(1) and HandlInst(21) are not sent.
+  pending, restated, order-status and trade-correction reports are ignored.
+* Encoder: Account(1) and HandlInst(21) are not sent.
 * The simulation bridge sends AvgPx(6) = LastPx (or 0) rather than a running average.

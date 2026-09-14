@@ -1,17 +1,16 @@
 # Determinism
 
-FastMM promises that a run can be repeated exactly: a backtest with the same inputs sends the same
-orders, and a journal replays to the same orders as the session that wrote it. This page explains
-how the engine keeps that promise, how it is checked, and what breaks it.
+A backtest with the same inputs sends the same orders, and replaying a journal sends the same order
+messages as the session that wrote it. `fastmm-replay --verify` checks the second property by
+comparing the SHA-256 of both outbound streams ([How it is checked](#how-it-is-checked)).
 
 ## Why it matters
 
-- **A journal is a reproduction.** When a live session misbehaves, replaying its journal runs the
-  same decisions again under a debugger, without a venue.
-- **Changes are measurable.** Golden hashes (`tests/backtest/golden_strategies_test.cpp`,
-  `tests/fixtures/journals/sample_1000.sha256`) fail when a change alters what a strategy sends, so
-  every such change is deliberate and explained.
-- **Backtests compare.** Two parameter sets differ only by the parameters, not by noise.
+- Replaying the journal of a live session that misbehaved runs the same decisions again under a
+  debugger, without a venue.
+- Golden hashes (`tests/backtest/golden_strategies_test.cpp`,
+  `tests/fixtures/journals/sample_1000.sha256`) fail when a change alters what a strategy sends.
+- Two backtests with different parameter sets differ only by the parameters.
 
 ## How the engine keeps it
 
@@ -25,7 +24,7 @@ policies:
 | orders | `LiveTransport` to the venue | `SimTransport`: matching engine with a seeded latency model | `ReplayTransport`: recorded acks and refusals |
 | randomness | `ctx.rng()` seeded from `[engine] rng_seed` | the same | the seed from the journal header |
 
-Everything else is ordinary code that is deterministic by construction: one engine thread, no
+The rest is deterministic because it uses one engine thread, no
 reads of the system clock, integer arithmetic for money, fixed-capacity containers iterated in a
 defined order, and timers that fire in engine time.
 
@@ -63,12 +62,12 @@ whatever it sent, so later messages diverge too.
 | Threads or asynchronous work started by the strategy | results arrive at an unrecorded time | do the work in a hook, or publish results as engine events |
 | Uninitialised members, iteration over pointer-keyed hash maps | values or order change between runs | initialise every member; order by ids |
 | Floating-point decisions that differ between builds (`-ffast-math`, a different compiler, `-march=native`) | the same inputs round differently | fixed-point arithmetic for prices and sizes; replay with the binary that recorded |
-| A different binary: changed strategy or engine code, other parameters | the decisions legitimately differ | a replay with `--config` or `--strategy` is reported as a what-if run |
-| A journal written before format version 2, from a live session | it has no engine clock or session settings | replay with `--config`; it is not expected to match |
+| A different binary: changed strategy or engine code, other parameters | the decisions differ | a replay with `--config` or `--strategy` is reported as a what-if run |
+| A journal written before format version 2, from a live session | it has no engine clock or session settings | replay with `--config` as a what-if run |
 | A full journal ring during recording | events were lost; the engine trips the kill switch | size `[engine] journal_ring_bytes` for the session |
 
-A mismatch with the same binary and the embedded configuration is a determinism bug: the journal
-is its reproduction, and the fix belongs in the code that read a non-engine input.
+A mismatch with the same binary and the embedded configuration is a bug: some code read an input
+the journal does not record.
 
 ## Related
 

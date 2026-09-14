@@ -1,9 +1,8 @@
 # Event flow
 
-This page follows one market-data update from the venue's socket to an order on the wire and its
-fill back into the strategy, naming the component at each step. It describes `fastmm-live`;
-backtests and replay run the same engine with a simulated clock, feed and transport
-([Determinism](determinism.md)). Thread and ring details are in [Architecture](architecture.md).
+One market-data update in `fastmm-live`, from the venue's socket to an order on the wire and its fill
+back into the strategy. Backtests and replay run the same engine with a simulated clock, feed and
+transport ([Determinism](determinism.md)); threads and rings: [Architecture](architecture.md).
 
 ```text
  network thread (per venue)                  engine thread                                           network thread
@@ -30,14 +29,12 @@ new snapshot; a connection without traffic for `stale_ms` is reported `Stale`.
 Messages cross to the engine through single-producer, single-consumer rings, two per venue: market
 data and order events. A full market-data ring drops the delta and forces a resync; order events
 are never dropped, and an order ring overflow shuts the session down. The engine polls the rings
-round-robin, at most `[engine] max_events_per_step` events per ring per iteration, so one busy venue
-cannot starve another.
+round-robin, at most `[engine] max_events_per_step` events per ring per iteration.
 
 ## 3. Consume (engine thread)
 
 For each event the engine reads its clock once (the engine clock, `ctx.now()`), records the event
-in the journal with that time, and dispatches on the message type. The order in which the engine
-consumes events is the canonical order: it is what the journal records and what replay reproduces.
+in the journal with that time, and dispatches on the message type.
 
 ## 4. Market data
 
@@ -92,7 +89,7 @@ The venue's acknowledgement or fill arrives on the user stream and takes steps 1
 order ring. The OMS applies the state transition (for example `PendingNew` to `Live`, or a partial
 fill) and the quote manager updates the slot. For a fill, the engine first books the position and
 fees, checks `max_loss`, and then calls `on_fill(ctx, fill)`; `on_order_update(ctx, u)` follows for
-the same execution. A strategy that requotes from `on_fill` sees the new position.
+the same execution.
 
 ## 10. Everything else
 

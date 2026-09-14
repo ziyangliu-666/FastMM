@@ -1,49 +1,43 @@
 # ADR-0012: Strategy developer experience
 
-Status: proposed (2026-09)
+Status: accepted (2026-09)
 
-This record settles how people write, check, test, register, run and document strategies. It merges
-four design studies (hook API, registration and out-of-tree runtime, Python authoring, docs) and one
-adversarial review. FastMM is pre-1.0 with no external users, so API changes are clean breaks with
-no deprecated shims.
+FastMM is pre-1.0 with no external users, so API changes are clean breaks with no deprecated shims.
 
 ## Context
 
-Adding a strategy works today, but the path is fragile and undocumented.
-
-- **Hooks fail silently.** The engine detects hooks with `requires`, so a wrong signature is never
+- Hooks fail silently. The engine detects hooks with `requires`, so a wrong signature is never
   called and never reported. `docs/adding-a-strategy.md` lists wrong signatures (`on_trade`,
   `on_book_ticker`) and leaves out `on_connection` and eight context methods.
-- **Instrument hooks are inconsistent.** `on_book` gets `(ctx, id, book)`; `on_trade`,
+- Instrument hooks are inconsistent. `on_book` gets `(ctx, id, book)`; `on_trade`,
   `on_book_ticker` and `on_option_ticker` get `(ctx, msg)` and may receive instruments that are not
   in the table, so strategies repeat `ctx.instruments().contains(id)`.
-- **Nothing tells a strategy that quoting is possible again.** `set_quotes` is ignored while quoting
+- Nothing tells a strategy that quoting is possible again. `set_quotes` is ignored while quoting
   is disabled (control pull, kill, reconcile), and strategies still record the mid as quoted.
   ResumeQuotes, ResetKill and Reconcile End only flip flags.
-- **Fills are awkward.** `on_fill(ctx, OmsUpdate, OrderFillMsg)`; every strategy repeats
+- Fills are awkward. `on_fill(ctx, OmsUpdate, OrderFillMsg)`; every strategy repeats
   `u.known ? u.order.instrument : InstrumentId{}`.
-- **Fixed-point math is verbose.** Strategies convert doubles in `on_start`, keep centi-bps
+- Fixed-point math is verbose. Strategies convert doubles in `on_start`, keep centi-bps
   members and write `Int128` casts by hand. The example calls `Qty::from_double` per event.
-- **Registration is spread over four places** (`apps/fastmm-live/runner_<s>.cpp`,
+- Registration is spread over four places (`apps/fastmm-live/runner_<s>.cpp`,
   `live_runners.hpp`, `live_runners.cpp`, `src/backtest/registrations.cpp`). `FASTMM_REGISTER_STRATEGY`
   relies on static initialisers, which static archives drop.
-- **External projects cannot trade live without forking.** The install exports core, sim, backtest,
+- External projects cannot trade live without forking. The install exports core, sim, backtest,
   codecs, net and venues, but not the live session code or a strategies library.
-- **There is no test harness for strategies**, and the no-registration path
+- There is no test harness for strategies, and the no-registration path
   `bt::run_backtest<S>(cfg, source)` is not documented.
-- **Python can run backtests of C++ strategies but cannot define strategies.**
-- **Docs drift.** `adding-a-venue.md` describes a registration scheme and feed signatures that do
+- Python can run backtests of C++ strategies but cannot define strategies.
+- Docs drift. `adding-a-venue.md` describes a registration scheme and feed signatures that do
   not exist; `schema.hpp` lists a `binance_futures` venue kind that has no connector.
 
-Two engine defects surfaced during review and are fixed before any API work (they are bugs, not
-design choices):
+Two engine defects surfaced during review and are fixed before any API work:
 
-- **Reconcile holes.** Reconcile Begin pulls quotes; a requote that meets orders still waiting for
+- Reconcile holes. Reconcile Begin pulls quotes; a requote that meets orders still waiting for
   their cancel ack is skipped without remembering the target, and `reconcile_open_order` clears an
   in-flight PendingCancel. Orders a strategy sends on channel `Live` before the open-orders snapshot
   are marked Canceled by `reconcile_end` and their ack is then ignored, leaving an order at the venue
   that the OMS no longer tracks. `reconcile_end` updates reach the strategy but not the QuoteManager.
-- **Late fills are not booked.** For a recently terminal order the OMS reports `known` without an
+- Late fills are not booked. For a recently terminal order the OMS reports `known` without an
   order snapshot, so the engine books the fill on an invalid instrument and it never reaches
   position, fees or PnL.
 
@@ -60,7 +54,7 @@ one engine template for live, sim and replay; replay hashes stay the determinism
 
 ### 1. Hooks: plain member functions, checked at compile time
 
-Strategies keep writing ordinary member functions. A new `include/fastmm/strategies/hooks.hpp`
+A new `include/fastmm/strategies/hooks.hpp`
 holds one X-macro table (name, expected call, message) that drives dispatch, the checks and the
 reference table in the docs.
 
@@ -81,7 +75,7 @@ Rules:
 
 - All hooks return `void`; `template <class Ctx>` spelling is equivalent to `auto&`. `noexcept` is
   recommended, not enforced (hooks already run inside `noexcept` engine code).
-- Instrument-scoped hooks fire only for instruments in the table, so `ctx.book(id)` is always safe.
+- Instrument-scoped hooks fire only for instruments in the table, so `ctx.book(id)` is valid.
 - `on_fill` fires after position and fees are updated and before the `on_order_update` of the same
   execution, for every fill on an instrument in the table, including late fills and fills for
   unknown orders.
@@ -119,13 +113,13 @@ struct Fill {
 
 Checking (verified on gcc 13.3 and clang 18.1):
 
-- A **name probe** detects any member with a hook's name (function, template, data member, static,
+- A name probe detects any member with a hook's name (function, template, data member, static,
   inherited, private). If the name exists and the engine's call does not compile, `static_assert`
   fails with `fastmm: on_trade has the wrong signature or is not public; expected void
   on_trade(auto& ctx, InstrumentId id, const TradeMsg& m)`. Each hook has its own assert, so one
   build reports all of them.
-- A **near-miss list** (`on_fills`, `on_trades`, `on_order_book`, `on_tick`, `on_bbo`, `on_order`,
-  `on_execution`, `on_disconnect`, `onBook`, ...) produces a **warning** through a `[[deprecated]]`
+- A near-miss list (`on_fills`, `on_trades`, `on_order_book`, `on_tick`, `on_bbo`, `on_order`,
+  `on_execution`, `on_disconnect`, `onBook`, ...) produces a warning through a `[[deprecated]]`
   marker ("on_fills is not a hook; did you mean on_fill?"). It is a warning because a private helper
   can legitimately use such a name; `FASTMM_WERROR` builds turn it into an error, and a strategy can
   silence it with `static constexpr bool fastmm_allow_near_miss_names = true;`.
@@ -136,14 +130,13 @@ Checking (verified on gcc 13.3 and clang 18.1):
 - Documented limits: a `final` class loses the name probe (the call check remains); a hook that is
   ambiguous across two bases is reported as a wrong signature; an `auto`-returning hook must not be
   checked with `verify_strategy` (the stand-in types instantiate its body); private hooks are
-  rejected, also with `friend Engine` (see the implementation notes); implicit conversions are
+  rejected, also with `friend Engine` (see [Deviations](#deviations-from-the-decision)); implicit conversions are
   accepted (`on_timer(auto&, TimerId, int)` compiles).
 
 Rejected: a CRTP base with no-op defaults (typos compile and call the default; the engine can no
 longer skip empty hooks), one overloaded `on(ctx, Event)` (overloads cannot be enumerated, a generic
 overload swallows everything), a single `on_event` visitor (users write the dispatch), an explicit
-`HookSet` declaration (repeats what the code already says). A full `on_*` member scan waits for
-C++26 reflection.
+`HookSet` declaration (repeats what the code already says).
 
 ### 2. Context API
 
@@ -170,7 +163,8 @@ C++26 reflection.
 
 ### 3. Fixed-point helpers
 
-In `core/fixed_point.hpp` and a new `strategies/quoting.hpp`, all `constexpr` and integer-only:
+In `core/fixed_point.hpp` and a new `strategies/quoting.hpp`, `constexpr` and integer-only on the hot
+path:
 
 - `Ratio = Fixed<RatioTag>` (1.0 = 1e8 raw, 1 bp = 10'000 raw). `Fixed<T> * Ratio` multiplies through
   `Int128` with one truncation toward zero. `ratio(num, den)`, `Ratio::from_bps(double)` (startup
@@ -188,7 +182,7 @@ literals, instrument, quotes and helpers, params, hooks, log macros.
 
 The BasicMM formula port is bit-identical: `mid.raw * (cbps * 100) / 1e8` truncates exactly like the
 old `mid.raw * cbps / 1e6`, including the skew sign. Intended differences, each re-baselined with an
-explanation in its step: bps configs with more than two decimals gain precision; a non-positive ask
+explanation in its change: bps configs with more than two decimals gain precision; a non-positive ask
 is dropped instead of rejected; `on_fill` now reaches strategies for late and unknown fills; late
 fills now move positions and therefore skew.
 
@@ -211,7 +205,7 @@ fills now move positions and therefore skew.
 - `StrategyBase::params()` is const-only and `params_` becomes private.
 
 Rejected: Boost.PFR (dependency, no docs or ranges), descriptor tuples (names written twice), schema
-files (two sources of truth). C++26 annotations are the long-term replacement.
+files (two sources of truth).
 
 ### 5. Registration: one function per strategy library
 
@@ -237,7 +231,7 @@ void mm::register_strategies(fastmm::StrategyRegistry& r) {
   file above instantiates all three engines. Taking a factory's address only emits a reference, so a
   missing instantiation is a link error naming the factory.
 - The app references the registration function, so the linker pulls it and its instantiations out
-  of static archives. No static initialisers, no whole-archive.
+  of static archives.
 - `StrategyRegistry::try_add` returns `Added`, `AlreadyPresent` (same schema and factory),
   `Conflict` or `Invalid`. `register_strategy` throws on `Conflict`; CLIs exit 3 with the message.
   Tests that register fakes use a local `StrategyRegistry`, not the global one.
@@ -246,7 +240,7 @@ void mm::register_strategies(fastmm::StrategyRegistry& r) {
 - `FASTMM_REGISTER_STRATEGY` is removed.
 - Built-ins use an internal CMake function that generates one file per (strategy, transport) so the
   nine engine instantiations compile in parallel. It is not installed or documented until an
-  external project needs it; a strategy that should not run live simply is not registered by that
+  external project needs it; a strategy that should not run live is not registered by that
   project's live app.
 
 Rejected: static self-registration (dropped by archives, fails at runtime), X-macro strategy lists
@@ -263,12 +257,12 @@ fastmm::net ─ fastmm::venues ─ fastmm::live (run_live + cli::live) ── li
 
 ```cpp
 namespace fastmm::cli {
-int live(int argc, char** argv, std::initializer_list<StrategyModule> modules = {});
-int backtest(int argc, char** argv, std::initializer_list<StrategyModule> modules = {});
-int replay(int argc, char** argv, std::initializer_list<StrategyModule> modules = {});
+int live(int argc, char argv, std::initializer_list<StrategyModule> modules = {});
+int backtest(int argc, char argv, std::initializer_list<StrategyModule> modules = {});
+int replay(int argc, char argv, std::initializer_list<StrategyModule> modules = {});
 }
 // apps/fastmm-live/main.cpp
-int main(int argc, char** argv) { return fastmm::cli::live(argc, argv); }
+int main(int argc, char argv) { return fastmm::cli::live(argc, argv); }
 ```
 
 - `apps/fastmm-live/{live_backend,main}.cpp` move to `src/live/{session,cli}.cpp`; `LiveBackend`
@@ -278,8 +272,8 @@ int main(int argc, char** argv) { return fastmm::cli::live(argc, argv); }
 - `fastmm-live` gains `--strategy <name>` and `--param k=v`; changing the strategy clears
   `[strategy.params]` (as `fastmm-backtest` does). The journal `config_hash` hashes the effective
   configuration after overrides. Error prefixes use the program name; log tags stay `fastmm-live:`.
-- `cli::live` installs process-wide SIGINT/SIGTERM handlers; this is documented. A `LiveSession`
-  class without signal handling comes later and replaces the integration tests' own wiring.
+- `cli::live` installs process-wide SIGINT/SIGTERM handlers. Deferred: a `LiveSession` class without
+  signal handling, to replace the integration tests' own wiring.
 - `fastmm::strategies` and `fastmm::live` join the install export. Supported consumers use the same
   compiler as the FastMM build: `find_package(fastmm)` against an install prefix, or
   `add_subdirectory`/FetchContent. Installing binaries and configs, cross-compiler consumers,
@@ -291,53 +285,53 @@ int main(int argc, char** argv) { return fastmm::cli::live(argc, argv); }
 
 ### 7. Python strategies (v1)
 
-- **Model.** A `fastmm.Strategy` subclass with the same hook names and argument order as C++
+- Model. A `fastmm.Strategy` subclass with the same hook names and argument order as C++
   (`on_book(ctx, inst, book)`, `on_trade(ctx, inst, trade)`, `on_fill(ctx, fill)`,
   `on_quoting(ctx, enabled)`, ...) and `Param(default, min=, max=, doc=)` descriptors. Undefined
   hooks are never called.
-- **Bridge.** One C++ adapter, `PyStrategy`, compiled only into `_core` (`python/src/`). It is a
+- Bridge. One C++ adapter, `PyStrategy`, compiled only into `_core` (`python/src/`). It is a
   normal `StrategyLike` class, so the engine, risk, OMS, QuoteManager, journal and outbound hash are
   unchanged. It caches the bound functions and a hook bitmask, reuses one view object per instrument
   and event type, and calls with vectorcall. A view read outside its callback raises
   `StaleViewError` (one integer compare).
-- **Numbers.** Prices and quantities are available as floats (`book.mid`) and exact raw int64
+- Numbers. Prices and quantities are available as floats (`book.mid`) and exact raw int64
   (`book.mid_raw`). `set_quotes` rounds floats to tick and lot (bids down, asks up);
   `set_quotes_raw` takes raw ints. No `Decimal`.
-- **Context.** Mirrors section 2 in snake_case (`now_ns`, `every`, `once`, `random()` from the engine
+- Context. Mirrors section 2 in snake_case (`now_ns`, `every`, `once`, `random()` from the engine
   RNG).
-- **GIL.** Held for the whole run; released briefly every 1,024 hooks, where
+- GIL. Held for the whole run; released briefly every 1,024 hooks, where
   `PyErr_CheckSignals()` also runs, so Ctrl-C works on the main thread.
-- **Errors.** A raising hook stores the exception, pulls all quotes and requests stop.
+- Errors. A raising hook stores the exception, pulls all quotes and requests stop.
   `EngineHooks` gains a nullable `stopped` callback honoured by `SimDriver` only (this also makes
   `request_stop()` work in C++ backtests). `ReplayDriver` always drains the journal, because stopping
   early would change the replay hash; a failed adapter goes inert instead. `run_backtest` raises
   `fastmm.StrategyError` with the traceback as `__cause__` and the partial result as `.result`.
-- **Entry point.** `run_backtest(cfg, data=None, strategy=None, params=None)` where `strategy` is a
-  registered name, a `Strategy` subclass or an unused instance. Existing calls keep working.
-- **Scope.** In-process backtests only. Deferred: replay of Python strategies, process-pool sweeps,
+- Entry point. `run_backtest(cfg, data=None, strategy=None, params=None)` where `strategy` is a
+  registered name, a `Strategy` subclass or an unused instance. Backward compatible.
+- Scope. In-process backtests only. Deferred: replay of Python strategies, process-pool sweeps,
   `fastmm.fixed`/`fastmm.testing` helpers, research series (`record`), a C++ skeleton generator,
   and any live use (first a hybrid where Python publishes slow targets to a C++ strategy through
   shared memory, then an opt-in `fastmm-live-py` limited to the sim exchange and testnets).
   `fastmm-live` never links libpython and the wheel stays net-free.
-- **Custom C++ strategies in Python.** No runtime loading into the prebuilt wheel (ABI coupling).
+- Custom C++ strategies in Python. No runtime loading into the prebuilt wheel (ABI coupling).
   Build `_core` from source with `FASTMM_PYTHON_STRATEGY_DIRS=<dir;...>` (deferred with the rest).
-- **Proof.** `examples/python/strategies/basic_mm_exact.py`, a raw-int port of BasicMM, reproduces
+- Proof. `examples/python/strategies/basic_mm_exact.py`, a raw-int port of BasicMM, reproduces
   `tests/fixtures/journals/sample_1000.sha256` in CI.
 
 ### 8. Quick start, test harness and documentation
 
-**Quick start.** The shortest path is one strategy header plus a `main` that calls
+Quick start. The shortest path is one strategy header plus a `main` that calls
 `bt::run_backtest<MyMM>(cfg, source)`, built with FetchContent: no registration, under 30 lines. It is
 the first page of the docs and is compiled and run in CI.
 
-**Test harness.** `include/fastmm/testing/strategy_harness.hpp` (tier 1, in `fastmm::sim`):
+Test harness. `include/fastmm/testing/strategy_harness.hpp` (tier 1, in `fastmm::sim`):
 `StrategyHarness<S>` wraps a real `Engine<S, SimClock, SimTransport, InlineFeed>` with one instrument
 table and exposes `book(...)`, `trade(...)`, `fill(...)`, `disconnect()`/`reconnect()`,
 `pull_quotes()`/`resume_quotes()`, `advance(duration)`, and `working_orders()`. Authors test hooks
 without writing fake contexts; the docs' strategy API test and the external project use it.
 
-**Documentation.** Markdown rendered on GitHub is canonical (the repository is private; a site
-generator and Doxygen are deferred until it is public, and the layout is compatible with both).
+Documentation. Markdown rendered on GitHub is canonical (the repository is private; a site
+generator and Doxygen are deferred until it is public).
 
 - Layout: `docs/getting-started/`, `docs/tutorials/`, `docs/how-to/{strategies,venues,operations}/`,
   `docs/reference/`, `docs/explanation/`, `docs/contributing/`, `docs/adr/`.
@@ -377,215 +371,45 @@ Docs checks in CI:
 
 ## Consequences
 
-- Every strategy, test fake and strategy doc changes once. Golden outbound hashes are recorded on
+- Strategies, test fakes and strategy docs break once. Golden outbound hashes are recorded on
   `main` before the change; each step keeps them or re-baselines them with the reason in the change.
 - A wrong hook signature becomes a readable compile error and a missing instantiation a link error.
 - External projects get a supported path to live trading without forking, with a tier 1 API that
   must stay stable within a minor version.
 - Compile-fail tests (`tests/compile_fail/`, label `compile_fail`) join both compiler presets; each
   case has a control build that must compile and matches the expected message.
-- Python strategies run 10 to 30 times slower than C++ per event; acceptable for research, and the
-  reason they stay out of live trading.
+- Python hooks are slower than C++: the integer BasicMM port adds about 3.1 µs per `on_book` or
+  `on_fill` call, and a synthetic backtest runs 1.31 M events/s against 2.02 M for C++ `basic_mm`
+  ([Python API](../reference/python-api.md#performance)). That is acceptable for research and is why
+  Python strategies stay out of live trading.
 - `binance_futures` is removed from `schema.hpp` until a connector exists.
 
-## Implementation order
+## Implementation
 
-Each step is a separate merge, green on gcc release, clang release, ASan and TSan, with docs and
-CHANGELOG in the same change.
+Implemented in 2026-09 in this order: golden hashes, engine fixes, hooks and context, fixed point and
+parameters, registration and runtime, Python strategies, docs.
 
-1. **Golden hashes** for each built-in strategy on fixed seeds.
-2. **Engine fixes**: reconcile holes and late-fill booking (bug fixes, independent of the API).
-3. **Hooks, context and harness** (sections 1, 2 and the harness): `hooks.hpp`, engine dispatch and
-   filtering, `Fill`, `on_quoting`, context additions, tag-range check, `mark_decision` fix,
-   compile-fail harness, `StrategyHarness`; migrate the three strategies, tests and example.
-4. **Fixed point and params** (sections 3 and 4). In parallel: docs corrections that do not depend
-   on the API (venue guide, operator how-tos, troubleshooting, `binance_futures`, README).
-5. **Registration and runtime** (sections 5 and 6), after params (both touch `--list-strategies` and
-   the Python schema binding).
-6. **Python strategies** (section 7), after steps 3 and 4.
-7. **Quick start, tutorial, reference and docs checks** (section 8), after the APIs are merged.
+## Deviations from the decision
 
-## Implementation notes
-
-Step 2 (reconcile and late-fill fixes) landed before step 3. Step 3 follows sections 1, 2 and the
-harness part of section 8, with these clarifications:
-
-- **Reconcile End.** The engine clears `reconciling_`, puts back the quotes paused at Begin
-  (`resume_quotes()`), and only then reports `on_quoting(true)`, after `on_reconcile` returns. A
-  strategy that requotes there replaces the resumed quotes through the normal QuoteManager diff.
-- **Late fills.** For an order that was already terminal the OMS returns its terminal record, so
-  `Fill::known` is true and `update->order` carries only id, instrument, side, state and filled
-  quantity; `Fill::late` marks the case.
-- **Private hooks.** The call check is evaluated in `hooks.hpp`, not inside `Engine`, so the engine
-  and `verify_strategy` agree: a private hook is rejected even when the class befriends the engine.
-- **Near-miss warnings** are emitted inside `hooks.hpp`; a consumer that includes FastMM as a
-  system header does not see them (the wrong-signature errors are unaffected).
-- **`NewOrderRequest::limit`** returns a small `LimitOrder` builder that converts to
-  `NewOrderRequest`, because `post_only` and `reduce_only` are already data members; it also has
-  `.tag(n)`.
-- **`set_quotes`** also returns false for an instrument outside the table. Fills for such
-  instruments are counted in `EngineStats::unknown_instrument_fills`.
-- **`FASTMM_REGISTER_STRATEGY`** had one user (a test) and was removed in step 3; the rest of
-  section 5 stays for step 5.
-- **Golden hashes** (`tests/backtest/golden_strategies_test.cpp`) were recorded on main before
-  step 3 and did not change in it.
-
-Step 4 (sections 3 and 4) follows the decision, with these clarifications:
-
-- **Exponent parsing** is a new `Fixed::parse`; `Fixed::from_decimal` stays strict (no exponent) for
-  venue strings. Parameters use `parse` for `decimal` values and the same scaled parser for `bps`
-  (4 decimals) and `ms` (whole milliseconds). `double` parameters use `std::from_chars` and reject
-  non-finite values; integer parameters accept `3.0` and `3e0`.
-- **Literals** live in `fastmm::literals`, declared as an inline namespace so the built-in strategy
-  headers (inside `namespace fastmm`) use them without a using-directive; `using namespace
-  fastmm::literals` works as specified. `_px` and `_qty` keep their integer overloads; literals
-  accept digit separators and exponents. `Ratio * Ratio` is also defined. `from_bps` and `to_bps`
-  are members of `Fixed` constrained to the `Ratio` tag.
-- **`DesiredQuotes::bid/ask`** drop a non-positive quantity as well as a non-positive price, and a
-  level beyond `kMaxQuoteLevels`. A zero-quantity level (`quote_qty` below the lot) is therefore no
-  longer sent, an addition to the intended differences in section 3.
-- **`FASTMM_PARAM_MS`** bounds are `Duration`s (`milliseconds(2000)`). BasicMM and OptionsMM keep
-  comparing whole milliseconds (`.millis()`) in their stale checks, so the behaviour is unchanged.
-- **`configure()`** applies the keys to a copy, runs `validate()`, and only then replaces the
-  parameters, so an error leaves the previous values. A `validate` that is not `const` or does not
-  return `std::optional<std::string>` is a compile error.
-- **Migration scope.** BasicMM: both bps parameters are `Ratio`, `quote_qty` and `max_inventory` are
-  `Qty`, `pull_on_stale_ms` is `Duration`. AvellanedaStoikov: `quote_qty` and `max_inventory` are
-  `Qty`; its seconds-valued parameters stay `double` because their keys are in seconds. OptionsMM:
-  `quote_qty` and `max_position` are `Qty` and `pull_on_stale_ms` is `Duration`; `max_delta` and
-  `max_vega` stay `double` (they are not quantities). No built-in strategy gained a `validate()`,
-  so existing configurations behave as before; the docs example and `custom_strategy.cpp` show one.
-- **Golden hashes.** A test (`strategies.basic_mm: compute_quotes is bit-identical ...`) compares
-  the port with the old centi-bps function on random inputs. The AvellanedaStoikov, OptionsMM and
-  `sample_1000` hashes did not change. `basic_mm/coupled` and `basic_mm/l2_queue` changed for the
-  first intended difference: their market (`tests/backtest/backtest_test_util.hpp`) configures
-  `half_spread_bps = 0.003`, which the centi-bps code rounded to 0. With `half_spread_bps = 0` the
-  new code reproduces both old hashes; the first differing outbound message is #0, the first bid,
-  at `px=60000` before and `px=59999.98` after. They were re-baselined in a separate commit.
-  `tests/hotpath/noalloc_sim_test.cpp` and `bench/bench_tick_to_order.cpp` used the same 0.003 bps;
-  they now configure 0 bps, which is what they ran before, so the no-allocation window still
-  contains fills and the benchmark compares like for like.
-
-Step 5 (sections 5 and 6) follows the decision, with these clarifications:
-
-- **Masked registration.** `Transports` and `register_strategy<S>(r, Transports)` exist in
-  `module.hpp` for FastMM's own tests (a Sim-only registration whose factory is instantiated in
-  another file); the documented API is `register_strategy<S>(r)`.
-- **`FASTMM_INSTANTIATE_STRATEGY(S, kind)`** expands to an explicit instantiation with a trailing
-  return type (`template auto ::fastmm::kind##_factory<S>(...) -> std::unique_ptr<...>`), because
-  `std::unique_ptr<...> ::fastmm::...` parses as a nested name; the caller writes the `;`.
-- **No Engine in registration files.** `EngineConfig` moved to `core/engine_config.hpp`, so
-  `registry.hpp` and `module.hpp` do not include `engine.hpp`. `StrategyRegistry::add` was removed
-  rather than kept as a wrapper of `try_add`.
-- **Built-ins.** The internal generator is `fastmm_generate_strategy_module` in
-  `src/strategies/CMakeLists.txt`; it also writes the registration file, which only declares the
-  factories. `fastmm::strategies` additionally holds the `--list-strategies` formatter
-  (`strategies/listing.hpp`) and `cli/modules.hpp` (`program_name`, `register_strategy_modules`),
-  which all three command lines share.
-- **Listings.** Each command line lists the strategies of its own transport (`fastmm-live`: Live,
-  `fastmm-backtest`: Sim); the text format is unchanged and JSON is
-  `{"strategies": [{"name", "transports", "params": [{"name", "type", "default", "min", "max",
-  "doc"}]}]}`. The parity test compares the two apps' text and JSON output byte for byte.
-  `--format` without `--list-strategies` is a usage error (exit 2).
-- **Live overrides.** `--strategy` and `--param` edit the loaded `Config`, so `effective_toml()` and
-  `config_hash` include them. Unknown parameter names exit with code 3 before any venue is contacted;
-  bad values are still reported when the engine is built, after reference data, as before.
-  `fastmm-backtest` also requires the strategy to support Sim before running.
-- **Missing instantiation.** `link_fail.missing_factory_instantiation` (label `compile_fail`)
-  builds an executable that calls `register_strategy<S>` with only `module.hpp` included; the linker
-  names all three factories. Its control includes `factories.hpp` and links.
-- **External project.** The unit test uses plain checks instead of doctest, which the install does
-  not export. The strategy library links `fastmm::lowlatency` privately so consumer engines get the
-  same code generation flags as FastMM's. `-DFASTMM_SOURCE_DIR=` switches the template from
-  `find_package(fastmm CONFIG REQUIRED COMPONENTS live)` (no version, the policy is deferred) to
-  `add_subdirectory`. `scripts/ci-external-project.sh` also replays the live journal with
-  `--verify`, which journal v2 makes exact, and checks `--list-strategies --format json`.
-- **Install.** `fastmmConfig.cmake` sets `fastmm_<component>_FOUND` and checks a requested net
-  component before `find_dependency`, so `cmake.find_package.live_without_net` tests the message
-  with a config generated for `FASTMM_BUILD_NET=OFF` instead of a second install.
-- **Integration tests** keep their own live wiring until the `LiveSession` class (section 6) exists.
-
-Step 6 (section 7) follows the decision, with these clarifications:
-
-- **Adapter.** `PyStrategy` (`python/src/py_strategy.hpp`) declares every hook with the C++
-  signature and checks a bitmask of the hooks the class defines; `static_assert(verify_strategy<
-  PyStrategy>())` holds. Because every hook is compiled in, the engine always takes its `on_quoting`
-  and `Fill` paths for a Python strategy; they record latency and build the view only, so the
-  outbound stream is unchanged. The hooks forward to `PyRun` (`bind_strategy_api.cpp`), which calls
-  the bound methods with `PyObject_Vectorcall` and `PY_VECTORCALL_ARGUMENTS_OFFSET`.
-- **Views** are pybind11 objects created once per run (book and position per instrument, one per
-  event type otherwise) and share a guard with an epoch that advances when an outermost hook starts
-  and when it returns; a view stamped with an older epoch raises `StaleViewError`. `ctx.book(inst)`
-  re-stamps the instrument's view, so a book kept from an earlier hook is valid again after that
-  call. The context also checks that it runs on the backtest's thread.
-- **Arguments.** Hooks receive an `Instrument` value (id, symbol, tick, lot, rounding helpers) and
-  context methods accept it or an integer id; views report instruments as ids. Sides and liquidity
-  are the integers of the result columns (`fastmm.BUY`, `SELL`, `MAKER`, `TAKER`); order and
-  connection states and reject reasons are their C++ names as strings. Timers take nanoseconds
-  (`every(period_ns, tag)`, `once(delay_ns, tag)`), and `randint(lo, hi)` is inclusive like
-  `random.randint` and `Xoshiro256ss::between`.
-- **Orders.** `send` and `replace` raise `OrderRejected(reason)`; `cancel` returns `False` instead
-  of raising, because cancelling an order that just ended is routine. Float `send`/`replace` prices
-  round passively like `set_quotes`; `_raw` variants take ints.
-- **Parameters.** `params=` is applied on top of `config.params` for registered names too. A Python
-  strategy sees `config.params`, so the TOML example's BasicMM keys must be cleared first (as a
-  different C++ strategy would require); the integer port uses the same names and runs on the file
-  unchanged. Messages are the C++ texts prefixed with `py:<QualName>:`; doubles format like
-  `std::to_chars`; an unbounded side prints as `-inf`/`inf`. `Strategy.validate()` mirrors the
-  optional C++ `validate()`. Python checks hook signatures and warns about the C++ near-miss names.
-- **Errors and signals.** `KeyboardInterrupt` and `SystemExit` from a hook propagate unchanged with
-  `.result` instead of being wrapped in `StrategyError`, so `except Exception` does not swallow
-  Ctrl-C. Signals are also checked every 4,096 driver steps through `EngineHooks::stopped`, so a
-  strategy whose hooks rarely run can still be interrupted. After a failure no hook is called,
-  including `on_stop`.
-- **Journals.** `BacktestConfig::strategy` is set to `py:<QualName>`; the journal writer truncates
-  it to 31 characters. Replaying such a journal is deferred with the rest of replay support.
-- **Proof.** Besides `sample_1000` (54 outbound messages), the parity tests compare the port with
-  C++ `basic_mm` on 30 s synthetic runs with fills, three levels, skew and stale-book timers (L2
-  queue) and with the coupled matching market; all hashes match.
-- **Hooks in tests.** A raise is tested in every hook the simulator can drive (`on_quoting` through
-  the max-loss kill switch); `on_connection` and `on_option_ticker` share the same code path but
-  have no event source in a backtest.
-- **Cost** (`bench/python/bench_py_strategy.py`, 1,356,426 events): an empty hook adds about 40 ns
-  per call and the integer BasicMM port about 3.1 µs per `on_book`/`on_fill` call over C++; end to
-  end, 1.31 M events/s against 2.02 M for C++ `basic_mm`, because the simulator dominates.
-- **Stubs.** `python/fastmm/_core.pyi` is regenerated with pybind11-stubgen; arguments taken as
-  `py::handle` (instruments, prices, ladders) appear as `typing.Any`.
-Step 7 (section 8, C++ side; step 6 added the Python pages) follows the decision, with these
-clarifications:
-
-- **Layout.** `architecture.md` and `benchmarks.md` moved to `explanation/`; `configuration.md`,
-  `venues.md`, `sim-exchange.md`, `options.md` and the codec pages (`reference/codecs/`) to
-  `reference/`; `monitoring.md` to `how-to/operations/monitor-with-fastmm-top.md`;
-  `dependencies.md` to `contributing/`. `adding-a-strategy.md` became `reference/strategy-api.md`
-  and the `adding-a-venue.md` pointer was deleted: moved pages leave no pointer, every link was
-  updated, and `docs/README.md` is the index. The Python pages keep the places step 6 gave them.
-- **Quick start.** `examples/quickstart/` is 29 lines of code (the header and `main`, without
-  comments, blank lines and snippet markers). The default synthetic market gives no fills to a
-  quote 0.005 bps from the mid, so `main` sets one generator value. Its `CMakeLists.txt` uses the
-  existing `fastmm::` targets inside FastMM's build and otherwise `FetchContent` with
-  `FASTMM_BUILD_NET=OFF`; ctest `examples.quickstart` passes on a non-zero fill count.
-- **Tutorial.** The strategy is `first_mm` (`examples/cpp/tutorial/`, distinct from the external
-  project's `microprice_mm`); its programs go to `<build>/bin`. `configs/tutorial-sim.toml` serves
-  both processes, because `fastmm-sim-exchange` reads only `[[instruments]]` and `[sim]` and loads
-  without `${VAR}` substitution. The command-line backtest uses `configs/backtest-example.toml`
-  with `--strategy first_mm`, since the tutorial config's `[sim]` belongs to the exchange. The
-  harness test uses plain checks like the external project. `scripts/docs/tutorial.sh` holds every
-  shell step in `--8<--` regions; ctest `tutorial.script` runs it `--through sim --skip-build`
-  (serial, not under sanitizers). The Binance Demo page is documented only.
-- **Strategy API doc test.** Field types are pinned with `decltype(Type::member)`, method types
-  with `decltype` on an lvalue of `StrategyContext<Harness::EngineType>`. `on_book_ticker` and
-  `on_option_ticker` fire through `StrategyHarness::push`, `on_stop` through `engine().finish()`.
-- **Generated references.** Generated content sits between `<!-- BEGIN <kind> <arg> -->` and
-  `<!-- END <kind> -->`. The configuration tables come from the `schema.hpp` doc strings, which now
-  state units and defaults; `[backtest]` and `[sim]` stay hand-written because the schema treats
-  them as free-form, and `--check` also fails when a schema key is in no table. The shipped-config
-  test fails on any load warning and registers the tutorial's strategy module.
-- **Public headers.** Manifest lines are `tier1|tier2 [net] <path>`. ctest `docs.public_headers`
-  builds an `EXCLUDE_FROM_ALL` object library with one translation unit per header, under the
-  compile-fail resource lock and not under sanitizers; `venues/raw_recorder.hpp` gained its
-  missing `<cstdint>`.
-- **CI.** The lint job runs the snippet, link and configuration checks; gcc-release checks the
-  command-line reference after its build. Deferred: the how-to pages for testing, patterns,
-  recorded-data backtests, sweeps, binary protocols, fixtures and latency tuning, a log catalogue
-  check, Markdown linting, and a scheduled Binance Demo dry run.
+- `NewOrderRequest::limit` returns a `LimitOrder` builder (also with `.tag(n)`) that converts to `NewOrderRequest`, because `post_only` and `reduce_only` are data members.
+- The hook call check runs in `hooks.hpp`, so the engine and `verify_strategy` agree and a private hook is rejected even with `friend Engine`.
+- Near-miss warnings are emitted inside `hooks.hpp`, so a consumer that includes FastMM as a system header does not see them; wrong-signature errors are unaffected.
+- `set_quotes` also returns false for an instrument outside the table; fills for such instruments are counted in `EngineStats::unknown_instrument_fills`.
+- A late fill gets the order's terminal record: `Fill::known` is true and `update->order` carries only id, instrument, side, state and filled quantity.
+- Exponents are parsed by a new `Fixed::parse`; `Fixed::from_decimal` stays strict for venue strings.
+- `fastmm::literals` is an inline namespace; `Ratio * Ratio` is defined, and `from_bps`/`to_bps` are `Fixed` members constrained to the `Ratio` tag.
+- `DesiredQuotes::bid/ask` also drop a non-positive quantity and levels beyond `kMaxQuoteLevels`, so a zero-quantity level (`quote_qty` below the lot) is no longer sent.
+- `configure()` applies keys to a copy and replaces the parameters only after `validate()` passes.
+- AvellanedaStoikov's seconds-valued parameters and OptionsMM's `max_delta` and `max_vega` stay `double`; no built-in strategy has a `validate()`.
+- The `basic_mm/coupled` and `basic_mm/l2_queue` golden hashes were re-baselined: their test market's `half_spread_bps = 0.003` had rounded to 0 in the centi-bps code.
+- `register_strategy<S>(r, Transports)` exists for FastMM's own tests; the documented API is `register_strategy<S>(r)`.
+- `EngineConfig` moved to `core/engine_config.hpp` so registration headers do not include `engine.hpp`, and `StrategyRegistry::add` was removed.
+- Each command line lists only the strategies of its own transport; `--list-strategies --format json` was added.
+- The external project's unit test uses plain checks because the install does not export doctest; `-DFASTMM_SOURCE_DIR=` switches it to `add_subdirectory`.
+- Python hooks receive an `Instrument` value; sides and liquidity are integers, order states and reject reasons strings, and timers take nanoseconds.
+- Python `send` and `replace` raise `OrderRejected`; `cancel` returns `False` for an order that already ended.
+- Python `KeyboardInterrupt` and `SystemExit` propagate with `.result` instead of being wrapped in `StrategyError`, and signals are also checked every 4,096 driver steps.
+- A Python strategy's journal name is `py:<QualName>`, truncated to 31 characters.
+- The quick start sets one synthetic-market value, because the default market gives no fills to a quote 0.005 bps from the mid.
+- `[backtest]` and `[sim]` in `reference/configuration.md` stay hand-written because the schema treats them as free-form.
+- Deferred from section 8: how-to pages for testing, patterns, recorded-data backtests, sweeps, binary protocols, fixtures and latency tuning; a log catalogue check; Markdown linting; a scheduled Binance Demo dry run.

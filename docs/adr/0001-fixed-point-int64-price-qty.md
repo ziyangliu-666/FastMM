@@ -4,7 +4,7 @@ Status: accepted (2026-09)
 
 ## Context
 
-Prices and quantities arrive as decimal strings from every venue. Floating point cannot represent them exactly, makes PnL non-associative, and is slow to compare.
+Prices and quantities arrive as decimal strings from every venue. Floating point cannot represent them exactly and makes PnL non-associative.
 
 ## Decision
 
@@ -12,4 +12,4 @@ Prices and quantities arrive as decimal strings from every venue. Floating point
 
 ## Consequences
 
-Range is +/- 9.2e10 units, enough for every listed market. Instruments outside the range are rejected at load time. Only the Avellaneda-Stoikov formula uses `double`, on an already converted mid, then rounds to tick.
+Range is +/- 9.2e10 units; instruments outside it are rejected at load time. Only the Avellaneda-Stoikov formula uses `double`, on an already converted mid, then rounds to tick.
