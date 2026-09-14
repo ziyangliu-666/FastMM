@@ -93,6 +93,13 @@ All notable changes are recorded here (Keep a Changelog format).
 - Fills that arrived after the cancel ack (late fills) never reached positions, fees or PnL: the
   terminal record now keeps instrument and side, and the engine falls back to the fill's own
   instrument and side.
+- The gcc ASan+UBSan build of the Binance, Bybit and Deribit decoders and order encoders was slow
+  enough to nearly time out the gcc-asan CI job: gcc 13's UBSan instrumentation of one large
+  function per decoder full of inlined simdjson lookups took minutes per file. The decoders and
+  request builders are split into non-inlined functions per frame, item or request kind, with the
+  same output. Compile times under the ASan flags (before / after): bybit_private_parser 801 s /
+  32 s, binance_order_encoder 549 s / 40 s, binance_md_parser 310 s / 24 s, bybit_md_parser 241 s /
+  23 s, deribit_private_parser 140 s / 38 s, bybit_order_encoder 96 s / 47 s.
 
 ## [0.1.0] - 2026-09-14
 
