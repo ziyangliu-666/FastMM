@@ -22,6 +22,92 @@ inline constexpr std::int64_t kFixedScale = 100'000'000;  // 1e-8
 inline constexpr int kFixedDecimals = 8;
 // sign + 11 integer digits + '.' + 8 fraction digits + NUL
 inline constexpr std::size_t kMaxDecimalChars = 24;
+// Ratio (below): 1.0 == kFixedScale raw, one basis point == kRatioPerBp raw.
+inline constexpr std::int64_t kRatioPerBp = 10'000;
+inline constexpr int kBpsDecimals = 4;
+
+struct RatioTag;
+
+namespace detail {
+
+// Exact parse of "[+-]digits[.digits][(e|E)[+-]digits]" into value * 10^decimals. The result must
+// be an integer that fits int64: digits left over after the scale must be zeros, so "2e-05" with 8
+// decimals is 2000 and "1.5e-8" is rejected. With `literal` (numeric literal characters) no sign is
+// accepted, digit separators (') are skipped and an octal-looking integer ("017") is rejected.
+[[nodiscard]] constexpr std::optional<std::int64_t> parse_scaled_decimal(
+    std::string_view s, int decimals, bool literal = false) noexcept {
+  constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
+  std::size_t i = 0;
+  bool neg = false;
+  if (!literal && !s.empty() && (s[0] == '-' || s[0] == '+')) {
+    neg = s[0] == '-';
+    i = 1;
+  }
+  const std::size_t mant_begin = i;
+  std::int64_t n_digits = 0;
+  std::int64_t frac_digits = 0;
+  bool dot = false;
+  for (; i < s.size(); ++i) {
+    const char c = s[i];
+    if (c >= '0' && c <= '9') {
+      ++n_digits;
+      if (dot) ++frac_digits;
+    } else if (c == '.' && !dot) {
+      dot = true;
+    } else if (!literal || c != '\'') {
+      break;
+    }
+  }
+  const std::size_t mant_end = i;
+  if (n_digits == 0) return std::nullopt;
+  std::int64_t exp = 0;
+  bool has_exp = false;
+  if (i < s.size()) {
+    if (s[i] != 'e' && s[i] != 'E') return std::nullopt;
+    has_exp = true;
+    ++i;
+    bool exp_neg = false;
+    if (i < s.size() && (s[i] == '-' || s[i] == '+')) {
+      exp_neg = s[i] == '-';
+      ++i;
+    }
+    std::size_t exp_digits = 0;
+    for (; i < s.size(); ++i) {
+      const char c = s[i];
+      if (literal && c == '\'') continue;
+      if (c < '0' || c > '9') return std::nullopt;
+      if (exp < 100'000) exp = exp * 10 + (c - '0');  // larger exponents fail below anyway
+      ++exp_digits;
+    }
+    if (exp_digits == 0) return std::nullopt;
+    if (exp_neg) exp = -exp;
+  }
+  if (literal && !dot && !has_exp && n_digits > 1 && s[mant_begin] == '0') return std::nullopt;
+  // value = mantissa digits * 10^(exp - frac_digits); result = digits * 10^shift
+  const std::int64_t shift = exp - frac_digits + decimals;
+  const std::int64_t keep = n_digits + (shift < 0 ? shift : 0);  // leading digits that survive
+  std::int64_t r = 0;
+  std::int64_t idx = 0;
+  for (std::size_t k = mant_begin; k < mant_end; ++k) {
+    const char c = s[k];
+    if (c < '0' || c > '9') continue;
+    const int d = c - '0';
+    if (idx < keep) {
+      if (r > (kMax - d) / 10) return std::nullopt;
+      r = r * 10 + d;
+    } else if (d != 0) {
+      return std::nullopt;  // more decimals than the scale holds
+    }
+    ++idx;
+  }
+  for (std::int64_t k = 0; k < shift && r != 0; ++k) {
+    if (r > kMax / 10) return std::nullopt;
+    r *= 10;
+  }
+  return neg ? -r : r;
+}
+
+}  // namespace detail
 
 template <class Tag>
 struct Fixed {
@@ -88,6 +174,30 @@ struct Fixed {
     if (mag > std::numeric_limits<std::int64_t>::max() - fp) return std::nullopt;
     const std::int64_t r = mag + fp;
     return from_raw(neg ? -r : r);
+  }
+
+  // Exact parse of a decimal in plain or exponent notation: "0.1", "2e-05", "1.5E3", "-3". Used for
+  // configuration values (TOML floats arrive formatted by fmt, Python floats by repr). Rejects a
+  // value only if more than 8 decimals remain after applying the exponent, or it is out of range.
+  // Venue strings use the stricter from_decimal.
+  [[nodiscard]] static constexpr std::optional<Fixed> parse(std::string_view s) noexcept {
+    const std::optional<std::int64_t> r = detail::parse_scaled_decimal(s, kFixedDecimals);
+    if (!r) return std::nullopt;
+    return from_raw(*r);
+  }
+
+  // Ratio only. Startup only (double): Ratio::from_bps(2.5) == 2.5 bps, rounded to 0.0001 bp.
+  [[nodiscard]] static Fixed from_bps(double bps) noexcept
+    requires std::is_same_v<Tag, RatioTag>
+  {
+    const double scaled = bps * static_cast<double>(kRatioPerBp);
+    return from_raw(static_cast<std::int64_t>(scaled < 0 ? scaled - 0.5 : scaled + 0.5));
+  }
+  // Ratio only. Diagnostics only.
+  [[nodiscard]] double to_bps() const noexcept
+    requires std::is_same_v<Tag, RatioTag>
+  {
+    return static_cast<double>(raw) / static_cast<double>(kRatioPerBp);
   }
 
   // Formats into buf (>= kMaxDecimalChars), trims trailing zeros ("1.5", "100", "0.00000001").
@@ -172,8 +282,34 @@ struct Fixed {
 using Price = Fixed<struct PriceTag>;
 using Qty = Fixed<struct QtyTag>;
 using Notional = Fixed<struct NotionalTag>;
+// A dimensionless factor: 1.0 == 1e8 raw, 1 bp == 10'000 raw, so 0.0001 bp is the smallest step.
+using Ratio = Fixed<RatioTag>;
 
 static_assert(std::is_trivially_copyable_v<Price> && sizeof(Price) == 8);
+
+// value * ratio in the value's domain, through Int128 with one truncation toward zero:
+// mid * 5_bps, qty * ratio(filled, total).
+template <class T>
+[[nodiscard]] constexpr Fixed<T> operator*(Fixed<T> v, Ratio r) noexcept {
+  return Fixed<T>::from_raw(
+      static_cast<std::int64_t>(static_cast<Int128>(v.raw) * r.raw / kFixedScale));
+}
+template <class T>
+[[nodiscard]] constexpr Fixed<T> operator*(Ratio r, Fixed<T> v) noexcept {
+  return v * r;
+}
+[[nodiscard]] constexpr Ratio operator*(Ratio a, Ratio b) noexcept {
+  return Ratio::from_raw(
+      static_cast<std::int64_t>(static_cast<Int128>(a.raw) * b.raw / kFixedScale));
+}
+// num / den as a Ratio, truncated toward zero; zero when den is zero. The quotient must fit
+// +-92,233,720,368.
+template <class T>
+[[nodiscard]] constexpr Ratio ratio(Fixed<T> num, Fixed<T> den) noexcept {
+  if (den.raw == 0) return Ratio{};
+  return Ratio::from_raw(
+      static_cast<std::int64_t>(static_cast<Int128>(num.raw) * kFixedScale / den.raw));
+}
 
 // price * qty with a 128-bit intermediate, truncated toward zero to 1e-8.
 [[nodiscard]] constexpr Notional mul(Price p, Qty q) noexcept {
@@ -239,13 +375,44 @@ template <class T>
   return a.raw < b.raw ? b : a;
 }
 
-namespace literals {
-// 100_px == Price::from_int(100). Only whole units; use from_decimal for fractions.
+namespace detail {
+template <char... Cs>
+inline constexpr char kLiteralChars[sizeof...(Cs)] = {Cs...};
+template <char... Cs>
+[[nodiscard]] constexpr std::optional<std::int64_t> literal_raw(int decimals) noexcept {
+  return parse_scaled_decimal(
+      std::string_view(kLiteralChars<Cs...>, sizeof...(Cs)), decimals, /*literal=*/true);
+}
+}  // namespace detail
+
+// Exact literals, parsed at compile time: 100.25_px, 0.01_qty (up to 8 decimals), 5_bps, 0.25_bps
+// (up to 4 decimals). More decimals, or a value out of range, is a compile error. An inline
+// namespace, so `using namespace fastmm;` brings them in too (like std::literals).
+inline namespace literals {
+// 100_px == Price::from_int(100).
 constexpr Price operator""_px(unsigned long long v) noexcept {
   return Price::from_int(static_cast<std::int64_t>(v));
 }
 constexpr Qty operator""_qty(unsigned long long v) noexcept {
   return Qty::from_int(static_cast<std::int64_t>(v));
+}
+template <char... Cs>
+[[nodiscard]] constexpr Price operator""_px() noexcept {
+  static_assert(detail::literal_raw<Cs...>(kFixedDecimals).has_value(),
+                "fastmm: _px literal needs more than 8 decimals or is out of range");
+  return Price::from_raw(*detail::literal_raw<Cs...>(kFixedDecimals));
+}
+template <char... Cs>
+[[nodiscard]] constexpr Qty operator""_qty() noexcept {
+  static_assert(detail::literal_raw<Cs...>(kFixedDecimals).has_value(),
+                "fastmm: _qty literal needs more than 8 decimals or is out of range");
+  return Qty::from_raw(*detail::literal_raw<Cs...>(kFixedDecimals));
+}
+template <char... Cs>
+[[nodiscard]] constexpr Ratio operator""_bps() noexcept {
+  static_assert(detail::literal_raw<Cs...>(kBpsDecimals).has_value(),
+                "fastmm: _bps literal needs more than 4 decimals or is out of range");
+  return Ratio::from_raw(*detail::literal_raw<Cs...>(kBpsDecimals));
 }
 }  // namespace literals
 
