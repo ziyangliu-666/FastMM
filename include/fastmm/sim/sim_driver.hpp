@@ -40,6 +40,10 @@ struct EngineHooks {
   void (*start)(void*) = nullptr;
   void (*finish)(void*) = nullptr;
   void (*cancel_timers)(void*) = nullptr;
+  // Optional: true once the engine was asked to stop (ctx.request_stop(), a failed Python
+  // strategy). SimDriver ends the run after the step that asked; ReplayDriver ignores it, because a
+  // replay always drains the journal (stopping early would change the replay hash).
+  bool (*stopped)(void*) = nullptr;
 
   template <class Engine>
   [[nodiscard]] static EngineHooks for_engine(Engine& e) noexcept {
@@ -50,6 +54,7 @@ struct EngineHooks {
     h.warm_up = [](void* c) { static_cast<Engine*>(c)->warm_up(); };
     h.start = [](void* c) { static_cast<Engine*>(c)->start(); };
     h.finish = [](void* c) { static_cast<Engine*>(c)->finish(); };
+    h.stopped = [](void* c) { return static_cast<Engine*>(c)->stopped(); };
     h.cancel_timers = [](void* c) {
       auto& w = static_cast<Engine*>(c)->timers();
       if (w.size() == 0) return;
@@ -104,12 +109,15 @@ class SimDriver {
     hooks_.start(hooks_.ctx);
     if (generator_ != nullptr) transport_.flush_md(clock_.now());
     started_ = true;
+    poll_stopped();
   }
 
-  // Processes every event with time <= until. Returns false when no event remains.
+  // Processes every event with time <= until. Returns false when no event remains or the engine
+  // was asked to stop (EngineHooks::stopped).
   bool run_until(Timestamp until) {
     if (!started_) start();
     for (;;) {
+      if (stopped_) return false;
       if (source_ != nullptr && pending_ == nullptr && !source_done_) {
         pending_ = source_->next();
         source_done_ = pending_ == nullptr;  // never poll an exhausted source again
@@ -172,6 +180,8 @@ class SimDriver {
 
   [[nodiscard]] const SimDriverStats& stats() const noexcept { return stats_; }
   [[nodiscard]] Timestamp now() const noexcept { return clock_.now(); }
+  // The engine asked to stop; run_until() processes nothing more.
+  [[nodiscard]] bool stopped() const noexcept { return stopped_; }
 
  private:
   static Timestamp source_time(const EventHeader& h) noexcept {
@@ -187,7 +197,11 @@ class SimDriver {
     } else {
       hooks_.step(hooks_.ctx);
     }
+    poll_stopped();
     if (journal_ != nullptr && (stats_.engine_steps & 63U) == 0) drain_journal();
+  }
+  void poll_stopped() {
+    if (hooks_.stopped != nullptr && hooks_.stopped(hooks_.ctx)) stopped_ = true;
   }
   void drain_journal() {
     if (journal_ != nullptr) stats_.journal_drained += journal_->drain_once();
@@ -206,6 +220,7 @@ class SimDriver {
   bool measure_ = true;
   bool started_ = false;
   bool finished_ = false;
+  bool stopped_ = false;
   SimDriverStats stats_{};
 };
 
