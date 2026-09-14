@@ -67,3 +67,10 @@ if(TARGET fastmm-top)
   set_tests_properties(apps.fastmm-top.no_status PROPERTIES LABELS "unit" WILL_FAIL TRUE)
 endif()
 
+
+# tools/pnl_report.py checks its journal reader and PnL arithmetic on a synthetic journal.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME tools.pnl_report.self_test COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/tools/pnl_report.py --self-test)
+  set_tests_properties(tools.pnl_report.self_test PROPERTIES LABELS "unit")
+endif()
