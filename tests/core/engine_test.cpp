@@ -382,8 +382,7 @@ TEST_CASE("core.engine: reconcile marks unseen orders cancelled and suppresses q
   CHECK(f.transport.count(EventType::OutCancel) == 3);
 }
 
-TEST_CASE(
-    "core.engine: a timer-driven send records no serialize latency from an older book event") {
+TEST_CASE("core.engine: serialize latency starts at the decision of the same event") {
   Fixture f(false);
   f.push_book("100.00", "100.02", 1, true);
   f.drain();  // BasicMM quotes: a strategy decision followed by a send in the same event
