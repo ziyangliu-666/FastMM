@@ -54,6 +54,7 @@ PYBIND11_MODULE(_core, m) {
   fb::bind_backtest(m);
   fb::bind_book(m);
   fb::bind_strategies(m);
+  fb::bind_strategy_api(m);
 
   m.def(
       "enable_logging",
