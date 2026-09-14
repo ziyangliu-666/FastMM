@@ -97,3 +97,18 @@ Python, call `fastmm.enable_logging(level="warn", path=None)` to write records a
 a file (appended) or to stderr; warnings and errors are always mirrored to stderr as well. Call
 `fastmm.disable_logging()` to flush and stop. The logger is stopped automatically at interpreter exit.
 \n
+
+## Building and publishing wheels
+
+`.github/workflows/wheels.yml` builds manylinux x86_64 wheels for CPython 3.9-3.13 (each one tested
+with the Python test suite) and the sdist, for a `v*` tag or when run by hand, and keeps them as
+workflow artifacts. It never publishes on its own.
+
+Publishing to PyPI makes the package and its source public. To do it deliberately:
+
+1. On PyPI, add a trusted publisher for this repository, workflow `wheels.yml`, environment `pypi`.
+2. In the repository settings, create the `pypi` environment (optionally with required reviewers).
+3. Run the `wheels` workflow manually with **publish** checked.
+
+Locally, `python -m build --sdist && python -m twine check dist/*` checks the sdist metadata.
+

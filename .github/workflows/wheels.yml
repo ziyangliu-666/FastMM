@@ -1,0 +1,53 @@
+name: wheels
+# Builds the research wheels (manylinux x86_64, CPython 3.9-3.13) and the sdist on demand or for a
+# version tag, and uploads them as artifacts. Publishing to PyPI is a separate, manual step: run the
+# workflow by hand with "publish" checked, from a repository that PyPI trusts (trusted publishing,
+# environment "pypi"). Nothing is published on tags or pushes.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the built distributions to PyPI"
+        type: boolean
+        default: false
+  push:
+    tags: ["v*"]
+
+jobs:
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: build sdist
+        run: python -m pip install build twine && python -m build --sdist && python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with: { name: sdist, path: dist/*.tar.gz }
+
+  wheels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v2.23
+        env:
+          CIBW_BUILD: "cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_ENVIRONMENT: "CPM_SOURCE_CACHE=/tmp/cpm"
+          CIBW_TEST_REQUIRES: "pytest pandas"
+          CIBW_TEST_COMMAND: "python -m pytest {project}/python/tests -q"
+      - uses: actions/upload-artifact@v4
+        with: { name: wheels, path: wheelhouse/*.whl }
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: [sdist, wheels]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - uses: pypa/gh-action-pypi-publish@release/v1
