@@ -23,7 +23,7 @@ struct NullTransport {
 struct TickerSpy {
   std::vector<OptionTickerMsg> seen;
   template <class Ctx>
-  void on_option_ticker(Ctx&, const OptionTickerMsg& m) noexcept {
+  void on_option_ticker(Ctx&, InstrumentId, const OptionTickerMsg& m) noexcept {
     seen.push_back(m);
   }
 };

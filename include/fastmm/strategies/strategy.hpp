@@ -1,7 +1,8 @@
 #pragma once
 // Strategy concept and the StrategyBase helper (8.6). A strategy is a plain class with
 // static name()/schema(), a params struct declared with FASTMM_PARAMS, and any subset of
-// the engine hooks (all optional; see engine.hpp).
+// the engine hooks (all optional; see strategies/hooks.hpp and docs/adding-a-strategy.md).
+#include "fastmm/strategies/hooks.hpp"
 #include "fastmm/strategies/params.hpp"
 
 #include <concepts>

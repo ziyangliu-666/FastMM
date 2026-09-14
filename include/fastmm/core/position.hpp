@@ -29,6 +29,14 @@ struct alignas(kCacheLine) Position {
 };
 static_assert(sizeof(Position) == 64 && std::is_trivially_copyable_v<Position>);
 
+// PnL totals over every instrument (StrategyContext::portfolio()).
+struct Portfolio {
+  Notional realized{};
+  Notional unrealized{};
+  Notional fees{};
+  Notional net{};  // realized + unrealized - fees
+};
+
 class PositionTracker {
  public:
   [[nodiscard]] const Position& get(InstrumentId id) const noexcept {
@@ -113,6 +121,16 @@ class PositionTracker {
   }
   [[nodiscard]] Notional net_pnl() const noexcept {
     return total_realized() + total_unrealized() - total_fees();
+  }
+  [[nodiscard]] Portfolio portfolio() const noexcept {
+    Portfolio t;
+    for (const auto& p : pos_) {
+      t.realized += p.realized;
+      t.unrealized += p.unrealized;
+      t.fees += p.fees;
+    }
+    t.net = t.realized + t.unrealized - t.fees;
+    return t;
   }
 
  private:

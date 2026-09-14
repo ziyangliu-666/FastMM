@@ -8,10 +8,9 @@
 // exceptions, no heap. The same template runs live (TscClock, LiveTransport, RingFeed),
 // in the simulator (SimClock, SimTransport, InlineFeed) and in replay.
 //
-// Strategy hooks are optional and detected with `requires`:
-//   on_start(ctx) on_stop(ctx) on_book(ctx, id, book) on_trade(ctx, msg)
-//   on_book_ticker(ctx, msg) on_fill(ctx, update, msg) on_order_update(ctx, update)
-//   on_timer(ctx, id, user_data) on_connection(ctx, msg) on_option_ticker(ctx, msg)
+// Strategy hooks are optional member functions, checked in the constructor and dispatched at
+// compile time through the table in strategies/hooks.hpp: a hook with a wrong signature is a
+// build error, not a silent no-op. Instrument-scoped hooks fire only for instruments in the table.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
@@ -32,6 +31,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/timer_wheel.hpp"
 #include "fastmm/core/transport.hpp"
+#include "fastmm/strategies/hooks.hpp"
 
 #include <atomic>
 #include <concepts>
@@ -41,6 +41,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace fastmm {
 
@@ -74,6 +75,7 @@ struct EngineStats {
   std::uint64_t unknown_order_cancels = 0;
   std::uint64_t kills = 0;
   std::uint64_t unconverted_fees = 0;  // fills whose commission asset is neither base nor quote
+  std::uint64_t unknown_instrument_fills = 0;  // not booked, not passed to on_fill
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;  // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;      // ... or had to step (old mapping off by > threshold)
@@ -110,6 +112,8 @@ class Engine {
         rng_(cfg.rng_seed),
         spin_(cfg.spin_mode),
         quoting_enabled_(cfg.quoting_enabled) {
+    // Every hook the strategy declares must match the engine's call (strategies/hooks.hpp).
+    static_assert(verify_strategy<Strategy, Context, Book>());
     // Replace is only used if every venue we trade supports it (QuoteManager is global).
     QuoteParams qp = cfg.quotes;
     for (const Instrument& inst : instruments_) {
@@ -179,15 +183,22 @@ class Engine {
     }
     finish();
   }
+  // Calls on_start. on_quoting does not fire for the initial state (on_start reads
+  // ctx.quoting_enabled()), only for a change made during on_start.
   void start() noexcept {
     if (started_) return;
     started_ = true;
-    if constexpr (requires { strategy_.on_start(ctx_); }) strategy_.on_start(ctx_);
+    FASTMM_LOG_INFO(
+        "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
+    [[maybe_unused]] const bool quoting_before = quoting_enabled();
+    if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
+    if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
+    flush_out();
   }
   void finish() noexcept {
     if (!started_ || finished_) return;
     finished_ = true;
-    if constexpr (requires { strategy_.on_stop(ctx_); }) strategy_.on_stop(ctx_);
+    if constexpr (has_hook(Hook::Stop)) strategy_.on_stop(ctx_);
     flush_out();
     publish_latency(clock_.now());
   }
@@ -212,6 +223,7 @@ class Engine {
   [[nodiscard]] RiskEngine& risk() noexcept { return risk_; }
   [[nodiscard]] const RiskEngine& risk() const noexcept { return risk_; }
   [[nodiscard]] PositionTracker& positions() noexcept { return positions_; }
+  [[nodiscard]] const PositionTracker& positions() const noexcept { return positions_; }
   [[nodiscard]] LatencyTracker& latency() noexcept { return latency_; }
   [[nodiscard]] JournalWriter& journal() noexcept { return journal_; }
   [[nodiscard]] QuoteManager& quote_manager() noexcept { return quotes_; }
@@ -278,12 +290,14 @@ class Engine {
     flush_out();
     return r;
   }
-  void set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
-    if (!quoting_enabled()) return;
+  // False when the quotes are ignored: quoting is disabled or the instrument is not in the table.
+  bool set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
+    if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
     const Instrument& inst = instruments_.get(id);
     Placer place{this};
     quotes_.reconcile(inst, q, oms_, clock_.now(), place);
     flush_out();
+    return true;
   }
   void pull_quotes(InstrumentId id) noexcept {
     Placer place{this};
@@ -320,6 +334,34 @@ class Engine {
     bool operator()(QuoteAction& a) noexcept { return e->place_quote(a); }
   };
 
+  // ---- strategy hooks -------------------------------------------------------------------------
+
+  [[nodiscard]] static constexpr bool has_hook(Hook h) noexcept {
+    return implements_hook<Strategy, Context, Book>(h);
+  }
+  [[nodiscard]] static std::string_view strategy_name() noexcept {
+    if constexpr (requires {
+                    { Strategy::name() } -> std::convertible_to<std::string_view>;
+                  }) {
+      return Strategy::name();
+    } else {
+      return "(unnamed)";
+    }
+  }
+  // Reports a change of quoting_enabled() made by the event, timer or start-up that just ran, after
+  // its hooks have returned and every flag is final. Never called from inside a context call, so a
+  // kill switch tripped by set_quotes or send does not re-enter the strategy; a change made inside
+  // on_quoting itself is reported by a further call once it returns (quoting can only be enabled
+  // again by a control message or the end of a reconciliation, so this ends).
+  void notify_quoting(bool before) noexcept {
+    bool reported = before;
+    for (bool now = quoting_enabled(); now != reported; now = quoting_enabled()) {
+      reported = now;
+      strategy_.on_quoting(ctx_, now);
+      flush_out();
+    }
+  }
+
   // ---- event loop ---------------------------------------------------------------------------
 
   void process(const EventHeader* h) noexcept {
@@ -336,7 +378,13 @@ class Engine {
     // T3 belongs to this event only (see mark_decision()).
     strategy_t3_ = Cycles{};
     sent_in_event_ = false;
-    dispatch(h);
+    if constexpr (has_hook(Hook::Quoting)) {
+      const bool quoting_before = quoting_enabled();
+      dispatch(h);
+      notify_quoting(quoting_before);
+    } else {
+      dispatch(h);
+    }
   }
 
   void dispatch(const EventHeader* h) noexcept {
@@ -424,8 +472,9 @@ class Engine {
       ++stats_.crossed_pulls;
       pull_quotes(id);
     }
-    if constexpr (requires { strategy_.on_book(ctx_, id, b); }) {
-      strategy_.on_book(ctx_, id, b);
+    if constexpr (has_hook(Hook::Book)) {
+      const Book& view = b;
+      strategy_.on_book(ctx_, id, view);
       record_strategy_hop(t2);
     }
     flush_out();
@@ -434,12 +483,15 @@ class Engine {
   void on_trade(const TradeMsg& t) noexcept {
     ++stats_.trades;
     const InstrumentId id = t.hdr.instrument;
-    if (instruments_.contains(id)) risk_.on_trade(id, t.price);
+    const bool known_instrument = instruments_.contains(id);
+    if (known_instrument) risk_.on_trade(id, t.price);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
-    if constexpr (requires { strategy_.on_trade(ctx_, t); }) {
-      strategy_.on_trade(ctx_, t);
-      record_strategy_hop(t2);
+    if constexpr (has_hook(Hook::Trade)) {
+      if (FASTMM_LIKELY(known_instrument)) {
+        strategy_.on_trade(ctx_, id, t);
+        record_strategy_hop(t2);
+      }
     }
     flush_out();
   }
@@ -447,9 +499,12 @@ class Engine {
   void on_book_ticker(const BookTickerMsg& m) noexcept {
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
-    if constexpr (requires { strategy_.on_book_ticker(ctx_, m); }) {
-      strategy_.on_book_ticker(ctx_, m);
-      record_strategy_hop(t2);
+    if constexpr (has_hook(Hook::BookTicker)) {
+      const InstrumentId id = m.hdr.instrument;
+      if (FASTMM_LIKELY(instruments_.contains(id))) {
+        strategy_.on_book_ticker(ctx_, id, m);
+        record_strategy_hop(t2);
+      }
     }
     flush_out();
   }
@@ -457,9 +512,12 @@ class Engine {
   void on_option_ticker(const OptionTickerMsg& m) noexcept {
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
-    if constexpr (requires { strategy_.on_option_ticker(ctx_, m); }) {
-      strategy_.on_option_ticker(ctx_, m);
-      record_strategy_hop(t2);
+    if constexpr (has_hook(Hook::OptionTicker)) {
+      const InstrumentId id = m.hdr.instrument;
+      if (FASTMM_LIKELY(instruments_.contains(id))) {
+        strategy_.on_option_ticker(ctx_, id, m);
+        record_strategy_hop(t2);
+      }
     }
     flush_out();
   }
@@ -482,8 +540,7 @@ class Engine {
       quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, clock_.now(), place);
     }
     if (u.changed) {
-      if constexpr (requires { strategy_.on_order_update(ctx_, u); })
-        strategy_.on_order_update(ctx_, u);
+      if constexpr (has_hook(Hook::OrderUpdate)) strategy_.on_order_update(ctx_, u);
     }
     flush_out();
   }
@@ -516,17 +573,19 @@ class Engine {
     const bool from_order = u.order.instrument.valid();
     const InstrumentId id = from_order ? u.order.instrument : f.hdr.instrument;
     const Side side = from_order ? u.order.side : f.side;
-    if (instruments_.contains(id)) {
+    const bool known_instrument = instruments_.contains(id);
+    Qty booked = f.qty;
+    Notional fee = f.fee;
+    if (FASTMM_LIKELY(known_instrument)) {
       const Instrument& inst = instruments_.get(id);
       // Commission in the base asset changes what we hold (a buy receives qty - fee, a sell
       // delivers qty + fee) and costs fee * price in quote terms; commission in another asset
       // (BNB) cannot be valued here and is counted instead of being booked as quote.
-      Qty held = f.qty;
-      Notional fee = f.fee;
       if (f.fee_asset == FeeAsset::Base) {
         const Qty fee_base = Qty::from_raw(f.fee.raw);
         fee = inst.notional(f.price, fee_base);
-        held = side == Side::Buy ? f.qty - fee_base : f.qty + fee_base;
+        const Qty held = side == Side::Buy ? f.qty - fee_base : f.qty + fee_base;
+        if (held.raw > 0) booked = held;
       } else if (f.fee_asset == FeeAsset::Other) {
         if (stats_.unconverted_fees++ == 0) {
           FASTMM_LOG_WARN(
@@ -536,18 +595,34 @@ class Engine {
         }
         fee = Notional{};
       }
-      if (held.raw > 0) {
-        positions_.on_fill(id, side, f.price, held, fee, inst);
-      } else {
-        positions_.on_fill(id, side, f.price, f.qty, fee, inst);
-      }
+      positions_.on_fill(id, side, f.price, booked, fee, inst);
       if (risk_.on_pnl(positions_.net_pnl())) on_kill();
+    } else if (stats_.unknown_instrument_fills++ == 0) {
+      FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
     }
     if (u.action == OmsAction::UnknownFill) {
       FASTMM_LOG_ERROR(
           "fill for unknown order {} qty {} @ {}", encode_cl_ord_id(f.cl_ord_id), f.qty, f.price);
     }
-    if constexpr (requires { strategy_.on_fill(ctx_, u, f); }) strategy_.on_fill(ctx_, u, f);
+    if constexpr (has_hook(Hook::Fill)) {
+      if (FASTMM_LIKELY(known_instrument)) {
+        Fill fill;
+        fill.instrument = id;
+        fill.side = side;
+        fill.price = f.price;
+        fill.qty = f.qty;
+        fill.position_delta = side == Side::Buy ? booked : -booked;
+        fill.fee = fee;
+        fill.fee_converted = f.fee_asset != FeeAsset::Other;
+        fill.liquidity = f.liquidity;
+        fill.known = u.known;
+        fill.late = u.action == OmsAction::LateFill;
+        fill.order_done = u.terminal;
+        fill.update = u.known ? &u : nullptr;
+        fill.msg = &f;
+        strategy_.on_fill(ctx_, fill);
+      }
+    }
     after_oms_update(u, f.hdr);
   }
 
@@ -600,7 +675,7 @@ class Engine {
         pull_quotes(inst.id);
       }
     }
-    if constexpr (requires { strategy_.on_connection(ctx_, m); }) strategy_.on_connection(ctx_, m);
+    if constexpr (has_hook(Hook::Connection)) strategy_.on_connection(ctx_, m);
     flush_out();
   }
 
@@ -681,6 +756,11 @@ class Engine {
   // ---- timers ---------------------------------------------------------------------------------
 
   void on_timer_fired(TimerId id, std::uint64_t user_data) noexcept {
+    [[maybe_unused]] const bool quoting_before = quoting_enabled();
+    fire_timer(id, user_data);
+    if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
+  }
+  void fire_timer(TimerId id, std::uint64_t user_data) noexcept {
     ++stats_.timers_fired;
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
@@ -698,8 +778,7 @@ class Engine {
     fire_strategy_timer(id, user_data);
   }
   void fire_strategy_timer(TimerId id, std::uint64_t user_data) noexcept {
-    if constexpr (requires { strategy_.on_timer(ctx_, id, user_data); })
-      strategy_.on_timer(ctx_, id, user_data);
+    if constexpr (has_hook(Hook::Timer)) strategy_.on_timer(ctx_, id, user_data);
     flush_out();
   }
 

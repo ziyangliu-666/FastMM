@@ -90,9 +90,12 @@ struct Ctx {
   [[nodiscard]] const FakeBook& book(InstrumentId id) const { return books[id.value]; }
   [[nodiscard]] FakePosition position(InstrumentId id) const { return FakePosition{pos[id.value]}; }
   [[nodiscard]] Timestamp now() const { return t; }
-  void set_quotes(InstrumentId id, const DesiredQuotes& q) { sets.emplace_back(id, q); }
+  bool set_quotes(InstrumentId id, const DesiredQuotes& q) {
+    sets.emplace_back(id, q);
+    return true;
+  }
   void pull_quotes(InstrumentId id) { pulls.push_back(id); }
-  TimerId add_timer(Duration, bool, std::uint64_t) { return TimerId{1}; }
+  TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
   [[nodiscard]] const DesiredQuotes* last(InstrumentId id) const {
     for (auto it = sets.rbegin(); it != sets.rend(); ++it) {
       if (it->first == id) return &it->second;
@@ -141,7 +144,7 @@ TEST_CASE("strategies.options_mm: theo, vega spread and passive rounding (invers
   Ctx ctx;
   OptionsMM s = make({});
   s.on_start(ctx);
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   const DesiredQuotes* q = ctx.last(InstrumentId{0});
   REQUIRE(q != nullptr);
   REQUIRE(q->bids.size() == 1);
@@ -159,9 +162,9 @@ TEST_CASE("strategies.options_mm: theo, vega spread and passive rounding (invers
   CHECK(st.delta == doctest::Approx(g.delta - theo));  // premium-adjusted coin delta
   CHECK(st.vega == doctest::Approx(g.vega / 100.0));
   // Same inputs: gated, no new set_quotes; a theo move of at least a tick requotes.
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   CHECK(ctx.sets.size() == 1);
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "77500", 0.5));
+  s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "77500", 0.5));
   CHECK(ctx.sets.size() == 2);
 }
 
@@ -171,9 +174,9 @@ TEST_CASE("strategies.options_mm: portfolio delta skews calls down and puts up")
     OptionsMM s = make({{"max_delta", "1"}, {"delta_skew_ticks", "20"}});
     s.on_start(ctx);
     ctx.pos[0] = qt(call_position);
-    s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
-    s.on_option_ticker(ctx, ticker(InstrumentId{1}, "76904.4", 0.5));
-    s.on_fill(ctx, OmsUpdate{}, OrderFillMsg{});  // exposure now includes the call's greeks
+    s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
+    s.on_option_ticker(ctx, InstrumentId{1}, ticker(InstrumentId{1}, "76904.4", 0.5));
+    s.on_fill(ctx, Fill{});  // exposure now includes the call's greeks
     return std::make_pair(*ctx.last(InstrumentId{0}), *ctx.last(InstrumentId{1}));
   };
   const auto [flat_call, flat_put] = run("0");
@@ -190,10 +193,10 @@ TEST_CASE("strategies.options_mm: inventory skew and per-option position cap") {
   Ctx ctx;
   OptionsMM s = make({{"inventory_skew_ticks", "5"}, {"max_position", "0.2"}});
   s.on_start(ctx);
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   const DesiredQuotes flat = *ctx.last(InstrumentId{0});
   ctx.pos[0] = qt("0.2");  // two quote units long, at the cap
-  s.on_fill(ctx, OmsUpdate{}, OrderFillMsg{});
+  s.on_fill(ctx, Fill{});
   const DesiredQuotes& longq = *ctx.last(InstrumentId{0});
   CHECK(longq.bids.empty());  // buying 0.1 more would exceed max_position
   REQUIRE_FALSE(longq.asks.empty());
@@ -205,9 +208,9 @@ TEST_CASE("strategies.options_mm: max delta suppresses the side that adds delta"
   OptionsMM s = make({{"max_delta", "0.3"}});
   s.on_start(ctx);
   ctx.pos[0] = qt("1");  // long call: ~0.47 BTC delta > 0.3
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
-  s.on_option_ticker(ctx, ticker(InstrumentId{1}, "76904.4", 0.5));
-  s.on_fill(ctx, OmsUpdate{}, OrderFillMsg{});
+  s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_option_ticker(ctx, InstrumentId{1}, ticker(InstrumentId{1}, "76904.4", 0.5));
+  s.on_fill(ctx, Fill{});
   const OptionsMM::Exposure e = s.exposure(ctx);
   CHECK(e.delta == doctest::Approx(s.state(InstrumentId{0}).delta));
   const DesiredQuotes& call = *ctx.last(InstrumentId{0});
@@ -222,7 +225,7 @@ TEST_CASE("strategies.options_mm: vega exposure widens the spread and caps buyin
   Ctx ctx;
   OptionsMM base = make({{"max_vega", "1000"}, {"vega_widen", "1"}});
   base.on_start(ctx);
-  base.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  base.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   const DesiredQuotes flat = *ctx.last(InstrumentId{0});
   const double contract_vega = base.state(InstrumentId{0}).vega;  // USD per vol point
   REQUIRE(contract_vega > 10.0);
@@ -231,9 +234,9 @@ TEST_CASE("strategies.options_mm: vega exposure widens the spread and caps buyin
   ctx2.pos[1] = Qty::from_double(1000.0 / contract_vega * 0.5);  // half the vega limit in puts
   OptionsMM s = make({{"max_vega", "1000"}, {"vega_widen", "1"}});
   s.on_start(ctx2);
-  s.on_option_ticker(ctx2, ticker(InstrumentId{1}, "76904.4", 0.5));
-  s.on_option_ticker(ctx2, ticker(InstrumentId{0}, "76904.4", 0.5));
-  s.on_fill(ctx2, OmsUpdate{}, OrderFillMsg{});
+  s.on_option_ticker(ctx2, InstrumentId{1}, ticker(InstrumentId{1}, "76904.4", 0.5));
+  s.on_option_ticker(ctx2, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_fill(ctx2, Fill{});
   const DesiredQuotes& wide = *ctx2.last(InstrumentId{0});
   REQUIRE_FALSE(wide.bids.empty());
   REQUIRE_FALSE(wide.asks.empty());
@@ -243,9 +246,9 @@ TEST_CASE("strategies.options_mm: vega exposure widens the spread and caps buyin
   ctx3.pos[1] = Qty::from_double(1000.0 / contract_vega);  // at the vega limit
   OptionsMM capped = make({{"max_vega", "1000"}});
   capped.on_start(ctx3);
-  capped.on_option_ticker(ctx3, ticker(InstrumentId{1}, "76904.4", 0.5));
-  capped.on_option_ticker(ctx3, ticker(InstrumentId{0}, "76904.4", 0.5));
-  capped.on_fill(ctx3, OmsUpdate{}, OrderFillMsg{});
+  capped.on_option_ticker(ctx3, InstrumentId{1}, ticker(InstrumentId{1}, "76904.4", 0.5));
+  capped.on_option_ticker(ctx3, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
+  capped.on_fill(ctx3, Fill{});
   CHECK(ctx3.last(InstrumentId{0})->bids.empty());  // buying options adds vega
   CHECK_FALSE(ctx3.last(InstrumentId{0})->asks.empty());
 }
@@ -254,7 +257,7 @@ TEST_CASE("strategies.options_mm: contract multipliers and inverse futures delta
   Ctx ctx;
   OptionsMM s = make({});
   s.on_start(ctx);
-  s.on_option_ticker(ctx, ticker(InstrumentId{3}, "100", 0.4));
+  s.on_option_ticker(ctx, InstrumentId{3}, ticker(InstrumentId{3}, "100", 0.4));
   const OptionsMM::State& lin = s.state(InstrumentId{3});
   const Greeks g = black76(CallPut::Call, 100.0, 100.0, years(), 0.4);
   CHECK(lin.theo == doctest::Approx(g.price));          // linear: quote currency, no /F
@@ -272,8 +275,9 @@ TEST_CASE("strategies.options_mm: own smoothed implied vol from book mids") {
   Ctx ctx;
   OptionsMM s = make({{"use_venue_iv", "false"}, {"iv_halflife_s", "10"}});
   s.on_start(ctx);
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", std::nan("")));  // forward only
-  CHECK(ctx.sets.empty());                                                    // no vol yet
+  s.on_option_ticker(
+      ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", std::nan("")));  // forward only
+  CHECK(ctx.sets.empty());                                                      // no vol yet
   const auto mid_at = [&](double vol) {
     const double coin =
         black76_price(
@@ -302,13 +306,13 @@ TEST_CASE("strategies.options_mm: expiry filter, stale pulls and connection rese
   Ctx near(kNow + 1'800'000'000'000);  // 30 minutes to expiry
   OptionsMM s = make({{"pull_on_stale_ms", "1000"}});
   s.on_start(near);
-  s.on_option_ticker(near, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_option_ticker(near, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   CHECK(near.sets.empty());  // inside min_expiry_s (1 h)
 
   Ctx ctx;
   OptionsMM t = make({{"pull_on_stale_ms", "1000"}});
   t.on_start(ctx);
-  t.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  t.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   REQUIRE(ctx.sets.size() == 1);
   ctx.t = Timestamp{kNow + 500'000'000};
   t.on_timer(ctx, TimerId{1}, OptionsMM::kStaleTimer);
@@ -318,7 +322,7 @@ TEST_CASE("strategies.options_mm: expiry filter, stale pulls and connection rese
   REQUIRE(ctx.pulls.size() == 1);
   CHECK(ctx.pulls[0] == InstrumentId{0});
 
-  t.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  t.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   const std::size_t before = ctx.sets.size();
   ConnectionStateMsg live{};
   init_header(live, EventType::ConnectionState, InstrumentId::invalid(), VenueId{0});
@@ -332,7 +336,7 @@ TEST_CASE("strategies.options_mm: quotes wait for a two-sided book") {
   ctx.books[0].valid = false;
   OptionsMM s = make({});
   s.on_start(ctx);
-  s.on_option_ticker(ctx, ticker(InstrumentId{0}, "76904.4", 0.5));
+  s.on_option_ticker(ctx, InstrumentId{0}, ticker(InstrumentId{0}, "76904.4", 0.5));
   CHECK(ctx.sets.empty());
   CHECK(s.state(InstrumentId{0}).priced);  // the greeks still count towards the portfolio
   ctx.books[0].valid = true;

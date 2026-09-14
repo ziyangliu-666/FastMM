@@ -3,8 +3,8 @@
 // MicropriceMM quotes one level each side around the size-weighted microprice
 //   micro = (bid * ask_qty + ask * bid_qty) / (bid_qty + ask_qty)
 // `edge_ticks` away, and stops quoting the side that would push |position| past the limit.
-// No registration is needed for run_backtest<S>(); add FASTMM_REGISTER_STRATEGY to make it
-// visible to the apps and Python.
+// No registration is needed for run_backtest<S>(); docs/adding-a-strategy.md shows how to make it
+// visible to the apps and Python. A hook with a wrong signature is a compile error.
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/strategies/strategy.hpp"
 

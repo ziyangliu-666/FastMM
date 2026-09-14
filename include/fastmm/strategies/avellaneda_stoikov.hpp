@@ -80,8 +80,19 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
         (mid - s.quoted_mid).abs().raw < params_.requote_threshold_ticks * inst.tick.raw) {
       return;
     }
-    s.quoted_mid = mid;
-    ctx.set_quotes(id, compute_quotes(id, mid, ctx.position(id).qty, inst, now));
+    requote(ctx, id, mid, inst, now);
+  }
+
+  // Quoting was paused or resumed (control pull, kill switch, reconciliation). Forget the quoted
+  // mids, and when quoting is back requote at once, even if the mid has not moved.
+  template <class Ctx>
+  void on_quoting(Ctx& ctx, bool enabled) noexcept {
+    for (const Instrument& inst : ctx.instruments()) {
+      st_[inst.id.value].quoted_mid = Price{};
+      if (!enabled) continue;
+      const auto& book = ctx.book(inst.id);
+      if (book.is_valid()) requote(ctx, inst.id, book.mid(), inst, ctx.now());
+    }
   }
 
   // The engine pulls a venue's quotes when a connection drops. Forget the last quoted mid so the
@@ -97,10 +108,8 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
   }
 
   template <class Ctx>
-  void on_trade(Ctx& ctx, const TradeMsg& t) noexcept {
+  void on_trade(Ctx& ctx, InstrumentId id, const TradeMsg& t) noexcept {
     if (!params_.estimate_kappa) return;
-    const InstrumentId id = t.hdr.instrument;
-    if (!ctx.instruments().contains(id)) return;
     const auto& book = ctx.book(id);
     if (!book.is_valid()) return;
     State& s = st_[id.value];
@@ -111,9 +120,9 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
   }
 
   template <class Ctx>
-  void on_fill(Ctx& ctx, const OmsUpdate& u, const OrderFillMsg&) noexcept {
-    const InstrumentId id = u.known ? u.order.instrument : InstrumentId{};
-    if (!id.valid() || !ctx.instruments().contains(id)) return;
+  void on_fill(Ctx& ctx, const Fill& fill) noexcept {
+    // Inventory changed: requote at once (the quoted mid stays the gate for book updates).
+    const InstrumentId id = fill.instrument;
     const auto& book = ctx.book(id);
     if (!book.is_valid()) return;
     ctx.set_quotes(
@@ -163,6 +172,13 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
   [[nodiscard]] const State& state(InstrumentId id) const noexcept { return st_[id.value]; }
 
  private:
+  template <class Ctx>
+  void requote(
+      Ctx& ctx, InstrumentId id, Price mid, const Instrument& inst, Timestamp now) noexcept {
+    // Remember the mid only if the quotes were taken; while quoting is disabled they are ignored.
+    const bool taken = ctx.set_quotes(id, compute_quotes(id, mid, ctx.position(id).qty, inst, now));
+    st_[id.value].quoted_mid = taken ? mid : Price{};
+  }
   void update_variance(State& s, Price mid, Timestamp now, const Instrument&) noexcept {
     if (s.last_ts.valid() && s.last_mid.is_positive() && now > s.last_ts) {
       const double dt = static_cast<double>((now - s.last_ts).ns) / 1e9;
@@ -189,5 +205,6 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
 };
 
 static_assert(StrategyLike<AvellanedaStoikov>);
+static_assert(verify_strategy<AvellanedaStoikov>());
 
 }  // namespace fastmm

@@ -51,6 +51,8 @@ struct Order {
 };
 static_assert(sizeof(Order) == 128 && std::is_trivially_copyable_v<Order>);
 
+struct LimitOrder;
+
 struct NewOrderRequest {
   InstrumentId instrument;
   VenueId venue;
@@ -62,6 +64,56 @@ struct NewOrderRequest {
   Price price;
   Qty qty;
   std::uint32_t user_tag = 0;
+
+  // A GTC limit order, refined with the builder's methods:
+  //   ctx.send(NewOrderRequest::limit(id, Side::Buy, px, qty).post_only().tag(7));
+  [[nodiscard]] static constexpr LimitOrder limit(InstrumentId instrument,
+                                                  Side side,
+                                                  Price price,
+                                                  Qty qty) noexcept;
 };
+
+// Chainable builder returned by NewOrderRequest::limit(); converts to NewOrderRequest.
+struct LimitOrder {
+  NewOrderRequest request{};
+
+  [[nodiscard]] constexpr LimitOrder post_only() const noexcept {
+    LimitOrder o = *this;
+    o.request.type = OrderType::PostOnly;
+    o.request.post_only = true;
+    return o;
+  }
+  [[nodiscard]] constexpr LimitOrder reduce_only() const noexcept {
+    LimitOrder o = *this;
+    o.request.reduce_only = true;
+    return o;
+  }
+  [[nodiscard]] constexpr LimitOrder ioc() const noexcept {
+    LimitOrder o = *this;
+    o.request.tif = TimeInForce::Ioc;
+    return o;
+  }
+  // user_tag: echoed in the order record. Tags in the QuoteManager's range are rejected
+  // (RejectReason::InvalidTag).
+  [[nodiscard]] constexpr LimitOrder tag(std::uint32_t user_tag) const noexcept {
+    LimitOrder o = *this;
+    o.request.user_tag = user_tag;
+    return o;
+  }
+  // NOLINTNEXTLINE(google-explicit-constructor): passes straight to ctx.send().
+  constexpr operator NewOrderRequest() const noexcept { return request; }
+};
+
+inline constexpr LimitOrder NewOrderRequest::limit(InstrumentId instrument,
+                                                   Side side,
+                                                   Price price,
+                                                   Qty qty) noexcept {
+  LimitOrder o;
+  o.request.instrument = instrument;
+  o.request.side = side;
+  o.request.price = price;
+  o.request.qty = qty;
+  return o;
+}
 
 }  // namespace fastmm
