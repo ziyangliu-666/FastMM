@@ -48,6 +48,13 @@ endfunction()
 
 fastmm_test(core      LABELS "unit;property" LIBS fastmm::core)
 fastmm_test(strategies LABELS "unit"         LIBS fastmm::backtest)
+# A strategy library in its own STATIC archive, referenced only through its registration functions.
+add_library(fastmm_test_strategy_module STATIC
+  modules/module/strategies.cpp modules/module/shadow_register.cpp modules/module/shadow_sim.cpp)
+fastmm_target_defaults(fastmm_test_strategy_module)
+target_include_directories(fastmm_test_strategy_module PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/modules)
+target_link_libraries(fastmm_test_strategy_module PUBLIC fastmm::sim)
+fastmm_test(modules   LABELS "unit"          LIBS fastmm_test_strategy_module fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
 fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim)
@@ -147,6 +154,40 @@ fastmm_compile_fail(literal_qty_nine_decimals EXPECT fail REGEX
   "${_cf_prefix}_qty literal needs more than 8 decimals")
 fastmm_compile_fail(literal_bps_five_decimals EXPECT fail REGEX
   "${_cf_prefix}_bps literal needs more than 4 decimals")
+
+# Link-fail tests (label compile_fail): the case compiles but must fail to link with the expected
+# message (a missing factory instantiation); the control (FASTMM_CF_CONTROL) must link.
+#   fastmm_link_fail(<case> REGEX <regex>)
+function(fastmm_link_fail name)
+  cmake_parse_arguments(LF "" "REGEX" "" ${ARGN})
+  foreach(_variant case control)
+    set(_tgt fastmm_lf_${name}_${_variant})
+    add_executable(${_tgt} EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/${name}.cpp)
+    fastmm_target_defaults(${_tgt})
+    target_link_libraries(${_tgt} PRIVATE fastmm::strategies)
+  endforeach()
+  target_compile_definitions(fastmm_lf_${name}_control PRIVATE FASTMM_CF_CONTROL=1)
+  foreach(_variant case control)
+    set(_tgt fastmm_lf_${name}_${_variant})
+    if(_variant STREQUAL "control")
+      set(_expect pass)
+      set(_test link_fail.${name}.control)
+    else()
+      set(_expect fail)
+      set(_test link_fail.${name})
+    endif()
+    add_test(NAME ${_test}
+      COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR} -DTARGET=${_tgt}
+              "-DOBJECTS=$<TARGET_FILE:${_tgt}>" -DEXPECT=${_expect}
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/run_case.cmake)
+    set_tests_properties(${_test} PROPERTIES LABELS compile_fail RESOURCE_LOCK fastmm_compile_fail)
+  endforeach()
+  set_tests_properties(link_fail.${name} PROPERTIES
+    PASS_REGULAR_EXPRESSION "${LF_REGEX}" FAIL_REGULAR_EXPRESSION "compile_fail: unexpected")
+endfunction()
+
+fastmm_link_fail(missing_factory_instantiation REGEX
+  "undefined (reference|symbol).*fastmm::live_factory<LinkMM>")
 
 # fastmm-top without a running engine: a clear message and exit code 3.
 if(TARGET fastmm-top)

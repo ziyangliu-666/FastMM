@@ -18,6 +18,7 @@
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
+#include "fastmm/core/engine_config.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/journal.hpp"
@@ -49,23 +50,6 @@
 #include <string_view>
 
 namespace fastmm {
-
-struct EngineConfig {
-  std::uint64_t session_id = 0;
-  std::uint64_t rng_seed = 1;
-  std::uint16_t session_epoch = 1;
-  std::uint32_t max_events_per_step = 64;
-  Duration crossed_grace = milliseconds(100);
-  Duration latency_publish_interval = seconds(1);
-  // Risk rejects are logged at WARN: the first of each reason, then at most one line per reason per
-  // interval with the number suppressed in between (0 logs every reject).
-  Duration reject_log_interval = seconds(10);
-  bool quoting_enabled = true;
-  int cpu = -1;
-  SpinMode spin_mode = SpinMode::Busy;
-  RiskLimits risk;
-  QuoteParams quotes;
-};
 
 struct EngineStats {
   std::uint64_t events = 0;

@@ -8,11 +8,12 @@
 // Exit codes: 0 ok, 2 bad command line or missing API keys, 3 bad config / strategy, 4 venue
 // reference data failed, 5 runtime failure (cancel-all failed, journal, ring overflow).
 #include "live_backend.hpp"
-#include "live_runners.hpp"
 
 #include "fastmm/config/config.hpp"
 #include "fastmm/config/env_subst.hpp"
 #include "fastmm/core/log.hpp"
+#include "fastmm/strategies/builtin.hpp"
+#include "fastmm/strategies/registry.hpp"
 #include "fastmm/version.hpp"
 
 #include <cstdio>
@@ -191,7 +192,7 @@ int main(int argc, char** argv) {
       return kExitUsage;
     }
   }
-  register_live_strategies();
+  register_builtin_strategies(StrategyRegistry::instance());
   if (list) {
     for (const StrategyEntry& e : list_strategies()) {
       if (!e.supports(TransportKind::Live)) continue;

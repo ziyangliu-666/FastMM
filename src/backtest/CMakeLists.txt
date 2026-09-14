@@ -4,4 +4,4 @@ add_library(fastmm_backtest STATIC ${FASTMM_BACKTEST_SOURCES} ${FASTMM_BACKTEST_
 add_library(fastmm::backtest ALIAS fastmm_backtest)
 set_target_properties(fastmm_backtest PROPERTIES EXPORT_NAME backtest)
 fastmm_target_defaults(fastmm_backtest)
-target_link_libraries(fastmm_backtest PUBLIC fastmm::sim)
+target_link_libraries(fastmm_backtest PUBLIC fastmm::strategies)

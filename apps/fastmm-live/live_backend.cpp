@@ -1,7 +1,5 @@
 #include "live_backend.hpp"
 
-#include "live_runners.hpp"
-
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
@@ -11,6 +9,7 @@
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
+#include "fastmm/live/live_backend.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
