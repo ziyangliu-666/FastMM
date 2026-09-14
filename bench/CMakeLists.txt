@@ -39,6 +39,8 @@ foreach(src ${_benches})
   set_target_properties(${name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin/bench)
   if(FASTMM_BUILD_TESTS)
     add_test(NAME bench.${name}.smoke COMMAND ${name} --benchmark_min_time=0.05s --benchmark_repetitions=2)
-    set_tests_properties(bench.${name}.smoke PROPERTIES LABELS "bench-smoke")
+    # Google Benchmark exits 0 after state.SkipWithError(); a benchmark that errors must fail.
+    set_tests_properties(bench.${name}.smoke PROPERTIES LABELS "bench-smoke"
+                                                        FAIL_REGULAR_EXPRESSION "ERROR OCCURRED")
   endif()
 endforeach()

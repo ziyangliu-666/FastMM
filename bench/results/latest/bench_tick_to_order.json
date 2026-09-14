@@ -1,6 +1,6 @@
 {
   "context": {
-    "date": "2026-09-13T18:10:09+00:00",
+    "date": "2026-09-14T22:08:43+00:00",
     "executable": "build/release-native/bin/bench/bench_tick_to_order",
     "num_cpus": 8,
     "mhz_per_cpu": 4192,
@@ -32,7 +32,11 @@
         "num_sharing": 8
       }
     ],
-    "load_avg": [8.71143,10.2227,6.80762],
+    "load_avg": [
+      1.81885,
+      5.23486,
+      5.94873
+    ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
     "json_schema_version": 1
@@ -49,14 +53,14 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.2217974511251252e+03,
-      "cpu_time": 1.3028085889732797e+03,
+      "real_time": 1757.1827700482506,
+      "cpu_time": 1744.3090232828915,
       "time_unit": "ns",
-      "all_p50": 6.3260000000000002e+02,
-      "kills": 0.0000000000000000e+00,
-      "order_events_pct": 7.5000046675142869e+01,
-      "p50": 6.3900000000000000e+02,
-      "p99": 1.0742000000000000e+03
+      "all_p50": 1048.6000000000001,
+      "kills": 0.0,
+      "order_events_pct": 100.0,
+      "p50": 1048.6000000000001,
+      "p99": 1586.2
     },
     {
       "name": "BM_TickToOrder_Sim_median",
@@ -69,14 +73,14 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.2149264929733251e+03,
-      "cpu_time": 1.3057912724953226e+03,
+      "real_time": 1720.1659146447414,
+      "cpu_time": 1732.4798115020374,
       "time_unit": "ns",
-      "all_p50": 6.3900000000000000e+02,
-      "kills": 0.0000000000000000e+00,
-      "order_events_pct": 7.5000046675142869e+01,
-      "p50": 6.3900000000000000e+02,
-      "p99": 1.0870000000000000e+03
+      "all_p50": 1023.0,
+      "kills": 0.0,
+      "order_events_pct": 100.0,
+      "p50": 1023.0,
+      "p99": 1535.0
     },
     {
       "name": "BM_TickToOrder_Sim_stddev",
@@ -89,14 +93,14 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.1957110254284968e+01,
-      "cpu_time": 6.9408586313733824e+00,
+      "real_time": 61.42253278523583,
+      "cpu_time": 29.527286666453314,
       "time_unit": "ns",
-      "all_p50": 1.4310835055999773e+01,
-      "kills": 0.0000000000000000e+00,
-      "order_events_pct": 1.0662402999400090e-06,
-      "p50": 0.0000000000000000e+00,
-      "p99": 8.0319362547270970e+01
+      "all_p50": 35.05424368032715,
+      "kills": 0.0,
+      "order_events_pct": 0.0,
+      "p50": 35.05424368032715,
+      "p99": 70.1084873606626
     },
     {
       "name": "BM_TickToOrder_Sim_cv",
@@ -109,14 +113,14 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 9.7864914051620754e-03,
-      "cpu_time": 5.3276119685727189e-03,
+      "real_time": 0.034955118973508496,
+      "cpu_time": 0.01692778416686811,
       "time_unit": "ns",
-      "all_p50": 2.2622249535250983e-02,
-      "kills": 0.0000000000000000e+00,
-      "order_events_pct": 1.4216528485086811e-08,
-      "p50": 0.0000000000000000e+00,
-      "p99": 7.4771329870853623e-02
+      "all_p50": 0.03342956673691316,
+      "kills": 0.0,
+      "order_events_pct": 0.0,
+      "p50": 0.03342956673691316,
+      "p99": 0.04419902115790102
     },
     {
       "name": "BM_EngineStep_Sim_mean",
@@ -129,10 +133,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 9.2250044494672911e+03,
-      "cpu_time": 9.6299775694480359e+03,
+      "real_time": 9851.456648241845,
+      "cpu_time": 9733.715507949022,
       "time_unit": "ns",
-      "items_per_second": 3.3229811896601696e+06
+      "items_per_second": 3287552.3293493935,
+      "out_msgs_per_step": 2.0
     },
     {
       "name": "BM_EngineStep_Sim_median",
@@ -145,10 +150,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 9.2227651582864273e+03,
-      "cpu_time": 9.6268081266900244e+03,
+      "real_time": 9866.107065713353,
+      "cpu_time": 9741.491213359936,
       "time_unit": "ns",
-      "items_per_second": 3.3240508773911260e+06
+      "items_per_second": 3284918.017080764,
+      "out_msgs_per_step": 2.0
     },
     {
       "name": "BM_EngineStep_Sim_stddev",
@@ -161,10 +167,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2.5455401698453951e+01,
-      "cpu_time": 2.9155374053023628e+01,
+      "real_time": 52.91097929014087,
+      "cpu_time": 19.13376654161067,
       "time_unit": "ns",
-      "items_per_second": 1.0046228095425293e+04
+      "items_per_second": 6473.5985661760105,
+      "out_msgs_per_step": 0.0
     },
     {
       "name": "BM_EngineStep_Sim_cv",
@@ -177,10 +184,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 2.7593918071144026e-03,
-      "cpu_time": 3.0275640667660180e-03,
+      "real_time": 0.0053708787623385325,
+      "cpu_time": 0.001965720749284804,
       "time_unit": "ns",
-      "items_per_second": 3.0232575877002445e-03
+      "items_per_second": 0.0019691241135185627,
+      "out_msgs_per_step": 0.0
     }
   ]
 }

@@ -93,10 +93,10 @@ def main():
     ap.add_argument("--cpu", default="?")
     a = ap.parse_args()
     rows = load(a.json)
-    machine = (f"{machine()} | {compiler()} | preset `{a.preset}` "
-               f"| pinned to CPU {a.cpu} | 5 repetitions, median reported")
+    setup = (f"{machine()} | {compiler()} | preset `{a.preset}` "
+             f"| pinned to CPU {a.cpu} | 5 repetitions, median reported")
     tmpl = open(a.template).read()
-    sys.stdout.write(tmpl.replace("{{TABLE}}", render(rows)).replace("{{MACHINE}}", machine)
+    sys.stdout.write(tmpl.replace("{{TABLE}}", render(rows)).replace("{{MACHINE}}", setup)
                      .replace("{{DATE}}", dt.date.today().isoformat()))
 
 
