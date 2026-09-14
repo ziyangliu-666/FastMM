@@ -1,30 +1,26 @@
 # 2. The model
 
-Before you write code, here is what a strategy is to the engine. Five ideas are enough for this
-tutorial.
+The engine owns the books, positions, orders and your strategy, and runs on one thread. Network
+threads decode venue messages and pass them to it through lock-free rings. Hooks are never called
+concurrently.
 
-**One engine thread.** The engine owns the books, positions, orders and your strategy, and runs on
-one thread. Network threads decode venue messages and pass them to it through lock-free rings. Your
-code is never called concurrently, so it needs no locks.
+Hooks are plain member functions. The engine calls `on_book` after a book update, `on_fill` after
+one of your orders trades and `on_timer` when a timer fires. Every hook is optional. A hook with a
+wrong signature fails the build (page 3).
 
-**Hooks are plain member functions.** The engine calls `on_book` after a book update, `on_fill`
-after one of your orders trades, `on_timer` when a timer fires, and so on. Every hook is optional.
-The engine checks their signatures when it compiles your strategy: a hook with a wrong signature is
-a build error, not a hook that is silently never called. There are no virtual calls.
+You describe quotes; the engine sends orders. A hook calls `ctx.set_quotes(id, quotes)` with the
+bids and asks it wants. The engine's quote manager compares them with your resting orders and sends
+the new orders, cancels and replaces that make up the difference; it keeps an order whose price is
+within `[engine] min_requote_ticks` of the desired one. Every order passes pre-trade risk checks
+first. For anything else there are direct orders (`ctx.send`).
 
-**You describe quotes; the engine sends orders.** A hook calls `ctx.set_quotes(id, quotes)` with
-the bids and asks it wants. The engine's quote manager compares them with your resting orders and
-sends the minimum: new orders, cancels and replaces, with hysteresis so that a price that moved by
-less than a tick does not cause a cancel. Every order passes pre-trade risk checks first. For
-anything else there are direct orders (`ctx.send`).
+Prices, quantities, amounts and ratios are 64-bit integers with 8 decimals (`Price`, `Qty`,
+`Notional`, `Ratio`). `100.25_px` and `5_bps` are compile-time literals. Parameters are parsed
+without `double`.
 
-**Money is exact.** Prices, quantities and amounts are 64-bit integers with 8 decimals (`Price`,
-`Qty`, `Notional`); `Ratio` holds basis points. `100.25_px` and `5_bps` are compile-time literals.
-Parameters are parsed from the configuration exactly, never through a `double`.
-
-**Every input is journaled.** A session records each event the engine consumed and the clock at
-which it did. Replaying the journal through the same strategy must send the same orders, byte for
-byte; you use this on pages 7 and 8.
+A session journals each event the engine consumed and the clock at which it did. Replaying the
+journal through the same strategy must send the same orders, byte for byte; pages 7 and 8 check
+this.
 
 ```text
 venue ──► network thread ──► ring ──► engine: book ─► on_book ─► set_quotes ─► quote manager ─► risk ─► OMS ──► ring ──► network thread ──► venue
@@ -33,9 +29,8 @@ venue ──► network thread ──► ring ──► engine: book ─► on_b
 
 Two rules follow for hook code:
 
-- **Do not block and do not allocate.** Hooks run on the hot path; return quickly. `noexcept` is
-  recommended.
-- **Only the engine's inputs may drive decisions.** Use `ctx.now()` for time and `ctx.rng()` for
+- Do not block and do not allocate. `noexcept` is recommended.
+- Only the engine's inputs may drive decisions. Use `ctx.now()` for time and `ctx.rng()` for
   randomness, never the system clock or `std::random_device`, or replays stop matching.
 
 Further reading: [Event flow](../../explanation/event-flow.md),

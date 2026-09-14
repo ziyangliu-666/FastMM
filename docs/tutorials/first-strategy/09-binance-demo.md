@@ -1,14 +1,7 @@
 # 9. Trade on Binance Demo
 
-In this page you run `first_mm` on Binance Spot Demo Mode: realistic market data and a demo
-account with demo balances. You first run without keys, then place real demo orders for five
-minutes with tight risk limits, stop the session and check it.
-
-> **Warning.** This page places orders on an exchange. Use Demo Trading keys only: they are not
-> testnet keys, and never use keys of a real account. Read
-> [Kill switch and shutdown](../../how-to/operations/kill-switch-and-shutdown.md) before you start.
-
-CI does not run this page. The commands are in `scripts/docs/tutorial.sh` (`--through demo`).
+Binance Spot Demo Mode is a Binance environment with demo balances and its own API keys. The
+commands on this page are in `scripts/docs/tutorial.sh --through demo`.
 
 ## 1. Dry run
 
@@ -17,10 +10,9 @@ CI does not run this page. The commands are in `scripts/docs/tutorial.sh` (`--th
 "$BIN"/tutorial-live --config configs/tutorial-binance-demo.toml --dry-run --duration 60s
 ```
 
-`--dry-run` connects to the public market data only: no keys are read and no order is sent, and
-`first_mm` logs `started, quoting disabled (dry run)`. Once a second the log shows the venue's
-status; a healthy run has `md=live` and `books=1/1`. If it exits instead, look up the message in
-[Troubleshooting](../../how-to/operations/troubleshooting.md).
+`--dry-run` connects to public market data only, reads no keys and sends no orders; `first_mm` logs
+`started, quoting disabled (dry run)`. The per-second status line should show `md=live` and
+`books=1/1`. Exit messages: [Troubleshooting](../../how-to/operations/troubleshooting.md).
 
 ## 2. Keys
 
@@ -31,14 +23,16 @@ the terminal that runs the session:
 export FASTMM_BINANCE_API_KEY=<demo key> FASTMM_BINANCE_API_SECRET=<demo secret>
 ```
 
-The configuration refers to these variables (`api_key = "${FASTMM_BINANCE_API_KEY}"`); FastMM
-refuses a literal secret in a configuration file.
+Binance testnet keys do not work here
+([Binance Spot Demo Mode](../../how-to/operations/run-on-testnet.md#binance-spot-demo-mode)). The
+configuration reads the variables as `api_key = "${FASTMM_BINANCE_API_KEY}"`
+([Configuration](../../reference/configuration.md#general-rules)).
 
 ## 3. The risk limits
 
-`configs/tutorial-binance-demo.toml` keeps the session small. The strategy quotes 0.0001 BTC
-(about 8 USDT) per side and stops adding at 0.0003 BTC; independently of the strategy, the
-engine's pre-trade checks refuse anything beyond these limits:
+The strategy quotes 0.0001 BTC (about 8 USDT) per side and stops adding at 0.0003 BTC. Independently
+of the strategy, the engine's pre-trade checks in `configs/tutorial-binance-demo.toml` refuse
+anything beyond these limits:
 
 | `[risk]` key | Value | Effect |
 |---|---|---|
@@ -46,13 +40,17 @@ engine's pre-trade checks refuse anything beyond these limits:
 | `max_order_notional` | `25` | no order above 25 USDT |
 | `max_position` | `0.0004` | position plus same-side open orders stays within 0.0004 BTC |
 | `max_open_orders` | `2` | at most 2 open orders |
-| `max_loss` | `5` | the kill switch trips when net PnL reaches -5 USDT; `tutorial-live` then cancels everything and exits with code 6 |
-| `orders_per_sec`, `burst` | `2`, `4` | order rate, far below Binance's limits |
+| `max_loss` | `5` | the kill switch trips when net PnL reaches -5 USDT ([After a kill](../../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)) |
+| `orders_per_sec`, `burst` | `2`, `4` | orders per second, burst |
 
-The Demo account charges 10 bps per fill and `first_mm` quotes 5 bps from the microprice, so
-expect a small loss per fill: the point of this page is the procedure, not the profit.
+The Demo account charges 10 bps per fill and `first_mm` quotes 5 bps from the microprice, so fills
+lose money on average.
 
 ## 4. A five-minute session
+
+> **Warning.** This command places orders with the keys you exported. Use Demo Trading keys only,
+> never keys of a real account, and read
+> [Kill switch and shutdown](../../how-to/operations/kill-switch-and-shutdown.md) first.
 
 <!-- snippet: scripts/docs/tutorial.sh#demo-run -->
 ```bash
@@ -66,21 +64,22 @@ Watch it from a second terminal:
 ./build/release/bin/fastmm-top --name tutorial-binance-demo
 ```
 
-Within a few seconds the status line shows `md=live user=live order=live`, and `fastmm-top` shows
-two open orders. Stop the session before the five minutes are up with Ctrl-C.
+Within a few seconds the status line shows `md=live user=live order=live` and `fastmm-top` shows
+two open orders. Stop the session with Ctrl-C before the five minutes are up.
 
 ## 5. Check the shutdown
 
-The last line of the log must be:
+The log ends with:
 
 ```text
 fastmm-live: shutdown took <n> ms (cancel_all ok)
+fastmm-live: exit code 0
 ```
 
-Ctrl-C tripped the kill switch: the engine pulled the quotes and each venue cancelled all open
-orders over a separate REST connection. `cancel_all ok` means those requests succeeded; confirm in
-the Demo Trading web interface that no order is left open. If the line says `cancel_all FAILED`,
-cancel by hand and follow
+Ctrl-C tripped the kill switch. `cancel_all ok` means the venue's cancel-all request succeeded;
+confirm in the Demo Trading web interface that no order is open
+([Go-live checklist](../../how-to/operations/go-live-checklist.md#stopping)). If the line says
+`cancel_all FAILED`, cancel by hand and follow
 [When cancel_all failed](../../how-to/operations/kill-switch-and-shutdown.md#when-cancel_all-failed).
 
 ## 6. Check the PnL
@@ -91,13 +90,10 @@ python3 tools/pnl_report.py runs/tutorial/demo.fmj --engine-log runs/tutorial/de
 ```
 
 The report lists fills, maker share, volume, fees and inventory, and compares the journal's PnL
-with the engine's final summary; they should agree to within rounding. To reconcile against the
-account's balances as well, take balance snapshots before and after the session
+with the engine's final summary; the two agree to within rounding. To reconcile against the
+account's balances, take balance snapshots before and after the session
 ([Journals, replay and PnL](../../how-to/operations/journals-replay-pnl.md#check-pnl)).
 
-## Where next
-
-- [Go-live checklist](../../how-to/operations/go-live-checklist.md) before a longer session
-- [Run on a testnet or Binance Demo](../../how-to/operations/run-on-testnet.md) for Bybit, Deribit
-  and the Binance testnet
-- [Strategy API](../../reference/strategy-api.md), [Risk model](../../explanation/risk-model.md)
+Next: [Go-live checklist](../../how-to/operations/go-live-checklist.md) before a longer session;
+[Run on a testnet or Binance Demo](../../how-to/operations/run-on-testnet.md) for Bybit, Deribit
+and the Binance testnet.

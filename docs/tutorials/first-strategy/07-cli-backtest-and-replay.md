@@ -1,8 +1,5 @@
 # 7. Backtest and replay from the command line
 
-In this page you backtest `first_mm` without writing a program, record the run in a journal, and
-verify that replaying the journal sends exactly the same orders.
-
 ## Backtest
 
 <!-- snippet: scripts/docs/tutorial.sh#cli-backtest -->
@@ -14,11 +11,10 @@ verify that replaying the journal sends exactly the same orders.
 
 - `--config configs/backtest-example.toml` supplies the synthetic market, fees, risk limits and
   the fill model. Its strategy is `basic_mm`; `--strategy first_mm` replaces it and ignores its
-  `[strategy.params]`, which the program notes on stderr.
-- `--param edge_bps=0.002` sets a parameter; repeat `--param` for more. An unknown name exits with
-  code 3.
+  `[strategy.params]`.
+- `--param edge_bps=0.002` sets a parameter; repeat `--param` for more. An unknown name is an error
+  ([exit codes](../../reference/cli.md#fastmm-backtest)).
 - `--seed 7 --duration 60` fixes the market and runs 60 s of simulated time.
-- `--out` writes the results and `--journal-out` records the session.
 
 ```text
 tutorial-backtest: note: ignoring [strategy.params] of 'basic_mm' for --strategy first_mm
@@ -56,11 +52,10 @@ replayed outbound 1189 msgs sha256 6ccab4815434470ef46161a79f32f6bf18ef422229d26
 replay MATCH
 ```
 
-The journal holds every event the engine consumed and the configuration after the command-line
-overrides, so the replay needs no configuration file. `--verify` compares every order message the
+The journal holds the events the engine consumed and the configuration after the command-line
+overrides, so the replay needs no configuration file. `--verify` compares each order message the
 replayed engine sends with the recorded copy and exits with code 1 on the first difference, which
 it prints. A mismatch with the same binary means the strategy used something that is not an engine
-input ([Determinism](../../explanation/determinism.md)); the replay's own strategy logs also appear
-on stderr, which is harmless.
+input ([Determinism](../../explanation/determinism.md)). The replayed strategy's logs go to stderr.
 
 Next: [8. Trade on the simulated exchange](08-sim-exchange.md)

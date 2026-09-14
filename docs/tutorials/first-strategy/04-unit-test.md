@@ -1,12 +1,9 @@
 # 4. Unit-test it
 
-In this page you test `first_mm` at two levels: the quoting function on its own, and the hooks
-inside a real engine. The test is `examples/cpp/tutorial/first_mm_test.cpp`; it uses plain checks
-so that you can copy it into a project without a test framework.
+`examples/cpp/tutorial/first_mm_test.cpp` tests `first_mm` with plain checks; it needs no test
+framework.
 
 ## The quoting function
-
-`compute_quotes` needs only parameters, an instrument and the touch:
 
 <!-- snippet: examples/cpp/tutorial/first_mm_test.cpp#pure -->
 ```cpp
@@ -20,14 +17,11 @@ check(q.bids.size() == 1 && q.bids[0].price == 99.90_px, "bid at 99.90");
 check(q.asks.size() == 1 && q.asks[0].price == 100.12_px, "ask at 100.12");
 ```
 
-The microprice of 100.00 and 100.02 with equal sizes is 100.01; 10 bps of it is 0.10001; the bid
-rounds down to 99.90 and the ask up to 100.12.
-
 ## The hooks, with the harness
 
-`fastmm::sim::StrategyHarness<S>` runs your strategy in the real engine against a simulated venue
-on virtual time. Its instrument is BTCUSDT with a tick of 0.01 and a lot of 0.001. Each call runs
-the engine until it is idle, so the strategy's reaction is visible when the call returns:
+`fastmm::sim::StrategyHarness<S>` runs your strategy in the engine against a simulated venue on
+virtual time. Each call runs the engine until it is idle, so the strategy's reaction is visible
+when the call returns:
 
 <!-- snippet: examples/cpp/tutorial/first_mm_test.cpp#harness -->
 ```cpp
@@ -48,13 +42,10 @@ check(orders.size() == 1 && orders[0].side == Side::Sell,
       "at the position limit only the ask rests");
 ```
 
-- `book(bid, ask)` delivers a one-level snapshot: `on_book` runs and the quotes are sent.
-- `advance(duration)` moves virtual time: orders reach the venue and acknowledgements come back.
-  Orders are only working after that.
-- `fill(side)` makes a taker at the venue trade against your best order on that side; `on_fill`
-  runs and the position changes.
+Orders are working only after `advance`. `fill(side)` trades a taker against your best order on
+that side.
 
-Connection loss and paused quoting work the same way:
+Connection loss and paused quoting:
 
 <!-- snippet: examples/cpp/tutorial/first_mm_test.cpp#connection -->
 ```cpp
@@ -90,12 +81,6 @@ check(s.configure({{"edge_bps", "0.00001"}}).has_value(),
 
 ## Run it
 
-<!-- snippet: scripts/docs/tutorial.sh#bin -->
-```bash
-BUILD=build/release
-BIN=$BUILD/bin
-```
-
 <!-- snippet: scripts/docs/tutorial.sh#unit-test -->
 ```bash
 "$BIN"/first_mm_test
@@ -109,8 +94,8 @@ ok    : a bid and an ask rest after the first book
 first_mm_test: all checks passed
 ```
 
-`ctest --test-dir build/release -L tutorial` runs this test with the rest of the tutorial's tests.
-The [Strategy API](../../reference/strategy-api.md#test-harness) lists the other harness calls:
-`trade`, `push` for any message, `working_orders`, `engine()`.
+`ctest --test-dir build/release -L tutorial` runs the tutorial's tests, this one included. The
+[Strategy API](../../reference/strategy-api.md#test-harness) lists the other harness calls: `trade`,
+`push` for any message, `engine()`.
 
 Next: [5. Backtest in C++](05-backtest-in-cpp.md)
