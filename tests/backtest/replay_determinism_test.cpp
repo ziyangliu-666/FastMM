@@ -19,10 +19,13 @@
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/synthetic_source.hpp"
+#include "fastmm/core/crc32c.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::bt;
@@ -49,6 +52,67 @@ void check_replay(const BacktestResult& rec, const std::string& path, const Back
   CHECK(rp.first_mismatch == -1);
   CHECK(rp.ok());
   CHECK(rp.events > rec.md_events);  // market data plus acks / fills / cancels
+}
+
+// Rewrites a v2 journal as format version 1: no engine-time records or flags, no session
+// settings or embedded config in the header.
+void downgrade_to_v1(const std::string& in, const std::string& out) {
+  JournalReader r;
+  REQUIRE(r.open(in));
+  JournalFileHeader h = r.header();
+  h.version = 1;
+  h.header_bytes = static_cast<std::uint32_t>(sizeof(JournalFileHeader) +
+                                              h.instrument_count * sizeof(Instrument));
+  h.session_epoch = 0;
+  h.quoting_enabled = 0;
+  h.header_flags = 0;
+  h.config_bytes = 0;
+  h.replace_venues = 0;
+  h.config_crc32c = 0;
+  h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
+  std::ofstream f(out, std::ios::binary | std::ios::trunc);
+  f.write(reinterpret_cast<const char*>(&h), sizeof h);
+  f.write(reinterpret_cast<const char*>(r.instruments().data()),
+          static_cast<std::streamsize>(r.instruments().size_bytes()));
+  std::vector<char> payload;
+  std::uint64_t first = 0;
+  std::uint64_t last = 0;
+  std::uint32_t count = 0;
+  auto flush = [&](std::uint32_t flags) {
+    JournalBlockHeader b{};
+    std::memcpy(b.magic, "FMJB", 4);
+    b.byte_len = static_cast<std::uint32_t>(payload.size());
+    b.seq_first = first;
+    b.seq_last = last;
+    b.count = count;
+    b.crc32c = crc32c(payload.data(), payload.size());
+    b.flags = flags;
+    f.write(reinterpret_cast<const char*>(&b), sizeof b);
+    f.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    payload.clear();
+    count = 0;
+  };
+  std::size_t engine_time_records = 0;
+  r.for_each([&](const EventHeader* e) {
+    if (e->type == EventType::EngineTime) {
+      ++engine_time_records;
+      return;
+    }
+    REQUIRE((e->flags & EventHeader::kDropped) == 0);
+    if (payload.size() + e->len > kJournalBlockBytes) flush(0);
+    if (count == 0) first = e->seq;
+    last = e->seq;
+    ++count;
+    const std::size_t at = payload.size();
+    payload.resize(at + e->len);
+    std::memcpy(payload.data() + at, e, e->len);
+    auto* copy = reinterpret_cast<EventHeader*>(payload.data() + at);
+    copy->flags = static_cast<std::uint8_t>(copy->flags & ~EventHeader::kEngineTime);
+    copy->reserved0 = 0;
+  });
+  CHECK(engine_time_records >= 2);  // start and finish
+  if (count > 0) flush(0);
+  flush(kBlockFlagTrailer);
 }
 
 std::filesystem::path repo_root() {
@@ -140,4 +204,23 @@ TEST_CASE("backtest.golden: sample_1000 journal gives the committed BasicMM outb
   const BacktestResult rec = run_backtest(cfg, cfg.strategy, &js);
   CHECK(rec.outbound_sha256 == expected);
   check_replay(rec, cfg.journal_out, cfg);
+}
+
+TEST_CASE("backtest.replay: a version 1 session journal still replays on receive times") {
+  BacktestConfig cfg = synthetic_config(21, seconds(10));
+  cfg.strategy = "basic_mm";
+  cfg.params["pull_on_stale_ms"] = "20";  // timers too
+  cfg.journal_out = tmp_journal("replay_v2_source.fmj");
+  const BacktestResult rec = run_backtest(cfg, "basic_mm");
+  REQUIRE(rec.engine.timers_fired > 0);
+  check_replay(rec, cfg.journal_out, cfg);
+
+  const std::string v1 = tmp_journal("replay_v1.fmj");
+  downgrade_to_v1(cfg.journal_out, v1);
+  JournalReader r;
+  REQUIRE(r.open(v1));
+  CHECK(r.version() == 1);
+  CHECK_FALSE(r.has_session());
+  r.for_each([](const EventHeader* e) { CHECK((e->flags & EventHeader::kEngineTime) == 0); });
+  check_replay(rec, v1, cfg);
 }

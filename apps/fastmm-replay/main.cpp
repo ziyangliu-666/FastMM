@@ -3,10 +3,14 @@
 //   fastmm-replay --journal session.fmj [--config cfg.toml] [--strategy name] [--verify]
 //   fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --verify
 //
-// Session journal (recorded with outbound copies, e.g. fastmm-backtest --journal-out):
-//   Engine<S, SimClock, ReplayTransport, JournalFeed> replays the inbound events; the
-//   outbound SHA-256 and every message are compared with the recorded Out* records.
-//   --strategy / --param-style what-ifs simply report the divergence.
+// Session journal (recorded with outbound copies: fastmm-live, fastmm-backtest --journal-out):
+//   Engine<S, SimClock, ReplayTransport, JournalFeed> replays the inbound events at the recorded
+//   engine clock; the outbound SHA-256 and every message are compared with the recorded Out*
+//   records, and the first differing message is printed. The configuration embedded in the
+//   journal is used unless --config is given; --config is checked against the journal's config
+//   hash (a different configuration is a what-if run and is reported as such). Session epoch,
+//   dry run, RNG seed and per-venue cancel-replace always come from the journal. A journal without
+//   an embedded configuration (format v1) needs --config. No API keys or ${VAR}s are needed.
 // Market-data journal (no outbound records, e.g. the golden fixture):
 //   the strategy is backtested on the journal (SimTransport), the run is recorded to
 //   --out (a temporary file by default) and that session is replayed as above. With --verify
@@ -25,6 +29,7 @@
 
 #include <unistd.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -41,8 +46,9 @@ constexpr int kExitInput = 3;
 void usage(std::FILE* out) {
   std::fprintf(out,
                "usage: fastmm-replay --journal <in.fmj> [options]\n"
-               "  --config <file.toml>  engine / strategy configuration of the recording\n"
-               "                        (default: configs/backtest-example.toml if present)\n"
+               "  --config <file.toml>  configuration to replay with (default: the one embedded\n"
+               "                        in a session journal; configs/backtest-example.toml for\n"
+               "                        a market-data journal)\n"
                "  --strategy <name>     strategy to run (default: journal header / config)\n"
                "  --out <file.fmj>      keep the re-simulated session journal (market-data input)\n"
                "  --expect <sha256>     expected outbound hash (default: <journal>.sha256)\n"
@@ -63,8 +69,16 @@ void print_replay(const fastmm::bt::ReplayResult& r) {
   if (r.first_mismatch >= 0) {
     std::printf("first mismatching outbound message: #%lld\n",
                 static_cast<long long>(r.first_mismatch));
+    std::printf("  expected: %s\n", r.expected_message.c_str());
+    std::printf("  actual:   %s\n", r.actual_message.c_str());
   }
   std::printf("replay %s\n", r.ok() ? "MATCH" : "MISMATCH");
+}
+
+fastmm::Config load_config(const std::string& path) {
+  fastmm::Config::LoadOptions lo;
+  lo.substitute_env = false;  // replay sends nothing: API keys and ${VAR}s stay unresolved
+  return fastmm::Config::load(path, lo);
 }
 
 std::string read_expected(const std::string& path) {
@@ -127,41 +141,101 @@ int main(int argc, char** argv) {
     usage(stderr);
     return kExitUsage;
   }
-  if (config_path.empty() && std::filesystem::exists("configs/backtest-example.toml"))
-    config_path = "configs/backtest-example.toml";
-  if (config_path.empty()) {
-    std::fprintf(stderr,
-                 "fastmm-replay: --config is required (no configs/backtest-example.toml here)\n");
-    return kExitUsage;
-  }
-
   bt::register_builtin_strategies();
-  bt::BacktestConfig cfg;
   bt::JournalInfo info;
   try {
-    const Config raw = Config::load(config_path);
-    Logger::instance().set_level(raw.log_level());
-    cfg = bt::BacktestConfig::from_config(raw);
-    cfg.measure_wall_clock = false;
-    cfg.output_dir.clear();
     info = bt::inspect_journal(journal);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "fastmm-replay: %s\n", e.what());
     return kExitInput;
   }
+  const bool session = info.outbound_messages > 0;
   std::printf(
-      "journal  %s: %llu messages (%llu market data, %llu outbound), seed %llu, strategy '%s'\n",
+      "journal  %s: format v%u, %llu messages (%llu market data, %llu outbound), seed %llu, "
+      "strategy '%s'\n",
       journal.c_str(),
+      info.version,
       static_cast<unsigned long long>(info.messages),
       static_cast<unsigned long long>(info.market_data_messages),
       static_cast<unsigned long long>(info.outbound_messages),
       static_cast<unsigned long long>(info.rng_seed),
       info.strategy.c_str());
+  if (info.has_session) {
+    std::printf("session  epoch %u, quoting %s, cancel-replace venues %#llx, engine clock %s\n",
+                static_cast<unsigned>(info.session_epoch),
+                info.quoting_enabled ? "enabled" : "disabled (dry run)",
+                static_cast<unsigned long long>(info.replace_venues),
+                info.engine_time ? "recorded" : "not recorded");
+  }
+  if (info.dropped_outbound > 0) {
+    std::printf("         %llu outbound message(s) were refused by the transport\n",
+                static_cast<unsigned long long>(info.dropped_outbound));
+  }
+
+  bt::BacktestConfig cfg;
+  try {
+    if (!config_path.empty()) {
+      const Config raw = load_config(config_path);
+      Logger::instance().set_level(raw.log_level());
+      cfg = bt::BacktestConfig::from_config(raw);
+      if (session && !info.config_toml.empty()) {
+        const std::uint64_t h = raw.effective_hash();
+        if (h == info.config_hash) {
+          std::printf("config   %s (matches the recording, hash %016llx)\n",
+                      config_path.c_str(),
+                      static_cast<unsigned long long>(h));
+        } else {
+          std::fprintf(stderr,
+                       "fastmm-replay: warning: %s is not the configuration this session was "
+                       "recorded with (effective config hash %016llx, journal %016llx); this is a "
+                       "what-if replay and is not expected to match. Omit --config to replay "
+                       "with the recorded configuration.\n",
+                       config_path.c_str(),
+                       static_cast<unsigned long long>(h),
+                       static_cast<unsigned long long>(info.config_hash));
+          std::printf("config   %s (differs from the recording)\n", config_path.c_str());
+        }
+      } else if (session) {
+        std::printf("config   %s (not checked: the journal embeds no configuration)\n",
+                    config_path.c_str());
+      }
+    } else if (session) {
+      if (info.config_toml.empty()) {
+        std::fprintf(stderr,
+                     "fastmm-replay: %s does not embed its configuration (journal format v%u); "
+                     "pass --config <the configuration the session ran with>\n",
+                     journal.c_str(),
+                     info.version);
+        return kExitUsage;
+      }
+      cfg = bt::journal_config(journal);
+      std::printf("config   embedded in the journal (hash %016llx)\n",
+                  static_cast<unsigned long long>(info.config_hash));
+    } else {
+      // Market-data journal: backtested with a configuration first.
+      config_path = "configs/backtest-example.toml";
+      if (!std::filesystem::exists(config_path)) {
+        std::fprintf(stderr,
+                     "fastmm-replay: --config is required for a market-data journal (no "
+                     "configs/backtest-example.toml here)\n");
+        return kExitUsage;
+      }
+      std::printf("config   %s (default for a market-data journal)\n", config_path.c_str());
+      const Config raw = load_config(config_path);
+      Logger::instance().set_level(raw.log_level());
+      cfg = bt::BacktestConfig::from_config(raw);
+    }
+    cfg.measure_wall_clock = false;
+    cfg.output_dir.clear();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "fastmm-replay: %s\n", e.what());
+    return kExitInput;
+  }
 
   int rc = 0;
   Logger::instance().start(stderr, LogLevel::Warn);
   try {
-    if (info.outbound_messages > 0) {
+    if (session) {
       bt::ReplayOptions opt;
       opt.strategy = strategy;
       opt.verify = true;

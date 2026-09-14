@@ -98,7 +98,10 @@ bool SimTransport::send(const EventHeader& m) noexcept {
 
 std::size_t SimTransport::send(std::span<const EventHeader* const> batch) noexcept {
   std::size_t ok = 0;
-  for (const EventHeader* m : batch) ok += send(*m) ? 1U : 0U;
+  for (const EventHeader* m : batch) {
+    if (!send(*m)) break;  // a prefix, like LiveTransport
+    ++ok;
+  }
   return ok;
 }
 

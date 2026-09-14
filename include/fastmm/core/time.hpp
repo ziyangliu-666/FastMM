@@ -328,6 +328,8 @@ class SimClock {
     now_ = t;
   }
   void advance(Duration d) noexcept { now_.ns += d.ns; }
+  // Replay only: follows a recorded engine clock, which may have stepped backwards.
+  void jump(Timestamp t) noexcept { now_ = t; }
 
  private:
   Timestamp now_{};

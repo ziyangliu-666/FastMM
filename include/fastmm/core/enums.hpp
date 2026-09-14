@@ -242,7 +242,8 @@ enum class EventType : std::uint8_t {
   OrderCancelL3 = 22,
   OrderReplaceL3 = 23,
   OptionTicker = 24,  // mark / implied vols / greeks of one option (OptionTickerMsg)
-  Count = 25,
+  EngineTime = 25,    // journal only: the engine clock at start / finish / a delta overflow
+  Count = 26,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -296,6 +297,8 @@ enum class EventType : std::uint8_t {
       return "OrderReplaceL3";
     case EventType::OptionTicker:
       return "OptionTicker";
+    case EventType::EngineTime:
+      return "EngineTime";
     case EventType::Count:
       return "Count";
   }

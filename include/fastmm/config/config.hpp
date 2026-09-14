@@ -167,7 +167,7 @@ class Config {
   GenericSection backtest;
   std::vector<std::string> warnings;
   std::string source;      // path or "<string>"
-  std::uint64_t hash = 0;  // FNV-1a of the raw text (journal header config_hash)
+  std::uint64_t hash = 0;  // FNV-1a of the raw text
 
   [[nodiscard]] const VenueSection* venue(std::string_view name) const noexcept;
   [[nodiscard]] VenueId venue_id(std::string_view name) const noexcept;  // invalid if unknown
@@ -181,6 +181,14 @@ class Config {
 
   // Dump with api_key/api_secret masked; safe to log.
   [[nodiscard]] std::string redacted() const;
+
+  // The configuration as parsed (after any changes made to this object, e.g. command-line
+  // overrides) as complete TOML without api_key / api_secret. Deterministic: equal
+  // configurations give equal text, and parsing the text gives an equal configuration. Journals
+  // embed it, and its hash is the journal header's config_hash.
+  [[nodiscard]] std::string effective_toml() const;
+  [[nodiscard]] std::uint64_t effective_hash() const { return text_hash(effective_toml()); }
+  [[nodiscard]] static std::uint64_t text_hash(std::string_view text) noexcept;  // FNV-1a
 };
 
 // Builds the dense instrument table (src/core/instrument_loader.cpp). Throws ConfigError.

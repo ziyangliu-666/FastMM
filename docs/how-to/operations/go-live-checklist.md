@@ -20,10 +20,13 @@ Tick each item only when you have seen the evidence yourself.
   unexpected ERROR lines and the shutdown line says `cancel_all ok`.
 - [ ] The strategy is deterministic: record a backtest with
   `./build/release/bin/fastmm-backtest --config <your config> --data synthetic --out - --journal-out runs/bt/session.fmj`
-  and replay it with
-  `./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --config <your config> --verify`,
-  which must exit with code 0. Journals recorded by `fastmm-live` do not replay to a match today
-  ([Journals, replay and PnL](journals-replay-pnl.md#replay)).
+  and replay it with `./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify`,
+  which must exit with code 0.
+- [ ] A live session replays: replay the journal of the simulator run above (the log names it,
+  `journal: <path>`) with `./build/release/bin/fastmm-replay --journal <path> --verify`, which must
+  print `replay MATCH` and exit with code 0
+  ([Journals, replay and PnL](journals-replay-pnl.md#replay)). Do the same for a journal of the
+  practice session below.
 
 ## A practice session
 

@@ -2,15 +2,19 @@
 // Shared helpers for the sim-exchange integration tests: an in-process SimExchangeServer on
 // ephemeral ports, ring-backed sinks for driving BinanceVenue directly, and LiveEngine, the
 // apps/fastmm-live wiring (venue reactor thread + Engine<BasicMM, TscClock, LiveTransport,
-// RingFeed> thread + kill-switch shutdown) built from configs/sim-local(-tls).toml.
+// RingFeed> thread + kill-switch shutdown) built from configs/sim-local(-tls).toml. With
+// LiveEngineOptions::journal_path it also journals like fastmm-live (session epoch, cancel-replace
+// from venue capability && config, effective config, TSC calibration source).
 //
 // Set FASTMM_IT_LOG=1 to see the connector/engine log on stderr.
 #include "test_support.hpp"
 
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/engine.hpp"
+#include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/net/reactor.hpp"
@@ -207,12 +211,17 @@ inline Config sim_local_config(const ServerFixture& fx, bool tls) {
   return cfg;
 }
 
+struct LiveEngineOptions {
+  std::string journal_path;         // empty: no journal
+  std::uint16_t session_epoch = 1;  // fastmm-live takes it from SessionEpochStore
+};
+
 // The fastmm-live session wiring (apps/fastmm-live/live_backend.cpp) for one venue and BasicMM.
 class LiveEngine {
  public:
   using EngineT = Engine<BasicMM, TscClock, LiveTransport, RingFeed>;
 
-  explicit LiveEngine(Config cfg)
+  explicit LiveEngine(Config cfg, LiveEngineOptions opts = {})
       : cfg_(std::move(cfg)),
         reactor_(test_net_backend()),
         md_ring_(ring_bytes(cfg_.engine.md_ring_bytes)),
@@ -226,13 +235,20 @@ class LiveEngine {
     REQUIRE_MESSAGE(ref, (ref ? std::string() : ref.error()));
     REQUIRE(symbols_.build(instruments_));
     clock_.calibrate();
+    initial_tsc_ = clock_.calibration();
+    tsc_pub_.store(initial_tsc_);
+    clock_.attach_calibration_source(&tsc_pub_,
+                                     TscClock::kDefaultStepThreshold,
+                                     cfg_.engine.tsc_recalibrate_s > 0
+                                         ? seconds(cfg_.engine.tsc_recalibrate_s)
+                                         : TscClock::kDefaultSlewHorizon);
     md_sink_.attach(&md_ring_, venues::SinkPolicy::Drop);
     order_sink_.attach(&order_ring_, venues::SinkPolicy::Spin);
     static_cast<void>(feed_.add_ring(&control_));
     static_cast<void>(feed_.add_ring(&order_ring_));
     static_cast<void>(feed_.add_ring(&md_ring_));
-    transport_.set_venue(
-        VenueId{0}, &outbound_, venue_->caps().supports_replace && cfg_.venues[0].supports_replace);
+    replace_ = venue_->caps().supports_replace && cfg_.venues[0].supports_replace;
+    transport_.set_venue(VenueId{0}, &outbound_, replace_);
     venue_->attach(symbols_, instruments_, md_sink_, order_sink_, &outbound_);
     std::vector<InstrumentId> ids;
     for (const Instrument& inst : instruments_) ids.push_back(inst.id);
@@ -242,7 +258,7 @@ class LiveEngine {
     EngineConfig ec;
     ec.session_id = static_cast<std::uint64_t>(wall_now().ns);
     ec.rng_seed = cfg_.engine.rng_seed;
-    ec.session_epoch = 1;
+    ec.session_epoch = opts.session_epoch;
     ec.max_events_per_step = cfg_.engine.max_events_per_step;
     ec.crossed_grace = milliseconds(cfg_.engine.crossed_grace_ms);
     ec.latency_publish_interval = milliseconds(cfg_.engine.latency_publish_ms);
@@ -253,13 +269,34 @@ class LiveEngine {
     ec.quoting_enabled = true;
     const auto err = strategy_.configure(cfg_.strategy.params);
     REQUIRE_MESSAGE(!err, (err ? *err : std::string()));
-    engine_ = std::make_unique<EngineT>(ec, instruments_, clock_, transport_, feed_, strategy_);
+    if (!opts.journal_path.empty()) {
+      const std::string effective = cfg_.effective_toml();
+      JournalSessionInfo info;
+      info.session_id = ec.session_id;
+      info.start_ts = wall_now();
+      info.tsc = initial_tsc_;
+      info.config_hash = Config::text_hash(effective);
+      info.rng_seed = ec.rng_seed;
+      info.strategy = BasicMM::name();
+      info.instruments = &instruments_;
+      info.has_session = true;
+      info.session_epoch = ec.session_epoch;
+      info.quoting_enabled = ec.quoting_enabled;
+      info.replace_venues = replace_ ? 1U : 0U;
+      info.config_toml = effective;
+      journal_ring_ = std::make_unique<MsgRing>(ring_bytes(cfg_.engine.journal_ring_bytes));
+      journal_ = std::make_unique<JournalFileWriter>(*journal_ring_, opts.journal_path, info);
+      REQUIRE_MESSAGE(journal_->ok(), "cannot open journal " << opts.journal_path);
+    }
+    engine_ = std::make_unique<EngineT>(
+        ec, instruments_, clock_, transport_, feed_, strategy_, journal_ring_.get());
   }
   ~LiveEngine() { stop(); }
   LiveEngine(const LiveEngine&) = delete;
   LiveEngine& operator=(const LiveEngine&) = delete;
 
   void start() {
+    if (journal_) journal_->start();
     net_thread_ = std::thread([this] { net_loop(); });
     engine_thread_ = std::thread([this] { engine_->run(); });
     started_ = true;
@@ -281,7 +318,14 @@ class LiveEngine {
     net_stop_.store(true, std::memory_order_release);
     reactor_.wake();
     net_thread_.join();
+    if (journal_) journal_->stop();
   }
+
+  // What the control thread's TscCalibrator would publish; the engine picks it up in its next
+  // step (a step when it disagrees with the engine's mapping by more than 1 ms).
+  void publish_tsc(const TscCalibration& c) { tsc_pub_.store(c); }
+  [[nodiscard]] const TscCalibration& initial_tsc() const noexcept { return initial_tsc_; }
+  [[nodiscard]] bool supports_replace() const noexcept { return replace_; }
 
   [[nodiscard]] venues::Venue& venue() noexcept { return *venue_; }
   [[nodiscard]] EngineT& engine() noexcept { return *engine_; }  // after stop() only
@@ -318,6 +362,8 @@ class LiveEngine {
   std::unique_ptr<venues::Venue> venue_;
   venues::SymbolTable symbols_;
   TscClock clock_;
+  TscCalibration initial_tsc_{};
+  Seqlocked<TscCalibration> tsc_pub_;
   LiveTransport transport_;
   RingFeed feed_;
   MsgRing md_ring_;
@@ -327,6 +373,9 @@ class LiveEngine {
   venues::EventSink md_sink_;
   venues::EventSink order_sink_;
   BasicMM strategy_;
+  std::unique_ptr<MsgRing> journal_ring_;
+  std::unique_ptr<JournalFileWriter> journal_;
+  bool replace_ = false;
   std::unique_ptr<EngineT> engine_;
   std::atomic<bool> wake_{false};
   std::atomic<bool> net_stop_{false};

@@ -207,6 +207,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   }
 
   std::vector<std::unique_ptr<VenueSlot>> slots;
+  std::uint64_t replace_venues = 0;  // bit v: venue v trades with cancel-replace (journal header)
   venues::VenueFactoryOptions vopts;
   vopts.dry_run = opts.dry_run;
   vopts.record_raw_dir = opts.record_raw_dir;
@@ -271,8 +272,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     // Orders first: order events must not wait behind a burst of market data.
     static_cast<void>(feed.add_ring(s.order_ring.get()));
     static_cast<void>(feed.add_ring(s.md_ring.get()));
-    transport.set_venue(
-        vid, s.outbound.get(), s.venue->caps().supports_replace && cfg.venues[i].supports_replace);
+    const bool replace = s.venue->caps().supports_replace && cfg.venues[i].supports_replace;
+    transport.set_venue(vid, s.outbound.get(), replace);
+    if (replace) replace_venues |= std::uint64_t{1} << i;
     s.venue->attach(symbols, instruments, s.md_sink, s.order_sink, s.outbound.get());
     s.venue->set_tsc_calibration_source(&tsc_pub);
     std::vector<InstrumentId> mine;
@@ -323,14 +325,22 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     const std::filesystem::path p(path);
     if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path());
     journal_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.journal_ring_bytes));
+    // Everything a replay needs besides the events: the effective configuration (secrets
+    // omitted) and the session settings that do not come from it.
+    const std::string effective = cfg.effective_toml();
     JournalSessionInfo info;
     info.session_id = deps.engine.session_id;
     info.start_ts = wall_now();
     info.tsc = clock.calibration();
-    info.config_hash = cfg.hash;
-    info.rng_seed = cfg.engine.rng_seed;
+    info.config_hash = Config::text_hash(effective);
+    info.rng_seed = deps.engine.rng_seed;
     info.strategy = strategy->name;
     info.instruments = &instruments;
+    info.has_session = true;
+    info.session_epoch = deps.engine.session_epoch;
+    info.quoting_enabled = deps.engine.quoting_enabled;
+    info.replace_venues = replace_venues;
+    info.config_toml = effective;
     journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info);
     if (!journal->ok()) {
       std::fprintf(stderr, "fastmm-live: cannot open journal %s\n", path.c_str());
