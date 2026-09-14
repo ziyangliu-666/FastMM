@@ -4,6 +4,7 @@
 
 #include "fastmm/core/rng.hpp"
 
+#include <algorithm>
 #include <array>
 #include <vector>
 
@@ -104,9 +105,11 @@ struct Receiver {
   [[nodiscard]] bool matches(const Channel& ch, std::size_t i) const {
     const MbpBookState& b = feed->decoder().book(i);
     for (const Side side : {Side::Buy, Side::Sell}) {
-      const std::vector<Level> expect = to_vector(ch.pubs[i].levels(side));
-      if (to_vector(b.sides[static_cast<std::size_t>(side)].view()) != expect) return false;
-      if (l2_levels(*books.books[i], side) != expect) return false;
+      // Compare the spans directly: copying them into vectors first tripped gcc 13's LTO
+      // -Wfree-nonheap-object false positive.
+      const auto expect = ch.pubs[i].levels(side);
+      if (!std::ranges::equal(b.sides[static_cast<std::size_t>(side)].view(), expect)) return false;
+      if (!std::ranges::equal(l2_levels(*books.books[i], side), expect)) return false;
     }
     return true;
   }

@@ -16,9 +16,15 @@ struct P {
 TEST_CASE("strategies.params: schema collection, apply, describe") {
   const ParamSchema& s = P::schema();
   REQUIRE(s.size() == 3);
-  CHECK(std::string(s.find("gamma")->doc) == "risk aversion");
-  CHECK(s.find("levels")->type == ParamType::Int);
-  CHECK(s.find("flag")->type == ParamType::Bool);
+  const ParamDesc* gamma = s.find("gamma");
+  const ParamDesc* levels = s.find("levels");
+  const ParamDesc* flag = s.find("flag");
+  REQUIRE(gamma != nullptr);
+  REQUIRE(levels != nullptr);
+  REQUIRE(flag != nullptr);
+  CHECK(std::string(gamma->doc) == "risk aversion");
+  CHECK(levels->type == ParamType::Int);
+  CHECK(flag->type == ParamType::Bool);
   CHECK(s.find("nope") == nullptr);
   P p;
   CHECK(p.gamma == doctest::Approx(0.1));
@@ -31,7 +37,7 @@ TEST_CASE("strategies.params: schema collection, apply, describe") {
   CHECK(p.apply({{"flag", "maybe"}}).value().find("cannot parse") != std::string::npos);
   CHECK(p.apply({{"unknown", "1"}}).value().find("unknown parameter") != std::string::npos);
   CHECK(p.describe() == "gamma=0.500000 levels=3 flag=true");
-  CHECK(s.find("gamma")->get(&p) == doctest::Approx(0.5));
+  CHECK(gamma->get(&p) == doctest::Approx(0.5));
   static_assert(sizeof(P) ==
                 sizeof(double) + sizeof(int) + sizeof(bool) + 3);  // registrars take no space
 }
