@@ -14,7 +14,7 @@ export CPM_SOURCE_CACHE="${CPM_SOURCE_CACHE:-$HOME/.cache/CPM}"
 [[ -d "build/$PRESET" ]] || cmake --preset "$PRESET"
 cmake --build --preset "$PRESET" -j"$(nproc)" >/dev/null
 OUT="bench/results/latest"; rm -rf "$OUT"; mkdir -p "$OUT"
-STAMP="$(date +%Y%m%d-%H%M%S)"; HOST="$(hostname -s)"
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
 for b in build/"$PRESET"/bin/bench/bench_*; do
   name="$(basename "$b")"
   echo "==> $name (cpu $CPU, min_time $MIN_TIME)"
@@ -23,5 +23,5 @@ for b in build/"$PRESET"/bin/bench/bench_*; do
     --benchmark_counters_tabular=true 2>&1 | tail -n +1 | grep -E "_median|^-|Benchmark" || true
 done
 python3 tools/bench_table.py "$OUT"/*.json --template bench/README.tmpl.md --preset "$PRESET" --cpu "$CPU" > bench/README.md
-[[ -n "$TAG" ]] && { mkdir -p bench/results; cp -r "$OUT" "bench/results/$TAG-$HOST-$STAMP"; }
+[[ -n "$TAG" ]] && { mkdir -p bench/results; cp -r "$OUT" "bench/results/$TAG-$STAMP"; }
 echo "wrote bench/README.md"

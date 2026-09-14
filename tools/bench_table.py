@@ -7,29 +7,28 @@ The template's `{{TABLE}}`, `{{MACHINE}}`, `{{DATE}}` placeholders are substitut
 import argparse
 import datetime as dt
 import json
+import os
 import platform
 import re
 import subprocess
 import sys
 
 
-def cpu_model() -> str:
-    try:
-        with open("/proc/cpuinfo") as f:
-            for line in f:
-                if line.startswith("model name"):
-                    return line.split(":", 1)[1].strip()
-    except OSError:
-        pass
-    return platform.processor() or "unknown"
+def machine() -> str:
+    """Core count, architecture and OS family; no CPU model or kernel version."""
+    wsl = " (WSL2)" if "microsoft" in platform.release().lower() else ""
+    return f"{os.cpu_count()}-core {platform.machine()} | {platform.system()}{wsl}"
 
 
 def compiler() -> str:
+    """Compiler name and major version."""
     for c in ("g++", "clang++"):
         try:
-            return subprocess.check_output([c, "--version"], text=True).splitlines()[0]
+            out = subprocess.check_output([c, "--version"], text=True)
         except Exception:
             continue
+        m = re.search(r"(\d+)\.\d+", out)
+        return f"{c} {m.group(1)}" if m else c
     return "unknown"
 
 
@@ -94,7 +93,7 @@ def main():
     ap.add_argument("--cpu", default="?")
     a = ap.parse_args()
     rows = load(a.json)
-    machine = (f"{cpu_model()} | {platform.system()} {platform.release()} | {compiler()} | preset `{a.preset}` "
+    machine = (f"{machine()} | {compiler()} | preset `{a.preset}` "
                f"| pinned to CPU {a.cpu} | 5 repetitions, median reported")
     tmpl = open(a.template).read()
     sys.stdout.write(tmpl.replace("{{TABLE}}", render(rows)).replace("{{MACHINE}}", machine)
