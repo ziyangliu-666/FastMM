@@ -1,0 +1,2 @@
+# FIX 4.4, one message per line, '|' stands for SOH (0x01). BodyLength and CheckSum are real.
+8=FIX.4.4|9=160|35=8|49=VENUE|56=CLIENT|34=7|52=20260914-08:00:00.123|37=NONE|11=fm000100000005|17=E6|150=8|39=8|103=6|58=Duplicate ClOrdID|55=BTCUSDT|54=1|38=1|151=0|14=0|6=0|10=167|

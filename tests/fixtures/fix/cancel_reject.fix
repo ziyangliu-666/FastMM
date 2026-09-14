@@ -1,0 +1,4 @@
+# FIX 4.4, one message per line, '|' stands for SOH (0x01). BodyLength and CheckSum are real.
+# A rejected cancel (CxlRejResponseTo 1, too late) and a rejected cancel/replace (2, unknown order).
+8=FIX.4.4|9=140|35=9|49=VENUE|56=CLIENT|34=10|52=20260914-08:00:00.123|37=1001|11=fm000100000001c2|41=fm000100000001|39=2|434=1|102=0|58=Too late to cancel|10=241|
+8=FIX.4.4|9=133|35=9|49=VENUE|56=CLIENT|34=11|52=20260914-08:00:00.123|37=NONE|11=fm000100000009|41=fm000100000008|39=8|434=2|102=1|58=Unknown order|10=143|

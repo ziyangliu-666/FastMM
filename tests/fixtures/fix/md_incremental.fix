@@ -1,0 +1,4 @@
+# FIX 4.4, one message per line, '|' stands for SOH (0x01). BodyLength and CheckSum are real.
+# BTCUSDT new bid + deleted offer (Symbol carried forward), an ETHUSDT trade and offer change, and
+# an entry for a symbol the table does not know.
+8=FIX.4.4|9=251|35=X|49=VENUE|56=CLIENT|34=13|52=20260914-08:00:00.123|262=REQ1|268=5|279=0|269=0|55=BTCUSDT|270=70000|271=1|279=2|269=1|270=70001|279=0|269=2|278=987654|55=ETHUSDT|270=3500.25|271=0.4|279=1|269=1|270=3501|271=2|279=0|269=0|55=XRPUSDT|270=0.5|271=100|10=144|
