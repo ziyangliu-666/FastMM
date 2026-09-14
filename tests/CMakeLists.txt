@@ -55,6 +55,11 @@ if(_hot AND NOT FASTMM_ENABLE_TSAN)
   target_link_libraries(fastmm_hotpath_tests PRIVATE fastmm_test_support fastmm::backtest fastmm::codecs)
   doctest_discover_tests(fastmm_hotpath_tests TEST_PREFIX "hotpath." PROPERTIES LABELS "noalloc")
 endif()
+# The reactor's dispatch path (hotpath/noalloc_reactor_test.cpp) needs the networking library.
+if(TARGET fastmm_hotpath_tests AND TARGET fastmm::net)
+  target_link_libraries(fastmm_hotpath_tests PRIVATE fastmm::net)
+  target_compile_definitions(fastmm_hotpath_tests PRIVATE FASTMM_HOTPATH_NET=1)
+endif()
 
 # fastmm-top without a running engine: a clear message and exit code 3.
 if(TARGET fastmm-top)

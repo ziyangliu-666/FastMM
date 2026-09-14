@@ -205,8 +205,8 @@ void echo_scenario(Reactor& reactor,
 
 }  // namespace
 
-TEST_CASE("ws: echo over PlainStream") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("ws: echo over PlainStream", test_ws_client_1) {
+  Reactor reactor(backend);
   EchoHandler handler;
   PlainServer server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
   server.set_ws_handler(&handler);
@@ -216,8 +216,8 @@ TEST_CASE("ws: echo over PlainStream") {
       reactor, server, handler, [&] { return connect_plain(server.port()); });
 }
 
-TEST_CASE("ws: echo over TlsStream with the fixture certificate") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("ws: echo over TlsStream with the fixture certificate", test_ws_client_2) {
+  Reactor reactor(backend);
   EchoHandler handler;
   TlsContext sctx =
       TlsContext::server(tls_fixture("cert.pem").string(), tls_fixture("key.pem").string());
@@ -233,8 +233,9 @@ TEST_CASE("ws: echo over TlsStream with the fixture certificate") {
   });
 }
 
-TEST_CASE("ws: upgrade rejected by the server surfaces as a protocol error") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("ws: upgrade rejected by the server surfaces as a protocol error",
+                    test_ws_client_3) {
+  Reactor reactor(backend);
   EchoHandler handler;
   PlainServer server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
   server.set_ws_handler(&handler);
@@ -250,8 +251,8 @@ TEST_CASE("ws: upgrade rejected by the server surfaces as a protocol error") {
   CHECK(handler.opened == 0);
 }
 
-TEST_CASE("ws: TLS hostname mismatch fails before the upgrade") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("ws: TLS hostname mismatch fails before the upgrade", test_ws_client_4) {
+  Reactor reactor(backend);
   EchoHandler handler;
   TlsContext sctx =
       TlsContext::server(tls_fixture("cert.pem").string(), tls_fixture("key.pem").string());
@@ -271,8 +272,8 @@ TEST_CASE("ws: TLS hostname mismatch fails before the upgrade") {
   CHECK(client.stream().last_error().find("mismatch") != std::string_view::npos);
 }
 
-TEST_CASE("ws: connection refused is reported as an error") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("ws: connection refused is reported as an error", test_ws_client_5) {
+  Reactor reactor(backend);
   std::uint16_t port = 0;
   {
     TcpSocket probe = listen_ephemeral(port);  // closed at scope exit: port now refuses
@@ -285,8 +286,9 @@ TEST_CASE("ws: connection refused is reported as an error") {
   CHECK((ev.error == NetError::Syscall || ev.error == NetError::Closed));
 }
 
-TEST_CASE("ws: server broadcast reaches every session and reaps closed ones") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("ws: server broadcast reaches every session and reaps closed ones",
+                    test_ws_client_6) {
+  Reactor reactor(backend);
   EchoHandler handler;
   handler.echo = false;
   PlainServer server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });

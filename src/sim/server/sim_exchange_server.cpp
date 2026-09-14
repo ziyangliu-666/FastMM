@@ -37,8 +37,21 @@ using Impl = SimExchangeServer::Impl;
 
 // ---- construction ---------------------------------------------------------------------------
 
+namespace {
+net::ReactorBackend usable_backend(net::ReactorBackend requested) {
+  const net::ReactorBackend backend = net::Reactor::resolve_backend(requested);
+  if (backend != requested)
+    FASTMM_LOG_WARN(
+        "sim-exchange: net_backend = \"io_uring\" but io_uring is not available; "
+        "falling back to epoll");
+  return backend;
+}
+}  // namespace
+
 Impl::Impl(SimServerConfig c)
-    : cfg_(std::move(c)), fees_(FeeModel::from_bps(cfg_.maker_bps, cfg_.taker_bps)) {
+    : cfg_(std::move(c)),
+      fees_(FeeModel::from_bps(cfg_.maker_bps, cfg_.taker_bps)),
+      reactor_(usable_backend(cfg_.net_backend)) {
   if (cfg_.symbols.empty()) throw std::invalid_argument("SimExchangeServer: no symbols configured");
   if (cfg_.symbols.size() > 64) throw std::invalid_argument("SimExchangeServer: too many symbols");
   if (cfg_.api_key.empty() || cfg_.api_secret.empty())

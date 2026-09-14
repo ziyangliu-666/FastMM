@@ -28,6 +28,7 @@ Every FastMM binary reads one TOML file passed with `--config path.toml`. The pa
 | `cpu` | int | `-1` | Core to pin the engine thread to; `-1` disables pinning |
 | `net_cpus` | int array | `[]` | Cores for the network threads, one per venue in order |
 | `spin_mode` | string | `"adaptive"` | `busy` spins forever; `adaptive` backs off to short sleeps when idle (use on WSL2 and laptops) |
+| `net_backend` | string | `"epoll"` | Event loop behind every `net::Reactor` that `fastmm-live` (one per venue) and `fastmm-sim-exchange` create: `epoll` (edge-triggered epoll) or `io_uring` (a multishot poll request per socket, Linux 5.13 or newer). When io_uring cannot be used (older kernel, `kernel.io_uring_disabled`, a seccomp profile that blocks it, as Docker's default does) the program logs a warning and runs on epoll. See [Network reactor](architecture.md#network-reactor) |
 | `journal` | bool | `true` | Record every inbound event to a `.fmj` journal |
 | `journal_dir` | string | `"runs"` | Directory for journals |
 | `epoch_file` | string | `"runs/session_epoch"` | Persisted session epoch, which keeps client order ids unique across restarts |

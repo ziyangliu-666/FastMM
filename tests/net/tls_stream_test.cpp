@@ -258,8 +258,8 @@ class TlsParty final : public IoHandler {
 
 }  // namespace
 
-TEST_CASE("tls: loopback sockets driven by the reactor") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("tls: loopback sockets driven by the reactor", test_tls_stream_1) {
+  Reactor reactor(backend);
   std::uint16_t port = 0;
   TcpSocket listener = listen_ephemeral(port);
   TlsContext sctx = server_ctx();

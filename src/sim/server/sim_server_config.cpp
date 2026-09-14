@@ -118,6 +118,7 @@ SimServerConfig SimServerConfig::from_config(const Config& cfg) {
   }
   if (c.symbols.empty()) throw std::invalid_argument("sim config: no [[instruments]] to simulate");
 
+  static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, c.net_backend));
   c.bind_host = s.get_string("bind", c.bind_host);
   c.port = static_cast<int>(s.get_int("port", c.port));
   c.tls_port = static_cast<int>(s.get_int("tls_port", c.tls_port));

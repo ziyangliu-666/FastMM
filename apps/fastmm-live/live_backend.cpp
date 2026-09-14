@@ -250,10 +250,18 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   MsgRing control_ring(1U << 16);
   static_cast<void>(feed.add_ring(&control_ring));
   Wake wake_ctx{&slots};
+  net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
+  static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, net_backend));  // validated
+  if (net::Reactor::resolve_backend(net_backend) != net_backend) {
+    FASTMM_LOG_WARN(
+        "[engine] net_backend = \"io_uring\" but io_uring is not available (kernel too "
+        "old, disabled or not permitted); falling back to epoll");
+    net_backend = net::ReactorBackend::Epoll;
+  }
   for (std::size_t i = 0; i < slots.size(); ++i) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
-    s.reactor = std::make_unique<net::Reactor>();
+    s.reactor = std::make_unique<net::Reactor>(net_backend);
     s.md_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
     s.order_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.order_ring_bytes));
     s.outbound = std::make_unique<MsgRing>(ring_size(cfg.engine.order_ring_bytes));
@@ -357,13 +365,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   std::thread engine_thread([&] { runner->run(); });
 
   FASTMM_LOG_INFO(
-      "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={}",
+      "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={} net={}",
       deps.engine.session_id,
       strategy->name,
       slots.size(),
       instruments.size(),
       opts.dry_run,
-      deps.engine.session_epoch);
+      deps.engine.session_epoch,
+      net::to_string(net_backend));
 
   // ---- live status for fastmm-top --------------------------------------------------------
   StatusWriter status;

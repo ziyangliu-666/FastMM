@@ -72,8 +72,9 @@ ConnectionConfig fast_config(std::string url) {
 
 }  // namespace
 
-TEST_CASE("connection: connect reaches Live through every state and subscribes") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("connection: connect reaches Live through every state and subscribes",
+                    test_connection_1) {
+  Reactor reactor(backend);
   VenueHandler venue;
   HttpServer<PlainStream> server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
   server.set_ws_handler(&venue);
@@ -146,8 +147,9 @@ TEST_CASE("connection: connect reaches Live through every state and subscribes")
   }
 }
 
-TEST_CASE("connection: stale detection with a silent server, then dead -> reconnect") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("connection: stale detection with a silent server, then dead -> reconnect",
+                    test_connection_2) {
+  Reactor reactor(backend);
   VenueHandler venue;
   venue.ack = false;  // never sends anything
   HttpServer<PlainStream> server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
@@ -189,8 +191,8 @@ TEST_CASE("connection: stale detection with a silent server, then dead -> reconn
   }
 }
 
-TEST_CASE("connection: max_lifetime rollover is make-before-break") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("connection: max_lifetime rollover is make-before-break", test_connection_3) {
+  Reactor reactor(backend);
   VenueHandler venue;
   HttpServer<PlainStream> server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
   server.set_ws_handler(&venue);
@@ -225,8 +227,9 @@ TEST_CASE("connection: max_lifetime rollover is make-before-break") {
   conn.close();
 }
 
-TEST_CASE("connection: refused connects back off until the server appears") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("connection: refused connects back off until the server appears",
+                    test_connection_4) {
+  Reactor reactor(backend);
   std::uint16_t port = 0;
   { TcpSocket probe = listen_ephemeral(port); }
   Events ev;
@@ -244,8 +247,9 @@ TEST_CASE("connection: refused connects back off until the server appears") {
   conn.close();
 }
 
-TEST_CASE("connection: wss:// with the fixture CA reports TlsHandshake") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("connection: wss:// with the fixture CA reports TlsHandshake",
+                    test_connection_5) {
+  Reactor reactor(backend);
   VenueHandler venue;
   TlsContext sctx =
       TlsContext::server(tls_fixture("cert.pem").string(), tls_fixture("key.pem").string());
@@ -296,8 +300,8 @@ TEST_CASE("connection: wss:// with the fixture CA reports TlsHandshake") {
   }
 }
 
-TEST_CASE("connection: config validation") {
-  Reactor reactor;
+FASTMM_BACKEND_TEST("connection: config validation", test_connection_6) {
+  Reactor reactor(backend);
   Events ev;
   ConnectionConfig cfg;
   cfg.url = "http://x/";

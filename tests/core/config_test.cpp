@@ -239,3 +239,18 @@ TEST_CASE("core.config: engine tsc_recalibrate_s defaults to 10, 0 disables, neg
   CHECK(Config::parse("[engine]\ntsc_recalibrate_s = 3\n").warnings.empty());
   CHECK_THROWS_AS(Config::parse("[engine]\ntsc_recalibrate_s = -1\n"), ConfigError);
 }
+
+TEST_CASE("config: engine net_backend selects the network reactor") {
+  CHECK(Config::parse("[engine]\n").engine.net_backend == "epoll");
+  const Config c = Config::parse("[engine]\nnet_backend = \"io_uring\"\n");
+  CHECK(c.engine.net_backend == "io_uring");
+  CHECK(c.warnings.empty());
+  CHECK(c.redacted().find("net_backend = \"io_uring\"") != std::string::npos);
+  int line = -1;
+  try {
+    static_cast<void>(Config::parse("[engine]\nnet_backend = \"kqueue\"\n"));
+  } catch (const ConfigError& e) {
+    line = e.line();
+  }
+  CHECK(line == 2);
+}

@@ -46,6 +46,7 @@ struct EngineSection {
   int cpu = -1;
   std::vector<int> net_cpus;
   std::string spin_mode = "adaptive";
+  std::string net_backend = "epoll";  // net::Reactor backend: "epoll" | "io_uring"
   bool journal = true;
   std::string journal_dir = "runs";
   std::string epoch_file = "runs/session_epoch";

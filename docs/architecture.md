@@ -7,7 +7,7 @@ replay.**
 
 ```
              ┌──────────────────────────── net thread (per venue) ────────────────────────────┐
- Venue WS ──►│ epoll ─ TLS (OpenSSL memory BIO) ─ WebSocket frames ─ simdjson ─ book sync      │──► md / order MsgRing ──┐
+ Venue WS ──►│ reactor ─ TLS (OpenSSL memory BIO) ─ WebSocket frames ─ simdjson ─ book sync    │──► md / order MsgRing ──┐
  Venue WS/REST◄ WebSocket write / HTTP/1.1 keep-alive ◄── order encoder + signer ◄──────────────│◄── outbound MsgRing ◄─┐ │
              └────────────────────────────────────────────────────────────────────────────────┘                        │ │
                                                                                                                         │ ▼
@@ -31,7 +31,7 @@ threads for the whole session:
 
 | Thread | Owns | Waits by |
 |---|---|---|
-| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait`, busy (`spin_mode = busy`) or with a 1 ms timeout (`adaptive`) |
+| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), busy (`spin_mode = busy`) or with a 1 ms timeout (`adaptive`) |
 | `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing, its `TscClock` copy | busy-spin, adaptive back-off with `spin_mode = adaptive` |
 | `fm-journal` (when journaling) | `JournalFileWriter`: drains the journal ring into the `.fmj` file | spin, then short sleeps |
 | log sink (`Logger::start`) | formats log records from every thread's ring and writes them | spin, then short sleeps |
@@ -41,6 +41,69 @@ All queues are single-producer/single-consumer (`MsgRing`, byte-oriented, variab
 64-byte-aligned messages). N producers means N rings; the engine polls them round-robin with a
 batch cap so one venue cannot starve another. The order in which the engine consumes events *is*
 the canonical order and is what the journal records, so replay is exact.
+
+## Network reactor
+
+`net::Reactor` (`include/fastmm/net/reactor.hpp`) is the single-threaded event loop under every
+connection: descriptors registered with an `IoHandler`, a timer min-heap, and a mailbox
+(`post()` / `wake()` through an eventfd), the only part that other threads may call. One
+`run_once()` waits for I/O (at most until the next timer or `max_wait_ms`), dispatches it, then
+runs posted tasks and expired timers, without allocating. The connection, TLS, WebSocket and HTTP
+code only uses registration (`add`, `modify`, `remove`) and timers, so it runs unchanged on either
+backend. `[engine] net_backend` selects the backend for `fastmm-live` and `fastmm-sim-exchange`.
+
+| | `epoll` (default) | `io_uring` |
+|---|---|---|
+| registration | `epoll_ctl`, edge-triggered, `EPOLLRDHUP` | one multishot `IORING_OP_POLL_ADD` per fd with `POLLRDHUP`; `POLLOUT` only while the registration asks for `Write` |
+| modify | `EPOLL_CTL_MOD` | `IORING_POLL_UPDATE_EVENTS` on the live poll request |
+| remove | `EPOLL_CTL_DEL` | `IORING_OP_POLL_REMOVE`, submitted immediately |
+| wait | `epoll_wait`, timeout rounded up to whole ms | `io_uring_enter` with `IORING_ENTER_EXT_ARG`, timeout in ns |
+| busy poll | `epoll_wait` with a zero timeout every iteration | reads the completion ring in user space; enters the kernel only to submit, or when the kernel sets `IORING_SQ_TASKRUN` or `IORING_SQ_CQ_OVERFLOW` |
+
+Both backends map events the same way: `POLLERR` calls `on_error(SO_ERROR)`, `POLLIN`,
+`POLLRDHUP` or `POLLHUP` call `on_readable()`, `POLLOUT` calls `on_writable()`. The handler is looked
+up again for every event, so a handler that an earlier callback in the same batch removed is not
+called, and one it replaced receives the event instead.
+
+The io_uring backend talks to the kernel through the raw `io_uring_setup` / `io_uring_enter`
+system calls and `<linux/io_uring.h>`; liburing is not a dependency.
+
+* **Ring.** The SQ and CQ rings and the SQE array are mmap'd (one mapping when the kernel has
+  `IORING_FEAT_SINGLE_MMAP`): 512 SQEs, 4096 CQEs, with `IORING_SETUP_SUBMIT_ALL`, `COOP_TASKRUN`
+  and `TASKRUN_FLAG` on 5.19 and newer. `EXT_ARG` and `NODROP` are required. Registrations are
+  queued and go out with the next wait, except `remove()`, which submits at once.
+* **Support probe.** `Reactor::io_uring_supported()` creates a small ring once and checks that a
+  multishot poll on an eventfd can be updated and then reports `IORING_CQE_F_MORE`. It is false on
+  ENOSYS, EPERM (`kernel.io_uring_disabled`, seccomp), ENOMEM and kernels older than 5.13;
+  `fastmm-live` and the simulator then log a warning and use epoll.
+* **Stale completions.** `user_data` packs the operation (4 bits), a registration generation
+  (28 bits) and the fd (32 bits). `add()` bumps the generation, so completions still queued for a
+  removed registration, or for an earlier file that had the same fd number, are dropped.
+* **Re-arming.** A multishot poll that ends without `IORING_CQE_F_MORE` (CQ overflow, a racing
+  update) is re-armed while its registration exists. An update or remove that races with a
+  completing poll (`-EALREADY`) is retried. A poll the kernel refuses (for example `-EBADF`) is
+  reported once through `on_error(errno)`.
+* **Descriptor lifetime.** A poll request holds a reference to its file, so a socket closed while
+  still registered stays open (no FIN, port still bound) until the request is cancelled. Always
+  `remove()` before `close()`, as the net classes do. If a socket number is reused while the old
+  registration is still there, `add()` sees a different inode and cancels the stale request.
+  eventfd and timerfd descriptors share one anonymous inode, so this check cannot tell two of them
+  apart.
+* **Wake-ups.** A multishot poll reports every wake-up of the socket's wait queue, so a handler
+  can be called for readiness it has already consumed. Handlers read or write until EAGAIN, so
+  this costs one failed system call.
+
+**Which one to use.** epoll stays the default. `bench/bench_reactor.cpp` measures 64-byte
+loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a
+shared 8-core host) the two are within measurement noise: p50 about 12.8 µs for both when client
+and server share one reactor; 10.8 to 11.3 µs for both, depending on the run, with the server on
+its own busy-polling thread; about 74 µs for both when both sides block and each round trip needs
+two cross-thread wake-ups (one epoll run out of five came in at 18 µs and did not reproduce). The
+time goes to the loopback TCP stack and the `read`/`write` system calls, which both backends make
+the same way, not to readiness notification. io_uring only saves the empty `epoll_wait` of an idle busy-polling loop.
+It could win clearly once reads and writes themselves go through the ring (multishot receive,
+registered buffers), which this reactor does not do. Measure on the production kernel before
+switching.
 
 ## Hot-path rules
 
