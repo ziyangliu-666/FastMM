@@ -265,6 +265,13 @@ void MatchingEngine::remove_resting(Handle32 h,
   SimBook& book = books_[o.instrument.value];
   PriceLevel* level = book.find(o.side, o.price);
   FASTMM_ASSERT(level != nullptr);
+  if (FASTMM_UNLIKELY(level == nullptr)) {
+    // A resting order always has its level; if that invariant is ever broken, release the order
+    // without touching the book instead of dereferencing null (FASTMM_ASSERT is off in release).
+    sink_->on_cancel(o, why, now);
+    free_order(h, o);
+    return;
+  }
   level->qty -= o.leaves();
   unlink(o, *level);
   if (level->count == 0) {
