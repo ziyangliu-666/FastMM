@@ -5,6 +5,20 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Deribit connector (`kind = "deribit"`), JSON-RPC 2.0 over WebSocket for options and futures:
+  reference data from public/get_instruments (tick_size_steps, contract_size, inverse), book sync on
+  change_id/prev_change_id with resubscribe on gaps, ticker and trades, client_credentials auth with
+  token refresh, heartbeat replies, private/buy, sell, edit and cancel (label = client id,
+  reject_post_only), user.orders/user.trades, open-order reconciliation, cancel-on-disconnect with a
+  REST cancel-all, credit-based order rate limiting; `configs/deribit-testnet.toml` and the opt-in
+  `live.deribit` test. The public part passed against the testnet; private payloads follow the
+  published schemas and a fake exchange, not recorded traffic (no keys were available).
+- `EventType::OptionTicker` (`OptionTickerMsg`): mark price, implied vols, greeks and underlying,
+  with an `on_option_ticker` strategy hook, journal support and `tools/journal_dump.py` decoding.
+- `core/options/black76.hpp`: Black-76 price and greeks and a bounded implied-volatility solver.
+- `options_mm` strategy (Sim, Replay, Live): Black-76 quotes on the venue's or a smoothed implied vol
+  with portfolio-delta and inventory skew, vega widening and delta, vega and position limits
+  (docs/options.md).
 - `fastmm::codecs` (M3), a core-only library for exchange wire protocols. FIX 4.4: zero-copy
   `FixView`, `FixBuilder` with BodyLength/CheckSum backfill, framer, initiator/acceptor session
   (logon, heartbeats, test requests, gap detection with resend, PossDup and GapFill, sequence

@@ -95,7 +95,7 @@ python examples/python/backtest_quickstart.py
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
 | Sim exchange | `apps/fastmm-sim-exchange` | Binance-compatible REST, market-data WebSocket, WS API and user stream over TCP or TLS, with fault injection (disconnects, dropped diffs, delayed acks, clock skew) |
 | Backtesting | `include/fastmm/backtest` | journal / CSV / numpy sources, fees, PnL, Sharpe, drawdown, parameter sweeps |
-| Strategies | `include/fastmm/strategies` | BasicMM with inventory skew, Avellaneda-Stoikov |
+| Strategies | `include/fastmm/strategies` | BasicMM with inventory skew, Avellaneda-Stoikov, OptionsMM (Black-76, delta and vega limits) |
 | Python | `python/` | `fastmm.run_backtest`, `fastmm.sweep`, zero-copy numpy in and out |
 
 ## Extending
@@ -146,7 +146,7 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [ ] Python package on PyPI (wheels build in CI; publishing is a manual step)
 - [x] FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0
 - [x] CME MDP 3.0 SBE codec with A/B arbitration and snapshot recovery
-- [ ] Deribit options with greeks-aware quoting
+- [x] Deribit options connector with Black-76 greeks-aware quoting (`options_mm`)
 - [x] Terminal monitoring UI (`fastmm-top`)
 - [x] io_uring reactor backend (`net_backend = "io_uring"`)
 - [ ] Kernel-bypass transports
