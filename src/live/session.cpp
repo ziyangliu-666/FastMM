@@ -1,6 +1,4 @@
-#include "live_backend.hpp"
-
-#include "live_runners.hpp"
+#include "fastmm/live/session.hpp"
 
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
@@ -11,6 +9,7 @@
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
+#include "fastmm/live/live_backend.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
@@ -199,28 +198,41 @@ const char* short_state(venues::ChannelState s) {
 }  // namespace
 
 int run_live(const Config& cfg, const LiveOptions& opts) {
+  const char* prog = opts.program.c_str();
   // ---- instruments, venues, reference data (main thread, blocking) ---------------------
   InstrumentTable instruments;
   try {
     instruments = load_instruments(cfg);
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "fastmm-live: %s\n", e.what());
+    std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return kExitConfig;
   }
   if (instruments.size() == 0) {
-    std::fprintf(stderr, "fastmm-live: no [[instruments]] configured\n");
+    std::fprintf(stderr, "%s: no [[instruments]] configured\n", prog);
     return kExitConfig;
   }
   const StrategyEntry* strategy = StrategyRegistry::instance().find(cfg.strategy.name);
   if (strategy == nullptr || !strategy->supports(TransportKind::Live)) {
-    std::fprintf(
-        stderr, "fastmm-live: unknown strategy '%s' (available:", cfg.strategy.name.c_str());
+    std::fprintf(stderr, "%s: unknown strategy '%s' (available:", prog, cfg.strategy.name.c_str());
     for (const StrategyEntry& e : list_strategies()) {
       if (e.supports(TransportKind::Live))
         std::fprintf(stderr, " %.*s", static_cast<int>(e.name.size()), e.name.data());
     }
     std::fprintf(stderr, ")\n");
     return kExitConfig;
+  }
+  // Parameter names are checked before any venue is contacted; values are checked when the engine
+  // is built.
+  for (const auto& [key, value] : cfg.strategy.params) {
+    if (strategy->schema->find(key) == nullptr) {
+      std::fprintf(stderr,
+                   "%s: %.*s: unknown parameter '%s' (see --list-strategies)\n",
+                   prog,
+                   static_cast<int>(strategy->name.size()),
+                   strategy->name.data(),
+                   key.c_str());
+      return kExitConfig;
+    }
   }
 
   std::vector<std::unique_ptr<VenueSlot>> slots;
@@ -234,18 +246,18 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     try {
       slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vopts);
     } catch (const std::exception& e) {
-      std::fprintf(stderr, "fastmm-live: %s\n", e.what());
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
       return kExitConfig;
     }
     if (auto r = slot->venue->load_reference_data(instruments); !r) {
-      std::fprintf(stderr, "fastmm-live: %s\n", r.error().c_str());
+      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
       return kExitVenue;
     }
     slots.push_back(std::move(slot));
   }
   venues::SymbolTable symbols;
   if (!symbols.build(instruments)) {
-    std::fprintf(stderr, "fastmm-live: duplicate or empty instrument symbols\n");
+    std::fprintf(stderr, "%s: duplicate or empty instrument symbols\n", prog);
     return kExitConfig;
   }
 
@@ -360,7 +372,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     info.config_toml = effective;
     journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info);
     if (!journal->ok()) {
-      std::fprintf(stderr, "fastmm-live: cannot open journal %s\n", path.c_str());
+      std::fprintf(stderr, "%s: cannot open journal %s\n", prog, path.c_str());
       return kExitRuntime;
     }
     deps.journal_ring = journal_ring.get();
@@ -373,12 +385,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   try {
     runner = StrategyRegistry::instance().make(strategy->name, TransportKind::Live, deps);
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "fastmm-live: %s\n", e.what());
+    std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return kExitConfig;
   }
   if (runner == nullptr) {
     std::fprintf(
-        stderr, "fastmm-live: cannot build a live runner for '%s'\n", cfg.strategy.name.c_str());
+        stderr, "%s: cannot build a live runner for '%s'\n", prog, cfg.strategy.name.c_str());
     return kExitConfig;
   }
 

@@ -8,13 +8,15 @@
 //   auto runner = StrategyRegistry::instance().make("basic_mm", TransportKind::Sim, deps);
 //   sim::SimDriver driver(backend.clock, backend.transport, backend.feed, backend.hooks);
 //
-// Strategy registrations call make_sim_or_replay_runner<S>() from their factory.
+// sim_factory<S> and replay_factory<S> (strategies/factory_sim.hpp, factory_replay.hpp) call
+// make_runner<S>() on the backend RunnerDeps::backend points at.
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/sim/journal_feed.hpp"
 #include "fastmm/sim/replay_transport.hpp"
 #include "fastmm/sim/sim_driver.hpp"
 #include "fastmm/sim/sim_transport.hpp"
+#include "fastmm/strategies/engine_factory.hpp"
 #include "fastmm/strategies/registry.hpp"
 
 #include <memory>
@@ -62,21 +64,5 @@ struct ReplayBackend {
     return r;
   }
 };
-
-// Factory body shared by every strategy registration: dispatches on the transport kind.
-template <StrategyLike S>
-std::unique_ptr<IEngineRunner> make_sim_or_replay_runner(TransportKind kind, RunnerDeps& deps) {
-  if (deps.backend == nullptr) return nullptr;
-  switch (kind) {
-    case TransportKind::Sim:
-      return static_cast<SimBackend*>(deps.backend)->make_runner<S>(deps);
-    case TransportKind::Replay:
-      return static_cast<ReplayBackend*>(deps.backend)->make_runner<S>(deps);
-    case TransportKind::Live:
-    case TransportKind::Count:
-      break;
-  }
-  return nullptr;
-}
 
 }  // namespace fastmm::sim

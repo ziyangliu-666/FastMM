@@ -57,11 +57,13 @@ configure_file(include/fastmm/version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generat
 # ---------------------------------------------------------------------------
 add_subdirectory(src/core)
 add_subdirectory(src/sim)
+add_subdirectory(src/strategies)
 add_subdirectory(src/backtest)
 add_subdirectory(src/codecs)
 if(FASTMM_BUILD_NET)
   add_subdirectory(src/net)
   add_subdirectory(src/venues)
+  add_subdirectory(src/live)
 endif()
 
 if(FASTMM_BUILD_APPS)
@@ -88,9 +90,9 @@ endif()
 if(FASTMM_INSTALL)
   include(GNUInstallDirs)
   include(CMakePackageConfigHelpers)
-  set(_fastmm_export_targets fastmm_core fastmm_sim fastmm_backtest fastmm_codecs fastmm_warnings fastmm_lowlatency)
+  set(_fastmm_export_targets fastmm_core fastmm_sim fastmm_strategies fastmm_backtest fastmm_codecs fastmm_warnings fastmm_lowlatency)
   if(FASTMM_BUILD_NET)
-    list(APPEND _fastmm_export_targets fastmm_net fastmm_venues)
+    list(APPEND _fastmm_export_targets fastmm_net fastmm_venues fastmm_live)
   endif()
   install(TARGETS ${_fastmm_export_targets} EXPORT fastmmTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

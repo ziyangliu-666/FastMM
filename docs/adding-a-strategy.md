@@ -219,28 +219,27 @@ rules and limits.
 
 ## Registering and testing
 
-1. **Register it for simulation, backtests, replay and Python.** Strategies are registered
-   explicitly, never through static initialisers: an object file inside a static library is only
-   linked when something references it, so a self-registering strategy would silently disappear
-   from some binaries. Add a factory and one `add` call to `src/backtest/registrations.cpp`:
+1. **Register it for backtests, replay and live trading.** One call registers all three runtimes.
+   Strategies are registered explicitly, never through static initialisers: an object file inside
+   a static library is only linked when something references it.
 
-   ```cpp
-   #include "fastmm/strategies/my_quoter.hpp"
+   - In FastMM's tree, add the type and header to the `STRATEGIES` list in
+     `src/strategies/CMakeLists.txt` (`fastmm::MyQuoter fastmm/strategies/my_quoter.hpp`). The
+     build compiles its engines and adds it to `fastmm::register_builtin_strategies`, so
+     `fastmm-live`, `fastmm-backtest`, `fastmm-replay`, sweeps and `fastmm.strategies()` in Python
+     find it by name.
+   - In your own project, a registration function in a file that includes
+     `fastmm/strategies/factories.hpp` does the same, and your apps pass it to
+     `fastmm::cli::live`, `backtest` and `replay`:
 
-   std::unique_ptr<IEngineRunner> make_my_quoter(TransportKind k, RunnerDeps& d) {
-     return sim::make_sim_or_replay_runner<MyQuoter>(k, d);
-   }
+     ```cpp
+     void mm::register_strategies(fastmm::StrategyRegistry& r) { fastmm::register_strategy<mm::MyQuoter>(r); }
+     ```
 
-   // inside register_builtin_strategies(), which registers the Sim and Replay factories:
-   for (const TransportKind k : {TransportKind::Sim, TransportKind::Replay}) {
-     static_cast<void>(r.add(MyQuoter::name(), &MyQuoter::schema(), k, make_my_quoter));
-   }
-   ```
-
-   `fastmm-backtest`, `fastmm-replay`, the tests and the Python module all call
-   `fastmm::bt::register_builtin_strategies()`, so the strategy is then available everywhere by
-   name, and `fastmm.strategies()` in Python lists its parameter schema. Without registration,
-   `fastmm::bt::run_backtest<MyQuoter>(config)` runs it directly.
+   [Register a strategy](how-to/strategies/register-a-strategy.md) covers both cases, and
+   `examples/external-project/` is a complete project to copy. A factory that is registered but
+   never compiled is a link error. Without registration, `fastmm::bt::run_backtest<MyQuoter>(config)`
+   runs the strategy directly.
 
 2. **Test the hooks with the harness** in `tests/strategies/my_quoter_test.cpp`.
    `fastmm::sim::StrategyHarness<S>` (`include/fastmm/testing/strategy_harness.hpp`) runs the
@@ -275,4 +274,6 @@ rules and limits.
        --strategy my_quoter --param half_spread_bps=0.02
    ```
 
-   `examples/cpp/custom_strategy.cpp` shows the same flow as a self-contained program.
+   `fastmm-live` takes the same `--strategy` and `--param` flags; a strategy other than the
+   config's ignores `[strategy.params]`. `examples/cpp/custom_strategy.cpp` shows the backtest as a
+   self-contained program.

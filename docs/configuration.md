@@ -131,8 +131,10 @@ max_inventory = 0.01
 ```
 
 Parameter names, types, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations,
-for example `include/fastmm/strategies/basic_mm.hpp`; `fastmm-backtest --list-strategies` prints
-them. `decimal` values (quantities, prices) take up to 8 decimals and `bps` values up to 4, both
+for example `include/fastmm/strategies/basic_mm.hpp`; `fastmm-live --list-strategies` and
+`fastmm-backtest --list-strategies` print them (`--format json` for tools). `--strategy <name>` and
+`--param key=value` on either command line override `[strategy]`: a strategy other than the
+config's ignores `[strategy.params]`, and a journal records the configuration after the overrides. `decimal` values (quantities, prices) take up to 8 decimals and `bps` values up to 4, both
 parsed exactly (exponent notation such as `2e-05` is accepted); `ms` and `int` values are whole
 numbers. An unknown parameter, a value with too many decimals or an out-of-range value is an error
 at startup.

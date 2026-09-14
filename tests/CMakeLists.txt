@@ -48,6 +48,13 @@ endfunction()
 
 fastmm_test(core      LABELS "unit;property" LIBS fastmm::core)
 fastmm_test(strategies LABELS "unit"         LIBS fastmm::backtest)
+# A strategy library in its own STATIC archive, referenced only through its registration functions.
+add_library(fastmm_test_strategy_module STATIC
+  modules/module/strategies.cpp modules/module/shadow_register.cpp modules/module/shadow_sim.cpp)
+fastmm_target_defaults(fastmm_test_strategy_module)
+target_include_directories(fastmm_test_strategy_module PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/modules)
+target_link_libraries(fastmm_test_strategy_module PUBLIC fastmm::sim)
+fastmm_test(modules   LABELS "unit"          LIBS fastmm_test_strategy_module fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
 fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim)
@@ -148,12 +155,156 @@ fastmm_compile_fail(literal_qty_nine_decimals EXPECT fail REGEX
 fastmm_compile_fail(literal_bps_five_decimals EXPECT fail REGEX
   "${_cf_prefix}_bps literal needs more than 4 decimals")
 
+# Link-fail tests (label compile_fail): the case compiles but must fail to link with the expected
+# message (a missing factory instantiation); the control (FASTMM_CF_CONTROL) must link.
+#   fastmm_link_fail(<case> REGEX <regex>)
+function(fastmm_link_fail name)
+  cmake_parse_arguments(LF "" "REGEX" "" ${ARGN})
+  foreach(_variant case control)
+    set(_tgt fastmm_lf_${name}_${_variant})
+    add_executable(${_tgt} EXCLUDE_FROM_ALL ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/${name}.cpp)
+    fastmm_target_defaults(${_tgt})
+    target_link_libraries(${_tgt} PRIVATE fastmm::strategies)
+  endforeach()
+  target_compile_definitions(fastmm_lf_${name}_control PRIVATE FASTMM_CF_CONTROL=1)
+  foreach(_variant case control)
+    set(_tgt fastmm_lf_${name}_${_variant})
+    if(_variant STREQUAL "control")
+      set(_expect pass)
+      set(_test link_fail.${name}.control)
+    else()
+      set(_expect fail)
+      set(_test link_fail.${name})
+    endif()
+    add_test(NAME ${_test}
+      COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR} -DTARGET=${_tgt}
+              "-DOBJECTS=$<TARGET_FILE:${_tgt}>" -DEXPECT=${_expect}
+              -P ${CMAKE_CURRENT_SOURCE_DIR}/compile_fail/run_case.cmake)
+    set_tests_properties(${_test} PROPERTIES LABELS compile_fail RESOURCE_LOCK fastmm_compile_fail)
+  endforeach()
+  set_tests_properties(link_fail.${name} PROPERTIES
+    PASS_REGULAR_EXPRESSION "${LF_REGEX}" FAIL_REGULAR_EXPRESSION "compile_fail: unexpected")
+endfunction()
+
+fastmm_link_fail(missing_factory_instantiation REGEX
+  "undefined (reference|symbol).*fastmm::live_factory<LinkMM>")
+
 # fastmm-top without a running engine: a clear message and exit code 3.
 if(TARGET fastmm-top)
   add_test(NAME apps.fastmm-top.no_status COMMAND fastmm-top --once --path ${CMAKE_CURRENT_BINARY_DIR}/tmp/no-such.status)
   set_tests_properties(apps.fastmm-top.no_status PROPERTIES LABELS "unit" WILL_FAIL TRUE)
 endif()
 
+
+# Command-line entry points (label cli): exit codes and messages of fastmm::cli::live / backtest,
+# --list-strategies parity, and strategy modules passed to the entry points.
+#   fastmm_cli_test(<name> EXPECT_RC <n> CMD <exe> <args...> [COMPARE_CMD <exe> <args...>]
+#                   [EXPECT_REGEX <regex>] [REJECT_REGEX <regex>])
+function(fastmm_cli_test name)
+  cmake_parse_arguments(C "" "EXPECT_RC;EXPECT_REGEX;REJECT_REGEX" "CMD;COMPARE_CMD" ${ARGN})
+  # Command lists are joined with @@: ctest would split a ';' list into separate arguments.
+  string(JOIN "@@" _cmd ${C_CMD})
+  set(_args "-DCMD=${_cmd}" -DEXPECT_RC=${C_EXPECT_RC} -DWORKDIR=${CMAKE_CURRENT_BINARY_DIR}/tmp/cli)
+  if(DEFINED C_EXPECT_REGEX)
+    list(APPEND _args "-DEXPECT_REGEX=${C_EXPECT_REGEX}")
+  endif()
+  if(DEFINED C_REJECT_REGEX)
+    list(APPEND _args "-DREJECT_REGEX=${C_REJECT_REGEX}")
+  endif()
+  if(C_COMPARE_CMD)
+    string(JOIN "@@" _compare ${C_COMPARE_CMD})
+    list(APPEND _args "-DCOMPARE_CMD=${_compare}")
+  endif()
+  add_test(NAME ${name} COMMAND ${CMAKE_COMMAND} ${_args} -P ${CMAKE_CURRENT_SOURCE_DIR}/cli/run_cli.cmake)
+  set_tests_properties(${name} PROPERTIES LABELS "unit;cli")
+endfunction()
+
+set(_json_builtin ".name.: .options_mm., .transports.: \\[.sim., .replay., .live.\\]")
+if(TARGET fastmm-backtest)
+  fastmm_cli_test(apps.fastmm-backtest.list_strategies_json EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-backtest> --list-strategies --format json EXPECT_REGEX "${_json_builtin}")
+  fastmm_cli_test(apps.fastmm-backtest.format_without_list EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-backtest> --format json EXPECT_REGEX "fastmm-backtest: --format applies to --list-strategies")
+  fastmm_cli_test(apps.fastmm-backtest.unknown_strategy EXPECT_RC 3
+    CMD $<TARGET_FILE:fastmm-backtest> --config ${PROJECT_SOURCE_DIR}/configs/backtest-example.toml --strategy nope
+    EXPECT_REGEX "fastmm-backtest: unknown strategy 'nope'")
+endif()
+if(TARGET fastmm-live)
+  # Built-in parity: the live and backtest apps offer the same strategies, for all three transports.
+  fastmm_cli_test(apps.list_strategies.parity_text EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-live> --list-strategies COMPARE_CMD $<TARGET_FILE:fastmm-backtest> --list-strategies
+    EXPECT_REGEX "avellaneda_stoikov")
+  fastmm_cli_test(apps.list_strategies.parity_json EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-live> --list-strategies --format json
+    COMPARE_CMD $<TARGET_FILE:fastmm-backtest> --list-strategies --format json
+    EXPECT_REGEX "${_json_builtin}")
+  fastmm_cli_test(apps.fastmm-live.bad_format EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-live> --list-strategies --format yaml EXPECT_REGEX "fastmm-live: bad --format 'yaml'")
+  fastmm_cli_test(apps.fastmm-live.bad_param_syntax EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-live> --config x.toml --param half_spread_bps EXPECT_REGEX "--param expects key=value")
+  # configs/sim-local.toml with its venue on a closed port: every case below fails before trading.
+  file(READ ${PROJECT_SOURCE_DIR}/configs/sim-local.toml _sim_local)
+  string(REPLACE "127.0.0.1:9080" "127.0.0.1:1" _sim_local "${_sim_local}")
+  set(_unreachable ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/sim-local-unreachable.toml)
+  file(CONFIGURE OUTPUT ${_unreachable} CONTENT "${_sim_local}" @ONLY)
+  set(_live_offline $<TARGET_FILE:fastmm-live> --config ${_unreachable} --dry-run --no-journal --no-status --duration 1s)
+  fastmm_cli_test(apps.fastmm-live.unknown_strategy EXPECT_RC 3
+    CMD ${_live_offline} --strategy nope
+    EXPECT_REGEX "fastmm-live: unknown strategy 'nope' \\(available: basic_mm avellaneda_stoikov options_mm\\)")
+  fastmm_cli_test(apps.fastmm-live.unknown_param EXPECT_RC 3
+    CMD ${_live_offline} --param no_such_param=1
+    EXPECT_REGEX "fastmm-live: basic_mm: unknown parameter 'no_such_param'")
+  # --strategy clears the config's basic_mm parameters: the run gets past the parameter check and
+  # stops at the unreachable venue (exit 4), and basic_mm parameters no longer apply.
+  fastmm_cli_test(apps.fastmm-live.strategy_clears_params EXPECT_RC 4
+    CMD ${_live_offline} --strategy avellaneda_stoikov --param gamma=0.2
+    EXPECT_REGEX "note: ignoring \\[strategy.params\\] of 'basic_mm' for --strategy avellaneda_stoikov"
+    REJECT_REGEX "unknown parameter")
+  fastmm_cli_test(apps.fastmm-live.params_follow_strategy EXPECT_RC 3
+    CMD ${_live_offline} --strategy avellaneda_stoikov --param half_spread_bps=5
+    EXPECT_REGEX "fastmm-live: avellaneda_stoikov: unknown parameter 'half_spread_bps'")
+endif()
+
+# Apps built from the test strategy library: the module is listed for every transport, runs, and a
+# name clash with a built-in strategy exits with code 3.
+foreach(_app backtest conflict)
+  add_executable(fastmm_test_module_${_app} modules/apps/${_app}_main.cpp)
+  fastmm_target_defaults(fastmm_test_module_${_app})
+  target_link_libraries(fastmm_test_module_${_app} PRIVATE fastmm_test_strategy_module fastmm::backtest)
+endforeach()
+set(_json_module ".name.: .test_module_mm., .transports.: \\[.sim., .replay., .live.\\]")
+fastmm_cli_test(modules.cli.backtest_lists_module EXPECT_RC 0
+  CMD $<TARGET_FILE:fastmm_test_module_backtest> --list-strategies --format json EXPECT_REGEX "${_json_module}")
+fastmm_cli_test(modules.cli.backtest_runs_module EXPECT_RC 0
+  CMD $<TARGET_FILE:fastmm_test_module_backtest> --config ${PROJECT_SOURCE_DIR}/configs/backtest-example.toml
+      --data synthetic --strategy test_module_mm --param edge_ticks=1 --duration 10 --out -
+  EXPECT_REGEX "fills \\(maker / taker\\)")
+fastmm_cli_test(modules.cli.conflict_exits_3 EXPECT_RC 3
+  CMD $<TARGET_FILE:fastmm_test_module_conflict> --list-strategies
+  EXPECT_REGEX "fastmm_test_module_conflict: strategy 'basic_mm' \\(sim\\) is already registered by different code")
+if(TARGET fastmm::live)
+  add_executable(fastmm_test_module_live modules/apps/live_main.cpp)
+  fastmm_target_defaults(fastmm_test_module_live)
+  target_link_libraries(fastmm_test_module_live PRIVATE fastmm_test_strategy_module fastmm::live)
+  fastmm_cli_test(modules.cli.live_lists_module EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm_test_module_live> --list-strategies --format json EXPECT_REGEX "${_json_module}")
+endif()
+
+# The package config of a FastMM built without networking: find_package(fastmm COMPONENTS live)
+# fails and says why. Only fastmmConfig.cmake is generated; the check returns before any target
+# file is read.
+include(CMakePackageConfigHelpers)
+set(_nonet_config_dir ${CMAKE_CURRENT_BINARY_DIR}/tmp/fastmm-config-nonet)
+block(SCOPE_FOR VARIABLES)
+  set(FASTMM_BUILD_NET OFF)
+  configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/fastmmConfig.cmake.in
+    ${_nonet_config_dir}/fastmmConfig.cmake INSTALL_DESTINATION lib/cmake/fastmm)
+endblock()
+add_test(NAME cmake.find_package.live_without_net
+  COMMAND ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_SOURCE_DIR}/cmake/find_live_without_net
+          -B ${CMAKE_CURRENT_BINARY_DIR}/tmp/find-live-without-net -Dfastmm_DIR=${_nonet_config_dir})
+set_tests_properties(cmake.find_package.live_without_net PROPERTIES LABELS "unit"
+  PASS_REGULAR_EXPRESSION "component 'live' \\(fastmm::live\\) is not available:.*FASTMM_BUILD_NET=OFF\\.")
 
 # tools/pnl_report.py checks its journal reader and PnL arithmetic on a synthetic journal.
 find_package(Python3 COMPONENTS Interpreter QUIET)

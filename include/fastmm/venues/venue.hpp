@@ -3,7 +3,7 @@
 // is on the hot path; the hot path lives in the connector's feed/gateway objects that the
 // concrete Venue owns and drives from its reactor thread.
 //
-// Threading contract (see apps/fastmm-live/live_backend.hpp):
+// Threading contract (see include/fastmm/live/session.hpp):
 //   * load_reference_data() and attach() run once on the main thread before any reactor
 //     thread starts (blocking REST allowed).
 //   * connect/disconnect/subscribe/on_timer/on_wake/request_open_orders run on the venue's

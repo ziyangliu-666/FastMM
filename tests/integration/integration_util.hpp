@@ -216,7 +216,7 @@ struct LiveEngineOptions {
   std::uint16_t session_epoch = 1;  // fastmm-live takes it from SessionEpochStore
 };
 
-// The fastmm-live session wiring (apps/fastmm-live/live_backend.cpp) for one venue and BasicMM.
+// The fastmm-live session wiring (src/live/session.cpp) for one venue and BasicMM.
 class LiveEngine {
  public:
   using EngineT = Engine<BasicMM, TscClock, LiveTransport, RingFeed>;

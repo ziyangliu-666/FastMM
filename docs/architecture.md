@@ -26,7 +26,7 @@ replay.**
 
 ## Threads
 
-The live application (`fastmm-live`, `apps/fastmm-live/live_backend.cpp`) runs a fixed set of
+The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 threads for the whole session:
 
 | Thread | Owns | Waits by |
@@ -124,10 +124,16 @@ engine plus a seeded latency model). Timers and RNG are virtualised the same way
 `fastmm-replay` tool feeds a recorded journal through the engine and verifies that the outbound
 stream is byte-identical.
 
-Strategies are built through the `StrategyRegistry`, which keeps one factory per transport kind:
-the backtest library registers the Sim and Replay factories
-(`bt::register_builtin_strategies()`), and `fastmm-live` registers the Live ones
-(`register_live_strategies()`), both explicitly at startup.
+Strategies are built through the `StrategyRegistry`, which keeps one factory per transport kind
+(Sim, Replay, Live). A strategy library registers its strategies with one function that calls
+`register_strategy<S>(r)` per strategy and so adds all three factories; the built-in strategies are
+the module `fastmm::register_builtin_strategies` in `fastmm::strategies`. The command lines
+(`fastmm::cli::live`, `backtest`, `replay`) register the built-in strategies and then the modules
+the app passes, explicitly at startup; `run_backtest(cfg, name)`, `replay_journal`, sweeps and the
+Python module register the built-in strategies through `bt::register_builtin_strategies()`. The
+factory templates are declared in `strategies/module.hpp` and defined in
+`strategies/factory_{sim,replay,live}.hpp`, so a registered factory that no file compiles is a link
+error. See [Register a strategy](how-to/strategies/register-a-strategy.md).
 
 ## Clock calibration
 

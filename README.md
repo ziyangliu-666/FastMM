@@ -102,8 +102,10 @@ python examples/python/backtest_quickstart.py
 ## Extending
 
 **Add a strategy** in one header: implement the hooks you need, declare parameters with
-`FASTMM_PARAM`, register it. The engine checks hook signatures at compile time (a wrong one is a
-readable build error) and Python sees the parameter schema automatically. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md).
+`FASTMM_PARAM`, register it with one call for backtests, replay and live trading. The engine checks
+hook signatures at compile time (a wrong one is a readable build error) and a registered strategy
+that was never compiled is a link error. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md);
+your own project on an installed FastMM: [`examples/external-project/`](examples/external-project/).
 
 ```cpp
 // FASTMM_PARAM_BPS(half_spread_bps, 5_bps, 0_bps, 1000_bps, "half spread around mid")

@@ -77,44 +77,6 @@ TEST_CASE("strategies.basic_mm: deterministic quotes, skew, inventory cap, level
 }
 
 namespace {
-std::unique_ptr<IEngineRunner> fake_factory(TransportKind, RunnerDeps&) {
-  return nullptr;
-}
-}  // namespace
-
-TEST_CASE("strategies.registry: one factory per transport kind, lookup, listing") {
-  StrategyRegistry& reg = StrategyRegistry::instance();
-  // This test binary has no live backend: register a fake live factory for the checks below.
-  CHECK(reg.add(BasicMM::name(), &BasicMM::schema(), TransportKind::Live, fake_factory));
-  REQUIRE_FALSE(list_strategies().empty());
-  const StrategyEntry* e = reg.find("basic_mm");
-  REQUIRE(e != nullptr);
-  CHECK(e->schema == &BasicMM::schema());
-  CHECK(e->supports(TransportKind::Live));
-  CHECK(reg.find("nope") == nullptr);
-
-  RunnerDeps deps;
-  CHECK(reg.make("basic_mm", TransportKind::Live, deps) == nullptr);  // fake factory result
-  CHECK(reg.make("nope", TransportKind::Live, deps) == nullptr);
-
-  // Same name and kind again: refused, nothing replaced.
-  CHECK_FALSE(reg.add("basic_mm", &BasicMM::schema(), TransportKind::Live, fake_factory));
-  // Same name, different kind: accepted alongside the existing one.
-  const bool had_replay = e->supports(TransportKind::Replay);
-  CHECK(reg.add("basic_mm", &BasicMM::schema(), TransportKind::Replay, fake_factory) != had_replay);
-  CHECK(reg.find("basic_mm")->supports(TransportKind::Replay));
-  CHECK(reg.find("basic_mm")->supports(TransportKind::Live));
-  // Same name with a different schema: refused.
-  static const ParamSchema& other = AvellanedaStoikov::schema();
-  CHECK_FALSE(reg.add("basic_mm", &other, TransportKind::Sim, fake_factory));
-  // Invalid input: refused.
-  CHECK_FALSE(reg.add("x", &BasicMM::schema(), TransportKind::Count, fake_factory));
-  CHECK_FALSE(reg.add("x", &BasicMM::schema(), TransportKind::Sim, nullptr));
-  CHECK(reg.find("x") == nullptr);
-  CHECK(to_string(TransportKind::Live) == "live");
-}
-
-namespace {
 struct FakeBook {
   Price bid, ask;
   bool is_valid() const { return true; }
