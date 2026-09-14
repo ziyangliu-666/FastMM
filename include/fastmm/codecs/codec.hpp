@@ -15,8 +15,10 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 namespace fastmm::codecs {
 
@@ -63,38 +65,48 @@ concept SessionLayer = requires(S& s, const FrameView& frame, std::int64_t now_n
   { s.state() } noexcept -> std::same_as<SessionState>;
 };
 
-// Big/little-endian helpers for packed structs (M3): explicit-width, byte-swapped on read.
-struct be16_t {
-  std::uint16_t raw;
-  [[nodiscard]] std::uint16_t get() const noexcept { return __builtin_bswap16(raw); }
-  void set(std::uint16_t v) noexcept { raw = __builtin_bswap16(v); }
+// Big/little-endian wire fields for packed structs (M3). Each holds raw bytes (alignment 1), and
+// get()/set() go through memcpy plus a byte swap, so a field at any offset of a packed layout is
+// read and written without undefined behaviour (a uint32_t member at an odd offset is misaligned,
+// and calling members on it is what UBSan reports). Never take the address of the value as an
+// integer; use get()/set().
+namespace detail {
+template <class T, bool big_endian>
+struct EndianField {
+  unsigned char raw[sizeof(T)];
+  [[nodiscard]] T get() const noexcept {
+    T v;
+    std::memcpy(&v, raw, sizeof(T));
+    return big_endian ? swap(v) : v;
+  }
+  void set(T v) noexcept {
+    const T w = big_endian ? swap(v) : v;
+    std::memcpy(raw, &w, sizeof(T));
+  }
+
+ private:
+  [[nodiscard]] static T swap(T v) noexcept {
+    switch (sizeof(T)) {
+      case 2:
+        return static_cast<T>(__builtin_bswap16(static_cast<std::uint16_t>(v)));
+      case 4:
+        return static_cast<T>(__builtin_bswap32(static_cast<std::uint32_t>(v)));
+      default:
+        return static_cast<T>(__builtin_bswap64(static_cast<std::uint64_t>(v)));
+    }
+  }
 };
-struct be32_t {
-  std::uint32_t raw;
-  [[nodiscard]] std::uint32_t get() const noexcept { return __builtin_bswap32(raw); }
-  void set(std::uint32_t v) noexcept { raw = __builtin_bswap32(v); }
-};
-struct be64_t {
-  std::uint64_t raw;
-  [[nodiscard]] std::uint64_t get() const noexcept { return __builtin_bswap64(raw); }
-  void set(std::uint64_t v) noexcept { raw = __builtin_bswap64(v); }
-};
-struct le16_t {
-  std::uint16_t raw;
-  [[nodiscard]] std::uint16_t get() const noexcept { return raw; }
-  void set(std::uint16_t v) noexcept { raw = v; }
-};
-struct le32_t {
-  std::uint32_t raw;
-  [[nodiscard]] std::uint32_t get() const noexcept { return raw; }
-  void set(std::uint32_t v) noexcept { raw = v; }
-};
-struct le64_t {
-  std::uint64_t raw;
-  [[nodiscard]] std::uint64_t get() const noexcept { return raw; }
-  void set(std::uint64_t v) noexcept { raw = v; }
-};
+}  // namespace detail
+
+using be16_t = detail::EndianField<std::uint16_t, true>;
+using be32_t = detail::EndianField<std::uint32_t, true>;
+using be64_t = detail::EndianField<std::uint64_t, true>;
+using le16_t = detail::EndianField<std::uint16_t, false>;
+using le32_t = detail::EndianField<std::uint32_t, false>;
+using le64_t = detail::EndianField<std::uint64_t, false>;
 static_assert(sizeof(be16_t) == 2 && sizeof(be32_t) == 4 && sizeof(be64_t) == 8);
 static_assert(sizeof(le16_t) == 2 && sizeof(le32_t) == 4 && sizeof(le64_t) == 8);
+static_assert(alignof(be32_t) == 1 && alignof(be64_t) == 1 && alignof(le64_t) == 1);
+static_assert(std::is_trivially_copyable_v<be64_t> && std::is_standard_layout_v<be64_t>);
 
 }  // namespace fastmm::codecs
