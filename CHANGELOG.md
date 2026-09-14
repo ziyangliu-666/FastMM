@@ -5,11 +5,25 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `fastmm-top`: a terminal dashboard for live sessions. `fastmm-live` publishes its state to
+  `/dev/shm/fastmm-<engine>.status` every 250 ms (`--status`, `--no-status`) from a seqlocked copy
+  of the engine's counters, PnL, kill-switch state and latency, plus every venue's status.
+- `[engine] reject_backoff_ms` / `reject_backoff_max_ms`: after a venue rejects a new quote (other
+  than a post-only cross) the quote manager pauses that side, doubling up to the cap.
+- A `wheels` workflow builds manylinux wheels for CPython 3.9-3.13 and the sdist; publishing to
+  PyPI is a manual, opt-in step (docs/python.md).
 - Binance Spot Demo Mode: `configs/binance-demo.toml`, and `FASTMM_BINANCE_ENV=demo` for the live
   test. The live test passed against Demo Mode (book sync, far post-only order, cancel, cancel-all).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
 
 ### Fixed
+- Serialize latency was measured from the previous event's strategy decision (about 100 ms with
+  BasicMM's stale timer). T3 is now stamped when the strategy calls the order API.
+- Binance and Bybit order/user channels reported "Live" again after a silent Stale, which read
+  like reconnects and made strategies requote.
+- A Binance Demo Mode session (no base asset) resent the rejected ask on almost every requote; with
+  the reject backoff the same 60 s session had 6 rejects instead of 20.
+- The market-data drop end-to-end test no longer requires cancels: quotes can fill before the drop.
 - Bybit positions deduct `spotBorrow` from `walletBalance` (the net holding; `locked` coins were
   already included, as the wallet docs define).
 - Bybit `rejectReason` values map to specific reasons (duplicate id, unknown order, self-trade

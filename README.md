@@ -67,6 +67,7 @@ git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
 cmake --build --preset release -j && ctest --preset release
 ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
 ./scripts/run-sim.sh --duration 30s                      # sim exchange + live engine on localhost
+./build/release/bin/fastmm-top --name sim-local           # live dashboard, in another terminal
 ```
 
 Or without a local toolchain: `docker compose up --build` starts the simulated exchange and the
@@ -88,7 +89,8 @@ python examples/python/backtest_quickstart.py
 | Core engine | `include/fastmm/core` | `Engine<Strategy, Clock, Transport, Feed>`, sorted-array L2 book, tick-indexed L3 book, OMS state machine with exchange-race handling, O(1) risk, quote manager with hysteresis |
 | Messaging | `core/msg_ring.hpp`, `core/journal.hpp` | variable-length SPSC ring, `.fmj` append-only journal with CRC32C blocks |
 | Networking | `include/fastmm/net` | hand-written epoll reactor, OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
-| Venues | `include/fastmm/venues` | Binance Spot and Bybit v5 connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting |
+| Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode) and Bybit v5 connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff |
+| Monitoring | `apps/fastmm-top` | terminal dashboard over a shared-memory status file: engine counters, PnL, latency percentiles, venue channels |
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
 | Sim exchange | `apps/fastmm-sim-exchange` | Binance-compatible REST, market-data WebSocket, WS API and user stream over TCP or TLS, with fault injection (disconnects, dropped diffs, delayed acks, clock skew) |
 | Backtesting | `include/fastmm/backtest` | journal / CSV / numpy sources, fees, PnL, Sharpe, drawdown, parameter sweeps |
@@ -140,10 +142,10 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [x] Binance Spot and Bybit v5 testnet connectors, `fastmm-live`
 - [x] Python research bindings (backtests, sweeps, zero-copy numpy)
 - [x] Binance-compatible simulated exchange with fault injection and end-to-end tests
-- [ ] Python package on PyPI
+- [ ] Python package on PyPI (wheels build in CI; publishing is a manual step)
 - [ ] FIX 4.4, Nasdaq ITCH 5.0 / OUCH, CME MDP 3.0 SBE codecs
 - [ ] Deribit options with greeks-aware quoting
-- [ ] Terminal monitoring UI
+- [x] Terminal monitoring UI (`fastmm-top`)
 - [ ] io_uring and kernel-bypass transports
 
 ## License
