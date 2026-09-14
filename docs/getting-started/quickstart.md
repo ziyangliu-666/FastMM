@@ -1,7 +1,6 @@
 # Quick start
 
-Requires a FastMM build ([Install](install.md)). The code is in `examples/quickstart/`; CI builds
-and runs it (ctest `examples.quickstart`).
+Requires a FastMM build ([Install](install.md)). The code is in `examples/quickstart/`; CI builds and runs it (ctest `examples.quickstart`).
 
 ## 1. The strategy
 
@@ -34,12 +33,9 @@ struct MyMM : StrategyBase<MyParams> {
 };
 ```
 
-- `FASTMM_PARAM_BPS` and `FASTMM_PARAM` declare typed parameters with a default, a range and a
-  description. `Ratio` (basis points) and `Qty` are 64-bit fixed-point values.
-- `on_book` is a hook: the engine calls it after each book update. Other hooks cover trades,
-  fills, timers and connection changes ([Strategy API](../reference/strategy-api.md)).
-- `set_quotes` sets the desired quotes; the engine sends new, cancel and replace messages for the
-  difference.
+- `FASTMM_PARAM_BPS` and `FASTMM_PARAM` declare typed parameters with a default, a range and a description. `Ratio` (basis points) and `Qty` are 64-bit fixed-point values.
+- `on_book` is a hook: the engine calls it after each book update. Other hooks cover trades, fills, timers and connection changes ([Strategy API](../reference/strategy-api.md)).
+- `set_quotes` sets the desired quotes; the engine sends new, cancel and replace messages for the difference.
 
 ## 2. The backtest
 
@@ -59,8 +55,7 @@ int main(int argc, char** argv) {
 }
 ```
 
-`run_backtest<MyMM>` builds the engine with your strategy, a simulated venue with a matching
-engine and latency, and runs it for 60 s of simulated time.
+`run_backtest<MyMM>` builds the engine with your strategy, a simulated venue with a matching engine and latency, and runs it for 60 s of simulated time.
 
 ## 3. Build and run
 
@@ -95,8 +90,7 @@ cmake -S examples/quickstart -B build/quickstart -G Ninja -DCMAKE_BUILD_TYPE=Rel
 cmake --build build/quickstart && ./build/quickstart/my_mm_backtest
 ```
 
-Add `-DFETCHCONTENT_SOURCE_DIR_FASTMM=$PWD` to the first command to build against this checkout
-instead of downloading FastMM.
+Add `-DFETCHCONTENT_SOURCE_DIR_FASTMM=$PWD` to the first command to build against this checkout instead of downloading FastMM.
 
 ## 4. Read the result
 
@@ -114,11 +108,9 @@ backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
 
 - Money is in the quote currency (USDT), quantities in the base currency (BTC).
 - `fills (maker / taker)`: quotes are post-only, so taker is 0.
-- `outbound messages / sha256`: a hash of the order messages sent; it is identical on every run
-  ([Determinism](../explanation/determinism.md)).
+- `outbound messages / sha256`: a hash of the order messages sent; it is identical on every run ([Determinism](../explanation/determinism.md)).
 
 ## Next
 
-- [Tutorial: your first market maker](../tutorials/first-strategy/README.md) adds unit tests,
-  inventory limits, registration, the command-line tools, the simulated exchange and Binance Demo.
+- [Tutorial: your first market maker](../tutorials/first-strategy/README.md) adds unit tests, inventory limits, registration, the command-line tools, the simulated exchange and Binance Demo.
 - [Strategy API](../reference/strategy-api.md) lists the hooks, context methods and helpers.

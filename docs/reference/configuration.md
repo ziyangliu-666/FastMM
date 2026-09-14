@@ -9,16 +9,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 
 - Unknown keys are ignored with a warning that names the key and its line.
 - A key with the wrong type is an error, reported with its line and column.
-- Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are
-  parsed as decimal text into fixed point, not through a `double`.
-- Inside `[venues.<name>]`, the string keys `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`,
-  `api_secret` and `ca_file` support `${NAME}` substitution. Only exact `${NAME}` tokens are
-  replaced, and a variable that is not set is an error. `fastmm-live --dry-run` drops unset
-  `api_key` and `api_secret` variables instead.
-- Under `[venues.<name>]`, a literal value longer than 32 characters under a key whose name contains
-  `key`, `secret`, `token` or `password` is refused with
-  `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`.
-  `fastmm-live --allow-inline-secrets` turns this check off.
+- Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are parsed as decimal text into fixed point, not through a `double`.
+- Inside `[venues.<name>]`, the string keys `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` and `ca_file` support `${NAME}` substitution. Only exact `${NAME}` tokens are replaced, and a variable that is not set is an error. `fastmm-live --dry-run` drops unset `api_key` and `api_secret` variables instead.
+- Under `[venues.<name>]`, a literal value longer than 32 characters under a key whose name contains `key`, `secret`, `token` or `password` is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`. `fastmm-live --allow-inline-secrets` turns this check off.
 - Logs and journals contain the configuration without `api_key` and `api_secret`.
 - Types: `decimal` values are marked in the meaning; `any` keys accept a string or a number.
 
@@ -53,11 +46,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `on_kill` | string |  | fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every venue killed): exit (normal shutdown, exit code 6) \| stay (keep running with quoting off) (default exit) |
 <!-- END config-keys -->
 
-`io_uring` is blocked by some seccomp profiles, including Docker's default
-([Network reactor](../explanation/architecture.md#network-reactor)).
-`tsc_recalibrate_s`: the engine clock stays continuous and slews each measured offset away over one
-period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off.
-`on_kill`: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself).
+`io_uring` is blocked by some seccomp profiles, including Docker's default ([Network reactor](../explanation/architecture.md#network-reactor)). `tsc_recalibrate_s`: the engine clock stays continuous and slews each measured offset away over one period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off. `on_kill`: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself).
 
 ## `[venues.<name>]`
 
@@ -91,8 +80,7 @@ One table per venue; `<name>` is how instruments refer to it.
 
 ### Connector-specific keys
 
-These are validated like the keys above and handed to the connector unchanged; a key a connector
-does not use has no effect. Keys per connector: [Venue connectors](venues.md#configuration-keys).
+These are validated like the keys above and handed to the connector unchanged; a key a connector does not use has no effect. Keys per connector: [Venue connectors](venues.md#configuration-keys).
 
 <!-- BEGIN config-keys venues.*:connector -->
 | Key | Type | Required | Meaning |
@@ -147,8 +135,7 @@ does not use has no effect. Keys per connector: [Venue connectors](venues.md#con
 | `option_type` | string |  | call \| put |
 <!-- END config-keys -->
 
-Live connectors replace `tick`, `lot` and the size bounds with the venue's reference data when
-they connect; the configured values are used by backtests and the simulator.
+Live connectors replace `tick`, `lot` and the size bounds with the venue's reference data when they connect; the configured values are used by backtests and the simulator.
 
 ## `[strategy]`
 
@@ -170,18 +157,14 @@ edge_bps = 5.0
 quote_qty = 0.001
 ```
 
-- Names, types, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations;
-  `--list-strategies` prints them (`--format json` for tools).
-- `decimal` values take up to 8 decimals and `bps` values up to 4; exponent notation is accepted
-  ([Fixed point](fixed-point.md#parsing-and-formatting)). `ms` and `int` values are whole numbers.
-- An unknown parameter, a value with too many decimals or an out-of-range value is an error at
-  startup.
+- Names, types, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations; `--list-strategies` prints them (`--format json` for tools).
+- `decimal` values take up to 8 decimals and `bps` values up to 4; exponent notation is accepted ([Fixed point](fixed-point.md#parsing-and-formatting)). `ms` and `int` values are whole numbers.
+- An unknown parameter, a value with too many decimals or an out-of-range value is an error at startup.
 - `--strategy` and `--param` override this section ([Command lines](cli.md#fastmm-live)).
 
 ## `[risk]`
 
-Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-model.md) describes the
-checks and their order.
+Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-model.md) describes the checks and their order.
 
 <!-- BEGIN config-keys risk -->
 | Key | Type | Required | Meaning |
@@ -211,10 +194,7 @@ checks and their order.
 
 ## `[backtest]`
 
-Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module
-(`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and
-strategy settings come from the sections above; fees come from the first venue's `fees` table,
-self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`.
+Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and strategy settings come from the sections above; fees come from the first venue's `fees` table, self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -234,14 +214,11 @@ self-trade prevention follows `[risk] stp`, and in-place replace follows `[engin
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 
-Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`,
-`--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).
+Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`, `--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).
 
 ## `[sim]`
 
-Parameters of the synthetic market used when the data source is synthetic; free-form in the
-schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` reads
-its own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml)).
+Parameters of the synthetic market used when the data source is synthetic; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` reads its own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml)).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

@@ -1,31 +1,19 @@
 # Status file
 
-`fastmm-live` publishes its live state in a memory-mapped file that monitors such as `fastmm-top`
-read. Code: `include/fastmm/core/status_segment.hpp`. Usage:
-[Monitor a session](../how-to/operations/monitor-with-fastmm-top.md).
+`fastmm-live` publishes its live state in a memory-mapped file that monitors such as `fastmm-top` read. Code: `include/fastmm/core/status_segment.hpp`. Usage: [Monitor a session](../how-to/operations/monitor-with-fastmm-top.md).
 
 ## Location and lifetime
 
-- The path is `/dev/shm/fastmm-<engine name>.status`, where the name is `[engine] name`;
-  `fastmm-live --status <path>` chooses another path and `--no-status` turns it off.
-- The control thread creates or truncates the file at startup and rewrites the snapshot every
-  250 ms. It leaves the file in place at exit, so the last snapshot shows `stopped` and the final
-  numbers.
-- The engine refreshes the counters it hands to the control thread once a second
-  (`[engine] latency_publish_ms` for latency).
+- The path is `/dev/shm/fastmm-<engine name>.status`, where the name is `[engine] name`; `fastmm-live --status <path>` chooses another path and `--no-status` turns it off.
+- The control thread creates or truncates the file at startup and rewrites the snapshot every 250 ms. It leaves the file in place at exit, so the last snapshot shows `stopped` and the final numbers.
+- The engine refreshes the counters it hands to the control thread once a second (`[engine] latency_publish_ms` for latency).
 
 ## Reading it safely
 
-The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the
-counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the
-counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
+The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 3) sit at the
-  same offsets in every version. A reader of another version refuses the file:
-  `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>,
-  this fastmm-top reads version <m>)`.
-- Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal
-  ([Public API](public-api.md)).
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 3) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal ([Public API](public-api.md)).
 
 ## Snapshot fields
 
@@ -61,8 +49,7 @@ A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is mo
 
 ### Kill reasons
 
-`KillReason` (`core/enums.hpp`), the first reason each flag was set for; `fastmm-top` shows it as
-`KILLED (<reason>)` next to the state and in each venue's `kill` column.
+`KillReason` (`core/enums.hpp`), the first reason each flag was set for; `fastmm-top` shows it as `KILLED (<reason>)` next to the state and in each venue's `kill` column.
 
 | Value | Name | Meaning |
 |---:|---|---|

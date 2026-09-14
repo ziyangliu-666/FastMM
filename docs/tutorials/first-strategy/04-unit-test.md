@@ -1,7 +1,6 @@
 # 4. Unit-test it
 
-`examples/cpp/tutorial/first_mm_test.cpp` tests `first_mm` with plain checks; it needs no test
-framework.
+`examples/cpp/tutorial/first_mm_test.cpp` tests `first_mm` with plain checks; it needs no test framework.
 
 ## The quoting function
 
@@ -19,9 +18,7 @@ check(q.asks.size() == 1 && q.asks[0].price == 100.12_px, "ask at 100.12");
 
 ## The hooks, with the harness
 
-`fastmm::sim::StrategyHarness<S>` runs your strategy in the engine against a simulated venue on
-virtual time. Each call runs the engine until it is idle, so the strategy's reaction is visible
-when the call returns:
+`fastmm::sim::StrategyHarness<S>` runs your strategy in the engine against a simulated venue on virtual time. Each call runs the engine until it is idle, so the strategy's reaction is visible when the call returns:
 
 <!-- snippet: examples/cpp/tutorial/first_mm_test.cpp#harness -->
 ```cpp
@@ -42,8 +39,7 @@ check(orders.size() == 1 && orders[0].side == Side::Sell,
       "at the position limit only the ask rests");
 ```
 
-Orders are working only after `advance`. `fill(side)` trades a taker against your best order on
-that side.
+Orders are working only after `advance`. `fill(side)` trades a taker against your best order on that side.
 
 Connection loss and paused quoting:
 
@@ -94,8 +90,6 @@ ok    : a bid and an ask rest after the first book
 first_mm_test: all checks passed
 ```
 
-`ctest --test-dir build/release -L tutorial` runs the tutorial's tests, this one included. The
-[Strategy API](../../reference/strategy-api.md#test-harness) lists the other harness calls: `trade`,
-`push` for any message, `engine()`.
+`ctest --test-dir build/release -L tutorial` runs the tutorial's tests, this one included. The [Strategy API](../../reference/strategy-api.md#test-harness) lists the other harness calls: `trade`, `push` for any message, `engine()`.
 
 Next: [5. Backtest in C++](05-backtest-in-cpp.md)

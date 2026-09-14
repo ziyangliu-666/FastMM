@@ -10,9 +10,7 @@ Run the commands in this tutorial from the repository root.
 cmake --build --preset release -j
 ```
 
-`bootstrap.sh` checks the toolchain and configures the `release` preset
-([Install](../../getting-started/install.md) lists the requirements). A top-level build includes
-the tutorial.
+`bootstrap.sh` checks the toolchain and configures the `release` preset ([Install](../../getting-started/install.md) lists the requirements). A top-level build includes the tutorial.
 
 Later pages use these variables:
 

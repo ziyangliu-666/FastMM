@@ -1,10 +1,6 @@
 # fastmm-sim-exchange
 
-`fastmm-sim-exchange` is a Binance Spot-compatible simulated exchange
-([ADR-0008](../adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector
-(`fastmm::venues::binance::BinanceVenue`, see [venues.md](venues.md)) and `fastmm-live` run
-against it on localhost: TCP or TLS, REST, market-data WebSockets, the WebSocket API, depth
-sequence sync, HMAC authentication, order flow with fills, and fault injection.
+`fastmm-sim-exchange` is a Binance Spot-compatible simulated exchange ([ADR-0008](../adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector (`fastmm::venues::binance::BinanceVenue`, see [venues.md](venues.md)) and `fastmm-live` run against it on localhost: TCP or TLS, REST, market-data WebSockets, the WebSocket API, depth sequence sync, HMAC authentication, order flow with fills, and fault injection.
 
 ```
 fastmm-sim-exchange ── one net::Reactor thread
@@ -16,8 +12,7 @@ fastmm-sim-exchange ── one net::Reactor thread
   └─ venue state           account balances, order index, listen keys, rate-limit windows
 ```
 
-Code: `include/fastmm/sim/server/` and `src/sim/server/` (target `fastmm::sim_server`), app
-`apps/fastmm-sim-exchange/`.
+Code: `include/fastmm/sim/server/` and `src/sim/server/` (target `fastmm::sim_server`), app `apps/fastmm-sim-exchange/`.
 
 ## Running
 
@@ -29,23 +24,13 @@ FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
 docker compose up --build                                                   # configs/sim-docker.toml
 ```
 
-Flags and exit codes: [Command lines](cli.md#fastmm-sim-exchange). Every `--stats-interval` the
-simulator prints a line with connections, orders, rejects, cancels, replaces, fills, open orders,
-public trades, depth diffs, tickers, snapshots, REST and WS API requests, rate-limited requests,
-authentication errors, the account position and the touch.
+Flags and exit codes: [Command lines](cli.md#fastmm-sim-exchange). Every `--stats-interval` the simulator prints a line with connections, orders, rejects, cancels, replaces, fills, open orders, public trades, depth diffs, tickers, snapshots, REST and WS API requests, rate-limited requests, authentication errors, the account position and the touch.
 
-`scripts/run-sim.sh` starts the simulator and waits until port 9080 accepts connections. It
-then runs `fastmm-live --duration <t> --journal runs/<ts>/session.fmj --log
-runs/<ts>/engine.log`, prints the engine, venue and simulator summaries, and stops the
-simulator. The key and secret come from `FASTMM_SIM_API_KEY` / `FASTMM_SIM_API_SECRET`
-(default `sim-key` / `sim-secret`). Engine configs and the simulator both read them; in the
-simulator they override `[sim.account]`.
+`scripts/run-sim.sh` starts the simulator and waits until port 9080 accepts connections. It then runs `fastmm-live --duration <t> --journal runs/<ts>/session.fmj --log runs/<ts>/engine.log`, prints the engine, venue and simulator summaries, and stops the simulator. The key and secret come from `FASTMM_SIM_API_KEY` / `FASTMM_SIM_API_SECRET` (default `sim-key` / `sim-secret`). Engine configs and the simulator both read them; in the simulator they override `[sim.account]`.
 
 ## Configuration (`configs/sim.toml`)
 
-The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, max_qty,
-min_notional) and `[sim]`. It declares `[venues.sim] kind = "sim"` only so that the
-instruments validate.
+The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, max_qty, min_notional) and `[sim]`. It declares `[venues.sim] kind = "sim"` only so that the instruments validate.
 
 | key | default | meaning |
 |---|---|---|
@@ -68,15 +53,11 @@ instruments validate.
 | `generator.*` | see file | `MarketGeneratorParams` + `enabled`, `seed_levels` |
 | `faults.*` | off | see Fault injection |
 
-The default generator places its touch 2990 ticks (29.90 USDT) from a slowly moving latent
-mid. `BasicMM`'s 5 bps quotes (30 USDT at 60000) therefore rest just behind the best generator
-levels and are filled by the larger market orders. The book is not realistic.
+The default generator places its touch 2990 ticks (29.90 USDT) from a slowly moving latent mid. `BasicMM`'s 5 bps quotes (30 USDT at 60000) therefore rest just behind the best generator levels and are filled by the larger market orders. The book is not realistic.
 
 ## What is implemented
 
-Request and response formats are those `BinanceVenue` uses
-([What a Binance-compatible simulator must implement](venues.md#what-a-binance-compatible-simulator-must-implement));
-this section lists what the simulator serves beyond them and how it behaves.
+Request and response formats are those `BinanceVenue` uses ([What a Binance-compatible simulator must implement](venues.md#what-a-binance-compatible-simulator-must-implement)); this section lists what the simulator serves beyond them and how it behaves.
 
 ### REST
 
@@ -96,48 +77,27 @@ Query string or form body; the signature covers query + body.
 | `GET /api/v3/openOrders[?symbol]`, `DELETE /api/v3/openOrders?symbol` | -2011 when nothing is open |
 | `POST/PUT/DELETE /api/v3/userDataStream` | legacy listenKey (`/ws/<listenKey>`) |
 
-Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry
-`X-MBX-ORDER-COUNT-10S` and `X-MBX-ORDER-COUNT-1D`. 429 responses carry `Retry-After`.
+Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry `X-MBX-ORDER-COUNT-10S` and `X-MBX-ORDER-COUNT-1D`. 429 responses carry `Retry-After`.
 
 ### Market-data WebSockets
 
-`/stream?streams=a/b/c` sends `{"stream","data"}`. `/ws/<stream>` (several streams separated by
-`/`) and `/ws` send raw payloads, and both accept
-`SUBSCRIBE` / `UNSUBSCRIBE` / `LIST_SUBSCRIPTIONS`. Streams: `<sym>@depth`, `<sym>@depth@100ms`
-and `<sym>@depth@1000ms` all use the same `depth_update_ms` batches. `<sym>@bookTicker` is sent
-when the touch changed during a batch; `<sym>@trade` (which adds `M`) is sent immediately.
-`U`/`u` are the matching engine's per-symbol update ids, so the stream is contiguous and a
-REST snapshot's `lastUpdateId` is consistent with it.
+`/stream?streams=a/b/c` sends `{"stream","data"}`. `/ws/<stream>` (several streams separated by `/`) and `/ws` send raw payloads, and both accept `SUBSCRIBE` / `UNSUBSCRIBE` / `LIST_SUBSCRIPTIONS`. Streams: `<sym>@depth`, `<sym>@depth@100ms` and `<sym>@depth@1000ms` all use the same `depth_update_ms` batches. `<sym>@bookTicker` is sent when the touch changed during a batch; `<sym>@trade` (which adds `M`) is sent immediately. `U`/`u` are the matching engine's per-symbol update ids, so the stream is contiguous and a REST snapshot's `lastUpdateId` is consistent with it.
 
 ### WebSocket API
 
-`/ws-api/v3` echoes the request id verbatim. Methods: `ping`, `time`,
-`exchangeInfo`, `depth`, `ticker.book`, `userDataStream.subscribe.signature` (returns
-`{"subscriptionId":N}`), `userDataStream.unsubscribe`, `order.place`, `order.test`,
-`order.cancel`, `order.cancelReplace`, `order.amend.keepPriority`, `order.status`,
-`openOrders.status`, `openOrders.cancelAll` and `account.status`. A 429 error carries
-`data.retryAfter`.
+`/ws-api/v3` echoes the request id verbatim. Methods: `ping`, `time`, `exchangeInfo`, `depth`, `ticker.book`, `userDataStream.subscribe.signature` (returns `{"subscriptionId":N}`), `userDataStream.unsubscribe`, `order.place`, `order.test`, `order.cancel`, `order.cancelReplace`, `order.amend.keepPriority`, `order.status`, `openOrders.status`, `openOrders.cancelAll` and `account.status`. A 429 error carries `data.retryAfter`.
 
 ### User data events
 
-Events go to WS API connections with a user-data subscription as
-`{"subscriptionId":N,"event":{...}}`, and raw to `/ws/<listenKey>` connections:
+Events go to WS API connections with a user-data subscription as `{"subscriptionId":N,"event":{...}}`, and raw to `/ws/<listenKey>` connections:
 
-* `executionReport`. `x` is `NEW`, `CANCELED` (`c` = cancel request
-  id, `C` = cancelled order id), `REPLACED` (amend), `REJECTED` (post-acceptance), `TRADE`
-  (`l,L,n,N,t,m`), `EXPIRED` (IOC/FOK/MARKET remainder) or `TRADE_PREVENTION` (self-trade,
-  EXPIRE_MAKER).
-* `outboundAccountPosition` after every balance change. Events from one request are sent after
-  its response.
+* `executionReport`. `x` is `NEW`, `CANCELED` (`c` = cancel request id, `C` = cancelled order id), `REPLACED` (amend), `REJECTED` (post-acceptance), `TRADE` (`l,L,n,N,t,m`), `EXPIRED` (IOC/FOK/MARKET remainder) or `TRADE_PREVENTION` (self-trade, EXPIRE_MAKER).
+* `outboundAccountPosition` after every balance change. Events from one request are sent after its response.
 * `listenKeyExpired`.
 
 ### Trading model
 
-LIMIT / LIMIT_MAKER orders lock quote notional (buys) or base quantity
-(sells). A fill releases the lock and moves balances, with commission in the quote asset. The
-simulator validates filters (`-1013 Filter failure: PRICE_FILTER / LOT_SIZE / NOTIONAL /
-MAX_NUM_ORDERS`), duplicate client ids (`-2010 Duplicate order sent.`) and insufficient balance
-(`-2010`). A crossing LIMIT_MAKER answers `-2010 Order would immediately match and take.`.
+LIMIT / LIMIT_MAKER orders lock quote notional (buys) or base quantity (sells). A fill releases the lock and moves balances, with commission in the quote asset. The simulator validates filters (`-1013 Filter failure: PRICE_FILTER / LOT_SIZE / NOTIONAL / MAX_NUM_ORDERS`), duplicate client ids (`-2010 Duplicate order sent.`) and insufficient balance (`-2010`). A crossing LIMIT_MAKER answers `-2010 Order would immediately match and take.`.
 
 ### Authentication and limits
 
@@ -153,13 +113,11 @@ MAX_NUM_ORDERS`), duplicate client ids (`-2010 Duplicate order sent.`) and insuf
 | order-count window exceeded | 429 `-1015` + `Retry-After` |
 | unknown order on cancel / query / amend | 400 `-2011 Unknown order sent.` / `-2013 Order does not exist.` |
 
-The server also sends WebSocket pings every `ping_interval_ms` and closes connections that
-have not answered for `pong_timeout_ms`.
+The server also sends WebSocket pings every `ping_interval_ms` and closes connections that have not answered for `pong_timeout_ms`.
 
 ## Fault injection
 
-The `[sim.faults]` settings are one-shot and count from the moment the listeners open. The
-programmatic API is thread-safe (`SimExchangeServer`).
+The `[sim.faults]` settings are one-shot and count from the moment the listeners open. The programmatic API is thread-safe (`SimExchangeServer`).
 
 | config key | API | what it exercises |
 |---|---|---|
@@ -174,41 +132,26 @@ programmatic API is thread-safe (`SimExchangeServer`).
 | — | `set_clock_offset_ms(ms)` | clock skew between client and venue |
 | — | `expire_listen_keys()` | legacy listenKey expiry |
 
-`stats()` returns counters for all of the above, plus watermarks since `mark()`: minimum
-open orders, cancels, cancel-alls, open-order queries and reconnects.
+`stats()` returns counters for all of the above, plus watermarks since `mark()`: minimum open orders, cancels, cancel-alls, open-order queries and reconnects.
 
 ## Determinism
 
-The generator, order ids and trade ids depend only on the configuration and seed and on the
-order of requests (tested). Event times inside the matching engine come from the reactor clock.
-Published timestamps (`E`, `T`, `transactTime`, `serverTime`) and recvWindow checks follow the host
-wall clock plus `clock_offset_ms`; on WSL2 the wall clock steps by more than a second. With
-`start_time_ms` set, published times are `start_time + elapsed` and reproducible, but clients
-then rely on their measured clock offset.
+The generator, order ids and trade ids depend only on the configuration and seed and on the order of requests (tested). Event times inside the matching engine come from the reactor clock. Published timestamps (`E`, `T`, `transactTime`, `serverTime`) and recvWindow checks follow the host wall clock plus `clock_offset_ms`; on WSL2 the wall clock steps by more than a second. With `start_time_ms` set, published times are `start_time + elapsed` and reproducible, but clients then rely on their measured clock offset.
 
 ## Differences from real Binance
 
 Not implemented:
 
-* Ed25519 / RSA keys and `session.logon`: HMAC only, one account. `session.logon` and the
-  unsigned `userDataStream.subscribe` answer an error.
-* Order types other than LIMIT / LIMIT_MAKER / MARKET: no stop, take-profit, iceberg,
-  trailing, `quoteOrderQty`, OCO/OTO/OPO lists, SOR or pegged orders (`-1014`).
-* Other market data: klines, aggTrades, 24 h tickers, avgPrice, `@depth<N>` partial books,
-  `/api/v3/trades`. `@depth` and `@depth@100ms` share one interval, and bookTicker is batched
-  per interval rather than sent on every change.
+* Ed25519 / RSA keys and `session.logon`: HMAC only, one account. `session.logon` and the unsigned `userDataStream.subscribe` answer an error.
+* Order types other than LIMIT / LIMIT_MAKER / MARKET: no stop, take-profit, iceberg, trailing, `quoteOrderQty`, OCO/OTO/OPO lists, SOR or pegged orders (`-1014`).
+* Other market data: klines, aggTrades, 24 h tickers, avgPrice, `@depth<N>` partial books, `/api/v3/trades`. `@depth` and `@depth@100ms` share one interval, and bookTicker is batched per interval rather than sent on every change.
 * The events `balanceUpdate`, `listStatus`, `externalLockUpdate` and `eventStreamTerminated`.
-* Self-trade prevention is EXPIRE_MAKER only. Commission is always charged in the quote
-  asset. There is no BNB discount.
-* Rate limits are not per IP: one weight window for the whole server and one order-count window
-  for the account. There are no 418 bans, no connection weight and no `X-MBX-ORDER-COUNT-*`
-  on the WS API (counts are in `rateLimits`).
+* Self-trade prevention is EXPIRE_MAKER only. Commission is always charged in the quote asset. There is no BNB discount.
+* Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. There are no 418 bans, no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
 * The legacy listenKey stream is kept ([venues.md](venues.md#binance-spot)).
 * The ack delay applies to WS API responses only. REST answers are synchronous.
-* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying
-  them answers `-2013`.
+* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`.
 
 ## Integration tests
 
-`tests/integration` (label `integration`) runs `BinanceVenue` and the `fastmm-live` wiring against
-the in-process server over TCP and TLS; `FASTMM_IT_LOG=1` prints the connector and engine log.
+`tests/integration` (label `integration`) runs `BinanceVenue` and the `fastmm-live` wiring against the in-process server over TCP and TLS; `FASTMM_IT_LOG=1` prints the connector and engine log.

@@ -14,29 +14,23 @@ The docs are Markdown rendered on GitHub; there is no site generator.
 | `docs/contributing/` | how-to | covers work on FastMM itself |
 | `docs/adr/` | decision record | records one decision; not edited after acceptance except for amendments |
 
-A new page gets a link from [`docs/README.md`](../README.md); the glossary defines each term once.
-Python pages (`docs/python.md` and the Python reference) belong to the Python package.
+A new page gets a link from [`docs/README.md`](../README.md); the glossary defines each term once. Python pages (`docs/python.md` and the Python reference) belong to the Python package.
 
 ## Style
 
 1. Start with the first fact or step. No "This page explains ..." openings, no recap closings.
 2. Keep a sentence only if deleting it would make a reader act wrongly, lose a fact or miss a link.
 3. Do not restate the table, code, command output or generated help next to the sentence.
-4. No reassurance ("normal", "harmless", "expected"): state the observable, the cause and when it
-   matters.
-5. Each fact has one home; other pages link to it. The risk warning lives on one page,
-   [Go-live checklist](../how-to/operations/go-live-checklist.md); link to it.
-6. Design reasons live in `docs/explanation/` and `docs/adr/`; other pages link to them in one
-   clause.
+4. No reassurance ("normal", "harmless", "expected"): state the observable, the cause and when it matters.
+5. Each fact has one home; other pages link to it. The risk warning lives on one page, [Go-live checklist](../how-to/operations/go-live-checklist.md); link to it.
+6. Design reasons live in `docs/explanation/` and `docs/adr/`; other pages link to them in one clause.
 7. Describe only what is implemented: no plans, ADR steps or task numbers in reader pages.
 8. No bold except a glossary term at its definition or one warning per page; no bold run-in labels.
-9. No emphasis words: simply, just, easily, fully, complete, note that; "exactly" and "every" only
-   when verified.
-10. Second person and present tense in tutorials and how-tos; sentence-case headings; British
-    spelling; no emojis.
+9. No emphasis words: simply, just, easily, fully, complete, note that; "exactly" and "every" only when verified.
+10. Second person and present tense in tutorials and how-tos; sentence-case headings; British spelling; no emojis.
 11. Units on every number (bps, ms, s, ticks, base or quote currency, raw fixed-point integers).
-12. Commands run from the repository root and copy as they are; code longer than three lines is a
-    snippet; relative links only.
+12. Commands run from the repository root and copy as they are; code longer than three lines is a snippet; relative links only.
+13. Write each paragraph and list item on one line; do not wrap prose at a column.
 
 ## Snippets
 
@@ -49,19 +43,13 @@ A code block that shows repository code is generated from the source by `tools/d
 ```
 ````
 
-The path is relative to the repository root; `#region` selects a region, and without it the whole
-file is shown. The source marks the region with comment lines, `// [start:on_book]` and
-`// [end:on_book]` in C++, `# --8<-- [start:name]` and `# --8<-- [end:name]` in shell, TOML,
-CMake and Python. The tool fills the block below each marker. Program output in `text` blocks may
-be shortened with `...`. Markers inside a code block, like the one above, are left alone.
+The path is relative to the repository root; `#region` selects a region, and without it the whole file is shown. The source marks the region with comment lines, `// [start:on_book]` and `// [end:on_book]` in C++, `# --8<-- [start:name]` and `# --8<-- [end:name]` in shell, TOML, CMake and Python. The tool fills the block below each marker. Program output in `text` blocks may be shortened with `...`. Markers inside a code block, like the one above, are left alone.
 
 ```bash
 python3 tools/doc_snippets.py
 ```
 
-Code that the docs show should be compiled or run by a test: the examples and the tutorial have
-ctest labels `examples` and `tutorial`, `scripts/docs/tutorial.sh` holds the tutorial's shell
-steps, and `tests/docs/strategy_api_doc_test.cpp` holds the strategy API reference.
+Code that the docs show should be compiled or run by a test: the examples and the tutorial have ctest labels `examples` and `tutorial`, `scripts/docs/tutorial.sh` holds the tutorial's shell steps, and `tests/docs/strategy_api_doc_test.cpp` holds the strategy API reference.
 
 ## Generated pages
 
@@ -70,9 +58,7 @@ steps, and `tests/docs/strategy_api_doc_test.cpp` holds the strategy API referen
 | `docs/reference/cli.md` | each program's `--help` | `python3 tools/docs_cli_help.py --bin build/release/bin` |
 | `docs/reference/configuration.md` | the key tables in `include/fastmm/config/schema.hpp` | `python3 tools/docs_config_ref.py` |
 
-Only the regions between `<!-- BEGIN ... -->` and `<!-- END ... -->` are generated; edit the rest
-of the page by hand. Change a flag or a configuration key in the code (usage text or schema doc
-string), then run the tool.
+Only the regions between `<!-- BEGIN ... -->` and `<!-- END ... -->` are generated; edit the rest of the page by hand. Change a flag or a configuration key in the code (usage text or schema doc string), then run the tool.
 
 ## Checks
 
@@ -88,6 +74,4 @@ CI runs these checks:
 | quick start, examples and tutorial run | `ctest --test-dir build/release -L 'examples\|tutorial'` | all build jobs |
 | every `configs/*.toml` loads without warnings | `ctest --test-dir build/release -L config` | all build jobs |
 
-The tutorial script test (`tutorial.script`) runs the simulated exchange on ports 9080 and 9443 and
-is not registered under sanitizers. The public header manifest is
-[`docs/api/public-headers.txt`](../api/public-headers.txt) ([Public API](../reference/public-api.md)).
+The tutorial script test (`tutorial.script`) runs the simulated exchange on ports 9080 and 9443 and is not registered under sanitizers. The public header manifest is [`docs/api/public-headers.txt`](../api/public-headers.txt) ([Public API](../reference/public-api.md)).

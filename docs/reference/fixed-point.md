@@ -1,8 +1,6 @@
 # Fixed point
 
-Prices, quantities and money are 64-bit integers with a fixed scale of 1e-8 (ADR-0001). The
-headers are `include/fastmm/core/fixed_point.hpp` and `include/fastmm/strategies/quoting.hpp`;
-`include/fastmm/strategy.hpp` includes both.
+Prices, quantities and money are 64-bit integers with a fixed scale of 1e-8 (ADR-0001). The headers are `include/fastmm/core/fixed_point.hpp` and `include/fastmm/strategies/quoting.hpp`; `include/fastmm/strategy.hpp` includes both.
 
 ## Types
 
@@ -13,8 +11,7 @@ headers are `include/fastmm/core/fixed_point.hpp` and `include/fastmm/strategies
 | `Notional` | price times quantity, fees, PnL | 0.00000001 | same |
 | `Ratio` | dimensionless factor; 1.0 is raw 100,000,000 | 0.0001 bp | +-922,337,203 x |
 
-The types do not mix: `Price * Qty` and `Price + Qty` do not compile.
-`.raw` is the integer; `from_raw`, `from_int`, `zero`, `max` and `min` build values.
+The types do not mix: `Price * Qty` and `Price + Qty` do not compile. `.raw` is the integer; `from_raw`, `from_int`, `zero`, `max` and `min` build values.
 
 ## Arithmetic
 
@@ -31,8 +28,7 @@ The types do not mix: `Price * Qty` and `Price + Qty` do not compile.
 | `ratio(num, den)` (same type) | `Ratio` | Int128, truncates toward zero; zero for a zero `den` |
 | `r * k` (`k` is `int64_t`) | `Ratio` | exact; must fit int64 |
 
-Truncation toward zero is sign-symmetric, so `mid - mid * (skew * units)` shifts a long and a short
-position by the same amount in opposite directions.
+Truncation toward zero is sign-symmetric, so `mid - mid * (skew * units)` shifts a long and a short position by the same amount in opposite directions.
 
 To the tick and lot grid, rounding is passive:
 
@@ -55,15 +51,13 @@ const Ratio half = 0.25_bps;        // raw 2'500
 const Ratio cap = 5_bps;            // raw 50'000
 ```
 
-Literals are parsed exactly at compile time. `_px` and `_qty` take up to 8 decimals, `_bps` up to 4;
-more decimals, or a value out of range, is a compile error:
+Literals are parsed exactly at compile time. `_px` and `_qty` take up to 8 decimals, `_bps` up to 4; more decimals, or a value out of range, is a compile error:
 
 ```text
 error: static assertion failed: fastmm: _qty literal needs more than 8 decimals or is out of range
 ```
 
-Digit separators (`1'000.5_px`) and exponents (`1e-8_qty`) are accepted. There is no Notional
-literal; use `Notional::from_int(1000)` or `mul(price, qty)`.
+Digit separators (`1'000.5_px`) and exponents (`1e-8_qty`) are accepted. There is no Notional literal; use `Notional::from_int(1000)` or `mul(price, qty)`.
 
 ## Parsing and formatting
 
@@ -75,10 +69,7 @@ literal; use `Notional::from_int(1000)` or `mul(price, qty)`.
 | `Fixed::from_double(d)`, `to_double()` | | startup and diagnostics only, never per event |
 | `Ratio::from_bps(double)`, `r.to_bps()` | | startup and diagnostics only |
 
-`parse` rejects a value only when more decimals remain after applying the exponent than the type
-holds: `2e-05` is raw 2,000, `1.5e-8` is an error. TOML floats reach strategy parameters formatted
-by fmt (`0.00002` becomes `2e-05`) and Python floats through `repr`
-([Strategy API](strategy-api.md#parameters)).
+`parse` rejects a value only when more decimals remain after applying the exponent than the type holds: `2e-05` is raw 2,000, `1.5e-8` is an error. TOML floats reach strategy parameters formatted by fmt (`0.00002` becomes `2e-05`) and Python floats through `repr` ([Strategy API](strategy-api.md#parameters)).
 
 ## Quoting helpers
 
@@ -100,8 +91,7 @@ On `DesiredQuotes`:
 | `q.bid(px, qty)`, `q.ask(px, qty)` | append the next level; a non-positive price or quantity, or a ninth level, is dropped and `false` returned |
 | `q.uncross(tick)` | if the level-0 bid is at or above the level-0 ask, move that ask to bid + tick |
 
-`inventory_allows` checks the result of the fill, not `|position|`: at a long limit the sell side
-is still allowed, and so is a reducing trade from beyond the limit when it lands inside.
+`inventory_allows` checks the result of the fill, not `|position|`: at a long limit the sell side is still allowed, and so is a reducing trade from beyond the limit when it lands inside.
 
 ## Example
 
@@ -127,9 +117,6 @@ q.uncross(inst.tick);
 
 ## Limits
 
-- `Ratio * k` is a plain int64 multiply: `skew * inventory_units` overflows past about 9.2e10
-  units at 1 bp.
-- A `Ratio` product with a value truncates once. `mid * a * b` truncates twice; write
-  `mid * (a * b)` only when the precision of `a * b` (1e-8) is enough, otherwise scale in one step.
-- Ranges are checked where values enter (instrument load, parameter parsing, literals), not on
-  every operation.
+- `Ratio * k` is a plain int64 multiply: `skew * inventory_units` overflows past about 9.2e10 units at 1 bp.
+- A `Ratio` product with a value truncates once. `mid * a * b` truncates twice; write `mid * (a * b)` only when the precision of `a * b` (1e-8) is enough, otherwise scale in one step.
+- Ranges are checked where values enter (instrument load, parameter parsing, literals), not on every operation.

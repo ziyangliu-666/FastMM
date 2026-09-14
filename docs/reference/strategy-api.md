@@ -1,14 +1,10 @@
 # Strategy API
 
-Code blocks come from
-[`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) (ctest
-`docs.strategy_api`). The headers are listed in [Public API](public-api.md);
-`#include "fastmm/strategy.hpp"` brings in everything a strategy header needs.
+Code blocks come from [`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) (ctest `docs.strategy_api`). The headers are listed in [Public API](public-api.md); `#include "fastmm/strategy.hpp"` brings in everything a strategy header needs.
 
 ## Strategy class
 
-A strategy is a default-constructible class with a static `name()` and a static `schema()`
-(concept `StrategyLike`). `StrategyBase<Params>` provides `schema()` and the parameters:
+A strategy is a default-constructible class with a static `name()` and a static `schema()` (concept `StrategyLike`). `StrategyBase<Params>` provides `schema()` and the parameters:
 
 | Member of `StrategyBase<Params>` | Meaning |
 |---|---|
@@ -22,8 +18,7 @@ static_assert(StrategyLike<AllHooks>);
 static_assert(verify_strategy<AllHooks>());
 ```
 
-`verify_strategy<S>()` checks every hook with stand-in context and book types, so the check runs
-in the strategy header instead of when an engine is built.
+`verify_strategy<S>()` checks every hook with stand-in context and book types, so the check runs in the strategy header instead of when an engine is built.
 
 ## Hooks
 
@@ -76,51 +71,31 @@ void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
 
 Rules:
 
-- Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the
-  same. `noexcept` is recommended; hooks run inside `noexcept` engine code.
-- Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_fill`)
-  fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in
-  them.
-- `on_fill` fires for every execution on an instrument in the table, including late fills (the
-  order was already terminal) and fills for ids the OMS does not know. Fills on other instruments
-  are counted in `EngineStats::unknown_instrument_fills`.
-- Hooks must not block, allocate on every event or read anything that is not an engine input (the
-  system clock, `std::random_device`, files); see [Determinism](../explanation/determinism.md).
+- Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the same. `noexcept` is recommended; hooks run inside `noexcept` engine code.
+- Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_fill`) fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in them.
+- `on_fill` fires for every execution on an instrument in the table, including late fills (the order was already terminal) and fills for ids the OMS does not know. Fills on other instruments are counted in `EngineStats::unknown_instrument_fills`.
+- Hooks must not block, allocate on every event or read anything that is not an engine input (the system clock, `std::random_device`, files); see [Determinism](../explanation/determinism.md).
 
 ### on_quoting
 
-`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch,
-a reconciliation, or a dry run. `on_quoting(ctx, enabled)` reports changes, so a strategy can
-requote as soon as quoting is back.
+`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch, a reconciliation, or a dry run. `on_quoting(ctx, enabled)` reports changes, so a strategy can requote as soon as quoting is back.
 
-- The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and
-  `on_start`, and calls the hook after the triggering hook has returned and all flags are final. At
-  the end of a reconciliation that is after the engine has placed the quotes it paused, so a
-  requote from `on_quoting` replaces them.
-- It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is
-  reported after the hook that made the call returns.
+- The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and `on_start`, and calls the hook after the triggering hook has returned and all flags are final. At the end of a reconciliation that is after the engine has placed the quotes it paused, so a requote from `on_quoting` replaces them.
+- It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the hook that made the call returns.
 - It does not fire for the initial state; `on_start` reads `ctx.quoting_enabled()`.
 - A lost connection does not change `quoting_enabled()`; `on_connection` reports it.
 
 ### Signature checks
 
-The engine checks each hook name when it is compiled. A member with a hook's name whose call does
-not compile stops the build, one error per hook:
+The engine checks each hook name when it is compiled. A member with a hook's name whose call does not compile stops the build, one error per hook:
 
 ```text
 error: static assertion failed: fastmm: on_trade has the wrong signature or is not public; expected void on_trade(auto& ctx, InstrumentId id, const TradeMsg& m)
 ```
 
-- Likely misspellings (`on_fills`, `on_trades`, `on_order_book`, `on_tick`, `on_bbo`, `on_order`,
-  `on_execution`, `on_disconnect`, `onBook`, ...) produce the warning `fastmm: on_fills is not a
-  hook; did you mean on_fill?`, an error with `FASTMM_WERROR`. Silence it with
-  `static constexpr bool fastmm_allow_near_miss_names = true;` in the strategy.
-- Limits: a `final` class is only call-checked, so a wrong signature is silently not called; a hook
-  that is ambiguous across two bases is reported as a wrong signature; a hook with a deduced
-  (`auto`) return type must not be checked with `verify_strategy`; private hooks are rejected, also
-  with `friend`; implicit argument conversions are accepted.
-- `Engine::start()` logs the implemented hooks: `strategy first_mm hooks: start book fill timer
-  connection quoting`.
+- Likely misspellings (`on_fills`, `on_trades`, `on_order_book`, `on_tick`, `on_bbo`, `on_order`, `on_execution`, `on_disconnect`, `onBook`, ...) produce the warning `fastmm: on_fills is not a hook; did you mean on_fill?`, an error with `FASTMM_WERROR`. Silence it with `static constexpr bool fastmm_allow_near_miss_names = true;` in the strategy.
+- Limits: a `final` class is only call-checked, so a wrong signature is silently not called; a hook that is ambiguous across two bases is reported as a wrong signature; a hook with a deduced (`auto`) return type must not be checked with `verify_strategy`; private hooks are rejected, also with `friend`; implicit argument conversions are accepted.
+- `Engine::start()` logs the implemented hooks: `strategy first_mm hooks: start book fill timer connection quoting`.
 
 ## Context
 
@@ -189,9 +164,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `request_stop()` | sets the engine's stop flag: a backtest ends after the current engine step; replay always drains the journal |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |
 
-`set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips
-orders awaiting a venue response and uses replace where the venue supports it. A direct order
-returns a `Result`:
+`set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips orders awaiting a venue response and uses replace where the venue supports it. A direct order returns a `Result`:
 
 ```cpp
 auto id = ctx.send(NewOrderRequest::limit(inst.id, Side::Buy, px, qty).post_only());
@@ -281,17 +254,11 @@ static_assert(std::same_as<decltype(OmsUpdate::prev), OrderState>);
 static_assert(std::same_as<decltype(OmsUpdate::terminal), bool>);
 ```
 
-- Every message starts with an `EventHeader`: `type`, `venue`, `instrument`, `exch_ts` (venue
-  event time) and `recv_ts` (receive time), plus `seq` and flags.
+- Every message starts with an `EventHeader`: `type`, `venue`, `instrument`, `exch_ts` (venue event time) and `recv_ts` (receive time), plus `seq` and flags.
 - `TradeMsg::aggressor` is the taker's side.
-- `OptionTickerMsg`: `mark_price` is in the instrument's price unit, `underlying_price` and
-  `index_price` in the underlying's quote currency, implied volatilities are annualised decimals
-  (0.312 is 31.2 %), greeks are the venue's; NaN marks a field the venue did not send.
-- `ConnectionStateMsg::state` is `Disconnected`, `Connecting`, `Live`, `Stale`, `Resyncing` or
-  `Dead`; `channel` is 0 for market data and 1 for the order and user stream; `reason_code` is
-  venue-specific.
-- `OmsUpdate` carries the order snapshot after the transition (`order`), the previous state
-  (`prev`), and `known`, `changed` and `terminal` flags.
+- `OptionTickerMsg`: `mark_price` is in the instrument's price unit, `underlying_price` and `index_price` in the underlying's quote currency, implied volatilities are annualised decimals (0.312 is 31.2 %), greeks are the venue's; NaN marks a field the venue did not send.
+- `ConnectionStateMsg::state` is `Disconnected`, `Connecting`, `Live`, `Stale`, `Resyncing` or `Dead`; `channel` is 0 for market data and 1 for the order and user stream; `reason_code` is venue-specific.
+- `OmsUpdate` carries the order snapshot after the transition (`order`), the previous state (`prev`), and `known`, `changed` and `terminal` flags.
 
 ## Parameters
 
@@ -323,13 +290,10 @@ struct AllHooksParams {
 | `FASTMM_PARAM_BPS(name, ...)` | `Ratio` | `bps` | basis points, exact, up to 4 decimals |
 | `FASTMM_PARAM_MS(name, ...)` | `Duration` | `ms` | whole milliseconds; bounds are `Duration`s |
 
-- The arguments are the field name, default, minimum, maximum and a description; `FASTMM_PARAMS(Self)`
-  comes first. At most 32 parameters.
-- `decimal`, `bps` and `ms` values are parsed as decimal text, never through a double; exponents are
-  accepted ([Fixed point](fixed-point.md#parsing-and-formatting)).
+- The arguments are the field name, default, minimum, maximum and a description; `FASTMM_PARAMS(Self)` comes first. At most 32 parameters.
+- `decimal`, `bps` and `ms` values are parsed as decimal text, never through a double; exponents are accepted ([Fixed point](fixed-point.md#parsing-and-formatting)).
 - Ranges are checked on the typed value: `parameter 'quote_qty': value 1000.5 outside [0, 1000]`.
-- The schema drives configuration checks, `--list-strategies`, `--param key=value` and
-  `fastmm.strategies()` in Python.
+- The schema drives configuration checks, `--list-strategies`, `--param key=value` and `fastmm.strategies()` in Python.
 
 ## Fixed-point helpers
 
@@ -362,14 +326,11 @@ static_assert(
 static_assert(std::convertible_to<LimitOrder, NewOrderRequest>);
 ```
 
-`NewOrderRequest::limit(id, side, px, qty)` builds a GTC limit order. [Fixed point](fixed-point.md)
-has the types, literals, rounding rules, quoting helpers and ranges.
+`NewOrderRequest::limit(id, side, px, qty)` builds a GTC limit order. [Fixed point](fixed-point.md) has the types, literals, rounding rules, quoting helpers and ranges.
 
 ## Test harness
 
-`fastmm::sim::StrategyHarness<S>` (`fastmm/testing/strategy_harness.hpp`, in `fastmm::sim`) runs a
-strategy in a real `Engine<S, SimClock, SimTransport, InlineFeed>` against a simulated venue on
-virtual time. Each call runs the engine until it is idle:
+`fastmm::sim::StrategyHarness<S>` (`fastmm/testing/strategy_harness.hpp`, in `fastmm::sim`) runs a strategy in a real `Engine<S, SimClock, SimTransport, InlineFeed>` against a simulated venue on virtual time. Each call runs the engine until it is idle:
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#harness -->
 ```cpp
@@ -407,8 +368,7 @@ h.engine().finish();  // on_stop
 | `working_orders([id])` | our working orders, bids then asks, best first |
 | `engine()`, `strategy()`, `now()`, `instrument()`, `price(s)`, `quantity(s)` | access and conversions |
 
-The default instrument is BTCUSDT on venue 0 with a tick of 0.01 and a lot of 0.001. The harness
-allocates and is single-threaded.
+The default instrument is BTCUSDT on venue 0 with a tick of 0.01 and a lot of 0.001. The harness allocates and is single-threaded.
 
 ## Registration
 
@@ -420,20 +380,13 @@ void register_strategies(StrategyRegistry& r) {
 static_assert(std::same_as<decltype(&register_strategies), StrategyModule>);
 ```
 
-- `register_strategy<S>(r)` adds the Sim, Replay and Live factories of `S`. The file that calls it
-  includes `fastmm/strategies/factories.hpp`, which compiles the three engines; without it the link
-  fails and names the missing factory.
-- A strategy library exports one such function (`StrategyModule`); apps pass it to
-  `fastmm::cli::live`, `backtest` or `replay`. The built-in strategies are always registered first.
-- Registering the same function twice is a no-op; a name registered by different code throws
-  `StrategyConflict` (the command lines exit with code 3).
+- `register_strategy<S>(r)` adds the Sim, Replay and Live factories of `S`. The file that calls it includes `fastmm/strategies/factories.hpp`, which compiles the three engines; without it the link fails and names the missing factory.
+- A strategy library exports one such function (`StrategyModule`); apps pass it to `fastmm::cli::live`, `backtest` or `replay`. The built-in strategies are always registered first.
+- Registering the same function twice is a no-op; a name registered by different code throws `StrategyConflict` (the command lines exit with code 3).
 - `bt::run_backtest<S>(cfg, source)` and `StrategyHarness<S>` need no registration.
 
 Build setups: [Register a strategy](../how-to/strategies/register-a-strategy.md).
 
 ## Logging
 
-`FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR`
-take a fmt format string (`FASTMM_LOG_INFO("filled {} @ {}", qty, px)`); `Price`, `Qty`, `Side`
-and the enums format directly. Records go through a per-thread ring to a background thread; when
-the ring is full the record is dropped and counted. Logs are not journaled: strategy logic must not depend on them.
+`FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR` take a fmt format string (`FASTMM_LOG_INFO("filled {} @ {}", qty, px)`); `Price`, `Qty`, `Side` and the enums format directly. Records go through a per-thread ring to a background thread; when the ring is full the record is dropped and counted. Logs are not journaled: strategy logic must not depend on them.

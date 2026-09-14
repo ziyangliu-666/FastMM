@@ -28,15 +28,13 @@ struct FirstMMParams {
 };
 ```
 
-Each `FASTMM_PARAM*` line declares a field with its default, range and description. The macro sets
-how the value is written in a configuration:
+Each `FASTMM_PARAM*` line declares a field with its default, range and description. The macro sets how the value is written in a configuration:
 
 - `FASTMM_PARAM_BPS` declares a `Ratio` configured in basis points (`edge_bps = 5.0`).
 - `FASTMM_PARAM(Qty, ...)` declares a `Qty` (`quote_qty = 0.001`).
 - `FASTMM_PARAM_MS` declares a `Duration` configured in whole milliseconds.
 
-`validate()` rejects inconsistent combinations. The same declarations drive `--list-strategies`,
-`--param key=value` and configuration errors.
+`validate()` rejects inconsistent combinations. The same declarations drive `--list-strategies`, `--param key=value` and configuration errors.
 
 ## The quoting function
 
@@ -61,18 +59,14 @@ how the value is written in a configuration:
 }
 ```
 
-- `microprice` weights the best bid and ask by the size on the opposite side, so it leans towards
-  the side that is about to be taken.
+- `microprice` weights the best bid and ask by the size on the opposite side, so it leans towards the side that is about to be taken.
 - Tick rounding never makes a quote more aggressive; `round_qty` rounds down to the lot.
 - `inventory_allows` drops the side that would take the position past `max_position`.
-- `keep_passive` moves a crossing quote back one tick inside the touch; the venue rejects a
-  crossing post-only order.
+- `keep_passive` moves a crossing quote back one tick inside the touch; the venue rejects a crossing post-only order.
 
 ## The hooks
 
-The class derives from `StrategyBase<FirstMMParams>`, which stores the parameters (`params()`),
-and names itself with `name()`. `on_start` runs once before the first event and starts the
-status-line timer:
+The class derives from `StrategyBase<FirstMMParams>`, which stores the parameters (`params()`), and names itself with `name()`. `on_start` runs once before the first event and starts the status-line timer:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_start -->
 ```cpp
@@ -83,8 +77,7 @@ void on_start(auto& ctx) noexcept {
 }
 ```
 
-`on_book` runs after each book update of a configured instrument. `ctx` is the strategy's view of
-the engine: books, positions, quotes, orders, timers:
+`on_book` runs after each book update of a configured instrument. `ctx` is the strategy's view of the engine: books, positions, quotes, orders, timers:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_book -->
 ```cpp
@@ -106,8 +99,7 @@ void on_fill(auto& /*ctx*/, const Fill& fill) noexcept {
 }
 ```
 
-`on_connection` runs when a venue channel changes state. Off `Live`, the engine has already pulled
-that venue's quotes and, for market data, cleared its books:
+`on_connection` runs when a venue channel changes state. Off `Live`, the engine has already pulled that venue's quotes and, for market data, cleared its books:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_connection -->
 ```cpp
@@ -124,9 +116,7 @@ void on_connection(auto& /*ctx*/, const ConnectionStateMsg& m) noexcept {
 }
 ```
 
-`on_quoting` runs when quoting is paused or resumed: an operator pull, the kill switch, or a
-reconciliation after a reconnect. On resume the strategy requotes without waiting for the next book
-update:
+`on_quoting` runs when quoting is paused or resumed: an operator pull, the kill switch, or a reconciliation after a reconnect. On resume the strategy requotes without waiting for the next book update:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_quoting -->
 ```cpp
@@ -136,8 +126,7 @@ void on_quoting(auto& ctx, bool enabled) noexcept {
 }
 ```
 
-`on_timer` prints the status line. Logs are not journaled, so they must never change what the
-strategy does:
+`on_timer` prints the status line. Logs are not journaled, so they must never change what the strategy does:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_timer -->
 ```cpp
@@ -158,9 +147,6 @@ void on_timer(auto& ctx, TimerId id, std::uint64_t /*tag*/) noexcept {
 static_assert(verify_strategy<FirstMM>());  // a hook with a wrong signature fails here
 ```
 
-If you misspell a hook's parameters, for example `on_fill(auto& ctx, const OrderFillMsg& m)`, the
-build stops with `fastmm: on_fill has the wrong signature or is not public; expected void
-on_fill(auto& ctx, const Fill& fill)`. A likely misspelling of a name, such as `on_fills`, is a
-warning. The [Strategy API](../../reference/strategy-api.md) lists the hooks.
+If you misspell a hook's parameters, for example `on_fill(auto& ctx, const OrderFillMsg& m)`, the build stops with `fastmm: on_fill has the wrong signature or is not public; expected void on_fill(auto& ctx, const Fill& fill)`. A likely misspelling of a name, such as `on_fills`, is a warning. The [Strategy API](../../reference/strategy-api.md) lists the hooks.
 
 Next: [4. Unit-test it](04-unit-test.md)

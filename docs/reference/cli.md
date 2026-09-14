@@ -3,10 +3,7 @@
 <!-- The usage blocks are generated from each program's --help by tools/docs_cli_help.py; do not
 edit them by hand (docs/contributing/writing-docs.md#generated-pages). -->
 
-Programs are built into `build/<preset>/bin/`. Programs built with `fastmm::cli::live`, `backtest`
-and `replay` for your own strategies (`tutorial-live`, `mm-live`, ...) accept the same flags and
-print their own name in messages ([Register a strategy](../how-to/strategies/register-a-strategy.md)). Durations take a unit:
-`1500ms`, `60s`, `5m`, `2h`.
+Programs are built into `build/<preset>/bin/`. Programs built with `fastmm::cli::live`, `backtest` and `replay` for your own strategies (`tutorial-live`, `mm-live`, ...) accept the same flags and print their own name in messages ([Register a strategy](../how-to/strategies/register-a-strategy.md)). Durations take a unit: `1500ms`, `60s`, `5m`, `2h`.
 
 ## fastmm-live
 
@@ -60,8 +57,7 @@ Exit codes:
 | 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed) with `on_kill = "exit"`, and `cancel_all ok` |
 
 - The journal records the configuration after `--strategy` and `--param`.
-- `fastmm::cli::live` installs process-wide SIGINT and SIGTERM handlers. The first signal starts the
-  shutdown ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
+- `fastmm::cli::live` installs process-wide SIGINT and SIGTERM handlers. The first signal starts the shutdown ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
 
 ## fastmm-backtest
 
@@ -97,8 +93,7 @@ The flags override `[backtest]` ([Configuration](configuration.md#backtest)).
 
 ## fastmm-replay
 
-Replays a journal through the same engine and strategy and, with `--verify`, compares the order
-messages it sends with the recorded ones.
+Replays a journal through the same engine and strategy and, with `--verify`, compares the order messages it sends with the recorded ones.
 
 <!-- BEGIN cli-help fastmm-replay -->
 ```text
@@ -121,8 +116,7 @@ usage: fastmm-replay --journal <in.fmj> [options]
 | 2 | bad command line, including a session journal without an embedded configuration and no `--config` |
 | 3 | unreadable configuration or journal, unknown strategy |
 
-[Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md#replay) explains what-if
-replays and journals without outbound copies.
+[Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md#replay) explains what-if replays and journals without outbound copies.
 
 ## fastmm-sim-exchange
 

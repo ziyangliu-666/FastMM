@@ -1,21 +1,16 @@
 # Determinism
 
-A backtest with the same inputs sends the same orders, and replaying a journal sends the same order
-messages as the session that wrote it. `fastmm-replay --verify` checks the second property by
-comparing the SHA-256 of both outbound streams ([How it is checked](#how-it-is-checked)).
+A backtest with the same inputs sends the same orders, and replaying a journal sends the same order messages as the session that wrote it. `fastmm-replay --verify` checks the second property by comparing the SHA-256 of both outbound streams ([How it is checked](#how-it-is-checked)).
 
 ## Why it matters
 
-- Replaying the journal of a live session that misbehaved runs the same decisions again under a
-  debugger, without a venue.
-- Golden hashes (`tests/backtest/golden_strategies_test.cpp`,
-  `tests/fixtures/journals/sample_1000.sha256`) fail when a change alters what a strategy sends.
+- Replaying the journal of a live session that misbehaved runs the same decisions again under a debugger, without a venue.
+- Golden hashes (`tests/backtest/golden_strategies_test.cpp`, `tests/fixtures/journals/sample_1000.sha256`) fail when a change alters what a strategy sends.
 - Two backtests with different parameter sets differ only by the parameters.
 
 ## How the engine keeps it
 
-`Engine<Strategy, Clock, Transport, Feed>` takes the sources of non-determinism as compile-time
-policies:
+`Engine<Strategy, Clock, Transport, Feed>` takes the sources of non-determinism as compile-time policies:
 
 | Input | Live | Backtest | Replay |
 |---|---|---|---|
@@ -24,21 +19,13 @@ policies:
 | orders | `LiveTransport` to the venue | `SimTransport`: matching engine with a seeded latency model | `ReplayTransport`: recorded acks and refusals |
 | randomness | `ctx.rng()` seeded from `[engine] rng_seed` | the same | the seed from the journal header |
 
-The rest is deterministic because it uses one engine thread, no
-reads of the system clock, integer arithmetic for money, fixed-capacity containers iterated in a
-defined order, and timers that fire in engine time.
+The rest is deterministic because it uses one engine thread, no reads of the system clock, integer arithmetic for money, fixed-capacity containers iterated in a defined order, and timers that fire in engine time.
 
-A live session is not repeatable (network timing decides which event comes first), but its journal
-is. Journal format version 2 ([Journal format](../reference/journal-format.md)) records, for every
-consumed event and fired timer, the engine clock at which it was processed, and in the header the
-session epoch, whether quoting was enabled, each venue's cancel-replace setting and the effective
-configuration. Replay restores all of them.
+A live session is not repeatable (network timing decides which event comes first), but its journal is. Journal format version 2 ([Journal format](../reference/journal-format.md)) records, for every consumed event and fired timer, the engine clock at which it was processed, and in the header the session epoch, whether quoting was enabled, each venue's cancel-replace setting and the effective configuration. Replay restores all of them.
 
 ## How it is checked
 
-`fastmm-replay --verify` (or `tutorial-replay`, or any app built with `cli::replay`) compares every
-outbound order message the replayed engine sends with the copy in the journal and prints the
-SHA-256 of both streams:
+`fastmm-replay --verify` (or `tutorial-replay`, or any app built with `cli::replay`) compares every outbound order message the replayed engine sends with the copy in the journal and prints the SHA-256 of both streams:
 
 ```text
 recorded outbound 712 msgs sha256 1116a9bd...
@@ -46,9 +33,7 @@ replayed outbound 712 msgs sha256 1116a9bd...
 replay MATCH
 ```
 
-On a mismatch it prints the first differing message as recorded and as replayed and exits with
-code 1. Only the first difference means anything: replay feeds the recorded acknowledgements
-whatever it sent, so later messages diverge too.
+On a mismatch it prints the first differing message as recorded and as replayed and exits with code 1. Only the first difference means anything: replay feeds the recorded acknowledgements whatever it sent, so later messages diverge too.
 
 ## What breaks it
 
@@ -66,8 +51,7 @@ whatever it sent, so later messages diverge too.
 | A journal written before format version 2, from a live session | it has no engine clock or session settings | replay with `--config` as a what-if run |
 | A full journal ring during recording | events were lost; the engine trips the kill switch | size `[engine] journal_ring_bytes` for the session |
 
-A mismatch with the same binary and the embedded configuration is a bug: some code read an input
-the journal does not record.
+A mismatch with the same binary and the embedded configuration is a bug: some code read an input the journal does not record.
 
 ## Related
 

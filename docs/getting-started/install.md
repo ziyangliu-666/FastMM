@@ -13,9 +13,7 @@ All commands run from the repository root.
 | zlib | development headers | networking |
 | Python | 3.9 or newer | the tools in `tools/` and the Python package |
 
-On Ubuntu 24.04: `sudo apt install g++-13 cmake ninja-build libssl-dev zlib1g-dev python3`.
-Every other dependency (fmt, toml++, simdjson, doctest, Google Benchmark, pybind11) is downloaded
-and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
+On Ubuntu 24.04: `sudo apt install g++-13 cmake ninja-build libssl-dev zlib1g-dev python3`. Every other dependency (fmt, toml++, simdjson, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
 
 ## Build
 
@@ -25,9 +23,7 @@ cmake --build --preset release -j
 ctest --preset release
 ```
 
-`bootstrap.sh` checks the toolchain, creates the CPM download cache
-([Dependencies](../contributing/dependencies.md)) and configures the `release` preset; `--dev` also
-configures `debug` and installs the pre-commit hooks. The programs are in `build/release/bin/`.
+`bootstrap.sh` checks the toolchain, creates the CPM download cache ([Dependencies](../contributing/dependencies.md)) and configures the `release` preset; `--dev` also configures `debug` and installs the pre-commit hooks. The programs are in `build/release/bin/`.
 
 ## Check the build
 
@@ -36,8 +32,7 @@ configures `debug` and installs the pre-commit hooks. The programs are in `build
 ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
 ```
 
-The first command lists the built-in strategies with their parameters. The second backtests
-`basic_mm` for 60 s of simulated time and prints a summary.
+The first command lists the built-in strategies with their parameters. The second backtests `basic_mm` for 60 s of simulated time and prints a summary.
 
 ## Presets
 
@@ -51,8 +46,7 @@ The first command lists the built-in strategies with their parameters. The secon
 | `clang-release` | clang, LTO | the second compiler in CI |
 | `python` | the Python module only, no networking | wheel builds |
 
-`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live`
-label (tests against real testnets).
+`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets).
 
 ## Docker
 
@@ -60,8 +54,7 @@ label (tests against real testnets).
 docker compose up --build
 ```
 
-This builds one image and starts two containers: `fastmm-sim-exchange` and `fastmm-live` trading
-`basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`.
+This builds one image and starts two containers: `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`.
 
 ## Python
 
@@ -69,9 +62,6 @@ See [Python research bindings](../python.md).
 
 ## Use FastMM from your own project
 
-- The [Quick start](quickstart.md) pulls FastMM into a CMake project with `FetchContent`; the
-  [Tutorial: your first market maker](../tutorials/first-strategy/README.md) continues from there.
-- [Register a strategy](../how-to/strategies/register-a-strategy.md) builds a project against an
-  installed FastMM (`find_package(fastmm)`) or a source tree (`add_subdirectory`).
-- Build your project with the compiler that built FastMM: a release install contains GCC LTO
-  objects.
+- The [Quick start](quickstart.md) pulls FastMM into a CMake project with `FetchContent`; the [Tutorial: your first market maker](../tutorials/first-strategy/README.md) continues from there.
+- [Register a strategy](../how-to/strategies/register-a-strategy.md) builds a project against an installed FastMM (`find_package(fastmm)`) or a source tree (`add_subdirectory`).
+- Build your project with the compiler that built FastMM: a release install contains GCC LTO objects.

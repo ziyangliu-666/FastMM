@@ -1,7 +1,6 @@
 # Public API
 
-Which headers and CMake targets a project outside FastMM may use, and what may change. The list of
-headers is [`docs/api/public-headers.txt`](../api/public-headers.txt).
+Which headers and CMake targets a project outside FastMM may use, and what may change. The list of headers is [`docs/api/public-headers.txt`](../api/public-headers.txt).
 
 ## Tiers
 
@@ -11,18 +10,13 @@ headers is [`docs/api/public-headers.txt`](../api/public-headers.txt).
 | 2 | Extending FastMM: configuration (`config/*`), venue connectors (`venues/*.hpp` outside the venue subdirectories), `core/book/book_syncer.hpp`, networking (`net/{reactor,connection,crypto,backoff,url,ws_client,http_client}.hpp`) and `codecs/codec.hpp` | Documented; may change in any release before 1.0 |
 | internal | Everything else: engine internals (`core/engine.hpp`, rings, containers, the journal writer, timers, latency, the status segment), the simulator (`sim/*`), the reference connectors (`venues/binance/`, `venues/bybit/`, `venues/deribit/`), protocol-specific codec headers and the built-in strategies | No promise; may change in any release |
 
-- Use the built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`,
-  `options_mm.hpp`) by name through the registry; their parameters and behaviour may change.
-- A tier 1 header may include internal headers; only the names the reference pages document are
-  public. `Engine<...>` is internal even though `StrategyHarness::engine()` returns it; use it for
-  inspection in tests.
-- Everything is in `namespace fastmm` (backtests in `fastmm::bt`, the harness in `fastmm::sim`,
-  command lines in `fastmm::cli`); `detail` namespaces are internal.
+- Use the built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`, `options_mm.hpp`) by name through the registry; their parameters and behaviour may change.
+- A tier 1 header may include internal headers; only the names the reference pages document are public. `Engine<...>` is internal even though `StrategyHarness::engine()` returns it; use it for inspection in tests.
+- Everything is in `namespace fastmm` (backtests in `fastmm::bt`, the harness in `fastmm::sim`, command lines in `fastmm::cli`); `detail` namespaces are internal.
 
 ## CMake targets
 
-Installed FastMM exports these targets through `find_package(fastmm)`; `add_subdirectory` and
-`FetchContent` create the same names.
+Installed FastMM exports these targets through `find_package(fastmm)`; `add_subdirectory` and `FetchContent` create the same names.
 
 | Target | Contents | Needs |
 |---|---|---|
@@ -36,19 +30,12 @@ Installed FastMM exports these targets through `find_package(fastmm)`; `add_subd
 | `fastmm::live` | `run_live`, `cli::live` | `fastmm::venues`, `fastmm::strategies` |
 | `fastmm::lowlatency` | FastMM's code generation flags (link privately where you instantiate engines) | |
 
-`find_package(fastmm CONFIG REQUIRED COMPONENTS live)` fails with a message when the install was
-built without networking. Build your project with the same compiler as FastMM: a release install
-contains GCC LTO objects. Not provided: installed programs and configurations, other compilers, a
-version compatibility policy.
+`find_package(fastmm CONFIG REQUIRED COMPONENTS live)` fails with a message when the install was built without networking. Build your project with the same compiler as FastMM: a release install contains GCC LTO objects. Not provided: installed programs and configurations, other compilers, a version compatibility policy.
 
 ## Checks
 
-- Every header in the manifest compiles on its own in its own translation unit (ctest
-  `docs.public_headers`, label `docs`, not built under sanitizers).
-- [`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) pins the
-  documented strategy API ([Strategy API](strategy-api.md)).
-- `examples/external-project/` builds against an install in CI
-  (`scripts/ci-external-project.sh`).
+- Every header in the manifest compiles on its own in its own translation unit (ctest `docs.public_headers`, label `docs`, not built under sanitizers).
+- [`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) pins the documented strategy API ([Strategy API](strategy-api.md)).
+- `examples/external-project/` builds against an install in CI (`scripts/ci-external-project.sh`).
 
-When you add a header that projects should use, add it to the manifest with its tier; when you
-remove or rename a tier 1 name, record it under **Breaking** in the CHANGELOG.
+When you add a header that projects should use, add it to the manifest with its tier; when you remove or rename a tier 1 name, record it under **Breaking** in the CHANGELOG.

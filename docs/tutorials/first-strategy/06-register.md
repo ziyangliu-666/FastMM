@@ -1,7 +1,6 @@
 # 6. Register it
 
-`tutorial-backtest`, `tutorial-replay` and `tutorial-live` are FastMM's `fastmm-backtest`,
-`fastmm-replay` and `fastmm-live` with the tutorial's strategies added.
+`tutorial-backtest`, `tutorial-replay` and `tutorial-live` are FastMM's `fastmm-backtest`, `fastmm-replay` and `fastmm-live` with the tutorial's strategies added.
 
 ## The registration function
 
@@ -20,10 +19,8 @@ void tutorial::register_strategies(fastmm::StrategyRegistry& r) {
 }
 ```
 
-- `fastmm/strategies/factories.hpp` compiles the strategy's three engines (simulated, replay and
-  live) into this file.
-- Nothing registers itself: each program passes the function to the command line it runs. If you
-  register a strategy but omit `factories.hpp`, the link fails and names the missing factory.
+- `fastmm/strategies/factories.hpp` compiles the strategy's three engines (simulated, replay and live) into this file.
+- Nothing registers itself: each program passes the function to the command line it runs. If you register a strategy but omit `factories.hpp`, the link fails and names the missing factory.
 
 Each program is a three-line `main`, here the live one:
 
@@ -70,12 +67,7 @@ endif()
 
 ## Build it: in your own project
 
-For your own repository, copy [`examples/external-project/`](../../../examples/external-project/).
-It has the same pieces (a strategy header, `examples/external-project/src/strategies.cpp`, live, backtest and replay mains
-and a harness test) and builds against an installed FastMM with `find_package(fastmm)` or a source
-tree with `add_subdirectory`; [Register a strategy](../../how-to/strategies/register-a-strategy.md)
-walks through it. To ship a strategy with FastMM itself, add it to the `STRATEGIES` list
-in `src/strategies/CMakeLists.txt`, which registers it in every FastMM program.
+For your own repository, copy [`examples/external-project/`](../../../examples/external-project/). It has the same pieces (a strategy header, `examples/external-project/src/strategies.cpp`, live, backtest and replay mains and a harness test) and builds against an installed FastMM with `find_package(fastmm)` or a source tree with `add_subdirectory`; [Register a strategy](../../how-to/strategies/register-a-strategy.md) walks through it. To ship a strategy with FastMM itself, add it to the `STRATEGIES` list in `src/strategies/CMakeLists.txt`, which registers it in every FastMM program.
 
 ## Check
 

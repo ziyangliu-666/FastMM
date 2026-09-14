@@ -1,11 +1,8 @@
 # FIX 4.4 codec (`fastmm::codecs::fix`)
 
-A tag=value FIX 4.4 codec: framing, session layer for initiators and acceptors, and a decoder and
-encoder between FIX messages and the engine's normalised messages. There is no XML dictionary: the
-tags and enumerations the codec uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`.
+A tag=value FIX 4.4 codec: framing, session layer for initiators and acceptors, and a decoder and encoder between FIX messages and the engine's normalised messages. There is no XML dictionary: the tags and enumerations the codec uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`.
 
-Everything on the hot path is `noexcept` and allocation-free after construction
-(`tests/hotpath/codecs_fix_noalloc_test.cpp` checks it). The library depends on core only.
+Everything on the hot path is `noexcept` and allocation-free after construction (`tests/hotpath/codecs_fix_noalloc_test.cpp` checks it). The library depends on core only.
 
 ```
 bytes ─► FixFramer ─► FixSession.on_frame ─┬─ session message: handled, true
@@ -33,44 +30,27 @@ OrderCommand ─► FixEncoder.encode ─► FixSession.send_app ─► MessageS
 * BeginString(8), BodyLength(9) and MsgType(35) are the first three fields.
 * BodyLength counts the bytes after the SOH that ends field 9, up to and excluding `10=`.
 * CheckSum is the sum of every byte before `10=`, modulo 256, written as three digits.
-* Values cannot be empty. The data fields SecureData(91), RawData(96), XmlData(213) and
-  EncodedText(355) may contain SOH; their length comes from the preceding length field.
+* Values cannot be empty. The data fields SecureData(91), RawData(96), XmlData(213) and EncodedText(355) may contain SOH; their length comes from the preceding length field.
 
 ### FixFramer
 
-`FixFramer` finds `8=FIX`, reads BodyLength and checks that `10=ddd|` sits exactly where
-BodyLength says. It returns `kMessage` frames (payload = one message) or `kGarbage` frames
-(bytes that cannot start a message), and "need more" on partial input. Garbage before a message,
-a non-numeric BodyLength, a misplaced CheckSum field or a message over `max_message` (64 KiB by
-default) are skipped until the next `8=FIX`.
+`FixFramer` finds `8=FIX`, reads BodyLength and checks that `10=ddd|` sits exactly where BodyLength says. It returns `kMessage` frames (payload = one message) or `kGarbage` frames (bytes that cannot start a message), and "need more" on partial input. Garbage before a message, a non-numeric BodyLength, a misplaced CheckSum field or a message over `max_message` (64 KiB by default) are skipped until the next `8=FIX`.
 
 ### FixView
 
-`FixView::parse` validates the framing above plus the CheckSum value, then indexes every field
-as (tag, offset, length) into the caller's bytes. Tags below 1024 get O(1) lookups. Getters
-return `std::optional`: `get_int`, `get_char`, `get_bool` (Y/N), `get_price` / `get_qty` (exact
-decimal to the 1e-8 fixed point; `+` and exponents rejected),
-`get_timestamp_ns`. `FixGroupReader` walks a repeating group: entries start with the group's first
-tag, end at the next first tag, at a tag outside an optional member list, or at CheckSum, and
-`complete()` checks NumInGroup.
+`FixView::parse` validates the framing above plus the CheckSum value, then indexes every field as (tag, offset, length) into the caller's bytes. Tags below 1024 get O(1) lookups. Getters return `std::optional`: `get_int`, `get_char`, `get_bool` (Y/N), `get_price` / `get_qty` (exact decimal to the 1e-8 fixed point; `+` and exponents rejected), `get_timestamp_ns`. `FixGroupReader` walks a repeating group: entries start with the group's first tag, end at the next first tag, at a tag outside an optional member list, or at CheckSum, and `complete()` checks NumInGroup.
 
 ### UTCTimestamp
 
-`YYYYMMDD-HH:MM:SS` or `YYYYMMDD-HH:MM:SS.sss` in FIX 4.4. The parser also accepts 6 and 9 fraction
-digits; the builder writes milliseconds.
+`YYYYMMDD-HH:MM:SS` or `YYYYMMDD-HH:MM:SS.sss` in FIX 4.4. The parser also accepts 6 and 9 fraction digits; the builder writes milliseconds.
 
 ### FixBuilder
 
-`FixBuilder` writes into a caller buffer: `begin_header(type, sender, target, seq, now)` emits
-8, 9 (three placeholder digits), 35, 49, 56, 34, 43 + 122 for retransmissions, and 52. `finish()`
-writes the real BodyLength (shifting the body when it is not three digits) and appends CheckSum.
-Overflow latches `!ok()` and `finish()` returns 0.
+`FixBuilder` writes into a caller buffer: `begin_header(type, sender, target, seq, now)` emits 8, 9 (three placeholder digits), 35, 49, 56, 34, 43 + 122 for retransmissions, and 52. `finish()` writes the real BodyLength (shifting the body when it is not three digits) and appends CheckSum. Overflow latches `!ok()` and `finish()` returns 0.
 
 ## Session layer
 
-`FixSession(cfg, send, ctx)`; `set_clock()` supplies SendingTime (otherwise the time of the last
-`on_timer`), `set_event_callback()` reports logon, disconnect, gap detected and gap filled.
-`SendFn` must not call back into the session.
+`FixSession(cfg, send, ctx)`; `set_clock()` supplies SendingTime (otherwise the time of the last `on_timer`), `set_event_callback()` reports logon, disconnect, gap detected and gap filled. `SendFn` must not call back into the session.
 
 | message | behaviour |
 |---|---|
@@ -85,36 +65,19 @@ Overflow latches `!ok()` and `finish()` returns 0.
 Inbound MsgSeqNum(34):
 
 * equal to the expected number: processed;
-* higher: ResendRequest, state `Recovering`, the message is discarded (EndSeqNo=0 covers it).
-  Recovery ends when the expected number passes the highest number seen. If, while recovering,
-  a newer message arrives after the resend has already advanced the expected number, a new gap
-  opened (a message lost mid-recovery) and the session asks again from there;
+* higher: ResendRequest, state `Recovering`, the message is discarded (EndSeqNo=0 covers it). Recovery ends when the expected number passes the highest number seen. If, while recovering, a newer message arrives after the resend has already advanced the expected number, a new gap opened (a message lost mid-recovery) and the session asks again from there;
 * lower with PossDupFlag(43)=Y: duplicate, ignored;
 * lower without it: Logout with `MsgSeqNum too low, expecting N but received M`, disconnect.
 
-PossDupFlag=Y without OrigSendingTime(122) gets Reject 373=1 (RefTagID 122). OrigSendingTime later
-than SendingTime gets Reject 373=10, then Logout and disconnect. Messages failing BodyLength or
-CheckSum are ignored (not counted against sequence numbers). A wrong BeginString after logon, a
-CompID mismatch (Reject 373=9 + Logout) or a missing MsgSeqNum end the session. Acceptors drop
-anything but Logon while down.
+PossDupFlag=Y without OrigSendingTime(122) gets Reject 373=1 (RefTagID 122). OrigSendingTime later than SendingTime gets Reject 373=10, then Logout and disconnect. Messages failing BodyLength or CheckSum are ignored (not counted against sequence numbers). A wrong BeginString after logon, a CompID mismatch (Reject 373=9 + Logout) or a missing MsgSeqNum end the session. Acceptors drop anything but Logon while down.
 
 ### MessageStore
 
-`send_app()` appends each outbound application message (MsgType, original
-SendingTime, body bytes after the standard header) to a store preallocated at construction
-(`store_max_messages` entries, `store_max_bytes` arena). It is append-only and bounded: once full,
-further messages are not kept. On ResendRequest each stored message in the range is sent again with
-its original MsgSeqNum, PossDupFlag=Y, OrigSendingTime = original SendingTime and a new SendingTime;
-every run of administrative or unavailable sequence numbers becomes one SequenceReset-GapFill
-(PossDupFlag=Y, NewSeqNo = next number to resend). Header fields other than 8/9/35/49/56/34/43/52/122
-are not preserved on resend.
+`send_app()` appends each outbound application message (MsgType, original SendingTime, body bytes after the standard header) to a store preallocated at construction (`store_max_messages` entries, `store_max_bytes` arena). It is append-only and bounded: once full, further messages are not kept. On ResendRequest each stored message in the range is sent again with its original MsgSeqNum, PossDupFlag=Y, OrigSendingTime = original SendingTime and a new SendingTime; every run of administrative or unavailable sequence numbers becomes one SequenceReset-GapFill (PossDupFlag=Y, NewSeqNo = next number to resend). Header fields other than 8/9/35/49/56/34/43/52/122 are not preserved on resend.
 
 ## Decoder
 
-`FixDecoder(symbols, venue)`; `decode(frame, rx_ts, sink)` parses and validates, `decode_view(view,
-rx_ts, sink)` reuses `FixSession::view()`. Messages are built in place in the sink (BookDelta is
-reserved with `BookDeltaMsg::size_for` and filled in place). `hdr.venue_seq` = MsgSeqNum,
-`exch_ts` = TransactTime(60) or SendingTime(52), `recv_ts` = `rx_ts`.
+`FixDecoder(symbols, venue)`; `decode(frame, rx_ts, sink)` parses and validates, `decode_view(view, rx_ts, sink)` reuses `FixSession::view()`. Messages are built in place in the sink (BookDelta is reserved with `BookDeltaMsg::size_for` and filled in place). `hdr.venue_seq` = MsgSeqNum, `exch_ts` = TransactTime(60) or SendingTime(52), `recv_ts` = `rx_ts`.
 
 | FIX | engine message |
 |---|---|
@@ -129,15 +92,11 @@ reserved with `BookDeltaMsg::size_for` and filled in place). `hdr.venue_seq` = M
 | MarketDataSnapshotFullRefresh (W) | one `BookSnapshot` (kSnapshot) with MDEntryType 0 bids and 1 offers |
 | MarketDataIncrementalRefresh (X) | one `BookDelta` per run of book entries on one instrument (MDUpdateAction 2 Delete = qty 0); one `Trade` per MDEntryType 2 entry (trade id = numeric MDEntryID 278) |
 
-Fills are deduplicated by ExecID over the last 256 executions. ClOrdIDs are the engine's encoding
-(`encode_cl_ord_id`, "fm" + 12 hex digits); order events for other ids are ignored (`foreign_ids`).
-Order events are delivered even when Symbol(55) is unknown (instrument left invalid); market data
-needs a known symbol. In X, an entry without Symbol inherits the previous entry's.
+Fills are deduplicated by ExecID over the last 256 executions. ClOrdIDs are the engine's encoding (`encode_cl_ord_id`, "fm" + 12 hex digits); order events for other ids are ignored (`foreign_ids`). Order events are delivered even when Symbol(55) is unknown (instrument left invalid); market data needs a known symbol. In X, an entry without Symbol inherits the previous entry's.
 
 ## Encoder
 
-`FixEncoder(session, symbols)`; `encode(cmd, out)` writes a full message for MsgSeqNum =
-`session.next_sender_seq()`, `send(session, cmd)` encodes and calls `send_app`.
+`FixEncoder(session, symbols)`; `encode(cmd, out)` writes a full message for MsgSeqNum = `session.next_sender_seq()`, `send(session, cmd)` encodes and calls `send_app`.
 
 | command | message and fields |
 |---|---|
@@ -145,33 +104,17 @@ needs a known symbol. In X, an entry without Symbol inherits the previous entry'
 | Cancel | OrderCancelRequest (F): 41 OrigClOrdID, 37 OrderID when known, 11 = order id + `c` + counter, 55, 54, 60, 38 |
 | Replace | OrderCancelReplaceRequest (G): 37, 41, 11, 18, 55, 54, 60, 38, 40, 44, 59 |
 
-F and G require Side, OrderQty and OrdType, which `OutCancelMsg` / `OutReplaceMsg` do not carry.
-The encoder remembers side, type, time in force, instrument, price and quantity of every order it
-encoded in a preallocated direct-mapped table keyed by the client order id (16384 slots by
-default); `remember()` seeds orders sent elsewhere. A cancel or replace for an unknown order fails
-(returns 0). `reduce_only` has no FIX 4.4 field and is not sent.
+F and G require Side, OrderQty and OrdType, which `OutCancelMsg` / `OutReplaceMsg` do not carry. The encoder remembers side, type, time in force, instrument, price and quantity of every order it encoded in a preallocated direct-mapped table keyed by the client order id (16384 slots by default); `remember()` seeds orders sent elsewhere. A cancel or replace for an unknown order fails (returns 0). `reduce_only` has no FIX 4.4 field and is not sent.
 
 ## Simulation validation
 
-`tests/codecs/fix_sim_test.cpp` joins an initiator and an acceptor session with an in-memory byte
-pipe (random 1 to 64 byte chunks through `FixFramer`). The acceptor bridges D/F/G to the sim
-`MatchingEngine` and answers with ExecutionReports, OrderCancelRejects and
-MarketDataIncrementalRefresh built from the engine's callbacks. For three seeds, 3000 random steps of
-new orders (limit, post-only, IOC), cancels (including unknown ids), replaces (in-place amends and
-cancel-then-new) and counter-party liquidity run while about 2% of the venue's first transmissions
-are dropped, so recovery by ResendRequest runs throughout. At the end the client, which only sees
-decoded events, must match the engine exactly: fills per order and the net position, open orders
-with their leaves, and both sides of the book.
+`tests/codecs/fix_sim_test.cpp` joins an initiator and an acceptor session with an in-memory byte pipe (random 1 to 64 byte chunks through `FixFramer`). The acceptor bridges D/F/G to the sim `MatchingEngine` and answers with ExecutionReports, OrderCancelRejects and MarketDataIncrementalRefresh built from the engine's callbacks. For three seeds, 3000 random steps of new orders (limit, post-only, IOC), cancels (including unknown ids), replaces (in-place amends and cancel-then-new) and counter-party liquidity run while about 2% of the venue's first transmissions are dropped, so recovery by ResendRequest runs throughout. At the end the client, which only sees decoded events, must match the engine exactly: fills per order and the net position, open orders with their leaves, and both sides of the book.
 
-`tests/codecs/fix_session_test.cpp` covers logon, heartbeats, test requests and their timeout,
-logout, gap detection with resend (PossDup, OrigSendingTime, GapFill for administrative messages),
-a full store, too-low MsgSeqNum, the PossDup rules, both SequenceReset modes, garbled messages and
-CompID checks.
+`tests/codecs/fix_session_test.cpp` covers logon, heartbeats, test requests and their timeout, logout, gap detection with resend (PossDup, OrigSendingTime, GapFill for administrative messages), a full store, too-low MsgSeqNum, the PossDup rules, both SequenceReset modes, garbled messages and CompID checks.
 
 ## Performance
 
-`bench/bench_codecs_fix.cpp`, gcc 13 RelWithDebInfo, an 8-core desktop under WSL2, pinned, median of
-9 repetitions:
+`bench/bench_codecs_fix.cpp`, gcc 13 RelWithDebInfo, an 8-core desktop under WSL2, pinned, median of 9 repetitions:
 
 | benchmark | p50 |
 |---|---|
@@ -191,40 +134,22 @@ Budgets: `bench/ci_budget.toml`.
 
 * FIX Trading Community, FIX 4.4 specification with Errata 20030618:
   <https://www.fixtrading.org/standards/fix-4-4/>
-* OnixS FIX 4.4 dictionary, <https://www.onixs.biz/fix-dictionary/4.4/>: StandardHeader
-  (`compBlock_StandardHeader.html`), messages Logon (`msgType_A_65.html`), Heartbeat
-  (`msgType_0_0.html`), TestRequest (`msgType_1_1.html`), ResendRequest (`msgType_2_2.html`), Reject
-  (`msgType_3_3.html`), SequenceReset (`msgType_4_4.html`), Logout (`msgType_5_5.html`),
-  ExecutionReport (`msgType_8_8.html`), OrderCancelReject (`msgType_9_9.html`), NewOrderSingle
-  (`msgType_D_68.html`), OrderCancelRequest (`msgType_F_70.html`), OrderCancelReplaceRequest
-  (`msgType_G_71.html`), MarketDataSnapshotFullRefresh (`msgType_W_87.html`),
-  MarketDataIncrementalRefresh (`msgType_X_88.html`); tags 9, 10, 18, 39, 40, 54, 59, 97, 102,
-  103, 123, 150, 269, 279, 373, 434, 851 (`tagNum_<n>.html`).
+* OnixS FIX 4.4 dictionary, <https://www.onixs.biz/fix-dictionary/4.4/>: StandardHeader (`compBlock_StandardHeader.html`), messages Logon (`msgType_A_65.html`), Heartbeat (`msgType_0_0.html`), TestRequest (`msgType_1_1.html`), ResendRequest (`msgType_2_2.html`), Reject (`msgType_3_3.html`), SequenceReset (`msgType_4_4.html`), Logout (`msgType_5_5.html`), ExecutionReport (`msgType_8_8.html`), OrderCancelReject (`msgType_9_9.html`), NewOrderSingle (`msgType_D_68.html`), OrderCancelRequest (`msgType_F_70.html`), OrderCancelReplaceRequest (`msgType_G_71.html`), MarketDataSnapshotFullRefresh (`msgType_W_87.html`), MarketDataIncrementalRefresh (`msgType_X_88.html`); tags 9, 10, 18, 39, 40, 54, 59, 97, 102, 103, 123, 150, 269, 279, 373, 434, 851 (`tagNum_<n>.html`).
 * OnixS, CheckSum calculation (FIX 4.2 appendix B; the algorithm is unchanged in 4.4):
   <https://www.onixs.biz/fix-dictionary/4.2/app_b.html>
 * B2BITS FIXopaedia FIX 4.4 data types (UTCTimestamp, int, float, Boolean, MultipleValueString):
   <https://www.b2bits.com/fixopaedia/fixdic44/data_types.html>
-* FIX Trading Community, FIX session-level test cases and expected behaviours (MsgSeqNum too low,
-  PossDup handling, OrigSendingTime later than SendingTime), from secondary summaries only.
-* Known-answer check: the ExecutionReport example of the Wikipedia article "Financial Information
-  eXchange" (BodyLength 178, CheckSum 128).
+* FIX Trading Community, FIX session-level test cases and expected behaviours (MsgSeqNum too low, PossDup handling, OrigSendingTime later than SendingTime), from secondary summaries only.
+* Known-answer check: the ExecutionReport example of the Wikipedia article "Financial Information eXchange" (BodyLength 178, CheckSum 128).
 
 ## Limitations and unverified details
 
-* Session rules come from the dictionary's message descriptions and secondary summaries of the
-  session test cases. Not confirmed against FIX 4.4 Volume 2 (session protocol):
+* Session rules come from the dictionary's message descriptions and secondary summaries of the session test cases. Not confirmed against FIX 4.4 Volume 2 (session protocol):
   * GapFill messages sent in reply to a ResendRequest carry PossDupFlag=Y (implemented);
   * the 20% "reasonable transmission time" (a configurable default);
-  * a ResendRequest or Logout with a too-high MsgSeqNum is still acted on (implemented: serve or
-    confirm, then request the gap);
+  * a ResendRequest or Logout with a too-high MsgSeqNum is still acted on (implemented: serve or confirm, then request the gap);
   * an acceptor silently drops non-Logon first messages.
-* Session: no persistent sequence numbers or store (in memory, per process); no NextExpectedMsgSeqNum
-  (789), Username/Password, encryption or Logon-time TestRequest; a lost ResendRequest is not
-  retried until another too-high message arrives; messages arriving above the gap are discarded, not
-  queued; `Reject` is gap-filled like other administrative messages.
-* Decoder: FIX 4.4 market data has no aggressor side, so `TradeMsg::aggressor` is always Buy;
-  incremental entries must carry MDEntryType and MDEntryPx (entries addressed only by MDEntryID are
-  not supported); trades in W snapshots are ignored; Commission(12) is not mapped, so `fee` is 0;
-  pending, restated, order-status and trade-correction reports are ignored.
+* Session: no persistent sequence numbers or store (in memory, per process); no NextExpectedMsgSeqNum (789), Username/Password, encryption or Logon-time TestRequest; a lost ResendRequest is not retried until another too-high message arrives; messages arriving above the gap are discarded, not queued; `Reject` is gap-filled like other administrative messages.
+* Decoder: FIX 4.4 market data has no aggressor side, so `TradeMsg::aggressor` is always Buy; incremental entries must carry MDEntryType and MDEntryPx (entries addressed only by MDEntryID are not supported); trades in W snapshots are ignored; Commission(12) is not mapped, so `fee` is 0; pending, restated, order-status and trade-correction reports are ignored.
 * Encoder: Account(1) and HandlInst(21) are not sent.
 * The simulation bridge sends AvgPx(6) = LastPx (or 0) rather than a running average.

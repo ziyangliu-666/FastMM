@@ -1,12 +1,8 @@
 # Journal format
 
-The `.fmj` journal records every event a session's engine consumed, in consumption order, with
-the engine clock, plus a copy of every order message it sent. Format version 2;
-readers also open version 1. The decision and its history are in
-[ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
+The `.fmj` journal records every event a session's engine consumed, in consumption order, with the engine clock, plus a copy of every order message it sent. Format version 2; readers also open version 1. The decision and its history are in [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
 
-All integers are little-endian. Prices, quantities and notionals are raw fixed-point `int64`
-(1e-8), timestamps are `int64` nanoseconds since the Unix epoch.
+All integers are little-endian. Prices, quantities and notionals are raw fixed-point `int64` (1e-8), timestamps are `int64` nanoseconds since the Unix epoch.
 
 ## File layout
 
@@ -17,8 +13,7 @@ block  := block header (64 B) | message* (byte_len bytes)
 
 - `header_bytes` in the header is the offset of the first block.
 - Blocks are at most 1 MiB (`block_bytes`); a message never straddles two blocks.
-- A clean shutdown appends a trailer: an empty block with flag bit 0 set. Without it the file was
-  not closed cleanly; a reader drops a tail block whose checksum or length does not match.
+- A clean shutdown appends a trailer: an empty block with flag bit 0 set. Without it the file was not closed cleanly; a reader drops a tail block whose checksum or length does not match.
 
 ## Header
 
@@ -47,9 +42,7 @@ block  := block header (64 B) | message* (byte_len bytes)
 | 132 | 120 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
 
-The configuration is `Config::effective_toml()`: the configuration after command-line
-overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key` and `api_secret`,
-zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
+The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key` and `api_secret`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
 
 ## Block header
 
@@ -93,25 +86,17 @@ Every message starts with the 64-byte `EventHeader`; its total length (`len`) is
 | 4 | `kEngineTime` | a consumed event; `reserved0` is the engine clock minus the previous engine-time record |
 | 5 | `kDropped` | an outbound copy the transport did not accept |
 
-Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in
-`core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, order acks,
-rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands,
-connection states, reconciliation records, latency samples and outbound orders.
+Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples and outbound orders.
 
 ## Engine clock
 
-- Every consumed event and every fired timer (a synthetic `Timer` message) carries `kEngineTime`
-  and a delta from the previous such record.
-- An `EngineTime` message (128 bytes) holds the absolute engine clock in `engine_ts` (offset 64)
-  with `kind` (offset 72): 0 `Sync` before an event whose delta does not fit in int32 ns (a gap of
-  more than 2.1 s) or whose predecessor was lost, 1 `Start`, 2 `Finish`.
+- Every consumed event and every fired timer (a synthetic `Timer` message) carries `kEngineTime` and a delta from the previous such record.
+- An `EngineTime` message (128 bytes) holds the absolute engine clock in `engine_ts` (offset 64) with `kind` (offset 72): 0 `Sync` before an event whose delta does not fit in int32 ns (a gap of more than 2.1 s) or whose predecessor was lost, 1 `Start`, 2 `Finish`.
 - The engine clock may step backwards (TSC recalibration); replay sets the simulated clock to it.
 - Sequence numbers count `EngineTime` records too.
 
 ## Tools
 
-- `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` prints the
-  header, instruments, events and a count per type.
-- `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL
-  ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)).
+- `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` prints the header, instruments, events and a count per type.
+- `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)).
 - `fastmm-replay --journal <file.fmj> --verify` replays it ([Determinism](../explanation/determinism.md)).

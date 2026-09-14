@@ -1,7 +1,6 @@
 # 5. Backtest in C++
 
-`examples/cpp/tutorial/first_mm_backtest.cpp` backtests `first_mm` for 60 s on a synthetic market
-and checks the result; like the quick start, it needs no registration.
+`examples/cpp/tutorial/first_mm_backtest.cpp` backtests `first_mm` for 60 s on a synthetic market and checks the result; like the quick start, it needs no registration.
 
 ## The configuration
 
@@ -17,9 +16,7 @@ cfg.transport.fees = sim::FeeModel::from_bps(-0.5, 3.0);  // maker rebate 0.5 bp
 cfg.params = {{"edge_bps", "0.002"}, {"max_position", "0.004"}, {"report_ms", "0"}};
 ```
 
-The synthetic market's spread is one tick (0.01 USDT) at 60,000 USDT, so the edge is 0.002 bps:
-0.012 USDT, about one tick. Pages 8 and 9 use 5 bps. `cfg.params` takes the same strings as a
-configuration file.
+The synthetic market's spread is one tick (0.01 USDT) at 60,000 USDT, so the edge is 0.002 bps: 0.012 USDT, about one tick. Pages 8 and 9 use 5 bps. `cfg.params` takes the same strings as a configuration file.
 
 ## Run and check
 
@@ -61,7 +58,6 @@ ok    : the position stayed within max_position
 ok    : two runs sent the same orders
 ```
 
-Negative fees are rebates. Amounts are in USDT, the position in BTC. The fill model and the
-synthetic flow are simplified; the PnL does not predict live results.
+Negative fees are rebates. Amounts are in USDT, the position in BTC. The fill model and the synthetic flow are simplified; the PnL does not predict live results.
 
 Next: [6. Register it](06-register.md)

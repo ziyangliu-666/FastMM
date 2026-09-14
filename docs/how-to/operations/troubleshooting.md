@@ -1,9 +1,6 @@
 # Troubleshooting
 
-Messages are quoted as the code writes them; `<...>` stands for a value, and `<venue>` is the
-`[venues.<name>]` name. Log lines start with a timestamp, the level (`INFO`, `WARN`, `ERROR`), the
-thread id and the source file. Messages marked *stderr* are printed before the logger starts.
-Exit codes of `fastmm-live` are listed in [Command lines](../../reference/cli.md#exit-codes).
+Messages are quoted as the code writes them; `<...>` stands for a value, and `<venue>` is the `[venues.<name>]` name. Log lines start with a timestamp, the level (`INFO`, `WARN`, `ERROR`), the thread id and the source file. Messages marked *stderr* are printed before the logger starts. Exit codes of `fastmm-live` are listed in [Command lines](../../reference/cli.md#exit-codes).
 
 ## Startup and configuration
 
