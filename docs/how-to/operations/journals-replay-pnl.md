@@ -10,10 +10,12 @@ With `[engine] journal = true` (the default), `fastmm-live` writes
 `--no-journal` turns it off. The log names the file at startup (`journal: <path>`).
 
 A journal holds the session header (session id, start time, clock calibration, config hash, RNG
-seed, strategy name), the instrument table, and then every event the engine consumed, in order,
-plus a copy of every order message the engine sent (marked `out`). Blocks carry CRC32C checksums,
-and a clean shutdown writes a trailer block. The format is described in
-[ADR 0010](../../adr/0010-fmj-journal-format.md).
+seed, strategy name, session epoch, dry run, which venues trade with cancel-replace), the instrument
+table, the effective configuration (API keys and secrets left out), and then every event the engine
+consumed, in order, with the engine clock at which it was processed, plus a copy of every order
+message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean shutdown writes a
+trailer block. The format is described in [ADR 0010](../../adr/0010-fmj-journal-format.md); this
+page describes format version 2, and the tools still read version 1 journals.
 
 Size: our one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour.
 
@@ -49,34 +51,70 @@ type. A fill looks like this:
 
 ## Replay
 
+A journal recorded by `fastmm-live` or by `fastmm-backtest --journal-out` replays on its own:
+
 ```bash
+./build/release/bin/fastmm-replay --journal runs/sim-local-1789370000000000000.fmj --verify
 ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - --journal-out runs/bt/session.fmj
-./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --config configs/backtest-example.toml --verify
+./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify
 ```
 
 `fastmm-replay` runs the recorded inbound events through the same engine and strategy with a
-simulated clock and compares every outbound order message, and their SHA-256, with the copies in
-the journal. Pass the config the session ran with; a config with `${VAR}` references needs those
-variables set, even though replay sends nothing. A journal without outbound copies (market data
-only, such as `tests/fixtures/journals/sample_1000.fmj`) is backtested first, and with `--verify`
-the run's outbound hash must match the `<journal>.sha256` sidecar or `--expect <sha256>`:
+simulated clock set to the engine clock of the recording, and compares every outbound order
+message, and their SHA-256, with the copies in the journal. It takes the configuration embedded in
+the journal, and the session epoch, dry run, RNG seed and each venue's cancel-replace from the
+header, so it needs neither the config file nor API keys. A 20 s `fastmm-live` session against
+`fastmm-sim-exchange` (35 fills, 282 replaces, two TSC recalibration steps of -422 ms and -320 ms
+during the session) replays like this:
+
+```text
+journal  /tmp/e2e/session.fmj: format v2, 2644 messages (850 market data, 320 outbound), seed 42, strategy 'basic_mm'
+session  epoch 23, quoting enabled, cancel-replace venues 0x1, engine clock recorded
+config   embedded in the journal (hash fb8ab9d4318a634e)
+replay   strategy=basic_mm events=2300
+recorded outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6bda62b69b76ef9cd6a
+replayed outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6bda62b69b76ef9cd6a
+replay MATCH
+```
+
+`--config <file>` replays with that file instead. Its effective configuration (secrets and
+formatting do not count) is hashed and compared with the journal's config hash; if they differ,
+`fastmm-replay` warns that this is a what-if run, which is not expected to match.
+`--strategy <name>` is a what-if run too.
+
+A mismatch prints the first differing message as recorded and as replayed. The same session with
+`half_spread_bps = 6.0` instead of `5.0`:
+
+```text
+fastmm-replay: warning: sim-local-whatif.toml is not the configuration this session was recorded with (effective config hash cc9c8e5451e9b57f, journal fb8ab9d4318a634e); this is a what-if replay and is not expected to match. Omit --config to replay with the recorded configuration.
+...
+first mismatching outbound message: #0
+  expected: OutNewOrder venue=0 inst=0 cl_ord_id=98784247809 (epoch 23, seq 1) Buy PostOnly GTC px=59970 qty=0.001 recv_ts=1789376211743451228
+  actual:   OutNewOrder venue=0 inst=0 cl_ord_id=98784247809 (epoch 23, seq 1) Buy PostOnly GTC px=59964 qty=0.001 recv_ts=1789376211743451228
+replay MISMATCH
+```
+
+Only the first mismatch means anything: replay feeds the recorded acknowledgements whatever it
+sent, so everything after it diverges too.
+
+Journals written before format version 2 carry no configuration, session settings or engine clock.
+Replay them with `--config <the config the session ran with>`; a live one of those does not replay
+to a match. A journal without outbound copies (market data only, such as
+`tests/fixtures/journals/sample_1000.fmj`) is backtested first, with `configs/backtest-example.toml`
+unless `--config` is given, and with `--verify` the run's outbound hash must match the
+`<journal>.sha256` sidecar or `--expect <sha256>`:
 
 ```bash
 ./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --verify
 ```
 
-Exit codes: 0 match (or no verification requested), 1 mismatch, 2 bad command line, 3 unreadable
-config or journal, or unknown strategy.
+Exit codes: 0 match (or no verification requested), 1 mismatch, 2 bad command line (including a
+session journal without an embedded configuration and no `--config`), 3 unreadable config or
+journal, or unknown strategy.
 
-A mismatch means the engine did not make the same decisions from the same inputs. Check first that
-the binary, strategy parameters and config are the ones of the recording (the header's config hash
-identifies the config); if they are, it is a determinism bug, and the journal is the reproduction.
-
-**Live journals do not replay to a match today.** A 20 s `fastmm-live` session against
-`fastmm-sim-exchange` (`./scripts/run-sim.sh --duration 20s`) replayed with
-`--config configs/sim-local.toml --verify` reported `replay MISMATCH` at the first outbound
-message (311 recorded, 624 replayed). Use live journals for inspection and PnL; prove determinism
-on backtest journals as above.
+A mismatch with the embedded configuration and the same binary means the engine did not make the
+same decisions from the same inputs: a determinism bug, and the journal is the reproduction. A
+different binary (a changed strategy or engine) can legitimately decide differently.
 
 ## Check PnL
 

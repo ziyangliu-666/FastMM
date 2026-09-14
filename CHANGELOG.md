@@ -5,6 +5,22 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- **Journal format v2 (ADR-0010).** Every consumed event and fired timer carries the engine clock
+  (an int32 ns delta in `EventHeader::reserved0`, flag `kEngineTime`; `EngineTimeMsg` records hold
+  absolute values at start, finish and on overflow). The header holds the session epoch, quoting
+  enabled (dry run), per-venue cancel-replace and the effective configuration as TOML without API
+  keys; `config_hash` is the hash of that text, after command-line overrides. Version 1 journals
+  are still read and replay as before. `tools/journal_dump.py` prints the new fields.
+- The engine reads its clock once per consumed event, per fired timer, at start and at finish, and
+  uses that time for every decision and Out* stamp (`Engine::now()`). Golden outbound hashes of
+  SimClock runs are unchanged.
+- `fastmm-replay` uses the configuration embedded in a session journal by default, checks
+  `--config` against the journal's config hash (a different one is reported as a what-if run),
+  needs no `${VAR}` secrets, no longer falls back to `configs/backtest-example.toml` for session
+  journals (a v1 session journal needs `--config`), and prints the first mismatching message as
+  recorded and as replayed.
+- `bt::replay_journal(path)` replays from the journal alone; `replay_journal(path, cfg)` restores
+  the session settings from the header too (`ReplayOptions::session_from_journal`).
 - **Breaking, strategy hooks (ADR-0012).** `on_trade`, `on_book_ticker` and `on_option_ticker` take
   `(ctx, InstrumentId id, const Msg& m)`; `on_fill` takes `(ctx, const Fill& fill)` instead of
   `(ctx, OmsUpdate, OrderFillMsg)`. Instrument-scoped hooks fire only for instruments in the table.
@@ -20,6 +36,10 @@ All notable changes are recorded here (Keep a Changelog format).
   mid or theo only when `set_quotes` took the quotes. Their golden outbound hashes are unchanged.
 
 ### Added
+- `Config::effective_toml()`, `Config::effective_hash()`; `bt::journal_config()`,
+  `bt::describe_outbound()`; `JournalInfo` session fields.
+- Integration tests that record `fastmm-live` sessions against the simulator (one with TSC
+  recalibration steps) and replay them from the journal.
 - `include/fastmm/strategies/hooks.hpp`: the hook table, `verify_strategy<S>()`, `hook_status`,
   `implemented_hooks` and the `Fill` view (position delta, booked fee, known, late, order done).
 - `on_quoting(ctx, bool enabled)` hook: reports changes of `ctx.quoting_enabled()` (operator
@@ -88,6 +108,14 @@ All notable changes are recorded here (Keep a Changelog format).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
 
 ### Fixed
+- **Live session journals replay exactly.** `fastmm-replay --journal <live journal> --verify`
+  reported a mismatch at the first outbound message: replay ran with session epoch 1 (every
+  recorded ack named an unknown order and replay cancelled it), drove its clock from receive times
+  instead of the live `TscClock`, and fell back to `configs/backtest-example.toml`. Journal format
+  v2 records what was missing, and replay restores it.
+- Outbound messages the transport refused (ring full) were journaled as sent. They are journaled
+  after the hand-off and marked dropped; replay refuses them again. Transports accept a prefix of a
+  batch (`LiveTransport` stops at the first refused message).
 - `SyntheticSource::next` failed gcc's -Wnull-dereference without LTO; the peek is checked.
 - `be*_t`/`le*_t` wire fields held an integer, so a field at an odd offset of a packed layout was
   misaligned and UBSan reported member calls on it; they are byte arrays now.
