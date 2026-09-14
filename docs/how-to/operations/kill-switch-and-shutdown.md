@@ -64,7 +64,9 @@ From `run_live()` in `apps/fastmm-live/live_backend.cpp`:
 4. It waits 200 ms so that the engine's queued cancels reach the wire, then stops the engine thread.
 5. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and
    disconnects. The journal is flushed and closed with a trailer block.
-6. The summary lines are logged: engine counters (`fastmm-live: events=...`), PnL
+6. The summary lines are logged: engine counters (`fastmm-live: events=... risk_rejects=<n>
+   venue_rejects=<n>`), the rejects per reason for each kind that had any
+   (`fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5`), PnL
    (`fastmm-live: realized_pnl=... unrealized_pnl=... fees=...`), one `[<venue>] final:` line per
    venue, the clock statistics and, last, `fastmm-live: shutdown took <n> ms (cancel_all ok)` or
    `(cancel_all FAILED)`.

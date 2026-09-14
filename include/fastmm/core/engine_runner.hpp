@@ -3,6 +3,7 @@
 // for a (strategy, transport kind) pair; run()/stop() are called once each, never on the
 // hot path. EngineRunner<E> adapts a concrete Engine instantiation.
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/reject_counters.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -27,6 +28,9 @@ struct RunnerStats {
   std::int64_t fees_raw = 0;
   std::uint64_t tick_to_trade_p50_ns = 0;
   std::uint64_t tick_to_trade_p99_ns = 0;
+  std::uint64_t venue_rejects = 0;       // order rejects reported by the venues
+  RejectCounts risk_rejects_by_reason;   // sums to risk_rejects
+  RejectCounts venue_rejects_by_reason;  // sums to venue_rejects
 };
 
 // What a running engine publishes for other threads (monitors): the runner stats, kill-switch

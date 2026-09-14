@@ -5,6 +5,10 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- **Status segment version 2** (`venue_rejects` and per-reason reject counts). `fastmm-top` and
+  `fastmm-live` must come from the same build; a mismatch is reported as `status segment version
+  <n> is not readable by this build` instead of being misread. `fastmm-top` shows the reject
+  counters on a `rejects` line instead of the `engine` line.
 - **Journal format v2 (ADR-0010).** Every consumed event and fired timer carries the engine clock
   (an int32 ns delta in `EventHeader::reserved0`, flag `kEngineTime`; `EngineTimeMsg` records hold
   absolute values at start, finish and on overflow). The header holds the session epoch, quoting
@@ -36,6 +40,14 @@ All notable changes are recorded here (Keep a Changelog format).
   mid or theo only when `set_quotes` took the quotes. Their golden outbound hashes are unchanged.
 
 ### Added
+- **Rejects per reason.** The engine counts risk and venue rejects per `RejectReason`
+  (`EngineStats` / `RunnerStats::risk_rejects_by_reason`, `venue_rejects_by_reason`, `venue_rejects`;
+  an increment on the reject path). Risk rejects are logged at WARN with reason, instrument, side,
+  quantity and price: the first of each reason, then at most one line per reason per
+  `EngineConfig::reject_log_interval` (10 s) with the number suppressed. `fastmm-top` shows the most
+  frequent reasons (`risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3
+  (PostOnlyWouldCross 3)`), the `fastmm-live` shutdown summary adds `venue_rejects=` and
+  `risk_rejects by reason:` / `venue_rejects by reason:` lines, and `tools/pnl_report.py` reads them.
 - `Config::effective_toml()`, `Config::effective_hash()`; `bt::journal_config()`,
   `bt::describe_outbound()`; `JournalInfo` session fields.
 - Integration tests that record `fastmm-live` sessions against the simulator (one with TSC

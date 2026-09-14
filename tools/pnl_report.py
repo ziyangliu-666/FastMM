@@ -155,9 +155,24 @@ def parse_engine_log(path: str) -> dict:
     m = re.findall(r"fastmm-live: realized_pnl=(\S+) unrealized_pnl=(\S+) fees=(\S+)", text)
     if m:
         out["realized"], out["unrealized"], out["fees"] = (float(x) for x in m[-1])
-    m = re.findall(r"fastmm-live: events=(\d+) .*? fills=(\d+) risk_rejects=(\d+)", text)
+    m = re.findall(r"fastmm-live: events=(\d+) .*? fills=(\d+) risk_rejects=(\d+)(?: venue_rejects=(\d+))?", text)
     if m:
-        out["events"], out["fills"], out["risk_rejects"] = (int(x) for x in m[-1])
+        events, fills, risk, venue = m[-1]
+        out["events"], out["fills"], out["risk_rejects"] = int(events), int(fills), int(risk)
+        if venue:  # logs before the per-reason breakdown have no venue_rejects
+            out["venue_rejects"] = int(venue)
+        # "fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5", possibly continued on
+        # further lines; they follow the counters line of the same (last) session.
+        tail = text[text.rfind("fastmm-live: events="):]
+        for kind in ("risk_rejects", "venue_rejects"):
+            reasons = {}
+            for line in re.findall(rf"fastmm-live: {kind} by reason: (.*)", tail):
+                for item in line.strip().split(", "):
+                    name, _, count = item.rpartition(" ")
+                    if name and count.isdigit():
+                        reasons[name] = reasons.get(name, 0) + int(count)
+            if reasons:
+                out[f"{kind}_by_reason"] = reasons
     m = re.findall(r"fastmm-live: shutdown took (\d+) ms \(cancel_all (ok|FAILED)\)", text)
     if m:
         out["shutdown_ms"], out["cancel_all"] = int(m[-1][0]), m[-1][1]
@@ -231,6 +246,10 @@ def report(args, out=sys.stdout) -> int:
             total = sum(b.fills for b in books.values())
             p(f"engine fills {engine['fills']}, journal fills {total}"
               + ("" if engine["fills"] == total else "  <- MISMATCH"))
+        for kind in ("risk_rejects", "venue_rejects"):
+            if kind in engine:
+                detail = ", ".join(f"{k} {v}" for k, v in engine.get(f"{kind}_by_reason", {}).items())
+                p(f"engine {kind} {engine[kind]}" + (f" ({detail})" if detail else ""))
         if "cancel_all" in engine:
             p(f"shutdown ({engine.get('reason', '?')}) took {engine['shutdown_ms']} ms, cancel_all {engine['cancel_all']}")
 
@@ -341,12 +360,25 @@ def self_test() -> int:
         log = os.path.join(d, "engine.log")
         Path(log).write_text(
             "x INFO fastmm-live: shutting down (signal)\n"
-            "x INFO fastmm-live: events=4 book_updates=0 orders=3 cancels=0 replaces=0 fills=3 risk_rejects=0\n"
+            "x INFO fastmm-live: events=4 book_updates=0 orders=3 cancels=0 replaces=0 fills=3 risk_rejects=17 "
+            "venue_rejects=3\n"
+            "x INFO fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 4\n"
+            "x INFO fastmm-live: risk_rejects by reason: PriceCollar 1\n"
+            "x INFO fastmm-live: venue_rejects by reason: PostOnlyWouldCross 3\n"
             "x INFO fastmm-live: realized_pnl=1.5 unrealized_pnl=-0.25 fees=0.0806 tick_to_trade p50=1 ns p99=2 ns\n"
             "x INFO fastmm-live: shutdown took 12 ms (cancel_all ok)\n")
         eng = parse_engine_log(log)
         assert eng["fills"] == 3 and eng["cancel_all"] == "ok" and eng["reason"] == "signal"
         assert close(eng["realized"] + eng["unrealized"] - eng["fees"], 1.1694)
+        assert eng["risk_rejects"] == 17 and eng["venue_rejects"] == 3, eng
+        assert eng["risk_rejects_by_reason"] == {"MaxPosition": 12, "RateLimit": 4, "PriceCollar": 1}, eng
+        assert eng["venue_rejects_by_reason"] == {"PostOnlyWouldCross": 3}, eng
+        # A log from before the per-reason breakdown still parses.
+        old_log = os.path.join(d, "old-engine.log")
+        Path(old_log).write_text(
+            "x INFO fastmm-live: events=4 book_updates=0 orders=3 cancels=0 replaces=0 fills=3 risk_rejects=2\n")
+        old = parse_engine_log(old_log)
+        assert old["risk_rejects"] == 2 and "venue_rejects" not in old and "risk_rejects_by_reason" not in old, old
 
         start = os.path.join(d, "start.json")
         end = os.path.join(d, "end.json")
@@ -367,6 +399,8 @@ def self_test() -> int:
         assert report(A, out=buf) == 0
         text = buf.getvalue()
         assert "difference to the account +0.0000" in text, text
+        assert "engine risk_rejects 17 (MaxPosition 12, RateLimit 4, PriceCollar 1)" in text, text
+        assert "engine venue_rejects 3 (PostOnlyWouldCross 3)" in text, text
     print("pnl_report self-test: ok")
     return 0
 

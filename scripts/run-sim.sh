@@ -84,6 +84,7 @@ trap - EXIT
 
 echo "==> summary (engine exit code $RC)"
 grep -hoE "fastmm-live: events=.*" "$RUN_DIR/engine.log" | tail -1 | sed 's/^/  engine: /' || true
+grep -hoE "fastmm-live: (risk|venue)_rejects by reason: .*" "$RUN_DIR/engine.log" | sed 's/^fastmm-live: /  engine: /' || true
 grep -hoE "\[[a-z0-9_-]+\] final: .*" "$RUN_DIR/engine.log" | tail -1 | sed 's/^/  venue:  /' || true
 grep -hoE "fastmm-live: shutdown took .*" "$RUN_DIR/engine.log" | tail -1 | sed 's/^/  /' || true
 WARNINGS=$(grep -cE " (WARN|ERROR) " "$RUN_DIR/engine.log" || true)
