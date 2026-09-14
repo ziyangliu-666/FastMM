@@ -209,11 +209,59 @@ namespace {
   return sj::padded_string_view(s.data(), s.size(), s.size() + sj::SIMDJSON_PADDING);
 }
 
-[[nodiscard]] std::int64_t int_text(od::object& o, std::string_view key) noexcept {
+// The decoders are split into non-inlined functions per response section: large
+// functions full of inlined simdjson lookups made gcc's UBSan instrumentation
+// (null, alignment, object-size) slow to compile this file at -O1.
+[[nodiscard]] [[gnu::noinline]] std::int64_t int_text(od::object& o,
+                                                      std::string_view key) noexcept {
   std::string_view s;
   if (o[key].get_string().get(s) != sj::SUCCESS) return -1;
   const auto v = parse_int64(s);
   return v ? *v : -1;
+}
+
+// data.orderId / data.orderLinkId and the X-Bapi-Limit headers of a trade response.
+[[gnu::noinline]] void read_ws_order_fields(od::object& root, TradeResponse& r) noexcept {
+  std::string_view s;
+  root.reset();
+  {
+    od::object data;
+    if (root["data"].get_object().get(data) == sj::SUCCESS) {
+      if (data["orderId"].get_string().get(s) == sj::SUCCESS) r.order_id = s;
+      data.reset();
+      if (data["orderLinkId"].get_string().get(s) == sj::SUCCESS) r.order_link_id = s;
+    }
+  }
+  root.reset();
+  {
+    od::object header;
+    if (root["header"].get_object().get(header) == sj::SUCCESS) {
+      r.limit = int_text(header, "X-Bapi-Limit");
+      header.reset();
+      r.limit_status = int_text(header, "X-Bapi-Limit-Status");
+      header.reset();
+      r.limit_reset_ms = int_text(header, "X-Bapi-Limit-Reset-Timestamp");
+    }
+  }
+}
+
+// False if the order is malformed.
+[[gnu::noinline]] bool read_open_order(od::object& o, OpenOrderRecord& rec) noexcept {
+  if (o["orderId"].get_string().get(rec.order_id) != sj::SUCCESS) return false;
+  if (o["orderLinkId"].get_string().get(rec.order_link_id) != sj::SUCCESS) rec.order_link_id = {};
+  o.reset();
+  if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return false;
+  o.reset();
+  if (o["price"].get_string().get(rec.price) != sj::SUCCESS) return false;
+  o.reset();
+  if (o["qty"].get_string().get(rec.qty) != sj::SUCCESS) return false;
+  o.reset();
+  if (o["side"].get_string().get(rec.side) != sj::SUCCESS) return false;
+  o.reset();
+  if (o["orderStatus"].get_string().get(rec.status) != sj::SUCCESS) return false;
+  o.reset();
+  if (o["cumExecQty"].get_string().get(rec.cum_exec_qty) != sj::SUCCESS) rec.cum_exec_qty = {};
+  return true;
 }
 
 }  // namespace
@@ -260,26 +308,7 @@ ParseStatus BybitResponseDecoder::decode_ws(std::string_view json, TradeResponse
   if (root["retMsg"].get_string().get(s) == sj::SUCCESS) r.ret_msg = s;
   root.reset();
   if (root["op"].get_string().get(s) == sj::SUCCESS) r.op = s;
-  root.reset();
-  {
-    od::object data;
-    if (root["data"].get_object().get(data) == sj::SUCCESS) {
-      if (data["orderId"].get_string().get(s) == sj::SUCCESS) r.order_id = s;
-      data.reset();
-      if (data["orderLinkId"].get_string().get(s) == sj::SUCCESS) r.order_link_id = s;
-    }
-  }
-  root.reset();
-  {
-    od::object header;
-    if (root["header"].get_object().get(header) == sj::SUCCESS) {
-      r.limit = int_text(header, "X-Bapi-Limit");
-      header.reset();
-      r.limit_status = int_text(header, "X-Bapi-Limit-Status");
-      header.reset();
-      r.limit_reset_ms = int_text(header, "X-Bapi-Limit-Reset-Timestamp");
-    }
-  }
+  read_ws_order_fields(root, r);
   return ParseStatus::Ok;
 }
 
@@ -323,20 +352,7 @@ ParseStatus BybitResponseDecoder::decode_open_orders(
     od::object o;
     if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
     OpenOrderRecord rec;
-    if (o["orderId"].get_string().get(rec.order_id) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["orderLinkId"].get_string().get(rec.order_link_id) != sj::SUCCESS) rec.order_link_id = {};
-    o.reset();
-    if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return ParseStatus::Malformed;
-    o.reset();
-    if (o["price"].get_string().get(rec.price) != sj::SUCCESS) return ParseStatus::Malformed;
-    o.reset();
-    if (o["qty"].get_string().get(rec.qty) != sj::SUCCESS) return ParseStatus::Malformed;
-    o.reset();
-    if (o["side"].get_string().get(rec.side) != sj::SUCCESS) return ParseStatus::Malformed;
-    o.reset();
-    if (o["orderStatus"].get_string().get(rec.status) != sj::SUCCESS) return ParseStatus::Malformed;
-    o.reset();
-    if (o["cumExecQty"].get_string().get(rec.cum_exec_qty) != sj::SUCCESS) rec.cum_exec_qty = {};
+    if (!read_open_order(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
   return ParseStatus::Ok;
