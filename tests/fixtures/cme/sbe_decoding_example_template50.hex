@@ -1,0 +1,18 @@
+# CME MDP 3.0 UDP packet copied verbatim from the CME Group Client Systems Wiki page
+# "MDP 3.0 - SBE Decoding Example" (retrieved 2026-09-14).
+# One MDIncrementalRefreshLimitsBanding50 message encoded with schema version 9:
+#   MsgSeqNum 703398, SendingTime 1633099253939247451
+#   MsgSize 56, blockLength 11, templateId 50, schemaId 1, version 9
+#   TransactTime 1633099253937623627, MatchEventIndicator 0, 2 bytes of block padding
+#   NoMDEntries blockLength 32, numInGroup 1
+#   HighLimitPrice null, LowLimitPrice 9000, MaxPriceVariation 10, SecurityID 5620, RptSeq 1869
+# packet header
+A6 BB 0A 00 5B 19 01 72 1E EF A9 16
+# MsgSize + SBE message header
+38 00 0B 00 32 00 01 00 09 00
+# root block
+4B 52 E8 71 1E EF A9 16 00 00 00
+# NoMDEntries dimension and entry
+20 00 01
+FF FF FF FF FF FF FF 7F 00 90 CD 79 2F 08 00 00
+00 E4 0B 54 02 00 00 00 F4 15 00 00 4D 07 00 00
