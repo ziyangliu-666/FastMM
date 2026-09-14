@@ -25,6 +25,7 @@
 #include "fastmm/venues/bybit/bybit_order_encoder.hpp"
 #include "fastmm/venues/bybit/bybit_private_parser.hpp"
 #include "fastmm/venues/connection_slot.hpp"
+#include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/rest_channel.hpp"
@@ -150,7 +151,7 @@ class BybitVenue final : public Venue {
   void request_resubscribe(InstrumentId id);
   void request_server_time();
   void cancel_all_async();
-  void emit_reconcile(std::string_view json);
+  void emit_reconcile(std::string_view json, ClientOrderId sent_watermark);
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   void forget_order(ClientOrderId id) noexcept;
@@ -201,6 +202,7 @@ class BybitVenue final : public Venue {
   bool rest_hard_stopped_ = false;
   bool private_was_live_ = false;
   bool trade_was_live_ = false;
+  SentWatermark sent_;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;
   ConnState trade_state_ = ConnState::Disconnected;

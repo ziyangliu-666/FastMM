@@ -282,6 +282,13 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
       oc.take(orders);
       return oc.count(EventType::Reconcile) == 2;
     }));
+    // Begin carries the last order id the venue sent before it asked for the snapshot.
+    const auto* begin = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+    REQUIRE(begin != nullptr);
+    CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
+    CHECK(begin->sent_watermark == n.cl_ord_id);
 
     // Kill switch from this (non-reactor) thread over an independent connection.
     CHECK(venue.cancel_all());

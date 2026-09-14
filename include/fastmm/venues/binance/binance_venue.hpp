@@ -29,6 +29,7 @@
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
 #include "fastmm/venues/connection_slot.hpp"
+#include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/rest_channel.hpp"
@@ -181,7 +182,7 @@ class BinanceVenue final : public Venue {
   void request_listen_key();
   void keepalive_listen_key();
   void cancel_all_async();
-  void emit_reconcile(std::string_view json, bool rest_array);
+  void emit_reconcile(std::string_view json, bool rest_array, ClientOrderId sent_watermark);
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   [[nodiscard]] std::int64_t now_ns() const noexcept { return net::Reactor::now_ns(); }
@@ -239,6 +240,10 @@ class BinanceVenue final : public Venue {
   ConnState order_state_ = ConnState::Disconnected;
   bool order_was_live_ = false;
   bool user_was_live_ = false;
+  SentWatermark sent_;
+  // Sent watermark of each openOrders.status request on the order connection, in send order (the
+  // replies come back in that order).
+  std::vector<ClientOrderId> oo_watermarks_;
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 

@@ -172,7 +172,7 @@ TEST_CASE("core.oms: transition table and races") {
   }
   SUBCASE("fill after cancel ack is a late fill") {
     const ClientOrderId id = oms.next_cl_ord_id();
-    static_cast<void>(oms.submit(req(Side::Sell, 100, 5), id, {}));
+    static_cast<void>(oms.submit(req(Side::Sell, 100, 5, InstrumentId{3}), id, {}));
     oms.on_ack(ack(id));
     oms.on_cancel_ack(cancel_ack(id));
     auto u = oms.on_fill(fill(id, 100, 2, 2, "x1"));
@@ -180,6 +180,12 @@ TEST_CASE("core.oms: transition table and races") {
     CHECK(u.known);
     CHECK(u.fill_qty == qt(2));
     CHECK(oms.stats().late_fills == 1);
+    // The order is gone, but the terminal record still says what the fill was for.
+    CHECK_FALSE(u.handle.valid());
+    CHECK(u.order.cl_ord_id == id);
+    CHECK(u.order.instrument == InstrumentId{3});
+    CHECK(u.order.side == Side::Sell);
+    CHECK(u.order.state == OrderState::Canceled);
   }
   SUBCASE("cancel reject after fill is ignored; cancel reject restores state; >3 -> reconcile") {
     const ClientOrderId id = oms.next_cl_ord_id();
@@ -380,7 +386,7 @@ TEST_CASE("core.oms: reconcile") {
   m.cl_ord_id = c;
   m.cum_qty = Qty{};
   u = oms.reconcile_open_order(m);
-  CHECK(u.order.state == OrderState::Live);  // pending cancel cleared: venue still has it
+  CHECK(u.order.state == OrderState::PendingCancel);  // its cancel is still in flight
   m.cl_ord_id = ClientOrderId{0x777};
   u = oms.reconcile_open_order(m);
   CHECK(u.action == OmsAction::CancelUnknown);
@@ -391,4 +397,107 @@ TEST_CASE("core.oms: reconcile") {
   CHECK(oms.open_count() == 2);
   CHECK(oms.classify(b) == OrderClass::RecentlyTerminal);
   CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == qt(3));
+}
+
+TEST_CASE("core.oms: reconcile keeps a cancel or replace in flight pending") {
+  Oms oms;
+  const ClientOrderId a = oms.next_cl_ord_id();
+  const ClientOrderId b = oms.next_cl_ord_id();
+  const Handle<Order> ha = *oms.submit(req(Side::Buy, 100, 5), a, {});
+  const Handle<Order> hb = *oms.submit(req(Side::Sell, 101, 5), b, {});
+  oms.on_ack(ack(a));
+  oms.on_ack(ack(b));
+  REQUIRE(oms.request_cancel(ha));
+  const ClientOrderId b2 = oms.next_cl_ord_id();
+  REQUIRE(oms.request_replace(hb, b2, px(102), qt(5)));
+  oms.reconcile_begin();
+  ReconcileMsg m{};
+  init_header(m, EventType::Reconcile);
+  m.kind = ReconcileMsg::Kind::OpenOrder;
+  m.cl_ord_id = a;
+  m.cum_qty = qt(1);
+  m.venue_order_id = "VA";
+  OmsUpdate u = oms.reconcile_open_order(m);
+  CHECK(u.order.state == OrderState::PendingCancel);
+  CHECK(u.order.cum_qty == qt(1));
+  m.cl_ord_id = b;
+  m.cum_qty = Qty{};
+  u = oms.reconcile_open_order(m);
+  CHECK(u.order.state == OrderState::PendingReplace);
+  CHECK(u.order.pending_cl_ord_id == b2);
+  std::size_t ended = 0;
+  oms.reconcile_end([&](const OmsUpdate&) { ++ended; });
+  CHECK(ended == 0);
+  // The replies to the requests sent before the reconciliation settle both orders.
+  u = oms.on_cancel_ack(cancel_ack(a, 1));
+  CHECK(u.terminal);
+  CHECK(u.order.state == OrderState::Canceled);
+  CHECK_FALSE(u.order.has(Order::kUnsolicitedCancel));
+  u = oms.on_ack(ack(b2));
+  CHECK(u.order.state == OrderState::Live);
+  CHECK(u.order.cl_ord_id == b2);
+  CHECK(u.order.price == px(102));
+  CHECK(oms.open_count() == 1);
+  CHECK(oms.open_qty(InstrumentId{0}, Side::Sell) == qt(5));
+}
+
+TEST_CASE("core.oms: reconcile spares orders sent after the request and other venues' orders") {
+  Oms oms;
+  const ClientOrderId a = oms.next_cl_ord_id();
+  static_cast<void>(oms.submit(req(Side::Buy, 100, 5), a, {}));
+  oms.on_ack(ack(a));
+  NewOrderRequest other = req(Side::Sell, 101, 5);
+  other.venue = VenueId{1};
+  const ClientOrderId d = oms.next_cl_ord_id();  // another venue: not part of this snapshot
+  static_cast<void>(oms.submit(other, d, {}));
+  oms.on_ack(ack(d));
+  const ClientOrderId b = oms.next_cl_ord_id();  // cancelled at the venue while disconnected
+  static_cast<void>(oms.submit(req(Side::Buy, 99, 5), b, {}));
+  oms.on_ack(ack(b));
+  const ClientOrderId e = oms.next_cl_ord_id();  // sent, but the snapshot missed it
+  static_cast<void>(oms.submit(req(Side::Sell, 102, 5), e, {}));
+  // The venue requested its open orders after sending e.
+  oms.reconcile_begin(VenueId{0}, e);
+  const ClientOrderId c = oms.next_cl_ord_id();  // sent after the request
+  static_cast<void>(oms.submit(req(Side::Sell, 103, 5), c, {}));
+  ReconcileMsg m{};
+  init_header(m, EventType::Reconcile);
+  m.kind = ReconcileMsg::Kind::OpenOrder;
+  m.cl_ord_id = a;
+  static_cast<void>(oms.reconcile_open_order(m));
+  std::vector<ClientOrderId> ended;
+  ClientOrderId placed{};
+  oms.reconcile_end(
+      [&](const OmsUpdate& x) {
+        CHECK(x.terminal);
+        CHECK(x.order.state == OrderState::Canceled);
+        ended.push_back(x.order.cl_ord_id);
+        if (!placed.valid()) {  // callers may place orders from the callback
+          placed = oms.next_cl_ord_id();
+          REQUIRE(oms.submit(req(Side::Buy, 98, 1), placed, {}));
+        }
+      },
+      VenueId{0});
+  REQUIRE(ended.size() == 2);
+  CHECK(ended[0] == b);
+  CHECK(ended[1] == e);
+  CHECK(oms.classify(a) == OrderClass::Open);
+  CHECK(oms.classify(d) == OrderClass::Open);
+  CHECK(oms.classify(placed) == OrderClass::Open);
+  REQUIRE(oms.classify(c) == OrderClass::Open);
+  CHECK(oms.get(oms.find(c)).state == OrderState::PendingNew);
+  // c's ack is applied as usual.
+  OmsUpdate u = oms.on_ack(ack(c));
+  CHECK(u.changed);
+  CHECK(u.order.state == OrderState::Live);
+  // e was taken for gone, yet the venue acks it: it must be cancelled, not ignored.
+  u = oms.on_ack(ack(e));
+  CHECK(u.known);
+  CHECK(u.action == OmsAction::CancelUnknown);
+  // A late ack for an order the venue itself cancelled is still ignored.
+  const ClientOrderId f = oms.next_cl_ord_id();
+  static_cast<void>(oms.submit(req(Side::Buy, 97, 1), f, {}));
+  oms.on_ack(ack(f));
+  oms.on_cancel_ack(cancel_ack(f));
+  CHECK(oms.on_ack(ack(f)).action == OmsAction::Ignored);
 }

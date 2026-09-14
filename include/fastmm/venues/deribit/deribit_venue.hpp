@@ -37,6 +37,7 @@
 #include "fastmm/venues/deribit/deribit_md_feed.hpp"
 #include "fastmm/venues/deribit/deribit_order_encoder.hpp"
 #include "fastmm/venues/deribit/deribit_private_parser.hpp"
+#include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
@@ -203,6 +204,8 @@ class DeribitVenue final : public Venue {
   std::vector<ReconcileMsg> reconcile_records_;
   std::size_t reconcile_pending_ = 0;
   bool reconcile_failed_ = false;
+  ClientOrderId reconcile_watermark_{};  // sent watermark when the open orders were requested
+  SentWatermark sent_;
 
   std::atomic<std::int64_t> clock_offset_ms_{0};
   bool fatal_ = false;

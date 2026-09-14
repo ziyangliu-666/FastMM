@@ -340,6 +340,13 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
       oc.take(orders);
       return oc.count(EventType::Reconcile) == 3;  // Begin, BTCUSDT order, End (ETHUSDT skipped)
     }));
+    // Begin carries the last order id the venue sent before it asked for the snapshot.
+    const auto* begin = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+    REQUIRE(begin != nullptr);
+    CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
+    CHECK(begin->sent_watermark == rp.cl_ord_id);
     CHECK(h.open_orders_ok.load() == 1);
 
     CHECK(venue.cancel_all());

@@ -7,7 +7,9 @@
 //   * hysteresis: keep an order whose price is within min_requote_ticks of the desired
 //     price and whose leaves cover min_qty_bps of the desired quantity;
 //   * never re-quote a slot within min_requote_interval of its last change;
-//   * orders in a Pending* state are never touched;
+//   * orders in a Pending* state are never touched: the slot records the target instead and applies
+//     it when the order's ack or terminal update arrives via on_order_update() (dropped if the
+//     instrument is pulled first);
 //   * a slot only counts an order as its own if it is live and carries the slot's tag (order
 //     slots are reused, and a replace changes the order's id);
 //   * while an instrument is pulled, an order that becomes working late (its ack arrived after
@@ -17,7 +19,9 @@
 //     an ack on that side, so an unfundable side is not resent on every requote;
 //   * venues with supports_replace get a single Replace; otherwise Cancel now and New
 //     only once the cancel's terminal update arrives via on_order_update() (cancel-then-new
-//     keeps momentary exposure down and never double-quotes a level).
+//     keeps momentary exposure down and never double-quotes a level);
+//   * pull_quotes(keep_desired) pauses an instrument (the engine during reconciliation): resume()
+//     re-applies the last desired quotes unless the instrument was pulled for good meanwhile.
 //
 // Actions are executed by the caller through a Placer callable so the QuoteManager stays
 // independent of risk/OMS/transport wiring:
@@ -110,88 +114,42 @@ class QuoteManager {
                           Placer&& place) noexcept {
     InstState& st = state_[inst.id.value];
     st.pulled = false;
+    st.resumable = false;
     st.desired = desired;
     std::uint32_t actions = 0;
     for (Side side : {Side::Buy, Side::Sell}) {
-      const auto& want = desired.side(side);
+      const auto& want = st.desired.side(side);
       for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
         Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
         const bool has_want = lvl < want.size() && want[lvl].qty.is_positive();
-        const Level target = has_want ? want[lvl] : Level{};
-        if (owns(oms, inst, side, lvl, slot)) {
-          const Order& o = oms.get(slot.handle);
-          if (is_pending(o.state)) {
-            ++stats_.skipped_pending;
-            continue;
-          }
-          if (!has_want) {
-            actions += cancel(inst, side, lvl, slot, place);
-            continue;
-          }
-          const std::int64_t dpx = (target.price - o.price).abs().raw / inst.tick.raw;
-          const bool qty_ok = static_cast<Int128>(o.leaves_qty().raw) * 10'000 >=
-                              static_cast<Int128>(target.qty.raw) * params_.min_qty_bps;
-          if (dpx < params_.min_requote_ticks && qty_ok) {
-            ++stats_.kept_hysteresis;
-            continue;
-          }
-          if (now - slot.last_requote < params_.min_requote_interval) {
-            ++stats_.kept_interval;
-            continue;
-          }
-          if (params_.supports_replace) {
-            QuoteAction a{QuoteActionKind::Replace,
-                          inst.id,
-                          side,
-                          lvl,
-                          slot.handle,
-                          ClientOrderId{},
-                          target.price,
-                          target.qty,
-                          params_.post_only};
-            if (place(a)) {
-              ++stats_.replaces;
-              slot.last_requote = now;
-              ++actions;
-            } else {
-              ++stats_.rejected;
-            }
-          } else {
-            slot.want = target;
-            slot.renew_after_cancel = true;
-            actions += cancel(inst, side, lvl, slot, place);
-          }
-          continue;
-        }
-        // No resting order in this slot. A cancel still in flight keeps the order live (Pending*,
-        // handled above), so any earlier order is final in the OMS and there is nothing left to
-        // wait for, even if its terminal update never reached on_order_update().
-        slot.handle = Handle<Order>{};
-        slot.awaiting_terminal = false;
-        slot.renew_after_cancel = false;
-        if (!has_want) continue;
-        if (backing_off(st, side, now)) {
-          ++stats_.kept_backoff;
-          continue;
-        }
-        actions += submit_new(inst, side, lvl, slot, target, now, place);
+        actions += reconcile_slot(
+            inst, st, oms, side, lvl, slot, has_want ? want[lvl] : Level{}, now, place);
       }
     }
     return actions;
   }
 
   // Cancels every working quote on the instrument and suppresses re-quoting until the
-  // next reconcile().
+  // next reconcile(). With keep_desired (a pause, not a decision to stop quoting) the last desired
+  // quotes are kept for resume(), unless the instrument was already pulled.
   template <class Placer>
-  std::uint32_t pull_quotes(const Instrument& inst, const Oms& oms, Placer&& place) noexcept {
+  std::uint32_t pull_quotes(const Instrument& inst,
+                            const Oms& oms,
+                            Placer&& place,
+                            bool keep_desired = false) noexcept {
     InstState& st = state_[inst.id.value];
+    if (keep_desired) {
+      st.resumable = st.resumable || (!st.pulled && !st.desired.empty());
+    } else {
+      st.resumable = false;
+      st.desired.clear();
+    }
     st.pulled = true;
-    st.desired.clear();
     std::uint32_t actions = 0;
     for (Side side : {Side::Buy, Side::Sell}) {
       for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
         Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
-        slot.renew_after_cancel = false;
+        slot.apply_want = false;
         if (!owns(oms, inst, side, lvl, slot)) continue;
         const Order& o = oms.get(slot.handle);
         if (!o.is_working()) continue;  // pending: cannot touch; a later pull will catch it
@@ -201,9 +159,25 @@ class QuoteManager {
     return actions;
   }
 
-  // Feed every OmsUpdate here. A terminal update frees the slot it belonged to and, if a
-  // replacement was queued (cancel-then-new), places the New now. While the instrument is pulled,
-  // an order that has just become working is cancelled.
+  // Re-applies the desired quotes kept by pull_quotes(keep_desired). Returns the actions placed.
+  template <class Placer>
+  std::uint32_t resume(const Instrument& inst,
+                       const Oms& oms,
+                       Timestamp now,
+                       Placer&& place) noexcept {
+    InstState& st = state_[inst.id.value];
+    if (!st.resumable) return 0;
+    const DesiredQuotes desired = st.desired;
+    return reconcile(inst, desired, oms, now, place);
+  }
+  [[nodiscard]] bool resumable(InstrumentId id) const noexcept {
+    return state_[id.value].resumable;
+  }
+
+  // Feed every OmsUpdate here. A terminal update frees the slot it belonged to and, if a target
+  // was recorded for it (cancel-then-new, or a requote that met the order pending), places the New
+  // now. The ack of an order that was pending at a requote applies the recorded target. While the
+  // instrument is pulled, an order that has just become working is cancelled instead.
   template <class Placer>
   void on_order_update(const OmsUpdate& u,
                        const Instrument& inst,
@@ -219,9 +193,18 @@ class QuoteManager {
     if (!u.terminal) {
       if (u.prev == OrderState::PendingNew && u.order.is_working())
         st.backoff[static_cast<std::size_t>(side)] = Duration{};  // the venue takes this side
-      if (st.pulled && u.handle.valid() && slot.handle.idx == u.handle.idx &&
-          owns(oms, inst, side, lvl, slot) && u.order.is_working())
+      if (!u.handle.valid() || slot.handle.idx != u.handle.idx ||
+          !owns(oms, inst, side, lvl, slot) || !u.order.is_working())
+        return;
+      if (st.pulled) {
         static_cast<void>(cancel(inst, side, lvl, slot, place));
+        return;
+      }
+      if (slot.apply_want &&
+          (u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace)) {
+        slot.apply_want = false;
+        static_cast<void>(reconcile_slot(inst, st, oms, side, lvl, slot, slot.want, now, place));
+      }
       return;
     }
     if (u.order.state == OrderState::Rejected && u.prev == OrderState::PendingNew)
@@ -233,15 +216,14 @@ class QuoteManager {
     slot.handle = Handle<Order>{};
     slot.cl_ord_id = ClientOrderId{};
     slot.awaiting_terminal = false;
-    if (st.pulled) return;
-    if (slot.renew_after_cancel) {
-      slot.renew_after_cancel = false;
-      if (backing_off(st, side, now)) {
-        ++stats_.kept_backoff;
-        return;
-      }
-      submit_new(inst, side, lvl, slot, slot.want, now, place);
+    if (st.pulled || !slot.apply_want) return;
+    slot.apply_want = false;
+    if (!slot.want.qty.is_positive()) return;
+    if (backing_off(st, side, now)) {
+      ++stats_.kept_backoff;
+      return;
     }
+    submit_new(inst, side, lvl, slot, slot.want, now, place);
   }
 
   [[nodiscard]] Handle<Order> slot_handle(InstrumentId id,
@@ -256,15 +238,16 @@ class QuoteManager {
     Handle<Order> handle{};
     ClientOrderId cl_ord_id{};
     Timestamp last_requote{};
-    Level want{};
-    bool renew_after_cancel = false;
+    Level want{};             // target to apply once the slot's pending order resolves
+    bool apply_want = false;  // `want` is pending (qty 0: no quote on this level)
     bool awaiting_terminal = false;
   };
   struct InstState {
     Slot slots[2][kMaxQuoteLevels];
     DesiredQuotes desired;
     bool pulled = false;
-    Duration backoff[2] = {};         // current backoff per side (0 = none)
+    bool resumable = false;    // paused by pull_quotes(keep_desired): resume() re-applies `desired`
+    Duration backoff[2] = {};  // current backoff per side (0 = none)
     Timestamp blocked_until[2] = {};  // no News on the side before this
   };
 
@@ -283,6 +266,77 @@ class QuoteManager {
     st.backoff[i] = next;
     st.blocked_until[i] = now + next;
     ++stats_.reject_backoffs;
+  }
+
+  // One slot of reconcile(): keep, cancel, replace or place so the slot converges on `target`
+  // (qty 0: no quote).
+  template <class Placer>
+  std::uint32_t reconcile_slot(const Instrument& inst,
+                               InstState& st,
+                               const Oms& oms,
+                               Side side,
+                               std::uint32_t lvl,
+                               Slot& slot,
+                               Level target,
+                               Timestamp now,
+                               Placer& place) noexcept {
+    const bool has_want = target.qty.is_positive();
+    if (owns(oms, inst, side, lvl, slot)) {
+      const Order& o = oms.get(slot.handle);
+      if (is_pending(o.state)) {
+        // Cannot touch it now; apply the target when its ack or terminal update arrives.
+        ++stats_.skipped_pending;
+        slot.want = target;
+        slot.apply_want = true;
+        return 0;
+      }
+      slot.apply_want = false;
+      if (!has_want) return cancel(inst, side, lvl, slot, place);
+      const std::int64_t dpx = (target.price - o.price).abs().raw / inst.tick.raw;
+      const bool qty_ok = static_cast<Int128>(o.leaves_qty().raw) * 10'000 >=
+                          static_cast<Int128>(target.qty.raw) * params_.min_qty_bps;
+      if (dpx < params_.min_requote_ticks && qty_ok) {
+        ++stats_.kept_hysteresis;
+        return 0;
+      }
+      if (now - slot.last_requote < params_.min_requote_interval) {
+        ++stats_.kept_interval;
+        return 0;
+      }
+      if (params_.supports_replace) {
+        QuoteAction a{QuoteActionKind::Replace,
+                      inst.id,
+                      side,
+                      lvl,
+                      slot.handle,
+                      ClientOrderId{},
+                      target.price,
+                      target.qty,
+                      params_.post_only};
+        if (!place(a)) {
+          ++stats_.rejected;
+          return 0;
+        }
+        ++stats_.replaces;
+        slot.last_requote = now;
+        return 1;
+      }
+      slot.want = target;
+      slot.apply_want = true;
+      return cancel(inst, side, lvl, slot, place);
+    }
+    // No resting order in this slot. A cancel still in flight keeps the order live (Pending*,
+    // handled above), so any earlier order is final in the OMS and there is nothing left to
+    // wait for, even if its terminal update never reached on_order_update().
+    slot.handle = Handle<Order>{};
+    slot.awaiting_terminal = false;
+    slot.apply_want = false;
+    if (!has_want) return 0;
+    if (backing_off(st, side, now)) {
+      ++stats_.kept_backoff;
+      return 0;
+    }
+    return submit_new(inst, side, lvl, slot, target, now, place);
   }
 
   // The slot's order is live and really the slot's: order slots are reused by later orders.

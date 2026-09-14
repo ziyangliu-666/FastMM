@@ -79,6 +79,20 @@ All notable changes are recorded here (Keep a Changelog format).
 - Binance `GET /api/v3/time` is counted with weight 1, as documented.
 - Comments that said VERIFY now cite what the Bybit and Binance docs state (Bybit sequencing and
   amend quantity, Binance listenKey removal from 2026-02-20).
+- Quotes stayed empty after a reconciliation in a quiet market: End did not requote, a requote that
+  met pending orders was dropped, and End's cancellations bypassed the quote manager. The engine now
+  re-applies the quotes it paused at Begin, a slot applies a target recorded while its order was
+  pending once the order's ack or terminal update arrives (unless quotes were pulled), and End's
+  updates go through the normal order-update path.
+- Reconciliation cleared a cancel or replace still in flight, and marked cancelled the orders a
+  strategy sent after the open-orders request (for example its requote on Live), whose acks were
+  then ignored: live orders the OMS no longer tracked. Binance, Bybit and Deribit stamp the Begin
+  with the last order id sent before the request (`ReconcileMsg::sent_watermark`), End spares later
+  orders and only touches the reconciling venue, pending cancels/replaces stay pending, and an ack
+  for an order reconciliation dropped is cancelled at the venue.
+- Fills that arrived after the cancel ack (late fills) never reached positions, fees or PnL: the
+  terminal record now keeps instrument and side, and the engine falls back to the fill's own
+  instrument and side.
 
 ## [0.1.0] - 2026-09-14
 

@@ -640,7 +640,10 @@ void BybitVenue::drain_outbound() {
   if (outbound_ == nullptr) return;
   while (const std::byte* p = outbound_->try_peek()) {
     const auto* h = reinterpret_cast<const EventHeader*>(p);
-    if (const auto cmd = OrderCommand::from(*h)) send_command(*cmd);
+    if (const auto cmd = OrderCommand::from(*h)) {
+      sent_.note(*cmd);
+      send_command(*cmd);
+    }
     outbound_->release();
   }
 }
@@ -876,10 +879,11 @@ void BybitVenue::apply_action(VenueAction action,
 
 // ---- control requests -----------------------------------------------------------------------
 
-void BybitVenue::emit_reconcile(std::string_view json) {
+void BybitVenue::emit_reconcile(std::string_view json, ClientOrderId sent_watermark) {
   ReconcileMsg begin{};
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
+  SentWatermark::stamp(begin, sent_watermark);
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   std::size_t count = 0;
@@ -923,20 +927,24 @@ void BybitVenue::request_open_orders() {
   const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
   std::weak_ptr<int> alive = alive_;
   static_cast<void>(
-      rest_->request("GET", rr.target(), headers, {}, [this, alive](const net::HttpResponse& r) {
-        if (alive.expired()) return;
-        ++stats_.rest_requests;
-        note_rate_headers(r);
-        if (!r.ok()) {
-          ++stats_.rest_errors;
-          FASTMM_LOG_WARN("{}: GET order/realtime failed: status={} err={}",
-                          cfg_.name,
-                          r.status,
-                          net::to_string(r.error));
-          return;
-        }
-        emit_reconcile(r.body);
-      }));
+      rest_->request("GET",
+                     rr.target(),
+                     headers,
+                     {},
+                     [this, alive, watermark = sent_.value()](const net::HttpResponse& r) {
+                       if (alive.expired()) return;
+                       ++stats_.rest_requests;
+                       note_rate_headers(r);
+                       if (!r.ok()) {
+                         ++stats_.rest_errors;
+                         FASTMM_LOG_WARN("{}: GET order/realtime failed: status={} err={}",
+                                         cfg_.name,
+                                         r.status,
+                                         net::to_string(r.error));
+                         return;
+                       }
+                       emit_reconcile(r.body, watermark);
+                     }));
 }
 
 void BybitVenue::request_server_time() {

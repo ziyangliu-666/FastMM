@@ -361,3 +361,88 @@ TEST_CASE("core.quote_manager: a venue reject backs off new orders on that side"
   CHECK(news(Side::Sell) == 6);
   CHECK(qm.stats().reject_backoffs == 3);
 }
+
+TEST_CASE("core.quote_manager: a requote that meets pending orders is applied when they resolve") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  p.supports_replace = false;
+  QuoteManager qm(p);
+  Harness h;
+  const auto cancel_acks = [&](Timestamp now) {
+    for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+      qm.on_order_update(h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, now, h);
+  };
+
+  SUBCASE("the terminal update places the recorded target") {
+    qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+    h.ack_all();
+    qm.reconcile(inst, DesiredQuotes{}, h.oms, Timestamp{1}, h);  // cancels both
+    REQUIRE(h.count(QuoteActionKind::Cancel) == 2);
+    CHECK(qm.reconcile(inst, quotes("98.00", "102.00"), h.oms, Timestamp{2}, h) == 0);
+    CHECK(qm.stats().skipped_pending == 2);
+    cancel_acks(Timestamp{3});
+    REQUIRE(h.count(QuoteActionKind::New) == 4);
+    CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Buy, 0)).price == px("98.00"));
+    CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 0)).price == px("102.00"));
+  }
+  SUBCASE("a pull in between drops the target") {
+    qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+    h.ack_all();
+    qm.reconcile(inst, DesiredQuotes{}, h.oms, Timestamp{1}, h);
+    CHECK(qm.reconcile(inst, quotes("98.00", "102.00"), h.oms, Timestamp{2}, h) == 0);
+    qm.pull_quotes(inst, h.oms, h);
+    cancel_acks(Timestamp{3});
+    CHECK(h.count(QuoteActionKind::New) == 2);
+    CHECK(h.oms.open_count() == 0);
+  }
+  SUBCASE("the ack of a pending new applies the target") {
+    qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);  // both PendingNew
+    CHECK(qm.reconcile(inst, quotes("98.00", "102.00"), h.oms, Timestamp{1}, h) == 0);
+    for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+      qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, Timestamp{2}, h);
+    CHECK(h.count(QuoteActionKind::Cancel) == 2);  // cancel-then-new toward the recorded target
+    cancel_acks(Timestamp{3});
+    REQUIRE(h.count(QuoteActionKind::New) == 4);
+    CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Buy, 0)).price == px("98.00"));
+    CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 0)).price == px("102.00"));
+  }
+  SUBCASE("an ack that meets the target within hysteresis keeps the order") {
+    qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+    CHECK(qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{1}, h) == 0);
+    for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingNew))
+      qm.on_order_update(h.oms.on_ack(ack_msg(id)), inst, h.oms, Timestamp{2}, h);
+    CHECK(h.count(QuoteActionKind::Cancel) == 0);
+    CHECK(h.count(QuoteActionKind::New) == 2);
+    CHECK(qm.stats().kept_hysteresis == 2);
+  }
+}
+
+TEST_CASE("core.quote_manager: resume re-applies quotes paused with keep_desired only") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.min_requote_interval = Duration{};
+  QuoteManager qm(p);
+  Harness h;
+  qm.reconcile(inst, quotes("99.00", "101.00"), h.oms, Timestamp{}, h);
+  h.ack_all();
+  qm.pull_quotes(inst, h.oms, h, /*keep_desired=*/true);
+  CHECK(qm.pulled(inst.id));
+  CHECK(qm.resumable(inst.id));
+  REQUIRE(h.count(QuoteActionKind::Cancel) == 2);
+  for (const ClientOrderId id : ids_in_state(h.oms, OrderState::PendingCancel))
+    qm.on_order_update(h.oms.on_cancel_ack(cancel_ack_msg(id)), inst, h.oms, Timestamp{1}, h);
+  CHECK(h.count(QuoteActionKind::New) == 2);  // still paused
+  CHECK(qm.resume(inst, h.oms, Timestamp{2}, h) == 2);
+  CHECK_FALSE(qm.pulled(inst.id));
+  CHECK_FALSE(qm.resumable(inst.id));
+  CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Buy, 0)).price == px("99.00"));
+  CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 0)).price == px("101.00"));
+  CHECK(qm.resume(inst, h.oms, Timestamp{3}, h) == 0);  // once
+  h.ack_all();
+  // A pull that stops quoting forgets the quotes, and a pause on top of it has nothing to resume.
+  qm.pull_quotes(inst, h.oms, h);
+  qm.pull_quotes(inst, h.oms, h, /*keep_desired=*/true);
+  CHECK_FALSE(qm.resumable(inst.id));
+  CHECK(qm.resume(inst, h.oms, Timestamp{4}, h) == 0);
+}

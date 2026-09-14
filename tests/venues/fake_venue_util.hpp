@@ -166,6 +166,14 @@ struct Collected {
     for (const auto& m : all) n += RecordingSink::type_of(m) == t ? 1U : 0U;
     return n;
   }
+  template <class M, class Pred>
+  [[nodiscard]] const M* first_if(EventType t, Pred&& pred) const {
+    for (const auto& m : all) {
+      if (RecordingSink::type_of(m) == t && pred(RecordingSink::as<M>(m)))
+        return &RecordingSink::as<M>(m);
+    }
+    return nullptr;
+  }
   template <class M>
   [[nodiscard]] const M* last(EventType t) const {
     const M* out = nullptr;

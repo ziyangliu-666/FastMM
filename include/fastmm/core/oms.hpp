@@ -11,14 +11,18 @@
 //   cancel reject    PendingCancel -> back; >3 rejects -> ReconcileNeeded; VenueUnknownOrder ->
 //   Canceled fill             cum >= qty -> Filled, else PartiallyFilled (pending states keep
 //   pending) expired          any open -> Expired
-// Races: fill after cancel ack -> LateFill (position still updated); cancel-reject after
-// fill -> ignored; ack for unknown id -> CancelUnknown (never leave an unknown live order);
-// duplicate exec_id -> Duplicate; duplicate ack -> Ignored.
+// Races: fill after cancel ack -> LateFill (position still updated from the terminal record's
+// instrument and side); cancel-reject after fill -> ignored; ack for unknown id -> CancelUnknown
+// (never leave an unknown live order); ack for an order reconciliation marked cancelled ->
+// CancelUnknown; duplicate exec_id -> Duplicate; duplicate ack -> Ignored.
+// Reconciliation (per venue): a cancel or replace still in flight stays pending; orders sent after
+// the snapshot was requested (above the Begin's sent watermark) are not marked cancelled.
 #include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
 #include "fastmm/core/containers/ring_buffer.hpp"
+#include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
@@ -27,6 +31,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
+#include <optional>
 #include <string>
 
 namespace fastmm {
@@ -45,7 +51,8 @@ enum class OmsAction : std::uint8_t {
 };
 
 struct OmsUpdate {
-  Order order{};           // snapshot after the transition (valid if known)
+  Order order{};  // snapshot after the transition; for a recently terminal id only the terminal
+                  // record's fields (id, instrument, side, state, cum_qty); empty if unknown
   Handle<Order> handle{};  // invalid once terminal (slot freed) or unknown
   OrderState prev = OrderState::PendingNew;
   OmsAction action = OmsAction::None;
@@ -191,6 +198,10 @@ class Oms {
       if (!u.known) {
         u.action = OmsAction::CancelUnknown;  // a live order we do not know: cancel it
         ++stats_.unknown_ids;
+      } else if (u.order.has(Order::kReconciled)) {
+        // Reconciliation took it for gone, yet the venue has it (the snapshot missed an order
+        // still in flight). Nothing tracks it any more: cancel it rather than leave it live.
+        u.action = OmsAction::CancelUnknown;
       } else {
         u.action = OmsAction::Ignored;  // late ack for a terminal order
       }
@@ -366,9 +377,16 @@ class Oms {
 
   // ---- reconciliation ---------------------------------------------------------------------
 
-  void reconcile_begin() noexcept {
-    pool_.for_each([](Handle<Order>, Order& o) {
-      o.flags &= static_cast<std::uint8_t>(~Order::kSeenInReconcile);
+  // Starts reconciling `venue`'s orders (an invalid venue: every venue). `sent_watermark` is the
+  // highest id the venue had sent when it requested the snapshot: orders above it cannot be in the
+  // snapshot, and reconcile_end() leaves them alone. Without it every unreported order ends.
+  void reconcile_begin(VenueId venue = VenueId::invalid(),
+                       std::optional<ClientOrderId> sent_watermark = std::nullopt) noexcept {
+    ReconcileScope& sc = recon_scope_[venue.value];
+    sc.bounded = sent_watermark.has_value();
+    sc.watermark = sent_watermark.value_or(ClientOrderId{});
+    pool_.for_each([&](Handle<Order>, Order& o) {
+      if (in_scope(o, venue)) o.flags &= static_cast<std::uint8_t>(~Order::kSeenInReconcile);
     });
   }
   // Venue reports an open order. Unknown -> CancelUnknown (engine cancels by venue id).
@@ -389,26 +407,39 @@ class Oms {
       o.cum_qty = m.cum_qty;
       u.changed = true;
     }
-    if (o.state == OrderState::PendingNew || o.state == OrderState::PendingCancel ||
-        o.state == OrderState::PendingReplace) {
-      clear_pending(o);
+    // The venue has it, so a new order was accepted. A cancel or replace is left pending: its ack
+    // or reject is still on the way and settles the order (clearing it made that cancel ack look
+    // unsolicited while the quote manager kept the order as a working quote).
+    if (o.state == OrderState::PendingNew) {
       o.state = o.cum_qty.is_zero() ? OrderState::Live : OrderState::PartiallyFilled;
       u.changed = true;
     }
     finish_update(u, h, o);
     return u;
   }
-  // Every open order the venue did not report is marked Canceled. F(const OmsUpdate&).
+  // Every open order of `venue` (invalid: every venue) the snapshot did not report is marked
+  // Canceled, except orders sent after the snapshot was requested (see reconcile_begin).
+  // F(const OmsUpdate&) runs after each order ends and outside the pool iteration, so it may place
+  // or cancel orders.
   template <class F>
-  void reconcile_end(F&& f) noexcept {
-    pool_.for_each([&](Handle<Order> h, Order& o) {
-      if (o.has(Order::kSeenInReconcile)) return;
+  void reconcile_end(F&& f, VenueId venue = VenueId::invalid()) noexcept {
+    const ReconcileScope& sc = recon_scope_[venue.value];
+    StaticVector<Handle<Order>, kMaxOpenOrders> unseen;
+    pool_.for_each([&](Handle<Order> h, const Order& o) {
+      if (!in_scope(o, venue) || o.has(Order::kSeenInReconcile)) return;
+      if (sc.bounded && o.cl_ord_id.value > sc.watermark.value) return;  // not sent yet
+      static_cast<void>(unseen.push_back(h));
+    });
+    for (const Handle<Order> h : unseen) {
+      if (!pool_.is_live(h)) continue;
+      Order& o = pool_.get(h);
       OmsUpdate u;
       u.prev = o.state;
+      u.known = true;
       o.flags |= Order::kReconciled;
-      terminate(u, h, o, OrderState::Canceled);
+      terminate(u, h, o, OrderState::Canceled, /*by_reconcile=*/true);
       f(u);
-    });
+    }
   }
 
   // ---- queries ----------------------------------------------------------------------------
@@ -444,9 +475,20 @@ class Oms {
  private:
   struct TerminalRecord {
     ClientOrderId cl_ord_id;
-    OrderState state;
     Qty cum_qty;
+    InstrumentId instrument;
+    OrderState state;
+    Side side;
+    bool by_reconcile;  // marked Canceled by reconcile_end(), not reported by the venue
   };
+  struct ReconcileScope {
+    ClientOrderId watermark{};
+    bool bounded = false;
+  };
+
+  [[nodiscard]] static bool in_scope(const Order& o, VenueId venue) noexcept {
+    return !venue.valid() || o.venue == venue;
+  }
 
   // Finds an open order; sets u.known if the id is open or recently terminal.
   Handle<Order> lookup(ClientOrderId id, OmsUpdate& u) noexcept {
@@ -456,9 +498,17 @@ class Oms {
       u.handle = *p;
       return *p;
     }
-    if (recently_terminal_.find_if([&](const TerminalRecord& r) { return r.cl_ord_id == id; }) !=
-        nullptr) {
+    const TerminalRecord* r =
+        recently_terminal_.find_if([&](const TerminalRecord& t) { return t.cl_ord_id == id; });
+    if (r != nullptr) {
+      // The slot is gone; a late fill still needs to know what it was for.
       u.known = true;
+      u.order.cl_ord_id = r->cl_ord_id;
+      u.order.instrument = r->instrument;
+      u.order.side = r->side;
+      u.order.state = r->state;
+      u.order.cum_qty = r->cum_qty;
+      if (r->by_reconcile) u.order.flags |= Order::kReconciled;
     }
     return Handle<Order>{};
   }
@@ -503,7 +553,11 @@ class Oms {
     o.flags &= static_cast<std::uint8_t>(~Order::kReplaceOldCanceled);
   }
 
-  void terminate(OmsUpdate& u, Handle<Order> h, Order& o, OrderState final_state) noexcept {
+  void terminate(OmsUpdate& u,
+                 Handle<Order> h,
+                 Order& o,
+                 OrderState final_state,
+                 bool by_reconcile = false) noexcept {
     o.state = final_state;
     if (final_state == OrderState::Canceled) ++stats_.canceled;
     --stats_.open;
@@ -513,7 +567,8 @@ class Oms {
     by_id_.erase(o.cl_ord_id);
     if (o.pending_cl_ord_id.valid() && o.pending_cl_ord_id != o.cl_ord_id)
       by_id_.erase(o.pending_cl_ord_id);
-    recently_terminal_.push(TerminalRecord{o.cl_ord_id, final_state, o.cum_qty});
+    recently_terminal_.push(
+        TerminalRecord{o.cl_ord_id, o.cum_qty, o.instrument, final_state, o.side, by_reconcile});
     u.order = o;
     u.handle = Handle<Order>{};
     u.changed = true;
@@ -559,6 +614,7 @@ class Oms {
   Price best_own_[kMaxInstruments][2];
   Qty open_qty_[kMaxInstruments][2];
   std::uint32_t open_per_inst_[kMaxInstruments] = {};
+  ReconcileScope recon_scope_[std::numeric_limits<VenueId::rep_type>::max() + 1U] = {};
 };
 
 }  // namespace fastmm

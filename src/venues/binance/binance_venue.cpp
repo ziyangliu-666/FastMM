@@ -571,6 +571,7 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     session_logged_on_ = false;
     encoder_->set_session_authenticated(false);
     emit_connection_state(Channel::Order, ConnState::Disconnected);
+    oo_watermarks_.clear();  // requests on the closed connection get no reply
     // 6.7 "order channel down": cancel everything through REST immediately.
     // disconnect() clears connected_ before closing the channels: a requested shutdown already
     // runs the synchronous cancel_all(), and an async request would only be aborted.
@@ -638,11 +639,13 @@ void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_vi
     return;
   }
   if (r.id == "oo") {
+    const ClientOrderId watermark = oo_watermarks_.empty() ? sent_.value() : oo_watermarks_.front();
+    if (!oo_watermarks_.empty()) oo_watermarks_.erase(oo_watermarks_.begin());
     if (r.is_error) {
       FASTMM_LOG_WARN("{}: openOrders.status failed: {} {}", cfg_.name, r.code, r.msg);
       return;
     }
-    emit_reconcile(raw, /*rest_array=*/false);
+    emit_reconcile(raw, /*rest_array=*/false, watermark);
     return;
   }
   if (r.id == "ca") {
@@ -730,7 +733,10 @@ void BinanceVenue::drain_outbound() {
   if (outbound_ == nullptr) return;
   while (const std::byte* p = outbound_->try_peek()) {
     const auto* h = reinterpret_cast<const EventHeader*>(p);
-    if (const auto cmd = OrderCommand::from(*h)) send_command(*cmd);
+    if (const auto cmd = OrderCommand::from(*h)) {
+      sent_.note(*cmd);
+      send_command(*cmd);
+    }
     outbound_->release();
   }
 }
@@ -1033,10 +1039,13 @@ void BinanceVenue::emit_cancel_ack(InstrumentId inst,
   ++stats_.order_events;
 }
 
-void BinanceVenue::emit_reconcile(std::string_view json, bool rest_array) {
+void BinanceVenue::emit_reconcile(std::string_view json,
+                                  bool rest_array,
+                                  ClientOrderId sent_watermark) {
   ReconcileMsg begin{};
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
+  SentWatermark::stamp(begin, sent_watermark);
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   std::size_t count = 0;
@@ -1080,6 +1089,7 @@ void BinanceVenue::request_open_orders() {
     const std::size_t n = encoder_->encode_ws_open_orders({}, "oo", venue_time_ms(), request_buf_);
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
       rate_.on_sent(80, now_ns());
+      oo_watermarks_.push_back(sent_.value());
       return;
     }
   }
@@ -1089,20 +1099,24 @@ void BinanceVenue::request_open_orders() {
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued =
-      rest_->request("GET", target, api_headers(), {}, [this, alive](const net::HttpResponse& r) {
-        if (alive.expired()) return;
-        ++stats_.rest_requests;
-        note_rate_headers(r);
-        if (!r.ok()) {
-          ++stats_.rest_errors;
-          FASTMM_LOG_WARN("{}: GET openOrders failed: status={} err={}",
-                          cfg_.name,
-                          r.status,
-                          net::to_string(r.error));
-          return;
-        }
-        emit_reconcile(r.body, /*rest_array=*/true);
-      });
+      rest_->request("GET",
+                     target,
+                     api_headers(),
+                     {},
+                     [this, alive, watermark = sent_.value()](const net::HttpResponse& r) {
+                       if (alive.expired()) return;
+                       ++stats_.rest_requests;
+                       note_rate_headers(r);
+                       if (!r.ok()) {
+                         ++stats_.rest_errors;
+                         FASTMM_LOG_WARN("{}: GET openOrders failed: status={} err={}",
+                                         cfg_.name,
+                                         r.status,
+                                         net::to_string(r.error));
+                         return;
+                       }
+                       emit_reconcile(r.body, /*rest_array=*/true, watermark);
+                     });
   if (queued) rate_.on_sent(rr.weight, now_ns());
 }
 

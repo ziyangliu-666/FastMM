@@ -84,4 +84,22 @@ struct OrderCommand {
   }
 };
 
+// Highest client order id (New or Replace) a venue has taken from the outbound ring. The value
+// at the time a venue requests its open orders is stamped into that snapshot's ReconcileMsg Begin:
+// the engine's orders above it had not been sent, so the snapshot cannot show them.
+class SentWatermark {
+ public:
+  void note(const OrderCommand& c) noexcept {
+    if (c.kind != OrderCommandKind::Cancel && c.cl_ord_id.value > high_.value) high_ = c.cl_ord_id;
+  }
+  [[nodiscard]] ClientOrderId value() const noexcept { return high_; }
+  static void stamp(ReconcileMsg& begin, ClientOrderId watermark) noexcept {
+    begin.sent_watermark = watermark;
+    begin.flags |= ReconcileMsg::kSentWatermark;
+  }
+
+ private:
+  ClientOrderId high_{};
+};
+
 }  // namespace fastmm::venues
