@@ -36,6 +36,10 @@ struct EventHeader {
     kReplayed = 1U << 1,   // came from a journal
     kSnapshot = 1U << 2,   // BookDelta carries a full snapshot
     kOutbound = 1U << 3,   // engine -> venue message copied into the journal
+    // Journal only (format v2, ADR-0010): reserved0 holds the engine clock at consumption as a
+    // signed ns delta from the previous kEngineTime record or EngineTimeMsg.
+    kEngineTime = 1U << 4,
+    kDropped = 1U << 5,  // journal only: outbound message the transport did not accept
   };
 
   std::uint32_t len;     // total bytes incl. header, multiple of 64   (offset 0)
@@ -44,7 +48,7 @@ struct EventHeader {
   VenueId venue;
   std::uint8_t flags;
   InstrumentId instrument;  // dense id, invalid for non-instrument events (offset 8)
-  std::uint32_t reserved0;  // (offset 12)
+  std::uint32_t reserved0;  // journal: engine-time delta when kEngineTime (offset 12)
   std::uint64_t seq;        // engine consumption order; assigned by JournalWriter (16)
   std::uint64_t venue_seq;  // venue update id / sequence number (24)
   Timestamp exch_ts;        // venue event time (32)
@@ -318,6 +322,18 @@ struct LatencySampleMsg {
 };
 static_assert(sizeof(LatencySampleMsg) == 128);
 
+// Journal only (format v2): the engine clock as an absolute value. Written when the engine starts
+// and finishes, and before a consumed event whose clock delta does not fit kEngineTime's int32 ns.
+// Never dispatched.
+struct EngineTimeMsg {
+  enum class Kind : std::uint8_t { Sync = 0, Start = 1, Finish = 2 };
+  EventHeader hdr;
+  Timestamp engine_ts;
+  Kind kind;
+  std::uint8_t pad_[55];
+};
+static_assert(sizeof(EngineTimeMsg) == 128);
+
 // ---- outbound (engine -> venue) --------------------------------------------------------
 
 struct OutNewOrderMsg {
@@ -414,9 +430,10 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<TimerMsg> &&
               FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
               FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
-              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
-              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
-              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<EngineTimeMsg> && FixedSizeMessage<OutNewOrderMsg> &&
+              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
+              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
+              FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

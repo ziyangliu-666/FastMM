@@ -15,6 +15,9 @@ namespace {
 constexpr char kFileMagic[4] = {'F', 'M', 'J', '1'};
 constexpr char kBlockMagic[4] = {'F', 'M', 'J', 'B'};
 constexpr Duration kSyncInterval = milliseconds(100);
+constexpr std::size_t pad64(std::size_t n) noexcept {
+  return (n + 63U) & ~std::size_t{63};
+}
 }  // namespace
 
 // ---- JournalFileWriter ----------------------------------------------------------------
@@ -35,8 +38,9 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   JournalFileHeader h{};
   std::memcpy(h.magic, kFileMagic, 4);
   h.version = kJournalVersion;
-  h.header_bytes =
-      static_cast<std::uint32_t>(sizeof(JournalFileHeader) + ninst * sizeof(Instrument));
+  const std::size_t config_bytes = info.config_toml.size();
+  h.header_bytes = static_cast<std::uint32_t>(sizeof(JournalFileHeader) +
+                                              ninst * sizeof(Instrument) + pad64(config_bytes));
   h.instrument_count = ninst;
   h.session_id = info.session_id;
   h.start_ts_ns = info.start_ts.ns;
@@ -50,10 +54,23 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   const std::size_t n =
       info.strategy.size() < sizeof(h.strategy) - 1 ? info.strategy.size() : sizeof(h.strategy) - 1;
   std::memcpy(h.strategy, info.strategy.data(), n);
+  if (info.has_session) {
+    h.header_flags |= kHeaderSession;
+    h.session_epoch = info.session_epoch;
+    h.quoting_enabled = info.quoting_enabled ? 1 : 0;
+    h.replace_venues = info.replace_venues;
+  }
+  h.config_bytes = static_cast<std::uint32_t>(config_bytes);
+  h.config_crc32c = crc32c(info.config_toml.data(), config_bytes);
   h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
   if (!ensure_mapped(h.header_bytes)) return;
   append(&h, sizeof h);
   if (ninst > 0) append(info.instruments->data(), ninst * sizeof(Instrument));
+  if (config_bytes > 0) {
+    static constexpr char kZeros[64] = {};
+    append(info.config_toml.data(), config_bytes);
+    append(kZeros, pad64(config_bytes) - config_bytes);
+  }
   last_sync_ = last_flush_ = steady_now();
 }
 
@@ -239,15 +256,25 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
   map_len_ = len;
   header_ = reinterpret_cast<const JournalFileHeader*>(map_);
   if (std::memcmp(header_->magic, kFileMagic, 4) != 0) return fail(JournalError::BadMagic);
-  if (header_->version != kJournalVersion) return fail(JournalError::BadVersion);
+  if (header_->version < kJournalMinVersion || header_->version > kJournalVersion)
+    return fail(JournalError::BadVersion);
   if (crc32c(header_, offsetof(JournalFileHeader, crc32c)) != header_->crc32c)
     return fail(JournalError::HeaderCorrupt);
+  const std::size_t tables =
+      sizeof(JournalFileHeader) + std::size_t{header_->instrument_count} * sizeof(Instrument);
+  const std::size_t config_bytes = header_->version >= 2 ? header_->config_bytes : 0;
   if (header_->header_bytes > len || header_->header_bytes < sizeof(JournalFileHeader) ||
-      header_->header_bytes !=
-          sizeof(JournalFileHeader) + header_->instrument_count * sizeof(Instrument)) {
+      header_->header_bytes != tables + pad64(config_bytes)) {
     return fail(JournalError::HeaderCorrupt);
   }
   instruments_ = reinterpret_cast<const Instrument*>(map_ + sizeof(JournalFileHeader));
+  config_ = {};
+  if (config_bytes > 0) {
+    const auto* text = reinterpret_cast<const char*>(map_ + tables);
+    if (crc32c(text, config_bytes) != header_->config_crc32c)
+      return fail(JournalError::HeaderCorrupt);
+    config_ = std::string_view(text, config_bytes);
+  }
   first_block_ = header_->header_bytes;
   validate();
   reset();

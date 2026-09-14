@@ -220,8 +220,9 @@ TEST_CASE("core.engine: book -> quotes -> ack -> fill -> requote, journal and st
   CHECK(f.engine->stats().orders_sent == 2);
   CHECK(f.engine->stats().book_updates == 1);
   CHECK(f.engine->book(InstrumentId{0}).is_valid());
-  // journal: 1 inbound event + 2 outbound + the first LatencySample publish
-  CHECK(f.engine->journal().recorded() == 4);
+  // journal: the absolute engine clock + 1 inbound event (a clock delta) + 2 outbound + the first
+  // LatencySample publish
+  CHECK(f.engine->journal().recorded() == 5);
 
   // small mid move below threshold: no requote
   f.push_book("100.00", "100.02", 2);

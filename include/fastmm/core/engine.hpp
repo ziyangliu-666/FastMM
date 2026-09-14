@@ -196,6 +196,8 @@ class Engine {
     // The rate limiter refills from the start time, not from construction (replay constructs the
     // engine at a different time).
     risk_.bucket().rebase(now_);
+    if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Start, now_))
+      ++stats_.journal_overflows;
     FASTMM_LOG_INFO(
         "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
     [[maybe_unused]] const bool quoting_before = quoting_enabled();
@@ -208,6 +210,8 @@ class Engine {
     if (!started_ || finished_) return;
     finished_ = true;
     latch_clock();
+    if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Finish, now_))
+      ++stats_.journal_overflows;
     if constexpr (has_hook(Hook::Stop)) strategy_.on_stop(ctx_);
     flush_out();
     publish_latency(now_);
@@ -383,7 +387,7 @@ class Engine {
     ++stats_.events;
     latch_clock();
     if (journal_.enabled()) {
-      auto r = journal_.record(*h);
+      auto r = journal_.record_at(*h, now_);
       if (FASTMM_UNLIKELY(!r)) {
         ++stats_.journal_overflows;
         on_journal_overflow();
@@ -463,6 +467,7 @@ class Engine {
       case EventType::OrderCancelL3:
       case EventType::OrderReplaceL3:
       case EventType::Padding:
+      case EventType::EngineTime:
       case EventType::Count:
         break;  // not consumed by the L2 engine
     }
@@ -789,7 +794,7 @@ class Engine {
       t.user_data = user_data;
       t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
-      if (!journal_.record(t.hdr)) {
+      if (!journal_.record_at(t.hdr, now_)) {
         ++stats_.journal_overflows;
         on_journal_overflow();
       }

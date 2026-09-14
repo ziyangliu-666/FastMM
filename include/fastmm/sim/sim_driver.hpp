@@ -14,7 +14,10 @@
 //
 // ReplayDriver replays a journal through Engine<S, SimClock, ReplayTransport, JournalFeed>:
 // one journal event per step at its original time; wheel timers are suppressed because the
-// journal already contains the synthetic TimerMsg records that fired.
+// journal already contains the synthetic TimerMsg records that fired. With a v2 journal the clock
+// follows the recorded engine clock exactly (including backward steps of a recalibrated TscClock),
+// also for start() and finish(); a v1 journal only has receive and fire times, which never move
+// the clock backwards.
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/time.hpp"
@@ -212,6 +215,7 @@ class ReplayDriver {
       : clock_(clock), feed_(feed), hooks_(hooks) {}
 
   void start() {
+    if (feed_.has_start_ts()) clock_.jump(feed_.start_ts());
     hooks_.warm_up(hooks_.ctx);
     hooks_.start(hooks_.ctx);
     hooks_.cancel_timers(hooks_.ctx);
@@ -223,7 +227,11 @@ class ReplayDriver {
     std::uint64_t n = 0;
     while (feed_.has_next()) {
       const Timestamp ts = feed_.peek_ts();
-      if (ts > clock_.now()) clock_.set(ts);
+      if (feed_.has_engine_ts()) {
+        clock_.jump(ts);
+      } else if (ts > clock_.now()) {
+        clock_.set(ts);
+      }
       feed_.arm();
       hooks_.step(hooks_.ctx);
       hooks_.cancel_timers(hooks_.ctx);
@@ -234,6 +242,7 @@ class ReplayDriver {
   void finish() {
     if (!started_ || finished_) return;
     finished_ = true;
+    if (feed_.has_finish_ts()) clock_.jump(feed_.finish_ts());
     hooks_.finish(hooks_.ctx);
   }
 

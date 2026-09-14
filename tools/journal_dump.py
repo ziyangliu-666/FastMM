@@ -3,10 +3,14 @@
 
 Layouts follow include/fastmm/core/journal.hpp and include/fastmm/core/messages.hpp:
   file   := FileHeader (256 B, crc32c over the first 252) | Instrument[count] (128 B each)
-            | Block* | trailer block (flags & 1)
+            | effective config TOML (v2, zero-padded to 64 B) | Block* | trailer block (flags & 1)
   block  := BlockHeader (64 B, crc32c of the payload) | messages
   message:= EventHeader (64 B: len, type, version, venue, flags, instrument, reserved, seq,
             venue_seq, exch_ts, recv_ts, t0_cycles, t1_delta, t2_delta) | body
+
+Format v2: a record flagged engine_time carries the engine clock as an int32 ns delta in `reserved`
+from the previous one; EngineTime records carry absolute values (start, finish, overflow). The
+dump prints the reconstructed clock as engine_ts. Version 1 files are read as before.
 
 Prices / quantities / notionals are int64 with a 1e-8 scale and are printed as exact decimals.
 
@@ -27,14 +31,18 @@ EVENT_TYPES = [
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
+    "EngineTime",
 ]
+ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
 SIDES = {0: "Buy", 1: "Sell"}
 ORDER_TYPES = {0: "Limit", 1: "Market", 2: "PostOnly"}
 TIFS = {0: "Gtc", 1: "Ioc", 2: "Fok", 3: "Day"}
 LIQUIDITY = {0: "Unknown", 1: "Maker", 2: "Taker"}
-FLAG_NAMES = [(1, "synthetic"), (2, "replayed"), (4, "snapshot"), (8, "outbound")]
+FLAG_NAMES = [(1, "synthetic"), (2, "replayed"), (4, "snapshot"), (8, "outbound"),
+              (16, "engine_time"), (32, "dropped")]
+FLAG_ENGINE_TIME = 16
 
-HEADER = struct.Struct("<4sIIIQqQqQQQII32s140sI")  # 256 bytes
+HEADER = struct.Struct("<4sIIIQqQqQQQII32sHBBIQI120sI")  # 256 bytes
 BLOCK = struct.Struct("<4sIQQIII28s")  # 64 bytes
 EVENT = struct.Struct("<IBBBBIIQQqqQII")  # 64 bytes
 INSTRUMENT_HOT = struct.Struct("<IBBBBqqqqqqq")  # 64 bytes
@@ -138,6 +146,8 @@ def decode_body(type_name: str, body: bytes) -> str:
                 f"fee_asset={f['fee_asset']} side={f['side']} liq={f['liq']}")
     if type_name == "Timer":
         return f"timer_id={struct.unpack_from('<I', body, 0)[0]} user_data={u64(8):#x} fire_ts={q(16)}"
+    if type_name == "EngineTime":
+        return f"kind={ENGINE_TIME_KINDS.get(body[8], body[8])} engine_ts={q(0)}"
     if type_name == "LatencySample":
         return f"interval={body[0]} count={u64(8)} p50={q(16)} p90={q(24)} p99={q(32)} p999={q(40)} max={q(48)} ns"
     if type_name == "OutNewOrder":
@@ -161,10 +171,17 @@ def parse_header(data: bytes, verify_crc: bool = True) -> dict:
     if len(data) < HEADER.size:
         raise JournalError("file shorter than the 256-byte header")
     (magic, version, header_bytes, inst_count, session_id, start_ts, tsc0, tsc_ns0, ns_per_cycle,
-     config_hash, rng_seed, msg_version, block_bytes, strategy, _reserved, hdr_crc) = HEADER.unpack_from(data, 0)
+     config_hash, rng_seed, msg_version, block_bytes, strategy, session_epoch, quoting_enabled,
+     header_flags, config_bytes, replace_venues, _config_crc, _reserved, hdr_crc) = HEADER.unpack_from(data, 0)
     if magic != b"FMJ1":
         raise JournalError(f"bad magic {magic!r}")
+    if version < 2:
+        session_epoch = quoting_enabled = header_flags = config_bytes = replace_venues = 0
+    config_off = HEADER.size + 128 * inst_count
     return {
+        "session": bool(header_flags & 1), "session_epoch": session_epoch,
+        "quoting_enabled": bool(quoting_enabled), "replace_venues": replace_venues,
+        "config": data[config_off:config_off + config_bytes].decode("utf-8", "replace"),
         "version": version, "header_bytes": header_bytes, "instrument_count": inst_count,
         "session_id": session_id, "start_ts": start_ts, "tsc0": tsc0, "tsc_ns0": tsc_ns0,
         "ns_per_cycle_q32": ns_per_cycle, "config_hash": config_hash, "rng_seed": rng_seed,
@@ -220,7 +237,7 @@ def iter_events(data: bytes, header: dict, verify_crc: bool = True, stats: Block
         stats.blocks += 1
         pos = 0
         while pos + EVENT.size <= len(payload):
-            (length, etype, ver, venue, flags, inst, _res, seq, venue_seq, exch_ts, recv_ts, t0, t1, t2) = \
+            (length, etype, ver, venue, flags, inst, res, seq, venue_seq, exch_ts, recv_ts, t0, t1, t2) = \
                 EVENT.unpack_from(payload, pos)
             if length < EVENT.size or pos + length > len(payload):
                 print(f"warning: bad message length {length} in block at offset {off}", file=sys.stderr)
@@ -229,6 +246,7 @@ def iter_events(data: bytes, header: dict, verify_crc: bool = True, stats: Block
                 "type": EVENT_TYPES[etype] if etype < len(EVENT_TYPES) else f"type{etype}",
                 "version": ver, "venue": venue, "flags": flags, "instrument": inst, "seq": seq,
                 "venue_seq": venue_seq, "exch_ts": exch_ts, "recv_ts": recv_ts,
+                "engine_delta": struct.unpack("<i", struct.pack("<I", res))[0] if flags & FLAG_ENGINE_TIME else None,
             }
             yield ev, payload[pos + EVENT.size:pos + length]
             pos += length
@@ -258,6 +276,11 @@ def main() -> int:
     print(f"strategy        '{hdr['strategy']}'")
     print(f"start_ts        {hdr['start_ts']}   tsc0 {hdr['tsc0']} tsc_ns0 {hdr['tsc_ns0']} "
           f"ns/cycle q32 {hdr['ns_per_cycle_q32']}")
+    if hdr["session"]:
+        print(f"session         epoch {hdr['session_epoch']}   quoting_enabled {hdr['quoting_enabled']}   "
+              f"replace_venues {hdr['replace_venues']:#x}")
+    if hdr["config"]:
+        print(f"config          {len(hdr['config'])} bytes of effective TOML embedded")
     print(f"header crc32c   {'ok' if crc_ok else 'MISMATCH'}")
 
     print(f"instruments     {hdr['instrument_count']}")
@@ -270,13 +293,19 @@ def main() -> int:
     counts = Counter()
     printed = 0
     stats = BlockStats()
+    engine_ts = None
     for ev, body in iter_events(data, hdr, verify_crc=not args.no_crc, stats=stats):
         name = ev["type"]
         direction = "out" if ev["flags"] & 8 else "in"
         counts[(name, direction)] += 1
+        if name == "EngineTime":
+            engine_ts = struct.unpack_from("<q", body, 0)[0]
+        elif ev["engine_delta"] is not None and engine_ts is not None:
+            engine_ts += ev["engine_delta"]
         if printed < args.first and (args.type is None or args.type == name):
+            clock = f" engine_ts {engine_ts}" if ev["engine_delta"] is not None else ""
             print(f"#{ev['seq']:<7} {name:<17} {direction:<3} inst {ev['instrument']} venue {ev['venue']} "
-                  f"flags {flags_str(ev['flags'])} exch_ts {ev['exch_ts']} recv_ts {ev['recv_ts']} "
+                  f"flags {flags_str(ev['flags'])} exch_ts {ev['exch_ts']} recv_ts {ev['recv_ts']}{clock} "
                   f"venue_seq {ev['venue_seq']}\n          {decode_body(name, body)}")
             printed += 1
 
