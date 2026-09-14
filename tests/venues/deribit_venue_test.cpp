@@ -485,6 +485,12 @@ TEST_CASE("deribit.venue: invalid credentials are fatal and the credit limit ref
     REQUIRE(oc.count(EventType::OrderReject) == 1);
     CHECK(oc.last<OrderRejectMsg>(EventType::OrderReject)->reason == RejectReason::VenueKilled);
     CHECK(h.buys.load() == 0);
+    // The failed authentication asked the engine, once, to kill this venue only.
+    REQUIRE(oc.count(EventType::Control) == 1);
+    const ControlMsg* kill = oc.last<ControlMsg>(EventType::Control);
+    CHECK(kill->command == ControlCommand::TripVenueKill);
+    CHECK(kill->hdr.venue == kVenue);
+    CHECK(static_cast<KillReason>(kill->arg) == KillReason::VenueFatal);
     venue.disconnect();
     reactor.run_once(0);
   }

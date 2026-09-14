@@ -358,3 +358,41 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
   }
   h.srv.stop();
 }
+
+TEST_CASE("bybit.venue: a failed private authentication kills this venue, once") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 1, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    VenueSection s = h.section(true);
+    s.api_secret = "not-the-secret";
+    BybitVenueConfig cfg = make_bybit_config(s, false);
+    cfg.ws_private_url = h.srv.ws_base() + "/v5/private";
+    BybitVenue venue(kVenue, cfg);
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {kBtc};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    REQUIRE(pump_until(reactor, [&] { return venue.fatal(); }));
+    CHECK(h.auth_failures.load() >= 1);
+    // Both authenticated channels fail; the engine is asked only once.
+    for (int i = 0; i < 40; ++i) reactor.run_once(5);
+    Collected oc;
+    oc.take(orders);
+    REQUIRE(oc.count(EventType::Control) == 1);
+    const ControlMsg* kill = oc.last<ControlMsg>(EventType::Control);
+    CHECK(kill->command == ControlCommand::TripVenueKill);
+    CHECK(kill->hdr.venue == kVenue);
+    CHECK(static_cast<KillReason>(kill->arg) == KillReason::VenueFatal);
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}

@@ -81,6 +81,20 @@ inline void emit_cancel_ack(EventSink& sink,
   static_cast<void>(sink.push(m.hdr));
 }
 
+// The connector cannot trade on this venue any more (error map HardStop / Fatal, failed
+// authentication): asks the engine to trip this venue's kill switch only
+// (ControlCommand::TripVenueKill, the reason in `arg`). Travels with the order events, so it is
+// journaled and replayed like them. Connectors send it once, on the first such error.
+inline void emit_venue_kill(EventSink& sink, VenueId venue, KillReason reason) noexcept {
+  ControlMsg m{};
+  init_header(m, EventType::Control, InstrumentId::invalid(), venue);
+  m.command = ControlCommand::TripVenueKill;
+  m.arg = static_cast<std::uint64_t>(reason);
+  m.hdr.recv_ts = wall_now();
+  m.hdr.t0_cycles = rdtscp();
+  static_cast<void>(sink.push(m.hdr));
+}
+
 // channel: 0 = market data, 1 = order/user stream (ConnectionStateMsg contract).
 inline void emit_connection_state(EventSink& sink,
                                   VenueId venue,
