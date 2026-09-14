@@ -27,6 +27,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
+#include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/rng.hpp"
 #include "fastmm/core/seqlock.hpp"
@@ -56,6 +57,9 @@ struct EngineConfig {
   std::uint32_t max_events_per_step = 64;
   Duration crossed_grace = milliseconds(100);
   Duration latency_publish_interval = seconds(1);
+  // Risk rejects are logged at WARN: the first of each reason, then at most one line per reason per
+  // interval with the number suppressed in between (0 logs every reject).
+  Duration reject_log_interval = seconds(10);
   bool quoting_enabled = true;
   int cpu = -1;
   SpinMode spin_mode = SpinMode::Busy;
@@ -72,6 +76,7 @@ struct EngineStats {
   std::uint64_t replaces_sent = 0;
   std::uint64_t fills = 0;
   std::uint64_t risk_rejects = 0;
+  std::uint64_t venue_rejects = 0;  // OrderReject messages that changed an order
   std::uint64_t journal_overflows = 0;
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
@@ -81,8 +86,10 @@ struct EngineStats {
   std::uint64_t unconverted_fees = 0;  // fills whose commission asset is neither base nor quote
   std::uint64_t unknown_instrument_fills = 0;  // not booked, not passed to on_fill
   std::uint64_t steps = 0;
-  std::uint64_t clock_reanchors = 0;  // TscClock picked up a recalibration continuously
-  std::uint64_t clock_steps = 0;      // ... or had to step (old mapping off by > threshold)
+  std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
+  std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
+  RejectCounts risk_rejects_by_reason;   // sums to risk_rejects
+  RejectCounts venue_rejects_by_reason;  // sums to venue_rejects
 };
 
 template <class Strategy, ClockLike Clock, TransportLike Transport, FeedLike Feed = RingFeed>
@@ -115,6 +122,7 @@ class Engine {
         journal_(journal_ring),
         rng_(cfg.rng_seed),
         spin_(cfg.spin_mode),
+        reject_log_(cfg.reject_log_interval),
         quoting_enabled_(cfg.quoting_enabled) {
     // Every hook the strategy declares must match the engine's call (strategies/hooks.hpp).
     static_assert(verify_strategy<Strategy, Context, Book>());
@@ -279,6 +287,9 @@ class Engine {
     const auto& h = latency_.histogram(LatencyInterval::TickToTrade);
     r.tick_to_trade_p50_ns = h.percentile(0.5);
     r.tick_to_trade_p99_ns = h.percentile(0.99);
+    r.venue_rejects = stats_.venue_rejects;
+    r.risk_rejects_by_reason = stats_.risk_rejects_by_reason;
+    r.venue_rejects_by_reason = stats_.venue_rejects_by_reason;
     return r;
   }
 
@@ -578,6 +589,8 @@ class Engine {
   void on_order_reject(const OrderRejectMsg& m) noexcept {
     const OmsUpdate u = oms_.on_reject(m);
     if (u.changed) {
+      ++stats_.venue_rejects;
+      stats_.venue_rejects_by_reason.add(m.reason);
       FASTMM_LOG_WARN(
           "order {} rejected: {} ({})", encode_cl_ord_id(m.cl_ord_id), m.reason, m.venue_code);
     }
@@ -857,6 +870,8 @@ class Engine {
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
+      stats_.risk_rejects_by_reason.add(rr);
+      log_risk_reject(rr, inst, req.side, req.price, req.qty, false);
       return fail(rr);
     }
     const ClientOrderId id = oms_.next_cl_ord_id();
@@ -909,6 +924,8 @@ class Engine {
     const RejectReason rr = risk_.check_replace(oi, o, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
+      stats_.risk_rejects_by_reason.add(rr);
+      log_risk_reject(rr, inst, o.side, px, qty, true);
       return fail(rr);
     }
     const ClientOrderId new_id = oms_.next_cl_ord_id();
@@ -925,6 +942,32 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.replaces_sent;
     return {};
+  }
+
+  // Cold: the rate limiter and the log record stay out of the order path's inlined code. Only the
+  // arguments are packed here; the sink thread formats them.
+  FASTMM_NOINLINE void log_risk_reject(RejectReason rr,
+                                       const Instrument& inst,
+                                       Side side,
+                                       Price px,
+                                       Qty qty,
+                                       bool replace) noexcept {
+    std::uint64_t suppressed = 0;
+    if (!reject_log_.admit(rr, now_, suppressed)) return;
+    const std::string_view what = replace ? std::string_view("replace") : std::string_view("new");
+    if (suppressed == 0) {
+      FASTMM_LOG_WARN(
+          "risk reject {} on {} order: {} {} {} @ {}", rr, what, inst.symbol, side, qty, px);
+    } else {
+      FASTMM_LOG_WARN("risk reject {} on {} order: {} {} {} @ {} ({} more suppressed)",
+                      rr,
+                      what,
+                      inst.symbol,
+                      side,
+                      qty,
+                      px,
+                      suppressed);
+    }
   }
 
   void cancel_unknown(const EventHeader& h, const OmsUpdate&) noexcept {
@@ -1104,6 +1147,7 @@ class Engine {
   JournalWriter journal_;
   Xoshiro256ss rng_;
   SpinPolicy spin_;
+  RejectLogLimiter reject_log_;
   EngineStats stats_{};
   Seqlocked<LatencySnapshot> latency_pub_;
   Seqlocked<EngineLiveStats> live_pub_;

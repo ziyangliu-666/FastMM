@@ -5,9 +5,12 @@
 
 #include "fastmm/strategies/basic_mm.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fastmm;
@@ -75,7 +78,7 @@ struct Fixture {
   BasicMM strategy;
   std::unique_ptr<TestEngine> engine;
 
-  explicit Fixture(bool with_journal = true) {
+  explicit Fixture(bool with_journal = true, void (*tweak)(EngineConfig&) = nullptr) {
     REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
                                       {"quote_qty", "0.01"},
                                       {"max_inventory", "0.05"},
@@ -90,6 +93,7 @@ struct Fixture {
     cfg.risk.price_collar_bps = 500;
     cfg.quotes.min_requote_interval = Duration{};
     cfg.quotes.min_requote_ticks = 1;
+    if (tweak != nullptr) tweak(cfg);
     engine = std::make_unique<TestEngine>(
         cfg, table, clock, transport, feed, strategy, with_journal ? &journal_ring : nullptr);
     engine->warm_up();
@@ -374,6 +378,133 @@ TEST_CASE("core.engine: direct order API, risk rejects, transport full trips the
   CHECK(f.engine->stats().transport_full >= 1);
   ctx.request_stop();
   CHECK(f.engine->stopped());
+}
+
+TEST_CASE("core.engine: risk and venue rejects are counted per reason") {
+  // Quoting off: only the test's orders take rate-limit tokens.
+  Fixture f(false, [](EngineConfig& cfg) {
+    cfg.quoting_enabled = false;
+    cfg.risk.orders_per_sec = 4;
+    cfg.risk.burst = 4;
+  });
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  auto& ctx = f.engine->context();
+  NewOrderRequest r{};
+  r.instrument = InstrumentId{0};
+  r.side = Side::Buy;
+  r.price = px("50");  // outside the 5 % collar
+  r.qty = qt("0.01");
+  CHECK(ctx.send(r).error() == RejectReason::PriceCollar);
+  r.price = px("99.50");
+  r.qty = qt("2");  // max_order_qty 1
+  CHECK(ctx.send(r).error() == RejectReason::MaxOrderQty);
+  r.qty = qt("0.6");
+  const auto big = ctx.send(r);  // token 1
+  REQUIRE(big);
+  CHECK(ctx.send(r).error() == RejectReason::MaxPosition);  // 0.6 open + 0.6 > max_position 1
+  // The replace path counts too.
+  f.ack_all_new();
+  f.drain();
+  f.transport.replace = true;
+  CHECK(ctx.replace(*big, px("99.60"), qt("2")).error() == RejectReason::MaxOrderQty);
+  // A venue reject, delivered twice: the duplicate does not change the order and is not counted.
+  r.qty = qt("0.01");
+  const auto crossed = ctx.send(r);  // token 2
+  REQUIRE(crossed);
+  for (int i = 0; i < 2; ++i) {
+    OrderRejectMsg rej{};
+    init_header(rej, EventType::OrderReject, InstrumentId{0}, VenueId{0});
+    rej.cl_ord_id = *crossed;
+    rej.reason = RejectReason::PostOnlyWouldCross;
+    rej.venue_code = -2010;
+    f.push(rej);
+    f.drain();
+  }
+  REQUIRE(ctx.send(r));  // token 3
+  REQUIRE(ctx.send(r));  // token 4
+  CHECK(ctx.send(r).error() == RejectReason::RateLimit);
+
+  const EngineStats& es = f.engine->stats();
+  CHECK(es.risk_rejects == 5);
+  CHECK(es.risk_rejects_by_reason[RejectReason::PriceCollar] == 1);
+  CHECK(es.risk_rejects_by_reason[RejectReason::MaxOrderQty] == 2);
+  CHECK(es.risk_rejects_by_reason[RejectReason::MaxPosition] == 1);
+  CHECK(es.risk_rejects_by_reason[RejectReason::RateLimit] == 1);
+  CHECK(es.risk_rejects_by_reason.total() == es.risk_rejects);
+  CHECK(es.venue_rejects == 1);
+  CHECK(es.venue_rejects_by_reason[RejectReason::PostOnlyWouldCross] == 1);
+  CHECK(es.venue_rejects_by_reason.total() == 1);
+  const RunnerStats rs = f.engine->runner_stats();
+  CHECK(rs.venue_rejects == 1);
+  CHECK(format_reject_counts(rs.risk_rejects_by_reason) ==
+        "MaxOrderQty 2, PriceCollar 1, MaxPosition 1, RateLimit 1");
+  CHECK(format_reject_counts(rs.venue_rejects_by_reason) == "PostOnlyWouldCross 1");
+}
+
+namespace {
+std::string read_from(std::FILE* f, long offset) {
+  std::fflush(f);
+  std::fseek(f, offset, SEEK_SET);
+  std::string s;
+  char buf[4096];
+  std::size_t n = 0;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+  return s;
+}
+std::size_t occurrences(const std::string& s, std::string_view what) {
+  std::size_t n = 0;
+  for (std::size_t pos = s.find(what); pos != std::string::npos; pos = s.find(what, pos + 1)) ++n;
+  return n;
+}
+}  // namespace
+
+TEST_CASE(
+    "core.engine: risk rejects are logged once per reason per interval with a suppressed count") {
+  Fixture f(false, [](EngineConfig& cfg) {
+    cfg.quoting_enabled = false;
+    cfg.reject_log_interval = seconds(10);
+  });
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  std::FILE* out = std::tmpfile();
+  REQUIRE(out != nullptr);
+  Logger& lg = Logger::instance();
+  const LogLevel prev_level = lg.level();
+  lg.set_level(LogLevel::Info);
+  lg.start(out, LogLevel::Off);
+  lg.flush();  // records left by earlier tests on this thread
+  const long mark = std::ftell(out);
+
+  auto& ctx = f.engine->context();
+  NewOrderRequest r{};
+  r.instrument = InstrumentId{0};
+  r.side = Side::Buy;
+  r.price = px("99.50");
+  r.qty = qt("2");
+  for (int i = 0; i < 3; ++i) CHECK(ctx.send(r).error() == RejectReason::MaxOrderQty);
+  r.price = px("50");
+  r.qty = qt("0.01");
+  CHECK(ctx.send(r).error() == RejectReason::PriceCollar);  // another reason: logged at once
+  // Past the interval (with a fresh book, or the reject would be StaleMarketData).
+  f.clock.advance(seconds(11));
+  f.push_book("100.00", "100.02", 2, true);
+  f.drain();
+  r.price = px("99.50");
+  r.qty = qt("2");
+  CHECK(ctx.send(r).error() == RejectReason::MaxOrderQty);
+  lg.flush();
+  const std::string log = read_from(out, mark);
+  INFO(log);
+  CHECK(occurrences(log, "risk reject MaxOrderQty on new order: BTCUSDT Buy 2 @ 99.5") == 2);
+  CHECK(occurrences(log, "risk reject PriceCollar on new order: BTCUSDT Buy 0.01 @ 50") == 1);
+  CHECK(occurrences(log, "(2 more suppressed)") == 1);
+  CHECK(occurrences(log, "WARN") == 3);
+  // Every reject is counted, logged or not.
+  CHECK(f.engine->stats().risk_rejects_by_reason[RejectReason::MaxOrderQty] == 4);
+  lg.stop();
+  lg.set_level(prev_level);
+  std::fclose(out);
 }
 
 TEST_CASE("core.engine: reconcile marks unseen orders cancelled, pauses quoting until End") {
