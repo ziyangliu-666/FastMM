@@ -130,9 +130,12 @@ quote_qty = 0.001
 max_inventory = 0.01
 ```
 
-Parameter names, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations, for
-example `include/fastmm/strategies/basic_mm.hpp`. An unknown parameter or an out-of-range value is an
-error at startup.
+Parameter names, types, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations,
+for example `include/fastmm/strategies/basic_mm.hpp`; `fastmm-backtest --list-strategies` prints
+them. `decimal` values (quantities, prices) take up to 8 decimals and `bps` values up to 4, both
+parsed exactly (exponent notation such as `2e-05` is accepted); `ms` and `int` values are whole
+numbers. An unknown parameter, a value with too many decimals or an out-of-range value is an error
+at startup.
 
 ## `[risk]`
 

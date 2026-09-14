@@ -44,9 +44,9 @@ min_notional = "5"
 [strategy]
 name = "basic_mm"
 
-# BasicMM works in centi-bps of mid: at 60000, 0.01 bps = 0.06 = 6 ticks. Skewed quotes are kept
-# one tick inside the touch, so the inventory cap can hold several quote sizes and both sides stay
-# quoted most of the time.
+# BasicMM takes bps of mid (up to four decimals): at 60000, 0.01 bps = 0.06 = 6 ticks. Skewed
+# quotes are kept one tick inside the touch, so the inventory cap can hold several quote sizes and
+# both sides stay quoted most of the time.
 [strategy.params]
 half_spread_bps = 0.01
 skew_bps_per_unit = 0.01
