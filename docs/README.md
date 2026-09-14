@@ -50,7 +50,7 @@ teaches, a how-to reaches a goal, a reference describes, an explanation gives th
   [Simulated exchange](reference/sim-exchange.md), [Options](reference/options.md),
   [FIX 4.4](reference/codecs/fix.md), [Nasdaq ITCH and OUCH](reference/codecs/nasdaq.md),
   [CME MDP 3.0](reference/codecs/cme-mdp3.md)
-- Python: [Python research bindings](python.md)
+- Python: [Python research bindings](python.md), [Python API](reference/python-api.md)
 - [Glossary](reference/glossary.md)
 
 ## Explanation
