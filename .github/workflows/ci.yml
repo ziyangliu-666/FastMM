@@ -81,12 +81,13 @@ jobs:
         env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
         # The presets run 8 tests at once; match the runner's cores instead (2 on private repositories).
         run: ctest --preset ${{ matrix.preset }} -j$(nproc)
-      - name: install + consumer
+      - name: install + external project
         if: matrix.name == 'gcc-release'
+        # examples/external-project against the install prefix: strategy lists, a synthetic backtest,
+        # 15 s of live trading against fastmm-sim-exchange, a verified replay of that journal.
         run: |
           cmake --install build/release --prefix build/install
-          cmake -S tests/install-consumer -B build/consumer -G Ninja -DCMAKE_PREFIX_PATH=$PWD/build/install -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
-          cmake --build build/consumer && ./build/consumer/consumer
+          CXX=${{ matrix.cxx }} JOBS=$(nproc) ./scripts/ci-external-project.sh build/release build/install build/external-project
 
   docker:
     runs-on: ubuntu-24.04

@@ -1,8 +1,30 @@
 @PACKAGE_INIT@
+# Components: core, sim, strategies, backtest and codecs are always installed; net, venues and live
+# only when FastMM was built with FASTMM_BUILD_NET=ON. Request what you link:
+#   find_package(fastmm CONFIG REQUIRED COMPONENTS live)
+set(fastmm_BUILD_NET @FASTMM_BUILD_NET@)
+foreach(_fastmm_c IN ITEMS core sim strategies backtest codecs)
+  set(fastmm_${_fastmm_c}_FOUND TRUE)
+endforeach()
+foreach(_fastmm_c IN ITEMS net venues live)
+  if(fastmm_BUILD_NET)
+    set(fastmm_${_fastmm_c}_FOUND TRUE)
+  else()
+    set(fastmm_${_fastmm_c}_FOUND FALSE)
+    if(_fastmm_c IN_LIST fastmm_FIND_COMPONENTS AND fastmm_FIND_REQUIRED_${_fastmm_c})
+      set(fastmm_FOUND FALSE)
+      string(CONCAT fastmm_NOT_FOUND_MESSAGE
+        "component '${_fastmm_c}' (fastmm::${_fastmm_c}) is not available: this FastMM was built "
+        "with FASTMM_BUILD_NET=OFF. Rebuild and install FastMM with FASTMM_BUILD_NET=ON.")
+      return()
+    endif()
+  endif()
+endforeach()
+
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 find_dependency(fmt)
-if(@FASTMM_BUILD_NET@)
+if(fastmm_BUILD_NET)
   find_dependency(OpenSSL 3.0)
   find_dependency(ZLIB)
   find_dependency(simdjson)

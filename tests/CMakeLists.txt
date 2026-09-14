@@ -290,6 +290,22 @@ if(TARGET fastmm::live)
     CMD $<TARGET_FILE:fastmm_test_module_live> --list-strategies --format json EXPECT_REGEX "${_json_module}")
 endif()
 
+# The package config of a FastMM built without networking: find_package(fastmm COMPONENTS live)
+# fails and says why. Only fastmmConfig.cmake is generated; the check returns before any target
+# file is read.
+include(CMakePackageConfigHelpers)
+set(_nonet_config_dir ${CMAKE_CURRENT_BINARY_DIR}/tmp/fastmm-config-nonet)
+block(SCOPE_FOR VARIABLES)
+  set(FASTMM_BUILD_NET OFF)
+  configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/fastmmConfig.cmake.in
+    ${_nonet_config_dir}/fastmmConfig.cmake INSTALL_DESTINATION lib/cmake/fastmm)
+endblock()
+add_test(NAME cmake.find_package.live_without_net
+  COMMAND ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_SOURCE_DIR}/cmake/find_live_without_net
+          -B ${CMAKE_CURRENT_BINARY_DIR}/tmp/find-live-without-net -Dfastmm_DIR=${_nonet_config_dir})
+set_tests_properties(cmake.find_package.live_without_net PROPERTIES LABELS "unit"
+  PASS_REGULAR_EXPRESSION "component 'live' \\(fastmm::live\\) is not available:.*FASTMM_BUILD_NET=OFF\\.")
+
 # tools/pnl_report.py checks its journal reader and PnL arithmetic on a synthetic journal.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

@@ -92,7 +92,7 @@ if(FASTMM_INSTALL)
   include(CMakePackageConfigHelpers)
   set(_fastmm_export_targets fastmm_core fastmm_sim fastmm_strategies fastmm_backtest fastmm_codecs fastmm_warnings fastmm_lowlatency)
   if(FASTMM_BUILD_NET)
-    list(APPEND _fastmm_export_targets fastmm_net fastmm_venues)
+    list(APPEND _fastmm_export_targets fastmm_net fastmm_venues fastmm_live)
   endif()
   install(TARGETS ${_fastmm_export_targets} EXPORT fastmmTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
