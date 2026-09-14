@@ -8,7 +8,7 @@ Include guards are verbose and error-prone across a large header-heavy tree.
 
 ## Decision
 
-Use `#pragma once` everywhere; all supported compilers (gcc 13+, clang 16+, msvc) implement it.
+Use `#pragma once` everywhere. FastMM builds on Linux with gcc and clang (CI: gcc 13 and clang 18), and both implement it.
 
 ## Consequences
 

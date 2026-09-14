@@ -1,7 +1,7 @@
 # Public API
 
 Which headers and CMake targets a project outside FastMM may use, and what may change. The list of
-headers is [`docs/api/public-headers.txt`](../api/public-headers.txt); this page explains it.
+headers is [`docs/api/public-headers.txt`](../api/public-headers.txt).
 
 ## Tiers
 
@@ -11,11 +11,8 @@ headers is [`docs/api/public-headers.txt`](../api/public-headers.txt); this page
 | 2 | Extending FastMM: configuration (`config/*`), venue connectors (`venues/*.hpp` outside the venue subdirectories), `core/book/book_syncer.hpp`, networking (`net/{reactor,connection,crypto,backoff,url,ws_client,http_client}.hpp`) and `codecs/codec.hpp` | Documented; may change in any release before 1.0 |
 | internal | Everything else: engine internals (`core/engine.hpp`, rings, containers, the journal writer, timers, latency, the status segment), the simulator (`sim/*`), the reference connectors (`venues/binance/`, `venues/bybit/`, `venues/deribit/`), protocol-specific codec headers and the built-in strategies | No promise; may change in any release |
 
-Notes:
-
-- The built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`, `options_mm.hpp`)
-  are examples to read and copy, not API: their parameters and behaviour may change. Use them by
-  name through the registry.
+- Use the built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`,
+  `options_mm.hpp`) by name through the registry; their parameters and behaviour may change.
 - A tier 1 header may include internal headers; only the names the reference pages document are
   public. `Engine<...>` is internal even though `StrategyHarness::engine()` returns it; use it for
   inspection in tests.
@@ -41,8 +38,8 @@ Installed FastMM exports these targets through `find_package(fastmm)`; `add_subd
 
 `find_package(fastmm CONFIG REQUIRED COMPONENTS live)` fails with a message when the install was
 built without networking. Build your project with the same compiler as FastMM: a release install
-contains GCC LTO objects. Installing programs and configurations, other compilers and a version
-compatibility policy are deferred until the repository is public.
+contains GCC LTO objects. Not provided: installed programs and configurations, other compilers, a
+version compatibility policy.
 
 ## Checks
 

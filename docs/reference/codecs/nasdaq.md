@@ -1,9 +1,7 @@
 # Nasdaq protocol family: ITCH 5.0, MoldUDP64, SoupBinTCP, OUCH 4.2 / 5.0
 
-Part of `fastmm::codecs` (plan section 7). The wire codecs and session layers depend only on
-`fastmm::core`; transports plug them into the net stack, and simulators or replay tools drive
-them directly. Hot paths (framers, decoders, encoders, session `on_frame` / `on_timer`) are
-`noexcept` and allocate nothing after construction
+The wire codecs and session layers depend only on `fastmm::core`. Hot paths (framers, decoders,
+encoders, session `on_frame` / `on_timer`) are `noexcept` and allocate nothing after construction
 (`tests/hotpath/codecs_nasdaq_noalloc_test.cpp`).
 
 | Protocol | Namespace | Headers | Specification used |
@@ -22,9 +20,9 @@ live in `include/fastmm/codecs/itch/nasdaq_fields.hpp` (`fastmm::codecs::nasdaq`
 
 Every message is a `#pragma pack(1)` struct built from the alignment-1 `be16_t` / `be32_t` /
 `be64_t` fields of `codec.hpp` (read and written only through `get()` / `set()`), with
-`static_assert`s on `sizeof` and on the offsets of the fields the code touches. Independently,
-`tests/fixtures/nasdaq/generate_fixtures.py` packs every message with Python `struct.pack` straight
-from the specification tables; the tests check that the C++ structs read those bytes and that the
+`static_assert`s on `sizeof` and on the offsets of the fields the code touches.
+`tests/fixtures/nasdaq/generate_fixtures.py` packs every message with Python `struct.pack` from the
+specification tables; the tests check that the C++ structs read those bytes and that the
 encoders and host-side builders reproduce them byte for byte.
 
 ITCH 5.0 message lengths (bytes): S 12, R 39, H 25, Y 20, L 26, V 35, W 12, K 28, J 35, h 21,
@@ -106,13 +104,12 @@ resumes the accepted session at the next expected sequence number.
 case-insensitive, blank or matching session), answers Accepted / Rejected, replays its sequenced
 history from the requested sequence, sends Server Heartbeats, forwards client Unsequenced Data and
 closes on logout, login timeout or client timeout (the 4.10 Heartbeat Timeout overrides the
-configured one). A requested sequence of 0 or past the end starts at the next message generated.
+configured one). A requested sequence past the end starts at the next message generated.
 
 ## OUCH 4.2
 
-Order Token (14 alphanumeric characters, day-unique per account) is exactly
-`encode_cl_ord_id(cl_ord_id)` (`"fm"` + 12 lowercase hex digits), so tokens decode with
-`decode_cl_ord_id()` and no id table is needed.
+Order Token (14 alphanumeric characters, day-unique per account) is `encode_cl_ord_id(cl_ord_id)`
+(`"fm"` + 12 lowercase hex digits); `decode_cl_ord_id()` reverses it.
 
 `OuchEncoder` (satisfies `Encoder`): New -> Enter Order, Replace -> Replace Order (existing token =
 `orig_cl_ord_id`, replacement = `cl_ord_id`), Cancel -> Cancel Order with Shares 0. Time in Force:
@@ -169,7 +166,8 @@ The event mapping matches OUCH 4.2; Rejected carries a 2-byte numeric reason.
 `bench/bench_codecs_nasdaq.cpp`. Each benchmark iteration times a batch of 64 operations with
 rdtsc; `p50_ns` is the median per-operation time. Measured on the development machine (WSL2,
 gcc 13.3, RelWithDebInfo, `-march=x86-64-v2`, pinned with `--cpu=5`, 3 repetitions of 1 s) while
-other builds were running (load average about 6.7), so treat the numbers as upper bounds:
+other builds were running (load average about 6.7; see
+[Benchmarks](../../explanation/benchmarks.md#caveats)):
 
 | Benchmark | What is timed | p50 |
 |---|---|---|
@@ -186,12 +184,9 @@ Run them with `build/<dir>/bin/bench/bench_codecs_nasdaq --cpu=N --benchmark_min
 
 * ITCH: the Printable flag (C), Attribution (F), Cross Type (Q) and the P Buy/Sell Indicator (always
   `B` since 2014) have no field in the engine messages and are dropped.
-* MoldUDP64: out-of-order packets beyond a gap are not buffered, and recovery re-requests them.
-  The receiver does not rotate to a new session after End of Session.
-* SoupBinTCP: packet arrival time is attributed to the next `on_timer()` tick. The server-side
-  handling of a requested sequence number of 0 ("the most recently generated message") starts at
-  the next new message.
-* OUCH: market orders are not encoded, partial Canceled messages produce no engine event, and the
-  Replace Shares field is sent as the command's quantity (OUCH defines it as total liable including
+* MoldUDP64: the receiver does not rotate to a new session after End of Session.
+* SoupBinTCP: packet arrival time is attributed to the next `on_timer()` tick. A requested sequence
+  number of 0 starts the server at the next new message, not at the most recently generated one.
+* OUCH: the Replace Shares field is sent as the command's quantity (OUCH defines it as total liable including
   prior executions). Modify Order, Mass Cancel, Disable / Enable Order Entry and Account Query are
   laid out but not produced by the encoders.

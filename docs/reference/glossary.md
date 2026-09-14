@@ -1,7 +1,5 @@
 # Glossary
 
-Terms as FastMM's code and docs use them, in alphabetical order.
-
 | Term | Meaning |
 |---|---|
 | **ack** | a venue's confirmation that it accepted an order (`OrderAckMsg`); an order is working only after it |
@@ -24,11 +22,11 @@ Terms as FastMM's code and docs use them, in alphabetical order.
 | **hysteresis** | the quote manager keeps a resting quote whose price or quantity is close enough to the desired one (`min_requote_ticks`, `min_qty_bps`) |
 | **instrument table** | the instruments of a session, indexed by `InstrumentId` |
 | **journal (`.fmj`)** | the file of every event a session consumed, in order, with the engine clock ([Journal format](journal-format.md)) |
-| **kill switch** | a flag that stops all new orders and replaces while cancels still pass; the global switch is tripped by shutdown, `max_loss`, internal failures and every venue killed, a venue's own switch by an error that makes that venue unusable. After a kill it tripped itself, `fastmm-live` exits with code 6 unless `[engine] on_kill = "stay"` |
+| **kill switch** | a flag, global or per venue, that blocks new orders and replaces but not cancels ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)) |
 | **late fill** | a fill for an order that was already terminal (for example cancelled) |
 | **level** | one price with its quantity (`Level{price, qty}`); level 0 is the best |
 | **lot** | the quantity increment of an instrument; quantities are multiples of it |
-| **maker, taker** | a maker's order rested in the book; a taker's order traded against it. Fees usually differ |
+| **maker, taker** | a maker's order rested in the book; a taker's order traded against it |
 | **microprice** | the touch weighted by the opposite side's size: `(bid * ask_qty + ask * bid_qty) / (bid_qty + ask_qty)` |
 | **mid** | `(best bid + best ask) / 2` |
 | **notional** | price times quantity, in the quote currency (`Notional`) |
@@ -48,7 +46,7 @@ Terms as FastMM's code and docs use them, in alphabetical order.
 | **stale** | a feed with no traffic for `stale_ms`; the engine pulls the venue's quotes |
 | **STP** | self-trade prevention: an order that would trade against our own resting order is refused |
 | **strategy module** | a strategy library's registration function (`StrategyModule`) |
-| **testnet, Demo Mode** | practice environments of a venue with their own keys: Binance Demo Mode has realistic market data, testnets have their own thin books |
+| **testnet, Demo Mode** | practice environments of a venue with their own keys: Binance Demo Mode market data follows the real market, testnets have their own thin books |
 | **tick** | the price increment of an instrument; prices are multiples of it |
 | **touch** | the best bid and best ask |
 | **transport** | how the engine sends orders: Sim (in-process matching), Replay (from a journal) or Live (a venue) |

@@ -1,7 +1,7 @@
 # Journal format
 
 The `.fmj` journal records every event a session's engine consumed, in consumption order, with
-the engine clock, plus a copy of every order message it sent. This page describes format version 2;
+the engine clock, plus a copy of every order message it sent. Format version 2;
 readers also open version 1. The decision and its history are in
 [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
 
@@ -47,7 +47,7 @@ block  := block header (64 B) | message* (byte_len bytes)
 | 132 | 120 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
 
-The configuration is `Config::effective_toml()`: the complete configuration after command-line
+The configuration is `Config::effective_toml()`: the configuration after command-line
 overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key` and `api_secret`,
 zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
 
@@ -105,8 +105,7 @@ connection states, reconciliation records, latency samples and outbound orders.
 - An `EngineTime` message (128 bytes) holds the absolute engine clock in `engine_ts` (offset 64)
   with `kind` (offset 72): 0 `Sync` before an event whose delta does not fit in int32 ns (a gap of
   more than 2.1 s) or whose predecessor was lost, 1 `Start`, 2 `Finish`.
-- The engine clock may step backwards (TSC recalibration); replay sets the simulated clock to it
-  exactly.
+- The engine clock may step backwards (TSC recalibration); replay sets the simulated clock to it.
 - Sequence numbers count `EngineTime` records too.
 
 ## Tools

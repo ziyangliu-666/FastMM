@@ -1,9 +1,25 @@
 # Architecture
 
-FastMM is built around one idea: **a single engine thread owns all trading state, every input
-crosses into it as a trivially-copyable message in an SPSC ring, every input is journaled, and
-the same `Engine<Strategy, Clock, Transport, Feed>` template runs live, in simulation, and in
-replay.**
+One engine thread owns all trading state. Every input reaches it as a trivially-copyable message on
+an SPSC ring and is journaled, and the same `Engine<Strategy, Clock, Transport, Feed>` template runs
+live, in simulation and in replay. Overview:
+
+```mermaid
+flowchart LR
+  subgraph NET["net thread (per venue)"]
+    WS["epoll · TLS · WebSocket"] --> P["simdjson parser<br/>book sync FSM"]
+    ENC["order encoder"] --> OUT["HTTP / WS API"]
+  end
+  subgraph ENG["engine thread (pinned, busy-spin)"]
+    B["L2/L3 book"] --> S["Strategy (CRTP)"] --> Q["QuoteManager"] --> R["Risk O(1)"] --> O["OMS"]
+  end
+  P -- "SPSC MsgRing" --> B
+  O -- "SPSC MsgRing" --> ENC
+  ENG -- "journal ring" --> J["journal thread<br/>.fmj + async log"]
+  SIM["SimClock + SimTransport<br/>matching engine"] -. "same Engine template" .-> ENG
+```
+
+## Threads
 
 ```
              ┌──────────────────────────── net thread (per venue) ────────────────────────────┐
@@ -24,8 +40,6 @@ replay.**
    Backtest / replay: SimClock + SimTransport(MatchingEngine + LatencyModel) + InlineFeed/JournalFeed
 ```
 
-## Threads
-
 The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 threads for the whole session:
 
@@ -39,8 +53,8 @@ threads for the whole session:
 
 All queues are single-producer/single-consumer (`MsgRing`, byte-oriented, variable-length
 64-byte-aligned messages). N producers means N rings; the engine polls them round-robin with a
-batch cap so one venue cannot starve another. The order in which the engine consumes events *is*
-the canonical order and is what the journal records, so replay is exact.
+batch cap so one venue cannot starve another. The journal records events in the order the engine
+consumes them.
 
 ## Network reactor
 
@@ -90,20 +104,17 @@ system calls and `<linux/io_uring.h>`; liburing is not a dependency.
   eventfd and timerfd descriptors share one anonymous inode, so this check cannot tell two of them
   apart.
 * **Wake-ups.** A multishot poll reports every wake-up of the socket's wait queue, so a handler
-  can be called for readiness it has already consumed. Handlers read or write until EAGAIN, so
-  this costs one failed system call.
+  can be called for readiness it already consumed; it costs one read or write that returns EAGAIN.
 
-**Which one to use.** epoll stays the default. `bench/bench_reactor.cpp` measures 64-byte
-loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a
-shared 8-core host) the two are within measurement noise: p50 about 12.8 µs for both when client
-and server share one reactor; 10.8 to 11.3 µs for both, depending on the run, with the server on
-its own busy-polling thread; about 74 µs for both when both sides block and each round trip needs
-two cross-thread wake-ups (one epoll run out of five came in at 18 µs and did not reproduce). The
-time goes to the loopback TCP stack and the `read`/`write` system calls, which both backends make
-the same way, not to readiness notification. io_uring only saves the empty `epoll_wait` of an idle busy-polling loop.
-It could win clearly once reads and writes themselves go through the ring (multishot receive,
-registered buffers), which this reactor does not do. Measure on the production kernel before
-switching.
+### Backend latency
+
+`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends. On the
+development machine (WSL2, Linux 6.6, a shared 8-core host) the two are within measurement noise:
+p50 about 12.8 µs for both when client and server share one reactor; 10.8 to 11.3 µs for both,
+depending on the run, with the server on its own busy-polling thread; about 74 µs for both when
+both sides block and each round trip needs two cross-thread wake-ups. Loopback TCP and the
+`read`/`write` system calls dominate, and both backends make those calls the same way; io_uring
+only saves the empty `epoll_wait` of an idle busy-polling loop.
 
 ## Hot-path rules
 
@@ -122,8 +133,9 @@ switching.
 use `SimClock` (virtual time driven by event timestamps) and `SimTransport` (in-process matching
 engine plus a seeded latency model). Timers and RNG are virtualised the same way. The
 `fastmm-replay` tool feeds a recorded journal through the engine and verifies that the outbound
-stream is byte-identical. [Determinism](determinism.md) explains how live sessions replay exactly
-and what breaks a replay; [Event flow](event-flow.md) follows one event through the engine.
+stream is byte-identical. See [Determinism](determinism.md) and [Event flow](event-flow.md).
+
+## Strategy registration
 
 Strategies are built through the `StrategyRegistry`, which keeps one factory per transport kind
 (Sim, Replay, Live). A strategy library registers its strategies with one function that calls
@@ -147,8 +159,7 @@ mapping drifts over a long session; stale-market-data checks and timers read it.
   (a tight rdtsc bracket around `CLOCK_REALTIME` and `CLOCK_MONOTONIC_RAW`) and computes the rate
   over the whole interval since the previous anchor, against `CLOCK_MONOTONIC_RAW`. Tens of
   microseconds of `clock_gettime` jitter then cost a few ppm instead of thousands, and NTP slews or
-  host clock steps cannot distort the rate. Re-measuring the rate over 50 ms every time used to
-  drift the mapping by milliseconds between recalibrations on WSL2 and force steps.
+  host clock steps cannot distort the rate.
 * The main thread recalibrates every `[engine] tsc_recalibrate_s` seconds (default 10, 0 turns
   it off), logs how far the previous calibration had drifted
   (`tsc recalibrated: drift <ns> over <s> (<ppm>) ...`) and publishes the result in a
@@ -167,7 +178,7 @@ mapping drifts over a long session; stale-market-data checks and timers read it.
   step (`EngineStats::clock_steps`) and the engine logs a warning.
 * The calibration follows `CLOCK_REALTIME`. If the host steps its wall clock (NTP corrections, or
   WSL2 resynchronising with Windows, which can jump by hundreds of milliseconds), the next
-  recalibration steps the engine clock with it and counts it in `EngineStats::clock_steps`.
+  recalibration steps the engine clock with it.
 * The venues read the latest calibration when they publish their status, to convert their
   cycle-based latency histograms to ns.
 
@@ -186,8 +197,7 @@ Stamps are `rdtscp` readings (`Cycles`); intervals go into allocation-free log-l
 
 The engine's `LatencyTracker` (decode, book apply, strategy, serialize = T3 to T4, send = T4 to
 T5, tick-to-trade = T0 to T5, wire-to-book = T0 to T2) is published through a seqlock every
-`latency_publish_ms`. Live, the engine's tick-to-trade therefore ends when the order is handed to
-the network thread. The engine copies the triggering event's `t0_cycles` into every outbound
+`latency_publish_ms`. The engine copies the triggering event's `t0_cycles` into every outbound
 message header, and the network thread measures the rest in `venues::WireLatencyRecorder`: for
 each outbound order message it stamps before encoding, after encoding and signing, and after the
 WebSocket write (or REST request call) returned, and records
@@ -204,7 +214,14 @@ the final summary.
 
 ## Failure handling
 
-See the [failure handling table](../reference/configuration.md#failure-handling): market-data gaps trigger a resync (quotes
-pulled), order-channel loss triggers `cancel_all` through an independent REST connection and a
-reconciliation pass after reconnect, and the kill switch (global or per venue) mass-cancels and
-stops quoting while still allowing cancels.
+| Failure | Detection | Action |
+|---|---|---|
+| Market-data disconnect | EPOLLRDHUP, read of 0 bytes, TLS error | Quotes pulled, reconnect with backoff, fresh snapshot |
+| Sequence gap | Book sync state machine | Resync state, re-snapshot (rate limited), quotes pulled meanwhile |
+| Stale feed | No traffic for the connector's `stale_ms` | Stale event, quotes pulled; `dead_ms` without traffic forces a reconnect ([Venue connectors](../reference/venues.md#configuration-keys)) |
+| Order channel loss | Connection state machine | Cancel-all through REST (`cancel_on_order_channel_loss`), reconcile open orders after reconnect |
+| Kill switch | `max_loss`, a full outbound or journal ring, every venue killed, SIGINT/SIGTERM, `--duration`, an order-event ring overflow | Stop quoting and cancel working orders (cancels stay allowed); at shutdown each venue also cancels all over REST (5 s timeout per request). See [Risk model](risk-model.md#the-kill-switch) and [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) |
+| Venue unusable | The venue's error map: `Fatal` (bad key, signature or permission, failed authentication) or `HardStop` (Binance HTTP 418 IP ban) | That venue's kill switch: its quotes are pulled, its orders cancelled and new orders to it refused. Every venue killed is a global kill |
+| Rate limit | Response headers and error codes | Cool down until the limit resets; after HTTP 418 REST stays stopped until restart |
+| Clock skew | Timestamp rejection codes | Re-measure the offset from the venue's time endpoint |
+| Ring overflow | Push fails | Market data: drop the delta and resync. Order events are never dropped; an overflow trips the kill switch |

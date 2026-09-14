@@ -1,12 +1,11 @@
 # Command lines
 
-The five programs in `build/<preset>/bin/`, with their usage text and exit codes. The usage blocks
-are generated from each program's `--help` by `tools/docs_cli_help.py`; do not edit them by hand
-([Writing docs](../contributing/writing-docs.md#generated-pages)).
+<!-- The usage blocks are generated from each program's --help by tools/docs_cli_help.py; do not
+edit them by hand (docs/contributing/writing-docs.md#generated-pages). -->
 
-Programs built with `fastmm::cli::live`, `backtest` and `replay` for your own strategies
-(`tutorial-live`, `mm-live`, ...) accept the same flags and print their own name in messages
-([Register a strategy](../how-to/strategies/register-a-strategy.md)). Durations take a unit:
+Programs are built into `build/<preset>/bin/`. Programs built with `fastmm::cli::live`, `backtest`
+and `replay` for your own strategies (`tutorial-live`, `mm-live`, ...) accept the same flags and
+print their own name in messages ([Register a strategy](../how-to/strategies/register-a-strategy.md)). Durations take a unit:
 `1500ms`, `60s`, `5m`, `2h`.
 
 ## fastmm-live
@@ -53,21 +52,16 @@ Exit codes:
 
 | Exit code | Meaning |
 |---:|---|
-| 0 | stopped by `--duration` or SIGINT/SIGTERM (also after a kill with `on_kill = "stay"`), `cancel_all ok` |
-| 2 | bad command line, or a venue has no keys and there is no `--dry-run` |
-| 3 | bad configuration (including an invalid `on_kill`), unknown strategy or parameter, a strategy name registered twice |
+| 0 | stopped by `--duration` or SIGINT/SIGTERM with `cancel_all ok`, also after a kill with `[engine] on_kill = "stay"`; `--help`, `--version` and `--list-strategies` |
+| 2 | bad command line, including a `--log` file that cannot be opened; a `${VAR}` in `[venues.*]` that is not set, except `api_key` and `api_secret` with `--dry-run` |
+| 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code |
 | 4 | a venue's reference data failed to load |
-| 5 | runtime failure: `cancel_all FAILED`, the journal cannot be opened, a ring overflowed, an uncaught error |
-| 6 | the engine tripped the kill switch itself (`max_loss`, a full ring, every venue killed) with `on_kill = "exit"`, and `cancel_all ok` |
+| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened; a venue's order-event ring overflowed; an uncaught error |
+| 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed) with `on_kill = "exit"`, and `cancel_all ok` |
 
-A failed cancel-all takes precedence: code 5 whenever orders may still be resting. A test
-(`apps.fastmm-live.exit_codes_documented`) checks that this table lists the codes of `--help`.
-
-- `--strategy` with a strategy other than the configuration's ignores `[strategy.params]` and says
-  so; `--param key=value` then sets the new strategy's parameters.
-- The journal records the configuration after these overrides.
-- The program installs process-wide SIGINT and SIGTERM handlers: the first signal trips the kill
-  switch and starts the shutdown ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
+- The journal records the configuration after `--strategy` and `--param`.
+- `fastmm::cli::live` installs process-wide SIGINT and SIGTERM handlers. The first signal starts the
+  shutdown ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
 
 ## fastmm-backtest
 
@@ -99,8 +93,7 @@ usage: fastmm-backtest --config <file.toml> [options]
 | 4 | the market data cannot be read |
 | 5 | the run failed |
 
-`--out` writes `equity.csv`, `fills.csv`, `orders.csv` and `summary.json`
-([Configuration](configuration.md#backtest) describes `[backtest]`).
+The flags override `[backtest]` ([Configuration](configuration.md#backtest)).
 
 ## fastmm-replay
 

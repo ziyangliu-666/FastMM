@@ -1,11 +1,8 @@
 # Strategy API
 
-The interface between a strategy and the engine: the strategy class, hooks, the context, the book,
-fills and messages, parameters, fixed-point helpers, the test harness and registration. Every code
-block on this page is a snippet of
-[`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp), which
-compiles the documented signatures, pins each type with a `static_assert` and runs every hook in
-the harness (ctest `docs.strategy_api`). The headers are listed in [Public API](public-api.md);
+Code blocks come from
+[`tests/docs/strategy_api_doc_test.cpp`](../../tests/docs/strategy_api_doc_test.cpp) (ctest
+`docs.strategy_api`). The headers are listed in [Public API](public-api.md);
 `#include "fastmm/strategy.hpp"` brings in everything a strategy header needs.
 
 ## Strategy class
@@ -30,8 +27,7 @@ in the strategy header instead of when an engine is built.
 
 ## Hooks
 
-Hooks are public member functions; every hook is optional. These are all of them, with the
-documented signatures:
+Hooks are public member functions; every hook is optional:
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#hooks -->
 ```cpp
@@ -83,8 +79,8 @@ Rules:
 - Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the
   same. `noexcept` is recommended; hooks run inside `noexcept` engine code.
 - Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_fill`)
-  fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are always
-  valid in them.
+  fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in
+  them.
 - `on_fill` fires for every execution on an instrument in the table, including late fills (the
   order was already terminal) and fills for ids the OMS does not know. Fills on other instruments
   are counted in `EngineStats::unknown_instrument_fills`.
@@ -128,8 +124,7 @@ error: static assertion failed: fastmm: on_trade has the wrong signature or is n
 
 ## Context
 
-`ctx` is a `StrategyContext<Engine>`, a thin non-owning view of the engine. The type of every
-method:
+`ctx` is a `StrategyContext<Engine>`, a non-owning view of the engine:
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#context -->
 ```cpp
@@ -194,10 +189,9 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `request_stop()` | sets the engine's stop flag: a backtest ends after the current engine step; replay always drains the journal |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |
 
-Prefer `set_quotes` over direct orders for quoting: the quote manager applies hysteresis
-(`[engine] min_requote_ticks`, `min_requote_interval_ms`), never touches orders waiting for an
-exchange response and uses replace where the venue supports it. Always check the `Result` of a
-direct order:
+`set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips
+orders awaiting a venue response and uses replace where the venue supports it. A direct order
+returns a `Result`:
 
 ```cpp
 auto id = ctx.send(NewOrderRequest::limit(inst.id, Side::Buy, px, qty).post_only());
@@ -331,12 +325,9 @@ struct AllHooksParams {
 
 - The arguments are the field name, default, minimum, maximum and a description; `FASTMM_PARAMS(Self)`
   comes first. At most 32 parameters.
-- `decimal`, `bps` and `ms` values are parsed exactly, never through a double. Exponent notation is
-  accepted (a TOML float `0.00002` reaches the parser as `2e-05`); a value is rejected only when
-  more decimals remain than the type holds.
+- `decimal`, `bps` and `ms` values are parsed as decimal text, never through a double; exponents are
+  accepted ([Fixed point](fixed-point.md#parsing-and-formatting)).
 - Ranges are checked on the typed value: `parameter 'quote_qty': value 1000.5 outside [0, 1000]`.
-- `std::optional<std::string> validate() const` on the params struct, when present, runs after all
-  keys of a `configure()` call are applied.
 - The schema drives configuration checks, `--list-strategies`, `--param key=value` and
   `fastmm.strategies()` in Python.
 
@@ -371,20 +362,8 @@ static_assert(
 static_assert(std::convertible_to<LimitOrder, NewOrderRequest>);
 ```
 
-| Helper | Use |
-|---|---|
-| `100.25_px`, `0.01_qty`, `5_bps`, `0.25_bps` | exact compile-time literals; too many decimals is a compile error |
-| `value * ratio`, `ratio(num, den)` | scale by a `Ratio` through Int128, one truncation toward zero |
-| `mid(bid, ask)`, `microprice(bid_level, ask_level)`, `spread_ratio(bid, ask)` | reference prices |
-| `inst.ticks(n)`, `away_from(ref, side, dist)` | distances in ticks, on the passive side |
-| `inst.round_price(px, side)`, `inst.round_qty(qty)` | bids round down, asks up; quantities down to the lot |
-| `inventory_allows(side, position, qty, limit)` | may this side add `qty` without passing the limit (0 = no limit) |
-| `q.bid(px, qty)`, `q.ask(px, qty)` | append a level; non-positive prices or quantities and levels beyond 8 are dropped |
-| `q.uncross(tick)` | an ask at or below the best bid of the ladder moves one tick above it |
-| `keep_passive(q, best_bid, best_ask, tick)` | shift a ladder so level 0 stays one tick inside the touch |
-| `NewOrderRequest::limit(id, side, px, qty)` | a GTC limit order; `.post_only()`, `.reduce_only()`, `.ioc()`, `.tag(n)` |
-
-[Fixed point](fixed-point.md) has the types, rounding rules and ranges.
+`NewOrderRequest::limit(id, side, px, qty)` builds a GTC limit order. [Fixed point](fixed-point.md)
+has the types, literals, rounding rules, quoting helpers and ranges.
 
 ## Test harness
 
@@ -429,7 +408,7 @@ h.engine().finish();  // on_stop
 | `engine()`, `strategy()`, `now()`, `instrument()`, `price(s)`, `quantity(s)` | access and conversions |
 
 The default instrument is BTCUSDT on venue 0 with a tick of 0.01 and a lot of 0.001. The harness
-allocates and is single-threaded: it is for tests, not the hot path.
+allocates and is single-threaded.
 
 ## Registration
 
@@ -446,16 +425,15 @@ static_assert(std::same_as<decltype(&register_strategies), StrategyModule>);
   fails and names the missing factory.
 - A strategy library exports one such function (`StrategyModule`); apps pass it to
   `fastmm::cli::live`, `backtest` or `replay`. The built-in strategies are always registered first.
-- Registering the same function twice is harmless; a name registered by different code throws
+- Registering the same function twice is a no-op; a name registered by different code throws
   `StrategyConflict` (the command lines exit with code 3).
 - `bt::run_backtest<S>(cfg, source)` and `StrategyHarness<S>` need no registration.
 
-[Register a strategy](../how-to/strategies/register-a-strategy.md) covers projects on an installed
-FastMM, source-tree builds and strategies shipped with FastMM.
+Build setups: [Register a strategy](../how-to/strategies/register-a-strategy.md).
 
 ## Logging
 
 `FASTMM_LOG_TRACE`, `FASTMM_LOG_DEBUG`, `FASTMM_LOG_INFO`, `FASTMM_LOG_WARN` and `FASTMM_LOG_ERROR`
 take a fmt format string (`FASTMM_LOG_INFO("filled {} @ {}", qty, px)`); `Price`, `Qty`, `Side`
-and the enums format directly. Records go through a per-thread ring to a background thread, so
-logging does not block. Logs are not journaled: strategy logic must not depend on them.
+and the enums format directly. Records go through a per-thread ring to a background thread; when
+the ring is full the record is dropped and counted. Logs are not journaled: strategy logic must not depend on them.

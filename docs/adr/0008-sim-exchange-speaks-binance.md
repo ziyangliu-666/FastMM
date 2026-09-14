@@ -12,4 +12,4 @@ The live connector code path (TLS, WS, JSON, sequence sync, auth, order flow) ne
 
 ## Consequences
 
-The real Binance connector runs unmodified against localhost in CI, including resync after injected gaps.
+The Binance connector runs unmodified against localhost in CI, including resync after injected gaps.

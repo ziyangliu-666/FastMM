@@ -2,9 +2,7 @@
 
 FastMM decodes CME Group's MDP 3.0 market data (Simple Binary Encoding over UDP) into the same
 normalised events as the crypto venues: `BookDeltaMsg` / `BookSnapshotMsg`, `TradeMsg` and
-`ConnectionStateMsg`. The codec is allocation-free and `noexcept` on the hot path. It is validated
-against a simulated exchange: the sim `MatchingEngine` publishes MDP 3.0 packets and the decoded
-books are compared with the engine's own book.
+`ConnectionStateMsg`. The codec is allocation-free and `noexcept` on the hot path.
 
 | Piece | Where |
 |---|---|
@@ -23,7 +21,7 @@ books are compared with the engine's own book.
 
 ## Sources
 
-Everything below was checked against CME's published material, retrieved on 2026-09-14:
+CME sources, retrieved on 2026-09-14:
 
 * **Schema.** `templates_FixBinary.xml` from
   `ftp://ftp.cmegroup.com/SBEFix/Production/Templates/templates_FixBinary.xml`. Its header says
@@ -61,9 +59,9 @@ Everything below was checked against CME's published material, retrieved on 2026
 | MDInstrumentDefinitionFuture54 | 54 | 224 | instrument table |
 | MDIncrementalRefreshVolume37, DailyStatistics49, LimitsBanding50, SessionStatistics51 | 37, 49, 50, 51 | 11 | RptSeq accounting only |
 
-The statistics templates are in the subset because RptSeq is sequenced per instrument across
-every incremental template. Skipping them would make every statistics message look like an RptSeq
-gap. Any template not in the subset is skipped by MsgSize, and so is any other schemaId.
+RptSeq is sequenced per instrument across all incremental templates, so 37, 49, 50 and 51 are
+read for RptSeq accounting. Any template not in the subset is skipped by MsgSize, and so is any
+other schemaId.
 
 ## Generator
 
@@ -81,8 +79,7 @@ python3 tools/sbe_gen.py generate --schema tools/sbe/mdp3_templates_subset.xml \
 
 The generated header has one reader class and one `...Writer` class per message:
 
-* **Reads.** Every field is read with `memcpy` at its schema offset, so there are no packed-struct
-  casts and no alignment assumptions, and it is clean under UBSan. The byte order is little-endian.
+* **Reads.** Every field is read with `memcpy` at its schema offset, little-endian.
 * **Layout checks.** The generator validates offsets and sizes, then emits a `static_assert` for
   every field (`offset + size <= blockLength`) and for every block length.
 * **Groups.** `sbe::GroupView<Entry, Dimension>` reads `groupSize` (3 bytes) and `groupSize8Byte`
@@ -101,8 +98,8 @@ The generated header has one reader class and one `...Writer` class per message:
   mantissa not divisible by 10) and on overflow. `from_fixed()` is the exact inverse.
 
 Unsupported, and rejected by the generator: `<data>` (variable-length) fields, nested groups,
-non-constant exponents, array members in composites, big-endian schemas. The MDP 3.0 templates
-above use none of them.
+non-constant exponents, array members in composites, big-endian schemas (none is used by the
+subset).
 
 ## Decoding
 
@@ -121,7 +118,7 @@ above use none of them.
   that falls off the bottom. All changes of one instrument within one message become a single
   `BookDeltaMsg`, built in place in the sink with `BookDeltaMsg::size_for()`. Its fields:
   `first_update_id`/`last_update_id` hold the RptSeq range, `exch_ts` is TransactTime and
-  `recv_ts` is `rx_ts`. An `L2Book` fed with these events holds exactly the decoder's top N.
+  `recv_ts` is `rx_ts`. An `L2Book` fed with these events holds the decoder's top N.
 * **Implied entries** (`E`/`F`) are counted and ignored; the implied book is not merged. `J` (book
   reset) empties the instrument. `w`/`x` are counted and ignored (EBS only).
 * **Trades.** Trade summary entries with MDUpdateAction New become `TradeMsg`:
@@ -138,7 +135,9 @@ above use none of them.
 * **ChannelReset4** empties every book (one empty `BookSnapshotMsg` each) and resets RptSeq to 0,
   because MBP RptSeq restarts at 1 after a reset.
 
-**What puts an instrument into recovery.** RptSeq is checked per instrument across templates
+### What puts an instrument into recovery
+
+RptSeq is checked per instrument across templates
 46/48/37/49/50/51. The instrument's entries are skipped until a snapshot when any of these happen:
 
 * an RptSeq gap;
@@ -174,9 +173,8 @@ An RptSeq at or below the last applied one is a stale replay and is skipped sile
   3. The book is replaced (`BookSnapshotMsg`, `kSnapshot`) and the buffered entries are replayed
      (`BookDeltaMsg`, `TradeMsg`).
 
-  CME's rule is to drop cached packets with a sequence number below LastMsgSeqNumProcessed and to
-  compare TransactTime for the instrument. FastMM applies the same rule per entry using RptSeq,
-  which also covers events split across packets.
+  This is CME's recovery rule applied per entry by RptSeq rather than per packet by
+  LastMsgSeqNumProcessed and TransactTime; it also covers events split across packets.
 * **Instruments without book activity** have no snapshot. After a complete loop (snapshot packet 1
   through TotNumReports messages), instruments that were recovering for the whole loop and never
   appeared are reset to an empty book, and their next RptSeq is taken as the baseline.
@@ -202,12 +200,12 @@ matching engine's top N:
 ## Benchmarks
 
 `bench/bench_codecs_mdp3.cpp` (Google Benchmark, `RelWithDebInfo`, gcc 13, WSL2 on a shared 8-core
-desktop, so treat the numbers as indicative):
+desktop; see [Benchmarks](../../explanation/benchmarks.md#caveats)):
 
 | Benchmark | p50 | What is timed |
 |---|---|---|
 | `BM_Mdp3_DecodeBook46_4Entries` | 51.9 ns / packet | `Mdp3Decoder::decode_packet` of a Book46 packet with 4 Change entries (2 bid, 2 offer levels) into a `MsgRing` sink, one `BookDeltaMsg`, plus draining the ring |
-| `BM_Mdp3_ArbitrationAB_Heartbeat` | 10.0 ns / packet copy | a heartbeat packet on line A (processed) then line B (dropped); 20 ns per pair |
+| `BM_Mdp3_ArbitrationAB_Heartbeat` | 10.0 ns / packet copy | a heartbeat packet on line A (processed) then line B (dropped) |
 | `BM_Mdp3_FeedAB_Book46_4Entries` | 57.2 ns / A+B pair | the 4-entry Book46 packet through `Mdp3Feed` on A, its duplicate on B, ring drain |
 
 Run: `bench_codecs_mdp3 --cpu=5 --benchmark_repetitions=7 --benchmark_min_time=0.3s`.
@@ -216,10 +214,7 @@ Run: `bench_codecs_mdp3 --cpu=5 --benchmark_repetitions=7 --benchmark_min_time=0
 
 * **DeleteThru, DeleteFrom, Overlay.** They are defined in the schema's MDUpdateAction enum, but the
   current wiki MBP pages only describe New/Change/Delete, and the LongQty page lists 0, 1, 2, 5 for
-  EBS. The implemented semantics are the FIX 5.0 SP2 ones:
-  * DeleteThru: delete from the top through the level.
-  * DeleteFrom: delete the level and below.
-  * Overlay: replace in place.
+  EBS. FastMM implements the FIX 5.0 SP2 semantics (see [Decoding](#decoding)).
 * **Maximum datagram size.** CME's pages above do not state one. `kMaxPacketBytes` = 1500 bounds
   the buffered copies; larger datagrams are still decoded but end the buffer's coverage.
 * **Gap timeout** is a site-specific A/B skew budget, not a CME value.
