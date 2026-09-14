@@ -64,11 +64,7 @@ inline constexpr KeySpec kConfigSchema[] = {
      "pause new orders on a side after a venue reject (0 = off)"},
     {"engine", "reject_backoff_max_ms", KeyType::Int, false, "cap of the doubling reject backoff"},
     // [venues.<name>]
-    {"venues.*",
-     "kind",
-     KeyType::String,
-     true,
-     "binance_spot | binance_futures | bybit | deribit | sim"},
+    {"venues.*", "kind", KeyType::String, true, "binance_spot | bybit | deribit | sim"},
     {"venues.*", "ws_url", KeyType::String, false, "market data websocket URL"},
     {"venues.*", "ws_api_url", KeyType::String, false, "order websocket API URL"},
     {"venues.*", "rest_url", KeyType::String, false, "REST base URL"},
