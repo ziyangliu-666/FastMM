@@ -53,4 +53,4 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md).
 - Linux on x86-64 only.
 - Not yet used with real money.
 
-[Documentation](docs/README.md) · [MIT license](LICENSE)
+[Documentation](docs/README.md) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)
