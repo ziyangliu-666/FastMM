@@ -18,6 +18,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang-format-18
       - name: clang-format
         run: CLANG_FORMAT=clang-format-18 ./scripts/format.sh --check
+      - name: generated SBE flyweights are up to date
+        run: >-
+          python3 tools/sbe_gen.py generate --schema tools/sbe/mdp3_templates_subset.xml
+          --schema-label tools/sbe/mdp3_templates_subset.xml
+          --out include/fastmm/codecs/mdp3/generated/mdp3_schema.hpp
+          --namespace fastmm::codecs::mdp3::schema --check
       - name: forbidden patterns
         run: |
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)

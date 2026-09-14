@@ -15,3 +15,18 @@
 "BM_WsAssemble/16384" = 200
 "BM_TickToOrder_Sim" = 2000                     # bench/bench_tick_to_order.cpp
 "BM_Json_BinanceDepth20" = 1500                 # bench/bench_json.cpp
+
+# Wire codecs (M3). Budgets are about twice the p50 measured while the machine was heavily loaded.
+"BM_Fix_ParseExecReportFill" = 400        # ~250-byte ExecutionReport, 25 fields
+"BM_Fix_DecodeExecReportFill" = 800       # parse + map to OrderFillMsg
+"BM_Fix_BuildNewOrderSingle" = 300
+"BM_Fix_FramerNext" = 25
+"BM_Itch_DecodeAddOrder" = 30
+"BM_Itch_DecodeOrderExecuted" = 30
+"BM_MoldUdp64_FramePacket" = 40           # 10-message packet
+"BM_SoupBin_FrameSequenced" = 10
+"BM_Ouch42_EncodeEnterOrder" = 40
+"BM_Ouch50_EncodeEnterOrder" = 40
+"BM_Mdp3_DecodeBook46_4Entries" = 110     # packet with 4 book entries, decoded into the ring
+"BM_Mdp3_ArbitrationAB_Heartbeat" = 25    # per packet copy
+"BM_Mdp3_FeedAB_Book46_4Entries" = 120    # A plus its duplicate on B, full feed path
