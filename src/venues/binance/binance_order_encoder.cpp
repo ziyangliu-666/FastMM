@@ -129,10 +129,78 @@ void add_auth(BinanceOrderEncoder::ParamList& p, const Signer& signer, bool sess
   if (!session_auth && signer.usable()) p.add("apiKey", signer.api_key());
 }
 
-// Builds the shared parameter list for New / Cancel / Replace. Alphabetical order:
+// The request builders and the response decoder are split into non-inlined
+// functions per request kind and response section: large functions full of
+// inlined parameter appends and simdjson lookups made gcc's UBSan
+// instrumentation (null, alignment, object-size) take minutes to compile this
+// file at -O1.
+//
+// Shared parameter list for New / Cancel / Replace. Alphabetical order:
 //   apiKey < cancelOrderId < cancelOrigClientOrderId < cancelReplaceMode < newClientOrderId
 //   < newOrderRespType < orderId < origClientOrderId < price < quantity < recvWindow < side
 //   < symbol < timeInForce < timestamp < type
+[[gnu::noinline]] void add_new_params(BinanceOrderEncoder::ParamList& p,
+                                      const OrderCommand& cmd,
+                                      std::string_view symbol,
+                                      std::int64_t timestamp_ms,
+                                      int recv_window_ms) noexcept {
+  p.add("newClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
+  p.add("newOrderRespType", "ACK");
+  if (cmd.type != OrderType::Market) p.add_decimal("price", cmd.price);
+  p.add_decimal("quantity", cmd.qty);
+  p.add_int("recvWindow", recv_window_ms);
+  p.add("side", BinanceOrderEncoder::side_text(cmd.side));
+  p.add("symbol", symbol);
+  // timeInForce is mandatory for LIMIT, forbidden for LIMIT_MAKER / MARKET
+  // (web-socket-api.md "Place new order" mandatory parameters by type).
+  if (cmd.type == OrderType::Limit) p.add("timeInForce", BinanceOrderEncoder::tif_text(cmd.tif));
+  p.add_int("timestamp", timestamp_ms);
+  p.add("type", BinanceOrderEncoder::type_text(cmd.type));
+}
+
+[[gnu::noinline]] void add_cancel_params(BinanceOrderEncoder::ParamList& p,
+                                         const OrderCommand& cmd,
+                                         std::string_view symbol,
+                                         std::int64_t timestamp_ms,
+                                         int recv_window_ms) noexcept {
+  // orderId alone is fastest (docs note); fall back to the client id before the ack.
+  const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
+  if (have_venue_id) {
+    p.add("orderId", cmd.venue_order_id->view(), true);
+  } else {
+    p.add("origClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
+  }
+  p.add_int("recvWindow", recv_window_ms);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+}
+
+[[gnu::noinline]] void add_replace_params(BinanceOrderEncoder::ParamList& p,
+                                          const OrderCommand& cmd,
+                                          const OrderShadow& shadow,
+                                          std::string_view symbol,
+                                          std::int64_t timestamp_ms,
+                                          int recv_window_ms) noexcept {
+  const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
+  if (have_venue_id) {
+    p.add("cancelOrderId", cmd.venue_order_id->view(), true);
+  } else {
+    p.add("cancelOrigClientOrderId", encode_cl_ord_id(cmd.orig_cl_ord_id).view());
+  }
+  p.add("cancelReplaceMode", "STOP_ON_FAILURE");
+  p.add("newClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
+  p.add("newOrderRespType", "ACK");
+  p.add_decimal("price", cmd.price);
+  p.add_decimal("quantity", cmd.qty);
+  p.add_int("recvWindow", recv_window_ms);
+  p.add("side", BinanceOrderEncoder::side_text(shadow.side));
+  p.add("symbol", symbol);
+  if (shadow.type == OrderType::Limit)
+    p.add("timeInForce", BinanceOrderEncoder::tif_text(shadow.tif));
+  p.add_int("timestamp", timestamp_ms);
+  p.add("type", BinanceOrderEncoder::type_text(shadow.type));
+}
+
 bool build_params(BinanceOrderEncoder::ParamList& p,
                   const OrderCommand& cmd,
                   const OrderShadow* shadow,
@@ -144,55 +212,15 @@ bool build_params(BinanceOrderEncoder::ParamList& p,
   add_auth(p, signer, session_auth);
   switch (cmd.kind) {
     case OrderCommandKind::New:
-      p.add("newClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
-      p.add("newOrderRespType", "ACK");
-      if (cmd.type != OrderType::Market) p.add_decimal("price", cmd.price);
-      p.add_decimal("quantity", cmd.qty);
-      p.add_int("recvWindow", recv_window_ms);
-      p.add("side", BinanceOrderEncoder::side_text(cmd.side));
-      p.add("symbol", symbol);
-      // timeInForce is mandatory for LIMIT, forbidden for LIMIT_MAKER / MARKET
-      // (web-socket-api.md "Place new order" mandatory parameters by type).
-      if (cmd.type == OrderType::Limit)
-        p.add("timeInForce", BinanceOrderEncoder::tif_text(cmd.tif));
-      p.add_int("timestamp", timestamp_ms);
-      p.add("type", BinanceOrderEncoder::type_text(cmd.type));
+      add_new_params(p, cmd, symbol, timestamp_ms, recv_window_ms);
       return true;
-    case OrderCommandKind::Cancel: {
-      // orderId alone is fastest (docs note); fall back to the client id before the ack.
-      const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
-      if (have_venue_id) {
-        p.add("orderId", cmd.venue_order_id->view(), true);
-      } else {
-        p.add("origClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
-      }
-      p.add_int("recvWindow", recv_window_ms);
-      p.add("symbol", symbol);
-      p.add_int("timestamp", timestamp_ms);
+    case OrderCommandKind::Cancel:
+      add_cancel_params(p, cmd, symbol, timestamp_ms, recv_window_ms);
       return true;
-    }
-    case OrderCommandKind::Replace: {
+    case OrderCommandKind::Replace:
       if (shadow == nullptr) return false;
-      const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
-      if (have_venue_id) {
-        p.add("cancelOrderId", cmd.venue_order_id->view(), true);
-      } else {
-        p.add("cancelOrigClientOrderId", encode_cl_ord_id(cmd.orig_cl_ord_id).view());
-      }
-      p.add("cancelReplaceMode", "STOP_ON_FAILURE");
-      p.add("newClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
-      p.add("newOrderRespType", "ACK");
-      p.add_decimal("price", cmd.price);
-      p.add_decimal("quantity", cmd.qty);
-      p.add_int("recvWindow", recv_window_ms);
-      p.add("side", BinanceOrderEncoder::side_text(shadow->side));
-      p.add("symbol", symbol);
-      if (shadow->type == OrderType::Limit)
-        p.add("timeInForce", BinanceOrderEncoder::tif_text(shadow->tif));
-      p.add_int("timestamp", timestamp_ms);
-      p.add("type", BinanceOrderEncoder::type_text(shadow->type));
+      add_replace_params(p, cmd, *shadow, symbol, timestamp_ms, recv_window_ms);
       return true;
-    }
   }
   return false;
 }
@@ -375,7 +403,7 @@ namespace {
   return sj::padded_string_view(s.data(), s.size(), s.size() + sj::SIMDJSON_PADDING);
 }
 
-void read_order_fields(od::object& o, WsApiResponse& r) noexcept {
+[[gnu::noinline]] void read_order_fields(od::object& o, WsApiResponse& r) noexcept {
   std::string_view s;
   std::int64_t i = 0;
   if (o["symbol"].get_string().get(s) == sj::SUCCESS) r.symbol = s;
@@ -386,7 +414,81 @@ void read_order_fields(od::object& o, WsApiResponse& r) noexcept {
   if (o["executedQty"].get_string().get(s) == sj::SUCCESS) r.executed_qty = s;
 }
 
-void read_rate_limits(od::value v, RateLimitInfo& info) noexcept {
+// cancelReplace's cancelResponse, in a result or in error.data.
+[[gnu::noinline]] void read_cancel_response(od::object& cr, WsApiResponse& r) noexcept {
+  std::string_view s;
+  std::int64_t i = 0;
+  if (cr["orderId"].get_int64().get(i) == sj::SUCCESS) r.cancel_order_id = i;
+  if (cr["origClientOrderId"].get_string().get(s) == sj::SUCCESS) r.cancel_client_order_id = s;
+  if (cr["executedQty"].get_string().get(s) == sj::SUCCESS) r.cancel_executed_qty = s;
+}
+
+[[gnu::noinline]] void read_error_data(od::object& dobj, WsApiResponse& r) noexcept {
+  std::int64_t ra = 0;
+  if (dobj["retryAfter"].get_int64().get(ra) == sj::SUCCESS) r.retry_after_ms = ra;
+  // cancelReplace failures (-2021/-2022, HTTP 409) report both legs here.
+  std::string_view s;
+  if (dobj["cancelResult"].get_string().get(s) == sj::SUCCESS) r.cancel_result = s;
+  if (dobj["newOrderResult"].get_string().get(s) == sj::SUCCESS) r.new_order_result = s;
+  od::object cr;
+  if (dobj["cancelResponse"].get_object().get(cr) == sj::SUCCESS) read_cancel_response(cr, r);
+  od::object nr;
+  if (dobj["newOrderResponse"].get_object().get(nr) == sj::SUCCESS) {
+    std::int64_t nr_code = 0;
+    if (nr["code"].get_int64().get(nr_code) == sj::SUCCESS)
+      r.new_order_code = static_cast<int>(nr_code);
+    if (nr["msg"].get_string().get(s) == sj::SUCCESS) r.new_order_msg = s;
+    nr.reset();
+    read_order_fields(nr, r);
+  }
+}
+
+[[gnu::noinline]] void read_error(od::value err, WsApiResponse& r) noexcept {
+  od::object eo;
+  if (err.get_object().get(eo) != sj::SUCCESS) return;
+  r.is_error = true;
+  std::int64_t code = 0;
+  if (eo["code"].get_int64().get(code) == sj::SUCCESS) r.code = static_cast<int>(code);
+  std::string_view msg;
+  if (eo["msg"].get_string().get(msg) == sj::SUCCESS) r.msg = msg;
+  od::value data;
+  if (eo["data"].get(data) == sj::SUCCESS) {
+    od::object dobj;
+    if (data.get_object().get(dobj) == sj::SUCCESS) read_error_data(dobj, r);
+  }
+}
+
+[[gnu::noinline]] void read_result(od::value res, WsApiResponse& r) noexcept {
+  od::json_type t;
+  if (res.type().get(t) != sj::SUCCESS) return;
+  if (t == od::json_type::array) {
+    r.result_is_array = true;
+    return;
+  }
+  if (t != od::json_type::object) return;
+  od::object o;
+  if (res.get_object().get(o) != sj::SUCCESS) return;
+  std::string_view s;
+  std::int64_t i = 0;
+  if (o["cancelResult"].get_string().get(s) == sj::SUCCESS) {
+    r.cancel_result = s;
+    if (o["newOrderResult"].get_string().get(s) == sj::SUCCESS) r.new_order_result = s;
+    od::object cr;
+    if (o["cancelResponse"].get_object().get(cr) == sj::SUCCESS) read_cancel_response(cr, r);
+    od::object nr;
+    if (o["newOrderResponse"].get_object().get(nr) == sj::SUCCESS) read_order_fields(nr, r);
+  } else {
+    o.reset();
+    if (o["subscriptionId"].get_int64().get(i) == sj::SUCCESS) {
+      r.subscription_id = i;
+    } else {
+      o.reset();
+      read_order_fields(o, r);
+    }
+  }
+}
+
+[[gnu::noinline]] void read_rate_limits(od::value v, RateLimitInfo& info) noexcept {
   od::array arr;
   if (v.get_array().get(arr) != sj::SUCCESS) return;
   std::int64_t best_order_window = -1;
@@ -422,6 +524,21 @@ void read_rate_limits(od::value v, RateLimitInfo& info) noexcept {
   }
 }
 
+// False if the order is malformed.
+[[gnu::noinline]] bool read_open_order(od::object& o, OpenOrderRecord& rec) noexcept {
+  if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return false;
+  if (o["orderId"].get_int64().get(rec.order_id) != sj::SUCCESS) return false;
+  if (o["clientOrderId"].get_string().get(rec.client_order_id) != sj::SUCCESS) return false;
+  if (o["price"].get_string().get(rec.price) != sj::SUCCESS) return false;
+  if (o["origQty"].get_string().get(rec.orig_qty) != sj::SUCCESS) return false;
+  if (o["executedQty"].get_string().get(rec.executed_qty) != sj::SUCCESS) return false;
+  if (o["status"].get_string().get(rec.status) != sj::SUCCESS) return false;
+  if (o["timeInForce"].get_string().get(rec.tif) != sj::SUCCESS) rec.tif = {};
+  if (o["type"].get_string().get(rec.type) != sj::SUCCESS) return false;
+  if (o["side"].get_string().get(rec.side) != sj::SUCCESS) return false;
+  return true;
+}
+
 }  // namespace
 
 ParseStatus BinanceWsApiDecoder::decode(std::string_view json, WsApiResponse& r) noexcept {
@@ -446,84 +563,11 @@ ParseStatus BinanceWsApiDecoder::decode(std::string_view json, WsApiResponse& r)
   r.status = static_cast<int>(status);
   {
     od::value err;
-    if (root["error"].get(err) == sj::SUCCESS) {
-      od::object eo;
-      if (err.get_object().get(eo) == sj::SUCCESS) {
-        r.is_error = true;
-        std::int64_t code = 0;
-        if (eo["code"].get_int64().get(code) == sj::SUCCESS) r.code = static_cast<int>(code);
-        std::string_view msg;
-        if (eo["msg"].get_string().get(msg) == sj::SUCCESS) r.msg = msg;
-        od::value data;
-        if (eo["data"].get(data) == sj::SUCCESS) {
-          od::object dobj;
-          if (data.get_object().get(dobj) == sj::SUCCESS) {
-            std::int64_t ra = 0;
-            if (dobj["retryAfter"].get_int64().get(ra) == sj::SUCCESS) r.retry_after_ms = ra;
-            // cancelReplace failures (-2021/-2022, HTTP 409) report both legs here.
-            std::string_view s;
-            if (dobj["cancelResult"].get_string().get(s) == sj::SUCCESS) r.cancel_result = s;
-            if (dobj["newOrderResult"].get_string().get(s) == sj::SUCCESS) r.new_order_result = s;
-            od::object cr;
-            if (dobj["cancelResponse"].get_object().get(cr) == sj::SUCCESS) {
-              std::int64_t i = 0;
-              if (cr["orderId"].get_int64().get(i) == sj::SUCCESS) r.cancel_order_id = i;
-              if (cr["origClientOrderId"].get_string().get(s) == sj::SUCCESS)
-                r.cancel_client_order_id = s;
-              if (cr["executedQty"].get_string().get(s) == sj::SUCCESS) r.cancel_executed_qty = s;
-            }
-            od::object nr;
-            if (dobj["newOrderResponse"].get_object().get(nr) == sj::SUCCESS) {
-              std::int64_t nr_code = 0;
-              if (nr["code"].get_int64().get(nr_code) == sj::SUCCESS)
-                r.new_order_code = static_cast<int>(nr_code);
-              if (nr["msg"].get_string().get(s) == sj::SUCCESS) r.new_order_msg = s;
-              nr.reset();
-              read_order_fields(nr, r);
-            }
-          }
-        }
-      }
-    }
+    if (root["error"].get(err) == sj::SUCCESS) read_error(err, r);
   }
   {
     od::value res;
-    if (root["result"].get(res) == sj::SUCCESS) {
-      od::json_type t;
-      if (res.type().get(t) == sj::SUCCESS) {
-        if (t == od::json_type::array) {
-          r.result_is_array = true;
-        } else if (t == od::json_type::object) {
-          od::object o;
-          if (res.get_object().get(o) == sj::SUCCESS) {
-            std::string_view s;
-            std::int64_t i = 0;
-            if (o["cancelResult"].get_string().get(s) == sj::SUCCESS) {
-              r.cancel_result = s;
-              if (o["newOrderResult"].get_string().get(s) == sj::SUCCESS) r.new_order_result = s;
-              od::object cr;
-              if (o["cancelResponse"].get_object().get(cr) == sj::SUCCESS) {
-                if (cr["orderId"].get_int64().get(i) == sj::SUCCESS) r.cancel_order_id = i;
-                if (cr["origClientOrderId"].get_string().get(s) == sj::SUCCESS)
-                  r.cancel_client_order_id = s;
-                if (cr["executedQty"].get_string().get(s) == sj::SUCCESS) r.cancel_executed_qty = s;
-              }
-              od::object nr;
-              if (o["newOrderResponse"].get_object().get(nr) == sj::SUCCESS)
-                read_order_fields(nr, r);
-            } else {
-              o.reset();
-              if (o["subscriptionId"].get_int64().get(i) == sj::SUCCESS) {
-                r.subscription_id = i;
-              } else {
-                o.reset();
-                read_order_fields(o, r);
-              }
-            }
-          }
-        }
-      }
-    }
+    if (root["result"].get(res) == sj::SUCCESS) read_result(res, r);
   }
   {
     od::value rl;
@@ -550,18 +594,7 @@ ParseStatus BinanceWsApiDecoder::decode_open_orders(
     od::object o;
     if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
     OpenOrderRecord rec;
-    if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["orderId"].get_int64().get(rec.order_id) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["clientOrderId"].get_string().get(rec.client_order_id) != sj::SUCCESS)
-      return ParseStatus::Malformed;
-    if (o["price"].get_string().get(rec.price) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["origQty"].get_string().get(rec.orig_qty) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["executedQty"].get_string().get(rec.executed_qty) != sj::SUCCESS)
-      return ParseStatus::Malformed;
-    if (o["status"].get_string().get(rec.status) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["timeInForce"].get_string().get(rec.tif) != sj::SUCCESS) rec.tif = {};
-    if (o["type"].get_string().get(rec.type) != sj::SUCCESS) return ParseStatus::Malformed;
-    if (o["side"].get_string().get(rec.side) != sj::SUCCESS) return ParseStatus::Malformed;
+    if (!read_open_order(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
   return ParseStatus::Ok;
