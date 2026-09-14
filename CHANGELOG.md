@@ -11,6 +11,15 @@ All notable changes are recorded here (Keep a Changelog format).
   resets) over a bounded message store, ExecutionReport/OrderCancelReject/market-data decoding and
   NewOrderSingle/cancel/cancel-replace encoding. A simulation test drives a session against the
   matching engine with 2% message loss and checks fills, positions, open orders and the book.
+- Nasdaq protocol family in `fastmm::codecs`: TotalView-ITCH 5.0 (every message type, exact
+  Price(4)/Price(8) conversion, decoding to L3 add/execute/cancel/replace events and trades, and an
+  encoder for simulation), MoldUDP64 (framing, gap detection, re-requests, in-order delivery),
+  SoupBinTCP 3.00/4.00/4.10 client and server sessions, and OUCH 4.2 and 5.0 order entry. Checked
+  against the matching engine: the ITCH-fed L3 book equals the engine's book after every step
+  (16 seeds), OUCH sessions over SoupBinTCP reproduce the engine's fills and open orders, and
+  MoldUDP64 delivers every message once and in order under loss, duplication and reordering.
+  Limitations are listed in docs/codecs-nasdaq.md (for example, OUCH Replace sends the command's
+  quantity, which matches OUCH's "total liable" only for unfilled orders).
 - `net::Reactor` io_uring backend (`ReactorBackend::IoUring`) on raw io_uring syscalls: multishot
   polls, poll updates, nanosecond timeouts, syscall-free busy polling, and a kernel probe.
   `[engine] net_backend = "epoll" | "io_uring"` selects it for fastmm-live and the simulated

@@ -143,7 +143,8 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [x] Python research bindings (backtests, sweeps, zero-copy numpy)
 - [x] Binance-compatible simulated exchange with fault injection and end-to-end tests
 - [ ] Python package on PyPI (wheels build in CI; publishing is a manual step)
-- [ ] FIX 4.4, Nasdaq ITCH 5.0 / OUCH, CME MDP 3.0 SBE codecs
+- [x] FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0
+- [ ] CME MDP 3.0 SBE codec
 - [ ] Deribit options with greeks-aware quoting
 - [x] Terminal monitoring UI (`fastmm-top`)
 - [x] io_uring reactor backend (`net_backend = "io_uring"`)
