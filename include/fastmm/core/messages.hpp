@@ -138,6 +138,33 @@ struct BookTickerMsg {
 };
 static_assert(sizeof(BookTickerMsg) == 128);
 
+// Options ticker (EventType::OptionTicker): the venue's mark, implied volatilities and greeks for
+// one option instrument. mark_price is in the instrument's price unit (the base coin for Deribit
+// inverse options); underlying_price (the forward the venue prices the option on) and
+// index_price are in the underlying's quote currency. Implied vols are annualised decimals
+// (0.312 = 31.2 %). Greeks are copied as the venue reports them (Deribit: Black-76 delta, gamma
+// per quote unit, vega and rho per 1 vol / rate point, theta per day, in the quote currency; see
+// core/options/black76.hpp). NaN marks a field the venue did not send.
+struct OptionTickerMsg {
+  EventHeader hdr;
+  Price mark_price;        // 64
+  Price underlying_price;  // 72
+  Price index_price;       // 80
+  double mark_iv;          // 88
+  double bid_iv;           // 96
+  double ask_iv;           // 104
+  double delta;            // 112
+  double gamma;            // 120
+  double vega;             // 128
+  double theta;            // 136
+  double rho;              // 144
+  double interest_rate;    // 152  annualised decimal
+  std::uint8_t pad_[32];   // 160
+};
+static_assert(sizeof(OptionTickerMsg) == 192);
+static_assert(offsetof(OptionTickerMsg, mark_iv) == 88 &&
+              offsetof(OptionTickerMsg, interest_rate) == 152);
+
 // ---- order events (venue -> engine) ----------------------------------------------------
 
 struct OrderAckMsg {
@@ -372,15 +399,15 @@ concept FixedSizeMessage = MessageLike<M> && (sizeof(M) % 64 == 0);
 static_assert(MessageLike<BookDeltaMsg> && FixedSizeMessage<OrderFillMsg> &&
               FixedSizeMessage<OutReplaceMsg>);
 static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
-              FixedSizeMessage<OrderAckMsg> && FixedSizeMessage<OrderRejectMsg> &&
-              FixedSizeMessage<OrderCancelAckMsg> && FixedSizeMessage<OrderCancelRejectMsg> &&
-              FixedSizeMessage<OrderExpiredMsg> && FixedSizeMessage<PositionUpdateMsg> &&
-              FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
-              FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
-              FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<OutNewOrderMsg> &&
-              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
-              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
-              FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<OptionTickerMsg> && FixedSizeMessage<OrderAckMsg> &&
+              FixedSizeMessage<OrderRejectMsg> && FixedSizeMessage<OrderCancelAckMsg> &&
+              FixedSizeMessage<OrderCancelRejectMsg> && FixedSizeMessage<OrderExpiredMsg> &&
+              FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<TimerMsg> &&
+              FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
+              FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
+              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
+              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
+              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

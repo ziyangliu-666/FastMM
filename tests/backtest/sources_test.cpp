@@ -206,3 +206,31 @@ TEST_CASE("backtest.sources: synthetic, journal, CSV and array data give identic
     CHECK(r.equity.position == base.equity.position);
   }
 }
+
+TEST_CASE("backtest.journal_source: OptionTicker is market data and round-trips") {
+  CHECK(JournalSource::is_market_data(EventType::OptionTicker));
+  struct TickerSource final : sim::MdSource {
+    OptionTickerMsg m{};
+    int left = 1;
+    TickerSource() {
+      init_header(m, EventType::OptionTicker, InstrumentId{0}, VenueId{0});
+      m.hdr.recv_ts = Timestamp{100};
+      m.hdr.exch_ts = Timestamp{100};
+      m.mark_iv = 0.312;
+      m.underlying_price = px("76904.4");
+    }
+    const EventHeader* next() override { return left-- > 0 ? &m.hdr : nullptr; }
+    void reset() override { left = 1; }
+    [[nodiscard]] Timestamp start_ts() const override { return Timestamp{100}; }
+  } src;
+  const BacktestConfig cfg = BacktestConfig::single_instrument("X", px("0.01"), qt("0.001"));
+  const std::string path = (fastmm::test::tmp_dir() / "option_ticker.fmj").string();
+  CHECK(write_md_journal(src, path, cfg.instruments, 7) == 1);
+  JournalSource js(path);
+  CHECK(js.md_events() == 1);
+  const EventHeader* h = js.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->type == EventType::OptionTicker);
+  CHECK(msg_cast<OptionTickerMsg>(h).mark_iv == doctest::Approx(0.312));
+  CHECK(msg_cast<OptionTickerMsg>(h).underlying_price == px("76904.4"));
+}

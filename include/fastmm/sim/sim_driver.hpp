@@ -144,7 +144,8 @@ class SimDriver {
       } else if (t == t_in) {
         const EventType type = transport_.deliver_next_inbound(feed_);
         const bool md = type == EventType::BookDelta || type == EventType::BookSnapshot ||
-                        type == EventType::Trade || type == EventType::BookTicker;
+                        type == EventType::Trade || type == EventType::BookTicker ||
+                        type == EventType::OptionTicker;
         if (md) {
           ++stats_.md_delivered;
         } else {
