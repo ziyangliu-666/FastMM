@@ -26,7 +26,7 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 | `fastmm-live: venue '<venue>' needs API keys: environment variable <VAR> is not set` (stderr) | A `${VAR}` in `api_key` or `api_secret` is not exported | Export the variable ([Run on a testnet](run-on-testnet.md#2-keys-in-the-environment)) or add `--dry-run` |
 | `fastmm-live: venue '<venue>' has no api_key/api_secret` (stderr) | The keys are empty and this is not a dry run | As above |
 | `fastmm-live: venues.<venue>.<key>: environment variable <VAR> is not set` (stderr) | A `${VAR}` in a URL or extra key is not exported | Export it or write the value into the config |
-| `config: unknown key '<section>.<key>' ignored (line <n>)` | A key the schema does not know; it has no effect unless it is a connector key | Check the spelling against [Configuration](../../configuration.md) |
+| `config: unknown key '<section>.<key>' ignored (line <n>)` | A key the schema does not know; it has no effect unless it is a connector key | Check the spelling against [Configuration](../../reference/configuration.md) |
 | `fastmm-live: unknown strategy '<name>' (available: ...)` (stderr) | `[strategy] name` or `--strategy` is not registered in this app | Pick one from `./build/release/bin/fastmm-live --list-strategies`, or register it (see [Register a strategy](../strategies/register-a-strategy.md)) |
 | `fastmm-live: <strategy>: unknown parameter '<key>' (see --list-strategies)` (stderr) | `[strategy.params]` or `--param` names a parameter the strategy does not have; after `--strategy` switches strategies the config's parameters are ignored | Use the names from `--list-strategies` |
 | `<program>: strategy '<name>' (<kind>) is already registered by different code; ...` (stderr, exit 3) | Two strategy libraries in the app use the same strategy name, or one reuses a built-in name | Rename one of the strategies |
@@ -52,7 +52,7 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 |---|---|---|
 | `<venue>: clock offset to venue is <n> ms`, `... (recvWindow <m> ms)` (Binance), `... (recv_window <m> ms)` (Bybit) | The local clock differs from the venue's by more than 1000 ms; signed requests are rejected once the offset nears `recv_window_ms` | Synchronise the system clock (chrony or systemd-timesyncd; on WSL2 check the Windows host's time). Raising `recv_window_ms` is only a stopgap |
 | `host wall clock stepped by <n> ns relative to CLOCK_MONOTONIC_RAW within <t> s; the engine clock follows it` | The system clock was stepped (NTP, or the hypervisor on WSL2 and VMs) | Nothing on WSL2: our Demo sessions logged it several hundred times an hour without effect. On bare metal, make the time daemon slew instead of step |
-| `TSC recalibration stepped the engine clock by <n> ns (threshold <m> ns)` | The engine clock was more than 1 ms off and was stepped instead of slewed | As above; see [Clock calibration](../../architecture.md#clock-calibration) |
+| `TSC recalibration stepped the engine clock by <n> ns (threshold <m> ns)` | The engine clock was more than 1 ms off and was stepped instead of slewed | As above; see [Clock calibration](../../explanation/architecture.md#clock-calibration) |
 | `TSC recalibration skipped (no TSC mapping or baseline too short)` | No invariant TSC, or the first recalibration came too soon | Nothing |
 
 ## Connectivity and market data
@@ -122,7 +122,7 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 | Message | Meaning | What to do |
 |---|---|---|
 | `status file <path> unavailable: <error>` | The status file for `fastmm-top` could not be created | Check `/dev/shm` permissions and space, or pass `--status <path>` or `--no-status` |
-| `fastmm-top` marks a running session as stale | The engine has not published for more than 3 s; the process has probably died | Check the process and the end of its log ([Monitoring](../../monitoring.md)) |
+| `fastmm-top` marks a running session as stale | The engine has not published for more than 3 s; the process has probably died | Check the process and the end of its log ([Monitoring](monitor-with-fastmm-top.md)) |
 
 ## Symptoms without a message
 

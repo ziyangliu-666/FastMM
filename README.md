@@ -55,7 +55,9 @@ flowchart LR
 - **Measured, not claimed.** `rdtscp` stamps at six hops feed allocation-free log-linear histograms;
   every hot component has a Google Benchmark with a p50 budget checked by `tools/check_budgets.py`.
 
-Details: [`docs/architecture.md`](docs/architecture.md) and the design records in [`docs/adr/`](docs/adr).
+Details: [Architecture](docs/explanation/architecture.md), [Event flow](docs/explanation/event-flow.md),
+[Determinism](docs/explanation/determinism.md) and the design records in [`docs/adr/`](docs/adr).
+All documentation starts at [`docs/README.md`](docs/README.md).
 
 ## Quick start
 
@@ -73,7 +75,9 @@ cmake --build --preset release -j && ctest --preset release
 
 Or without a local toolchain: `docker compose up --build` starts the simulated exchange and the
 engine in two containers. The simulator and its fault injection are described in
-[`docs/sim-exchange.md`](docs/sim-exchange.md).
+[Simulated exchange](docs/reference/sim-exchange.md). [Install](docs/getting-started/install.md) has
+the details, and the [Quick start](docs/getting-started/quickstart.md) backtests your own strategy
+in under 30 lines.
 
 Python research bindings, in a virtual environment:
 
@@ -90,8 +94,8 @@ python examples/python/backtest_quickstart.py
 | Core engine | `include/fastmm/core` | `Engine<Strategy, Clock, Transport, Feed>`, sorted-array L2 book, tick-indexed L3 book, OMS state machine with exchange-race handling, O(1) risk, quote manager with hysteresis |
 | Messaging | `core/msg_ring.hpp`, `core/journal.hpp` | variable-length SPSC ring, `.fmj` append-only journal with CRC32C blocks |
 | Networking | `include/fastmm/net` | hand-written reactor on epoll or io_uring (`[engine] net_backend`), OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
-| Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode), Bybit v5 and Deribit (options and futures over JSON-RPC, with `OptionTicker` events) connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff ([connectors](docs/venues.md), [options](docs/options.md)) |
-| Codecs | `include/fastmm/codecs` | FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0, CME MDP 3.0 SBE with A/B arbitration; each checked against the matching engine ([FIX](docs/codecs-fix.md), [Nasdaq](docs/codecs-nasdaq.md), [CME](docs/codecs-cme-mdp3.md)) |
+| Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode), Bybit v5 and Deribit (options and futures over JSON-RPC, with `OptionTicker` events) connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff ([connectors](docs/reference/venues.md), [options](docs/reference/options.md)) |
+| Codecs | `include/fastmm/codecs` | FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0, CME MDP 3.0 SBE with A/B arbitration; each checked against the matching engine ([FIX](docs/reference/codecs/fix.md), [Nasdaq](docs/reference/codecs/nasdaq.md), [CME](docs/reference/codecs/cme-mdp3.md)) |
 | Monitoring | `apps/fastmm-top` | terminal dashboard over a shared-memory status file: engine counters, PnL, latency percentiles, venue channels |
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
 | Sim exchange | `apps/fastmm-sim-exchange` | Binance-compatible REST, market-data WebSocket, WS API and user stream over TCP or TLS, with fault injection (disconnects, dropped diffs, delayed acks, clock skew) |
@@ -104,23 +108,38 @@ python examples/python/backtest_quickstart.py
 **Add a strategy** in one header: implement the hooks you need, declare parameters with
 `FASTMM_PARAM`, register it with one call for backtests, replay and live trading. The engine checks
 hook signatures at compile time (a wrong one is a readable build error) and a registered strategy
-that was never compiled is a link error. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md);
-your own project on an installed FastMM: [`examples/external-project/`](examples/external-project/).
+that was never compiled is a link error. Start with the
+[Quick start](docs/getting-started/quickstart.md) and the tutorial
+[Your first market maker](docs/tutorials/first-strategy/README.md) (from a header to the simulated
+exchange and Binance Demo); look things up in the [Strategy API](docs/reference/strategy-api.md).
+Your own project on an installed FastMM: [`examples/external-project/`](examples/external-project/).
+The whole strategy of the quick start (`examples/quickstart/my_mm.hpp`, compiled and run in CI):
 
+<!-- snippet: examples/quickstart/my_mm.hpp#strategy -->
 ```cpp
-// FASTMM_PARAM_BPS(half_spread_bps, 5_bps, 0_bps, 1000_bps, "half spread around mid")
-// FASTMM_PARAM(Qty, quote_qty, 0.001_qty, 0_qty, 1000_qty, "quantity per side")
-void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
-  if (!book.is_valid()) return ctx.pull_quotes(id);
-  const Instrument& inst = ctx.instrument(id);
-  const Price mid = book.mid();
-  const Price half = mid * params().half_spread_bps;  // exact integer math, no doubles
-  const Qty qty = inst.round_qty(params().quote_qty);
-  DesiredQuotes q;
-  q.bid(inst.round_price(mid - half, Side::Buy), qty);
-  q.ask(inst.round_price(mid + half, Side::Sell), qty);
-  ctx.set_quotes(id, q);  // QuoteManager diffs against live orders: minimal new/cancel/replace
-}
+#include "fastmm/strategy.hpp"
+
+using namespace fastmm;
+
+struct MyParams {
+  FASTMM_PARAMS(MyParams)
+  FASTMM_PARAM_BPS(half_spread_bps, 0.005_bps, 0_bps, 1000_bps, "half spread around the mid, bps")
+  FASTMM_PARAM(Qty, quote_qty, 0.001_qty, 0_qty, 1000_qty, "quantity per side, base units")
+};
+
+struct MyMM : StrategyBase<MyParams> {
+  static constexpr std::string_view name() noexcept { return "my_mm"; }
+
+  void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
+    if (!book.is_valid()) return ctx.pull_quotes(id);  // empty or crossed
+    const Instrument& inst = ctx.instrument(id);
+    const Price half = book.mid() * params().half_spread_bps;  // exact integer arithmetic
+    DesiredQuotes q;
+    q.bid(inst.round_price(book.mid() - half, Side::Buy), inst.round_qty(params().quote_qty));
+    q.ask(inst.round_price(book.mid() + half, Side::Sell), inst.round_qty(params().quote_qty));
+    ctx.set_quotes(id, q);  // the engine sends only the difference to the resting orders
+  }
+};
 ```
 
 **Add a venue** with a market-data parser, an order gateway and a control-path class; binary
@@ -136,7 +155,7 @@ Before trading on a testnet or Binance Demo, read the operator guides:
 - [Kill switch and shutdown](docs/how-to/operations/kill-switch-and-shutdown.md): what trips it and how to read `cancel_all ok|FAILED`
 - [Journals, replay and PnL](docs/how-to/operations/journals-replay-pnl.md): `tools/pnl_report.py` and account reconciliation
 - [Troubleshooting](docs/how-to/operations/troubleshooting.md), keyed by log message
-- [Monitoring a live session](docs/monitoring.md) with `fastmm-top`
+- [Monitoring a live session](docs/how-to/operations/monitor-with-fastmm-top.md) with `fastmm-top`
 
 ## Testing
 

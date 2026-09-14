@@ -15,7 +15,7 @@ Tick each item only when you have seen the evidence yourself.
   with your `[strategy.params]`.
 - [ ] It survives the simulated exchange with faults. Enable `[sim.faults]` in a copy of
   `configs/sim.toml` (market-data drop, order-channel drop, skipped depth update, delayed acks,
-  rejects, rate limits; see [fastmm-sim-exchange](../../sim-exchange.md#fault-injection)) and run
+  rejects, rate limits; see [fastmm-sim-exchange](../../reference/sim-exchange.md#fault-injection)) and run
   `./scripts/run-sim.sh --duration 5m --sim-config <your sim config>`. The engine log has no
   unexpected ERROR lines and the shutdown line says `cancel_all ok`.
 - [ ] The strategy is deterministic: record a backtest with
@@ -43,7 +43,7 @@ Tick each item only when you have seen the evidence yourself.
 
 ## Risk limits
 
-Every `[risk]` limit is **off** when it is `0` or missing ([Configuration](../../configuration.md#risk)).
+Every `[risk]` limit is **off** when it is `0` or missing ([Configuration](../../reference/configuration.md#risk)).
 Set each one deliberately.
 
 - [ ] `max_order_qty` and `max_order_notional` (quote currency; BTC for Deribit options).

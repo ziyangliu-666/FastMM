@@ -28,7 +28,7 @@
 // Reject, SequenceReset, Logout and the StandardHeader component
 // (https://www.onixs.biz/fix-dictionary/4.4/msgType_A_65.html and siblings); the FIX session-level
 // test cases and expected behaviours (FIX Trading Community) for the MsgSeqNum and PossDup rules.
-// See docs/codecs-fix.md for what could not be checked against the primary PDF.
+// See docs/reference/codecs/fix.md for what could not be checked against the primary PDF.
 //
 // I/O is by callbacks: SendFn transmits one complete message (it must not call back into the
 // session), ClockFn supplies SendingTime (defaults to the time of the last on_timer()). on_frame()

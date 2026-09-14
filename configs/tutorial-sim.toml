@@ -1,0 +1,114 @@
+# The tutorial "Your first market maker" on the simulated exchange (docs/tutorials/first-strategy/).
+# One file for both processes: fastmm-sim-exchange reads [[instruments]] and [sim], tutorial-live
+# reads the rest (the engine ignores [sim]).
+#
+#   ./build/release/bin/fastmm-sim-exchange --config configs/tutorial-sim.toml
+#   FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
+#     ./build/release/bin/tutorial-live --config configs/tutorial-sim.toml --duration 40s
+#
+# [sim.faults] closes every market-data connection 15 s after the exchange starts, so the session
+# sees a disconnect, pulls its quotes, reconnects and quotes again.
+
+[engine]
+name = "tutorial-sim"
+cpu = -1                     # -1: do not pin the engine thread (WSL2, laptops)
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs/tutorial"
+epoch_file = "runs/tutorial/session_epoch"
+rng_seed = 42
+min_requote_ticks = 1
+min_requote_interval_ms = 50
+post_only = true
+supports_replace = true
+
+[venues.sim]
+kind = "binance_spot"        # the simulator speaks the Binance Spot API
+ws_url = "ws://127.0.0.1:9080/stream"
+ws_api_url = "ws://127.0.0.1:9080/ws-api/v3"
+rest_url = "http://127.0.0.1:9080"
+api_key = "${FASTMM_SIM_API_KEY}"
+api_secret = "${FASTMM_SIM_API_SECRET}"
+testnet = true
+supports_replace = true
+recv_window_ms = 3000
+
+[venues.sim.fees]
+maker_bps = 1.0
+taker_bps = 4.0
+
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "100"
+min_notional = "5"
+
+[strategy]
+name = "first_mm"
+
+[strategy.params]
+edge_bps = 5.0               # 30 USDT from the microprice at 60,000 USDT
+quote_qty = 0.001            # BTC per side
+max_position = 0.004         # BTC
+report_ms = 5000
+
+[risk]
+max_order_qty = "0.01"
+max_order_notional = "1000"
+max_position = "0.01"
+max_open_orders = 4
+price_collar_bps = 100
+fat_finger_bps = 500
+stale_md_ms = 2000
+max_loss = "50"
+orders_per_sec = 20
+burst = 10
+stp = true
+
+[logging]
+level = "info"
+mirror_level = "warn"
+
+# ---- fastmm-sim-exchange ---------------------------------------------------------------------------
+[sim]
+seed = 7
+start_mid = "60000"
+bind = "127.0.0.1"
+port = 9080
+tls_port = 9443
+tls_cert = "tests/fixtures/tls/cert.pem"
+tls_key = "tests/fixtures/tls/key.pem"
+depth_update_ms = 100
+
+[sim.account]
+api_key = "sim-key"          # FASTMM_SIM_API_KEY / FASTMM_SIM_API_SECRET override these
+api_secret = "sim-secret"
+
+[sim.account.balances]
+BTC = "100"
+USDT = "10000000"
+
+[sim.fees]
+maker_bps = 1.0
+taker_bps = 4.0
+
+[sim.generator]
+# The generator's touch sits 29.90 USDT from its mid, so quotes 5 bps (30 USDT) from the
+# microprice rest just behind it and fill when larger market orders arrive.
+enabled = true
+limit_rate_per_s = 100.0
+market_rate_per_s = 4.0
+mid_step_rate_per_s = 2.0
+offset_p = 0.01
+base_spread_ticks = 2990
+limit_qty_median_lots = 200.0
+market_qty_median_lots = 1000.0
+
+[sim.faults]
+drop_md_after_s = 15         # close every market-data WebSocket once, 15 s after start

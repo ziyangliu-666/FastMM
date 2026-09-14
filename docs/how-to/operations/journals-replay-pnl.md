@@ -199,6 +199,6 @@ edge than the spread it quotes.
 
 ## See also
 
-- [Monitoring a live session](../../monitoring.md)
+- [Monitoring a live session](monitor-with-fastmm-top.md)
 - [Kill switch and shutdown](kill-switch-and-shutdown.md)
 - [Go-live checklist](go-live-checklist.md)

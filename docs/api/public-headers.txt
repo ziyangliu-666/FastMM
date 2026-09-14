@@ -1,0 +1,101 @@
+# FastMM public header manifest (ADR-0012, section 8). One header per line, relative to include/,
+# after its tier:
+#
+#   tier1  strategy, testing, backtest and live API: stable within a minor version from 1.0
+#   tier2  venue, codec, network and configuration extension API: documented, may change before 1.0
+#
+# Every header not listed is internal (engine internals, rings, containers, the journal writer,
+# simulator internals, the reference venue connectors and protocol-specific codec headers) and may
+# change in any release. docs/reference/public-api.md explains the tiers. Each listed header must
+# compile on its own (ctest docs.public_headers, label docs); `net` marks headers that need a
+# FASTMM_BUILD_NET build.
+
+# ---- tier 1: writing and testing strategies -------------------------------------------------------
+tier1 fastmm/strategy.hpp
+tier1 fastmm/strategies/strategy.hpp
+tier1 fastmm/strategies/hooks.hpp
+tier1 fastmm/strategies/params.hpp
+tier1 fastmm/strategies/quoting.hpp
+tier1 fastmm/strategies/registry.hpp
+tier1 fastmm/strategies/module.hpp
+tier1 fastmm/strategies/factories.hpp
+tier1 fastmm/strategies/factory_sim.hpp
+tier1 fastmm/strategies/factory_replay.hpp
+tier1 fastmm/strategies/factory_live.hpp
+tier1 fastmm/testing/strategy_harness.hpp
+tier1 fastmm/core/strategy_context.hpp
+tier1 fastmm/core/fixed_point.hpp
+tier1 fastmm/core/instrument.hpp
+tier1 fastmm/core/enums.hpp
+tier1 fastmm/core/strong_id.hpp
+tier1 fastmm/core/time.hpp
+tier1 fastmm/core/result.hpp
+tier1 fastmm/core/rng.hpp
+tier1 fastmm/core/messages.hpp
+tier1 fastmm/core/order.hpp
+tier1 fastmm/core/oms.hpp
+tier1 fastmm/core/position.hpp
+tier1 fastmm/core/quote_manager.hpp
+tier1 fastmm/core/engine_config.hpp
+tier1 fastmm/core/log.hpp
+tier1 fastmm/core/book/book_view.hpp
+tier1 fastmm/core/book/l2_book.hpp
+tier1 fastmm/core/options/black76.hpp
+
+# ---- tier 1: backtests, sweeps and replay --------------------------------------------------------
+tier1 fastmm/backtest/backtest_config.hpp
+tier1 fastmm/backtest/backtest_runner.hpp
+tier1 fastmm/backtest/result.hpp
+tier1 fastmm/backtest/metrics.hpp
+tier1 fastmm/backtest/sweep.hpp
+tier1 fastmm/backtest/replay.hpp
+tier1 fastmm/backtest/data_source.hpp
+tier1 fastmm/backtest/csv_source.hpp
+tier1 fastmm/backtest/journal_source.hpp
+tier1 fastmm/backtest/array_source.hpp
+tier1 fastmm/backtest/synthetic_source.hpp
+tier1 fastmm/cli/backtest.hpp
+tier1 fastmm/cli/replay.hpp
+
+# ---- tier 1: live trading ---------------------------------------------------------------------------
+tier1 net fastmm/cli/live.hpp
+tier1 net fastmm/live/session.hpp
+tier1 net fastmm/live/live_backend.hpp
+
+# ---- tier 2: configuration --------------------------------------------------------------------------
+tier2 fastmm/config/config.hpp
+tier2 fastmm/config/schema.hpp
+tier2 fastmm/config/env_subst.hpp
+
+# ---- tier 2: venue connectors -----------------------------------------------------------------------
+tier2 net fastmm/venues/venue.hpp
+tier2 net fastmm/venues/venue_factory.hpp
+tier2 net fastmm/venues/feed.hpp
+tier2 net fastmm/venues/event_sink.hpp
+tier2 net fastmm/venues/order_commands.hpp
+tier2 net fastmm/venues/order_events.hpp
+tier2 net fastmm/venues/error_action.hpp
+tier2 net fastmm/venues/symbology.hpp
+tier2 net fastmm/venues/rate_limiter.hpp
+tier2 net fastmm/venues/rest_channel.hpp
+tier2 net fastmm/venues/connection_slot.hpp
+tier2 net fastmm/venues/blocking_http.hpp
+tier2 net fastmm/venues/decimal.hpp
+tier2 net fastmm/venues/json_writer.hpp
+tier2 net fastmm/venues/padded_json.hpp
+tier2 net fastmm/venues/request_id.hpp
+tier2 net fastmm/venues/raw_recorder.hpp
+tier2 net fastmm/venues/wire_latency.hpp
+tier2 fastmm/core/book/book_syncer.hpp
+
+# ---- tier 2: networking -----------------------------------------------------------------------------
+tier2 net fastmm/net/reactor.hpp
+tier2 net fastmm/net/connection.hpp
+tier2 net fastmm/net/crypto.hpp
+tier2 net fastmm/net/backoff.hpp
+tier2 net fastmm/net/url.hpp
+tier2 net fastmm/net/ws_client.hpp
+tier2 net fastmm/net/http_client.hpp
+
+# ---- tier 2: binary protocols -----------------------------------------------------------------------
+tier2 fastmm/codecs/codec.hpp

@@ -78,7 +78,7 @@ literal; use `Notional::from_int(1000)` or `mul(price, qty)`.
 `parse` rejects a value only when more decimals remain after applying the exponent than the type
 holds: `2e-05` is raw 2,000, `1.5e-8` is an error. TOML floats reach strategy parameters formatted
 by fmt (`0.00002` becomes `2e-05`) and Python floats through `repr`, which is why exponents matter
-there. Parameters are described in [adding a strategy](../adding-a-strategy.md#parameters).
+there. Parameters are described in [adding a strategy](strategy-api.md#parameters).
 
 ## Quoting helpers
 

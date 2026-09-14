@@ -4,8 +4,8 @@ This guide shows how to add an exchange connector for a JSON-over-WebSocket venu
 three connectors that ship: Binance Spot (`include/fastmm/venues/binance/`), Bybit v5 spot
 (`include/fastmm/venues/bybit/`) and Deribit options and futures (`include/fastmm/venues/deribit/`).
 Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data.
-Binary protocols (FIX, ITCH/OUCH, SBE) are codecs instead; see [FIX](../../codecs-fix.md),
-[Nasdaq](../../codecs-nasdaq.md) and [CME MDP 3.0](../../codecs-cme-mdp3.md).
+Binary protocols (FIX, ITCH/OUCH, SBE) are codecs instead; see [FIX](../../reference/codecs/fix.md),
+[Nasdaq](../../reference/codecs/nasdaq.md) and [CME MDP 3.0](../../reference/codecs/cme-mdp3.md).
 
 Throughout, `foo` stands for your venue.
 
@@ -30,8 +30,8 @@ The threading contract, from `venue.hpp`:
 - Nothing on the hot path allocates, throws or calls a virtual function. The `Venue` interface is
   virtual because it is control path only.
 
-Read [Venue connectors](../../venues.md) for what the three connectors do today, and its section
-[What a Binance-compatible simulator must implement](../../venues.md#what-a-binance-compatible-simulator-must-implement)
+Read [Venue connectors](../../reference/venues.md) for what the three connectors do today, and its section
+[What a Binance-compatible simulator must implement](../../reference/venues.md#what-a-binance-compatible-simulator-must-implement)
 as a list of venue behaviours your connector must handle.
 
 ## 2. File layout
@@ -252,8 +252,8 @@ Connectors are registered in code, in four places:
    connector-specific key as a passthrough entry
    (`{"venues.*", "<key>", KeyType::Int, false, "<meaning>", true}`), which the loader hands to the
    connector in `VenueSection::extra` without an "unknown key" warning.
-4. Documentation: the kind and keys in [Configuration](../../configuration.md), the kind table and a
-   section in [Venue connectors](../../venues.md), a `configs/foo-testnet.toml`, the key variables in
+4. Documentation: the kind and keys in [Configuration](../../reference/configuration.md), the kind table and a
+   section in [Venue connectors](../../reference/venues.md), a `configs/foo-testnet.toml`, the key variables in
    `.env.example`, an environment section in [Run on a testnet](../operations/run-on-testnet.md) and
    a CHANGELOG entry.
 

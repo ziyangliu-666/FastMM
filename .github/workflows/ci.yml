@@ -28,6 +28,12 @@ jobs:
         run: |
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)
           ! grep -rnE 'TEST_CASE\("[^"]*;' tests || (echo "';' in a TEST_CASE name breaks doctest_discover_tests filters" && exit 1)
+      - name: docs (snippets, links and anchors, configuration reference)
+        # docs/contributing/writing-docs.md; the command-line reference needs a build (gcc-release).
+        run: |
+          python3 tools/doc_snippets.py --check
+          python3 tools/docs_links.py --check
+          python3 tools/docs_config_ref.py --check
 
   clang-tidy:
     runs-on: ubuntu-24.04
@@ -77,9 +83,15 @@ jobs:
       - name: build
         # -k 0: report every compile error in one run instead of stopping at the first one
         run: cmake --build --preset ${{ matrix.preset }} -j$(nproc) -- -k 0
+      - name: docs (command-line reference is up to date)
+        if: matrix.name == 'gcc-release'
+        run: python3 tools/docs_cli_help.py --check --bin build/release/bin
       - name: test
         env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
         # The presets run 8 tests at once; match the runner's cores instead (2 on private repositories).
+        # Includes the labels examples (quick start, C++ examples), tutorial (its unit test, C++
+        # backtest and, outside sanitizers, scripts/docs/tutorial.sh up to the simulated exchange on
+        # ports 9080/9443) and docs (strategy API doc test, public headers compile alone).
         run: ctest --preset ${{ matrix.preset }} -j$(nproc)
       - name: install + external project
         if: matrix.name == 'gcc-release'

@@ -1,0 +1,76 @@
+# The tutorial "Your first market maker" on Binance Spot Demo Mode (docs/tutorials/first-strategy/).
+# Demo Mode has realistic market data and demo balances; its keys are neither testnet nor live keys.
+#
+#   ./build/release/bin/tutorial-live --config configs/tutorial-binance-demo.toml --dry-run --duration 60s
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   ./build/release/bin/tutorial-live --config configs/tutorial-binance-demo.toml --duration 5m
+#
+# The risk limits are deliberately tight: at most 0.0003 BTC (about 25 USDT) of position and a
+# 5 USDT loss before the kill switch trips.
+
+[engine]
+name = "tutorial-binance-demo"
+cpu = -1
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs/tutorial"
+epoch_file = "runs/tutorial/demo_session_epoch"
+rng_seed = 42
+min_requote_ticks = 50       # 0.50 USDT: keeps the order rate far below Binance's limits
+min_requote_interval_ms = 1000
+post_only = true
+supports_replace = true
+
+[venues.binance]
+kind = "binance_spot"
+ws_url = "wss://demo-stream.binance.com/stream"
+ws_api_url = "wss://demo-ws-api.binance.com/ws-api/v3"
+rest_url = "https://demo-api.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = true
+recv_window_ms = 3000
+stale_ms = 10000             # quiet spells of a few seconds are normal
+
+[venues.binance.fees]
+maker_bps = 10.0             # the Demo account's commission
+taker_bps = 10.0
+
+# Tick, lot and minimum notional are replaced by exchangeInfo at startup.
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+min_notional = "5"
+
+[strategy]
+name = "first_mm"
+
+[strategy.params]
+edge_bps = 5.0               # below the 10 bps fee: expect to lose a little per fill
+quote_qty = 0.0001           # BTC per side, above the 5 USDT minimum notional
+max_position = 0.0003        # BTC
+report_ms = 10000
+
+[risk]
+max_order_qty = "0.0002"
+max_order_notional = "25"
+max_position = "0.0004"
+max_open_orders = 2
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 5000
+max_loss = "5"
+orders_per_sec = 2
+burst = 4
+stp = true
+
+[logging]
+level = "info"
+mirror_level = "warn"

@@ -1,5 +1,5 @@
 #pragma once
-// FIX 4.4 codec (plan 7): umbrella header. See docs/codecs-fix.md.
+// FIX 4.4 codec (plan 7): umbrella header. See docs/reference/codecs/fix.md.
 //
 //   FixFramer    byte stream -> one message per frame           (codecs::Framer)
 //   FixView      zero-copy validating field index + typed getters

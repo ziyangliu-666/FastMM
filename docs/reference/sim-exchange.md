@@ -1,7 +1,7 @@
 # fastmm-sim-exchange
 
 `fastmm-sim-exchange` is a Binance Spot-compatible simulated exchange (plan 8.3,
-[ADR-0008](adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector
+[ADR-0008](../adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector
 (`fastmm::venues::binance::BinanceVenue`, see [venues.md](venues.md)) and `fastmm-live` run
 against it on localhost: TCP or TLS, REST, market-data WebSockets, the WebSocket API, depth
 sequence sync, HMAC authentication, and order flow with real fills. The simulator can also

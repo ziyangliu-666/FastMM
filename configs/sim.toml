@@ -1,4 +1,4 @@
-# fastmm-sim-exchange: the Binance Spot-compatible simulated exchange (docs/sim-exchange.md).
+# fastmm-sim-exchange: the Binance Spot-compatible simulated exchange (docs/reference/sim-exchange.md).
 #   ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml     # 127.0.0.1:9080 / :9443
 #   ./build/release/bin/fastmm-live --config configs/sim-local.toml       # engine against it
 #

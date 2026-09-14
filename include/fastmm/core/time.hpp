@@ -170,10 +170,10 @@ enum class TscRefresh : std::uint8_t {
                      (static_cast<Int128>(dc) * static_cast<Int128>(c.ns_per_cycle_q32)) >> 32);
 }
 
-// Periodic recalibration (see docs/architecture.md, "Clock calibration"): a calibrator thread
-// measures with calibrate_tsc() and publishes into a Seqlocked<TscCalibration>; every TscClock
-// user keeps its own copy and calls refresh() from its loop. A clock is owned by one thread:
-// refresh() and the time accessors must not race.
+// Periodic recalibration (see docs/explanation/architecture.md, "Clock calibration"): a calibrator
+// thread measures with calibrate_tsc() and publishes into a Seqlocked<TscCalibration>; every
+// TscClock user keeps its own copy and calls refresh() from its loop. A clock is owned by one
+// thread: refresh() and the time accessors must not race.
 class TscClock {
  public:
   static constexpr Duration kDefaultStepThreshold = milliseconds(1);

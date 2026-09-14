@@ -51,7 +51,7 @@ void usage(std::FILE* out) {
       "\n"
       "Endpoints: REST /api/v3/*, market data /stream?streams=... and /ws/<stream>,\n"
       "WebSocket API /ws-api/v3. The API key/secret come from [sim.account] or\n"
-      "FASTMM_SIM_API_KEY / FASTMM_SIM_API_SECRET. See docs/sim-exchange.md.\n");
+      "FASTMM_SIM_API_KEY / FASTMM_SIM_API_SECRET. See docs/reference/sim-exchange.md.\n");
 }
 
 // "60s", "5m", "1500ms", "2h", or a bare number of seconds.

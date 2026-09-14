@@ -62,6 +62,52 @@ fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim)
 fastmm_test(config    LABELS "config"        LIBS fastmm::backtest)
 if(TARGET fastmm_config_tests)
   target_compile_definitions(fastmm_config_tests PRIVATE FASTMM_CONFIGS_DIR="${PROJECT_SOURCE_DIR}/configs")
+  # The tutorial's configs run its strategy (examples/cpp/tutorial).
+  if(TARGET tutorial_strategies)
+    target_link_libraries(fastmm_config_tests PRIVATE tutorial_strategies)
+    target_compile_definitions(fastmm_config_tests PRIVATE FASTMM_TUTORIAL_STRATEGIES=1)
+  endif()
+endif()
+
+# Docs checks (label docs, docs/reference/strategy-api.md and docs/reference/public-api.md):
+#   docs.strategy_api.*   tests/docs/strategy_api_doc_test.cpp, the source of the strategy API
+#                         reference's code blocks
+#   docs.public_headers   every header of docs/api/public-headers.txt compiles on its own
+fastmm_test(docs LABELS "unit;docs" LIBS fastmm::sim)
+if(TARGET fastmm_docs_tests)
+  fastmm_relabel_tests(fastmm_docs_tests "^docs\\." "unit;docs")  # discovered tests keep one label
+endif()
+set(_manifest ${PROJECT_SOURCE_DIR}/docs/api/public-headers.txt)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_manifest})
+file(STRINGS ${_manifest} _manifest_lines REGEX "^[^#]")
+set(_header_tus)
+foreach(_line IN LISTS _manifest_lines)
+  if(NOT _line MATCHES "^(tier1|tier2) (net )?([A-Za-z0-9_/.]+\\.hpp)$")
+    message(FATAL_ERROR "docs/api/public-headers.txt: malformed line '${_line}'")
+  endif()
+  set(_header ${CMAKE_MATCH_3})
+  if(CMAKE_MATCH_2 AND NOT FASTMM_BUILD_NET)
+    continue()
+  endif()
+  if(NOT EXISTS ${PROJECT_SOURCE_DIR}/include/${_header})
+    message(FATAL_ERROR "docs/api/public-headers.txt: include/${_header} does not exist")
+  endif()
+  string(MAKE_C_IDENTIFIER ${_header} _tu)
+  set(_tu ${CMAKE_CURRENT_BINARY_DIR}/public_headers/${_tu}.cpp)
+  file(CONFIGURE OUTPUT ${_tu} CONTENT "#include \"${_header}\"  // alone: nothing before it\n")
+  list(APPEND _header_tus ${_tu})
+endforeach()
+if(NOT FASTMM_ENABLE_ASAN AND NOT FASTMM_ENABLE_TSAN)
+  add_library(fastmm_public_headers OBJECT EXCLUDE_FROM_ALL ${_header_tus})
+  fastmm_target_defaults(fastmm_public_headers)
+  target_link_libraries(fastmm_public_headers PRIVATE fastmm::backtest fastmm::codecs)
+  if(TARGET fastmm::live)
+    target_link_libraries(fastmm_public_headers PRIVATE fastmm::live fastmm::venues fastmm::net)
+  endif()
+  add_test(NAME docs.public_headers
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target fastmm_public_headers)
+  set_tests_properties(docs.public_headers PROPERTIES
+    LABELS "docs" RESOURCE_LOCK fastmm_compile_fail TIMEOUT 3600)
 endif()
 if(FASTMM_BUILD_NET)
   fastmm_test(net       LABELS "unit"           LIBS fastmm::net)
@@ -328,7 +374,8 @@ if(Python3_Interpreter_FOUND AND TARGET fastmm-live)
     COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/exit_codes_doc.py
             $<TARGET_FILE:fastmm-live>
             ${PROJECT_SOURCE_DIR}/docs/how-to/operations/kill-switch-and-shutdown.md
-            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/troubleshooting.md)
+            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/troubleshooting.md
+            ${PROJECT_SOURCE_DIR}/docs/reference/cli.md)
   set_tests_properties(apps.fastmm-live.exit_codes_documented PROPERTIES LABELS "unit;cli")
 endif()
 

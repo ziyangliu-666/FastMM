@@ -1,0 +1,287 @@
+# Configuration
+
+Every FastMM program reads one TOML file passed with `--config <file.toml>`. This page lists every
+key. The key tables are generated from `include/fastmm/config/schema.hpp` by
+`tools/docs_config_ref.py` ([Writing docs](../contributing/writing-docs.md#generated-pages)); the
+parser is `src/core/config.cpp`. The shipped configurations in `configs/` are complete examples,
+and a test loads each of them and fails on any warning.
+
+## General rules
+
+- **Unknown keys are ignored with a warning** that names the key and its line. Check the warnings
+  when a setting seems to have no effect.
+- **A key with the wrong type is an error**, reported with its line and column.
+- **Prices, quantities and notionals are exact.** Decimal keys (`tick`, `lot`, `max_order_qty`,
+  `max_loss`, ...) may be written as strings (`"0.01"`) or numbers (`0.01`); either way the decimal
+  text is parsed exactly into fixed point, never through a `double`.
+- **Secrets come from the environment.** Inside `[venues.<name>]`, the string keys `kind`,
+  `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` and `ca_file` support `${NAME}`
+  substitution. Only exact `${NAME}` tokens are replaced; a variable that is not set fails loading.
+- **Literal secrets are refused.** A value longer than 32 characters under a key whose name
+  contains `key`, `secret`, `token` or `password` is rejected unless it uses `${...}`.
+  `--allow-inline-secrets` overrides this, for throwaway local tests only.
+- Logs and journals contain the configuration without `api_key` and `api_secret`.
+- Types: `decimal` values are marked in the meaning; `any` keys accept a string or a number.
+
+## `[engine]`
+
+<!-- BEGIN config-keys engine -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string |  | session name, used in logs, journal file names and the status file (default "fastmm") |
+| `cpu` | integer |  | CPU core of the engine thread; -1 = not pinned (default -1) |
+| `net_cpus` | integer array |  | CPU cores of the network threads, one per venue in order (default []) |
+| `spin_mode` | string |  | busy (spin forever) \| adaptive (back off to short sleeps when idle; use on WSL2 and laptops) (default adaptive) |
+| `net_backend` | string |  | event loop of fastmm-live and fastmm-sim-exchange: epoll \| io_uring (Linux 5.13 or newer; falls back to epoll with a warning) (default epoll) |
+| `journal` | boolean |  | record every consumed event to a .fmj journal (default true) |
+| `journal_dir` | string |  | directory for journals (default "runs") |
+| `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
+| `rng_seed` | integer |  | seed of the strategy random generator ctx.rng() (default 1) |
+| `md_ring_bytes` | integer |  | market-data ring per venue, bytes, a power of two (default 4194304) |
+| `order_ring_bytes` | integer |  | order-event ring per venue, bytes, a power of two (default 1048576) |
+| `journal_ring_bytes` | integer |  | engine-to-journal ring, bytes, a power of two (default 16777216) |
+| `max_events_per_step` | integer |  | events taken from each ring per engine iteration (default 64) |
+| `crossed_grace_ms` | integer |  | tolerate a crossed book this long before pulling its quotes, ms (default 100) |
+| `latency_publish_ms` | integer |  | latency histogram publish interval, ms (default 1000) |
+| `tsc_recalibrate_s` | integer |  | fastmm-live: TSC recalibration period, s; 0 = off (default 10) |
+| `min_requote_ticks` | integer |  | keep a resting quote whose price is within this many ticks of the desired price (default 1) |
+| `min_requote_interval_ms` | integer |  | change the same quote slot at most this often, ms (default 50) |
+| `min_qty_bps` | integer |  | keep a resting quote whose remaining quantity covers this share of the desired quantity, bps (default 8000 = 80 %) |
+| `post_only` | boolean |  | send quotes as post-only orders (default true) |
+| `supports_replace` | boolean |  | let the quote manager amend orders in place where the venue supports it (default true) |
+| `reject_backoff_ms` | integer |  | after a venue reject other than a post-only cross, no new orders on that side for this long, doubling with each further reject, ms; 0 = off (default 1000) |
+| `reject_backoff_max_ms` | integer |  | cap of the doubling reject backoff, ms (default 60000) |
+| `on_kill` | string |  | fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every venue killed): exit (normal shutdown, exit code 6) \| stay (keep running with quoting off) (default exit) |
+<!-- END config-keys -->
+
+`net_backend = "io_uring"` needs Linux 5.13 or newer and is blocked by some seccomp profiles,
+Docker's default among them; see [Network reactor](../explanation/architecture.md#network-reactor).
+`tsc_recalibrate_s`: the engine clock stays continuous and slews each measured offset away over one
+period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off.
+`on_kill` applies to kills the engine trips itself (`[risk] max_loss`, a full outbound or journal
+ring, every venue killed): `exit` runs the normal shutdown (quotes pulled, cancel-all on every
+venue, summary, status, journal) and exits with code 6; `stay` keeps the process running with
+quoting off and logs an ERROR line every 10 s until it is stopped. See
+[Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself).
+
+## `[venues.<name>]`
+
+One table per venue; `<name>` is how instruments refer to it.
+
+<!-- BEGIN config-keys venues.* -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `kind` | string | yes | connector: binance_spot (alias binance) \| bybit (alias bybit_spot) \| deribit \| sim (fastmm-sim-exchange and backtest configs) |
+| `ws_url` | string |  | market-data WebSocket URL |
+| `ws_api_url` | string |  | order-entry WebSocket API URL, where the venue has one |
+| `rest_url` | string |  | REST base URL |
+| `api_key` | string |  | API key; write "${VARIABLE}" (a literal secret is refused) |
+| `api_secret` | string |  | API secret; write "${VARIABLE}" (a literal secret is refused) |
+| `testnet` | boolean |  | the endpoints are a testnet or demo environment (default true) |
+| `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
+| `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
+| `ca_file` | string |  | extra CA certificate, for example tests/fixtures/tls/cert.pem for the local simulator |
+| `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
+| `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
+<!-- END config-keys -->
+
+### `[venues.<name>.fees]`
+
+<!-- BEGIN config-keys venues.*.fees -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `maker_bps` | number |  | maker fee, bps; negative = rebate (default 0) |
+| `taker_bps` | number |  | taker fee, bps (default 0) |
+<!-- END config-keys -->
+
+### Connector-specific keys
+
+These are validated like the keys above and handed to the connector unchanged; a key a connector
+does not use has no effect. [Venue connectors](venues.md) describes each connector.
+
+<!-- BEGIN config-keys venues.*:connector -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms |
+| `order_api` | string |  | order entry: ws (default) \| rest |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
+| `depth_limit` | integer |  | binance: REST snapshot depth, 5 to 5000 |
+| `key_type` | string |  | binance: hmac (default) \| ed25519 |
+| `private_key_file` | string |  | binance: Ed25519 private key file (PEM), with key_type = ed25519 |
+| `user_stream` | string |  | binance: ws_api (default) \| listen_key \| none |
+| `position_from_balance` | boolean |  | binance: derive positions from account balances |
+| `depth` | integer |  | bybit: order book subscription depth, 1 to 1000 |
+| `ws_private_url` | string |  | bybit, deribit: private WebSocket URL; empty = derived from ws_url |
+| `ping_interval_ms` | integer |  | bybit: application ping interval, ms, at least 1000 |
+| `orders_per_second` | integer |  | bybit: client-side order rate cap, orders/s |
+| `position_from_wallet` | boolean |  | bybit: derive positions from the wallet |
+| `currencies` | any |  | deribit: currencies for reference data, user channels and reconciliation, "BTC" or ["BTC", "ETH"] (default "BTC") |
+| `book_interval` | string |  | deribit: book channel interval, 100ms (default) \| agg2 |
+| `ticker_interval` | string |  | deribit: ticker channel interval, 100ms (default) \| agg2 |
+| `trades_interval` | string |  | deribit: trades channel interval, 100ms (default) \| agg2 |
+| `heartbeat_interval_s` | integer |  | deribit: public/set_heartbeat interval, s, at least 10 |
+| `reject_post_only` | boolean |  | deribit: reject crossing post-only orders instead of repricing them (default true) |
+| `cancel_on_disconnect` | boolean |  | deribit: cancel-on-disconnect on the order connection (default true) |
+| `matching_engine_rate` | integer |  | deribit: order requests per second of the account tier (default 5) |
+| `matching_engine_burst` | integer |  | deribit: order request burst of the account tier (default 20) |
+<!-- END config-keys -->
+
+## `[[instruments]]`
+
+<!-- BEGIN config-keys instruments[] -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `venue` | string | yes | name of a [venues.<name>] table |
+| `symbol` | string | yes | venue symbol, for example BTCUSDT |
+| `base` | string |  | base asset, for example BTC |
+| `quote` | string |  | quote asset, for example USDT |
+| `asset_class` | string |  | spot \| perpetual (perp) \| future (futures) \| option \| fx \| equity (default spot) |
+| `tick` | any | yes | price increment, decimal; a string such as "0.01" is parsed exactly |
+| `lot` | any | yes | quantity increment, decimal |
+| `min_qty` | any |  | smallest order quantity, decimal |
+| `max_qty` | any |  | largest order quantity, decimal |
+| `min_notional` | any |  | smallest order value, quote currency, decimal |
+| `contract_multiplier` | any |  | units of the underlying per contract, decimal; PnL and notional use it (default 1) |
+| `enabled` | boolean |  | trade this instrument; false loads it without trading (default true) |
+| `price_decimals` | integer |  | price display precision (default 8) |
+| `expiry` | string |  | expiry of a derivative, ISO-8601 |
+| `strike` | any |  | option strike, decimal |
+| `option_type` | string |  | call \| put |
+<!-- END config-keys -->
+
+Live connectors replace `tick`, `lot` and the size bounds with the venue's reference data when
+they connect; the configured values are used by backtests and the simulator.
+
+## `[strategy]`
+
+<!-- BEGIN config-keys strategy -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `name` | string | yes | registered strategy name (see --list-strategies) |
+| `params` | table |  | [strategy.params] table: the strategy's parameters |
+<!-- END config-keys -->
+
+`[strategy.params]` holds scalars, validated against the strategy's parameter schema:
+
+```toml
+[strategy]
+name = "first_mm"
+
+[strategy.params]
+edge_bps = 5.0
+quote_qty = 0.001
+```
+
+- Names, types, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations;
+  `--list-strategies` prints them (`--format json` for tools).
+- `decimal` values take up to 8 decimals and `bps` values up to 4, both parsed exactly (exponent
+  notation such as `2e-05` is accepted); `ms` and `int` values are whole numbers.
+- An unknown parameter, a value with too many decimals or an out-of-range value is an error at
+  startup.
+- `--strategy <name>` and `--param key=value` override `[strategy]`; a strategy other than the
+  configuration's ignores `[strategy.params]`. A journal records the configuration after the
+  overrides.
+
+## `[risk]`
+
+Every limit is off when it is `0` or omitted. Cancels are always allowed, including after the kill
+switch trips. [Risk model](../explanation/risk-model.md) explains the order and meaning of the
+checks.
+
+<!-- BEGIN config-keys risk -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `max_order_qty` | any |  | largest order quantity, decimal; 0 = off |
+| `max_order_notional` | any |  | largest order value, quote currency, decimal; 0 = off |
+| `max_position` | any |  | largest absolute position per instrument, counting same-side open orders, decimal; 0 = off |
+| `max_open_orders` | integer |  | open orders per instrument; 0 = off |
+| `price_collar_bps` | integer |  | refuse limit prices further than this from the mid, bps; 0 = off |
+| `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps; 0 = off |
+| `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms; 0 = off |
+| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, quote currency, decimal; 0 = off; [engine] on_kill decides whether fastmm-live then exits |
+| `orders_per_sec` | integer |  | token-bucket order rate, orders/s; 0 = off |
+| `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
+| `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
+<!-- END config-keys -->
+
+## `[logging]`
+
+<!-- BEGIN config-keys logging -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `level` | string |  | trace \| debug \| info \| warn (or warning) \| error \| off (default info) |
+| `file` | string |  | log file; empty = stderr only |
+| `mirror_level` | string |  | records at or above this level are also written to stderr (default warn) |
+<!-- END config-keys -->
+
+## `[backtest]`
+
+Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module
+(`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and
+strategy settings come from the sections above; fees come from the first venue's `fees` table,
+self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `source` | string | `""` | `synthetic`, `journal` or `csv`. When empty, the format is inferred from `path` |
+| `path` | string | `""` | Data file. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
+| `seed` | int | `[sim] seed`, else `1` | Seed for the simulator and the strategy random generator |
+| `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
+| `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Treat its results as optimistic |
+| `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do |
+| `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue and acknowledgements back, µs |
+| `latency_jitter_us` | int | `50` | Random jitter added to that latency, µs, seeded |
+| `latency_md_us` | int | `0` | Fixed market-data latency, µs |
+| `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
+| `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost; exercises reconciliation |
+| `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s |
+| `initial_capital` | number | `0` | Starting capital, quote currency, used for percentage drawdown |
+| `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
+| `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
+
+Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`,
+`--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).
+
+## `[sim]`
+
+Parameters of the synthetic market used when the data source is synthetic; free-form in the
+schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` reads
+its own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml)).
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `seed` | int | `1` | Used when `[backtest] seed` is not set |
+| `duration_s` | int | `60` | Used when `[backtest] duration_s` is not set, s |
+| `start_mid` | decimal | `"60000"` | Initial mid price |
+| `seed_levels` | int | `20` | Price levels populated before the run starts |
+| `limit_rate_per_s` | number | `200` | Limit-order arrivals per second |
+| `cancel_rate_per_order_s` | number | `0.5` | Cancellation hazard of each resting order, per second |
+| `market_rate_per_s` | number | `10` | Market-order arrivals per second |
+| `mid_step_rate_per_s` | number | `2` | Steps of one tick in the latent mid price, per second |
+| `offset_p` | number | `0.35` | In (0, 1]. Limit orders land k ticks from the touch with probability p(1-p)^k |
+| `base_spread_ticks` | int | `1` | Distance of the touch from the latent mid, ticks, at least 1 |
+| `limit_qty_median_lots` | number | `200` | Median limit-order size in lots (log-normal) |
+| `market_qty_median_lots` | number | `100` | Median market-order size in lots (log-normal) |
+| `regimes` | bool | `true` | Switch between a calm and a volatile regime |
+| `volatile_mult` | number | `4.0` | Multiplier on mid steps and market orders in the volatile regime |
+| `depth_update_ms` | int | `100` | Book changes are aggregated into one depth diff per interval, ms, like Binance `@depth@100ms` |
+| `book_ticker` | bool | `true` | Also publish top-of-book updates, at the same flush as the depth diff |
+
+`configs/backtest-example.toml` is a complete, tuned example of both sections.
+
+## Failure handling
+
+| Failure | Detection | Action |
+|---|---|---|
+| Market-data disconnect | EPOLLRDHUP, read of 0 bytes, TLS error | Quotes pulled, reconnect with backoff, fresh snapshot |
+| Sequence gap | Book sync state machine | Resync state, re-snapshot (rate limited), quotes pulled meanwhile |
+| Stale feed | No traffic for the connector's `stale_ms` | Stale event; a longer `dead_ms` forces a reconnect |
+| Order channel loss | Connection state machine | Immediate cancel-all through REST, reconcile open orders after reconnect |
+| Kill switch | `max_loss`, a full outbound or journal ring, every venue killed, SIGINT/SIGTERM, `--duration`, order ring overflow | Stop quoting and cancel every working order. On shutdown every venue also cancels all over REST (5 s timeout per request), then the process exits. After a kill the engine tripped itself the shutdown follows at once (exit code 6) unless `[engine] on_kill = "stay"`; see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) |
+| Venue unusable | The venue's error map: `Fatal` (bad key, signature or permission, failed authentication) or `HardStop` (Binance IP ban) | That venue's kill switch: its quotes are pulled, its orders cancelled and new orders to it refused; the other venues keep trading. Every venue killed is a global kill |
+| Rate limit | Response headers and error codes | Cool down until reset; HTTP 418 halts REST for the ban period |
+| Clock skew | Timestamp rejection codes | Re-measure the offset from the venue's time endpoint |
+| Ring overflow | Push fails | Drop the market-data delta and resync; order events are never dropped |

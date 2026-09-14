@@ -46,7 +46,7 @@ set -a && . ./.env && set +a
 Binance Demo and the Binance testnet use the same variable names, so only one of them can be loaded
 at a time. Never write a key into a config file: a literal value longer than 32 characters under a
 key-like name is refused at startup, and `--allow-inline-secrets` exists only for throwaway local
-tests (see [Configuration](../../configuration.md#general-rules)).
+tests (see [Configuration](../../reference/configuration.md#general-rules)).
 
 ## 3. The environments
 
@@ -107,7 +107,7 @@ tests (see [Configuration](../../configuration.md#general-rules)).
   are rate limited locally by `matching_engine_rate` and `matching_engine_burst`; set them to your
   account tier. Prices of options are in BTC, so the `[risk]` notional limits are BTC amounts.
 - **Status:** the private payloads follow Deribit's published schemas and a scripted fake exchange,
-  not recorded traffic ([Venue connectors](../../venues.md#open-questions-verify-in-the-code)). Watch
+  not recorded traffic ([Venue connectors](../../reference/venues.md#open-questions-verify-in-the-code)). Watch
   the first keyed session closely.
 
 ## 4. Dry run
@@ -184,4 +184,4 @@ FASTMM_LIVE_TESTS=1 ctest --test-dir build/release -L live -R 'venues\.live\.byb
 
 - [Go-live checklist](go-live-checklist.md)
 - [Journals, replay and PnL](journals-replay-pnl.md)
-- [Venue connectors](../../venues.md) for what each connector implements
+- [Venue connectors](../../reference/venues.md) for what each connector implements

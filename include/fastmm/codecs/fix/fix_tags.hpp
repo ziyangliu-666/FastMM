@@ -1,7 +1,7 @@
 #pragma once
 // FIX 4.4 tag numbers, message types and enumeration values used by fastmm::codecs::fix.
 // There is no XML dictionary: every constant the codec reads or writes is listed here, and
-// each was checked against the FIX 4.4 dictionary (docs/codecs-fix.md, "Sources"):
+// each was checked against the FIX 4.4 dictionary (docs/reference/codecs/fix.md, "Sources"):
 //   * FIX Trading Community, FIX 4.4 specification with Errata 20030618
 //     https://www.fixtrading.org/standards/fix-4-4/
 //   * OnixS FIX 4.4 dictionary, https://www.onixs.biz/fix-dictionary/4.4/ (tagNum_<n>.html and
