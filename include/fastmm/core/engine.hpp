@@ -249,6 +249,14 @@ class Engine {
     return r;
   }
 
+  // T3: the strategy's first order decision in the current event (StrategyContext calls this
+  // before forwarding send/cancel/replace/set_quotes/pull_quotes). Serialize runs from here to
+  // the hand-off to the transport; engine-initiated sends (kill switch, connection loss, pulled
+  // quotes on a stale book) record no serialize sample.
+  void mark_decision() noexcept {
+    if (strategy_t3_.v == 0) strategy_t3_ = clock_.cycles();
+  }
+
   Result<ClientOrderId, RejectReason> send_order(const NewOrderRequest& req) noexcept {
     auto r = submit_new(req);
     flush_out();
@@ -323,6 +331,8 @@ class Engine {
     }
     event_t0_ = h->t0_cycles;
     event_t1_ = Cycles{h->t0_cycles.v + h->t1_delta};
+    // T3 belongs to this event only (see mark_decision()).
+    strategy_t3_ = Cycles{};
     sent_in_event_ = false;
     dispatch(h);
   }
@@ -852,10 +862,12 @@ class Engine {
     latency_.record(LatencyInterval::WireToBook,
                     static_cast<std::uint64_t>(clock_.cycles_to_ns(t2 - event_t0_)));
   }
+  // Strategy (T2 -> T3) ends at the strategy's first order decision in this event, or at the end
+  // of its callback when it made none.
   void record_strategy_hop(Cycles t2) noexcept {
-    strategy_t3_ = clock_.cycles();
+    const Cycles t3 = strategy_t3_.v != 0 ? strategy_t3_ : clock_.cycles();
     latency_.record(LatencyInterval::Strategy,
-                    static_cast<std::uint64_t>(clock_.cycles_to_ns(strategy_t3_ - t2)));
+                    static_cast<std::uint64_t>(clock_.cycles_to_ns(t3 - t2)));
   }
   void publish_latency(Timestamp now) noexcept {
     last_publish_ = now;

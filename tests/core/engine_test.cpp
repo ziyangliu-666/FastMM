@@ -381,3 +381,24 @@ TEST_CASE("core.engine: reconcile marks unseen orders cancelled and suppresses q
         OrderState::PendingCancel);
   CHECK(f.transport.count(EventType::OutCancel) == 3);
 }
+
+TEST_CASE(
+    "core.engine: a timer-driven send records no serialize latency from an older book event") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();  // BasicMM quotes: a strategy decision followed by a send in the same event
+  const auto& serialize = f.engine->latency().histogram(LatencyInterval::Serialize);
+  CHECK(serialize.count() >= 1);
+  f.ack_all_new();  // working orders, so the stale pull below cancels them
+  f.drain();
+  const std::uint64_t after_book = serialize.count();
+  const std::size_t sent_before = f.transport.count(EventType::OutCancel);
+  f.clock.advance(seconds(1));  // no book updates: the stale timer pulls the quotes
+  f.drain();
+  REQUIRE(f.transport.count(EventType::OutCancel) > sent_before);
+  // BasicMM's stale timer pulls the quotes itself: a decision of its own, measured from that timer
+  // event. Before T3 was stamped at the decision, these cancels were measured from the book
+  // event's T3 and read as the whole second.
+  CHECK(serialize.count() > after_book);
+  CHECK(serialize.percentile(1.0) < 500'000'000ULL);
+}

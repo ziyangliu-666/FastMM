@@ -37,17 +37,26 @@ class StrategyContext {
 
   // Direct order API (risk-checked, journaled).
   [[nodiscard]] Result<ClientOrderId, RejectReason> send(const NewOrderRequest& req) noexcept {
+    e_->mark_decision();
     return e_->send_order(req);
   }
   [[nodiscard]] Result<void, RejectReason> cancel(ClientOrderId id) noexcept {
+    e_->mark_decision();
     return e_->cancel_order(id);
   }
   [[nodiscard]] Result<void, RejectReason> replace(ClientOrderId id, Price px, Qty qty) noexcept {
+    e_->mark_decision();
     return e_->replace_order(id, px, qty);
   }
   // Quote ladder API (QuoteManager does the diffing).
-  void set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept { e_->set_quotes(id, q); }
-  void pull_quotes(InstrumentId id) noexcept { e_->pull_quotes(id); }
+  void set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
+    e_->mark_decision();
+    e_->set_quotes(id, q);
+  }
+  void pull_quotes(InstrumentId id) noexcept {
+    e_->mark_decision();
+    e_->pull_quotes(id);
+  }
   void pull_all_quotes() noexcept { e_->pull_all_quotes(); }
 
   [[nodiscard]] TimerId add_timer(Duration period,
