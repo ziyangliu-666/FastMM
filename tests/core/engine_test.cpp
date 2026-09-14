@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <vector>
 
 using namespace fastmm;
@@ -160,6 +161,34 @@ struct Fixture {
     f.exec_id = exec;
     f.liquidity = Liquidity::Maker;
     push(f);
+  }
+  OrderState state(ClientOrderId id) const {
+    const Handle<Order> h = engine->oms().find(id);
+    REQUIRE(h.valid());
+    return engine->oms().get(h).state;
+  }
+  std::vector<OutNewOrderMsg> news() const {
+    std::vector<OutNewOrderMsg> v;
+    for (std::size_t i = 0; i < transport.out.size(); ++i) {
+      if (reinterpret_cast<const EventHeader*>(transport.out[i].data())->type ==
+          EventType::OutNewOrder)
+        v.push_back(transport.at<OutNewOrderMsg>(i));
+    }
+    return v;
+  }
+  void reconcile(ReconcileMsg::Kind kind,
+                 ClientOrderId id = ClientOrderId{},
+                 std::optional<ClientOrderId> sent_watermark = std::nullopt) {
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, InstrumentId{0}, VenueId{0});
+    m.kind = kind;
+    m.cl_ord_id = id;
+    m.venue_order_id = "V";
+    if (sent_watermark) {
+      m.sent_watermark = *sent_watermark;
+      m.flags = ReconcileMsg::kSentWatermark;
+    }
+    push(m);
   }
   std::size_t drain() {
     std::size_t total = 0;
@@ -346,7 +375,7 @@ TEST_CASE("core.engine: direct order API, risk rejects, transport full trips the
   CHECK(f.engine->stopped());
 }
 
-TEST_CASE("core.engine: reconcile marks unseen orders cancelled and suppresses quoting") {
+TEST_CASE("core.engine: reconcile marks unseen orders cancelled, pauses quoting until End") {
   Fixture f(false);
   f.push_book("100.00", "100.02", 1, true);
   f.drain();
@@ -374,12 +403,22 @@ TEST_CASE("core.engine: reconcile marks unseen orders cancelled and suppresses q
   f.drain();
   CHECK_FALSE(f.engine->reconciling());
   CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.003"));
-  CHECK(f.engine->oms().open_count() == 1);  // the ask (unseen) was marked cancelled
-  // The venue still has the bid, so reconciliation cleared its pending cancel (the pull's cancel
-  // was lost). Quotes are pulled during reconciliation, so the quote manager cancels it again.
-  CHECK(f.engine->oms().get(f.engine->oms().find(bid.cl_ord_id)).state ==
-        OrderState::PendingCancel);
-  CHECK(f.transport.count(EventType::OutCancel) == 3);
+  const std::vector<OutNewOrderMsg> sent = f.news();
+  // The ask (unseen) was marked cancelled. The venue still has the bid: the pull's cancel is in
+  // flight, so the bid stays pending and is not cancelled again.
+  CHECK(f.engine->oms().classify(sent[1].cl_ord_id) == OrderClass::RecentlyTerminal);
+  CHECK(f.state(bid.cl_ord_id) == OrderState::PendingCancel);
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  // Quoting resumes at End: the free ask level at once, the bid level once its cancel ack arrives.
+  REQUIRE(sent.size() == 3);
+  CHECK(sent[2].side == Side::Sell);
+  CHECK(sent[2].price == px("100.12"));
+  CHECK(f.engine->oms().open_count() == 2);
+  f.cancel_ack_all();
+  f.drain();
+  REQUIRE(f.news().size() == 4);
+  CHECK(f.news()[3].side == Side::Buy);
+  CHECK(f.news()[3].price == px("99.90"));
 }
 
 TEST_CASE("core.engine: serialize latency starts at the decision of the same event") {
@@ -446,4 +485,161 @@ TEST_CASE(
   CHECK(pos.qty == qt("0.00499"));
   CHECK(pos.fees == Notional::from_decimal("0.001399").value());
   CHECK(f.engine->stats().unconverted_fees == 1);
+}
+
+TEST_CASE("core.engine: quotes pulled for a reconciliation work again after End, mid unchanged") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const std::vector<OutNewOrderMsg> quoted = f.news();
+  REQUIRE(quoted.size() == 2);
+  f.reconcile(ReconcileMsg::Kind::Begin, ClientOrderId{}, quoted[1].cl_ord_id);
+  f.drain();
+  REQUIRE(f.transport.count(EventType::OutCancel) == 2);  // pulled at Begin
+  // The snapshot still shows both quotes: the pull's cancels are in flight.
+  f.reconcile(ReconcileMsg::Kind::OpenOrder, quoted[0].cl_ord_id);
+  f.reconcile(ReconcileMsg::Kind::OpenOrder, quoted[1].cl_ord_id);
+  f.reconcile(ReconcileMsg::Kind::End);
+  f.drain();
+  CHECK_FALSE(f.engine->reconciling());
+  CHECK(f.engine->quoting_enabled());
+  CHECK(f.state(quoted[0].cl_ord_id) == OrderState::PendingCancel);
+  CHECK(f.state(quoted[1].cl_ord_id) == OrderState::PendingCancel);
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  CHECK(f.transport.count(EventType::OutNewOrder) == 2);
+  // The cancel acks arrive after End. The book has not moved, yet both levels are quoted again.
+  f.cancel_ack_all();
+  f.drain();
+  const std::vector<OutNewOrderMsg> requoted = f.news();
+  REQUIRE(requoted.size() == 4);
+  CHECK(requoted[2].side == Side::Buy);
+  CHECK(requoted[2].price == quoted[0].price);
+  CHECK(requoted[3].side == Side::Sell);
+  CHECK(requoted[3].price == quoted[1].price);
+  f.ack_all_new();
+  f.drain();
+  CHECK(f.engine->oms().open_count() == 2);
+  CHECK(f.state(requoted[2].cl_ord_id) == OrderState::Live);
+  CHECK(f.state(requoted[3].cl_ord_id) == OrderState::Live);
+}
+
+TEST_CASE("core.engine: orders sent after the open-orders request stay tracked through End") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const ClientOrderId last_sent = f.news()[1].cl_ord_id;
+  // The order channel drops: the engine pulls the quotes and the venue cancels them.
+  ConnectionStateMsg cs{};
+  init_header(cs, EventType::ConnectionState, InstrumentId{}, VenueId{0});
+  cs.state = ConnState::Disconnected;
+  cs.channel = 1;
+  f.push(cs);
+  f.drain();
+  REQUIRE(f.transport.count(EventType::OutCancel) == 2);
+  f.cancel_ack_all();
+  f.drain();
+  REQUIRE(f.engine->oms().open_count() == 0);
+  // Back: the venue reports Live, then requests its open orders. The strategy requotes on Live;
+  // those orders leave after the request, so the snapshot cannot show them.
+  cs.state = ConnState::Live;
+  f.push(cs);
+  f.drain();
+  const std::vector<OutNewOrderMsg> requoted = f.news();
+  REQUIRE(requoted.size() == 4);
+  f.reconcile(ReconcileMsg::Kind::Begin, ClientOrderId{}, last_sent);
+  f.reconcile(ReconcileMsg::Kind::End);
+  f.drain();
+  CHECK(f.engine->oms().open_count() == 2);
+  CHECK(f.state(requoted[2].cl_ord_id) == OrderState::PendingNew);
+  CHECK(f.state(requoted[3].cl_ord_id) == OrderState::PendingNew);
+  CHECK(f.transport.count(EventType::OutNewOrder) == 4);  // nothing re-placed on top of them
+  // Their acks are applied: both quotes are tracked and working, nothing is left untracked.
+  f.ack_all_new();
+  f.drain();
+  CHECK(f.state(requoted[2].cl_ord_id) == OrderState::Live);
+  CHECK(f.state(requoted[3].cl_ord_id) == OrderState::Live);
+  CHECK(f.engine->stats().unknown_order_cancels == 0);
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  CHECK(f.transport.count(EventType::OutNewOrder) == 4);
+}
+
+TEST_CASE("core.engine: late and unknown fills update position, fees and PnL") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const OutNewOrderMsg bid = f.news()[0];
+  REQUIRE(bid.side == Side::Buy);
+  ControlMsg c{};
+  init_header(c, EventType::Control);
+  c.command = ControlCommand::PullQuotes;  // quotes cancelled, no requote to muddy the position
+  f.push(c);
+  f.drain();
+  f.cancel_ack_all();
+  f.drain();
+  REQUIRE(f.engine->oms().open_count() == 0);
+  const auto push_fill = [&](ClientOrderId id,
+                             Side side,
+                             const char* p,
+                             const char* q,
+                             const char* fee,
+                             FeeAsset asset,
+                             const char* exec) {
+    OrderFillMsg m{};
+    init_header(m, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+    m.cl_ord_id = id;
+    m.side = side;
+    m.price = px(p);
+    m.qty = qt(q);
+    m.cum_qty = qt(q);
+    m.exec_id = exec;
+    m.liquidity = Liquidity::Maker;
+    m.fee = Notional::from_decimal(fee).value();
+    m.fee_asset = asset;
+    f.push(m);
+    f.drain();
+  };
+  // The bid filled at the venue before the cancel took effect; the fill arrives after the cancel
+  // ack. Commission in the base asset: we hold 0.00999 and pay 0.00001 * 99.90.
+  push_fill(bid.cl_ord_id, Side::Buy, "99.90", "0.01", "0.00001", FeeAsset::Base, "late1");
+  CHECK(f.engine->oms().stats().late_fills == 1);
+  const Position& pos = f.engine->position(InstrumentId{0});
+  CHECK(pos.qty == qt("0.00999"));
+  CHECK(pos.fees == Notional::from_decimal("0.000999").value());
+  CHECK(f.engine->stats().fills == 1);
+  CHECK(f.engine->runner_stats().fees_raw == pos.fees.raw);
+  // A fill for an id we never issued, on an instrument we trade, is booked too.
+  push_fill(ClientOrderId{0xABCD}, Side::Sell, "100.10", "0.004", "0.0004", FeeAsset::Quote, "u1");
+  CHECK(pos.qty == qt("0.00599"));
+  CHECK(pos.fees == Notional::from_decimal("0.001399").value());
+  CHECK(f.engine->oms().stats().unknown_ids >= 1);
+  // Realized PnL: 0.004 sold at 100.10 against an average cost of 99.90.
+  CHECK(pos.realized.is_positive());
+}
+
+TEST_CASE("core.engine: End frees the quote manager's slots of orders the venue no longer has") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const QuoteManager& qm = f.engine->quote_manager();
+  REQUIRE(qm.slot_handle(InstrumentId{0}, Side::Buy, 0).valid());
+  REQUIRE(qm.slot_handle(InstrumentId{0}, Side::Sell, 0).valid());
+  f.reconcile(ReconcileMsg::Kind::Begin);
+  ControlMsg c{};
+  init_header(c, EventType::Control);
+  c.command = ControlCommand::PullQuotes;  // the operator stops quoting meanwhile: nothing resumes
+  f.push(c);
+  f.reconcile(ReconcileMsg::Kind::End);  // the snapshot shows neither quote
+  f.drain();
+  CHECK(f.engine->oms().open_count() == 0);
+  CHECK_FALSE(qm.slot_handle(InstrumentId{0}, Side::Buy, 0).valid());
+  CHECK_FALSE(qm.slot_handle(InstrumentId{0}, Side::Sell, 0).valid());
+  CHECK(f.transport.count(EventType::OutNewOrder) == 2);
 }

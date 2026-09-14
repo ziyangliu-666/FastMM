@@ -820,7 +820,10 @@ void DeribitVenue::drain_outbound() {
   if (outbound_ == nullptr) return;
   while (const std::byte* p = outbound_->try_peek()) {
     const auto* h = reinterpret_cast<const EventHeader*>(p);
-    if (const auto cmd = OrderCommand::from(*h)) send_command(*cmd);
+    if (const auto cmd = OrderCommand::from(*h)) {
+      sent_.note(*cmd);
+      send_command(*cmd);
+    }
     outbound_->release();
   }
 }
@@ -973,6 +976,7 @@ void DeribitVenue::apply_action(VenueAction action, int code, std::string_view m
 void DeribitVenue::request_open_orders() {
   if (cfg_.dry_run || !connected_ || !private_conn_.is_live() || access_token_.empty()) return;
   if (reconcile_pending_ > 0) return;  // one reconciliation at a time
+  reconcile_watermark_ = sent_.value();
   reconcile_records_.clear();
   reconcile_failed_ = false;
   for (std::size_t i = 0; i < cfg_.currencies.size(); ++i) {
@@ -1029,6 +1033,7 @@ void DeribitVenue::handle_open_orders_response(std::size_t currency_index,
   ReconcileMsg begin{};
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
+  SentWatermark::stamp(begin, reconcile_watermark_);
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));

@@ -277,8 +277,14 @@ static_assert(sizeof(ConnectionStateMsg) == 128);
 
 // Control thread injects the venue's view after a reconnect (5.8). A reconciliation is a
 // Begin, N OpenOrder / Position records, then End.
+//
+// Begin with kSentWatermark set carries the highest client order id (New or Replace) the venue had
+// taken from the outbound ring when it requested the snapshot. Orders with a higher id were not yet
+// sent, so the snapshot cannot contain them and End must not mark them cancelled. Without the flag
+// every order of the venue missing from the snapshot is cancelled.
 struct ReconcileMsg {
   enum class Kind : std::uint8_t { Begin = 0, OpenOrder = 1, Position = 2, End = 3 };
+  static constexpr std::uint8_t kSentWatermark = 1U << 0;
   EventHeader hdr;
   Kind kind;
   Side side;
@@ -290,9 +296,11 @@ struct ReconcileMsg {
   Price price;
   Qty orig_qty;
   Qty cum_qty;
-  Qty position_qty;  // Kind::Position
-  Price avg_px;      // Kind::Position
-  std::uint8_t pad_[24];
+  Qty position_qty;              // Kind::Position
+  Price avg_px;                  // Kind::Position
+  ClientOrderId sent_watermark;  // Kind::Begin, valid with kSentWatermark
+  std::uint8_t flags;            // Kind::Begin: kSentWatermark
+  std::uint8_t pad_[15];
 };
 static_assert(sizeof(ReconcileMsg) == 192);
 

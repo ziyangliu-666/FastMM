@@ -393,6 +393,13 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     }));
     const auto* rec = oc.last<ReconcileMsg>(EventType::Reconcile);
     CHECK(rec->kind == ReconcileMsg::Kind::End);
+    // Begin carries the last order id the venue sent before it asked for the snapshot.
+    const auto* begin = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+    REQUIRE(begin != nullptr);
+    CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
+    CHECK(begin->sent_watermark == rp.cl_ord_id);
 
     // Private channel drop: REST cancel_all_by_instrument per instrument, reconnect, auth again,
     // reconcile again.

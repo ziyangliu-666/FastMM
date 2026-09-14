@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace fastmm {
@@ -510,8 +511,11 @@ class Engine {
     const OmsUpdate u = oms_.on_fill(f);
     if (u.action == OmsAction::Duplicate) return;
     ++stats_.fills;
-    const InstrumentId id = u.known ? u.order.instrument : f.hdr.instrument;
-    const Side side = u.known ? u.order.side : f.side;
+    // A fill for an order that is no longer open (late fill) or was never ours still changes the
+    // position: without an instrument in the OMS snapshot, the fill itself says what was traded.
+    const bool from_order = u.order.instrument.valid();
+    const InstrumentId id = from_order ? u.order.instrument : f.hdr.instrument;
+    const Side side = from_order ? u.order.side : f.side;
     if (instruments_.contains(id)) {
       const Instrument& inst = instruments_.get(id);
       // Commission in the base asset changes what we hold (a buy receives qty - fee, a sell
@@ -602,11 +606,18 @@ class Engine {
 
   void on_reconcile(const ReconcileMsg& m) noexcept {
     switch (m.kind) {
-      case ReconcileMsg::Kind::Begin:
+      case ReconcileMsg::Kind::Begin: {
         reconciling_ = true;
-        pull_all_quotes();
-        oms_.reconcile_begin();
+        Placer place{this};
+        for (const Instrument& inst : instruments_)
+          quotes_.pull_quotes(inst, oms_, place, /*keep_desired=*/true);  // resumed at End
+        flush_out();
+        oms_.reconcile_begin(m.hdr.venue,
+                             (m.flags & ReconcileMsg::kSentWatermark) != 0
+                                 ? std::optional<ClientOrderId>(m.sent_watermark)
+                                 : std::nullopt);
         break;
+      }
       case ReconcileMsg::Kind::OpenOrder: {
         const OmsUpdate u = oms_.reconcile_open_order(m);
         after_oms_update(u, m.hdr);
@@ -617,13 +628,31 @@ class Engine {
           positions_.set(m.hdr.instrument, m.position_qty, m.avg_px);
         break;
       case ReconcileMsg::Kind::End:
-        oms_.reconcile_end([&](const OmsUpdate& u) {
-          if constexpr (requires { strategy_.on_order_update(ctx_, u); })
-            strategy_.on_order_update(ctx_, u);
-        });
+        // Orders the venue no longer has end like any other update, so the quote manager frees
+        // their slots too.
+        oms_.reconcile_end([&](const OmsUpdate& u) { after_oms_update(u, m.hdr); }, m.hdr.venue);
         reconciling_ = false;
+        resume_quotes();
         break;
     }
+  }
+
+  // The strategy is not asked again after a reconciliation (BasicMM requotes on a mid move), so
+  // the quotes paused at Begin are placed again here. An instrument that cannot quote now (kill
+  // switch, quoting disabled, no valid book) is pulled for good instead: its kept quotes are stale.
+  void resume_quotes() noexcept {
+    Placer place{this};
+    const bool enabled = quoting_enabled();
+    const Timestamp now = clock_.now();
+    for (const Instrument& inst : instruments_) {
+      if (!quotes_.resumable(inst.id)) continue;
+      if (enabled && books_[inst.id.value].is_valid()) {
+        quotes_.resume(inst, oms_, now, place);
+      } else {
+        quotes_.pull_quotes(inst, oms_, place);
+      }
+    }
+    flush_out();
   }
 
   // `requested`: the control thread asked for it (shutdown, operator); otherwise a risk limit or
