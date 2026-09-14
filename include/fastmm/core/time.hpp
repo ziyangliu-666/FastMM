@@ -82,9 +82,6 @@ struct TscCalibration {
   bool use_tsc = false;
 };
 
-// Measures the TSC frequency against CLOCK_REALTIME over `window` (spins). src/core/time.cpp
-[[nodiscard]] TscCalibration calibrate_tsc(Duration window = milliseconds(50)) noexcept;
-
 // Clock readings used by TscCalibrator. Plain function pointers so tests can inject a
 // deterministic clock; system_clock_readings() reads rdtsc, CLOCK_REALTIME and CLOCK_MONOTONIC_RAW.
 struct ClockReadings {
@@ -94,6 +91,12 @@ struct ClockReadings {
   bool check_invariant_tsc = true;  // false for injected clocks
 };
 [[nodiscard]] ClockReadings system_clock_readings() noexcept;
+
+// Startup calibration (spins for `window`): TscCalibrator::start(), so the rate is measured against
+// CLOCK_MONOTONIC_RAW and a host wall-clock step inside the window cannot distort it; the anchor
+// follows CLOCK_REALTIME. src/core/time.cpp
+[[nodiscard]] TscCalibration calibrate_tsc(Duration window = milliseconds(50)) noexcept;
+[[nodiscard]] TscCalibration calibrate_tsc(Duration window, const ClockReadings& readings) noexcept;
 
 // One simultaneous reading of the three clocks (the TSC is the midpoint of a tight bracket).
 struct TscAnchor {

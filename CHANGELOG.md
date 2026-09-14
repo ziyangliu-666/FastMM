@@ -254,6 +254,12 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- `calibrate_tsc()` (and `TscClock::calibrate()`) measures the TSC rate against
+  `CLOCK_MONOTONIC_RAW`, like `TscCalibrator::start()`, instead of `CLOCK_REALTIME`. A host
+  wall-clock step inside its 50 ms window (WSL2 steps by 0.5-1.5 s every 10-40 s) made the clock run
+  tens of times fast, so every order failed the stale-market-data check; this was the occasional
+  20 s timeout of the `sim_exchange e2e` integration tests, whose live engine calibrates this way.
+  A new overload takes injected `ClockReadings`.
 - A `[risk] max_loss` trip or an internal failure no longer leaves `fastmm-live` running silently
   with quoting off (see `[engine] on_kill`), and a fatal error on one venue now stops trading on
   that venue through its kill switch instead of leaving the engine quoting into a venue that

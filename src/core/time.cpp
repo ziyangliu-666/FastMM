@@ -139,48 +139,14 @@ TscRecalibration TscCalibrator::update() noexcept {
 }
 
 TscCalibration calibrate_tsc(Duration window) noexcept {
-  TscCalibration c{};
-  if (!has_invariant_tsc()) {
-    c.use_tsc = false;
-    return c;
-  }
-  // Anchor: take the (wall, tsc) pair with the smallest rdtsc-clock_gettime-rdtsc bracket.
-  auto sample = [](std::uint64_t& tsc, std::int64_t& ns) {
-    std::uint64_t best_span = UINT64_MAX;
-    for (int i = 0; i < 32; ++i) {
-      const std::uint64_t a = rdtsc().v;
-      const std::int64_t w = wall_now().ns;
-      const std::uint64_t b = rdtsc().v;
-      if (b - a < best_span) {
-        best_span = b - a;
-        tsc = a + (b - a) / 2;
-        ns = w;
-      }
-    }
-  };
-  std::uint64_t t0 = 0;
-  std::int64_t n0 = 0;
-  sample(t0, n0);
-  const std::int64_t end = n0 + window.ns;
-  while (wall_now().ns < end) {
-    __builtin_ia32_pause();
-  }
-  std::uint64_t t1 = 0;
-  std::int64_t n1 = 0;
-  sample(t1, n1);
-  const std::uint64_t dc = t1 - t0;
-  const std::int64_t dn = n1 - n0;
-  if (dc == 0 || dn <= 0) {
-    c.use_tsc = false;
-    return c;
-  }
-  c.tsc0 = t1;
-  c.ns0 = n1;
-  c.ns_per_cycle_q32 =
-      static_cast<std::uint64_t>((static_cast<Uint128>(static_cast<std::uint64_t>(dn)) << 32) / dc);
-  c.ghz = static_cast<double>(dc) / static_cast<double>(dn);
-  c.use_tsc = true;
-  return c;
+  return calibrate_tsc(window, system_clock_readings());
+}
+
+// The rate comes from CLOCK_MONOTONIC_RAW, as in TscCalibrator: on WSL2 CLOCK_REALTIME steps by
+// 0.5-1.5 s every 10-40 s, and a step inside a 50 ms window measured against it made the clock
+// run tens of times fast (every order then failed the stale-market-data check).
+TscCalibration calibrate_tsc(Duration window, const ClockReadings& r) noexcept {
+  return TscCalibrator(r).start(window);
 }
 
 }  // namespace fastmm

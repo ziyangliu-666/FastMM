@@ -68,6 +68,7 @@ TEST_CASE("sim_exchange e2e: injected depth gap triggers a resync and the engine
   LiveEngine live(sim_local_config(fx, false));
   live.start();
   auto status = [&] { return live.venue().status(); };
+  INFO(describe(status(), fx.server.stats()));
   REQUIRE(wait_until(
       [&] { return status().books_synced == 1 && fx.server.stats().open_orders >= 1; }, 20000));
 
@@ -101,6 +102,7 @@ TEST_CASE("sim_exchange e2e: market-data drop pulls quotes and order-channel los
   LiveEngine live(sim_local_config(fx, false));
   live.start();
   auto status = [&] { return live.venue().status(); };
+  INFO(describe(status(), fx.server.stats()));
   REQUIRE(wait_until(
       [&] { return status().books_synced == 1 && fx.server.stats().open_orders >= 1; }, 20000));
 

@@ -279,6 +279,8 @@ std::int64_t g_wall_offset_ns = 0;
 double g_ns_per_cycle = 0.25;
 std::int64_t g_raw_jitter_ns = 0;  // added to every 5th raw reading
 std::uint64_t g_raw_reads = 0;
+std::int64_t g_wall_step_at_ns = -1;  // true time at which realtime steps by g_wall_step_ns
+std::int64_t g_wall_step_ns = 0;
 
 std::uint64_t read_tsc() noexcept {
   g_tsc += 400;
@@ -286,6 +288,10 @@ std::uint64_t read_tsc() noexcept {
   return g_tsc;
 }
 std::int64_t read_realtime() noexcept {
+  if (g_wall_step_at_ns >= 0 && g_true_ns >= g_wall_step_at_ns) {
+    g_wall_offset_ns += g_wall_step_ns;
+    g_wall_step_at_ns = -1;
+  }
   return g_true_ns + g_wall_offset_ns;
 }
 std::int64_t read_raw() noexcept {
@@ -302,6 +308,8 @@ ClockReadings reset(double ns_per_cycle) noexcept {
   g_ns_per_cycle = ns_per_cycle;
   g_raw_jitter_ns = 0;
   g_raw_reads = 0;
+  g_wall_step_at_ns = -1;
+  g_wall_step_ns = 0;
   return ClockReadings{&read_tsc, &read_realtime, &read_raw, false};
 }
 }  // namespace fake_clock
@@ -337,6 +345,21 @@ TEST_CASE("core.time: a host wall-clock step is reported and does not distort th
   CHECK(std::llabs(r.drift_ns - 1'550'000'000) < 1'000);
   CHECK(std::llabs(q32_error(r.calibration)) <= kPpmOfQuarter);  // rate from CLOCK_MONOTONIC_RAW
   CHECK(r.calibration.ns0 > fake_clock::g_wall_offset_ns);       // anchored on CLOCK_REALTIME
+}
+
+TEST_CASE("core.time: a host wall-clock step inside the startup window does not distort the rate") {
+  // calibrate_tsc() (TscClock::calibrate(), the integration tests' live engine) used to take the
+  // rate from CLOCK_REALTIME over its 50 ms window. On WSL2 the wall clock steps by 0.5-1.5 s every
+  // 10-40 s; a step inside the window made the clock run tens of times fast, and every order then
+  // failed the stale-market-data check until the process ended.
+  const ClockReadings readings = fake_clock::reset(0.25);
+  fake_clock::g_wall_step_at_ns = 20'000'000;
+  fake_clock::g_wall_step_ns = 1'450'000'000;
+  const TscCalibration c = calibrate_tsc(milliseconds(50), readings);
+  REQUIRE(c.use_tsc);
+  CHECK(fake_clock::g_wall_step_at_ns < 0);  // the step happened inside the window
+  CHECK(std::llabs(q32_error(c)) <= kPpmOfQuarter);
+  CHECK(c.ns0 > fake_clock::g_wall_offset_ns);  // anchored on CLOCK_REALTIME after the step
 }
 
 TEST_CASE("core.time: anchor jitter costs a few ppm over a long baseline") {
