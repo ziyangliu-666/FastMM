@@ -1,8 +1,8 @@
 # Add a venue
 
-This guide shows how to add an exchange connector for a JSON-over-WebSocket venue, following the
-three connectors that ship: Binance Spot (`include/fastmm/venues/binance/`), Bybit v5 spot
-(`include/fastmm/venues/bybit/`) and Deribit options and futures (`include/fastmm/venues/deribit/`).
+Model a JSON-over-WebSocket connector on the three that ship: Binance Spot
+(`include/fastmm/venues/binance/`), Bybit v5 spot (`include/fastmm/venues/bybit/`) and Deribit
+options and futures (`include/fastmm/venues/deribit/`).
 Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data.
 Binary protocols (FIX, ITCH/OUCH, SBE) are codecs instead; see [FIX](../../reference/codecs/fix.md),
 [Nasdaq](../../reference/codecs/nasdaq.md) and [CME MDP 3.0](../../reference/codecs/cme-mdp3.md).
@@ -22,13 +22,13 @@ The threading contract, from `venue.hpp`:
   that setup.
 - `connect()`, `disconnect()`, `on_timer()`, `on_wake()` and `request_open_orders()` run on the
   venue's reactor thread.
-- `cancel_all()` must work from **any** thread, including while the reactor thread is stuck: use an
+- `cancel_all()` must work from any thread, including while the reactor thread is stuck: use an
   independent blocking REST connection (`BlockingHttp`, `include/fastmm/venues/blocking_http.hpp`).
 - Two sinks carry events to the engine (`include/fastmm/venues/event_sink.hpp`). The market-data
   sink is lossy: when its ring is full the delta is dropped and the book must resync. The order sink
   never drops: it spins, then calls its overflow callback, and `fastmm-live` shuts down.
-- Nothing on the hot path allocates, throws or calls a virtual function. The `Venue` interface is
-  virtual because it is control path only.
+- Nothing on the hot path allocates, throws or calls a virtual function; the virtual `Venue`
+  interface is control path only.
 
 Read [Venue connectors](../../reference/venues.md) for what the three connectors do today, and its section
 [What a Binance-compatible simulator must implement](../../reference/venues.md#what-a-binance-compatible-simulator-must-implement)
@@ -142,7 +142,8 @@ book and pull the quotes of that venue's instruments.
 
 A channel with no traffic for `stale_ms` reports `ConnState::Stale`; after `dead_ms` the connection
 is closed and reopened. Defaults are 2000 ms and 10000 ms (Binance), 2000 ms and 30000 ms (Bybit),
-10000 ms and 30000 ms (Deribit); quiet testnets need a larger `stale_ms`.
+10000 ms and 30000 ms (Deribit); for quiet testnet feeds see
+[Venue connectors](../../reference/venues.md#configuration-keys).
 
 ## 5. Order entry
 
@@ -161,7 +162,7 @@ Follow the pattern rather than the concept:
    (`include/fastmm/venues/json_writer.hpp`), which never allocates and refuses to send a
    truncated request.
 3. Request ids are `<kind><client order id>` (`include/fastmm/venues/request_id.hpp`: kind `n`,
-   `c` or `r`, 15 characters), so a response maps back to its command without a lookup table.
+   `c` or `r`, 15 characters).
 4. Post-only maps to the venue's flag: Binance `LIMIT_MAKER`, Bybit `timeInForce` `PostOnly`,
    Deribit `post_only` with `reject_post_only`.
 5. Replace is used only when both `VenueCaps::supports_replace` and the config's
@@ -297,13 +298,11 @@ ctest --preset release -R 'foo\.'
 ```
 
 Benchmarks: add the parsers to `bench/bench_json.cpp` and the order encoder to
-`bench/bench_order_encoders.cpp`, then a p50 budget for each in `bench/ci_budget.toml`, as the
-shipped venues have.
+`bench/bench_order_encoders.cpp`, then a p50 budget for each in `bench/ci_budget.toml`.
 
 ## 13. Conformance checklist
 
-Each item links to the test that proves it for Bybit (or the connector named). Your venue is done
-when each has an equivalent test.
+Your venue is done when each item has an equivalent test.
 
 | Item | Proven by |
 |---|---|
@@ -317,7 +316,7 @@ when each has an equivalent test.
 | A full market-data ring forces a resync | [`binance_depth_sync_test.cpp`](../../../tests/venues/binance_depth_sync_test.cpp) "binance.depth_sync: full market-data ring forces a resync" |
 | Signatures match an independent implementation | [`bybit_order_encoder_test.cpp`](../../../tests/venues/bybit_order_encoder_test.cpp) "bybit.auth: signatures match an independent HMAC implementation" |
 | New, cancel and replace requests are byte-exact | [`bybit_order_encoder_test.cpp`](../../../tests/venues/bybit_order_encoder_test.cpp) "bybit.encoder: order.create / order.cancel / order.amend WS frames" |
-| REST requests sign the bytes actually sent | [`bybit_order_encoder_test.cpp`](../../../tests/venues/bybit_order_encoder_test.cpp) "bybit.encoder: REST requests sign the exact bytes sent" |
+| REST requests sign the bytes sent | [`bybit_order_encoder_test.cpp`](../../../tests/venues/bybit_order_encoder_test.cpp) "bybit.encoder: REST requests sign the exact bytes sent" |
 | Every documented error code maps to a reason and an action | [`bybit_order_encoder_test.cpp`](../../../tests/venues/bybit_order_encoder_test.cpp) "bybit.error_map: documented retCodes" |
 | Order statuses map to order events | [`bybit_private_parser_test.cpp`](../../../tests/venues/bybit_private_parser_test.cpp) "bybit.private_parser: order topic statuses map to order events" |
 | Fills and positions, with the commission asset | [`bybit_private_parser_test.cpp`](../../../tests/venues/bybit_private_parser_test.cpp) "bybit.private_parser: execution -> fill, wallet -> position, control frames"; [`binance_user_parser_test.cpp`](../../../tests/venues/binance_user_parser_test.cpp) "binance.user: the commission asset of a fill is classified as base, quote or other" |
@@ -332,6 +331,5 @@ when each has an equivalent test.
 | The real testnet: book sync, place and cancel | [`live_bybit_test.cpp`](../../../tests/venues/live_bybit_test.cpp) "live.bybit: testnet book sync, then place and cancel a far limit order" |
 | The engine quotes, fills and shuts down cleanly over the network (Binance protocol only) | [`e2e_test.cpp`](../../../tests/integration/e2e_test.cpp), against `fastmm-sim-exchange` |
 
-Once the list is green, run the connector on its testnet: `--dry-run`, then a short keyed session
-with tight `[risk]` limits and a Ctrl-C that ends with `cancel_all ok`
+Then run the connector on its testnet with tight `[risk]` limits
 ([Run on a testnet](../operations/run-on-testnet.md)).
