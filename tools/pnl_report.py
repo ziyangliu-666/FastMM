@@ -149,7 +149,7 @@ def read_fills(path: str, verify_crc: bool):
 
 
 def parse_engine_log(path: str) -> dict:
-    """Last summary lines of a fastmm-live log (apps/fastmm-live/live_backend.cpp)."""
+    """Last summary lines of a fastmm-live log (src/live/session.cpp)."""
     text = Path(path).read_text(errors="replace")
     out = {}
     m = re.findall(r"fastmm-live: realized_pnl=(\S+) unrealized_pnl=(\S+) fees=(\S+)", text)

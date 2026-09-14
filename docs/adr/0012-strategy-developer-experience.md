@@ -465,3 +465,42 @@ Step 4 (sections 3 and 4) follows the decision, with these clarifications:
   `tests/hotpath/noalloc_sim_test.cpp` and `bench/bench_tick_to_order.cpp` used the same 0.003 bps;
   they now configure 0 bps, which is what they ran before, so the no-allocation window still
   contains fills and the benchmark compares like for like.
+
+Step 5 (sections 5 and 6) follows the decision, with these clarifications:
+
+- **Masked registration.** `Transports` and `register_strategy<S>(r, Transports)` exist in
+  `module.hpp` for FastMM's own tests (a Sim-only registration whose factory is instantiated in
+  another file); the documented API is `register_strategy<S>(r)`.
+- **`FASTMM_INSTANTIATE_STRATEGY(S, kind)`** expands to an explicit instantiation with a trailing
+  return type (`template auto ::fastmm::kind##_factory<S>(...) -> std::unique_ptr<...>`), because
+  `std::unique_ptr<...> ::fastmm::...` parses as a nested name; the caller writes the `;`.
+- **No Engine in registration files.** `EngineConfig` moved to `core/engine_config.hpp`, so
+  `registry.hpp` and `module.hpp` do not include `engine.hpp`. `StrategyRegistry::add` was removed
+  rather than kept as a wrapper of `try_add`.
+- **Built-ins.** The internal generator is `fastmm_generate_strategy_module` in
+  `src/strategies/CMakeLists.txt`; it also writes the registration file, which only declares the
+  factories. `fastmm::strategies` additionally holds the `--list-strategies` formatter
+  (`strategies/listing.hpp`) and `cli/modules.hpp` (`program_name`, `register_strategy_modules`),
+  which all three command lines share.
+- **Listings.** Each command line lists the strategies of its own transport (`fastmm-live`: Live,
+  `fastmm-backtest`: Sim); the text format is unchanged and JSON is
+  `{"strategies": [{"name", "transports", "params": [{"name", "type", "default", "min", "max",
+  "doc"}]}]}`. The parity test compares the two apps' text and JSON output byte for byte.
+  `--format` without `--list-strategies` is a usage error (exit 2).
+- **Live overrides.** `--strategy` and `--param` edit the loaded `Config`, so `effective_toml()` and
+  `config_hash` include them. Unknown parameter names exit with code 3 before any venue is contacted;
+  bad values are still reported when the engine is built, after reference data, as before.
+  `fastmm-backtest` also requires the strategy to support Sim before running.
+- **Missing instantiation.** `link_fail.missing_factory_instantiation` (label `compile_fail`)
+  builds an executable that calls `register_strategy<S>` with only `module.hpp` included; the linker
+  names all three factories. Its control includes `factories.hpp` and links.
+- **External project.** The unit test uses plain checks instead of doctest, which the install does
+  not export. The strategy library links `fastmm::lowlatency` privately so consumer engines get the
+  same code generation flags as FastMM's. `-DFASTMM_SOURCE_DIR=` switches the template from
+  `find_package(fastmm CONFIG REQUIRED COMPONENTS live)` (no version, the policy is deferred) to
+  `add_subdirectory`. `scripts/ci-external-project.sh` also replays the live journal with
+  `--verify`, which journal v2 makes exact, and checks `--list-strategies --format json`.
+- **Install.** `fastmmConfig.cmake` sets `fastmm_<component>_FOUND` and checks a requested net
+  component before `find_dependency`, so `cmake.find_package.live_without_net` tests the message
+  with a config generated for `FASTMM_BUILD_NET=OFF` instead of a second install.
+- **Integration tests** keep their own live wiring until the `LiveSession` class (section 6) exists.

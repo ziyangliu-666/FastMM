@@ -5,8 +5,9 @@
 // `edge_ticks` away, and stops quoting the side that would push |position| past the limit.
 // Parameters are exact (Qty is parsed from the config string, never through a double), and the
 // hot path is integer-only. No registration is needed for run_backtest<S>();
-// docs/adding-a-strategy.md shows how to make it visible to the apps and Python. A hook with a
-// wrong signature is a compile error.
+// examples/external-project/ registers the same strategy for the live, backtest and replay command
+// lines (docs/how-to/strategies/register-a-strategy.md). A hook with a wrong signature is a compile
+// error.
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/strategy.hpp"
 

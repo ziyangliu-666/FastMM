@@ -46,7 +46,7 @@ These events do **not** trip the kill switch:
 
 ## Shutdown sequence
 
-From `run_live()` in `apps/fastmm-live/live_backend.cpp`:
+From `run_live()` in `src/live/session.cpp`:
 
 1. The control thread notices the signal, the elapsed duration or the ring overflow (it checks every
    50 ms), publishes the state `stopping` to the status file and logs

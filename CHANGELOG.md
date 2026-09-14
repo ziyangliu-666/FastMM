@@ -5,6 +5,31 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- **Breaking, strategy registration (ADR-0012).** A strategy library exports one registration
+  function that calls `fastmm::register_strategy<S>(r)` per strategy; that call adds the Sim,
+  Replay and Live factories, whose templates are declared in `strategies/module.hpp` and defined in
+  `strategies/factory_{sim,replay,live}.hpp` (`factories.hpp` includes all three). A registered
+  factory that no file compiles is a link error naming it. `StrategyRegistry::add` is replaced by
+  `try_add`, which returns `AddResult::Added`, `AlreadyPresent`, `Conflict` or `Invalid`;
+  `register_strategy` throws `StrategyConflict` on a conflict. `make_engine_runner` moves to
+  `strategies/engine_factory.hpp`, `EngineConfig` to `core/engine_config.hpp` and `LiveBackend` /
+  `make_live_runner` to `live/live_backend.hpp`; `sim::make_sim_or_replay_runner` is removed.
+- The built-in strategies are the new `fastmm::strategies` library, registered for all three
+  runtimes by `fastmm::register_builtin_strategies(StrategyRegistry&)` (one generated file per
+  strategy and runtime); `fastmm::backtest` links it and `bt::register_builtin_strategies()` wraps
+  it. `apps/fastmm-live/runner_*.cpp`, `live_runners.*` and `src/backtest/registrations.cpp` are
+  gone.
+- **The live session and the command lines are libraries.** `fastmm::live` (net builds) holds
+  `run_live` (`live/session.hpp`) and `fastmm::cli::live`; `fastmm::backtest` holds
+  `fastmm::cli::backtest` and `fastmm::cli::replay`. Each takes the app's strategy modules; the
+  built-in strategies are always registered first, and a strategy name registered by different
+  code exits with code 3. `fastmm-live`, `fastmm-backtest` and `fastmm-replay` are 3-line mains.
+  Usage and error messages start with the program name; log lines keep the `fastmm-live:` tag.
+- The install exports `fastmm::strategies` and, in net builds, `fastmm::live`; the package config
+  reports components, and `find_package(fastmm COMPONENTS live)` against an install built with
+  `FASTMM_BUILD_NET=OFF` fails with a message saying so. `examples/external-project/` replaces
+  `tests/install-consumer`, and the CI install step builds and runs it
+  (`scripts/ci-external-project.sh`).
 - The opt-in testnet tests (`venues.live.*` in `fastmm_venues_tests`) carry the ctest label `live`
   instead of `unit` and `fixture`: `ctest -L live` selects them, the test presets exclude them, and
   they still skip unless `FASTMM_LIVE_TESTS=1`.
@@ -58,6 +83,15 @@ All notable changes are recorded here (Keep a Changelog format).
   AvellanedaStoikov, OptionsMM and `sample_1000` hashes are unchanged.
 
 ### Added
+- `fastmm-live --strategy <name>` and `--param key=value`. A strategy other than the config's
+  ignores `[strategy.params]` (as in `fastmm-backtest`), parameter names are checked before any
+  venue is contacted, and the journal embeds and hashes the configuration after the overrides, so
+  the session replays with `fastmm-replay --verify` alone.
+- `--list-strategies --format json` on `fastmm-live` and `fastmm-backtest`: name, transports and the
+  parameter schema of every strategy the app can run.
+- `examples/external-project/`: a strategy project to copy, with one strategy header, the
+  registration file, live, backtest and replay apps and a `StrategyHarness` test;
+  `docs/how-to/strategies/register-a-strategy.md` covers registration in and out of tree.
 - **Rejects per reason.** The engine counts risk and venue rejects per `RejectReason`
   (`EngineStats` / `RunnerStats::risk_rejects_by_reason`, `venue_rejects_by_reason`, `venue_rejects`;
   an increment on the reject path). Risk rejects are logged at WARN with reason, instrument, side,

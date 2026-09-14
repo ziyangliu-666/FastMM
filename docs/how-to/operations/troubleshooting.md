@@ -26,7 +26,9 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 | `fastmm-live: venue '<venue>' has no api_key/api_secret` (stderr) | The keys are empty and this is not a dry run | As above |
 | `fastmm-live: venues.<venue>.<key>: environment variable <VAR> is not set` (stderr) | A `${VAR}` in a URL or extra key is not exported | Export it or write the value into the config |
 | `config: unknown key '<section>.<key>' ignored (line <n>)` | A key the schema does not know; it has no effect unless it is a connector key | Check the spelling against [Configuration](../../configuration.md) |
-| `fastmm-live: unknown strategy '<name>' (available: ...)` (stderr) | `[strategy] name` is not registered for live trading | Pick one from `./build/release/bin/fastmm-live --list-strategies` |
+| `fastmm-live: unknown strategy '<name>' (available: ...)` (stderr) | `[strategy] name` or `--strategy` is not registered in this app | Pick one from `./build/release/bin/fastmm-live --list-strategies`, or register it (see [Register a strategy](../strategies/register-a-strategy.md)) |
+| `fastmm-live: <strategy>: unknown parameter '<key>' (see --list-strategies)` (stderr) | `[strategy.params]` or `--param` names a parameter the strategy does not have; after `--strategy` switches strategies the config's parameters are ignored | Use the names from `--list-strategies` |
+| `<program>: strategy '<name>' (<kind>) is already registered by different code; ...` (stderr, exit 3) | Two strategy libraries in the app use the same strategy name, or one reuses a built-in name | Rename one of the strategies |
 | `fastmm-live: no [[instruments]] configured` (stderr) | The config has no instruments | Add `[[instruments]]` tables |
 | `fastmm-live: cannot open journal <path>` (stderr) | The journal file cannot be created | Check the directory permissions and free space, or pass `--journal <path>` |
 | `cannot create session epoch directory <dir>: <error>` | The parent directory of `[engine] epoch_file` cannot be created | Fix the path; without the epoch file, client order ids can repeat across restarts |
@@ -122,5 +124,5 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 |---|---|---|
 | No orders at all (`orders=0`) | `--dry-run` (quoting is disabled), the book is not synced, or a risk limit refuses every order (`risk_rejects` grows) | Check the status line and `risk_rejects=` in `fastmm-top` or the summary: the reasons are listed next to it (`risk_rejects=17 (MaxPosition 12, RateLimit 5)`, `risk_rejects by reason: ...`) and in `risk reject <reason>` warnings |
 | Orders but no fills | Quotes too far from the touch: a Binance Demo session at 15 bps from the mid had 0 fills in an hour, the same strategy at the touch had 1640 | Compare your spread with the venue's typical spread; test in a backtest first |
-| The strategy is missing from `fastmm-live --list-strategies` | It is registered for backtests but not for live trading | See [Adding a strategy](../../adding-a-strategy.md) |
+| The strategy is missing from `--list-strategies` | The app does not pass the registration function of the library that defines it | Pass it to `fastmm::cli::live` / `backtest` / `replay` (see [Register a strategy](../strategies/register-a-strategy.md)) |
 | `fastmm-replay --verify` reports a mismatch | Different binary, config or parameters, or a determinism bug | See [Replay](journals-replay-pnl.md#replay) |
