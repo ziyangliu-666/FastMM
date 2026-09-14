@@ -70,7 +70,7 @@ TEST_CASE("strategies.harness: BasicMM quotes, fills, pauses, resumes and reconn
   CHECK(h.engine().position(id).qty == qt("0.006"));
 }
 
-TEST_CASE("strategies.harness: advance fires timers; trades reach the engine") {
+TEST_CASE("strategies.harness: advance fires timers and trades reach the engine") {
   ParamMap p = kParams;
   p["pull_on_stale_ms"] = "500";
   StrategyHarness<BasicMM> h(p);
