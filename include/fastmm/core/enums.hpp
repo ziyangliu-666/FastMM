@@ -142,6 +142,7 @@ enum class RejectReason : std::uint8_t {
   DuplicateId = 35,
   TransportFull = 36,
   NotReconciled = 37,
+  InvalidTag = 38,  // a direct order used a user_tag in the QuoteManager's range
   // Venue-originated
   VenueReject = 64,
   PostOnlyWouldCross = 65,
@@ -197,6 +198,8 @@ enum class RejectReason : std::uint8_t {
       return "TransportFull";
     case RejectReason::NotReconciled:
       return "NotReconciled";
+    case RejectReason::InvalidTag:
+      return "InvalidTag";
     case RejectReason::VenueReject:
       return "VenueReject";
     case RejectReason::PostOnlyWouldCross:

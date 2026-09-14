@@ -45,7 +45,7 @@ option's venue view:
 | `interest_rate` | annualised decimal |
 
 The engine journals the event and passes it to the optional strategy hook
-`on_option_ticker(ctx, msg)`. `tools/journal_dump.py` prints it. The Deribit connector emits it for
+`on_option_ticker(ctx, id, msg)`, for instruments in the table only. `tools/journal_dump.py` prints it. The Deribit connector emits it for
 every `ticker.{instrument}.{interval}` notification of an option, next to a `BookTicker`.
 
 Deribit's greeks were checked against a recorded testnet ticker (`tests/core/black76_test.cpp`).

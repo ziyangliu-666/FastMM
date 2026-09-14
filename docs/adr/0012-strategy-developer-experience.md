@@ -90,7 +90,8 @@ Rules:
 - `on_quoting(enabled)` reports changes of `ctx.quoting_enabled()`. The engine compares the value
   before and after each dispatched event, fired timer and `start()`, and calls the hook after the
   triggering hook has returned and all flags are final (for reconcile, after `reconciling_` is
-  cleared). It never fires from inside a context call, so a kill switch tripped by `set_quotes` or
+  cleared and the quotes paused at Begin are resumed, so the strategy may replace them). It never
+  fires from inside a context call, so a kill switch tripped by `set_quotes` or
   `send` cannot re-enter the strategy. It does not fire at start: `on_start` reads
   `ctx.quoting_enabled()` (dry-run starts disabled). Connection pulls do not change
   `quoting_enabled()`; `on_connection` covers them.
@@ -134,8 +135,8 @@ Checking (verified on gcc 13.3 and clang 18.1):
   connection quoting`.
 - Documented limits: a `final` class loses the name probe (the call check remains); a hook that is
   ambiguous across two bases is reported as a wrong signature; an `auto`-returning hook must not be
-  checked with `verify_strategy` (the stand-in types instantiate its body); a private hook with
-  `friend Engine` passes the engine check but fails `verify_strategy`; implicit conversions are
+  checked with `verify_strategy` (the stand-in types instantiate its body); private hooks are
+  rejected, also with `friend Engine` (see the implementation notes); implicit conversions are
   accepted (`on_timer(auto&, TimerId, int)` compiles).
 
 Rejected: a CRTP base with no-op defaults (typos compile and call the default; the engine can no
@@ -403,3 +404,28 @@ CHANGELOG in the same change.
    the Python schema binding).
 6. **Python strategies** (section 7), after steps 3 and 4.
 7. **Quick start, tutorial, reference and docs checks** (section 8), after the APIs are merged.
+
+## Implementation notes
+
+Step 2 (reconcile and late-fill fixes) landed before step 3. Step 3 follows sections 1, 2 and the
+harness part of section 8, with these clarifications:
+
+- **Reconcile End.** The engine clears `reconciling_`, puts back the quotes paused at Begin
+  (`resume_quotes()`), and only then reports `on_quoting(true)`, after `on_reconcile` returns. A
+  strategy that requotes there replaces the resumed quotes through the normal QuoteManager diff.
+- **Late fills.** For an order that was already terminal the OMS returns its terminal record, so
+  `Fill::known` is true and `update->order` carries only id, instrument, side, state and filled
+  quantity; `Fill::late` marks the case.
+- **Private hooks.** The call check is evaluated in `hooks.hpp`, not inside `Engine`, so the engine
+  and `verify_strategy` agree: a private hook is rejected even when the class befriends the engine.
+- **Near-miss warnings** are emitted inside `hooks.hpp`; a consumer that includes FastMM as a
+  system header does not see them (the wrong-signature errors are unaffected).
+- **`NewOrderRequest::limit`** returns a small `LimitOrder` builder that converts to
+  `NewOrderRequest`, because `post_only` and `reduce_only` are already data members; it also has
+  `.tag(n)`.
+- **`set_quotes`** also returns false for an instrument outside the table. Fills for such
+  instruments are counted in `EngineStats::unknown_instrument_fills`.
+- **`FASTMM_REGISTER_STRATEGY`** had one user (a test) and was removed in step 3; the rest of
+  section 5 stays for step 5.
+- **Golden hashes** (`tests/backtest/golden_strategies_test.cpp`) were recorded on main before
+  step 3 and did not change in it.

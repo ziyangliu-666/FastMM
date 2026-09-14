@@ -24,7 +24,7 @@ Instrument inst() {
   return i;
 }
 struct NoCtx {
-  TimerId add_timer(Duration, bool, std::uint64_t) { return TimerId{1}; }
+  TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
 };
 }  // namespace
 
@@ -78,7 +78,6 @@ std::unique_ptr<IEngineRunner> fake_factory(TransportKind, RunnerDeps&) {
   return nullptr;
 }
 }  // namespace
-FASTMM_REGISTER_STRATEGY(BasicMM, Live, fake_factory);
 
 TEST_CASE("strategies.basic_mm: skewed quotes are clamped inside the touch") {
   const Price tick = Price::from_decimal("0.01").value();
@@ -112,11 +111,13 @@ TEST_CASE("strategies.basic_mm: skewed quotes are clamped inside the touch") {
 
 TEST_CASE("strategies.registry: one factory per transport kind, lookup, listing") {
   StrategyRegistry& reg = StrategyRegistry::instance();
+  // This test binary has no live backend: register a fake live factory for the checks below.
+  CHECK(reg.add(BasicMM::name(), &BasicMM::schema(), TransportKind::Live, fake_factory));
   REQUIRE_FALSE(list_strategies().empty());
   const StrategyEntry* e = reg.find("basic_mm");
   REQUIRE(e != nullptr);
   CHECK(e->schema == &BasicMM::schema());
-  CHECK(e->supports(TransportKind::Live));  // the static registration above
+  CHECK(e->supports(TransportKind::Live));
   CHECK(reg.find("nope") == nullptr);
 
   RunnerDeps deps;
@@ -159,12 +160,16 @@ struct QuoteCtx {
   }()};
   FakeBook b{px("100.00"), px("100.10")};
   int set_quotes_calls = 0;
+  bool quoting = true;
   const std::array<Instrument, 1>& instruments() const { return list; }
   const Instrument& instrument(InstrumentId) const { return list[0]; }
   const FakeBook& book(InstrumentId) const { return b; }
   Timestamp now() const { return Timestamp{}; }
   FakePosition position(InstrumentId) const { return {}; }
-  void set_quotes(InstrumentId, const DesiredQuotes&) { ++set_quotes_calls; }
+  bool set_quotes(InstrumentId, const DesiredQuotes&) {
+    ++set_quotes_calls;
+    return quoting;
+  }
   void pull_quotes(InstrumentId) {}
 };
 ConnectionStateMsg connection(ConnState state) {

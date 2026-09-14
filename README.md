@@ -102,8 +102,8 @@ python examples/python/backtest_quickstart.py
 ## Extending
 
 **Add a strategy** in one header: implement the hooks you need, declare parameters with
-`FASTMM_PARAM`, register it. The engine detects hooks at compile time and Python sees the parameter
-schema automatically. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md).
+`FASTMM_PARAM`, register it. The engine checks hook signatures at compile time (a wrong one is a
+readable build error) and Python sees the parameter schema automatically. Walkthrough: [`docs/adding-a-strategy.md`](docs/adding-a-strategy.md).
 
 ```cpp
 template <class Ctx, class Book>

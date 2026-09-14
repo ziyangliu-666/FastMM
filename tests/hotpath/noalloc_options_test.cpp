@@ -34,9 +34,12 @@ struct Ctx {
   [[nodiscard]] const Book& book(InstrumentId) const { return b; }
   [[nodiscard]] Pos position(InstrumentId) const { return Pos{Qty::from_decimal("0.3").value()}; }
   [[nodiscard]] Timestamp now() const { return t; }
-  void set_quotes(InstrumentId, const DesiredQuotes&) noexcept { ++quotes; }
+  bool set_quotes(InstrumentId, const DesiredQuotes&) noexcept {
+    ++quotes;
+    return true;
+  }
   void pull_quotes(InstrumentId) noexcept {}
-  TimerId add_timer(Duration, bool, std::uint64_t) { return TimerId{1}; }
+  TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
 };
 
 }  // namespace
@@ -72,7 +75,7 @@ TEST_CASE("hotpath.noalloc: Black-76, implied vol and OptionsMM requotes") {
           options::implied_vol(options::CallPut::Call, g.price, f, 77000.0, 0.08, 0.0, 1e-9);
       sum += g.delta + iv.vol;
       m.underlying_price = Price::from_double(f);
-      strategy->on_option_ticker(ctx, m);
+      strategy->on_option_ticker(ctx, m.hdr.instrument, m);
     }
   }
   CHECK(sum > 0.0);

@@ -57,8 +57,7 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     quote_qty_ = Qty::from_double(params_.quote_qty);
     max_inventory_ = Qty::from_double(params_.max_inventory);
     for (auto& m : last_mid_) m = Price{};
-    if (params_.pull_on_stale_ms > 0)
-      stale_timer_ = ctx.add_timer(milliseconds(100), true, kStaleTimer);
+    if (params_.pull_on_stale_ms > 0) stale_timer_ = ctx.every(milliseconds(100), kStaleTimer);
   }
 
   template <class Ctx, class Book>
@@ -78,12 +77,10 @@ class BasicMM : public StrategyBase<BasicMMParams> {
   }
 
   template <class Ctx>
-  void on_fill(Ctx& ctx, const OmsUpdate& u, const OrderFillMsg&) noexcept {
+  void on_fill(Ctx& ctx, const Fill& fill) noexcept {
     // Inventory changed: re-skew immediately (bypasses the mid-move threshold).
-    const InstrumentId id = u.known ? u.order.instrument : InstrumentId{};
-    if (!id.valid() || !ctx.instruments().contains(id)) return;
-    const auto& book = ctx.book(id);
-    if (book.is_valid()) requote(ctx, id, book, ctx.instrument(id));
+    const auto& book = ctx.book(fill.instrument);
+    if (book.is_valid()) requote(ctx, fill.instrument, book, ctx.instrument(fill.instrument));
   }
 
   template <class Ctx>
@@ -139,6 +136,18 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     }
   }
 
+  // Quoting was paused or resumed (control pull, kill switch, reconciliation). Forget the quoted
+  // mids, and when quoting is back requote at once, even if the mid has not moved.
+  template <class Ctx>
+  void on_quoting(Ctx& ctx, bool enabled) noexcept {
+    for (const Instrument& inst : ctx.instruments()) {
+      last_mid_[inst.id.value] = Price{};
+      if (!enabled) continue;
+      const auto& book = ctx.book(inst.id);
+      if (book.is_valid()) requote(ctx, inst.id, book, inst);
+    }
+  }
+
   // Pure quoting function; exposed for deterministic tests.
   [[nodiscard]] DesiredQuotes compute_quotes(Price mid,
                                              Qty position,
@@ -180,8 +189,8 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     const Price mid = book.mid();
     DesiredQuotes q = compute_quotes(mid, ctx.position(id).qty, inst);
     clamp_to_touch(q, book.best_bid().price, book.best_ask().price, inst.tick);
-    ctx.set_quotes(id, q);
-    last_mid_[id.value] = mid;
+    // Remember the mid only if the quotes were taken; while quoting is disabled they are ignored.
+    last_mid_[id.value] = ctx.set_quotes(id, q) ? mid : Price{};
   }
 
   std::int64_t half_spread_cbps_ = 0;
@@ -193,5 +202,6 @@ class BasicMM : public StrategyBase<BasicMMParams> {
 };
 
 static_assert(StrategyLike<BasicMM>);
+static_assert(verify_strategy<BasicMM>());
 
 }  // namespace fastmm

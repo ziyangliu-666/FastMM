@@ -4,7 +4,35 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Changed
+- **Breaking, strategy hooks (ADR-0012).** `on_trade`, `on_book_ticker` and `on_option_ticker` take
+  `(ctx, InstrumentId id, const Msg& m)`; `on_fill` takes `(ctx, const Fill& fill)` instead of
+  `(ctx, OmsUpdate, OrderFillMsg)`. Instrument-scoped hooks fire only for instruments in the table.
+  `on_fill` now also reaches strategies for late fills and fills for unknown ids.
+- **Breaking, strategy context.** `set_quotes` returns `bool` (false while quoting is disabled);
+  `add_timer(period, repeat, tag)` is replaced by `every(period, tag)` and `once(delay, tag)`;
+  `instrument_count()` is removed. `FASTMM_REGISTER_STRATEGY` is removed (register explicitly).
+- The engine checks every hook at compile time: a member with a hook's name whose call does not
+  compile fails the build with `fastmm: <hook> has the wrong signature or is not public; expected
+  ...`, and likely misspellings (`on_fills`, `on_tick`, ...) warn. `Engine::start()` logs the
+  implemented hook set.
+- BasicMM, AvellanedaStoikov and OptionsMM requote when quoting resumes and remember a quoted
+  mid or theo only when `set_quotes` took the quotes. Their golden outbound hashes are unchanged.
+
 ### Added
+- `include/fastmm/strategies/hooks.hpp`: the hook table, `verify_strategy<S>()`, `hook_status`,
+  `implemented_hooks` and the `Fill` view (position delta, booked fee, known, late, order done).
+- `on_quoting(ctx, bool enabled)` hook: reports changes of `ctx.quoting_enabled()` (operator
+  pull and resume, kill switch trip and reset, reconciliation begin and end) after the triggering
+  event, never from inside a context call.
+- Strategy context: `contains`, `portfolio`, `working_quote`, `order`, `open_qty`, `every`, `once`;
+  `NewOrderRequest::limit(id, side, px, qty)` with `.post_only()`, `.reduce_only()`, `.ioc()` and
+  `.tag(n)`; `RejectReason::InvalidTag` (38) for direct orders using a quote-manager tag.
+- `fastmm::sim::StrategyHarness<S>` (`include/fastmm/testing/strategy_harness.hpp`): the real engine
+  and a simulated venue on virtual time with `book`, `trade`, `fill`, `disconnect`/`reconnect`,
+  `pull_quotes`/`resume_quotes`, `advance` and `working_orders`.
+- Compile-fail tests (`tests/compile_fail/`, ctest label `compile_fail`) for the hook checker, each
+  with a control build, and golden outbound hashes for the three built-in strategies.
 - Deribit connector (`kind = "deribit"`), JSON-RPC 2.0 over WebSocket for options and futures:
   reference data from public/get_instruments (tick_size_steps, contract_size, inverse), book sync on
   change_id/prev_change_id with resubscribe on gaps, ticker and trades, client_credentials auth with

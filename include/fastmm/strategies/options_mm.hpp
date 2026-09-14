@@ -144,14 +144,11 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
   void on_start(Ctx& ctx) noexcept {
     quote_qty_ = Qty::from_double(params_.quote_qty);
     for (auto& s : st_) s = State{};
-    if (params_.pull_on_stale_ms > 0)
-      stale_timer_ = ctx.add_timer(milliseconds(250), true, kStaleTimer);
+    if (params_.pull_on_stale_ms > 0) stale_timer_ = ctx.every(milliseconds(250), kStaleTimer);
   }
 
   template <class Ctx>
-  void on_option_ticker(Ctx& ctx, const OptionTickerMsg& m) noexcept {
-    const InstrumentId id = m.hdr.instrument;
-    if (!ctx.instruments().contains(id)) return;
+  void on_option_ticker(Ctx& ctx, InstrumentId id, const OptionTickerMsg& m) noexcept {
     State& s = st_[id.value];
     const double f = m.underlying_price.to_double();
     if (f > 0.0) s.forward = f;
@@ -164,7 +161,6 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
 
   template <class Ctx, class Book>
   void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
-    if (!ctx.instruments().contains(id)) return;
     const Instrument& inst = ctx.instrument(id);
     if (inst.asset_class != AssetClass::Option) return;
     State& s = st_[id.value];
@@ -184,7 +180,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
   }
 
   template <class Ctx>
-  void on_fill(Ctx& ctx, const OmsUpdate&, const OrderFillMsg&) noexcept {
+  void on_fill(Ctx& ctx, const Fill&) noexcept {
     // Portfolio greeks changed: every option's skew and limits move.
     requote_all(ctx);
   }
@@ -212,6 +208,14 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
       st_[inst.id.value].quoted_theo = Price{};
     }
     if (m.state == ConnState::Live) requote_all(ctx);
+  }
+
+  // Quoting was paused or resumed (control pull, kill switch, reconciliation): forget the quoted
+  // theos, and requote every option at once when quoting is back.
+  template <class Ctx>
+  void on_quoting(Ctx& ctx, bool enabled) noexcept {
+    for (const Instrument& inst : ctx.instruments()) st_[inst.id.value].quoted_theo = Price{};
+    if (enabled) requote_all(ctx);
   }
 
   // ---- pure functions (deterministic tests) ------------------------------------------------
@@ -405,7 +409,10 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
       return;
     DesiredQuotes q = compute_quotes(inst, p, ctx.position(id).qty.to_double(), exposure(ctx));
     clamp_to_touch(q, book.best_bid().price, book.best_ask().price, inst.tick);
-    ctx.set_quotes(id, q);
+    if (!ctx.set_quotes(id, q)) {
+      s.quoted_theo = Price{};  // ignored while quoting is disabled; on_quoting requotes
+      return;
+    }
     s.quoted_theo = theo.is_positive() ? theo : Price::from_raw(1);
   }
 
@@ -415,5 +422,6 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
 };
 
 static_assert(StrategyLike<OptionsMM>);
+static_assert(verify_strategy<OptionsMM>());
 
 }  // namespace fastmm

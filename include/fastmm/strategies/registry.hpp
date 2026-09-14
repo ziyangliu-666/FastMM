@@ -129,11 +129,3 @@ std::unique_ptr<IEngineRunner> make_engine_runner(RunnerDeps& deps,
 }
 
 }  // namespace fastmm
-
-// Static registration for executables. Do not use it inside a static library: an object file
-// that nothing references is not linked, and the registration silently disappears.
-#define FASTMM_REGISTER_STRATEGY(S, Kind, FactoryFn)                                      \
-  namespace {                                                                             \
-  const bool fastmm_registered_##S##_##Kind = ::fastmm::StrategyRegistry::instance().add( \
-      S::name(), &S::schema(), ::fastmm::TransportKind::Kind, FactoryFn);                 \
-  }
