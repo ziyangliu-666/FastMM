@@ -105,7 +105,7 @@ def decode_body(type_name: str, body: bytes) -> str:
         return f"cl_ord_id={cl_ord_id(u64(0))} reason={reason} code={code} text='{fixed_string(body[16:57], 40)}'"
     if type_name == "OrderFill":
         return (f"cl_ord_id={cl_ord_id(u64(0))} exec_id={fixed_string(body[49:90], 40)} px={dec(q(96))} "
-                f"qty={dec(q(104))} cum={dec(q(112))} leaves={dec(q(120))} fee={dec(q(128))} "
+                f"qty={dec(q(104))} cum={dec(q(112))} leaves={dec(q(120))} fee={dec(q(128))} fee_asset={('quote', 'base', 'other')[body[138]] if body[138] < 3 else body[138]} "
                 f"side={SIDES.get(body[136], body[136])} liq={LIQUIDITY.get(body[137], body[137])}")
     if type_name == "Timer":
         return f"timer_id={struct.unpack_from('<I', body, 0)[0]} user_data={u64(8):#x} fire_ts={q(16)}"
