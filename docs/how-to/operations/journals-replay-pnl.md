@@ -1,23 +1,19 @@
 # Journals, replay and PnL
 
-Every `fastmm-live` session can be recorded to a journal. This page shows how to read a journal,
-how to replay it, and how to check a session's PnL against the venue account.
-
 ## Journal files
 
 With `[engine] journal = true` (the default), `fastmm-live` writes
 `<journal_dir>/<engine name>-<session id>.fmj`; `--journal <path>` chooses the file and
 `--no-journal` turns it off. The log names the file at startup (`journal: <path>`).
 
-A journal holds the session header (session id, start time, clock calibration, config hash, RNG
-seed, strategy name, session epoch, dry run, which venues trade with cancel-replace), the instrument
-table, the effective configuration (API keys and secrets left out), and then every event the engine
-consumed, in order, with the engine clock at which it was processed, plus a copy of every order
-message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean shutdown writes a
-trailer block. The format is described in [ADR 0010](../../adr/0010-fmj-journal-format.md); this
-page describes format version 2, and the tools still read version 1 journals.
+A journal holds the session header, the instrument table, the effective configuration (without API
+keys and secrets), each consumed event with the engine clock at which it was processed, and a copy
+of each order message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean
+shutdown writes a trailer block. The current format is version 2
+([Journal format](../../reference/journal-format.md), [ADR 0010](../../adr/0010-fmj-journal-format.md));
+the tools also read version 1.
 
-Size: our one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour.
+Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour.
 
 ### The session epoch
 
@@ -34,8 +30,8 @@ account; the startup log shows the value (`epoch=22`).
 python3 tools/journal_dump.py runs/demo-1/session.fmj --type OrderFill --first 3
 ```
 
-It prints the header, the instrument table, the first matching events and a count of every event
-type. A fill looks like this:
+It prints the header, the instrument table, the first matching events and a count per event type.
+A fill:
 
 ```text
 #86      OrderFill         in  inst 0 venue 0 flags - exch_ts 1789356325085000000 recv_ts 1789356324721949775 venue_seq 0
@@ -64,8 +60,7 @@ simulated clock set to the engine clock of the recording, and compares every out
 message, and their SHA-256, with the copies in the journal. It takes the configuration embedded in
 the journal, and the session epoch, dry run, RNG seed and each venue's cancel-replace from the
 header, so it needs neither the config file nor API keys. A 20 s `fastmm-live` session against
-`fastmm-sim-exchange` (35 fills, 282 replaces, two TSC recalibration steps of -422 ms and -320 ms
-during the session) replays like this:
+`fastmm-sim-exchange`:
 
 ```text
 journal  /tmp/e2e/session.fmj: format v2, 2644 messages (850 market data, 320 outbound), seed 42, strategy 'basic_mm'
@@ -78,9 +73,8 @@ replay MATCH
 ```
 
 `--config <file>` replays with that file instead. Its effective configuration (secrets and
-formatting do not count) is hashed and compared with the journal's config hash; if they differ,
-`fastmm-replay` warns that this is a what-if run, which is not expected to match.
-`--strategy <name>` is a what-if run too.
+formatting do not count) is hashed and compared with the journal's config hash; if they differ, the
+run is a what-if replay and prints the warning below. `--strategy <name>` is a what-if run too.
 
 A mismatch prints the first differing message as recorded and as replayed. The same session with
 `half_spread_bps = 6.0` instead of `5.0`:
@@ -108,23 +102,21 @@ unless `--config` is given, and with `--verify` the run's outbound hash must mat
 ./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --verify
 ```
 
-Exit codes: 0 match (or no verification requested), 1 mismatch, 2 bad command line (including a
-session journal without an embedded configuration and no `--config`), 3 unreadable config or
-journal, or unknown strategy.
+Exit codes: [Command lines](../../reference/cli.md#fastmm-replay).
 
-A mismatch with the embedded configuration and the same binary means the engine did not make the
-same decisions from the same inputs: a determinism bug, and the journal is the reproduction. A
-different binary (a changed strategy or engine) can legitimately decide differently.
+A mismatch with the embedded configuration and the same binary is a determinism bug, and the
+journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary may not
+match.
 
 ## Check PnL
 
-There are three views of a session's PnL, and they should agree:
+A session's PnL has three views:
 
-1. **The engine's**, from the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u>
+1. The engine's, from the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u>
    fees=<f> ...` (also the final `fastmm-top` frame). Net PnL is `r + u - f`, marked at the engine's
    last mid.
-2. **The journal's**, computed from the fills by `tools/pnl_report.py`.
-3. **The account's**, from balance snapshots taken before and after the session.
+2. The journal's, computed from the fills by `tools/pnl_report.py`.
+3. The account's, from balance snapshots taken before and after the session.
 
 `tools/pnl_report.py` prints fills, maker share, volume, fees and inventory per hour, the journal's
 trading PnL and, when given, the engine's summary and the account reconciliation:
@@ -135,8 +127,8 @@ python3 tools/pnl_report.py runs/demo-1/session.fmj --engine-log runs/demo-1/eng
 ```
 
 The snapshots are JSON objects that you produce from the venue's account and ticker endpoints
-right before and right after the session (FastMM does not ship a tool for this, because it needs
-keys and venue-specific endpoints). The balances are the free plus locked amounts:
+right before and right after the session (FastMM ships no tool for this). The balances are the
+free plus locked amounts:
 
 ```json
 {"utc": "2026-09-14T03:25:21Z", "btc": 0.004995, "usdt": 4614.81995, "mid": 77762.685, "open_orders": 0}
@@ -144,32 +136,26 @@ keys and venue-specific endpoints). The balances are the free plus locked amount
 
 The balance keys are `base` and `quote`, or the lower-case asset names given by `--base-asset` and
 `--quote-asset` (default `BTC` and `USDT`). `equity` (or `equity_usdt`) is optional and computed as
-`quote + base * mid` when missing. `python3 tools/pnl_report.py --help` lists every option, and
-`python3 tools/pnl_report.py --self-test` checks the tool on a synthetic journal.
-
-The account's equity change is split into what the starting inventory did on its own and what
-trading did:
+`quote + base * mid` when missing. `python3 tools/pnl_report.py --self-test` checks the tool on a
+synthetic journal.
 
 ```text
 equity change = starting base balance * (end mid - start mid) + trading
 ```
 
-How to read the differences:
+The session reconciles when:
 
-- **Balance change "unexplained"** (account balance change minus the journal's inventory or cash
-  change) should be zero. A non-zero value means fills that are not in the journal (a second
-  engine or manual trades on the account), deposits or withdrawals, or commission paid in another
-  asset.
-- **Journal trading PnL vs the account** should agree to within rounding.
-- **Engine net vs the account** differs by the inventory marked at the engine's last mid instead of
-  the snapshot mid; with a small inventory the difference is cents.
+- the unexplained balance change (account balance change minus the journal's inventory or cash
+  change) is zero. A non-zero value means fills that are not in the journal (a second engine or
+  manual trades on the account), deposits or withdrawals, or commission paid in another asset;
+- the journal's trading PnL equals the account's trading PnL to within rounding;
+- the engine's net PnL differs from the account's trading PnL only by the engine's inventory marked
+  at its last mid instead of the end snapshot's mid.
 
 Commission charged in the base asset is already inside the inventory: a buy receives `qty - fee`
-and a sell delivers `qty + fee`. Subtracting it from the PnL a second time understates the result
-(an early version of the report did this and showed -48.74 USDT for the session below instead of
--32.94 USDT).
+and a sell delivers `qty + fee`. Do not subtract it from the PnL a second time.
 
-## A real example: Binance Demo
+## Example: Binance Demo
 
 Two one-hour `basic_mm` sessions on BTCUSDT in Binance Demo Mode, with the same risk limits and
 quote size (0.0003 BTC):
@@ -179,26 +165,14 @@ quote size (0.0003 BTC):
 | Quoting 15 bps from the mid | 15 | 0 | +2.11 USDT | 0.00 USDT |
 | Quoting at the touch | 0 | 1640 (all maker) | -33.36 USDT | -32.94 USDT |
 
-The first session never traded: its whole equity change was the revaluation of the starting 0.004995
-BTC. The second session's report:
+The second session's report:
 
-- Notional traded: 31,622.62 USDT; fees: 31.62 USDT, exactly 10.00 bps (the 0.1% maker commission).
+- Notional traded: 31,622.62 USDT; fees: 31.62 USDT, 10.00 bps (the 0.1% maker commission).
   Commission was charged in BTC on buys (0.00020358 BTC in total) and in USDT on sells (15.82 USDT).
-- Inventory change -0.00044358 BTC and cash change +1.5160 USDT, both after fees, matching the
-  account's balance changes exactly.
+- Inventory change -0.00044358 BTC and cash change +1.5160 USDT, both after fees, equal to the
+  account's balance changes.
 - Account: equity change -33.36 USDT = starting inventory revaluation -0.42 USDT + trading
   -32.94 USDT.
-- Engine: realised -1.32 USDT, unrealised +0.00 USDT, fees 31.62 USDT, net -32.94 USDT. The
-  difference to the account's trading PnL was 0.003 USDT.
-- The strategy had 260 post-only rejects (`PostOnlyWouldCross`), the normal cost of quoting at the
-  touch.
-
-Quoting at the touch captured almost no spread (-1.32 USDT before fees), and the 10 bps maker fee
-turned that into a 32.94 USDT loss. A market maker on this fee tier needs a rebate or a much better
-edge than the spread it quotes.
-
-## See also
-
-- [Monitoring a live session](monitor-with-fastmm-top.md)
-- [Kill switch and shutdown](kill-switch-and-shutdown.md)
-- [Go-live checklist](go-live-checklist.md)
+- Engine: realised -1.32 USDT, unrealised +0.00 USDT, fees 31.62 USDT, net -32.94 USDT, 0.003 USDT
+  from the account's trading PnL.
+- Post-only rejects (`PostOnlyWouldCross`): 260.

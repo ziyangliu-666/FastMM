@@ -1,8 +1,7 @@
 # Register a strategy
 
 A strategy runs in backtests, replay and live trading once a registration function adds it to the
-strategy registry. One call registers all three runtimes. This page covers your own project on top
-of FastMM (out of tree) and a strategy shipped with FastMM (in tree).
+strategy registry.
 
 ## How registration works
 
@@ -13,21 +12,18 @@ of FastMM (out of tree) and a strategy shipped with FastMM (in tree).
 - Apps pass the function to `fastmm::cli::live`, `fastmm::cli::backtest` or `fastmm::cli::replay`.
   The built-in strategies (`basic_mm`, `avellaneda_stoikov`, `options_mm`) are always registered
   first.
-- Nothing registers itself. Because the app calls the function, the linker takes the registration
-  and the engines out of static libraries; there are no static initialisers and no whole-archive
-  flags.
+- Nothing registers itself: the app must call the function. There are no static initialisers and
+  no whole-archive flags ([ADR-0012](../../adr/0012-strategy-developer-experience.md)).
 - A factory that is registered but never compiled is a link error, for example
-  `undefined reference to fastmm::live_factory<mm::MicropriceMM>(...)`, not an "unknown strategy"
-  at runtime.
-- Registering the same function twice is harmless. A name that different code already registered
+  `undefined reference to fastmm::live_factory<mm::MicropriceMM>(...)`.
+- Registering the same strategy again does nothing. A name that different code already registered
   throws `fastmm::StrategyConflict`; the command lines print the message and exit with code 3.
 - Only a strategy's owner compiles its engines. To use a strategy from another library, call that
   library's registration function.
 
 ## Out of tree: your own project
 
-Copy [`examples/external-project/`](../../../examples/external-project/). CI builds it against an
-installed FastMM and trades it on the simulated exchange.
+Copy [`examples/external-project/`](../../../examples/external-project/).
 
 | File | Role |
 |---|---|
@@ -38,7 +34,7 @@ installed FastMM and trades it on the simulated exchange.
 | `tests/microprice_mm_test.cpp` | a hook test with `fastmm::sim::StrategyHarness` |
 | `CMakeLists.txt` | `find_package(fastmm)` or `add_subdirectory` |
 
-The registration function is the whole registration:
+`src/strategies.cpp`:
 
 ```cpp
 void mm::register_strategies(fastmm::StrategyRegistry& r) {
@@ -108,8 +104,8 @@ FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret ./build/mm/mm-live \
 
 ### Compile the engines in parallel
 
-`src/strategies.cpp` compiles three engines per strategy in one file, which is fine for a few
-strategies. For more, put each engine in its own file with `FASTMM_INSTANTIATE_STRATEGY(S, kind)`,
+`src/strategies.cpp` compiles three engines per strategy in one file. To compile them in parallel,
+put each engine in its own file with `FASTMM_INSTANTIATE_STRATEGY(S, kind)`,
 where `kind` is `sim`, `replay` or `live` and the file includes `fastmm/strategies/factory_<kind>.hpp`:
 
 ```cpp
