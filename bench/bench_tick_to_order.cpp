@@ -1,13 +1,22 @@
 // Tick-to-order inside the simulator (5.9 / 5.12): Engine<BasicMM, SimClock, SimTransport,
 // InlineFeed> fed pre-generated BookDeltaMsgs that alternately move the touch up and down
-// by two ticks, so every event makes BasicMM requote.
+// by two ticks, so every event makes BasicMM requote both quotes.
 //
 //   BM_TickToOrder_Sim   one delta: bytes into the feed -> Engine::step() -> Out* serialized
 //                        into SimTransport (latency model, scheduler, outbound SHA-256).
 //                        Per-event rdtsc deltas go into a LogLinearHistogram; counters p50 /
 //                        p99 (ns) cover the events that produced orders. Venue processing and
-//                        ack delivery run outside the timed region.
-//   BM_EngineStep_Sim    Engine::step() throughput on a 32-event batch (items_per_second).
+//                        ack delivery run outside the timed region, until nothing is in flight and
+//                        both quotes are working, so each timed event starts from a settled state
+//                        and sends a Cancel per side. The benchmark fails when fewer than
+//                        kMinOrderEventsPct of the events sent orders.
+//   BM_EngineStep_Sim    Engine::step() throughput on a 32-event batch (items_per_second), from
+//                        the same settled state. Only the batch's first event can requote: its
+//                        orders are still in flight for the other 31. Counter out_msgs_per_step.
+//
+// Why settle fully: QuoteManager never touches a Pending* order, it records the target and applies
+// it on the ack. A tick that meets an order still in flight therefore sends nothing, and with a
+// single 1 ms venue pass per event every timed tick met one (order_events_pct 0).
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/time.hpp"
@@ -26,6 +35,9 @@ using namespace fastmm::sim;
 namespace {
 
 using SimEngine = Engine<BasicMM, SimClock, SimTransport, InlineFeed>;
+
+// Below this share of events with outbound orders the timings describe something else.
+constexpr double kMinOrderEventsPct = 50.0;
 
 const TscClock& tsc() {
   static const TscClock c = [] {
@@ -62,9 +74,11 @@ class Rig {
     clock_ = std::make_unique<SimClock>(Timestamp{seconds(1'700'000'000).ns});
     transport_ = std::make_unique<SimTransport>(*clock_, table_, tc);
     feed_ = std::make_unique<InlineFeed>(1U << 22);
-    // 0 bps: quote at the rounded mid, the workload this bench has always measured ("0.003" before
-    // bps parameters kept four decimals, which the centi-bps BasicMM rounded to 0).
-    static_cast<void>(strategy_.configure({{"half_spread_bps", "0"},
+    // Half spread 0.005 bps = 3 ticks at 60000: quotes m-3 / m+3, then m-1 / m+6 after the up
+    // tick. Cancel-then-new sends each side's New when its cancel ack arrives, while the other side
+    // may still rest at its old price; at 0 bps (one tick wide) that New crossed the old opposite
+    // quote and risk rejected it (self-trade prevention), leaving the slot empty.
+    static_cast<void>(strategy_.configure({{"half_spread_bps", "0.005"},
                                            {"skew_bps_per_unit", "0"},
                                            {"quote_qty", "0.002"},
                                            {"max_inventory", "0"},
@@ -79,19 +93,26 @@ class Rig {
     build_tape();
     push(snapshot_);
     engine_->step();
-    settle();
+    settled_ = settle();
   }
 
-  // Venue side + acks, untimed: advance virtual time, let orders reach the venue and the
-  // acks reach the engine so QuoteManager can requote on the next tick.
-  void settle() noexcept {
-    clock_->advance(milliseconds(1));
-    const Timestamp now = clock_->now();
-    while (transport_->next_order_arrival() <= now) transport_->process_order_arrival();
-    while (transport_->next_inbound_ts() <= now) {
-      static_cast<void>(transport_->deliver_next_inbound(*feed_));
-      engine_->step();
+  // Venue side + acks, untimed: 1 ms passes of virtual time that deliver orders to the venue and
+  // acks to the engine, repeated until nothing is in flight (a cancel ack sends the New of a
+  // cancel-then-new, which needs another pass). True when the venue is quiet and both quotes are
+  // working, so the next tick can requote them.
+  [[nodiscard]] bool settle() noexcept {
+    for (int pass = 0; pass < kMaxSettlePasses; ++pass) {
+      clock_->advance(milliseconds(1));
+      const Timestamp now = clock_->now();
+      while (transport_->next_order_arrival() <= now) transport_->process_order_arrival();
+      while (transport_->next_inbound_ts() <= now) {
+        static_cast<void>(transport_->deliver_next_inbound(*feed_));
+        engine_->step();
+      }
+      if (transport_->next_order_arrival() == Timestamp::max() && !transport_->inbound_pending())
+        return quotes_working();
     }
+    return false;
   }
   void push(const TapeMsg& m) noexcept { static_cast<void>(feed_->push(m.hdr())); }
   [[nodiscard]] const TapeMsg& tick_msg(std::size_t i) const noexcept {
@@ -99,8 +120,19 @@ class Rig {
   }
   [[nodiscard]] SimEngine& engine() noexcept { return *engine_; }
   [[nodiscard]] SimTransport& transport() noexcept { return *transport_; }
+  [[nodiscard]] bool settled() const noexcept { return settled_; }
 
  private:
+  static constexpr int kMaxSettlePasses = 16;
+
+  [[nodiscard]] bool quotes_working() const noexcept {
+    const Oms& oms = engine_->oms();
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      const Handle<Order> h = engine_->quote_manager().slot_handle(InstrumentId{0}, s, 0);
+      if (!h.valid() || !oms.is_live(h) || !oms.get(h).is_working()) return false;
+    }
+    return true;
+  }
   void level_msg(TapeMsg& m,
                  bool snapshot,
                  std::initializer_list<Level> bids,
@@ -144,15 +176,21 @@ class Rig {
   std::unique_ptr<SimEngine> engine_;
   TapeMsg snapshot_{};
   std::vector<TapeMsg> tape_;
+  bool settled_ = false;
 };
 
 }  // namespace
 
 static void BM_TickToOrder_Sim(benchmark::State& state) {
   auto rig = std::make_unique<Rig>();
+  if (!rig->settled()) {
+    state.SkipWithError("rig did not settle after the snapshot");
+    return;
+  }
   LogLinearHistogram with_orders;
   LogLinearHistogram all;
   std::size_t i = 0;
+  bool settled = true;
   for (auto _ : state) {
     const std::uint64_t sent_before = rig->transport().outbound_hash().count();
     const TapeMsg& m = rig->tick_msg(i++);
@@ -164,33 +202,52 @@ static void BM_TickToOrder_Sim(benchmark::State& state) {
     all.record(ns);
     if (rig->transport().outbound_hash().count() != sent_before) with_orders.record(ns);
     state.PauseTiming();
-    rig->settle();
+    settled = rig->settle() && settled;
     state.ResumeTiming();
   }
-  state.counters["p50"] = static_cast<double>(with_orders.percentile(0.50));
-  state.counters["p99"] = static_cast<double>(with_orders.percentile(0.99));
-  state.counters["all_p50"] = static_cast<double>(all.percentile(0.50));
-  state.counters["order_events_pct"] =
+  const double order_events_pct =
       all.count() == 0
           ? 0.0
           : 100.0 * static_cast<double>(with_orders.count()) / static_cast<double>(all.count());
+  state.counters["p50"] = static_cast<double>(with_orders.percentile(0.50));
+  state.counters["p99"] = static_cast<double>(with_orders.percentile(0.99));
+  state.counters["all_p50"] = static_cast<double>(all.percentile(0.50));
+  state.counters["order_events_pct"] = order_events_pct;
   state.counters["kills"] = static_cast<double>(rig->engine().stats().kills);
+  if (!settled) {
+    state.SkipWithError("venue did not settle between timed events");
+  } else if (order_events_pct < kMinOrderEventsPct) {
+    state.SkipWithError("fewer than 50% of the timed events sent orders; p50/p99 are meaningless");
+  }
 }
 BENCHMARK(BM_TickToOrder_Sim);
 
 static void BM_EngineStep_Sim(benchmark::State& state) {
   static constexpr std::int64_t kBatch = 32;
   auto rig = std::make_unique<Rig>();
+  if (!rig->settled()) {
+    state.SkipWithError("rig did not settle after the snapshot");
+    return;
+  }
   std::size_t i = 0;
+  bool settled = true;
+  std::uint64_t out_msgs = 0;
   for (auto _ : state) {
     state.PauseTiming();
     for (std::int64_t k = 0; k < kBatch; ++k) rig->push(rig->tick_msg(i++));
+    const std::uint64_t sent_before = rig->transport().outbound_hash().count();
     state.ResumeTiming();
     benchmark::DoNotOptimize(rig->engine().step());
     state.PauseTiming();
-    rig->settle();
+    out_msgs += rig->transport().outbound_hash().count() - sent_before;
+    settled = rig->settle() && settled;
     state.ResumeTiming();
   }
   state.SetItemsProcessed(state.iterations() * kBatch);
+  state.counters["out_msgs_per_step"] =
+      state.iterations() == 0
+          ? 0.0
+          : static_cast<double>(out_msgs) / static_cast<double>(state.iterations());
+  if (!settled) state.SkipWithError("venue did not settle between steps");
 }
 BENCHMARK(BM_EngineStep_Sim);

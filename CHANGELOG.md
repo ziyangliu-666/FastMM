@@ -254,6 +254,22 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- **`BM_TickToOrder_Sim` measured no order events.** Since the quote manager applies a requote
+  target on the ack of a pending order, every timed tick found both quotes pending and sent
+  nothing (`order_events_pct` 0.000; its p50 came from a handful of start-up events). The rig now
+  runs the venue and acks, untimed, until nothing is in flight and both quotes are working, and
+  quotes 3 ticks wide so the New of a cancel-then-new no longer meets the other side's old quote
+  and fails self-trade prevention. Every timed tick sends a cancel per side. Median of 5 repetitions,
+  release-native, pinned: p50 1023 ns, p99 1535 ns, 1720 ns per iteration (the published 639 ns p50
+  from 2026-09-13 predates the regression and no longer applies). The benchmark fails
+  (`SkipWithError`) when fewer than 50 % of the ticks send orders or the rig does not settle; the
+  bench-smoke tests fail on a benchmark error; `tools/check_budgets.py` fails on errored benchmarks
+  and on median counters below the new `[min_counters]` floors in `bench/ci_budget.toml`.
+  `BM_EngineStep_Sim` now starts each batch from the same settled state (`out_msgs_per_step` 2).
+- `scripts/bench.sh` removes the host name from the result JSON and records UTC dates, and
+  `tools/bench_table.py` no longer fails with `UnboundLocalError` (a local variable shadowed
+  `machine()`), which left `bench/README.md` empty. `--only <bench>` reruns selected executables
+  and keeps the other results.
 - The OMS no longer completes a replace on a duplicate ack for the original id. Binance acks every
   new order twice (WS API response and user-stream NEW); a requote between the two made the second
   ack look like the replace's ack, so the new price was booked unconfirmed, the old leg's cancel
