@@ -11,6 +11,9 @@ Layouts follow include/fastmm/core/journal.hpp and include/fastmm/core/messages.
 Prices / quantities / notionals are int64 with a 1e-8 scale and are printed as exact decimals.
 
 usage: journal_dump.py file.fmj [--first 20] [--type Trade] [--no-crc]
+
+parse_header, parse_instruments, iter_events and fill_fields are also used by
+tools/pnl_report.py.
 """
 import argparse
 import struct
@@ -82,6 +85,26 @@ def flags_str(f: int) -> str:
     return "|".join(names) if names else "-"
 
 
+FEE_ASSETS = ("quote", "base", "other")
+
+
+def fill_fields(body: bytes) -> dict:
+    """OrderFillMsg body (after the 64-byte EventHeader) as a dict of raw fixed-point integers.
+
+    `fee_raw` is in units of `fee_asset`: "quote" (a quote amount), "base" (base-asset units) or
+    "other" (not convertible, for example BNB).
+    """
+    px, qty, cum, leaves, fee = struct.unpack_from("<qqqqq", body, 96)
+    return {
+        "cl_ord_id": struct.unpack_from("<Q", body, 0)[0],
+        "exec_id": fixed_string(body[49:90], 40),
+        "px_raw": px, "qty_raw": qty, "cum_raw": cum, "leaves_raw": leaves, "fee_raw": fee,
+        "fee_asset": FEE_ASSETS[body[138]] if body[138] < 3 else body[138],
+        "side": SIDES.get(body[136], body[136]),
+        "liq": LIQUIDITY.get(body[137], body[137]),
+    }
+
+
 def decode_body(type_name: str, body: bytes) -> str:
     q = lambda off: struct.unpack_from("<q", body, off)[0]  # noqa: E731
     u64 = lambda off: struct.unpack_from("<Q", body, off)[0]  # noqa: E731
@@ -109,9 +132,10 @@ def decode_body(type_name: str, body: bytes) -> str:
         reason, code = body[8], struct.unpack_from("<i", body, 12)[0]
         return f"cl_ord_id={cl_ord_id(u64(0))} reason={reason} code={code} text='{fixed_string(body[16:57], 40)}'"
     if type_name == "OrderFill":
-        return (f"cl_ord_id={cl_ord_id(u64(0))} exec_id={fixed_string(body[49:90], 40)} px={dec(q(96))} "
-                f"qty={dec(q(104))} cum={dec(q(112))} leaves={dec(q(120))} fee={dec(q(128))} fee_asset={('quote', 'base', 'other')[body[138]] if body[138] < 3 else body[138]} "
-                f"side={SIDES.get(body[136], body[136])} liq={LIQUIDITY.get(body[137], body[137])}")
+        f = fill_fields(body)
+        return (f"cl_ord_id={cl_ord_id(f['cl_ord_id'])} exec_id={f['exec_id']} px={dec(f['px_raw'])} "
+                f"qty={dec(f['qty_raw'])} cum={dec(f['cum_raw'])} leaves={dec(f['leaves_raw'])} fee={dec(f['fee_raw'])} "
+                f"fee_asset={f['fee_asset']} side={f['side']} liq={f['liq']}")
     if type_name == "Timer":
         return f"timer_id={struct.unpack_from('<I', body, 0)[0]} user_data={u64(8):#x} fire_ts={q(16)}"
     if type_name == "LatencySample":
@@ -129,45 +153,56 @@ def decode_body(type_name: str, body: bytes) -> str:
     return f"({len(body)} body bytes)"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("journal")
-    ap.add_argument("--first", type=int, default=20, help="print the first N events (0 = none)")
-    ap.add_argument("--type", help="only print events of this type (counts are still global)")
-    ap.add_argument("--no-crc", action="store_true", help="skip crc32c verification")
-    args = ap.parse_args()
+class JournalError(Exception):
+    """The file is not a readable FastMM journal."""
 
-    data = open(args.journal, "rb").read()
+
+def parse_header(data: bytes, verify_crc: bool = True) -> dict:
     if len(data) < HEADER.size:
-        print("error: file shorter than the 256-byte header", file=sys.stderr)
-        return 2
+        raise JournalError("file shorter than the 256-byte header")
     (magic, version, header_bytes, inst_count, session_id, start_ts, tsc0, tsc_ns0, ns_per_cycle,
      config_hash, rng_seed, msg_version, block_bytes, strategy, _reserved, hdr_crc) = HEADER.unpack_from(data, 0)
     if magic != b"FMJ1":
-        print(f"error: bad magic {magic!r}", file=sys.stderr)
-        return 2
-    crc_ok = args.no_crc or crc32c(data[:252]) == hdr_crc
-    print(f"file            {args.journal} ({len(data)} bytes)")
-    print(f"version         {version} (messages v{msg_version}), block size {block_bytes}")
-    print(f"session_id      {session_id}   rng_seed {rng_seed}   config_hash {config_hash:#018x}")
-    name = strategy.split(b"\0", 1)[0].decode("ascii", "replace")
-    print(f"strategy        '{name}'")
-    print(f"start_ts        {start_ts}   tsc0 {tsc0} tsc_ns0 {tsc_ns0} ns/cycle q32 {ns_per_cycle}")
-    print(f"header crc32c   {'ok' if crc_ok else 'MISMATCH'}")
+        raise JournalError(f"bad magic {magic!r}")
+    return {
+        "version": version, "header_bytes": header_bytes, "instrument_count": inst_count,
+        "session_id": session_id, "start_ts": start_ts, "tsc0": tsc0, "tsc_ns0": tsc_ns0,
+        "ns_per_cycle_q32": ns_per_cycle, "config_hash": config_hash, "rng_seed": rng_seed,
+        "message_version": msg_version, "block_bytes": block_bytes,
+        "strategy": strategy.split(b"\0", 1)[0].decode("ascii", "replace"),
+        "crc_ok": (not verify_crc) or crc32c(data[:252]) == hdr_crc,
+    }
 
-    print(f"instruments     {inst_count}")
-    for i in range(inst_count):
+
+def parse_instruments(data: bytes, header: dict) -> list:
+    out = []
+    for i in range(header["instrument_count"]):
         off = HEADER.size + 128 * i
         iid, venue, asset, flags, decimals, tick, lot, min_qty, max_qty, min_notional, mult, max_notional = \
             INSTRUMENT_HOT.unpack_from(data, off)
-        symbol = fixed_string(data[off + 80:off + 101], 20)
-        print(f"  #{iid} venue {venue} {symbol:<12} tick {dec(tick)} lot {dec(lot)} min_qty {dec(min_qty)} "
-              f"min_notional {dec(min_notional)} multiplier {dec(mult)} asset_class {asset} flags {flags:#x}")
+        out.append({
+            "id": iid, "venue": venue, "asset_class": asset, "flags": flags,
+            "symbol": fixed_string(data[off + 80:off + 101], 20),
+            "tick_raw": tick, "lot_raw": lot, "min_qty_raw": min_qty, "max_qty_raw": max_qty,
+            "min_notional_raw": min_notional, "multiplier_raw": mult,
+        })
+    return out
 
-    counts = Counter()
-    blocks = bad_blocks = printed = 0
-    trailer = False
-    off = header_bytes
+
+class BlockStats:
+    def __init__(self):
+        self.blocks = 0
+        self.bad_blocks = 0
+        self.trailer = False
+
+
+def iter_events(data: bytes, header: dict, verify_crc: bool = True, stats: BlockStats = None):
+    """Yields (event header dict, body bytes) for every message in file order.
+
+    Damaged blocks are reported on stderr; `stats` (optional) receives the block counts.
+    """
+    stats = stats if stats is not None else BlockStats()
+    off = header["header_bytes"]
     while off + BLOCK.size <= len(data):
         bmagic, byte_len, seq_first, seq_last, count, bcrc, bflags, _ = BLOCK.unpack_from(data, off)
         if bmagic != b"FMJB":
@@ -178,11 +213,11 @@ def main() -> int:
             print(f"warning: truncated block at offset {off}", file=sys.stderr)
             break
         if bflags & 1:
-            trailer = True
-        if not args.no_crc and crc32c(payload) != bcrc:
-            bad_blocks += 1
+            stats.trailer = True
+        if verify_crc and crc32c(payload) != bcrc:
+            stats.bad_blocks += 1
             print(f"warning: block at offset {off} (seq {seq_first}..{seq_last}) crc mismatch", file=sys.stderr)
-        blocks += 1
+        stats.blocks += 1
         pos = 0
         while pos + EVENT.size <= len(payload):
             (length, etype, ver, venue, flags, inst, _res, seq, venue_seq, exch_ts, recv_ts, t0, t1, t2) = \
@@ -190,25 +225,68 @@ def main() -> int:
             if length < EVENT.size or pos + length > len(payload):
                 print(f"warning: bad message length {length} in block at offset {off}", file=sys.stderr)
                 break
-            name = EVENT_TYPES[etype] if etype < len(EVENT_TYPES) else f"type{etype}"
-            direction = "out" if flags & 8 else "in"
-            counts[(name, direction)] += 1
-            if printed < args.first and (args.type is None or args.type == name):
-                body = payload[pos + EVENT.size:pos + length]
-                print(f"#{seq:<7} {name:<17} {direction:<3} inst {inst} venue {venue} flags {flags_str(flags)} "
-                      f"exch_ts {exch_ts} recv_ts {recv_ts} venue_seq {venue_seq}\n          {decode_body(name, body)}")
-                printed += 1
+            ev = {
+                "type": EVENT_TYPES[etype] if etype < len(EVENT_TYPES) else f"type{etype}",
+                "version": ver, "venue": venue, "flags": flags, "instrument": inst, "seq": seq,
+                "venue_seq": venue_seq, "exch_ts": exch_ts, "recv_ts": recv_ts,
+            }
+            yield ev, payload[pos + EVENT.size:pos + length]
             pos += length
         off += BLOCK.size + byte_len
-        if trailer:
+        if stats.trailer:
             break
 
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("journal")
+    ap.add_argument("--first", type=int, default=20, help="print the first N events (0 = none)")
+    ap.add_argument("--type", help="only print events of this type (counts are still global)")
+    ap.add_argument("--no-crc", action="store_true", help="skip crc32c verification")
+    args = ap.parse_args()
+
+    data = open(args.journal, "rb").read()
+    try:
+        hdr = parse_header(data, verify_crc=not args.no_crc)
+    except JournalError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    crc_ok = hdr["crc_ok"]
+    print(f"file            {args.journal} ({len(data)} bytes)")
+    print(f"version         {hdr['version']} (messages v{hdr['message_version']}), block size {hdr['block_bytes']}")
+    print(f"session_id      {hdr['session_id']}   rng_seed {hdr['rng_seed']}   config_hash {hdr['config_hash']:#018x}")
+    print(f"strategy        '{hdr['strategy']}'")
+    print(f"start_ts        {hdr['start_ts']}   tsc0 {hdr['tsc0']} tsc_ns0 {hdr['tsc_ns0']} "
+          f"ns/cycle q32 {hdr['ns_per_cycle_q32']}")
+    print(f"header crc32c   {'ok' if crc_ok else 'MISMATCH'}")
+
+    print(f"instruments     {hdr['instrument_count']}")
+    for inst in parse_instruments(data, hdr):
+        print(f"  #{inst['id']} venue {inst['venue']} {inst['symbol']:<12} tick {dec(inst['tick_raw'])} "
+              f"lot {dec(inst['lot_raw'])} min_qty {dec(inst['min_qty_raw'])} "
+              f"min_notional {dec(inst['min_notional_raw'])} multiplier {dec(inst['multiplier_raw'])} "
+              f"asset_class {inst['asset_class']} flags {inst['flags']:#x}")
+
+    counts = Counter()
+    printed = 0
+    stats = BlockStats()
+    for ev, body in iter_events(data, hdr, verify_crc=not args.no_crc, stats=stats):
+        name = ev["type"]
+        direction = "out" if ev["flags"] & 8 else "in"
+        counts[(name, direction)] += 1
+        if printed < args.first and (args.type is None or args.type == name):
+            print(f"#{ev['seq']:<7} {name:<17} {direction:<3} inst {ev['instrument']} venue {ev['venue']} "
+                  f"flags {flags_str(ev['flags'])} exch_ts {ev['exch_ts']} recv_ts {ev['recv_ts']} "
+                  f"venue_seq {ev['venue_seq']}\n          {decode_body(name, body)}")
+            printed += 1
+
     total = sum(counts.values())
-    print(f"blocks          {blocks} (crc mismatches {bad_blocks}), trailer {'present' if trailer else 'MISSING'}")
+    print(f"blocks          {stats.blocks} (crc mismatches {stats.bad_blocks}), "
+          f"trailer {'present' if stats.trailer else 'MISSING'}")
     print(f"events          {total}")
     for (name, direction), n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"  {name:<18} {direction:<3} {n}")
-    return 0 if crc_ok and bad_blocks == 0 else 1
+    return 0 if crc_ok and stats.bad_blocks == 0 else 1
 
 
 if __name__ == "__main__":

@@ -2,16 +2,17 @@
 
 **An open-source, ultra-low-latency market-making engine in C++20.**
 One engine thread owns all trading state, every input is journaled, and the same template code
-runs live, in simulation, and in deterministic replay. Crypto venues (Binance, Bybit) ship today;
+runs live, in simulation, and in deterministic replay. Crypto venues (Binance, Bybit, Deribit) ship today;
 the abstractions are built for equities, futures, options and FX (FIX 4.4, ITCH/OUCH, CME MDP3 SBE).
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: v0.1.** The core engine, networking stack, simulator, backtester, Binance and Bybit
-> testnet connectors, a Binance-compatible simulated exchange with end-to-end tests, and the Python
-> research bindings are implemented and tested. Testnets are the default. Nothing here is
+> **Status: v0.1.** The core engine, networking stack, simulator, backtester, Binance Spot (testnet
+> and Demo Mode), Bybit v5 and Deribit options and futures testnet connectors, a Binance-compatible
+> simulated exchange with end-to-end tests, and the Python research bindings are implemented and
+> tested. Testnets are the default. Nothing here is
 > investment advice. Live trading is at your own risk.
 
 ## Latency
@@ -89,7 +90,7 @@ python examples/python/backtest_quickstart.py
 | Core engine | `include/fastmm/core` | `Engine<Strategy, Clock, Transport, Feed>`, sorted-array L2 book, tick-indexed L3 book, OMS state machine with exchange-race handling, O(1) risk, quote manager with hysteresis |
 | Messaging | `core/msg_ring.hpp`, `core/journal.hpp` | variable-length SPSC ring, `.fmj` append-only journal with CRC32C blocks |
 | Networking | `include/fastmm/net` | hand-written reactor on epoll or io_uring (`[engine] net_backend`), OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
-| Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode) and Bybit v5 connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff |
+| Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode), Bybit v5 and Deribit (options and futures over JSON-RPC, with `OptionTicker` events) connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff ([connectors](docs/venues.md), [options](docs/options.md)) |
 | Codecs | `include/fastmm/codecs` | FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0, CME MDP 3.0 SBE with A/B arbitration; each checked against the matching engine ([FIX](docs/codecs-fix.md), [Nasdaq](docs/codecs-nasdaq.md), [CME](docs/codecs-cme-mdp3.md)) |
 | Monitoring | `apps/fastmm-top` | terminal dashboard over a shared-memory status file: engine counters, PnL, latency percentiles, venue channels |
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
@@ -120,7 +121,18 @@ void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
 
 **Add a venue** with a market-data parser, an order gateway and a control-path class; binary
 protocols plug in as `Framer` / `Decoder` / `Encoder` codecs on the same connection stack.
-Walkthrough: [`docs/adding-a-venue.md`](docs/adding-a-venue.md).
+Walkthrough, with a conformance checklist: [`docs/how-to/venues/add-a-venue.md`](docs/how-to/venues/add-a-venue.md).
+
+## Operating
+
+Before trading on a testnet or Binance Demo, read the operator guides:
+
+- [Run on a testnet or Binance Demo](docs/how-to/operations/run-on-testnet.md): keys, endpoints, `--dry-run`, a first keyed session
+- [Go-live checklist](docs/how-to/operations/go-live-checklist.md)
+- [Kill switch and shutdown](docs/how-to/operations/kill-switch-and-shutdown.md): what trips it and how to read `cancel_all ok|FAILED`
+- [Journals, replay and PnL](docs/how-to/operations/journals-replay-pnl.md): `tools/pnl_report.py` and account reconciliation
+- [Troubleshooting](docs/how-to/operations/troubleshooting.md), keyed by log message
+- [Monitoring a live session](docs/monitoring.md) with `fastmm-top`
 
 ## Testing
 

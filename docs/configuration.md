@@ -54,7 +54,7 @@ One table per venue; `<name>` is how instruments refer to it.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `kind` | string | | Connector type |
+| `kind` | string | | Connector type: `binance_spot` (also `binance`, and `sim` for the local simulator), `bybit` (also `bybit_spot`) or `deribit` |
 | `rest_url` | string | | REST base URL |
 | `ws_url` | string | | Market-data WebSocket URL |
 | `ws_api_url` | string | | WebSocket order-entry URL, if the venue has one |
@@ -224,7 +224,7 @@ first instrument's `tick` and `lot`.
 | Sequence gap | Book sync state machine | Resync state, re-snapshot (rate limited), quotes pulled meanwhile |
 | Stale feed | No traffic for the connector's stale threshold | Stale event; a longer dead threshold forces reconnect |
 | Order channel loss | Connection state machine | Immediate cancel-all through REST, reconcile open orders after reconnect |
-| Kill switch | Risk engine or SIGINT | Cancel-all on every venue, stop quoting, exit after acks or 5 s |
+| Kill switch | `max_loss`, a full outbound or journal ring, SIGINT/SIGTERM, `--duration`, order ring overflow | Stop quoting and cancel every working order. On shutdown every venue also cancels all over REST (5 s timeout per request), then the process exits; see [Kill switch and shutdown](how-to/operations/kill-switch-and-shutdown.md) |
 | Rate limit | Response headers and error codes | Cool down until reset; HTTP 418 halts REST for the ban period |
 | Clock skew | Timestamp rejection codes | Re-measure offset from the venue's time endpoint |
 | Ring overflow | Push fails | Drop the market-data delta and resync; order events are never dropped |

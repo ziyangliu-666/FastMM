@@ -100,6 +100,36 @@ All notable changes are recorded here (Keep a Changelog format).
   same output. Compile times under the ASan flags (before / after): bybit_private_parser 801 s /
   32 s, binance_order_encoder 549 s / 40 s, binance_md_parser 310 s / 24 s, bybit_md_parser 241 s /
   23 s, deribit_private_parser 140 s / 38 s, bybit_order_encoder 96 s / 47 s.
+- `schema.hpp` listed a `binance_futures` venue kind that has no connector; the `kind` description
+  now names the kinds the factory accepts.
+- `tools/pnl_report.py` replaces the session scripts whose mark-to-market PnL subtracted commission
+  charged in the base asset a second time (-48.74 instead of -32.94 USDT on a Binance Demo session).
+
+### Added (tools)
+- `tools/pnl_report.py`: per-hour fills, maker share, volume, fees in the quote asset and inventory
+  from a journal; the journal's trading PnL; the engine's final PnL line from the log; and, with
+  start and end account snapshots, the equity change split into starting-inventory revaluation and
+  trading, with the balance changes checked against the fills. `--self-test` checks it on a
+  synthetic journal (ctest `tools.pnl_report.self_test`). `tools/journal_dump.py` exposes its
+  reader (`parse_header`, `parse_instruments`, `iter_events`, `fill_fields`) with unchanged output.
+- `.env.example` lists the Deribit key variables and `FASTMM_BINANCE_ENV`.
+
+### Documentation
+- `docs/how-to/venues/add-a-venue.md` replaces `docs/adding-a-venue.md`, which pointed to a
+  registration directory and X-macro that do not exist and gave outdated concept signatures. The
+  new guide follows the Binance, Bybit and Deribit connectors: threading contract, file layout,
+  `MarketDataFeed` and `ParseStatus`, book sync traits, order entry (the `OrderGateway` concept is
+  not used by the shipped encoders), error actions, reconciliation, registration in
+  `venue_factory.cpp` and `schema.hpp`, fixtures, tests, and a conformance checklist linked to the
+  tests that prove each item.
+- Operator how-tos in `docs/how-to/operations/`: running on Binance Demo and the Binance, Bybit and
+  Deribit testnets; a go-live checklist; the kill switch (what trips it, the flag bits, the
+  shutdown sequence and `cancel_all ok|FAILED`); journals, replay and PnL reconciliation with a
+  Binance Demo example (0 fills at 15 bps from the mid, 1640 maker fills at the touch with engine
+  and account PnL agreeing to 0.003 USDT); and troubleshooting keyed by the exact log messages.
+- README: Deribit ships today; links to the venue guide and the operator how-tos.
+- `docs/configuration.md`: the accepted `kind` values, and the kill-switch row describes the real
+  shutdown sequence instead of "exit after acks or 5 s".
 
 ## [0.1.0] - 2026-09-14
 
