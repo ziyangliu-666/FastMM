@@ -2,7 +2,12 @@
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 
-FastMM is a fast market-making engine in C++20. A strategy is one C++ header, and the same header runs in backtests and live on Binance, Bybit and Deribit.
+FastMM is a fast market-making engine in C++20.
+
+- Backtests, replay and live trading run the same strategy code.
+- Every session is recorded, and replaying a recording sends the same orders again.
+- Orders pass pre-trade risk limits before they are sent, and reaching the loss limit cancels all orders.
+- The trading thread does not allocate memory or wait on network I/O; a market-data update becomes an order in about 0.6 microseconds in simulation.
 
 ## Quick start
 
@@ -50,6 +55,7 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md).
 ## Limitations
 
 - Version 0.1; the API may change.
+- Exchanges: Binance Spot, Bybit spot and Deribit.
 - Linux on x86-64 only.
 - Not yet used with real money.
 
