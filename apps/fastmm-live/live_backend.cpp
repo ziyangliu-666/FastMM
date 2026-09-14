@@ -7,6 +7,7 @@
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
@@ -15,6 +16,8 @@
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/symbology.hpp"
 #include "fastmm/venues/venue_factory.hpp"
+
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -362,6 +365,75 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       opts.dry_run,
       deps.engine.session_epoch);
 
+  // ---- live status for fastmm-top --------------------------------------------------------
+  StatusWriter status;
+  StatusSnapshot snap;
+  if (!opts.no_status) {
+    const std::string path =
+        opts.status_path.empty() ? default_status_path(cfg.engine.name) : opts.status_path;
+    std::string err;
+    if (status.open(path, &err)) {
+      FASTMM_LOG_INFO("status: {} (watch with fastmm-top --path {})", path, path);
+    } else {
+      FASTMM_LOG_WARN("status file {} unavailable: {}", path, err);
+    }
+  }
+  snap.pid = static_cast<std::uint32_t>(::getpid());
+  snap.session_id = deps.engine.session_id;
+  snap.started_ns = wall_now().ns;
+  snap.dry_run = opts.dry_run ? 1 : 0;
+  set_status_name(snap.engine_name, cfg.engine.name);
+  set_status_name(snap.strategy, strategy->name);
+  snap.venue_count =
+      static_cast<std::uint8_t>(std::min<std::size_t>(slots.size(), kStatusMaxVenues));
+  const auto publish_status = [&](StatusRunState state) {
+    if (!status.is_open()) return;
+    snap.state = state;
+    snap.updated_ns = wall_now().ns;
+    const EngineLiveStats live = runner->live_stats();
+    snap.events = live.stats.events;
+    snap.book_updates = live.stats.book_updates;
+    snap.orders_sent = live.stats.orders_sent;
+    snap.cancels_sent = live.stats.cancels_sent;
+    snap.replaces_sent = live.stats.replaces_sent;
+    snap.fills = live.stats.fills;
+    snap.risk_rejects = live.stats.risk_rejects;
+    snap.kills = live.kills;
+    snap.kill_flags = live.kill_flags;
+    snap.realized_pnl_raw = live.stats.realized_pnl_raw;
+    snap.unrealized_pnl_raw = live.stats.unrealized_pnl_raw;
+    snap.fees_raw = live.stats.fees_raw;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i)
+      snap.latency[i] = to_status_latency(live.latency.interval[i]);
+    for (std::size_t i = 0; i < snap.venue_count; ++i) {
+      const venues::Venue* v = slots[i]->venue.get();
+      const venues::VenueStatus st = v->status();
+      StatusVenue& sv = snap.venues[i];
+      set_status_name(sv.name, v->name());
+      sv.md = static_cast<std::uint8_t>(st.md);
+      sv.user = static_cast<std::uint8_t>(st.user);
+      sv.order = static_cast<std::uint8_t>(st.order);
+      sv.books_synced = st.books_synced;
+      sv.books_total = st.books_total;
+      sv.md_messages = st.md_messages;
+      sv.resyncs = st.resyncs;
+      sv.orders_sent = st.orders_sent;
+      sv.cancels_sent = st.cancels_sent;
+      sv.replaces_sent = st.replaces_sent;
+      sv.order_events = st.order_events;
+      sv.reconnects = st.reconnects;
+      sv.rest_errors = st.rest_errors;
+      sv.rate_limit_cooldowns = st.rate_limit_cooldowns;
+      sv.clock_offset_ms = st.clock_offset_ms;
+      sv.wire_tick_to_trade = StatusLatency{st.wire_tick_to_trade.count,
+                                            st.wire_tick_to_trade.p50_ns,
+                                            st.wire_tick_to_trade.p99_ns,
+                                            0};
+    }
+    status.publish(snap);
+  };
+  publish_status(StatusRunState::Running);
+
   // ---- control loop -----------------------------------------------------------------------
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
@@ -371,6 +443,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   if (recalibrate_ns > 0 && !last_tsc.use_tsc)
     FASTMM_LOG_INFO("no invariant TSC: the clock uses clock_gettime; TSC recalibration is off");
   int reason = 0;  // 1 duration, 2 signal
+  std::int64_t next_status = start + 250'000'000;
   while (reason == 0) {
     sleep_for(milliseconds(50));
     if (g_signal != 0) reason = 2;
@@ -381,6 +454,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         FASTMM_LOG_ERROR("order ring overflow on {}: tripping the kill switch", s->venue->name());
         reason = 3;
       }
+    }
+    if (now >= next_status) {
+      next_status = now + 250'000'000;
+      publish_status(StatusRunState::Running);
     }
     if (recalibrate_ns > 0 && last_tsc.use_tsc && now >= next_recalibration) {
       recalibrate_tsc(tsc_calibrator, tsc_pub, last_tsc);
@@ -417,6 +494,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const std::int64_t shutdown_start = steady_now().ns;
+  publish_status(StatusRunState::Stopping);
   FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                   reason == 1   ? std::string_view("duration elapsed")
                   : reason == 2 ? std::string_view("signal")
@@ -484,6 +562,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   const std::int64_t shutdown_ms = (steady_now().ns - shutdown_start) / 1'000'000;
   FASTMM_LOG_INFO(
       "fastmm-live: shutdown took {} ms (cancel_all {})", shutdown_ms, cancel_ok ? "ok" : "FAILED");
+  publish_status(StatusRunState::Stopped);  // the file stays: monitors show the final numbers
   if (!cancel_ok) return kExitRuntime;
   return reason == 3 ? kExitRuntime : kExitOk;
 }

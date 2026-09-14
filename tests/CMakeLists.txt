@@ -55,3 +55,10 @@ if(_hot AND NOT FASTMM_ENABLE_TSAN)
   target_link_libraries(fastmm_hotpath_tests PRIVATE fastmm_test_support fastmm::backtest fastmm::codecs)
   doctest_discover_tests(fastmm_hotpath_tests TEST_PREFIX "hotpath." PROPERTIES LABELS "noalloc")
 endif()
+
+# fastmm-top without a running engine: a clear message and exit code 3.
+if(TARGET fastmm-top)
+  add_test(NAME apps.fastmm-top.no_status COMMAND fastmm-top --once --path ${CMAKE_CURRENT_BINARY_DIR}/tmp/no-such.status)
+  set_tests_properties(apps.fastmm-top.no_status PROPERTIES LABELS "unit" WILL_FAIL TRUE)
+endif()
+

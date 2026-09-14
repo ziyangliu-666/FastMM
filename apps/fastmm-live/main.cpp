@@ -36,6 +36,9 @@ void usage(std::FILE* out) {
       "  --record-raw <dir>       append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl\n"
       "  --journal <path>         write the session journal (.fmj) here\n"
       "  --no-journal             disable journaling even if [engine] journal = true\n"
+      "  --status <path>          live status file for fastmm-top (default "
+      "/dev/shm/fastmm-<engine>.status)\n"
+      "  --no-status              do not publish live status\n"
       "  --log <path>             write the log to a file (warnings are mirrored to stderr)\n"
       "  --allow-inline-secrets   accept literal API secrets in the config file\n"
       "  --list-strategies        print the strategies this binary can run and exit\n"
@@ -172,6 +175,10 @@ int main(int argc, char** argv) {
       if (!value(opts.journal_path)) return kExitUsage;
     } else if (a == "--no-journal") {
       opts.no_journal = true;
+    } else if (a == "--status") {
+      if (!value(opts.status_path)) return kExitUsage;
+    } else if (a == "--no-status") {
+      opts.no_status = true;
     } else if (a == "--log") {
       if (!value(log_path)) return kExitUsage;
     } else if (a == "--allow-inline-secrets") {

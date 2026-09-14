@@ -221,6 +221,7 @@ class Engine {
   [[nodiscard]] const Seqlocked<LatencySnapshot>& latency_snapshot() const noexcept {
     return latency_pub_;
   }
+  [[nodiscard]] EngineLiveStats live_stats() const noexcept { return live_pub_.load(); }
   [[nodiscard]] bool quoting_enabled() const noexcept {
     return quoting_enabled_ && !reconciling_ && !risk_.killed();
   }
@@ -860,6 +861,12 @@ class Engine {
     last_publish_ = now;
     const LatencySnapshot s = latency_.snapshot(now.ns);
     latency_pub_.store(s);
+    EngineLiveStats live;
+    live.stats = runner_stats();
+    live.kills = stats_.kills;
+    live.kill_flags = risk_.kill_flags();
+    live.latency = s;
+    live_pub_.store(live);
     if (journal_.enabled()) {
       LatencySampleMsg m{};
       init_header(m, EventType::LatencySample);
@@ -898,6 +905,7 @@ class Engine {
   SpinPolicy spin_;
   EngineStats stats_{};
   Seqlocked<LatencySnapshot> latency_pub_;
+  Seqlocked<EngineLiveStats> live_pub_;
   Timestamp last_publish_{};
 
   alignas(kCacheLine) std::byte out_storage_[kOutBatch * kOutSlotBytes] = {};

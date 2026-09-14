@@ -31,6 +31,8 @@ struct LiveOptions {
   std::string record_raw_dir;
   std::string journal_path;  // overrides [engine] journal_dir
   bool no_journal = false;
+  std::string status_path;  // overrides the default /dev/shm/fastmm-<engine>.status
+  bool no_status = false;
 };
 
 inline constexpr int kExitOk = 0;

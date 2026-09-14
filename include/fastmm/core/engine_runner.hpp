@@ -2,6 +2,8 @@
 // IEngineRunner: the only virtual seam in the system. The registry hands the app a runner
 // for a (strategy, transport kind) pair; run()/stop() are called once each, never on the
 // hot path. EngineRunner<E> adapts a concrete Engine instantiation.
+#include "fastmm/core/latency.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -27,6 +29,16 @@ struct RunnerStats {
   std::uint64_t tick_to_trade_p99_ns = 0;
 };
 
+// What a running engine publishes for other threads (monitors): the runner stats, kill-switch
+// state and the latency snapshot, refreshed with the latency publication (every second).
+struct EngineLiveStats {
+  RunnerStats stats;
+  std::uint64_t kills = 0;
+  std::uint32_t kill_flags = 0;
+  std::uint32_t pad_ = 0;
+  LatencySnapshot latency;
+};
+
 // Human-readable one-line summary (src/core/engine_runner.cpp).
 std::string format_runner_stats(const RunnerStats& s);
 
@@ -37,6 +49,8 @@ class IEngineRunner {
   virtual void stop() = 0;         // thread-safe request to leave run()
   virtual std::size_t step() = 0;  // process a bounded batch (sim/backtest driver)
   [[nodiscard]] virtual RunnerStats stats() const = 0;
+  // Safe to call from any thread while run() is active (a seqlocked copy, up to a second old).
+  [[nodiscard]] virtual EngineLiveStats live_stats() const { return {}; }
   [[nodiscard]] virtual std::string_view strategy_name() const = 0;
 };
 
@@ -50,6 +64,7 @@ class EngineRunner final : public IEngineRunner {
   void stop() override { engine_->stop(); }
   std::size_t step() override { return engine_->step(); }
   [[nodiscard]] RunnerStats stats() const override { return engine_->runner_stats(); }
+  [[nodiscard]] EngineLiveStats live_stats() const override { return engine_->live_stats(); }
   [[nodiscard]] std::string_view strategy_name() const override { return Strategy::name(); }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }
   [[nodiscard]] Strategy& strategy() noexcept { return *strategy_; }
