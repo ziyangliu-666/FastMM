@@ -58,9 +58,10 @@ std::size_t BybitOrderEncoder::write_args(const OrderCommand& cmd,
         const ClientOrderId link = shadow->link_id.valid() ? shadow->link_id : cmd.orig_cl_ord_id;
         w.key("orderLinkId").string(encode_cl_ord_id(link).view());
       }
-      // VERIFY: amend-order `qty` is "Order quantity after modification"; whether that is
-      // the total (including already filled) quantity is not stated. We send the engine's
-      // new order quantity unchanged.
+      // Amend `qty` is "Order quantity after modification" (amend-order page). On the order
+      // object `qty` is the order quantity and `leavesQty` "the remaining qty not executed"
+      // (open-order page), so the amended value is the total, as the engine's replace qty is.
+      // Checked against the docs 2026-09-14; not yet observed on a partially filled order.
       DecimalText qty(cmd.qty);
       DecimalText px(cmd.price);
       w.key("qty").string(qty.view()).key("price").string(px.view());

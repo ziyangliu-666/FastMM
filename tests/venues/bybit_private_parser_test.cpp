@@ -79,7 +79,11 @@ TEST_CASE("bybit.private_parser: execution -> fill, wallet -> position, control 
   REQUIRE(r.count == 1);  // BTC -> BTCUSDT on venue 1; USDT is no instrument's base
   const auto& pos = s.as<PositionUpdateMsg>();
   CHECK(pos.hdr.instrument == kBtc);
-  CHECK(pos.qty == qty("1.001"));
+  CHECK(pos.qty == qty("1.001"));  // spotBorrow 0; locked coins are part of walletBalance
+  // Spot borrows are deducted: the position is the net holding (equity = walletBalance -
+  // spotBorrow).
+  r = decode(p, "bybit/private_wallet_borrow.json", s);
+  CHECK(s.as<PositionUpdateMsg>().qty == qty("0.801"));
 
   r = decode(p, "bybit/private_auth_ok.json", s);
   CHECK(r.status == ParseStatus::Ignored);

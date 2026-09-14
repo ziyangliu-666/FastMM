@@ -1,9 +1,13 @@
-// Binance Spot testnet (opt-in: FASTMM_LIVE_TESTS=1). Public part: reference data and a
-// synchronised book. With FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET: a post-only
+// Binance Spot testnet or Demo Mode (opt-in: FASTMM_LIVE_TESTS=1). Public part: reference data
+// and a synchronised book. With FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET: a post-only
 // order far below the market is placed and cancelled.
-// Endpoints: https://developers.binance.com/docs/binance-spot-api-docs (testnet section):
-// https://testnet.binance.vision, wss://stream.testnet.binance.vision,
-// wss://ws-api.testnet.binance.vision/ws-api/v3.
+// FASTMM_BINANCE_ENV selects the environment (never the live exchange):
+//   testnet (default)  https://testnet.binance.vision, wss://stream.testnet.binance.vision,
+//                      wss://ws-api.testnet.binance.vision/ws-api/v3
+//   demo               https://demo-api.binance.com, wss://demo-stream.binance.com,
+//                      wss://demo-ws-api.binance.com/ws-api/v3
+// (https://developers.binance.com/docs/binance-spot-api-docs, testnet section, and
+//  .../demo-mode/general-info). Testnet and Demo Mode keys are different keys.
 #include "live_test_util.hpp"
 
 #include "fastmm/venues/binance/binance_venue.hpp"
@@ -13,20 +17,31 @@ using namespace fastmm::venues;
 using namespace fastmm::venues::binance;
 using namespace fastmm::venues::test;
 
-TEST_CASE("live.binance: testnet book sync, then place and cancel a far limit order") {
+TEST_CASE("live.binance: book sync, then place and cancel a far limit order") {
   if (!live_tests_enabled()) {
-    MESSAGE("skipped: set FASTMM_LIVE_TESTS=1 to run against the Binance Spot testnet");
+    MESSAGE("skipped: set FASTMM_LIVE_TESTS=1 to run against the Binance Spot testnet or demo");
     return;
   }
   const std::string key = env_or_empty("FASTMM_BINANCE_API_KEY");
   const std::string secret = env_or_empty("FASTMM_BINANCE_API_SECRET");
   const bool with_keys = !key.empty() && !secret.empty();
 
+  const std::string env = env_or_empty("FASTMM_BINANCE_ENV");
   BinanceVenueConfig cfg;
-  cfg.name = "binance-testnet";
-  cfg.ws_url = "wss://stream.testnet.binance.vision/stream";
-  cfg.ws_api_url = "wss://ws-api.testnet.binance.vision/ws-api/v3";
-  cfg.rest_url = "https://testnet.binance.vision";
+  if (env == "demo") {
+    cfg.name = "binance-demo";
+    cfg.ws_url = "wss://demo-stream.binance.com/stream";
+    cfg.ws_api_url = "wss://demo-ws-api.binance.com/ws-api/v3";
+    cfg.rest_url = "https://demo-api.binance.com";
+  } else {
+    REQUIRE_MESSAGE((env.empty() || env == "testnet"),
+                    "FASTMM_BINANCE_ENV must be testnet or demo, got '" << env << "'");
+    cfg.name = "binance-testnet";
+    cfg.ws_url = "wss://stream.testnet.binance.vision/stream";
+    cfg.ws_api_url = "wss://ws-api.testnet.binance.vision/ws-api/v3";
+    cfg.rest_url = "https://testnet.binance.vision";
+  }
+  MESSAGE("environment: " << cfg.name << " (" << cfg.rest_url << ")");
   cfg.credentials.api_key = key;
   cfg.credentials.secret.value = secret;
   cfg.dry_run = !with_keys;

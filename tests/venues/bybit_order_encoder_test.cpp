@@ -221,4 +221,14 @@ TEST_CASE("bybit.error_map: documented retCodes") {
   CHECK_FALSE(map_error(170999).known);
   CHECK(map_http_status(403).action == VenueAction::RateLimit);
   CHECK(map_reject_reason("EC_PostOnlyWillTakeLiquidity") == RejectReason::PostOnlyWouldCross);
+  CHECK(map_reject_reason("EC_InvalidSymbolStatus") == RejectReason::InstrumentDisabled);
+  CHECK(map_reject_reason("EC_DuplicatedClOrdID") == RejectReason::DuplicateId);
+  CHECK(map_reject_reason("EC_OrderNotExist") == RejectReason::VenueUnknownOrder);
+  CHECK(map_reject_reason("EC_OrigClOrdIDDoesNotExist") == RejectReason::VenueUnknownOrder);
+  CHECK(map_reject_reason("EC_BySelfMatch") == RejectReason::SelfTradePrevention);
+  CHECK(map_reject_reason("EC_InvalidPriceScale") == RejectReason::InvalidTick);
+  CHECK(map_reject_reason("EC_QtyCannotBeZero") == RejectReason::InvalidLot);
+  CHECK(map_reject_reason("EC_ReachRiskPriceLimit") == RejectReason::PriceCollar);
+  CHECK(map_reject_reason("EC_Others") == RejectReason::VenueReject);
+  CHECK(map_reject_reason("EC_InsufficientBalance") == RejectReason::VenueReject);  // not an enum
 }

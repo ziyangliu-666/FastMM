@@ -1,0 +1,42 @@
+{
+  "id": "592324d2bce751-ad38-48eb-8f42-4671d1fb4d4e",
+  "topic": "wallet",
+  "creationTime": 1789299703470,
+  "data": [
+    {
+      "accountType": "UNIFIED",
+      "totalEquity": "100000",
+      "totalWalletBalance": "100000",
+      "totalMarginBalance": "100000",
+      "totalAvailableBalance": "100000",
+      "coin": [
+        {
+          "coin": "BTC",
+          "equity": "1.001",
+          "usdValue": "77217.6",
+          "walletBalance": "1.001",
+          "locked": "0",
+          "spotBorrow": "0.2",
+          "borrowAmount": "0",
+          "unrealisedPnl": "0",
+          "bonus": "0",
+          "collateralSwitch": true,
+          "marginCollateral": true
+        },
+        {
+          "coin": "USDT",
+          "equity": "9922.8",
+          "usdValue": "9922.8",
+          "walletBalance": "9922.8",
+          "locked": "60.0001",
+          "spotBorrow": "0",
+          "borrowAmount": "0",
+          "unrealisedPnl": "0",
+          "bonus": "0",
+          "collateralSwitch": true,
+          "marginCollateral": true
+        }
+      ]
+    }
+  ]
+}

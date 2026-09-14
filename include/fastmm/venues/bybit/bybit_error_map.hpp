@@ -62,12 +62,21 @@ namespace fastmm::venues::bybit {
   }
 }
 
-// rejectReason on the private `order` topic (enum page, "rejectReason").
+// rejectReason on the private `order` topic (enum page, "rejectReason", checked 2026-09-14).
+// The enum has no balance-related value: insufficient balance is reported as retCode
+// 170131 / 110007 on the order response and handled by map_error().
 [[nodiscard]] constexpr RejectReason map_reject_reason(std::string_view r) noexcept {
   if (r == "EC_PostOnlyWillTakeLiquidity") return RejectReason::PostOnlyWouldCross;
   if (r == "EC_InvalidSymbolStatus") return RejectReason::InstrumentDisabled;
-  // VERIFY: the balance-related rejectReason strings are not listed on the enum page.
-  if (contains_ci(r, "Balance")) return RejectReason::InsufficientBalance;
+  if (r == "EC_DuplicatedClOrdID") return RejectReason::DuplicateId;
+  if (r == "EC_OrigClOrdIDDoesNotExist" || r == "EC_OrderNotExist")
+    return RejectReason::VenueUnknownOrder;
+  if (r == "EC_BySelfMatch" || r == "EC_StopBySelfMatch") return RejectReason::SelfTradePrevention;
+  if (r == "EC_LimitOrderInvalidPrice" || r == "EC_InvalidPriceScale")
+    return RejectReason::InvalidTick;
+  if (r == "EC_QtyCannotBeZero" || r == "EC_EcInvalidQty") return RejectReason::InvalidLot;
+  if (r == "EC_ReachRiskPriceLimit" || r == "EC_ReachMarketPriceLimit")
+    return RejectReason::PriceCollar;
   return RejectReason::VenueReject;
 }
 

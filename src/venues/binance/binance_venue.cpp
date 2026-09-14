@@ -1135,15 +1135,16 @@ void BinanceVenue::request_server_time() {
                           cfg_.recv_window_ms);
       });
   if (!queued) time_request_pending_ = false;
-  rate_.on_sent(2, now_ns());  // GET /api/v3/time weight 2 (rest-api.md "Check server time"...
-                               // VERIFY: 1 in older docs)
+  rate_.on_sent(1, now_ns());  // GET /api/v3/time: "IP Weight 1" (general endpoints, 2026-09-14)
 }
 
 void BinanceVenue::request_listen_key() {
-  // Legacy listenKey flow for the local simulator: POST /api/v3/userDataStream returns
-  // {"listenKey": "..."}; keepalive with PUT every 30 minutes (key valid 60 minutes).
-  // VERIFY: the validity/keepalive numbers come from the removed documentation; Binance
-  // testnet itself answers 410 Gone (observed 2026-09-13), in which case we switch to WsApi.
+  // Legacy listenKey flow, kept for the local simulator and older deployments: POST
+  // /api/v3/userDataStream returns {"listenKey": "..."}; keepalive with PUT every 30 minutes
+  // (key valid 60 minutes, per the documentation removed on 2025-10-24). Binance deprecated
+  // listenKey streams on 2025-04-07 and removed POST/PUT/DELETE /api/v3/userDataStream (and
+  // userDataStream.start/ping/stop) from 2026-02-20 (spot API changelog); the testnet answers
+  // 410 Gone (observed 2026-09-13), in which case we switch to userDataStream.subscribe.
   if (rest_ == nullptr || !signer_.usable()) return;
   std::weak_ptr<int> alive = alive_;
   rest_->request("POST",

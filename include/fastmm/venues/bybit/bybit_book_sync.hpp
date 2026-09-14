@@ -6,9 +6,12 @@
 // A gap (u not increasing) or a missing snapshot re-subscribes the topic to obtain a fresh
 // snapshot, rate limited to one request per instrument per min_interval.
 //
-// VERIFY: the docs do not state that u increments by exactly one per delta. Recorded
-// testnet deltas (tests/fixtures/bybit/raw_md_stream.jsonl) did, but the core traits only
-// require strict increase so a legitimately skipped id does not force a resync.
+// Sequencing (checked against the orderbook page, 2026-09-14): the docs promise neither that u
+// grows by exactly one per delta nor any other gap rule; they only say that a new snapshot
+// (including u=1 after a service restart, and the level-1 spot snapshot resent after 3 s
+// without changes) resets the local book, and that a smaller seq means older data. Recorded
+// testnet deltas (tests/fixtures/bybit/raw_md_stream.jsonl) did step by one, but the traits
+// require only a strict increase, so an id Bybit legitimately skips never forces a resync.
 //
 // Output contract (6.2): BookSnapshot before the first BookDelta; a gap emits
 // ConnectionState{Resyncing, channel 0} before the next snapshot.

@@ -154,14 +154,22 @@ MdDecodeResult BybitPrivateParser::decode(std::string_view json,
         std::string_view balance;
         if (co["coin"].get_string().get(coin) != sj::SUCCESS) return malformed();
         if (co["walletBalance"].get_string().get(balance) != sj::SUCCESS) return malformed();
-        const auto bal = parse_qty(balance);
+        auto bal = parse_qty(balance);
         if (!bal) return malformed();
+        // walletBalance is the gross coin balance: `locked` (open spot orders) is part of it and
+        // reported separately, and coin equity is walletBalance - spotBorrow + UPL (wallet page,
+        // checked 2026-09-14). The position is the net holding, so spot borrows are deducted.
+        std::string_view borrow;
+        if (co["spotBorrow"].get_string().get(borrow) == sj::SUCCESS && !borrow.empty()) {
+          const auto b = parse_qty(borrow);
+          if (!b) return malformed();
+          bal = *bal - *b;
+        }
         for (const Instrument& inst : instruments_) {
           if (inst.venue != venue_ || !iequals_symbol(inst.base.view(), coin)) continue;
           if (!room(sizeof(PositionUpdateMsg))) break;
           auto* m = reinterpret_cast<PositionUpdateMsg*>(out.data() + written);
           init_header(*m, EventType::PositionUpdate, inst.id, venue_);
-          // VERIFY: whether walletBalance already includes `locked` for spot holdings.
           m->qty = *bal;
           stamp(*m, recv_ts, t0, creation);
           written += sizeof(PositionUpdateMsg);

@@ -4,6 +4,20 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- Binance Spot Demo Mode: `configs/binance-demo.toml`, and `FASTMM_BINANCE_ENV=demo` for the live
+  test. The live test passed against Demo Mode (book sync, far post-only order, cancel, cancel-all).
+- CI builds the Docker image and runs the compose stack for 20 seconds.
+
+### Fixed
+- Bybit positions deduct `spotBorrow` from `walletBalance` (the net holding; `locked` coins were
+  already included, as the wallet docs define).
+- Bybit `rejectReason` values map to specific reasons (duplicate id, unknown order, self-trade
+  prevention, price scale, zero quantity, price limits) instead of a guessed "Balance" match.
+- Binance `GET /api/v3/time` is counted with weight 1, as documented.
+- Comments that said VERIFY now cite what the Bybit and Binance docs state (Bybit sequencing and
+  amend quantity, Binance listenKey removal from 2026-02-20).
+
 ## [0.1.0] - 2026-09-14
 
 ### Added
