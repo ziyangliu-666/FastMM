@@ -224,11 +224,54 @@ TEST_CASE("core.status_segment: a segment of another version is refused, not mis
   INFO(err);
   CHECK(err == status_version_mismatch(1));
   CHECK(err.find("version 1 ") != std::string::npos);
-  CHECK(err.find("(version 2)") != std::string::npos);
+  CHECK(err.find("(version " + std::to_string(kStatusVersion) + ")") != std::string::npos);
   CHECK_FALSE(r.is_open());
   CHECK(r.segment_version() == 1);  // fastmm-top reports the refused version on its own
   CHECK_FALSE(r.open(tmp_path("no-such.status"), &err));
   CHECK(r.segment_version() == 0);
   std::remove(old_path.c_str());
   std::remove(path.c_str());
+}
+
+TEST_CASE(
+    "core.status_segment: kill switch reasons and per-venue kill flags show on the dashboard") {
+  StatusSnapshot s = sample();
+  std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("KILLED") == std::string::npos);
+  CHECK(frame.find("venue_kills=0 kill_flags=0x0") != std::string::npos);
+
+  // One of two venues killed: the state line says so, the venue row names the reason.
+  s.venue_count = 2;
+  set_status_name(s.venues[1].name, "bybit");
+  s.venues[1].killed = 1;
+  s.venues[1].kill_reason = static_cast<std::uint8_t>(KillReason::VenueFatal);
+  s.kill_flags = 0x4;
+  s.venue_kills = 1;
+  frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("running  VENUE KILLED") != std::string::npos);
+  CHECK(frame.find("VenueFatal") != std::string::npos);
+  CHECK(frame.find("venue_kills=1 kill_flags=0x4") != std::string::npos);
+
+  // Global kill: the reason stays in the final frame.
+  s.kill_flags |= 1U;
+  s.kill_reason = static_cast<std::uint8_t>(KillReason::MaxLoss);
+  s.state = StatusRunState::Stopped;
+  frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("stopped  KILLED (MaxLoss)") != std::string::npos);
+
+  const std::string path = tmp_path("killed.status");
+  StatusWriter w;
+  std::string err;
+  REQUIRE(w.open(path, &err));
+  w.publish(s);
+  StatusReader r;
+  REQUIRE(r.open(path, &err));
+  StatusSnapshot back;
+  REQUIRE(r.read(back));
+  CHECK(back.kill_flags == s.kill_flags);
+  CHECK(back.kill_reason == s.kill_reason);
+  CHECK(back.venue_kills == 1);
+  CHECK(back.venues[1].killed == 1);
+  CHECK(back.venues[1].kill_reason == static_cast<std::uint8_t>(KillReason::VenueFatal));
+  CHECK(back.venues[0].killed == 0);
 }

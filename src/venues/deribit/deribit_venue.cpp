@@ -941,6 +941,15 @@ void DeribitVenue::send_command(const OrderCommand& cmd) {
   }
 }
 
+// First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled, new
+// orders refused by risk); the other venues keep trading.
+void DeribitVenue::trip_venue_kill(KillReason reason) {
+  if (venue_kill_sent_ || order_sink_ == nullptr) return;
+  venue_kill_sent_ = true;
+  FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
+  emit_venue_kill(*order_sink_, id_, reason);
+}
+
 void DeribitVenue::apply_action(VenueAction action, int code, std::string_view msg) {
   switch (action) {
     case VenueAction::None:
@@ -967,6 +976,8 @@ void DeribitVenue::apply_action(VenueAction action, int code, std::string_view m
     case VenueAction::Fatal:
       fatal_ = true;
       FASTMM_LOG_ERROR("{}: fatal venue error ({} {}); order entry disabled", cfg_.name, code, msg);
+      trip_venue_kill(action == VenueAction::HardStop ? KillReason::VenueHardStop
+                                                      : KillReason::VenueFatal);
       break;
   }
 }

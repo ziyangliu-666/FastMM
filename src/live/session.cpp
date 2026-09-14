@@ -4,6 +4,7 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/oms.hpp"
+#include "fastmm/core/risk.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
@@ -42,6 +43,8 @@ extern "C" void on_signal(int sig) {
 }
 
 void install_signal_handlers() {
+  // Each session starts without a pending stop: a process can run several sessions (tests).
+  g_signal = 0;
   struct sigaction sa {};
   sa.sa_handler = &on_signal;
   sigemptyset(&sa.sa_mask);
@@ -434,11 +437,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   set_status_name(snap.strategy, strategy->name);
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(slots.size(), kStatusMaxVenues));
-  const auto publish_status = [&](StatusRunState state) {
+  const auto publish_status = [&](StatusRunState state, const EngineLiveStats& live) {
     if (!status.is_open()) return;
     snap.state = state;
     snap.updated_ns = wall_now().ns;
-    const EngineLiveStats live = runner->live_stats();
     snap.events = live.stats.events;
     snap.book_updates = live.stats.book_updates;
     snap.orders_sent = live.stats.orders_sent;
@@ -450,7 +452,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
     snap.kills = live.kills;
+    snap.venue_kills = static_cast<std::uint32_t>(live.venue_kills);
     snap.kill_flags = live.kill_flags;
+    snap.kill_reason = static_cast<std::uint8_t>(live.kill_reason);
     snap.realized_pnl_raw = live.stats.realized_pnl_raw;
     snap.unrealized_pnl_raw = live.stats.unrealized_pnl_raw;
     snap.fees_raw = live.stats.fees_raw;
@@ -460,7 +464,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       const venues::Venue* v = slots[i]->venue.get();
       const venues::VenueStatus st = v->status();
       StatusVenue& sv = snap.venues[i];
+      const VenueId vid{static_cast<std::uint8_t>(i)};
       set_status_name(sv.name, v->name());
+      sv.killed = (live.kill_flags & RiskEngine::venue_bit(vid)) != 0 ? 1 : 0;
+      sv.kill_reason =
+          static_cast<std::uint8_t>(live.venue_kill_reasons[RiskEngine::venue_slot(vid)]);
       sv.md = static_cast<std::uint8_t>(st.md);
       sv.user = static_cast<std::uint8_t>(st.user);
       sv.order = static_cast<std::uint8_t>(st.order);
@@ -483,7 +491,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     status.publish(snap);
   };
-  publish_status(StatusRunState::Running);
+  publish_status(StatusRunState::Running, runner->live_stats());
 
   // ---- control loop -----------------------------------------------------------------------
   const std::int64_t start = steady_now().ns;
@@ -493,8 +501,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   std::int64_t next_recalibration = start + recalibrate_ns;
   if (recalibrate_ns > 0 && !last_tsc.use_tsc)
     FASTMM_LOG_INFO("no invariant TSC: the clock uses clock_gettime; TSC recalibration is off");
-  int reason = 0;  // 1 duration, 2 signal
+  // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine
+  int reason = 0;
   std::int64_t next_status = start + 250'000'000;
+  const bool exit_on_kill = cfg.engine.on_kill != "stay";
+  KillReason engine_kill = KillReason::None;  // the unrequested global kill, once seen
+  std::int64_t next_kill_reminder = 0;
+  std::uint32_t reported_venue_kills = 0;  // venue kill bits already logged
   while (reason == 0) {
     sleep_for(milliseconds(50));
     if (g_signal != 0) reason = 2;
@@ -506,9 +519,47 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         reason = 3;
       }
     }
+    // The engine publishes its kill-switch state as soon as a flag changes.
+    const EngineLiveStats live = runner->live_stats();
+    if (const std::uint32_t new_venue_kills = live.kill_flags & ~1U & ~reported_venue_kills;
+        new_venue_kills != 0) {
+      reported_venue_kills |= new_venue_kills;
+      std::size_t trading = 0;
+      for (std::size_t i = 0; i < slots.size(); ++i) {
+        if ((live.kill_flags & RiskEngine::venue_bit(VenueId{static_cast<std::uint8_t>(i)})) == 0)
+          ++trading;
+      }
+      for (std::size_t i = 0; i < slots.size(); ++i) {
+        const VenueId vid{static_cast<std::uint8_t>(i)};
+        if ((new_venue_kills & RiskEngine::venue_bit(vid)) == 0) continue;
+        FASTMM_LOG_ERROR(
+            "[{}] venue kill switch engaged ({}): its quotes are pulled and new orders to it are "
+            "refused; {} of {} venue(s) still trading",
+            slots[i]->venue->name(),
+            live.venue_kill_reasons[RiskEngine::venue_slot(vid)],
+            trading,
+            slots.size());
+      }
+    }
+    if ((live.kill_flags & 1U) != 0 && live.kill_reason != KillReason::Requested) {
+      if (engine_kill == KillReason::None) {
+        engine_kill = live.kill_reason;
+        next_kill_reminder = now;
+        if (exit_on_kill && reason == 0) reason = 4;
+      }
+      if (!exit_on_kill && now >= next_kill_reminder) {
+        next_kill_reminder = now + kKilledReminderNs;
+        FASTMM_LOG_ERROR(
+            "fastmm-live: kill switch engaged ({}, flags={:#x}) and [engine] on_kill = \"stay\": "
+            "quoting is off and no new orders are sent; stop the process (SIGINT/SIGTERM) to "
+            "cancel all and exit",
+            engine_kill,
+            live.kill_flags);
+      }
+    }
     if (now >= next_status) {
       next_status = now + 250'000'000;
-      publish_status(StatusRunState::Running);
+      publish_status(StatusRunState::Running, live);
     }
     if (recalibrate_ns > 0 && last_tsc.use_tsc && now >= next_recalibration) {
       recalibrate_tsc(tsc_calibrator, tsc_pub, last_tsc);
@@ -545,15 +596,21 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const std::int64_t shutdown_start = steady_now().ns;
-  publish_status(StatusRunState::Stopping);
-  FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
-                  reason == 1   ? std::string_view("duration elapsed")
-                  : reason == 2 ? std::string_view("signal")
-                                : std::string_view("order ring overflow"));
+  publish_status(StatusRunState::Stopping, runner->live_stats());
+  if (reason == 4) {
+    FASTMM_LOG_ERROR("fastmm-live: shutting down (kill switch: {}; [engine] on_kill = \"exit\")",
+                     engine_kill);
+  } else {
+    FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
+                    reason == 1   ? std::string_view("duration elapsed")
+                    : reason == 2 ? std::string_view("signal")
+                                  : std::string_view("order ring overflow"));
+  }
 
-  // Kill switch: the engine pulls quotes and queues cancels; independently every venue
-  // cancels all open orders over its own REST connection (6.7).
-  if (!push_control(control_ring, ControlCommand::TripKill))
+  // Kill switch: the engine pulls quotes and queues cancels (it already did when it tripped the
+  // switch itself); independently every venue cancels all open orders over its own REST
+  // connection (6.7).
+  if (reason != 4 && !push_control(control_ring, ControlCommand::TripKill))
     FASTMM_LOG_ERROR("control ring full: kill switch message dropped");
   bool cancel_ok = true;
   if (!opts.dry_run) {
@@ -613,12 +670,27 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                   clock.reanchors(),
                   clock.steps(),
                   clock.last_offset_ns());
+  const EngineLiveStats final_live = runner->live_stats();  // published by the engine's finish()
+  const bool unrequested_kill =
+      final_live.kill_reason != KillReason::None && final_live.kill_reason != KillReason::Requested;
+  if (unrequested_kill || final_live.venue_kills != 0) {
+    FASTMM_LOG_ERROR("fastmm-live: kill switch flags={:#x} reason={} kills={} venue_kills={}",
+                     final_live.kill_flags,
+                     final_live.kill_reason,
+                     final_live.kills,
+                     final_live.venue_kills);
+  }
   const std::int64_t shutdown_ms = (steady_now().ns - shutdown_start) / 1'000'000;
   FASTMM_LOG_INFO(
       "fastmm-live: shutdown took {} ms (cancel_all {})", shutdown_ms, cancel_ok ? "ok" : "FAILED");
-  publish_status(StatusRunState::Stopped);  // the file stays: monitors show the final numbers
-  if (!cancel_ok) return kExitRuntime;
-  return reason == 3 ? kExitRuntime : kExitOk;
+  // The file stays: monitors show the final numbers and the kill reason.
+  publish_status(StatusRunState::Stopped, final_live);
+  const int rc = !cancel_ok    ? kExitRuntime
+                 : reason == 4 ? kExitKilled
+                 : reason == 3 ? kExitRuntime
+                               : kExitOk;
+  FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);
+  return rc;
 }
 
 }  // namespace fastmm::live

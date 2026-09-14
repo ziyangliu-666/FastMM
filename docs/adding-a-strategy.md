@@ -152,7 +152,7 @@ type must not be checked with `verify_strategy`; implicit argument conversions a
 | Quoting | `set_quotes(id, q) -> bool`, `pull_quotes(id)`, `pull_all_quotes()`, `working_quote(id, side, level) -> const Order*` |
 | Direct orders | `send(req) -> Result<ClientOrderId, RejectReason>`, `cancel(id)`, `replace(id, px, qty)`, `order(id) -> const Order*`, `open_qty(id, side)`, `oms()` |
 | Timers | `every(period, tag) -> TimerId`, `once(delay, tag) -> TimerId`, `cancel_timer(id)` |
-| Control | `quoting_enabled()`, `killed()`, `request_stop()` |
+| Control | `quoting_enabled()`, `killed()`, `venue_killed(venue)`, `request_stop()` |
 | Randomness | `rng()` (seeded from the config, so backtests and replays are reproducible) |
 
 Prefer `set_quotes` over sending orders yourself. The quote manager diffs the desired quotes against

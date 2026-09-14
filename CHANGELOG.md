@@ -11,6 +11,16 @@ All notable changes are recorded here (Keep a Changelog format).
 - `fastmm.run_backtest` is a Python function with a `params=` argument applied on top of
   `config.params`; `strategy=` also takes a `fastmm.Strategy` subclass or instance. The existing
   call forms are unchanged.
+- **`fastmm-live` exits after a kill switch it did not ask for.** New `[engine] on_kill = "exit" |
+  "stay"` (default `"exit"`): after the engine trips the kill switch itself (`[risk] max_loss`, a
+  full outbound or journal ring, every venue killed) the session runs the normal shutdown (quotes
+  pulled, REST cancel-all on every venue, summary, status file, journal trailer) and exits with the
+  new exit code 6 (5 if a cancel-all failed). `"stay"` keeps the previous behaviour and logs an
+  ERROR line every 10 s while killed. `fastmm-live --help` lists every exit code; a test checks the
+  list against the operations docs.
+- Status segment version 3 (kill reasons, per-venue kill flags, `venue_kills`); `fastmm-top` shows
+  `KILLED (<reason>)` or `VENUE KILLED` next to the state and a `kill` column per venue. A
+  `fastmm-top` of another build refuses the file.
 - **Breaking, strategy registration (ADR-0012).** A strategy library exports one registration
   function that calls `fastmm::register_strategy<S>(r)` per strategy; that call adds the Sim,
   Replay and Live factories, whose templates are declared in `strategies/module.hpp` and defined in
@@ -102,6 +112,16 @@ All notable changes are recorded here (Keep a Changelog format).
   of BasicMM, reproduces the C++ outbound hash in CI; `skew_mm.py` is a float example;
   `docs/reference/python-api.md` documents the API, number model, determinism rules and measured
   cost; `bench/python/bench_py_strategy.py` measures it.
+- **Per-venue kill switch.** A connector error that makes one venue unusable (error map `Fatal`:
+  bad key, signature or permission, failed authentication; `HardStop`: Binance IP ban) sends
+  `ControlCommand::TripVenueKill` through the venue's order ring (`venues::emit_venue_kill`), so it
+  is journaled and replays. The engine sets that venue's kill bit, pulls its quotes, cancels its
+  orders and refuses new orders to it (`RejectReason::VenueKilled`) while the other venues keep
+  trading; every venue with instruments killed trips the global switch. `StrategyContext::
+  venue_killed(venue)`.
+- `KillReason` records why each kill flag was first set (`Engine::kill_reason()`,
+  `venue_kill_reason(venue)`); `EngineLiveStats` carries the reasons and `venue_kills` and is
+  published as soon as a flag changes.
 - `fastmm-live --strategy <name>` and `--param key=value`. A strategy other than the config's
   ignores `[strategy.params]` (as in `fastmm-backtest`), parameter names are checked before any
   venue is contacted, and the journal embeds and hashes the configuration after the overrides, so
@@ -216,6 +236,10 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- A `[risk] max_loss` trip or an internal failure no longer leaves `fastmm-live` running silently
+  with quoting off (see `[engine] on_kill`), and a fatal error on one venue now stops trading on
+  that venue through its kill switch instead of leaving the engine quoting into a venue that
+  refuses every order.
 - **Live session journals replay exactly.** `fastmm-replay --journal <live journal> --verify`
   reported a mismatch at the first outbound message: replay ran with session epoch 1 (every
   recorded ack named an unknown order and replay cancelled it), drove its clock from receive times

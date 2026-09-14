@@ -120,6 +120,8 @@ class StrategyContext {
 
   [[nodiscard]] bool quoting_enabled() const noexcept { return e_->quoting_enabled(); }
   [[nodiscard]] bool killed() const noexcept { return e_->risk().killed(); }
+  // One venue's kill switch: new orders to it are refused and set_quotes ignores its instruments.
+  [[nodiscard]] bool venue_killed(VenueId v) const noexcept { return e_->risk().venue_killed(v); }
   void request_stop() noexcept { e_->stop(); }
 
   // ---- randomness: seeded from EngineConfig::rng_seed, replay-deterministic --------------------

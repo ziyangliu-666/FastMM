@@ -156,6 +156,8 @@ class DeribitVenue final : public Venue {
   void handle_open_orders_response(std::size_t currency_index, std::string_view json, bool error);
   void drain_outbound();
   void send_command(const OrderCommand& cmd);
+  // Sends ControlCommand::TripVenueKill to the engine, once per session.
+  void trip_venue_kill(KillReason reason);
   void apply_action(VenueAction action, int code, std::string_view msg);
   void request_resubscribe(InstrumentId id);
   void cancel_all_async();
@@ -209,6 +211,7 @@ class DeribitVenue final : public Venue {
 
   std::atomic<std::int64_t> clock_offset_ms_{0};
   bool fatal_ = false;
+  bool venue_kill_sent_ = false;  // TripVenueKill emitted
   bool connected_ = false;
   bool private_was_live_ = false;
   ConnState md_state_ = ConnState::Disconnected;

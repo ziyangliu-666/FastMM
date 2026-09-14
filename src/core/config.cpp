@@ -281,6 +281,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "reject_backoff_max_ms", e.reject_backoff_max_ms);
     get(*t, "post_only", e.post_only);
     get(*t, "supports_replace", e.supports_replace);
+    get(*t, "on_kill", e.on_kill);
+    if (e.on_kill != "exit" && e.on_kill != "stay")
+      fail_at(*t->get("on_kill"), "on_kill must be exit|stay");
     for (std::size_t b : {e.md_ring_bytes, e.order_ring_bytes, e.journal_ring_bytes}) {
       if ((b & (b - 1)) != 0 || b < 64)
         throw ConfigError("engine ring sizes must be powers of two >= 64", line_of(*t), col_of(*t));
@@ -517,6 +520,7 @@ std::string Config::redacted() const {
   kv("reject_backoff_max_ms", engine.reject_backoff_max_ms);
   kv("post_only", engine.post_only);
   kv("supports_replace", engine.supports_replace);
+  kq("on_kill", engine.on_kill);
   for (const auto& v : venues) {
     fmt::format_to(std::back_inserter(out), "\n[venues.{}]\n", v.name);
     kq("kind", v.kind);
@@ -639,6 +643,7 @@ std::string Config::effective_toml() const {
   e.insert("supports_replace", engine.supports_replace);
   e.insert("reject_backoff_ms", static_cast<std::int64_t>(engine.reject_backoff_ms));
   e.insert("reject_backoff_max_ms", static_cast<std::int64_t>(engine.reject_backoff_max_ms));
+  e.insert("on_kill", engine.on_kill);
   root.insert("engine", std::move(e));
 
   if (!venues.empty()) {

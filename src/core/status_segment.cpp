@@ -1,5 +1,6 @@
 #include "fastmm/core/status_segment.hpp"
 
+#include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 
 #include <fmt/format.h>
@@ -278,16 +279,27 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  s.session_id,
                  s.pid,
                  s.dry_run != 0 ? "  [dry-run]" : "");
+  // The kill switch next to the state: why the global switch tripped, or that some venue is killed.
+  std::string kill;
+  if ((s.kill_flags & 1U) != 0) {
+    kill = fmt::format("  {}KILLED ({}){}",
+                       color ? "\x1b[31m" : "",
+                       to_string(static_cast<KillReason>(s.kill_reason)),
+                       reset(color));
+  } else if (s.kill_flags != 0) {
+    kill = fmt::format("  {}VENUE KILLED{}", color ? "\x1b[33m" : "", reset(color));
+  }
   fmt::format_to(std::back_inserter(out),
-                 "state      {}{}{}  uptime={}  updated {:.1f}s ago\n\n",
+                 "state      {}{}{}{}  uptime={}  updated {:.1f}s ago\n\n",
                  paint(color, state),
                  state,
                  reset(color),
+                 kill,
                  fmt_duration_s(s.updated_ns - s.started_ns),
                  static_cast<double>(std::max<std::int64_t>(age_ns, 0)) / 1e9);
   fmt::format_to(std::back_inserter(out),
                  "engine     events={} book_updates={} orders={} cancels={} replaces={} fills={} "
-                 "kills={} kill_flags={:#x}\n",
+                 "kills={} venue_kills={} kill_flags={:#x}\n",
                  s.events,
                  s.book_updates,
                  s.orders_sent,
@@ -295,6 +307,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  s.replaces_sent,
                  s.fills,
                  s.kills,
+                 s.venue_kills,
                  s.kill_flags);
   const auto rejects = [](std::uint64_t total, const StatusRejectCount* entries) {
     return total == 0 ? std::string("0")
@@ -328,7 +341,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
   }
   fmt::format_to(std::back_inserter(out),
                  "\n{:<14} {:<10} {:<10} {:<10} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} "
-                 "{:>9} {:>10}\n",
+                 "{:>9} {:>10} {}\n",
                  "venue",
                  "md",
                  "user",
@@ -342,7 +355,8 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  "reconn",
                  "rest_er",
                  "clock_ms",
-                 "wire_t2t50");
+                 "wire_t2t50",
+                 "kill");
   const std::size_t n = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
   for (std::size_t i = 0; i < n; ++i) {
     const StatusVenue& v = s.venues[i];
@@ -350,22 +364,31 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
       const std::string_view name = channel_state_name(c);
       return fmt::format("{}{:<10}{}", paint(color, name), name, reset(color));
     };
-    fmt::format_to(std::back_inserter(out),
-                   "{:<14} {} {} {} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} {:>9} {:>10}\n",
-                   name_of(v.name, sizeof v.name),
-                   chan(v.md),
-                   chan(v.user),
-                   chan(v.order),
-                   fmt::format("{}/{}", v.books_synced, v.books_total),
-                   v.md_messages,
-                   v.resyncs,
-                   v.orders_sent,
-                   v.cancels_sent,
-                   v.order_events,
-                   v.reconnects,
-                   v.rest_errors,
-                   v.clock_offset_ms,
-                   fmt_ns(v.wire_tick_to_trade.p50_ns));
+    // A killed venue shows the reason it was tripped for; a live one "-".
+    const std::string venue_kill =
+        v.killed != 0 ? fmt::format("{}{}{}",
+                                    color ? "\x1b[31m" : "",
+                                    to_string(static_cast<KillReason>(v.kill_reason)),
+                                    reset(color))
+                      : std::string("-");
+    fmt::format_to(
+        std::back_inserter(out),
+        "{:<14} {} {} {} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} {:>9} {:>10} {}\n",
+        name_of(v.name, sizeof v.name),
+        chan(v.md),
+        chan(v.user),
+        chan(v.order),
+        fmt::format("{}/{}", v.books_synced, v.books_total),
+        v.md_messages,
+        v.resyncs,
+        v.orders_sent,
+        v.cancels_sent,
+        v.order_events,
+        v.reconnects,
+        v.rest_errors,
+        v.clock_offset_ms,
+        fmt_ns(v.wire_tick_to_trade.p50_ns),
+        venue_kill);
   }
   return out;
 }

@@ -144,6 +144,8 @@ class BybitVenue final : public Venue {
   void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow);
   void handle_order_response(RequestKind kind, ClientOrderId id, const TradeResponse& r);
   void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
+  // Sends ControlCommand::TripVenueKill to the engine, once per session.
+  void trip_venue_kill(KillReason reason);
   void apply_action(VenueAction action,
                     int code,
                     std::string_view msg,
@@ -198,6 +200,7 @@ class BybitVenue final : public Venue {
   bool time_request_pending_ = false;
   bool clock_resync_wanted_ = false;
   bool fatal_ = false;
+  bool venue_kill_sent_ = false;  // TripVenueKill emitted
   bool connected_ = false;
   bool rest_hard_stopped_ = false;
   bool private_was_live_ = false;

@@ -6,9 +6,10 @@
 //   FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=... fastmm-live --config
 //   configs/binance-testnet.toml
 //
-// Exit codes: 0 ok, 2 bad command line or missing API keys, 3 bad config / strategy / parameters
-// (including a strategy name registered twice by different code), 4 venue reference data failed,
-// 5 runtime failure (cancel-all failed, journal, ring overflow).
+// Exit codes (live/session.hpp; --help lists them): 0 ok, 2 bad command line or missing API keys,
+// 3 bad config / strategy / parameters (including a strategy name registered twice by different
+// code), 4 venue reference data failed, 5 runtime failure (cancel-all failed, journal, ring
+// overflow), 6 the engine tripped the kill switch itself and [engine] on_kill = "exit".
 #include "fastmm/cli/live.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
@@ -61,7 +62,17 @@ void usage(std::FILE* out, const char* prog) {
       "\n"
       "API keys come from the environment through ${VAR} references in [venues.*],\n"
       "e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.\n"
-      "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n",
+      "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n"
+      "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
+      "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
+      "\n"
+      "Exit codes:\n"
+      "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
+      "  2  bad command line, or a venue has no API keys\n"
+      "  3  bad config, strategy or parameters\n"
+      "  4  venue reference data failed to load\n"
+      "  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error\n"
+      "  6  kill switch tripped by the engine (on_kill = \"exit\"), cancel_all ok\n",
       prog);
 }
 

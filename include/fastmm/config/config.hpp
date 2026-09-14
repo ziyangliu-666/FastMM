@@ -65,6 +65,10 @@ struct EngineSection {
   bool supports_replace = true;
   int reject_backoff_ms = 1000;       // QuoteManager: pause a side after a venue reject (0 = off)
   int reject_backoff_max_ms = 60000;  // doubling cap
+  // fastmm-live after a kill switch it did not ask for (risk limit, internal failure, every venue
+  // killed): "exit" shuts down like SIGTERM and exits with code 6; "stay" keeps running with
+  // quoting off and logs an ERROR line every 10 s.
+  std::string on_kill = "exit";
 };
 
 struct FeesSection {

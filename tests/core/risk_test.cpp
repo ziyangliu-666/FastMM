@@ -87,6 +87,11 @@ TEST_CASE("core.risk: every reject reason in isolation and in order") {
     risk.reset_venue(VenueId{0});
     CHECK(risk.check_new(ok, inst, in) == RejectReason::None);
     CHECK(risk.stats().trips == 2);
+    // Venue ids from 30 up share the last bit and the last reason slot.
+    CHECK(RiskEngine::venue_slot(VenueId{1}) == 1);
+    CHECK(RiskEngine::venue_slot(VenueId{200}) == kKillVenueSlots - 1);
+    CHECK(RiskEngine::venue_bit(VenueId{200}) == RiskEngine::venue_bit(VenueId{30}));
+    CHECK(RiskEngine::venue_bit(VenueId{30}) == 0x80000000U);
   }
   SUBCASE("instrument disabled") {
     Instrument off = inst;

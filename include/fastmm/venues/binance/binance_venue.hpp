@@ -164,6 +164,8 @@ class BinanceVenue final : public Venue {
   void handle_ws_api_response(const WsApiResponse& r, std::string_view raw);
   void handle_order_response(RequestKind kind, ClientOrderId id, const WsApiResponse& r);
   void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
+  // Sends ControlCommand::TripVenueKill to the engine, once per session.
+  void trip_venue_kill(KillReason reason);
   void apply_action(VenueAction action,
                     int code,
                     std::string_view msg,
@@ -233,6 +235,7 @@ class BinanceVenue final : public Venue {
   bool session_logged_on_ = false;
   bool user_subscribed_ = false;
   bool fatal_ = false;
+  bool venue_kill_sent_ = false;  // TripVenueKill emitted
   bool connected_ = false;
   bool rest_hard_stopped_ = false;
   ConnState md_state_ = ConnState::Disconnected;

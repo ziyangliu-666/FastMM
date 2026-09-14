@@ -39,6 +39,7 @@
 #include "fastmm/core/transport.hpp"
 #include "fastmm/strategies/hooks.hpp"
 
+#include <array>
 #include <atomic>
 #include <concepts>
 #include <cstddef>
@@ -66,7 +67,8 @@ struct EngineStats {
   std::uint64_t timers_fired = 0;
   std::uint64_t crossed_pulls = 0;
   std::uint64_t unknown_order_cancels = 0;
-  std::uint64_t kills = 0;
+  std::uint64_t kills = 0;        // global kill switch trips
+  std::uint64_t venue_kills = 0;  // per-venue kill switch trips (ControlCommand::TripVenueKill)
   std::uint64_t unconverted_fees = 0;  // fills whose commission asset is neither base nor quote
   std::uint64_t unknown_instrument_fills = 0;  // not booked, not passed to on_fill
   std::uint64_t steps = 0;
@@ -251,6 +253,11 @@ class Engine {
     return quoting_enabled_ && !reconciling_ && !risk_.killed();
   }
   [[nodiscard]] bool reconciling() const noexcept { return reconciling_; }
+  // The first reason the global kill switch was set for (None while it is not set).
+  [[nodiscard]] KillReason kill_reason() const noexcept { return kill_reason_; }
+  [[nodiscard]] KillReason venue_kill_reason(VenueId v) const noexcept {
+    return venue_kill_reasons_[RiskEngine::venue_slot(v)];
+  }
   [[nodiscard]] const EngineConfig& config() const noexcept { return cfg_; }
 
   [[nodiscard]] RunnerStats runner_stats() const noexcept {
@@ -307,11 +314,13 @@ class Engine {
     flush_out();
     return r;
   }
-  // False when the quotes are ignored: quoting is disabled or the instrument is not in the table.
+  // False when the quotes are ignored: quoting is disabled, the instrument is not in the table or
+  // its venue's kill switch is engaged (its quotes were pulled when it tripped).
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
     if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
-    enter_api();
     const Instrument& inst = instruments_.get(id);
+    if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue))) return false;
+    enter_api();
     Placer place{this};
     quotes_.reconcile(inst, q, oms_, now_, place);
     flush_out();
@@ -491,7 +500,7 @@ class Engine {
       const Price mid = b.mid();
       risk_.on_book(id, mid, d.hdr.recv_ts.valid() ? d.hdr.recv_ts : now);
       positions_.mark(id, mid, inst);
-      if (risk_.on_pnl(positions_.net_pnl())) on_kill();
+      if (risk_.on_pnl(positions_.net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (b.crossed() && b.crossed_for(now) > cfg_.crossed_grace) {
       ++stats_.crossed_pulls;
       pull_quotes(id);
@@ -622,7 +631,7 @@ class Engine {
         fee = Notional{};
       }
       positions_.on_fill(id, side, f.price, booked, fee, inst);
-      if (risk_.on_pnl(positions_.net_pnl())) on_kill();
+      if (risk_.on_pnl(positions_.net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
     }
@@ -673,11 +682,17 @@ class Engine {
         break;
       case ControlCommand::TripKill:
         risk_.trip();
-        on_kill(/*requested=*/true);
+        on_kill(KillReason::Requested);
+        break;
+      case ControlCommand::TripVenueKill:
+        on_venue_kill(c.hdr.venue, static_cast<KillReason>(static_cast<std::uint8_t>(c.arg)));
         break;
       case ControlCommand::ResetKill:
         risk_.reset();
+        kill_reason_ = KillReason::None;
+        venue_kill_reasons_.fill(KillReason::None);
         quoting_enabled_ = true;
+        publish_live(latency_pub_.load());
         break;
       case ControlCommand::RecalibrateTsc:
         // The calibrator publishes new calibrations and step() picks them up anyway; this
@@ -747,7 +762,7 @@ class Engine {
     const Timestamp now = now_;
     for (const Instrument& inst : instruments_) {
       if (!quotes_.resumable(inst.id)) continue;
-      if (enabled && books_[inst.id.value].is_valid()) {
+      if (enabled && !risk_.venue_killed(inst.venue) && books_[inst.id.value].is_valid()) {
         quotes_.resume(inst, oms_, now, place);
       } else {
         quotes_.pull_quotes(inst, oms_, place);
@@ -756,26 +771,71 @@ class Engine {
     flush_out();
   }
 
-  // `requested`: the control thread asked for it (shutdown, operator); otherwise a risk limit or
-  // an internal failure tripped it, which is an error.
-  void on_kill(bool requested = false) noexcept {
+  // The global flag is already set. KillReason::Requested: the control thread asked for it
+  // (shutdown, operator); any other reason is a risk limit or an internal failure, which is an
+  // error (fastmm-live exits or keeps running per [engine] on_kill). The first reason is kept.
+  void on_kill(KillReason reason) noexcept {
     ++stats_.kills;
     quoting_enabled_ = false;
-    if (requested) {
+    if (kill_reason_ == KillReason::None) kill_reason_ = reason;
+    if (reason == KillReason::Requested) {
       FASTMM_LOG_WARN("kill switch requested (flags={:#x}); pulling quotes and cancelling all",
                       risk_.kill_flags());
     } else {
-      FASTMM_LOG_ERROR("kill switch engaged (flags={:#x}); pulling quotes and cancelling all",
+      FASTMM_LOG_ERROR("kill switch engaged ({}, flags={:#x}); pulling quotes and cancelling all",
+                       reason,
                        risk_.kill_flags());
     }
     pull_all_quotes();
     mass_cancel();
+    publish_live(latency_pub_.load());
+  }
+  // One venue is unusable: new orders to it are refused by risk (VenueKilled), its quotes are
+  // pulled and its working orders cancelled (the connector may refuse the cancels; fastmm-live's
+  // shutdown cancel-all still tries), and the other venues keep trading. When every venue that has
+  // instruments is killed nothing can trade: that is a global kill (KillReason::AllVenuesKilled).
+  void on_venue_kill(VenueId venue, KillReason reason) noexcept {
+    if (risk_.venue_killed(venue)) return;  // the first reason stays
+    risk_.trip_venue(venue);
+    ++stats_.venue_kills;
+    venue_kill_reasons_[RiskEngine::venue_slot(venue)] = reason;
+    FASTMM_LOG_ERROR(
+        "venue {} kill switch engaged ({}, flags={:#x}); pulling its quotes and cancelling its "
+        "orders, other venues keep trading",
+        venue.value,
+        reason,
+        risk_.kill_flags());
+    enter_api();
+    Placer place{this};
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue == venue) quotes_.pull_quotes(inst, oms_, place);
+    }
+    StaticVector<Handle<Order>, kMaxOpenOrders> handles;
+    oms_.for_each_open_order([&](Handle<Order> h, const Order& o) {
+      if (o.venue == venue && o.is_working()) static_cast<void>(handles.push_back(h));
+    });
+    for (Handle<Order> h : handles) static_cast<void>(submit_cancel(h));
+    flush_out();
+    if (!risk_.killed() && all_venues_killed()) {
+      risk_.trip();
+      on_kill(KillReason::AllVenuesKilled);  // publishes
+      return;
+    }
+    publish_live(latency_pub_.load());
+  }
+  [[nodiscard]] bool all_venues_killed() const noexcept {
+    bool any = false;
+    for (const Instrument& inst : instruments_) {
+      if (!risk_.venue_killed(inst.venue)) return false;
+      any = true;
+    }
+    return any;
   }
   void on_journal_overflow() noexcept {
     // 5.5: journal ring full is fatal for determinism guarantees; trip and cancel everything.
     if (!risk_.killed()) {
       risk_.trip();
-      on_kill();
+      on_kill(KillReason::JournalOverflow);
     }
   }
 
@@ -1005,7 +1065,7 @@ class Engine {
       out_batch_.clear();
       if (!risk_.killed()) {
         risk_.trip();
-        on_kill();
+        on_kill(KillReason::TransportFull);
       }
       return;
     }
@@ -1089,12 +1149,7 @@ class Engine {
     last_publish_ = now;
     const LatencySnapshot s = latency_.snapshot(now.ns);
     latency_pub_.store(s);
-    EngineLiveStats live;
-    live.stats = runner_stats();
-    live.kills = stats_.kills;
-    live.kill_flags = risk_.kill_flags();
-    live.latency = s;
-    live_pub_.store(live);
+    publish_live(s);
     if (journal_.enabled()) {
       LatencySampleMsg m{};
       init_header(m, EventType::LatencySample);
@@ -1110,6 +1165,18 @@ class Engine {
       m.max_ns = static_cast<std::int64_t>(st.max);
       static_cast<void>(journal_.record(m.hdr));
     }
+  }
+
+  void publish_live(const LatencySnapshot& latency) noexcept {
+    EngineLiveStats live;
+    live.stats = runner_stats();
+    live.kills = stats_.kills;
+    live.venue_kills = stats_.venue_kills;
+    live.kill_flags = risk_.kill_flags();
+    live.kill_reason = kill_reason_;
+    live.venue_kill_reasons = venue_kill_reasons_;
+    live.latency = latency;
+    live_pub_.store(live);
   }
 
   // ---- members ----------------------------------------------------------------------------------
@@ -1148,6 +1215,8 @@ class Engine {
   bool latched_ = false;
   bool quoting_enabled_;
   bool reconciling_ = false;
+  KillReason kill_reason_ = KillReason::None;
+  std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;
   bool finished_ = false;
   std::atomic<bool> stop_{false};

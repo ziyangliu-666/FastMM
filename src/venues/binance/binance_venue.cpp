@@ -3,6 +3,7 @@
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/order_events.hpp"
 #include "fastmm/venues/padded_json.hpp"
 
 #include <fmt/format.h>
@@ -912,6 +913,15 @@ void BinanceVenue::note_rate_headers(const net::HttpResponse& r) {
       header_int(r, "X-MBX-USED-WEIGHT-1M"), header_int(r, "X-MBX-ORDER-COUNT-10S"), now_ns());
 }
 
+// First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled, new
+// orders refused by risk); the other venues keep trading.
+void BinanceVenue::trip_venue_kill(KillReason reason) {
+  if (venue_kill_sent_ || order_sink_ == nullptr) return;
+  venue_kill_sent_ = true;
+  FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
+  emit_venue_kill(*order_sink_, id_, reason);
+}
+
 void BinanceVenue::apply_action(VenueAction action,
                                 int code,
                                 std::string_view msg,
@@ -953,10 +963,12 @@ void BinanceVenue::apply_action(VenueAction action,
       rate_.hard_stop();
       rest_hard_stopped_ = true;
       FASTMM_LOG_ERROR("{}: HTTP 418 IP ban: REST stopped until restart", cfg_.name);
+      trip_venue_kill(KillReason::VenueHardStop);
       break;
     case VenueAction::Fatal:
       fatal_ = true;
       FASTMM_LOG_ERROR("{}: fatal venue error ({} {}); order entry disabled", cfg_.name, code, msg);
+      trip_venue_kill(KillReason::VenueFatal);
       break;
   }
 }

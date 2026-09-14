@@ -832,6 +832,15 @@ void BybitVenue::note_rate_headers(const net::HttpResponse& r) {
   }
 }
 
+// First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled, new
+// orders refused by risk); the other venues keep trading.
+void BybitVenue::trip_venue_kill(KillReason reason) {
+  if (venue_kill_sent_ || order_sink_ == nullptr) return;
+  venue_kill_sent_ = true;
+  FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
+  emit_venue_kill(*order_sink_, id_, reason);
+}
+
 void BybitVenue::apply_action(VenueAction action,
                               int code,
                               std::string_view msg,
@@ -869,10 +878,12 @@ void BybitVenue::apply_action(VenueAction action,
       rate_.hard_stop();
       rest_hard_stopped_ = true;
       FASTMM_LOG_ERROR("{}: REST hard stop ({} {})", cfg_.name, code, msg);
+      trip_venue_kill(KillReason::VenueHardStop);
       break;
     case VenueAction::Fatal:
       fatal_ = true;
       FASTMM_LOG_ERROR("{}: fatal venue error ({} {}); order entry disabled", cfg_.name, code, msg);
+      trip_venue_kill(KillReason::VenueFatal);
       break;
   }
 }

@@ -139,6 +139,10 @@ class RiskEngine {
   [[nodiscard]] static constexpr std::uint32_t venue_bit(VenueId v) noexcept {
     return 1U << (1U + (v.value < 31U ? v.value : 30U));
   }
+  // Slot of `v` in per-venue tables sized kKillVenueSlots (the ids that share bit 31 share a slot).
+  [[nodiscard]] static constexpr std::size_t venue_slot(VenueId v) noexcept {
+    return v.value < kKillVenueSlots ? v.value : kKillVenueSlots - 1;
+  }
   [[nodiscard]] std::uint32_t kill_flags() const noexcept {
     return kill_.load(std::memory_order_acquire);
   }

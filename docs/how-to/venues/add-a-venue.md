@@ -199,7 +199,7 @@ What each action does in the shipped connectors (`BybitVenue::apply_action()`):
 | `Reconcile` | `request_open_orders()` |
 | `DisableInstrument` | Log `venue rejected a precision/filter rule (...)`; the config is wrong for the symbol |
 | `HardStop` | Stop all REST requests (IP ban) |
-| `Fatal` | Refuse every further order on the venue and log `fatal venue error (...)` |
+| `Fatal` | Refuse every further order on the venue, log `fatal venue error (...)` and, once, send the engine `ControlCommand::TripVenueKill` with `emit_venue_kill(sink, venue, KillReason::VenueFatal)` (`venues/order_events.hpp`) so that it kills this venue only |
 
 ## 8. Private stream and reconciliation
 
