@@ -149,6 +149,12 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg, MdSource* source)
     info.rng_seed = cfg_.engine.rng_seed;
     info.strategy = cfg_.strategy;
     info.instruments = &cfg_.instruments;
+    info.has_session = true;
+    info.session_epoch = cfg_.engine.session_epoch;
+    info.quoting_enabled = cfg_.engine.quoting_enabled;
+    info.replace_venues = cfg_.transport.supports_replace ? ~std::uint64_t{0} : 0;
+    info.config_toml = cfg_.config_toml;
+    if (!cfg_.config_toml.empty()) info.config_hash = Config::text_hash(cfg_.config_toml);
     impl_->journal_file =
         std::make_unique<JournalFileWriter>(*impl_->journal_ring, cfg_.journal_out, info);
     if (!impl_->journal_file->ok())

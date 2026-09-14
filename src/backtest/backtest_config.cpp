@@ -32,6 +32,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   if (b.instruments.size() == 0) throw ConfigError("backtest: no [[instruments]] configured");
   b.strategy = cfg.strategy.name;
   b.params = cfg.strategy.params;
+  b.config_toml = cfg.effective_toml();
 
   const GenericSection& bt = cfg.backtest;
   const GenericSection& sm = cfg.sim;

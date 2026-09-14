@@ -153,8 +153,9 @@ int main(int argc, char** argv) {
   }
 
   bt::BacktestConfig cfg;
+  Config raw;
   try {
-    const Config raw = Config::load(config_path);
+    raw = Config::load(config_path);
     Logger::instance().set_level(raw.log_level());
     cfg = bt::BacktestConfig::from_config(raw);
   } catch (const std::exception& e) {
@@ -185,6 +186,12 @@ int main(int argc, char** argv) {
   for (const auto& [k, v] : overrides) cfg.set_param(k, v);
   if (have_seed) cfg.set_seed(seed);
   if (duration_s > 0) cfg.duration = seconds(static_cast<std::int64_t>(duration_s));
+  // The journal embeds the configuration the run used, command-line overrides included.
+  raw.strategy.name = cfg.strategy;
+  raw.strategy.params = cfg.params;
+  if (have_seed) raw.backtest.values["seed"] = std::to_string(seed);
+  if (duration_s > 0) raw.backtest.values["duration_s"] = std::to_string(duration_s);
+  cfg.config_toml = raw.effective_toml();
   if (!journal_out.empty()) cfg.journal_out = journal_out;
   if (have_out) cfg.output_dir = out_dir == "-" ? std::string() : out_dir;
 

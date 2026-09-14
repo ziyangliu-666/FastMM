@@ -2,7 +2,8 @@
 // OutboundHasher: SHA-256 over the engine's outbound message stream (5.11). Messages are
 // normalized before hashing so the hash of a live/sim run equals the hash of its replay and
 // of the journal's own Out* records:
-//   * seq and the journal flags (kOutbound / kReplayed) are assigned by the journal;
+//   * seq and the journal flags (kOutbound / kReplayed / kDropped / kEngineTime, reserved0) are
+//     assigned by the journal;
 //   * t0_cycles / t1_delta / t2_delta are latency diagnostics, not order content. They are
 //     also not replay-stable: an order sent from a timer callback inherits the T0 of the
 //     previous feed event in the original run, but the T0 of the (zero-stamped) journaled
@@ -22,8 +23,8 @@ class OutboundHasher {
 
   static void normalize(EventHeader& h) noexcept {
     h.seq = 0;
-    h.flags =
-        static_cast<std::uint8_t>(h.flags & ~(EventHeader::kOutbound | EventHeader::kReplayed));
+    h.flags = static_cast<std::uint8_t>(
+        h.flags & ~(EventHeader::kOutbound | EventHeader::kReplayed | EventHeader::kDropped));
     h.t0_cycles = Cycles{};
     h.t1_delta = 0;
     h.t2_delta = 0;

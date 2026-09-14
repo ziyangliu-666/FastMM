@@ -44,6 +44,10 @@ struct BacktestConfig {
   std::string path;
   std::string output_dir;
   std::string journal_out;  // record the run to this .fmj (empty = no journal)
+  // Effective configuration embedded in journal_out (Config::effective_toml(); from_config() sets
+  // it, hand-built configs leave it empty). Callers that override fields after from_config()
+  // must refresh or clear it.
+  std::string config_toml;
   bool measure_wall_clock = true;
 
   // Throws ConfigError on invalid values.
