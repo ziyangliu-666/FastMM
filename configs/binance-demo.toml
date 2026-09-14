@@ -38,8 +38,7 @@ api_secret = "${FASTMM_BINANCE_API_SECRET}"
 testnet = true
 supports_replace = true      # order.cancelReplace (STOP_ON_FAILURE)
 recv_window_ms = 3000
-# The testnet BTCUSDT feed can be silent for several seconds; with the 2 s default every
-# quiet spell is reported as Stale, which clears the engine book and forces a resync.
+# The 2 s default flags quiet Demo Mode spells as Stale (book clear + resync).
 stale_ms = 10000
 
 [venues.binance.fees]
@@ -66,7 +65,7 @@ name = "basic_mm"
 [strategy.params]
 # Fee-aware defaults for Demo Mode: maker commission is 10 bps per fill, so a round trip at a 15 bps
 # half spread keeps 10 bps before adverse selection. Requote thresholds are in 0.01 USDT ticks:
-# at ~77,000 USDT, 100 ticks is about 1.3 bps, which keeps the order rate far below Binance's limits.
+# at ~77,000 USDT, 100 ticks is about 1.3 bps.
 half_spread_bps = 15.0
 skew_bps_per_unit = 5.0
 quote_qty = 0.0003

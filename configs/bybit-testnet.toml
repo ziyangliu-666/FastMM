@@ -40,8 +40,7 @@ testnet = true
 # documented (VERIFY), so quotes are replaced with cancel + new by default.
 supports_replace = false
 recv_window_ms = 5000
-# The testnet BTCUSDT feed can be silent for several seconds; with the 2 s default every
-# quiet spell is reported as Stale, which clears the engine book and forces a resync.
+# The 2 s default flags quiet testnet spells as Stale (book clear + resync).
 stale_ms = 10000
 
 [venues.bybit.fees]

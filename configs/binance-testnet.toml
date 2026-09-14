@@ -38,8 +38,7 @@ api_secret = "${FASTMM_BINANCE_API_SECRET}"
 testnet = true
 supports_replace = true      # order.cancelReplace (STOP_ON_FAILURE)
 recv_window_ms = 3000
-# The testnet BTCUSDT feed can be silent for several seconds; with the 2 s default every
-# quiet spell is reported as Stale, which clears the engine book and forces a resync.
+# The 2 s default flags quiet testnet spells as Stale (book clear + resync).
 stale_ms = 10000
 
 [venues.binance.fees]

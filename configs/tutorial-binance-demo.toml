@@ -16,7 +16,7 @@ journal = true
 journal_dir = "runs/tutorial"
 epoch_file = "runs/tutorial/demo_session_epoch"
 rng_seed = 42
-min_requote_ticks = 50       # 0.50 USDT: keeps the order rate far below Binance's limits
+min_requote_ticks = 50       # 0.50 USDT
 min_requote_interval_ms = 1000
 post_only = true
 supports_replace = true
@@ -31,7 +31,7 @@ api_secret = "${FASTMM_BINANCE_API_SECRET}"
 testnet = true
 supports_replace = true
 recv_window_ms = 3000
-stale_ms = 10000             # quiet spells of a few seconds are normal
+stale_ms = 10000             # tolerate quiet spells of a few seconds
 
 [venues.binance.fees]
 maker_bps = 10.0             # the Demo account's commission
@@ -53,7 +53,7 @@ min_notional = "5"
 name = "first_mm"
 
 [strategy.params]
-edge_bps = 5.0               # below the 10 bps fee: expect to lose a little per fill
+edge_bps = 5.0               # below the 10 bps fee: negative edge per fill
 quote_qty = 0.0001           # BTC per side, above the 5 USDT minimum notional
 max_position = 0.0003        # BTC
 report_ms = 10000
