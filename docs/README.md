@@ -1,33 +1,17 @@
 # FastMM documentation
 
-FastMM is a low-latency market-making engine in C++20: one engine thread owns all trading state,
-every input is journaled, and the same code runs live, in simulation and in deterministic replay.
-These pages are plain Markdown and read on GitHub; each page is one of four kinds: a tutorial
-teaches, a how-to reaches a goal, a reference describes, an explanation gives the reasons.
+FastMM is a market-making engine in C++20. These pages describe version 0.1.
 
 ## Start here
 
-| You want to | Read |
-|---|---|
-| Build FastMM and run something in 10 minutes | [Install](getting-started/install.md), then the [Quick start](getting-started/quickstart.md) |
-| Write, test and trade your first strategy | [Tutorial: your first market maker](tutorials/first-strategy/README.md) |
-| Look up a hook, a context method or a parameter macro | [Strategy API](reference/strategy-api.md) |
-| Run a session on a testnet or Binance Demo | [Run on a testnet](how-to/operations/run-on-testnet.md), then the [Go-live checklist](how-to/operations/go-live-checklist.md) |
-| Connect a new venue | [Add a venue](how-to/venues/add-a-venue.md) |
-| Understand how an event becomes an order | [Event flow](explanation/event-flow.md) and [Architecture](explanation/architecture.md) |
-| Change FastMM or its docs | [CONTRIBUTING](../CONTRIBUTING.md) and [Writing docs](contributing/writing-docs.md) |
-
-## Getting started
-
-- [Install](getting-started/install.md): toolchain, build presets, Docker, the Python package
-- [Quick start](getting-started/quickstart.md): one strategy header and a backtest, under 30 lines
+- New to FastMM: [Install](getting-started/install.md), then the [Quick start](getting-started/quickstart.md)
+- Writing a strategy: [Tutorial: your first market maker](tutorials/first-strategy/README.md) and the [Strategy API](reference/strategy-api.md)
+- Running a keyed session: [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md), then the [Go-live checklist](how-to/operations/go-live-checklist.md)
 
 ## Tutorials
 
 - [Your first market maker](tutorials/first-strategy/README.md) (C++): from a strategy header to
   the simulated exchange and Binance Demo
-- Your first strategy in Python: planned with ADR-0012 step 6; until then see
-  [Python research bindings](python.md)
 
 ## How-to guides
 
@@ -50,7 +34,7 @@ teaches, a how-to reaches a goal, a reference describes, an explanation gives th
   [Simulated exchange](reference/sim-exchange.md), [Options](reference/options.md),
   [FIX 4.4](reference/codecs/fix.md), [Nasdaq ITCH and OUCH](reference/codecs/nasdaq.md),
   [CME MDP 3.0](reference/codecs/cme-mdp3.md)
-- Python: [Python research bindings](python.md), [Python API](reference/python-api.md)
+- Python: [Python research bindings](python.md), [Python strategy API](reference/python-api.md)
 - [Glossary](reference/glossary.md)
 
 ## Explanation
@@ -60,10 +44,10 @@ teaches, a how-to reaches a goal, a reference describes, an explanation gives th
 - [Determinism](explanation/determinism.md): why replays match, and what breaks them
 - [Risk model](explanation/risk-model.md): the pre-trade checks and the kill switch
 - [Benchmarks](explanation/benchmarks.md): how the latency numbers are measured
-- [Design records](adr/): the decisions behind the above
+- [Design records](adr/)
 
 ## Contributing
 
 - [CONTRIBUTING](../CONTRIBUTING.md): build, format, commit conventions
-- [Writing docs](contributing/writing-docs.md): page kinds, snippets, generated pages, the checks
+- [Writing docs](contributing/writing-docs.md): page kinds, style, snippets, generated pages, checks
 - [Dependencies](contributing/dependencies.md)

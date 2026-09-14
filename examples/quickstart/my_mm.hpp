@@ -16,11 +16,11 @@ struct MyMM : StrategyBase<MyParams> {
   void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
     if (!book.is_valid()) return ctx.pull_quotes(id);  // empty or crossed
     const Instrument& inst = ctx.instrument(id);
-    const Price half = book.mid() * params().half_spread_bps;  // exact integer arithmetic
+    const Price half = book.mid() * params().half_spread_bps;
     DesiredQuotes q;
     q.bid(inst.round_price(book.mid() - half, Side::Buy), inst.round_qty(params().quote_qty));
     q.ask(inst.round_price(book.mid() + half, Side::Sell), inst.round_qty(params().quote_qty));
-    ctx.set_quotes(id, q);  // the engine sends only the difference to the resting orders
+    ctx.set_quotes(id, q);  // diffed against resting orders
   }
 };
 // [end:strategy]

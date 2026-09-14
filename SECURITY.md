@@ -1,6 +1,10 @@
 # Security
 
-- API keys are read **only** from environment variables (`FASTMM_*_API_KEY/SECRET`) via `${VAR}` substitution in TOML. Never commit keys; `.env` is git-ignored.
-- The logger redacts values wrapped in `Secret<T>`; journals never contain credentials.
-- Default configs point at exchange **testnets**. Live trading is at your own risk.
-- Report vulnerabilities via GitHub private security advisories.
+- API keys come from environment variables (`FASTMM_*_API_KEY/SECRET`) through `${VAR}` substitution
+  in TOML; literal secrets are refused ([Configuration](docs/reference/configuration.md#general-rules)).
+  Never commit keys; `.env` is git-ignored.
+- The logger redacts values wrapped in `Secret<T>`; journals record the configuration without
+  `api_key` and `api_secret`.
+- The configs in `configs/` point at testnets, Binance Demo Mode or the local simulator. Live trading
+  is at your own risk.
+- Report vulnerabilities through GitHub private security advisories.

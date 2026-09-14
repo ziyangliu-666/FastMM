@@ -1,9 +1,7 @@
 # Quick start
 
-In this page you write a market maker in one header, backtest it with a short `main`, and read
-the result. There is no registration and no configuration file. It takes about 10 minutes once
-FastMM builds ([Install](install.md)). The code is in `examples/quickstart/`, and CI builds and
-runs it (ctest `examples.quickstart`).
+Requires a FastMM build ([Install](install.md)). The code is in `examples/quickstart/`; CI builds
+and runs it (ctest `examples.quickstart`).
 
 ## 1. The strategy
 
@@ -27,21 +25,21 @@ struct MyMM : StrategyBase<MyParams> {
   void on_book(auto& ctx, InstrumentId id, const auto& book) noexcept {
     if (!book.is_valid()) return ctx.pull_quotes(id);  // empty or crossed
     const Instrument& inst = ctx.instrument(id);
-    const Price half = book.mid() * params().half_spread_bps;  // exact integer arithmetic
+    const Price half = book.mid() * params().half_spread_bps;
     DesiredQuotes q;
     q.bid(inst.round_price(book.mid() - half, Side::Buy), inst.round_qty(params().quote_qty));
     q.ask(inst.round_price(book.mid() + half, Side::Sell), inst.round_qty(params().quote_qty));
-    ctx.set_quotes(id, q);  // the engine sends only the difference to the resting orders
+    ctx.set_quotes(id, q);  // diffed against resting orders
   }
 };
 ```
 
 - `FASTMM_PARAM_BPS` and `FASTMM_PARAM` declare typed parameters with a default, a range and a
-  description. `Ratio` (basis points) and `Qty` are exact 64-bit fixed-point values.
+  description. `Ratio` (basis points) and `Qty` are 64-bit fixed-point values.
 - `on_book` is a hook: the engine calls it after each book update. Other hooks cover trades,
   fills, timers and connection changes ([Strategy API](../reference/strategy-api.md)).
-- `set_quotes` hands the engine the quotes you want; the engine diffs them against your resting
-  orders and sends only new, cancel and replace messages.
+- `set_quotes` sets the desired quotes; the engine sends new, cancel and replace messages for the
+  difference.
 
 ## 2. The backtest
 
@@ -62,12 +60,11 @@ int main(int argc, char** argv) {
 ```
 
 `run_backtest<MyMM>` builds the engine with your strategy, a simulated venue with a matching
-engine and latency, and runs it for 60 s of simulated time. Without an argument the market data
-is synthetic; pass a journal (`.fmj`) or a CSV file to backtest recorded data.
+engine and latency, and runs it for 60 s of simulated time.
 
 ## 3. Build and run
 
-Inside the FastMM build tree the quick start is already a target:
+In the FastMM build tree:
 
 ```bash
 cmake --build --preset release --target my_mm_backtest
@@ -103,7 +100,7 @@ instead of downloading FastMM.
 
 ## 4. Read the result
 
-The program prints a summary like this one (shortened):
+Output (shortened):
 
 ```text
 backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
@@ -116,12 +113,12 @@ backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
 ```
 
 - Money is in the quote currency (USDT), quantities in the base currency (BTC).
-- `fills (maker / taker)`: all fills are maker fills, because quotes are post-only.
-- `outbound messages / sha256`: a hash of every order message sent. Run the program again and it is
-  the same: backtests are deterministic ([Determinism](../explanation/determinism.md)).
+- `fills (maker / taker)`: quotes are post-only, so taker is 0.
+- `outbound messages / sha256`: a hash of the order messages sent; it is identical on every run
+  ([Determinism](../explanation/determinism.md)).
 
 ## Next
 
 - [Tutorial: your first market maker](../tutorials/first-strategy/README.md) adds unit tests,
   inventory limits, registration, the command-line tools, the simulated exchange and Binance Demo.
-- [Strategy API](../reference/strategy-api.md) lists every hook, context method and helper.
+- [Strategy API](../reference/strategy-api.md) lists the hooks, context methods and helpers.

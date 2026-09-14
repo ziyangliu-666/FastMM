@@ -29,7 +29,7 @@ frames = r.to_pandas()                  # {"fills", "equity", "orders"} DataFram
 ```
 
 `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by
-hand. Other tunables: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`,
+hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`,
 `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`,
 `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`,
 `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`,
@@ -50,7 +50,7 @@ Array columns: `ts` int64 (ns), `type` uint8 (0 snapshot level, 1 delta level, 2
 (raw 1e-8) or float64, optional `seq` uint64. Dtypes must match exactly and arrays must be
 1-D, C-contiguous, aligned and native-endian: a float32 column raises `TypeError` and a strided
 slice raises `ValueError` instead of being copied. `fastmm.load_csv(path)` reads a CSV into
-exact int64 columns (identical outbound hash to running the file by path).
+int64 columns (identical outbound hash to running the file by path).
 
 The GIL is released while a C++ strategy's backtest runs, so several runs can proceed in Python
 threads. A strategy written in Python holds the GIL for its whole run.
@@ -71,8 +71,7 @@ cfg.clear_params()                     # the example file configures basic_mm
 r = fastmm.run_backtest(cfg, data="synthetic", strategy=Joiner, params={"qty": 0.001})
 ```
 
-The hooks, context, views, number model, determinism rules, error handling and performance are in
-[reference/python-api.md](reference/python-api.md). `examples/python/strategies/basic_mm_exact.py`
+Reference: [Python strategy API](reference/python-api.md). `examples/python/strategies/basic_mm_exact.py`
 is an integer port of the C++ BasicMM with the same outbound hash; `skew_mm.py` is a float
 market maker.
 
@@ -81,7 +80,7 @@ market maker.
 `r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result
 vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw
 int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts
-to floats and `datetime64[ns]`. `stats()` returns every summary metric; `engine_stats()` and
+to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `engine_stats()` and
 `transport_stats()` the component counters; `write_all(dir)` writes the same CSV/JSON files as
 `fastmm-backtest`.
 
@@ -111,22 +110,19 @@ Regenerate the type stub after changing the bindings:
 .venv/bin/pybind11-stubgen fastmm._core -o /tmp/stubs && cp /tmp/stubs/fastmm/_core.pyi python/fastmm/
 ```
 
-
 ## Logging
 
 The C++ engine logs through an asynchronous logger that has no output until it is started. From
-Python, call `fastmm.enable_logging(level="warn", path=None)` to write records at `level` or above to
-a file (appended) or to stderr; warnings and errors are always mirrored to stderr as well. Call
-`fastmm.disable_logging()` to flush and stop. The logger is stopped automatically at interpreter exit.
-\n
+Python, call `fastmm.enable_logging(level="warn", path=None)` to write records at `level` or above
+to a file (appended) or to stderr; warnings and errors are always mirrored to stderr as well.
+`fastmm.disable_logging()` flushes and stops it; interpreter exit does the same.
 
 ## Building and publishing wheels
 
 `.github/workflows/wheels.yml` builds manylinux x86_64 wheels for CPython 3.9-3.13 (each one tested
 with the Python test suite) and the sdist, for a `v*` tag or when run by hand, and keeps them as
-workflow artifacts. It never publishes on its own.
-
-Publishing to PyPI makes the package and its source public. To do it deliberately:
+workflow artifacts; publishing is manual. Publishing to PyPI makes the package and its source
+public. To publish:
 
 1. On PyPI, add a trusted publisher for this repository, workflow `wheels.yml`, environment `pypi`.
 2. In the repository settings, create the `pypi` environment (optionally with required reviewers).

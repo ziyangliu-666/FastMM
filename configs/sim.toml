@@ -53,7 +53,7 @@ taker_bps = 4.0
 
 [sim.limits]
 weight_per_minute = 6000     # REQUEST_WEIGHT / 1 MINUTE (X-MBX-USED-WEIGHT-1M)
-orders_per_10s = 1000        # ORDERS / 10 SECOND (Binance: 50; generous so requote bursts pass)
+orders_per_10s = 1000        # ORDERS / 10 SECOND (Binance: 50)
 orders_per_day = 1000000
 max_recv_window_ms = 60000
 

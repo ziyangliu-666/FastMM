@@ -9,7 +9,8 @@
 | Google Benchmark | 1.9.5 | bench | micro-benchmarks |
 | pybind11 | 3.1.0 | python | bindings |
 | OpenSSL | >= 3.0 (system) | net | TLS, HMAC, SHA |
-| zlib | system | net | CRC / future permessage-deflate |
+| zlib | system | net | linked by `fastmm_net` |
+| CPM.cmake | 0.43.1 | build | fetches and pins the dependencies above |
 
 Pins are in `cmake/Dependencies.cmake`; `CPM_SOURCE_CACHE` (default `~/.cache/CPM`) makes repeat
 configures offline.

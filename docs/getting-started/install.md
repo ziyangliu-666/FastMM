@@ -1,7 +1,6 @@
 # Install
 
-This page builds FastMM from source, checks the build, and lists the other ways to get it: Docker
-and the Python package. All commands run from the repository root.
+All commands run from the repository root.
 
 ## Requirements
 
@@ -26,10 +25,9 @@ cmake --build --preset release -j
 ctest --preset release
 ```
 
-`bootstrap.sh` checks the toolchain, creates the CPM download cache (`CPM_SOURCE_CACHE`, default
-`~/.cache/CPM`, which makes later configures work offline) and configures the `release` preset;
-`--dev` also configures `debug` and installs the pre-commit hooks. The programs are in
-`build/release/bin/`.
+`bootstrap.sh` checks the toolchain, creates the CPM download cache
+([Dependencies](../contributing/dependencies.md)) and configures the `release` preset; `--dev` also
+configures `debug` and installs the pre-commit hooks. The programs are in `build/release/bin/`.
 
 ## Check the build
 
@@ -38,9 +36,8 @@ ctest --preset release
 ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
 ```
 
-The first command lists the built-in strategies (`basic_mm`, `avellaneda_stoikov`, `options_mm`)
-with their parameters. The second backtests `basic_mm` for 60 s of simulated time and prints a
-summary with fills, PnL and the SHA-256 of the orders it sent.
+The first command lists the built-in strategies with their parameters. The second backtests
+`basic_mm` for 60 s of simulated time and prints a summary.
 
 ## Presets
 
@@ -68,18 +65,13 @@ This builds one image and starts two containers: `fastmm-sim-exchange` and `fast
 
 ## Python
 
-The Python package runs backtests and parameter sweeps in-process; it has no networking.
-[Python research bindings](../python.md) covers installing it into a virtual environment.
+See [Python research bindings](../python.md).
 
 ## Use FastMM from your own project
 
-- The [Quick start](quickstart.md) pulls FastMM into a CMake project with `FetchContent`.
+- The [Quick start](quickstart.md) pulls FastMM into a CMake project with `FetchContent`; the
+  [Tutorial: your first market maker](../tutorials/first-strategy/README.md) continues from there.
 - [Register a strategy](../how-to/strategies/register-a-strategy.md) builds a project against an
   installed FastMM (`find_package(fastmm)`) or a source tree (`add_subdirectory`).
 - Build your project with the compiler that built FastMM: a release install contains GCC LTO
   objects.
-
-## Next
-
-- [Quick start](quickstart.md)
-- [Tutorial: your first market maker](../tutorials/first-strategy/README.md)

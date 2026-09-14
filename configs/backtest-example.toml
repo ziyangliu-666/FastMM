@@ -20,7 +20,7 @@ min_requote_ticks = 1
 min_requote_interval_ms = 50
 min_qty_bps = 8000
 post_only = true
-supports_replace = false     # cancel-then-new, the conservative path
+supports_replace = false     # cancel-then-new
 
 [venues.sim]
 kind = "sim"
@@ -45,8 +45,7 @@ min_notional = "5"
 name = "basic_mm"
 
 # BasicMM takes bps of mid (up to four decimals): at 60000, 0.01 bps = 0.06 = 6 ticks. Skewed
-# quotes are kept one tick inside the touch, so the inventory cap can hold several quote sizes and
-# both sides stay quoted most of the time.
+# quotes stay one tick inside the touch.
 [strategy.params]
 half_spread_bps = 0.01
 skew_bps_per_unit = 0.01
