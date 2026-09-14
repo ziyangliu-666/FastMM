@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"subscription","params":{"channel":"book.BTC-15SEP26-77000-C.100ms","data":{"timestamp":1789344930088,"type":"snapshot","change_id":118850965713,"instrument_name":"BTC-15SEP26-77000-C","bids":[["new",0.0065,10.0]],"asks":[["new",0.0075,10.0]]}}}

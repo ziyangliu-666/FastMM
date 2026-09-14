@@ -7,6 +7,7 @@
 #include "fastmm/sim/sim_backend.hpp"
 #include "fastmm/strategies/avellaneda_stoikov.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
+#include "fastmm/strategies/options_mm.hpp"
 #include "fastmm/strategies/registry.hpp"
 
 namespace fastmm::bt {
@@ -18,6 +19,9 @@ std::unique_ptr<IEngineRunner> make_basic_mm(TransportKind k, RunnerDeps& d) {
 std::unique_ptr<IEngineRunner> make_avellaneda_stoikov(TransportKind k, RunnerDeps& d) {
   return sim::make_sim_or_replay_runner<AvellanedaStoikov>(k, d);
 }
+std::unique_ptr<IEngineRunner> make_options_mm(TransportKind k, RunnerDeps& d) {
+  return sim::make_sim_or_replay_runner<OptionsMM>(k, d);
+}
 }  // namespace
 
 std::size_t register_builtin_strategies() {
@@ -27,6 +31,7 @@ std::size_t register_builtin_strategies() {
     static_cast<void>(r.add(BasicMM::name(), &BasicMM::schema(), k, make_basic_mm));
     static_cast<void>(
         r.add(AvellanedaStoikov::name(), &AvellanedaStoikov::schema(), k, make_avellaneda_stoikov));
+    static_cast<void>(r.add(OptionsMM::name(), &OptionsMM::schema(), k, make_options_mm));
   }
   return r.entries().size();
 }

@@ -11,7 +11,7 @@
 // Strategy hooks are optional and detected with `requires`:
 //   on_start(ctx) on_stop(ctx) on_book(ctx, id, book) on_trade(ctx, msg)
 //   on_book_ticker(ctx, msg) on_fill(ctx, update, msg) on_order_update(ctx, update)
-//   on_timer(ctx, id, user_data) on_connection(ctx, msg)
+//   on_timer(ctx, id, user_data) on_connection(ctx, msg) on_option_ticker(ctx, msg)
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
@@ -350,6 +350,9 @@ class Engine {
       case EventType::BookTicker:
         on_book_ticker(msg_cast<BookTickerMsg>(h));
         break;
+      case EventType::OptionTicker:
+        on_option_ticker(msg_cast<OptionTickerMsg>(h));
+        break;
       case EventType::OrderAck:
         on_order_ack(msg_cast<OrderAckMsg>(h));
         break;
@@ -445,6 +448,16 @@ class Engine {
     record_md_hops(t2);
     if constexpr (requires { strategy_.on_book_ticker(ctx_, m); }) {
       strategy_.on_book_ticker(ctx_, m);
+      record_strategy_hop(t2);
+    }
+    flush_out();
+  }
+
+  void on_option_ticker(const OptionTickerMsg& m) noexcept {
+    const Cycles t2 = clock_.cycles();
+    record_md_hops(t2);
+    if constexpr (requires { strategy_.on_option_ticker(ctx_, m); }) {
+      strategy_.on_option_ticker(ctx_, m);
       record_strategy_hop(t2);
     }
     flush_out();

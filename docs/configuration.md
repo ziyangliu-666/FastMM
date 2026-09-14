@@ -83,10 +83,16 @@ Connector-specific keys are validated like the ones above and handed to the conn
 | `user_stream` | string | Binance | `ws_api` (default), `listen_key` or `none` |
 | `position_from_balance` | bool | Binance | Derive positions from account balances |
 | `depth` | int | Bybit | Order book subscription depth, 1 to 1000 |
-| `ws_private_url` | string | Bybit | Private WebSocket URL; derived from `ws_url` when empty |
+| `ws_private_url` | string | Bybit, Deribit | Private WebSocket URL; derived from `ws_url` when empty (Deribit: the same URL, a second connection) |
 | `ping_interval_ms` | int | Bybit | Application-level ping interval, at least 1000 |
 | `orders_per_second` | int | Bybit | Client-side order rate cap |
 | `position_from_wallet` | bool | Bybit | Derive positions from the wallet |
+| `currencies` | string or array | Deribit | Currencies for reference data, user channels and reconciliation; default `"BTC"` |
+| `book_interval`, `ticker_interval`, `trades_interval` | string | Deribit | Channel intervals, `100ms` (default) or `agg2` |
+| `heartbeat_interval_s` | int | Deribit | `public/set_heartbeat` interval, at least 10 |
+| `reject_post_only` | bool | Deribit | Reject crossing post-only orders instead of repricing them; default `true` |
+| `cancel_on_disconnect` | bool | Deribit | Enable cancel-on-disconnect on the order connection; default `true` |
+| `matching_engine_rate`, `matching_engine_burst` | int | Deribit | Order request rate and burst of the account tier; default 5 and 20 |
 
 A key that is not listed anywhere is still forwarded to the connector but produces an "unknown key"
 warning. Details of each connector are in `docs/venues.md`.

@@ -70,6 +70,7 @@ All hooks are optional; the engine detects them at compile time with `requires`.
 | `on_fill(ctx, update, fill)` | one of our orders filled; position is already updated |
 | `on_order_update(ctx, update)` | any OMS state transition |
 | `on_timer(ctx, timer_id, user_data)` | a timer added with `ctx.add_timer(period, repeat, user_data)` fired |
+| `on_option_ticker(ctx, msg)` | an option's mark, implied vols and greeks (`OptionTickerMsg`, see `docs/options.md`) |
 
 Check `include/fastmm/strategies/basic_mm.hpp` for the exact signatures in use.
 

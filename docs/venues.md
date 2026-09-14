@@ -1,14 +1,15 @@
 # Venue connectors
 
-FastMM ships two crypto spot connectors behind the control-path `fastmm::venues::Venue`
-interface (`include/fastmm/venues/venue.hpp`): **Binance Spot** (testnet or the local
-Binance-compatible simulator) and **Bybit v5 spot** (testnet). `make_venue()`
-(`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
+FastMM ships three connectors behind the control-path `fastmm::venues::Venue` interface
+(`include/fastmm/venues/venue.hpp`): **Binance Spot** (testnet or the local Binance-compatible
+simulator), **Bybit v5 spot** (testnet) and **Deribit** options and futures (testnet).
+`make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
 
 | kind | connector |
 |---|---|
 | `binance_spot`, `binance`, `sim` | `binance::BinanceVenue` |
 | `bybit`, `bybit_spot` | `bybit::BybitVenue` |
+| `deribit` | `deribit::DeribitVenue` |
 
 Every connector runs on its own `net::Reactor` thread and writes normalised messages into two
 rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order
@@ -112,6 +113,69 @@ or a missing snapshot (10 s) re-subscribes the depth topic to get a fresh snapsh
 the venue's `orderLinkId`: the engine receives an ack for its new client id and later
 `order`/`execution` events for the old link id are translated to it.
 
+## Deribit (options and futures)
+
+Deribit speaks JSON-RPC 2.0 over one WebSocket endpoint (`wss://test.deribit.com/ws/api/v2`), and
+the same methods are available over REST (`https://test.deribit.com/api/v2/<method>`). The sources
+are the official documentation at <https://docs.deribit.com> (articles, OpenAPI and AsyncAPI specs)
+and recorded testnet responses (`tests/fixtures/deribit/fixtures.meta.json`).
+
+| channel | endpoint | purpose |
+|---|---|---|
+| md | `ws_url`, unauthenticated | `public/set_heartbeat`, `public/subscribe` `book.NAME.100ms`, `ticker.NAME.100ms`, `trades.NAME.100ms` |
+| private | `ws_private_url` (default `ws_url`), a second connection | `public/auth` (client_credentials, refresh_token), `public/set_heartbeat`, `private/enable_cancel_on_disconnect`, `private/subscribe` `user.orders.KIND.CURRENCY.raw` + `user.trades.KIND.CURRENCY.raw`; order entry `private/buy`, `private/sell`, `private/edit`, `private/cancel`, `private/cancel_by_label`; reconciliation `private/get_open_orders_by_currency` |
+| rest | `rest_url` | `public/get_time`, `public/get_instruments?currency=C&kind=option|future`; kill switch `private/cancel_all_by_instrument` with `Authorization: Basic base64(client_id:client_secret)` |
+
+**Messages.** Requests are `{"jsonrpc":"2.0","id":..,"method":..,"params":{..}}`. Order requests use
+the string id `n|c|r` + the 14-character client id (the testnet echoes string ids); control
+requests use small integers. Notifications are `{"method":"subscription","params":{"channel","data"}}`,
+and responses carry `result` or `error {code, message, data}`. Prices and amounts are JSON numbers,
+often with exponents (`1.0002e6`), and are parsed exactly from the raw token.
+
+**Units.** Engine quantities are contracts: `contract_multiplier` = Deribit `contract_size`
+(1 BTC for BTC options, 10 USD for BTC-PERPETUAL). Orders are sent with `contracts`, and book, trade
+and fill amounts are divided by the contract size. The label is the FastMM client id, and
+`post_only` is always sent explicitly because the documented default is `true`. Post-only orders
+set `reject_post_only` (config `reject_post_only`), so a crossing order is rejected (11054) rather
+than repriced. Prices are rounded passively onto `tick_size_steps` (BTC options: 0.0001, and
+0.0005 from 0.005).
+
+**Book sync.** The first `book.NAME.interval` notification is a full snapshot. Every later change
+must have `prev_change_id` equal to the previous `change_id` (the ids are not consecutive
+integers). A mismatch emits `ConnectionState{Resyncing}` and sends `public/unsubscribe` then
+`public/subscribe` for that book channel, which yields a new snapshot. A missing snapshot (10 s)
+does the same, at most once per 2 s per instrument. Snapshots deeper than 1024 levels per side
+are truncated to the best levels.
+
+**Options data.** Each option ticker yields a `BookTicker` and an `OptionTicker` (mark, IVs,
+greeks, underlying price; see [options.md](options.md)).
+
+**Session.** Both connections enable heartbeats (interval >= 10 s; smaller values are refused
+with -32602) and answer every `test_request` with `public/test`. The access token goes into
+`params.access_token` of every private request. It is refreshed with `grant_type=refresh_token`
+at 80 % of `expires_in`, and an order answered with 13009 re-authenticates. After a private
+reconnect the venue reconciles open orders across all configured currencies (one
+`ReconcileMsg` Begin/End pair). When the private connection drops it cancels every subscribed
+instrument over REST (`cancel_on_order_channel_loss`), in addition to the venue-side
+cancel-on-disconnect.
+
+**Edits.** `private/edit` keeps the order id and label, and its `contracts` is the new total
+including fills. The engine receives an ack for its new client id. While the edit is in flight, a
+`user.orders` "open" update for the old label is not acked; later updates and fills for the old
+label map to the new id. Fills get `cum_qty`/`leaves_qty` from the venue's order shadow, because
+`user.trades` has no cumulative quantity.
+
+**Rate limits.** The credit model is from the rate-limits article: order requests use a leaky
+bucket sized by `matching_engine_rate` / `matching_engine_burst` (Tier 4 default 5/s, burst 20);
+check `private/get_account_summary` `limits` for the account's tier. New orders and edits are
+refused locally when the bucket is empty; cancels are always sent. A 10028 `too_many_requests`
+(after which the venue drops the session) drains the bucket.
+
+**Errors.** `deribit_error_map.hpp` follows the "Complete RPC Error Codes Reference" table. Among
+others: 11054 post_only_reject, 10009/10039 insufficient funds, 10004/11044 unknown order (10004
+reconciles), 10043/10026 tick, 10005-10007 price bands, 10028 rate limit, 13004/13021 fatal, 13009
+re-authenticate, and 10040/10041/10047/11051/13028 back off.
+
 ## Configuration keys
 
 Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` (always
@@ -127,6 +191,14 @@ Venue-specific keys are read from the section's extra keys. The core schema warn
 * Bybit: `ws_private_url`, `depth`, `order_api`, `stale_ms`, `dead_ms`, `ping_interval_ms`,
   `orders_per_second`, `position_from_wallet`, `allow_offline_reference_data`,
   `cancel_on_order_channel_loss`, `emit_ack_from_response`.
+* Deribit: `api_key` / `api_secret` are the client id and client secret
+  (`${FASTMM_DERIBIT_CLIENT_ID}` / `${FASTMM_DERIBIT_CLIENT_SECRET}`); extras `ws_private_url`,
+  `currencies` (`"BTC"` or `["BTC", "ETH"]`), `book_interval` / `ticker_interval` /
+  `trades_interval` (`100ms` | `agg2`; `raw` needs an authenticated connection),
+  `heartbeat_interval_s` (>= 10), `reject_post_only`, `cancel_on_disconnect`,
+  `cancel_on_order_channel_loss`, `matching_engine_rate`, `matching_engine_burst`, `stale_ms`,
+  `dead_ms`, `allow_offline_reference_data`, `emit_ack_from_response`. Example:
+  `configs/deribit-testnet.toml`.
 
 The testnet configs set `stale_ms = 10000`: testnet BTCUSDT is often silent for more than 2 s, and
 with the default every quiet spell is reported as Stale, which clears the engine book and
@@ -141,3 +213,10 @@ forces a resync.
 * Bybit: whether `walletBalance` includes `locked`; balance-related `rejectReason` strings.
 * Binance: `GET /api/v3/time` weight (1 vs 2) and listenKey validity/keepalive figures (the
   documentation was removed; simulator mode only).
+* Deribit: the private payloads (`user.orders`, `user.trades`, order and auth responses, open
+  orders) follow the OpenAPI/AsyncAPI schemas but were not recorded, because that needs testnet
+  keys; the live test covers them when the keys are exported. Whether `reject_post_only`
+  rejections arrive as error 11054 (complete reference) or 11006 (the error page's summary table)
+  is not confirmed; the error map also matches on the message text. The public `trades` `direction`
+  is taken as the taker side, which the current documentation does not state. The account's
+  matching-engine tier is not queried.
