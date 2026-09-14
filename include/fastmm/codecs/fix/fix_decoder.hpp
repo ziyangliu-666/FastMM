@@ -27,7 +27,7 @@
 // Field/enum sources: OnixS FIX 4.4 dictionary, ExecutionReport (msgType_8_8.html),
 // OrderCancelReject (msgType_9_9.html), MarketDataSnapshotFullRefresh (msgType_W_87.html),
 // MarketDataIncrementalRefresh (msgType_X_88.html) and the tag pages for 150, 39, 103, 102, 269,
-// 279, 851. See docs/codecs-fix.md.
+// 279, 851. See docs/reference/codecs/fix.md.
 #include "fastmm/codecs/codec.hpp"
 #include "fastmm/codecs/fix/fix_symbols.hpp"
 #include "fastmm/codecs/fix/fix_tags.hpp"

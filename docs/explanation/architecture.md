@@ -122,7 +122,8 @@ switching.
 use `SimClock` (virtual time driven by event timestamps) and `SimTransport` (in-process matching
 engine plus a seeded latency model). Timers and RNG are virtualised the same way. The
 `fastmm-replay` tool feeds a recorded journal through the engine and verifies that the outbound
-stream is byte-identical.
+stream is byte-identical. [Determinism](determinism.md) explains how live sessions replay exactly
+and what breaks a replay; [Event flow](event-flow.md) follows one event through the engine.
 
 Strategies are built through the `StrategyRegistry`, which keeps one factory per transport kind
 (Sim, Replay, Live). A strategy library registers its strategies with one function that calls
@@ -133,7 +134,7 @@ the app passes, explicitly at startup; `run_backtest(cfg, name)`, `replay_journa
 Python module register the built-in strategies through `bt::register_builtin_strategies()`. The
 factory templates are declared in `strategies/module.hpp` and defined in
 `strategies/factory_{sim,replay,live}.hpp`, so a registered factory that no file compiles is a link
-error. See [Register a strategy](how-to/strategies/register-a-strategy.md).
+error. See [Register a strategy](../how-to/strategies/register-a-strategy.md).
 
 ## Clock calibration
 
@@ -203,7 +204,7 @@ the final summary.
 
 ## Failure handling
 
-See the table in `docs/configuration.md#failure-handling`: market-data gaps trigger a resync (quotes
+See the [failure handling table](../reference/configuration.md#failure-handling): market-data gaps trigger a resync (quotes
 pulled), order-channel loss triggers `cancel_all` through an independent REST connection and a
 reconciliation pass after reconnect, and the kill switch (global or per venue) mass-cancels and
 stops quoting while still allowing cancels.

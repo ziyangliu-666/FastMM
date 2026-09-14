@@ -67,4 +67,4 @@ fastmm-live: venue_rejects by reason: PostOnlyWouldCross 3
 ```
 
 `tools/pnl_report.py --engine-log` reads these lines. What each risk reason means and which limit
-to look at: [Troubleshooting](how-to/operations/troubleshooting.md#orders-and-reconciliation).
+to look at: [Troubleshooting](troubleshooting.md#orders-and-reconciliation).

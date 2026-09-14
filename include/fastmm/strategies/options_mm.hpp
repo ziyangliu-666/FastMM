@@ -1,5 +1,5 @@
 #pragma once
-// OptionsMM: greeks-aware option market making (docs/options.md).
+// OptionsMM: greeks-aware option market making (docs/reference/options.md).
 //
 // Per option instrument, on every OptionTicker (and, with use_venue_iv = false, every book update):
 //

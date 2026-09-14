@@ -10,3 +10,5 @@
    entropy TSan aborts with "unexpected memory mapping". Run it with ASLR disabled:
    `setarch $(uname -m) -R ctest --preset tsan` (or `sudo sysctl -w vm.mmap_rnd_bits=28`).
 8. Never construct `BookDeltaMsg` by value; see the comment on the struct in `core/messages.hpp`.
+9. Docs: [Writing docs](docs/contributing/writing-docs.md) covers page kinds, snippets, generated
+   references and the checks (`python3 tools/doc_snippets.py --check`, `tools/docs_links.py --check`).
