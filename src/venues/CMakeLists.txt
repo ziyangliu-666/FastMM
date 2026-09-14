@@ -1,6 +1,5 @@
 file(GLOB_RECURSE FASTMM_VENUES_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
-file(GLOB_RECURSE FASTMM_VENUES_HEADERS CONFIGURE_DEPENDS
-  ${PROJECT_SOURCE_DIR}/include/fastmm/venues/*.hpp ${PROJECT_SOURCE_DIR}/include/fastmm/codecs/*.hpp)
+file(GLOB_RECURSE FASTMM_VENUES_HEADERS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/fastmm/venues/*.hpp)
 add_library(fastmm_venues STATIC ${FASTMM_VENUES_SOURCES} ${FASTMM_VENUES_HEADERS})
 add_library(fastmm::venues ALIAS fastmm_venues)
 set_target_properties(fastmm_venues PROPERTIES EXPORT_NAME venues)

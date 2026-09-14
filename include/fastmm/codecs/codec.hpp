@@ -9,14 +9,18 @@
 // Decoders. Nothing in this header allocates or is virtual.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/venues/event_sink.hpp"
+#include "fastmm/venues/feed.hpp"
 #include "fastmm/venues/order_commands.hpp"
 
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 namespace fastmm::codecs {
+
+[[nodiscard]] std::string_view library_name() noexcept;
 
 // One complete application frame carved out of a byte stream. `consumed` is how many input
 // bytes the framer used (frame + framing overhead); zero means "need more bytes".
