@@ -400,19 +400,22 @@ template <char... Cs>
 [[nodiscard]] constexpr Price operator""_px() noexcept {
   static_assert(detail::literal_raw<Cs...>(kFixedDecimals).has_value(),
                 "fastmm: _px literal needs more than 8 decimals or is out of range");
-  return Price::from_raw(*detail::literal_raw<Cs...>(kFixedDecimals));
+  return Price::from_raw(detail::literal_raw<Cs...>(kFixedDecimals)
+                             .value_or(0));  // checked by the static_assert above
 }
 template <char... Cs>
 [[nodiscard]] constexpr Qty operator""_qty() noexcept {
   static_assert(detail::literal_raw<Cs...>(kFixedDecimals).has_value(),
                 "fastmm: _qty literal needs more than 8 decimals or is out of range");
-  return Qty::from_raw(*detail::literal_raw<Cs...>(kFixedDecimals));
+  return Qty::from_raw(detail::literal_raw<Cs...>(kFixedDecimals)
+                           .value_or(0));  // checked by the static_assert above
 }
 template <char... Cs>
 [[nodiscard]] constexpr Ratio operator""_bps() noexcept {
   static_assert(detail::literal_raw<Cs...>(kBpsDecimals).has_value(),
                 "fastmm: _bps literal needs more than 4 decimals or is out of range");
-  return Ratio::from_raw(*detail::literal_raw<Cs...>(kBpsDecimals));
+  return Ratio::from_raw(
+      detail::literal_raw<Cs...>(kBpsDecimals).value_or(0));  // checked by the static_assert above
 }
 }  // namespace literals
 
