@@ -32,8 +32,9 @@ concept FeedLike = requires(F& f) {
 template <class T>
 concept TransportLike =
     requires(T& t, const EventHeader& m, std::span<const EventHeader* const> batch, VenueId v) {
-      { t.send(m) } noexcept -> std::same_as<bool>;             // one Out*Msg; false == queue full
-      { t.send(batch) } noexcept -> std::same_as<std::size_t>;  // returns how many were accepted
+      { t.send(m) } noexcept -> std::same_as<bool>;  // one Out*Msg; false == queue full
+      // Accepts a prefix of the batch and returns its length (the rest was not sent).
+      { t.send(batch) } noexcept -> std::same_as<std::size_t>;
       { t.supports_replace(v) } noexcept -> std::same_as<bool>;
     };
 
@@ -128,15 +129,16 @@ class LiveTransport {
     if (wake_ != nullptr) wake_(wake_ctx_, m.venue);
     return true;
   }
-  // Batch: all messages are enqueued first, then each touched venue is woken once.
+  // Batch: all messages are enqueued first, then each touched venue is woken once. Stops at the
+  // first message a ring refuses, so the accepted messages are a prefix of the batch.
   [[nodiscard]] std::size_t send(std::span<const EventHeader* const> batch) noexcept {
     std::size_t ok = 0;
     std::uint32_t touched = 0;
     for (const EventHeader* m : batch) {
       MsgRing* r = ring_for(m->venue);
       if (r == nullptr || !r->try_push(m, m->len)) {
-        ++full_;
-        continue;
+        full_ += batch.size() - ok;
+        break;
       }
       ++ok;
       touched |= 1U << m->venue.value;

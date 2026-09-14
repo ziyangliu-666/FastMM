@@ -954,14 +954,16 @@ class Engine {
   void flush_out() noexcept {
     if (out_batch_.empty()) return;
     const Cycles t4 = clock_.cycles();
-    if (journal_.enabled()) {
-      for (const EventHeader* m : out_batch_) {
-        if (!journal_.record_outbound(*m)) ++stats_.journal_overflows;
-      }
-    }
     const std::size_t ok =
         transport_.send(std::span<const EventHeader* const>(out_batch_.data(), out_batch_.size()));
     const Cycles t5 = clock_.cycles();
+    // Journaled after the hand-off: the transport accepts a prefix of the batch, and the rest
+    // is recorded as dropped (replay refuses the same messages).
+    if (journal_.enabled()) {
+      for (std::size_t i = 0; i < out_batch_.size(); ++i) {
+        if (!journal_.record_outbound(*out_batch_[i], i >= ok)) ++stats_.journal_overflows;
+      }
+    }
     if (FASTMM_UNLIKELY(ok != out_batch_.size())) {
       stats_.transport_full += out_batch_.size() - ok;
       FASTMM_LOG_ERROR("outbound transport full: {} message(s) dropped; tripping kill switch",
