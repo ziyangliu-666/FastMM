@@ -20,6 +20,14 @@ All notable changes are recorded here (Keep a Changelog format).
   MoldUDP64 delivers every message once and in order under loss, duplication and reordering.
   Limitations are listed in docs/codecs-nasdaq.md (for example, OUCH Replace sends the command's
   quantity, which matches OUCH's "total liable" only for unfilled orders).
+- CME MDP 3.0 in `fastmm::codecs`: `tools/sbe_gen.py`, a standard-library SBE generator, emits
+  memcpy-based flyweights from a committed subset of CME's official schema (templates_FixBinary.xml
+  version 13); the decoder turns MBP book entries into book deltas with per-instrument RptSeq
+  tracking, trade summaries into trades and futures definitions into instruments; the feed handler
+  arbitrates lines A and B, detects gaps and recovers from the snapshot loop with buffered
+  incrementals. Simulation tests keep decoded books equal to the matching engine's top levels with
+  no loss, 30% loss on A, burst loss on both lines and duplicates with reordering. Not handled yet:
+  MBO, the implied book, statistics, options and spreads, TCP replay.
 - `net::Reactor` io_uring backend (`ReactorBackend::IoUring`) on raw io_uring syscalls: multishot
   polls, poll updates, nanosecond timeouts, syscall-free busy polling, and a kernel probe.
   `[engine] net_backend = "epoll" | "io_uring"` selects it for fastmm-live and the simulated
@@ -38,6 +46,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
 
 ### Fixed
+- `SyntheticSource::next` failed gcc's -Wnull-dereference without LTO; the peek is checked.
 - `be*_t`/`le*_t` wire fields held an integer, so a field at an odd offset of a packed layout was
   misaligned and UBSan reported member calls on it; they are byte arrays now.
 - gcc 13 with `-Werror` and without LTO rejected `MatchingEngine::remove_resting` for a potential

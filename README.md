@@ -90,6 +90,7 @@ python examples/python/backtest_quickstart.py
 | Messaging | `core/msg_ring.hpp`, `core/journal.hpp` | variable-length SPSC ring, `.fmj` append-only journal with CRC32C blocks |
 | Networking | `include/fastmm/net` | hand-written reactor on epoll or io_uring (`[engine] net_backend`), OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
 | Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode) and Bybit v5 connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff |
+| Codecs | `include/fastmm/codecs` | FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0, CME MDP 3.0 SBE with A/B arbitration; each checked against the matching engine ([FIX](docs/codecs-fix.md), [Nasdaq](docs/codecs-nasdaq.md), [CME](docs/codecs-cme-mdp3.md)) |
 | Monitoring | `apps/fastmm-top` | terminal dashboard over a shared-memory status file: engine counters, PnL, latency percentiles, venue channels |
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
 | Sim exchange | `apps/fastmm-sim-exchange` | Binance-compatible REST, market-data WebSocket, WS API and user stream over TCP or TLS, with fault injection (disconnects, dropped diffs, delayed acks, clock skew) |
@@ -144,7 +145,7 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [x] Binance-compatible simulated exchange with fault injection and end-to-end tests
 - [ ] Python package on PyPI (wheels build in CI; publishing is a manual step)
 - [x] FIX 4.4 session and codec, Nasdaq ITCH 5.0 / MoldUDP64 / SoupBinTCP / OUCH 4.2 and 5.0
-- [ ] CME MDP 3.0 SBE codec
+- [x] CME MDP 3.0 SBE codec with A/B arbitration and snapshot recovery
 - [ ] Deribit options with greeks-aware quoting
 - [x] Terminal monitoring UI (`fastmm-top`)
 - [x] io_uring reactor backend (`net_backend = "io_uring"`)
