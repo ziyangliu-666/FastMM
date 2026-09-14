@@ -224,8 +224,11 @@ stale_ms = "soon"
 TEST_CASE("core.config: shipped venue configs load without warnings") {
   ConfigLoadOptions opts;
   opts.substitute_env = false;  // keep ${FASTMM_*} references; no secrets needed to validate
-  for (const char* name :
-       {"binance-testnet.toml", "bybit-testnet.toml", "sim-local.toml", "sim-local-tls.toml"}) {
+  for (const char* name : {"binance-testnet.toml",
+                           "bybit-testnet.toml",
+                           "deribit-testnet.toml",
+                           "sim-local.toml",
+                           "sim-local-tls.toml"}) {
     const Config cfg = Config::load((configs_dir() / name).string(), opts);
     INFO(name);
     for (const auto& w : cfg.warnings) MESSAGE(w);

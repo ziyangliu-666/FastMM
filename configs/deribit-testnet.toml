@@ -1,0 +1,151 @@
+# FastMM: OptionsMM on the Deribit testnet (BTC options, inverse / coin-quoted).
+#   ./build/release/bin/fastmm-live --config configs/deribit-testnet.toml --dry-run --duration 60s
+#   export FASTMM_DERIBIT_CLIENT_ID=... FASTMM_DERIBIT_CLIENT_SECRET=...   # testnet API key
+#   ./build/release/bin/fastmm-live --config configs/deribit-testnet.toml
+# Endpoints (https://docs.deribit.com/articles/json-rpc-overview): WebSocket
+# wss://test.deribit.com/ws/api/v2 (market data and, on a second connection, auth + orders),
+# REST https://test.deribit.com/api/v2 (reference data, kill-switch cancel_all_by_instrument).
+# Never point this at www.deribit.com: the keys are testnet keys and the limits are testnet sized.
+#
+# Option names carry their expiry: replace the [[instruments]] below with live ones
+# (public/get_instruments?currency=BTC&kind=option) once they expire. load_reference_data fails on
+# an expired symbol and overwrites tick, lot, strike, expiry, option type and contract size.
+
+[engine]
+name = "deribit-testnet"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 1
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+supports_replace = true
+
+[venues.deribit]
+kind = "deribit"
+ws_url = "wss://test.deribit.com/ws/api/v2"
+rest_url = "https://test.deribit.com/api/v2"
+api_key = "${FASTMM_DERIBIT_CLIENT_ID}"
+api_secret = "${FASTMM_DERIBIT_CLIENT_SECRET}"
+testnet = true
+supports_replace = true          # private/edit keeps the order id and fills
+currencies = "BTC"
+book_interval = "100ms"
+ticker_interval = "100ms"
+trades_interval = "100ms"
+heartbeat_interval_s = 10        # public/set_heartbeat minimum
+reject_post_only = true          # a crossing post-only order is rejected, never repriced
+cancel_on_disconnect = true      # private/enable_cancel_on_disconnect on the order connection
+cancel_on_order_channel_loss = true
+matching_engine_rate = 5         # Tier 4 (rate-limits article); see private/get_account_summary limits
+matching_engine_burst = 20
+# Option books can be quiet for seconds; the ticker (100 ms) keeps the channel busy, but a stale
+# threshold below the heartbeat interval would still flag quiet spells.
+stale_ms = 15000
+dead_ms = 35000
+
+[venues.deribit.fees]
+maker_bps = 3.0
+taker_bps = 3.0
+
+# Tick, lot (contracts), contract_multiplier, strike, expiry and option type come from
+# public/get_instruments; the values below are fallbacks only.
+[[instruments]]
+venue = "deribit"
+symbol = "BTC-PERPETUAL"
+base = "BTC"
+quote = "USD"
+asset_class = "perpetual"
+tick = "0.5"
+lot = "1"
+contract_multiplier = "10"
+enabled = true
+
+[[instruments]]
+venue = "deribit"
+symbol = "BTC-25DEC26-76000-C"
+base = "BTC"
+quote = "BTC"
+asset_class = "option"
+tick = "0.0001"
+lot = "0.1"
+contract_multiplier = "1"
+option_type = "call"
+strike = "76000"
+expiry = "2026-12-25T08:00:00Z"
+enabled = true
+
+[[instruments]]
+venue = "deribit"
+symbol = "BTC-25DEC26-76000-P"
+base = "BTC"
+quote = "BTC"
+asset_class = "option"
+tick = "0.0001"
+lot = "0.1"
+contract_multiplier = "1"
+option_type = "put"
+strike = "76000"
+expiry = "2026-12-25T08:00:00Z"
+enabled = true
+
+[[instruments]]
+venue = "deribit"
+symbol = "BTC-25DEC26-78000-C"
+base = "BTC"
+quote = "BTC"
+asset_class = "option"
+tick = "0.0001"
+lot = "0.1"
+contract_multiplier = "1"
+option_type = "call"
+strike = "78000"
+expiry = "2026-12-25T08:00:00Z"
+enabled = true
+
+[strategy]
+name = "options_mm"
+
+[strategy.params]
+use_venue_iv = true
+half_spread_vol = 2.0            # vol points
+min_half_spread_ticks = 2
+quote_qty = 0.1                  # contracts (0.1 BTC of underlying each)
+max_position = 1.0
+max_delta = 0.5                  # BTC
+max_vega = 200.0                 # USD per vol point
+delta_skew_ticks = 4.0
+inventory_skew_ticks = 1.0
+vega_widen = 1.0
+min_expiry_s = 86400
+requote_threshold_ticks = 1
+pull_on_stale_ms = 5000
+
+[risk]
+max_order_qty = "1"
+max_order_notional = "1"          # BTC premium per order (option prices are in BTC)
+max_position = "2"
+max_open_orders = 4
+price_collar_bps = 5000           # option mids move far in relative terms
+fat_finger_bps = 10000
+stale_md_ms = 5000
+max_loss = "0.05"
+orders_per_sec = 4
+burst = 4
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

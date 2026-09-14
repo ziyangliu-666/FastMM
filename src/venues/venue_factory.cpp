@@ -2,6 +2,7 @@
 
 #include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/bybit/bybit_venue.hpp"
+#include "fastmm/venues/deribit/deribit_venue.hpp"
 
 #include <stdexcept>
 
@@ -10,6 +11,7 @@ namespace fastmm::venues {
 VenueKind venue_kind(std::string_view kind) noexcept {
   if (kind == "binance_spot" || kind == "binance" || kind == "sim") return VenueKind::BinanceSpot;
   if (kind == "bybit" || kind == "bybit_spot") return VenueKind::BybitSpot;
+  if (kind == "deribit") return VenueKind::Deribit;
   return VenueKind::Unknown;
 }
 
@@ -39,11 +41,16 @@ std::unique_ptr<Venue> make_venue(VenueId id,
       c.record_raw_dir = opts.record_raw_dir;
       return std::make_unique<bybit::BybitVenue>(id, std::move(c));
     }
+    case VenueKind::Deribit: {
+      deribit::DeribitVenueConfig c = deribit::make_deribit_config(s, opts.dry_run);
+      c.record_raw_dir = opts.record_raw_dir;
+      return std::make_unique<deribit::DeribitVenue>(id, std::move(c));
+    }
     case VenueKind::Unknown:
       break;
   }
   throw std::invalid_argument("venue '" + s.name + "': unsupported kind '" + s.kind +
-                              "' (expected binance_spot, sim or bybit)");
+                              "' (expected binance_spot, sim, bybit or deribit)");
 }
 
 }  // namespace fastmm::venues

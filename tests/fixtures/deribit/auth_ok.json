@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"access_token":"1789345400000.1MbQ-J_4.CBP-OqOwFakeAccessToken","expires_in":900,"refresh_token":"1789345400000.1GP4rQd0.A9Wa78FakeRefreshToken","scope":"connection mainaccount","token_type":"bearer"},"usIn":1789345400000000,"usOut":1789345400000150,"usDiff":150,"testnet":true}

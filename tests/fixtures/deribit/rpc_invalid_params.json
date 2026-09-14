@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":8,"error":{"code":-32602,"data":{"reason":"invalid value","param":"kind"},"message":"Invalid params"},"usIn":1789344931553833,"usOut":1789344931553881,"usDiff":48,"testnet":true}

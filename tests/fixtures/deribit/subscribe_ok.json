@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":4,"result":["trades.option.BTC.100ms","trades.BTC-PERPETUAL.100ms","trades.BTC-15SEP26-77000-C.100ms","ticker.BTC-PERPETUAL.100ms","ticker.BTC-15SEP26-77000-C.100ms","book.BTC-PERPETUAL.100ms","book.BTC-15SEP26-77000-C.100ms"],"usIn":1789344931553121,"usOut":1789344931553446,"usDiff":325,"testnet":true}

@@ -32,6 +32,7 @@ std::unique_ptr<IEngineRunner> make_live_runner(TransportKind kind, RunnerDeps& 
 // One per strategy (runner_<strategy>.cpp).
 void register_live_basic_mm(StrategyRegistry& registry);
 void register_live_avellaneda_stoikov(StrategyRegistry& registry);
+void register_live_options_mm(StrategyRegistry& registry);
 
 // Registers every live factory; repeated calls are harmless. Returns the number of registry
 // entries.

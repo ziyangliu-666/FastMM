@@ -23,7 +23,7 @@ EVENT_TYPES = [
     "Padding", "BookDelta", "BookSnapshot", "BookTicker", "Trade", "OrderAck", "OrderReject",
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
-    "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3",
+    "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
 ]
 SIDES = {0: "Buy", 1: "Sell"}
 ORDER_TYPES = {0: "Limit", 1: "Market", 2: "PostOnly"}
@@ -95,6 +95,11 @@ def decode_body(type_name: str, body: bytes) -> str:
         return f"px={dec(q(0))} qty={dec(q(8))} trade_id={u64(16)} aggressor={SIDES.get(body[24], body[24])}"
     if type_name == "BookTicker":
         return f"bid={dec(q(0))}x{dec(q(8))} ask={dec(q(16))}x{dec(q(24))}"
+    if type_name == "OptionTicker":
+        (mark_iv, bid_iv, ask_iv, delta, gamma, vega, theta, rho, rate) = struct.unpack_from("<9d", body, 24)
+        return (f"mark={dec(q(0))} underlying={dec(q(8))} index={dec(q(16))} iv mark={mark_iv:.4f} "
+                f"bid={bid_iv:.4f} ask={ask_iv:.4f} delta={delta:.5f} gamma={gamma:.6g} vega={vega:.5f} "
+                f"theta={theta:.5f} rho={rho:.5f} r={rate:.4f}")
     if type_name in ("OrderAck", "OrderCancelAck", "OrderExpired"):
         s = f"cl_ord_id={cl_ord_id(u64(0))} venue_order_id={fixed_string(body[8:49], 40)}"
         if type_name != "OrderAck":
