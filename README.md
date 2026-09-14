@@ -88,7 +88,7 @@ python examples/python/backtest_quickstart.py
 |---|---|---|
 | Core engine | `include/fastmm/core` | `Engine<Strategy, Clock, Transport, Feed>`, sorted-array L2 book, tick-indexed L3 book, OMS state machine with exchange-race handling, O(1) risk, quote manager with hysteresis |
 | Messaging | `core/msg_ring.hpp`, `core/journal.hpp` | variable-length SPSC ring, `.fmj` append-only journal with CRC32C blocks |
-| Networking | `include/fastmm/net` | hand-written epoll reactor, OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
+| Networking | `include/fastmm/net` | hand-written reactor on epoll or io_uring (`[engine] net_backend`), OpenSSL BIO-pair TLS, RFC 6455 WebSocket, HTTP/1.1, reconnect FSM with make-before-break |
 | Venues | `include/fastmm/venues` | Binance Spot (testnet and Demo Mode) and Bybit v5 connectors, snapshot + delta sync, HMAC/Ed25519 auth, rate limiting, reject backoff |
 | Monitoring | `apps/fastmm-top` | terminal dashboard over a shared-memory status file: engine counters, PnL, latency percentiles, venue channels |
 | Simulation | `include/fastmm/sim` | price-time matching engine, seeded latency model, queue-position fill model, synthetic order flow |
@@ -146,7 +146,8 @@ CI runs gcc and clang, release and sanitizer builds, lint, and the Python wheel.
 - [ ] FIX 4.4, Nasdaq ITCH 5.0 / OUCH, CME MDP 3.0 SBE codecs
 - [ ] Deribit options with greeks-aware quoting
 - [x] Terminal monitoring UI (`fastmm-top`)
-- [ ] io_uring and kernel-bypass transports
+- [x] io_uring reactor backend (`net_backend = "io_uring"`)
+- [ ] Kernel-bypass transports
 
 ## License
 
