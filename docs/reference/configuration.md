@@ -1,25 +1,24 @@
 # Configuration
 
-Every FastMM program reads one TOML file passed with `--config <file.toml>`. This page lists every
-key. The key tables are generated from `include/fastmm/config/schema.hpp` by
-`tools/docs_config_ref.py` ([Writing docs](../contributing/writing-docs.md#generated-pages)); the
-parser is `src/core/config.cpp`. The shipped configurations in `configs/` are complete examples,
-and a test loads each of them and fails on any warning.
+<!-- The key tables are generated from include/fastmm/config/schema.hpp by tools/docs_config_ref.py
+(docs/contributing/writing-docs.md#generated-pages); the parser is src/core/config.cpp. -->
+
+Every FastMM program reads one TOML file passed with `--config <file.toml>`. Examples: `configs/`.
 
 ## General rules
 
-- **Unknown keys are ignored with a warning** that names the key and its line. Check the warnings
-  when a setting seems to have no effect.
-- **A key with the wrong type is an error**, reported with its line and column.
-- **Prices, quantities and notionals are exact.** Decimal keys (`tick`, `lot`, `max_order_qty`,
-  `max_loss`, ...) may be written as strings (`"0.01"`) or numbers (`0.01`); either way the decimal
-  text is parsed exactly into fixed point, never through a `double`.
-- **Secrets come from the environment.** Inside `[venues.<name>]`, the string keys `kind`,
-  `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` and `ca_file` support `${NAME}`
-  substitution. Only exact `${NAME}` tokens are replaced; a variable that is not set fails loading.
-- **Literal secrets are refused.** A value longer than 32 characters under a key whose name
-  contains `key`, `secret`, `token` or `password` is rejected unless it uses `${...}`.
-  `--allow-inline-secrets` overrides this, for throwaway local tests only.
+- Unknown keys are ignored with a warning that names the key and its line.
+- A key with the wrong type is an error, reported with its line and column.
+- Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are
+  parsed as decimal text into fixed point, not through a `double`.
+- Inside `[venues.<name>]`, the string keys `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`,
+  `api_secret` and `ca_file` support `${NAME}` substitution. Only exact `${NAME}` tokens are
+  replaced, and a variable that is not set is an error. `fastmm-live --dry-run` drops unset
+  `api_key` and `api_secret` variables instead.
+- Under `[venues.<name>]`, a literal value longer than 32 characters under a key whose name contains
+  `key`, `secret`, `token` or `password` is refused with
+  `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`.
+  `fastmm-live --allow-inline-secrets` turns this check off.
 - Logs and journals contain the configuration without `api_key` and `api_secret`.
 - Types: `decimal` values are marked in the meaning; `any` keys accept a string or a number.
 
@@ -54,15 +53,11 @@ and a test loads each of them and fails on any warning.
 | `on_kill` | string |  | fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every venue killed): exit (normal shutdown, exit code 6) \| stay (keep running with quoting off) (default exit) |
 <!-- END config-keys -->
 
-`net_backend = "io_uring"` needs Linux 5.13 or newer and is blocked by some seccomp profiles,
-Docker's default among them; see [Network reactor](../explanation/architecture.md#network-reactor).
+`io_uring` is blocked by some seccomp profiles, including Docker's default
+([Network reactor](../explanation/architecture.md#network-reactor)).
 `tsc_recalibrate_s`: the engine clock stays continuous and slews each measured offset away over one
 period (at most 500 ppm); it steps, with a warning, only when it was more than 1 ms off.
-`on_kill` applies to kills the engine trips itself (`[risk] max_loss`, a full outbound or journal
-ring, every venue killed): `exit` runs the normal shutdown (quotes pulled, cancel-all on every
-venue, summary, status, journal) and exits with code 6; `stay` keeps the process running with
-quoting off and logs an ERROR line every 10 s until it is stopped. See
-[Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself).
+`on_kill`: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself).
 
 ## `[venues.<name>]`
 
@@ -75,8 +70,8 @@ One table per venue; `<name>` is how instruments refer to it.
 | `ws_url` | string |  | market-data WebSocket URL |
 | `ws_api_url` | string |  | order-entry WebSocket API URL, where the venue has one |
 | `rest_url` | string |  | REST base URL |
-| `api_key` | string |  | API key; write "${VARIABLE}" (a literal secret is refused) |
-| `api_secret` | string |  | API secret; write "${VARIABLE}" (a literal secret is refused) |
+| `api_key` | string |  | API key, written as "${VARIABLE}" |
+| `api_secret` | string |  | API secret, written as "${VARIABLE}" |
 | `testnet` | boolean |  | the endpoints are a testnet or demo environment (default true) |
 | `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
@@ -97,13 +92,13 @@ One table per venue; `<name>` is how instruments refer to it.
 ### Connector-specific keys
 
 These are validated like the keys above and handed to the connector unchanged; a key a connector
-does not use has no effect. [Venue connectors](venues.md) describes each connector.
+does not use has no effect. Keys per connector: [Venue connectors](venues.md#configuration-keys).
 
 <!-- BEGIN config-keys venues.*:connector -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms |
-| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000; deribit 10000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to a per-connector minimum (binance and bybit 45000, deribit 30000 by default) |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
@@ -139,7 +134,7 @@ does not use has no effect. [Venue connectors](venues.md) describes each connect
 | `base` | string |  | base asset, for example BTC |
 | `quote` | string |  | quote asset, for example USDT |
 | `asset_class` | string |  | spot \| perpetual (perp) \| future (futures) \| option \| fx \| equity (default spot) |
-| `tick` | any | yes | price increment, decimal; a string such as "0.01" is parsed exactly |
+| `tick` | any | yes | price increment, decimal |
 | `lot` | any | yes | quantity increment, decimal |
 | `min_qty` | any |  | smallest order quantity, decimal |
 | `max_qty` | any |  | largest order quantity, decimal |
@@ -177,32 +172,29 @@ quote_qty = 0.001
 
 - Names, types, defaults and bounds come from the strategy's `FASTMM_PARAM` declarations;
   `--list-strategies` prints them (`--format json` for tools).
-- `decimal` values take up to 8 decimals and `bps` values up to 4, both parsed exactly (exponent
-  notation such as `2e-05` is accepted); `ms` and `int` values are whole numbers.
+- `decimal` values take up to 8 decimals and `bps` values up to 4; exponent notation is accepted
+  ([Fixed point](fixed-point.md#parsing-and-formatting)). `ms` and `int` values are whole numbers.
 - An unknown parameter, a value with too many decimals or an out-of-range value is an error at
   startup.
-- `--strategy <name>` and `--param key=value` override `[strategy]`; a strategy other than the
-  configuration's ignores `[strategy.params]`. A journal records the configuration after the
-  overrides.
+- `--strategy` and `--param` override this section ([Command lines](cli.md#fastmm-live)).
 
 ## `[risk]`
 
-Every limit is off when it is `0` or omitted. Cancels are always allowed, including after the kill
-switch trips. [Risk model](../explanation/risk-model.md) explains the order and meaning of the
-checks.
+Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-model.md) describes the
+checks and their order.
 
 <!-- BEGIN config-keys risk -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `max_order_qty` | any |  | largest order quantity, decimal; 0 = off |
-| `max_order_notional` | any |  | largest order value, quote currency, decimal; 0 = off |
-| `max_position` | any |  | largest absolute position per instrument, counting same-side open orders, decimal; 0 = off |
-| `max_open_orders` | integer |  | open orders per instrument; 0 = off |
-| `price_collar_bps` | integer |  | refuse limit prices further than this from the mid, bps; 0 = off |
-| `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps; 0 = off |
-| `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms; 0 = off |
-| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, quote currency, decimal; 0 = off; [engine] on_kill decides whether fastmm-live then exits |
-| `orders_per_sec` | integer |  | token-bucket order rate, orders/s; 0 = off |
+| `max_order_qty` | any |  | largest order quantity, decimal |
+| `max_order_notional` | any |  | largest order value, quote currency, decimal |
+| `max_position` | any |  | largest absolute position per instrument, counting same-side open orders, decimal |
+| `max_open_orders` | integer |  | open orders per instrument |
+| `price_collar_bps` | integer |  | refuse limit prices further than this from the mid, bps |
+| `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps |
+| `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms |
+| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, quote currency, decimal |
+| `orders_per_sec` | integer |  | token-bucket order rate, orders/s |
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
 <!-- END config-keys -->
@@ -236,7 +228,7 @@ self-trade prevention follows `[risk] stp`, and in-place replace follows `[engin
 | `latency_jitter_us` | int | `50` | Random jitter added to that latency, µs, seeded |
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
-| `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost; exercises reconciliation |
+| `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
 | `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s |
 | `initial_capital` | number | `0` | Starting capital, quote currency, used for percentage drawdown |
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
@@ -270,18 +262,5 @@ its own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuratio
 | `depth_update_ms` | int | `100` | Book changes are aggregated into one depth diff per interval, ms, like Binance `@depth@100ms` |
 | `book_ticker` | bool | `true` | Also publish top-of-book updates, at the same flush as the depth diff |
 
-`configs/backtest-example.toml` is a complete, tuned example of both sections.
+Example: `configs/backtest-example.toml`.
 
-## Failure handling
-
-| Failure | Detection | Action |
-|---|---|---|
-| Market-data disconnect | EPOLLRDHUP, read of 0 bytes, TLS error | Quotes pulled, reconnect with backoff, fresh snapshot |
-| Sequence gap | Book sync state machine | Resync state, re-snapshot (rate limited), quotes pulled meanwhile |
-| Stale feed | No traffic for the connector's `stale_ms` | Stale event; a longer `dead_ms` forces a reconnect |
-| Order channel loss | Connection state machine | Immediate cancel-all through REST, reconcile open orders after reconnect |
-| Kill switch | `max_loss`, a full outbound or journal ring, every venue killed, SIGINT/SIGTERM, `--duration`, order ring overflow | Stop quoting and cancel every working order. On shutdown every venue also cancels all over REST (5 s timeout per request), then the process exits. After a kill the engine tripped itself the shutdown follows at once (exit code 6) unless `[engine] on_kill = "stay"`; see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) |
-| Venue unusable | The venue's error map: `Fatal` (bad key, signature or permission, failed authentication) or `HardStop` (Binance IP ban) | That venue's kill switch: its quotes are pulled, its orders cancelled and new orders to it refused; the other venues keep trading. Every venue killed is a global kill |
-| Rate limit | Response headers and error codes | Cool down until reset; HTTP 418 halts REST for the ban period |
-| Clock skew | Timestamp rejection codes | Re-measure the offset from the venue's time endpoint |
-| Ring overflow | Push fails | Drop the market-data delta and resync; order events are never dropped |
