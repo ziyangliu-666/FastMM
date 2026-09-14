@@ -594,6 +594,8 @@ void insert_typed(toml::table& t, const std::string& key, const std::string& tex
         return;
       }
     } catch (const toml::parse_error&) {
+      t.insert_or_assign(key, text);  // not a literal of the expected type: keep the text
+      return;
     }
   }
   t.insert_or_assign(key, text);
