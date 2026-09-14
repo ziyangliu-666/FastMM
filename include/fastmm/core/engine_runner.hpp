@@ -2,9 +2,11 @@
 // IEngineRunner: the only virtual seam in the system. The registry hands the app a runner
 // for a (strategy, transport kind) pair; run()/stop() are called once each, never on the
 // hot path. EngineRunner<E> adapts a concrete Engine instantiation.
+#include "fastmm/core/enums.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/reject_counters.hpp"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -33,13 +35,18 @@ struct RunnerStats {
   RejectCounts venue_rejects_by_reason;  // sums to venue_rejects
 };
 
-// What a running engine publishes for other threads (monitors): the runner stats, kill-switch
-// state and the latency snapshot, refreshed with the latency publication (every second).
+// What a running engine publishes for other threads (monitors, fastmm-live's control loop): the
+// runner stats, kill-switch state and the latency snapshot, refreshed with the latency publication
+// (every second) and immediately whenever a kill switch trips or is reset.
 struct EngineLiveStats {
   RunnerStats stats;
-  std::uint64_t kills = 0;
-  std::uint32_t kill_flags = 0;
-  std::uint32_t pad_ = 0;
+  std::uint64_t kills = 0;        // global trips (EngineStats::kills)
+  std::uint64_t venue_kills = 0;  // venue trips (EngineStats::venue_kills)
+  std::uint32_t kill_flags = 0;   // RiskEngine::kill_flags(): bit 0 global, bit 1 + venue per venue
+  KillReason kill_reason = KillReason::None;  // why the global flag was first set
+  std::uint8_t pad_[3] = {};
+  // Why each venue's flag was first set, by venue id (RiskEngine::venue_slot).
+  std::array<KillReason, kKillVenueSlots> venue_kill_reasons{};
   LatencySnapshot latency;
 };
 

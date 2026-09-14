@@ -1,6 +1,7 @@
 #pragma once
 // All engine enumerations. Every enum is `enum class` with a fixed underlying type so it
 // can be embedded in trivially copyable messages; to_string() is for logs/diagnostics.
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -357,6 +358,10 @@ enum class ControlCommand : std::uint8_t {
   Reload = 5,
   FlushStats = 6,
   RecalibrateTsc = 7,
+  // A venue connector gave up on one venue (arg: KillReason, hdr.venue: the venue): the engine
+  // trips that venue's kill bit only. Sent through the venue's order ring, so it is journaled and
+  // replays like any other engine input.
+  TripVenueKill = 8,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -376,6 +381,48 @@ enum class ControlCommand : std::uint8_t {
       return "FlushStats";
     case ControlCommand::RecalibrateTsc:
       return "RecalibrateTsc";
+    case ControlCommand::TripVenueKill:
+      return "TripVenueKill";
+  }
+  return "?";
+}
+
+// Why a kill switch (global or one venue's) was tripped. The engine records the first reason per
+// flag; fastmm-live decides from it whether to exit ([engine] on_kill) and shows it in the status.
+enum class KillReason : std::uint8_t {
+  None = 0,
+  Requested = 1,          // ControlCommand::TripKill: shutdown, operator
+  MaxLoss = 2,            // [risk] max_loss
+  TransportFull = 3,      // the outbound ring to a venue was full
+  JournalOverflow = 4,    // the journal ring was full
+  AllVenuesKilled = 5,    // every venue with instruments has its own kill bit set
+  VenueFatal = 6,         // venue error map: bad key, signature, permission, failed auth
+  VenueHardStop = 7,      // venue error map: REST stopped (IP ban)
+  OrderRingOverflow = 8,  // fastmm-live: a venue's order-event ring overflowed
+};
+// Kill reasons are kept per venue id for ids 0..kKillVenueSlots-1; higher ids share the last slot,
+// as they share the last kill bit (RiskEngine::venue_bit).
+inline constexpr std::size_t kKillVenueSlots = 31;
+[[nodiscard]] constexpr std::string_view to_string(KillReason r) noexcept {
+  switch (r) {
+    case KillReason::None:
+      return "None";
+    case KillReason::Requested:
+      return "Requested";
+    case KillReason::MaxLoss:
+      return "MaxLoss";
+    case KillReason::TransportFull:
+      return "TransportFull";
+    case KillReason::JournalOverflow:
+      return "JournalOverflow";
+    case KillReason::AllVenuesKilled:
+      return "AllVenuesKilled";
+    case KillReason::VenueFatal:
+      return "VenueFatal";
+    case KillReason::VenueHardStop:
+      return "VenueHardStop";
+    case KillReason::OrderRingOverflow:
+      return "OrderRingOverflow";
   }
   return "?";
 }
