@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -107,6 +108,22 @@ struct ServerFixture {
     return "wss://127.0.0.1:" + std::to_string(server.tls_port());
   }
 };
+
+// Connector and simulator state for failure messages: INFO(describe(...)) is evaluated only when
+// an assertion fails, so it shows the state at that moment. Engine-side reasons (risk rejects) are
+// in the FASTMM_IT_LOG=1 log.
+inline std::string describe(const venues::VenueStatus& v, const sim::server::SimServerStats& s) {
+  std::ostringstream o;
+  o << "venue: md=" << venues::to_string(v.md) << " order=" << venues::to_string(v.order)
+    << " user=" << venues::to_string(v.user) << " books_synced=" << v.books_synced
+    << " resyncs=" << v.resyncs << " md_messages=" << v.md_messages
+    << " orders_sent=" << v.orders_sent << " order_events=" << v.order_events
+    << " rest_errors=" << v.rest_errors << " reconnects=" << v.reconnects
+    << " | server: open_orders=" << s.open_orders << " accepted=" << s.orders_accepted
+    << " rejected=" << s.orders_rejected << " fills=" << s.fills
+    << " depth_snapshots=" << s.depth_snapshots;
+  return o.str();
+}
 
 // Sleeps in 5 ms steps until pred() or the timeout; returns pred().
 template <class Pred>

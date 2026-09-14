@@ -292,6 +292,33 @@ TEST_CASE("core.oms: transition table and races") {
     CHECK(u.order.state == OrderState::Canceled);
     CHECK(oms.open_count() == 0);
   }
+  SUBCASE("a duplicate ack for the original id does not complete a replace to a new id") {
+    // Binance acks a new order twice (WS API response and user-stream NEW). A requote between the
+    // two made the second ack look like the replace's ack: the replace was applied unconfirmed,
+    // the new id stayed mapped after the order ended, and the new leg's ack then read a freed slot.
+    const ClientOrderId id = oms.next_cl_ord_id();
+    auto h = *oms.submit(req(Side::Buy, 100, 5), id, {});
+    oms.on_ack(ack(id, "V1"));
+    const ClientOrderId nid = oms.next_cl_ord_id();
+    REQUIRE(oms.request_replace(h, nid, px(101), qt(7)));
+    auto u = oms.on_ack(ack(id, "V1"));  // the duplicate
+    CHECK(u.action == OmsAction::Ignored);
+    CHECK(oms.get(h).state == OrderState::PendingReplace);
+    CHECK(oms.get(h).cl_ord_id == id);
+    CHECK(oms.get(h).price == px(100));
+    u = oms.on_cancel_ack(cancel_ack(id));  // old leg
+    CHECK_FALSE(u.terminal);
+    u = oms.on_ack(ack(nid, "V2"));  // new leg
+    CHECK(u.order.state == OrderState::Live);
+    CHECK(u.order.cl_ord_id == nid);
+    CHECK(u.order.price == px(101));
+    CHECK_FALSE(oms.find(id).valid());
+    REQUIRE(oms.request_cancel(h));
+    u = oms.on_cancel_ack(cancel_ack(nid));
+    CHECK(u.terminal);
+    CHECK_FALSE(oms.find(nid).valid());
+    CHECK(oms.open_count() == 0);
+  }
   SUBCASE("in-place amend keeps the id and cum qty") {
     const ClientOrderId id = oms.next_cl_ord_id();
     auto h = *oms.submit(req(Side::Buy, 100, 5), id, {});
