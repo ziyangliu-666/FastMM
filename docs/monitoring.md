@@ -17,8 +17,12 @@ memory-mapped file every 250 ms. The file is `/dev/shm/fastmm-<engine name>.stat
 - the session: engine and strategy name, session id, pid, dry-run flag, uptime and the state
   (starting, running, stopping, stopped). A running engine that has not published for more
   than 3 seconds is shown as `STALE`, which usually means the process died;
-- engine counters: events, book updates, orders, cancels, replaces, fills, risk rejects, kill
-  switch trips and flags, realised and unrealised PnL and fees;
+- engine counters: events, book updates, orders, cancels, replaces, fills, kill switch trips and
+  flags, realised and unrealised PnL and fees;
+- rejects: `risk_rejects` counts orders the engine's pre-trade checks refused (they were never
+  sent), `venue_rejects` orders a venue refused; each is followed by its most frequent reasons,
+  for example `risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 (PostOnlyWouldCross 3)`.
+  Up to six reasons per kind are listed, rejects of further reasons are summed as `other <n>`;
 - engine latency per interval as count, p50, p99 and max. `decode` is the network thread's parse
   time; `book_apply` runs from the end of decoding on the network thread to the book update on the
   engine thread, so it includes the hand-off through the SPSC ring (with `spin_mode = "adaptive"`
@@ -30,4 +34,33 @@ memory-mapped file every 250 ms. The file is `/dev/shm/fastmm-<engine name>.stat
 
 The file stays after the session ends, so the last frame shows `stopped` with the final numbers.
 The layout is versioned (magic number and version field); a monitor built from a different
-version refuses to read it instead of showing garbage.
+version refuses to read it instead of showing garbage. `fastmm-top` then reports
+`status segment version <n> is not readable by this build (version <m>)`; use the `fastmm-top`
+of the same build as `fastmm-live`. A `fastmm-top` from before version 2 (per-reason rejects)
+keeps showing `waiting for <file>` for a newer session.
+
+## Why orders are rejected
+
+Every reject is counted per reason, but not every reject is logged: a strategy that retries on
+each book update could otherwise write thousands of lines. A risk reject is logged at WARN the
+first time its reason occurs, then at most once per reason every 10 seconds
+(`EngineConfig::reject_log_interval`), with the number of that reason's rejects not logged since
+its previous line:
+
+```text
+WARN  ... risk reject MaxPosition on new order: BTCUSDT Buy 0.01 @ 64250.1
+WARN  ... risk reject MaxPosition on new order: BTCUSDT Buy 0.01 @ 64251.3 (11 more suppressed)
+```
+
+Venue rejects are logged per order (`order <id> rejected: <reason> (<code>)`). At shutdown
+`fastmm-live` logs both breakdowns after the engine counters; a kind without rejects has no
+breakdown line, and a long one continues on further lines with the same prefix:
+
+```text
+fastmm-live: events=... fills=812 risk_rejects=17 venue_rejects=3
+fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5
+fastmm-live: venue_rejects by reason: PostOnlyWouldCross 3
+```
+
+`tools/pnl_report.py --engine-log` reads these lines. What each risk reason means and which limit
+to look at: [Troubleshooting](how-to/operations/troubleshooting.md#orders-and-reconciliation).
