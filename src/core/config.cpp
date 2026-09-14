@@ -209,6 +209,10 @@ bool GenericSection::get_bool(std::string_view key, bool def) const {
 
 // ---- Config --------------------------------------------------------------------------------
 
+std::uint64_t Config::text_hash(std::string_view text) noexcept {
+  return fnv1a(text);
+}
+
 Config Config::load(const std::string& path, const LoadOptions& opts) {
   std::ifstream in(path, std::ios::binary);
   if (!in) throw ConfigError("cannot open config file '" + path + "'");
@@ -572,6 +576,150 @@ std::string Config::redacted() const {
     for (const auto& [k, v] : sec->values) kq(k, v);
   }
   return out;
+}
+
+namespace {
+
+// A passthrough venue key was stored as text; emit it with the type its schema entry expects so
+// the TOML parses back to the same text.
+void insert_typed(toml::table& t, const std::string& key, const std::string& text) {
+  const KeySpec* spec = find_spec("venues.*", key);
+  const KeyType type = spec == nullptr ? KeyType::String : spec->type;
+  if (type != KeyType::String) {
+    try {
+      toml::table probe = toml::parse("v = " + text);
+      if (toml::node* n = probe.get("v");
+          n != nullptr && type_matches(type, *n) && stringify(*n) == text) {
+        t.insert_or_assign(key, std::move(*n));
+        return;
+      }
+    } catch (const toml::parse_error&) {
+    }
+  }
+  t.insert_or_assign(key, text);
+}
+
+toml::table generic_table(const GenericSection& g) {
+  toml::table t;
+  for (const auto& [k, v] : g.values)
+    t.insert_or_assign(k, v);  // flatten() reads dotted names back
+  return t;
+}
+
+}  // namespace
+
+std::string Config::effective_toml() const {
+  toml::table root;
+
+  toml::table e;
+  e.insert("name", engine.name);
+  e.insert("cpu", static_cast<std::int64_t>(engine.cpu));
+  toml::array cpus;
+  for (int c : engine.net_cpus) cpus.push_back(static_cast<std::int64_t>(c));
+  e.insert("net_cpus", std::move(cpus));
+  e.insert("spin_mode", engine.spin_mode);
+  e.insert("net_backend", engine.net_backend);
+  e.insert("journal", engine.journal);
+  e.insert("journal_dir", engine.journal_dir);
+  e.insert("epoch_file", engine.epoch_file);
+  e.insert("rng_seed", static_cast<std::int64_t>(engine.rng_seed));
+  e.insert("md_ring_bytes", static_cast<std::int64_t>(engine.md_ring_bytes));
+  e.insert("order_ring_bytes", static_cast<std::int64_t>(engine.order_ring_bytes));
+  e.insert("journal_ring_bytes", static_cast<std::int64_t>(engine.journal_ring_bytes));
+  e.insert("max_events_per_step", static_cast<std::int64_t>(engine.max_events_per_step));
+  e.insert("crossed_grace_ms", static_cast<std::int64_t>(engine.crossed_grace_ms));
+  e.insert("latency_publish_ms", static_cast<std::int64_t>(engine.latency_publish_ms));
+  e.insert("tsc_recalibrate_s", static_cast<std::int64_t>(engine.tsc_recalibrate_s));
+  e.insert("min_requote_ticks", static_cast<std::int64_t>(engine.min_requote_ticks));
+  e.insert("min_requote_interval_ms", static_cast<std::int64_t>(engine.min_requote_interval_ms));
+  e.insert("min_qty_bps", static_cast<std::int64_t>(engine.min_qty_bps));
+  e.insert("post_only", engine.post_only);
+  e.insert("supports_replace", engine.supports_replace);
+  e.insert("reject_backoff_ms", static_cast<std::int64_t>(engine.reject_backoff_ms));
+  e.insert("reject_backoff_max_ms", static_cast<std::int64_t>(engine.reject_backoff_max_ms));
+  root.insert("engine", std::move(e));
+
+  if (!venues.empty()) {
+    toml::table vs;
+    for (const VenueSection& v : venues) {
+      toml::table t;
+      t.insert("kind", v.kind);
+      t.insert("ws_url", v.ws_url);
+      t.insert("ws_api_url", v.ws_api_url);
+      t.insert("rest_url", v.rest_url);
+      t.insert("testnet", v.testnet);
+      t.insert("supports_replace", v.supports_replace);
+      t.insert("insecure_tls", v.insecure_tls);
+      t.insert("ca_file", v.ca_file);
+      t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));
+      toml::table fees;
+      fees.insert("maker_bps", v.fees.maker_bps);
+      fees.insert("taker_bps", v.fees.taker_bps);
+      t.insert("fees", std::move(fees));
+      for (const auto& [k, val] : v.extra) insert_typed(t, k, val);
+      vs.insert(v.name, std::move(t));
+    }
+    root.insert("venues", std::move(vs));
+  }
+
+  if (!instruments.empty()) {
+    toml::array arr;
+    for (const InstrumentSection& i : instruments) {
+      toml::table t;
+      t.insert("venue", i.venue);
+      t.insert("symbol", i.symbol);
+      t.insert("base", i.base);
+      t.insert("quote", i.quote);
+      t.insert("asset_class", i.asset_class);
+      t.insert("tick", i.tick);
+      t.insert("lot", i.lot);
+      t.insert("min_qty", i.min_qty);
+      t.insert("max_qty", i.max_qty);
+      t.insert("min_notional", i.min_notional);
+      t.insert("contract_multiplier", i.contract_multiplier);
+      t.insert("enabled", i.enabled);
+      t.insert("price_decimals", static_cast<std::int64_t>(i.price_decimals));
+      t.insert("expiry", i.expiry);
+      t.insert("strike", i.strike);
+      t.insert("option_type", i.option_type);
+      arr.push_back(std::move(t));
+    }
+    root.insert("instruments", std::move(arr));
+  }
+
+  toml::table st;
+  st.insert("name", strategy.name);
+  toml::table params;
+  for (const auto& [k, v] : strategy.params) params.insert_or_assign(k, v);
+  st.insert("params", std::move(params));
+  root.insert("strategy", std::move(st));
+
+  toml::table r;
+  r.insert("max_order_qty", risk.max_order_qty);
+  r.insert("max_order_notional", risk.max_order_notional);
+  r.insert("max_position", risk.max_position);
+  r.insert("max_open_orders", static_cast<std::int64_t>(risk.max_open_orders));
+  r.insert("price_collar_bps", static_cast<std::int64_t>(risk.price_collar_bps));
+  r.insert("fat_finger_bps", static_cast<std::int64_t>(risk.fat_finger_bps));
+  r.insert("stale_md_ms", static_cast<std::int64_t>(risk.stale_md_ms));
+  r.insert("max_loss", risk.max_loss);
+  r.insert("orders_per_sec", static_cast<std::int64_t>(risk.orders_per_sec));
+  r.insert("burst", static_cast<std::int64_t>(risk.burst));
+  r.insert("stp", risk.stp);
+  root.insert("risk", std::move(r));
+
+  toml::table lg;
+  lg.insert("level", logging.level);
+  lg.insert("file", logging.file);
+  lg.insert("mirror_level", logging.mirror_level);
+  root.insert("logging", std::move(lg));
+
+  if (!sim.values.empty()) root.insert("sim", generic_table(sim));
+  if (!backtest.values.empty()) root.insert("backtest", generic_table(backtest));
+
+  std::ostringstream ss;
+  ss << root << "\n";
+  return ss.str();
 }
 
 }  // namespace fastmm
