@@ -1,7 +1,6 @@
 # Writing docs
 
-How FastMM's documentation is organised, written and checked. The docs are Markdown rendered on
-GitHub; there is no site generator.
+The docs are Markdown rendered on GitHub; there is no site generator.
 
 ## Where a page goes
 
@@ -15,20 +14,29 @@ GitHub; there is no site generator.
 | `docs/contributing/` | how-to | covers work on FastMM itself |
 | `docs/adr/` | decision record | records one decision; not edited after acceptance except for amendments |
 
-A new page gets a link from [`docs/README.md`](../README.md). Python pages (`docs/python.md` and
-the Python reference) belong to the Python package.
+A new page gets a link from [`docs/README.md`](../README.md); the glossary defines each term once.
+Python pages (`docs/python.md` and the Python reference) belong to the Python package.
 
 ## Style
 
-- Second person, present tense, sentence-case headings, short paragraphs, British spelling
-  (normalise, behaviour), no emojis.
-- Commands run from the repository root and can be copied as they are: `./build/release/bin/...`,
-  or a variable defined once on the page.
-- Units are always explicit: bps, ms, s, ticks, base or quote currency, raw fixed-point integers.
-- No hand-copied code longer than three lines: use a snippet (below). Program output in `text`
-  blocks may be shortened with `...`.
-- A warning block (`> **Warning.**`) comes before any step that places orders on a venue.
-- Relative links only; the glossary is the one definition of a term.
+1. Start with the first fact or step. No "This page explains ..." openings, no recap closings.
+2. Keep a sentence only if deleting it would make a reader act wrongly, lose a fact or miss a link.
+3. Do not restate the table, code, command output or generated help next to the sentence.
+4. No reassurance ("normal", "harmless", "expected"): state the observable, the cause and when it
+   matters.
+5. Each fact has one home; other pages link to it. The risk warning lives on one page,
+   [Go-live checklist](../how-to/operations/go-live-checklist.md); link to it.
+6. Design reasons live in `docs/explanation/` and `docs/adr/`; other pages link to them in one
+   clause.
+7. Describe only what is implemented: no plans, ADR steps or task numbers in reader pages.
+8. No bold except a glossary term at its definition or one warning per page; no bold run-in labels.
+9. No emphasis words: simply, just, easily, fully, complete, note that; "exactly" and "every" only
+   when verified.
+10. Second person and present tense in tutorials and how-tos; sentence-case headings; British
+    spelling; no emojis.
+11. Units on every number (bps, ms, s, ticks, base or quote currency, raw fixed-point integers).
+12. Commands run from the repository root and copy as they are; code longer than three lines is a
+    snippet; relative links only.
 
 ## Snippets
 
@@ -44,8 +52,8 @@ A code block that shows repository code is generated from the source by `tools/d
 The path is relative to the repository root; `#region` selects a region, and without it the whole
 file is shown. The source marks the region with comment lines, `// [start:on_book]` and
 `// [end:on_book]` in C++, `# --8<-- [start:name]` and `# --8<-- [end:name]` in shell, TOML,
-CMake and Python. Write the marker line, run the tool, and it inserts or rewrites the fenced block
-below the marker. Markers inside a code block, like the one above, are left alone.
+CMake and Python. The tool fills the block below each marker. Program output in `text` blocks may
+be shortened with `...`. Markers inside a code block, like the one above, are left alone.
 
 ```bash
 python3 tools/doc_snippets.py
@@ -68,7 +76,7 @@ string), then run the tool.
 
 ## Checks
 
-CI runs these; run them before you push a docs change.
+CI runs these checks:
 
 | Check | Command | CI job |
 |---|---|---|
