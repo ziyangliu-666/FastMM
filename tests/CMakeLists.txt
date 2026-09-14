@@ -72,7 +72,7 @@ if(FASTMM_BUILD_NET)
     fastmm_relabel_tests(fastmm_venues_tests "^venues\\.live\\." "live")
   endif()
   if(TARGET fastmm::sim_server)
-    fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::backtest)
+    fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::backtest fastmm::live)
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
@@ -263,6 +263,15 @@ if(TARGET fastmm-live)
   fastmm_cli_test(apps.fastmm-live.params_follow_strategy EXPECT_RC 3
     CMD ${_live_offline} --strategy avellaneda_stoikov --param half_spread_bps=5
     EXPECT_REGEX "fastmm-live: avellaneda_stoikov: unknown parameter 'half_spread_bps'")
+  string(REPLACE "[engine]\n" "[engine]\non_kill = \"restart\"\n" _bad_on_kill "${_sim_local}")
+  set(_bad_on_kill_file ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/sim-local-bad-on-kill.toml)
+  file(CONFIGURE OUTPUT ${_bad_on_kill_file} CONTENT "${_bad_on_kill}" @ONLY)
+  fastmm_cli_test(apps.fastmm-live.bad_on_kill EXPECT_RC 3
+    CMD $<TARGET_FILE:fastmm-live> --config ${_bad_on_kill_file} --dry-run --no-journal --no-status
+    EXPECT_REGEX "on_kill must be exit\\|stay")
+  fastmm_cli_test(apps.fastmm-live.help_lists_exit_codes EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-live> --help
+    EXPECT_REGEX "Exit codes:.*  6  kill switch tripped by the engine \\(on_kill = \"exit\"\\)")
 endif()
 
 # Apps built from the test strategy library: the module is listed for every transport, runs, and a
@@ -311,6 +320,16 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
   add_test(NAME tools.pnl_report.self_test COMMAND Python3::Interpreter ${PROJECT_SOURCE_DIR}/tools/pnl_report.py --self-test)
   set_tests_properties(tools.pnl_report.self_test PROPERTIES LABELS "unit")
+endif()
+
+# fastmm-live --help and the operations docs list the same exit codes.
+if(Python3_Interpreter_FOUND AND TARGET fastmm-live)
+  add_test(NAME apps.fastmm-live.exit_codes_documented
+    COMMAND Python3::Interpreter ${CMAKE_CURRENT_SOURCE_DIR}/support/exit_codes_doc.py
+            $<TARGET_FILE:fastmm-live>
+            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/kill-switch-and-shutdown.md
+            ${PROJECT_SOURCE_DIR}/docs/how-to/operations/troubleshooting.md)
+  set_tests_properties(apps.fastmm-live.exit_codes_documented PROPERTIES LABELS "unit;cli")
 endif()
 
 # fastmm-top --once messages: missing file, unpublished segment, segment of another version.

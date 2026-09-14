@@ -13,7 +13,11 @@
 //                TSC every [engine] tsc_recalibrate_s and publishes it (the engine and the
 //                venues pick it up), handles SIGINT/SIGTERM and --duration: kill switch ->
 //                cancel_all on every venue over an independent REST connection -> stop, all
-//                within ~5 s
+//                within ~5 s. It also watches the engine's kill switch: a kill the engine trips
+//                itself (risk limit, full ring, every venue killed) runs the same shutdown and
+//                exits with kExitKilled when [engine] on_kill = "exit" (the default); with "stay"
+//                the session keeps running and logs an ERROR line every 10 s. Venue kills are
+//                logged once per venue.
 //
 // The thread set is fixed for the whole session (the logger keeps a ring per thread). The strategy
 // is built by the StrategyRegistry's TransportKind::Live factory for [strategy] name; register it
@@ -38,11 +42,17 @@ struct LiveOptions {
   std::string program = "fastmm-live";  // prefix of error messages (log lines keep fastmm-live:)
 };
 
-inline constexpr int kExitOk = 0;
-inline constexpr int kExitUsage = 2;
-inline constexpr int kExitConfig = 3;
-inline constexpr int kExitVenue = 4;
-inline constexpr int kExitRuntime = 5;
+// Process exit codes (listed in fastmm-live --help and docs/how-to/operations/). A failed
+// cancel-all wins over every other outcome: orders may still be resting.
+inline constexpr int kExitOk = 0;       // --duration elapsed or SIGINT/SIGTERM, cancel_all ok
+inline constexpr int kExitUsage = 2;    // bad command line, missing API keys
+inline constexpr int kExitConfig = 3;   // bad config, strategy or parameters
+inline constexpr int kExitVenue = 4;    // venue reference data failed
+inline constexpr int kExitRuntime = 5;  // cancel_all failed, journal, ring overflow, uncaught error
+inline constexpr int kExitKilled = 6;   // engine-tripped kill switch with [engine] on_kill = "exit"
+
+// How often a session that stays up after a kill ([engine] on_kill = "stay") repeats its ERROR.
+inline constexpr std::int64_t kKilledReminderNs = 10'000'000'000;
 
 // Runs one session; returns the process exit code. `cfg` must already have its venue secrets
 // resolved (or cleared for dry-run) and any command-line overrides applied: the journal embeds

@@ -16,9 +16,11 @@ memory-mapped file every 250 ms. The file is `/dev/shm/fastmm-<engine name>.stat
 
 - the session: engine and strategy name, session id, pid, dry-run flag, uptime and the state
   (starting, running, stopping, stopped). A running engine that has not published for more
-  than 3 seconds is shown as `STALE`, which usually means the process died;
-- engine counters: events, book updates, orders, cancels, replaces, fills, kill switch trips and
-  flags, realised and unrealised PnL and fees;
+  than 3 seconds is shown as `STALE`, which usually means the process died. Next to the state, `KILLED (<reason>)` means the global
+  kill switch is engaged (the reason stays in the final `stopped` frame) and `VENUE KILLED` that at
+  least one venue's switch is;
+- engine counters: events, book updates, orders, cancels, replaces, fills, kill switch trips
+  (`kills` global, `venue_kills` per venue) and flags, realised and unrealised PnL and fees;
 - rejects: `risk_rejects` counts orders the engine's pre-trade checks refused (they were never
   sent), `venue_rejects` orders a venue refused; each is followed by its most frequent reasons,
   for example `risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 (PostOnlyWouldCross 3)`.
@@ -30,7 +32,8 @@ memory-mapped file every 250 ms. The file is `/dev/shm/fastmm-<engine name>.stat
   thread only; `tick_to_trade` and `wire_to_book` start at the socket read;
 - per venue: market-data, user and order channel states, synced books, market-data messages,
   resyncs, orders, cancels, order events, reconnects, REST errors, clock offset and the network
-  thread's wire tick-to-trade p50.
+  thread's wire tick-to-trade p50, and in the `kill` column the reason a killed venue was tripped for
+  (`-` while it trades).
 
 The file stays after the session ends, so the last frame shows `stopped` with the final numbers.
 The layout is versioned (magic number and version field); a monitor built from a different

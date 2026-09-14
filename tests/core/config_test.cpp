@@ -257,3 +257,16 @@ TEST_CASE("config: engine net_backend selects the network reactor") {
   }
   CHECK(line == 2);
 }
+
+TEST_CASE("core.config: [engine] on_kill defaults to exit, accepts stay and rejects other values") {
+  CHECK(Config::parse("[engine]\nname = \"x\"\n").engine.on_kill == "exit");
+  const Config stay = Config::parse("[engine]\non_kill = \"stay\"\n");
+  CHECK(stay.engine.on_kill == "stay");
+  CHECK(stay.warnings.empty());
+  // The effective configuration (journal header) carries it and round-trips.
+  CHECK(Config::parse(stay.effective_toml()).engine.on_kill == "stay");
+  CHECK(stay.effective_hash() != Config::parse("[engine]\n").effective_hash());
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\non_kill = \"restart\"\n"),
+                       doctest::Contains("on_kill must be exit|stay"),
+                       ConfigError);
+}

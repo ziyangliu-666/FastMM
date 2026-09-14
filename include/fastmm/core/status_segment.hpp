@@ -23,7 +23,8 @@ namespace fastmm {
 
 inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTAT1" little-endian
 // 2: venue_rejects and the per-reason reject counts.
-inline constexpr std::uint32_t kStatusVersion = 2;
+// 3: kill reasons (global and per venue), per-venue kill flags and venue_kills.
+inline constexpr std::uint32_t kStatusVersion = 3;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -51,7 +52,9 @@ struct StatusVenue {
   std::uint8_t md = 0;
   std::uint8_t user = 0;
   std::uint8_t order = 0;
-  std::uint8_t pad_[5] = {};
+  std::uint8_t killed = 0;       // this venue's kill switch is engaged
+  std::uint8_t kill_reason = 0;  // KillReason it was tripped for
+  std::uint8_t pad_[3] = {};
   std::uint32_t books_synced = 0;
   std::uint32_t books_total = 0;
   std::uint64_t md_messages = 0;
@@ -77,7 +80,8 @@ struct StatusSnapshot {
   StatusRunState state = StatusRunState::Starting;
   std::uint8_t dry_run = 0;
   std::uint8_t venue_count = 0;
-  std::uint8_t pad_[5] = {};
+  std::uint8_t kill_reason = 0;  // KillReason of the global kill switch (0 while not set)
+  std::uint8_t pad_[4] = {};
   char engine_name[32] = {};
   char strategy[32] = {};
   // engine
@@ -89,8 +93,8 @@ struct StatusSnapshot {
   std::uint64_t fills = 0;
   std::uint64_t risk_rejects = 0;
   std::uint64_t kills = 0;
-  std::uint32_t kill_flags = 0;
-  std::uint32_t pad2_ = 0;
+  std::uint32_t kill_flags = 0;  // bit 0 global, bit 1 + venue id per venue
+  std::uint32_t venue_kills = 0;
   std::int64_t realized_pnl_raw = 0;  // Notional raw (1e-8)
   std::int64_t unrealized_pnl_raw = 0;
   std::int64_t fees_raw = 0;

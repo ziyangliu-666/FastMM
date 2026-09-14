@@ -11,11 +11,12 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 
 | Code | Meaning |
 |---|---|
-| 0 | Normal stop (duration elapsed or signal) and `cancel_all ok` |
+| 0 | Normal stop (duration elapsed or signal, also after a kill with `[engine] on_kill = "stay"`) and `cancel_all ok` |
 | 2 | Bad command line, or a venue has no keys (and no `--dry-run`) |
-| 3 | Bad config, unknown strategy or instruments |
+| 3 | Bad config (including an invalid `on_kill`), unknown strategy or instruments |
 | 4 | A venue's reference data failed to load |
-| 5 | Runtime failure: `cancel_all FAILED`, the journal cannot be opened, a ring overflowed, an uncaught error |
+| 5 | Runtime failure: `cancel_all FAILED` (whatever stopped the session), the journal cannot be opened, a ring overflowed, an uncaught error |
+| 6 | The engine tripped the kill switch itself (`max_loss`, a full ring, every venue killed) with `[engine] on_kill = "exit"`, and `cancel_all ok`; see [Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself) |
 
 ## Startup and configuration
 
@@ -74,7 +75,7 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 | `<venue>: could not send the auth request` (Bybit), `<venue>: could not send public/auth` (Deribit) | The connection closed before the request was written | Transient; if it repeats, see "channel lost" |
 | `<venue>: public/auth failed: <code> <msg>` (Deribit) | Wrong client id or secret, or a main-net key on the testnet | Use a key created on test.deribit.com |
 | `<venue>: token refresh failed (<code> <msg>); re-authenticating` (Deribit) | The refresh token was refused; the connector logs in again | Nothing unless followed by `public/auth failed` |
-| `<venue>: fatal venue error (<code> <msg>); order entry disabled` | Bad key, bad signature or missing permission; that venue refuses every further order (cancels still go out) | Stop the session, fix the key, restart |
+| `<venue>: fatal venue error (<code> <msg>); order entry disabled`, then `<venue>: asking the engine to kill this venue (VenueFatal)` | Bad key, bad signature, missing permission or failed authentication. The connector refuses every further order and cancel on that venue, and the venue's kill switch trips: its quotes are pulled and new orders to it are refused (`VenueKilled`) while the other venues keep trading. If it was the last venue trading, the global kill switch trips (`AllVenuesKilled`) | Cancel that venue's orders on its website (the key cannot), fix the key, restart |
 
 ## Rate limits
 
@@ -82,7 +83,7 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 |---|---|---|
 | `<venue>: rate limited (<code> <msg>); cooling down <n> ms` (Binance, Bybit), `<venue>: rate limited (<code> <msg>)` (Deribit) | The venue signalled a rate limit; the connector sends nothing for the cooldown | Lower `[risk] orders_per_sec`, raise `[engine] min_requote_ticks` and `min_requote_interval_ms` |
 | `<venue>: HTTP 403 (IP rate limit): REST paused for 10 minutes` (Bybit) | Bybit's per-IP limit | Wait; reduce the request rate |
-| `<venue>: HTTP 418 IP ban: REST stopped until restart` (Binance) | Binance banned the IP after ignored 429 responses; no REST request is sent until restart, and the kill-switch cancel-all will fail | Cancel orders on the website, stop, wait for the ban to expire, lower the request rate |
+| `<venue>: HTTP 418 IP ban: REST stopped until restart` (Binance) | Binance banned the IP after ignored 429 responses; no REST request is sent until restart, the venue's kill switch trips (`VenueHardStop`) and its kill-switch cancel-all will fail | Cancel orders on the website, stop, wait for the ban to expire, lower the request rate |
 | `<venue>: REST hard stop (<code> <msg>)` (Bybit) | Bybit returned an error that stops REST | As for the IP ban |
 
 ## Orders and reconciliation
@@ -108,6 +109,11 @@ Search the log for a message with `grep`, for example `grep -n 'channel lost' ru
 | `outbound transport full: <n> message(s) dropped; tripping kill switch` | The ring to the venue's network thread was full | Raise `[engine] order_ring_bytes`; check the network thread |
 | `control ring full: kill switch message dropped` | The shutdown command did not reach the engine; the venues' REST cancel-all still runs | Confirm on the venue that no orders are left |
 | `kill switch requested (flags=<hex>); pulling quotes and cancelling all` | Normal shutdown (WARN) | Nothing |
+| `kill switch engaged (<reason>, flags=<hex>); pulling quotes and cancelling all` | The engine tripped the global kill switch itself: `MaxLoss` (`[risk] max_loss`), `TransportFull`, `JournalOverflow` or `AllVenuesKilled` | With `[engine] on_kill = "exit"` the session shuts down and exits with code 6; with `"stay"` it keeps running without quoting. Find the cause before restarting (PnL, ring sizes, the venue errors before it) |
+| `fastmm-live: shutting down (kill switch: <reason>; [engine] on_kill = "exit")` | The shutdown after a kill the engine tripped itself | Check `cancel_all ok` and the exit code (6, or 5 when a cancel-all failed) |
+| `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off ...` | Repeated every 10 s while a `stay` session is killed | Inspect it with `fastmm-top`, then stop it with Ctrl-C |
+| `venue <id> kill switch engaged (<reason>, flags=<hex>); pulling its quotes and cancelling its orders, other venues keep trading`, `[<venue>] venue kill switch engaged (<reason>): ...; <n> of <m> venue(s) still trading` | A connector reported a fatal error (`VenueFatal`, `VenueHardStop`); only that venue stopped trading | Read the venue's error line before it; fix and restart |
+| `fastmm-live: kill switch flags=<hex> reason=<reason> kills=<n> venue_kills=<n>` | Shutdown summary after a kill that was not requested or any venue kill | Nothing more; `fastmm-top` shows the same in the final frame |
 | `kill switch engaged (flags=<hex>); pulling quotes and cancelling all` | A risk limit (usually `max_loss`) or an internal failure tripped it (ERROR); quoting has stopped but the process runs | See [Kill switch and shutdown](kill-switch-and-shutdown.md#what-trips-it) |
 | `fastmm-live: shutdown took <n> ms (cancel_all FAILED)` | A venue's REST cancel-all failed | Follow [When cancel_all failed](kill-switch-and-shutdown.md#when-cancel_all-failed) |
 

@@ -47,6 +47,7 @@ Every FastMM binary reads one TOML file passed with `--config path.toml`. The pa
 | `min_qty_bps` | int | `8000` | Keep a resting quote whose remaining quantity covers this share of the desired quantity, in bps (8000 = 80%) |
 | `post_only` | bool | `true` | Send quotes as post-only (maker only) |
 | `supports_replace` | bool | `true` | Allow the quote manager to amend orders in place; it is still disabled for any venue that does not support replace |
+| `on_kill` | string | `"exit"` | What `fastmm-live` does after a kill switch the engine trips itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed): `exit` runs the normal shutdown (quotes pulled, cancel-all on every venue, summary, status, journal) and exits with code 6; `stay` keeps the process running with quoting off and logs an ERROR line every 10 s until it is stopped. See [Kill switch and shutdown](how-to/operations/kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself) |
 
 ## `[venues.<name>]`
 
@@ -152,7 +153,7 @@ Every limit is off when it is `0` or omitted.
 | `price_collar_bps` | int | Reject limit prices further than this from mid |
 | `fat_finger_bps` | int | Reject limit prices further than this from the last trade |
 | `stale_md_ms` | int | Reject orders when the book is older than this |
-| `max_loss` | decimal | Positive number. The kill switch trips when net PnL falls to `-max_loss` or below |
+| `max_loss` | decimal | Positive number. The kill switch trips when net PnL falls to `-max_loss` or below; `[engine] on_kill` decides whether `fastmm-live` then exits |
 | `orders_per_sec` | int | Token-bucket order rate |
 | `burst` | int | Token-bucket capacity; defaults to `orders_per_sec` |
 | `stp` | bool | Self-trade prevention against our own resting orders; default `true` |
@@ -229,7 +230,8 @@ first instrument's `tick` and `lot`.
 | Sequence gap | Book sync state machine | Resync state, re-snapshot (rate limited), quotes pulled meanwhile |
 | Stale feed | No traffic for the connector's stale threshold | Stale event; a longer dead threshold forces reconnect |
 | Order channel loss | Connection state machine | Immediate cancel-all through REST, reconcile open orders after reconnect |
-| Kill switch | `max_loss`, a full outbound or journal ring, SIGINT/SIGTERM, `--duration`, order ring overflow | Stop quoting and cancel every working order. On shutdown every venue also cancels all over REST (5 s timeout per request), then the process exits; see [Kill switch and shutdown](how-to/operations/kill-switch-and-shutdown.md) |
+| Kill switch | `max_loss`, a full outbound or journal ring, every venue killed, SIGINT/SIGTERM, `--duration`, order ring overflow | Stop quoting and cancel every working order. On shutdown every venue also cancels all over REST (5 s timeout per request), then the process exits. After a kill the engine tripped itself the shutdown follows at once (exit code 6) unless `[engine] on_kill = "stay"`; see [Kill switch and shutdown](how-to/operations/kill-switch-and-shutdown.md) |
+| Venue unusable | The venue's error map: `Fatal` (bad key, signature or permission, failed authentication) or `HardStop` (Binance IP ban) | That venue's kill switch: its quotes are pulled, its orders cancelled and new orders to it refused; the other venues keep trading. Every venue killed is a global kill |
 | Rate limit | Response headers and error codes | Cool down until reset; HTTP 418 halts REST for the ban period |
 | Clock skew | Timestamp rejection codes | Re-measure offset from the venue's time endpoint |
 | Ring overflow | Push fails | Drop the market-data delta and resync; order events are never dropped |
