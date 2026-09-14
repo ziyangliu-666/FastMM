@@ -9,6 +9,10 @@
 #include "fastmm/config/config.hpp"
 #include "fastmm/strategies/registry.hpp"
 
+#if FASTMM_TUTORIAL_STRATEGIES
+#include "strategies.hpp"  // examples/cpp/tutorial
+#endif
+
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
@@ -49,6 +53,7 @@ std::string check_config(const std::filesystem::path& path) {
     for (const std::string& name : env_references(fastmm::test::read_file(path)))
       ::setenv(name.c_str(), ("placeholder-" + name).c_str(), 1);
     const Config cfg = Config::load(path.string());
+    if (!cfg.warnings.empty()) return "warning: " + cfg.warnings.front();
     const InstrumentTable instruments = load_instruments(cfg);
     if (cfg.strategy.name.empty()) {
       if (!cfg.strategy.params.empty()) return "[strategy.params] without [strategy] name";
@@ -56,6 +61,9 @@ std::string check_config(const std::filesystem::path& path) {
     }
     if (instruments.size() == 0) return "no [[instruments]] configured";
     bt::register_builtin_strategies();
+#if FASTMM_TUTORIAL_STRATEGIES
+    tutorial::register_strategies(StrategyRegistry::instance());
+#endif
     if (StrategyRegistry::instance().find(cfg.strategy.name) == nullptr)
       return "unknown strategy '" + cfg.strategy.name + "'";
     // Build (but do not run) the engine runner: configure() parses every parameter and runs the

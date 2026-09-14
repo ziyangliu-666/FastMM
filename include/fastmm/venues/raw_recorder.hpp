@@ -4,6 +4,7 @@
 // live session (`fastmm-live --record-raw DIR`, plan 8.8). Off by default; when enabled it
 // does buffered stdio writes on the net thread, so it is a diagnostic tool, not a hot-path
 // feature.
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
