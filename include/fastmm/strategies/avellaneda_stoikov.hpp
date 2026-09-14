@@ -18,6 +18,7 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/quote_manager.hpp"
+#include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
 #include <cmath>
@@ -34,8 +35,13 @@ struct AvellanedaStoikovParams {
   FASTMM_PARAM(double, sigma_window_s, 60.0, 0.1, 86400.0, "EWMA window for mid variance, seconds")
   FASTMM_PARAM(double, horizon_s, 60.0, 0.1, 86400.0, "quoting horizon T, seconds (rolling)")
   FASTMM_PARAM(bool, infinite_horizon, true, 0, 1, "use tau = 1 instead of the rolling horizon")
-  FASTMM_PARAM(double, quote_qty, 0.01, 0.0, 1e9, "quantity per side (base units)")
-  FASTMM_PARAM(double, max_inventory, 0.1, 0.0, 1e9, "stop quoting the side that would exceed this")
+  FASTMM_PARAM(Qty, quote_qty, 0.01_qty, 0_qty, 1000000000_qty, "quantity per side (base units)")
+  FASTMM_PARAM(Qty,
+               max_inventory,
+               0.1_qty,
+               0_qty,
+               1000000000_qty,
+               "stop quoting the side that would exceed this (0 = no cap)")
   FASTMM_PARAM(int, min_half_spread_ticks, 1, 0, 1000000, "floor for the half spread")
   FASTMM_PARAM(int, requote_threshold_ticks, 1, 0, 1000000, "ignore mid moves smaller than this")
   FASTMM_PARAM(
@@ -59,8 +65,6 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
 
   template <class Ctx>
   void on_start(Ctx& ctx) noexcept {
-    quote_qty_ = Qty::from_double(params_.quote_qty);
-    max_inventory_ = Qty::from_double(params_.max_inventory);
     for (auto& s : st_) s = State{};
     start_ = ctx.now();
   }
@@ -77,7 +81,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     const Timestamp now = ctx.now();
     update_variance(s, mid, now, inst);
     if (s.quoted_mid.is_positive() &&
-        (mid - s.quoted_mid).abs().raw < params_.requote_threshold_ticks * inst.tick.raw) {
+        (mid - s.quoted_mid).abs() < inst.ticks(params().requote_threshold_ticks)) {
       return;
     }
     requote(ctx, id, mid, inst, now);
@@ -109,7 +113,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
 
   template <class Ctx>
   void on_trade(Ctx& ctx, InstrumentId id, const TradeMsg& t) noexcept {
-    if (!params_.estimate_kappa) return;
+    if (!params().estimate_kappa) return;
     const auto& book = ctx.book(id);
     if (!book.is_valid()) return;
     State& s = st_[id.value];
@@ -135,38 +139,28 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
                                              Qty position,
                                              const Instrument& inst,
                                              Timestamp now) const noexcept {
+    const AvellanedaStoikovParams& p = params();
     DesiredQuotes q;
-    if (quote_qty_.is_zero()) return q;
+    if (p.quote_qty.is_zero()) return q;
     const State& s = st_[id.value];
     const double m = mid.to_double();
     const double tick = inst.tick.to_double();
     const double sigma2 =
-        s.have_var
-            ? s.var
-            : (params_.sigma_init > 0.0 ? params_.sigma_init * params_.sigma_init : tick * tick);
-    const double tau = params_.infinite_horizon ? 1.0 : horizon_left(now);
-    const double gamma = params_.gamma;
-    const double kappa =
-        (params_.estimate_kappa && s.kappa_est > 0.0) ? s.kappa_est : params_.kappa;
-    const double qinv = static_cast<double>(position.raw) / static_cast<double>(quote_qty_.raw);
+        s.have_var ? s.var : (p.sigma_init > 0.0 ? p.sigma_init * p.sigma_init : tick * tick);
+    const double tau = p.infinite_horizon ? 1.0 : horizon_left(now);
+    const double gamma = p.gamma;
+    const double kappa = (p.estimate_kappa && s.kappa_est > 0.0) ? s.kappa_est : p.kappa;
+    const double qinv = static_cast<double>(position.raw) / static_cast<double>(p.quote_qty.raw);
     const double r = m - qinv * gamma * sigma2 * tau;
     double delta = gamma * sigma2 * tau / 2.0 + std::log(1.0 + gamma / kappa) / gamma;
-    const double min_delta = static_cast<double>(params_.min_half_spread_ticks) * tick;
+    const double min_delta = static_cast<double>(p.min_half_spread_ticks) * tick;
     if (delta < min_delta) delta = min_delta;
-    const bool can_buy = max_inventory_.is_zero() || position + quote_qty_ <= max_inventory_;
-    const bool can_sell = max_inventory_.is_zero() || position - quote_qty_ >= -max_inventory_;
-    const Qty qty = inst.round_qty(quote_qty_);
-    if (can_buy) {
-      const Price bid = inst.round_price(Price::from_double(r - delta), Side::Buy);
-      if (bid.is_positive()) static_cast<void>(q.bids.push_back(Level{bid, qty}));
-    }
-    if (can_sell) {
-      const Price ask = inst.round_price(Price::from_double(r + delta), Side::Sell);
-      static_cast<void>(q.asks.push_back(Level{ask, qty}));
-    }
-    if (!q.bids.empty() && !q.asks.empty() && q.bids[0].price >= q.asks[0].price) {
-      q.asks[0].price = q.bids[0].price + inst.tick;
-    }
+    const Qty qty = inst.round_qty(p.quote_qty);
+    if (inventory_allows(Side::Buy, position, p.quote_qty, p.max_inventory))
+      q.bid(inst.round_price(Price::from_double(r - delta), Side::Buy), qty);
+    if (inventory_allows(Side::Sell, position, p.quote_qty, p.max_inventory))
+      q.ask(inst.round_price(Price::from_double(r + delta), Side::Sell), qty);
+    q.uncross(inst.tick);
     return q;
   }
   [[nodiscard]] const State& state(InstrumentId id) const noexcept { return st_[id.value]; }
@@ -184,7 +178,7 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
       const double dt = static_cast<double>((now - s.last_ts).ns) / 1e9;
       const double dm = (mid - s.last_mid).to_double();
       const double inst_var = dm * dm / dt;  // variance rate
-      const double alpha = 1.0 - std::exp(-dt / params_.sigma_window_s);
+      const double alpha = 1.0 - std::exp(-dt / params().sigma_window_s);
       s.var = s.have_var ? (1.0 - alpha) * s.var + alpha * inst_var : inst_var;
       s.have_var = true;
     }
@@ -193,13 +187,11 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
   }
   [[nodiscard]] double horizon_left(Timestamp now) const noexcept {
     const double elapsed = static_cast<double>((now - start_).ns) / 1e9;
-    const double h = params_.horizon_s;
+    const double h = params().horizon_s;
     const double left = h - std::fmod(elapsed, h);
     return left < 0.05 * h ? 0.05 * h : left;
   }
 
-  Qty quote_qty_{};
-  Qty max_inventory_{};
   Timestamp start_{};
   State st_[kMaxInstruments] = {};
 };

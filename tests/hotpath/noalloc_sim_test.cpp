@@ -34,7 +34,9 @@ TEST_CASE("hotpath.noalloc: coupled sim run (generator, matching, transport, eng
   auto transport = std::make_unique<SimTransport>(clock, table, tc);
   auto feed = std::make_unique<InlineFeed>(1U << 22);
   BasicMM strategy;
-  REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "0.003"},
+  // Quote at the rounded mid so fills keep the fill path inside the measured window. (This was
+  // "0.003", which the centi-bps BasicMM rounded to 0; Ratio parameters keep four decimals.)
+  REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "0"},
                                     {"skew_bps_per_unit", "0"},
                                     {"quote_qty", "0.002"},
                                     {"max_inventory", "0.02"},

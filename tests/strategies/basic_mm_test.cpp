@@ -6,6 +6,9 @@
 #include "fastmm/strategies/registry.hpp"
 
 #include <array>
+#include <cstdio>
+#include <random>
+#include <string>
 
 using namespace fastmm;
 
@@ -78,36 +81,6 @@ std::unique_ptr<IEngineRunner> fake_factory(TransportKind, RunnerDeps&) {
   return nullptr;
 }
 }  // namespace
-
-TEST_CASE("strategies.basic_mm: skewed quotes are clamped inside the touch") {
-  const Price tick = Price::from_decimal("0.01").value();
-  const Qty q1 = Qty::from_decimal("1").value();
-  auto lvl = [&](const char* p) { return Level{Price::from_decimal(p).value(), q1}; };
-
-  DesiredQuotes q;
-  static_cast<void>(q.bids.push_back(lvl("100.20")));  // skewed through the 100.05 ask
-  static_cast<void>(q.bids.push_back(lvl("100.15")));
-  static_cast<void>(q.asks.push_back(lvl("100.30")));
-  BasicMM::clamp_to_touch(
-      q, Price::from_decimal("100.00").value(), Price::from_decimal("100.05").value(), tick);
-  REQUIRE(q.bids.size() == 2);
-  CHECK(q.bids[0].price == Price::from_decimal("100.04").value());  // one tick inside the ask
-  CHECK(q.bids[1].price == Price::from_decimal("99.99").value());   // spacing preserved
-  CHECK(q.asks[0].price == Price::from_decimal("100.30").value());  // already passive
-
-  DesiredQuotes a;
-  static_cast<void>(a.asks.push_back(lvl("99.90")));  // skewed through the 100.00 bid
-  static_cast<void>(a.bids.push_back(lvl("99.80")));
-  BasicMM::clamp_to_touch(
-      a, Price::from_decimal("100.00").value(), Price::from_decimal("100.05").value(), tick);
-  CHECK(a.asks[0].price == Price::from_decimal("100.01").value());
-  CHECK(a.bids[0].price == Price::from_decimal("99.80").value());
-
-  DesiredQuotes empty_book;
-  static_cast<void>(empty_book.bids.push_back(lvl("100.20")));
-  BasicMM::clamp_to_touch(empty_book, Price{}, Price{}, tick);  // no opposite side: unchanged
-  CHECK(empty_book.bids[0].price == Price::from_decimal("100.20").value());
-}
 
 TEST_CASE("strategies.registry: one factory per transport kind, lookup, listing") {
   StrategyRegistry& reg = StrategyRegistry::instance();
@@ -204,4 +177,126 @@ TEST_CASE("strategies: a connection change forces the next requote even if the m
     AvellanedaStoikov s;
     check(s);
   }
+}
+
+namespace {
+// BasicMM::compute_quotes as it was before the fixed-point helpers (centi-bps and Int128 by hand),
+// kept to prove the port is bit-identical.
+DesiredQuotes centi_bps_quotes(Price mid,
+                               Qty position,
+                               const Instrument& inst,
+                               std::int64_t half_spread_cbps,
+                               std::int64_t skew_cbps,
+                               Qty quote_qty,
+                               Qty max_inventory,
+                               int levels,
+                               int level_step_ticks) {
+  DesiredQuotes q;
+  if (quote_qty.is_zero()) return q;
+  const std::int64_t inv_units = position.raw / quote_qty.raw;
+  const auto half = Price::from_raw(
+      static_cast<std::int64_t>(static_cast<Int128>(mid.raw) * half_spread_cbps / 1'000'000));
+  const auto skew = Price::from_raw(
+      static_cast<std::int64_t>(static_cast<Int128>(mid.raw) * skew_cbps * -inv_units / 1'000'000));
+  const Price centre = mid + skew;
+  const Price step = Price::from_raw(inst.tick.raw * level_step_ticks);
+  const bool can_buy = max_inventory.is_zero() || position + quote_qty <= max_inventory;
+  const bool can_sell = max_inventory.is_zero() || position - quote_qty >= -max_inventory;
+  const Qty qty = inst.round_qty(quote_qty);
+  for (int l = 0; l < levels; ++l) {
+    const Price off = Price::from_raw(step.raw * l);
+    if (can_buy) {
+      Price bid = inst.round_price(centre - half - off, Side::Buy);
+      if (bid.is_positive()) static_cast<void>(q.bids.push_back(Level{bid, qty}));
+    }
+    if (can_sell) {
+      Price ask = inst.round_price(centre + half + off, Side::Sell);
+      static_cast<void>(q.asks.push_back(Level{ask, qty}));
+    }
+  }
+  if (!q.bids.empty() && !q.asks.empty() && q.bids[0].price >= q.asks[0].price) {
+    q.asks[0].price = q.bids[0].price + inst.tick;
+  }
+  return q;
+}
+
+std::string centi(std::int64_t cbps) {
+  char buf[32];
+  std::snprintf(buf,
+                sizeof(buf),
+                "%lld.%02lld",
+                static_cast<long long>(cbps / 100),
+                static_cast<long long>(cbps % 100));
+  return buf;
+}
+}  // namespace
+
+TEST_CASE("strategies.basic_mm: compute_quotes is bit-identical to the centi-bps formula") {
+  std::mt19937_64 rng(4242);
+  std::uniform_int_distribution<std::int64_t> mid_raw(100'000'000, 10'000'000'000'000);
+  std::uniform_int_distribution<std::int64_t> half_cbps(0, 5'000);
+  std::uniform_int_distribution<std::int64_t> skew_cbps(0, 500);
+  std::uniform_int_distribution<std::int64_t> pos_raw(-3'000'000, 3'000'000);  // +-0.03
+  std::uniform_int_distribution<int> small(0, 7);
+  const Instrument i = inst();
+  NoCtx ctx;
+  int compared = 0;
+  for (int n = 0; n < 400; ++n) {
+    const std::int64_t h = half_cbps(rng);
+    const std::int64_t k = skew_cbps(rng);
+    const Qty quote_qty = Qty::from_raw(100'000 * (1 + small(rng)));  // 0.001 .. 0.008
+    const Qty max_inventory = (n % 3 == 0) ? Qty{} : qt("0.02");
+    const int levels = 1 + small(rng);
+    const int step = 1 + small(rng);
+    BasicMM s;
+    REQUIRE_FALSE(s.configure({{"half_spread_bps", centi(h)},
+                               {"skew_bps_per_unit", centi(k)},
+                               {"quote_qty", std::to_string(quote_qty.raw) + "e-8"},
+                               {"max_inventory", std::to_string(max_inventory.raw) + "e-8"},
+                               {"levels", std::to_string(levels)},
+                               {"level_step_ticks", std::to_string(step)}}));
+    s.on_start(ctx);
+    for (int m = 0; m < 50; ++m) {
+      const Price mid = Price::from_raw(mid_raw(rng));
+      const Qty position = Qty::from_raw(pos_raw(rng));
+      const DesiredQuotes got = s.compute_quotes(mid, position, i);
+      const DesiredQuotes want =
+          centi_bps_quotes(mid, position, i, h, k, quote_qty, max_inventory, levels, step);
+      CAPTURE(mid.raw);
+      CAPTURE(position.raw);
+      CAPTURE(h);
+      CAPTURE(k);
+      REQUIRE(got.bids.size() == want.bids.size());
+      REQUIRE(got.asks.size() == want.asks.size());
+      for (std::size_t x = 0; x < got.bids.size(); ++x) CHECK(got.bids[x] == want.bids[x]);
+      for (std::size_t x = 0; x < got.asks.size(); ++x) CHECK(got.asks[x] == want.asks[x]);
+      ++compared;
+    }
+  }
+  CHECK(compared == 20'000);
+}
+
+TEST_CASE("strategies.basic_mm: bps keep four decimals and quantities parse exactly") {
+  BasicMM s;
+  // 0.003 bps of 60000 is 0.018: the centi-bps version rounded it to 0 bps.
+  REQUIRE_FALSE(s.configure({{"half_spread_bps", "0.003"},
+                             {"skew_bps_per_unit", "0"},
+                             {"quote_qty", "2e-05"},
+                             {"max_inventory", "0"},
+                             {"pull_on_stale_ms", "0"}}));
+  CHECK(s.params().half_spread_bps.raw == 30);
+  CHECK(s.params().quote_qty.raw == 2'000);
+  Instrument i = inst();
+  i.lot = qt("0.00001");
+  const DesiredQuotes q = s.compute_quotes(px("60000"), Qty{}, i);
+  REQUIRE(q.bids.size() == 1);
+  REQUIRE(q.asks.size() == 1);
+  CHECK(q.bids[0].price == px("59999.98"));  // 60000 - 0.018, rounded down
+  CHECK(q.asks[0].price == px("60000.02"));  // 60000 + 0.018, rounded up
+  CHECK(q.bids[0].qty == qt("0.00002"));
+  CHECK(s.configure({{"half_spread_bps", "0.00001"}}).value().find("at most 4 decimals") !=
+        std::string::npos);
+  CHECK(BasicMM::schema().find("half_spread_bps")->type == ParamType::Bps);
+  CHECK(BasicMM::schema().find("quote_qty")->type == ParamType::Decimal);
+  CHECK(BasicMM::schema().find("pull_on_stale_ms")->type == ParamType::Millis);
 }

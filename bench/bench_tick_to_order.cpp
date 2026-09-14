@@ -62,7 +62,9 @@ class Rig {
     clock_ = std::make_unique<SimClock>(Timestamp{seconds(1'700'000'000).ns});
     transport_ = std::make_unique<SimTransport>(*clock_, table_, tc);
     feed_ = std::make_unique<InlineFeed>(1U << 22);
-    static_cast<void>(strategy_.configure({{"half_spread_bps", "0.003"},
+    // 0 bps: quote at the rounded mid, the workload this bench has always measured ("0.003" before
+    // bps parameters kept four decimals, which the centi-bps BasicMM rounded to 0).
+    static_cast<void>(strategy_.configure({{"half_spread_bps", "0"},
                                            {"skew_bps_per_unit", "0"},
                                            {"quote_qty", "0.002"},
                                            {"max_inventory", "0"},

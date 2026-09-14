@@ -16,8 +16,11 @@ py::object typed_value(ParamType t, double v) {
     case ParamType::Bool:
       return py::bool_(v != 0.0);
     case ParamType::Int:
+    case ParamType::Millis:
       return py::int_(std::llround(v));
     case ParamType::Double:
+    case ParamType::Decimal:
+    case ParamType::Bps:
       return py::float_(v);
   }
   return py::float_(v);
