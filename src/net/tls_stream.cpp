@@ -1,7 +1,10 @@
 #include "fastmm/net/tls_stream.hpp"
 
+#include "fastmm/net/ca_locations.hpp"
+
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 
@@ -9,7 +12,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <memory>
 #include <stdexcept>
+#include <system_error>
 
 namespace fastmm::net {
 
@@ -31,6 +37,40 @@ bool is_ip_literal(std::string_view host) noexcept {
   return ::inet_pton(AF_INET, z, tmp) == 1 || ::inet_pton(AF_INET6, z, tmp) == 1;
 }
 
+// Errors name where the path came from, so a wrong SSL_CERT_FILE is visible as such.
+void load_ca_locations(SSL_CTX* ctx, const CaLocations& ca) {
+  const bool env = ca.source == CaSource::Environment;
+  if (ca.source == CaSource::OpenSslDefault) {
+    if (SSL_CTX_set_default_verify_paths(ctx) != 1)
+      throw_openssl("SSL_CTX_set_default_verify_paths");
+    return;
+  }
+  if (!ca.file.empty() && SSL_CTX_load_verify_file(ctx, ca.file.c_str()) != 1) {
+    const std::string what = (env ? "SSL_CERT_FILE=" : "CA bundle ") + ca.file;
+    throw_openssl(what.c_str());
+  }
+  if (!ca.dir.empty()) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(ca.dir, ec)) {
+      throw std::runtime_error("SSL_CERT_DIR=" + ca.dir + ": not a directory");
+    }
+    if (SSL_CTX_load_verify_dir(ctx, ca.dir.c_str()) != 1) {
+      throw_openssl(("SSL_CERT_DIR=" + ca.dir).c_str());
+    }
+  }
+}
+
+struct BioFree {
+  void operator()(BIO* b) const noexcept { BIO_free(b); }
+};
+using BioPtr = std::unique_ptr<BIO, BioFree>;
+
+BioPtr pem_bio(std::string_view pem) {
+  BioPtr bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+  if (bio == nullptr) throw_openssl("BIO_new_mem_buf");
+  return bio;
+}
+
 }  // namespace
 
 // --------------------------------------------------------------------------- TlsContext
@@ -44,8 +84,7 @@ TlsContext::TlsContext(Mode mode) : mode_(mode) {
   SSL_CTX_set_mode(ctx_, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
   if (mode == Mode::Client) {
     SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
-    if (SSL_CTX_set_default_verify_paths(ctx_) != 1)
-      throw_openssl("SSL_CTX_set_default_verify_paths");
+    load_ca_locations(ctx_, find_ca_locations());
   } else {
     SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
   }
@@ -63,6 +102,46 @@ TlsContext TlsContext::server(const std::string& cert_pem_path, const std::strin
   }
   if (SSL_CTX_check_private_key(ctx.ctx_) != 1) throw_openssl("SSL_CTX_check_private_key");
   return ctx;
+}
+
+TlsContext TlsContext::server_pem(std::string_view cert_chain_pem, std::string_view key_pem) {
+  TlsContext ctx(Mode::Server);
+  const BioPtr certs = pem_bio(cert_chain_pem);
+  X509* leaf = PEM_read_bio_X509(certs.get(), nullptr, nullptr, nullptr);
+  if (leaf == nullptr) throw_openssl("PEM_read_bio_X509");
+  const int used = SSL_CTX_use_certificate(ctx.ctx_, leaf);
+  X509_free(leaf);
+  if (used != 1) throw_openssl("SSL_CTX_use_certificate");
+  while (X509* extra = PEM_read_bio_X509(certs.get(), nullptr, nullptr, nullptr)) {
+    // SSL_CTX_add0_chain_cert is a macro with a C-style cast; the ctrl takes ownership on success.
+    if (SSL_CTX_ctrl(ctx.ctx_, SSL_CTRL_CHAIN_CERT, 0, extra) != 1) {
+      X509_free(extra);
+      throw_openssl("SSL_CTX_add0_chain_cert");
+    }
+  }
+  ERR_clear_error();  // PEM_R_NO_START_LINE after the last certificate
+  const BioPtr key_bio = pem_bio(key_pem);
+  EVP_PKEY* key = PEM_read_bio_PrivateKey(key_bio.get(), nullptr, nullptr, nullptr);
+  if (key == nullptr) throw_openssl("PEM_read_bio_PrivateKey");
+  const int key_used = SSL_CTX_use_PrivateKey(ctx.ctx_, key);
+  EVP_PKEY_free(key);
+  if (key_used != 1) throw_openssl("SSL_CTX_use_PrivateKey");
+  if (SSL_CTX_check_private_key(ctx.ctx_) != 1) throw_openssl("SSL_CTX_check_private_key");
+  return ctx;
+}
+
+void TlsContext::add_ca_pem(std::string_view pem) {
+  const BioPtr bio = pem_bio(pem);
+  X509_STORE* store = SSL_CTX_get_cert_store(ctx_);
+  int added = 0;
+  while (X509* cert = PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr)) {
+    const int ok = X509_STORE_add_cert(store, cert);
+    X509_free(cert);
+    if (ok != 1) throw_openssl("X509_STORE_add_cert");
+    ++added;
+  }
+  ERR_clear_error();
+  if (added == 0) throw std::runtime_error("add_ca_pem: no certificate in the PEM text");
 }
 
 TlsContext::~TlsContext() {
