@@ -1,14 +1,48 @@
 name: CI
+# Pushes and pull requests run lint, the gcc release build with tests, and the Python wheel; a push
+# that only changes documentation runs lint alone. clang-tidy, the sanitizer builds, the clang build
+# and the Docker smoke test run weekly and on manual dispatch ("Run workflow").
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 env:
   CPM_SOURCE_CACHE: ~/.cache/CPM
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      code: ${{ steps.plan.outputs.code }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          gcc_release='{"name":"gcc-release","preset":"release","cxx":"g++-13","pkgs":"g++-13"}'
+          others='{"name":"gcc-asan","preset":"asan","cxx":"g++-13","pkgs":"g++-13"},{"name":"clang-release","preset":"clang-release","cxx":"clang++-18","pkgs":"clang-18 lld-18"},{"name":"clang-tsan","preset":"clang-tsan","cxx":"clang++-18","pkgs":"clang-18 lld-18"}'
+          full=false; code=true; matrix="[$gcc_release]"
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ]; then
+            full=true; matrix="[$gcc_release,$others]"
+          elif [ "$EVENT" = push ]; then
+            # Unknown ranges (first push, force push) count as code changes.
+            if files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BEFORE...$GITHUB_SHA" --jq '.files[].filename') && [ -n "$files" ]; then
+              echo "$files" | grep -qvE '^(docs/.*|.*\.md|LICENSE)$' || code=false
+            fi
+          fi
+          { echo "full=$full"; echo "code=$code"; echo "matrix=$matrix"; } >> "$GITHUB_OUTPUT"
+          echo "full=$full code=$code"
+
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -36,6 +70,8 @@ jobs:
           python3 tools/docs_config_ref.py --check
 
   clang-tidy:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -52,17 +88,15 @@ jobs:
         run: RUN_CLANG_TIDY=run-clang-tidy-18 ./scripts/tidy.sh build/debug
 
   build-test:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
     runs-on: ubuntu-24.04
     # Private-repository runners have 2 vCPUs and 7 GB: a cold sanitizer build takes well over 20 min.
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { name: gcc-release,   preset: release,       cxx: g++-13,     pkgs: "g++-13" }
-          - { name: gcc-asan,      preset: asan,          cxx: g++-13,     pkgs: "g++-13" }
-          - { name: clang-release, preset: clang-release, cxx: clang++-18, pkgs: "clang-18 lld-18" }
-          - { name: clang-tsan,    preset: clang-tsan,    cxx: clang++-18, pkgs: "clang-18 lld-18" }
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +136,8 @@ jobs:
           CXX=${{ matrix.cxx }} JOBS=$(nproc) ./scripts/ci-external-project.sh build/release build/install build/external-project
 
   docker:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -120,6 +156,8 @@ jobs:
         run: docker compose down
 
   python:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
