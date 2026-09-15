@@ -5,7 +5,7 @@ Run from the repository root:
     .venv/bin/python examples/python/sweep_spread.py
 
 The sweep runs on a C++ thread pool with the GIL released; results come back in grid order.
-Needs pandas (pip install fastmm-engine[pandas]).
+Needs pandas (pip install 'pandas>=2.0').
 """
 
 from __future__ import annotations

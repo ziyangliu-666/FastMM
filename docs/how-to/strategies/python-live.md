@@ -10,6 +10,8 @@ Install numba and the live runtime (CPython 3.10 or later):
 pip install "fastmm-engine[hot,live]"
 ```
 
+FastMM is not published on PyPI yet; from a checkout, follow [Install from source](../../getting-started/install.md#install-from-source).
+
 ## Run against the simulated exchange
 
 Start the simulated exchange:

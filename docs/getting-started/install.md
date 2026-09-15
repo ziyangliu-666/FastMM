@@ -58,12 +58,24 @@ This builds one image and starts two containers: `fastmm-sim-exchange` and `fast
 
 ## Python
 
-The `fastmm-engine` package (`pip install fastmm-engine`, imported as `fastmm`) runs backtests on CPython 3.9 or later; see [Python research bindings](../python.md).
+The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9 or later, and `fastmm-engine-live` adds live trading; see [Python](../python.md).
 
 | Extra | Installs | Needs |
 |---|---|---|
 | `fastmm-engine[live]` | `fastmm-engine-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module | CPython 3.10 or later, Linux x86-64 |
 | `fastmm-engine[hot]` | numba and llvmlite | CPython 3.10 or later |
+
+### Install from source
+
+The packages are not published on PyPI yet, so `pip install fastmm-engine` fails. From a checkout, in a virtual environment and with the [requirements](#requirements) above installed:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install ".[hot]"
+.venv/bin/pip install ./python/live
+```
+
+`pip install ".[hot,live]"` fails: the `live` extra asks PyPI for `fastmm-engine-live`. `./python/live` builds that package from the same checkout and links OpenSSL statically; with the `libssl-dev` of Ubuntu 24.04 that works as it is, and `FASTMM_OPENSSL_STATIC=OFF` links the shared libraries instead.
 
 TLS connections, from the `fastmm-live` program or the Python package, trust the CA certificates in `SSL_CERT_FILE` and `SSL_CERT_DIR` if either is set, otherwise in the first existing file of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`, otherwise in `certifi` (Python package only), otherwise in OpenSSL's built-in paths. A venue's `ca_file` adds to them.
 

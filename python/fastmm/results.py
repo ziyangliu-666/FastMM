@@ -44,7 +44,7 @@ def _pandas():
         import pandas as pd
     except ImportError as exc:  # pragma: no cover - exercised only without pandas
         raise ImportError(
-            "fastmm.to_pandas() needs pandas; install it with `pip install fastmm-engine[pandas]`"
+            "fastmm.to_pandas() needs pandas; install it with `pip install 'pandas>=2.0'`"
         ) from exc
     return pd
 
