@@ -5,6 +5,7 @@
 FastMM is a fast market-making engine in C++20.
 
 - Backtests, replay and live trading run the same strategy code.
+- Strategies are written in C++ or Python. Python quoting hooks are compiled with Numba and called on the trading thread; model code runs as ordinary Python on another thread.
 - Every session is recorded, and replaying a recording sends the same orders again.
 - Orders pass pre-trade risk limits before they are sent, and reaching the loss limit cancels all orders.
 - The trading thread does not allocate memory or wait on network I/O; a market-data update becomes an order in about 1 microsecond (median, in simulation).
@@ -50,7 +51,7 @@ struct MyMM : StrategyBase<MyParams> {
 };
 ```
 
-Next: [tutorial](docs/tutorials/first-strategy/README.md).
+Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Python](docs/how-to/strategies/python-live.md).
 
 ## Limitations
 
