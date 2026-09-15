@@ -2,8 +2,9 @@
 // Journal `.fmj` (5.5, ADR-0010): every event the engine consumes, every outbound message
 // and periodic latency samples, in consumption order, so a session can be replayed exactly.
 //
-//   file  := FileHeader (256 B) | Instrument[instrument_count] | Config? | Params? | Block* |
-//   Trailer? block := BlockHeader (64 B, crc32c over payload) | messages (raw EventHeader-prefixed)
+//   file  := FileHeader (256 B) | Instrument[instrument_count] | Config? | Params? | Metadata? |
+//   Block* | Trailer? block := BlockHeader (64 B, crc32c over payload) | messages (raw
+//   EventHeader-prefixed)
 //
 // Format v2 (readers accept v1 and v2) adds:
 //   * the engine clock of every consumed event: records flagged kEngineTime carry a signed int32
@@ -79,13 +80,16 @@ struct JournalFileHeader {
   std::uint32_t param_count;         // entries of the parameter table (0 = none)
   std::uint32_t param_table_bytes;   // table bytes after the padded config, before its padding
   std::uint32_t param_table_crc32c;  // of the table bytes
-  std::uint8_t reserved[108];
+  std::uint32_t metadata_bytes;      // metadata text after the padded parameter table (0 = none)
+  std::uint32_t metadata_crc32c;     // of the metadata text
+  std::uint8_t reserved[100];
   std::uint32_t crc32c;  // over the preceding 252 bytes
 };
 static_assert(sizeof(JournalFileHeader) == 256 && std::is_trivially_copyable_v<JournalFileHeader>);
 
 static_assert(offsetof(JournalFileHeader, session_epoch) == 112 &&
               offsetof(JournalFileHeader, param_count) == 132 &&
+              offsetof(JournalFileHeader, metadata_bytes) == 144 &&
               offsetof(JournalFileHeader, crc32c) == 252);
 
 // One entry of the v3 parameter table: the name and ParamType of a schema index.
@@ -241,6 +245,8 @@ struct JournalSessionInfo {
   std::uint64_t replace_venues = 0;     // bit v: venue v used cancel-replace
   std::string_view config_toml;         // effective configuration (Config::effective_toml())
   const ParamSchema* params = nullptr;  // the strategy's parameter schema (v3 parameter table)
+  // `key=value` lines about the strategy (v3, Python strategies: class, source hash, versions).
+  std::string_view metadata;
 };
 
 // Background side: drains the ring into 1 MiB blocks appended to an mmap'd file grown in
@@ -323,6 +329,8 @@ class JournalReader {
   }
   // Effective configuration TOML embedded by the recording (empty: none, e.g. a v1 file).
   [[nodiscard]] std::string_view config_text() const noexcept { return config_; }
+  // The `key=value` metadata lines (v3; empty: none).
+  [[nodiscard]] std::string_view metadata() const noexcept { return metadata_; }
   // The strategy's parameter table, by schema index (empty: none, e.g. a v2 file).
   [[nodiscard]] std::span<const JournalParam> params() const noexcept {
     return {params_.data(), param_count_};
@@ -358,6 +366,7 @@ class JournalReader {
   const JournalFileHeader* header_ = nullptr;
   const Instrument* instruments_ = nullptr;
   std::string_view config_;
+  std::string_view metadata_;
   std::array<JournalParam, kJournalMaxParams> params_{};
   std::size_t param_count_ = 0;
   std::size_t first_block_ = 0;

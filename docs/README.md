@@ -14,7 +14,7 @@ FastMM is a market-making engine in C++20. These pages describe version 0.1.
 
 ## How-to guides
 
-- Strategies: [Register a strategy](how-to/strategies/register-a-strategy.md), [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md)
+- Strategies: [Register a strategy](how-to/strategies/register-a-strategy.md), [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md), [Run slow methods beside hot hooks](how-to/strategies/python-slow-methods.md)
 - Venues: [Add a venue](how-to/venues/add-a-venue.md)
 - Operations: [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md), [Go-live checklist](how-to/operations/go-live-checklist.md), [Kill switch and shutdown](how-to/operations/kill-switch-and-shutdown.md), [Journals, replay and PnL](how-to/operations/journals-replay-pnl.md), [Monitor a session with fastmm-top](how-to/operations/monitor-with-fastmm-top.md), [Troubleshooting](how-to/operations/troubleshooting.md)
 

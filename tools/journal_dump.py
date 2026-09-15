@@ -47,7 +47,7 @@ FLAG_NAMES = [(1, "synthetic"), (2, "replayed"), (4, "snapshot"), (8, "outbound"
               (16, "engine_time"), (32, "dropped")]
 FLAG_ENGINE_TIME = 16
 
-HEADER = struct.Struct("<4sIIIQqQqQQQII32sHBBIQIIII108sI")  # 256 bytes
+HEADER = struct.Struct("<4sIIIQqQqQQQII32sHBBIQIIIIII100sI")  # 256 bytes
 BLOCK = struct.Struct("<4sIQQIII28s")  # 64 bytes
 EVENT = struct.Struct("<IBBBBIIQQqqQII")  # 64 bytes
 INSTRUMENT_HOT = struct.Struct("<IBBBBqqqqqqq")  # 64 bytes
@@ -211,14 +211,15 @@ def parse_header(data: bytes, verify_crc: bool = True) -> dict:
         raise JournalError("file shorter than the 256-byte header")
     (magic, version, header_bytes, inst_count, session_id, start_ts, tsc0, tsc_ns0, ns_per_cycle,
      config_hash, rng_seed, msg_version, block_bytes, strategy, session_epoch, quoting_enabled,
-     header_flags, config_bytes, replace_venues, _config_crc, param_count, _param_bytes, _param_crc, _reserved,
+     header_flags, config_bytes, replace_venues, _config_crc, param_count, param_bytes, _param_crc, metadata_bytes,
+     _metadata_crc, _reserved,
      hdr_crc) = HEADER.unpack_from(data, 0)
     if magic != b"FMJ1":
         raise JournalError(f"bad magic {magic!r}")
     if version < 2:
         session_epoch = quoting_enabled = header_flags = config_bytes = replace_venues = 0
     if version < 3:
-        param_count = 0
+        param_count = param_bytes = metadata_bytes = 0
     config_off = HEADER.size + 128 * inst_count
     params = []
     off = config_off + (config_bytes + 63) // 64 * 64
@@ -227,8 +228,10 @@ def parse_header(data: bytes, verify_crc: bool = True) -> dict:
         params.append((data[off + 2:off + 2 + name_len].decode("utf-8", "replace"),
                        PARAM_TYPES.get(type_id, f"type{type_id}")))
         off += 2 + name_len
+    meta_off = config_off + (config_bytes + 63) // 64 * 64 + (param_bytes + 63) // 64 * 64
     return {
         "params": params,
+        "metadata": data[meta_off:meta_off + metadata_bytes].decode("utf-8", "replace"),
         "session": bool(header_flags & 1), "session_epoch": session_epoch,
         "quoting_enabled": bool(quoting_enabled), "replace_venues": replace_venues,
         "config": data[config_off:config_off + config_bytes].decode("utf-8", "replace"),
@@ -331,6 +334,8 @@ def main() -> int:
               f"replace_venues {hdr['replace_venues']:#x}")
     if hdr["config"]:
         print(f"config          {len(hdr['config'])} bytes of effective TOML embedded")
+    for line in hdr["metadata"].splitlines():
+        print(f"metadata        {line}")
     if hdr["params"]:
         print("parameters      " + " ".join(f"{i}:{n}({t})" for i, (n, t) in enumerate(hdr["params"])))
     print(f"header crc32c   {'ok' if crc_ok else 'MISMATCH'}")

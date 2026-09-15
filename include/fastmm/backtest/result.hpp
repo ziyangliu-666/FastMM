@@ -62,6 +62,15 @@ struct OrderRows {
   void reserve(std::size_t n);
 };
 
+// Wall time of one slow method of a Python strategy over a backtest.
+struct SlowMethodTiming {
+  std::string name;
+  std::uint64_t calls = 0;
+  std::uint64_t wall_p50_ns = 0;
+  std::uint64_t wall_p99_ns = 0;
+  std::uint64_t wall_max_ns = 0;
+};
+
 struct BacktestResult {
   std::string strategy;
   ParamMap params;
@@ -79,6 +88,8 @@ struct BacktestResult {
   std::int64_t start_ts = 0;
   std::int64_t end_ts = 0;
   double wall_seconds = 0.0;
+  // Slow methods of a Python strategy (the Python package fills this in; empty otherwise).
+  std::vector<SlowMethodTiming> slow_methods;
 
   [[nodiscard]] const Metrics& summary() const noexcept { return metrics; }
   // Human-readable table, one metric per line.

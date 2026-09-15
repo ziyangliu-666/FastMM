@@ -207,6 +207,15 @@ void bind_config(py::module_& m) {
       .def_readwrite("journal_out",
                      &BacktestConfig::journal_out,
                      "Record the session to this .fmj ('' = no journal).")
+      .def_property(
+          "max_param_age_ms",
+          [](const BacktestConfig& c) { return c.engine.max_param_age.ns / 1'000'000; },
+          [](BacktestConfig& c, std::int64_t ms) {
+            if (ms < 0) throw py::value_error("max_param_age_ms must be >= 0 (0 disables)");
+            c.engine.max_param_age = milliseconds(ms);
+          },
+          "[strategy] max_param_age_ms: quoting is disabled before the first parameter update and "
+          "while none was applied for this long (0 disables).")
       // ---- simulated venue -------------------------------------------------------------------
       .def_property(
           "fill_model",

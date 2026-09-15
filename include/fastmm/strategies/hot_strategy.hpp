@@ -17,11 +17,19 @@
 //
 // The owner builds a HotProgram, calls attach() before the run and warm_up() before any venue
 // connection, and reads error() afterwards.
+//
+// Parameter updates (ADR-0013, section 2): apply_param_update() writes a ParamUpdate's values into
+// the parameter blocks of its instrument or of every instrument, and on_params calls the on_params
+// hook for those instruments. With a SlowChannel attached (attach_slow()), the strategy also
+// records top-of-book changes, trades and fills for the slow tier and publishes a snapshot at most
+// once per SlowChannelConfig::snapshot_interval of engine time; a change the interval holds back is
+// published by a one-shot engine timer (tag kSlowSnapshotTimerTag) at the end of the interval.
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
+#include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
@@ -29,23 +37,35 @@
 #include "fastmm/strategies/hot_abi.h"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/quoting.hpp"
+#include "fastmm/strategies/slow_channel.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace fastmm {
 
 // The event hooks a hot strategy may define; timer hooks are numbered separately.
-enum class HotHook : std::uint8_t { Book = 0, Fill = 1, Quoting = 2, Connection = 3, Count = 4 };
+enum class HotHook : std::uint8_t {
+  Book = 0,
+  Fill = 1,
+  Quoting = 2,
+  Connection = 3,
+  Params = 4,
+  Count = 5
+};
 
 [[nodiscard]] constexpr std::string_view to_string(HotHook h) noexcept {
   switch (h) {
@@ -57,6 +77,8 @@ enum class HotHook : std::uint8_t { Book = 0, Fill = 1, Quoting = 2, Connection 
       return "on_quoting";
     case HotHook::Connection:
       return "on_connection";
+    case HotHook::Params:
+      return "on_params";
     case HotHook::Count:
       break;
   }
@@ -66,6 +88,76 @@ enum class HotHook : std::uint8_t { Book = 0, Fill = 1, Quoting = 2, Connection 
 inline constexpr std::size_t kMaxHotTimers = 16;
 // Timer tags of the hot timers: this base plus the timer's index.
 inline constexpr std::uint64_t kHotTimerTag = 0x484f'5400'0000'0000ULL;  // "HOT"
+
+namespace detail {
+
+// `x` as 1e-8 fixed point, rounded from its shortest decimal form with halves away from zero and
+// saturated to int64: what fastmm/_hot/decl.py fixed_raw() computes (Decimal(repr(x)) * 1e8,
+// ROUND_HALF_UP), so a published float gets the same `_raw` twin as the initial record. 0 for a
+// value that is not finite.
+[[nodiscard]] inline std::int64_t hot_fixed_raw(double x) noexcept {
+  std::array<char, 40> buf{};
+  const std::to_chars_result res = std::to_chars(buf.data(), buf.data() + buf.size(), x);
+  if (res.ec != std::errc{}) return 0;
+  const char* p = buf.data();
+  const char* const end = res.ptr;
+  bool negative = false;
+  if (p < end && *p == '-') {
+    negative = true;
+    ++p;
+  }
+  __extension__ typedef unsigned __int128 U;  // NOLINT(modernize-use-using)
+  U mantissa = 0;
+  int exp10 = 0;
+  bool point = false;
+  for (; p < end; ++p) {
+    const char c = *p;
+    if (c >= '0' && c <= '9') {
+      mantissa = (mantissa * 10U) + static_cast<unsigned>(c - '0');  // at most 21 digits
+      if (point) --exp10;
+    } else if (c == '.') {
+      point = true;
+    } else if (c == 'e') {
+      int e = 0;
+      const std::from_chars_result r =
+          std::from_chars(p + 1 + (p[1] == '+' ? 1 : 0), end, e);  // "e+20", "e-09"
+      if (r.ec != std::errc{}) return 0;
+      exp10 += e;
+      break;
+    } else {
+      return 0;  // inf, nan
+    }
+  }
+  const int k = exp10 + 8;  // raw magnitude = mantissa * 10^k
+  constexpr U kMax = static_cast<U>(std::numeric_limits<std::int64_t>::max());
+  U mag = 0;
+  if (mantissa == 0) {
+    mag = 0;
+  } else if (k >= 0) {
+    mag = mantissa;
+    for (int i = 0; i < k && mag <= kMax; ++i) mag *= 10U;
+  } else if (-k <= 38) {
+    U pow10 = 1;
+    for (int i = 0; i < -k; ++i) pow10 *= 10U;
+    mag = mantissa / pow10;
+    if (2U * (mantissa % pow10) >= pow10) ++mag;
+  }
+  if (negative) {
+    if (mag > kMax) return std::numeric_limits<std::int64_t>::min();
+    return -static_cast<std::int64_t>(mag);
+  }
+  return mag > kMax ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(mag);
+}
+
+}  // namespace detail
+
+// Where one parameter lives in the parameter block, by schema index (ParamUpdateMsg field).
+struct HotParamField {
+  enum class Kind : std::uint8_t { Bool = 0, Int = 1, Double = 2 };
+  Kind kind = Kind::Double;
+  std::uint32_t offset = 0;      // uint8 (Bool), int64 (Int) or double (Double)
+  std::uint32_t raw_offset = 0;  // Double: its int64 `_raw` twin
+};
 
 // What the compiler produced: hook addresses, timers and the initial `self` record.
 struct HotProgram {
@@ -79,6 +171,8 @@ struct HotProgram {
   // One record: the parameter block (the first param_bytes) and the State defaults after it.
   std::vector<std::uint8_t> record;
   std::size_t param_bytes = 0;
+  // The parameters by schema index: what the fields of a ParamUpdate refer to.
+  std::vector<HotParamField> params;
   bool stop_on_error = false;  // request_stop() after a failure (backtests)
   // Copy the level arrays into the book view. False when no hook can read them: the view then holds
   // the top of book and the level counts, and the arrays stay zero.
@@ -97,7 +191,8 @@ struct HotError {
 class HotStrategy {
  public:
   static constexpr std::string_view name() noexcept { return "python_hot"; }
-  // The parameters live in the `self` records; the engine sees none.
+  // The parameters live in the `self` records; the engine sees none. The fields of a ParamUpdate
+  // index HotProgram::params, whose schema the owner records in the journal.
   static const ParamSchema& schema() {
     static const ParamSchema s{};
     return s;
@@ -105,10 +200,15 @@ class HotStrategy {
   std::optional<std::string> configure(const ParamMap&) { return std::nullopt; }
 
   // Copies the program and allocates one parameter block and one record per instrument. Startup
-  // only (allocates). Returns false when the record is smaller than the parameter block or there
-  // are more timers than kMaxHotTimers.
+  // only (allocates). Returns false when the record is smaller than the parameter block, there are
+  // more timers than kMaxHotTimers or a parameter field lies outside the parameter block.
   bool attach(const HotProgram& p, const InstrumentTable& instruments) {
     if (p.param_bytes > p.record.size() || p.n_timers > kMaxHotTimers) return false;
+    for (const HotParamField& f : p.params) {
+      const std::size_t width = f.kind == HotParamField::Kind::Bool ? 1 : 8;
+      if (f.offset + width > p.param_bytes) return false;
+      if (f.kind == HotParamField::Kind::Double && f.raw_offset + 8U > p.param_bytes) return false;
+    }
     program_ = p;
     record_size_ = p.record.size();
     param_bytes_ = p.param_bytes;
@@ -130,6 +230,23 @@ class HotStrategy {
     book_depth_ = p.book_depth;
     error_ = HotError{};
     calls_ = 0;
+    param_ts_.assign(n, 0);
+    param_seq_.assign(n, 0);
+    last_top_.assign(n, TopOfBook{});
+    update_first_ = update_last_ = 0;
+    update_seq_ = 0;
+    next_snapshot_ = Timestamp{};
+    snapshot_dirty_ = false;
+    snapshot_timer_armed_ = false;
+    return true;
+  }
+
+  // Connects the slow tier (sessions of a strategy with slow methods; none in replay): the strategy
+  // records rows and fills into `channel` and publishes snapshots to it. `channel` must outlive the
+  // run and hold at least as many instruments as the table. Startup only, after attach().
+  bool attach_slow(SlowChannel* channel) noexcept {
+    if (channel != nullptr && channel->instruments() < inst_f_.size()) return false;
+    slow_ = channel;
     return true;
   }
 
@@ -165,18 +282,22 @@ class HotStrategy {
       if (program_.timers[i].fn != nullptr)
         static_cast<void>(ctx.every(program_.timers[i].period, kHotTimerTag + i));
     }
+    if (slow_ != nullptr) publish_snapshot(ctx);
   }
 
   template <class Ctx, class Book>
   FASTMM_FORCE_INLINE void on_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
     const fastmm_hot_fn fn = hooks_[static_cast<std::size_t>(HotHook::Book)];
     if (fn != nullptr) call(ctx, id, book, fn, static_cast<std::int32_t>(HotHook::Book), -1);
+    if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_book(ctx, id, book);
   }
 
   template <class Ctx>
   void on_fill(Ctx& ctx, const Fill& fill) noexcept {
+    if (!ctx.contains(fill.instrument)) return;
+    if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_fill(ctx, fill);
     const fastmm_hot_fn fn = hooks_[static_cast<std::size_t>(HotHook::Fill)];
-    if (fn == nullptr || !ctx.contains(fill.instrument)) return;
+    if (fn == nullptr) return;
     fastmm_hot_ctx& c = cx_;
     c.fill_side = fill.side == Side::Buy ? 0 : 1;
     c.fill_maker = fill.liquidity == Liquidity::Maker ? 1 : 0;
@@ -200,6 +321,7 @@ class HotStrategy {
 
   template <class Ctx>
   void on_quoting(Ctx& ctx, bool) noexcept {
+    if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_touch(ctx);
     const fastmm_hot_fn fn = hooks_[static_cast<std::size_t>(HotHook::Quoting)];
     if (fn == nullptr) return;
     for (const Instrument& inst : ctx.instruments()) {
@@ -210,6 +332,7 @@ class HotStrategy {
 
   template <class Ctx>
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
+    if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_touch(ctx);
     const fastmm_hot_fn fn = hooks_[static_cast<std::size_t>(HotHook::Connection)];
     if (fn == nullptr) return;
     cx_.connected = m.state == ConnState::Live ? 1 : 0;
@@ -223,6 +346,11 @@ class HotStrategy {
 
   template <class Ctx>
   void on_timer(Ctx& ctx, TimerId, std::uint64_t tag) noexcept {
+    if (tag == kSlowSnapshotTimerTag) {
+      snapshot_timer_armed_ = false;
+      if (slow_ != nullptr && snapshot_dirty_) publish_snapshot(ctx);
+      return;
+    }
     const std::uint64_t i = tag - kHotTimerTag;
     if (tag < kHotTimerTag || i >= program_.n_timers) return;
     const fastmm_hot_fn fn = program_.timers[i].fn;
@@ -233,7 +361,77 @@ class HotStrategy {
     }
   }
 
-  // ---- state ----------------------------------------------------------------------------------
+  template <class Ctx>
+  void on_trade(Ctx& ctx, InstrumentId id, const TradeMsg& t) noexcept {
+    if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_trade(ctx, id, t);
+  }
+
+  // Assigns the (field, raw value) pairs of a ParamUpdate to the parameter block of its instrument,
+  // or of every instrument; a field outside HotProgram::params is skipped. A double's `_raw` twin
+  // is set from the value (detail::hot_fixed_raw). on_params follows at the same event.
+  void apply_param_update(const ParamUpdateMsg& m) noexcept {
+    const std::size_t n = inst_f_.size();
+    std::size_t first = 0;
+    std::size_t last = n;
+    if (m.hdr.instrument.valid()) {
+      if (m.hdr.instrument.value >= n) return;
+      first = m.hdr.instrument.value;
+      last = first + 1;
+    }
+    const std::size_t count = std::min<std::size_t>(m.count, ParamUpdateMsg::kMaxFields);
+    for (std::size_t k = first; k < last; ++k) {
+      std::uint8_t* const block = params_.data() + (k * param_bytes_);
+      for (std::size_t i = 0; i < count; ++i) {
+        if (m.field[i] >= program_.params.size()) continue;
+        const HotParamField& f = program_.params[m.field[i]];
+        switch (f.kind) {
+          case HotParamField::Kind::Bool: {
+            const std::uint8_t b = m.value[i] != 0 ? 1 : 0;
+            std::memcpy(block + f.offset, &b, 1);
+            break;
+          }
+          case HotParamField::Kind::Int:
+            std::memcpy(block + f.offset, &m.value[i], sizeof(std::int64_t));
+            break;
+          case HotParamField::Kind::Double: {
+            const auto d = std::bit_cast<double>(m.value[i]);
+            const std::int64_t raw = detail::hot_fixed_raw(d);
+            std::memcpy(block + f.offset, &d, sizeof d);
+            std::memcpy(block + f.raw_offset, &raw, sizeof raw);
+            break;
+          }
+        }
+      }
+    }
+    update_first_ = first;
+    update_last_ = last;
+    update_seq_ = m.publish_seq;
+  }
+
+  // After apply_param_update(): stamps the updated instruments with the engine time and calls the
+  // on_params hook for each of them.
+  template <class Ctx>
+  void on_params(Ctx& ctx) noexcept {
+    const std::size_t first = update_first_;
+    const std::size_t last = update_last_;
+    update_first_ = update_last_ = 0;
+    for (std::size_t k = first; k < last; ++k) {
+      param_ts_[k] = ctx.now().ns;
+      param_seq_[k] = update_seq_;
+    }
+    if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_touch(ctx);
+    const fastmm_hot_fn fn = hooks_[static_cast<std::size_t>(HotHook::Params)];
+    if (fn == nullptr) return;
+    for (std::size_t k = first; k < last; ++k) {
+      InstrumentId id{};
+      id.value = static_cast<decltype(id.value)>(k);
+      if (!ctx.contains(id)) continue;
+      call(ctx, id, ctx.book(id), fn, static_cast<std::int32_t>(HotHook::Params), -1);
+      if (failed()) return;
+    }
+  }
+
+  // ---- state----------------------------------------------------------------------------------
 
   [[nodiscard]] bool failed() const noexcept { return error_.status != FASTMM_HOT_OK; }
   [[nodiscard]] const HotError& error() const noexcept { return error_; }
@@ -433,6 +631,124 @@ class HotStrategy {
     if (program_.stop_on_error) ctx.request_stop();
   }
 
+  struct TopOfBook {
+    std::int64_t bid = 0;
+    std::int64_t bid_qty = 0;
+    std::int64_t ask = 0;
+    std::int64_t ask_qty = 0;
+  };
+
+  // ---- slow tier --------------------------------------------------------------------------------
+
+  template <class Ctx, class Book>
+  FASTMM_NOINLINE void slow_book(Ctx& ctx, InstrumentId id, const Book& book) noexcept {
+    if (id.value < last_top_.size()) {
+      const Level bb = book.best_bid();
+      const Level ba = book.best_ask();
+      TopOfBook& top = last_top_[id.value];
+      if (bb.price.raw != top.bid || bb.qty.raw != top.bid_qty || ba.price.raw != top.ask ||
+          ba.qty.raw != top.ask_qty) {
+        top = TopOfBook{bb.price.raw, bb.qty.raw, ba.price.raw, ba.qty.raw};
+        SlowRecentRow row{};
+        row.ts_ns = ctx.now().ns;
+        row.bid_raw = top.bid;
+        row.bid_qty_raw = top.bid_qty;
+        row.ask_raw = top.ask;
+        row.ask_qty_raw = top.ask_qty;
+        row.kind = SlowRecentRow::kTop;
+        slow_->record(id, row);
+      }
+    }
+    slow_touch(ctx);
+  }
+
+  template <class Ctx>
+  FASTMM_NOINLINE void slow_trade(Ctx& ctx, InstrumentId id, const TradeMsg& t) noexcept {
+    if (!ctx.contains(id)) return;
+    const auto& book = ctx.book(id);
+    const Level bb = book.best_bid();
+    const Level ba = book.best_ask();
+    SlowRecentRow row{};
+    row.ts_ns = ctx.now().ns;
+    row.bid_raw = bb.price.raw;
+    row.bid_qty_raw = bb.qty.raw;
+    row.ask_raw = ba.price.raw;
+    row.ask_qty_raw = ba.qty.raw;
+    row.trade_price_raw = t.price.raw;
+    row.trade_qty_raw = t.qty.raw;
+    row.kind = SlowRecentRow::kTrade;
+    row.side = t.aggressor == Side::Buy ? 0 : 1;
+    slow_->record(id, row);
+    slow_touch(ctx);
+  }
+
+  template <class Ctx>
+  FASTMM_NOINLINE void slow_fill(Ctx& ctx, const Fill& fill) noexcept {
+    SlowFill f{};
+    f.ts_ns = ctx.now().ns;
+    f.price_raw = fill.price.raw;
+    f.qty_raw = fill.qty.raw;
+    f.fee_raw = fill.fee.raw;
+    f.position_raw = ctx.position(fill.instrument).qty.raw;
+    f.instrument = static_cast<std::uint32_t>(fill.instrument.value);
+    f.side = fill.side == Side::Buy ? 0 : 1;
+    f.maker = fill.liquidity == Liquidity::Maker ? 1 : 0;
+    static_cast<void>(slow_->push_fill(f));  // a full ring records SlowFailure::FillsOverflow
+    slow_touch(ctx);
+  }
+
+  // Publishes a snapshot when the interval since the last one has passed; otherwise marks it
+  // pending and arms a one-shot timer for the end of the interval.
+  template <class Ctx>
+  FASTMM_NOINLINE void slow_touch(Ctx& ctx) noexcept {
+    const Timestamp now = ctx.now();
+    if (now >= next_snapshot_) {
+      publish_snapshot(ctx);
+      return;
+    }
+    snapshot_dirty_ = true;
+    if (!snapshot_timer_armed_)
+      snapshot_timer_armed_ = ctx.once(next_snapshot_ - now, kSlowSnapshotTimerTag).valid();
+  }
+
+  template <class Ctx>
+  void publish_snapshot(Ctx& ctx) noexcept {
+    const Timestamp now = ctx.now();
+    const bool enabled = ctx.quoting_enabled();
+    slow_->write_snapshot(
+        now, enabled, ctx.killed(), [&](SlowInstrumentState* states, std::size_t cap) noexcept {
+          for (const Instrument& inst : ctx.instruments()) {
+            const std::size_t k = inst.id.value;
+            if (k >= cap || k >= param_ts_.size()) continue;
+            const auto& book = ctx.book(inst.id);
+            const Level bb = book.best_bid();
+            const Level ba = book.best_ask();
+            const Position& pos = ctx.position(inst.id);
+            SlowInstrumentState& s = states[k];
+            s.book_ts_ns = book.last_update().ns;
+            s.best_bid_raw = bb.price.raw;
+            s.best_bid_qty_raw = bb.qty.raw;
+            s.best_ask_raw = ba.price.raw;
+            s.best_ask_qty_raw = ba.qty.raw;
+            s.mid_raw = book.mid().raw;
+            s.position_raw = pos.qty.raw;
+            s.avg_price_raw = pos.avg_px.raw;
+            s.realized_pnl_raw = pos.realized.raw;
+            s.unrealized_pnl_raw = pos.unrealized.raw;
+            s.fees_raw = pos.fees.raw;
+            s.bid_open_qty_raw = ctx.open_qty(inst.id, Side::Buy).raw;
+            s.ask_open_qty_raw = ctx.open_qty(inst.id, Side::Sell).raw;
+            s.param_ts_ns = param_ts_[k];
+            s.param_seq = param_seq_[k];
+            s.fills = pos.fills;
+            s.book_valid = book.is_valid() ? 1 : 0;
+            s.quoting = enabled && !ctx.venue_killed(inst.venue) ? 1 : 0;
+          }
+        });
+    next_snapshot_ = now + slow_->config().snapshot_interval;
+    snapshot_dirty_ = false;
+  }
+
   HotProgram program_{};
   std::array<fastmm_hot_fn, static_cast<std::size_t>(HotHook::Count)> hooks_{};
   std::size_t record_size_ = 0;
@@ -446,6 +762,17 @@ class HotStrategy {
   DesiredQuotes q_{};
   HotError error_{};
   std::uint64_t calls_ = 0;
+  // parameter updates and the slow tier
+  SlowChannel* slow_ = nullptr;
+  std::vector<std::int64_t> param_ts_;
+  std::vector<std::uint64_t> param_seq_;
+  std::vector<TopOfBook> last_top_;
+  std::size_t update_first_ = 0;
+  std::size_t update_last_ = 0;
+  std::uint64_t update_seq_ = 0;
+  Timestamp next_snapshot_{};
+  bool snapshot_dirty_ = false;
+  bool snapshot_timer_armed_ = false;
 };
 
 static_assert(StrategyLike<HotStrategy>);

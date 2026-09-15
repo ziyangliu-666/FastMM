@@ -88,6 +88,7 @@ JournalInfo inspect_journal(const std::string& path) {
     info.replace_venues = h.replace_venues;
   }
   info.config_toml = std::string(reader.config_text());
+  info.metadata = std::string(reader.metadata());
   reader.for_each([&](const EventHeader* e) {
     ++info.messages;
     if ((e->flags & EventHeader::kEngineTime) != 0) info.engine_time = true;
@@ -128,14 +129,21 @@ ReplayResult replay_journal(const std::string& path, const ReplayOptions& opt) {
   return replay_journal(path, journal_config(path), opt);
 }
 
-ReplayResult replay_journal(const std::string& path,
-                            const BacktestConfig& cfg,
-                            const ReplayOptions& opt) {
+namespace {
+
+ReplayResult replay_impl(const std::string& path,
+                         const BacktestConfig& cfg,
+                         const ReplayOptions& opt,
+                         const ReplayStrategy* custom) {
   JournalReader reader;
   open_or_throw(reader, path);
 
   ReplayResult res;
-  res.strategy = opt.strategy.empty() ? header_strategy(reader.header()) : opt.strategy;
+  if (custom != nullptr) {
+    res.strategy = custom->name;
+  } else {
+    res.strategy = opt.strategy.empty() ? header_strategy(reader.header()) : opt.strategy;
+  }
   if (res.strategy.empty()) throw std::invalid_argument("replay: no strategy given or recorded");
 
   // Expected stream first: load_outbound() walks the reader, JournalFeed then rewinds it.
@@ -176,7 +184,6 @@ ReplayResult replay_journal(const std::string& path,
   const std::size_t expected_count = expected.size();
   if (opt.verify) backend.transport.set_expected(std::move(expected));
 
-  register_builtin_strategies();
   RunnerDeps deps;
   deps.engine = cfg.engine;
   if (session) {
@@ -187,15 +194,23 @@ ReplayResult replay_journal(const std::string& path,
   deps.instruments = &instruments;
   deps.params = cfg.params;
   deps.backend = &backend;
-  const StrategyEntry* entry = StrategyRegistry::instance().find(res.strategy);
-  if (entry == nullptr)
-    throw std::invalid_argument("replay: unknown strategy '" + res.strategy + "'");
   backend.feed.set_param_updates(opt.param_updates);
-  backend.feed.set_param_schema(*entry->schema);
-  std::unique_ptr<IEngineRunner> runner =
-      StrategyRegistry::instance().make(res.strategy, TransportKind::Replay, deps);
-  if (runner == nullptr)
-    throw std::invalid_argument("replay: strategy '" + res.strategy + "' has no replay factory");
+  std::unique_ptr<IEngineRunner> runner;
+  if (custom != nullptr) {
+    if (custom->schema != nullptr) backend.feed.set_param_schema(*custom->schema);
+    if (custom->make) runner = custom->make(deps);
+    if (runner == nullptr)
+      throw std::invalid_argument("replay: strategy '" + res.strategy + "' built no runner");
+  } else {
+    register_builtin_strategies();
+    const StrategyEntry* entry = StrategyRegistry::instance().find(res.strategy);
+    if (entry == nullptr)
+      throw std::invalid_argument("replay: unknown strategy '" + res.strategy + "'");
+    backend.feed.set_param_schema(*entry->schema);
+    runner = StrategyRegistry::instance().make(res.strategy, TransportKind::Replay, deps);
+    if (runner == nullptr)
+      throw std::invalid_argument("replay: strategy '" + res.strategy + "' has no replay factory");
+  }
 
   sim::ReplayDriver driver(backend.clock, backend.feed, backend.hooks);
   res.events = driver.run_all();
@@ -224,6 +239,21 @@ ReplayResult replay_journal(const std::string& path,
     }
   }
   return res;
+}
+
+}  // namespace
+
+ReplayResult replay_journal(const std::string& path,
+                            const BacktestConfig& cfg,
+                            const ReplayOptions& opt) {
+  return replay_impl(path, cfg, opt, nullptr);
+}
+
+ReplayResult replay_journal(const std::string& path,
+                            const BacktestConfig& cfg,
+                            const ReplayOptions& opt,
+                            const ReplayStrategy& strategy) {
+  return replay_impl(path, cfg, opt, &strategy);
 }
 
 }  // namespace fastmm::bt

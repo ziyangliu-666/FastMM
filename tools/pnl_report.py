@@ -330,7 +330,7 @@ def write_synthetic_journal(path: str) -> None:
     inst[80:87] = b"TESTUSD"
     inst[100] = 7
     header = bytearray(jd.HEADER.pack(b"FMJ1", 1, 256 + 128, 1, 42, start, 0, 0, 0, 0, 1, 1, 1 << 20,
-                                      b"basic_mm", 0, 0, 0, 0, 0, 0, 0, 0, 0, b"", 0))
+                                      b"basic_mm", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b"", 0))
     struct.pack_into("<I", header, 252, jd.crc32c(bytes(header[:252])))
     block = jd.BLOCK.pack(b"FMJB", len(payload), 1, 4, len(events), jd.crc32c(payload), 0, b"")
     trailer = jd.BLOCK.pack(b"FMJB", 0, 5, 4, 0, jd.crc32c(b""), 1, b"")

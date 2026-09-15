@@ -12,7 +12,7 @@ pip install "fastmm[hot]"
 
 ## Declare the strategy
 
-Declare parameters with `fastmm.Param` and per-instrument values that persist between calls with `fastmm.State`. Mark each hook with `@fastmm.hot` (`on_book`, `on_fill`, `on_quoting`, `on_connection`) or with `@fastmm.hot(every="100ms")` for a timer; every hook takes `(self, ctx, book)`:
+Declare parameters with `fastmm.Param` and per-instrument values that persist between calls with `fastmm.State`. Mark each hook with `@fastmm.hot` (`on_book`, `on_fill`, `on_quoting`, `on_connection`, `on_params`) or with `@fastmm.hot(every="100ms")` for a timer; every hook takes `(self, ctx, book)`. Plain Python that changes the parameters goes in slow methods: [Run slow methods beside hot hooks](python-slow-methods.md).
 
 <!-- snippet: examples/python/strategies/basic_mm_hot.py#class -->
 ```python

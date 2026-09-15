@@ -34,12 +34,16 @@ py::tuple run_python_strategy(const bt::BacktestConfig& cfg,
                               const std::vector<std::string>& hooks);
 
 // Backtest of a compiled hot strategy with the GIL released (bind_hot.cpp). `program` holds the
-// hook addresses, timers, the initial record and the parameter block size. Returns (BacktestResult,
-// error, hook calls); error is None or (status, fail_code, hook, timer, at_ns, engine_events,
-// kill_reason) and the run stopped early then.
+// hook addresses, timers, the initial record, the parameter block size and the parameter fields;
+// `metadata` goes into the journal. `slow` is None or a dict with the slow runner and the channel
+// settings. Returns (BacktestResult, error, hook calls, slow error, slow failure code, engine
+// events); error is None or (status, fail_code, hook, timer, at_ns, engine_events, kill_reason),
+// slow error None or the exception a slow method raised, and the run stopped early after either.
 py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            sim::MdSource* source,
-                           const py::dict& program);
+                           const py::dict& program,
+                           const std::string& metadata,
+                           const py::object& slow);
 
 // str / int / float / bool (and numpy scalars) -> the exact string form the C++ parameter
 // parser accepts. Throws TypeError / ValueError.

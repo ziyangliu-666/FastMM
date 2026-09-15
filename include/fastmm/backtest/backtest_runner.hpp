@@ -26,7 +26,11 @@ namespace fastmm::bt {
 class BacktestSession {
  public:
   // `schema`: the strategy's parameters, recorded in cfg.journal_out (may be null).
-  BacktestSession(const BacktestConfig& cfg, MdSource* source, const ParamSchema* schema = nullptr);
+  // `journal_metadata`: `key=value` lines recorded in cfg.journal_out (Python strategies).
+  BacktestSession(const BacktestConfig& cfg,
+                  MdSource* source,
+                  const ParamSchema* schema = nullptr,
+                  std::string_view journal_metadata = {});
   ~BacktestSession();
   BacktestSession(const BacktestSession&) = delete;
   BacktestSession& operator=(const BacktestSession&) = delete;
@@ -35,6 +39,8 @@ class BacktestSession {
   [[nodiscard]] sim::SimBackend& backend() noexcept { return *backend_; }
   // Parameter updates delivered at simulated times during run() (not owned; may be null).
   void set_param_schedule(sim::ParamSchedule* schedule) noexcept { params_ = schedule; }
+  // Code run at simulated times during run() (sim::SimDriver::set_slow_hooks).
+  void set_slow_hooks(const sim::SlowHooks& hooks) noexcept { slow_ = hooks; }
   // Runs to the end of the data / horizon. `runner` (may be null) supplies engine stats.
   BacktestResult run(const sim::EngineHooks& hooks,
                      const IEngineRunner* runner,
@@ -50,6 +56,7 @@ class BacktestSession {
   std::unique_ptr<Impl> impl_;
   RunnerDeps deps_;
   sim::ParamSchedule* params_ = nullptr;
+  sim::SlowHooks slow_{};
 };
 
 template <StrategyLike S>

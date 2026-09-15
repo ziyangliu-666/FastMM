@@ -16,9 +16,13 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 
+from .._slow import decl as _slow_decl
 from . import abi
 
-EVENT_HOOKS: Tuple[str, ...] = ("on_book", "on_fill", "on_quoting", "on_connection")
+EVENT_HOOKS: Tuple[str, ...] = ("on_book", "on_fill", "on_quoting", "on_connection", "on_params")
+MAX_PARAMS = 32  # a ParamUpdate's fields and the journal's parameter table
+# Names that Strategy.publish(inst=None, **values) needs for itself.
+RESERVED_NAMES = frozenset({"publish", "inst"})
 # Methods on Numba records (compiler.py). A record field with one of these names is unreachable.
 CTX_METHODS = frozenset({"quote", "quote_raw", "bid", "ask", "bid_raw", "ask_raw", "clear", "pull",
                          "uncross", "keep_passive", "fail"})
@@ -133,16 +137,45 @@ class State:
 
 
 class HotSpec:
-    """What class creation found: hooks, timer hooks, parameters and State fields, in declaration
-    order (bases first)."""
+    """What class creation found: hooks, timer hooks, parameters, State fields, @fastmm.every methods
+    and on_start / on_stop, in declaration order (bases first)."""
 
     def __init__(self, qualname: str, hooks: Dict[str, HotHook], timers: Dict[str, HotHook],
-                 params: Dict[str, Any], states: Dict[str, State]) -> None:
+                 params: Dict[str, Any], states: Dict[str, State],
+                 slow: Optional[Dict[str, Any]] = None,
+                 lifecycle: Optional[Dict[str, Any]] = None) -> None:
         self.qualname = qualname
         self.hooks = hooks
         self.timers = timers
         self.params = params
         self.states = states
+        self.slow = slow or {}
+        self.lifecycle = lifecycle or {}
+
+    @property
+    def has_slow(self) -> bool:
+        """Whether the class has slow methods (@fastmm.every, on_start or on_stop)."""
+        return bool(self.slow or self.lifecycle)
+
+    def periods_ns(self) -> List[int]:
+        """The periods of the @fastmm.every methods."""
+        out = []
+        for fn in self.slow.values():
+            mark = _slow_decl.every_of(fn)
+            if mark is not None:
+                out.append(mark.period_ns)
+        return out
+
+    def param_fields(self) -> List[Tuple[str, int, int, int]]:
+        """(name, kind, offset, raw offset) per parameter in declaration order: the fields of a
+        ParamUpdate. kind: 0 bool, 1 int, 2 float (with its `_raw` twin)."""
+        dt, _ = self.record_dtype()
+        out: List[Tuple[str, int, int, int]] = []
+        for name, p in self.params.items():
+            kind = 0 if p.type is bool else 1 if p.type is int else 2
+            raw_offset = dt.fields[name + "_raw"][1] if kind == 2 else 0
+            out.append((name, kind, dt.fields[name][1], raw_offset))
+        return out
 
     def fields(self) -> List[Tuple[str, str]]:
         """The `self` record: parameters (float ones with a `_raw` int64 twin), then State."""
@@ -244,17 +277,20 @@ def _lint_parameter_writes(qualname: str, hook: HotHook, params: Mapping[str, An
 def check_class(cls: type, hook_table: Mapping[str, Tuple[str, ...]],
                 param_type: type) -> Optional[HotSpec]:
     """The HotSpec of a class with hot hooks, None for a class without. Raises TypeError for a class
-    that mixes hot hooks with fastmm.Strategy hooks, a bad hot hook, or a name used by two fields,
-    and ImportError when numba is missing."""
+    that mixes hot hooks with fastmm.Strategy hooks other than on_start and on_stop, a bad hot hook
+    or slow method, slow methods without hot hooks, or a name used by two fields, and ImportError
+    when numba is missing."""
     hooks: Dict[str, HotHook] = {}
     timers: Dict[str, HotHook] = {}
     params: Dict[str, Any] = {}
     states: Dict[str, State] = {}
     plain: Dict[str, type] = {}
+    slow: Dict[str, Any] = {}
+    lifecycle: Dict[str, Any] = {}
     kinds: Dict[str, str] = {}
     for klass in reversed(cls.__mro__):
         for name, attr in vars(klass).items():
-            for table in (hooks, timers, params, states, plain):
+            for table in (hooks, timers, params, states, plain, slow, lifecycle):
                 table.pop(name, None)
             if isinstance(attr, HotHook):
                 (hooks if attr.every is None else timers)[name] = attr
@@ -265,11 +301,20 @@ def check_class(cls: type, hook_table: Mapping[str, Tuple[str, ...]],
                                     "and as a State; parameters and State share one namespace")
                 kinds[name] = kind
                 (states if kind == "State" else params)[name] = attr
+            elif _slow_decl.every_of(attr) is not None:
+                slow[name] = attr
             elif name in hook_table and not (klass.__module__ == "fastmm.strategy"
                                              and klass.__qualname__ == "Strategy"):
+                if name in _slow_decl.LIFECYCLE:
+                    lifecycle[name] = attr
                 plain[name] = klass
     if not hooks and not timers:
+        if slow:
+            raise TypeError(f"fastmm: {cls.__qualname__} has @fastmm.every methods but no "
+                            "@fastmm.hot hooks; slow methods run beside hot hooks")
         return None
+    for name in lifecycle:
+        plain.pop(name, None)
 
     qualname = cls.__qualname__
     if importlib.util.find_spec("numba") is None:
@@ -295,10 +340,28 @@ def check_class(cls: type, hook_table: Mapping[str, Tuple[str, ...]],
             raise TypeError(f"fastmm: {qualname}.{name} has the wrong signature; a hot hook is "
                             f"{name}(self, ctx, book)")
 
+    for name, fn in lifecycle.items():
+        if not inspect.isfunction(fn) or len(_positional(fn) or ()) != 2:
+            raise TypeError(f"fastmm: {qualname}.{name} has the wrong signature; expected "
+                            f"{name}(self, ctx)")
+    for name, fn in slow.items():
+        if name in hook_table or name in EVENT_HOOKS:
+            raise TypeError(f"fastmm: {qualname}.{name}: a @fastmm.every method needs a name that "
+                            "is not a hook name")
+        if len(_positional(fn) or ()) != 2:
+            raise TypeError(f"fastmm: {qualname}.{name} has the wrong signature; a slow method is "
+                            f"{name}(self, ctx)")
+    if len(params) > MAX_PARAMS:
+        raise TypeError(f"fastmm: {qualname} has {len(params)} parameters; a hot strategy has at "
+                        f"most {MAX_PARAMS}")
+
     for name in (*params, *states):
         if name in CTX_METHODS:
             raise TypeError(f"fastmm: {qualname}.{name}: '{name}' is the name of a ctx method, "
                             "which Numba would resolve instead of the field; rename it")
+        if name in RESERVED_NAMES:
+            raise TypeError(f"fastmm: {qualname}.{name}: '{name}' is taken by "
+                            "Strategy.publish(inst=None, **values); rename it")
 
     raw_names: Dict[str, str] = {}
     for name, p in params.items():
@@ -310,4 +373,4 @@ def check_class(cls: type, hook_table: Mapping[str, Tuple[str, ...]],
                             f"'{name}'; parameters and State share one namespace")
     for h in (*hooks.values(), *timers.values()):
         _lint_parameter_writes(qualname, h, params, raw_names)
-    return HotSpec(qualname, hooks, timers, params, states)
+    return HotSpec(qualname, hooks, timers, params, states, slow, lifecycle)

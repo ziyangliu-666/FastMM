@@ -24,6 +24,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -349,6 +350,35 @@ void bind_backtest(py::module_& m) {
       .def_readonly("start_ts", &BacktestResult::start_ts, "First event time, ns.")
       .def_readonly("end_ts", &BacktestResult::end_ts, "Last event time, ns.")
       .def_readonly("wall_seconds", &BacktestResult::wall_seconds)
+      .def_property_readonly(
+          "slow_methods",
+          [](const BacktestResult& r) {
+            py::dict d;
+            for (const bt::SlowMethodTiming& t : r.slow_methods) {
+              py::dict e;
+              e["calls"] = t.calls;
+              e["p50_ms"] = static_cast<double>(t.wall_p50_ns) / 1e6;
+              e["p99_ms"] = static_cast<double>(t.wall_p99_ns) / 1e6;
+              e["max_ms"] = static_cast<double>(t.wall_max_ns) / 1e6;
+              d[py::str(t.name)] = e;
+            }
+            return d;
+          },
+          "Wall time of each slow method of a Python strategy: {name: {'calls', 'p50_ms', "
+          "'p99_ms', 'max_ms'}}; empty for other strategies.")
+      .def(
+          "_set_slow_methods",
+          [](BacktestResult& r,
+             const std::vector<std::tuple<std::string,
+                                          std::uint64_t,
+                                          std::uint64_t,
+                                          std::uint64_t,
+                                          std::uint64_t>>& rows) {
+            r.slow_methods.clear();
+            for (const auto& [name, calls, p50, p99, max] : rows)
+              r.slow_methods.push_back(bt::SlowMethodTiming{name, calls, p50, p99, max});
+          },
+          "Internal: set slow_methods from (name, calls, p50_ns, p99_ns, max_ns) rows.")
       .def_property_readonly("fills", &fills_dict, "Fill columns (zero-copy numpy views).")
       .def_property_readonly("equity", &equity_dict, "Equity bar columns (zero-copy numpy views).")
       .def_property_readonly("orders", &orders_dict, "Order columns (zero-copy numpy views).")
@@ -457,7 +487,9 @@ void bind_backtest(py::module_& m) {
          const py::object& data,
          const std::string& name,
          const py::dict& params,
-         const py::dict& program) {
+         const py::dict& program,
+         const std::string& metadata,
+         const py::object& slow) {
         DataSpec spec = parse_data(data);
         BacktestConfig cfg = config;
         cfg.strategy = name;
@@ -470,13 +502,15 @@ void bind_backtest(py::module_& m) {
           py::gil_scoped_release release;
           source = open_spec(spec, cfg);
         }
-        return run_hot_strategy(cfg, source.get(), program);
+        return run_hot_strategy(cfg, source.get(), program, metadata, slow);
       },
       py::arg("config"),
       py::arg("data"),
       py::arg("name"),
       py::arg("params"),
       py::arg("program"),
+      py::arg("metadata") = std::string(),
+      py::arg("slow") = py::none(),
       "Internal: backtest of a compiled hot strategy with the GIL released; use "
       "fastmm.run_backtest(config, data, strategy=MyStrategy).");
 
@@ -574,6 +608,7 @@ void bind_backtest(py::module_& m) {
         d["messages"] = info.messages;
         d["outbound_messages"] = info.outbound_messages;
         d["market_data_messages"] = info.market_data_messages;
+        d["metadata"] = info.metadata;
         return d;
       },
       py::arg("path"),

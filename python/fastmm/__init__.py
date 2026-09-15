@@ -37,6 +37,8 @@ from ._core import (
     sweep,
 )
 from ._hot.decl import HotCompileError, State, hot
+from ._slow.decl import every
+from ._slow.replay import ReplayResult, replay
 from .data import load_csv
 from .results import FIXED_SCALE, sweep_frame, to_pandas
 from .strategy import (
@@ -78,6 +80,7 @@ __all__ = [
     "Param",
     "Portfolio",
     "PositionView",
+    "ReplayResult",
     "StaleViewError",
     "State",
     "Strategy",
@@ -87,9 +90,11 @@ __all__ = [
     "build_info",
     "disable_logging",
     "enable_logging",
+    "every",
     "hot",
     "inspect_journal",
     "load_csv",
+    "replay",
     "run_backtest",
     "strategies",
     "sweep",

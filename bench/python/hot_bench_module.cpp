@@ -59,6 +59,10 @@ struct BenchCtx {
   void trip_kill(KillReason) noexcept {}
   void request_stop() noexcept {}
   [[nodiscard]] TimerId every(Duration, std::uint64_t) noexcept { return TimerId{}; }
+  // Used only with a slow channel attached, which the benchmark never does.
+  [[nodiscard]] TimerId once(Duration, std::uint64_t) noexcept { return TimerId{}; }
+  [[nodiscard]] bool killed() const noexcept { return false; }
+  [[nodiscard]] Qty open_qty(InstrumentId, Side) const noexcept { return Qty{}; }
 };
 
 // BTCUSDT (tick 0.01, lot 0.00001), four touches with 20 levels a side, four positions.

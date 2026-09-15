@@ -447,6 +447,7 @@ class CompiledHot:
             "record": self.spec.initial_record(instance),
             "param_bytes": self.param_bytes,
             "book_depth": self.book_depth,
+            "params": self.spec.param_fields(),
         }
 
 
@@ -468,11 +469,74 @@ _WHAT = {
 }
 
 
+def source_hash(spec: HotSpec) -> str:
+    """SHA-256 over the `self` record layout, each hot hook's name, period and source, and the source
+    of the numba.njit functions the hooks reach. A replay with a different hash is a what-if run."""
+    h = hashlib.sha256()
+    for field_name, code in spec.fields():
+        h.update(f"field {field_name} {code}\n".encode())
+    hooks = {**spec.hooks, **spec.timers}
+    for name in sorted(hooks):
+        h.update(f"hook {name} {hooks[name].period_ns}\n".encode())
+        h.update(_source(hooks[name].fn))
+    for fn in sorted(_helpers([hk.fn for hk in hooks.values()]),
+                     key=lambda f: (f.__module__ or "", f.__qualname__)):
+        h.update(f"helper {fn.__module__}.{fn.__qualname__}\n".encode())
+        h.update(_source(fn))
+    return h.hexdigest()
+
+
+def _source(fn: Any) -> bytes:
+    try:
+        import inspect
+
+        return inspect.getsource(fn).encode()
+    except (OSError, TypeError):  # no source file (exec, REPL): the bytecode and constants
+        return fn.__code__.co_code + repr(fn.__code__.co_consts).encode()
+
+
+def _helpers(functions: List[Any]) -> List[Any]:
+    """The Python functions of the numba.njit dispatchers that `functions` reach through globals and
+    closures."""
+    found: Dict[int, Any] = {}
+    pending = list(functions)
+    seen = set()
+    while pending:
+        fn = pending.pop()
+        if id(fn) in seen or not isinstance(fn, pytypes.FunctionType):
+            continue
+        seen.add(id(fn))
+        values = []
+        code_objects = [fn.__code__]
+        while code_objects:
+            code = code_objects.pop()
+            values.extend(fn.__globals__[n] for n in code.co_names if n in fn.__globals__)
+            code_objects.extend(c for c in code.co_consts if isinstance(c, pytypes.CodeType))
+        for cell in fn.__closure__ or ():
+            try:
+                values.append(cell.cell_contents)
+            except ValueError:  # an empty cell
+                continue
+        for value in values:
+            if isinstance(value, numba.core.dispatcher.Dispatcher):
+                found[id(value.py_func)] = value.py_func
+                pending.append(value.py_func)
+    return list(found.values())
+
+
 def run(config: Any, data: Any, instance: Any, name: str, spec: HotSpec, cache: bool,
-        params: Mapping[str, str]) -> Tuple[Any, Optional[Dict[str, Any]], int]:
-    """(result, error, hook calls); error is None or a dict describing the failure."""
+        params: Mapping[str, str], metadata: str = "",
+        slow: Optional[Dict[str, Any]] = None) -> Tuple[Any, Optional[Dict[str, Any]], int]:
+    """(result, error, hook calls); error is None or a dict describing the failure. The error of
+    the slow tier, when there is one, is in `slow["error"]` (the exception) and `slow["failure"]`
+    (the failure code) afterwards."""
     program = compiled(type(instance), spec, cache).program(instance)
-    result, error, calls = _core._run_hot_strategy(config, data, name, dict(params), program)
+    result, error, calls, slow_error, failure, events = _core._run_hot_strategy(
+        config, data, name, dict(params), program, metadata, slow)
+    if slow is not None:
+        slow["error"] = slow_error
+        slow["failure"] = failure
+        slow["events"] = events
     if error is None:
         return result, None, calls
     status, code, hook, timer, at_ns, events, kill_reason = error

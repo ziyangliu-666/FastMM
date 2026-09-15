@@ -15,8 +15,13 @@
 // and no message differed (ReplayResult::ok()). A different strategy or parameters turn the
 // same call into a what-if run (ok() is then expected to be false).
 #include "fastmm/backtest/backtest_config.hpp"
+#include "fastmm/core/engine_runner.hpp"
+#include "fastmm/strategies/params.hpp"
+#include "fastmm/strategies/registry.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 
 namespace fastmm::bt {
@@ -65,6 +70,16 @@ struct JournalInfo {
   std::uint64_t replace_venues = 0;
   bool engine_time = false;  // the events carry the engine clock
   std::string config_toml;   // embedded effective configuration (empty: none)
+  std::string metadata;      // `key=value` lines about the strategy (empty: none)
+};
+
+// A strategy outside the registry (a Python hot strategy): the name for the result, the parameter
+// schema that ParamUpdate fields are matched against, and a factory that builds the runner on the
+// sim::ReplayBackend that `deps.backend` points at.
+struct ReplayStrategy {
+  std::string name;
+  const ParamSchema* schema = nullptr;
+  std::function<std::unique_ptr<IEngineRunner>(RunnerDeps& deps)> make;
 };
 
 // Throws std::runtime_error when the file cannot be opened / validated.
@@ -84,6 +99,11 @@ struct JournalInfo {
 [[nodiscard]] ReplayResult replay_journal(const std::string& path,
                                           const BacktestConfig& cfg,
                                           const ReplayOptions& opt = {});
+// Replays `strategy` instead of a registered one (opt.strategy is ignored).
+[[nodiscard]] ReplayResult replay_journal(const std::string& path,
+                                          const BacktestConfig& cfg,
+                                          const ReplayOptions& opt,
+                                          const ReplayStrategy& strategy);
 // Replays with the journal's embedded configuration (journal_config(path)).
 [[nodiscard]] ReplayResult replay_journal(const std::string& path, const ReplayOptions& opt = {});
 

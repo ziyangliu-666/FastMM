@@ -10,6 +10,18 @@ All notable changes are recorded here (Keep a Changelog format).
   engine thread through the C ABI in `strategies/hot_abi.h`, with `fastmm.State`, `fastmm.fx` and
   the `fastmm[hot]` extra. A failing hook trips the kill switch with the new
   `KillReason::StrategyError`; `StrategyContext::trip_kill(reason)` is new.
+- Python slow methods in backtests (ADR-0013, sections 1 and 2): `on_start`, `on_stop` and
+  `@fastmm.every(period, timeout=)` methods beside hot hooks, with `ctx.snapshot()`,
+  `ctx.recent(inst)`, `ctx.fills()`, `ctx.publish(inst=None, **values)`, `strategy.publish()` from
+  any thread and a hot `on_params` hook. They run at simulated times; `run_backtest` gains
+  `slow_delay_ms`, `max_param_age_ms`, `fills_capacity` and `recent_rows`, and
+  `BacktestResult.slow_methods` reports their wall time. `fastmm.replay(journal, MyMM)` replays a
+  hot strategy from a journal's parameter updates. The engine side is `strategies/slow_channel.hpp`
+  (snapshot seqlock, recent rows, fills ring, watchdog state, parameter sink); `HotStrategy` applies
+  per-instrument updates. `sim::SimDriver::set_slow_hooks`, `sim::ParamSchedule::threaded_sink`,
+  `bt::ReplayStrategy` and `BacktestConfig.max_param_age_ms` (Python) are new. The journal header
+  gains an optional metadata text after the parameter table (`metadata_bytes`, `metadata_crc32c`
+  from reserved bytes; version 3 unchanged).
 
 ### Changed
 - Parameter updates (ADR-0013). `EventType::ParamUpdate` (26) carries up to 32 (field index, raw

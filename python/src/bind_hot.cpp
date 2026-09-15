@@ -1,18 +1,25 @@
-// Python hot hooks (ADR-0013, section 1): the ABI layout that fastmm/_hot/abi.py checks at import,
-// and the backtest of a compiled hot strategy (HotStrategy, run with the GIL released).
+// Python hot hooks and slow methods (ADR-0013, sections 1 and 2): the ABI layouts that
+// fastmm/_hot/abi.py and fastmm/_slow/abi.py check at import, the backtest of a compiled hot
+// strategy (HotStrategy, run with the GIL released, its slow methods at simulated times) and its
+// replay.
 #include "bind_common.hpp"
+#include "slow_channel_py.hpp"
 
 #include "fastmm/backtest/backtest_config.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/enums.hpp"
+#include "fastmm/sim/param_schedule.hpp"
 #include "fastmm/sim/sim_backend.hpp"
 #include "fastmm/sim/sim_driver.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 #include "fastmm/strategies/hot_abi.h"
 #include "fastmm/strategies/hot_strategy.hpp"
+#include "fastmm/strategies/params.hpp"
+#include "fastmm/strategies/slow_channel.hpp"
 
 #include <pybind11/stl.h>
 
@@ -20,21 +27,29 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace fastmm::py_bind {
 
 namespace {
 
 using HotSimEngine = Engine<HotStrategy, SimClock, sim::SimTransport, InlineFeed>;
+using HotReplayEngine = Engine<HotStrategy, SimClock, sim::ReplayTransport, sim::JournalFeed>;
 
 // Hook calls of the hot backtest running in this process, published after every engine step, and
 // whether one is running. Read by _hot_hold_gil (tests); two concurrent runs share them.
 std::atomic<std::uint64_t> g_hot_calls{0};
 std::atomic<int> g_hot_running{0};
+// The slow channel of the hot backtest running on this thread: EngineHooks::stopped gets only the
+// engine as its context.
+thread_local const SlowChannel* t_slow_channel = nullptr;
 
 // NOLINTBEGIN(bugprone-macro-parentheses)
 #define FASTMM_HOT_OFFSET(d, T, f) (d)[#f] = offsetof(T, f);
@@ -116,7 +131,27 @@ fastmm_hot_fn fn_from(py::handle address) {
   return reinterpret_cast<fastmm_hot_fn>(a);  // NOLINT(performance-no-int-to-ptr)
 }
 
-HotProgram program_from(const py::dict& program) {
+// The parameters of a hot strategy as a ParamSchema, for the journal's parameter table and for
+// matching ParamUpdate fields in replay. The descriptors do not parse or format values; the Python
+// package validates publishes.
+struct RuntimeSchema {
+  std::vector<std::string> names;
+  ParamSchema schema;
+};
+
+ParamType param_type(HotParamField::Kind kind) noexcept {
+  switch (kind) {
+    case HotParamField::Kind::Bool:
+      return ParamType::Bool;
+    case HotParamField::Kind::Int:
+      return ParamType::Int;
+    case HotParamField::Kind::Double:
+      break;
+  }
+  return ParamType::Double;
+}
+
+HotProgram program_from(const py::dict& program, RuntimeSchema& schema) {
   HotProgram p;
   for (const auto& [name, address] : program["hooks"].cast<py::dict>()) {
     const auto n = name.cast<std::string>();
@@ -145,17 +180,92 @@ HotProgram program_from(const py::dict& program) {
   p.record.assign(record.begin(), record.end());
   p.param_bytes = program["param_bytes"].cast<std::size_t>();
   if (program.contains("book_depth")) p.book_depth = program["book_depth"].cast<bool>();
+  if (program.contains("params")) {
+    const auto params = program["params"].cast<py::list>();
+    if (params.size() > kMaxParams) {
+      throw py::value_error("fastmm: at most " + std::to_string(kMaxParams) +
+                            " parameters in a hot strategy");
+    }
+    schema.names.reserve(params.size());  // ParamDesc::name points into these strings
+    for (const auto& item : params) {
+      const auto t = item.cast<py::tuple>();
+      const auto kind = t[1].cast<int>();
+      if (kind < 0 || kind > static_cast<int>(HotParamField::Kind::Double))
+        throw py::value_error("fastmm: bad hot parameter kind");
+      HotParamField f;
+      f.kind = static_cast<HotParamField::Kind>(kind);
+      f.offset = t[2].cast<std::uint32_t>();
+      f.raw_offset = t[3].cast<std::uint32_t>();
+      p.params.push_back(f);
+      schema.names.push_back(t[0].cast<std::string>());
+    }
+    for (std::size_t i = 0; i < p.params.size(); ++i) {
+      ParamDesc d{};
+      d.name = schema.names[i].c_str();
+      d.type = param_type(p.params[i].kind);
+      d.doc = "";
+      d.parse = [](void*, std::string_view) -> std::optional<std::string> {
+        return std::string("a hot strategy's parameters change through ParamUpdate messages");
+      };
+      d.format = [](const void*) { return std::string(); };
+      d.get_raw = [](const void*) noexcept -> std::int64_t { return 0; };
+      d.set_raw = [](void*, std::int64_t) noexcept {};
+      static_cast<void>(schema.schema.add(d));
+    }
+  }
   p.stop_on_error = true;
   return p;
+}
+
+// fastmm._core's wrapper of a slow channel (slow_channel_py.hpp).
+struct CoreSlowChannel {
+  std::shared_ptr<SlowChannel> channel;
+  std::vector<std::string> symbols;
+  std::vector<std::uint64_t> recent_cursors;
+};
+
+std::vector<std::string> symbols_of(const InstrumentTable& instruments) {
+  std::vector<std::string> out(instruments.size());
+  for (const Instrument& inst : instruments) {
+    if (inst.id.value < out.size()) out[inst.id.value] = std::string(inst.symbol.view());
+  }
+  return out;
+}
+
+// The slow tier of one backtest: the Python runner and the first error it raised.
+struct SlowRun {
+  py::object runner;
+  py::object error;
+  SlowChannel* channel = nullptr;
+};
+
+// SlowHooks::run: the runner's wake(now_ns) with the GIL held. An exception stops the slow tier
+// (SlowFailure::Exception, which ends the run after this call) and is kept for the caller.
+Timestamp run_slow(void* ctx, Timestamp now) {
+  auto* run = static_cast<SlowRun*>(ctx);
+  const py::gil_scoped_acquire gil;
+  try {
+    const auto next = run->runner.attr("wake")(now.ns).cast<std::int64_t>();
+    return next < 0 ? Timestamp::max() : Timestamp{next};
+  } catch (py::error_already_set& e) {
+    run->error = e.value();
+  } catch (const std::exception& e) {
+    run->error = py::module_::import("builtins").attr("RuntimeError")(e.what());
+  }
+  run->channel->fail(SlowFailure::Exception);
+  return Timestamp::max();
 }
 
 }  // namespace
 
 py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            sim::MdSource* source,
-                           const py::dict& program) {
-  const HotProgram p = program_from(program);
-  bt::BacktestSession session(cfg, source);
+                           const py::dict& program,
+                           const std::string& metadata,
+                           const py::object& slow) {
+  RuntimeSchema schema;
+  const HotProgram p = program_from(program, schema);
+  bt::BacktestSession session(cfg, source, &schema.schema, metadata);
   std::unique_ptr<IEngineRunner> runner =
       session.backend().template make_runner<HotStrategy>(session.deps());
   auto* er = static_cast<EngineRunner<HotSimEngine, HotStrategy>*>(runner.get());
@@ -163,11 +273,50 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
   if (!strategy.attach(p, er->engine().instruments())) {
     throw py::value_error("fastmm: invalid hot program (record smaller than its parameter block)");
   }
+
+  // The slow tier: a channel, parameter updates at simulated times and the runner's wake-ups.
+  sim::ParamSchedule schedule;
+  std::shared_ptr<SlowChannel> channel;
+  SlowRun slow_run;
+  slow_run.error = py::none();
+  if (!slow.is_none()) {
+    const auto s = slow.cast<py::dict>();
+    SlowChannelConfig cc;
+    cc.instruments = cfg.instruments.size();
+    const auto capacity = s["fills_capacity"].cast<std::size_t>();
+    cc.fills_capacity =
+        capacity > 0 ? capacity
+                     : slow_fills_capacity(cfg.engine.risk.orders_per_sec,
+                                           Duration{s["longest_gap_ns"].cast<std::int64_t>()});
+    cc.recent_rows = s["recent_rows"].cast<std::size_t>();
+    cc.snapshot_interval = Duration{s["snapshot_interval_ns"].cast<std::int64_t>()};
+    channel = std::make_shared<SlowChannel>(cc);
+    if (!strategy.attach_slow(channel.get()))
+      throw py::value_error("fastmm: the slow channel is smaller than the instrument table");
+    schedule.set_delay(Duration{s["delay_ns"].cast<std::int64_t>()});
+    channel->set_param_sink(schedule.threaded_sink(session.backend().clock));
+    session.set_param_schedule(&schedule);
+    slow_run.runner = s["runner"];
+    slow_run.channel = channel.get();
+    CoreSlowChannel wrapper{
+        channel, symbols_of(cfg.instruments), std::vector<std::uint64_t>(cc.instruments, 0)};
+    const auto first =
+        slow_run.runner
+            .attr("start")(py::cast(std::move(wrapper)), session.backend().clock.now().ns)
+            .cast<std::int64_t>();
+    sim::SlowHooks sh;
+    sh.ctx = &slow_run;
+    sh.run = &run_slow;
+    sh.first = first < 0 ? Timestamp::max() : Timestamp{first};
+    session.set_slow_hooks(sh);
+  }
+
   sim::EngineHooks hooks = session.backend().hooks;
   hooks.stopped = [](void* c) {
     auto* e = static_cast<HotSimEngine*>(c);
     g_hot_calls.store(e->strategy().calls(), std::memory_order_relaxed);
-    return e->stopped();
+    return e->stopped() ||
+           (t_slow_channel != nullptr && t_slow_channel->failure() != SlowFailure::None);
   };
   std::shared_ptr<bt::BacktestResult> result;
   {
@@ -175,14 +324,21 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
     strategy.warm_up(er->engine().instruments());
     g_hot_calls.store(0, std::memory_order_relaxed);
     g_hot_running.store(1, std::memory_order_relaxed);
+    t_slow_channel = channel.get();
     struct Running {
       Running() = default;
       Running(const Running&) = delete;
       Running& operator=(const Running&) = delete;
-      ~Running() { g_hot_running.store(0, std::memory_order_relaxed); }
+      Running(Running&&) = delete;
+      Running& operator=(Running&&) = delete;
+      ~Running() {
+        g_hot_running.store(0, std::memory_order_relaxed);
+        t_slow_channel = nullptr;
+      }
     } const running;
     result = std::make_shared<bt::BacktestResult>(session.run(hooks, runner.get(), cfg.strategy));
   }
+  if (channel) channel->close();
   py::object error = py::none();
   if (strategy.failed()) {
     const HotError& e = strategy.error();
@@ -195,7 +351,9 @@ py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
         er->engine().stats().events,
         std::string(to_string(er->engine().kill_reason())));
   }
-  return py::make_tuple(result, error, strategy.calls());
+  const int failure = channel ? static_cast<int>(channel->failure()) : 0;
+  return py::make_tuple(
+      result, error, strategy.calls(), slow_run.error, failure, er->engine().stats().events);
 }
 
 void bind_hot(py::module_& m) {
@@ -212,6 +370,106 @@ void bind_hot(py::module_& m) {
         return d;
       },
       "Internal: layout of the hot hook C ABI (include/fastmm/strategies/hot_abi.h).");
+
+  m.def(
+      "_slow_abi",
+      &slow_abi,
+      "Internal: layout of the slow channel structs (include/fastmm/strategies/slow_channel.hpp).");
+
+  m.def(
+      "_hot_fixed_raw",
+      [](double x) { return detail::hot_fixed_raw(x); },
+      py::arg("x"),
+      "Internal (tests): the `_raw` twin the engine computes for a published float.");
+
+  py::class_<CoreSlowChannel> channel(
+      m,
+      "_SlowChannel",
+      "Internal: the channel between the engine and a strategy's slow methods. The constructor "
+      "(tests, live runner) makes one whose updates go to its own ring.");
+  channel.def(py::init([](std::size_t instruments,
+                          std::size_t fills_capacity,
+                          std::size_t recent_rows,
+                          std::int64_t snapshot_interval_ns,
+                          std::vector<std::string> symbols) {
+                SlowChannelConfig cc;
+                cc.instruments = instruments;
+                cc.fills_capacity = fills_capacity;
+                cc.recent_rows = recent_rows;
+                cc.snapshot_interval = Duration{snapshot_interval_ns};
+                if (symbols.size() < instruments) symbols.resize(instruments);
+                return CoreSlowChannel{std::make_shared<SlowChannel>(cc),
+                                       std::move(symbols),
+                                       std::vector<std::uint64_t>(instruments, 0)};
+              }),
+              py::arg("instruments") = 1,
+              py::arg("fills_capacity") = 4096,
+              py::arg("recent_rows") = 4096,
+              py::arg("snapshot_interval_ns") = 10'000'000,
+              py::arg("symbols") = std::vector<std::string>{});
+  def_slow_channel(channel);
+
+  m.def(
+      "_replay_hot_strategy",
+      [](const py::object& path,
+         const bt::BacktestConfig& config,
+         const std::string& name,
+         const py::dict& program,
+         bool verify,
+         bool param_updates) {
+        const std::string p = fspath(path);
+        RuntimeSchema schema;
+        HotProgram hot = program_from(program, schema);
+        hot.stop_on_error = false;  // a replay drains the journal
+        bt::ReplayOptions opt;
+        opt.verify = verify;
+        opt.param_updates = param_updates;
+        bt::ReplayStrategy strategy;
+        strategy.name = name;
+        strategy.schema = &schema.schema;
+        strategy.make = [&hot](RunnerDeps& deps) -> std::unique_ptr<IEngineRunner> {
+          auto* backend = static_cast<sim::ReplayBackend*>(deps.backend);
+          std::unique_ptr<IEngineRunner> r = backend->template make_runner<HotStrategy>(deps);
+          auto* er = static_cast<EngineRunner<HotReplayEngine, HotStrategy>*>(r.get());
+          if (!er->strategy().attach(hot, er->engine().instruments()))
+            throw std::invalid_argument("fastmm: invalid hot program");
+          er->strategy().warm_up(er->engine().instruments());
+          return r;
+        };
+        bt::ReplayResult res;
+        {
+          const py::gil_scoped_release release;
+          res = bt::replay_journal(p, config, opt, strategy);
+        }
+        py::dict d;
+        d["strategy"] = res.strategy;
+        d["outbound_sha256"] = res.outbound_sha256;
+        d["recorded_sha256"] = res.recorded_sha256;
+        d["outbound_messages"] = res.outbound_messages;
+        d["recorded_messages"] = res.recorded_messages;
+        d["events"] = res.events;
+        d["first_mismatch"] = res.first_mismatch;
+        d["expected_message"] = res.expected_message;
+        d["actual_message"] = res.actual_message;
+        d["ok"] = res.ok();
+        return d;
+      },
+      py::arg("path"),
+      py::arg("config"),
+      py::arg("name"),
+      py::arg("program"),
+      py::arg("verify"),
+      py::arg("param_updates"),
+      "Internal: replay of a compiled hot strategy from a journal; use fastmm.replay().");
+
+  m.def(
+      "_journal_config",
+      [](const py::object& path) {
+        const std::string p = fspath(path);
+        return bt::journal_config(p);
+      },
+      py::arg("path"),
+      "Internal: the configuration a journal embeds (RuntimeError when it has none).");
 
   m.def(
       "_hot_hold_gil",
