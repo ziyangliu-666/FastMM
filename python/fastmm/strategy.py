@@ -411,14 +411,9 @@ class Strategy:
         checks and effect as ctx.publish(). False when no session of this instance runs or the
         session did not take the update."""
         publisher = self.__dict__.get("_fastmm_publisher")
-        if publisher is not None:
-            return bool(publisher.publish(inst, values))
-        channel = self.__dict__.get("_fastmm_live_params")  # fastmm.run_live without slow methods
-        if channel is None:
+        if publisher is None:
             return False
-        if inst is not None and not isinstance(inst, int):
-            raise ValueError(f"instrument must be an int id in a live session, got {inst!r}")
-        return bool(channel.publish(values, inst))
+        return bool(publisher.publish(inst, values))
 
 
 def _accepts(fn: Any, nargs: int) -> bool:

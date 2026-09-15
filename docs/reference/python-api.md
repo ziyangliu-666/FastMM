@@ -304,7 +304,7 @@ Defining the class raises `TypeError` when an `@fastmm.every` method has another
 
 | Member | Result |
 |---|---|
-| `now_ns` | session time of the call, ns (simulated in backtests) |
+| `now_ns` | session time of the call, ns (simulated in backtests, `time.time_ns()` live) |
 | `instruments` | instrument symbols by id |
 | `snapshot()` | a `Snapshot` of the latest state the engine published |
 | `recent(inst)` | `Recent(rows, dropped)`: recent top-of-book changes and trades of one instrument |
@@ -353,7 +353,7 @@ The engine writes fills into a ring that the slow tier empties whenever it runs;
 
 The call checks each name, parses the value and checks its range as `fastmm.Param` does, then runs `validate()` on a copy of the instance with the new values, and raises `ValueError` at the first error; nothing is sent then. An update names at most 32 parameters. An update without values changes nothing and renews `max_param_age_ms`.
 
-`strategy.publish(inst=None, **values)` does the same from any Python thread while a session of that instance runs, for a model outside the slow methods such as a thread started in `on_start`. It returns `False` before the session starts and after it stops. In a backtest its update applies at the simulated time the engine has reached when it next checks for updates, which depends on thread timing.
+`strategy.publish(inst=None, **values)` does the same from any Python thread while a session of that instance runs, for a model outside the slow methods such as a thread started in `on_start`. It returns `False` before `on_start` runs and after the session stops. In a backtest its update applies at the simulated time the engine has reached when it next checks for updates, which depends on thread timing.
 
 With `max_param_age_ms` above 0, quoting is disabled before the first update and while none has applied for that long ([Parameter updates](strategy-api.md#parameter-updates)). For a class with `@fastmm.every` methods, a configured value of 0 means 3 times the shortest period, at least 1,000 ms.
 
@@ -381,9 +381,9 @@ A slow method that raises, or a full fills ring, ends the run after that event a
 
 ### Replay
 
-`fastmm.replay(journal, MyMM, verify=True, config=None, params=None, param_updates=True)` replays a journal written by a backtest with `config.journal_out`. The engine consumes the recorded inputs, parameter updates included, with `MyMM`'s hot hooks; slow methods do not run. The parameters start at the recorded values, `max_param_age_ms` is the recorded one, and the configuration is the one the journal embeds unless `config` is given. With `verify=True` every sent message is compared with the recording.
+`fastmm.replay(journal, MyMM, verify=True, config=None, params=None, param_updates=True)` replays a journal written by a backtest with `config.journal_out` or by a live session. The engine consumes the recorded inputs, parameter updates included, with `MyMM`'s hot hooks; slow methods do not run. The parameters start at the recorded values, `max_param_age_ms` is the recorded one, and the configuration is the one the journal embeds unless `config` is given. With `verify=True` every sent message is compared with the recording.
 
-A backtest journal's `strategy_meta` holds the keys a live session writes ([Live sessions](#live-sessions)) and also `max_param_age_ms` and `param.<name>` for each starting parameter; without `param.` keys (a live journal) the parameters come from the embedded configuration. A difference in `class`, `hot_source_sha256`, `fastmm` or `numba`, `params`, or `param_updates=False` makes the replay a what-if run: `what_if` is `True` and `what_if_reasons` lists the differences.
+A journal's `strategy_meta` holds the keys listed under [Live sessions](#live-sessions), `max_param_age_ms` and `param.<name>` for each starting parameter; without `param.` keys (a journal from an earlier version) the parameters come from the embedded configuration. A difference in `class`, `hot_source_sha256`, `fastmm` or `numba`, `params`, or `param_updates=False` makes the replay a what-if run: `what_if` is `True` and `what_if_reasons` lists the differences.
 
 | `ReplayResult` field | Meaning |
 |---|---|
@@ -395,7 +395,7 @@ A backtest journal's `strategy_meta` holds the keys a live session writes ([Live
 
 ## Live sessions
 
-`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs `pip install "fastmm-engine[live]"` (CPython 3.10 or later) and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
+`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False, fills_capacity=None, recent_rows=4096, slow_tier_timeout_ms=10000)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs `pip install "fastmm-engine[live]"` (CPython 3.10 or later) and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
 
 | Argument | Meaning |
 |---|---|
@@ -403,21 +403,42 @@ A backtest journal's `strategy_meta` holds the keys a live session writes ([Live
 | `config` | a `fastmm-live` configuration ([Configuration](configuration.md)) |
 | `params` | overrides on top of `[strategy.params]`, which apply only when `[strategy] name` is `py:<Class>`, `<module>:<Class>` or `<Class>` |
 | `duration` | seconds, or a string such as `"60s"`; `None` runs until SIGINT or SIGTERM |
+| `fills_capacity`, `recent_rows` | as in `run_backtest` ([In backtests](#in-backtests)) |
+| `slow_tier_timeout_ms` | how long to wait for the slow thread after the session stops |
 | the other keywords | the `fastmm-live` options of the same names ([Command lines](cli.md#fastmm-live)) |
 
 Before any venue is contacted, `run_live` applies the parameters, compiles the hooks without the Numba cache and calls each once on scratch data. It then runs the `fastmm-live` session with the GIL released: the same threads, log, status file, journal, kill switch, `on_kill` and exit codes.
 
 | Case | Result |
 |---|---|
-| a configuration, parameter or compilation error, or a class without hot hooks | a message on stderr; returns 3 |
+| a configuration, parameter or compilation error, a class without hot hooks, or `on_start` raises | a message on stderr; returns 3 |
 | a hook raises, calls `ctx.fail` or sets a bad float level | the kill switch trips with `StrategyError` and stderr names the hook; returns 6 with `on_kill = "exit"` |
-| `run_live` while a session runs in the process | `RuntimeError` |
+| the slow tier fails ([Slow methods live](#slow-methods-live)) | the session stops as on SIGTERM; returns 7 |
+| `run_live` while a session runs in the process | `RuntimeError`, before `on_start` runs |
 | `run_live` in a child forked while a session runs | `RuntimeError`; start children with the `spawn` or `forkserver` method |
 
 - SIGINT and SIGTERM stop the session. The session replaces the process's handlers while it runs and restores them when it returns, so `KeyboardInterrupt` is not raised.
 - Before the engine starts, every thread of the process, including numpy's BLAS threads, is limited to the CPUs not listed in `[engine] cpu` and `net_cpus`; threads started later inherit that. Without pinned CPUs nothing changes. Thread-count variables such as `OPENBLAS_NUM_THREADS` act only when set before numpy loads.
-- The journal's parameter table lists the class's parameters. `inspect_journal(path)["strategy_meta"]` returns `class` (`module:qualname`), `hot_source_sha256` (the source of the hot hooks and the `numba.njit` functions they call) and the `fastmm`, `numba`, `llvmlite` and `python` versions ([Journal format](journal-format.md)).
+- The journal's parameter table lists the class's parameters. `inspect_journal(path)["strategy_meta"]` returns `class` (`module:qualname`), `hot_source_sha256` (the source of the hot hooks and the `numba.njit` functions they call), the `fastmm`, `numba`, `llvmlite` and `python` versions, `max_param_age_ms` and `param.<name>` for each starting parameter ([Journal format](journal-format.md)). `fastmm.replay` replays it ([Replay](#replay)).
+- `strategy.publish` works from `on_start` until the session stops; after that it returns `False`.
+
+### Slow methods live
+
+1. `run_live` moves the calling thread off the CPUs in `[engine] cpu` and `net_cpus`, so the threads it starts next inherit that, and runs `on_start` on the calling thread before any venue is contacted. `on_start` has no timeout.
+2. The slow thread (`fastmm-slow`) starts and runs each `@fastmm.every` method at once and then once per period of wall-clock time. Between calls it empties the fills ring every 10 ms.
+3. The session starts. The engine publishes snapshots, recent rows and fills into the slow channel as in backtests. Publishes from `ctx.publish` and `strategy.publish` share one ring to the engine; a publish returns `False` when the ring is full.
+4. The control thread checks the slow tier every 50 ms without the GIL. A failure stops the session like SIGTERM: kill switch, cancel-all, exit code 7, or 5 when a cancel-all fails.
+5. When the session has stopped, the slow thread finishes its current call, runs `on_stop` and ends. An exception in `on_stop` is printed and does not change the exit code. If the thread has not ended `slow_tier_timeout_ms` after the session stopped, `run_live` issues a `RuntimeWarning` and returns; the thread keeps running as a daemon thread.
+
+| Failure | Log line (ERROR) | stderr |
+|---|---|---|
+| a slow method raised | `fastmm-live: slow tier failed (Exception): a slow method raised` | `fastmm: py:<Class>.<method> raised <Type>: <message>` and the traceback |
+| a call ran past its `timeout` | `fastmm-live: slow tier failed (Timeout): a slow method ran past its timeout` | `fastmm: py:<Class>.<method> ran past its timeout (<n> s); the slow tier stopped the session` |
+| the fills ring was full | `fastmm-live: slow tier failed (FillsOverflow): the fills ring was full` | `fastmm: py:<Class>: the fills ring (<n> fills) was full; ...; pass a larger fills_capacity` |
+| the slow thread ended while the session ran | `fastmm-live: slow tier failed (ThreadExited): the slow thread ended` | `fastmm: py:<Class>: the slow thread ended while the session ran; ...` |
+
+The log line is followed by `fastmm-live: shutting down (slow tier failed)`. A method that stops publishing (a stall) disables quoting after `max_param_age_ms`, which the engine logs as `no parameter update for <n> ms (max_param_age_ms): quotes pulled until the next`; this comes before the timeout stops the session when `max_param_age_ms` is below the method's `timeout`.
 
 ### python -m fastmm run
 
-`python -m fastmm run <module>:<Class> --config <file> [options]` imports the class, with the current directory first on the module path, and exits with the code `run_live` returns. The options are the `fastmm-live` ones: `--param key=value` (repeatable), `--duration`, `--dry-run`, `--record-raw`, `--journal`, `--no-journal`, `--status`, `--no-status`, `--log` and `--allow-inline-secrets`. A bad command line exits with 2 and a class that cannot be imported with 3. Each of `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` that is not set is set to 1, and the interpreter starts again once so that numpy sees them.
+`python -m fastmm run <module>:<Class> --config <file> [options]` imports the class, with the current directory first on the module path, and exits with the code `run_live` returns. The options are the `fastmm-live` ones: `--param key=value` (repeatable), `--duration`, `--dry-run`, `--record-raw`, `--journal`, `--no-journal`, `--status`, `--no-status`, `--log` and `--allow-inline-secrets`, and `--slow-tier-timeout-ms <ms>` (default 10000). When the slow thread has not ended within that time after the session stopped, the process prints `fastmm: exiting with code <n> without waiting for the slow thread` and exits with `os._exit`. A bad command line exits with 2 and a class that cannot be imported with 3. Each of `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` that is not set is set to 1, and the interpreter starts again once so that numpy sees them.

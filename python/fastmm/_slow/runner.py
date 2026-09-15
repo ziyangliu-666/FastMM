@@ -57,6 +57,10 @@ class SlowRunner:
         self.ctx = context.SlowContext(self)
         self.now_ns = 0
         self.failed_method: Optional[str] = None
+        self.current: Optional[str] = None
+        """The method running now (read by another thread to name a call past its timeout)."""
+        self.overran: Optional[str] = None
+        """The first method whose call ran past its timeout."""
         self.timings: Dict[str, List[int]] = {name: [] for name, *_ in self.methods}
         self._due: List[int] = []
         self._fills: List[np.ndarray] = []
@@ -174,6 +178,7 @@ class SlowRunner:
         t0 = time.monotonic_ns()
         if timeout_ns > 0:
             ch.begin_call(t0, timeout_ns)
+        self.current = name
         try:
             fn(self.instance, self.ctx)
         except BaseException:
@@ -182,8 +187,11 @@ class SlowRunner:
             raise
         finally:
             t1 = time.monotonic_ns()
+            self.current = None
             if timeout_ns > 0:
                 ch.end_call(t1)
+                if t1 - t0 > timeout_ns and self.overran is None:
+                    self.overran = name
             else:
                 ch.heartbeat(t1)
             if name in self.timings:
