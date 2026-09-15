@@ -56,6 +56,7 @@ enum HookIndex : std::uint8_t {
   kTimer,
   kConnection,
   kQuoting,
+  kParams,
   kHookCount
 };
 
@@ -91,6 +92,7 @@ class AllHooks : public StrategyBase<AllHooksParams> {
   }
   void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hit(kConnection); }
   void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
+  void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
   // [end:hooks]
 
   [[nodiscard]] int count(HookIndex h) const noexcept { return counts_[h]; }
@@ -263,12 +265,13 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   h.push(ticker.hdr);  // on_book_ticker
   OptionTickerMsg option{};
   init_header(option, EventType::OptionTicker, h.instrument(), VenueId{0});
-  h.push(option.hdr);   // on_option_ticker
-  h.disconnect();       // on_connection (market data lost)
-  h.reconnect();        // on_connection (live again)
-  h.pull_quotes();      // on_quoting(false)
-  h.resume_quotes();    // on_quoting(true)
-  h.engine().finish();  // on_stop
+  h.push(option.hdr);                       // on_option_ticker
+  h.disconnect();                           // on_connection (market data lost)
+  h.reconnect();                            // on_connection (live again)
+  h.pull_quotes();                          // on_quoting(false)
+  h.resume_quotes();                        // on_quoting(true)
+  h.publish({{"half_spread_bps", "7.5"}});  // on_params
+  h.engine().finish();                      // on_stop
   // [end:harness]
 
   const AllHooks& s = h.strategy();
@@ -283,6 +286,8 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   CHECK(s.count(docs::kTimer) >= 1);
   CHECK(s.count(docs::kConnection) == 2);
   CHECK(s.count(docs::kQuoting) == 2);
+  CHECK(s.count(docs::kParams) == 1);
+  CHECK(s.params().half_spread_bps == 7.5_bps);
   for (int i = 0; i < docs::kHookCount; ++i) {
     INFO("hook index " << i);
     CHECK(s.count(static_cast<docs::HookIndex>(i)) > 0);

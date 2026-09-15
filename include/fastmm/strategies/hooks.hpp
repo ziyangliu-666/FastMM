@@ -6,7 +6,7 @@
 //   on_start(ctx)  on_stop(ctx)  on_book(ctx, id, book)  on_book_ticker(ctx, id, m)
 //   on_trade(ctx, id, m)  on_option_ticker(ctx, id, m)  on_fill(ctx, fill)
 //   on_order_update(ctx, u)  on_timer(ctx, timer_id, tag)  on_connection(ctx, m)
-//   on_quoting(ctx, enabled)
+//   on_quoting(ctx, enabled)  on_params(ctx)
 //
 // The engine checks every hook name when it is instantiated. If the strategy has a member with a
 // hook's name (function, template, data member, static, inherited or private) and the engine's
@@ -125,7 +125,8 @@ struct Fill {
     "quoting",                                                                     \
     (Ctx & ctx, bool enabled),                                                     \
     (ctx, enabled),                                                                \
-    "void on_quoting(auto& ctx, bool enabled)")
+    "void on_quoting(auto& ctx, bool enabled)")                                    \
+  X(Params, on_params, "params", (Ctx & ctx), (ctx), "void on_params(auto& ctx)")
 
 // Y(misspelling, hook): names that produce a "did you mean" warning.
 #define FASTMM_STRATEGY_HOOK_NEAR_MISSES(Y) \
@@ -148,6 +149,8 @@ struct Fill {
   Y(on_init, on_start)                      \
   Y(on_shutdown, on_stop)                   \
   Y(on_quote, on_quoting)                   \
+  Y(on_param, on_params)                    \
+  Y(on_parameters, on_params)               \
   Y(onBook, on_book)                        \
   Y(OnBook, on_book)                        \
   Y(onTrade, on_trade)                      \

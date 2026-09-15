@@ -34,6 +34,7 @@
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -86,6 +87,11 @@ struct ParamDesc {
   std::optional<std::string> (*parse)(void* obj, std::string_view value);
   // The field's current value in a form parse() accepts ("0.01", "2.5", "true", "2000").
   std::string (*format)(const void* obj);
+  // The field as the int64 a ParamUpdateMsg carries, and back (engine thread: no checks). Integers
+  // and bool as their value, Price, Qty, Notional and Ratio as raw fixed point, a Duration in ns
+  // and a floating-point field as the bits of the double.
+  std::int64_t (*get_raw)(const void* obj) noexcept;
+  void (*set_raw)(void* obj, std::int64_t raw) noexcept;
 };
 
 inline constexpr std::size_t kMaxParams = 32;
@@ -168,6 +174,8 @@ struct ParamCodec<bool, PlainUnit> {
   }
   [[nodiscard]] static std::string format(bool v) { return v ? "true" : "false"; }
   [[nodiscard]] static double display(bool v) noexcept { return v ? 1.0 : 0.0; }
+  [[nodiscard]] static std::int64_t to_raw(bool v) noexcept { return v ? 1 : 0; }
+  [[nodiscard]] static bool from_raw(std::int64_t raw) noexcept { return raw != 0; }
 };
 
 template <class T>
@@ -182,6 +190,8 @@ struct ParamCodec<T, PlainUnit> {
   }
   [[nodiscard]] static std::string format(T v) { return std::to_string(v); }
   [[nodiscard]] static double display(T v) noexcept { return static_cast<double>(v); }
+  [[nodiscard]] static std::int64_t to_raw(T v) noexcept { return param_cast<std::int64_t>(v); }
+  [[nodiscard]] static T from_raw(std::int64_t raw) noexcept { return param_cast<T>(raw); }
 };
 
 template <class T>
@@ -203,6 +213,12 @@ struct ParamCodec<T, PlainUnit> {
     return {buf, r.ptr};
   }
   [[nodiscard]] static double display(T v) noexcept { return param_cast<double>(v); }
+  [[nodiscard]] static std::int64_t to_raw(T v) noexcept {
+    return std::bit_cast<std::int64_t>(param_cast<double>(v));
+  }
+  [[nodiscard]] static T from_raw(std::int64_t raw) noexcept {
+    return param_cast<T>(std::bit_cast<double>(raw));
+  }
 };
 
 template <class Tag>
@@ -218,6 +234,10 @@ struct ParamCodec<Fixed<Tag>, PlainUnit> {
     return format_scaled(v.raw, kFixedDecimals);
   }
   [[nodiscard]] static double display(Fixed<Tag> v) noexcept { return v.to_double(); }
+  [[nodiscard]] static std::int64_t to_raw(Fixed<Tag> v) noexcept { return v.raw; }
+  [[nodiscard]] static Fixed<Tag> from_raw(std::int64_t raw) noexcept {
+    return Fixed<Tag>::from_raw(raw);
+  }
 };
 
 template <>
@@ -231,6 +251,8 @@ struct ParamCodec<Ratio, BpsUnit> {
   }
   [[nodiscard]] static std::string format(Ratio v) { return format_scaled(v.raw, kBpsDecimals); }
   [[nodiscard]] static double display(Ratio v) noexcept { return v.to_bps(); }
+  [[nodiscard]] static std::int64_t to_raw(Ratio v) noexcept { return v.raw; }
+  [[nodiscard]] static Ratio from_raw(std::int64_t raw) noexcept { return Ratio::from_raw(raw); }
 };
 
 template <>
@@ -248,6 +270,8 @@ struct ParamCodec<Duration, MsUnit> {
   [[nodiscard]] static double display(Duration v) noexcept {
     return static_cast<double>(v.ns) / static_cast<double>(kNsPerMs);
   }
+  [[nodiscard]] static std::int64_t to_raw(Duration v) noexcept { return v.ns; }
+  [[nodiscard]] static Duration from_raw(std::int64_t raw) noexcept { return Duration{raw}; }
 };
 
 template <class Codec, class T>
@@ -350,30 +374,36 @@ std::optional<std::string> validate_params(const P& p) {
 
 // Implementation of the FASTMM_PARAM* macros: the field, then a zero-size registrar whose
 // constructor adds the schema entry while collect_schema() runs.
-#define FASTMM_PARAM_IMPL(unit, type, name, def, lo, hi, doc)                                   \
-  type name = def;                                                                              \
-  struct FastmmReg_##name {                                                                     \
-    FastmmReg_##name() noexcept {                                                               \
-      using FastmmCodec = ::fastmm::detail::ParamCodec<type, unit>;                             \
-      ::fastmm::detail::register_param(::fastmm::ParamDesc{                                     \
-          #name,                                                                                \
-          FastmmCodec::kType,                                                                   \
-          FastmmCodec::display(::fastmm::detail::param_cast<type>(def)),                        \
-          FastmmCodec::display(::fastmm::detail::param_cast<type>(lo)),                         \
-          FastmmCodec::display(::fastmm::detail::param_cast<type>(hi)),                         \
-          doc,                                                                                  \
-          +[](void* fastmm_obj, std::string_view fastmm_value) {                                \
-            return ::fastmm::detail::assign_param<FastmmCodec, type>(                           \
-                static_cast<FastmmParamsSelf*>(fastmm_obj)->name,                               \
-                fastmm_value,                                                                   \
-                ::fastmm::detail::param_cast<type>(lo),                                         \
-                ::fastmm::detail::param_cast<type>(hi));                                        \
-          },                                                                                    \
-          +[](const void* fastmm_obj) {                                                         \
-            return FastmmCodec::format(static_cast<const FastmmParamsSelf*>(fastmm_obj)->name); \
-          }});                                                                                  \
-    }                                                                                           \
-  };                                                                                            \
+#define FASTMM_PARAM_IMPL(unit, type, name, def, lo, hi, doc)                                     \
+  type name = def;                                                                                \
+  struct FastmmReg_##name {                                                                       \
+    FastmmReg_##name() noexcept {                                                                 \
+      using FastmmCodec = ::fastmm::detail::ParamCodec<type, unit>;                               \
+      ::fastmm::detail::register_param(::fastmm::ParamDesc{                                       \
+          #name,                                                                                  \
+          FastmmCodec::kType,                                                                     \
+          FastmmCodec::display(::fastmm::detail::param_cast<type>(def)),                          \
+          FastmmCodec::display(::fastmm::detail::param_cast<type>(lo)),                           \
+          FastmmCodec::display(::fastmm::detail::param_cast<type>(hi)),                           \
+          doc,                                                                                    \
+          +[](void* fastmm_obj, std::string_view fastmm_value) {                                  \
+            return ::fastmm::detail::assign_param<FastmmCodec, type>(                             \
+                static_cast<FastmmParamsSelf*>(fastmm_obj)->name,                                 \
+                fastmm_value,                                                                     \
+                ::fastmm::detail::param_cast<type>(lo),                                           \
+                ::fastmm::detail::param_cast<type>(hi));                                          \
+          },                                                                                      \
+          +[](const void* fastmm_obj) {                                                           \
+            return FastmmCodec::format(static_cast<const FastmmParamsSelf*>(fastmm_obj)->name);   \
+          },                                                                                      \
+          +[](const void* fastmm_obj) noexcept -> std::int64_t {                                  \
+            return FastmmCodec::to_raw(static_cast<const FastmmParamsSelf*>(fastmm_obj)->name);   \
+          },                                                                                      \
+          +[](void* fastmm_obj, std::int64_t fastmm_raw) noexcept {                               \
+            static_cast<FastmmParamsSelf*>(fastmm_obj)->name = FastmmCodec::from_raw(fastmm_raw); \
+          }});                                                                                    \
+    }                                                                                             \
+  };                                                                                              \
   [[no_unique_address]] FastmmReg_##name fastmm_reg_##name{};
 
 // FASTMM_PARAM(type, name, default, min, max, doc): bool, integer, floating point, Price, Qty or

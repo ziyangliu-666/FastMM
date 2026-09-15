@@ -27,6 +27,9 @@ struct ReplayOptions {
   // Restore session epoch, quoting enabled, RNG seed and per-venue cancel-replace from a v2
   // header (a journal without them replays with the given configuration's values).
   bool session_from_journal = true;
+  // Apply the journal's ParamUpdate records, their fields matched to the strategy's parameters by
+  // name (false: skip them and keep the configured parameters, a what-if run).
+  bool param_updates = true;
 };
 
 struct ReplayResult {

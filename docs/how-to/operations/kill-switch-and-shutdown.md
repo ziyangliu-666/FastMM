@@ -9,7 +9,7 @@ The kill switch is one atomic 32-bit flag word in the risk engine (`include/fast
 | 0 | `0x1` | Global: no new orders on any venue |
 | 1 + venue id | `0x2` (venue 0), `0x4` (venue 1), ... | One venue only (`RejectReason::VenueKilled`); venues from id 30 up share bit 31 (`0x80000000`) |
 
-Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)). `fastmm-live` has no command to reset the kill switch: restart the process.
+Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`, `OrderRingOverflow`, `StrategyError`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)). `fastmm-live` has no command to reset the kill switch: restart the process.
 
 ## What trips it
 

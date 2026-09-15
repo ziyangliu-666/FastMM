@@ -41,6 +41,7 @@ struct AllHooks {
   void on_connection(auto&, const ConnectionStateMsg&) noexcept {}
   template <class Ctx>
   void on_quoting(Ctx&, bool) noexcept {}
+  void on_params(auto&) noexcept {}
 };
 static_assert(verify_strategy<AllHooks>());
 
@@ -80,6 +81,10 @@ struct Derived : Base {};
 struct NearMiss {
   void on_fills(auto&, const Fill&) noexcept {}
 };
+struct ParamsNearMiss {
+  void on_parameters(auto&) noexcept {}
+  void on_param(auto&) noexcept {}
+};
 struct NearMissAllowed {
   static constexpr bool fastmm_allow_near_miss_names = true;
   void on_tick() noexcept {}
@@ -88,6 +93,10 @@ static_assert(verify_strategy<NearMissAllowed>());
 
 static_assert(status<AllHooks>(Hook::Start) == HookStatus::Ok);
 static_assert(status<AllHooks>(Hook::Quoting) == HookStatus::Ok);
+static_assert(status<AllHooks>(Hook::Params) == HookStatus::Ok);
+static_assert(status<ParamsNearMiss>(Hook::Params) == HookStatus::Absent);
+static_assert(detail::hooks::declares_on_parameters<ParamsNearMiss>);
+static_assert(detail::hooks::declares_on_param<ParamsNearMiss>);
 static_assert(status<NoHooks>(Hook::Fill) == HookStatus::Absent);
 static_assert(status<OldTrade>(Hook::Trade) == HookStatus::Mismatch);
 static_assert(status<OldTrade>(Hook::Book) == HookStatus::Absent);
@@ -116,7 +125,7 @@ TEST_CASE("strategies.hooks: implemented hook sets, table and built-in strategie
   CHECK(words<NoHooks>().empty());
   CHECK(words<AllHooks>() ==
         "start stop book book_ticker trade option_ticker fill order_update "
-        "timer connection quoting");
+        "timer connection quoting params");
   CHECK(words<BasicMM>() == "start book fill timer connection quoting");
   CHECK(words<AvellanedaStoikov>() == "start book trade fill connection quoting");
   CHECK(words<OptionsMM>() == "start book option_ticker fill timer connection quoting");

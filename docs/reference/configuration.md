@@ -143,6 +143,7 @@ Live connectors replace `tick`, `lot` and the size bounds with the venue's refer
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string | yes | registered strategy name (see --list-strategies) |
+| `max_param_age_ms` | integer |  | disable quoting before the first parameter update and while none was applied for this long, ms of engine time (default 0: off) |
 | `params` | table |  | [strategy.params] table: the strategy's parameters |
 <!-- END config-keys -->
 
@@ -161,6 +162,7 @@ quote_qty = 0.001
 - `decimal` values take up to 8 decimals and `bps` values up to 4; exponent notation is accepted ([Fixed point](fixed-point.md#parsing-and-formatting)). `ms` and `int` values are whole numbers.
 - An unknown parameter, a value with too many decimals or an out-of-range value is an error at startup.
 - `--strategy` and `--param` override this section ([Command lines](cli.md#fastmm-live)).
+- `max_param_age_ms` bounds the age of parameter updates sent while the session runs ([Strategy API](strategy-api.md#parameter-updates)).
 
 ## `[risk]`
 

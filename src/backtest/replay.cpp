@@ -187,8 +187,11 @@ ReplayResult replay_journal(const std::string& path,
   deps.instruments = &instruments;
   deps.params = cfg.params;
   deps.backend = &backend;
-  if (StrategyRegistry::instance().find(res.strategy) == nullptr)
+  const StrategyEntry* entry = StrategyRegistry::instance().find(res.strategy);
+  if (entry == nullptr)
     throw std::invalid_argument("replay: unknown strategy '" + res.strategy + "'");
+  backend.feed.set_param_updates(opt.param_updates);
+  backend.feed.set_param_schema(*entry->schema);
   std::unique_ptr<IEngineRunner> runner =
       StrategyRegistry::instance().make(res.strategy, TransportKind::Replay, deps);
   if (runner == nullptr)

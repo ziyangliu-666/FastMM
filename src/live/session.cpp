@@ -336,6 +336,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.session_epoch = SessionEpochStore::next_epoch(cfg.engine.epoch_file);
   deps.engine.max_events_per_step = cfg.engine.max_events_per_step;
   deps.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
+  deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   deps.engine.cpu = cfg.engine.cpu;
   deps.engine.spin_mode = cfg.spin_mode();
@@ -373,6 +374,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     info.quoting_enabled = deps.engine.quoting_enabled;
     info.replace_venues = replace_venues;
     info.config_toml = effective;
+    info.params = strategy->schema;
     journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info);
     if (!journal->ok()) {
       std::fprintf(stderr, "%s: cannot open journal %s\n", prog, path.c_str());

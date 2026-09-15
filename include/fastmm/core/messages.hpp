@@ -253,7 +253,8 @@ static_assert(sizeof(PositionUpdateMsg) == 128);
 struct TimerMsg {
   EventHeader hdr;
   TimerId timer_id;
-  std::uint32_t pad0_;
+  std::uint8_t engine;  // 1: the engine's own timer (max_param_age), not the strategy's
+  std::uint8_t pad0_[3];
   std::uint64_t user_data;
   Timestamp fire_ts;
   std::uint8_t pad_[40];
@@ -333,6 +334,32 @@ struct EngineTimeMsg {
   std::uint8_t pad_[55];
 };
 static_assert(sizeof(EngineTimeMsg) == 128);
+
+// New strategy parameter values (ADR-0013): up to kMaxFields (field index, raw value) pairs, built
+// and validated off the engine thread (strategies/param_publisher.hpp). The engine applies them
+// together at one event, journals the message and calls on_params. A field index is the position
+// of the parameter in the strategy's schema; the journal header records the schema, so a replay
+// resolves indices by name. A raw value is the field's int64 form (ParamDesc::get_raw): the value
+// of an integer or bool, the raw fixed-point value of Price, Qty, Notional and Ratio, the
+// nanoseconds of a Duration and the IEEE-754 bits of a double.
+struct ParamUpdateMsg {
+  static constexpr std::size_t kMaxFields = 32;
+  // hdr.instrument of an update for every instrument: the invalid id.
+  static constexpr InstrumentId kAllInstruments{};
+
+  EventHeader hdr;
+  std::uint32_t count;              // pairs used
+  std::uint32_t pad0_;              //
+  std::uint64_t publish_seq;        // the publisher's sequence number, from 1
+  std::uint16_t field[kMaxFields];  // schema index of each pair
+  std::uint8_t pad1_[48];           //
+  std::int64_t value[kMaxFields];   // raw value of each pair
+
+  [[nodiscard]] bool all_instruments() const noexcept { return !hdr.instrument.valid(); }
+};
+static_assert(sizeof(ParamUpdateMsg) == 448 && std::is_trivially_copyable_v<ParamUpdateMsg>);
+static_assert(offsetof(ParamUpdateMsg, count) == 64 && offsetof(ParamUpdateMsg, field) == 80 &&
+              offsetof(ParamUpdateMsg, value) == 192);
 
 // ---- outbound (engine -> venue) --------------------------------------------------------
 

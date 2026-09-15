@@ -3,7 +3,8 @@
 
 Layouts follow include/fastmm/core/journal.hpp and include/fastmm/core/messages.hpp:
   file   := FileHeader (256 B, crc32c over the first 252) | Instrument[count] (128 B each)
-            | effective config TOML (v2, zero-padded to 64 B) | Block* | trailer block (flags & 1)
+            | effective config TOML (v2, zero-padded to 64 B) | parameter table (v3, zero-padded to 64 B)
+            | Block* | trailer block (flags & 1)
   block  := BlockHeader (64 B, crc32c of the payload) | messages
   message:= EventHeader (64 B: len, type, version, venue, flags, instrument, reserved, seq,
             venue_seq, exch_ts, recv_ts, t0_cycles, t1_delta, t2_delta) | body
@@ -11,6 +12,9 @@ Layouts follow include/fastmm/core/journal.hpp and include/fastmm/core/messages.
 Format v2: a record flagged engine_time carries the engine clock as an int32 ns delta in `reserved`
 from the previous one; EngineTime records carry absolute values (start, finish, overflow). The
 dump prints the reconstructed clock as engine_ts. Version 1 files are read as before.
+
+Format v3: the header holds the strategy's parameter table (per schema index: type u8, name length
+u8, name), and ParamUpdate records carry (field index, raw int64) pairs, printed with the names.
 
 Prices / quantities / notionals are int64 with a 1e-8 scale and are printed as exact decimals.
 
@@ -31,8 +35,9 @@ EVENT_TYPES = [
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
-    "EngineTime",
+    "EngineTime", "ParamUpdate",
 ]
+PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
 SIDES = {0: "Buy", 1: "Sell"}
 ORDER_TYPES = {0: "Limit", 1: "Market", 2: "PostOnly"}
@@ -42,7 +47,7 @@ FLAG_NAMES = [(1, "synthetic"), (2, "replayed"), (4, "snapshot"), (8, "outbound"
               (16, "engine_time"), (32, "dropped")]
 FLAG_ENGINE_TIME = 16
 
-HEADER = struct.Struct("<4sIIIQqQqQQQII32sHBBIQI120sI")  # 256 bytes
+HEADER = struct.Struct("<4sIIIQqQqQQQII32sHBBIQIIII108sI")  # 256 bytes
 BLOCK = struct.Struct("<4sIQQIII28s")  # 64 bytes
 EVENT = struct.Struct("<IBBBBIIQQqqQII")  # 64 bytes
 INSTRUMENT_HOT = struct.Struct("<IBBBBqqqqqqq")  # 64 bytes
@@ -113,7 +118,38 @@ def fill_fields(body: bytes) -> dict:
     }
 
 
-def decode_body(type_name: str, body: bytes) -> str:
+def param_value(raw: int, type_name: str) -> str:
+    """A ParamUpdate raw value in the parameter's unit."""
+    if type_name == "double":
+        return repr(struct.unpack("<d", struct.pack("<q", raw))[0])
+    if type_name == "decimal":
+        return dec(raw)
+    if type_name == "bps":
+        return dec(raw * 10_000)  # Ratio raw: 1 bp = 10'000
+    if type_name == "ms":
+        return f"{raw / 1_000_000:g}"
+    if type_name == "bool":
+        return "true" if raw else "false"
+    return str(raw)
+
+
+def param_update_fields(body: bytes, params) -> str:
+    """ParamUpdateMsg body: count, publish_seq and the (field, raw value) pairs by name."""
+    count, _pad, publish_seq = struct.unpack_from("<IIQ", body, 0)
+    fields = struct.unpack_from("<32H", body, 16)
+    values = struct.unpack_from("<32q", body, 128)
+    out = []
+    for i in range(min(count, 32)):
+        idx = fields[i]
+        if idx < len(params):
+            name, type_name = params[idx]
+            out.append(f"{name}={param_value(values[i], type_name)}")
+        else:
+            out.append(f"#{idx}=raw {values[i]}")
+    return f"publish_seq={publish_seq} " + (" ".join(out) if out else "(no fields)")
+
+
+def decode_body(type_name: str, body: bytes, params=()) -> str:
     q = lambda off: struct.unpack_from("<q", body, off)[0]  # noqa: E731
     u64 = lambda off: struct.unpack_from("<Q", body, off)[0]  # noqa: E731
     if type_name in ("BookDelta", "BookSnapshot"):
@@ -145,7 +181,10 @@ def decode_body(type_name: str, body: bytes) -> str:
                 f"qty={dec(f['qty_raw'])} cum={dec(f['cum_raw'])} leaves={dec(f['leaves_raw'])} fee={dec(f['fee_raw'])} "
                 f"fee_asset={f['fee_asset']} side={f['side']} liq={f['liq']}")
     if type_name == "Timer":
-        return f"timer_id={struct.unpack_from('<I', body, 0)[0]} user_data={u64(8):#x} fire_ts={q(16)}"
+        engine = " engine (max_param_age)" if body[4] else ""
+        return f"timer_id={struct.unpack_from('<I', body, 0)[0]} user_data={u64(8):#x} fire_ts={q(16)}{engine}"
+    if type_name == "ParamUpdate":
+        return param_update_fields(body, params)
     if type_name == "EngineTime":
         return f"kind={ENGINE_TIME_KINDS.get(body[8], body[8])} engine_ts={q(0)}"
     if type_name == "LatencySample":
@@ -172,13 +211,24 @@ def parse_header(data: bytes, verify_crc: bool = True) -> dict:
         raise JournalError("file shorter than the 256-byte header")
     (magic, version, header_bytes, inst_count, session_id, start_ts, tsc0, tsc_ns0, ns_per_cycle,
      config_hash, rng_seed, msg_version, block_bytes, strategy, session_epoch, quoting_enabled,
-     header_flags, config_bytes, replace_venues, _config_crc, _reserved, hdr_crc) = HEADER.unpack_from(data, 0)
+     header_flags, config_bytes, replace_venues, _config_crc, param_count, _param_bytes, _param_crc, _reserved,
+     hdr_crc) = HEADER.unpack_from(data, 0)
     if magic != b"FMJ1":
         raise JournalError(f"bad magic {magic!r}")
     if version < 2:
         session_epoch = quoting_enabled = header_flags = config_bytes = replace_venues = 0
+    if version < 3:
+        param_count = 0
     config_off = HEADER.size + 128 * inst_count
+    params = []
+    off = config_off + (config_bytes + 63) // 64 * 64
+    for _ in range(param_count):
+        type_id, name_len = data[off], data[off + 1]
+        params.append((data[off + 2:off + 2 + name_len].decode("utf-8", "replace"),
+                       PARAM_TYPES.get(type_id, f"type{type_id}")))
+        off += 2 + name_len
     return {
+        "params": params,
         "session": bool(header_flags & 1), "session_epoch": session_epoch,
         "quoting_enabled": bool(quoting_enabled), "replace_venues": replace_venues,
         "config": data[config_off:config_off + config_bytes].decode("utf-8", "replace"),
@@ -281,6 +331,8 @@ def main() -> int:
               f"replace_venues {hdr['replace_venues']:#x}")
     if hdr["config"]:
         print(f"config          {len(hdr['config'])} bytes of effective TOML embedded")
+    if hdr["params"]:
+        print("parameters      " + " ".join(f"{i}:{n}({t})" for i, (n, t) in enumerate(hdr["params"])))
     print(f"header crc32c   {'ok' if crc_ok else 'MISMATCH'}")
 
     print(f"instruments     {hdr['instrument_count']}")
@@ -306,7 +358,7 @@ def main() -> int:
             clock = f" engine_ts {engine_ts}" if ev["engine_delta"] is not None else ""
             print(f"#{ev['seq']:<7} {name:<17} {direction:<3} inst {ev['instrument']} venue {ev['venue']} "
                   f"flags {flags_str(ev['flags'])} exch_ts {ev['exch_ts']} recv_ts {ev['recv_ts']}{clock} "
-                  f"venue_seq {ev['venue_seq']}\n          {decode_body(name, body)}")
+                  f"venue_seq {ev['venue_seq']}\n          {decode_body(name, body, hdr['params'])}")
             printed += 1
 
     total = sum(counts.values())

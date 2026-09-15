@@ -1,13 +1,16 @@
 #include "fastmm/core/crc32c.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/strategies/params.hpp"
 
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <string>
 
 namespace fastmm {
 
@@ -17,6 +20,22 @@ constexpr char kBlockMagic[4] = {'F', 'M', 'J', 'B'};
 constexpr Duration kSyncInterval = milliseconds(100);
 constexpr std::size_t pad64(std::size_t n) noexcept {
   return (n + 63U) & ~std::size_t{63};
+}
+constexpr char kZeros[64] = {};
+static_assert(kJournalMaxParams == kMaxParams);
+
+// v3 parameter table: per schema index, type (u8), name length (u8) and the name.
+std::string param_table(const ParamSchema* schema) {
+  std::string t;
+  if (schema == nullptr) return t;
+  for (const ParamDesc& d : *schema) {
+    const std::string_view name(d.name);
+    const std::size_t len = std::min<std::size_t>(name.size(), 255);
+    t.push_back(static_cast<char>(d.type));
+    t.push_back(static_cast<char>(len));
+    t.append(name.substr(0, len));
+  }
+  return t;
 }
 }  // namespace
 
@@ -39,8 +58,10 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   std::memcpy(h.magic, kFileMagic, 4);
   h.version = kJournalVersion;
   const std::size_t config_bytes = info.config_toml.size();
-  h.header_bytes = static_cast<std::uint32_t>(sizeof(JournalFileHeader) +
-                                              ninst * sizeof(Instrument) + pad64(config_bytes));
+  const std::string params = param_table(info.params);
+  h.header_bytes =
+      static_cast<std::uint32_t>(sizeof(JournalFileHeader) + ninst * sizeof(Instrument) +
+                                 pad64(config_bytes) + pad64(params.size()));
   h.instrument_count = ninst;
   h.session_id = info.session_id;
   h.start_ts_ns = info.start_ts.ns;
@@ -62,14 +83,20 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   }
   h.config_bytes = static_cast<std::uint32_t>(config_bytes);
   h.config_crc32c = crc32c(info.config_toml.data(), config_bytes);
+  h.param_count = info.params == nullptr ? 0 : static_cast<std::uint32_t>(info.params->size());
+  h.param_table_bytes = static_cast<std::uint32_t>(params.size());
+  h.param_table_crc32c = crc32c(params.data(), params.size());
   h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
   if (!ensure_mapped(h.header_bytes)) return;
   append(&h, sizeof h);
   if (ninst > 0) append(info.instruments->data(), ninst * sizeof(Instrument));
   if (config_bytes > 0) {
-    static constexpr char kZeros[64] = {};
     append(info.config_toml.data(), config_bytes);
     append(kZeros, pad64(config_bytes) - config_bytes);
+  }
+  if (!params.empty()) {
+    append(params.data(), params.size());
+    append(kZeros, pad64(params.size()) - params.size());
   }
   last_sync_ = last_flush_ = steady_now();
 }
@@ -263,8 +290,9 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
   const std::size_t tables =
       sizeof(JournalFileHeader) + std::size_t{header_->instrument_count} * sizeof(Instrument);
   const std::size_t config_bytes = header_->version >= 2 ? header_->config_bytes : 0;
+  const std::size_t param_bytes = header_->version >= 3 ? header_->param_table_bytes : 0;
   if (header_->header_bytes > len || header_->header_bytes < sizeof(JournalFileHeader) ||
-      header_->header_bytes != tables + pad64(config_bytes)) {
+      header_->header_bytes != tables + pad64(config_bytes) + pad64(param_bytes)) {
     return fail(JournalError::HeaderCorrupt);
   }
   instruments_ = reinterpret_cast<const Instrument*>(map_ + sizeof(JournalFileHeader));
@@ -274,6 +302,26 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
     if (crc32c(text, config_bytes) != header_->config_crc32c)
       return fail(JournalError::HeaderCorrupt);
     config_ = std::string_view(text, config_bytes);
+  }
+  param_count_ = 0;
+  if (header_->version >= 3) {
+    const auto* table = reinterpret_cast<const char*>(map_ + tables + pad64(config_bytes));
+    if (header_->param_count > kJournalMaxParams ||
+        crc32c(table, param_bytes) != header_->param_table_crc32c) {
+      return fail(JournalError::HeaderCorrupt);
+    }
+    std::size_t off = 0;
+    for (std::size_t i = 0; i < header_->param_count; ++i) {
+      if (off + 2 > param_bytes) return fail(JournalError::HeaderCorrupt);
+      const auto type = static_cast<std::uint8_t>(table[off]);
+      const auto name_len = static_cast<std::uint8_t>(table[off + 1]);
+      off += 2;
+      if (off + name_len > param_bytes) return fail(JournalError::HeaderCorrupt);
+      params_[i] = JournalParam{std::string_view(table + off, name_len), type};
+      off += name_len;
+    }
+    if (off != param_bytes) return fail(JournalError::HeaderCorrupt);
+    param_count_ = header_->param_count;
   }
   first_block_ = header_->header_bytes;
   validate();

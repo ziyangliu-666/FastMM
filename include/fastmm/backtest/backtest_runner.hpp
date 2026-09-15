@@ -25,13 +25,16 @@ namespace fastmm::bt {
 
 class BacktestSession {
  public:
-  BacktestSession(const BacktestConfig& cfg, MdSource* source);
+  // `schema`: the strategy's parameters, recorded in cfg.journal_out (may be null).
+  BacktestSession(const BacktestConfig& cfg, MdSource* source, const ParamSchema* schema = nullptr);
   ~BacktestSession();
   BacktestSession(const BacktestSession&) = delete;
   BacktestSession& operator=(const BacktestSession&) = delete;
 
   [[nodiscard]] RunnerDeps& deps() noexcept { return deps_; }
   [[nodiscard]] sim::SimBackend& backend() noexcept { return *backend_; }
+  // Parameter updates delivered at simulated times during run() (not owned; may be null).
+  void set_param_schedule(sim::ParamSchedule* schedule) noexcept { params_ = schedule; }
   // Runs to the end of the data / horizon. `runner` (may be null) supplies engine stats.
   BacktestResult run(const sim::EngineHooks& hooks,
                      const IEngineRunner* runner,
@@ -46,11 +49,12 @@ class BacktestSession {
   std::unique_ptr<sim::SimBackend> backend_;
   std::unique_ptr<Impl> impl_;
   RunnerDeps deps_;
+  sim::ParamSchedule* params_ = nullptr;
 };
 
 template <StrategyLike S>
 BacktestResult run_backtest(const BacktestConfig& cfg, MdSource* source = nullptr) {
-  BacktestSession session(cfg, source);
+  BacktestSession session(cfg, source, &S::schema());
   std::unique_ptr<IEngineRunner> runner = session.backend().template make_runner<S>(session.deps());
   return session.run(session.backend().hooks, runner.get(), S::name());
 }

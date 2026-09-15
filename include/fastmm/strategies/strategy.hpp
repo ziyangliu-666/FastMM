@@ -6,6 +6,7 @@
 #include "fastmm/strategies/params.hpp"
 
 #include <concepts>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -32,8 +33,19 @@ class StrategyBase {
     params_ = next;
     return std::nullopt;
   }
-  // Read-only: parameters change only through configure().
+  // Read-only: parameters change through configure() and apply_param_update().
   [[nodiscard]] const Params& params() const noexcept { return params_; }
+  // Engine thread: assigns the (field, raw value) pairs of a ParamUpdateMsg, which the publisher
+  // validated (strategies/param_publisher.hpp). A StrategyBase keeps one parameter set for every
+  // instrument, so the message's instrument is not used; a field outside the schema is skipped.
+  void apply_param_update(const ParamUpdateMsg& m) noexcept {
+    const ParamSchema& s = Params::schema();
+    const std::size_t n =
+        m.count < ParamUpdateMsg::kMaxFields ? m.count : ParamUpdateMsg::kMaxFields;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (m.field[i] < s.size()) s.begin()[m.field[i]].set_raw(&params_, m.value[i]);
+    }
+  }
   [[nodiscard]] std::string describe_params() const { return params_.describe(); }
 
  private:

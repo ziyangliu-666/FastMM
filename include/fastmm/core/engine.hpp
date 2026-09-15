@@ -15,6 +15,12 @@
 // Time: the engine reads its clock once per consumed event, once per fired timer and once at start
 // and finish, and uses that value for every decision and Out* stamp inside (now()). The journal
 // records it, so a replay on SimClock sees exactly the times the original run saw.
+//
+// Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
+// (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
+// before the first ParamUpdate and whenever none was applied for that long; the engine checks the
+// deadline before each event and timer and with a one-shot timer of its own, all on the journaled
+// engine clock.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
@@ -71,6 +77,8 @@ struct EngineStats {
   std::uint64_t venue_kills = 0;  // per-venue kill switch trips (ControlCommand::TripVenueKill)
   std::uint64_t unconverted_fees = 0;  // fills whose commission asset is neither base nor quote
   std::uint64_t unknown_instrument_fills = 0;  // not booked, not passed to on_fill
+  std::uint64_t param_updates = 0;             // ParamUpdate events applied
+  std::uint64_t param_expiries = 0;            // max_param_age passed: quoting disabled
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
@@ -109,7 +117,8 @@ class Engine {
         rng_(cfg.rng_seed),
         spin_(cfg.spin_mode),
         reject_log_(cfg.reject_log_interval),
-        quoting_enabled_(cfg.quoting_enabled) {
+        quoting_enabled_(cfg.quoting_enabled),
+        params_stale_(cfg.max_param_age.ns > 0) {
     // Every hook the strategy declares must match the engine's call (strategies/hooks.hpp).
     static_assert(verify_strategy<Strategy, Context, Book>());
     // Replace is only used if every venue we trade supports it (QuoteManager is global).
@@ -250,9 +259,11 @@ class Engine {
   }
   [[nodiscard]] EngineLiveStats live_stats() const noexcept { return live_pub_.load(); }
   [[nodiscard]] bool quoting_enabled() const noexcept {
-    return quoting_enabled_ && !reconciling_ && !risk_.killed();
+    return quoting_enabled_ && !reconciling_ && !params_stale_ && !risk_.killed();
   }
   [[nodiscard]] bool reconciling() const noexcept { return reconciling_; }
+  // max_param_age is set and no ParamUpdate was applied within it (or none yet).
+  [[nodiscard]] bool params_stale() const noexcept { return params_stale_; }
   // The first reason the global kill switch was set for (None while it is not set).
   [[nodiscard]] KillReason kill_reason() const noexcept { return kill_reason_; }
   [[nodiscard]] KillReason venue_kill_reason(VenueId v) const noexcept {
@@ -409,11 +420,15 @@ class Engine {
     // T3 belongs to this event only (see mark_decision()).
     strategy_t3_ = Cycles{};
     sent_in_event_ = false;
+    // The ParamUpdate that renews the parameters does not first expire them.
+    const bool renews_params = h->type == EventType::ParamUpdate;
     if constexpr (has_hook(Hook::Quoting)) {
       const bool quoting_before = quoting_enabled();
+      if (!renews_params) check_param_age();
       dispatch(h);
       notify_quoting(quoting_before);
     } else {
+      if (!renews_params) check_param_age();
       dispatch(h);
     }
     unlatch_clock();
@@ -457,9 +472,16 @@ class Engine {
         break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
-        fire_strategy_timer(t.timer_id, t.user_data);
+        if (t.engine != 0) {
+          check_param_age();  // replay of the engine's max_param_age timer
+        } else {
+          fire_strategy_timer(t.timer_id, t.user_data);
+        }
         break;
       }
+      case EventType::ParamUpdate:
+        on_param_update(msg_cast<ParamUpdateMsg>(h));
+        break;
       case EventType::Control:
         on_control(msg_cast<ControlMsg>(h));
         break;
@@ -666,6 +688,38 @@ class Engine {
     positions_.set(m.hdr.instrument, m.qty, m.avg_px);
   }
 
+  // ---- parameters -----------------------------------------------------------------------------
+
+  void on_param_update(const ParamUpdateMsg& m) noexcept {
+    ++stats_.param_updates;
+    if constexpr (requires { strategy_.apply_param_update(m); }) strategy_.apply_param_update(m);
+    if (cfg_.max_param_age.ns > 0) {
+      params_stale_ = false;
+      param_deadline_ = now_ + cfg_.max_param_age;
+      param_deadline_armed_ = true;
+      if (param_timer_.valid()) static_cast<void>(timers_.cancel(param_timer_));
+      // An invalid id (timer pool full) leaves the check before each event and timer.
+      param_timer_ = timers_.add(now_, cfg_.max_param_age, false);
+    }
+    if constexpr (has_hook(Hook::Params)) strategy_.on_params(ctx_);
+    flush_out();
+  }
+
+  FASTMM_FORCE_INLINE void check_param_age() noexcept {
+    if (FASTMM_UNLIKELY(param_deadline_armed_ && now_ >= param_deadline_)) expire_params();
+  }
+  // Quoting stays disabled until the next ParamUpdate; on_quoting(false) follows the event or
+  // timer.
+  FASTMM_NOINLINE void expire_params() noexcept {
+    param_deadline_armed_ = false;
+    params_stale_ = true;
+    ++stats_.param_expiries;
+    FASTMM_LOG_WARN(
+        "no parameter update for {} ms (max_param_age_ms): quotes pulled until the next",
+        cfg_.max_param_age.millis());
+    pull_all_quotes();
+  }
+
   // ---- control / connection / reconcile ------------------------------------------------------
 
   void on_control(const ControlMsg& c) noexcept {
@@ -850,11 +904,13 @@ class Engine {
   }
   void fire_timer(TimerId id, std::uint64_t user_data) noexcept {
     ++stats_.timers_fired;
+    const bool engine_timer = param_timer_.valid() && id == param_timer_;
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
       init_header(t, EventType::Timer);
       t.timer_id = id;
+      t.engine = engine_timer ? 1 : 0;
       t.user_data = user_data;
       t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
@@ -863,7 +919,13 @@ class Engine {
         on_journal_overflow();
       }
     }
-    fire_strategy_timer(id, user_data);
+    check_param_age();
+    if (engine_timer) {
+      param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
+      flush_out();
+    } else {
+      fire_strategy_timer(id, user_data);
+    }
   }
   void fire_strategy_timer(TimerId id, std::uint64_t user_data) noexcept {
     if constexpr (has_hook(Hook::Timer)) strategy_.on_timer(ctx_, id, user_data);
@@ -1215,6 +1277,10 @@ class Engine {
   bool latched_ = false;
   bool quoting_enabled_;
   bool reconciling_ = false;
+  bool params_stale_;                  // max_param_age passed, or no ParamUpdate yet
+  bool param_deadline_armed_ = false;  // param_deadline_ applies (max_param_age set, fresh)
+  Timestamp param_deadline_{};
+  TimerId param_timer_{};  // the engine's one-shot max_param_age timer
   KillReason kill_reason_ = KillReason::None;
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;
