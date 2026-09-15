@@ -4,7 +4,7 @@ Run from the repository root:
 
     .venv/bin/python examples/python/backtest_quickstart.py
 
-Saves runs/quickstart_equity.png when matplotlib is installed (pip install fastmm[plot]).
+Saves runs/quickstart_equity.png when matplotlib is installed (pip install fastmm-engine[plot]).
 """
 
 from __future__ import annotations

@@ -23,7 +23,7 @@ EVENT_HOOKS: Tuple[str, ...] = ("on_book", "on_fill", "on_quoting", "on_connecti
 CTX_METHODS = frozenset({"quote", "quote_raw", "bid", "ask", "bid_raw", "ask_raw", "clear", "pull",
                          "uncross", "keep_passive", "fail"})
 
-NUMBA_MISSING = 'fastmm: hot hooks need numba; install it with: pip install "fastmm[hot]"'
+NUMBA_MISSING = 'fastmm: hot hooks need numba; install it with: pip install "fastmm-engine[hot]"'
 
 _UNIT_NS = {
     "ns": 1,

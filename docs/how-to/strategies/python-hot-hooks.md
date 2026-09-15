@@ -7,7 +7,7 @@ Hot hooks are strategy methods that Numba compiles and the engine thread calls w
 Install numba with the `hot` extra (CPython 3.10 or later):
 
 ```bash
-pip install "fastmm[hot]"
+pip install "fastmm-engine[hot]"
 ```
 
 ## Declare the strategy

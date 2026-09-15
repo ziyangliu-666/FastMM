@@ -170,7 +170,7 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 
 ## Hot hooks
 
-A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs `pip install "fastmm[hot]"` (numba 0.61 to 0.67, CPython 3.10 or later). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
+A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs `pip install "fastmm-engine[hot]"` (numba 0.61 to 0.67, CPython 3.10 or later). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
 
 ### Declarations
 
@@ -193,7 +193,7 @@ Every hot hook takes `(self, ctx, book)` and runs once per instrument:
 
 `self` holds the instrument's parameters and `State` fields as attributes. A float parameter also has `self.<name>_raw`, its value as a 1e-8 fixed-point int64 (nearest). The engine copies the parameters into `self` before every call, so an assignment to a parameter, also through an alias such as `t = self`, is gone at the next call.
 
-Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm[hot]"`.
+Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm-engine[hot]"`.
 
 ### ctx
 

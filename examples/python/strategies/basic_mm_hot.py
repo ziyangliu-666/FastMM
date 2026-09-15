@@ -9,7 +9,7 @@ asks up to the tick). On the same configuration, data and seed it sends the same
 BasicMMHotFloat writes the same quoting in floats; the engine rounds each float level to the
 nearest 1e-8 and then to the tick and lot.
 
-Needs numba (pip install "fastmm[hot]"). Run from the repository root:
+Needs numba (pip install "fastmm-engine[hot]"). Run from the repository root:
 
     python examples/python/strategies/basic_mm_hot.py
 """

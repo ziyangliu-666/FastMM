@@ -1,4 +1,4 @@
-# The fastmm-live distribution: the network stack, venue connectors and the live runtime as
+# The fastmm-engine-live distribution: the network stack, venue connectors and the live runtime as
 # fastmm_live._live, built from the same CMake tree as fastmm. Build from the repository root:
 #   pip wheel ./python/live --no-deps -w dist
 # OpenSSL is linked statically by default; OPENSSL_ROOT_DIR selects the installation
@@ -8,7 +8,7 @@ requires = ["scikit-build-core>=0.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "fastmm-live"
+name = "fastmm-engine-live"
 dynamic = ["version", "dependencies"]
 description = "Live trading runtime for fastmm: network stack, venue connectors, OpenSSL"
 license = { text = "MIT" }
@@ -40,4 +40,4 @@ regex = "project\\(fastmm\\s+VERSION\\s+(?P<value>[0-9.]+)"
 
 [tool.scikit-build.metadata.dependencies]
 provider = "scikit_build_core.metadata.template"
-result = ["fastmm=={project[version]}", "certifi"]
+result = ["fastmm-engine=={project[version]}", "certifi"]

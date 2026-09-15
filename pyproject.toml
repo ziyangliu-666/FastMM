@@ -3,7 +3,7 @@ requires = ["scikit-build-core>=0.10"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "fastmm"
+name = "fastmm-engine"
 dynamic = ["version"]
 description = "Ultra-low-latency multi-asset market-making engine (research bindings)"
 readme = "README.md"
@@ -17,7 +17,7 @@ plot = ["matplotlib>=3.7"]
 # Hot hooks (@fastmm.hot), CPython 3.10 or later. Tested with numba 0.61.2 and 0.67.0.
 hot = ["numba>=0.61,<0.68", "llvmlite>=0.44,<0.50"]
 # Same version as fastmm (python/tests/test_packaging.py checks it); CPython 3.10 or later.
-live = ["fastmm-live==0.1.0"]
+live = ["fastmm-engine-live==0.1.0"]
 dev = ["pytest>=7", "pandas>=2.0", "pybind11-stubgen"]
 
 [tool.scikit-build]
