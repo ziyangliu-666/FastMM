@@ -274,7 +274,7 @@ With `hot_cache=True` compiled hooks are stored under `$FASTMM_CACHE_DIR/numba/`
 
 ### Performance
 
-Measured with `python bench/python/bench_hot_strategy.py --build build/release` (gcc 13 release module, numba 0.67.0, Python 3.12, WSL2 on a Zen 4 desktop, one core). Cost of one `on_book` call without the engine, on the same books, positions and parameters (`levels = 2`):
+Measured with `python bench/python/bench_hot_strategy.py --build build/release` (gcc 13 release module, numba 0.67.0, Python 3.12, WSL2 on an 8-core desktop, one core). Cost of one `on_book` call without the engine, on the same books, positions and parameters (`levels = 2`):
 
 | Case | ns per call |
 |---|---|
