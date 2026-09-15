@@ -624,6 +624,10 @@ void append_stream_message(std::string& out, std::string_view stream, std::strin
 void append_user_event(std::string& out,
                        std::int64_t subscription_id,
                        std::string_view event_json) {
+  // No string is this long; the bound lets GCC 13 (-O3, LTO) see that the append below cannot
+  // exceed the maximum object size, which it otherwise reports as -Wstringop-overflow in
+  // publish_user_event.
+  if (event_json.size() > out.max_size() / 2) return;
   JsonObjectWriter w(out);
   w.num("subscriptionId", subscription_id).raw("event", event_json);
   w.close();

@@ -105,7 +105,7 @@ class InstrumentTable {
     constexpr auto operator<=>(const Key&) const noexcept = default;
   };
 
-  Result<InstrumentId, InstrumentError> add(Instrument inst) noexcept {
+  Result<InstrumentId, InstrumentError> add(const Instrument& inst) noexcept {
     if (inst.symbol.empty()) return fail(InstrumentError::EmptySymbol);
     if (!inst.tick.is_positive()) return fail(InstrumentError::InvalidTick);
     if (!inst.lot.is_positive()) return fail(InstrumentError::InvalidLot);
@@ -113,8 +113,8 @@ class InstrumentTable {
     const InstrumentId id{static_cast<std::uint32_t>(by_id_.size())};
     auto [p, inserted] = by_symbol_.insert(Key{inst.venue, inst.symbol}, id);
     if (!inserted) return fail(InstrumentError::DuplicateSymbol);
-    inst.id = id;
     by_id_.push_back(inst);
+    by_id_[id.value].id = id;
     return id;
   }
 
