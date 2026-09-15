@@ -42,6 +42,11 @@ class Publisher:
         base = {name: getattr(instance, name) for name in spec.params}
         self._values: List[Dict[str, Any]] = [dict(base) for _ in range(channel.instruments)]
         self._lock = threading.Lock()
+        self._disabled = False
+
+    def disable(self) -> None:
+        """Later publishes return False without taking the lock (a forked child)."""
+        self._disabled = True
 
     def values(self, inst: Any = 0) -> Dict[str, Any]:
         """The parameter values last sent for one instrument."""
@@ -50,6 +55,8 @@ class Publisher:
             return dict(self._values[k])
 
     def publish(self, inst: Any, values: Mapping[str, Any]) -> bool:
+        if self._disabled:
+            return False
         if len(values) > abi.MAX_FIELDS:
             raise ValueError(f"at most {abi.MAX_FIELDS} parameters per update, got {len(values)}")
         k = -1 if inst is None else instrument_index(inst, self._symbols)

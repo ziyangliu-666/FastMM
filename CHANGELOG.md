@@ -5,14 +5,25 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Slow methods in live sessions (ADR-0013, sections 1 and 4): `fastmm.run_live` and
+  `python -m fastmm run` run `on_start` before any venue connection, the `@fastmm.every` methods
+  on a `fastmm-slow` thread and `on_stop` after the session, with snapshots, recent rows and fills
+  from the engine as in backtests. The control thread's watchdog
+  (`live/slow_watchdog.hpp`) stops the session with exit code 7 when a slow method raises, a call
+  runs past its `timeout`, the fills ring is full or the slow thread ends, and logs
+  `fastmm-live: slow tier failed (<cause>)`. `run_live` gains `fills_capacity`, `recent_rows` and
+  `slow_tier_timeout_ms`; `python -m fastmm run` gains `--slow-tier-timeout-ms` and exits with
+  `os._exit` when the slow thread does not end in time. A class with slow methods defaults
+  `max_param_age_ms` to 3 periods (at least 1000 ms) live as in backtests, and live journals record
+  the starting parameters and `max_param_age_ms`, so `fastmm.replay` replays them.
 - Python strategies live (ADR-0013, section 3): `fastmm.run_live(StrategyClass, config, params=None,
   ...)` and `python -m fastmm run module:Class --config file.toml` run a class with hot hooks in the
   `fastmm-live` session from `fastmm_live._live`, with the GIL released, and return its exit code.
   Hooks compile (exit code 3 on failure) and warm up before any venue is contacted; a failing hook
   trips `StrategyError` (exit code 6 with `on_kill = "exit"`). The session moves every other thread
   of the process off the CPUs pinned in `[engine]`, runs one per process (`RuntimeError`) and is
-  inert in a forked child. `fastmm_live._live.ParamChannel` is the session's parameter ring and
-  publisher. New exit code 7 (`kExitSlowTier`) and `LiveOptions::watchdog`, `strategy`
+  inert in a forked child. `strategy.publish` sends parameter updates through the session's slow
+  channel (`fastmm_live._live.SlowChannel`), the only producer on its ring. New exit code 7 (`kExitSlowTier`) and `LiveOptions::watchdog`, `strategy`
   (`LiveStrategy`) and `confine_other_threads`; `run_live` restores the SIGINT/SIGTERM handlers it
   replaced.
 - Journal format 3 gains optional strategy metadata (`meta_bytes`, `meta_crc32c`; `key=value` lines)

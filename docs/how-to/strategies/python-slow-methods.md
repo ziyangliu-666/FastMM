@@ -97,6 +97,10 @@ python examples/python/strategies/hot_slow_mm.py
 
 `result.slow_methods` reports each slow method's wall time, and `run_backtest` warns when the median is above `slow_delay_ms`. The replay does not run slow methods; the parameter updates come from the journal.
 
+## Run it live
+
+`python -m fastmm run hot_slow_mm:HotSlowMM --config <file>` runs the same class against venues ([Run a Python strategy live](python-live.md#run-slow-methods-live)). Live, `timeout` applies: a call that runs past it stops the session with exit code 7.
+
 ## Fix what the checks report
 
 | Error | Cause |
@@ -105,4 +109,5 @@ python examples/python/strategies/hot_slow_mm.py
 | `ValueError` from `ctx.publish` | an unknown or `State` name, a value of the wrong type or out of range, a failed `validate()`, or more than 32 names |
 | `StrategyError` with `slow_failure == "exception"` | a slow method raised; `hook` names it |
 | `StrategyError` with `slow_failure == "fills overflow"` | more fills arrived between two runs of the slow methods than `fills_capacity` |
+| exit code 7 and `fastmm-live: slow tier failed (<cause>)` in a live session | a slow method raised or ran past its `timeout`, the fills ring was full, or the slow thread ended ([Slow methods live](../../reference/python-api.md#slow-methods-live)) |
 | `ReplayResult.what_if` is `True` | the class, hot-hook source, fastmm or numba version, or parameters differ from the recording (`what_if_reasons`) |

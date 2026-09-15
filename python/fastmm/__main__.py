@@ -41,6 +41,9 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--log", metavar="path", help="write the log to a file")
     run.add_argument("--allow-inline-secrets", action="store_true",
                      help="accept literal API secrets in the config file")
+    run.add_argument("--slow-tier-timeout-ms", type=int, default=None, metavar="ms",
+                     help="after the session stops, wait this long for the slow thread, then exit "
+                          "(default 10000)")
     return parser
 
 
@@ -69,9 +72,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             os.environ.setdefault(v, "1")
         os.execv(sys.executable, sys.orig_argv)
 
-    from .live import EXIT_CONFIG, run_live
+    from .live import EXIT_CONFIG, SLOW_TIER_TIMEOUT_MS, _run_live
     from .strategy import Strategy
 
+    timeout_ms = args.slow_tier_timeout_ms
+    if timeout_ms is None:
+        timeout_ms = SLOW_TIER_TIMEOUT_MS
+    if timeout_ms < 0:
+        parser.error("--slow-tier-timeout-ms must be >= 0")
     if args.duration is not None:
         from ._hot.decl import parse_period
 
@@ -88,10 +96,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not (isinstance(cls, type) and issubclass(cls, Strategy)):
         print(f"fastmm: '{args.strategy}' is not a fastmm.Strategy subclass", file=sys.stderr)
         return EXIT_CONFIG
-    return run_live(cls, args.config, params, duration=args.duration, dry_run=args.dry_run,
-                    journal=args.journal, no_journal=args.no_journal, status=args.status,
-                    no_status=args.no_status, log=args.log, record_raw=args.record_raw,
-                    allow_inline_secrets=args.allow_inline_secrets)
+    rc, stuck = _run_live(cls, args.config, params, duration=args.duration, dry_run=args.dry_run,
+                          journal=args.journal, no_journal=args.no_journal, status=args.status,
+                          no_status=args.no_status, log=args.log, record_raw=args.record_raw,
+                          allow_inline_secrets=args.allow_inline_secrets, fills_capacity=None,
+                          recent_rows=4096, slow_tier_timeout_ms=timeout_ms)
+    if stuck:  # the slow thread still runs: do not wait for it at interpreter exit
+        print(f"fastmm: exiting with code {rc} without waiting for the slow thread",
+              file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        os._exit(rc)
+    return rc
 
 
 if __name__ == "__main__":

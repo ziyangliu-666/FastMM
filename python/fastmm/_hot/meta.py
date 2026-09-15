@@ -1,7 +1,7 @@
 """What a live session hands the engine and records in its journal about a hot strategy class.
 
-param_fields(spec) is the parameter layout the engine writes publishes into (the ParamChannel of
-fastmm_live and the journal's parameter table). session_meta(cls) is the journal's strategy
+param_fields(spec) is the parameter layout the engine writes publishes into (HotStrategy's parameter
+blocks and the journal's parameter table). session_meta(cls) is the journal's strategy
 metadata: the class as ``module:qualname``, a hash of the hot-hook source and the package versions,
 so a replay can tell whether it runs the same code.
 """

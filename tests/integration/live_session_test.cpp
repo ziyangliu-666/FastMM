@@ -1,19 +1,23 @@
 // fastmm::live::run_live with a LiveStrategy, the path fastmm_live._live takes for Python hot
 // strategies, against the in-process simulator: a HotStrategy with a hook written in C, its
-// parameter ring and journal metadata, a failing hook (exit code 6), the watchdog (exit code 7),
-// the restored signal handlers, and confine_threads.
+// parameter ring and journal metadata, a failing hook (exit code 6), the watchdog (exit code 7), a
+// slow channel fed by the engine and watched by slow_tier_watchdog, the restored signal handlers,
+// and confine_threads.
 #include "integration_util.hpp"
 
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/core/log.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/session.hpp"
+#include "fastmm/live/slow_watchdog.hpp"
 #include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/strategies/hot_abi.h"
 #include "fastmm/strategies/hot_params.hpp"
 #include "fastmm/strategies/hot_strategy.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
+#include "fastmm/strategies/slow_channel.hpp"
 
 #include <sched.h>
 #include <sys/syscall.h>
@@ -21,6 +25,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <csignal>
 #include <cstring>
@@ -69,12 +74,14 @@ std::vector<HotParamField> param_fields() {
   return f;
 }
 
-// What fastmm_live._live builds: the parameter table, ring and publisher, the program and the
-// LiveStrategy around them.
+// The LiveStrategy around a hot program. Without a slow channel the parameters come from a
+// ParamPublisher over a ring (a C++ publisher); with one they come from the channel, which the
+// strategy also feeds, as fastmm_live._live builds it for a Python strategy with slow methods.
 struct HotSession {
   HotParamTable table{param_fields(), 16};
   MsgRing ring{1U << 16};
   std::unique_ptr<ParamPublisher> publisher;
+  std::shared_ptr<SlowChannel> slow;
   HotProgram program;
   live::LiveStrategy strategy;
   HotStrategy* hot = nullptr;
@@ -82,7 +89,13 @@ struct HotSession {
   bool failed = false;
   HotError error{};
 
-  HotSession() {
+  explicit HotSession(bool with_slow = false) {
+    if (with_slow) {
+      SlowChannelConfig cc;
+      cc.instruments = 1;
+      cc.fills_capacity = slow_fills_capacity(20, seconds(10));
+      slow = std::make_shared<SlowChannel>(cc);
+    }
     program.hooks[static_cast<std::size_t>(HotHook::Book)] = &quote_mid;
     program.record.assign(16, 0);
     const double bps = 5.0;
@@ -95,12 +108,13 @@ struct HotSession {
     strategy.name = "hot_test";
     strategy.params = &table.schema();
     strategy.meta = "class=tests:HotSession\n";
-    strategy.inputs.push_back(&ring);
+    strategy.inputs.push_back(slow ? &slow->param_ring() : &ring);
     strategy.make = [this](RunnerDeps& deps) {
       std::unique_ptr<IEngineRunner> runner =
           live::make_live_runner<HotStrategy>(TransportKind::Live, deps);
       auto* er = static_cast<EngineRunner<HotLiveEngine, HotStrategy>*>(runner.get());
       REQUIRE(er->strategy().attach(program, er->engine().instruments()));
+      if (slow) REQUIRE(er->strategy().attach_slow(slow.get()));
       hot = &er->strategy();
       return runner;
     };
@@ -223,6 +237,108 @@ TEST_CASE("live session: a watchdog cause stops the session with exit code 7") {
   REQUIRE(quoted);
   CHECK(rc == live::kExitSlowTier);
   CHECK_FALSE(s.failed);
+}
+
+bool publish_bps(SlowChannel& ch, double bps) {
+  const std::uint16_t field = 0;
+  const auto raw = std::bit_cast<std::int64_t>(bps);
+  return ch.publish(ParamUpdateMsg::kAllInstruments, {&field, 1}, {&raw, 1});
+}
+
+std::int64_t steady_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+TEST_CASE("live session: the engine feeds a slow channel and a call past its timeout exits 7") {
+  g_quotes = 0;
+  g_fail = false;
+  ServerFixture fx;
+  HotSession s(true);
+  const Config cfg = session_config(fx);
+  live::LiveOptions opts = options(s, 30'000'000'000, "");
+  opts.watchdog = live::slow_tier_watchdog(s.slow, 0);
+  CHECK(opts.watchdog().empty());
+  int rc = -1;
+  std::thread session([&] { rc = live::run_live(cfg, opts); });
+  const bool quoted = quotes_at_least(2, 10000);
+
+  // Publishers on two threads share the ring through the channel's lock.
+  std::vector<std::thread> publishers;
+  publishers.reserve(2);
+  for (int t = 0; t < 2; ++t) {
+    publishers.emplace_back([&s, t] {
+      for (int i = 0; i < 50; ++i) static_cast<void>(publish_bps(*s.slow, 5.0 + t + (i * 0.01)));
+    });
+  }
+  for (std::thread& t : publishers) t.join();
+
+  SlowSnapshotHeader h{};
+  std::vector<SlowInstrumentState> states(1);
+  const bool snapshot = wait_until(
+      [&] {
+        s.slow->snapshot(h, states);
+        return h.version > 0 && states[0].book_valid != 0 && states[0].param_seq > 0;
+      },
+      10000);
+  const bool rows = wait_until([&] { return s.slow->recent_written(InstrumentId{0}) > 0; }, 10000);
+  std::vector<SlowRecentRow> recent(64);
+  std::uint64_t cursor = 0;
+  const SlowChannel::RecentRead read = s.slow->recent(InstrumentId{0}, recent, cursor);
+
+  const auto start = std::chrono::steady_clock::now();
+  s.slow->begin_call(steady_ns(), milliseconds(1));
+  session.join();
+  const auto stopped_after = std::chrono::steady_clock::now() - start;
+  REQUIRE(quoted);
+  CHECK(snapshot);
+  CHECK(rows);
+  CHECK(read.rows > 0);
+  CHECK(rc == live::kExitSlowTier);
+  CHECK(s.slow->failure() == SlowFailure::Timeout);
+  CHECK(s.slow->published() == 100);
+  CHECK(s.param_updates == 100);
+  CHECK(stopped_after < std::chrono::seconds(10));
+  CHECK(live::slow_failure_cause(SlowFailure::Timeout) ==
+        "slow tier failed (Timeout): a slow method ran past its timeout");
+  for (const SlowFailure f : {SlowFailure::Exception,
+                              SlowFailure::Timeout,
+                              SlowFailure::FillsOverflow,
+                              SlowFailure::ThreadExited}) {
+    CHECK(live::slow_failure_cause(f).size() <= kLogMaxStrBytes);  // log lines do not cut it
+  }
+  s.slow->close();
+  CHECK_FALSE(publish_bps(*s.slow, 6.0));
+}
+
+TEST_CASE("live session: the slow-tier watchdog notices a slow thread that ended") {
+  CHECK(live::thread_alive(0));
+  CHECK(live::thread_alive(::syscall(SYS_gettid)));
+  g_quotes = 0;
+  g_fail = false;
+  ServerFixture fx;
+  HotSession s(true);
+  const Config cfg = session_config(fx);
+  std::atomic<std::int64_t> tid{0};
+  std::atomic<bool> quit{false};
+  std::thread slow_thread([&] {
+    tid = ::syscall(SYS_gettid);
+    while (!quit.load()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  });
+  REQUIRE(wait_until([&] { return tid.load() != 0; }, 5000));
+  live::LiveOptions opts = options(s, 30'000'000'000, "");
+  opts.watchdog = live::slow_tier_watchdog(s.slow, tid.load());
+  int rc = -1;
+  std::thread session([&] { rc = live::run_live(cfg, opts); });
+  const bool quoted = quotes_at_least(2, 10000);
+  quit = true;
+  slow_thread.join();
+  session.join();
+  REQUIRE(quoted);
+  CHECK(rc == live::kExitSlowTier);
+  CHECK(s.slow->failure() == SlowFailure::ThreadExited);
+  CHECK_FALSE(live::thread_alive(tid.load()));
 }
 
 TEST_CASE("live session: confine_threads moves every thread off the reserved CPUs") {

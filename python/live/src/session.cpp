@@ -1,45 +1,45 @@
-// Live sessions of Python hot strategies (ADR-0013, section 3), used by fastmm.run_live.
+// Live sessions of Python hot strategies (ADR-0013, sections 3 and 4), used by fastmm.run_live.
 //
-//   load_config(path, allow_inline_secrets)   [strategy] section, instruments, warnings
-//   ParamChannel(fields, param_bytes, record, instruments, ring_bytes)
-//                                             the parameter ring and its ParamPublisher
-//   run(path, options, name, params, program, meta, channel) -> (exit code, hot error, calls)
+//   load_config(path, allow_inline_secrets)   [strategy] section, instruments, order rate, CPUs
+//   SlowChannel(symbols, fills_capacity, ...) the session's channel: parameter ring, snapshot,
+//                                             recent rows, fills and watchdog state
+//   run(path, options, name, params, program, meta, channel, slow, slow_tid)
+//                                             -> (exit code, hot error, calls)
 //
 // run() starts fastmm::live::run_live with a HotStrategy built from the compiled program and the
-// channel's ring as an engine input, with the GIL released. Hooks are warmed up on a scratch
-// strategy before any venue is contacted. One session runs per process; a child forked while a
-// session runs is inert (_after_fork_in_child).
+// channel's parameter ring as an engine input, with the GIL released. The channel is the ring's
+// only producer: SlowChannel::publish serialises publishes from any thread. With `slow` the
+// strategy also publishes snapshots, recent rows and fills into the channel, and the control
+// thread's watchdog (live/slow_watchdog.hpp) stops the session with exit code 7 when the slow tier
+// fails. Hooks are warmed up on a scratch strategy before any venue is contacted. One session runs
+// per process; a child forked while a session runs is inert (_after_fork_in_child).
 #include "session.hpp"
 
 #include "hot_program.hpp"
+#include "slow_channel_py.hpp"
 
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
-#include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/session.hpp"
+#include "fastmm/live/slow_watchdog.hpp"
 #include "fastmm/strategies/hot_params.hpp"
 #include "fastmm/strategies/hot_strategy.hpp"
-#include "fastmm/strategies/param_publisher.hpp"
+#include "fastmm/strategies/slow_channel.hpp"
 
 #include <pybind11/stl.h>
 
-#include <algorithm>
 #include <atomic>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <memory>
-#include <mutex>
-#include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -54,45 +54,15 @@ namespace py = pybind11;
 using HotLiveEngine = Engine<HotStrategy, TscClock, LiveTransport, RingFeed>;
 
 std::atomic<bool> g_active{false};  // a session runs in this process
-std::atomic<bool> g_forked{false};  // forked while a session ran: sessions and publishes are off
+std::atomic<bool> g_forked{false};  // forked while a session ran: sessions are off
 
-// Set by _fail_slow_tier; the session's watchdog reads it (exit code 7).
-std::mutex g_slow_mutex;
-std::string g_slow_cause;
-
-class ParamChannel {
- public:
-  ParamChannel(std::vector<HotParamField> fields,
-               std::size_t param_bytes,
-               std::span<const std::uint8_t> block,
-               std::size_t instruments,
-               std::size_t ring_bytes)
-      : table_(std::move(fields), param_bytes),
-        ring_(std::bit_ceil(std::max<std::size_t>(ring_bytes, 1U << 16))),
-        publisher_(table_.publisher(ParamSink::to_ring(ring_), block, instruments)) {}
-
-  bool publish(const std::vector<ParamPublisher::ParamValue>& values, InstrumentId inst) {
-    if (g_forked.load(std::memory_order_relaxed)) return false;
-    return publisher_->publish(values, inst);
-  }
-  void close() { publisher_->close(); }
-  [[nodiscard]] const ParamPublisher& publisher() const noexcept { return *publisher_; }
-  [[nodiscard]] const HotParamTable& table() const noexcept { return table_; }
-  [[nodiscard]] MsgRing& ring() noexcept { return ring_; }
-
- private:
-  HotParamTable table_;
-  MsgRing ring_;
-  std::unique_ptr<ParamPublisher> publisher_;
+// fastmm_live's wrapper of a slow channel (slow_channel_py.hpp). run() holds its own reference to
+// the channel, so the channel outlives whichever of the session and the Python objects ends last.
+struct LiveSlowChannel {
+  std::shared_ptr<SlowChannel> channel;
+  std::vector<std::string> symbols;
+  std::vector<std::uint64_t> recent_cursors;
 };
-
-std::string value_string(const py::handle& v, const std::string& name) {
-  if (py::isinstance<py::bool_>(v)) return v.cast<bool>() ? "true" : "false";
-  if (py::isinstance<py::int_>(v)) return py::str(v).cast<std::string>();
-  if (py::isinstance<py::float_>(v)) return py::repr(v).cast<std::string>();
-  if (py::isinstance<py::str>(v)) return v.cast<std::string>();
-  throw py::type_error("fastmm: parameter '" + name + "': values must be str, int, float or bool");
-}
 
 struct ActiveSession {
   ActiveSession() {
@@ -141,7 +111,28 @@ py::dict load_config(const std::string& path, bool allow_inline_secrets) {
   for (const Instrument& inst : instruments) symbols.append(std::string(inst.symbol.view()));
   out["instruments"] = symbols;
   out["warnings"] = cfg.warnings;
+  out["orders_per_sec"] = cfg.risk_limits().orders_per_sec;
+  out["max_param_age_ms"] = cfg.strategy.max_param_age_ms;
+  py::list reserved;
+  if (cfg.engine.cpu >= 0) reserved.append(cfg.engine.cpu);
+  for (const int c : cfg.engine.net_cpus) {
+    if (c >= 0) reserved.append(c);
+  }
+  out["reserved_cpus"] = reserved;
   return out;
+}
+
+// Throws RuntimeError when this process cannot start a session now.
+void check_can_run() {
+  if (g_forked.load()) {
+    throw std::runtime_error(
+        "fastmm: this process was forked while a live session was running and cannot run one; "
+        "start processes with the spawn or forkserver method");
+  }
+  if (g_active.load()) {
+    throw std::runtime_error(
+        "fastmm: a live session is already running in this process; run one session per process");
+  }
 }
 
 py::tuple run(const std::string& path,
@@ -150,23 +141,22 @@ py::tuple run(const std::string& path,
               const py::dict& params,
               const py::dict& program,
               const std::string& meta,
-              const std::shared_ptr<ParamChannel>& channel) {
-  if (g_forked.load()) {
-    throw std::runtime_error(
-        "fastmm: this process was forked while a live session was running and cannot run one; "
-        "start processes with the spawn or forkserver method");
-  }
+              const LiveSlowChannel& channel,
+              bool slow,
+              std::int64_t slow_tid) {
+  if (g_forked.load()) check_can_run();
   const ActiveSession active;
-  {
-    const std::lock_guard<std::mutex> lock(g_slow_mutex);
-    g_slow_cause.clear();
+  if (channel.channel == nullptr) throw py::value_error("fastmm: run() needs a SlowChannel");
+  if (channel.channel->closed())
+    throw py::value_error("fastmm: the SlowChannel belongs to a session that has ended");
+  const std::shared_ptr<SlowChannel> ch = channel.channel;  // the session's reference
+  const HotProgram hot = py_hot::program_from(program, false);
+  std::unique_ptr<HotParamTable> table;
+  try {
+    table = std::make_unique<HotParamTable>(py_hot::param_fields_from(program), hot.param_bytes);
+  } catch (const std::invalid_argument& e) {
+    throw py::value_error(e.what());
   }
-  if (channel == nullptr) throw py::value_error("fastmm: run() needs a ParamChannel");
-  HotProgram hot = py_hot::program_from(program, false);
-  if (hot.param_bytes != channel->table().param_bytes())
-    throw py::value_error(
-        "fastmm: the ParamChannel and the program disagree on the parameter block");
-  hot.params = channel->table().slots();
 
   live::LiveOptions opts;
   opts.config_path = path;
@@ -180,6 +170,7 @@ py::tuple run(const std::string& path,
   opts.no_status = option<bool>(options, "no_status", false);
   const auto log_path = option<std::string>(options, "log", "");
   const bool allow_inline = option<bool>(options, "allow_inline_secrets", false);
+  const auto max_param_age_ms = option<std::int64_t>(options, "max_param_age_ms", -1);
   ParamMap effective;
   for (const auto& [k, v] : params)
     effective[py::str(k).cast<std::string>()] = py::str(v).cast<std::string>();
@@ -202,6 +193,11 @@ py::tuple run(const std::string& path,
     }
     cfg.strategy.name = name;
     cfg.strategy.params = effective;  // the journal embeds what the session ran with
+    if (max_param_age_ms >= 0) cfg.strategy.max_param_age_ms = max_param_age_ms;
+    if (rc == 0 && ch->instruments() < instruments.size()) {
+      std::fprintf(stderr, "fastmm: the slow channel is smaller than the instrument table\n");
+      rc = live::kExitConfig;
+    }
     if (rc == 0 && !live::resolve_venue_env(cfg, opts.dry_run, "fastmm")) rc = live::kExitUsage;
 
     // Every hook runs once on scratch data before any venue is contacted.
@@ -212,7 +208,6 @@ py::tuple run(const std::string& path,
         rc = live::kExitConfig;
       } else {
         scratch.warm_up(instruments);
-        rc = 0;
       }
     }
 
@@ -232,9 +227,9 @@ py::tuple run(const std::string& path,
       HotStrategy* strategy = nullptr;
       live::LiveStrategy ls;
       ls.name = name;
-      ls.params = &channel->table().schema();
+      ls.params = &table->schema();
       ls.meta = meta;
-      ls.inputs.push_back(&channel->ring());
+      ls.inputs.push_back(&ch->param_ring());
       ls.make = [&](RunnerDeps& deps) {
         std::unique_ptr<IEngineRunner> runner =
             live::make_live_runner<HotStrategy>(TransportKind::Live, deps);
@@ -242,6 +237,8 @@ py::tuple run(const std::string& path,
         auto* er = static_cast<EngineRunner<HotLiveEngine, HotStrategy>*>(runner.get());
         if (!er->strategy().attach(hot, er->engine().instruments()))
           throw std::invalid_argument(name + ": invalid hot program");
+        if (slow && !er->strategy().attach_slow(ch.get()))
+          throw std::invalid_argument("the slow channel is smaller than the instrument table");
         strategy = &er->strategy();
         return runner;
       };
@@ -253,10 +250,7 @@ py::tuple run(const std::string& path,
       };
       opts.strategy = &ls;
       opts.confine_other_threads = true;
-      opts.watchdog = [] {
-        const std::lock_guard<std::mutex> lock(g_slow_mutex);
-        return g_slow_cause;
-      };
+      if (slow) opts.watchdog = live::slow_tier_watchdog(ch, slow_tid);
       try {
         rc = live::run_live(cfg, opts);
       } catch (const std::exception& e) {
@@ -266,7 +260,7 @@ py::tuple run(const std::string& path,
       Logger::instance().stop();
     }
     if (log_file != nullptr) std::fclose(log_file);
-    channel->close();
+    ch->close();
   }
 
   py::object err = py::none();
@@ -286,117 +280,69 @@ py::tuple run(const std::string& path,
 }  // namespace
 
 void bind_session(py::module_& m) {
-  py::class_<ParamChannel, std::shared_ptr<ParamChannel>>(
+  py::class_<LiveSlowChannel> channel(
       m,
-      "ParamChannel",
-      "The parameter ring of a live session and its publisher: publish() validates an update and "
-      "pushes it for the engine, which applies it at one event and journals it.")
-      .def(py::init([](const py::list& fields,
-                       std::size_t param_bytes,
-                       const py::bytes& record,
-                       std::size_t instruments,
-                       std::size_t ring_bytes) {
-             py::dict program;
-             program["param_fields"] = fields;
-             const auto bytes = record.cast<std::string>();
-             try {
-               return std::make_shared<ParamChannel>(
-                   py_hot::param_fields_from(program),
-                   param_bytes,
-                   std::span<const std::uint8_t>(
-                       reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()),
-                   instruments,
-                   ring_bytes);
-             } catch (const std::invalid_argument& e) {
-               throw py::value_error(e.what());
-             }
-           }),
-           py::arg("fields"),
-           py::arg("param_bytes"),
-           py::arg("record"),
-           py::arg("instruments"),
-           py::arg("ring_bytes") = 1U << 16)
-      .def(
-          "publish",
-          [](ParamChannel& c, const py::dict& values, std::optional<std::int64_t> instrument) {
-            std::vector<ParamPublisher::ParamValue> v;
-            v.reserve(values.size());
-            for (const auto& [k, value] : values) {
-              const auto key = py::str(k).cast<std::string>();
-              v.emplace_back(key, value_string(value, key));
-            }
-            InstrumentId inst = ParamPublisher::kAllInstruments;
-            if (instrument) {
-              if (*instrument < 0 || *instrument > 0xFFFF'FFFELL)
-                throw py::value_error("fastmm: instrument " + std::to_string(*instrument) +
-                                      " is not in the instrument table");
-              inst = InstrumentId{static_cast<std::uint32_t>(*instrument)};
-            }
-            std::string why;
-            bool ok = false;
-            {
-              const py::gil_scoped_release release;
-              try {
-                ok = c.publish(v, inst);
-              } catch (const std::invalid_argument& e) {
-                why = e.what();
-              }
-            }
-            if (!why.empty()) throw py::value_error(why);
-            return ok;
-          },
-          py::arg("values"),
-          py::arg("instrument") = py::none(),
-          "Validates {name: value} (str, int, float or bool) and pushes one update for every "
-          "instrument, or for one instrument id. Raises ValueError when it is invalid; returns "
-          "False when the ring is full or the session has stopped.")
-      .def("close", &ParamChannel::close, "Later publishes return False.")
-      .def_property_readonly("closed", [](const ParamChannel& c) { return c.publisher().closed(); })
-      .def_property_readonly("published",
-                             [](const ParamChannel& c) { return c.publisher().published(); })
-      .def_property_readonly("refused",
-                             [](const ParamChannel& c) { return c.publisher().refused(); })
-      .def_property_readonly("names",
-                             [](const ParamChannel& c) {
-                               std::vector<std::string> out;
-                               for (const HotParamField& f : c.table().fields())
-                                 out.push_back(f.name);
-                               return out;
-                             })
-      .def(
-          "describe",
-          [](const ParamChannel& c, std::optional<std::uint32_t> instrument) {
-            return c.publisher().describe(instrument ? InstrumentId{*instrument}
-                                                     : ParamPublisher::kAllInstruments);
-          },
-          py::arg("instrument") = py::none(),
-          "The publisher's copy of the parameters as name=value pairs.");
+      "SlowChannel",
+      "Internal: the channel between a live session's engine and the strategy's slow methods and "
+      "publishers. publish() pushes a validated update onto the parameter ring the engine polls; "
+      "it returns False once the session has ended.");
+  channel.def(py::init([](std::vector<std::string> symbols,
+                          std::size_t fills_capacity,
+                          std::size_t recent_rows,
+                          std::int64_t snapshot_interval_ns) {
+                if (symbols.empty())
+                  throw py::value_error("fastmm: a slow channel needs at least one instrument");
+                SlowChannelConfig cc;
+                cc.instruments = symbols.size();
+                cc.fills_capacity = fills_capacity;
+                cc.recent_rows = recent_rows;
+                cc.snapshot_interval = Duration{snapshot_interval_ns};
+                const std::size_t n = symbols.size();
+                return LiveSlowChannel{std::make_shared<SlowChannel>(cc),
+                                       std::move(symbols),
+                                       std::vector<std::uint64_t>(n, 0)};
+              }),
+              py::arg("symbols"),
+              py::arg("fills_capacity"),
+              py::arg("recent_rows") = 4096,
+              py::arg("snapshot_interval_ns") = 10'000'000);
+  fastmm::py_bind::def_slow_channel(channel);
 
+  m.def(
+      "slow_fills_capacity",
+      [](std::uint32_t orders_per_sec, std::int64_t longest_gap_ns) {
+        return slow_fills_capacity(orders_per_sec, Duration{longest_gap_ns});
+      },
+      py::arg("orders_per_sec"),
+      py::arg("longest_gap_ns"),
+      "Internal: the fills ring capacity of a session (strategies/slow_channel.hpp).");
+
+  m.def("_check_can_run",
+        &check_can_run,
+        "Internal: raises RuntimeError when a session runs in this process or it was forked during "
+        "one.");
   m.def("load_config",
         &load_config,
         py::arg("path"),
         py::arg("allow_inline_secrets") = false,
-        "Internal: {'strategy', 'params', 'instruments', 'warnings'} of a live configuration. "
-        "Raises ValueError when it does not load.");
-  m.def("run",
-        &run,
-        py::arg("path"),
-        py::arg("options"),
-        py::arg("name"),
-        py::arg("params"),
-        py::arg("program"),
-        py::arg("meta"),
-        py::arg("channel"),
-        "Internal: runs a live session of a compiled hot strategy with the GIL released; use "
-        "fastmm.run_live. Returns (exit code, hot hook error or None, hook calls).");
+        "Internal: {'strategy', 'params', 'instruments', 'warnings', 'orders_per_sec', "
+        "'max_param_age_ms', 'reserved_cpus'} of a live configuration. Raises ValueError when it "
+        "does not load.");
   m.def(
-      "_fail_slow_tier",
-      [](const std::string& cause) {
-        const std::lock_guard<std::mutex> lock(g_slow_mutex);
-        g_slow_cause = cause.empty() ? std::string("slow tier failed") : cause;
-      },
-      py::arg("cause"),
-      "Internal: stop the running session like SIGTERM with exit code 7, logging `cause`.");
+      "run",
+      &run,
+      py::arg("path"),
+      py::arg("options"),
+      py::arg("name"),
+      py::arg("params"),
+      py::arg("program"),
+      py::arg("meta"),
+      py::arg("channel"),
+      py::arg("slow"),
+      py::arg("slow_tid"),
+      "Internal: runs a live session of a compiled hot strategy with the GIL released; use "
+      "fastmm.run_live. With `slow` the engine feeds `channel` and the watchdog watches it and "
+      "the thread `slow_tid` (0: none). Returns (exit code, hot hook error or None, hook calls).");
   m.def(
       "_after_fork_in_child",
       [] {
@@ -405,7 +351,7 @@ void bind_session(py::module_& m) {
         live::restore_signal_handlers();
       },
       "Internal (os.register_at_fork): a child forked while a session runs cannot run a session "
-      "or publish, and gets the previous SIGINT/SIGTERM handlers back.");
+      "and gets the previous SIGINT/SIGTERM handlers back.");
   m.attr("EXIT_SLOW_TIER") = live::kExitSlowTier;
 }
 

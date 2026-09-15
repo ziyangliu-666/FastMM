@@ -24,6 +24,10 @@ Venue ids follow the order of the `[venues.<name>]` tables in the config, starti
 | A fatal venue error (see [below](#venue-kill-switch)) | That venue | `<venue>: asking the engine to kill this venue (VenueFatal)`, `venue <id> kill switch engaged (VenueFatal, flags=0x2); ...`, `[<venue>] venue kill switch engaged (VenueFatal): ...; <n> of <m> venue(s) still trading` | ERROR | Only that venue stops; the others keep trading |
 | Every venue that has instruments is killed | Global | `kill switch engaged (AllVenuesKilled, ...)` | ERROR | `on_kill` |
 | A hot hook of a Python strategy raised, called `ctx.fail` or set a float level that is not finite; no hook runs again | Global | `kill switch engaged (StrategyError, ...)`; after the session, `fastmm: py:<Class>.<hook> ... kill switch tripped: StrategyError` on stderr | ERROR | `on_kill` |
+| A slow method of a Python strategy raised | Global, requested | `fastmm-live: slow tier failed (Exception): a slow method raised`, then `fastmm-live: shutting down (slow tier failed)`; the traceback on stderr | ERROR | Shutdown sequence; exit code 7 |
+| A slow method ran past its `timeout` | Global, requested | `fastmm-live: slow tier failed (Timeout): a slow method ran past its timeout`, then `fastmm-live: shutting down (slow tier failed)` | ERROR | Shutdown sequence; exit code 7 |
+| The engine found the slow methods' fills ring full | Global, requested | `fastmm-live: slow tier failed (FillsOverflow): the fills ring was full`, then `fastmm-live: shutting down (slow tier failed)` | ERROR | Shutdown sequence; exit code 7 |
+| The slow thread ended while the session ran | Global, requested | `fastmm-live: slow tier failed (ThreadExited): the slow thread ended`, then `fastmm-live: shutting down (slow tier failed)` | ERROR | Shutdown sequence; exit code 7 |
 
 The exit codes in the table assume `cancel_all ok`; a failed cancel-all makes the code 5 ([Reading the last lines](#reading-the-last-lines)).
 
@@ -35,7 +39,7 @@ These events do not trip the kill switch:
 
 ## After a kill the engine trips itself
 
-`[engine] on_kill` decides what `fastmm-live` does after a global kill it did not request: every row above except signal, `--duration` and order ring overflow, which shut down in any case.
+`[engine] on_kill` decides what `fastmm-live` does after a global kill it did not request: every row above except signal, `--duration`, order ring overflow and the slow-tier rows, which shut down in any case.
 
 | `on_kill` | Behaviour |
 |---|---|
@@ -65,7 +69,7 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
 
 From `run_live()` in `src/live/session.cpp`, which also runs Python strategies ([Run a Python strategy live](../strategies/python-live.md)):
 
-1. The control thread notices the signal, the elapsed duration, the ring overflow or a kill the engine tripped itself (it checks every 50 ms), publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
+1. The control thread notices the signal, the elapsed duration, the ring overflow, a slow-tier failure or a kill the engine tripped itself (it checks every 50 ms), publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
 2. Unless the engine tripped the kill switch itself (it has already pulled quotes and cancelled), it posts a kill-switch command to the engine. The engine logs `kill switch requested`, pulls every quote and queues cancels for every working order. If the control ring is full, the log says `control ring full: kill switch message dropped`; step 3 still runs.
 3. Independently of the engine, the control thread calls `cancel_all()` on every venue, one after another, over a new blocking REST connection (so it works even when the venue's network thread is stuck), and waits for each reply. It is skipped in `--dry-run`. Each request has a 5000 ms timeout (`http_timeout_ms`), and there is one request per subscribed instrument:
    - Binance: `DELETE /api/v3/openOrders` per symbol; error `-2011` (nothing open) counts as success.
