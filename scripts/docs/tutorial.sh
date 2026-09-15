@@ -7,10 +7,13 @@
 #
 # Steps: setup, test, backtest, register, cli, sim, demo. --through stops after a step (default sim);
 # `demo` trades on Binance Demo and needs FASTMM_BINANCE_API_KEY and FASTMM_BINANCE_API_SECRET.
-# --skip-build uses an existing build (FASTMM_BUILD_DIR, default build/release). The simulated
-# exchange needs ports 9080 and 9443. Output goes to runs/tutorial/.
+# --skip-build uses an existing build (FASTMM_BUILD_DIR, default build/release). Output goes to
+# runs/tutorial/. The simulated exchange listens on ports 9080 and 9443; FASTMM_SIM_PORT=<port>
+# (0 picks a free one) runs the sim step in runs/tutorial-port-<port>/ instead, with a copy of
+# configs/tutorial-sim.toml on that port and an ephemeral TLS port (ctest tutorial.script).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+ROOT=$PWD
 
 THROUGH=sim
 SKIP_BUILD=0
@@ -18,7 +21,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --through) THROUGH="$2"; shift 2;;
     --skip-build) SKIP_BUILD=1; shift;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0;;
     *) echo "tutorial.sh: unknown argument $1" >&2; exit 2;;
   esac
 done
@@ -94,7 +97,25 @@ port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 if wanted sim; then
   step "trade on the simulated exchange"
-  port_open 9080 && fail "port 9080 is in use (another fastmm-sim-exchange?)"
+  SIM_PORT=${FASTMM_SIM_PORT:-9080}
+  if [[ "$SIM_PORT" != 9080 ]]; then
+    if [[ "$SIM_PORT" == 0 ]]; then
+      SIM_PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+    fi
+    # The commands below are the tutorial's, so they read configs/tutorial-sim.toml and write
+    # runs/tutorial/: run them in a directory whose copy of that file uses SIM_PORT.
+    WORK=runs/tutorial-port-$SIM_PORT
+    rm -rf "$WORK"
+    mkdir -p "$WORK/configs" "$WORK/runs/tutorial" "$WORK/tests/fixtures"
+    ln -s "$ROOT/tests/fixtures/tls" "$WORK/tests/fixtures/tls"
+    sed -e "s/127\.0\.0\.1:9080/127.0.0.1:$SIM_PORT/g" -e "s/^port = 9080\b/port = $SIM_PORT/" \
+      -e "s/^tls_port = 9443\b/tls_port = 0/" -e "s/^name = \"tutorial-sim\"/name = \"tutorial-sim-$SIM_PORT\"/" \
+      configs/tutorial-sim.toml > "$WORK/configs/tutorial-sim.toml"
+    grep -q "^port = $SIM_PORT\b" "$WORK/configs/tutorial-sim.toml" || fail "configs/tutorial-sim.toml has no port = 9080"
+    BIN=$(realpath "$BIN")
+    cd "$WORK"
+  fi
+  port_open "$SIM_PORT" && fail "port $SIM_PORT is in use (another fastmm-sim-exchange? set FASTMM_SIM_PORT)"
   rm -f runs/tutorial/sim.fmj runs/tutorial/sim-live.log
   # --8<-- [start:sim-exchange]
   "$BIN"/fastmm-sim-exchange --config configs/tutorial-sim.toml --duration 90s > runs/tutorial/sim-exchange.log 2>&1 &
@@ -102,7 +123,7 @@ if wanted sim; then
   SIM_PID=$!
   trap 'kill "$SIM_PID" 2>/dev/null || true' EXIT
   for _ in $(seq 1 100); do
-    port_open 9080 && break
+    port_open "$SIM_PORT" && break
     kill -0 "$SIM_PID" 2>/dev/null || { cat runs/tutorial/sim-exchange.log >&2; fail "fastmm-sim-exchange exited"; }
     sleep 0.1
   done
@@ -126,6 +147,7 @@ if wanted sim; then
   kill "$SIM_PID" 2>/dev/null || true
   wait "$SIM_PID" 2>/dev/null || true
   trap - EXIT
+  cd "$ROOT"
 fi
 
 if wanted demo; then

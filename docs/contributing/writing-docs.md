@@ -74,4 +74,4 @@ CI runs these checks:
 | quick start, examples and tutorial run | `ctest --test-dir build/release -L 'examples\|tutorial'` | all build jobs |
 | every `configs/*.toml` loads without warnings | `ctest --test-dir build/release -L config` | all build jobs |
 
-The tutorial script test (`tutorial.script`) runs the simulated exchange on ports 9080 and 9443 and is not registered under sanitizers. The public header manifest is [`docs/api/public-headers.txt`](../api/public-headers.txt) ([Public API](../reference/public-api.md)).
+The tutorial script test (`tutorial.script`) runs the simulated exchange on a free port (`FASTMM_SIM_PORT=0`) and is not registered under sanitizers. The public header manifest is [`docs/api/public-headers.txt`](../api/public-headers.txt) ([Public API](../reference/public-api.md)).
