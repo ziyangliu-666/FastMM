@@ -36,6 +36,7 @@ from ._core import (
     strategies,
     sweep,
 )
+from ._hot.decl import HotCompileError, State, hot
 from .data import load_csv
 from .results import FIXED_SCALE, sweep_frame, to_pandas
 from .strategy import (
@@ -55,6 +56,7 @@ from .strategy import (
 __all__ = [
     "BUY",
     "FIXED_SCALE",
+    "HotCompileError",
     "LIQUIDITY_UNKNOWN",
     "MAKER",
     "SELL",
@@ -77,6 +79,7 @@ __all__ = [
     "Portfolio",
     "PositionView",
     "StaleViewError",
+    "State",
     "Strategy",
     "StrategyError",
     "TradeView",
@@ -84,6 +87,7 @@ __all__ = [
     "build_info",
     "disable_logging",
     "enable_logging",
+    "hot",
     "inspect_journal",
     "load_csv",
     "run_backtest",
@@ -92,3 +96,12 @@ __all__ = [
     "sweep_frame",
     "to_pandas",
 ]
+
+
+def __getattr__(name: str):  # noqa: ANN202
+    # fastmm.fx imports numba, so it loads on first use.
+    if name == "fx":
+        import importlib
+
+        return importlib.import_module(".fx", __name__)
+    raise AttributeError(f"module 'fastmm' has no attribute {name!r}")

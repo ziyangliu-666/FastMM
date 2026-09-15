@@ -4,6 +4,13 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- Python hot hooks in backtests (ADR-0013, section 1): `@fastmm.hot` methods (`on_book`, `on_fill`,
+  `on_quoting`, `on_connection`, and timer hooks with `every=`) compiled by Numba and called by the
+  engine thread through the C ABI in `strategies/hot_abi.h`, with `fastmm.State`, `fastmm.fx` and
+  the `fastmm[hot]` extra. A failing hook trips the kill switch with the new
+  `KillReason::StrategyError`; `StrategyContext::trip_kill(reason)` is new.
+
 ### Changed
 - `ctx.request_stop()` ends a backtest: `sim::EngineHooks` gains a nullable `stopped` callback that
   `SimDriver` checks after every engine step. `ReplayDriver` ignores it and always drains the
