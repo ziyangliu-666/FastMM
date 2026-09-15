@@ -1,6 +1,6 @@
 # Run on a testnet or Binance Demo
 
-FastMM ships configs for four practice environments: Binance Spot Demo Mode, the Binance Spot testnet, the Bybit v5 spot testnet and the Deribit testnet. Each environment has its own keys; keys from one never work on another, and none of them are live-exchange keys.
+FastMM ships configs for five practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 spot testnet and the Deribit testnet. The two Binance Demo environments share one set of keys; every other environment has its own, and none of them are live-exchange keys.
 
 Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
 
@@ -25,11 +25,12 @@ set -a && . ./.env && set +a
 | Environment | Config | Key variables |
 |---|---|---|
 | Binance Demo Mode | `configs/binance-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
+| Binance USDⓈ-M Demo Trading | `configs/binance-usdm-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
 | Binance testnet | `configs/binance-testnet.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
 | Bybit testnet | `configs/bybit-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
 | Deribit testnet | `configs/deribit-testnet.toml` | `FASTMM_DERIBIT_CLIENT_ID`, `FASTMM_DERIBIT_CLIENT_SECRET` |
 
-Binance Demo and the Binance testnet use the same variable names, so only one of them can be loaded at a time.
+The Binance configs use the same variable names, so only one set of keys can be loaded at a time. Demo Trading keys work for both Spot Demo Mode and USDⓈ-M Demo Trading.
 
 ## 3. The environments
 
@@ -43,6 +44,15 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Fees: the config books 10 bps maker and taker (`[venues.binance.fees]`), the commission the Demo account charged in our sessions.
 - Commission asset: buys are charged in the base asset (BTC) and sells in the quote asset (USDT) ([Journals, replay and PnL](journals-replay-pnl.md#check-pnl)).
 - Config: `stale_ms = 10000`; `[engine] min_requote_ticks = 50` and `min_requote_interval_ms = 1000` keep the order rate below Binance's limits.
+
+### Binance USDⓈ-M futures Demo Trading
+
+- Keys: the Binance Demo Trading HMAC keys, the same as for Spot Demo Mode. The USDⓈ-M futures wallet needs a USDT balance, and the account must be in one-way position mode (the connector refuses hedge mode).
+- Endpoints (from `configs/binance-usdm-demo.toml`): streams `wss://demo-fstream.binance.com` (`/public`, `/market`, `/private`), WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`, REST `https://demo-fapi.binance.com`.
+- Contract: the BTCUSDT perpetual, tick 0.10, lot 0.0001, minimum notional 50 USDT. The config quotes 0.001 BTC about 1 bps from mid with `max_position = "0.003"` and `max_loss = "20"`.
+- Fees: 2 bps maker and 4 bps taker, charged in USDT (`GET /fapi/v1/commissionRate` on the Demo account).
+- Leverage and margin mode are account settings: the log shows them at startup and the connector changes nothing. Funding payments are not booked.
+- After a session, flatten any remaining position with a reduce-only order.
 
 ### Binance Spot testnet
 
@@ -102,7 +112,7 @@ Press Ctrl-C or let `--duration` elapse, then read the last log lines ([Reading 
 
 ## 7. Opt-in live connector tests
 
-The `live.*` test cases in `tests/venues/live_binance_test.cpp`, `live_bybit_test.cpp` and `live_deribit_test.cpp` run each connector against its testnet: book sync, then a far post-only order that is placed and cancelled. They are part of the venue test binary with the ctest label `live`: the test presets (`ctest --preset release`, ...) exclude that label, and a plain `ctest` runs them but they pass without doing anything unless `FASTMM_LIVE_TESTS=1` is set; the order steps also need the key variables above. `FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode instead of the testnet.
+The `live.*` test cases in `tests/venues/live_binance_test.cpp`, `live_binance_usdm_test.cpp`, `live_bybit_test.cpp` and `live_deribit_test.cpp` run each connector against its testnet or Demo environment: book sync, then a far post-only order that is placed and cancelled. They are part of the venue test binary with the ctest label `live`: the test presets (`ctest --preset release`, ...) exclude that label, and a plain `ctest` runs them but they pass without doing anything unless `FASTMM_LIVE_TESTS=1` is set; the order steps also need the key variables above. `FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode instead of the testnet.
 
 ```bash
 cmake --build --preset release -j --target fastmm_venues_tests

@@ -1,6 +1,7 @@
 #include "fastmm/venues/venue_factory.hpp"
 
 #include "fastmm/venues/binance/binance_venue.hpp"
+#include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 #include "fastmm/venues/bybit/bybit_venue.hpp"
 #include "fastmm/venues/deribit/deribit_venue.hpp"
 
@@ -12,6 +13,7 @@ VenueKind venue_kind(std::string_view kind) noexcept {
   if (kind == "binance_spot" || kind == "binance" || kind == "sim") return VenueKind::BinanceSpot;
   if (kind == "bybit" || kind == "bybit_spot") return VenueKind::BybitSpot;
   if (kind == "deribit") return VenueKind::Deribit;
+  if (kind == "binance_usdm") return VenueKind::BinanceUsdm;
   return VenueKind::Unknown;
 }
 
@@ -46,11 +48,17 @@ std::unique_ptr<Venue> make_venue(VenueId id,
       c.record_raw_dir = opts.record_raw_dir;
       return std::make_unique<deribit::DeribitVenue>(id, std::move(c));
     }
+    case VenueKind::BinanceUsdm: {
+      binance_usdm::BinanceUsdmVenueConfig c =
+          binance_usdm::make_binance_usdm_config(s, opts.dry_run);
+      c.record_raw_dir = opts.record_raw_dir;
+      return std::make_unique<binance_usdm::BinanceUsdmVenue>(id, std::move(c));
+    }
     case VenueKind::Unknown:
       break;
   }
   throw std::invalid_argument("venue '" + s.name + "': unsupported kind '" + s.kind +
-                              "' (expected binance_spot, sim, bybit or deribit)");
+                              "' (expected binance_spot, binance_usdm, sim, bybit or deribit)");
 }
 
 }  // namespace fastmm::venues

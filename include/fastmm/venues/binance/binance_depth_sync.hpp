@@ -27,17 +27,19 @@ struct SnapshotRequester {
   }
 };
 
-class BinanceDepthSync {
+// Traits: BinanceSpotSyncTraits (Spot, U/u chaining) or BinanceFuturesSyncTraits (USDⓈ-M, pu
+// chaining; see binance_usdm_md_feed.hpp).
+template <class Traits>
+class BasicBinanceDepthSync {
  public:
   static constexpr std::int64_t kDefaultMinInterval = 2'000'000'000;  // 2 s
 
-  BinanceDepthSync(
-      InstrumentId instrument,
-      VenueId venue,
-      EventSink& sink,
-      SnapshotRequester requester,
-      std::int64_t min_interval_ns = kDefaultMinInterval,
-      std::size_t buffer_bytes = BookSyncer<BinanceSpotSyncTraits, int>::kDefaultBufferBytes)
+  BasicBinanceDepthSync(InstrumentId instrument,
+                        VenueId venue,
+                        EventSink& sink,
+                        SnapshotRequester requester,
+                        std::int64_t min_interval_ns = kDefaultMinInterval,
+                        std::size_t buffer_bytes = BookSyncer<Traits, int>::kDefaultBufferBytes)
       : instrument_(instrument),
         venue_(venue),
         sink_(sink),
@@ -105,7 +107,7 @@ class BinanceDepthSync {
 
  private:
   struct Inner {
-    BinanceDepthSync* owner;
+    BasicBinanceDepthSync* owner;
     void on_snapshot(const BookDeltaMsg& m) noexcept { owner->forward(m); }
     void on_delta(const BookDeltaMsg& m) noexcept { owner->forward(m); }
     void on_resync(SyncReason reason) noexcept { owner->emit_resyncing(reason); }
@@ -153,7 +155,9 @@ class BinanceDepthSync {
   bool overflowed_ = false;
   bool stopped_ = false;
   Inner inner_;
-  BookSyncer<BinanceSpotSyncTraits, Inner> syncer_;
+  BookSyncer<Traits, Inner> syncer_;
 };
+
+using BinanceDepthSync = BasicBinanceDepthSync<BinanceSpotSyncTraits>;
 
 }  // namespace fastmm::venues::binance

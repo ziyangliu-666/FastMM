@@ -5,6 +5,17 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Binance USDⓈ-M perpetual futures connector (`kind = "binance_usdm"`,
+  `binance_usdm::BinanceUsdmVenue`) and `configs/binance-usdm-demo.toml` for Demo Trading: depth
+  sync with `pu` chaining on the `/public` stream, `bookTicker` and `aggTrade` (`/market`), orders
+  over the WebSocket API (`order.place`, `order.cancel`, `order.modify`) with a REST fallback,
+  post-only as GTX, `reduceOnly`, the listenKey user stream (`ORDER_TRADE_UPDATE`,
+  `ACCOUNT_UPDATE`), reconciliation of open orders and positions, a check of `ACCOUNT_UPDATE`
+  positions against the fills, and a read-only account check that refuses hedge mode. New
+  connector key `position_from_account_update`. Market-data fixtures are recorded on Demo Trading;
+  the private payloads are hand-written from the documentation because the Demo account had no
+  futures margin balance. Funding payments are not booked. `binance::BinanceDepthSync` is now
+  `BasicBinanceDepthSync<BinanceSpotSyncTraits>`.
 - Slow methods in live sessions (ADR-0013, sections 1 and 4): `fastmm.run_live` and
   `python -m fastmm run` run `on_start` before any venue connection, the `@fastmm.every` methods
   on a `fastmm-slow` thread and `on_stop` after the session, with snapshots, recent rows and fills

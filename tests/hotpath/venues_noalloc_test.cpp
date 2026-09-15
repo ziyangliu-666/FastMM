@@ -12,6 +12,9 @@
 #include "fastmm/venues/binance/binance_md_parser.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
+#include "fastmm/venues/binance_usdm/binance_usdm_md_parser.hpp"
+#include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
+#include "fastmm/venues/binance_usdm/binance_usdm_user_parser.hpp"
 #include "fastmm/venues/bybit/bybit_auth.hpp"
 #include "fastmm/venues/bybit/bybit_md_parser.hpp"
 #include "fastmm/venues/bybit/bybit_order_encoder.hpp"
@@ -171,6 +174,38 @@ TEST_CASE("hotpath.noalloc: Binance market-data parser, user parser and order en
   binance::BinanceOrderEncoder enc(signer, u.symbols, 3000);
   const binance::OrderShadow shadow{
       Side::Buy, OrderType::PostOnly, TimeInForce::Gtc, InstrumentId{0}};
+  const Commands cmds(InstrumentId{0}, VenueId{0}, "70000.5", "0.001");
+  check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
+    return enc.encode_ws(c, &shadow, 1789295199000, out);
+  });
+}
+
+TEST_CASE("hotpath.noalloc: Binance USD-M market-data parser, user parser and order encoder") {
+  TestUniverse u;
+  {
+    binance_usdm::BinanceUsdmMdParser md(u.symbols, VenueId{0});
+    check_decoder_noalloc(md,
+                          frames({"binance_usdm/depth_update.json",
+                                  "binance_usdm/book_ticker.json",
+                                  "binance_usdm/agg_trade.json"}));
+  }
+  {
+    binance_usdm::BinanceUsdmUserParser user(u.symbols, u.instruments, VenueId{0});
+    check_decoder_noalloc(user,
+                          frames({"binance_usdm/order_update_new.json",
+                                  "binance_usdm/order_update_trade.json",
+                                  "binance_usdm/order_update_canceled.json",
+                                  "binance_usdm/order_update_expired.json",
+                                  "binance_usdm/account_update.json"}));
+  }
+  binance::Credentials creds;
+  creds.api_key = "test-key";
+  creds.secret.value = "test-secret";
+  const binance::Signer signer(creds);
+  binance_usdm::BinanceUsdmOrderEncoder enc(signer, u.symbols, 3000);
+  binance_usdm::OrderShadow shadow;
+  shadow.instrument = InstrumentId{0};
+  shadow.type = OrderType::PostOnly;
   const Commands cmds(InstrumentId{0}, VenueId{0}, "70000.5", "0.001");
   check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
     return enc.encode_ws(c, &shadow, 1789295199000, out);

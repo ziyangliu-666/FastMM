@@ -1,0 +1,93 @@
+# FastMM: BasicMM on Binance USDⓈ-M perpetual futures, Demo Trading (demo funds).
+#   ./build/release/bin/fastmm-live --config configs/binance-usdm-demo.toml --dry-run --duration 60s
+# Keys come from Binance Demo Trading (API Key Management after switching to Demo Trading); the
+# account needs a USDT balance in its USDⓈ-M futures wallet, one-way position mode and HMAC keys:
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/binance-usdm-demo.toml
+# Endpoints: https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info
+#   ("Testnet API Information") and websocket-api-general-info:
+#   REST https://demo-fapi.binance.com, streams wss://demo-fstream.binance.com (/public, /market,
+#   /private), WebSocket API wss://testnet.binancefuture.com/ws-fapi/v1.
+# Leverage and margin mode are account settings; the connector logs them and changes nothing.
+[engine]
+name = "binance-usdm-demo"
+cpu = -1                     # pin the engine thread on bare metal; -1 on WSL2
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 10
+min_requote_interval_ms = 1000
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.binance_usdm]
+kind = "binance_usdm"
+ws_url = "wss://demo-fstream.binance.com"
+ws_api_url = "wss://testnet.binancefuture.com/ws-fapi/v1"
+rest_url = "https://demo-fapi.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = false     # cancel + new; order.modify is implemented but moves the order in the queue anyway
+recv_window_ms = 3000
+stale_ms = 10000
+
+[venues.binance_usdm.fees]
+maker_bps = 2.0              # GET /fapi/v1/commissionRate on the Demo account
+taker_bps = 4.0
+
+# Tick/lot/min_notional are overwritten from GET /fapi/v1/exchangeInfo at startup.
+[[instruments]]
+venue = "binance_usdm"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.10"
+lot = "0.0001"
+min_qty = "0.0001"
+max_qty = "1000"
+min_notional = "50"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+# Quotes about 1 bps from mid so fills happen; 0.001 BTC is above the 50 USDT minimum notional.
+# At ~77,000 USDT one 0.10 tick is about 0.013 bps. The skew is per quote_qty of inventory.
+half_spread_bps = 1.0
+skew_bps_per_unit = 0.5
+quote_qty = 0.001
+max_inventory = 0.003
+requote_threshold_ticks = 30
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.002"
+max_order_notional = "200"
+max_position = "0.003"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

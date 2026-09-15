@@ -1,0 +1,16 @@
+{
+ "_source": "recorded and docs-example",
+ "_recorded_from": "wss://demo-fstream.binance.com/public/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker, wss://demo-fstream.binance.com/market/stream?streams=btcusdt@aggTrade and https://demo-fapi.binance.com/fapi/v1/{exchangeInfo,depth,time} (fastmm-live --dry-run --record-raw)",
+ "_recorded_at": "2026-09-15T10:45Z",
+ "files": {
+  "exchange_info.json": "recorded (GET /fapi/v1/exchangeInfo), cut to BTCUSDT and ETHUSDT",
+  "depth_snapshot.json": "recorded (GET /fapi/v1/depth?symbol=BTCUSDT&limit=5)",
+  "server_time.json": "recorded (GET /fapi/v1/time)",
+  "depth_update.json": "recorded (public combined stream frame)",
+  "book_ticker.json": "recorded (public combined stream frame)",
+  "agg_trade.json": "recorded (market combined stream frame)",
+  "raw_md_stream.jsonl": "recorded, the first 400 public frames of the session, one frame per line",
+  "order_update_*.json, account_update.json, listen_key_expired.json": "docs-example (hand-written from https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams event descriptions and the field names of the official connector models, binance-connector-python derivatives_trading_usds_futures websocket_streams OrderTradeUpdateO / AccountUpdateAPInner; FastMM client ids; the Demo account had no margin balance, so no private events could be recorded)",
+  "position_risk.json": "docs-example (field names of binance-connector-python PositionInformationV3ResponseInner)"
+ }
+}

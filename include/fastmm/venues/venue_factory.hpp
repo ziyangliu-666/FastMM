@@ -1,7 +1,7 @@
 #pragma once
 // Venue factory: maps a [venues.<name>] config section to a concrete connector by `kind`
-// (config/schema.hpp: binance_spot | bybit | deribit | sim; "sim" is the Binance-compatible
-// simulator).
+// (config/schema.hpp: binance_spot | binance_usdm | bybit | deribit | sim; "sim" is the
+// Binance-compatible simulator).
 #include "fastmm/config/config.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -16,7 +16,13 @@ struct VenueFactoryOptions {
   std::string record_raw_dir;  // non-empty: append raw frames to <dir>/<venue>-<channel>.jsonl
 };
 
-enum class VenueKind : std::uint8_t { Unknown = 0, BinanceSpot = 1, BybitSpot = 2, Deribit = 3 };
+enum class VenueKind : std::uint8_t {
+  Unknown = 0,
+  BinanceSpot = 1,
+  BybitSpot = 2,
+  Deribit = 3,
+  BinanceUsdm = 4,
+};
 [[nodiscard]] VenueKind venue_kind(std::string_view kind) noexcept;
 
 [[nodiscard]] inline bool has_credentials(const VenueSection& s) noexcept {

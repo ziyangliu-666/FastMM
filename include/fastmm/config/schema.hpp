@@ -152,7 +152,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      "kind",
      KeyType::String,
      true,
-     "connector: binance_spot (alias binance) | bybit (alias bybit_spot) | deribit | sim "
+     "connector: binance_spot (alias binance) | binance_usdm | bybit (alias bybit_spot) | "
+     "deribit | sim "
      "(fastmm-sim-exchange and backtest configs)"},
     {"venues.*", "ws_url", KeyType::String, false, "market-data WebSocket URL"},
     {"venues.*",
@@ -213,7 +214,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Int,
      false,
      "no traffic for this long forces a reconnect, ms; raised to a per-connector minimum "
-     "(binance and bybit 45000, deribit 30000 by default)",
+     "(binance and bybit 45000, deribit 30000 by default; binance_usdm 45000 for market data, "
+     "240000 for the other channels)",
      true},
     {"venues.*", "order_api", KeyType::String, false, "order entry: ws (default) | rest", true},
     {"venues.*",
@@ -238,7 +240,7 @@ inline constexpr KeySpec kConfigSchema[] = {
      "depth_limit",
      KeyType::Int,
      false,
-     "binance: REST snapshot depth, 5 to 5000",
+     "binance: REST snapshot depth, 5 to 5000; binance_usdm: 5, 10, 20, 50, 100, 500 or 1000",
      true},
     {"venues.*", "key_type", KeyType::String, false, "binance: hmac (default) | ed25519", true},
     {"venues.*",
@@ -260,6 +262,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "binance: derive positions from account balances",
      true},
     {"venues.*",
+     "position_from_account_update",
+     KeyType::Bool,
+     false,
+     "binance_usdm: correct the engine position from ACCOUNT_UPDATE when it differs from the "
+     "fills (default true)",
+     true},
+    {"venues.*",
      "depth",
      KeyType::Int,
      false,
@@ -269,7 +278,7 @@ inline constexpr KeySpec kConfigSchema[] = {
      "ws_private_url",
      KeyType::String,
      false,
-     "bybit, deribit: private WebSocket URL; empty = derived from ws_url",
+     "bybit, deribit, binance_usdm: private WebSocket URL; empty = derived from ws_url",
      true},
     {"venues.*",
      "ping_interval_ms",
