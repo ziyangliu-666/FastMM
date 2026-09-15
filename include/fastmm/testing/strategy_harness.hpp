@@ -69,8 +69,8 @@ class StrategyHarness {
 
   // Configures the strategy with `params` (std::invalid_argument on a bad value), then warms up
   // and starts the engine (on_start runs here).
-  explicit StrategyHarness(const ParamMap& params = {}, HarnessOptions options = {})
-      : options_(std::move(options)),
+  explicit StrategyHarness(const ParamMap& params = {}, const HarnessOptions& options = {})
+      : options_(options),
         clock_(options_.start),
         transport_(
             std::make_unique<SimTransport>(clock_, options_.instruments, transport_config())),

@@ -20,7 +20,7 @@ On Ubuntu 24.04: `sudo apt install g++-13 cmake ninja-build libssl-dev zlib1g-de
 ```bash
 ./scripts/bootstrap.sh
 cmake --build --preset release -j
-ctest --preset release
+ctest --preset release -j"$(nproc)"
 ```
 
 `bootstrap.sh` checks the toolchain, creates the CPM download cache ([Dependencies](../contributing/dependencies.md)) and configures the `release` preset; `--dev` also configures `debug` and installs the pre-commit hooks. The programs are in `build/release/bin/`.
@@ -46,7 +46,7 @@ The first command lists the built-in strategies with their parameters. The secon
 | `clang-release` | clang, LTO | the second compiler in CI |
 | `python` | the Python module only, no networking | wheel builds |
 
-`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets).
+`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets). They set no job count: without `-j`, ctest runs one test at a time unless `CTEST_PARALLEL_LEVEL` is set.
 
 ## Docker
 
@@ -56,14 +56,31 @@ docker compose up --build
 
 This builds one image and starts two containers: `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`.
 
+## WSL2
+
+- The log of a live session shows `host wall clock stepped by <n> ns relative to CLOCK_MONOTONIC_RAW ...` and `TSC recalibration stepped the engine clock by <n> ns ...` warnings: WSL2 steps the Linux wall clock to follow Windows, and the engine clock follows it ([Troubleshooting](../how-to/operations/troubleshooting.md), [Architecture](../explanation/architecture.md)).
+- Keep `[engine] spin_mode = "adaptive"` and `cpu = -1`, as the shipped configurations do. `spin_mode`, `cpu` and `net_cpus` are described in [Configuration](../reference/configuration.md#engine), and CPU pinning on dedicated machines in the [Go-live checklist](../how-to/operations/go-live-checklist.md).
+
 ## Python
 
-The `fastmm-engine` package (`pip install fastmm-engine`, imported as `fastmm`) runs backtests on CPython 3.9 or later; see [Python research bindings](../python.md).
+The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9 or later, and `fastmm-engine-live` adds live trading; see [Python](../python.md).
 
 | Extra | Installs | Needs |
 |---|---|---|
 | `fastmm-engine[live]` | `fastmm-engine-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module | CPython 3.10 or later, Linux x86-64 |
 | `fastmm-engine[hot]` | numba and llvmlite | CPython 3.10 or later |
+
+### Install from source
+
+The packages are not published on PyPI yet, so `pip install fastmm-engine` fails. From a checkout, in a virtual environment and with the [requirements](#requirements) above installed:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install ".[hot]"
+.venv/bin/pip install ./python/live
+```
+
+`pip install ".[hot,live]"` fails: the `live` extra asks PyPI for `fastmm-engine-live`. `./python/live` builds that package from the same checkout and links OpenSSL statically; with the `libssl-dev` of Ubuntu 24.04 that works as it is, and `FASTMM_OPENSSL_STATIC=OFF` links the shared libraries instead.
 
 TLS connections, from the `fastmm-live` program or the Python package, trust the CA certificates in `SSL_CERT_FILE` and `SSL_CERT_DIR` if either is set, otherwise in the first existing file of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`, otherwise in `certifi` (Python package only), otherwise in OpenSSL's built-in paths. A venue's `ca_file` adds to them.
 

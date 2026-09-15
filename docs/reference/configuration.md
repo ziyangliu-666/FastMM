@@ -202,7 +202,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 |---|---|---|---|
 | `source` | string | `""` | `synthetic`, `journal` or `csv`. When empty, the format is inferred from `path` |
 | `path` | string | `""` | Data file. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
-| `seed` | int | `[sim] seed`, else `1` | Seed for the simulator and the strategy random generator |
+| `seed` | int | `[sim] seed`, else `1` | Seed for the synthetic market and the simulated venue; the engine's random generator uses `[engine] rng_seed` |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
 | `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Treat its results as optimistic |
 | `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do |
@@ -211,8 +211,8 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
-| `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s |
-| `initial_capital` | number | `0` | Starting capital, quote currency, used for percentage drawdown |
+| `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
+| `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 

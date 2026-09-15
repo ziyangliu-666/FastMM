@@ -1,14 +1,32 @@
-# Python research bindings
+# Python
 
-`fastmm` wraps the in-process backtester (`fastmm::backtest`) with pybind11. The wheel contains only the backtest/sim code: no networking, no OpenSSL (`FASTMM_BUILD_NET=OFF`).
+The `fastmm` package runs strategies written in Python inside the C++ engine: in backtests, in replays of their journals and, with `fastmm-engine-live`, against venues. It also backtests the C++ strategies. Install: [Python](getting-started/install.md#python).
+
+## What runs where
+
+A strategy class uses one of two styles. Hot hooks (`@fastmm.hot`) are compiled with Numba and called by the engine thread without the GIL; slow methods beside them are plain Python on another thread and change the hooks' parameters. Plain hooks are `fastmm.Strategy` methods without `@fastmm.hot`, called by the engine thread with the GIL held.
+
+| Style | Backtest (`run_backtest`) | Replay (`fastmm.replay`) | Live (`run_live`, `python -m fastmm run`) |
+|---|---|---|---|
+| hot hooks | yes | yes | yes |
+| slow methods beside hot hooks (`on_start`, `on_stop`, `@fastmm.every`) | yes | no; the recorded parameter updates are applied | yes |
+| plain hooks | yes | no | no |
+
+## First strategy
+
+Write it as hot hooks, the only style that trades live:
+
+1. [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md): parameters, hooks and a backtest.
+2. [Run slow methods beside hot hooks](how-to/strategies/python-slow-methods.md): a model in plain Python that publishes parameters.
+3. [Run a Python strategy live](how-to/strategies/python-live.md): the simulated exchange, then a venue.
+
+`examples/python/strategies/basic_mm_hot.py` ports the C++ `basic_mm` to hot hooks with the same outbound hash, and `hot_slow_mm.py` adds a slow model:
 
 ```bash
-python -m venv .venv
-.venv/bin/pip install -e ".[dev]"              # editable build (scikit-build-core)
-.venv/bin/python -m pytest python/tests -q
-.venv/bin/python examples/python/backtest_quickstart.py
-.venv/bin/python examples/python/sweep_spread.py
+python examples/python/strategies/basic_mm_hot.py
 ```
+
+Reference: [Python strategy API](reference/python-api.md).
 
 ## Running a backtest
 
@@ -27,7 +45,7 @@ r.stats()["net_pnl"], r.outbound_sha256
 frames = r.to_pandas()                  # {"fills", "equity", "orders"} DataFrames
 ```
 
-`BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
+`from_toml` issues a `UserWarning` for each unknown key or section, with its line, and lists them in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
 
 ### Data
 
@@ -40,11 +58,25 @@ frames = r.to_pandas()                  # {"fills", "equity", "orders"} DataFram
 
 Array columns: `ts` int64 (ns), `type` uint8 (0 snapshot level, 1 delta level, 2 trade, 3 book ticker), `inst` uint32, `side` int8 (0 bid/buy, 1 ask/sell), `price` and `qty` int64 (raw 1e-8) or float64, optional `seq` uint64. Dtypes must match exactly and arrays must be 1-D, C-contiguous, aligned and native-endian: a float32 column raises `TypeError` and a strided slice raises `ValueError` instead of being copied. `fastmm.load_csv(path)` reads a CSV into int64 columns (identical outbound hash to running the file by path).
 
-The GIL is released while a C++ strategy's backtest runs, so several runs can proceed in Python threads. A strategy written in Python holds the GIL for its whole run.
+The GIL is released while a C++ strategy or hot hooks run, so several runs can proceed in Python threads. A strategy with plain hooks holds the GIL for its whole run.
 
-## Python strategies
+### Results
 
-Subclass `fastmm.Strategy`, define the hooks you need and pass the class as `strategy=`:
+`r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `sharpe_annualized` is NaN for runs shorter than 1 day and `max_drawdown_pct` is NaN without `initial_capital` ([`[backtest]`](reference/configuration.md#backtest)). `engine_stats()` and `transport_stats()` return the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
+
+## Sweeps
+
+```python
+points = fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.02], "skew_bps_per_unit": [0, 0.01]},
+                      data="synthetic", threads=0)
+df = fastmm.sweep_frame(points)           # one row per grid point
+```
+
+Points run on a C++ thread pool (GIL released), every worker with its own cursor over `data`; results come back in grid order with the first parameter varying slowest.
+
+## Plain hooks
+
+Subclass `fastmm.Strategy`, define the hooks you need and pass the class as `strategy=`. The class runs in backtests only ([What runs where](#what-runs-where)):
 
 ```python
 class Joiner(fastmm.Strategy):
@@ -58,25 +90,7 @@ cfg.clear_params()                     # the example file configures basic_mm
 r = fastmm.run_backtest(cfg, data="synthetic", strategy=Joiner, params={"qty": 0.001})
 ```
 
-Reference: [Python strategy API](reference/python-api.md). `examples/python/strategies/basic_mm_exact.py` is an integer port of the C++ BasicMM with the same outbound hash; `skew_mm.py` is a float market maker.
-
-Methods marked `@fastmm.hot` are compiled with Numba and run without the GIL: [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md). `basic_mm_hot.py` ports BasicMM that way, with the same outbound hash.
-
-Slow methods beside hot hooks change their parameters from plain Python, and `fastmm.replay` replays such a strategy from its journal: [Run slow methods beside hot hooks](how-to/strategies/python-slow-methods.md).
-
-### Results
-
-`r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `engine_stats()` and `transport_stats()` the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
-
-## Sweeps
-
-```python
-points = fastmm.sweep(cfg, {"half_spread_bps": [0.01, 0.02], "skew_bps_per_unit": [0, 0.01]},
-                      data="synthetic", threads=0)
-df = fastmm.sweep_frame(points)           # one row per grid point
-```
-
-Points run on a C++ thread pool (GIL released), every worker with its own cursor over `data`; results come back in grid order with the first parameter varying slowest.
+`examples/python/strategies/basic_mm_exact.py` is an integer port of the C++ BasicMM with the same outbound hash; `skew_mm.py` is a float market maker.
 
 ## Other helpers
 
@@ -84,33 +98,8 @@ Points run on a C++ thread pool (GIL released), every worker with its own cursor
 - `fastmm.OrderBook()`: L2 book (256 levels/side) with `apply_snapshot(bids, asks)`, `apply_delta(bids, asks)` (`(n, 2)` arrays or `(price, qty)` pairs, qty 0 deletes), `best_bid()`, `best_ask()`, `mid()`, `spread()`, `microprice()`, `weighted_mid(levels)`, `imbalance(levels)`, `bids(n)`, `asks(n)`.
 - `fastmm.inspect_journal(path)`: header and message counts of an `.fmj`.
 
-Regenerate the type stub after changing the bindings:
-
-```bash
-.venv/bin/pybind11-stubgen fastmm._core -o /tmp/stubs && cp /tmp/stubs/fastmm/_core.pyi python/fastmm/
-```
-
 ## Logging
 
 The C++ engine logs through an asynchronous logger that has no output until it is started. From Python, call `fastmm.enable_logging(level="warn", path=None)` to write records at `level` or above to a file (appended) or to stderr; warnings and errors are always mirrored to stderr as well. `fastmm.disable_logging()` flushes and stops it; interpreter exit does the same.
 
-## Building and publishing wheels
-
-`.github/workflows/wheels.yml` builds manylinux_2_28 x86_64 wheels of `fastmm-engine` for CPython 3.9-3.14 and of `fastmm-engine-live` for CPython 3.10-3.14 (each one tested with its test suite) and the `fastmm-engine` sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts; publishing is manual. `fastmm-engine-live` has no sdist.
-
-`fastmm-engine-live` links OpenSSL statically, built by `scripts/wheels/build-openssl.sh` from a pinned, checksum-verified release; every OpenSSL security release needs a new `fastmm-engine-live` release. To build it locally:
-
-```bash
-./scripts/wheels/build-openssl.sh "$HOME/.cache/fastmm-openssl"
-OPENSSL_ROOT_DIR="$HOME/.cache/fastmm-openssl" .venv/bin/pip wheel ./python/live --no-deps -w dist
-./scripts/wheels/check-live-wheel.sh dist/fastmm_engine_live-*.whl
-```
-
-`FASTMM_OPENSSL_STATIC=OFF` links the system's shared OpenSSL instead; the check script then fails. Publishing to PyPI makes the package and its source public. To publish:
-
-1. On PyPI, add a trusted publisher for this repository, workflow `wheels.yml`, environment `pypi`.
-2. In the repository settings, create the `pypi` environment (optionally with required reviewers).
-3. Run the `wheels` workflow manually with **publish** checked.
-
-Locally, `python -m build --sdist && python -m twine check dist/*` checks the sdist metadata.
-
+Development install, tests, the type stub and wheels: [Python packages](contributing/python-packages.md).

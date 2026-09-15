@@ -6,6 +6,7 @@
 #include "fastmm/core/latency.hpp"
 
 #include <cmath>
+#include <limits>
 
 namespace fastmm::bt {
 
@@ -20,6 +21,8 @@ Metrics compute_metrics(const EquityRows& equity,
                         const OrderRows& orders,
                         const MetricsInputs& in) {
   Metrics m;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  m.max_drawdown_pct = in.initial_capital > 0.0 ? 0.0 : nan;
   m.rejects = in.rejects;
   m.wall_tick_to_order_p50_ns = in.wall_p50_ns;
   m.wall_tick_to_order_p99_ns = in.wall_p99_ns;
@@ -50,11 +53,7 @@ Metrics compute_metrics(const EquityRows& equity,
       sum2 += r * r;
       prev = e;
       if (e > peak) peak = e;
-      if (peak - e > max_dd) {
-        max_dd = peak - e;
-        const double base = in.initial_capital + dec(peak);
-        m.max_drawdown_pct = base > 0.0 ? dec(max_dd) / base : 0.0;
-      }
+      if (peak - e > max_dd) max_dd = peak - e;
       const double pos = dec(equity.position[i]);
       inv_sum += pos;
       inv_abs += std::fabs(pos);
@@ -67,8 +66,10 @@ Metrics compute_metrics(const EquityRows& equity,
     const double sd = var > 0.0 ? std::sqrt(var) : 0.0;
     m.sharpe_bar = sd > 0.0 ? mean / sd : 0.0;
     const double bars_per_year = 365.0 * 86400.0 * 1e9 / static_cast<double>(in.bar.ns);
-    m.sharpe_annualized = m.sharpe_bar * std::sqrt(bars_per_year);
+    m.sharpe_annualized =
+        m.duration_s >= kMinAnnualizedDurationS ? m.sharpe_bar * std::sqrt(bars_per_year) : nan;
     m.max_drawdown = dec(max_dd);
+    if (in.initial_capital > 0.0) m.max_drawdown_pct = m.max_drawdown / in.initial_capital;
     m.inventory_mean = inv_sum / dn;
     m.inventory_abs_mean = inv_abs / dn;
     m.inventory_max = inv_max;

@@ -13,7 +13,8 @@ from conftest import REPO
 @pytest.mark.skipif(importlib.util.find_spec("fastmm_live") is not None,
                     reason="fastmm_live is installed")
 def test_run_live_without_the_live_runtime_names_the_extra():
-    with pytest.raises(ImportError, match=r'pip install "fastmm-engine\[live\]"'):
+    with pytest.raises(ImportError, match=r'pip install "fastmm-engine\[live\]" \(from source: '
+                                          r'https://\S+/install\.md#install-from-source\)'):
         fastmm.run_live(fastmm.Strategy, "configs/sim-local.toml")
 
 

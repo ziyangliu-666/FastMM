@@ -26,7 +26,7 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 
 | Message | Cause | Action |
 |---|---|---|
-| `fastmm.run_live needs the live runtime (fastmm_live); install it with: pip install "fastmm-engine[live]"` (ImportError) | The live runtime is not installed | Install it |
+| `fastmm.run_live needs the live runtime (fastmm_live); install it with: pip install "fastmm-engine[live]" (from source: <url>)` (ImportError) | The live runtime is not installed | Install it; from a checkout, `pip install ./python/live` ([Install from source](../../getting-started/install.md#install-from-source)) |
 | `fastmm: py:<Class> has no @fastmm.hot methods; a strategy runs live only with hot hooks` (exit 3) | The class defines `fastmm.Strategy` hooks only | Write the hooks as [hot hooks](../strategies/python-hot-hooks.md) |
 | `fastmm: <Class>.<hook> is rejected by the IR check: ...`, `fastmm: <Class>.<hook> does not compile in Numba nopython mode: ...` (exit 3) | A hot hook does not compile; no venue was contacted | Fix the hook ([What compiles](../../reference/python-api.md#what-compiles)) |
 | `fastmm: note: ignoring [strategy.params] of '<name>' for py:<Class>` | `[strategy] name` names another strategy, so its parameters do not apply to the class | Set `name = "py:<Class>"` or pass the parameters with `--param` |

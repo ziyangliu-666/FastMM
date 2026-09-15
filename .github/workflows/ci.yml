@@ -122,10 +122,10 @@ jobs:
         run: python3 tools/docs_cli_help.py --check --bin build/release/bin
       - name: test
         env: { ASAN_OPTIONS: "detect_leaks=1:strict_string_checks=1", UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1", TSAN_OPTIONS: "halt_on_error=1" }
-        # The presets run 8 tests at once; match the runner's cores instead (2 on private repositories).
+        # The test presets set no job count; run as many tests at once as the runner has cores.
         # Includes the labels examples (quick start, C++ examples), tutorial (its unit test, C++
         # backtest and, outside sanitizers, scripts/docs/tutorial.sh up to the simulated exchange on
-        # ports 9080/9443) and docs (strategy API doc test, public headers compile alone).
+        # a free port) and docs (strategy API doc test, public headers compile alone).
         run: ctest --preset ${{ matrix.preset }} -j$(nproc)
       - name: install + external project
         if: matrix.name == 'gcc-release'

@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fastmm::bt {
 
@@ -39,6 +40,8 @@ struct BacktestConfig {
   Duration duration = seconds(60);             // synthetic horizon
   Duration equity_bar = seconds(1);
   double initial_capital = 0.0;  // reporting only (drawdown %)
+  // from_config: Config::warnings plus unknown [backtest] keys, each naming the key and its line.
+  std::vector<std::string> warnings;
   int generator_seed_levels = 20;
   std::string source;  // "synthetic" | "journal" | "csv" | "" (caller supplies the source)
   std::string path;

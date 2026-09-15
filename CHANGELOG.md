@@ -50,6 +50,24 @@ All notable changes are recorded here (Keep a Changelog format).
   `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- `fastmm-backtest`, `fastmm-replay` and `BacktestConfig.from_toml` report unknown configuration
+  keys and sections with their line (stderr, or a `UserWarning` each and `BacktestConfig.warnings`),
+  including unknown `[backtest]` keys. `GenericSection::lines` records the line of each
+  `[sim]`/`[backtest]` key.
+- Summary metrics: `sharpe_annualized` is NaN (`n/a` in the table, `null` in `summary.json`) for
+  runs shorter than 1 day (`kMinAnnualizedDurationS`); `max_drawdown_pct` is `max_drawdown /
+  initial_capital` and NaN without initial capital.
+- The `fastmm-replay` journal line labels the recorded engine seed `rng_seed`.
+- `scripts/run-sim.sh --port/--tls-port` (or `FASTMM_SIM_PORT`/`FASTMM_SIM_TLS_PORT`);
+  `scripts/docs/tutorial.sh` honours `FASTMM_SIM_PORT` and ctest `tutorial.script` runs on a free
+  port.
+- Test presets set no job count (`ctest --preset release -j"$(nproc)"`); `scripts/bootstrap.sh`
+  never pip-installs into a conda base environment.
+- `InstrumentTable::add` and `StrategyHarness` take `const&`, which removes GCC's 64-byte alignment
+  ABI note.
+- Docs: install from source, a WSL2 section, what runs where for Python strategy styles with hot
+  hooks first, floating-point models in C++ strategies; wheel publishing moved to
+  `docs/contributing/python-packages.md`. Install messages link to the install-from-source section.
 - The PyPI distributions are named `fastmm-engine` and `fastmm-engine-live`, because `fastmm` is
   taken on PyPI. The import names `fastmm` and `fastmm_live` are unchanged.
 - Parameter updates (ADR-0013). `EventType::ParamUpdate` (26) carries up to 32 (field index, raw
@@ -299,7 +317,7 @@ All notable changes are recorded here (Keep a Changelog format).
 - `[engine] reject_backoff_ms` / `reject_backoff_max_ms`: after a venue rejects a new quote (other
   than a post-only cross) the quote manager pauses that side, doubling up to the cap.
 - A `wheels` workflow builds manylinux wheels for CPython 3.9-3.13 and the sdist; publishing to
-  PyPI is a manual, opt-in step (docs/python.md).
+  PyPI is a manual, opt-in step (docs/contributing/python-packages.md).
 - Binance Spot Demo Mode: `configs/binance-demo.toml`, and `FASTMM_BINANCE_ENV=demo` for the live
   test. The live test passed against Demo Mode (book sync, far post-only order, cancel, cancel-all).
 - CI builds the Docker image and runs the compose stack for 20 seconds.
@@ -323,6 +341,7 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- Two GCC 13 `-Wstringop-overflow` warnings in `fastmm-sim-exchange` (`append_user_event`).
 - **`BM_TickToOrder_Sim` measured no order events.** Since the quote manager applies a requote
   target on the ack of a pending order, every timed tick found both quotes pending and sent
   nothing (`order_events_pct` 0.000; its p50 came from a handful of start-up events). The rig now

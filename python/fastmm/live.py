@@ -3,7 +3,7 @@
 The session is the one ``fastmm-live`` runs (venue threads, engine thread, journal, status file,
 kill switch), started by the fastmm_live extension with the GIL released. Slow methods run on one
 Python thread beside it; the session's control thread watches that thread through the channel. It
-needs the live runtime: ``pip install "fastmm-engine[live]"``.
+needs the live runtime, fastmm-engine-live (docs/getting-started/install.md#python).
 """
 
 from __future__ import annotations
@@ -17,11 +17,12 @@ import warnings
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
 from ._hot.decl import HotCompileError, parse_period
+from ._install import FROM_SOURCE
 
 __all__ = ["LIVE_MISSING", "run_live"]
 
 LIVE_MISSING = ('fastmm.run_live needs the live runtime (fastmm_live); install it with: '
-                'pip install "fastmm-engine[live]"')
+                f'pip install "fastmm-engine[live]" (from source: {FROM_SOURCE})')
 
 EXIT_USAGE = 2
 EXIT_CONFIG = 3

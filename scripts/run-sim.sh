@@ -5,6 +5,11 @@
 #
 #   ./scripts/run-sim.sh [--duration 30s] [--preset release | --build-dir build/<dir>]
 #                        [--config configs/sim-local.toml] [--tls] [--sim-config configs/sim.toml]
+#                        [--port 9080] [--tls-port 9443]
+#
+# --port and --tls-port (default FASTMM_SIM_PORT and FASTMM_SIM_TLS_PORT, else 9080 and 9443) move
+# the simulator; the engine then runs with runs/<timestamp>/engine.toml, a copy of --config whose
+# 127.0.0.1:9080 and 127.0.0.1:9443 URLs use those ports.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,7 +18,8 @@ PRESET=release
 BUILD_DIR=""
 CONFIG=configs/sim-local.toml
 SIM_CONFIG=configs/sim.toml
-PORT=9080
+PORT=${FASTMM_SIM_PORT:-9080}
+TLS_PORT=${FASTMM_SIM_TLS_PORT:-9443}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --duration) DURATION="$2"; shift 2;;
@@ -22,9 +28,17 @@ while [[ $# -gt 0 ]]; do
     --config) CONFIG="$2"; shift 2;;
     --sim-config) SIM_CONFIG="$2"; shift 2;;
     --tls) CONFIG=configs/sim-local-tls.toml; shift;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0;;
+    --port) PORT="$2"; shift 2;;
+    --tls-port) TLS_PORT="$2"; shift 2;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 2;;
   esac
+done
+for p in "$PORT" "$TLS_PORT"; do
+  if ! [[ "$p" =~ ^[0-9]+$ ]] || (( p < 1 || p > 65535 )); then
+    echo "bad port '$p' (1-65535)" >&2
+    exit 2
+  fi
 done
 
 export CPM_SOURCE_CACHE="${CPM_SOURCE_CACHE:-$HOME/.cache/CPM}"
@@ -43,15 +57,24 @@ export FASTMM_SIM_API_KEY="${FASTMM_SIM_API_KEY:-sim-key}"
 export FASTMM_SIM_API_SECRET="${FASTMM_SIM_API_SECRET:-sim-secret}"
 
 port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
-if port_open "$PORT"; then
-  echo "port $PORT is already in use (another fastmm-sim-exchange?)" >&2
-  exit 1
-fi
+for p in "$PORT" "$TLS_PORT"; do
+  if port_open "$p"; then
+    echo "port $p is already in use (another fastmm-sim-exchange?); choose others with --port and --tls-port" >&2
+    exit 1
+  fi
+done
 
 RUN_DIR="runs/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_DIR"
-echo "==> starting fastmm-sim-exchange ($SIM_CONFIG), log: $RUN_DIR/sim.log"
-"$BIN/fastmm-sim-exchange" --config "$SIM_CONFIG" --stats-interval 5s > "$RUN_DIR/sim.log" 2>&1 &
+ENGINE_CONFIG="$CONFIG"
+if [[ "$PORT" != 9080 || "$TLS_PORT" != 9443 ]]; then
+  ENGINE_CONFIG="$RUN_DIR/engine.toml"
+  sed -e "s/127\.0\.0\.1:9080/127.0.0.1:$PORT/g" -e "s/127\.0\.0\.1:9443/127.0.0.1:$TLS_PORT/g" \
+    "$CONFIG" > "$ENGINE_CONFIG"
+fi
+echo "==> starting fastmm-sim-exchange ($SIM_CONFIG, ports $PORT and $TLS_PORT), log: $RUN_DIR/sim.log"
+"$BIN/fastmm-sim-exchange" --config "$SIM_CONFIG" --port "$PORT" --tls-port "$TLS_PORT" \
+  --stats-interval 5s > "$RUN_DIR/sim.log" 2>&1 &
 SIM_PID=$!
 stop_sim() {
   if kill -0 "$SIM_PID" 2>/dev/null; then
@@ -73,9 +96,9 @@ done
 port_open "$PORT" || { echo "fastmm-sim-exchange did not open port $PORT" >&2; exit 1; }
 grep -E "^  (REST|TLS)" "$RUN_DIR/sim.log" || true
 
-echo "==> running fastmm-live ($CONFIG) for $DURATION, log: $RUN_DIR/engine.log"
+echo "==> running fastmm-live ($ENGINE_CONFIG) for $DURATION, log: $RUN_DIR/engine.log"
 set +e
-"$BIN/fastmm-live" --config "$CONFIG" --duration "$DURATION" \
+"$BIN/fastmm-live" --config "$ENGINE_CONFIG" --duration "$DURATION" \
   --journal "$RUN_DIR/session.fmj" --log "$RUN_DIR/engine.log"
 RC=$?
 set -e

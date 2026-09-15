@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-shot developer setup: checks toolchain, installs cmake via pip if missing,
+# One-shot developer setup: checks toolchain, installs cmake and ninja via pip if missing (never
+# into a conda base environment),
 # creates the CPM cache and configures the release (and optionally debug) preset.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,21 +26,32 @@ CMAKE_MIN=3.25
 # version_ge A B: true when version A >= version B (full dotted comparison, so 4.0 > 3.25).
 version_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" == "$2" ]]; }
 cmake_ok() { command -v cmake >/dev/null && version_ge "$(cmake --version | head -1 | awk '{print $3}')" "$CMAKE_MIN"; }
-# Inside a virtualenv pip installs into it; outside, use the user site. Distro Pythons that are
-# PEP 668 "externally managed" refuse both, so the error message points at apt or pipx instead.
+# Inside a virtualenv or a conda environment other than base, pip installs into it; with a system
+# Python, into the user site. Distro Pythons that are PEP 668 "externally managed" refuse both, so
+# the error message points at apt or pipx instead. A conda base environment (its prefix has
+# condabin/) is never changed: the caller prints what to install.
+conda_base() {
+  local prefix
+  prefix=$(python3 -c 'import sys; print(sys.prefix)' 2>/dev/null) || return 1
+  [[ -d "$prefix/conda-meta" && -d "$prefix/condabin" ]]
+}
 pip_install() {
+  if conda_base; then
+    say "python3 is the conda base environment ($(command -v python3)); not installing $* into it"
+    return 1
+  fi
   if [[ -n "${VIRTUAL_ENV:-}" || -n "${CONDA_PREFIX:-}" ]]; then python3 -m pip install "$@"
   else python3 -m pip install --user "$@"; fi
 }
 if ! cmake_ok; then
   say "cmake >= $CMAKE_MIN not found; installing via pip"
-  pip_install "cmake>=$CMAKE_MIN" || die "install cmake >= $CMAKE_MIN: sudo apt install cmake, or pipx install cmake"
+  pip_install "cmake>=$CMAKE_MIN" || die "install cmake >= $CMAKE_MIN: sudo apt install cmake, pipx install cmake, or activate a virtualenv and rerun"
   hash -r
   cmake_ok || die "cmake is still older than $CMAKE_MIN on PATH ($(command -v cmake))"
 fi
 if ! command -v ninja >/dev/null; then
   say "installing ninja via pip"
-  pip_install ninja || die "install ninja: sudo apt install ninja-build, or pipx install ninja"
+  pip_install ninja || die "install ninja: sudo apt install ninja-build, pipx install ninja, or activate a virtualenv and rerun"
 fi
 
 # --- system libs ---
@@ -66,5 +78,5 @@ if [[ $DEV -eq 1 ]]; then
 fi
 
 say "done. next:"
-echo "  cmake --build --preset release -j\$(nproc) && ctest --preset release"
+echo "  cmake --build --preset release -j\$(nproc) && ctest --preset release -j\$(nproc)"
 echo "  ./scripts/run-sim.sh          # sim exchange + engine on localhost"

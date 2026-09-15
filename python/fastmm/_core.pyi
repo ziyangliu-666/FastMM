@@ -13,12 +13,12 @@ class BacktestConfig:
     @staticmethod
     def from_toml(path: typing.Any) -> BacktestConfig:
         """
-        Load a FastMM TOML config (sections [engine] [[instruments]] [strategy] [risk] [venues.<x>.fees] [sim] [backtest]). Raises ConfigError.
+        Load a FastMM TOML config (sections [engine] [[instruments]] [strategy] [risk] [venues.<x>.fees] [sim] [backtest]). Raises ConfigError; unknown keys issue a UserWarning each and are listed in warnings.
         """
     @staticmethod
     def from_toml_string(text: str) -> BacktestConfig:
         """
-        Parse a TOML document held in a string. Raises ConfigError.
+        Parse a TOML document held in a string. Raises ConfigError; unknown keys issue a UserWarning each.
         """
     @staticmethod
     def single_instrument(symbol: str, tick: str, lot: str) -> BacktestConfig:
@@ -89,6 +89,11 @@ class BacktestConfig:
     @initial_capital.setter
     def initial_capital(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
+    @property
+    def warnings(self) -> list[str]:
+        """
+        Unknown keys and sections of the TOML file, each with its line.
+        """
     @property
     def journal_out(self) -> str:
         """

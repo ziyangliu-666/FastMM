@@ -66,7 +66,7 @@ Digit separators (`1'000.5_px`) and exponents (`1e-8_qty`) are accepted. There i
 | `Fixed::from_decimal(s)` | `[+-]digits[.digits]`, up to 8 significant decimals | venue strings (strict: no exponent, no whitespace) |
 | `Fixed::parse(s)` | the same plus an exponent: `2e-05`, `1.5E3` | configuration values |
 | `p.to_decimal(buf)` | | exact, trailing zeros trimmed |
-| `Fixed::from_double(d)`, `to_double()` | | startup and diagnostics only, never per event |
+| `Fixed::from_double(d)`, `to_double()` | | startup, diagnostics and [floating-point models](#floating-point-models) |
 | `Ratio::from_bps(double)`, `r.to_bps()` | | startup and diagnostics only |
 
 `parse` rejects a value only when more decimals remain after applying the exponent than the type holds: `2e-05` is raw 2,000, `1.5e-8` is an error. TOML floats reach strategy parameters formatted by fmt (`0.00002` becomes `2e-05`) and Python floats through `repr` ([Strategy API](strategy-api.md#parameters)).
@@ -114,6 +114,18 @@ for (int l = 0; l < p.levels; ++l) {
 }
 q.uncross(inst.tick);
 ```
+
+## Floating-point models
+
+A model evaluated in `double` converts once on the way in and once on the way out, as `AvellanedaStoikov::compute_quotes` in `include/fastmm/strategies/avellaneda_stoikov.hpp` does:
+
+| Step | Code |
+|---|---|
+| a price or quantity to `double` | `mid.to_double()`, `inst.tick.to_double()`: the value in quote currency or base units |
+| a ratio of two values of one type | `static_cast<double>(position.raw) / static_cast<double>(p.quote_qty.raw)`: the scale cancels |
+| a `double` price back to the grid | `inst.round_price(Price::from_double(r - delta), Side::Buy)` |
+
+`static_cast<double>(x.raw)` on its own is the value times 1e8. `from_double` rounds to the nearest raw unit, half away from zero, and `round_price` then moves bids down and asks up to the tick.
 
 ## Limits
 

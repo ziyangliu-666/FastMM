@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 
 from .._slow import decl as _slow_decl
+from .._install import FROM_SOURCE
 from . import abi
 
 EVENT_HOOKS: Tuple[str, ...] = ("on_book", "on_fill", "on_quoting", "on_connection", "on_params")
@@ -27,7 +28,8 @@ RESERVED_NAMES = frozenset({"publish", "inst"})
 CTX_METHODS = frozenset({"quote", "quote_raw", "bid", "ask", "bid_raw", "ask_raw", "clear", "pull",
                          "uncross", "keep_passive", "fail"})
 
-NUMBA_MISSING = 'fastmm: hot hooks need numba; install it with: pip install "fastmm-engine[hot]"'
+NUMBA_MISSING = ('fastmm: hot hooks need numba; install it with: pip install "fastmm-engine[hot]" '
+                 f'(from source: {FROM_SOURCE})')
 
 _UNIT_NS = {
     "ns": 1,

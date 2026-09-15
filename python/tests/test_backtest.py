@@ -136,11 +136,20 @@ def test_results_are_zero_copy_views(example_config):
     assert n_orders > 0
 
 
+def test_drawdown_pct_needs_initial_capital(example_config):
+    cfg = _short(example_config)
+    cfg.initial_capital = 0.0
+    assert np.isnan(fastmm.run_backtest(cfg, data="synthetic").stats()["max_drawdown_pct"])
+
+
 def test_stats_and_summaries(example_config, tmp_path):
     r = fastmm.run_backtest(_short(example_config), data="synthetic")
     s = r.stats()
     for key in ("net_pnl", "sharpe_annualized", "max_drawdown", "fill_ratio", "quote_uptime"):
         assert isinstance(s[key], float)
+    assert np.isnan(s["sharpe_annualized"])  # not annualised: the run is shorter than 1 day
+    assert "n/a" in r.summary_table()
+    assert s["max_drawdown_pct"] == pytest.approx(s["max_drawdown"] / 10_000)  # initial_capital
     assert s["fills"] == len(r.fills["ts"])
     e = r.equity
     last = (int(e["realized"][-1]) + int(e["unrealized"][-1]) - int(e["fees"][-1])) * 1e-8

@@ -91,6 +91,13 @@ std::string param_value_string(py::handle value) {
                        std::string(py::str(py::type::handle_of(value).attr("__name__"))));
 }
 
+// Issues a UserWarning per unknown key or section, attributed to the caller's line.
+void warn_config(const BacktestConfig& c, const std::string& source) {
+  if (c.warnings.empty()) return;
+  const py::object warn = py::module_::import("warnings").attr("warn");
+  for (const std::string& w : c.warnings) warn(source + ": " + w, py::handle(PyExc_UserWarning));
+}
+
 void bind_config(py::module_& m) {
   py::register_exception<ConfigError>(m, "ConfigError", PyExc_ValueError);
 
@@ -104,17 +111,28 @@ void bind_config(py::module_& m) {
           "from_toml",
           [](const py::object& path) {
             const std::string p = fspath(path);
-            py::gil_scoped_release release;
-            return BacktestConfig::from_config(Config::load(p));
+            BacktestConfig c;
+            {
+              py::gil_scoped_release release;
+              c = BacktestConfig::from_config(Config::load(p));
+            }
+            warn_config(c, p);
+            return c;
           },
           py::arg("path"),
           "Load a FastMM TOML config (sections [engine] [[instruments]] [strategy] [risk] "
-          "[venues.<x>.fees] [sim] [backtest]). Raises ConfigError.")
+          "[venues.<x>.fees] [sim] [backtest]). Raises ConfigError; unknown keys issue a "
+          "UserWarning each and are listed in warnings.")
       .def_static(
           "from_toml_string",
-          [](const std::string& text) { return BacktestConfig::from_config(Config::parse(text)); },
+          [](const std::string& text) {
+            BacktestConfig c = BacktestConfig::from_config(Config::parse(text));
+            warn_config(c, "<string>");
+            return c;
+          },
           py::arg("text"),
-          "Parse a TOML document held in a string. Raises ConfigError.")
+          "Parse a TOML document held in a string. Raises ConfigError; unknown keys issue a "
+          "UserWarning each.")
       .def_static(
           "single_instrument",
           [](const std::string& symbol, const std::string& tick, const std::string& lot) {
@@ -193,6 +211,9 @@ void bind_config(py::module_& m) {
       .def_readwrite("initial_capital",
                      &BacktestConfig::initial_capital,
                      "Quote currency; only used for max_drawdown_pct.")
+      .def_readonly("warnings",
+                    &BacktestConfig::warnings,
+                    "Unknown keys and sections of the TOML file, each with its line.")
       .def_readwrite("measure_wall_clock",
                      &BacktestConfig::measure_wall_clock,
                      "Measure wall-clock tick-to-order per engine step.")

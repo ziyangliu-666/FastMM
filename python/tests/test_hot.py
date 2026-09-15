@@ -185,7 +185,8 @@ def test_missing_numba_names_the_extra():
         "    print(e)\n"
     )
     out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
-    assert 'pip install "fastmm-engine[hot]"' in out.stdout
+    assert 'pip install "fastmm-engine[hot]" (from source: https://' in out.stdout
+    assert "install.md#install-from-source)" in out.stdout
 
 
 # ---- the compile checks -----------------------------------------------------------------------------

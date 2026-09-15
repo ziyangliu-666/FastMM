@@ -10,6 +10,8 @@ Install numba with the `hot` extra (CPython 3.10 or later):
 pip install "fastmm-engine[hot]"
 ```
 
+FastMM is not published on PyPI yet; from a checkout, follow [Install from source](../../getting-started/install.md#install-from-source).
+
 ## Declare the strategy
 
 Declare parameters with `fastmm.Param` and per-instrument values that persist between calls with `fastmm.State`. Mark each hook with `@fastmm.hot` (`on_book`, `on_fill`, `on_quoting`, `on_connection`, `on_params`) or with `@fastmm.hot(every="100ms")` for a timer; every hook takes `(self, ctx, book)`. Plain Python that changes the parameters goes in slow methods: [Run slow methods beside hot hooks](python-slow-methods.md).

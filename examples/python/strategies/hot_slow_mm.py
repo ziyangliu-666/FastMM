@@ -4,7 +4,7 @@ HotSlowMM quotes one level per side around a fair value on the engine thread. A 
 once per second, how far the mid moves after a book imbalance, with numpy least squares over
 ctx.recent(), and publishes the fair-value offset the current imbalance implies.
 
-Needs numba (pip install "fastmm-engine[hot]"). Run from the repository root:
+Needs numba, the hot extra (docs/getting-started/install.md#python). Run from the repository root:
 
     python examples/python/strategies/hot_slow_mm.py
 """

@@ -29,7 +29,7 @@ SWEEP_STATS: Tuple[str, ...] = (
     "net_pnl",
     "realized_pnl",
     "fees",
-    "sharpe_bar",  # per 1 s bar; annualising short synthetic runs gives meaningless values
+    "sharpe_bar",  # per bar; sharpe_annualized is NaN for runs shorter than a day
     "max_drawdown",
     "fills",
     "fill_ratio",
@@ -44,7 +44,7 @@ def _pandas():
         import pandas as pd
     except ImportError as exc:  # pragma: no cover - exercised only without pandas
         raise ImportError(
-            "fastmm.to_pandas() needs pandas; install it with `pip install fastmm-engine[pandas]`"
+            "fastmm.to_pandas() needs pandas; install it with `pip install 'pandas>=2.0'`"
         ) from exc
     return pd
 

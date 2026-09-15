@@ -35,7 +35,7 @@ if(FASTMM_BUILD_TESTS)
   add_test(NAME tutorial.first_mm_test COMMAND first_mm_test)
   add_test(NAME tutorial.first_mm_backtest COMMAND first_mm_backtest)
   set_tests_properties(tutorial.first_mm_test tutorial.first_mm_backtest PROPERTIES LABELS "tutorial;examples")
-  # The tutorial's shell steps up to the simulated exchange (ports 9080 and 9443, about 90 s).
+  # The tutorial's shell steps up to the simulated exchange (on a free port, about 90 s).
   # Not under sanitizers: the engine and the simulator run for real time.
   if(TARGET tutorial-live AND TARGET fastmm-sim-exchange AND NOT FASTMM_ENABLE_ASAN AND NOT FASTMM_ENABLE_TSAN)
     find_program(FASTMM_BASH bash)
@@ -45,7 +45,7 @@ if(FASTMM_BUILD_TESTS)
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
       set_tests_properties(tutorial.script PROPERTIES
         LABELS "tutorial" RUN_SERIAL TRUE TIMEOUT 600
-        ENVIRONMENT "FASTMM_BUILD_DIR=${CMAKE_BINARY_DIR}"
+        ENVIRONMENT "FASTMM_BUILD_DIR=${CMAKE_BINARY_DIR};FASTMM_SIM_PORT=0"
         DEPENDS "tutorial.first_mm_test;tutorial.first_mm_backtest")
     endif()
   endif()

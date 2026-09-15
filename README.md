@@ -17,7 +17,7 @@ Requires Linux, gcc 13+ or clang 16+, CMake 3.25+, Ninja, OpenSSL 3 and zlib.
 ```bash
 git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
 ./scripts/bootstrap.sh                                   # checks toolchain, configures the release preset
-cmake --build --preset release -j && ctest --preset release
+cmake --build --preset release -j && ctest --preset release -j"$(nproc)"
 ./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
 ./scripts/run-sim.sh --duration 30s                      # sim exchange + live engine on localhost
 ```

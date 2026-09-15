@@ -4,7 +4,7 @@ Run from the repository root:
 
     .venv/bin/python examples/python/backtest_quickstart.py
 
-Saves runs/quickstart_equity.png when matplotlib is installed (pip install fastmm-engine[plot]).
+Saves runs/quickstart_equity.png when matplotlib is installed (pip install 'matplotlib>=3.7').
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ def main() -> None:
         f"(spread and inventory {stats['realized_pnl'] + stats['unrealized_pnl']:.4f}, "
         f"maker rebates {-stats['fees']:.4f})"
     )
-    # A per-bar Sharpe on 1 s bars is the honest number here; annualising minutes of synthetic
-    # data (stats['sharpe_annualized']) produces meaningless four-digit values.
+    # A per-bar Sharpe on 1 s bars is the number to read here: stats['sharpe_annualized'] is NaN
+    # for runs shorter than a day.
     print(f"sharpe per 1s bar={stats['sharpe_bar']:.3f}  quote uptime={stats['quote_uptime']:.1%}")
     # Quotes are priced from the last aggregated depth update (every 100 ms, like Binance
     # @depth@100ms). When the market moves before the order arrives, a post-only order would cross

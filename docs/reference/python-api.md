@@ -1,10 +1,10 @@
 # Python strategy API
 
-Strategies written in Python run inside the C++ engine in backtests. They use the same engine, risk checks, OMS, quote manager, journal and outbound hash as C++ strategies (ADR-0012, section 7). Backtests, data sources and results: [Python](../python.md).
+Strategies written in Python run inside the C++ engine. They use the same engine, risk checks, OMS, quote manager, journal and outbound hash as C++ strategies (ADR-0012, section 7). Backtests, data sources and results: [Python](../python.md).
 
 Methods marked `@fastmm.hot` are compiled with Numba instead and follow [Hot hooks](#hot-hooks).
 
-Scope: in-process backtests only. Replay of Python strategies, process-pool sweeps, live trading and the simulated exchange over the network are not supported.
+Scope: a class with plain hooks only (no `@fastmm.hot` methods) runs in in-process backtests; it does not replay, run in `fastmm.sweep` or trade live. A class with hot hooks also replays ([Replay](#replay)) and trades live ([Live sessions](#live-sessions)); [What runs where](../python.md#what-runs-where) compares them.
 
 ## A strategy
 
@@ -170,7 +170,7 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 
 ## Hot hooks
 
-A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs `pip install "fastmm-engine[hot]"` (numba 0.61 to 0.67, CPython 3.10 or later). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
+A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs numba 0.61 to 0.67, the `hot` extra, and CPython 3.10 or later ([Install](../getting-started/install.md#python)). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
 
 ### Declarations
 
@@ -194,7 +194,7 @@ Every hot hook takes `(self, ctx, book)` and runs once per instrument:
 
 `self` holds the instrument's parameters and `State` fields as attributes. A float parameter also has `self.<name>_raw`, its value as a 1e-8 fixed-point int64 (nearest). The engine copies the parameters into `self` before every call, so an assignment to a parameter, also through an alias such as `t = self`, is gone at the next call.
 
-Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook other than `on_start` and `on_stop` as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm-engine[hot]"`.
+Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook other than `on_start` and `on_stop` as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` naming the `hot` extra and [Install from source](../getting-started/install.md#install-from-source).
 
 ### ctx
 
@@ -395,7 +395,7 @@ A journal's `strategy_meta` holds the keys listed under [Live sessions](#live-se
 
 ## Live sessions
 
-`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False, fills_capacity=None, recent_rows=4096, slow_tier_timeout_ms=10000)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs `pip install "fastmm-engine[live]"` (CPython 3.10 or later) and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
+`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False, fills_capacity=None, recent_rows=4096, slow_tier_timeout_ms=10000)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs the live runtime, `fastmm-engine-live` (CPython 3.10 or later; [Install](../getting-started/install.md#python)), and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
 
 | Argument | Meaning |
 |---|---|
