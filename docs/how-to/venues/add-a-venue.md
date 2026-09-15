@@ -99,6 +99,7 @@ The sink receives `on_snapshot()`, `on_delta()`, `on_resync(SyncReason)` and `re
 | Traits | Rule |
 |---|---|
 | `BinanceSpotSyncTraits` (`book_syncer.hpp`) | REST snapshot with `lastUpdateId`; buffered deltas chained on `U`/`u` |
+| `BinanceFuturesSyncTraits` (`book_syncer.hpp`) | REST snapshot; the first delta brackets `lastUpdateId`, later deltas chained on `pu` (Binance USDⓈ-M) |
 | `BybitSyncTraits` (`book_syncer.hpp`) | Snapshot in the stream; `u` strictly increasing; `u == 1` is a reset marker |
 | `DeribitSyncTraits` (`include/fastmm/venues/deribit/deribit_book_sync.hpp`) | First notification is the snapshot; `prev_change_id` equals the previous `change_id` |
 

@@ -55,7 +55,7 @@ One table per venue; `<name>` is how instruments refer to it.
 <!-- BEGIN config-keys venues.* -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `kind` | string | yes | connector: binance_spot (alias binance) \| bybit (alias bybit_spot) \| deribit \| sim (fastmm-sim-exchange and backtest configs) |
+| `kind` | string | yes | connector: binance_spot (alias binance) \| binance_usdm \| bybit (alias bybit_spot) \| deribit \| sim (fastmm-sim-exchange and backtest configs) |
 | `ws_url` | string |  | market-data WebSocket URL |
 | `ws_api_url` | string |  | order-entry WebSocket API URL, where the venue has one |
 | `rest_url` | string |  | REST base URL |
@@ -86,18 +86,19 @@ These are validated like the keys above and handed to the connector unchanged; a
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000; deribit 10000) |
-| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to a per-connector minimum (binance and bybit 45000, deribit 30000 by default) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to a per-connector minimum (binance and bybit 45000, deribit 30000 by default; binance_usdm 45000 for market data, 240000 for the other channels) |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
-| `depth_limit` | integer |  | binance: REST snapshot depth, 5 to 5000 |
+| `depth_limit` | integer |  | binance: REST snapshot depth, 5 to 5000; binance_usdm: 5, 10, 20, 50, 100, 500 or 1000 |
 | `key_type` | string |  | binance: hmac (default) \| ed25519 |
 | `private_key_file` | string |  | binance: Ed25519 private key file (PEM), with key_type = ed25519 |
 | `user_stream` | string |  | binance: ws_api (default) \| listen_key \| none |
 | `position_from_balance` | boolean |  | binance: derive positions from account balances |
+| `position_from_account_update` | boolean |  | binance_usdm: correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
 | `depth` | integer |  | bybit: order book subscription depth, 1 to 1000 |
-| `ws_private_url` | string |  | bybit, deribit: private WebSocket URL; empty = derived from ws_url |
+| `ws_private_url` | string |  | bybit, deribit, binance_usdm: private WebSocket URL; empty = derived from ws_url |
 | `ping_interval_ms` | integer |  | bybit: application ping interval, ms, at least 1000 |
 | `orders_per_second` | integer |  | bybit: client-side order rate cap, orders/s |
 | `position_from_wallet` | boolean |  | bybit: derive positions from the wallet |

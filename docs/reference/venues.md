@@ -1,10 +1,11 @@
 # Venue connectors
 
-FastMM ships three connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet or the local Binance-compatible simulator), Bybit v5 spot (testnet) and Deribit options and futures (testnet). `make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
+FastMM ships four connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet, Demo Mode or the local Binance-compatible simulator), Binance USDⓈ-M perpetual futures (Demo Trading), Bybit v5 spot (testnet) and Deribit options and futures (testnet). `make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
 
 | kind | connector |
 |---|---|
 | `binance_spot`, `binance`, `sim` | `binance::BinanceVenue` |
+| `binance_usdm` | `binance_usdm::BinanceUsdmVenue` |
 | `bybit`, `bybit_spot` | `bybit::BybitVenue` |
 | `deribit` | `deribit::DeribitVenue` |
 
@@ -78,6 +79,43 @@ User data events arrive on the subscribed WS API connection as `{"subscriptionId
 
 Error codes the connector acts on: -1003/-1015 (cool down), -1021 (resync clock), -1022/-2014/-2015 (fatal), -2010/-2011 message texts (`Order would immediately match and take.`, `Unknown order sent.`, `Account has insufficient balance for requested action.`, `Duplicate order sent.`), -2013, -2021/-2022, HTTP 418/429.
 
+## Binance USDⓈ-M futures
+
+Perpetual contracts in one-way position mode, with HMAC keys. Sources: the USDⓈ-M documentation at <https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info> (read 2026-09-15), the field names of the official connector's generated models (`binance-connector-python`, `derivatives_trading_usds_futures`) and recorded Demo Trading market data (`tests/fixtures/binance_usdm/fixtures.meta.json`).
+
+| channel | endpoint | purpose |
+|---|---|---|
+| md | `<ws_url>/public/stream?streams=<sym>@depth@100ms/<sym>@bookTicker` | depth diffs, best bid and offer |
+| trades | `<ws_url>/market/stream?streams=<sym>@aggTrade` | aggregate trades |
+| user | `<ws_private_url>/ws/<listenKey>`, default `<ws_url>/private` | `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `listenKeyExpired` |
+| order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.modify` | order entry; REST fallback `POST` / `DELETE` / `PUT /fapi/v1/order` |
+| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `listenKey`, `openOrders`, `positionRisk`, account checks, kill-switch `DELETE /fapi/v1/allOpenOrders` |
+
+The `/public`, `/market` and `/private` paths come from the 2026-03-05 URL split; the unrouted `/ws` and `/stream` URLs were decommissioned on 2026-04-23 ("Important WebSocket Change Notice"). Demo Trading hosts: REST `https://demo-fapi.binance.com`, streams `wss://demo-fstream.binance.com`, WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`.
+
+The listenKey comes from `POST /fapi/v1/listenKey` and is kept alive with `PUT` every 30 minutes (valid for 60). On `listenKeyExpired` or a failed keepalive the connector requests a key, reopens the user connection and reconciles.
+
+### Book sync
+
+`GET /fapi/v1/depth?symbol=S&limit=1000` (weight 20). Deltas with `u` below `lastUpdateId` are dropped, the first applied delta has `U <= lastUpdateId <= u`, and each later delta's `pu` must equal the previous `u` (`BinanceFuturesSyncTraits`). A mismatch emits `ConnectionState{Resyncing}` and fetches a new snapshot, at most once per 2 s. The trades connection does not report its state to the engine, so a quiet `aggTrade` stream never clears the book. Mark price is not subscribed: the engine has no message for it.
+
+### Orders
+
+* LIMIT maps `timeInForce` GTC, IOC and FOK directly; post-only is LIMIT with `GTX`; MARKET has no price and no `timeInForce`. `reduceOnly=true` is sent when the engine sets it; `positionSide` is omitted (BOTH). A crossing GTX order is rejected with -5022 or expires (`OrderExpired`).
+* `order.modify` keeps the venue's `clientOrderId` and takes the total quantity. The connector sends the new remaining quantity plus the filled quantity, reports later events for that order under the engine's new client id, and counts their fills from the modify. A modify answered with status `CANCELED` or `EXPIRED` becomes a cancel of the original and a reject of the replacement. A modified order loses its queue position, so `configs/binance-usdm-demo.toml` uses cancel and new (`supports_replace = false`).
+* Rate limits come from `exchangeInfo.rateLimits`, the WS API `rateLimits` and the REST headers `X-MBX-USED-WEIGHT-1M` and `X-MBX-ORDER-COUNT-10S`.
+
+### Positions and reconciliation
+
+* On every user-stream connect and order-channel reconnect, `GET /fapi/v1/openOrders` (weight 40) and `GET /fapi/v3/positionRisk` (weight 5) become one `ReconcileMsg` sequence: Begin, one `OpenOrder` per order, one `Position` per configured instrument (flat when absent), End.
+* The engine books every fill, including liquidations and ADL (`autoclose-*` client ids). The connector compares each `ACCOUNT_UPDATE` position with the fills it forwarded once no fill has arrived for 1 s, and sends a `PositionUpdate` only when they differ (`position_from_account_update`). The two event types are not ordered against each other, so forwarding every position would count fills twice.
+* `load_reference_data()` refuses an account in hedge mode and logs the position mode, the leverage and margin type of each symbol and the margin balance. It changes no account setting.
+* Funding payments are not booked: they arrive as balance-only `ACCOUNT_UPDATE` events, which the connector ignores.
+
+### Errors
+
+`binance_usdm_error_map.hpp` follows the USDⓈ-M error code page: -5022 post-only reject, -2018/-2019/-2027 insufficient balance or margin, -2022/-4118 reduce-only rejects, -4164 minimum notional, -4014/-4023 tick and lot, -1003/-1015 rate limit, -1021/-5028 clock resync, -1022/-2015/-4109 and -4061 (hedge mode) fatal, -2011/-2013/-4116 reconcile, HTTP 418 (stop REST), 429 (cool down) and 503 (execution status unknown, reconcile).
+
 ## Bybit v5 spot
 
 | channel | endpoint | purpose |
@@ -140,15 +178,17 @@ Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` ([se
 Venue-specific keys ([Configuration](configuration.md#connector-specific-keys)):
 
 * Binance: `user_stream` (`ws_api` | `listen_key` | `none`), `key_type` (`ed25519`), `private_key_file`, `order_api` (`ws` | `rest`), `depth_limit`, `stale_ms`, `dead_ms`, `position_from_balance`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
+* Binance USDⓈ-M: `ws_private_url`, `order_api`, `depth_limit` (5, 10, 20, 50, 100, 500 or 1000), `stale_ms`, `dead_ms`, `position_from_account_update`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`. `key_type = "ed25519"` is refused. Example: `configs/binance-usdm-demo.toml`.
 * Bybit: `ws_private_url`, `depth`, `order_api`, `stale_ms`, `dead_ms`, `ping_interval_ms`, `orders_per_second`, `position_from_wallet`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
 * Deribit: `api_key` / `api_secret` are the client id and client secret (`${FASTMM_DERIBIT_CLIENT_ID}` / `${FASTMM_DERIBIT_CLIENT_SECRET}`); extras `ws_private_url`, `currencies` (`"BTC"` or `["BTC", "ETH"]`), `book_interval` / `ticker_interval` / `trades_interval` (`100ms` | `agg2`; `raw` needs an authenticated connection), `heartbeat_interval_s` (>= 10), `reject_post_only`, `cancel_on_disconnect`, `cancel_on_order_channel_loss`, `matching_engine_rate`, `matching_engine_burst`, `stale_ms`, `dead_ms`, `allow_offline_reference_data`, `emit_ack_from_response`. Example: `configs/deribit-testnet.toml`.
 
-`stale_ms` defaults to 2000 ms for Binance and Bybit and 10000 ms for Deribit. `dead_ms` is raised to at least 45000 ms on Binance (the venue pings every 20 s), twice `ping_interval_ms` plus 5000 ms on Bybit (45000 ms by default) and three heartbeat intervals on Deribit (30000 ms by default). A market-data connection without traffic for `stale_ms` is reported `Stale`: the engine pulls the venue's quotes and clears its books, and the connector fetches a new snapshot when data returns. Testnet BTCUSDT is often silent for more than 2 s, so the testnet and Demo configs set `stale_ms = 10000` (`configs/deribit-testnet.toml`: 15000).
+`stale_ms` defaults to 2000 ms for Binance and Bybit and 10000 ms for Deribit. `dead_ms` is raised to at least 45000 ms on Binance (the venue pings every 20 s), to 45000 ms for market data and 240000 ms for the other connections on Binance USDⓈ-M (pings every 3 minutes), twice `ping_interval_ms` plus 5000 ms on Bybit (45000 ms by default) and three heartbeat intervals on Deribit (30000 ms by default). A market-data connection without traffic for `stale_ms` is reported `Stale`: the engine pulls the venue's quotes and clears its books, and the connector fetches a new snapshot when data returns. Testnet BTCUSDT is often silent for more than 2 s, so the testnet and Demo configs set `stale_ms = 10000` (`configs/deribit-testnet.toml`: 15000).
 
 ## Open questions (`VERIFY:` in the code)
 
 * Bybit: whether `u` increments by exactly one per delta (recorded testnet deltas did; the sync only requires increase).
 * Bybit: whether amend `qty` includes the filled quantity (the testnet config therefore uses cancel + new, `supports_replace = false`).
 * Bybit: whether `walletBalance` includes `locked`; balance-related `rejectReason` strings.
+* Binance USDⓈ-M: the private payloads (`ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, WS API order responses) follow the documentation and the official connector's models but were not recorded, because the Demo account had no futures margin balance. Whether Demo rejects a crossing GTX order with -5022 or accepts and expires it is not confirmed; both are handled. `order.modify` is covered by the scripted fake exchange only.
 * Binance: `GET /api/v3/time` weight (1 vs 2) and listenKey validity/keepalive figures (the documentation was removed; simulator mode only).
 * Deribit: the private payloads (`user.orders`, `user.trades`, order and auth responses, open orders) follow the OpenAPI/AsyncAPI schemas but were not recorded, because that needs testnet keys; the live test covers them when the keys are exported. Whether `reject_post_only` rejections arrive as error 11054 (complete reference) or 11006 (the error page's summary table) is not confirmed; the error map also matches on the message text. The public `trades` `direction` is taken as the taker side, which the current documentation does not state. The account's matching-engine tier is not queried.
