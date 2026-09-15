@@ -225,7 +225,7 @@ struct ArgPacker {
     if (len > room - 2) len = room - 2;
     *p++ = static_cast<std::uint8_t>(t);
     *p++ = static_cast<std::uint8_t>(len);
-    std::memcpy(p, s.data(), len);
+    if (len != 0) std::memcpy(p, s.data(), len);  // an empty string_view may hold nullptr
     if (len < s.size() && len >= 3) std::memcpy(p + len - 3, "...", 3);  // make the cut visible
     p += len;
     ++n;

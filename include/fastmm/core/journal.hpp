@@ -2,8 +2,9 @@
 // Journal `.fmj` (5.5, ADR-0010): every event the engine consumes, every outbound message
 // and periodic latency samples, in consumption order, so a session can be replayed exactly.
 //
-//   file  := FileHeader (256 B) | Instrument[instrument_count] | Config? | Params? | Block* |
-//   Trailer? block := BlockHeader (64 B, crc32c over payload) | messages (raw EventHeader-prefixed)
+//   file  := FileHeader (256 B) | Instrument[instrument_count] | Config? | Params? | Meta? |
+//            Block* | Trailer?
+//   block := BlockHeader (64 B, crc32c over payload) | messages (raw EventHeader-prefixed)
 //
 // Format v2 (readers accept v1 and v2) adds:
 //   * the engine clock of every consumed event: records flagged kEngineTime carry a signed int32
@@ -16,7 +17,8 @@
 //
 // Format v3 (readers accept v1 to v3) adds the strategy's parameter table (name and type of each
 // schema index) after the configuration, so ParamUpdate records resolve their field indices by
-// name.
+// name, and optional strategy metadata after it (`key=value` lines; a Python strategy's class,
+// hot-hook source hash and package versions).
 //
 // Blocks are 1 MiB max; a message never straddles blocks. A trailer is an empty block with
 // kBlockFlagTrailer; if it is missing the file was not closed cleanly and the reader
@@ -79,13 +81,16 @@ struct JournalFileHeader {
   std::uint32_t param_count;         // entries of the parameter table (0 = none)
   std::uint32_t param_table_bytes;   // table bytes after the padded config, before its padding
   std::uint32_t param_table_crc32c;  // of the table bytes
-  std::uint8_t reserved[108];
+  std::uint32_t meta_bytes;          // strategy metadata after the padded table (0 = none)
+  std::uint32_t meta_crc32c;         // of the metadata text
+  std::uint8_t reserved[100];
   std::uint32_t crc32c;  // over the preceding 252 bytes
 };
 static_assert(sizeof(JournalFileHeader) == 256 && std::is_trivially_copyable_v<JournalFileHeader>);
 
 static_assert(offsetof(JournalFileHeader, session_epoch) == 112 &&
               offsetof(JournalFileHeader, param_count) == 132 &&
+              offsetof(JournalFileHeader, meta_bytes) == 144 &&
               offsetof(JournalFileHeader, crc32c) == 252);
 
 // One entry of the v3 parameter table: the name and ParamType of a schema index.
@@ -241,6 +246,7 @@ struct JournalSessionInfo {
   std::uint64_t replace_venues = 0;     // bit v: venue v used cancel-replace
   std::string_view config_toml;         // effective configuration (Config::effective_toml())
   const ParamSchema* params = nullptr;  // the strategy's parameter schema (v3 parameter table)
+  std::string_view strategy_meta;       // `key=value` lines (v3 metadata; empty = none)
 };
 
 // Background side: drains the ring into 1 MiB blocks appended to an mmap'd file grown in
@@ -324,6 +330,8 @@ class JournalReader {
   // Effective configuration TOML embedded by the recording (empty: none, e.g. a v1 file).
   [[nodiscard]] std::string_view config_text() const noexcept { return config_; }
   // The strategy's parameter table, by schema index (empty: none, e.g. a v2 file).
+  // `key=value` lines about the strategy (empty when none).
+  [[nodiscard]] std::string_view strategy_meta() const noexcept { return meta_; }
   [[nodiscard]] std::span<const JournalParam> params() const noexcept {
     return {params_.data(), param_count_};
   }
@@ -358,6 +366,7 @@ class JournalReader {
   const JournalFileHeader* header_ = nullptr;
   const Instrument* instruments_ = nullptr;
   std::string_view config_;
+  std::string_view meta_;
   std::array<JournalParam, kJournalMaxParams> params_{};
   std::size_t param_count_ = 0;
   std::size_t first_block_ = 0;

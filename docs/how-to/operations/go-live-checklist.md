@@ -50,5 +50,5 @@ A `[risk]` limit is off when it is `0` or missing ([Configuration](../../referen
 - [ ] You have done a kill-switch drill with this config: a keyed session with open orders, Ctrl-C, `shutdown took <n> ms (cancel_all ok)` ([Reading the last lines](kill-switch-and-shutdown.md#reading-the-last-lines)), and no open orders on the venue.
 - [ ] After every stop, including one that logged `cancel_all ok`, the venue's open-orders page shows no orders. The shutdown cancel-all sends one request per subscribed instrument and `ok` means those requests succeeded; orders on other instruments, orders the venue accepted after the request, and every order in a `--dry-run` (where the cancel-all is skipped) are not covered.
 - [ ] You know where the venue's own "cancel all" is on its website, and you have read [When cancel_all failed](kill-switch-and-shutdown.md#when-cancel_all-failed).
-- [ ] `[engine] on_kill` is set, and whatever starts `fastmm-live` alerts on exit codes 5 and 6 ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)).
+- [ ] `[engine] on_kill` is set, and whatever starts `fastmm-live` or `python -m fastmm run` alerts on exit codes 5, 6 and 7 ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)).
 - [ ] Someone watches the first live session from start to finish.

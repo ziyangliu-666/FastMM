@@ -20,6 +20,22 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | `[engine] net_backend = "io_uring" but io_uring is not available (kernel too old, disabled or not permitted); falling back to epoll` | The kernel refuses io_uring (`kernel.io_uring_disabled`, seccomp, an old kernel); the session runs on epoll | Set `net_backend = "epoll"` |
 | `fastmm-live: fatal: <error>` | An uncaught error in the session; exit code 5 | Check the lines before it |
 
+## Python strategies
+
+`python -m fastmm run` and `fastmm.run_live` print these on stderr; the session's log lines are the ones above.
+
+| Message | Cause | Action |
+|---|---|---|
+| `fastmm.run_live needs the live runtime (fastmm_live); install it with: pip install "fastmm-engine[live]"` (ImportError) | The live runtime is not installed | Install it |
+| `fastmm: py:<Class> has no @fastmm.hot methods; a strategy runs live only with hot hooks` (exit 3) | The class defines `fastmm.Strategy` hooks only | Write the hooks as [hot hooks](../strategies/python-hot-hooks.md) |
+| `fastmm: <Class>.<hook> is rejected by the IR check: ...`, `fastmm: <Class>.<hook> does not compile in Numba nopython mode: ...` (exit 3) | A hot hook does not compile; no venue was contacted | Fix the hook ([What compiles](../../reference/python-api.md#what-compiles)) |
+| `fastmm: note: ignoring [strategy.params] of '<name>' for py:<Class>` | `[strategy] name` names another strategy, so its parameters do not apply to the class | Set `name = "py:<Class>"` or pass the parameters with `--param` |
+| `fastmm: cannot load strategy '<module>:<Class>': <error>` (exit 3) | The module is not importable from the current directory or `PYTHONPATH`, or has no such class | Check the name and `PYTHONPATH` |
+| `fastmm: py:<Class>.<hook> raised an exception (engine time <n> ns); kill switch tripped: StrategyError` (exit 6 with `on_kill = "exit"`) | The hook raised, for example an index outside a book array | Reproduce it in a backtest with the session's journal |
+| `fastmm: a live session is already running in this process; run one session per process` (RuntimeError) | `run_live` was called while another session runs | Run the second session in another process |
+| `fastmm: this process was forked while a live session was running and cannot run one; ...` (RuntimeError) | A child process started with `fork` during a session | Use the `spawn` or `forkserver` start method |
+| `thread affinity unchanged: every CPU this process may use is pinned in [engine] cpu or net_cpus` | No CPU is left for the process's other threads; they keep their affinity | Leave at least one CPU unpinned |
+
 ## Reference data
 
 | Message | Cause | Action |

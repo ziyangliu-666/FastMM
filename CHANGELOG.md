@@ -5,6 +5,22 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Python strategies live (ADR-0013, section 3): `fastmm.run_live(StrategyClass, config, params=None,
+  ...)` and `python -m fastmm run module:Class --config file.toml` run a class with hot hooks in the
+  `fastmm-live` session from `fastmm_live._live`, with the GIL released, and return its exit code.
+  Hooks compile (exit code 3 on failure) and warm up before any venue is contacted; a failing hook
+  trips `StrategyError` (exit code 6 with `on_kill = "exit"`). The session moves every other thread
+  of the process off the CPUs pinned in `[engine]`, runs one per process (`RuntimeError`) and is
+  inert in a forked child. `fastmm_live._live.ParamChannel` is the session's parameter ring and
+  publisher. New exit code 7 (`kExitSlowTier`) and `LiveOptions::watchdog`, `strategy`
+  (`LiveStrategy`) and `confine_other_threads`; `run_live` restores the SIGINT/SIGTERM handlers it
+  replaced.
+- Journal format 3 gains optional strategy metadata (`meta_bytes`, `meta_crc32c`; `key=value` lines)
+  after the parameter table: a Python session records the class, a hash of the hot-hook source and
+  the package versions. `inspect_journal` returns it as `strategy_meta`. Journals without it read
+  unchanged.
+- `HotStrategy` applies `ParamUpdate` messages to its parameter blocks (`HotProgram::params`,
+  `strategies/hot_params.hpp`), and `ParamPublisher` takes a parameter schema built at run time.
 - Python hot hooks in backtests (ADR-0013, section 1): `@fastmm.hot` methods (`on_book`, `on_fill`,
   `on_quoting`, `on_connection`, and timer hooks with `every=`) compiled by Numba and called by the
   engine thread through the C ABI in `strategies/hot_abi.h`, with `fastmm.State`, `fastmm.fx` and

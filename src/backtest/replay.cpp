@@ -88,6 +88,7 @@ JournalInfo inspect_journal(const std::string& path) {
     info.replace_venues = h.replace_venues;
   }
   info.config_toml = std::string(reader.config_text());
+  info.strategy_meta = std::string(reader.strategy_meta());
   reader.for_each([&](const EventHeader* e) {
     ++info.messages;
     if ((e->flags & EventHeader::kEngineTime) != 0) info.engine_time = true;

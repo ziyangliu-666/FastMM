@@ -1,6 +1,7 @@
 // Python hot hooks (ADR-0013, section 1): the ABI layout that fastmm/_hot/abi.py checks at import,
 // and the backtest of a compiled hot strategy (HotStrategy, run with the GIL released).
 #include "bind_common.hpp"
+#include "hot_program.hpp"
 
 #include "fastmm/backtest/backtest_config.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
@@ -110,51 +111,12 @@ py::dict book_layout() {
 
 #undef FASTMM_HOT_OFFSET
 
-fastmm_hot_fn fn_from(py::handle address) {
-  const auto a = address.cast<std::uintptr_t>();
-  if (a == 0) throw py::value_error("fastmm: a hot hook address is 0");
-  return reinterpret_cast<fastmm_hot_fn>(a);  // NOLINT(performance-no-int-to-ptr)
-}
-
-HotProgram program_from(const py::dict& program) {
-  HotProgram p;
-  for (const auto& [name, address] : program["hooks"].cast<py::dict>()) {
-    const auto n = name.cast<std::string>();
-    bool found = false;
-    for (std::size_t i = 0; i < p.hooks.size(); ++i) {
-      if (to_string(static_cast<HotHook>(i)) == n) {
-        p.hooks[i] = fn_from(address);
-        found = true;
-      }
-    }
-    if (!found) throw py::value_error("fastmm: '" + n + "' is not a hot hook");
-  }
-  for (const auto& t : program["timers"].cast<py::list>()) {
-    if (p.n_timers == kMaxHotTimers) {
-      throw py::value_error("fastmm: more than " + std::to_string(kMaxHotTimers) +
-                            " hot timer hooks");
-    }
-    const auto pair = t.cast<py::tuple>();
-    const auto period = pair[1].cast<std::int64_t>();
-    if (period <= 0) throw py::value_error("fastmm: a hot timer period must be positive");
-    p.timers[p.n_timers].fn = fn_from(pair[0]);
-    p.timers[p.n_timers].period = Duration{period};
-    ++p.n_timers;
-  }
-  const auto record = program["record"].cast<std::string>();
-  p.record.assign(record.begin(), record.end());
-  p.param_bytes = program["param_bytes"].cast<std::size_t>();
-  if (program.contains("book_depth")) p.book_depth = program["book_depth"].cast<bool>();
-  p.stop_on_error = true;
-  return p;
-}
-
 }  // namespace
 
 py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            sim::MdSource* source,
                            const py::dict& program) {
-  const HotProgram p = program_from(program);
+  const HotProgram p = py_hot::program_from(program, true);
   bt::BacktestSession session(cfg, source);
   std::unique_ptr<IEngineRunner> runner =
       session.backend().template make_runner<HotStrategy>(session.deps());

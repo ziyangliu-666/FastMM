@@ -56,12 +56,28 @@ class ParamPublisher {
   using ParamValue = std::pair<std::string, std::string>;  // name, value as ParamDesc::parse takes
   static constexpr InstrumentId kAllInstruments = ParamUpdateMsg::kAllInstruments;
 
+  // Copying and freeing a parameter block whose layout is known only at run time
+  // (strategies/hot_params.hpp); validate runs after the schema's parsers.
+  struct BlockOps {
+    void* (*clone)(const void* src);
+    void (*destroy)(void* p) noexcept;
+    std::optional<std::string> (*validate)(const void* p);
+  };
+
   template <class Params>
   ParamPublisher(ParamSink sink, const Params& current, std::size_t instruments = 0)
-      : sink_(sink), ops_(&block_ops<Params>()), per_instrument_(instruments != 0) {
+      : ParamPublisher(sink, Params::schema(), block_ops<Params>(), &current, instruments) {}
+  // `schema`'s parsers and `ops` work on blocks like `current`; `schema` must outlive the
+  // publisher.
+  ParamPublisher(ParamSink sink,
+                 const ParamSchema& schema,
+                 const BlockOps& ops,
+                 const void* current,
+                 std::size_t instruments = 0)
+      : sink_(sink), schema_(&schema), ops_(ops), per_instrument_(instruments != 0) {
     const std::size_t n = instruments == 0 ? 1 : instruments;
     blocks_.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) blocks_.push_back(clone(&current));
+    for (std::size_t i = 0; i < n; ++i) blocks_.push_back(clone(current));
   }
   ParamPublisher(const ParamPublisher&) = delete;
   ParamPublisher& operator=(const ParamPublisher&) = delete;
@@ -115,26 +131,19 @@ class ParamPublisher {
     const std::lock_guard<std::mutex> lock(mutex_);
     return refused_;
   }
-  [[nodiscard]] const ParamSchema& schema() const { return ops_->schema(); }
+  [[nodiscard]] const ParamSchema& schema() const { return *schema_; }
   // `name=value` pairs of the copy: one instrument's, or the shared set.
   [[nodiscard]] std::string describe(InstrumentId inst = kAllInstruments) const {
     const std::lock_guard<std::mutex> lock(mutex_);
     const std::size_t k =
         per_instrument_ && inst.valid() && inst.value < blocks_.size() ? inst.value : 0;
-    return detail::describe_params(ops_->schema(), blocks_[k].get());
+    return detail::describe_params(*schema_, blocks_[k].get());
   }
 
  private:
-  struct BlockOps {
-    const ParamSchema& (*schema)();
-    void* (*clone)(const void* src);
-    void (*destroy)(void* p) noexcept;
-    std::optional<std::string> (*validate)(const void* p);
-  };
   template <class P>
   static const BlockOps& block_ops() {
     static constexpr BlockOps kOps{
-        []() -> const ParamSchema& { return P::schema(); },
         [](const void* src) -> void* { return new P(*static_cast<const P*>(src)); },
         [](void* p) noexcept { delete static_cast<P*>(p); },
         [](const void* p) { return detail::validate_params(*static_cast<const P*>(p)); }};
@@ -147,14 +156,14 @@ class ParamPublisher {
   using Block = std::unique_ptr<void, Deleter>;
 
   [[nodiscard]] Block clone(const void* src) const {
-    return Block(ops_->clone(src), Deleter{ops_->destroy});
+    return Block(ops_.clone(src), Deleter{ops_.destroy});
   }
 
   std::optional<std::string> build_locked(const std::vector<ParamValue>& values,
                                           InstrumentId inst,
                                           ParamUpdateMsg& out,
                                           std::vector<std::pair<std::size_t, Block>>* next) const {
-    const ParamSchema& schema = ops_->schema();
+    const ParamSchema& schema = *schema_;
     if (values.size() > ParamUpdateMsg::kMaxFields) {
       return "at most " + std::to_string(ParamUpdateMsg::kMaxFields) +
              " parameters per update, got " + std::to_string(values.size());
@@ -189,7 +198,7 @@ class ParamPublisher {
         out.field[i] = static_cast<std::uint16_t>(d - schema.begin());
         out.value[i] = d->get_raw(copy.get());
       }
-      if (auto err = ops_->validate(copy.get())) {
+      if (auto err = ops_.validate(copy.get())) {
         if (per_instrument_) return "instrument " + std::to_string(k) + ": " + *err;
         return err;
       }
@@ -199,7 +208,8 @@ class ParamPublisher {
   }
 
   ParamSink sink_;
-  const BlockOps* ops_;
+  const ParamSchema* schema_;
+  BlockOps ops_;
   bool per_instrument_;
   std::vector<Block> blocks_;  // one per instrument, or the shared set
   mutable std::mutex mutex_;

@@ -34,7 +34,7 @@ import llvmlite.binding as llvm
 import numba
 from numba import carray, cfunc, njit, types
 from numba.core import config as numba_config
-from numba.core.errors import NumbaError, TypingError
+from numba.core.errors import NumbaError, TypingError, UnsupportedBytecodeError
 from numba.extending import overload_method
 
 from .. import _core
@@ -426,7 +426,7 @@ class CompiledHot:
                     raise
                 user = njit(**self.options)(fn)
             entry = cfunc(sig, error_model="python")(_make_entry(user))
-        except NumbaError as e:
+        except (NumbaError, UnsupportedBytecodeError) as e:  # the latter is no NumbaError
             raise HotCompileError(f"fastmm: {where} does not compile in Numba nopython mode:\n"
                                   f"{e}") from None
         bad = disallowed_calls(entry.inspect_llvm())

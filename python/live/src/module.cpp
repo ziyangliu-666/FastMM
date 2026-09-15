@@ -1,6 +1,8 @@
 // fastmm_live._live: extension module of the fastmm-live wheel. It exchanges only Python objects
-// with fastmm._core and binds no C++ type (ADR-0013, section 5).
+// with fastmm._core and binds no C++ type _core binds (ADR-0013, section 5). The live runtime of
+// Python strategies is in session.cpp.
 #include "self_test_pem.hpp"
+#include "session.hpp"
 
 #include "fastmm/net/ca_locations.hpp"
 #include "fastmm/net/io_result.hpp"
@@ -161,4 +163,6 @@ PYBIND11_MODULE(_live, m) {
       "Loads the CA certificates a live session would use, runs a TLS handshake and a round trip "
       "in memory, and checks that an untrusted certificate is rejected. Raises RuntimeError on "
       "failure.");
+
+  fastmm::py_live::bind_session(m);
 }

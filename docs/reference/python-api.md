@@ -286,3 +286,32 @@ Measured with `python bench/python/bench_hot_strategy.py --build build/release` 
 Bounds checks cost less than the run-to-run spread (under 1 ns per call). The engine copies the level arrays only when a hook, or a `numba.njit` function it calls, names one of them, or calls code the check cannot follow; the copy costs about 35 ns per call.
 
 On the synthetic market (3,600 s, 1,356,426 market-data events) C++ `basic_mm` runs at 1.93 M events/s and `BasicMMHot` at 1.90 M events/s with the same orders. Compiling `BasicMMHot` (5 hooks) takes 1.1 s in a fresh process, 0.5 s from the Numba cache; importing numba takes 0.14 s.
+
+## Live sessions
+
+`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs `pip install "fastmm-engine[live]"` (CPython 3.10 or later) and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
+
+| Argument | Meaning |
+|---|---|
+| `strategy` | a `fastmm.Strategy` subclass with `@fastmm.hot` methods, or an unused instance |
+| `config` | a `fastmm-live` configuration ([Configuration](configuration.md)) |
+| `params` | overrides on top of `[strategy.params]`, which apply only when `[strategy] name` is `py:<Class>`, `<module>:<Class>` or `<Class>` |
+| `duration` | seconds, or a string such as `"60s"`; `None` runs until SIGINT or SIGTERM |
+| the other keywords | the `fastmm-live` options of the same names ([Command lines](cli.md#fastmm-live)) |
+
+Before any venue is contacted, `run_live` applies the parameters, compiles the hooks without the Numba cache and calls each once on scratch data. It then runs the `fastmm-live` session with the GIL released: the same threads, log, status file, journal, kill switch, `on_kill` and exit codes.
+
+| Case | Result |
+|---|---|
+| a configuration, parameter or compilation error, or a class without hot hooks | a message on stderr; returns 3 |
+| a hook raises, calls `ctx.fail` or sets a bad float level | the kill switch trips with `StrategyError` and stderr names the hook; returns 6 with `on_kill = "exit"` |
+| `run_live` while a session runs in the process | `RuntimeError` |
+| `run_live` in a child forked while a session runs | `RuntimeError`; start children with the `spawn` or `forkserver` method |
+
+- SIGINT and SIGTERM stop the session. The session replaces the process's handlers while it runs and restores them when it returns, so `KeyboardInterrupt` is not raised.
+- Before the engine starts, every thread of the process, including numpy's BLAS threads, is limited to the CPUs not listed in `[engine] cpu` and `net_cpus`; threads started later inherit that. Without pinned CPUs nothing changes. Thread-count variables such as `OPENBLAS_NUM_THREADS` act only when set before numpy loads.
+- The journal's parameter table lists the class's parameters. `inspect_journal(path)["strategy_meta"]` returns `class` (`module:qualname`), `hot_source_sha256` (the source of the hot hooks and the `numba.njit` functions they call) and the `fastmm`, `numba`, `llvmlite` and `python` versions ([Journal format](journal-format.md)).
+
+### python -m fastmm run
+
+`python -m fastmm run <module>:<Class> --config <file> [options]` imports the class, with the current directory first on the module path, and exits with the code `run_live` returns. The options are the `fastmm-live` ones: `--param key=value` (repeatable), `--duration`, `--dry-run`, `--record-raw`, `--journal`, `--no-journal`, `--status`, `--no-status`, `--log` and `--allow-inline-secrets`. A bad command line exits with 2 and a class that cannot be imported with 3. Each of `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` that is not set is set to 1, and the interpreter starts again once so that numpy sees them.
