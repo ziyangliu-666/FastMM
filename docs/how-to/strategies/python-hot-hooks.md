@@ -1,13 +1,13 @@
 # Write hot hooks in Python
 
-Hot hooks are strategy methods that Numba compiles and the engine thread calls without the GIL; they run in backtests. Reference: [Hot hooks](../../reference/python-api.md#hot-hooks).
+Hot hooks are strategy methods that Numba compiles and the engine thread calls without the GIL; they run in backtests and [live sessions](python-live.md). Reference: [Hot hooks](../../reference/python-api.md#hot-hooks).
 
 ## Install
 
 Install numba with the `hot` extra (CPython 3.10 or later):
 
 ```bash
-pip install "fastmm[hot]"
+pip install "fastmm-engine[hot]"
 ```
 
 ## Declare the strategy

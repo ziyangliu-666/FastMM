@@ -1,4 +1,4 @@
-"""fastmm-live against the installed wheels: metadata, the TLS self-test, CA lookup, and both
+"""fastmm-engine-live against the installed wheels: metadata, the TLS self-test, CA lookup, and both
 extension modules in one process."""
 
 import importlib.metadata
@@ -14,7 +14,7 @@ import pytest
 
 def test_version_pin_and_build_info():
     assert fastmm_live.__version__ == fastmm.__version__
-    assert f"fastmm=={fastmm.__version__}" in importlib.metadata.requires("fastmm-live")
+    assert f"fastmm-engine=={fastmm.__version__}" in importlib.metadata.requires("fastmm-engine-live")
     info = fastmm_live.build_info()
     assert info["version"] == fastmm.__version__
     assert info["openssl"].startswith("OpenSSL 3.")

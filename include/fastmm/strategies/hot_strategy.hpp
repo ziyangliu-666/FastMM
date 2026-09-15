@@ -15,12 +15,14 @@
 // kill switch trips with KillReason::StrategyError (which pulls the quotes and cancels the working
 // orders) and, when the program asks for it (backtests), the engine is asked to stop.
 //
+// A ParamUpdate (live publishes, replay) is written into the parameter block of its instrument, or
+// of every instrument, at the places HotProgram::params gives (strategies/hot_params.hpp); the next
+// call copies it into `self`. on_params then calls the on_params hook for those instruments.
+//
 // The owner builds a HotProgram, calls attach() before the run and warm_up() before any venue
 // connection, and reads error() afterwards.
 //
-// Parameter updates (ADR-0013, section 2): apply_param_update() writes a ParamUpdate's values into
-// the parameter blocks of its instrument or of every instrument, and on_params calls the on_params
-// hook for those instruments. With a SlowChannel attached (attach_slow()), the strategy also
+// With a SlowChannel attached (attach_slow(), ADR-0013 slow methods), the strategy also
 // records top-of-book changes, trades and fills for the slow tier and publishes a snapshot at most
 // once per SlowChannelConfig::snapshot_interval of engine time; a change the interval holds back is
 // published by a one-shot engine timer (tag kSlowSnapshotTimerTag) at the end of the interval.
@@ -35,6 +37,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/strategies/hooks.hpp"
 #include "fastmm/strategies/hot_abi.h"
+#include "fastmm/strategies/hot_params.hpp"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/slow_channel.hpp"
@@ -89,76 +92,6 @@ inline constexpr std::size_t kMaxHotTimers = 16;
 // Timer tags of the hot timers: this base plus the timer's index.
 inline constexpr std::uint64_t kHotTimerTag = 0x484f'5400'0000'0000ULL;  // "HOT"
 
-namespace detail {
-
-// `x` as 1e-8 fixed point, rounded from its shortest decimal form with halves away from zero and
-// saturated to int64: what fastmm/_hot/decl.py fixed_raw() computes (Decimal(repr(x)) * 1e8,
-// ROUND_HALF_UP), so a published float gets the same `_raw` twin as the initial record. 0 for a
-// value that is not finite.
-[[nodiscard]] inline std::int64_t hot_fixed_raw(double x) noexcept {
-  std::array<char, 40> buf{};
-  const std::to_chars_result res = std::to_chars(buf.data(), buf.data() + buf.size(), x);
-  if (res.ec != std::errc{}) return 0;
-  const char* p = buf.data();
-  const char* const end = res.ptr;
-  bool negative = false;
-  if (p < end && *p == '-') {
-    negative = true;
-    ++p;
-  }
-  __extension__ typedef unsigned __int128 U;  // NOLINT(modernize-use-using)
-  U mantissa = 0;
-  int exp10 = 0;
-  bool point = false;
-  for (; p < end; ++p) {
-    const char c = *p;
-    if (c >= '0' && c <= '9') {
-      mantissa = (mantissa * 10U) + static_cast<unsigned>(c - '0');  // at most 21 digits
-      if (point) --exp10;
-    } else if (c == '.') {
-      point = true;
-    } else if (c == 'e') {
-      int e = 0;
-      const std::from_chars_result r =
-          std::from_chars(p + 1 + (p[1] == '+' ? 1 : 0), end, e);  // "e+20", "e-09"
-      if (r.ec != std::errc{}) return 0;
-      exp10 += e;
-      break;
-    } else {
-      return 0;  // inf, nan
-    }
-  }
-  const int k = exp10 + 8;  // raw magnitude = mantissa * 10^k
-  constexpr U kMax = static_cast<U>(std::numeric_limits<std::int64_t>::max());
-  U mag = 0;
-  if (mantissa == 0) {
-    mag = 0;
-  } else if (k >= 0) {
-    mag = mantissa;
-    for (int i = 0; i < k && mag <= kMax; ++i) mag *= 10U;
-  } else if (-k <= 38) {
-    U pow10 = 1;
-    for (int i = 0; i < -k; ++i) pow10 *= 10U;
-    mag = mantissa / pow10;
-    if (2U * (mantissa % pow10) >= pow10) ++mag;
-  }
-  if (negative) {
-    if (mag > kMax) return std::numeric_limits<std::int64_t>::min();
-    return -static_cast<std::int64_t>(mag);
-  }
-  return mag > kMax ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(mag);
-}
-
-}  // namespace detail
-
-// Where one parameter lives in the parameter block, by schema index (ParamUpdateMsg field).
-struct HotParamField {
-  enum class Kind : std::uint8_t { Bool = 0, Int = 1, Double = 2 };
-  Kind kind = Kind::Double;
-  std::uint32_t offset = 0;      // uint8 (Bool), int64 (Int) or double (Double)
-  std::uint32_t raw_offset = 0;  // Double: its int64 `_raw` twin
-};
-
 // What the compiler produced: hook addresses, timers and the initial `self` record.
 struct HotProgram {
   struct Timer {
@@ -171,8 +104,8 @@ struct HotProgram {
   // One record: the parameter block (the first param_bytes) and the State defaults after it.
   std::vector<std::uint8_t> record;
   std::size_t param_bytes = 0;
-  // The parameters by schema index: what the fields of a ParamUpdate refer to.
-  std::vector<HotParamField> params;
+  // The parameters a ParamUpdate may assign, by field index: their places in the parameter block.
+  std::vector<HotParamSlot> params;
   bool stop_on_error = false;  // request_stop() after a failure (backtests)
   // Copy the level arrays into the book view. False when no hook can read them: the view then holds
   // the top of book and the level counts, and the arrays stay zero.
@@ -200,14 +133,17 @@ class HotStrategy {
   std::optional<std::string> configure(const ParamMap&) { return std::nullopt; }
 
   // Copies the program and allocates one parameter block and one record per instrument. Startup
-  // only (allocates). Returns false when the record is smaller than the parameter block, there are
-  // more timers than kMaxHotTimers or a parameter field lies outside the parameter block.
+  // only (allocates). Returns false when the record is smaller than the parameter block, there
+  // are more timers than kMaxHotTimers or more parameters than kMaxParams, or a parameter lies
+  // outside the parameter block.
   bool attach(const HotProgram& p, const InstrumentTable& instruments) {
     if (p.param_bytes > p.record.size() || p.n_timers > kMaxHotTimers) return false;
-    for (const HotParamField& f : p.params) {
-      const std::size_t width = f.kind == HotParamField::Kind::Bool ? 1 : 8;
-      if (f.offset + width > p.param_bytes) return false;
-      if (f.kind == HotParamField::Kind::Double && f.raw_offset + 8U > p.param_bytes) return false;
+    if (p.params.size() > kMaxParams) return false;
+    for (const HotParamSlot& s : p.params) {
+      const std::size_t width = s.type == ParamType::Bool ? 1 : 8;
+      if (std::size_t{s.offset} + width > p.param_bytes) return false;
+      if (s.raw_offset >= 0 && static_cast<std::size_t>(s.raw_offset) + 8 > p.param_bytes)
+        return false;
     }
     program_ = p;
     record_size_ = p.record.size();
@@ -366,40 +302,25 @@ class HotStrategy {
     if (FASTMM_UNLIKELY(slow_ != nullptr)) slow_trade(ctx, id, t);
   }
 
-  // Assigns the (field, raw value) pairs of a ParamUpdate to the parameter block of its instrument,
-  // or of every instrument; a field outside HotProgram::params is skipped. A double's `_raw` twin
-  // is set from the value (detail::hot_fixed_raw). on_params follows at the same event.
+  // Engine thread: writes the message's (field, raw value) pairs into the parameter block of its
+  // instrument, or of every instrument. A field without a HotProgram::params entry is skipped.
+  // on_params follows at the same event.
   void apply_param_update(const ParamUpdateMsg& m) noexcept {
-    const std::size_t n = inst_f_.size();
+    const std::size_t n_inst = inst_f_.size();
     std::size_t first = 0;
-    std::size_t last = n;
-    if (m.hdr.instrument.valid()) {
-      if (m.hdr.instrument.value >= n) return;
+    std::size_t last = n_inst;
+    if (!m.all_instruments()) {
+      if (m.hdr.instrument.value >= n_inst) return;
       first = m.hdr.instrument.value;
       last = first + 1;
     }
     const std::size_t count = std::min<std::size_t>(m.count, ParamUpdateMsg::kMaxFields);
-    for (std::size_t k = first; k < last; ++k) {
-      std::uint8_t* const block = params_.data() + (k * param_bytes_);
-      for (std::size_t i = 0; i < count; ++i) {
-        if (m.field[i] >= program_.params.size()) continue;
-        const HotParamField& f = program_.params[m.field[i]];
-        switch (f.kind) {
-          case HotParamField::Kind::Bool: {
-            const std::uint8_t b = m.value[i] != 0 ? 1 : 0;
-            std::memcpy(block + f.offset, &b, 1);
-            break;
-          }
-          case HotParamField::Kind::Int:
-            std::memcpy(block + f.offset, &m.value[i], sizeof(std::int64_t));
-            break;
-          case HotParamField::Kind::Double: {
-            const auto d = std::bit_cast<double>(m.value[i]);
-            const std::int64_t raw = detail::hot_fixed_raw(d);
-            std::memcpy(block + f.offset, &d, sizeof d);
-            std::memcpy(block + f.raw_offset, &raw, sizeof raw);
-            break;
-          }
+    const std::vector<HotParamSlot>& slots = program_.params;
+    if (param_bytes_ > 0) {
+      for (std::size_t k = first; k < last; ++k) {
+        std::uint8_t* const block = params_.data() + (k * param_bytes_);
+        for (std::size_t i = 0; i < count; ++i) {
+          if (m.field[i] < slots.size()) hot_write_param(slots[m.field[i]], block, m.value[i]);
         }
       }
     }
@@ -431,7 +352,7 @@ class HotStrategy {
     }
   }
 
-  // ---- state----------------------------------------------------------------------------------
+  // ---- state ----------------------------------------------------------------------------------
 
   [[nodiscard]] bool failed() const noexcept { return error_.status != FASTMM_HOT_OK; }
   [[nodiscard]] const HotError& error() const noexcept { return error_; }

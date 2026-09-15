@@ -9,6 +9,10 @@
 Python strategies subclass fastmm.Strategy (see fastmm.strategy and docs/reference/python-api.md):
 
     result = fastmm.run_backtest(cfg, data="synthetic", strategy=MyStrategy, params={...})
+
+A strategy with @fastmm.hot methods also runs live (fastmm_live, pip install "fastmm-engine[live]"):
+
+    fastmm.run_live(MyStrategy, "configs/sim-local.toml")
 """
 
 from ._core import (
@@ -40,6 +44,7 @@ from ._hot.decl import HotCompileError, State, hot
 from ._slow.decl import every
 from ._slow.replay import ReplayResult, replay
 from .data import load_csv
+from .live import run_live
 from .results import FIXED_SCALE, sweep_frame, to_pandas
 from .strategy import (
     BUY,
@@ -96,6 +101,7 @@ __all__ = [
     "load_csv",
     "replay",
     "run_backtest",
+    "run_live",
     "strategies",
     "sweep",
     "sweep_frame",

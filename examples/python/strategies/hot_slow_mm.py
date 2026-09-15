@@ -79,6 +79,7 @@ def main() -> None:
     cfg = fastmm.BacktestConfig.from_toml(repo / "configs" / "backtest-example.toml")
     cfg.clear_params()
     cfg.duration_s = 120
+    cfg.fill_model = "matching"  # quotes rest in the synthetic book and trade against its flow
     with tempfile.TemporaryDirectory() as tmp:
         # --8<-- [start:run]
         cfg.journal_out = str(Path(tmp) / "hot_slow_mm.fmj")

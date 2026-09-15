@@ -3,7 +3,7 @@
 # bundled) and the extension exports PyInit__live and nothing else.
 # The repair step in .github/workflows/wheels.yml runs it.
 #
-#   scripts/wheels/check-live-wheel.sh <fastmm_live-*.whl>
+#   scripts/wheels/check-live-wheel.sh <fastmm_engine_live-*.whl>
 set -euo pipefail
 
 wheel="$1"

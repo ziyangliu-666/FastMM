@@ -1,22 +1,17 @@
 // SlowChannel (ADR-0013, sections 1 and 4): fills ring, recent window, snapshot, watchdog and
-// publish; the `_raw` twin of a published float; ParamSchedule's inbox; journal metadata.
+// publish; ParamSchedule's inbox.
 #include "fastmm/strategies/slow_channel.hpp"
 
-#include "fastmm/core/journal.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/sim/param_schedule.hpp"
-#include "fastmm/strategies/hot_strategy.hpp"
 
 #include <doctest/doctest.h>
 
 #include <array>
 #include <cstdint>
-#include <cstdlib>
-#include <filesystem>
-#include <limits>
-#include <string>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -38,25 +33,13 @@ SlowRecentRow row(std::int64_t ts) {
   return r;
 }
 
-}  // namespace
-
-TEST_CASE("slow.fixed_raw: a published float gets the twin fastmm/_hot/decl.py computes") {
-  // Decimal(repr(x)) * 1e8, halves away from zero.
-  CHECK(detail::hot_fixed_raw(0.002) == 200'000);
-  CHECK(detail::hot_fixed_raw(5.0) == 500'000'000);
-  CHECK(detail::hot_fixed_raw(0.1) == 10'000'000);
-  CHECK(detail::hot_fixed_raw(1.23e-5) == 1'230);
-  CHECK(detail::hot_fixed_raw(2.5e-8) == 3);
-  CHECK(detail::hot_fixed_raw(-5e-9) == -1);
-  CHECK(detail::hot_fixed_raw(4e-9) == 0);
-  CHECK(detail::hot_fixed_raw(1e-300) == 0);
-  CHECK(detail::hot_fixed_raw(-0.0) == 0);
-  CHECK(detail::hot_fixed_raw(123456.78901234) == 12'345'678'901'234);
-  CHECK(detail::hot_fixed_raw(1e10) == 1'000'000'000'000'000'000);
-  CHECK(detail::hot_fixed_raw(9.3e10) == std::numeric_limits<std::int64_t>::max());
-  CHECK(detail::hot_fixed_raw(-9.3e10) == std::numeric_limits<std::int64_t>::min());
-  CHECK(detail::hot_fixed_raw(std::numeric_limits<double>::infinity()) == 0);
+InstrumentId instrument(std::uint32_t k) {
+  InstrumentId id{};
+  id.value = k;
+  return id;
 }
+
+}  // namespace
 
 TEST_CASE("slow.fills: numbered in order, and a full ring records FillsOverflow") {
   SlowChannel ch(small(4, 8));
@@ -79,9 +62,7 @@ TEST_CASE("slow.fills: numbered in order, and a full ring records FillsOverflow"
 
 TEST_CASE("slow.recent: the newest rows, oldest first, with the rows that left the window") {
   SlowChannel ch(small(4, 8));
-  const InstrumentId id{};
-  InstrumentId inst = id;
-  inst.value = 1;
+  const InstrumentId inst = instrument(1);
   std::vector<SlowRecentRow> out(8);
   std::uint64_t cursor = 0;
 
@@ -104,9 +85,7 @@ TEST_CASE("slow.recent: the newest rows, oldest first, with the rows that left t
   CHECK(r.dropped == 2);  // rows 23 and 24
 
   std::uint64_t other = 0;
-  InstrumentId first = id;
-  first.value = 0;
-  CHECK(ch.recent(first, out, other).rows == 0);
+  CHECK(ch.recent(instrument(0), out, other).rows == 0);
   CHECK(ch.recent_written(inst) == 33);
 }
 
@@ -146,8 +125,7 @@ TEST_CASE("slow.publish: updates reach the ring numbered, and none after close")
   SlowChannel ch(small(4, 8));
   const std::array<std::uint16_t, 2> fields{1, 0};
   const std::array<std::int64_t, 2> values{7, -3};
-  InstrumentId inst{};
-  inst.value = 1;
+  const InstrumentId inst = instrument(1);
   CHECK(ch.publish(inst, fields, values));
   CHECK(ch.publish(ParamUpdateMsg::kAllInstruments, {}, {}));
   CHECK(ch.published() == 2);
@@ -195,26 +173,4 @@ TEST_CASE("slow.param_schedule: updates from another thread wait in the inbox") 
   CHECK(schedule.size() == 2);
   static_cast<void>(schedule.pop());
   CHECK(schedule.next_ts() == Timestamp{2'005});
-}
-
-TEST_CASE("slow.journal_metadata: written after the parameter table and read back") {
-  const std::filesystem::path path =
-      std::filesystem::temp_directory_path() /
-      ("fastmm_slow_metadata_" + std::to_string(::getpid()) + ".fmj");
-  {
-    MsgRing ring(1U << 16);
-    JournalSessionInfo info;
-    info.strategy = "py:Test";
-    info.config_toml = "[strategy]\nname = \"x\"\n";
-    info.metadata = "python.class=mod:Test\npython.fastmm=0.1.0\n";
-    JournalFileWriter w(ring, path.string(), info);
-    REQUIRE(w.ok());
-    w.stop();
-  }
-  JournalReader reader;
-  REQUIRE(reader.open(path.string()));
-  CHECK(reader.metadata() == "python.class=mod:Test\npython.fastmm=0.1.0\n");
-  CHECK(reader.config_text() == "[strategy]\nname = \"x\"\n");
-  CHECK(reader.header().metadata_bytes == 42);
-  std::filesystem::remove(path);
 }

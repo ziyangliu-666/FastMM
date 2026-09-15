@@ -170,7 +170,7 @@ TEST_CASE("hotpath.noalloc: parameter updates and the slow channel through HotSt
   const double qty = 0.002;
   std::memcpy(program.record.data(), &qty, sizeof qty);
   program.param_bytes = 16;
-  program.params.push_back(HotParamField{HotParamField::Kind::Double, 0, 8});
+  program.params.push_back(HotParamSlot{0, 8, ParamType::Double});
   HotStrategy strategy;
   REQUIRE(strategy.attach(program, table));
   SlowChannelConfig cc;

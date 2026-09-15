@@ -8,8 +8,8 @@
 | doctest | 2.5.3 | tests | unit/property tests |
 | Google Benchmark | 1.9.5 | bench | micro-benchmarks |
 | pybind11 | 3.1.0 | python | bindings |
-| OpenSSL | >= 3.0 (system); 3.5.8 linked statically in `fastmm-live` wheels | net | TLS, HMAC, SHA |
-| certifi | any | `fastmm-live` (Python) | last CA bundle before OpenSSL's built-in paths |
+| OpenSSL | >= 3.0 (system); 3.5.8 linked statically in `fastmm-engine-live` wheels | net | TLS, HMAC, SHA |
+| certifi | any | `fastmm-engine-live` (Python) | last CA bundle before OpenSSL's built-in paths |
 | zlib | system | net | linked by `fastmm_net` |
 | CPM.cmake | 0.43.1 | build | fetches and pins the dependencies above |
 

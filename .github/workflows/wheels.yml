@@ -1,6 +1,6 @@
 name: wheels
-# Builds the wheels (manylinux_2_28 x86_64): fastmm for CPython 3.9-3.14 and fastmm-live for
-# CPython 3.10-3.14, plus the fastmm sdist, on demand or for a version tag, and uploads them as
+# Builds the wheels (manylinux_2_28 x86_64): fastmm-engine for CPython 3.9-3.14 and fastmm-engine-live for
+# CPython 3.10-3.14, plus the fastmm-engine sdist, on demand or for a version tag, and uploads them as
 # artifacts. Publishing to PyPI is a separate, manual step: run the workflow by hand with "publish"
 # checked, from a repository that PyPI trusts (trusted publishing, environment "pypi"). Nothing is
 # published on tags or pushes.
@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # cibuildwheel copies the checkout, wheelhouse/ included, into the container: before the tests,
-      # fastmm is installed from /project/wheelhouse only. PyPI has an unrelated project named fastmm.
+      # fastmm-engine is installed from /project/wheelhouse only.
       - uses: actions/download-artifact@v4
         with: { name: wheels, path: wheelhouse }
       - uses: pypa/cibuildwheel@v4.2.1
@@ -61,12 +61,12 @@ jobs:
           CIBW_BEFORE_ALL: "bash {project}/scripts/wheels/build-openssl.sh /opt/fastmm-openssl"
           CIBW_ENVIRONMENT: "CPM_SOURCE_CACHE=/tmp/cpm OPENSSL_ROOT_DIR=/opt/fastmm-openssl FASTMM_OPENSSL_STATIC=ON"
           # auditwheel repair, then: no libssl or libcrypto needed or bundled, only PyInit__live exported.
-          CIBW_REPAIR_WHEEL_COMMAND: "auditwheel repair -w {dest_dir} {wheel} && bash {project}/scripts/wheels/check-live-wheel.sh {dest_dir}/fastmm_live-*.whl"
-          CIBW_BEFORE_TEST: "pip install numpy && pip install --no-index --find-links {project}/wheelhouse fastmm"
+          CIBW_REPAIR_WHEEL_COMMAND: "auditwheel repair -w {dest_dir} {wheel} && bash {project}/scripts/wheels/check-live-wheel.sh {dest_dir}/fastmm_engine_live-*.whl"
+          CIBW_BEFORE_TEST: "pip install numpy && pip install --no-index --find-links {project}/wheelhouse fastmm-engine"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python -m pytest {project}/python/live/tests -q"
       - uses: actions/upload-artifact@v4
-        with: { name: live-wheels, path: wheelhouse/fastmm_live-*.whl }
+        with: { name: live-wheels, path: wheelhouse/fastmm_engine_live-*.whl }
 
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish

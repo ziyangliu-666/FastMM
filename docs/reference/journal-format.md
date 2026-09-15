@@ -7,7 +7,7 @@ All integers are little-endian. Prices, quantities and notionals are raw fixed-p
 ## File layout
 
 ```text
-file   := header (256 B) | instrument[instrument_count] (128 B each) | config (config_bytes, padded to 64) | params (param_table_bytes, padded to 64) | metadata (metadata_bytes, padded to 64) | block* | trailer
+file   := header (256 B) | instrument[instrument_count] (128 B each) | config (config_bytes, padded to 64) | params (param_table_bytes, padded to 64) | meta (meta_bytes, padded to 64) | block* | trailer
 block  := block header (64 B) | message* (byte_len bytes)
 ```
 
@@ -42,8 +42,8 @@ block  := block header (64 B) | message* (byte_len bytes)
 | 132 | 4 | `param_count` | entries of the parameter table (v3) |
 | 136 | 4 | `param_table_bytes` | length of the parameter table; 0 = none (v3) |
 | 140 | 4 | `param_table_crc32c` | CRC32C of the parameter table (v3) |
-| 144 | 4 | `metadata_bytes` | length of the metadata text; 0 = none (v3) |
-| 148 | 4 | `metadata_crc32c` | CRC32C of the metadata text (v3) |
+| 144 | 4 | `meta_bytes` | length of the strategy metadata; 0 = none (v3) |
+| 148 | 4 | `meta_crc32c` | CRC32C of the strategy metadata (v3) |
 | 152 | 100 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
 
@@ -51,7 +51,7 @@ The configuration is `Config::effective_toml()`: the configuration after command
 
 The parameter table lists the strategy's parameters in schema order. Each entry is the type (`uint8`: 0 `int`, 1 `double`, 2 `bool`, 3 `decimal`, 4 `bps`, 5 `ms`), the name length (`uint8`) and the name; the table is zero-padded to a multiple of 64 bytes.
 
-The metadata is UTF-8 text with one `key=value` per line, zero-padded to a multiple of 64 bytes. Backtests of Python hot strategies write it and `fastmm.replay` reads it ([Replay](python-api.md#replay)); files without it have `metadata_bytes` 0.
+The strategy metadata is UTF-8 `key=value` lines, zero-padded to a multiple of 64 bytes. A Python strategy run live writes `class` (`module:qualname`), `hot_source_sha256`, `fastmm`, `numba`, `llvmlite` and `python`; `fastmm.inspect_journal(path)["strategy_meta"]` returns them as a dict.
 
 ## Block header
 

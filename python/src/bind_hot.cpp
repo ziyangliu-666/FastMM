@@ -3,6 +3,7 @@
 // strategy (HotStrategy, run with the GIL released, its slow methods at simulated times) and its
 // replay.
 #include "bind_common.hpp"
+#include "hot_program.hpp"
 #include "slow_channel_py.hpp"
 
 #include "fastmm/backtest/backtest_config.hpp"
@@ -125,98 +126,6 @@ py::dict book_layout() {
 
 #undef FASTMM_HOT_OFFSET
 
-fastmm_hot_fn fn_from(py::handle address) {
-  const auto a = address.cast<std::uintptr_t>();
-  if (a == 0) throw py::value_error("fastmm: a hot hook address is 0");
-  return reinterpret_cast<fastmm_hot_fn>(a);  // NOLINT(performance-no-int-to-ptr)
-}
-
-// The parameters of a hot strategy as a ParamSchema, for the journal's parameter table and for
-// matching ParamUpdate fields in replay. The descriptors do not parse or format values; the Python
-// package validates publishes.
-struct RuntimeSchema {
-  std::vector<std::string> names;
-  ParamSchema schema;
-};
-
-ParamType param_type(HotParamField::Kind kind) noexcept {
-  switch (kind) {
-    case HotParamField::Kind::Bool:
-      return ParamType::Bool;
-    case HotParamField::Kind::Int:
-      return ParamType::Int;
-    case HotParamField::Kind::Double:
-      break;
-  }
-  return ParamType::Double;
-}
-
-HotProgram program_from(const py::dict& program, RuntimeSchema& schema) {
-  HotProgram p;
-  for (const auto& [name, address] : program["hooks"].cast<py::dict>()) {
-    const auto n = name.cast<std::string>();
-    bool found = false;
-    for (std::size_t i = 0; i < p.hooks.size(); ++i) {
-      if (to_string(static_cast<HotHook>(i)) == n) {
-        p.hooks[i] = fn_from(address);
-        found = true;
-      }
-    }
-    if (!found) throw py::value_error("fastmm: '" + n + "' is not a hot hook");
-  }
-  for (const auto& t : program["timers"].cast<py::list>()) {
-    if (p.n_timers == kMaxHotTimers) {
-      throw py::value_error("fastmm: more than " + std::to_string(kMaxHotTimers) +
-                            " hot timer hooks");
-    }
-    const auto pair = t.cast<py::tuple>();
-    const auto period = pair[1].cast<std::int64_t>();
-    if (period <= 0) throw py::value_error("fastmm: a hot timer period must be positive");
-    p.timers[p.n_timers].fn = fn_from(pair[0]);
-    p.timers[p.n_timers].period = Duration{period};
-    ++p.n_timers;
-  }
-  const auto record = program["record"].cast<std::string>();
-  p.record.assign(record.begin(), record.end());
-  p.param_bytes = program["param_bytes"].cast<std::size_t>();
-  if (program.contains("book_depth")) p.book_depth = program["book_depth"].cast<bool>();
-  if (program.contains("params")) {
-    const auto params = program["params"].cast<py::list>();
-    if (params.size() > kMaxParams) {
-      throw py::value_error("fastmm: at most " + std::to_string(kMaxParams) +
-                            " parameters in a hot strategy");
-    }
-    schema.names.reserve(params.size());  // ParamDesc::name points into these strings
-    for (const auto& item : params) {
-      const auto t = item.cast<py::tuple>();
-      const auto kind = t[1].cast<int>();
-      if (kind < 0 || kind > static_cast<int>(HotParamField::Kind::Double))
-        throw py::value_error("fastmm: bad hot parameter kind");
-      HotParamField f;
-      f.kind = static_cast<HotParamField::Kind>(kind);
-      f.offset = t[2].cast<std::uint32_t>();
-      f.raw_offset = t[3].cast<std::uint32_t>();
-      p.params.push_back(f);
-      schema.names.push_back(t[0].cast<std::string>());
-    }
-    for (std::size_t i = 0; i < p.params.size(); ++i) {
-      ParamDesc d{};
-      d.name = schema.names[i].c_str();
-      d.type = param_type(p.params[i].kind);
-      d.doc = "";
-      d.parse = [](void*, std::string_view) -> std::optional<std::string> {
-        return std::string("a hot strategy's parameters change through ParamUpdate messages");
-      };
-      d.format = [](const void*) { return std::string(); };
-      d.get_raw = [](const void*) noexcept -> std::int64_t { return 0; };
-      d.set_raw = [](void*, std::int64_t) noexcept {};
-      static_cast<void>(schema.schema.add(d));
-    }
-  }
-  p.stop_on_error = true;
-  return p;
-}
-
 // fastmm._core's wrapper of a slow channel (slow_channel_py.hpp).
 struct CoreSlowChannel {
   std::shared_ptr<SlowChannel> channel;
@@ -261,11 +170,11 @@ Timestamp run_slow(void* ctx, Timestamp now) {
 py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
                            sim::MdSource* source,
                            const py::dict& program,
-                           const std::string& metadata,
+                           const std::string& strategy_meta,
                            const py::object& slow) {
-  RuntimeSchema schema;
-  const HotProgram p = program_from(program, schema);
-  bt::BacktestSession session(cfg, source, &schema.schema, metadata);
+  const HotProgram p = py_hot::program_from(program, true);
+  const HotParamTable table(py_hot::param_fields_from(program), p.param_bytes);
+  bt::BacktestSession session(cfg, source, &table.schema(), strategy_meta);
   std::unique_ptr<IEngineRunner> runner =
       session.backend().template make_runner<HotStrategy>(session.deps());
   auto* er = static_cast<EngineRunner<HotSimEngine, HotStrategy>*>(runner.get());
@@ -378,7 +287,10 @@ void bind_hot(py::module_& m) {
 
   m.def(
       "_hot_fixed_raw",
-      [](double x) { return detail::hot_fixed_raw(x); },
+      [](double x) {
+        std::int64_t raw = 0;
+        return hot_fixed_raw(x, raw) ? raw : std::int64_t{0};
+      },
       py::arg("x"),
       "Internal (tests): the `_raw` twin the engine computes for a published float.");
 
@@ -418,15 +330,14 @@ void bind_hot(py::module_& m) {
          bool verify,
          bool param_updates) {
         const std::string p = fspath(path);
-        RuntimeSchema schema;
-        HotProgram hot = program_from(program, schema);
-        hot.stop_on_error = false;  // a replay drains the journal
+        const HotProgram hot = py_hot::program_from(program, false);  // a replay drains the journal
+        const HotParamTable table(py_hot::param_fields_from(program), hot.param_bytes);
         bt::ReplayOptions opt;
         opt.verify = verify;
         opt.param_updates = param_updates;
         bt::ReplayStrategy strategy;
         strategy.name = name;
-        strategy.schema = &schema.schema;
+        strategy.schema = &table.schema();
         strategy.make = [&hot](RunnerDeps& deps) -> std::unique_ptr<IEngineRunner> {
           auto* backend = static_cast<sim::ReplayBackend*>(deps.backend);
           std::unique_ptr<IEngineRunner> r = backend->template make_runner<HotStrategy>(deps);

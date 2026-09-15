@@ -27,7 +27,7 @@ RESERVED_NAMES = frozenset({"publish", "inst"})
 CTX_METHODS = frozenset({"quote", "quote_raw", "bid", "ask", "bid_raw", "ask_raw", "clear", "pull",
                          "uncross", "keep_passive", "fail"})
 
-NUMBA_MISSING = 'fastmm: hot hooks need numba; install it with: pip install "fastmm[hot]"'
+NUMBA_MISSING = 'fastmm: hot hooks need numba; install it with: pip install "fastmm-engine[hot]"'
 
 _UNIT_NS = {
     "ns": 1,
@@ -166,16 +166,6 @@ class HotSpec:
                 out.append(mark.period_ns)
         return out
 
-    def param_fields(self) -> List[Tuple[str, int, int, int]]:
-        """(name, kind, offset, raw offset) per parameter in declaration order: the fields of a
-        ParamUpdate. kind: 0 bool, 1 int, 2 float (with its `_raw` twin)."""
-        dt, _ = self.record_dtype()
-        out: List[Tuple[str, int, int, int]] = []
-        for name, p in self.params.items():
-            kind = 0 if p.type is bool else 1 if p.type is int else 2
-            raw_offset = dt.fields[name + "_raw"][1] if kind == 2 else 0
-            out.append((name, kind, dt.fields[name][1], raw_offset))
-        return out
 
     def fields(self) -> List[Tuple[str, str]]:
         """The `self` record: parameters (float ones with a `_raw` int64 twin), then State."""

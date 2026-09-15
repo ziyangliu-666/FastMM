@@ -170,7 +170,7 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 
 ## Hot hooks
 
-A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs `pip install "fastmm[hot]"` (numba 0.61 to 0.67, CPython 3.10 or later). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
+A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs `pip install "fastmm-engine[hot]"` (numba 0.61 to 0.67, CPython 3.10 or later). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
 
 ### Declarations
 
@@ -194,7 +194,7 @@ Every hot hook takes `(self, ctx, book)` and runs once per instrument:
 
 `self` holds the instrument's parameters and `State` fields as attributes. A float parameter also has `self.<name>_raw`, its value as a 1e-8 fixed-point int64 (nearest). The engine copies the parameters into `self` before every call, so an assignment to a parameter, also through an alias such as `t = self`, is gone at the next call.
 
-Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook other than `on_start` and `on_stop` as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm[hot]"`.
+Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook other than `on_start` and `on_stop` as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm-engine[hot]"`.
 
 ### ctx
 
@@ -383,7 +383,7 @@ A slow method that raises, or a full fills ring, ends the run after that event a
 
 `fastmm.replay(journal, MyMM, verify=True, config=None, params=None, param_updates=True)` replays a journal written by a backtest with `config.journal_out`. The engine consumes the recorded inputs, parameter updates included, with `MyMM`'s hot hooks; slow methods do not run. The parameters start at the recorded values, `max_param_age_ms` is the recorded one, and the configuration is the one the journal embeds unless `config` is given. With `verify=True` every sent message is compared with the recording.
 
-The journal records the class as `module:qualname`, a SHA-256 over the hot hooks' source, the `self` layout and the `numba.njit` functions the hooks call, and the fastmm and numba versions. A difference in any of these, `params`, or `param_updates=False` makes the replay a what-if run: `what_if` is `True` and `what_if_reasons` lists the differences.
+A backtest journal's `strategy_meta` holds the keys a live session writes ([Live sessions](#live-sessions)) and also `max_param_age_ms` and `param.<name>` for each starting parameter; without `param.` keys (a live journal) the parameters come from the embedded configuration. A difference in `class`, `hot_source_sha256`, `fastmm` or `numba`, `params`, or `param_updates=False` makes the replay a what-if run: `what_if` is `True` and `what_if_reasons` lists the differences.
 
 | `ReplayResult` field | Meaning |
 |---|---|
@@ -392,3 +392,32 @@ The journal records the class as `module:qualname`, a SHA-256 over the hot hooks
 | `outbound_messages`, `recorded_messages`, `events` | message and inbound event counts |
 | `first_mismatch`, `expected_message`, `actual_message` | the first differing message (-1 when none) |
 | `what_if`, `what_if_reasons` | see above |
+
+## Live sessions
+
+`fastmm.run_live(strategy, config, params=None, *, duration=None, dry_run=False, journal=None, no_journal=False, status=None, no_status=False, log=None, record_raw=None, allow_inline_secrets=False)` runs a class with hot hooks against the venues in `config`, in this process, and returns the exit code ([Exit codes](cli.md#exit-codes)). It needs `pip install "fastmm-engine[live]"` (CPython 3.10 or later) and raises `ImportError` without it. Steps: [Run a Python strategy live](../how-to/strategies/python-live.md).
+
+| Argument | Meaning |
+|---|---|
+| `strategy` | a `fastmm.Strategy` subclass with `@fastmm.hot` methods, or an unused instance |
+| `config` | a `fastmm-live` configuration ([Configuration](configuration.md)) |
+| `params` | overrides on top of `[strategy.params]`, which apply only when `[strategy] name` is `py:<Class>`, `<module>:<Class>` or `<Class>` |
+| `duration` | seconds, or a string such as `"60s"`; `None` runs until SIGINT or SIGTERM |
+| the other keywords | the `fastmm-live` options of the same names ([Command lines](cli.md#fastmm-live)) |
+
+Before any venue is contacted, `run_live` applies the parameters, compiles the hooks without the Numba cache and calls each once on scratch data. It then runs the `fastmm-live` session with the GIL released: the same threads, log, status file, journal, kill switch, `on_kill` and exit codes.
+
+| Case | Result |
+|---|---|
+| a configuration, parameter or compilation error, or a class without hot hooks | a message on stderr; returns 3 |
+| a hook raises, calls `ctx.fail` or sets a bad float level | the kill switch trips with `StrategyError` and stderr names the hook; returns 6 with `on_kill = "exit"` |
+| `run_live` while a session runs in the process | `RuntimeError` |
+| `run_live` in a child forked while a session runs | `RuntimeError`; start children with the `spawn` or `forkserver` method |
+
+- SIGINT and SIGTERM stop the session. The session replaces the process's handlers while it runs and restores them when it returns, so `KeyboardInterrupt` is not raised.
+- Before the engine starts, every thread of the process, including numpy's BLAS threads, is limited to the CPUs not listed in `[engine] cpu` and `net_cpus`; threads started later inherit that. Without pinned CPUs nothing changes. Thread-count variables such as `OPENBLAS_NUM_THREADS` act only when set before numpy loads.
+- The journal's parameter table lists the class's parameters. `inspect_journal(path)["strategy_meta"]` returns `class` (`module:qualname`), `hot_source_sha256` (the source of the hot hooks and the `numba.njit` functions they call) and the `fastmm`, `numba`, `llvmlite` and `python` versions ([Journal format](journal-format.md)).
+
+### python -m fastmm run
+
+`python -m fastmm run <module>:<Class> --config <file> [options]` imports the class, with the current directory first on the module path, and exits with the code `run_live` returns. The options are the `fastmm-live` ones: `--param key=value` (repeatable), `--duration`, `--dry-run`, `--record-raw`, `--journal`, `--no-journal`, `--status`, `--no-status`, `--log` and `--allow-inline-secrets`. A bad command line exits with 2 and a class that cannot be imported with 3. Each of `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `MKL_NUM_THREADS` that is not set is set to 1, and the interpreter starts again once so that numpy sees them.

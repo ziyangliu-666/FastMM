@@ -5,10 +5,26 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Python strategies live (ADR-0013, section 3): `fastmm.run_live(StrategyClass, config, params=None,
+  ...)` and `python -m fastmm run module:Class --config file.toml` run a class with hot hooks in the
+  `fastmm-live` session from `fastmm_live._live`, with the GIL released, and return its exit code.
+  Hooks compile (exit code 3 on failure) and warm up before any venue is contacted; a failing hook
+  trips `StrategyError` (exit code 6 with `on_kill = "exit"`). The session moves every other thread
+  of the process off the CPUs pinned in `[engine]`, runs one per process (`RuntimeError`) and is
+  inert in a forked child. `fastmm_live._live.ParamChannel` is the session's parameter ring and
+  publisher. New exit code 7 (`kExitSlowTier`) and `LiveOptions::watchdog`, `strategy`
+  (`LiveStrategy`) and `confine_other_threads`; `run_live` restores the SIGINT/SIGTERM handlers it
+  replaced.
+- Journal format 3 gains optional strategy metadata (`meta_bytes`, `meta_crc32c`; `key=value` lines)
+  after the parameter table: a Python session records the class, a hash of the hot-hook source and
+  the package versions. `inspect_journal` returns it as `strategy_meta`. Journals without it read
+  unchanged.
+- `HotStrategy` applies `ParamUpdate` messages to its parameter blocks (`HotProgram::params`,
+  `strategies/hot_params.hpp`), and `ParamPublisher` takes a parameter schema built at run time.
 - Python hot hooks in backtests (ADR-0013, section 1): `@fastmm.hot` methods (`on_book`, `on_fill`,
   `on_quoting`, `on_connection`, and timer hooks with `every=`) compiled by Numba and called by the
   engine thread through the C ABI in `strategies/hot_abi.h`, with `fastmm.State`, `fastmm.fx` and
-  the `fastmm[hot]` extra. A failing hook trips the kill switch with the new
+  the `fastmm-engine[hot]` extra. A failing hook trips the kill switch with the new
   `KillReason::StrategyError`; `StrategyContext::trip_kill(reason)` is new.
 - Python slow methods in backtests (ADR-0013, sections 1 and 2): `on_start`, `on_stop` and
   `@fastmm.every(period, timeout=)` methods beside hot hooks, with `ctx.snapshot()`,
@@ -19,11 +35,12 @@ All notable changes are recorded here (Keep a Changelog format).
   hot strategy from a journal's parameter updates. The engine side is `strategies/slow_channel.hpp`
   (snapshot seqlock, recent rows, fills ring, watchdog state, parameter sink); `HotStrategy` applies
   per-instrument updates. `sim::SimDriver::set_slow_hooks`, `sim::ParamSchedule::threaded_sink`,
-  `bt::ReplayStrategy` and `BacktestConfig.max_param_age_ms` (Python) are new. The journal header
-  gains an optional metadata text after the parameter table (`metadata_bytes`, `metadata_crc32c`
-  from reserved bytes; version 3 unchanged).
+  `bt::ReplayStrategy` and `BacktestConfig.max_param_age_ms` (Python) are new. Backtests with
+  `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- The PyPI distributions are named `fastmm-engine` and `fastmm-engine-live`, because `fastmm` is
+  taken on PyPI. The import names `fastmm` and `fastmm_live` are unchanged.
 - Parameter updates (ADR-0013). `EventType::ParamUpdate` (26) carries up to 32 (field index, raw
   value) pairs. `ParamPublisher` validates an update off the engine thread and pushes it into a
   feed ring (false when the ring is full); `sim::ParamSchedule` delivers updates at simulated
@@ -127,8 +144,9 @@ All notable changes are recorded here (Keep a Changelog format).
   AvellanedaStoikov, OptionsMM and `sample_1000` hashes are unchanged.
 
 ### Added
-- **`fastmm-live` wheel (ADR-0013, section 5).** A second distribution from `python/live`, pinned to
-  the same `fastmm` version and installed by `pip install "fastmm[live]"` (CPython 3.10 or later).
+- **`fastmm-engine-live` wheel (ADR-0013, section 5).** A second distribution from `python/live`,
+  pinned to the same `fastmm-engine` version and installed by `pip install "fastmm-engine[live]"`
+  (CPython 3.10 or later).
   Its module `fastmm_live._live` links the network stack, the venue connectors and OpenSSL 3.5.8
   (`scripts/wheels/build-openssl.sh`, static, checksum-verified) and exports only `PyInit__live`.
   This release has `build_info()`, `ca_locations()` and `self_test()`, an in-memory TLS handshake.

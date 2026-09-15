@@ -11,9 +11,15 @@ from .. import _core
 
 if TYPE_CHECKING:  # pragma: no cover
     from .._core import BacktestConfig
-    from .._hot.decl import HotSpec
 
-_PARAM = "python.param."
+_PARAM = "param."
+# Strategy metadata keys (fastmm._hot.meta.session_meta) whose difference makes a what-if replay.
+_COMPARED = {
+    "class": "class",
+    "hot_source_sha256": "hot-hook source hash",
+    "fastmm": "fastmm version",
+    "numba": "numba version",
+}
 
 
 @dataclass(frozen=True)
@@ -35,47 +41,30 @@ class ReplayResult:
     what_if_reasons: List[str] = field(default_factory=list)
 
 
-def journal_metadata(cls: type, spec: "HotSpec", params: Mapping[str, str],
-                     max_param_age_ms: int) -> str:
-    """The journal metadata of a backtest of `cls`: class, hot source hash, versions, the effective
-    max_param_age_ms and the initial parameters."""
-    import numba
+def journal_meta(cls: type, params: Mapping[str, str], max_param_age_ms: int) -> str:
+    """The strategy metadata a backtest of `cls` records: fastmm._hot.meta.session_meta, the effective
+    max_param_age_ms and the initial parameters as `param.<name>`."""
+    from .._hot import meta
 
-    from .._hot import compiler
-
-    lines = [
-        f"python.class={cls.__module__}:{cls.__qualname__}",
-        f"python.hot_source={compiler.source_hash(spec)}",
-        f"python.fastmm={_core.__version__}",
-        f"python.numba={numba.__version__}",
-        f"python.max_param_age_ms={max_param_age_ms}",
-    ]
-    lines += [f"{_PARAM}{name}={value}" for name, value in params.items()]
-    return "\n".join(lines) + "\n"
-
-
-def parse_metadata(text: str) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            out[key] = value
-    return out
+    values = dict(meta.session_meta(cls))
+    values["max_param_age_ms"] = str(int(max_param_age_ms))
+    values.update({f"{_PARAM}{name}": value for name, value in params.items()})
+    return meta.format_meta(values)
 
 
 def replay(journal: Any, strategy: type, *, verify: bool = True,
            config: "Optional[BacktestConfig]" = None, params: Optional[Mapping[str, Any]] = None,
            param_updates: bool = True, hot_cache: bool = True) -> ReplayResult:
-    """Replay a journal recorded by a backtest of a Python hot strategy.
+    """Replay a journal recorded with a Python hot strategy.
 
     The engine consumes the journal's inputs, ParamUpdate messages included, with `strategy`'s hot
     hooks; slow methods do not run. `verify` compares every outbound message with the recording.
-    The parameters start at the values the journal records (`params` overrides them) and
-    max_param_age_ms is the recorded one. `config` defaults to the configuration the journal
-    embeds. A different class, hot-hook source, fastmm or numba version, `params` or
-    `param_updates=False` makes it a what-if replay: ReplayResult.what_if is True and the reasons
-    are listed."""
-    from .._hot import compiler
+    The parameters start at the values the journal records (a backtest journal), else at the
+    configuration's [strategy.params]; `params` overrides them. max_param_age_ms is the recorded one.
+    `config` defaults to the configuration the journal embeds. A different class, hot-hook source,
+    fastmm or numba version, `params` or `param_updates=False` makes it a what-if replay:
+    ReplayResult.what_if is True and the reasons are listed."""
+    from .._hot import compiler, meta
     from ..strategy import Strategy
 
     if not (isinstance(strategy, type) and issubclass(strategy, Strategy)):
@@ -84,52 +73,45 @@ def replay(journal: Any, strategy: type, *, verify: bool = True,
     if spec is None:
         raise TypeError(f"fastmm.replay: {strategy.__qualname__} has no @fastmm.hot hooks")
     path = os.fspath(journal)
-    meta = parse_metadata(_core.inspect_journal(path).get("metadata", ""))
+    recorded: Dict[str, str] = dict(_core.inspect_journal(path).get("strategy_meta", {}))
     reasons: List[str] = []
 
-    import numba
-
-    current = {
-        "python.class": f"{strategy.__module__}:{strategy.__qualname__}",
-        "python.hot_source": compiler.source_hash(spec),
-        "python.fastmm": _core.__version__,
-        "python.numba": numba.__version__,
-    }
-    if "python.class" not in meta:
+    current = meta.session_meta(strategy)
+    if "class" not in recorded:
         reasons.append("the journal records no Python strategy")
     else:
-        labels = {"python.class": "class", "python.hot_source": "hot-hook source hash",
-                  "python.fastmm": "fastmm version", "python.numba": "numba version"}
-        for key, label in labels.items():
-            if meta.get(key) != current[key]:
-                reasons.append(f"{label}: recorded {meta.get(key)}, replaying {current[key]}")
+        for key, label in _COMPARED.items():
+            if recorded.get(key) != current[key]:
+                reasons.append(f"{label}: recorded {recorded.get(key)}, replaying {current[key]}")
 
+    recorded_age = recorded.get("max_param_age_ms")
     if config is None:
         try:
             config = _core._journal_config(path)
         except RuntimeError as e:
             raise RuntimeError(f"{e}; pass config= to fastmm.replay") from None
-        if "python.max_param_age_ms" in meta:
-            config.max_param_age_ms = int(meta["python.max_param_age_ms"])
+        if recorded_age is not None:
+            config.max_param_age_ms = int(recorded_age)
     else:
         config = config.copy()
-        recorded_age = meta.get("python.max_param_age_ms")
         if recorded_age is not None and int(recorded_age) != config.max_param_age_ms:
             reasons.append(f"max_param_age_ms: recorded {recorded_age}, replaying "
                            f"{config.max_param_age_ms}")
 
     declared = strategy.params()
-    recorded = {k[len(_PARAM):]: v for k, v in meta.items() if k.startswith(_PARAM)}
+    stored = {k[len(_PARAM):]: v for k, v in recorded.items() if k.startswith(_PARAM)}
     values: Dict[str, Any] = {}
-    for name, value in recorded.items():
-        if name in declared:
-            values[name] = value
-        else:
-            reasons.append(f"recorded parameter '{name}' is not a parameter of "
-                           f"{strategy.__qualname__}")
-    for name in declared:
-        if meta and name not in recorded and "python.class" in meta:
-            reasons.append(f"parameter '{name}' is not in the recording")
+    if stored:
+        for name, value in stored.items():
+            if name in declared:
+                values[name] = value
+            else:
+                reasons.append(f"recorded parameter '{name}' is not a parameter of "
+                               f"{strategy.__qualname__}")
+        reasons.extend(f"parameter '{name}' is not in the recording"
+                       for name in declared if name not in stored)
+    else:  # a live journal: the parameters come from the embedded configuration
+        values = {k: v for k, v in config.params.items() if k in declared}
     instance = strategy()
     instance.configure(values)
     if params:

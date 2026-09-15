@@ -1,5 +1,6 @@
 #include "fastmm/live/session.hpp"
 
+#include "fastmm/config/env_subst.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/msg_ring.hpp"
@@ -11,6 +12,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/live/live_backend.hpp"
+#include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
@@ -42,14 +44,39 @@ extern "C" void on_signal(int sig) {
   g_signal = sig;
 }
 
+struct sigaction g_old_int {};
+struct sigaction g_old_term {};
+std::atomic<bool> g_handlers_installed{false};
+
 void install_signal_handlers() {
   // Each session starts without a pending stop: a process can run several sessions (tests).
   g_signal = 0;
   struct sigaction sa {};
   sa.sa_handler = &on_signal;
   sigemptyset(&sa.sa_mask);
-  sigaction(SIGINT, &sa, nullptr);
-  sigaction(SIGTERM, &sa, nullptr);
+  sigaction(SIGINT, &sa, &g_old_int);
+  sigaction(SIGTERM, &sa, &g_old_term);
+  g_handlers_installed.store(true);
+}
+
+// Restores the previous handlers when the session returns (a Python process gets its
+// KeyboardInterrupt back).
+struct SignalGuard {
+  SignalGuard() { install_signal_handlers(); }
+  SignalGuard(const SignalGuard&) = delete;
+  SignalGuard& operator=(const SignalGuard&) = delete;
+  SignalGuard(SignalGuard&&) = delete;
+  SignalGuard& operator=(SignalGuard&&) = delete;
+  ~SignalGuard() { restore_signal_handlers(); }
+};
+
+std::string cpu_list(const std::vector<int>& cpus) {
+  std::string s;
+  for (const int c : cpus) {
+    if (!s.empty()) s += ',';
+    s += std::to_string(c);
+  }
+  return s;
 }
 
 std::size_t ring_size(std::size_t bytes) {
@@ -200,8 +227,70 @@ const char* short_state(venues::ChannelState s) {
 
 }  // namespace
 
+void restore_signal_handlers() noexcept {
+  if (!g_handlers_installed.exchange(false)) return;
+  sigaction(SIGINT, &g_old_int, nullptr);
+  sigaction(SIGTERM, &g_old_term, nullptr);
+}
+
+bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
+  for (VenueSection& v : cfg.venues) {
+    auto resolve = [&](const char* key, std::string& value, bool secret) {
+      if (!has_env_reference(value)) return true;
+      auto r = substitute_env(value);
+      if (r) {
+        value = *r;
+        return true;
+      }
+      if (secret && dry_run) {
+        value.clear();
+        return true;
+      }
+      if (secret) {
+        std::fprintf(
+            stderr,
+            "%s: venue '%s' needs API keys: environment variable %s is not set "
+            "(venues.%s.%s). Export it, or run with --dry-run for public market data only.\n",
+            prog,
+            v.name.c_str(),
+            r.error().c_str(),
+            v.name.c_str(),
+            key);
+      } else {
+        std::fprintf(stderr,
+                     "%s: venues.%s.%s: environment variable %s is not set\n",
+                     prog,
+                     v.name.c_str(),
+                     key,
+                     r.error().c_str());
+      }
+      return false;
+    };
+    if (!resolve("ws_url", v.ws_url, false) || !resolve("ws_api_url", v.ws_api_url, false) ||
+        !resolve("rest_url", v.rest_url, false) || !resolve("ca_file", v.ca_file, false) ||
+        !resolve("api_key", v.api_key, true) || !resolve("api_secret", v.api_secret, true))
+      return false;
+    for (auto& [k, val] : v.extra) {
+      if (!resolve(k.c_str(), val, false)) return false;
+    }
+    if (dry_run) {
+      v.api_key.clear();
+      v.api_secret.clear();
+    } else if (v.api_key.empty() || v.api_secret.empty()) {
+      std::fprintf(stderr,
+                   "%s: venue '%s' has no api_key/api_secret. Set them via ${ENV} references, or "
+                   "run with --dry-run for public market data only.\n",
+                   prog,
+                   v.name.c_str());
+      return false;
+    }
+  }
+  return true;
+}
+
 int run_live(const Config& cfg, const LiveOptions& opts) {
   const char* prog = opts.program.c_str();
+  const LiveStrategy* const custom = opts.strategy;
   // ---- instruments, venues, reference data (main thread, blocking) ---------------------
   InstrumentTable instruments;
   try {
@@ -214,8 +303,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     std::fprintf(stderr, "%s: no [[instruments]] configured\n", prog);
     return kExitConfig;
   }
-  const StrategyEntry* strategy = StrategyRegistry::instance().find(cfg.strategy.name);
-  if (strategy == nullptr || !strategy->supports(TransportKind::Live)) {
+  const StrategyEntry* const strategy =
+      custom != nullptr ? nullptr : StrategyRegistry::instance().find(cfg.strategy.name);
+  if (custom != nullptr && !custom->make) {
+    std::fprintf(
+        stderr, "%s: the strategy '%s' has no runner factory\n", prog, custom->name.c_str());
+    return kExitConfig;
+  }
+  if (custom == nullptr && (strategy == nullptr || !strategy->supports(TransportKind::Live))) {
     std::fprintf(stderr, "%s: unknown strategy '%s' (available:", prog, cfg.strategy.name.c_str());
     for (const StrategyEntry& e : list_strategies()) {
       if (e.supports(TransportKind::Live))
@@ -224,10 +319,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     std::fprintf(stderr, ")\n");
     return kExitConfig;
   }
+  const std::string_view strategy_name =
+      custom != nullptr ? std::string_view(custom->name) : strategy->name;
+  const ParamSchema* const param_schema = custom != nullptr ? custom->params : strategy->schema;
   // Parameter names are checked before any venue is contacted; values are checked when the engine
-  // is built.
+  // is built. A LiveStrategy checks its own.
   for (const auto& [key, value] : cfg.strategy.params) {
-    if (strategy->schema->find(key) == nullptr) {
+    if (custom == nullptr && strategy->schema->find(key) == nullptr) {
       std::fprintf(stderr,
                    "%s: %.*s: unknown parameter '%s' (see --list-strategies)\n",
                    prog,
@@ -282,6 +380,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   RingFeed feed;
   MsgRing control_ring(1U << 16);
   static_cast<void>(feed.add_ring(&control_ring));
+  if (custom != nullptr) {
+    for (MsgRing* const ring : custom->inputs) {
+      if (!feed.add_ring(ring)) {
+        std::fprintf(stderr, "%s: too many engine input rings\n", prog);
+        return kExitConfig;
+      }
+    }
+  }
   Wake wake_ctx{&slots};
   net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
   static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, net_backend));  // validated
@@ -367,14 +473,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     info.tsc = clock.calibration();
     info.config_hash = Config::text_hash(effective);
     info.rng_seed = deps.engine.rng_seed;
-    info.strategy = strategy->name;
+    info.strategy = strategy_name;
     info.instruments = &instruments;
     info.has_session = true;
     info.session_epoch = deps.engine.session_epoch;
     info.quoting_enabled = deps.engine.quoting_enabled;
     info.replace_venues = replace_venues;
     info.config_toml = effective;
-    info.params = strategy->schema;
+    info.params = param_schema;
+    if (custom != nullptr) info.strategy_meta = custom->meta;
     journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info);
     if (!journal->ok()) {
       std::fprintf(stderr, "%s: cannot open journal %s\n", prog, path.c_str());
@@ -388,19 +495,36 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.backend = &backend;
   std::unique_ptr<IEngineRunner> runner;
   try {
-    runner = StrategyRegistry::instance().make(strategy->name, TransportKind::Live, deps);
+    runner = custom != nullptr
+                 ? custom->make(deps)
+                 : StrategyRegistry::instance().make(strategy->name, TransportKind::Live, deps);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return kExitConfig;
   }
   if (runner == nullptr) {
-    std::fprintf(
-        stderr, "%s: cannot build a live runner for '%s'\n", prog, cfg.strategy.name.c_str());
+    std::fprintf(stderr,
+                 "%s: cannot build a live runner for '%s'\n",
+                 prog,
+                 std::string(strategy_name).c_str());
     return kExitConfig;
   }
 
   // ---- threads --------------------------------------------------------------------------
-  install_signal_handlers();
+  if (opts.confine_other_threads) {
+    std::vector<int> reserved{cfg.engine.cpu};
+    reserved.insert(reserved.end(), cfg.engine.net_cpus.begin(), cfg.engine.net_cpus.end());
+    const ConfineResult confined = confine_threads(reserved);
+    if (!confined.error.empty()) {
+      FASTMM_LOG_WARN("{}", std::string_view(confined.error));
+    } else if (!confined.cpus.empty()) {
+      const std::string cpus = cpu_list(confined.cpus);
+      FASTMM_LOG_INFO("thread affinity: {} thread(s) of this process moved to CPUs {}",
+                      confined.threads,
+                      std::string_view(cpus));
+    }
+  }
+  const SignalGuard signals;
   if (journal) journal->start();
   for (std::size_t i = 0; i < slots.size(); ++i) {
     const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
@@ -411,7 +535,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   FASTMM_LOG_INFO(
       "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={} net={}",
       deps.engine.session_id,
-      strategy->name,
+      strategy_name,
       slots.size(),
       instruments.size(),
       opts.dry_run,
@@ -436,7 +560,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   snap.started_ns = wall_now().ns;
   snap.dry_run = opts.dry_run ? 1 : 0;
   set_status_name(snap.engine_name, cfg.engine.name);
-  set_status_name(snap.strategy, strategy->name);
+  set_status_name(snap.strategy, strategy_name);
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(slots.size(), kStatusMaxVenues));
   const auto publish_status = [&](StatusRunState state, const EngineLiveStats& live) {
@@ -503,8 +627,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   std::int64_t next_recalibration = start + recalibrate_ns;
   if (recalibrate_ns > 0 && !last_tsc.use_tsc)
     FASTMM_LOG_INFO("no invariant TSC: the clock uses clock_gettime; TSC recalibration is off");
-  // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine
+  // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog
   int reason = 0;
+  std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
   const bool exit_on_kill = cfg.engine.on_kill != "stay";
   KillReason engine_kill = KillReason::None;  // the unrequested global kill, once seen
@@ -519,6 +644,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       if (s->order_overflows.load(std::memory_order_relaxed) != 0 && reason == 0) {
         FASTMM_LOG_ERROR("order ring overflow on {}: tripping the kill switch", s->venue->name());
         reason = 3;
+      }
+    }
+    if (reason == 0 && opts.watchdog) {
+      watchdog_cause = opts.watchdog();
+      if (!watchdog_cause.empty()) {
+        FASTMM_LOG_ERROR("fastmm-live: {}", std::string_view(watchdog_cause));
+        reason = 5;
       }
     }
     // The engine publishes its kill-switch state as soon as a flag changes.
@@ -602,6 +734,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   if (reason == 4) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (kill switch: {}; [engine] on_kill = \"exit\")",
                      engine_kill);
+  } else if (reason == 5) {
+    FASTMM_LOG_ERROR("fastmm-live: shutting down (slow tier failed)");
   } else {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                     reason == 1   ? std::string_view("duration elapsed")
@@ -622,6 +756,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   sleep_for(milliseconds(200));
   runner->stop();
   engine_thread.join();
+  if (custom != nullptr && custom->finished) custom->finished(*runner);
   for (auto& s : slots) {
     s->stop.store(true);
     s->reactor->wake();
@@ -689,6 +824,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   publish_status(StatusRunState::Stopped, final_live);
   const int rc = !cancel_ok    ? kExitRuntime
                  : reason == 4 ? kExitKilled
+                 : reason == 5 ? kExitSlowTier
                  : reason == 3 ? kExitRuntime
                                : kExitOk;
   FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);

@@ -411,9 +411,14 @@ class Strategy:
         checks and effect as ctx.publish(). False when no session of this instance runs or the
         session did not take the update."""
         publisher = self.__dict__.get("_fastmm_publisher")
-        if publisher is None:
+        if publisher is not None:
+            return bool(publisher.publish(inst, values))
+        channel = self.__dict__.get("_fastmm_live_params")  # fastmm.run_live without slow methods
+        if channel is None:
             return False
-        return bool(publisher.publish(inst, values))
+        if inst is not None and not isinstance(inst, int):
+            raise ValueError(f"instrument must be an int id in a live session, got {inst!r}")
+        return bool(channel.publish(values, inst))
 
 
 def _accepts(fn: Any, nargs: int) -> bool:
@@ -552,7 +557,7 @@ def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
     if config.journal_out:
         from ._slow import replay as slow_replay
 
-        metadata = slow_replay.journal_metadata(type(instance), spec, param_values, age)
+        metadata = slow_replay.journal_meta(type(instance), param_values, age)
 
     slow: Optional[Dict[str, Any]] = None
     runner = None

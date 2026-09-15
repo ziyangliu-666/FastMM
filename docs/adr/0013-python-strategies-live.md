@@ -100,11 +100,11 @@ A strategy without hot hooks does not run live. The ADR-0012 adapter stays in th
 
 ### 5. Packaging
 
-- `fastmm` stays the backtest wheel without network code.
-- `fastmm-live` is a second wheel from the same CI run, pinned to `fastmm==` the same version, with the network stack and OpenSSL 3 linked statically with hidden symbols. Its extension module exchanges only Python objects with `fastmm._core` and binds no C++ type that `_core` binds. `pip install "fastmm[live]"` installs it.
+- `fastmm` stays the backtest package without network code. Its PyPI distribution is `fastmm-engine`, because `fastmm` is taken on PyPI; the import name is `fastmm`.
+- `fastmm-engine-live` (import `fastmm_live`) is a second wheel from the same CI run, pinned to `fastmm-engine==` the same version, with the network stack and OpenSSL 3 linked statically with hidden symbols. Its extension module exchanges only Python objects with `fastmm._core` and binds no C++ type that `_core` binds. `pip install "fastmm-engine[live]"` installs it.
 - TLS finds CA certificates from `SSL_CERT_FILE` and `SSL_CERT_DIR`, then `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`, then `certifi`.
-- `fastmm[hot]` adds `numba` and `llvmlite` within a tested version range; a CI job runs against the newest numba. Hot hooks raise a clear error when numba is missing.
-- `fastmm[hot]` and `fastmm-live` need CPython 3.10 or later. Wheels are built for 3.9–3.14 with a cibuildwheel release that supports 3.14.
+- `fastmm-engine[hot]` adds `numba` and `llvmlite` within a tested version range; a CI job runs against the newest numba. Hot hooks raise a clear error when numba is missing.
+- `fastmm-engine[hot]` and `fastmm-engine-live` need CPython 3.10 or later. Wheels are built for 3.9–3.14 with a cibuildwheel release that supports 3.14.
 
 ## Consequences
 

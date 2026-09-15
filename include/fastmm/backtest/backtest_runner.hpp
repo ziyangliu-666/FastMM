@@ -26,11 +26,11 @@ namespace fastmm::bt {
 class BacktestSession {
  public:
   // `schema`: the strategy's parameters, recorded in cfg.journal_out (may be null).
-  // `journal_metadata`: `key=value` lines recorded in cfg.journal_out (Python strategies).
+  // `strategy_meta`: `key=value` lines recorded in cfg.journal_out (Python strategies).
   BacktestSession(const BacktestConfig& cfg,
                   MdSource* source,
                   const ParamSchema* schema = nullptr,
-                  std::string_view journal_metadata = {});
+                  std::string_view strategy_meta = {});
   ~BacktestSession();
   BacktestSession(const BacktestSession&) = delete;
   BacktestSession& operator=(const BacktestSession&) = delete;

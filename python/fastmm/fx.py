@@ -11,7 +11,7 @@ Raw values use the 1e-8 scale of ``Price::raw`` and ``Qty::raw``; a Ratio raw va
     to_raw(x)                 float to raw, nearest (half away from zero)
     to_float(raw)             raw to float
 
-Needs numba (``pip install "fastmm[hot]"``).
+Needs numba (``pip install "fastmm-engine[hot]"``).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ try:
     from numba import types
     from numba.extending import intrinsic, overload
 except ImportError as e:  # pragma: no cover
-    raise ImportError('fastmm.fx needs numba; install it with: pip install "fastmm[hot]"') from e
+    raise ImportError('fastmm.fx needs numba; install it with: pip install "fastmm-engine[hot]"') from e
 
 __all__ = [
     "BUY",

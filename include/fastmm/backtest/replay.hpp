@@ -68,9 +68,9 @@ struct JournalInfo {
   std::uint16_t session_epoch = 0;
   bool quoting_enabled = true;
   std::uint64_t replace_venues = 0;
-  bool engine_time = false;  // the events carry the engine clock
-  std::string config_toml;   // embedded effective configuration (empty: none)
-  std::string metadata;      // `key=value` lines about the strategy (empty: none)
+  bool engine_time = false;   // the events carry the engine clock
+  std::string config_toml;    // embedded effective configuration (empty: none)
+  std::string strategy_meta;  // `key=value` lines about the strategy (empty: none)
 };
 
 // A strategy outside the registry (a Python hot strategy): the name for the result, the parameter

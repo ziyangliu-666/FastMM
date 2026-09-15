@@ -59,9 +59,10 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   h.version = kJournalVersion;
   const std::size_t config_bytes = info.config_toml.size();
   const std::string params = param_table(info.params);
-  h.header_bytes = static_cast<std::uint32_t>(sizeof(JournalFileHeader) +
-                                              ninst * sizeof(Instrument) + pad64(config_bytes) +
-                                              pad64(params.size()) + pad64(info.metadata.size()));
+  const std::size_t meta_bytes = info.strategy_meta.size();
+  h.header_bytes =
+      static_cast<std::uint32_t>(sizeof(JournalFileHeader) + ninst * sizeof(Instrument) +
+                                 pad64(config_bytes) + pad64(params.size()) + pad64(meta_bytes));
   h.instrument_count = ninst;
   h.session_id = info.session_id;
   h.start_ts_ns = info.start_ts.ns;
@@ -86,8 +87,8 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   h.param_count = info.params == nullptr ? 0 : static_cast<std::uint32_t>(info.params->size());
   h.param_table_bytes = static_cast<std::uint32_t>(params.size());
   h.param_table_crc32c = crc32c(params.data(), params.size());
-  h.metadata_bytes = static_cast<std::uint32_t>(info.metadata.size());
-  h.metadata_crc32c = crc32c(info.metadata.data(), info.metadata.size());
+  h.meta_bytes = static_cast<std::uint32_t>(meta_bytes);
+  h.meta_crc32c = crc32c(info.strategy_meta.data(), meta_bytes);
   h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
   if (!ensure_mapped(h.header_bytes)) return;
   append(&h, sizeof h);
@@ -100,9 +101,9 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
     append(params.data(), params.size());
     append(kZeros, pad64(params.size()) - params.size());
   }
-  if (!info.metadata.empty()) {
-    append(info.metadata.data(), info.metadata.size());
-    append(kZeros, pad64(info.metadata.size()) - info.metadata.size());
+  if (meta_bytes > 0) {
+    append(info.strategy_meta.data(), meta_bytes);
+    append(kZeros, pad64(meta_bytes) - meta_bytes);
   }
   last_sync_ = last_flush_ = steady_now();
 }
@@ -297,10 +298,10 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
       sizeof(JournalFileHeader) + std::size_t{header_->instrument_count} * sizeof(Instrument);
   const std::size_t config_bytes = header_->version >= 2 ? header_->config_bytes : 0;
   const std::size_t param_bytes = header_->version >= 3 ? header_->param_table_bytes : 0;
-  const std::size_t metadata_bytes = header_->version >= 3 ? header_->metadata_bytes : 0;
+  const std::size_t meta_bytes = header_->version >= 3 ? header_->meta_bytes : 0;
   if (header_->header_bytes > len || header_->header_bytes < sizeof(JournalFileHeader) ||
       header_->header_bytes !=
-          tables + pad64(config_bytes) + pad64(param_bytes) + pad64(metadata_bytes)) {
+          tables + pad64(config_bytes) + pad64(param_bytes) + pad64(meta_bytes)) {
     return fail(JournalError::HeaderCorrupt);
   }
   instruments_ = reinterpret_cast<const Instrument*>(map_ + sizeof(JournalFileHeader));
@@ -331,13 +332,12 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
     if (off != param_bytes) return fail(JournalError::HeaderCorrupt);
     param_count_ = header_->param_count;
   }
-  metadata_ = {};
-  if (metadata_bytes > 0) {
+  meta_ = {};
+  if (meta_bytes > 0) {
     const auto* text =
         reinterpret_cast<const char*>(map_ + tables + pad64(config_bytes) + pad64(param_bytes));
-    if (crc32c(text, metadata_bytes) != header_->metadata_crc32c)
-      return fail(JournalError::HeaderCorrupt);
-    metadata_ = std::string_view(text, metadata_bytes);
+    if (crc32c(text, meta_bytes) != header_->meta_crc32c) return fail(JournalError::HeaderCorrupt);
+    meta_ = std::string_view(text, meta_bytes);
   }
   first_block_ = header_->header_bytes;
   validate();

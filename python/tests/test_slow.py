@@ -403,8 +403,9 @@ def test_a_hot_and_slow_journal_replays_to_the_same_hash(example_config, tmp_pat
     cfg.journal_out = str(tmp_path / "hot_slow.fmj")
     r = fastmm.run_backtest(cfg, data="synthetic", strategy=HotSlowMM, slow_delay_ms=5)
     assert r.outbound_messages > 0
-    meta = fastmm.inspect_journal(cfg.journal_out)["metadata"]
-    assert "python.class=hot_slow_mm:HotSlowMM\n" in meta and "python.param.quote_qty=0.001" in meta
+    meta = fastmm.inspect_journal(cfg.journal_out)["strategy_meta"]
+    assert meta["class"] == "hot_slow_mm:HotSlowMM" and meta["param.quote_qty"] == "0.001"
+    assert meta["max_param_age_ms"] == "3000" and len(meta["hot_source_sha256"]) == 64
 
     same = fastmm.replay(cfg.journal_out, HotSlowMM, verify=True)
     assert same.ok and not same.what_if, same

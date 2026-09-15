@@ -16,9 +16,9 @@
 //
 // The snapshot is a seqlock over a header and one SlowInstrumentState per instrument. The recent
 // rows of an instrument are a window that keeps the newest `recent_rows` rows in a ring of twice
-// that size; a reader copies the window and discards rows the writer overwrote during the copy. The fills ring has one producer (the
-// engine) and one consumer (the slow tier); a fill that does not fit records
-// SlowFailure::FillsOverflow.
+// that size; a reader copies the window and discards rows the writer overwrote during the copy. The
+// fills ring has one producer (the engine) and one consumer (the slow tier); a fill that does not
+// fit records SlowFailure::FillsOverflow.
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/messages.hpp"
@@ -62,9 +62,8 @@ struct SlowInstrumentState {
   std::int64_t fees_raw;
   std::int64_t bid_open_qty_raw;  // unfilled quantity of open orders, quotes included
   std::int64_t ask_open_qty_raw;
-  std::int64_t
-      param_ts_ns;          // engine time the last ParamUpdate for the instrument applied (0: none)
-  std::uint64_t param_seq;  // that update's publish_seq
+  std::int64_t param_ts_ns;  // engine time of the instrument's last ParamUpdate (0: none)
+  std::uint64_t param_seq;   // that update's publish_seq
   std::uint32_t fills;
   std::uint8_t book_valid;
   std::uint8_t quoting;  // quoting is enabled and the instrument's venue is not killed
@@ -77,9 +76,8 @@ struct SlowSnapshotHeader {
   std::int64_t ts_ns;     // engine time of the snapshot (0: none published yet)
   std::uint64_t version;  // snapshots published
   std::uint32_t instruments;
-  std::uint8_t
-      quoting_enabled;  // the engine's global quoting flag (false while parameters are stale)
-  std::uint8_t killed;  // the global kill switch
+  std::uint8_t quoting_enabled;  // global quoting flag (false while parameters are stale)
+  std::uint8_t killed;           // the global kill switch
   std::uint8_t pad_[10];
 };
 static_assert(sizeof(SlowSnapshotHeader) == 32 && std::is_trivially_copyable_v<SlowSnapshotHeader>);
