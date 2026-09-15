@@ -1,18 +1,21 @@
-"""FastMM - ultra-low-latency market-making engine (Python research bindings).
+"""FastMM - market-making engine (Python bindings; docs/python.md).
+
+A strategy with @fastmm.hot methods (compiled with Numba) runs in backtests, replays and live:
 
     import fastmm
+
+    class MyMM(fastmm.Strategy):
+        @fastmm.hot
+        def on_book(self, ctx, book):
+            ...
+
     cfg = fastmm.BacktestConfig.from_toml("configs/backtest-example.toml")
-    result = fastmm.run_backtest(cfg, data="synthetic")
+    result = fastmm.run_backtest(cfg, data="synthetic", strategy=MyMM)
     print(result.summary_table())
     frames = result.to_pandas()          # fills / equity / orders DataFrames
+    fastmm.run_live(MyMM, "configs/sim-local.toml")    # needs fastmm-engine-live
 
-Python strategies subclass fastmm.Strategy (see fastmm.strategy and docs/reference/python-api.md):
-
-    result = fastmm.run_backtest(cfg, data="synthetic", strategy=MyStrategy, params={...})
-
-A strategy with @fastmm.hot methods also runs live (fastmm_live, pip install "fastmm-engine[live]"):
-
-    fastmm.run_live(MyStrategy, "configs/sim-local.toml")
+A class with plain fastmm.Strategy hooks (no @fastmm.hot) runs in backtests only.
 """
 
 from ._core import (

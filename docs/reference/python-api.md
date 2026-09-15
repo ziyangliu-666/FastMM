@@ -1,10 +1,10 @@
 # Python strategy API
 
-Strategies written in Python run inside the C++ engine in backtests. They use the same engine, risk checks, OMS, quote manager, journal and outbound hash as C++ strategies (ADR-0012, section 7). Backtests, data sources and results: [Python](../python.md).
+Strategies written in Python run inside the C++ engine. They use the same engine, risk checks, OMS, quote manager, journal and outbound hash as C++ strategies (ADR-0012, section 7). Backtests, data sources and results: [Python](../python.md).
 
 Methods marked `@fastmm.hot` are compiled with Numba instead and follow [Hot hooks](#hot-hooks).
 
-Scope: in-process backtests only. Replay of Python strategies, process-pool sweeps, live trading and the simulated exchange over the network are not supported.
+Scope: a class with plain hooks only (no `@fastmm.hot` methods) runs in in-process backtests; it does not replay, run in `fastmm.sweep` or trade live. A class with hot hooks also replays ([Replay](#replay)) and trades live ([Live sessions](#live-sessions)); [What runs where](../python.md#what-runs-where) compares them.
 
 ## A strategy
 

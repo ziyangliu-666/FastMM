@@ -14,4 +14,4 @@ You need a FastMM build ([Install](../../getting-started/install.md)); page 9 al
 8. [Trade on the simulated exchange](08-sim-exchange.md): trade through a disconnect and replay the live journal
 9. [Trade on Binance Demo](09-binance-demo.md): dry run, a keyed session, shutdown check
 
-Python: [Python research bindings](../../python.md).
+Python strategies: [Python](../../python.md).
