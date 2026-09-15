@@ -23,6 +23,7 @@ Venue ids follow the order of the `[venues.<name>]` tables in the config, starti
 | The journal ring was full | Global | `kill switch engaged (JournalOverflow, ...)` | ERROR | `on_kill` |
 | A fatal venue error (see [below](#venue-kill-switch)) | That venue | `<venue>: asking the engine to kill this venue (VenueFatal)`, `venue <id> kill switch engaged (VenueFatal, flags=0x2); ...`, `[<venue>] venue kill switch engaged (VenueFatal): ...; <n> of <m> venue(s) still trading` | ERROR | Only that venue stops; the others keep trading |
 | Every venue that has instruments is killed | Global | `kill switch engaged (AllVenuesKilled, ...)` | ERROR | `on_kill` |
+| A hot hook of a Python strategy raised, called `ctx.fail` or set a float level that is not finite; no hook runs again | Global | `kill switch engaged (StrategyError, ...)`; after the session, `fastmm: py:<Class>.<hook> ... kill switch tripped: StrategyError` on stderr | ERROR | `on_kill` |
 
 The exit codes in the table assume `cancel_all ok`; a failed cancel-all makes the code 5 ([Reading the last lines](#reading-the-last-lines)).
 
@@ -41,7 +42,7 @@ These events do not trip the kill switch:
 | `"exit"` (default) | Within 50 ms the control thread logs `fastmm-live: shutting down (kill switch: <reason>; [engine] on_kill = "exit")` at ERROR and runs the [shutdown sequence](#shutdown-sequence). Exit code 6, or 5 if a cancel-all failed |
 | `"stay"` | The process keeps running with quoting off and new orders refused. At once and then every 10 s it logs `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off and no new orders are sent; stop the process (SIGINT/SIGTERM) to cancel all and exit` at ERROR. SIGINT or SIGTERM then runs the shutdown sequence: exit code 0, or 5 if a cancel-all failed |
 
-Use `"stay"` only when someone watches the session. Alert on exit codes 5 and 6. After a `max_loss` kill, check the PnL and the market before restarting.
+Use `"stay"` only when someone watches the session. Alert on exit codes 5, 6 and 7. After a `max_loss` kill, check the PnL and the market before restarting.
 
 ## Venue kill switch
 
@@ -62,7 +63,7 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
 
 ## Shutdown sequence
 
-From `run_live()` in `src/live/session.cpp`:
+From `run_live()` in `src/live/session.cpp`, which also runs Python strategies ([Run a Python strategy live](../strategies/python-live.md)):
 
 1. The control thread notices the signal, the elapsed duration, the ring overflow or a kill the engine tripped itself (it checks every 50 ms), publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
 2. Unless the engine tripped the kill switch itself (it has already pulled quotes and cancelled), it posts a kill-switch command to the engine. The engine logs `kill switch requested`, pulls every quote and queues cancels for every working order. If the control ring is full, the log says `control ring full: kill switch message dropped`; step 3 still runs.

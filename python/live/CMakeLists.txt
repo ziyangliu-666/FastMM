@@ -9,9 +9,11 @@ file(READ ${PROJECT_SOURCE_DIR}/tests/fixtures/tls/cert.pem FASTMM_SELF_TEST_CER
 file(READ ${PROJECT_SOURCE_DIR}/tests/fixtures/tls/key.pem FASTMM_SELF_TEST_KEY_PEM)
 configure_file(src/self_test_pem.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generated/self_test_pem.hpp @ONLY)
 
-pybind11_add_module(fastmm_live_py MODULE src/module.cpp)
+pybind11_add_module(fastmm_live_py MODULE src/module.cpp src/session.cpp)
 fastmm_target_defaults(fastmm_live_py)
-target_include_directories(fastmm_live_py PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+# python/src/hot_program.hpp: the compiled hot program, shared with fastmm._core.
+target_include_directories(fastmm_live_py PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${PROJECT_SOURCE_DIR}/python/src)
 target_link_libraries(fastmm_live_py PRIVATE fastmm::live fastmm::venues fastmm::net)
 target_compile_definitions(fastmm_live_py PRIVATE
   FASTMM_OPENSSL_STATIC=$<BOOL:${FASTMM_OPENSSL_STATIC}>)

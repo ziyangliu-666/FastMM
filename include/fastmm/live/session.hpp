@@ -21,14 +21,40 @@
 //
 // The thread set is fixed for the whole session (the logger keeps a ring per thread). The strategy
 // is built by the StrategyRegistry's TransportKind::Live factory for [strategy] name; register it
-// (register_builtin_strategies, a strategy module) before calling run_live. run_live installs
-// process-wide SIGINT/SIGTERM handlers.
+// (register_builtin_strategies, a strategy module) before calling run_live, or pass a
+// LiveStrategy (fastmm_live._live runs Python hot strategies that way). run_live installs
+// process-wide SIGINT/SIGTERM handlers and restores the previous ones when it returns.
 #include "fastmm/config/config.hpp"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
+#include <vector>
+
+namespace fastmm {
+class IEngineRunner;
+class MsgRing;
+class ParamSchema;
+struct RunnerDeps;
+}  // namespace fastmm
 
 namespace fastmm::live {
+
+// A strategy the caller builds instead of the registry's [strategy] name.
+struct LiveStrategy {
+  std::string name;                     // journal header, status file and log lines
+  const ParamSchema* params = nullptr;  // the journal's parameter table
+  std::string meta;                     // the journal's strategy metadata (`key=value` lines)
+  // Rings the engine polls besides the venues' (parameter updates); the caller keeps them alive.
+  std::vector<MsgRing*> inputs;
+  // Builds the runner on `deps` (deps.backend is a LiveBackend) on the calling thread, after the
+  // venues' reference data has loaded and before any session thread starts. An exception or
+  // nullptr gives kExitConfig.
+  std::function<std::unique_ptr<IEngineRunner>(RunnerDeps& deps)> make;
+  // Called after the engine thread has stopped, before the runner is destroyed.
+  std::function<void(IEngineRunner& runner)> finished;
+};
 
 struct LiveOptions {
   std::string config_path;
@@ -39,7 +65,14 @@ struct LiveOptions {
   bool no_journal = false;
   std::string status_path;  // overrides the default /dev/shm/fastmm-<engine>.status
   bool no_status = false;
-  std::string program = "fastmm-live";  // prefix of error messages (log lines keep fastmm-live:)
+  std::string program = "fastmm-live";     // prefix of error messages (log lines keep fastmm-live:)
+  const LiveStrategy* strategy = nullptr;  // nullptr: [strategy] name from the registry
+  // Called by the control thread every 50 ms; must not block. A non-empty result stops the session
+  // like SIGTERM (kill switch, cancel_all) with kExitSlowTier and is logged as the cause.
+  std::function<std::string()> watchdog;
+  // Before the session starts its threads, set every thread of the process to the CPUs not listed
+  // in [engine] cpu and net_cpus (confine_threads, live/thread_affinity.hpp).
+  bool confine_other_threads = false;
 };
 
 // Process exit codes (listed in fastmm-live --help and docs/how-to/operations/). A failed
@@ -50,6 +83,7 @@ inline constexpr int kExitConfig = 3;   // bad config, strategy or parameters
 inline constexpr int kExitVenue = 4;    // venue reference data failed
 inline constexpr int kExitRuntime = 5;  // cancel_all failed, journal, ring overflow, uncaught error
 inline constexpr int kExitKilled = 6;   // engine-tripped kill switch with [engine] on_kill = "exit"
+inline constexpr int kExitSlowTier = 7;  // LiveOptions::watchdog (a Python slow tier failed)
 
 // How often a session that stays up after a kill ([engine] on_kill = "stay") repeats its ERROR.
 inline constexpr std::int64_t kKilledReminderNs = 10'000'000'000;
@@ -58,5 +92,14 @@ inline constexpr std::int64_t kKilledReminderNs = 10'000'000'000;
 // resolved (or cleared for dry-run) and any command-line overrides applied: the journal embeds
 // cfg.effective_toml() and hashes it.
 int run_live(const Config& cfg, const LiveOptions& opts);
+
+// Resolves ${VAR} in every venue string. With `dry_run`, an unset variable in api_key or api_secret
+// clears the key; anything else unset, or a venue without keys outside a dry run, prints an error
+// prefixed with `prog` to stderr and returns false (kExitUsage).
+bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog);
+
+// Restores the SIGINT/SIGTERM handlers run_live replaced; a no-op when none are replaced. For a
+// child forked during a session, whose control thread does not exist.
+void restore_signal_handlers() noexcept;
 
 }  // namespace fastmm::live

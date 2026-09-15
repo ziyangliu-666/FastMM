@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import certifi
 
 import fastmm
@@ -18,6 +20,9 @@ if fastmm.__version__ != __version__:
 # Last CA bundle before OpenSSL's compiled-in paths: after SSL_CERT_FILE, SSL_CERT_DIR and the
 # system bundles.
 _live.set_ca_fallback_file(certifi.where())
+
+# A child forked while a session runs cannot run a session or publish parameters.
+os.register_at_fork(after_in_child=_live._after_fork_in_child)
 
 build_info = _live.build_info
 ca_locations = _live.ca_locations

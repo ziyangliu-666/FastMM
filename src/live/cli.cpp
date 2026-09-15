@@ -9,11 +9,11 @@
 // Exit codes (live/session.hpp; --help lists them): 0 ok, 2 bad command line or missing API keys,
 // 3 bad config / strategy / parameters (including a strategy name registered twice by different
 // code), 4 venue reference data failed, 5 runtime failure (cancel-all failed, journal, ring
-// overflow), 6 the engine tripped the kill switch itself and [engine] on_kill = "exit".
+// overflow), 6 the engine tripped the kill switch itself and [engine] on_kill = "exit", 7 the slow
+// tier of a Python strategy failed (python -m fastmm run; fastmm-live never returns it).
 #include "fastmm/cli/live.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
-#include "fastmm/config/env_subst.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/strategies/listing.hpp"
@@ -72,7 +72,8 @@ void usage(std::FILE* out, const char* prog) {
       "  3  bad config, strategy or parameters\n"
       "  4  venue reference data failed to load\n"
       "  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error\n"
-      "  6  kill switch tripped by the engine (on_kill = \"exit\"), cancel_all ok\n",
+      "  6  kill switch tripped by the engine (on_kill = \"exit\"), cancel_all ok\n"
+      "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok\n",
       prog);
 }
 
@@ -101,63 +102,6 @@ bool parse_duration(std::string_view s, std::int64_t& ns) {
     return false;
   }
   ns = v * mult;
-  return true;
-}
-
-// Resolves ${VAR} in every venue string. For dry-run, missing variables in api_key /
-// api_secret are dropped (no keys needed); anything else missing is an error.
-bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
-  for (VenueSection& v : cfg.venues) {
-    auto resolve = [&](const char* key, std::string& value, bool secret) {
-      if (!has_env_reference(value)) return true;
-      auto r = substitute_env(value);
-      if (r) {
-        value = *r;
-        return true;
-      }
-      if (secret && dry_run) {
-        value.clear();
-        return true;
-      }
-      if (secret) {
-        std::fprintf(
-            stderr,
-            "%s: venue '%s' needs API keys: environment variable %s is not set "
-            "(venues.%s.%s). Export it, or run with --dry-run for public market data only.\n",
-            prog,
-            v.name.c_str(),
-            r.error().c_str(),
-            v.name.c_str(),
-            key);
-      } else {
-        std::fprintf(stderr,
-                     "%s: venues.%s.%s: environment variable %s is not set\n",
-                     prog,
-                     v.name.c_str(),
-                     key,
-                     r.error().c_str());
-      }
-      return false;
-    };
-    if (!resolve("ws_url", v.ws_url, false) || !resolve("ws_api_url", v.ws_api_url, false) ||
-        !resolve("rest_url", v.rest_url, false) || !resolve("ca_file", v.ca_file, false) ||
-        !resolve("api_key", v.api_key, true) || !resolve("api_secret", v.api_secret, true))
-      return false;
-    for (auto& [k, val] : v.extra) {
-      if (!resolve(k.c_str(), val, false)) return false;
-    }
-    if (dry_run) {
-      v.api_key.clear();
-      v.api_secret.clear();
-    } else if (v.api_key.empty() || v.api_secret.empty()) {
-      std::fprintf(stderr,
-                   "%s: venue '%s' has no api_key/api_secret. Set them via ${ENV} references, or "
-                   "run with --dry-run for public market data only.\n",
-                   prog,
-                   v.name.c_str());
-      return false;
-    }
-  }
   return true;
 }
 
@@ -288,7 +232,7 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
     cfg.strategy.name = strategy;
   }
   for (const auto& [k, v] : overrides) cfg.strategy.params[k] = v;
-  if (!resolve_venue_env(cfg, opts.dry_run, prog)) return kExitUsage;
+  if (!live::resolve_venue_env(cfg, opts.dry_run, prog)) return kExitUsage;
 
   std::FILE* log_file = nullptr;
   if (!log_path.empty()) {

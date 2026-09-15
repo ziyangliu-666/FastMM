@@ -574,6 +574,17 @@ void bind_backtest(py::module_& m) {
         d["messages"] = info.messages;
         d["outbound_messages"] = info.outbound_messages;
         d["market_data_messages"] = info.market_data_messages;
+        py::dict meta;  // key=value lines
+        std::string_view text = info.strategy_meta;
+        while (!text.empty()) {
+          const std::size_t nl = text.find('\n');
+          const std::string_view line = text.substr(0, nl);
+          text = nl == std::string_view::npos ? std::string_view() : text.substr(nl + 1);
+          const std::size_t eq = line.find('=');
+          if (eq != std::string_view::npos)
+            meta[py::str(std::string(line.substr(0, eq)))] = std::string(line.substr(eq + 1));
+        }
+        d["strategy_meta"] = meta;
         return d;
       },
       py::arg("path"),

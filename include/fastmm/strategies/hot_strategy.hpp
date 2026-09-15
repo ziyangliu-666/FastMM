@@ -15,6 +15,10 @@
 // kill switch trips with KillReason::StrategyError (which pulls the quotes and cancels the working
 // orders) and, when the program asks for it (backtests), the engine is asked to stop.
 //
+// A ParamUpdate (live publishes, replay) is written into the parameter block of its instrument, or
+// of every instrument, at the places HotProgram::params gives (strategies/hot_params.hpp); the next
+// call copies it into `self`.
+//
 // The owner builds a HotProgram, calls attach() before the run and warm_up() before any venue
 // connection, and reads error() afterwards.
 #include "fastmm/core/config_macros.hpp"
@@ -27,6 +31,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/strategies/hooks.hpp"
 #include "fastmm/strategies/hot_abi.h"
+#include "fastmm/strategies/hot_params.hpp"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/strategy.hpp"
@@ -79,6 +84,8 @@ struct HotProgram {
   // One record: the parameter block (the first param_bytes) and the State defaults after it.
   std::vector<std::uint8_t> record;
   std::size_t param_bytes = 0;
+  // The parameters a ParamUpdate may assign, by field index: their places in the parameter block.
+  std::vector<HotParamSlot> params;
   bool stop_on_error = false;  // request_stop() after a failure (backtests)
   // Copy the level arrays into the book view. False when no hook can read them: the view then holds
   // the top of book and the level counts, and the arrays stay zero.
@@ -105,10 +112,18 @@ class HotStrategy {
   std::optional<std::string> configure(const ParamMap&) { return std::nullopt; }
 
   // Copies the program and allocates one parameter block and one record per instrument. Startup
-  // only (allocates). Returns false when the record is smaller than the parameter block or there
-  // are more timers than kMaxHotTimers.
+  // only (allocates). Returns false when the record is smaller than the parameter block, there
+  // are more timers than kMaxHotTimers or more parameters than kMaxParams, or a parameter lies
+  // outside the parameter block.
   bool attach(const HotProgram& p, const InstrumentTable& instruments) {
     if (p.param_bytes > p.record.size() || p.n_timers > kMaxHotTimers) return false;
+    if (p.params.size() > kMaxParams) return false;
+    for (const HotParamSlot& s : p.params) {
+      const std::size_t width = s.type == ParamType::Bool ? 1 : 8;
+      if (std::size_t{s.offset} + width > p.param_bytes) return false;
+      if (s.raw_offset >= 0 && static_cast<std::size_t>(s.raw_offset) + 8 > p.param_bytes)
+        return false;
+    }
     program_ = p;
     record_size_ = p.record.size();
     param_bytes_ = p.param_bytes;
@@ -230,6 +245,28 @@ class HotStrategy {
     for (const Instrument& inst : ctx.instruments()) {
       call(ctx, inst.id, ctx.book(inst.id), fn, -1, static_cast<std::int32_t>(i));
       if (failed()) return;
+    }
+  }
+
+  // Engine thread: writes the message's (field, raw value) pairs into the parameter block of its
+  // instrument, or of every instrument. A field without a HotProgram::params entry is skipped.
+  void apply_param_update(const ParamUpdateMsg& m) noexcept {
+    if (param_bytes_ == 0) return;
+    const std::size_t n_inst = params_.size() / param_bytes_;
+    std::size_t first = 0;
+    std::size_t last = n_inst;
+    if (!m.all_instruments()) {
+      if (m.hdr.instrument.value >= n_inst) return;
+      first = m.hdr.instrument.value;
+      last = first + 1;
+    }
+    const std::size_t count = std::min<std::size_t>(m.count, ParamUpdateMsg::kMaxFields);
+    const std::vector<HotParamSlot>& slots = program_.params;
+    for (std::size_t k = first; k < last; ++k) {
+      std::uint8_t* const block = params_.data() + k * param_bytes_;
+      for (std::size_t i = 0; i < count; ++i) {
+        if (m.field[i] < slots.size()) hot_write_param(slots[m.field[i]], block, m.value[i]);
+      }
     }
   }
 

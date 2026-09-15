@@ -63,8 +63,9 @@ struct JournalInfo {
   std::uint16_t session_epoch = 0;
   bool quoting_enabled = true;
   std::uint64_t replace_venues = 0;
-  bool engine_time = false;  // the events carry the engine clock
-  std::string config_toml;   // embedded effective configuration (empty: none)
+  bool engine_time = false;   // the events carry the engine clock
+  std::string config_toml;    // embedded effective configuration (empty: none)
+  std::string strategy_meta;  // `key=value` lines about the strategy (empty: none)
 };
 
 // Throws std::runtime_error when the file cannot be opened / validated.
