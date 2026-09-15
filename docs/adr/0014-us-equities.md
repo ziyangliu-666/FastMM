@@ -1,8 +1,8 @@
 # ADR-0014: US equities
 
-Status: proposed
+Status: accepted (2026-09)
 
-FastMM trades US-listed stocks: first in backtests from IEX historical data, then in paper trading through Alpaca, then through Interactive Brokers with directed routing.
+FastMM trades US-listed stocks on IEX data: first in backtests from IEX HIST, then in paper trading through Alpaca to validate the connector, then two-sided market making through Interactive Brokers with directed routing.
 
 ## Context
 
@@ -18,7 +18,7 @@ FastMM trades US-listed stocks: first in backtests from IEX historical data, the
   - Paper orders fill against the NBBO once marketable, with no queue position, random partial fills 10% of the time and no regulatory fees.
   - Alpaca rejects a buy limit priced at or above the account's open sell limit in the same symbol, in paper too ([protection](https://docs.alpaca.markets/us/docs/user-protection)).
   - Extended-hours orders are Day or GTC limits with `extended_hours=true`. Overnight trading (20:00–04:00 ET) runs on Blue Ocean ATS.
-  - The SIP stream ($99/month) has trading status and LULD messages.
+  - The SIP stream ($99/month) has trading status and LULD messages; the free IEX feed is not documented to carry them.
   - Regulatory fees are summed per account per day, rounded up to the cent and posted at the end of the day ([fees](https://docs.alpaca.markets/docs/regulatory-fees)).
 - IBKR: the TWS API goes through TWS or IB Gateway, 50 messages/s, at most 20 active orders per contract per side ([IBKR](https://interactivebrokers.github.io/tws-api/order_limitations.html)).
 - Rules:
@@ -37,11 +37,11 @@ FastMM trades US-listed stocks: first in backtests from IEX historical data, the
 ### 1. Scope and stages
 
 1. `IexDeepSource` replays IEX HIST DEEP pcap files into backtests (pcap reader, IEX-TP and DEEP decoder). A trimmed real day is a test fixture with the IEX attribution.
-2. `ItchSource` replays ITCH 5.0 for users with their own data. Nasdaq sample files are for manual runs only, never CI.
-3. Alpaca connector, first because an account costs nothing and tests need only fixtures and the in-process fake server (`tests/venues/fake_venue_util.hpp`).
-4. IBKR connector, for routing to a named exchange and per-share tiered pricing.
+2. Alpaca connector on Alpaca's free IEX feed. Alpaca paper validates the connector, sessions, halts, reconciliation and fees; it is not where market making is judged. Credentials come only from `ALPACA_PAPER_API_KEY` and `ALPACA_PAPER_API_SECRET`, referenced as `${ALPACA_PAPER_API_KEY}` and `${ALPACA_PAPER_API_SECRET}` in `configs/alpaca-paper.toml` as the Binance configs do, never inline. Until the account exists, the connector is developed and tested against recorded fixtures and the in-process fake server (`tests/venues/fake_venue_util.hpp`).
+3. IBKR connector, for two-sided market making with routing to a named exchange and per-share tiered pricing.
+4. Optional, later: `ItchSource` replays ITCH 5.0 for users with licensed data. Nasdaq sample files are for manual runs only, never CI.
 
-Out of scope: registered market making, direct exchange access (live ITCH, OUCH, sponsored access), options on equities, fractional shares, hard-to-borrow locates, auction and ISO orders, overnight positions, corporate-action adjustment, overnight quoting on Alpaca, universes over `kMaxInstruments` (256), other brokers.
+Out of scope: Nasdaq data licensing, a SIP subscription, registered market making, direct exchange access (live ITCH, OUCH, sponsored access), options on equities, fractional shares, hard-to-borrow locates, auction and ISO orders, overnight positions, corporate-action adjustment, overnight quoting on Alpaca, universes over `kMaxInstruments` (256), other brokers.
 
 ### 2. Tick schedule and lots
 
@@ -69,20 +69,21 @@ Out of scope: registered market making, direct exchange access (live ITCH, OUCH,
 
 ### 4. Trading status
 
-- `EventType::TradingStatus = 27`, `TradingStatusMsg` (128 bytes): bits `kHalted`, `kLuldPause`, `kSsrActive`, `kShortable`, `kEasyToBorrow`; `luld_lo`, `luld_hi`; `reason`. The engine keeps one status per instrument and journals each message.
+- `EventType::TradingStatus = 27`, `TradingStatusMsg` (128 bytes): bits `kHalted`, `kLuldPause`, `kSsrActive`, `kShortable`, `kEasyToBorrow`, `kStatusUnknown`; `luld_lo`, `luld_hi`; `reason`. The engine keeps one status per instrument and journals each message.
 - Mapping:
   - ITCH H: H to `kHalted`, P to `kLuldPause` (Nasdaq-listed only; others arrive as H), Q to `kHalted`, T clears.
   - ITCH Y: 1 or 2 sets `kSsrActive`. ITCH h sets `kHalted` for Nasdaq.
   - ITCH W: level 3 halts every equity for the rest of the day; levels 1–2 halt for 15 minutes when before 15:25.
   - DEEP trading status, operational halt and short-sale price test map the same way.
-  - After a halt, quoting stays off until the first T or, at the open, the first trade after 09:30. Alpaca's status and LULD channels map directly.
-- `LuldBandCalculator` runs inside the source:
+  - After a halt, quoting stays off until the first T or, at the open, the first trade after 09:30.
+- Live on the IEX feed, LULD bands and trading-status messages may be unavailable. The connector runs `LuldBandCalculator` on IEX trades and maps Alpaca's status and LULD messages when they arrive, the asset endpoint's `tradable` flag at start and on each account poll, and `GET /v2/clock`. An equity starts with `kStatusUnknown`, which pulls quotes like `kHalted`. It clears when a status message arrives, or when the clock says open and an IEX trade or quote for the symbol arrives. It is set again after `status_stale_s` (default 30) without an update in the regular session.
+- `LuldBandCalculator` runs inside the source or connector:
   - Tier comes from ITCH R or DEEP's directory. The first reference price is the listing exchange's opening price, and bands apply 09:30–16:00.
   - Every 30 s it takes the mean of the source venue's eligible trades over the last 5 minutes and republishes the reference price only on a move of 1% or more.
   - Percentages: 5% (Tier 1) or 10% (Tier 2) above $3.00; 20% from $0.75 to $3.00; below $0.75, the lesser of $0.15 or 75%. Doubled 15:35–16:00 for Tier 1 and for Tier 2 at or below $3.00.
   - Bands are rounded to the penny.
-- Halted or paused: quotes are cancelled, orders rejected with `RejectReason::Halted = 17`, `on_status(ctx, inst)` fires (near misses `on_trading_status`, `on_halt`). LULD: bids above `luld_hi` and asks below `luld_lo` are clamped before risk.
-- A sell is short when it would take position plus open sells below zero; a sell never takes a long position below zero in one order. Short sales are rejected with `NotShortable = 18` when `[risk] allow_short = false` (default for equities) or `kShortable` is clear. Live, `kShortable` is clear until Alpaca's asset endpoint says shortable; backtests set it from `assume_shortable`.
+- Halted, paused or unknown: quotes are cancelled, orders rejected with `RejectReason::Halted = 17`, `on_status(ctx, inst)` fires (near misses `on_trading_status`, `on_halt`). LULD: bids above `luld_hi` and asks below `luld_lo` are clamped before risk.
+- A sell is short when it would take position plus open sells below zero; a sell never takes a long position below zero in one order. Short sales are allowed by default and rejected with `NotShortable = 18` when `kShortable` is clear or `[risk] long_only = true`. Live, `kShortable` is clear until Alpaca's asset endpoint says shortable; backtests set it from `assume_shortable`.
 - With `kSsrActive`, a short sale priced at or below the best bid is rejected with `ShortSaleRestricted = 19`. The engine holds a venue bid (IEX, Nasdaq or the feed), not always the national best bid; the broker's check is final.
 
 ### 5. Account and request budget
@@ -109,14 +110,14 @@ Out of scope: registered market making, direct exchange access (live ITCH, OUCH,
 
 ### 8. Alpaca connector
 
-- Base URLs `paper-api.alpaca.markets` and `api.alpaca.markets`, order updates from `trade_updates`, market data from `v2/iex` or `v2/sip`.
+- Base URLs `paper-api.alpaca.markets` and `api.alpaca.markets`, order updates from `trade_updates`, market data from `v2/iex`.
 - `VenueCaps::rejects_self_cross`: `stp` is forced on and the OMS also counts the pending price of a replace in flight, so no buy is sent at or above an open sell of the symbol or the reverse; the QuoteManager cancels first.
-- Before step 5 is accepted, a paper test records whether Alpaca accepts a short sale while a buy is open. If not, quoting from flat is one-sided on Alpaca and the venue reference says so.
+- A paper test records whether Alpaca accepts a short sale while a buy is open. If not, quoting from flat is one-sided on Alpaca, and the venue reference says so.
 - Replace is `PATCH`, which creates a new order; the connector follows `replaced_by` and keeps client order ids within Alpaca's length limit. Symbols use the dotted form (`BRK.B`); sources and connectors map theirs through `venues/symbology.hpp` (IBKR `BRK B`).
 
 ### 9. Python and invariants
 
-- `FASTMM_HOT_ABI_VERSION = 2` appends after `ask_is_raw`: `session` (int32); `halted`, `luld_paused`, `ssr`, `shortable`, `luld_clamped` (uint8); `luld_lo`, `luld_hi`, `buying_power`, `round_lot` (double and `_raw`). `ctx.tick` is `tick_at(mid)`. `on_session` and `on_status` join the hot hooks; `fastmm.SESSION_*` constants work in hot code. Hooks compile at import, so strategies recompile.
+- `FASTMM_HOT_ABI_VERSION = 2` appends after `ask_is_raw`: `session` (int32); `halted`, `luld_paused`, `ssr`, `shortable`, `status_unknown`, `luld_clamped` (uint8); `luld_lo`, `luld_hi`, `buying_power`, `round_lot` (double and `_raw`). `ctx.tick` is `tick_at(mid)`. `on_session` and `on_status` join the hot hooks; `fastmm.SESSION_*` constants work in hot code. Hooks compile at import, so strategies recompile.
 - No allocation or virtual call on the hot path: schedules, statuses and account state are fixed arrays; `tests/hotpath/noalloc_test.cpp` covers each new path.
 - `kJournalVersion = 4` adds a CRC-checked reference section (tick schedules, session schedule). Readers accept 1–4; existing golden journals and `sample_1000.sha256` replay unchanged.
 - Strategies that do not opt in compile and behave as before; crypto instruments set none of the new flags.
@@ -124,29 +125,26 @@ Out of scope: registered market making, direct exchange access (live ITCH, OUCH,
 ## Consequences
 
 - Equities run in backtests, replay and paper trading with the same strategy classes.
-- IEX's book is thin, and computed LULD bands use IEX or Nasdaq trades only, so both differ from the consolidated market.
+- IEX's book is thin, and LULD bands computed from IEX trades differ from the published ones. Live without SIP, a halt may be seen only as missing updates, so quotes are pulled late or conservatively while status is unknown.
 - Alpaca paper tests the connector, sessions, halts, reconciliation and fees. Its PnL is no evidence of spread capture: fills ignore queue position.
 - At 200 requests per minute for every REST call, requotes are measured in seconds, and engine latency makes no difference on Alpaca. `min_requote_interval_ms` and `min_requote_ticks` need values to match.
 - Retail commissions and regulatory fees exceed exchange rebates. IBKR's tiered pricing and directed routing narrow the gap without closing it.
-- Alpaca's self-cross rule may force one-sided quoting from flat.
+- Alpaca's self-cross rule may force one-sided quoting from flat there; two-sided market making is judged on IBKR.
 - The calendar and fee periods are maintained by hand.
 
 ## Implementation order
 
-Steps 1–3 can start in parallel; step 4 needs 1–3; steps 5–7 follow in order. Each step ships its docs.
+Steps 1–3 can start in parallel; step 4 needs 1–3; steps 5–7 follow in order; step 8 needs step 4. Each step ships its docs.
 
 1. Tick schedule: core types, `InstrumentTable` functions, callers, `[tick_schedules]`. Tests: both sides at $0.9999, $1.00, $1.0001; Deribit tests unchanged; golden hashes unchanged; BasicMM tick-to-order p50 within 2% of main.
 2. Engine inputs: session timers, `TradingStatus`, `AccountUpdate`, journal v4, rejects 17–20, clamps, short-sale checks, flattening, hooks, calendar file, tool and scheduled job. Tests: a synthetic journal crossing Pre, Regular and Post with a halt, SSR, band move and account update replays to the same hash on a quiet instrument; v1–3 journals replay; orders fail closed without an account update.
 3. Fees: `FeeSchedule`, periods, rounding modes. Tests: hand-computed fees for a 100-share sell at $50.00, a TAF-capped sell, a 2026–2027 period switch and a daily rounding total; crypto results identical.
-4. Sources: `IexDeepSource` with `LuldBandCalculator` and statuses; then `ItchSource` with `L3Book` rules. Tests: the IEX fixture gives the expected book and statuses; LULD against published examples; an ITCH fixture from `generate_fixtures.py` with H, Y, W and prices across $1.00; two runs give the same hash.
-5. Alpaca: request budget, self-cross handling, replace chains, symbology, clock and calendar checks, fee reconciliation, `configs/alpaca-paper.toml`. Tests against the fake server: lifecycle, replace, rejects, reconnection, budget refusal, extended-hours flag, halt pull, replay hash. Then the paper test of short with an open buy, and a paper session.
+4. `IexDeepSource` with `LuldBandCalculator` and statuses. Tests: the IEX fixture gives the expected book and statuses; LULD against published examples; two runs give the same hash.
+5. Alpaca: request budget, self-cross handling, replace chains, symbology, clock and calendar checks, fee reconciliation, `configs/alpaca-paper.toml`. Tests against the fake server: lifecycle, replace, rejects, reconnection, budget refusal, extended-hours flag, halt pull, replay hash. Tests for unknown status: no status messages and no updates pull quotes. Once the owner's paper account exists: the paper test of short with an open buy, and a paper session.
 6. Python ABI 2. Tests: a hot BasicMM port matches C++ on the IEX fixture; ADR-0013 tests pass.
-7. IBKR over IB Gateway: routing, `outsideRth`, halt and shortable ticks, 50 messages/s, 20 orders per side. Tests against a fake gateway from recorded fixtures; then a paper session.
+7. IBKR over IB Gateway: routing, `outsideRth`, halt and shortable ticks, 50 messages/s, 20 orders per side. Tests against a fake gateway from recorded fixtures; then a two-sided quoting paper session.
+8. Optional: `ItchSource` with the `L3Book` rules. Tests: an ITCH fixture from `generate_fixtures.py` with H, Y, W and prices across $1.00 gives the expected book and statuses; two runs give the same hash.
 
 ## Open questions
 
-- Alpaca data: free IEX, or SIP at $99/month for LULD and status messages?
-- Nasdaq data: form a business entity for a licence, or stay with IEX HIST?
-- Defaults: long-only, flat by the close, round-lot quotes, no overnight quoting.
-- If Alpaca rejects a short sale while a buy is open, accept one-sided quoting from flat, or skip Alpaca live and go to IBKR?
-- IBKR account and commission plan (fixed or tiered) for step 7.
+- IBKR account, commission plan (fixed or tiered) and market data subscriptions, before step 7.
