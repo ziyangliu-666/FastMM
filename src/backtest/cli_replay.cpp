@@ -166,7 +166,7 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
   }
   const bool session = info.outbound_messages > 0;
   std::printf(
-      "journal  %s: format v%u, %llu messages (%llu market data, %llu outbound), seed %llu, "
+      "journal  %s: format v%u, %llu messages (%llu market data, %llu outbound), rng_seed %llu, "
       "strategy '%s'\n",
       journal.c_str(),
       info.version,

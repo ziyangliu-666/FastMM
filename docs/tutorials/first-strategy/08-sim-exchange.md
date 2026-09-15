@@ -69,7 +69,7 @@ On WSL2 and in virtual machines the terminal may also show `TSC recalibration st
 ```
 
 ```text
-journal  runs/tutorial/sim.fmj: format v3, 5458 messages (1926 market data, 712 outbound), seed 42, strategy 'first_mm'
+journal  runs/tutorial/sim.fmj: format v3, 5458 messages (1926 market data, 712 outbound), rng_seed 42, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0x1, engine clock recorded
 config   embedded in the journal (hash 543d5a2b3f8d5c29)
 replay   strategy=first_mm events=4701

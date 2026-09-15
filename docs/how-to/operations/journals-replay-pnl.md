@@ -45,7 +45,7 @@ A journal recorded by `fastmm-live` or by `fastmm-backtest --journal-out` replay
 `fastmm-replay` runs the recorded inbound events through the same engine and strategy with a simulated clock set to the engine clock of the recording, and compares every outbound order message, and their SHA-256, with the copies in the journal. It takes the configuration embedded in the journal, and the session epoch, dry run, RNG seed and each venue's cancel-replace from the header, so it needs neither the config file nor API keys. A 20 s `fastmm-live` session against `fastmm-sim-exchange`:
 
 ```text
-journal  /tmp/e2e/session.fmj: format v3, 2644 messages (850 market data, 320 outbound), seed 42, strategy 'basic_mm'
+journal  /tmp/e2e/session.fmj: format v3, 2644 messages (850 market data, 320 outbound), rng_seed 42, strategy 'basic_mm'
 session  epoch 23, quoting enabled, cancel-replace venues 0x1, engine clock recorded
 config   embedded in the journal (hash fb8ab9d4318a634e)
 replay   strategy=basic_mm events=2300

@@ -202,7 +202,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 |---|---|---|---|
 | `source` | string | `""` | `synthetic`, `journal` or `csv`. When empty, the format is inferred from `path` |
 | `path` | string | `""` | Data file. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
-| `seed` | int | `[sim] seed`, else `1` | Seed for the simulator and the strategy random generator |
+| `seed` | int | `[sim] seed`, else `1` | Seed for the synthetic market and the simulated venue; the engine's random generator uses `[engine] rng_seed` |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
 | `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Treat its results as optimistic |
 | `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do |
