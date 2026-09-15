@@ -184,7 +184,8 @@ py::tuple run(const std::string& path,
   for (const auto& [k, v] : params)
     effective[py::str(k).cast<std::string>()] = py::str(v).cast<std::string>();
 
-  std::optional<HotError> error;
+  HotError error{};
+  bool failed = false;
   std::uint64_t calls = 0;
   int rc = live::kExitRuntime;
   {
@@ -247,7 +248,8 @@ py::tuple run(const std::string& path,
       ls.finished = [&](IEngineRunner&) {
         if (strategy == nullptr) return;
         calls = strategy->calls();
-        if (strategy->failed()) error = strategy->error();
+        failed = strategy->failed();
+        error = strategy->error();
       };
       opts.strategy = &ls;
       opts.confine_other_threads = true;
@@ -268,13 +270,12 @@ py::tuple run(const std::string& path,
   }
 
   py::object err = py::none();
-  if (error.has_value()) {
-    const HotError& e = error.value();
+  if (failed) {
+    const HotError& e = error;
     py::dict d;
     d["status"] = e.status;
     d["fail_code"] = e.fail_code;
-    d["hook"] =
-        e.hook >= 0 ? std::string(to_string(static_cast<HotHook>(e.hook))) : std::string();
+    d["hook"] = e.hook >= 0 ? std::string(to_string(static_cast<HotHook>(e.hook))) : std::string();
     d["timer"] = e.timer;
     d["now_ns"] = e.at.ns;
     err = std::move(d);
