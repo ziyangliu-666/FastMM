@@ -4,7 +4,7 @@
 // fastmm_net; the Reactor's io_uring backend is its only user.
 //
 // Single-threaded: every method must be called from the thread that owns the reactor.
-#include <linux/io_uring.h>
+#include "io_uring_uapi.hpp"
 
 #include <atomic>
 #include <cstddef>

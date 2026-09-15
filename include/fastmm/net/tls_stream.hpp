@@ -31,10 +31,13 @@ class TlsContext {
  public:
   enum class Mode : std::uint8_t { Client, Server };
 
-  // Client context: TLS 1.2+, peer verification against the system CA store.
+  // Client context: TLS 1.2+, peer verification against the CA certificates that
+  // find_ca_locations() selects (net/ca_locations.hpp).
   TlsContext();  // throws std::runtime_error
   // Server context loading a PEM certificate chain + private key (sim server / tests).
   static TlsContext server(const std::string& cert_pem_path, const std::string& key_pem_path);
+  // The same from PEM text: leaf certificate first, then the chain.
+  static TlsContext server_pem(std::string_view cert_chain_pem, std::string_view key_pem);
   ~TlsContext();
   TlsContext(TlsContext&& o) noexcept
       : ctx_(std::exchange(o.ctx_, nullptr)), mode_(o.mode_), insecure_(o.insecure_) {}
@@ -44,6 +47,8 @@ class TlsContext {
 
   // Trust only this PEM bundle (e.g. the sim server's self-signed certificate).
   void set_ca_file(const std::string& path);  // throws std::runtime_error
+  // Adds the certificates of PEM text to the trust store.
+  void add_ca_pem(std::string_view pem);  // throws std::runtime_error
   // Disable certificate + hostname verification (sim/testing only).
   void set_insecure(bool insecure) noexcept { insecure_ = insecure; }
   bool insecure() const noexcept { return insecure_; }

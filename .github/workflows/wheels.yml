@@ -1,8 +1,9 @@
 name: wheels
-# Builds the research wheels (manylinux x86_64, CPython 3.9-3.13) and the sdist on demand or for a
-# version tag, and uploads them as artifacts. Publishing to PyPI is a separate, manual step: run the
-# workflow by hand with "publish" checked, from a repository that PyPI trusts (trusted publishing,
-# environment "pypi"). Nothing is published on tags or pushes.
+# Builds the wheels (manylinux_2_28 x86_64): fastmm for CPython 3.9-3.14 and fastmm-live for
+# CPython 3.10-3.14, plus the fastmm sdist, on demand or for a version tag, and uploads them as
+# artifacts. Publishing to PyPI is a separate, manual step: run the workflow by hand with "publish"
+# checked, from a repository that PyPI trusts (trusted publishing, environment "pypi"). Nothing is
+# published on tags or pushes.
 on:
   workflow_dispatch:
     inputs:
@@ -27,12 +28,12 @@ jobs:
 
   wheels:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: pypa/cibuildwheel@v2.23
+      - uses: pypa/cibuildwheel@v4.2.1
         env:
-          CIBW_BUILD: "cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+          CIBW_BUILD: "cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64"
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
           CIBW_ENVIRONMENT: "CPM_SOURCE_CACHE=/tmp/cpm"
           CIBW_TEST_REQUIRES: "pytest pandas"
@@ -40,9 +41,36 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: wheels, path: wheelhouse/*.whl }
 
+  live-wheels:
+    needs: wheels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      # cibuildwheel copies the checkout, wheelhouse/ included, into the container: before the tests,
+      # fastmm is installed from /project/wheelhouse only. PyPI has an unrelated project named fastmm.
+      - uses: actions/download-artifact@v4
+        with: { name: wheels, path: wheelhouse }
+      - uses: pypa/cibuildwheel@v4.2.1
+        with:
+          package-dir: python/live
+        env:
+          CIBW_BUILD: "cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64"
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # OpenSSL 3, pinned and checksum-verified, static and position-independent.
+          CIBW_BEFORE_ALL: "bash {project}/scripts/wheels/build-openssl.sh /opt/fastmm-openssl"
+          CIBW_ENVIRONMENT: "CPM_SOURCE_CACHE=/tmp/cpm OPENSSL_ROOT_DIR=/opt/fastmm-openssl FASTMM_OPENSSL_STATIC=ON"
+          # auditwheel repair, then: no libssl or libcrypto needed or bundled, only PyInit__live exported.
+          CIBW_REPAIR_WHEEL_COMMAND: "auditwheel repair -w {dest_dir} {wheel} && bash {project}/scripts/wheels/check-live-wheel.sh {dest_dir}/fastmm_live-*.whl"
+          CIBW_BEFORE_TEST: "pip install numpy && pip install --no-index --find-links {project}/wheelhouse fastmm"
+          CIBW_TEST_REQUIRES: "pytest"
+          CIBW_TEST_COMMAND: "python -m pytest {project}/python/live/tests -q"
+      - uses: actions/upload-artifact@v4
+        with: { name: live-wheels, path: wheelhouse/fastmm_live-*.whl }
+
   publish:
     if: github.event_name == 'workflow_dispatch' && inputs.publish
-    needs: [sdist, wheels]
+    needs: [sdist, wheels, live-wheels]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:

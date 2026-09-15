@@ -99,6 +99,18 @@ All notable changes are recorded here (Keep a Changelog format).
   AvellanedaStoikov, OptionsMM and `sample_1000` hashes are unchanged.
 
 ### Added
+- **`fastmm-live` wheel (ADR-0013, section 5).** A second distribution from `python/live`, pinned to
+  the same `fastmm` version and installed by `pip install "fastmm[live]"` (CPython 3.10 or later).
+  Its module `fastmm_live._live` links the network stack, the venue connectors and OpenSSL 3.5.8
+  (`scripts/wheels/build-openssl.sh`, static, checksum-verified) and exports only `PyInit__live`.
+  This release has `build_info()`, `ca_locations()` and `self_test()`, an in-memory TLS handshake.
+  The wheels workflow uses cibuildwheel 4.2.1, adds CPython 3.14 and builds, checks and tests the
+  `fastmm-live` wheels; the per-push CI does not build them.
+- TLS clients find CA certificates from `SSL_CERT_FILE` and `SSL_CERT_DIR`, then
+  `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`,
+  then a fallback file (`certifi` in `fastmm-live`), then OpenSSL's built-in paths
+  (`net/ca_locations.hpp`). A `SSL_CERT_FILE` that does not load is an error naming the variable.
+  `TlsContext::server_pem` and `add_ca_pem` take PEM text.
 - **Python strategies in backtests (ADR-0012, section 7).** Subclass `fastmm.Strategy` with the C++
   hook names (`on_book(ctx, inst, book)`, `on_fill(ctx, fill)`, `on_quoting(ctx, enabled)`, ...) and
   `fastmm.Param` parameters (typed, C++ error messages), then

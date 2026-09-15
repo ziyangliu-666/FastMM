@@ -181,6 +181,37 @@ TEST_CASE("tls: peer vanishing mid-handshake is an error, after data it is EOF")
   CHECK((r.closed || r.failed()));
 }
 
+TEST_CASE("tls: contexts from PEM text verify like contexts from files") {
+  const std::string cert = fastmm::test::read_file(tls_fixture("cert.pem"));
+  const std::string key = fastmm::test::read_file(tls_fixture("key.pem"));
+  TlsContext sctx = TlsContext::server_pem(cert, key);
+
+  SUBCASE("trusted through add_ca_pem") {
+    MemoryLink link;
+    TlsContext cctx;
+    cctx.add_ca_pem(cert);
+    MemTls client(cctx, link.end_a(), "localhost");
+    MemTls server(sctx, link.end_b());
+    auto o = pump_handshake(client, server);
+    CAPTURE(client.last_error());
+    REQUIRE(o.both_ok());
+    CHECK(transfer(client, server, "pem") == "pem");
+  }
+  SUBCASE("rejected without it") {
+    MemoryLink link;
+    TlsContext cctx;
+    MemTls client(cctx, link.end_a(), "localhost");
+    MemTls server(sctx, link.end_b());
+    auto o = pump_handshake(client, server);
+    CHECK(o.client.failed());
+    CHECK(client.last_error().find("verify") != std::string_view::npos);
+  }
+  CHECK_THROWS_AS(TlsContext::server_pem("not pem", key), std::runtime_error);
+  CHECK_THROWS_AS(TlsContext::server_pem(cert, "not pem"), std::runtime_error);
+  TlsContext c;
+  CHECK_THROWS_AS(c.add_ca_pem("not pem"), std::runtime_error);
+}
+
 TEST_CASE("tls: context errors throw during setup only") {
   CHECK_THROWS_AS(TlsContext::server("/nonexistent/cert.pem", "/nonexistent/key.pem"),
                   std::runtime_error);

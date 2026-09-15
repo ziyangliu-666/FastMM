@@ -88,7 +88,7 @@ constexpr std::uint32_t poll32(std::uint32_t mask) noexcept {
 void prep_poll_add(io_uring_sqe& sqe, int fd, std::uint32_t mask, std::uint64_t ud) noexcept {
   sqe.opcode = IORING_OP_POLL_ADD;
   sqe.fd = fd;
-  sqe.poll32_events = poll32(mask);
+  detail::set_poll32_events(sqe, poll32(mask));
   sqe.len = IORING_POLL_ADD_MULTI;
   sqe.user_data = ud;
 }
@@ -102,7 +102,7 @@ void prep_poll_update(io_uring_sqe& sqe,
   sqe.addr = target;
   // ADD_MULTI keeps the updated request multishot.
   sqe.len = IORING_POLL_UPDATE_EVENTS | IORING_POLL_ADD_MULTI;
-  sqe.poll32_events = poll32(mask);
+  detail::set_poll32_events(sqe, poll32(mask));
   sqe.user_data = ud;
 }
 

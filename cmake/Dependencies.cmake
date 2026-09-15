@@ -8,7 +8,16 @@ set(CPM_USE_LOCAL_PACKAGES OFF)
 find_package(Threads REQUIRED)
 
 if(FASTMM_BUILD_NET)
+  # FASTMM_OPENSSL_STATIC: libssl.a and libcrypto.a, e.g. from scripts/wheels/build-openssl.sh with
+  # OPENSSL_ROOT_DIR pointing at its prefix.
+  if(FASTMM_OPENSSL_STATIC)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+  endif()
   find_package(OpenSSL 3.0 REQUIRED COMPONENTS SSL Crypto)
+  if(FASTMM_OPENSSL_STATIC AND NOT (OPENSSL_SSL_LIBRARY MATCHES "\\.a$" AND OPENSSL_CRYPTO_LIBRARY MATCHES "\\.a$"))
+    message(FATAL_ERROR "FASTMM_OPENSSL_STATIC: found ${OPENSSL_SSL_LIBRARY} and ${OPENSSL_CRYPTO_LIBRARY}, "
+      "not static libraries; set OPENSSL_ROOT_DIR to an OpenSSL built with scripts/wheels/build-openssl.sh")
+  endif()
   find_package(ZLIB REQUIRED)
 endif()
 
@@ -63,7 +72,7 @@ if(FASTMM_BUILD_BENCH)
 endif()
 
 # --- pybind11 (python) ------------------------------------------------------
-if(FASTMM_BUILD_PYTHON)
+if(FASTMM_BUILD_PYTHON OR FASTMM_BUILD_PYTHON_LIVE)
   find_package(Python 3.9 REQUIRED COMPONENTS Interpreter Development.Module)
   CPMAddPackage(
     NAME pybind11
