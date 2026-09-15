@@ -5,5 +5,5 @@
 #include "fastmm/strategies/module.hpp"
 
 void test_mm::register_shadow_basic_mm(fastmm::StrategyRegistry& r) {
-  fastmm::register_strategy<ShadowBasicMM>(r, fastmm::Transports::Sim);
+  fastmm::register_strategy<ShadowBasicMM, fastmm::Transports::Sim>(r);
 }

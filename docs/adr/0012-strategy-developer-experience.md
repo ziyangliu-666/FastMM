@@ -241,7 +241,7 @@ Implemented in 2026-09 in this order: golden hashes, engine fixes, hooks and con
 - `configure()` applies keys to a copy and replaces the parameters only after `validate()` passes.
 - AvellanedaStoikov's seconds-valued parameters and OptionsMM's `max_delta` and `max_vega` stay `double`; no built-in strategy has a `validate()`.
 - The `basic_mm/coupled` and `basic_mm/l2_queue` golden hashes were re-baselined: their test market's `half_spread_bps = 0.003` had rounded to 0 in the centi-bps code.
-- `register_strategy<S>(r, Transports)` exists for FastMM's own tests; the documented API is `register_strategy<S>(r)`.
+- `register_strategy<S, Transports>(r)` exists for FastMM's own tests; the documented API is `register_strategy<S>(r)`.
 - `EngineConfig` moved to `core/engine_config.hpp` so registration headers do not include `engine.hpp`, and `StrategyRegistry::add` was removed.
 - Each command line lists only the strategies of its own transport; `--list-strategies --format json` was added.
 - The external project's unit test uses plain checks because the install does not export doctest; `-DFASTMM_SOURCE_DIR=` switches it to `add_subdirectory`.
