@@ -53,7 +53,8 @@ template <class S>
 std::unique_ptr<IEngineRunner> live_factory(TransportKind kind, RunnerDeps& deps);
 
 // Internal: the factories register_strategy adds. FastMM's tests use it; a strategy that should not
-// run live is simply not registered by that project's live app.
+// run live is simply not registered by that project's live app. The set is a template argument so
+// that the factories it leaves out are never referenced, at any optimisation level.
 enum class Transports : std::uint8_t { None = 0, Sim = 1, Replay = 2, Live = 4, All = 7 };
 [[nodiscard]] constexpr Transports operator|(Transports a, Transports b) noexcept {
   return static_cast<Transports>(static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
@@ -62,8 +63,10 @@ enum class Transports : std::uint8_t { None = 0, Sim = 1, Replay = 2, Live = 4, 
   return (static_cast<std::uint8_t>(set) & static_cast<std::uint8_t>(t)) != 0;
 }
 
-template <class S>
-void register_strategy(StrategyRegistry& r, Transports transports) {
+// Adds the Sim, Replay and Live factories of S (or those in `Enabled`). Registering the same
+// strategy again does nothing; throws StrategyConflict when another strategy already uses the name.
+template <class S, Transports Enabled = Transports::All>
+void register_strategy(StrategyRegistry& r) {
   static_assert(StrategyLike<S>,
                 "fastmm: register_strategy<S> needs a strategy: static name(), static schema() "
                 "and a default constructor");
@@ -83,16 +86,10 @@ void register_strategy(StrategyRegistry& r, Transports transports) {
     throw std::invalid_argument("strategy '" + std::string(S::name()) +
                                 "' cannot be registered: empty name or no parameter schema");
   };
-  if (has(transports, Transports::Sim)) add(TransportKind::Sim, &sim_factory<S>);
-  if (has(transports, Transports::Replay)) add(TransportKind::Replay, &replay_factory<S>);
-  if (has(transports, Transports::Live)) add(TransportKind::Live, &live_factory<S>);
-}
-
-// Adds the Sim, Replay and Live factories of S. Registering the same strategy again does nothing;
-// throws StrategyConflict when another strategy already uses the name.
-template <class S>
-void register_strategy(StrategyRegistry& r) {
-  register_strategy<S>(r, Transports::All);
+  // if constexpr: a discarded branch is not instantiated, so it does not reference its factory.
+  if constexpr (has(Enabled, Transports::Sim)) add(TransportKind::Sim, &sim_factory<S>);
+  if constexpr (has(Enabled, Transports::Replay)) add(TransportKind::Replay, &replay_factory<S>);
+  if constexpr (has(Enabled, Transports::Live)) add(TransportKind::Live, &live_factory<S>);
 }
 
 }  // namespace fastmm
