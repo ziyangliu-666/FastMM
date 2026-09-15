@@ -53,6 +53,7 @@ void on_timer(auto& /*ctx*/, TimerId /*id*/, std::uint64_t tag) noexcept {
 }
 void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hit(kConnection); }
 void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
+void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
 ```
 
 | Hook | Called |
@@ -68,6 +69,7 @@ void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
 | `on_timer(ctx, id, tag)` | a timer from `ctx.every` or `ctx.once` fired |
 | `on_connection(ctx, m)` | a venue channel changed state; for any state other than `Live` the engine has already pulled that venue's quotes and, on the market-data channel, cleared its books |
 | `on_quoting(ctx, enabled)` | `ctx.quoting_enabled()` changed ([below](#on_quoting)) |
+| `on_params(ctx)` | a parameter update was applied; `params()` holds the new values ([Parameter updates](#parameter-updates)) |
 
 Rules:
 
@@ -78,7 +80,7 @@ Rules:
 
 ### on_quoting
 
-`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch, a reconciliation, or a dry run. `on_quoting(ctx, enabled)` reports changes, so a strategy can requote as soon as quoting is back.
+`set_quotes` is ignored while quoting is disabled: an operator pull (`PullQuotes`), the kill switch, a reconciliation, parameters older than `max_param_age_ms` ([Parameter updates](#parameter-updates)), or a dry run. `on_quoting(ctx, enabled)` reports changes, so a strategy can requote as soon as quoting is back.
 
 - The engine compares `ctx.quoting_enabled()` before and after each event, fired timer and `on_start`, and calls the hook after the triggering hook has returned and all flags are final. At the end of a reconciliation that is after the engine has placed the quotes it paused, so a requote from `on_quoting` replaces them.
 - It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the hook that made the call returns.
@@ -295,6 +297,22 @@ struct AllHooksParams {
 - Ranges are checked on the typed value: `parameter 'quote_qty': value 1000.5 outside [0, 1000]`.
 - The schema drives configuration checks, `--list-strategies`, `--param key=value` and `fastmm.strategies()` in Python.
 
+## Parameter updates
+
+A running engine takes new parameter values as an input event. `ParamPublisher` (`fastmm/strategies/param_publisher.hpp`) builds the event on another thread and pushes it into a ring of the engine's feed; in a backtest, `sim::ParamSchedule` (`fastmm/sim/param_schedule.hpp`) delivers events at simulated times through `bt::BacktestSession::set_param_schedule`.
+
+```cpp
+ParamPublisher pub(ParamSink::to_ring(ring), strategy.params());
+bool sent = pub.publish({{"half_spread_bps", "7.5"}, {"quote_qty", "0.02"}});
+```
+
+- `publish(values, inst)` parses each value with the parameter's type and range into a copy of the parameters, then runs `validate()`. An unknown name, a name given twice, a value that does not parse or is out of range, a failed `validate()` and more than 32 values throw `std::invalid_argument`; nothing is sent then.
+- It returns false when the ring is full or after `close()`; the engine never waits for the publisher.
+- The copy starts from the parameters passed to the constructor and follows every update that was sent. A `StrategyBase` keeps one parameter set, so its updates name no instrument and apply to all.
+- The engine assigns all values of an update at one event, journals it and then calls `on_params(ctx)`. Parameters the update does not name keep their values.
+- `[strategy] max_param_age_ms` (0, the default, is off) disables quoting before the first update and whenever none was applied for that long in engine time: the engine pulls the quotes, `set_quotes` returns false and `on_quoting(false)` fires. The next update fires `on_quoting(true)`.
+- Replay applies the journaled updates at the same events and matches their fields to the strategy's parameters by name ([Journal format](journal-format.md#parameter-updates)).
+
 ## Fixed-point helpers
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#helpers -->
@@ -347,12 +365,13 @@ ticker.ask_px = 100.02_px;
 h.push(ticker.hdr);  // on_book_ticker
 OptionTickerMsg option{};
 init_header(option, EventType::OptionTicker, h.instrument(), VenueId{0});
-h.push(option.hdr);   // on_option_ticker
-h.disconnect();       // on_connection (market data lost)
-h.reconnect();        // on_connection (live again)
-h.pull_quotes();      // on_quoting(false)
-h.resume_quotes();    // on_quoting(true)
-h.engine().finish();  // on_stop
+h.push(option.hdr);                       // on_option_ticker
+h.disconnect();                           // on_connection (market data lost)
+h.reconnect();                            // on_connection (live again)
+h.pull_quotes();                          // on_quoting(false)
+h.resume_quotes();                        // on_quoting(true)
+h.publish({{"half_spread_bps", "7.5"}});  // on_params
+h.engine().finish();                      // on_stop
 ```
 
 | Call | Effect |
@@ -363,6 +382,7 @@ h.engine().finish();  // on_stop
 | `fill(side[, qty, id])` | a taker at the venue fills our best working order on `side` (all of it when `qty` is 0), then advances by the ack latency; false when there is none |
 | `disconnect([channel, venue])`, `reconnect(...)` | a `ConnectionStateMsg`; channel 0 is market data |
 | `pull_quotes()`, `resume_quotes()` | operator control, `on_quoting(false)` and `on_quoting(true)` |
+| `publish(values)` | a parameter update for all instruments at the current time: the parameters change, then `on_params` runs; `std::invalid_argument` when a publisher would reject it |
 | `push(msg.hdr)` | any other message at the current time |
 | `advance(duration)` | moves virtual time: orders reach the venue, acks and fills return, timers fire |
 | `working_orders([id])` | our working orders, bids then asks, best first |

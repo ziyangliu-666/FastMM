@@ -5,6 +5,15 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Changed
+- Parameter updates (ADR-0013). `EventType::ParamUpdate` (26) carries up to 32 (field index, raw
+  value) pairs. `ParamPublisher` validates an update off the engine thread and pushes it into a
+  feed ring (false when the ring is full); `sim::ParamSchedule` delivers updates at simulated
+  times in backtests. The engine applies an update at one event, journals it and calls the new
+  `on_params(ctx)` hook. `[strategy] max_param_age_ms` (default off) disables quoting before the
+  first update and while none was applied for that long in engine time. Journal format version 3
+  embeds the strategy's parameter table and replay matches fields by name; readers open versions
+  1 to 3 and `sample_1000.sha256` is unchanged. `KillReason::StrategyError` (9) is appended.
+  `ParamDesc` gains `get_raw` and `set_raw`; `TimerMsg` byte 68 marks the engine's own timer.
 - `ctx.request_stop()` ends a backtest: `sim::EngineHooks` gains a nullable `stopped` callback that
   `SimDriver` checks after every engine step. `ReplayDriver` ignores it and always drains the
   journal. The golden hashes are unchanged.

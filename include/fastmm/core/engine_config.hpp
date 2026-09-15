@@ -20,6 +20,9 @@ struct EngineConfig {
   // Risk rejects are logged at WARN: the first of each reason, then at most one line per reason per
   // interval with the number suppressed in between (0 logs every reject).
   Duration reject_log_interval = seconds(10);
+  // [strategy] max_param_age_ms: quoting is disabled before the first ParamUpdate and while none
+  // was applied for this long (zero: off).
+  Duration max_param_age{};
   bool quoting_enabled = true;
   int cpu = -1;
   SpinMode spin_mode = SpinMode::Busy;

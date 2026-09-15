@@ -244,7 +244,8 @@ enum class EventType : std::uint8_t {
   OrderReplaceL3 = 23,
   OptionTicker = 24,  // mark / implied vols / greeks of one option (OptionTickerMsg)
   EngineTime = 25,    // journal only: the engine clock at start / finish / a delta overflow
-  Count = 26,
+  ParamUpdate = 26,   // new strategy parameter values (ParamUpdateMsg)
+  Count = 27,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -300,6 +301,8 @@ enum class EventType : std::uint8_t {
       return "OptionTicker";
     case EventType::EngineTime:
       return "EngineTime";
+    case EventType::ParamUpdate:
+      return "ParamUpdate";
     case EventType::Count:
       return "Count";
   }
@@ -399,6 +402,7 @@ enum class KillReason : std::uint8_t {
   VenueFatal = 6,         // venue error map: bad key, signature, permission, failed auth
   VenueHardStop = 7,      // venue error map: REST stopped (IP ban)
   OrderRingOverflow = 8,  // fastmm-live: a venue's order-event ring overflowed
+  StrategyError = 9,      // a strategy hook reported an error (Python hot hooks)
 };
 // Kill reasons are kept per venue id for ids 0..kKillVenueSlots-1; higher ids share the last slot,
 // as they share the last kill bit (RiskEngine::venue_bit).
@@ -423,6 +427,8 @@ inline constexpr std::size_t kKillVenueSlots = 31;
       return "VenueHardStop";
     case KillReason::OrderRingOverflow:
       return "OrderRingOverflow";
+    case KillReason::StrategyError:
+      return "strategy_error";
   }
   return "?";
 }

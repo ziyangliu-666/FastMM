@@ -21,7 +21,7 @@ A backtest with the same inputs sends the same orders, and replaying a journal s
 
 The rest is deterministic because it uses one engine thread, no reads of the system clock, integer arithmetic for money, fixed-capacity containers iterated in a defined order, and timers that fire in engine time.
 
-A live session is not repeatable (network timing decides which event comes first), but its journal is. Journal format version 2 ([Journal format](../reference/journal-format.md)) records, for every consumed event and fired timer, the engine clock at which it was processed, and in the header the session epoch, whether quoting was enabled, each venue's cancel-replace setting and the effective configuration. Replay restores all of them.
+A live session is not repeatable (network timing decides which event comes first), but its journal is. Journal format version 2 ([Journal format](../reference/journal-format.md)) records, for every consumed event and fired timer, the engine clock at which it was processed, and in the header the session epoch, whether quoting was enabled, each venue's cancel-replace setting and the effective configuration. Replay restores all of them. Parameter updates are journaled inputs like market data; version 3 adds the strategy's parameter table, so replay matches their fields by name.
 
 ## How it is checked
 

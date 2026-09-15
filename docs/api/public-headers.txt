@@ -15,6 +15,7 @@ tier1 fastmm/strategy.hpp
 tier1 fastmm/strategies/strategy.hpp
 tier1 fastmm/strategies/hooks.hpp
 tier1 fastmm/strategies/params.hpp
+tier1 fastmm/strategies/param_publisher.hpp
 tier1 fastmm/strategies/quoting.hpp
 tier1 fastmm/strategies/registry.hpp
 tier1 fastmm/strategies/module.hpp
@@ -45,6 +46,7 @@ tier1 fastmm/core/options/black76.hpp
 # ---- tier 1: backtests, sweeps and replay --------------------------------------------------------
 tier1 fastmm/backtest/backtest_config.hpp
 tier1 fastmm/backtest/backtest_runner.hpp
+tier1 fastmm/sim/param_schedule.hpp
 tier1 fastmm/backtest/result.hpp
 tier1 fastmm/backtest/metrics.hpp
 tier1 fastmm/backtest/sweep.hpp

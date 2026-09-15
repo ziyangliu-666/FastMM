@@ -380,6 +380,12 @@ inline constexpr KeySpec kConfigSchema[] = {
     // [strategy]
     {"strategy", "name", KeyType::String, true, "registered strategy name (see --list-strategies)"},
     {"strategy",
+     "max_param_age_ms",
+     KeyType::Int,
+     false,
+     "disable quoting before the first parameter update and while none was applied for this long, "
+     "ms of engine time (default 0: off)"},
+    {"strategy",
      "params",
      KeyType::Table,
      false,

@@ -12,6 +12,7 @@
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
+#include "fastmm/strategies/param_publisher.hpp"
 
 #include <memory>
 #include <vector>
@@ -229,4 +230,76 @@ TEST_CASE("hotpath.noalloc: engine step on BookDelta with BasicMM") {
   CHECK(engine->stats().book_updates == 3);
   CHECK(transport.sent >= 2);
   CHECK(engine->stats().timers_fired >= 1);
+}
+
+namespace {
+// BasicMM that requotes when its parameters change.
+struct ParamsMM : BasicMM {
+  int params_calls = 0;
+  template <class Ctx>
+  void on_params(Ctx& ctx) noexcept {
+    ++params_calls;
+    for (const Instrument& inst : ctx.instruments()) static_cast<void>(ctx.book(inst.id));
+  }
+};
+}  // namespace
+
+TEST_CASE(
+    "hotpath.noalloc: engine applies ParamUpdates, runs on_params and the max_param_age timer") {
+  InstrumentTable table;
+  REQUIRE(table.add(make_inst()));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 20};
+  ParamsMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_position = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.quotes.min_requote_interval = Duration{};
+  cfg.max_param_age = milliseconds(100);
+  using E = Engine<ParamsMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  const ParamPublisher pub(ParamSink{}, strategy.params());
+  ParamUpdateMsg first{};
+  ParamUpdateMsg second{};
+  REQUIRE_FALSE(pub.build({{"half_spread_bps", "12"}}, ParamPublisher::kAllInstruments, first));
+  REQUIRE_FALSE(pub.build(
+      {{"half_spread_bps", "8"}, {"quote_qty", "0.02"}}, ParamPublisher::kAllInstruments, second));
+  std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+  REQUIRE(p != nullptr);
+  auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+  init_header(
+      *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+  d->hdr.flags |= EventHeader::kSnapshot;
+  d->hdr.recv_ts = clock.now();
+  d->bid_count = d->ask_count = 1;
+  d->levels()[0] = Level{px("100.00"), qt("5")};
+  d->levels()[1] = Level{px("100.02"), qt("5")};
+  feed.commit();
+  bool pushed = true;
+  {
+    NoAllocScope guard(true);
+    while (engine->step() > 0) {
+    }
+    pushed = pushed && feed.push(first.hdr);
+    while (engine->step() > 0) {
+    }
+    clock.advance(milliseconds(150));  // the engine's max_param_age timer fires
+    engine->step();
+    pushed = pushed && feed.push(second.hdr);
+    while (engine->step() > 0) {
+    }
+  }
+  CHECK(pushed);
+  CHECK(strategy.params_calls == 2);
+  CHECK(strategy.params().quote_qty == qt("0.02"));
+  CHECK(engine->stats().param_updates == 2);
+  CHECK(engine->stats().param_expiries == 1);
+  CHECK_FALSE(engine->params_stale());
 }

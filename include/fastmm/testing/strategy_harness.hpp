@@ -13,6 +13,7 @@
 //   h.fill(Side::Buy);                // a taker at the venue fills our best bid; on_fill runs
 //   CHECK(h.engine().position(h.instrument()).qty.is_positive());
 //   h.pull_quotes();                  // on_quoting(false); resume_quotes() gives on_quoting(true)
+//   h.publish({{"half_spread_bps", "7.5"}});   // a ParamUpdate: new values, then on_params
 //
 // Not for the hot path: the helpers allocate, and the harness is single-threaded.
 #include "fastmm/core/engine.hpp"
@@ -21,6 +22,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/sim/matching_engine.hpp"
 #include "fastmm/sim/sim_transport.hpp"
+#include "fastmm/strategies/param_publisher.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
 #include <algorithm>
@@ -163,6 +165,23 @@ class StrategyHarness {
   }
   void pull_quotes() { control(ControlCommand::PullQuotes); }
   void resume_quotes() { control(ControlCommand::ResumeQuotes); }
+
+  // A ParamUpdate of `values` (names and values as in [strategy.params]) for all instruments, at
+  // the current time: the strategy's parameters change and on_params runs. Validated against the
+  // strategy's current parameters; std::invalid_argument when a publisher would reject it.
+  void publish(const std::vector<ParamPublisher::ParamValue>& values) {
+    ParamUpdateMsg m{};
+    if constexpr (requires { strategy_->params(); }) {
+      const ParamPublisher pub(ParamSink{}, strategy_->params());
+      if (auto err = pub.build(values, ParamPublisher::kAllInstruments, m))
+        throw std::invalid_argument(*err);
+    } else if (!values.empty()) {
+      throw std::invalid_argument("strategy takes no parameters");
+    } else {
+      init_header(m, EventType::ParamUpdate);
+    }
+    push(m.hdr);
+  }
 
   // Any other message, delivered to the engine at the current time.
   void push(EventHeader& h) {

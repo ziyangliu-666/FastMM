@@ -1,13 +1,13 @@
 # Journal format
 
-The `.fmj` journal records every event a session's engine consumed, in consumption order, with the engine clock, plus a copy of every order message it sent. Format version 2; readers also open version 1. The decision and its history are in [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
+The `.fmj` journal records every event a session's engine consumed, in consumption order, with the engine clock, plus a copy of every order message it sent. Format version 3; readers also open versions 1 and 2. The decision and its history are in [ADR-0010](../adr/0010-fmj-journal-format.md); the code is `include/fastmm/core/journal.hpp`.
 
 All integers are little-endian. Prices, quantities and notionals are raw fixed-point `int64` (1e-8), timestamps are `int64` nanoseconds since the Unix epoch.
 
 ## File layout
 
 ```text
-file   := header (256 B) | instrument[instrument_count] (128 B each) | config (config_bytes, padded to 64) | block* | trailer
+file   := header (256 B) | instrument[instrument_count] (128 B each) | config (config_bytes, padded to 64) | params (param_table_bytes, padded to 64) | block* | trailer
 block  := block header (64 B) | message* (byte_len bytes)
 ```
 
@@ -20,7 +20,7 @@ block  := block header (64 B) | message* (byte_len bytes)
 | Offset | Size | Field | Meaning |
 |---:|---:|---|---|
 | 0 | 4 | `magic` | `FMJ1` |
-| 4 | 4 | `version` | 2 (1 for old files) |
+| 4 | 4 | `version` | 3 (1 or 2 for old files) |
 | 8 | 4 | `header_bytes` | offset of the first block |
 | 12 | 4 | `instrument_count` | instruments that follow the header |
 | 16 | 8 | `session_id` | session identifier |
@@ -39,10 +39,15 @@ block  := block header (64 B) | message* (byte_len bytes)
 | 116 | 4 | `config_bytes` | length of the configuration text; 0 = none (v2) |
 | 120 | 8 | `replace_venues` | bit v set when venue v traded with cancel-replace (v2) |
 | 128 | 4 | `config_crc32c` | CRC32C of the configuration text (v2) |
-| 132 | 120 | `reserved` | zero |
+| 132 | 4 | `param_count` | entries of the parameter table (v3) |
+| 136 | 4 | `param_table_bytes` | length of the parameter table; 0 = none (v3) |
+| 140 | 4 | `param_table_crc32c` | CRC32C of the parameter table (v3) |
+| 144 | 108 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
 
 The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key` and `api_secret`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
+
+The parameter table lists the strategy's parameters in schema order. Each entry is the type (`uint8`: 0 `int`, 1 `double`, 2 `bool`, 3 `decimal`, 4 `bps`, 5 `ms`), the name length (`uint8`) and the name; the table is zero-padded to a multiple of 64 bytes.
 
 ## Block header
 
@@ -86,7 +91,7 @@ Every message starts with the 64-byte `EventHeader`; its total length (`len`) is
 | 4 | `kEngineTime` | a consumed event; `reserved0` is the engine clock minus the previous engine-time record |
 | 5 | `kDropped` | an outbound copy the transport did not accept |
 
-Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples and outbound orders.
+Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples, outbound orders and parameter updates.
 
 ## Engine clock
 
@@ -94,9 +99,24 @@ Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventTyp
 - An `EngineTime` message (128 bytes) holds the absolute engine clock in `engine_ts` (offset 64) with `kind` (offset 72): 0 `Sync` before an event whose delta does not fit in int32 ns (a gap of more than 2.1 s) or whose predecessor was lost, 1 `Start`, 2 `Finish`.
 - The engine clock may step backwards (TSC recalibration); replay sets the simulated clock to it.
 - Sequence numbers count `EngineTime` records too.
+- A `Timer` message with byte 68 (`engine`) set to 1 is the engine's `max_param_age_ms` deadline, not a strategy timer.
+
+## Parameter updates
+
+A `ParamUpdate` message (448 bytes) is an engine input with new strategy parameter values; the engine assigns all of them at that event.
+
+| Offset | Size | Field | Meaning |
+|---:|---:|---|---|
+| 8 | 4 | `instrument` | the target instrument; `0xFFFFFFFF` for all instruments |
+| 64 | 4 | `count` | pairs used, at most 32 |
+| 72 | 8 | `publish_seq` | the publisher's sequence number, from 1 |
+| 80 | 64 | `field` | `uint16` each: the parameter's index in the parameter table |
+| 192 | 256 | `value` | `int64` each: the raw value |
+
+A raw value is the value of an `int` or `bool`, raw fixed point for `decimal` and `bps` (1 bp = 10000), nanoseconds for `ms` and the IEEE-754 bits of a `double`. Replay maps each field through the parameter table to the replaying strategy's parameter with the same name and type, and drops a field that has none.
 
 ## Tools
 
-- `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` prints the header, instruments, events and a count per type.
+- `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` prints the header, instruments, parameter table, events and a count per type.
 - `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)).
 - `fastmm-replay --journal <file.fmj> --verify` replays it ([Determinism](../explanation/determinism.md)).

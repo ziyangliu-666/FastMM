@@ -89,7 +89,7 @@ TEST_CASE("core.journal v2: header carries the session settings and the effectiv
   }
   JournalReader r;
   REQUIRE(r.open(path));
-  CHECK(r.version() == 2);
+  CHECK(r.version() == kJournalVersion);
   CHECK(r.header().version == kJournalVersion);
   CHECK(r.has_session());
   CHECK(r.header().session_epoch == 23);
@@ -133,7 +133,7 @@ TEST_CASE("core.journal v2: a journal without session settings or config") {
   }
   JournalReader r;
   REQUIRE(r.open(path));
-  CHECK(r.version() == 2);
+  CHECK(r.version() == kJournalVersion);
   CHECK_FALSE(r.has_session());
   CHECK(r.config_text().empty());
   CHECK(r.header().header_bytes == sizeof(JournalFileHeader) + sizeof(Instrument));

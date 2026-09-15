@@ -388,6 +388,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
   if (const auto* t = doc["strategy"].as_table()) {
     validate_table(*t, "strategy", cfg.warnings);
     get(*t, "name", cfg.strategy.name);
+    get(*t, "max_param_age_ms", cfg.strategy.max_param_age_ms);
+    if (cfg.strategy.max_param_age_ms < 0)
+      fail_at(*t->get("max_param_age_ms"), "max_param_age_ms must be >= 0 (0 disables)");
     if (const auto* p = t->get_as<toml::table>("params")) {
       for (const auto& [k, v] : *p) {
         if (v.is_table() || v.is_array())
@@ -554,6 +557,7 @@ std::string Config::redacted() const {
   }
   out += "\n[strategy]\n";
   kq("name", strategy.name);
+  if (strategy.max_param_age_ms != 0) kv("max_param_age_ms", strategy.max_param_age_ms);
   if (!strategy.params.empty()) {
     out += "\n[strategy.params]\n";
     for (const auto& [k, v] : strategy.params) kq(k, v);
@@ -696,6 +700,7 @@ std::string Config::effective_toml() const {
 
   toml::table st;
   st.insert("name", strategy.name);
+  if (strategy.max_param_age_ms != 0) st.insert("max_param_age_ms", strategy.max_param_age_ms);
   toml::table params;
   for (const auto& [k, v] : strategy.params) params.insert_or_assign(k, v);
   st.insert("params", std::move(params));

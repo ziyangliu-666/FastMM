@@ -24,6 +24,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.rng_seed = cfg.engine.rng_seed;
   b.engine.max_events_per_step = cfg.engine.max_events_per_step;
   b.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
+  b.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   b.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   b.engine.spin_mode = SpinMode::Busy;
   b.engine.risk = cfg.risk_limits();

@@ -4,7 +4,8 @@
 //
 //   venue side   : generator action, historical source event, order arrival at the venue,
 //                  market-data flush
-//   engine side  : next wire message (ack/fill or market data), next engine timer
+//   engine side  : next wire message (ack/fill or market data), next parameter update
+//                  (ParamSchedule), next engine timer
 //
 // and performs exactly that event, so venue-side and engine-side state evolve in one
 // consistent virtual time. Ties resolve venue-first, then in the fixed order listed above.
@@ -25,6 +26,7 @@
 #include "fastmm/sim/journal_feed.hpp"
 #include "fastmm/sim/market_generator.hpp"
 #include "fastmm/sim/md_source.hpp"
+#include "fastmm/sim/param_schedule.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 
 #include <cstddef>
@@ -75,6 +77,7 @@ struct SimDriverStats {
   std::uint64_t md_delivered = 0;
   std::uint64_t order_events_delivered = 0;
   std::uint64_t timer_steps = 0;
+  std::uint64_t param_updates = 0;  // ParamSchedule updates delivered
   std::uint64_t engine_steps = 0;
   std::uint64_t journal_drained = 0;
   LogLinearHistogram md_step_ns;  // wall-clock ns per engine step that consumed market data
@@ -97,6 +100,9 @@ class SimDriver {
     seed_levels_ = seed_levels;
   }
   void set_journal_writer(JournalFileWriter* w) noexcept { journal_ = w; }
+  // Parameter updates at simulated times. A slow tier that runs code at simulated times adds its
+  // next time to run_until() the same way.
+  void set_param_schedule(ParamSchedule* s) noexcept { params_ = s; }
   void set_measure_wall_clock(bool v) noexcept { measure_ = v; }
 
   // warm_up + on_start; seeds the book and publishes the first snapshot in coupled mode.
@@ -128,6 +134,7 @@ class SimDriver {
       const Timestamp t_flush = transport_.next_flush_ts();
       const Timestamp t_in = transport_.next_inbound_ts();
       const Timestamp t_timer = hooks_.next_timer(hooks_.ctx);
+      const Timestamp t_param = params_ != nullptr ? params_->next_ts() : Timestamp::max();
       // Periodic flushes and repeating timers alone never keep a run alive: once no
       // external event (generator, source, order in flight, wire message) remains, stop.
       Timestamp t = t_gen;
@@ -136,6 +143,7 @@ class SimDriver {
       if (t_in < t) t = t_in;
       if (t == Timestamp::max()) return false;
       if (t_flush < t) t = t_flush;
+      if (t_param < t) t = t_param;
       if (t_timer < t) t = t_timer;
       if (t > until) return true;
       if (t > clock_.now()) clock_.set(t);
@@ -163,6 +171,12 @@ class SimDriver {
           ++stats_.order_events_delivered;
         }
         engine_step(md);
+      } else if (t == t_param) {
+        const ParamUpdateMsg m = params_->pop();
+        if (feed_.push(m.hdr)) {
+          ++stats_.param_updates;
+          engine_step(false);
+        }
       } else {
         ++stats_.timer_steps;
         engine_step(false);
@@ -216,6 +230,7 @@ class SimDriver {
   bool source_done_ = false;
   MarketGenerator* generator_ = nullptr;
   JournalFileWriter* journal_ = nullptr;
+  ParamSchedule* params_ = nullptr;
   int seed_levels_ = 20;
   bool measure_ = true;
   bool started_ = false;
