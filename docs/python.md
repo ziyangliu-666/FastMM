@@ -92,7 +92,17 @@ The C++ engine logs through an asynchronous logger that has no output until it i
 
 ## Building and publishing wheels
 
-`.github/workflows/wheels.yml` builds manylinux x86_64 wheels for CPython 3.9-3.13 (each one tested with the Python test suite) and the sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts; publishing is manual. Publishing to PyPI makes the package and its source public. To publish:
+`.github/workflows/wheels.yml` builds manylinux_2_28 x86_64 wheels of `fastmm` for CPython 3.9-3.14 and of `fastmm-live` for CPython 3.10-3.14 (each one tested with its test suite) and the `fastmm` sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts; publishing is manual. `fastmm-live` has no sdist.
+
+`fastmm-live` links OpenSSL statically, built by `scripts/wheels/build-openssl.sh` from a pinned, checksum-verified release; every OpenSSL security release needs a new `fastmm-live` release. To build it locally:
+
+```bash
+./scripts/wheels/build-openssl.sh "$HOME/.cache/fastmm-openssl"
+OPENSSL_ROOT_DIR="$HOME/.cache/fastmm-openssl" .venv/bin/pip wheel ./python/live --no-deps -w dist
+./scripts/wheels/check-live-wheel.sh dist/fastmm_live-*.whl
+```
+
+`FASTMM_OPENSSL_STATIC=OFF` links the system's shared OpenSSL instead; the check script then fails. Publishing to PyPI makes the package and its source public. To publish:
 
 1. On PyPI, add a trusted publisher for this repository, workflow `wheels.yml`, environment `pypi`.
 2. In the repository settings, create the `pypi` environment (optionally with required reviewers).

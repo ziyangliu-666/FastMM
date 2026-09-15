@@ -58,7 +58,14 @@ This builds one image and starts two containers: `fastmm-sim-exchange` and `fast
 
 ## Python
 
-See [Python research bindings](../python.md).
+The `fastmm` package runs backtests on CPython 3.9 or later; see [Python research bindings](../python.md).
+
+| Extra | Installs | Needs |
+|---|---|---|
+| `fastmm[live]` | `fastmm-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module | CPython 3.10 or later, Linux x86-64 |
+| `fastmm[hot]` | numba and llvmlite | CPython 3.10 or later |
+
+TLS connections, from the `fastmm-live` program or the Python package, trust the CA certificates in `SSL_CERT_FILE` and `SSL_CERT_DIR` if either is set, otherwise in the first existing file of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`, otherwise in `certifi` (Python package only), otherwise in OpenSSL's built-in paths. A venue's `ca_file` adds to them.
 
 ## Use FastMM from your own project
 

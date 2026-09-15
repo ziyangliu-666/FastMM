@@ -1,0 +1,7 @@
+/* Linker version script for fastmm_live._live: export the module init function only. */
+{
+  global:
+    PyInit__live;
+  local:
+    *;
+};
