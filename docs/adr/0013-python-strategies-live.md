@@ -1,6 +1,6 @@
 # ADR-0013: Python strategies in live trading
 
-Status: proposed (2026-09)
+Status: accepted (2026-09)
 
 This record replaces the "backtests only" scope of ADR-0012 section 7. Python strategies run live, and the same class runs in backtests and replay. The decision rests on a survey of existing systems and two prototypes.
 
