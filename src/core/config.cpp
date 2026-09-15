@@ -150,16 +150,15 @@ bool looks_like_inline_secret(std::string_view key, std::string_view value) noex
   return secret_key && value.size() > 32 && !has_env_reference(value);
 }
 
-void flatten(const toml::table& t,
-             const std::string& prefix,
-             std::map<std::string, std::string>& out) {
+void flatten(const toml::table& t, const std::string& prefix, GenericSection& out) {
   for (const auto& [k, v] : t) {
     const std::string name =
         prefix.empty() ? std::string(k.str()) : prefix + "." + std::string(k.str());
     if (const auto* sub = v.as_table()) {
       flatten(*sub, name, out);
     } else {
-      out[name] = stringify(v);
+      out.values[name] = stringify(v);
+      out.lines[name] = line_of(v);
     }
   }
 }
@@ -429,8 +428,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     parse_level(cfg.logging.mirror_level);
   }
 
-  if (const auto* t = doc["sim"].as_table()) flatten(*t, "", cfg.sim.values);
-  if (const auto* t = doc["backtest"].as_table()) flatten(*t, "", cfg.backtest.values);
+  if (const auto* t = doc["sim"].as_table()) flatten(*t, "", cfg.sim);
+  if (const auto* t = doc["backtest"].as_table()) flatten(*t, "", cfg.backtest);
 
   return cfg;
 }

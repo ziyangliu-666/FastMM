@@ -2,7 +2,10 @@
 
 #include "fastmm/backtest/fill_model.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <string_view>
 
 namespace fastmm::bt {
 
@@ -16,6 +19,33 @@ std::int64_t positive(const GenericSection& s, std::string_view key, std::int64_
   const std::int64_t v = s.get_int(key, def);
   if (v <= 0) throw ConfigError(std::string(key) + " must be > 0");
   return v;
+}
+
+// Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
+constexpr std::array<std::string_view, 15> kBacktestKeys = {"source",
+                                                            "path",
+                                                            "seed",
+                                                            "output_dir",
+                                                            "journal_out",
+                                                            "equity_bar_s",
+                                                            "duration_s",
+                                                            "initial_capital",
+                                                            "fill_model",
+                                                            "queue_conservatism",
+                                                            "p_drop",
+                                                            "latency_fixed_us",
+                                                            "latency_jitter_us",
+                                                            "latency_md_us",
+                                                            "latency_md_jitter_us"};
+
+void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
+  for (const auto& [key, value] : bt.values) {
+    if (std::find(kBacktestKeys.begin(), kBacktestKeys.end(), key) != kBacktestKeys.end()) continue;
+    const auto line = bt.lines.find(key);
+    warnings.push_back(
+        "unknown key 'backtest." + key + "' ignored" +
+        (line == bt.lines.end() ? std::string() : " (line " + std::to_string(line->second) + ")"));
+  }
 }
 }  // namespace
 
@@ -37,6 +67,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
 
   const GenericSection& bt = cfg.backtest;
   const GenericSection& sm = cfg.sim;
+  b.warnings = cfg.warnings;
+  warn_unknown_backtest_keys(bt, b.warnings);
   b.set_seed(static_cast<std::uint64_t>(bt.get_int("seed", sm.get_int("seed", 1))));
   b.source = bt.get_string("source", "");
   b.path = bt.get_string("path", "");

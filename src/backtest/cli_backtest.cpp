@@ -174,6 +174,8 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
     std::fprintf(stderr, "%s: config error: %s\n", prog, e.what());
     return kExitConfig;
   }
+  for (const std::string& w : cfg.warnings)
+    std::fprintf(stderr, "%s: warning: %s: %s\n", prog, config_path.c_str(), w.c_str());
   if (!strategy.empty() && strategy != cfg.strategy) {
     if (!cfg.params.empty()) {
       std::fprintf(stderr,

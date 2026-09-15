@@ -88,6 +88,13 @@ fastmm::Config load_config(const std::string& path) {
   return fastmm::Config::load(path, lo);
 }
 
+void print_config_warnings(const char* prog,
+                           const std::string& path,
+                           const fastmm::bt::BacktestConfig& cfg) {
+  for (const std::string& w : cfg.warnings)
+    std::fprintf(stderr, "%s: warning: %s: %s\n", prog, path.c_str(), w.c_str());
+}
+
 std::string read_expected(const std::string& path) {
   std::ifstream in(path);
   std::string s;
@@ -186,6 +193,7 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
       const Config raw = load_config(config_path);
       Logger::instance().set_level(raw.log_level());
       cfg = bt::BacktestConfig::from_config(raw);
+      print_config_warnings(prog, config_path, cfg);
       if (session && !info.config_toml.empty()) {
         const std::uint64_t h = raw.effective_hash();
         if (h == info.config_hash) {
@@ -235,6 +243,7 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
       const Config raw = load_config(config_path);
       Logger::instance().set_level(raw.log_level());
       cfg = bt::BacktestConfig::from_config(raw);
+      print_config_warnings(prog, config_path, cfg);
     }
     cfg.measure_wall_clock = false;
     cfg.output_dir.clear();

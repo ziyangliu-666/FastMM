@@ -129,3 +129,27 @@ TEST_CASE("config.shipped: the check reports bad parameters and schema errors") 
       mutated_copy("sim-local.toml", R"(name = "basic_mm")", R"(name = "no_such_strategy")"));
   CHECK_MESSAGE(err.find("unknown strategy 'no_such_strategy'") != std::string::npos, err);
 }
+
+TEST_CASE("config: unknown [risk] and [backtest] keys are warnings with their line") {
+  const Config cfg = Config::parse(R"([venues.sim]
+kind = "sim"
+
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+tick = "0.01"
+lot = "0.00001"
+
+[risk]
+max_postion = "0.05"
+
+[backtest]
+duraton_s = 5
+duration_s = 5
+)");
+  const bt::BacktestConfig b = bt::BacktestConfig::from_config(cfg);
+  REQUIRE(b.warnings.size() == 2);
+  CHECK(b.warnings[0] == "unknown key 'risk.max_postion' ignored (line 11)");
+  CHECK(b.warnings[1] == "unknown key 'backtest.duraton_s' ignored (line 14)");
+  CHECK(b.duration == seconds(5));
+}

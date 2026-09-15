@@ -141,6 +141,7 @@ struct LoggingSection {
 // Free-form section used by the sim / backtest libraries: dotted keys -> stringified value.
 struct GenericSection {
   std::map<std::string, std::string> values;
+  std::map<std::string, int> lines;  // key -> line in the file; absent for keys set in code
   [[nodiscard]] bool has(std::string_view key) const { return values.contains(std::string(key)); }
   [[nodiscard]] std::string get_string(std::string_view key, std::string_view def = "") const;
   [[nodiscard]] std::int64_t get_int(std::string_view key, std::int64_t def = 0) const;
