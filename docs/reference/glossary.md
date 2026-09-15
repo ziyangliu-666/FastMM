@@ -19,6 +19,7 @@
 | **fixed point** | integers with an implied scale: `Price`, `Qty` and `Notional` count units of 1e-8 ([Fixed point](fixed-point.md)) |
 | **harness** | `StrategyHarness<S>`, a real engine with a simulated venue for unit tests |
 | **hook** | a strategy member function the engine calls on an event (`on_book`, `on_fill`, ...) |
+| **hot hook** | a Python strategy method marked `@fastmm.hot`, compiled by Numba and called by the engine thread without the GIL ([Hot hooks](python-api.md#hot-hooks)) |
 | **hysteresis** | the quote manager keeps a resting quote whose price or quantity is close enough to the desired one (`min_requote_ticks`, `min_qty_bps`) |
 | **instrument table** | the instruments of a session, indexed by `InstrumentId` |
 | **journal (`.fmj`)** | the file of every event a session consumed, in order, with the engine clock ([Journal format](journal-format.md)) |
