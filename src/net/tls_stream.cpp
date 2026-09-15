@@ -84,7 +84,14 @@ TlsContext::TlsContext(Mode mode) : mode_(mode) {
   SSL_CTX_set_mode(ctx_, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
   if (mode == Mode::Client) {
     SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
-    load_ca_locations(ctx_, find_ca_locations());
+    try {
+      load_ca_locations(ctx_, find_ca_locations());
+    } catch (...) {
+      // The destructor does not run for a constructor that throws.
+      SSL_CTX_free(ctx_);
+      ctx_ = nullptr;
+      throw;
+    }
   } else {
     SSL_CTX_set_verify(ctx_, SSL_VERIFY_NONE, nullptr);
   }
