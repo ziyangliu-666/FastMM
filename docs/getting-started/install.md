@@ -56,6 +56,11 @@ docker compose up --build
 
 This builds one image and starts two containers: `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`.
 
+## WSL2
+
+- The log of a live session shows `host wall clock stepped by <n> ns relative to CLOCK_MONOTONIC_RAW ...` and `TSC recalibration stepped the engine clock by <n> ns ...` warnings: WSL2 steps the Linux wall clock to follow Windows, and the engine clock follows it ([Troubleshooting](../how-to/operations/troubleshooting.md), [Architecture](../explanation/architecture.md)).
+- Keep `[engine] spin_mode = "adaptive"` and `cpu = -1`, as the shipped configurations do. `spin_mode`, `cpu` and `net_cpus` are described in [Configuration](../reference/configuration.md#engine), and CPU pinning on dedicated machines in the [Go-live checklist](../how-to/operations/go-live-checklist.md).
+
 ## Python
 
 The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9 or later, and `fastmm-engine-live` adds live trading; see [Python](../python.md).
