@@ -22,6 +22,7 @@ void bind_backtest(py::module_& m);
 void bind_book(py::module_& m);
 void bind_strategies(py::module_& m);
 void bind_strategy_api(py::module_& m);
+void bind_hot(py::module_& m);
 
 // Backtest of a fastmm.Strategy instance with the GIL held (bind_strategy_api.cpp). `hooks` names
 // the hooks the class defines. Returns (BacktestResult, None) or (BacktestResult, (exception, hook,
@@ -31,6 +32,14 @@ py::tuple run_python_strategy(const bt::BacktestConfig& cfg,
                               const py::object& instance,
                               const std::string& name,
                               const std::vector<std::string>& hooks);
+
+// Backtest of a compiled hot strategy with the GIL released (bind_hot.cpp). `program` holds the
+// hook addresses, timers, the initial record and the parameter block size. Returns (BacktestResult,
+// error, hook calls); error is None or (status, fail_code, hook, timer, at_ns, engine_events,
+// kill_reason) and the run stopped early then.
+py::tuple run_hot_strategy(const bt::BacktestConfig& cfg,
+                           sim::MdSource* source,
+                           const py::dict& program);
 
 // str / int / float / bool (and numpy scalars) -> the exact string form the C++ parameter
 // parser accepts. Throws TypeError / ValueError.

@@ -38,6 +38,7 @@ from typing import (
 )
 
 from . import _core
+from ._hot import decl as _hot_decl
 
 if TYPE_CHECKING:  # pragma: no cover
     from ._core import BacktestConfig, BacktestResult
@@ -116,12 +117,18 @@ class StrategyError(RuntimeError):
     ``result`` is the partial BacktestResult of the run, which stopped after the failing event."""
 
     def __init__(self, message: str, result: "Optional[BacktestResult]" = None,
-                 hook: str = "", now_ns: int = 0, events: int = 0) -> None:
+                 hook: str = "", now_ns: int = 0, events: int = 0, status: int = 0,
+                 fail_code: int = 0, kill_reason: str = "") -> None:
         super().__init__(message)
         self.result = result
         self.hook = hook
         self.now_ns = now_ns
         self.events = events
+        # Hot hooks: the hook status (1 exception, 2 ctx.fail, 3 bad float level), the code passed
+        # to ctx.fail() and the kill reason.
+        self.status = status
+        self.fail_code = fail_code
+        self.kill_reason = kill_reason
 
 
 # ---- parameters ----------------------------------------------------------------------------------
@@ -310,6 +317,13 @@ class Strategy:
     def __init__(self) -> None:
         self._fastmm_used = False
 
+    # The HotSpec of a class with @fastmm.hot methods (set at class creation), else None.
+    _fastmm_hot: "Optional[_hot_decl.HotSpec]" = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._fastmm_hot = _hot_decl.check_class(cls, HOOKS, Param)
+
     # Silences the "did you mean" warning for helper methods named like a misspelt hook.
     fastmm_allow_near_miss_names = False
 
@@ -427,7 +441,8 @@ def _instance(strategy: Any) -> Strategy:
 
 
 def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyArg = None,
-                 params: Optional[Mapping[str, Any]] = None) -> "BacktestResult":
+                 params: Optional[Mapping[str, Any]] = None, *,
+                 hot_cache: bool = True) -> "BacktestResult":
     """Run one backtest.
 
     data: None (config.source / config.path), 'synthetic', a .fmj or .csv path, or a dict of numpy
@@ -438,10 +453,14 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
 
     params: overrides applied on top of config.params (str, int, float or bool values).
 
+    hot_cache: for a strategy with @fastmm.hot methods, whether compiled hooks are kept in
+    FastMM's Numba cache directory; False compiles every hook afresh.
+
     C++ strategies run with the GIL released. A Python strategy holds the GIL for the whole run;
     a hook that raises stops the run and raises StrategyError (original exception as __cause__,
     partial result as .result). KeyboardInterrupt and SystemExit from a hook propagate unchanged,
-    with the partial result as .result.
+    with the partial result as .result. Hot hooks run with the GIL released; a failing hot hook
+    trips the kill switch and raises StrategyError with .status, .fail_code and .kill_reason.
     """
     if strategy is None or isinstance(strategy, str):
         if params:
@@ -453,7 +472,8 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
     instance = _instance(strategy)
     cls = type(instance)
     name = cls.strategy_name()
-    hooks = cls.hooks()
+    spec = cls._fastmm_hot
+    hooks = () if spec is not None else cls.hooks()
     merged: Dict[str, Any] = dict(config.params)
     if params:
         merged.update(params)
@@ -462,6 +482,8 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
     except ValueError as e:
         raise ValueError(f"{name}: {e}") from None
     instance._fastmm_used = True
+    if spec is not None:
+        return _run_hot(config, data, instance, name, spec, hot_cache)
     result, error = _core._run_strategy(config, data, instance, name, list(hooks),
                                         instance.param_values())
     if error is None:
@@ -477,3 +499,18 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
         f"{name}.{hook} raised {type(exc).__name__}: {exc} (engine time {now_ns} ns, "
         f"after {events} engine events)",
         result=result, hook=hook, now_ns=now_ns, events=events) from exc
+
+
+def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
+             spec: "_hot_decl.HotSpec", cache: bool) -> "BacktestResult":
+    from ._hot import compiler  # imports numba
+
+    result, error, _calls = compiler.run(config, data, instance, name, spec, cache,
+                                         instance.param_values())
+    if error is None:
+        return result
+    raise StrategyError(
+        f"{name}.{error['hook']} {error['what']} (engine time {error['now_ns']} ns, after "
+        f"{error['events']} engine events); kill switch tripped: {error['kill_reason']}",
+        result=result, hook=error["hook"], now_ns=error["now_ns"], events=error["events"],
+        status=error["status"], fail_code=error["fail_code"], kill_reason=error["kill_reason"])

@@ -2,6 +2,8 @@
 
 Strategies written in Python run inside the C++ engine in backtests. They use the same engine, risk checks, OMS, quote manager, journal and outbound hash as C++ strategies (ADR-0012, section 7). Backtests, data sources and results: [Python](../python.md).
 
+Methods marked `@fastmm.hot` are compiled with Numba instead and follow [Hot hooks](#hot-hooks).
+
 Scope: in-process backtests only. Replay of Python strategies, process-pool sweeps, live trading and the simulated exchange over the network are not supported.
 
 ## A strategy
@@ -165,3 +167,122 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 - `fastmm.sweep` takes registered C++ strategy names only; `fastmm-live` never links Python.
 - The simulator produces no connection state changes and the numpy source no option tickers, so `on_connection` and `on_option_ticker` fire only with data sources that contain them.
 - One thread: a hook must not start threads that call the context.
+
+## Hot hooks
+
+A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and the engine thread calls the compiled hooks through function pointers with the GIL released. It needs `pip install "fastmm[hot]"` (numba 0.61 to 0.67, CPython 3.10 or later). Steps: [Write hot hooks in Python](../how-to/strategies/python-hot-hooks.md).
+
+### Declarations
+
+| Declaration | Meaning |
+|---|---|
+| `@fastmm.hot` on `on_book`, `on_fill`, `on_quoting` or `on_connection` | an event hook |
+| `@fastmm.hot(every="100ms")` on any other name | a timer hook, at most 16; units `ns`, `us`, `ms`, `s`, `m`, `h` |
+| `fastmm.Param(default, min=, max=, doc=)` | a parameter, typed, parsed and validated as in [Parameters](#parameters) |
+| `fastmm.State(default, doc="")` | a per-instrument bool, int64 or float that hooks read and write; it starts at the default and keeps its value between calls |
+
+Every hot hook takes `(self, ctx, book)` and runs once per instrument:
+
+| Hook | Runs for |
+|---|---|
+| `on_book` | the instrument whose book changed |
+| `on_fill` | the fill's instrument, after position and fees are updated |
+| `on_quoting` | every instrument, when quoting is enabled or disabled |
+| `on_connection` | every instrument of the venue whose connection changed |
+| a timer hook | every instrument, once per period of engine time from the start of the run |
+
+`self` holds the instrument's parameters and `State` fields as attributes. A float parameter also has `self.<name>_raw`, its value as a 1e-8 fixed-point int64 (nearest). The engine copies the parameters into `self` before every call, so an assignment to a parameter, also through an alias such as `t = self`, is gone at the next call.
+
+Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm[hot]"`.
+
+### ctx
+
+| Field | Meaning |
+|---|---|
+| `now_ns`, `instrument` | engine time (ns) and the instrument id |
+| `tick`, `lot`, `min_qty`, `position` | floats (quote currency for the tick, base units otherwise), each with a `_raw` field |
+| `quoting_enabled` | 1 while quoting is enabled and the instrument's venue is not killed; the engine ignores quotes otherwise |
+| `connected` | in `on_connection`: 1 when the venue's connection is live |
+| `fill_side`, `fill_maker`, `fill_price`, `fill_qty` | in `on_fill`: `fastmm.BUY` (0) or `fastmm.SELL` (1), 1 for a maker fill, price and quantity with `_raw` fields; 0 in other hooks |
+
+| Method | Intent |
+|---|---|
+| `quote(bid_px, ask_px, qty)` | replace the ladder with one level per side |
+| `bid(px, qty)`, `ask(px, qty)` | append a level; levels after the eighth per side are dropped |
+| `quote_raw`, `bid_raw`, `ask_raw` | the same with int raw values (1e-8 scale) |
+| `clear()` | an empty ladder: the working quotes are cancelled |
+| `pull()` | pull the instrument's quotes |
+| `uncross()` | move a level-0 ask at or below the level-0 bid to one tick above it (`DesiredQuotes::uncross`) |
+| `keep_passive()` | shift each side so level 0 is one tick inside the book's touch (`keep_passive`), after `uncross` |
+| `fail(code)` | stop the strategy with an int code |
+
+When the hook returns, the engine makes at most one call for the instrument: `set_quotes` after `quote`, `bid`, `ask` or `clear`, or `pull_quotes` after `pull`, whichever came last. A float price or quantity is rounded to the nearest 1e-8, then prices to the tick (bids down, asks up) and quantities down to the lot; a raw level is used as given. A level with a non-positive price or a zero quantity is dropped.
+
+### book
+
+| Field | Meaning |
+|---|---|
+| `valid`, `ts_ns` | 1 when the book is valid (`BookView.valid`); last update in engine time, 0 before the first |
+| `mid`, `best_bid`, `best_ask`, `best_bid_qty`, `best_ask_qty` | floats, each with a `_raw` field |
+| `n_bids`, `n_asks` | levels present in the arrays, at most 10 per side |
+| `bid_px[i]`, `bid_qty[i]`, `ask_px[i]`, `ask_qty[i]` | level `i`, 0 best, each with a `_raw` array; entries from `n_bids` or `n_asks` on are 0 |
+
+### fastmm.fx
+
+`fastmm.fx` has the C++ fixed-point operators for raw values; each works in plain Python and in hooks. Constants: `SCALE` (100,000,000), `RATIO_PER_BP` (10,000), `BUY`, `SELL`.
+
+| Function | Result |
+|---|---|
+| `tdiv(a, b)` | integer division truncating toward zero, as in C++; `ZeroDivisionError` when `b` is 0 |
+| `mul_ratio(v, r)` | `Fixed * Ratio`: the 128-bit product divided by 1e8, truncating toward zero |
+| `bps_ratio(bps_raw)` | the `Ratio` raw value of a bps parameter's `_raw` field (0.01 bps: 1,000,000 gives 100) |
+| `round_price(p, tick, side)`, `round_qty(q, lot)` | `round_to_tick` (bids down, asks up) and `round_to_lot` (down) |
+| `to_raw(x)`, `to_float(raw)` | the nearest raw value (halves away from zero; `ValueError` when not finite) and back |
+
+### What compiles
+
+Hooks use Numba's nopython subset: numbers, the fields and methods above, loops, tuples and functions decorated with `numba.njit`. The code runs with bounds checks (an index outside an array raises `IndexError`) and Python's error model (a division by zero raises `ZeroDivisionError`); helpers are compiled with bounds checks when a hook first calls them.
+
+Before a run, FastMM scans the LLVM IR of each hook and of the helpers it calls. A call to anything other than an LLVM intrinsic, a libm function or `NRT_MemInfo_call_dtor` raises `fastmm.HotCompileError` (a `TypeError`) with the hook and the symbol:
+
+```text
+fastmm: Allocates.on_book is rejected by the IR check: it calls NRT_MemInfo_alloc_aligned (memory allocation (arrays, lists, dicts, strings)). Hot hooks may not allocate, print or use Python objects.
+```
+
+This rejects arrays, lists, strings, `print` and Python objects. Calls through ctypes or cffi function pointers are not detected and are not supported. A hook that Numba cannot compile raises `HotCompileError` with the hook's name and Numba's message.
+
+### Running and errors
+
+`run_backtest(..., hot_cache=True)` compiles the hooks, calls each once on scratch copies of `ctx`, `book` and `self` (nothing is sent and `State` is unchanged), then runs the backtest with the GIL released.
+
+A hook that raises, calls `ctx.fail(code)`, or sets a float price or quantity that is not finite, beyond 9.2e10 in magnitude, or a negative quantity, stops the strategy: no hook runs again, the kill switch trips with reason `strategy_error` (quotes pulled, working orders cancelled) and the backtest ends after that event. `run_backtest` raises `fastmm.StrategyError`:
+
+| Attribute | Value |
+|---|---|
+| `hook` | the hook's name |
+| `status` | 1 raised, 2 `ctx.fail`, 3 bad float level |
+| `fail_code` | the code passed to `ctx.fail` |
+| `kill_reason` | `"strategy_error"` |
+| `now_ns`, `events`, `result` | engine time, engine events and the partial `BacktestResult` |
+
+Numba keeps neither the type nor the message of the exception.
+
+### Numba cache
+
+With `hot_cache=True` compiled hooks are stored under `$FASTMM_CACHE_DIR/numba/` (default `$XDG_CACHE_HOME/fastmm` or `~/.cache/fastmm`) in a directory whose name holds the fastmm version, the hot ABI, a hash of FastMM's compiler sources, the numba and llvmlite versions and the CPU. Numba checks only the source file of each hook: after changing a helper in another file, pass `hot_cache=False` or delete the directory.
+
+### Performance
+
+Measured with `python bench/python/bench_hot_strategy.py --build build/release` (gcc 13 release module, numba 0.67.0, Python 3.12, WSL2 on a Zen 4 desktop, one core). Cost of one `on_book` call without the engine, on the same books, positions and parameters (`levels = 2`):
+
+| Case | ns per call |
+|---|---|
+| C++ `BasicMM::on_book` | 31.7 |
+| `BasicMMHot` (exact) | 36.8 |
+| `BasicMMHot` with bounds checks off | 37.0 |
+| `BasicMMHot` with the 10 levels per side copied | 72.0 |
+| `BasicMMHotFloat` | 30.4 |
+
+Bounds checks cost less than the run-to-run spread (under 1 ns per call). The engine copies the level arrays only when a hook, or a `numba.njit` function it calls, names one of them, or calls code the check cannot follow; the copy costs about 35 ns per call.
+
+On the synthetic market (3,600 s, 1,356,426 market-data events) C++ `basic_mm` runs at 1.93 M events/s and `BasicMMHot` at 1.90 M events/s with the same orders. Compiling `BasicMMHot` (5 hooks) takes 1.1 s in a fresh process, 0.5 s from the Numba cache; importing numba takes 0.14 s.

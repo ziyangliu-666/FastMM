@@ -452,6 +452,35 @@ void bind_backtest(py::module_& m) {
       "fastmm.run_backtest(config, data, strategy=MyStrategy).");
 
   m.def(
+      "_run_hot_strategy",
+      [](const BacktestConfig& config,
+         const py::object& data,
+         const std::string& name,
+         const py::dict& params,
+         const py::dict& program) {
+        DataSpec spec = parse_data(data);
+        BacktestConfig cfg = config;
+        cfg.strategy = name;
+        ParamMap effective;
+        for (const auto& [k, v] : params)
+          effective[py::str(k).cast<std::string>()] = py::str(v).cast<std::string>();
+        cfg.params = std::move(effective);
+        std::unique_ptr<bt::MdSource> source;
+        {
+          py::gil_scoped_release release;
+          source = open_spec(spec, cfg);
+        }
+        return run_hot_strategy(cfg, source.get(), program);
+      },
+      py::arg("config"),
+      py::arg("data"),
+      py::arg("name"),
+      py::arg("params"),
+      py::arg("program"),
+      "Internal: backtest of a compiled hot strategy with the GIL released; use "
+      "fastmm.run_backtest(config, data, strategy=MyStrategy).");
+
+  m.def(
       "sweep",
       [](const BacktestConfig& config,
          const py::dict& grid,

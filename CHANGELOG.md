@@ -4,6 +4,13 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- Python hot hooks in backtests (ADR-0013, section 1): `@fastmm.hot` methods (`on_book`, `on_fill`,
+  `on_quoting`, `on_connection`, and timer hooks with `every=`) compiled by Numba and called by the
+  engine thread through the C ABI in `strategies/hot_abi.h`, with `fastmm.State`, `fastmm.fx` and
+  the `fastmm[hot]` extra. A failing hook trips the kill switch with the new
+  `KillReason::StrategyError`; `StrategyContext::trip_kill(reason)` is new.
+
 ### Changed
 - Parameter updates (ADR-0013). `EventType::ParamUpdate` (26) carries up to 32 (field index, raw
   value) pairs. `ParamPublisher` validates an update off the engine thread and pushes it into a

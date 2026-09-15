@@ -141,6 +141,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().quoting_enabled()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().killed()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_killed(VenueId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().request_stop()), void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().trip_kill(KillReason::StrategyError)), void>);
 // randomness (seeded from the configuration)
 static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 ```
@@ -164,6 +165,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `cancel_timer(id)` | false when the timer no longer exists |
 | `quoting_enabled()`, `killed()`, `venue_killed(venue)` | quoting state, the global kill switch and one venue's kill switch (new orders to that venue are refused and `set_quotes` ignores its instruments) |
 | `request_stop()` | sets the engine's stop flag: a backtest ends after the current engine step; replay always drains the journal |
+| `trip_kill(reason)` | trips the global kill switch with a `KillReason`: quoting stops, quotes are pulled and every working order is cancelled |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |
 
 `set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips orders awaiting a venue response and uses replace where the venue supports it. A direct order returns a `Result`:

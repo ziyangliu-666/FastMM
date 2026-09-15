@@ -153,6 +153,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().quoting_enabled()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().killed()), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_killed(VenueId{})), bool>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().request_stop()), void>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().trip_kill(KillReason::StrategyError)), void>);
 // randomness (seeded from the configuration)
 static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 // [end:context]

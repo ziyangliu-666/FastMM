@@ -60,6 +60,8 @@ r = fastmm.run_backtest(cfg, data="synthetic", strategy=Joiner, params={"qty": 0
 
 Reference: [Python strategy API](reference/python-api.md). `examples/python/strategies/basic_mm_exact.py` is an integer port of the C++ BasicMM with the same outbound hash; `skew_mm.py` is a float market maker.
 
+Methods marked `@fastmm.hot` are compiled with Numba and run without the GIL: [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md). `basic_mm_hot.py` ports BasicMM that way, with the same outbound hash.
+
 ### Results
 
 `r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `engine_stats()` and `transport_stats()` the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
