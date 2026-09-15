@@ -20,7 +20,7 @@ On Ubuntu 24.04: `sudo apt install g++-13 cmake ninja-build libssl-dev zlib1g-de
 ```bash
 ./scripts/bootstrap.sh
 cmake --build --preset release -j
-ctest --preset release
+ctest --preset release -j"$(nproc)"
 ```
 
 `bootstrap.sh` checks the toolchain, creates the CPM download cache ([Dependencies](../contributing/dependencies.md)) and configures the `release` preset; `--dev` also configures `debug` and installs the pre-commit hooks. The programs are in `build/release/bin/`.
@@ -46,7 +46,7 @@ The first command lists the built-in strategies with their parameters. The secon
 | `clang-release` | clang, LTO | the second compiler in CI |
 | `python` | the Python module only, no networking | wheel builds |
 
-`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets).
+`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets). They set no job count: without `-j`, ctest runs one test at a time unless `CTEST_PARALLEL_LEVEL` is set.
 
 ## Docker
 

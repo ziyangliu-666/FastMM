@@ -165,7 +165,6 @@
         "outputOnFailure": true
       },
       "execution": {
-        "jobs": 8,
         "timeout": 300
       },
       "filter": {

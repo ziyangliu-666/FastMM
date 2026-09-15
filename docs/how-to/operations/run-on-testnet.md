@@ -8,7 +8,7 @@ Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdow
 
 ```bash
 cmake --preset release && cmake --build --preset release -j
-ctest --preset release
+ctest --preset release -j"$(nproc)"
 ```
 
 The binaries are in `build/release/bin/`.
