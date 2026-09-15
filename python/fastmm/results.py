@@ -29,7 +29,7 @@ SWEEP_STATS: Tuple[str, ...] = (
     "net_pnl",
     "realized_pnl",
     "fees",
-    "sharpe_bar",  # per 1 s bar; annualising short synthetic runs gives meaningless values
+    "sharpe_bar",  # per bar; sharpe_annualized is NaN for runs shorter than a day
     "max_drawdown",
     "fills",
     "fill_ratio",

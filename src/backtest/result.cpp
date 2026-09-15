@@ -93,8 +93,14 @@ std::string BacktestResult::summary_table() const {
   row("realized / unrealized / fees",
       fmt::format("{:.4f} / {:.4f} / {:.4f}", m.realized_pnl, m.unrealized_pnl, m.fees));
   row("sharpe (per bar / annualized)",
-      fmt::format("{:.4f} / {:.2f}", m.sharpe_bar, m.sharpe_annualized));
-  row("max drawdown", fmt::format("{:.4f} ({:.3f}%)", m.max_drawdown, m.max_drawdown_pct * 100.0));
+      std::isfinite(m.sharpe_annualized)
+          ? fmt::format("{:.4f} / {:.2f}", m.sharpe_bar, m.sharpe_annualized)
+          : fmt::format("{:.4f} / n/a (run under 1 day)", m.sharpe_bar));
+  row("max drawdown",
+      std::isfinite(m.max_drawdown_pct)
+          ? fmt::format(
+                "{:.4f} ({:.3f}% of initial capital)", m.max_drawdown, m.max_drawdown_pct * 100.0)
+          : fmt::format("{:.4f}", m.max_drawdown));
   row("fills (maker / taker)", fmt::format("{} ({} / {})", m.fills, m.maker_fills, m.taker_fills));
   row("orders / cancels / replaces", fmt::format("{} / {} / {}", m.orders, m.cancels, m.replaces));
   row("rejects", fmt::format("{}", m.rejects));

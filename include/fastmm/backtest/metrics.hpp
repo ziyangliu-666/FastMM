@@ -18,11 +18,14 @@ struct Metrics {
   double realized_pnl = 0.0;
   double unrealized_pnl = 0.0;
   double fees = 0.0;
-  double final_position = 0.0;     // base units, summed over instruments
-  double sharpe_bar = 0.0;         // mean / sample stdev of per-bar equity changes
-  double sharpe_annualized = 0.0;  // sharpe_bar * sqrt(bars per 365-day year)
-  double max_drawdown = 0.0;       // quote currency, >= 0
-  double max_drawdown_pct = 0.0;   // drawdown / (initial_capital + equity peak); 0 if <= 0
+  double final_position = 0.0;  // base units, summed over instruments
+  double sharpe_bar = 0.0;      // mean / sample stdev of per-bar equity changes
+  // sharpe_bar * sqrt(bars per 365-day year); NaN for runs shorter than
+  // kMinAnnualizedDurationS, where the scaling turns noise into four-digit values.
+  double sharpe_annualized = 0.0;
+  double max_drawdown = 0.0;  // largest fall of equity from its peak, quote currency, >= 0
+  // max_drawdown / initial_capital; NaN when initial_capital <= 0.
+  double max_drawdown_pct = 0.0;
   std::uint64_t fills = 0;
   std::uint64_t maker_fills = 0;
   std::uint64_t taker_fills = 0;
@@ -48,6 +51,9 @@ struct Metrics {
   std::uint64_t wall_tick_to_order_p50_ns = 0;
   std::uint64_t wall_tick_to_order_p99_ns = 0;
 };
+
+// Shortest run whose Sharpe ratio is annualised: one day.
+inline constexpr double kMinAnnualizedDurationS = 86400.0;
 
 struct MetricsInputs {
   Duration bar = seconds(1);

@@ -104,9 +104,9 @@ TEST_CASE("backtest.metrics: hand-computed Sharpe, drawdown, inventory, uptime, 
   // per-bar changes 1, 2, -1, 3, -1: mean 0.8, sample variance 3.2
   const double sharpe = 0.8 / std::sqrt(3.2);
   CHECK(m.sharpe_bar == doctest::Approx(sharpe));
-  CHECK(m.sharpe_annualized == doctest::Approx(sharpe * std::sqrt(365.0 * 86400.0)));
+  CHECK(std::isnan(m.sharpe_annualized));  // 5 s is shorter than kMinAnnualizedDurationS
   CHECK(m.max_drawdown == doctest::Approx(1.0));
-  CHECK(m.max_drawdown_pct == doctest::Approx(1.0 / 3.0));  // peak 3 when the first 1 fell
+  CHECK(std::isnan(m.max_drawdown_pct));  // no initial capital
   CHECK(m.inventory_mean == doctest::Approx(0.0));
   CHECK(m.inventory_abs_mean == doctest::Approx(0.8));
   CHECK(m.inventory_max == doctest::Approx(2.0));
@@ -128,8 +128,13 @@ TEST_CASE("backtest.metrics: hand-computed Sharpe, drawdown, inventory, uptime, 
   CHECK(m.virtual_tick_to_order_p50_ns <= 266'000);
   CHECK(m.virtual_tick_to_order_p99_ns == 300'000);
 
-  in.initial_capital = 97.0;  // drawdown relative to capital + peak
-  CHECK(compute_metrics(eq, fills, orders, in).max_drawdown_pct == doctest::Approx(0.01));
+  in.initial_capital = 50.0;  // drawdown relative to the starting capital
+  CHECK(compute_metrics(eq, fills, orders, in).max_drawdown_pct == doctest::Approx(0.02));
+  // With 1 day bars the same 5 bars span 5 days: annualised over 365 bars per year.
+  in.bar = seconds(86400);
+  for (auto& ts : eq.ts) ts *= 86400;
+  CHECK(compute_metrics(eq, fills, orders, in).sharpe_annualized ==
+        doctest::Approx(sharpe * std::sqrt(365.0)));
   const Metrics empty = compute_metrics(EquityRows{}, FillRows{}, OrderRows{}, MetricsInputs{});
   CHECK(empty.bars == 0);
   CHECK(empty.sharpe_bar == 0.0);

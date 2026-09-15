@@ -211,8 +211,8 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
-| `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s |
-| `initial_capital` | number | `0` | Starting capital, quote currency, used for percentage drawdown |
+| `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
+| `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 
