@@ -6,6 +6,7 @@
 //                  market-data flush
 //   engine side  : next wire message (ack/fill or market data), next parameter update
 //                  (ParamSchedule), next engine timer
+//   slow tier    : next run of the slow methods of a Python strategy (SlowHooks)
 //
 // and performs exactly that event, so venue-side and engine-side state evolve in one
 // consistent virtual time. Ties resolve venue-first, then in the fixed order listed above.
@@ -69,6 +70,16 @@ struct EngineHooks {
   [[nodiscard]] bool valid() const noexcept { return ctx != nullptr && step != nullptr; }
 };
 
+// Code that runs at simulated times between engine events: the slow methods of a Python strategy
+// in a backtest.
+struct SlowHooks {
+  void* ctx = nullptr;
+  // Runs what is due at `now` (the clock is at `now`) and returns the next time to run
+  // (Timestamp::max(): none). A time not after `now` is taken as 1 ns after it.
+  Timestamp (*run)(void* ctx, Timestamp now) = nullptr;
+  Timestamp first = Timestamp::max();  // the first time to run
+};
+
 struct SimDriverStats {
   std::uint64_t generator_actions = 0;
   std::uint64_t source_events = 0;
@@ -78,6 +89,7 @@ struct SimDriverStats {
   std::uint64_t order_events_delivered = 0;
   std::uint64_t timer_steps = 0;
   std::uint64_t param_updates = 0;  // ParamSchedule updates delivered
+  std::uint64_t slow_runs = 0;      // SlowHooks::run calls
   std::uint64_t engine_steps = 0;
   std::uint64_t journal_drained = 0;
   LogLinearHistogram md_step_ns;  // wall-clock ns per engine step that consumed market data
@@ -100,9 +112,14 @@ class SimDriver {
     seed_levels_ = seed_levels;
   }
   void set_journal_writer(JournalFileWriter* w) noexcept { journal_ = w; }
-  // Parameter updates at simulated times. A slow tier that runs code at simulated times adds its
-  // next time to run_until() the same way.
+  // Parameter updates at simulated times.
   void set_param_schedule(ParamSchedule* s) noexcept { params_ = s; }
+  // A slow tier at simulated times. Its runs come after the other events of the same time and, like
+  // timers, do not keep a run alive.
+  void set_slow_hooks(const SlowHooks& h) noexcept {
+    slow_ = h;
+    slow_next_ = h.run != nullptr ? h.first : Timestamp::max();
+  }
   void set_measure_wall_clock(bool v) noexcept { measure_ = v; }
 
   // warm_up + on_start; seeds the book and publishes the first snapshot in coupled mode.
@@ -134,9 +151,11 @@ class SimDriver {
       const Timestamp t_flush = transport_.next_flush_ts();
       const Timestamp t_in = transport_.next_inbound_ts();
       const Timestamp t_timer = hooks_.next_timer(hooks_.ctx);
+      if (params_ != nullptr) params_->collect();
       const Timestamp t_param = params_ != nullptr ? params_->next_ts() : Timestamp::max();
-      // Periodic flushes and repeating timers alone never keep a run alive: once no
-      // external event (generator, source, order in flight, wire message) remains, stop.
+      const Timestamp t_slow = slow_next_;
+      // Periodic flushes, repeating timers and slow-tier runs alone never keep a run alive: once
+      // no external event (generator, source, order in flight, wire message) remains, stop.
       Timestamp t = t_gen;
       if (t_src < t) t = t_src;
       if (t_ord < t) t = t_ord;
@@ -145,6 +164,7 @@ class SimDriver {
       if (t_flush < t) t = t_flush;
       if (t_param < t) t = t_param;
       if (t_timer < t) t = t_timer;
+      if (t_slow < t) t = t_slow;
       if (t > until) return true;
       if (t > clock_.now()) clock_.set(t);
       if (t == t_gen) {
@@ -177,9 +197,14 @@ class SimDriver {
           ++stats_.param_updates;
           engine_step(false);
         }
-      } else {
+      } else if (t == t_timer) {
         ++stats_.timer_steps;
         engine_step(false);
+      } else {
+        ++stats_.slow_runs;
+        slow_next_ = slow_.run(slow_.ctx, t);
+        if (slow_next_ <= t) slow_next_ = Timestamp{t.ns + 1};
+        poll_stopped();
       }
     }
   }
@@ -231,6 +256,8 @@ class SimDriver {
   MarketGenerator* generator_ = nullptr;
   JournalFileWriter* journal_ = nullptr;
   ParamSchedule* params_ = nullptr;
+  SlowHooks slow_{};
+  Timestamp slow_next_ = Timestamp::max();
   int seed_levels_ = 20;
   bool measure_ = true;
   bool started_ = false;

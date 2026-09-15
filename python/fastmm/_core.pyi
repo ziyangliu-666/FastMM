@@ -98,6 +98,14 @@ class BacktestConfig:
     def journal_out(self, arg0: str) -> None:
         ...
     @property
+    def max_param_age_ms(self) -> int:
+        """
+        [strategy] max_param_age_ms: quoting is disabled before the first parameter update and while none was applied for this long (0 disables).
+        """
+    @max_param_age_ms.setter
+    def max_param_age_ms(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
     def latency_fixed_us(self) -> int:
         """
         Fixed order and ack latency, microseconds.
@@ -343,6 +351,11 @@ class BacktestResult:
     @property
     def seed(self) -> int:
         ...
+    @property
+    def slow_methods(self) -> dict:
+        """
+        Wall time of each slow method of a Python strategy: {name: {'calls', 'p50_ms', 'p99_ms', 'max_ms'}}; empty for other strategies.
+        """
     @property
     def start_ts(self) -> int:
         """

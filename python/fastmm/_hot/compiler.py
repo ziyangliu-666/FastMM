@@ -39,6 +39,7 @@ from numba.extending import overload_method
 
 from .. import _core
 from . import abi
+from . import meta
 from .decl import HotCompileError, HotSpec
 
 CTX_TYPE = numba.from_dtype(abi.CTX_DTYPE)
@@ -447,6 +448,7 @@ class CompiledHot:
             "record": self.spec.initial_record(instance),
             "param_bytes": self.param_bytes,
             "book_depth": self.book_depth,
+            "param_fields": meta.param_fields(self.spec),
         }
 
 
@@ -469,10 +471,18 @@ _WHAT = {
 
 
 def run(config: Any, data: Any, instance: Any, name: str, spec: HotSpec, cache: bool,
-        params: Mapping[str, str]) -> Tuple[Any, Optional[Dict[str, Any]], int]:
-    """(result, error, hook calls); error is None or a dict describing the failure."""
+        params: Mapping[str, str], strategy_meta: str = "",
+        slow: Optional[Dict[str, Any]] = None) -> Tuple[Any, Optional[Dict[str, Any]], int]:
+    """(result, error, hook calls); error is None or a dict describing the failure. The error of
+    the slow tier, when there is one, is in `slow["error"]` (the exception) and `slow["failure"]`
+    (the failure code) afterwards."""
     program = compiled(type(instance), spec, cache).program(instance)
-    result, error, calls = _core._run_hot_strategy(config, data, name, dict(params), program)
+    result, error, calls, slow_error, failure, events = _core._run_hot_strategy(
+        config, data, name, dict(params), program, strategy_meta, slow)
+    if slow is not None:
+        slow["error"] = slow_error
+        slow["failure"] = failure
+        slow["events"] = events
     if error is None:
         return result, None, calls
     status, code, hook, timer, at_ns, events, kill_reason = error

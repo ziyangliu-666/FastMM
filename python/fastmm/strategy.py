@@ -118,7 +118,7 @@ class StrategyError(RuntimeError):
 
     def __init__(self, message: str, result: "Optional[BacktestResult]" = None,
                  hook: str = "", now_ns: int = 0, events: int = 0, status: int = 0,
-                 fail_code: int = 0, kill_reason: str = "") -> None:
+                 fail_code: int = 0, kill_reason: str = "", slow_failure: str = "") -> None:
         super().__init__(message)
         self.result = result
         self.hook = hook
@@ -129,6 +129,8 @@ class StrategyError(RuntimeError):
         self.status = status
         self.fail_code = fail_code
         self.kill_reason = kill_reason
+        # Slow methods: "exception" or "fills overflow" when the slow tier stopped the run.
+        self.slow_failure = slow_failure
 
 
 # ---- parameters ----------------------------------------------------------------------------------
@@ -404,6 +406,20 @@ class Strategy:
         """Effective parameters as strings (BacktestResult.params)."""
         return {name: p.format(getattr(self, name)) for name, p in self.params().items()}
 
+    def publish(self, inst: Any = None, **values: Any) -> bool:
+        """New parameter values for a running strategy with slow methods, from any thread: the same
+        checks and effect as ctx.publish(). False when no session of this instance runs or the
+        session did not take the update."""
+        publisher = self.__dict__.get("_fastmm_publisher")
+        if publisher is not None:
+            return bool(publisher.publish(inst, values))
+        channel = self.__dict__.get("_fastmm_live_params")  # fastmm.run_live without slow methods
+        if channel is None:
+            return False
+        if inst is not None and not isinstance(inst, int):
+            raise ValueError(f"instrument must be an int id in a live session, got {inst!r}")
+        return bool(channel.publish(values, inst))
+
 
 def _accepts(fn: Any, nargs: int) -> bool:
     try:
@@ -442,7 +458,9 @@ def _instance(strategy: Any) -> Strategy:
 
 def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyArg = None,
                  params: Optional[Mapping[str, Any]] = None, *,
-                 hot_cache: bool = True) -> "BacktestResult":
+                 hot_cache: bool = True, slow_delay_ms: float = 0,
+                 max_param_age_ms: Optional[int] = None, fills_capacity: Optional[int] = None,
+                 recent_rows: int = 4096) -> "BacktestResult":
     """Run one backtest.
 
     data: None (config.source / config.path), 'synthetic', a .fmj or .csv path, or a dict of numpy
@@ -461,6 +479,14 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
     partial result as .result). KeyboardInterrupt and SystemExit from a hook propagate unchanged,
     with the partial result as .result. Hot hooks run with the GIL released; a failing hot hook
     trips the kill switch and raises StrategyError with .status, .fail_code and .kill_reason.
+
+    Slow methods (on_start, on_stop and @fastmm.every methods of a class with hot hooks) run at
+    simulated times. slow_delay_ms: simulated delay before their publishes take effect.
+    max_param_age_ms: overrides [strategy] max_param_age_ms (0 disables); None keeps the
+    configured value, or when that is 0 uses 3 x the shortest @fastmm.every period and at least
+    1000 ms. fills_capacity: fills the ring holds (None: from the order rate limit). recent_rows:
+    rows per instrument that ctx.recent() keeps. A slow method that raises, or a full fills ring,
+    stops the run and raises StrategyError with .slow_failure.
     """
     if strategy is None or isinstance(strategy, str):
         if params:
@@ -483,7 +509,8 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
         raise ValueError(f"{name}: {e}") from None
     instance._fastmm_used = True
     if spec is not None:
-        return _run_hot(config, data, instance, name, spec, hot_cache)
+        return _run_hot(config, data, instance, name, spec, hot_cache, slow_delay_ms,
+                        max_param_age_ms, fills_capacity, recent_rows)
     result, error = _core._run_strategy(config, data, instance, name, list(hooks),
                                         instance.param_values())
     if error is None:
@@ -501,16 +528,121 @@ def run_backtest(config: "BacktestConfig", data: Any = None, strategy: StrategyA
         result=result, hook=hook, now_ns=now_ns, events=events) from exc
 
 
+def _max_param_age_ms(config: "BacktestConfig", spec: "_hot_decl.HotSpec",
+                      override: Optional[int]) -> int:
+    from ._slow import decl as slow_decl
+
+    if override is not None:
+        if override < 0:
+            raise ValueError("max_param_age_ms must be >= 0 (0 disables)")
+        return int(override)
+    if config.max_param_age_ms > 0:
+        return int(config.max_param_age_ms)
+    periods = spec.periods_ns()
+    return slow_decl.default_max_param_age_ms(periods) if periods else 0
+
+
 def _run_hot(config: "BacktestConfig", data: Any, instance: Strategy, name: str,
-             spec: "_hot_decl.HotSpec", cache: bool) -> "BacktestResult":
+             spec: "_hot_decl.HotSpec", cache: bool, slow_delay_ms: float,
+             max_param_age_ms: Optional[int], fills_capacity: Optional[int],
+             recent_rows: int) -> "BacktestResult":
     from ._hot import compiler  # imports numba
 
-    result, error, _calls = compiler.run(config, data, instance, name, spec, cache,
-                                         instance.param_values())
-    if error is None:
+    age = _max_param_age_ms(config, spec, max_param_age_ms)
+    if age != config.max_param_age_ms:
+        config = config.copy()
+        config.max_param_age_ms = age
+    param_values = instance.param_values()
+    metadata = ""
+    if config.journal_out:
+        from ._slow import replay as slow_replay
+
+        metadata = slow_replay.journal_meta(type(instance), param_values, age)
+
+    slow: Optional[Dict[str, Any]] = None
+    runner = None
+    if spec.has_slow:
+        from ._slow import runner as slow_runner
+
+        if not (isinstance(slow_delay_ms, (int, float)) and math.isfinite(slow_delay_ms)
+                and slow_delay_ms >= 0):
+            raise ValueError(f"slow_delay_ms must be a finite number >= 0, got {slow_delay_ms!r}")
+        if fills_capacity is not None and fills_capacity < 1:
+            raise ValueError(f"fills_capacity must be >= 1, got {fills_capacity!r}")
+        if recent_rows < 1:
+            raise ValueError(f"recent_rows must be >= 1, got {recent_rows!r}")
+        runner = slow_runner.SlowRunner(instance, spec)
+        periods = spec.periods_ns()
+        timeouts = [timeout for _, _, _, timeout in runner.methods]
+        gap = max([min(periods), *timeouts]) if periods else slow_runner.IDLE_WAKE_NS
+        slow = {"runner": runner, "delay_ns": int(round(slow_delay_ms * 1_000_000)),
+                "fills_capacity": int(fills_capacity or 0), "longest_gap_ns": int(gap),
+                "recent_rows": int(recent_rows),
+                "snapshot_interval_ns": slow_runner.SNAPSHOT_INTERVAL_NS}
+
+    try:
+        result, error, _calls = compiler.run(config, data, instance, name, spec, cache,
+                                             param_values, metadata, slow)
+    except Exception as e:
+        if runner is not None and runner.failed_method == "on_start":
+            raise StrategyError(f"{name}.on_start raised {type(e).__name__}: {e}",
+                                hook="on_start", slow_failure="exception") from e
+        raise
+    if runner is not None:
+        result._set_slow_methods(runner.timing_rows())
+    if error is not None:
+        raise StrategyError(
+            f"{name}.{error['hook']} {error['what']} (engine time {error['now_ns']} ns, after "
+            f"{error['events']} engine events); kill switch tripped: {error['kill_reason']}",
+            result=result, hook=error["hook"], now_ns=error["now_ns"], events=error["events"],
+            status=error["status"], fail_code=error["fail_code"],
+            kill_reason=error["kill_reason"])
+    if slow is None or runner is None:
         return result
-    raise StrategyError(
-        f"{name}.{error['hook']} {error['what']} (engine time {error['now_ns']} ns, after "
-        f"{error['events']} engine events); kill switch tripped: {error['kill_reason']}",
-        result=result, hook=error["hook"], now_ns=error["now_ns"], events=error["events"],
-        status=error["status"], fail_code=error["fail_code"], kill_reason=error["kill_reason"])
+
+    events = slow["events"]
+    exc = slow["error"]
+    if exc is not None:
+        method = runner.failed_method or "a slow method"
+        if not isinstance(exc, Exception):  # KeyboardInterrupt, SystemExit
+            try:
+                exc.result = result
+            except AttributeError:  # pragma: no cover
+                pass
+            raise exc
+        raise StrategyError(
+            f"{name}.{method} raised {type(exc).__name__}: {exc} (engine time {runner.now_ns} ns, "
+            f"after {events} engine events); the slow tier stopped the run",
+            result=result, hook=method, now_ns=runner.now_ns, events=events,
+            slow_failure="exception") from exc
+    if slow["failure"] != 0:
+        from ._slow import abi as slow_abi
+
+        what = slow_abi.FAILURE_NAMES.get(slow["failure"], str(slow["failure"]))
+        detail = ""
+        if slow["failure"] == slow_abi.FAILURE_FILLS_OVERFLOW:
+            detail = (f": the fills ring ({runner.channel.fills_capacity} fills) was full; pass a "
+                      "larger fills_capacity")
+        raise StrategyError(
+            f"{name}: the slow tier failed ({what}){detail}; the run stopped after {events} engine "
+            "events", result=result, events=events, slow_failure=what)
+    try:
+        runner.stop(result.end_ts)
+    except Exception as e:
+        raise StrategyError(f"{name}.on_stop raised {type(e).__name__}: {e}", result=result,
+                            hook="on_stop", slow_failure="exception") from e
+    _warn_slow_delay(name, result, slow_delay_ms)
+    return result
+
+
+def _warn_slow_delay(name: str, result: "BacktestResult", slow_delay_ms: float) -> None:
+    """A warning per @fastmm.every method whose median wall time is at least 1 ms and above
+    slow_delay_ms: live, its publishes would take effect that much later than in the backtest."""
+    for method, t in result.slow_methods.items():
+        p50 = t["p50_ms"]
+        if t["calls"] > 0 and p50 >= 1.0 and slow_delay_ms < p50:
+            warnings.warn(
+                f"fastmm: {name}.{method} takes {p50:.1f} ms of wall time (p50) but "
+                f"slow_delay_ms={slow_delay_ms:g}, so its publishes take effect sooner than a live "
+                f"session allows; pass slow_delay_ms={math.ceil(p50)} or more",
+                RuntimeWarning, stacklevel=3)

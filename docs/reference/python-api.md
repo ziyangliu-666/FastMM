@@ -176,7 +176,7 @@ A class with `@fastmm.hot` methods is compiled with Numba in nopython mode, and 
 
 | Declaration | Meaning |
 |---|---|
-| `@fastmm.hot` on `on_book`, `on_fill`, `on_quoting` or `on_connection` | an event hook |
+| `@fastmm.hot` on `on_book`, `on_fill`, `on_quoting`, `on_connection` or `on_params` | an event hook |
 | `@fastmm.hot(every="100ms")` on any other name | a timer hook, at most 16; units `ns`, `us`, `ms`, `s`, `m`, `h` |
 | `fastmm.Param(default, min=, max=, doc=)` | a parameter, typed, parsed and validated as in [Parameters](#parameters) |
 | `fastmm.State(default, doc="")` | a per-instrument bool, int64 or float that hooks read and write; it starts at the default and keeps its value between calls |
@@ -189,11 +189,12 @@ Every hot hook takes `(self, ctx, book)` and runs once per instrument:
 | `on_fill` | the fill's instrument, after position and fees are updated |
 | `on_quoting` | every instrument, when quoting is enabled or disabled |
 | `on_connection` | every instrument of the venue whose connection changed |
+| `on_params` | every instrument a parameter update applied to, with the new values in `self` |
 | a timer hook | every instrument, once per period of engine time from the start of the run |
 
 `self` holds the instrument's parameters and `State` fields as attributes. A float parameter also has `self.<name>_raw`, its value as a 1e-8 fixed-point int64 (nearest). The engine copies the parameters into `self` before every call, so an assignment to a parameter, also through an alias such as `t = self`, is gone at the next call.
 
-Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm-engine[hot]"`.
+Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook other than `on_start` and `on_stop` as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` with `pip install "fastmm-engine[hot]"`.
 
 ### ctx
 
@@ -286,6 +287,111 @@ Measured with `python bench/python/bench_hot_strategy.py --build build/release` 
 Bounds checks cost less than the run-to-run spread (under 1 ns per call). The engine copies the level arrays only when a hook, or a `numba.njit` function it calls, names one of them, or calls code the check cannot follow; the copy costs about 35 ns per call.
 
 On the synthetic market (3,600 s, 1,356,426 market-data events) C++ `basic_mm` runs at 1.93 M events/s and `BasicMMHot` at 1.90 M events/s with the same orders. Compiling `BasicMMHot` (5 hooks) takes 1.1 s in a fresh process, 0.5 s from the Numba cache; importing numba takes 0.14 s.
+
+## Slow methods
+
+A class with hot hooks may also define `on_start(self, ctx)`, `on_stop(self, ctx)` and methods decorated `@fastmm.every(period, timeout="10s")` that take `(self, ctx)`. They are plain Python, run one at a time on the slow thread and may use any library. They cannot place orders; they change the hot hooks' parameters by publishing. Steps: [Run slow methods beside hot hooks](../how-to/strategies/python-slow-methods.md).
+
+| Method | Runs |
+|---|---|
+| `on_start` | once, before the engine starts |
+| `@fastmm.every("1s")` | when the session starts, then once per period of session time; units `ns`, `us`, `ms`, `s`, `m`, `h` |
+| `on_stop` | once, after the engine stops |
+
+Defining the class raises `TypeError` when an `@fastmm.every` method has another signature or a hook's name, the class has `@fastmm.every` methods but no hot hooks, it has more than 32 parameters, or a parameter or `State` field is named `publish` or `inst`.
+
+### Slow ctx
+
+| Member | Result |
+|---|---|
+| `now_ns` | session time of the call, ns (simulated in backtests) |
+| `instruments` | instrument symbols by id |
+| `snapshot()` | a `Snapshot` of the latest state the engine published |
+| `recent(inst)` | `Recent(rows, dropped)`: recent top-of-book changes and trades of one instrument |
+| `fills()` | the fills since the previous call |
+| `publish(inst=None, **values)` | new parameter values; `True` when the session took the update |
+
+`inst` is an instrument id or symbol.
+
+### Snapshot
+
+The engine publishes a snapshot at most once per 10 ms of engine time; a change the interval holds back is published at the end of the interval. A `Snapshot` has `ts_ns` (engine time), `age_ms` (`now_ns` minus `ts_ns` in ms; `None` before the first snapshot), `version`, `quoting_enabled` (the engine's quoting flag, false while parameters are stale), `killed` (the global kill switch) and one `InstrumentSnapshot` per instrument, indexed by id or symbol (`snap["BTCUSDT"]`):
+
+| Field | Meaning |
+|---|---|
+| `book_valid`, `book_ts_ns` | the book is valid; its last update in engine time |
+| `bid`, `bid_qty`, `ask`, `ask_qty`, `mid` | top of book (quote currency, base units) |
+| `position`, `avg_price`, `fills` | the position, its average entry price and the fill count |
+| `realized_pnl`, `unrealized_pnl`, `fees` | quote currency; `unrealized_pnl` at the position's last mark |
+| `bid_open_qty`, `ask_open_qty` | unfilled quantity of open orders, quotes included |
+| `quoting` | quoting is enabled and the instrument's venue is not killed |
+| `param_seq`, `param_age_ms` | the number of the last update applied to the instrument and its age in ms (`None` before the first) |
+
+### Recent rows
+
+`recent(inst).rows` is a numpy array of the newest rows, oldest first; the engine keeps 4,096 rows per instrument (`recent_rows`). A row is written when the top of book changes and for every trade:
+
+| Column | Meaning |
+|---|---|
+| `ts_ns` | engine time |
+| `kind` | 0 the top of book changed, 1 a trade |
+| `bid`, `bid_qty`, `ask`, `ask_qty` | top of book at that time |
+| `mid` | the mean of `bid` and `ask`; NaN when a side is empty |
+| `price`, `qty`, `side` | the trade and its aggressor (`fastmm.BUY` or `fastmm.SELL`); 0 in `kind` 0 rows |
+
+`dropped` counts the rows written since the previous `recent` call for the instrument that left the window before this call.
+
+### Fills
+
+`fills()` returns a numpy array with the columns `seq` (from 1, consecutive over the session), `ts_ns`, `instrument`, `side`, `maker`, `price`, `qty`, `fee` (quote currency) and `position` (after the fill). Order updates do not reach slow methods.
+
+The engine writes fills into a ring that the slow tier empties whenever it runs; they wait in Python until `fills()` takes them. The ring holds `fills_capacity` fills: by default 4 per order at `[risk] orders_per_sec` (1,000 when unlimited) over the longer of the shortest period and the longest timeout plus 1 s, at least 4,096, rounded up to a power of two. A full ring stops the session.
+
+### Publishing parameters
+
+`publish` names any subset of the parameters. The values apply together at one engine event and the other parameters keep their values; `inst=None` applies them to every instrument. The hot `on_params` hook then runs for each instrument the update applied to.
+
+The call checks each name, parses the value and checks its range as `fastmm.Param` does, then runs `validate()` on a copy of the instance with the new values, and raises `ValueError` at the first error; nothing is sent then. An update names at most 32 parameters. An update without values changes nothing and renews `max_param_age_ms`.
+
+`strategy.publish(inst=None, **values)` does the same from any Python thread while a session of that instance runs, for a model outside the slow methods such as a thread started in `on_start`. It returns `False` before the session starts and after it stops. In a backtest its update applies at the simulated time the engine has reached when it next checks for updates, which depends on thread timing.
+
+With `max_param_age_ms` above 0, quoting is disabled before the first update and while none has applied for that long ([Parameter updates](strategy-api.md#parameter-updates)). For a class with `@fastmm.every` methods, a configured value of 0 means 3 times the shortest period, at least 1,000 ms.
+
+### In backtests
+
+`run_backtest` calls `on_start` before the engine starts, each `@fastmm.every` method at its simulated times after the other events of that time, and `on_stop` after the run. Pending runs of slow methods do not extend a run past its data.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `slow_delay_ms` | 0 | simulated ms from a publish to the event that applies it |
+| `max_param_age_ms` | `None` | overrides `[strategy] max_param_age_ms`; `None` keeps the configured value or the default above, 0 disables |
+| `fills_capacity` | `None` | fills the ring holds |
+| `recent_rows` | 4096 | rows per instrument that `recent` keeps |
+
+`BacktestResult.slow_methods` maps each `@fastmm.every` method to `calls`, `p50_ms`, `p99_ms` and `max_ms` of its wall time. `run_backtest` issues a `RuntimeWarning` when a method's median wall time is at least 1 ms and above `slow_delay_ms`: a live session applies that method's publishes at least that much later. `timeout` is not enforced in backtests.
+
+A slow method that raises, or a full fills ring, ends the run after that event and `run_backtest` raises `fastmm.StrategyError`:
+
+| Attribute | Value |
+|---|---|
+| `slow_failure` | `"exception"` or `"fills overflow"` |
+| `hook` | the method that raised |
+| `__cause__` | the exception |
+| `result` | the partial `BacktestResult` |
+
+### Replay
+
+`fastmm.replay(journal, MyMM, verify=True, config=None, params=None, param_updates=True)` replays a journal written by a backtest with `config.journal_out`. The engine consumes the recorded inputs, parameter updates included, with `MyMM`'s hot hooks; slow methods do not run. The parameters start at the recorded values, `max_param_age_ms` is the recorded one, and the configuration is the one the journal embeds unless `config` is given. With `verify=True` every sent message is compared with the recording.
+
+A backtest journal's `strategy_meta` holds the keys a live session writes ([Live sessions](#live-sessions)) and also `max_param_age_ms` and `param.<name>` for each starting parameter; without `param.` keys (a live journal) the parameters come from the embedded configuration. A difference in `class`, `hot_source_sha256`, `fastmm` or `numba`, `params`, or `param_updates=False` makes the replay a what-if run: `what_if` is `True` and `what_if_reasons` lists the differences.
+
+| `ReplayResult` field | Meaning |
+|---|---|
+| `ok` | the replay sent the recorded messages |
+| `outbound_sha256`, `recorded_sha256` | hashes of the replayed and recorded messages |
+| `outbound_messages`, `recorded_messages`, `events` | message and inbound event counts |
+| `first_mismatch`, `expected_message`, `actual_message` | the first differing message (-1 when none) |
+| `what_if`, `what_if_reasons` | see above |
 
 ## Live sessions
 

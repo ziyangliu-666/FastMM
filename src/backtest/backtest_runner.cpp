@@ -114,7 +114,8 @@ struct BacktestSession::Impl final : sim::SimObserver {
 
 BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                  MdSource* source,
-                                 const ParamSchema* schema)
+                                 const ParamSchema* schema,
+                                 std::string_view strategy_meta)
     : cfg_(cfg), source_(source) {
   if (cfg_.instruments.size() == 0) throw std::invalid_argument("backtest: no instruments");
   if (cfg_.equity_bar.ns <= 0) throw std::invalid_argument("backtest: equity_bar must be > 0");
@@ -157,6 +158,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     info.replace_venues = cfg_.transport.supports_replace ? ~std::uint64_t{0} : 0;
     info.config_toml = cfg_.config_toml;
     info.params = schema;
+    info.strategy_meta = strategy_meta;
     if (!cfg_.config_toml.empty()) info.config_hash = Config::text_hash(cfg_.config_toml);
     impl_->journal_file =
         std::make_unique<JournalFileWriter>(*impl_->journal_ring, cfg_.journal_out, info);
@@ -186,6 +188,7 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   if (source_ != nullptr) driver.set_source(source_);
   if (impl_->journal_file) driver.set_journal_writer(impl_->journal_file.get());
   driver.set_param_schedule(params_);
+  driver.set_slow_hooks(slow_);
   driver.start();
   const Timestamp start = b.clock.now();
   Timestamp bar_end = start + cfg_.equity_bar;

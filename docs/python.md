@@ -62,6 +62,8 @@ Reference: [Python strategy API](reference/python-api.md). `examples/python/stra
 
 Methods marked `@fastmm.hot` are compiled with Numba and run without the GIL: [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md). `basic_mm_hot.py` ports BasicMM that way, with the same outbound hash.
 
+Slow methods beside hot hooks change their parameters from plain Python, and `fastmm.replay` replays such a strategy from its journal: [Run slow methods beside hot hooks](how-to/strategies/python-slow-methods.md).
+
 ### Results
 
 `r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `engine_stats()` and `transport_stats()` the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
