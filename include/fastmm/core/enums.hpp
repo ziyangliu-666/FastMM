@@ -428,7 +428,7 @@ inline constexpr std::size_t kKillVenueSlots = 31;
     case KillReason::OrderRingOverflow:
       return "OrderRingOverflow";
     case KillReason::StrategyError:
-      return "strategy_error";
+      return "StrategyError";
   }
   return "?";
 }

@@ -342,7 +342,7 @@ def test_an_exception_trips_the_kill_switch_and_raises_strategy_error(example_co
     with pytest.raises(fastmm.StrategyError) as ei:
         fastmm.run_backtest(cfg, data="synthetic", strategy=Quoter)
     e = ei.value
-    assert (e.hook, e.status, e.kill_reason) == ("on_book", abi.EXCEPTION, "strategy_error")
+    assert (e.hook, e.status, e.kill_reason) == ("on_book", abi.EXCEPTION, "StrategyError")
     assert "Quoter.on_book raised an exception" in str(e)
     full = fastmm.run_backtest(cfg, data="synthetic", strategy="basic_mm")
     assert 0 < e.events < full.engine_steps
@@ -374,7 +374,7 @@ def test_ctx_fail_and_bad_float_levels(example_config):
     for cls in (NotFinite, NegativeQty):
         with pytest.raises(fastmm.StrategyError, match="not finite, out of range or negative") as ei:
             _fixture_run(example_config, cls)
-        assert ei.value.status == abi.BAD_VALUE and ei.value.kill_reason == "strategy_error"
+        assert ei.value.status == abi.BAD_VALUE and ei.value.kill_reason == "StrategyError"
 
 
 def test_parameter_writes_through_an_alias_do_not_persist_and_state_does(example_config):

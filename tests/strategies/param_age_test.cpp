@@ -23,7 +23,9 @@ struct AgedMM : BasicMM {
     BasicMM::on_quoting(ctx, enabled);
   }
   template <class Ctx>
-  void on_params(Ctx& /*ctx*/) noexcept { ++params_calls; }
+  void on_params(Ctx& /*ctx*/) noexcept {
+    ++params_calls;
+  }
 };
 
 const ParamMap kParams{{"half_spread_bps", "5"},
@@ -39,7 +41,9 @@ sim::HarnessOptions aged(Duration max_age) {
 
 }  // namespace
 
-TEST_CASE("strategies.param_age: no quotes before the first update, pulled when stale, back on the next") {
+TEST_CASE(
+    "strategies.param_age: no quotes before the first update, pulled when stale, back on the "
+    "next") {
   sim::StrategyHarness<AgedMM> h(kParams, aged(milliseconds(500)));
   const AgedMM& s = h.strategy();
   CHECK_FALSE(h.engine().quoting_enabled());
@@ -55,8 +59,8 @@ TEST_CASE("strategies.param_age: no quotes before the first update, pulled when 
   h.advance(milliseconds(1));
   CHECK(h.working_orders().size() == 2);
 
-  // Book updates keep arriving and BasicMM keeps requoting, but no parameter update: 500 ms after the
-  // last one the quotes are pulled and later books do not bring them back.
+  // Book updates keep arriving and BasicMM keeps requoting, but no parameter update: 500 ms after
+  // the last one the quotes are pulled and later books do not bring them back.
   for (int i = 0; i < 4; ++i) {
     h.advance(milliseconds(100));
     h.book(i % 2 == 0 ? "100.10" : "100.00", i % 2 == 0 ? "100.12" : "100.02");

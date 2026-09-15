@@ -62,7 +62,7 @@ A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is mo
 | 6 | `VenueFatal` | venue error map: bad key, signature or permission, failed authentication |
 | 7 | `VenueHardStop` | venue error map: REST stopped (IP ban) |
 | 8 | `OrderRingOverflow` | a venue's order-event ring overflowed |
-| 9 | `StrategyError` | a strategy hook reported an error; `fastmm-top` shows `strategy_error` |
+| 9 | `StrategyError` | a strategy hook reported an error; `fastmm-top` shows `StrategyError` |
 
 ### Latency intervals
 

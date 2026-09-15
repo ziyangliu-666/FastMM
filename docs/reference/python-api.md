@@ -255,14 +255,14 @@ This rejects arrays, lists, strings, `print` and Python objects. Calls through c
 
 `run_backtest(..., hot_cache=True)` compiles the hooks, calls each once on scratch copies of `ctx`, `book` and `self` (nothing is sent and `State` is unchanged), then runs the backtest with the GIL released.
 
-A hook that raises, calls `ctx.fail(code)`, or sets a float price or quantity that is not finite, beyond 9.2e10 in magnitude, or a negative quantity, stops the strategy: no hook runs again, the kill switch trips with reason `strategy_error` (quotes pulled, working orders cancelled) and the backtest ends after that event. `run_backtest` raises `fastmm.StrategyError`:
+A hook that raises, calls `ctx.fail(code)`, or sets a float price or quantity that is not finite, beyond 9.2e10 in magnitude, or a negative quantity, stops the strategy: no hook runs again, the kill switch trips with reason `StrategyError` (quotes pulled, working orders cancelled) and the backtest ends after that event. `run_backtest` raises `fastmm.StrategyError`:
 
 | Attribute | Value |
 |---|---|
 | `hook` | the hook's name |
 | `status` | 1 raised, 2 `ctx.fail`, 3 bad float level |
 | `fail_code` | the code passed to `ctx.fail` |
-| `kill_reason` | `"strategy_error"` |
+| `kill_reason` | `"StrategyError"` |
 | `now_ns`, `events`, `result` | engine time, engine events and the partial `BacktestResult` |
 
 Numba keeps neither the type nor the message of the exception.

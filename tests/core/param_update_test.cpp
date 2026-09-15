@@ -94,7 +94,9 @@ struct ParamSpy : StrategyBase<TestParams> {
     qty_seen = params().quote_qty;
   }
   template <class Ctx>
-  void on_quoting(Ctx& /*ctx*/, bool enabled) noexcept { quoting.push_back(enabled); }
+  void on_quoting(Ctx& /*ctx*/, bool enabled) noexcept {
+    quoting.push_back(enabled);
+  }
 };
 static_assert(verify_strategy<ParamSpy>());
 
@@ -102,7 +104,8 @@ void push_book(InlineFeed& feed, const SimClock& clock, Price bid, Price ask) {
   std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
   REQUIRE(p != nullptr);
   auto* d = reinterpret_cast<BookDeltaMsg*>(p);
-  init_header(*d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+  init_header(
+      *d, EventType::BookSnapshot, InstrumentId{0}, VenueId{0}, BookDeltaMsg::size_for(1, 1));
   d->hdr.flags |= EventHeader::kSnapshot;
   d->hdr.recv_ts = clock.now();
   d->bid_count = d->ask_count = 1;
@@ -122,7 +125,7 @@ TEST_CASE("core.params: ParamUpdate message, event type and kill reason") {
   CHECK(static_cast<int>(EventType::Count) == 27);
   CHECK(to_string(EventType::ParamUpdate) == "ParamUpdate");
   CHECK(static_cast<int>(KillReason::StrategyError) == 9);
-  CHECK(to_string(KillReason::StrategyError) == "strategy_error");
+  CHECK(to_string(KillReason::StrategyError) == "StrategyError");
   ParamUpdateMsg m{};
   init_header(m, EventType::ParamUpdate);
   CHECK(m.hdr.len == 448);
@@ -156,7 +159,9 @@ TEST_CASE("core.params: the publisher rejects invalid updates and refuses when t
   MsgRing ring(1U << 12);
   const TestParams initial;
   ParamPublisher pub(ParamSink::to_ring(ring), initial);
-  const auto one = [&](const char* name, const char* value) { return pub.publish({{name, value}}); };
+  const auto one = [&](const char* name, const char* value) {
+    return pub.publish({{name, value}});
+  };
 
   CHECK_THROWS_WITH_AS(one("nope", "1"), "unknown parameter 'nope'", std::invalid_argument);
   CHECK_THROWS_WITH_AS(
@@ -229,7 +234,9 @@ TEST_CASE("core.params: the publisher rejects invalid updates and refuses when t
   CHECK(per.describe(InstrumentId{0}).find("levels=1") != std::string::npos);
 }
 
-TEST_CASE("core.params: an update from a feed ring applies at one event, is journaled, then on_params runs") {
+TEST_CASE(
+    "core.params: an update from a feed ring applies at one event, is journaled, then on_params "
+    "runs") {
   const InstrumentTable table = one_instrument();
   SimClock clock{Timestamp{seconds(1000).ns}};
   CountingTransport transport;
@@ -274,7 +281,9 @@ TEST_CASE("core.params: an update from a feed ring applies at one event, is jour
   CHECK(journaled);
 }
 
-TEST_CASE("core.params: max_param_age disables quoting before the first update and on an event past the deadline") {
+TEST_CASE(
+    "core.params: max_param_age disables quoting before the first update and on an event past the "
+    "deadline") {
   const InstrumentTable table = one_instrument();
   SimClock clock{Timestamp{seconds(1000).ns}};
   CountingTransport transport;
@@ -347,7 +356,8 @@ TEST_CASE("core.journal v3: the parameter table round-trips and older files stil
     fw.stop();
   }
   std::size_t table_bytes = 0;
-  for (const ParamDesc& d : TestParams::schema()) table_bytes += 2 + std::string_view(d.name).size();
+  for (const ParamDesc& d : TestParams::schema())
+    table_bytes += 2 + std::string_view(d.name).size();
   JournalReader r;
   REQUIRE(r.open(path));
   CHECK(r.version() == 3);

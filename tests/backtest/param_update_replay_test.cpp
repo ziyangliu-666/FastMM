@@ -84,7 +84,9 @@ std::size_t new_orders(const BacktestResult& r, Duration from, Duration to) {
 
 }  // namespace
 
-TEST_CASE("backtest.params: scheduled parameter updates replay to the recorded hash, and not when skipped") {
+TEST_CASE(
+    "backtest.params: scheduled parameter updates replay to the recorded hash, and not when "
+    "skipped") {
   BacktestConfig cfg = synthetic_config(21, seconds(10));
   cfg.strategy = "basic_mm";
   cfg.journal_out = tmp_journal("params_basic_mm.fmj");

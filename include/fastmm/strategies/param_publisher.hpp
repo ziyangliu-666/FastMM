@@ -163,8 +163,9 @@ class ParamPublisher {
     std::size_t last = blocks_.size();
     if (inst.valid()) {
       if (!per_instrument_) {
-        return std::string("the strategy keeps one parameter set for all instruments; publish "
-                           "without an instrument");
+        return std::string(
+            "the strategy keeps one parameter set for all instruments; publish "
+            "without an instrument");
       }
       if (inst.value >= blocks_.size())
         return "instrument " + std::to_string(inst.value) + " is not in the instrument table";

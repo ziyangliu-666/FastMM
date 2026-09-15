@@ -180,7 +180,7 @@ TEST_CASE(
   CHECK(s.error().status == FASTMM_HOT_EXCEPTION);
   CHECK(s.error().hook == static_cast<std::int32_t>(HotHook::Book));
   CHECK(h.engine().kill_reason() == KillReason::StrategyError);
-  CHECK(to_string(KillReason::StrategyError) == "strategy_error");
+  CHECK(to_string(KillReason::StrategyError) == "StrategyError");
   h.advance(milliseconds(1));
   CHECK(h.working_orders().empty());
   h.book("100.02", "100.04");
