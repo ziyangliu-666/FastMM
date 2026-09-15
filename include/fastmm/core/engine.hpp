@@ -338,6 +338,12 @@ class Engine {
     for (const Instrument& inst : instruments_) quotes_.pull_quotes(inst, oms_, place);
     flush_out();
   }
+  // Trips the global kill switch from inside the engine thread (a strategy that failed): quoting is
+  // disabled, quotes are pulled and every working order is cancelled. The first reason is kept.
+  void trip_kill(KillReason reason) noexcept {
+    risk_.trip();
+    on_kill(reason);
+  }
   // Cancels every working order (kill switch / control). Cancels are always allowed.
   void mass_cancel() noexcept {
     enter_api();

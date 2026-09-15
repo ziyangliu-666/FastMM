@@ -123,6 +123,9 @@ class StrategyContext {
   // One venue's kill switch: new orders to it are refused and set_quotes ignores its instruments.
   [[nodiscard]] bool venue_killed(VenueId v) const noexcept { return e_->risk().venue_killed(v); }
   void request_stop() noexcept { e_->stop(); }
+  // Trips the global kill switch: quoting stops, quotes are pulled and every working order is
+  // cancelled. The adapter for Python hot hooks uses KillReason::StrategyError.
+  void trip_kill(KillReason reason) noexcept { e_->trip_kill(reason); }
 
   // ---- randomness: seeded from EngineConfig::rng_seed, replay-deterministic --------------------
 
