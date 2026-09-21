@@ -114,7 +114,8 @@ Minimum Linux 5.11. Hand-written over raw syscalls like the io_uring backend, wi
   - It then logs in to GLIMPSE over SoupBinTCP and builds the directory and the L3 books from the snapshot.
   - It applies the buffered and live ITCH messages from the sequence in End of Snapshot.
   - Books stay `Resyncing` until then.
-  - The same procedure runs after an unrecoverable gap or when the buffer overflows during a snapshot. The buffer overflowing twice in a row stops the venue.
+  - The same procedure runs after a gap the receiver gives up, after any L3 book error, and when the buffer overflows during a snapshot. Overflowing during two snapshots in a row trips the venue's kill switch (`KillReason::FeedLost`).
+  - If the buffer starts after the End of Snapshot sequence, the receiver is moved back (`Receiver::reset`) and the hole is re-requested; without `rerequest`, another snapshot is taken.
   - Without `glimpse_url`, the venue must start before the directory spin (sequence 1) and cannot recover from a gap; `open` warns.
 - **Bridge**, on the net thread: source → MoldUDP receiver → `ItchDecoder` → one `L3Book` per configured instrument → L2 messages to the engine:
   - `BookDeltaMsg` with `kSnapshot` (top `depth` levels per side, default 20) when a book becomes complete, and `ConnectionStateMsg{Resyncing}` when it stops being complete.
@@ -132,8 +133,10 @@ Minimum Linux 5.11. Hand-written over raw syscalls like the io_uring backend, wi
   - The net thread records the kernel-to-T0 hop (`t0_wall_ns - sw_ts_ns`) in a venue histogram, the same way `WireLatencyRecorder` does. The engine's `LatencyInterval` does not change.
 - **Order entry**: `order_entry = "none"` (default) or `"sim_ouch"`.
   - With `none`, API keys are not required: `resolve_venue_env` skips the check for this kind. Orders are rejected by the venue with the existing `VenueReject`.
-  - `sim_ouch` sends OUCH 5.0 over SoupBinTCP to `fastmm-sim-itch` only (section 6). The triggering `venue_seq` goes into the order token, so the simulator can correlate.
-- **Engine**: no changes.
+  - `sim_ouch` sends OUCH 5.0 over SoupBinTCP to `fastmm-sim-itch` only (section 6). The ClOrdID is `T` and 13 digits: the MoldUDP64 sequence of the first datagram of the receive batch that triggered the order. The engine copies only `t0_cycles` into outbound messages, so the venue maps `t0_cycles` to that sequence in a 4096-slot table.
+  - GLIMPSE and OUCH logins use `glimpse_username`/`glimpse_password` and `ouch_username`/`ouch_password`.
+- **Engine**: no changes. `Venue` gains `poll()`, called after every reactor iteration; in busy mode the venue polls its sources there, in adaptive mode the reactor waits on their descriptors.
+- The sources open in `load_reference_data`, so a missing capability or interface fails the start (exit code 4).
 - **Status** (`kStatusVersion` 4):
   - packets, bytes, per-line packets, duplicates and skew;
   - gaps, recovered and unrecovered sequences, snapshot recoveries;
@@ -147,7 +150,7 @@ Minimum Linux 5.11. Hand-written over raw syscalls like the io_uring backend, wi
   - It encodes ITCH, packs MoldUDP64 and sends to A and B groups with `sendmmsg`. Rate, burst size and a drop rate per line are configurable.
   - It answers re-requests from its `Transmitter` history and serves GLIMPSE from the matching engine state.
   - It accepts OUCH 5.0 orders over SoupBinTCP. This needs server-side OUCH encoding and decoding on the existing message structs.
-- **Wire-to-wire**: for every order whose token names a `venue_seq`, the simulator records the time from `sendmmsg` of that datagram to receiving the order.
+- **Wire-to-wire**: for every Enter or Replace Order whose token names a sequence, the simulator records the time from `sendmmsg` of that datagram to receiving the order.
   - It uses its own TSC, stamped per datagram, independent of the engine's instrumentation.
 - **`scripts/bench-e2e.sh`** runs the simulator and `fastmm-live` in two network namespaces joined by a veth pair, pinned to separate cores. Market data and orders cross the veth.
   - It reports wire-to-wire and the engine's hops at p50, p99 and p99.9 for each backend.
