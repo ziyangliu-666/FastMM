@@ -1,12 +1,13 @@
 // Nasdaq codec micro-benchmarks (plan 7):
 //
-//   BM_Itch_DecodeAddOrder        ITCH 5.0 'A' (36 bytes) -> OrderAddL3Msg committed to an
-//   EventSink BM_Itch_DecodeOrderExecuted   ITCH 5.0 'E' (31 bytes) -> OrderExecL3Msg committed to
-//   an EventSink BM_MoldUdp64_FramePacket      parse_packet() + walk the messages of a 10-message
-//   packet BM_SoupBin_FrameSequenced     SoupBinFramer over a Sequenced Data packet +
-//   ClientSession::on_frame BM_Ouch42_EncodeEnterOrder    OrderCommand -> OUCH 4.2 Enter Order (49
-//   bytes) BM_Ouch50_EncodeEnterOrder    OrderCommand -> OUCH 5.0 Enter Order (47 bytes, UserRefNum
-//   lookup)
+//   BM_Itch_DecodeAddOrder        ITCH 5.0 'A' (36 bytes) -> OrderAddL3Msg in an EventSink
+//   BM_Itch_DecodeOrderExecuted   ITCH 5.0 'E' (31 bytes) -> OrderExecL3Msg in an EventSink
+//   BM_MoldUdp64_FramePacket      parse_packet() + walk the messages of a 10-message packet
+//   BM_MoldUdp64_ReceiveAB        Receiver, one datagram of A or B (B trails by one packet)
+//   BM_MoldUdp64_ReceiveABLossA   as above, A loses 1 packet in 8, B trails by two packets
+//   BM_SoupBin_FrameSequenced     SoupBinFramer + ClientSession::on_frame, Sequenced Data
+//   BM_Ouch42_EncodeEnterOrder    OrderCommand -> OUCH 4.2 Enter Order (49 bytes)
+//   BM_Ouch50_EncodeEnterOrder    OrderCommand -> OUCH 5.0 Enter Order (47 bytes, UserRefNum)
 //
 // Each benchmark iteration runs kBatch operations between two rdtsc readings and records the
 // per-operation average in picoseconds into a LogLinearHistogram; counter p50_ns is its median in
@@ -27,6 +28,9 @@
 
 #include <array>
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::codecs;
@@ -136,6 +140,78 @@ static void BM_MoldUdp64_FramePacket(benchmark::State& state) {
   state.counters["msgs_per_packet"] = 10;
 }
 BENCHMARK(BM_MoldUdp64_FramePacket);
+
+namespace {
+struct MoldCounter {
+  std::uint64_t messages = 0;
+  void on_message(std::uint64_t, std::span<const std::byte>) noexcept { ++messages; }
+  void send_request(std::span<const std::byte>) noexcept {}
+  void on_end_of_session() noexcept {}
+};
+}  // namespace
+
+// Receiver fed with lines A and B carrying the same 4-message packets. The schedule is a list of
+// (line, packet) datagrams; one timed operation is one datagram. B trails A by `lag` packets; A
+// loses every `a_loss_every`-th packet (0: none), which B then delivers from behind: the packets
+// in between wait in the reorder buffer. gap_timeout_ns is never reached (1 us per datagram).
+static void mold_receive_bench(benchmark::State& state, std::size_t lag, std::size_t a_loss_every) {
+  constexpr std::size_t kPackets = 4096;
+  constexpr std::size_t kMsgsPerPacket = 4;
+  itch::ItchEncoder enc;
+  std::array<std::byte, 64> msg{};
+  const std::size_t n = enc.add_order(msg, 7, 1, 1001, Side::Buy, kQty, "AAPL", kPrice);
+  const moldudp::SessionId session = moldudp::make_session("BENCH");
+  std::vector<std::array<std::byte, 256>> packets(kPackets);
+  std::vector<std::size_t> lens(kPackets);
+  for (std::size_t k = 0; k < kPackets; ++k) {
+    moldudp::PacketBuilder b(packets[k], session, 1 + k * kMsgsPerPacket);
+    for (std::size_t m = 0; m < kMsgsPerPacket; ++m)
+      b.add(std::span<const std::byte>(msg.data(), n));
+    lens[k] = b.finish();
+  }
+  std::vector<std::pair<std::size_t, std::size_t>> schedule;  // (line, packet)
+  for (std::size_t k = 0; k < kPackets + lag; ++k) {
+    if (k < kPackets && (a_loss_every == 0 || k % a_loss_every != a_loss_every - 1))
+      schedule.emplace_back(0, k);
+    if (k >= lag) schedule.emplace_back(1, k - lag);
+  }
+  MoldCounter h;
+  moldudp::ReceiverConfig cfg;
+  cfg.next_sequence = 1;
+  std::optional<moldudp::Receiver<MoldCounter>> rx;
+  rx.emplace(h, cfg);
+  std::size_t pos = 0;
+  BatchTimer timer;
+  for (auto _ : state) {
+    if (pos + kBatch > schedule.size()) {
+      state.PauseTiming();
+      rx.emplace(h, cfg);
+      pos = 0;
+      state.ResumeTiming();
+    }
+    timer.start();
+    for (int i = 0; i < kBatch; ++i, ++pos) {
+      const auto [line, k] = schedule[pos];
+      rx->on_packet(line,
+                    std::span<const std::byte>(packets[k].data(), lens[k]),
+                    static_cast<std::int64_t>(pos) * 1'000);
+    }
+    timer.stop();
+  }
+  benchmark::DoNotOptimize(h.messages);
+  timer.report(state);
+  state.counters["msgs_per_packet"] = kMsgsPerPacket;
+}
+
+static void BM_MoldUdp64_ReceiveAB(benchmark::State& state) {
+  mold_receive_bench(state, 1, 0);
+}
+BENCHMARK(BM_MoldUdp64_ReceiveAB);
+
+static void BM_MoldUdp64_ReceiveABLossA(benchmark::State& state) {
+  mold_receive_bench(state, 2, 8);
+}
+BENCHMARK(BM_MoldUdp64_ReceiveABLossA);
 
 static void BM_SoupBin_FrameSequenced(benchmark::State& state) {
   NullWriter w;
