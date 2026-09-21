@@ -347,11 +347,14 @@ TEST_CASE("codecs.itch: the decoder maps order messages to L3 events") {
     CHECK(m.exec_qty == qt(100));
     CHECK(m.exec_price.is_zero());  // E executes at the order's own price
     CHECK(m.match_id == 5001);
+    CHECK(m.printable());
   }
   {
     const auto m = RecordingSink::as<OrderExecL3Msg>(out[3]);
     CHECK(m.exec_price == px("189.24"));
     CHECK(m.match_id == 5002);
+    CHECK(m.printable());  // Printable 'Y'
+    CHECK(m.exec_flags == 0);
   }
   {
     const auto m = RecordingSink::as<OrderCancelL3Msg>(out[4]);
@@ -385,6 +388,22 @@ TEST_CASE("codecs.itch: the decoder maps order messages to L3 events") {
   }
   CHECK(dec.stats().events == 9);
   CHECK(dec.stats().messages == 23);
+
+  // C with Printable 'N' keeps the flag.
+  ItchEncoder enc;
+  std::array<std::byte, 64> buf{};
+  const std::size_t n =
+      enc.order_executed_with_price(buf, kLocate, kTs, 1003, qt(5), 5005, px("189.3"), false);
+  REQUIRE(n != 0);
+  CHECK(dec.decode(codecs::test::frame_of(std::span<const std::byte>(buf.data(), n)),
+                   rx,
+                   rec.sink) == ParseStatus::Ok);
+  const std::vector<Bytes> c = rec.drain();
+  REQUIRE(c.size() == 1);
+  const auto m = RecordingSink::as<OrderExecL3Msg>(c[0]);
+  CHECK(m.exec_flags == OrderExecL3Msg::kNonPrintable);
+  CHECK_FALSE(m.printable());
+  CHECK(m.exec_price == px("189.3"));
 }
 
 TEST_CASE("codecs.itch: unknown locates, unknown types and malformed messages") {
