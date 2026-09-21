@@ -111,6 +111,9 @@ if(NOT FASTMM_ENABLE_ASAN AND NOT FASTMM_ENABLE_TSAN)
 endif()
 if(FASTMM_BUILD_NET)
   fastmm_test(net       LABELS "unit"           LIBS fastmm::net)
+  # AF_XDP backend. The privileged cases (verifier load, BPF_PROG_TEST_RUN, veth receive) skip
+  # without root or the capabilities; `sudo scripts/xdp-test.sh` runs them.
+  fastmm_test(xdp       LABELS "unit"           LIBS fastmm::net)
   fastmm_test(venues    LABELS "unit;fixture"   LIBS fastmm::venues)
   # Opt-in testnet checks (tests/venues/live_*_test.cpp): `ctest -L live` selects them, the test
   # presets exclude the label, and without FASTMM_LIVE_TESTS=1 they skip.

@@ -5,6 +5,23 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- AF_XDP multicast receive (ADR-0015, section 3): `net::XdpDatagramSource`
+  (`net/xdp_datagram_source.hpp`) opens one XDP socket per (interface, RX queue) with its own UMEM,
+  fill and RX rings, attaches a BPF filter per interface through `BPF_LINK_CREATE` (native with a
+  zero-copy bind, native with a copy bind, then generic; `xdp_mode` pins one), joins each group with
+  a kernel socket for IGMP, and delivers UDP payloads with `RxMeta` (T0 per batch, line index).
+  `poll()` allocates nothing and returns RX descriptors to the fill ring before it returns.
+  `open()` fails with the missing capabilities and the `setcap` command, before Linux 5.11, and with
+  `-EBUSY` when an interface already has an XDP program. Statistics: `XDP_STATISTICS`, the per-CPU
+  count of packets passed to the kernel for lack of a socket on their queue, bad frames, the chosen
+  mode, and busy-poll options the kernel refused. The filter is BPF bytecode built in C++
+  (`net/bpf_asm.hpp`, `net/xdp_program.hpp`) and loaded over raw `bpf(2)`; no libbpf, libxdp or
+  BPF compiler. `net/udp_frame.hpp` parses Ethernet/802.1Q/IPv4/UDP frames and optionally verifies
+  checksums (`bench_udp_frame`).
+- `scripts/xdp-test.sh` (run with `sudo`) runs the privileged AF_XDP tests: verifier load,
+  `BPF_PROG_TEST_RUN` against crafted frames compared with the parser, and receive over a veth pair
+  in generic and native copy modes. Without privileges `ctest` skips them; the parser, the
+  assembler encodings and the program (under a small BPF interpreter) are tested unprivileged.
 - UDP multicast receive (ADR-0015, step 1): `net::UdpSocket` (any-source and source-specific
   joins with the interface by name or address, `SO_RCVBUF`, `recvmmsg`/`sendmmsg`, `send_to`,
   `IP_MULTICAST_IF`/`TTL`/`LOOP`, `SO_TIMESTAMPING`, and `SO_BUSY_POLL`, `SO_PREFER_BUSY_POLL` and

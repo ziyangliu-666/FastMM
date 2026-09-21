@@ -4,7 +4,8 @@
 // position. The net thread calls poll(handler), which delivers a batch and returns its size.
 // Payload spans are valid until poll returns; no backend allocates after open.
 //
-// Backends: KernelDatagramSource (kernel_datagram_source.hpp).
+// Backends: KernelDatagramSource (kernel_datagram_source.hpp), XdpDatagramSource
+// (xdp_datagram_source.hpp). Descriptors and statistics are backend-specific.
 #include "fastmm/core/time.hpp"
 
 #include <concepts>
@@ -17,8 +18,8 @@ namespace fastmm::net {
 struct RxMeta {
   Cycles t0_cycles;         // rdtscp after the batch left the kernel or the RX ring
   std::int64_t t0_wall_ns;  // CLOCK_REALTIME read with t0_cycles; sw_ts_ns -> T0 in one clock
-  std::int64_t hw_ts_ns;    // raw NIC (PHC) time, 0 when unavailable; not CLOCK_REALTIME
   std::int64_t sw_ts_ns;    // kernel receive time (CLOCK_REALTIME), 0 when unavailable
+  std::int64_t hw_ts_ns;    // raw NIC (PHC) time, 0 when unavailable; not CLOCK_REALTIME
   std::uint32_t src_ip;     // network byte order
   std::uint32_t dst_ip;     // network byte order: the subscription's group
   std::uint16_t dst_port;   // host byte order
@@ -39,12 +40,8 @@ struct DatagramHandlerArchetype {
 };
 
 template <class S>
-concept DatagramSource = requires(S& s, const S& cs, DatagramHandlerArchetype h, std::size_t line) {
+concept DatagramSource = requires(S& s, DatagramHandlerArchetype h) {
   { s.poll(h) } noexcept -> std::same_as<std::size_t>;
-  { cs.stats() } noexcept -> std::same_as<const DatagramSourceStats&>;
-  { cs.line_count() } noexcept -> std::same_as<std::size_t>;
-  // Descriptor the reactor waits on for `line` in adaptive mode (readable when data is queued).
-  { cs.fd(line) } noexcept -> std::same_as<int>;
 };
 
 }  // namespace fastmm::net
