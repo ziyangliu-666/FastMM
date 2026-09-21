@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- UDP multicast receive (ADR-0015, step 1): `net::UdpSocket` (any-source and source-specific
+  joins with the interface by name or address, `SO_RCVBUF`, `recvmmsg`/`sendmmsg`, `send_to`,
+  `IP_MULTICAST_IF`/`TTL`/`LOOP`, `SO_TIMESTAMPING`, and `SO_BUSY_POLL`, `SO_PREFER_BUSY_POLL` and
+  `SO_BUSY_POLL_BUDGET` setters that return the errno), `net::enable_hw_timestamps(ifname)`
+  (`SIOCSHWTSTAMP`, not called by default), the `net::DatagramSource` concept with `net::RxMeta`
+  (`net/datagram_source.hpp`), and its `kernel` backend `net::KernelDatagramSource`: one socket
+  per subscription (interface, group, port, optional source), batches of `recvmmsg` into buffers
+  allocated at `open`, kernel and NIC receive timestamps, T0 as `rdtscp` plus a `CLOCK_REALTIME`
+  read per batch, oversized datagrams counted and dropped. Busy-poll options that the process may
+  not set are reported by `open` and do not fail it. Multicast tests run in an unprivileged user
+  and network namespace and pass with a message where none can be created; `bench_udp` measures
+  unicast and multicast receive on loopback.
 - Binance USDⓈ-M perpetual futures connector (`kind = "binance_usdm"`,
   `binance_usdm::BinanceUsdmVenue`) and `configs/binance-usdm-demo.toml` for Demo Trading: depth
   sync with `pu` chaining on the `/public` stream, `bookTicker` and `aggTrade` (`/market`), orders
