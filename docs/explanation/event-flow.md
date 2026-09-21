@@ -8,6 +8,8 @@ One market-data update in `fastmm-live`, from the venue's socket to an order on 
  socket ─ TLS ─ WebSocket ─ parser ─ book sync ─► md ring ─► journal ─► book ─► risk marks ─► on_book ─► quote manager ─► risk check ─► OMS ─► outbound ring ─► encoder ─ signer ─ socket
                                                                                                                                                               │
  socket ─ TLS ─ WebSocket ─ user-stream parser ──────────► order ring ─► journal ─► OMS ─► position ─► on_fill ─► on_order_update ◄──── venue ack / fill ◄──────┘
+
+ multicast (nasdaq_itch): UDP A/B ─ MoldUDP64 ─ ITCH ─ L3 book ─► md ring ─► ...                                              ... outbound ring ─► OUCH encoder ─ socket
 ```
 
 ## 1. Receive and normalise (network thread)
@@ -15,6 +17,8 @@ One market-data update in `fastmm-live`, from the venue's socket to an order on 
 Each venue has a network thread running a `net::Reactor` (epoll or io_uring). It reads the socket, decrypts TLS, unframes WebSocket messages and parses the venue's JSON with simdjson into FastMM's fixed-size messages: `BookDeltaMsg` (a snapshot or a delta), `TradeMsg`, `BookTickerMsg` on the market-data connection; `OrderAckMsg`, `OrderFillMsg` and the other order events on the user stream. The receive time is stamped (T0) before parsing and the decode time after (T1).
 
 The book-sync state machine aligns the REST snapshot with the delta stream using the venue's sequence numbers. A gap puts the book into `Resyncing`, sends a `ConnectionStateMsg` and fetches a new snapshot; a connection without traffic for `stale_ms` is reported `Stale`.
+
+A multicast venue (`nasdaq_itch`) has no TLS or JSON. The network thread takes a batch of UDP datagrams from the kernel (`recvmmsg`) or from an AF_XDP RX ring and stamps T0 once per batch, together with the wall clock; `recv_ts` is the kernel's receive time of the datagram, so the kernel-to-T0 time is measured too. The MoldUDP64 receiver takes the first copy of each packet from line A or B, holds packets that arrive ahead of a gap and re-requests missing ones; a message delivered later keeps its datagram's T0. Each ITCH message updates the instrument's L3 book (order by order), and after each datagram the changed top levels go out as one `BookDeltaMsg` per instrument; T1 is taken after the L3 update. A gap that cannot be recovered, or an inconsistent L3 book, puts the venue into `Resyncing` until a GLIMPSE snapshot has rebuilt the books ([Venue connectors](../reference/venues.md#startup-and-recovery)).
 
 ## 2. Hand over (rings)
 
@@ -54,7 +58,7 @@ Each new order and replace passes the pre-trade checks ([Risk model](risk-model.
 
 ## 8. Send (transport, network thread)
 
-When the event is fully handled, the engine hands the batch to the transport (T4 to T5): live, a push into the venue's outbound ring and a wake-up of the network thread; in a backtest, the simulated venue's order queue. The journal records a copy of each message sent. The network thread encodes the order in the venue's format, signs it and writes it to the WebSocket API or REST connection, and records the wire tick-to-trade latency from T0.
+When the event is fully handled, the engine hands the batch to the transport (T4 to T5): live, a push into the venue's outbound ring and a wake-up of the network thread; in a backtest, the simulated venue's order queue. The journal records a copy of each message sent. The network thread encodes the order in the venue's format, signs it and writes it to the WebSocket API or REST connection (OUCH over SoupBinTCP for `nasdaq_itch` with `order_entry = "sim_ouch"`), and records the wire tick-to-trade latency from T0.
 
 ## 9. The response
 

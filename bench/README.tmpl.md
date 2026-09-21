@@ -10,6 +10,28 @@ iteration over all events.
 
 {{TABLE}}
 
+## End to end: fastmm-sim-itch to fastmm-live over veth
+
+Measured by `scripts/bench-e2e.sh` on 2026-09-21: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 340 to 400 samples per run, so their p99.9 is the largest sample.
+
+| hop | samples per run | p50 | p99 | p99.9 |
+|---|---:|---:|---:|---:|
+| wire to wire: simulator `sendmmsg` to the order read | 346 / 339 / 395 | 49.2 to 53.2 | 90.1 to 114.7 | 129.0 to 291.5 |
+| kernel receive timestamp to T0 | 137664 / 138268 / 137350 | 3.1 to 3.2 | 12.8 to 18.4 | 69.6 to 90.1 |
+| T0 to T1: MoldUDP64, ITCH decode, L3 update | 80247 / 80397 / 79635 | 0.8 to 0.9 | 2.4 to 3.7 | 7.2 to 13.3 |
+| T1 to T2: ring hand-off, L2 book apply | 80247 / 80397 / 79635 | 0.2 | 5.9 to 15.4 | 77.8 to 155.6 |
+| T2 to T3: strategy | 68925 / 69224 / 68765 | 0.4 | 0.8 to 0.9 | 1.7 to 12.8 |
+| T3 to T4: quote manager, risk, OMS | 661 / 651 / 415 | 0.5 to 0.6 | 1.4 to 1.7 | 1.8 to 12.8 |
+| T4 to T5: outbound ring push and wake | 745 / 734 / 454 | 1.9 to 2.4 | 4.4 to 16.4 | 10.8 to 98.9 |
+| T0 to T5: tick to trade (engine) | 197 / 187 / 219 | 4.9 to 5.4 | 14.2 to 27.6 | 14.2 to 82.6 |
+| T0 to OUCH write returned (network thread) | 346 / 339 / 395 | 33.2 to 35.2 | 66.4 to 74.3 | 92.8 to 103.4 |
+
+The OUCH write (`send` on the TCP socket, p50 12 µs) runs the veth and the simulator's TCP receive path inside the system call; the second order of an event waits for the first. With `spin_mode = "adaptive"` (one 30 s run) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
+
+```bash
+scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs root
+```
+
 ## Reproduce
 
 ```bash

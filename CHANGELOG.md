@@ -5,6 +5,31 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
+  docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
+  `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one
+  `L3Book` per instrument through `ItchL2Bridge`, T0 per receive batch and `recv_ts` from the kernel
+  receive time. Joins mid-stream from a GLIMPSE snapshot plus a recovery buffer
+  (`recovery_buffer_packets`, allocated at start); an unrecoverable gap or any L3 book error rebuilds
+  the books from GLIMPSE, and the buffer overflowing during two snapshots in a row trips the venue's
+  kill switch with the new `KillReason::FeedLost`. `order_entry = "none"` rejects orders
+  (`VenueReject`); `"sim_ouch"` trades OUCH 5.0 over SoupBinTCP with `fastmm-sim-itch`, naming the
+  triggering ITCH sequence number in the ClOrdID. No API keys are needed for this kind.
+- `Venue::poll()`: called by the network thread after every reactor iteration; `nasdaq_itch` polls
+  its sockets there with `spin_mode = "busy"`.
+- Status file version 4: p99.9 in every latency, and a multicast feed block per venue (packets per
+  line, A/B skew, gaps, recovered and given-up sequences, snapshots, reorder high-water mark,
+  kernel-to-T0 histogram, XDP statistics and mode). `fastmm-top` shows p99.9 and a feed line, and
+  `--json` prints the snapshot as JSON. `WireLatencyStats` carries p99.9 and max.
+- `scripts/bench-e2e.sh`: `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a
+  veth pair, pinned to separate cores; prints wire-to-wire, kernel-to-T0, the engine hops and the
+  network thread's tick-to-trade at p50, p99 and p99.9 (`--backend af_xdp` needs root). ctest runs it
+  for 5 s unpinned (`integration.nasdaq_itch_processes`).
+- `moldudp::Receiver::reset()`: resume delivery at a given sequence number (the End of Snapshot
+  sequence); the hole up to the highest sequence seen is requested as a gap.
+- `ItchL2Bridge::set_stamp()`: the receive stamp of the snapshot and state events `mark_*()` emits.
+- `fastmm-sim-itch` times Replace Orders whose ClOrdID is a sequence token, as it times Enter Orders
+  (`host::ReplaceView::seq_token`).
 - `fastmm-sim-itch` (ADR-0015, section 6; `configs/sim-itch.toml`, docs/reference/sim-itch.md): a
   Nasdaq-style simulator. `MatchingEngine` and `MarketGenerator` per symbol, engine effects
   published as ITCH 5.0 (A, E, X, D; opening spin O, R, S, Q, H), packed into MoldUDP64 and sent

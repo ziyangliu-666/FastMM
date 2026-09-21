@@ -347,6 +347,18 @@ if(TARGET fastmm-sim-itch)
     EXPECT_REGEX "sim-itch config: no multicast line")
 endif()
 
+# fastmm-live against fastmm-sim-itch as processes in two network namespaces joined by a veth pair
+# (scripts/bench-e2e.sh, kernel backend, unpinned, 5 s): the feed goes live and orders are sent.
+# Exit code 77 (no user namespaces here) skips it.
+if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top)
+  add_test(NAME integration.nasdaq_itch_processes
+    COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
+            --sim-cpu -1 --engine-cpu -1 --net-cpu -1 --build ${PROJECT_BINARY_DIR}
+            --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e)
+  set_tests_properties(integration.nasdaq_itch_processes PROPERTIES
+    LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
+endif()
+
 # Apps built from the test strategy library: the module is listed for every transport, runs, and a
 # name clash with a built-in strategy exits with code 3.
 foreach(_app backtest conflict)

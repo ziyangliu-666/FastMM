@@ -101,21 +101,21 @@ Outbound, as Sequenced Data: Accepted (Order Reference Number = the ITCH referen
 
 ## Wire to wire
 
-An Enter Order whose ClOrdID is a sequence token is timed:
+An Enter Order or Replace Order whose ClOrdID is a sequence token is timed:
 
 ```
 ClOrdID = 'T' + 13 decimal digits, zero padded = the MoldUDP64 sequence number of the ITCH
           message that triggered the order                          "T0000000012345"
 ```
 
-`codecs::ouch50::put_seq_token()` writes it and `parse_seq_token()` reads it. The simulator stamps every data datagram with `rdtscp` right before the `sendmmsg` call that first carries it, keeps the last `stamp_ring` stamps (default 1 048 576 datagrams) with the sequence range of each datagram, and stamps each TCP read with `rdtscp` right after it returns. For an Enter Order with a token the difference, converted with the calibrated TSC rate, goes into a `LogLinearHistogram` before the order is processed. A token outside the stamp ring counts as a miss.
+`codecs::ouch50::put_seq_token()` writes it and `parse_seq_token()` reads it; the `nasdaq_itch` venue with `order_entry = "sim_ouch"` sets it ([Venue connectors](venues.md#orders)). `scripts/bench-e2e.sh` runs the simulator against `fastmm-live` ([Benchmarks](../explanation/benchmarks.md#end-to-end-over-veth)). The simulator stamps every data datagram with `rdtscp` right before the `sendmmsg` call that first carries it, keeps the last `stamp_ring` stamps (default 1 048 576 datagrams) with the sequence range of each datagram, and stamps each TCP read with `rdtscp` right after it returns. For an order with a token the difference, converted with the calibrated TSC rate, goes into a `LogLinearHistogram` before the order is processed. A token outside the stamp ring counts as a miss.
 
 `--summary-json <file>` writes one JSON object at exit:
 
 | Key | Meaning |
 |---|---|
 | `wire_to_wire_ns` | `count`, `min`, `p50`, `p90`, `p99`, `p999`, `max`, `mean` of the histogram, in ns |
-| `tokens`, `misses` | Enter Orders with a sequence token; tokens not found in the stamp ring |
+| `tokens`, `misses` | Enter and Replace Orders with a sequence token; tokens not found in the stamp ring |
 | `messages`, `packets` | ITCH messages published, data datagrams built |
 | `datagrams_sent`, `datagrams_dropped` | per line, `[A, B]` |
 | `send_errors` | datagrams `sendmmsg` did not take |

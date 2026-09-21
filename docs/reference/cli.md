@@ -208,6 +208,7 @@ usage: fastmm-top [--name <engine name> | --path <status file>] [options]
   --path <file>       read this status file (fastmm-live --status <file>)
   --interval <ms>     refresh period, default 500
   --once              print one frame and exit (exit code 3 if no status is available)
+  --json              print the snapshot as one JSON object and exit (implies --once)
   --no-color          plain output
 ```
 <!-- END cli-help -->

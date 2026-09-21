@@ -1,6 +1,6 @@
 # Venue connectors
 
-FastMM ships four connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet, Demo Mode or the local Binance-compatible simulator), Binance USDⓈ-M perpetual futures (Demo Trading), Bybit v5 spot (testnet) and Deribit options and futures (testnet). `make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
+FastMM ships five connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet, Demo Mode or the local Binance-compatible simulator), Binance USDⓈ-M perpetual futures (Demo Trading), Bybit v5 spot (testnet), Deribit options and futures (testnet) and Nasdaq TotalView-ITCH market data (with order entry to fastmm-sim-itch). `make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
 
 | kind | connector |
 |---|---|
@@ -8,8 +8,9 @@ FastMM ships four connectors behind the control-path `fastmm::venues::Venue` int
 | `binance_usdm` | `binance_usdm::BinanceUsdmVenue` |
 | `bybit`, `bybit_spot` | `bybit::BybitVenue` |
 | `deribit` | `deribit::DeribitVenue` |
+| `nasdaq_itch` | `nasdaq::NasdaqItchVenue` |
 
-Every connector runs on its own `net::Reactor` thread and writes normalised messages into two rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order events (never dropped: bounded spin, overflow trips the kill switch in `fastmm-live`). `cancel_all()` uses an independent blocking REST connection, so it works from any thread even if the reactor is wedged.
+Every connector runs on its own `net::Reactor` thread and writes normalised messages into two rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order events (never dropped: bounded spin, overflow trips the kill switch in `fastmm-live`). `cancel_all()` uses an independent blocking REST connection, so it works from any thread even if the reactor is wedged (`nasdaq_itch`: it shuts the OUCH connection down, see below). `Venue::poll()` runs after every reactor iteration; `nasdaq_itch` polls its sockets there in `spin_mode = "busy"`.
 
 ## Binance Spot
 
@@ -171,6 +172,52 @@ The credit model is from the rate-limits article: order requests use a leaky buc
 
 `deribit_error_map.hpp` follows the "Complete RPC Error Codes Reference" table. Among others: 11054 post_only_reject, 10009/10039 insufficient funds, 10004/11044 unknown order (10004 reconciles), 10043/10026 tick, 10005-10007 price bands, 10028 rate limit, 13004/13021 fatal, 13009 re-authenticate, and 10040/10041/10047/11051/13028 back off.
 
+## Nasdaq TotalView-ITCH (`nasdaq_itch`)
+
+Market data from TotalView-ITCH 5.0 over MoldUDP64 multicast (lines A and B), the initial book from GLIMPSE 5.0, and order entry to [fastmm-sim-itch](sim-itch.md) only. No REST, no API keys, no reference data from the venue: tick and lot come from `[[instruments]]`. Code: `include/fastmm/venues/nasdaq/`. Setup: [Receive a multicast feed](../how-to/operations/multicast-feeds.md).
+
+```text
+ KernelDatagramSource | XdpDatagramSource ─► moldudp::Receiver ─► RecoveryBuffer (during a snapshot)
+   (rx_backend, lines A and B)                A/B, reorder,        │
+                                              re-requests          ▼
+                                                            ItchL2Bridge ─► BookSnapshot / BookDelta / Trade ─► md ring
+                                                            (L3Book per instrument)
+```
+
+### Startup and recovery
+
+1. `connect()` joins both lines and buffers every message (up to `recovery_buffer_packets` datagrams) while it logs in to GLIMPSE.
+2. The snapshot's Stock Directory, Trading Action and Add Order messages build the L3 books; End of Snapshot gives the sequence number to continue from.
+3. The buffered messages from that number on are applied. When the buffer starts after it, the receiver is moved back to it and the missing messages are re-requested; without `rerequest` another snapshot is taken.
+4. Each book emits a `BookSnapshotMsg` (top `depth` levels per side) and the venue a `ConnectionStateMsg{Live}`.
+
+The same procedure, after a `ConnectionStateMsg{Resyncing}` that clears the engine's books, follows:
+
+| Trigger | Why |
+|---|---|
+| a gap the receiver gives up (no `rerequest`, or `max_request_attempts` unanswered requests) | the book misses messages |
+| any L3 book error (an unknown or duplicate order reference, a book at `max_orders`) | later messages cannot repair it |
+| the recovery buffer filling during a snapshot | the snapshot is taken again |
+
+The buffer filling during two snapshots in a row stops the feed: the venue's kill switch trips with `KillReason::FeedLost`, and the feed state is `lost`. A GLIMPSE connection that fails or closes before End of Snapshot is retried after 1 s. Without `glimpse_url` the books are complete (empty) before sequence 1 and the receiver starts there; a gap given up stops the feed the same way.
+
+### Events
+
+Each datagram yields at most one `BookDeltaMsg` per instrument, with absolute quantities of the top `depth` levels that changed (0 deletes), and a `TradeMsg` per printable execution (E, C with Printable Y, P, Q). T0 (`t0_cycles`) is the `rdtscp` of the receive batch that carried the datagram, also for messages delivered later from the reorder buffer; `recv_ts` is the kernel receive time (the NIC time with `hw_clock = "phc_synced"`, the T0 wall clock on `af_xdp`); `venue_seq` is the MoldUDP64 sequence number of the last message applied; T1 is taken after decoding and the L3 update.
+
+### Orders
+
+| `order_entry` | Orders |
+|---|---|
+| `none` | refused at once: `OrderRejectMsg` with `RejectReason::VenueReject`, text `order_entry = none` |
+| `sim_ouch` | OUCH 5.0 over SoupBinTCP to `ouch_url`: Enter, Replace, Cancel; Accepted, Replaced, Canceled, Executed and Rejected become order events |
+
+With `sim_ouch`, an Enter or Replace Order triggered by market data carries the sequence token of the first ITCH message of its receive batch as ClOrdID (`T` + 13 digits); the simulator times it wire to wire. The engine copies only `t0_cycles` into outbound messages, so the venue maps each batch's `t0_cycles` to that sequence number (4096 recent batches). The simulator cancels a connection's orders when it closes: a lost OUCH connection is reported as `ConnectionStateMsg{Disconnected}` on channel 1 and a reconciliation without open orders, and the connection is retried after 1 s. `cancel_all()` shuts the connection down from the calling thread.
+
+### Status
+
+The venue fills the feed block of its status entry ([Status file](status-file.md#multicast-feed)): per-line packets, duplicates and A/B skew, gaps, recovered and given-up sequences, snapshots, the reorder high-water mark, requests, malformed datagrams, L3 book errors, the kernel-to-T0 histogram, and on `af_xdp` the XDP statistics and mode.
+
 ## Configuration keys
 
 Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` ([secrets](configuration.md#general-rules)), `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`.
@@ -181,6 +228,7 @@ Venue-specific keys ([Configuration](configuration.md#connector-specific-keys)):
 * Binance USDⓈ-M: `ws_private_url`, `order_api`, `depth_limit` (5, 10, 20, 50, 100, 500 or 1000), `stale_ms`, `dead_ms`, `position_from_account_update`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`. `key_type = "ed25519"` is refused. Example: `configs/binance-usdm-demo.toml`.
 * Bybit: `ws_private_url`, `depth`, `order_api`, `stale_ms`, `dead_ms`, `ping_interval_ms`, `orders_per_second`, `position_from_wallet`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
 * Deribit: `api_key` / `api_secret` are the client id and client secret (`${FASTMM_DERIBIT_CLIENT_ID}` / `${FASTMM_DERIBIT_CLIENT_SECRET}`); extras `ws_private_url`, `currencies` (`"BTC"` or `["BTC", "ETH"]`), `book_interval` / `ticker_interval` / `trades_interval` (`100ms` | `agg2`; `raw` needs an authenticated connection), `heartbeat_interval_s` (>= 10), `reject_post_only`, `cancel_on_disconnect`, `cancel_on_order_channel_loss`, `matching_engine_rate`, `matching_engine_burst`, `stale_ms`, `dead_ms`, `allow_offline_reference_data`, `emit_ack_from_response`. Example: `configs/deribit-testnet.toml`.
+* Nasdaq TotalView-ITCH: no `api_key` / `api_secret` (`resolve_venue_env` does not ask for them); `rx_backend`, `interface`, `line_a`, `line_b`, `line_a_interface`, `line_b_interface`, `line_a_source`, `line_b_source`, `queues`, `xdp_mode`, `rcvbuf`, `batch`, `rerequest`, `glimpse_url`, `glimpse_username`, `glimpse_password`, `reorder_packets`, `gap_timeout_ns`, `max_request_attempts`, `request_timeout_ns`, `recovery_buffer_packets`, `depth`, `price_window_ticks`, `max_orders`, `hw_timestamps`, `hw_clock`, `order_entry`, `ouch_url`, `ouch_username`, `ouch_password`. Example: `configs/nasdaq-itch-sim.toml`.
 
 `stale_ms` defaults to 2000 ms for Binance and Bybit and 10000 ms for Deribit. `dead_ms` is raised to at least 45000 ms on Binance (the venue pings every 20 s), to 45000 ms for market data and 240000 ms for the other connections on Binance USDⓈ-M (pings every 3 minutes), twice `ping_interval_ms` plus 5000 ms on Bybit (45000 ms by default) and three heartbeat intervals on Deribit (30000 ms by default). A market-data connection without traffic for `stale_ms` is reported `Stale`: the engine pulls the venue's quotes and clears its books, and the connector fetches a new snapshot when data returns. Testnet BTCUSDT is often silent for more than 2 s, so the testnet and Demo configs set `stale_ms = 10000` (`configs/deribit-testnet.toml`: 15000).
 
