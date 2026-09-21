@@ -98,6 +98,8 @@ tier2 net fastmm/net/backoff.hpp
 tier2 net fastmm/net/url.hpp
 tier2 net fastmm/net/ws_client.hpp
 tier2 net fastmm/net/http_client.hpp
+tier2 net fastmm/net/datagram_source.hpp
+tier2 net fastmm/net/xdp_datagram_source.hpp
 
 # ---- tier 2: binary protocols -----------------------------------------------------------------------
 tier2 fastmm/codecs/codec.hpp
