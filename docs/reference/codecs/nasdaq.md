@@ -52,7 +52,29 @@ Register symbols with `add_symbol()` before the directory spin (or `map_locate()
 
 `parse_packet()` validates a datagram (20-byte header, exactly `count` length-prefixed blocks), `MessageFramer` / `MessageIterator` walk the messages with their implied sequence numbers, `PacketBuilder`, `write_heartbeat()`, `write_end_of_session()` and `write_request()` build packets.
 
-`Receiver<Handler>` (satisfies `SessionLayer`) delivers messages to `Handler::on_message(seq, msg)` strictly in sequence. A gap is detected from a data packet starting beyond the next expected sequence or from a heartbeat / end-of-session announcing a higher next sequence. It then sends a Request Packet through `Handler::send_request()` (capped at `max_request_count` messages), asks for the next chunk as soon as a retransmission makes progress, and re-sends the request from `on_timer()` after `request_timeout_ns`. Packets ahead of the gap are dropped, not buffered: the request covers them. `Handler::on_end_of_session()` fires once every message before End of Session was delivered. `Transmitter` keeps a fixed-capacity history, builds live packets up to `max_datagram` and answers Request Packets.
+`Receiver<Handler, Meta>` (satisfies `SessionLayer`) delivers messages strictly in sequence to `Handler::on_message(seq, msg, meta)`, or `on_message(seq, msg)` when the handler does not take the metadata. `on_packet(line, datagram, now_ns, meta)` takes one datagram of any line; `meta` (a trivially copyable type, empty by default) reaches `on_message` with every message of that packet. `on_frame()` is line 0 at the latest time seen by `on_packet()` or `on_timer()`.
+
+* Arbitration: the first copy of a sequence wins; later copies count as duplicates of their line. For each duplicate the delay behind the first copy is recorded per line (`skew_last_ns`, `skew_max_ns`, `skew_sum_ns`, `skew_samples`) from a table of first-arrival times of the last 4 096 packet start sequences (direct-mapped; a collision loses the sample).
+* Reorder buffer: packets ahead of the next expected sequence are copied, with their `meta`, into `reorder_packets` slots of `max_packet_bytes` allocated by the constructor, and delivered when the sequence reaches them.
+* Gaps: a data packet starting beyond the next expected sequence, or a heartbeat / End of Session announcing a higher next sequence, opens a gap. It is declared after `gap_timeout_ns` without the missing sequence on any line (checked by `on_packet()` and `on_timer()`), or at once when an ahead packet cannot be held; that packet is dropped and counted in `reorder_overflow`.
+* Recovery with `can_request`: a Request Packet through `Handler::send_request()` for the first hole (next expected sequence up to the first held packet, at most `max_request_count`), re-sent from `on_timer()` after `request_timeout_ns`. When a retransmission makes progress the next hole is requested once it is `gap_timeout_ns` old, or at once if it holds dropped packets.
+* Unrecoverable gaps: a hole requested `max_request_attempts` times without progress, or any declared hole without `can_request`, is given up: `Handler::on_gap_unrecoverable(from_seq, count)` (optional) is called and delivery resumes at the first held packet. Without `can_request` a full buffer does the same at once.
+* End of Session: `Handler::on_end_of_session()` fires once every message before End of Session was delivered. After that, a packet with another session id is adopted as a new session (from sequence 1, or from its first packet with `next_sequence = 0`) only with `follow_session`; otherwise it counts as `session_mismatch`.
+
+| `ReceiverConfig` | Default | Meaning |
+|---|---|---|
+| `session` | blank | blank: adopt the session of the first packet |
+| `next_sequence` | 0 | 0: start at the first packet received (live join) |
+| `max_request_count` | 1024 | messages per Request Packet |
+| `request_timeout_ns` | 250 ms | re-send an unanswered request |
+| `max_request_attempts` | 4 | requests for one hole before it is unrecoverable; 0: no limit |
+| `gap_timeout_ns` | 2 ms | wait for the other line; size it from the measured skew; 0: declare at once |
+| `reorder_packets` | 256 | packets held ahead of a gap |
+| `max_packet_bytes` | 1472 | largest datagram that can be held |
+| `can_request` | true | a re-request server exists |
+| `follow_session` | false | adopt a new session after End of Session |
+
+`Transmitter` keeps a fixed-capacity history, builds live packets up to `max_datagram` and answers Request Packets.
 
 ## SoupBinTCP
 
@@ -90,7 +112,7 @@ Time In Force: DAY and GTC -> `0` (Day; OUCH 5.0 has no good-till-cancel), IOC -
 
 * `tests/codecs/itch_sim_property_test.cpp`: seeded random flow (limit, IOC, FOK, post-only, market, cancels, in-place amends and re-entering replaces) into the simulator's `MatchingEngine`. Its book events are published as ITCH (A/F, E/C, X, D, U, P), decoded and applied to an `L3Book`. After every step the L3 book must equal the engine's book: levels, quantities and each level's FIFO of (reference number, leaves). 16 seeds x 1 500 steps.
 * `tests/codecs/ouch_session_sim_test.cpp`: an OUCH client (encoder, SoupBinTCP client session, decoder) against a small OUCH acceptor (SoupBinTCP server session bridged to `MatchingEngine`), with a second account trading against it. Fills (count, quantity and notional per side) match the engine ledger, and open orders match the engine (ids, leaves, side), for OUCH 4.2 and 5.0, 12 seeds each.
-* `tests/codecs/moldudp_loss_test.cpp`: 20 seeds x 3 000 messages through a channel that drops 15 % of packets (10 % of retransmissions), duplicates and reorders. Every message is delivered once, in order, with the published contents.
+* `tests/codecs/moldudp_loss_test.cpp`: 20 seeds x 3 000 messages on one line, and on lines A and B that each drop 15 % of packets, duplicate and reorder independently; retransmissions arrive on a third line and lose 10 %. With a re-request server every message is delivered once, in order, with the published contents. Without one, every sequence is either delivered once in order or reported once through `on_gap_unrecoverable()`, and no sequence that reached a line promptly is reported.
 
 ## Benchmarks
 
@@ -101,15 +123,19 @@ Time In Force: DAY and GTC -> `0` (Day; OUCH 5.0 has no good-till-cancel), IOC -
 | `BM_Itch_DecodeAddOrder` | ITCH 'A' (36 bytes) -> `OrderAddL3Msg` committed to an `EventSink` | 15.4 ns |
 | `BM_Itch_DecodeOrderExecuted` | ITCH 'E' (31 bytes) -> `OrderExecL3Msg` committed to an `EventSink` | 15.9 ns |
 | `BM_MoldUdp64_FramePacket` | `parse_packet()` + iterate a 10-message packet | 19.5 ns per packet |
+| `BM_MoldUdp64_ReceiveAB` | `Receiver::on_packet()` for one datagram of line A or B (4 messages; B trails A by one packet, so every B copy is a duplicate) | 11.3 ns |
+| `BM_MoldUdp64_ReceiveABLossA` | as above; A loses 1 packet in 8 and B trails by two, so A's next packet waits in the reorder buffer | 26.6 ns |
 | `BM_SoupBin_FrameSequenced` | `SoupBinFramer::next()` + `ClientSession::on_frame()` for a Sequenced Data packet | 2.4 ns |
 | `BM_Ouch42_EncodeEnterOrder` | `OrderCommand` -> OUCH 4.2 Enter Order (49 bytes) | 18.4 ns |
 | `BM_Ouch50_EncodeEnterOrder` | `OrderCommand` -> OUCH 5.0 Enter Order (47 bytes, UserRefNum lookup) | 15.9 ns |
+
+The two `Receiver` rows were measured later (release preset, load average about 10).
 
 Run them with `build/<dir>/bin/bench/bench_codecs_nasdaq --cpu=N --benchmark_min_time=1s`.
 
 ## Limitations
 
 * ITCH: the Printable flag (C), Attribution (F), Cross Type (Q) and the P Buy/Sell Indicator (always `B` since 2014) have no field in the engine messages and are dropped.
-* MoldUDP64: the receiver does not rotate to a new session after End of Session.
+* MoldUDP64: adopting a new session (`follow_session`) is not reported to the handler; `on_message` sequence numbers restart at 1.
 * SoupBinTCP: packet arrival time is attributed to the next `on_timer()` tick. A requested sequence number of 0 starts the server at the next new message, not at the most recently generated one.
 * OUCH: the Replace Shares field is sent as the command's quantity (OUCH defines it as total liable including prior executions). Modify Order, Mass Cancel, Disable / Enable Order Entry and Account Query are laid out but not produced by the encoders.

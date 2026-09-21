@@ -73,6 +73,17 @@ All notable changes are recorded here (Keep a Changelog format).
   `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- `moldudp::Receiver` (ADR-0015, step 2): A/B arbitration, a reorder buffer and
+  `gap_timeout_ns`. `on_packet(line, datagram, now_ns, meta)` replaces `on_packet(datagram)`
+  (`on_packet(datagram, now_ns)` is line 0); requests are stamped with the packet time instead of
+  the last `on_timer()` tick. `Receiver<H, Meta>` passes `meta` to `on_message(seq, msg, meta)`
+  when the handler takes it, also for messages drained later. Packets ahead of a gap are copied
+  into a `ReorderBuffer` (`reorder_packets`, default 256, of `max_packet_bytes`) instead of
+  dropped; a gap is declared after `gap_timeout_ns` (default 2 ms) or when the buffer is full,
+  and requested one hole at a time. New `ReceiverConfig` fields `max_request_attempts`,
+  `can_request` and `follow_session`; an optional `on_gap_unrecoverable(from_seq, count)` reports
+  gaps that are given up. `ReceiverStats` gains per-line packets, duplicates and A/B skew, and
+  held, overflow, unrecoverable and session counters.
 - `fastmm-backtest`, `fastmm-replay` and `BacktestConfig.from_toml` report unknown configuration
   keys and sections with their line (stderr, or a `UserWarning` each and `BacktestConfig.warnings`),
   including unknown `[backtest]` keys. `GenericSection::lines` records the line of each

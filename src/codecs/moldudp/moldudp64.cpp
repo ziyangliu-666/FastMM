@@ -2,6 +2,8 @@
 #include "fastmm/codecs/moldudp/moldudp64.hpp"
 
 #include <cstring>
+#include <limits>
+#include <memory>
 
 namespace fastmm::codecs::moldudp {
 
@@ -102,6 +104,88 @@ std::size_t write_request(std::span<std::byte> out,
   if (out.size() < kRequestLength) return 0;
   write_header(out.data(), session, sequence, count);
   return kRequestLength;
+}
+
+// ---- reorder buffer ------------------------------------------------------------------------
+
+ReorderBuffer::ReorderBuffer(std::uint32_t capacity, std::size_t max_packet_bytes)
+    : capacity_(capacity),
+      stride_(max_packet_bytes > kHeaderLength ? max_packet_bytes - kHeaderLength : 0) {
+  if (capacity_ == 0) return;
+  entries_ = std::make_unique<Entry[]>(capacity_);
+  if (stride_ != 0) data_ = std::make_unique<std::byte[]>(capacity_ * stride_);
+}
+
+std::uint32_t ReorderBuffer::insert(const PacketView& p, std::int64_t rx_ns) noexcept {
+  if (full() || !fits(p)) return kNone;
+  std::uint32_t i = 0;
+  while (entries_[i].used) ++i;
+  Entry& e = entries_[i];
+  e.seq = p.sequence;
+  e.end = p.next_sequence();
+  e.rx_ns = rx_ns;
+  e.len = static_cast<std::uint32_t>(p.blocks.size());
+  e.count = p.count;
+  e.used = true;
+  if (!p.blocks.empty()) std::memcpy(data_.get() + i * stride_, p.blocks.data(), p.blocks.size());
+  ++size_;
+  return i;
+}
+
+bool ReorderBuffer::covers(std::uint64_t seq, std::uint64_t end) const noexcept {
+  if (size_ == 0) return false;
+  for (std::uint32_t i = 0; i < capacity_; ++i) {
+    const Entry& e = entries_[i];
+    if (e.used && e.seq <= seq && e.end >= end) return true;
+  }
+  return false;
+}
+
+std::uint32_t ReorderBuffer::find_at_or_below(std::uint64_t seq) const noexcept {
+  if (size_ == 0) return kNone;
+  for (std::uint32_t i = 0; i < capacity_; ++i) {
+    if (entries_[i].used && entries_[i].seq <= seq) return i;
+  }
+  return kNone;
+}
+
+PacketView ReorderBuffer::view(std::uint32_t slot, const SessionId& session) const noexcept {
+  const Entry& e = entries_[slot];
+  PacketView v;
+  v.session = session;
+  v.sequence = e.seq;
+  v.count = e.count;
+  v.kind = PacketKind::Data;
+  v.blocks = {data_.get() + slot * stride_, e.len};
+  return v;
+}
+
+void ReorderBuffer::erase(std::uint32_t slot) noexcept {
+  entries_[slot].used = false;
+  --size_;
+}
+
+void ReorderBuffer::clear() noexcept {
+  for (std::uint32_t i = 0; i < capacity_; ++i) entries_[i].used = false;
+  size_ = 0;
+}
+
+std::uint64_t ReorderBuffer::lowest() const noexcept {
+  std::uint64_t lo = std::numeric_limits<std::uint64_t>::max();
+  if (size_ == 0) return lo;
+  for (std::uint32_t i = 0; i < capacity_; ++i) {
+    if (entries_[i].used && entries_[i].seq < lo) lo = entries_[i].seq;
+  }
+  return lo;
+}
+
+std::int64_t ReorderBuffer::oldest_rx() const noexcept {
+  std::int64_t t = std::numeric_limits<std::int64_t>::max();
+  if (size_ == 0) return t;
+  for (std::uint32_t i = 0; i < capacity_; ++i) {
+    if (entries_[i].used && entries_[i].rx_ns < t) t = entries_[i].rx_ns;
+  }
+  return t;
 }
 
 // ---- transmitter ---------------------------------------------------------------------------

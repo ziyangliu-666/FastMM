@@ -1,6 +1,7 @@
 // The Nasdaq codecs' hot paths do not allocate after construction: ITCH decode, MoldUDP64
-// framing and gap recovery, SoupBinTCP framing and session traffic both ways (including
-// heartbeats), OUCH 4.2 / 5.0 encode and decode (including order-table inserts and erases).
+// framing, A/B arbitration, the reorder buffer and gap recovery, SoupBinTCP framing and session
+// traffic both ways (including heartbeats), OUCH 4.2 / 5.0 encode and decode (including order-table
+// inserts and erases).
 #include "alloc_counter.hpp"
 #include "test_support.hpp"
 
@@ -38,10 +39,17 @@ struct NullApp {
   std::uint64_t n = 0;
   void on_unsequenced(std::span<const std::byte>) noexcept { ++n; }
 };
+struct MoldMeta {
+  std::int64_t t0 = 0;
+};
 struct MoldHandler {
   std::uint64_t messages = 0;
   std::uint64_t requests = 0;
-  void on_message(std::uint64_t, std::span<const std::byte>) noexcept { ++messages; }
+  std::int64_t last_t0 = 0;
+  void on_message(std::uint64_t, std::span<const std::byte>, const MoldMeta& m) noexcept {
+    ++messages;
+    last_t0 = m.t0;
+  }
   void send_request(std::span<const std::byte>) noexcept { ++requests; }
   void on_end_of_session() noexcept {}
 };
@@ -83,17 +91,23 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
   itch_len[7] = itch_enc.trade(itch_msgs[7], 7, 8, Side::Buy, q, "FMHOT", p, 11);
   REQUIRE(itch_dec->add_symbol("FMHOT", InstrumentId{0}));
 
-  // MoldUDP64: a stream with a gap and its retransmission.
-  auto tx = std::make_unique<moldudp::Transmitter>("HOTPATH");
-  for (int i = 0; i < 64; ++i)
+  // MoldUDP64: 30 messages per iteration on lines A and B; 11..20 of each iteration are lost
+  // on both and recovered from a retransmission on line 2.
+  moldudp::TransmitterConfig tc;
+  tc.history_bytes = 1U << 23;
+  tc.history_messages = 1U << 18;
+  auto tx = std::make_unique<moldudp::Transmitter>("HOTPATH", tc);
+  for (int i = 0; i < 5'000 * 30; ++i)
     REQUIRE(tx->publish(std::span<const std::byte>(itch_msgs[1].data(), itch_len[1])) != 0);
   std::array<std::byte, 1500> d1{};
   std::array<std::byte, 1500> d2{};
   std::array<std::byte, 1500> d3{};
-  const std::size_t n1 = tx->packet_at(d1, 1, 10);
-  const std::size_t n2 = tx->packet_at(d2, 21, 10);  // 11..20 missing
   std::array<std::byte, 20> req{};
   MoldHandler mh;
+  moldudp::ReceiverConfig rc;
+  rc.next_sequence = 1;
+  rc.gap_timeout_ns = 50'000;
+  auto rx = std::make_unique<moldudp::Receiver<MoldHandler, MoldMeta>>(mh, rc);
 
   // SoupBinTCP sessions over fixed buffers, logged in before the guard.
   auto c2s = std::make_unique<FixedWriter>();
@@ -140,15 +154,18 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
       }
       drain(*ring);
 
-      moldudp::ReceiverConfig rc;
-      rc.next_sequence = 1;
-      moldudp::Receiver<MoldHandler> rx(mh, rc);
-      rx.on_packet(std::span<const std::byte>(d1.data(), n1));
-      rx.on_packet(std::span<const std::byte>(d2.data(), n2));
-      rx.on_timer(1'000'000'000);
-      moldudp::write_request(req, tx->session(), 11, 10);
+      const std::uint64_t base = (i - 1) * 30ULL;
+      const std::int64_t t = static_cast<std::int64_t>(i) * 1'000'000;
+      const std::size_t n1 = tx->packet_at(d1, base + 1, 10);
+      const std::size_t n2 = tx->packet_at(d2, base + 21, 10);
+      rx->on_packet(0, std::span<const std::byte>(d1.data(), n1), t, MoldMeta{t});
+      rx->on_packet(1, std::span<const std::byte>(d1.data(), n1), t + 1'000, MoldMeta{t});
+      rx->on_packet(0, std::span<const std::byte>(d2.data(), n2), t + 2'000, MoldMeta{t});
+      rx->on_packet(1, std::span<const std::byte>(d2.data(), n2), t + 3'000, MoldMeta{t});
+      rx->on_timer(t + 52'000);  // gap declared: request
+      moldudp::write_request(req, tx->session(), base + 11, 10);
       const std::size_t n3 = tx->answer_request(req, d3);
-      rx.on_packet(std::span<const std::byte>(d3.data(), n3));
+      rx->on_packet(2, std::span<const std::byte>(d3.data(), n3), t + 60'000, MoldMeta{t});
 
       // OUCH 4.2 over SoupBinTCP: client Unsequenced -> server, server Sequenced -> client.
       venues::OrderCommand cmd;
@@ -208,7 +225,10 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
   }
   CHECK(events == 55'000);  // 7 ITCH + 2 OUCH 4.2 + 2 OUCH 5.0 events per iteration
   CHECK(app_messages == 10'000);
-  CHECK(mh.messages > 0);
+  CHECK(mh.messages == 5'000 * 30);
+  CHECK(mh.requests == 5'000);
+  CHECK(rx->stats().lines[1].duplicate_packets == 10'000);
+  CHECK(rx->stats().held_packets == 5'000);
   CHECK(client->state() == SessionState::Up);
   CHECK(client->stats().heartbeats_sent >= 4);
   CHECK(server->stats().heartbeats_sent >= 4);
