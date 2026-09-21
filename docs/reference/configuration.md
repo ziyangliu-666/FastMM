@@ -221,7 +221,7 @@ Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=va
 
 ## `[sim]`
 
-Parameters of the synthetic market used when the data source is synthetic; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` reads its own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml)).
+Parameters of the synthetic market used when the data source is synthetic; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` and `fastmm-sim-itch` read their own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml), [fastmm-sim-itch](sim-itch.md#configuration-configssim-itchtoml)).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

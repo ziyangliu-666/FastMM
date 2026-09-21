@@ -512,9 +512,58 @@ class OuchDecoder {
 };
 static_assert(codecs::Decoder<OuchDecoder>);
 
-// ---- host side (simulated OUCH port, replay): outbound builders -------------------------
-// Each returns bytes written (Appendage Length 0), 0 when `out` is too small.
+// ---- venue_seq token (fastmm-sim-itch wire-to-wire) --------------------------------------
+// A client that wants the simulator to time an order from the market data that triggered it
+// writes the ClOrdID as 'T' followed by 13 decimal digits, zero padded: the MoldUDP64 sequence
+// number of that ITCH message ("T0000000012345"). ClOrdID is a free alpha field in OUCH 5.0 and
+// the exchange echoes it unchanged. The OuchDecoder's ClOrdID fallback (encode_cl_ord_id, "fm" +
+// 12 hex digits) does not apply to such orders; UserRefMap still resolves them.
+inline constexpr char kSeqTokenPrefix = 'T';
+inline constexpr std::uint64_t kMaxSeqToken = 9'999'999'999'999ULL;
+// False (and nothing written) when venue_seq is 0 or larger than kMaxSeqToken.
+bool put_seq_token(char* cl_ord_id14, std::uint64_t venue_seq) noexcept;
+// The sequence number, or 0 when the field is not a sequence token.
+[[nodiscard]] std::uint64_t parse_seq_token(const char* cl_ord_id14) noexcept;
+
 namespace host {
+
+// ---- host side (simulated OUCH port): inbound parsers ------------------------------------
+// Each checks the type, the fixed part and the appendage (split_message) and converts fields to
+// engine units. False for a malformed message or a value the engine cannot represent.
+
+struct EnterView {
+  const EnterOrder* raw = nullptr;
+  std::uint32_t user_ref_num = 0;
+  Side side = Side::Buy;
+  Qty qty{};
+  Price price{};
+  std::string_view symbol;  // trimmed
+  // '3' -> Ioc, or Fok when the MinQty option equals Quantity; any other value -> Gtc (the
+  // simulator has no end of day).
+  TimeInForce tif = TimeInForce::Gtc;
+  bool post_only = false;  // PostOnly option 'P'
+  std::uint32_t min_qty = 0;
+  std::uint64_t seq_token = 0;  // parse_seq_token(ClOrdID)
+};
+[[nodiscard]] bool parse_enter(std::span<const std::byte> msg, EnterView& out) noexcept;
+
+struct ReplaceView {
+  const ReplaceOrder* raw = nullptr;
+  std::uint32_t orig_user_ref_num = 0;
+  std::uint32_t user_ref_num = 0;
+  Qty qty{};
+  Price price{};
+};
+[[nodiscard]] bool parse_replace(std::span<const std::byte> msg, ReplaceView& out) noexcept;
+
+struct CancelView {
+  std::uint32_t user_ref_num = 0;
+  std::uint32_t quantity = 0;  // new intended size; 0 cancels the order
+};
+[[nodiscard]] bool parse_cancel(std::span<const std::byte> msg, CancelView& out) noexcept;
+
+// ---- host side: outbound builders ---------------------------------------------------------
+// Each returns bytes written (Appendage Length 0), 0 when `out` is too small.
 std::size_t system_event(std::span<std::byte> out, std::uint64_t ts, char event_code) noexcept;
 std::size_t accepted(std::span<std::byte> out,
                      std::uint64_t ts,

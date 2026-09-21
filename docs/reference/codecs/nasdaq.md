@@ -1,4 +1,4 @@
-# Nasdaq protocol family: ITCH 5.0, MoldUDP64, SoupBinTCP, OUCH 4.2 / 5.0
+# Nasdaq protocol family: ITCH 5.0, MoldUDP64, GLIMPSE 5.0, SoupBinTCP, OUCH 4.2 / 5.0
 
 The wire codecs and session layers depend only on `fastmm::core`. Hot paths (framers, decoders, encoders, session `on_frame` / `on_timer`) are `noexcept` and allocate nothing after construction (`tests/hotpath/codecs_nasdaq_noalloc_test.cpp`).
 
@@ -6,6 +6,7 @@ The wire codecs and session layers depend only on `fastmm::core`. Hot paths (fra
 |---|---|---|---|
 | TotalView-ITCH 5.0 | `fastmm::codecs::itch` | `include/fastmm/codecs/itch/` | Nasdaq TotalView-ITCH 5.0, `NQTVITCHspecification.pdf` (revision log entry 2023-04-28) |
 | MoldUDP64 1.00 | `fastmm::codecs::moldudp` | `include/fastmm/codecs/moldudp/` | MoldUDP64 Protocol Specification V 1.00, `moldudp64.pdf` (formatting update 2024-08-02) |
+| GLIMPSE 5.0 | `fastmm::codecs::itch::glimpse` | `include/fastmm/codecs/itch/glimpse.hpp` | GLIMPSE 5.0, `NQGlimpseSpecification.pdf` |
 | SoupBinTCP 3.00 / 4.00 / 4.10 | `fastmm::codecs::soupbin` | `include/fastmm/codecs/soupbin/` | `soupbintcp.pdf` (3.00), `SoupBinTCP 4.0.pdf` (4.00, 2010-07-12), `SoupBinTCP41.pdf` (4.10, 2012-01-13) |
 | OUCH 4.2 | `fastmm::codecs::ouch42` | `include/fastmm/codecs/ouch/ouch42.hpp` | O*U*C*H Version 4.2, `OUCH4.2.pdf` (updated October 2025) |
 | OUCH 5.0 | `fastmm::codecs::ouch50` | `include/fastmm/codecs/ouch/ouch50.hpp` | OUCH 5.0 Order Entry Specification, `Ouch5.0.pdf` (updated October 2025) |
@@ -96,7 +97,23 @@ Every emitted message carries the stamp's `t0_cycles` and `recv_ts`; `t1_delta` 
 | `can_request` | true | a re-request server exists |
 | `follow_session` | false | adopt a new session after End of Session |
 
-`Transmitter` keeps a fixed-capacity history, builds live packets up to `max_datagram` and answers Request Packets.
+`Transmitter` keeps a fixed-capacity history, builds live packets up to `max_datagram` (`next_packet()` takes an optional message limit) and answers Request Packets. With `overwrite_oldest` the history is a ring bounded by `history_messages` and `history_bytes`: publishing evicts the oldest messages, `oldest()` is the first sequence still held, and requests for evicted messages are not answered. Without it `publish()` fails once the history is full.
+
+## GLIMPSE 5.0
+
+GLIMPSE serves the current book over SoupBinTCP: after a login for sequence 1, Stock Directory, Stock Trading Action and Add Order messages in the ITCH 5.0 layouts, then End of Snapshot `'G' | Sequence Number(20, ASCII numeric)`, the TotalView-ITCH sequence number to continue from. `write_end_of_snapshot()` writes it right-aligned and space padded; `parse_end_of_snapshot()` accepts space or zero padding.
+
+`GlimpseClient<Writer, Handler>` wraps a SoupBinTCP `ClientSession<Writer>`:
+
+| Member | Meaning |
+|---|---|
+| `GlimpseClient(writer, handler, GlimpseConfig)` | `GlimpseConfig::session` is the SoupBinTCP `ClientConfig` (its sequence is forced to 1); `logout_after_snapshot` (default true) sends a Logout Request after End of Snapshot |
+| `login(now_ns)` | sends the Login Request; state `LoggingIn` |
+| `on_bytes(span)` | consumes whole SoupBinTCP packets and returns the bytes consumed; a partial packet stays with the caller |
+| `on_timer(now_ns)`, `on_disconnect()` | forwarded to the session; a session that goes down before End of Snapshot leaves the client `Idle` with `close_reason()` |
+| `state()`, `complete()`, `end_sequence()` | `Idle`, `LoggingIn`, `Receiving`, `Complete`; the End of Snapshot sequence number |
+
+`Handler::on_snapshot_message(msg)` receives every message before End of Snapshot (one ITCH message, valid during the call), `Handler::on_snapshot_end(next_itch_seq)` the sequence number. Nothing allocates after construction.
 
 ## SoupBinTCP
 
@@ -130,12 +147,18 @@ UserRefNum is a 4-byte number that must be day-unique and strictly increasing pe
 
 Time In Force: DAY and GTC -> `0` (Day; OUCH 5.0 has no good-till-cancel), IOC -> `3`, FOK -> `3` with the MinQty option. PostOnly uses the PostOnly option `P`; a non-blank firm adds the Firm option. The event mapping matches OUCH 4.2; Rejected carries a 2-byte numeric reason.
 
+Host side (simulated OUCH port): `host::parse_enter()`, `parse_replace()` and `parse_cancel()` check an inbound message and convert its fields to engine units (`EnterView`: side, quantity, price, trimmed symbol, time in force with FOK from MinQty, PostOnly, the sequence token); the `host::` builders write Accepted, Replaced, Canceled, Executed, Rejected, Cancel Reject, System Event and Account Query Response.
+
+Sequence token: a ClOrdID of `'T'` followed by 13 zero-padded decimal digits names the MoldUDP64 sequence number of the ITCH message that triggered the order (`put_seq_token()`, `parse_seq_token()`; 1 to 9 999 999 999 999). `fastmm-sim-itch` times such orders wire to wire ([fastmm-sim-itch](../sim-itch.md#wire-to-wire)). Orders sent this way do not carry `encode_cl_ord_id()`, so the decoder's ClOrdID fallback does not resolve them; the `UserRefMap` does.
+
 ## Simulation validation
 
-* `tests/codecs/itch_sim_property_test.cpp`: seeded random flow (limit, IOC, FOK, post-only, market, cancels, in-place amends and re-entering replaces) into the simulator's `MatchingEngine`. Its book events are published as ITCH (A/F, E/C, X, D, U, P), decoded and applied to an `L3Book`. After every step the L3 book must equal the engine's book: levels, quantities and each level's FIFO of (reference number, leaves). 16 seeds x 1 500 steps.
+* `tests/codecs/itch_sim_property_test.cpp`: seeded random flow (limit, IOC, FOK, post-only, market, cancels, in-place amends and re-entering replaces) into the simulator's `MatchingEngine`. Its book events are published as ITCH (A/F, E/C, X, D, U, P) by `sim::itch::ItchPublisher`, the publisher of `fastmm-sim-itch`, decoded and applied to an `L3Book`. After every step the L3 book must equal the engine's book: levels, quantities and each level's FIFO of (reference number, leaves). 16 seeds x 1 500 steps.
 * `tests/codecs/ouch_session_sim_test.cpp`: an OUCH client (encoder, SoupBinTCP client session, decoder) against a small OUCH acceptor (SoupBinTCP server session bridged to `MatchingEngine`), with a second account trading against it. Fills (count, quantity and notional per side) match the engine ledger, and open orders match the engine (ids, leaves, side), for OUCH 4.2 and 5.0, 12 seeds each.
 * `tests/codecs/itch_sim_property_test.cpp` also runs the flow with 5 % stub quotes and a drifting reference price through a 64-tick L3 window, so most levels sit in the overflow store and the window recentres.
 * `tests/codecs/itch_l2_bridge_test.cpp`: the same flow with stub quotes, a drifting market and C executions with Printable N and Y, grouped into datagrams of 1 to 12 messages and fed to `ItchL2Bridge`. After every datagram an `L2Book` built from the bridge's events equals the top `depth` of a `std::map` book rebuilt from the same ITCH bytes, and the trades match its executions. Each run starts incomplete, is marked complete, loses its books and recovers from a GLIMPSE-like spin. 12 seeds x 2 000 steps, depth 5 and 20, window 1 024 and 65 536 ticks.
+* `tests/codecs/glimpse_test.cpp`: End of Snapshot layouts, and a `GlimpseClient` against a SoupBinTCP `ServerSession` (split packets, logout after the snapshot, rejected login, disconnect).
+* `tests/integration/sim_itch_test.cpp`: `fastmm-sim-itch` in a network namespace with a multicast client, a GLIMPSE client and an OUCH client ([fastmm-sim-itch](../sim-itch.md#tests)).
 * `tests/codecs/moldudp_loss_test.cpp`: 20 seeds x 3 000 messages on one line, and on lines A and B that each drop 15 % of packets, duplicate and reorder independently; retransmissions arrive on a third line and lose 10 %. With a re-request server every message is delivered once, in order, with the published contents. Without one, every sequence is either delivered once in order or reported once through `on_gap_unrecoverable()`, and no sequence that reached a line promptly is reported.
 
 ## Benchmarks

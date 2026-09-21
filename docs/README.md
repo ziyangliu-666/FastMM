@@ -23,7 +23,7 @@ FastMM is a market-making engine in C++20. These pages describe version 0.1.
 
 - Strategies: [Strategy API](reference/strategy-api.md), [Fixed point](reference/fixed-point.md), [Public API and header tiers](reference/public-api.md)
 - Programs and files: [Command lines](reference/cli.md), [Configuration](reference/configuration.md), [Journal format](reference/journal-format.md), [Status file](reference/status-file.md)
-- Venues and protocols: [Venue connectors](reference/venues.md), [Simulated exchange](reference/sim-exchange.md), [Options](reference/options.md), [FIX 4.4](reference/codecs/fix.md), [Nasdaq ITCH and OUCH](reference/codecs/nasdaq.md), [CME MDP 3.0](reference/codecs/cme-mdp3.md)
+- Venues and protocols: [Venue connectors](reference/venues.md), [Simulated exchange](reference/sim-exchange.md), [fastmm-sim-itch](reference/sim-itch.md), [Options](reference/options.md), [FIX 4.4](reference/codecs/fix.md), [Nasdaq ITCH and OUCH](reference/codecs/nasdaq.md), [CME MDP 3.0](reference/codecs/cme-mdp3.md)
 - Python: [Python](python.md), [Python strategy API](reference/python-api.md)
 - [Glossary](reference/glossary.md)
 

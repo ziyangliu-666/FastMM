@@ -57,7 +57,7 @@ target_link_libraries(fastmm_test_strategy_module PUBLIC fastmm::sim)
 fastmm_test(modules   LABELS "unit"          LIBS fastmm_test_strategy_module fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
-fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim)
+fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim_itch_publisher)
 # Shipped configs/*.toml: load, schema and [strategy.params] through the registry (label config).
 fastmm_test(config    LABELS "config"        LIBS fastmm::backtest)
 if(TARGET fastmm_config_tests)
@@ -121,7 +121,7 @@ if(FASTMM_BUILD_NET)
     fastmm_relabel_tests(fastmm_venues_tests "^venues\\.live\\." "live")
   endif()
   if(TARGET fastmm::sim_server)
-    fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::backtest fastmm::live)
+    fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::sim_itch fastmm::backtest fastmm::live)
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
@@ -337,6 +337,14 @@ if(TARGET fastmm-live)
   fastmm_cli_test(apps.fastmm-live.help_lists_exit_codes EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-live> --help
     EXPECT_REGEX "Exit codes:.*  6  kill switch tripped by the engine \\(on_kill = \"exit\"\\)")
+endif()
+
+if(TARGET fastmm-sim-itch)
+  fastmm_cli_test(apps.fastmm-sim-itch.bad_drop_rate EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-sim-itch> --drop-a 1.5 EXPECT_REGEX "fastmm-sim-itch: bad --drop-a '1.5'")
+  fastmm_cli_test(apps.fastmm-sim-itch.bad_config EXPECT_RC 3
+    CMD $<TARGET_FILE:fastmm-sim-itch> --line-a off --line-b off
+    EXPECT_REGEX "sim-itch config: no multicast line")
 endif()
 
 # Apps built from the test strategy library: the module is listed for every transport, runs, and a

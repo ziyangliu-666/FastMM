@@ -19,8 +19,8 @@
 //                    buffer, declares a gap after gap_timeout_ns and recovers it with Request
 //                    Packets (re-sent on on_timer() until the gap closes) or, without a
 //                    re-request server, skips it and reports it to H.
-//   Transmitter      a sender with a fixed-capacity history that answers Request Packets
-//                    (simulation, tests, replay).
+//   Transmitter      a sender with a fixed-capacity history (optionally a ring) that answers
+//                    Request Packets (simulation, tests, replay).
 #include "fastmm/codecs/codec.hpp"
 #include "fastmm/codecs/itch/nasdaq_fields.hpp"
 #include "fastmm/core/config_macros.hpp"
@@ -653,18 +653,24 @@ struct TransmitterConfig {
   std::size_t history_bytes = 1U << 22;
   std::size_t history_messages = 1U << 18;
   std::size_t max_datagram = kDefaultMaxDatagram;
+  // false: publish() fails once the history is full. true: the history is a ring; the oldest
+  // messages are dropped to make room and requests for them are not answered.
+  bool overwrite_oldest = false;
 };
 
 class Transmitter {
  public:
   explicit Transmitter(std::string_view session, const TransmitterConfig& cfg = {});
 
-  // Stores one message and returns its sequence number (from 1); 0 when the history is full.
+  // Stores one message and returns its sequence number (from 1); 0 when the history is full
+  // (without overwrite_oldest) or the message is larger than the history.
   std::uint64_t publish(std::span<const std::byte> msg) noexcept;
-  // The next downstream packet of messages not sent yet; 0 when none are pending.
-  std::size_t next_packet(std::span<std::byte> out) noexcept;
+  // The next downstream packet of messages not sent yet (at most max_count of them); 0 when none
+  // are pending. Messages evicted before they were sent are skipped.
+  std::size_t next_packet(std::span<std::byte> out,
+                          std::uint16_t max_count = kMaxMessagesPerPacket) noexcept;
   // A packet starting at `seq` with at most `max_count` messages that fit max_datagram.
-  // 0 when `seq` has not been published (or the output buffer is too small).
+  // 0 when `seq` is not in the history (or the output buffer is too small).
   std::size_t packet_at(std::span<std::byte> out,
                         std::uint64_t seq,
                         std::uint16_t max_count) const noexcept;
@@ -678,14 +684,26 @@ class Transmitter {
   [[nodiscard]] const SessionId& session() const noexcept { return session_; }
   [[nodiscard]] std::uint64_t published() const noexcept { return count_; }
   [[nodiscard]] std::uint64_t next_unsent() const noexcept { return next_unsent_; }
+  // Oldest sequence number still in the history (published() + 1 when it is empty).
+  [[nodiscard]] std::uint64_t oldest() const noexcept { return first_; }
+  [[nodiscard]] std::uint64_t evicted() const noexcept { return evicted_; }
 
  private:
+  [[nodiscard]] std::uint64_t held() const noexcept { return count_ + 1 - first_; }
+  [[nodiscard]] std::uint64_t start_of(std::uint64_t seq) const noexcept {
+    return starts_[seq % cfg_.history_messages];
+  }
+  void evict_oldest() noexcept;
+
   SessionId session_;
   TransmitterConfig cfg_;
   std::unique_ptr<std::byte[]> bytes_;
-  std::unique_ptr<std::uint64_t[]> offsets_;  // offsets_[i] = start of message i+1
-  std::uint64_t count_ = 0;
-  std::uint64_t used_ = 0;
+  std::unique_ptr<std::uint64_t[]> starts_;  // byte offset of message s at [s % history_messages]
+  std::unique_ptr<std::uint16_t[]> lens_;
+  std::uint64_t count_ = 0;  // last sequence number published
+  std::uint64_t first_ = 1;  // oldest sequence number held
+  std::uint64_t head_ = 0;   // next write offset in bytes_
+  std::uint64_t evicted_ = 0;
   std::uint64_t next_unsent_ = 1;
 };
 

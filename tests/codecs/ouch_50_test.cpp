@@ -185,6 +185,68 @@ TEST_CASE("codecs.ouch: 5.0 host builders reproduce the fixture bytes") {
   CHECK(out_of(buf, host::account_query_response(buf, kTs, 42)) == fx("Q_account_query_response"));
 }
 
+TEST_CASE("codecs.ouch: 5.0 host parsers read what the encoder writes") {
+  const Bytes& e = fx("O_enter_order");
+  host::EnterView ev;
+  REQUIRE(host::parse_enter(codecs::test::span_of(e), ev));
+  CHECK(ev.user_ref_num == 1);
+  CHECK(ev.side == Side::Buy);
+  CHECK(ev.qty == Qty::from_int(100));
+  CHECK(ev.price == px("189.1234"));
+  CHECK(ev.symbol == "AAPL");
+  CHECK(ev.tif == TimeInForce::Gtc);
+  CHECK_FALSE(ev.post_only);
+  CHECK(ev.seq_token == 0);  // "fm" + hex: not a sequence token
+
+  const Bytes& fok = fx("O_enter_order_fok_post_only");
+  REQUIRE(host::parse_enter(codecs::test::span_of(fok), ev));
+  CHECK(ev.side == Side::Sell);
+  CHECK(ev.tif == TimeInForce::Fok);
+  CHECK(ev.min_qty == 50);
+  CHECK(ev.post_only);
+
+  host::ReplaceView rv;
+  REQUIRE(host::parse_replace(codecs::test::span_of(fx("U_replace_order")), rv));
+  CHECK(rv.orig_user_ref_num == 1);
+  CHECK(rv.user_ref_num == 3);
+  CHECK(rv.qty == Qty::from_int(150));
+  CHECK(rv.price == px("189.20"));
+  host::CancelView cv;
+  REQUIRE(host::parse_cancel(codecs::test::span_of(fx("X_cancel_order")), cv));
+  CHECK(cv.user_ref_num == 3);
+  CHECK(cv.quantity == 0);
+
+  // Wrong type, truncated, zero quantity.
+  CHECK_FALSE(host::parse_replace(codecs::test::span_of(e), rv));
+  CHECK_FALSE(host::parse_enter(std::span<const std::byte>(e.data(), 20), ev));
+  Bytes zero = e;
+  auto m = view<EnterOrder>(zero);
+  m.quantity.set(0);
+  std::memcpy(zero.data(), &m, sizeof m);
+  CHECK_FALSE(host::parse_enter(codecs::test::span_of(zero), ev));
+}
+
+TEST_CASE("codecs.ouch: 5.0 venue_seq token in ClOrdID") {
+  char f[14];
+  REQUIRE(put_seq_token(f, 12345));
+  CHECK(std::string_view(f, 14) == "T0000000012345");
+  CHECK(parse_seq_token(f) == 12345);
+  REQUIRE(put_seq_token(f, kMaxSeqToken));
+  CHECK(parse_seq_token(f) == kMaxSeqToken);
+  CHECK_FALSE(put_seq_token(f, 0));
+  CHECK_FALSE(put_seq_token(f, kMaxSeqToken + 1));
+  CHECK(parse_seq_token("fm000100000004") == 0);
+  CHECK(parse_seq_token("T00000000123 4") == 0);
+
+  Bytes e = fx("O_enter_order");
+  auto m = view<EnterOrder>(e);
+  REQUIRE(put_seq_token(m.cl_ord_id, 987));
+  std::memcpy(e.data(), &m, sizeof m);
+  host::EnterView ev;
+  REQUIRE(host::parse_enter(codecs::test::span_of(e), ev));
+  CHECK(ev.seq_token == 987);
+}
+
 TEST_CASE("codecs.ouch: 5.0 decoder with the shared UserRefNum map") {
   UserRefMap ids;
   OuchEncoder enc(ids);

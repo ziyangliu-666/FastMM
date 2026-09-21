@@ -546,3 +546,63 @@ TEST_CASE("codecs.moldudp: the transmitter packs, sequences and answers requests
   for (int i = 8; i <= 16; ++i) CHECK(tx.publish(to_bytes("x")) != 0);
   CHECK(tx.publish(to_bytes("x")) == 0);  // history full
 }
+
+TEST_CASE("codecs.moldudp: a ring history drops the oldest messages") {
+  // Message count bound: 8 messages of 10 bytes in 1000 bytes.
+  TransmitterConfig cfg;
+  cfg.history_messages = 8;
+  cfg.history_bytes = 1000;
+  cfg.overwrite_oldest = true;
+  Transmitter tx("RING", cfg);
+  std::array<std::byte, 1500> buf{};
+  PacketView p;
+  auto msg = [](std::uint64_t i) { return to_bytes("message" + std::to_string(100 + i)); };
+  for (std::uint64_t i = 1; i <= 20; ++i) CHECK(tx.publish(msg(i)) == i);
+  CHECK(tx.oldest() == 13);
+  CHECK(tx.evicted() == 12);
+  CHECK(tx.packet_at(buf, 12, 1) == 0);
+  std::size_t n = tx.packet_at(buf, 13, 100);
+  REQUIRE(parse_packet(std::span<const std::byte>(buf.data(), n), p));
+  CHECK(p.sequence == 13);
+  CHECK(p.count == 8);
+  MessageIterator it(p);
+  std::uint64_t seq = 0;
+  std::span<const std::byte> m;
+  for (std::uint64_t i = 13; i <= 20; ++i) {
+    REQUIRE(it.next(seq, m));
+    CHECK(seq == i);
+    CHECK(to_string(m) == to_string(msg(i)));
+  }
+  // Unsent messages that were evicted are skipped.
+  n = tx.next_packet(buf, 2);
+  REQUIRE(parse_packet(std::span<const std::byte>(buf.data(), n), p));
+  CHECK(p.sequence == 13);
+  CHECK(p.count == 2);
+
+  // Byte bound: messages of varying size wrap around a 256-byte area; every message still held
+  // reads back intact.
+  TransmitterConfig small;
+  small.history_messages = 1000;
+  small.history_bytes = 256;
+  small.overwrite_oldest = true;
+  Transmitter wrap("WRAP", small);
+  std::uint64_t last = 0;
+  for (std::uint64_t i = 1; i <= 500; ++i) {
+    const std::string s(1 + (i * 7) % 60, static_cast<char>('a' + i % 26));
+    last = wrap.publish(to_bytes(s));
+    REQUIRE(last == i);
+    std::size_t held = 0;
+    for (std::uint64_t q = wrap.oldest(); q <= last; ++q) {
+      n = wrap.packet_at(buf, q, 1);
+      REQUIRE(parse_packet(std::span<const std::byte>(buf.data(), n), p));
+      MessageIterator one(p);
+      REQUIRE(one.next(seq, m));
+      const std::string want(1 + (q * 7) % 60, static_cast<char>('a' + q % 26));
+      REQUIRE(to_string(m) == want);
+      held += m.size();
+    }
+    CHECK(held <= 256);
+  }
+  CHECK(wrap.oldest() > 1);
+  CHECK(wrap.publish(to_bytes(std::string(257, 'z'))) == 0);  // larger than the history
+}

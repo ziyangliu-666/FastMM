@@ -194,37 +194,56 @@ Transmitter::Transmitter(std::string_view session, const TransmitterConfig& cfg)
     : session_(make_session(session)),
       cfg_(cfg),
       bytes_(new std::byte[cfg.history_bytes]),
-      offsets_(new std::uint64_t[cfg.history_messages + 1]()) {}
+      starts_(new std::uint64_t[cfg.history_messages == 0 ? 1 : cfg.history_messages]()),
+      lens_(new std::uint16_t[cfg.history_messages == 0 ? 1 : cfg.history_messages]()) {}
+
+void Transmitter::evict_oldest() noexcept {
+  ++first_;
+  ++evicted_;
+}
 
 std::uint64_t Transmitter::publish(std::span<const std::byte> msg) noexcept {
-  if (msg.size() > kMaxMessageLength || count_ >= cfg_.history_messages ||
-      cfg_.history_bytes - used_ < msg.size())
-    return 0;
-  if (!msg.empty()) std::memcpy(bytes_.get() + used_, msg.data(), msg.size());
-  used_ += msg.size();
+  const std::size_t n = msg.size();
+  if (n > kMaxMessageLength || n > cfg_.history_bytes || cfg_.history_messages == 0) return 0;
+  if (!cfg_.overwrite_oldest) {
+    if (held() >= cfg_.history_messages || cfg_.history_bytes - head_ < n) return 0;
+  } else {
+    if (held() >= cfg_.history_messages) evict_oldest();
+    if (cfg_.history_bytes - head_ < n) {
+      // Wrap: the messages of the previous lap that lie behind head_ go first (they are the
+      // oldest), then the write restarts at offset 0.
+      while (held() != 0 && start_of(first_) >= head_) evict_oldest();
+      head_ = 0;
+    }
+    while (held() != 0 && start_of(first_) >= head_ && start_of(first_) < head_ + n) evict_oldest();
+  }
+  if (n != 0) std::memcpy(bytes_.get() + head_, msg.data(), n);
   ++count_;
-  offsets_[count_] = used_;
+  const std::size_t slot = count_ % cfg_.history_messages;
+  starts_[slot] = head_;
+  lens_[slot] = static_cast<std::uint16_t>(n);
+  head_ += n;
   return count_;
 }
 
 std::size_t Transmitter::packet_at(std::span<std::byte> out,
                                    std::uint64_t seq,
                                    std::uint16_t max_count) const noexcept {
-  if (seq == 0 || seq > count_) return 0;
+  if (seq < first_ || seq > count_) return 0;
   const std::size_t limit = out.size() < cfg_.max_datagram ? out.size() : cfg_.max_datagram;
   PacketBuilder b(out.first(limit), session_, seq);
   for (std::uint64_t s = seq; s <= count_ && b.count() < max_count; ++s) {
-    const std::uint64_t begin = offsets_[s - 1];
-    const std::uint64_t end = offsets_[s];
-    if (!b.add({bytes_.get() + begin, end - begin})) break;
+    const std::size_t slot = s % cfg_.history_messages;
+    if (!b.add({bytes_.get() + starts_[slot], lens_[slot]})) break;
   }
   if (b.count() == 0) return 0;  // first message larger than a datagram
   return b.finish();
 }
 
-std::size_t Transmitter::next_packet(std::span<std::byte> out) noexcept {
+std::size_t Transmitter::next_packet(std::span<std::byte> out, std::uint16_t max_count) noexcept {
+  if (next_unsent_ < first_) next_unsent_ = first_;  // evicted before it was sent
   if (next_unsent_ > count_) return 0;
-  const std::size_t n = packet_at(out, next_unsent_, kMaxMessagesPerPacket);
+  const std::size_t n = packet_at(out, next_unsent_, max_count);
   if (n == 0) return 0;
   next_unsent_ += nasdaq::load_be16(out.data() + 18);
   return n;

@@ -366,7 +366,7 @@ TEST_CASE("codecs.itch_l2_bridge: random ITCH through the bridge matches a refer
     auto flow =
         std::make_unique<ItchFlow>([&](std::span<const std::byte> m) { h->on_itch(m); },
                                    fastmm::codecs::test::ItchFlowOptions{.non_printable_every = 2});
-    auto eng = std::make_unique<sim::MatchingEngine>(1, flow.get());
+    auto eng = std::make_unique<sim::MatchingEngine>(1, &flow->publisher());
     FlowDriver driver(seed, *eng, *flow, {.stub_pct = 4, .drift_every = seed % 2 == 0 ? 10 : 0});
     flow->start();
     std::size_t target = 1;

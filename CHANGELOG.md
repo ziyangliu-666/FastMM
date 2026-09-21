@@ -5,6 +5,29 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `fastmm-sim-itch` (ADR-0015, section 6; `configs/sim-itch.toml`, docs/reference/sim-itch.md): a
+  Nasdaq-style simulator. `MatchingEngine` and `MarketGenerator` per symbol, engine effects
+  published as ITCH 5.0 (A, E, X, D; opening spin O, R, S, Q, H), packed into MoldUDP64 and sent
+  to lines A and B with `sendmmsg`, with seeded per-line drops, token-bucket pacing and bursts,
+  heartbeats and End of Session. It answers MoldUDP64 re-requests from a ring history, serves
+  GLIMPSE 5.0 snapshots (R, H, A per resting order, End of Snapshot) consistent with the stream,
+  and accepts OUCH 5.0 Enter / Replace / Cancel over SoupBinTCP (Accepted with the ITCH order
+  reference, Replaced, Canceled, Executed with the ITCH match number, Rejected; cancel on
+  disconnect). Orders whose ClOrdID is a sequence token are timed wire to wire, from the
+  `sendmmsg` of the datagram carrying that sequence number to the read that returned the order;
+  `--summary-json` writes the histogram. `--cpu`, `--busy-poll`, `--duration` and the bind and
+  port flags serve `scripts/bench-e2e.sh`.
+- `codecs::itch::glimpse` (`itch/glimpse.hpp`): End of Snapshot `G` and `GlimpseClient`, a
+  SoupBinTCP client session that hands every snapshot message and the End of Snapshot sequence
+  number to a handler.
+- OUCH 5.0 host side: `host::parse_enter()`, `parse_replace()`, `parse_cancel()`, and the
+  sequence token `put_seq_token()` / `parse_seq_token()` (ClOrdID `T` + 13 digits).
+- `sim::itch::ItchPublisher` (`sim/itch/itch_publisher.hpp`): `MatchingEngine` effects as ITCH
+  messages, with reference and match numbers shared across symbols. The ITCH property and L2
+  bridge tests use it instead of their own publisher.
+- `moldudp::TransmitterConfig::overwrite_oldest`: a ring history that evicts the oldest messages;
+  `Transmitter::oldest()`, `evicted()`, and a message limit for `next_packet()`.
+- `MatchingEngine::for_each_resting()`: resting orders best level first, in queue order.
 - AF_XDP multicast receive (ADR-0015, section 3): `net::XdpDatagramSource`
   (`net/xdp_datagram_source.hpp`) opens one XDP socket per (interface, RX queue) with its own UMEM,
   fill and RX rings, attaches a BPF filter per interface through `BPF_LINK_CREATE` (native with a

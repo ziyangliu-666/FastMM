@@ -153,6 +153,49 @@ FASTMM_SIM_API_KEY / FASTMM_SIM_API_SECRET. See docs/reference/sim-exchange.md.
 | 3 | bad configuration |
 | 4 | cannot listen on a port |
 
+## fastmm-sim-itch
+
+A Nasdaq-style exchange: ITCH 5.0 over MoldUDP64 multicast, re-requests, GLIMPSE 5.0 and OUCH 5.0, with a wire-to-wire histogram ([fastmm-sim-itch](sim-itch.md)).
+
+<!-- BEGIN cli-help fastmm-sim-itch -->
+```text
+usage: fastmm-sim-itch [--config <file.toml>] [options]
+  --config <file>          [[instruments]] + [sim] configuration (default: FMAA, FMBB)
+  --bind <ip>              re-request, GLIMPSE and OUCH servers (default 127.0.0.1)
+  --rerequest-port <n>     MoldUDP64 re-request server, UDP (default 31000, 0 = ephemeral)
+  --glimpse-port <n>       GLIMPSE 5.0 over SoupBinTCP (default 31010)
+  --ouch-port <n>          OUCH 5.0 over SoupBinTCP (default 31020)
+  --line-a <group:port>    multicast line A (default 239.192.0.1:31001)
+  --line-b <group:port>    multicast line B (default 239.192.0.2:31002, off = none)
+  --interface <if>         multicast interface, name or IPv4 address (default lo)
+  --source <ip>            local address of the multicast socket
+  --ttl <n>                multicast TTL (default 1)
+  --drop-a <p>             probability of not sending a data datagram on line A
+  --drop-b <p>             the same on line B
+  --drop-seed <n>          seed of the drop draws
+  --rate <n>               datagrams per second per line (default 0 = unpaced)
+  --burst <n>              datagrams per sendmmsg call (default 32)
+  --speed <x>              generator time per wall-clock time (default 1)
+  --seed <n>               generator seed
+  --busy-poll              never block waiting for I/O
+  --cpu <n>                pin the simulator thread to a CPU
+  --duration <t>           stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT/SIGTERM)
+  --stats-interval <t>     print statistics every t (default 5s, 0 = only at exit)
+  --summary-json <file>    write the wire-to-wire summary at exit
+  --version | --help
+
+Orders time wire-to-wire when their OUCH ClOrdID is 'T' + 13 digits of the triggering
+ITCH sequence number. See docs/reference/sim-itch.md.
+```
+<!-- END cli-help -->
+
+| Exit code | Meaning |
+|---:|---|
+| 0 | stopped by `--duration` or a signal |
+| 2 | bad command line |
+| 3 | bad configuration, CPU pinning failed, or the summary file cannot be written |
+| 4 | cannot open a socket |
+
 ## fastmm-top
 
 A terminal dashboard of a running `fastmm-live` session ([Status file](status-file.md)).

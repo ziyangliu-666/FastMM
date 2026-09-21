@@ -45,7 +45,7 @@ class ItchConsumer {
   [[nodiscard]] ItchFlow& flow() noexcept { return flow_; }
   [[nodiscard]] const ItchFlow& flow() const noexcept { return flow_; }
   [[nodiscard]] const L3Book& book() const noexcept { return book_; }
-  [[nodiscard]] const itch::ItchDecoder& decoder() const noexcept { return dec_; }
+  [[nodiscard]] const fastmm::codecs::itch::ItchDecoder& decoder() const noexcept { return dec_; }
   [[nodiscard]] std::uint64_t trades_seen() const noexcept { return trades_; }
   [[nodiscard]] std::uint64_t replaces_seen() const noexcept { return replaces_; }
   [[nodiscard]] std::uint64_t partial_cancels_seen() const noexcept { return partials_; }
@@ -97,7 +97,7 @@ class ItchConsumer {
     }
   }
 
-  itch::ItchDecoder dec_;
+  fastmm::codecs::itch::ItchDecoder dec_;
   RecordingSink rec_{1U << 16};
   L3Book book_;
   ItchFlow flow_{[this](std::span<const std::byte> m) { on_itch(m); }};
@@ -112,12 +112,12 @@ class ItchConsumer {
 void check_books(const MatchingEngine& eng, const ItchConsumer& pub) {
   const L3Book& book = pub.book();
   const SimBook& sb = eng.book(kSimInst);
-  const auto& resting = pub.flow().resting();
+  const sim::itch::ItchPublisher& flow = pub.flow().publisher();
   std::map<std::tuple<int, std::int64_t, std::uint32_t>, const SimOrder*> by_prev;
   eng.for_each_open_order(
       [&](const SimOrder& o) { by_prev[{static_cast<int>(o.side), o.price.raw, o.prev}] = &o; });
-  REQUIRE(eng.open_orders() == resting.size());
-  REQUIRE(book.order_count() == resting.size());
+  REQUIRE(eng.open_orders() == flow.resting_count());
+  REQUIRE(book.order_count() == flow.resting_count());
   for (Side s : {Side::Buy, Side::Sell}) {
     const SimBook::Levels& levels = sb.levels(s);
     REQUIRE(book.depth(s) == levels.size());
@@ -136,7 +136,8 @@ void check_books(const MatchingEngine& eng, const ItchConsumer& pub) {
         const auto it = by_prev.find({static_cast<int>(s), pl.price.raw, prev});
         REQUIRE(it != by_prev.end());
         const SimOrder& o = *it->second;
-        expect.emplace_back(resting.at(o.order_id).ref, o.leaves().raw);
+        REQUIRE(flow.ref_of(o.order_id) != 0);
+        expect.emplace_back(flow.ref_of(o.order_id), o.leaves().raw);
         prev = handle;
         handle = o.next;
       }
@@ -164,7 +165,7 @@ TEST_CASE("codecs.itch: simulated order flow through ITCH rebuilds the matching 
   for (std::uint64_t seed = 1; seed <= 16; ++seed) {
     CAPTURE(seed);
     auto pub = std::make_unique<ItchConsumer>();
-    auto eng = std::make_unique<MatchingEngine>(1, &pub->flow());
+    auto eng = std::make_unique<MatchingEngine>(1, &pub->flow().publisher());
     FlowDriver driver(seed, *eng, pub->flow());
     for (int step = 0; step < 1500; ++step) {
       CAPTURE(step);
@@ -177,6 +178,7 @@ TEST_CASE("codecs.itch: simulated order flow through ITCH rebuilds the matching 
     total_priced += pub->priced_execs_seen();
     total_unknown_locate += pub->decoder().stats().unknown_locate;
     CHECK(pub->decoder().stats().malformed == 0);
+    CHECK(pub->flow().publisher().stats().encode_failures == 0);
     CHECK(pub->decoder().stats().overflow == 0);
     CHECK(eng->stats().fills > 0);
   }
@@ -197,7 +199,7 @@ TEST_CASE("codecs.itch: stub quotes and a drifting market through a small L3 win
     CAPTURE(seed);
     auto pub = std::make_unique<ItchConsumer>(
         L3BookConfig{.price_window_ticks = 64, .max_orders = 1U << 14, .max_overflow_levels = 512});
-    auto eng = std::make_unique<MatchingEngine>(1, &pub->flow());
+    auto eng = std::make_unique<MatchingEngine>(1, &pub->flow().publisher());
     FlowDriver driver(seed, *eng, pub->flow(), {.stub_pct = 5, .drift_every = 10});
     for (int step = 0; step < 1500; ++step) {
       CAPTURE(step);
