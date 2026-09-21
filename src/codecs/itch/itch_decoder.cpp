@@ -32,13 +32,13 @@ void ItchDecoder::clear_locates() noexcept {
   std::fill_n(locate_.get(), kLocateSlots, InstrumentId{});
 }
 
-template <class M>
-M* ItchDecoder::start(venues::EventSink& sink,
+template <class M, class Sink>
+M* ItchDecoder::start(Sink& sink,
                       EventType type,
                       InstrumentId inst,
                       const MessageHeader& h,
                       std::int64_t rx_ts) noexcept {
-  M* m = sink.reserve<M>();
+  M* m = sink.template reserve<M>();
   if (FASTMM_UNLIKELY(m == nullptr)) {
     ++stats_.overflow;
     return nullptr;
@@ -51,7 +51,8 @@ M* ItchDecoder::start(venues::EventSink& sink,
   return m;
 }
 
-ParseStatus ItchDecoder::commit(venues::EventSink& sink) noexcept {
+template <class Sink>
+ParseStatus ItchDecoder::commit(Sink& sink) noexcept {
   sink.commit();
   ++stats_.events;
   return ParseStatus::Ok;
@@ -64,13 +65,14 @@ bool ItchDecoder::lookup(const MessageHeader& h, InstrumentId& out) noexcept {
   return false;
 }
 
+template <class Sink>
 ParseStatus ItchDecoder::add(const MessageHeader& h,
                              std::uint64_t ref,
                              char side,
                              std::uint32_t shares,
                              std::uint32_t price4,
                              std::int64_t rx_ts,
-                             venues::EventSink& sink) noexcept {
+                             Sink& sink) noexcept {
   InstrumentId inst;
   if (!lookup(h, inst)) return ParseStatus::Ignored;
   Side s = Side::Buy;
@@ -87,13 +89,15 @@ ParseStatus ItchDecoder::add(const MessageHeader& h,
   return commit(sink);
 }
 
+template <class Sink>
 ParseStatus ItchDecoder::execute(const MessageHeader& h,
                                  std::uint64_t ref,
                                  std::uint32_t shares,
                                  std::uint64_t match,
                                  Price exec_price,
+                                 std::uint8_t flags,
                                  std::int64_t rx_ts,
-                                 venues::EventSink& sink) noexcept {
+                                 Sink& sink) noexcept {
   InstrumentId inst;
   if (!lookup(h, inst)) return ParseStatus::Ignored;
   auto* m = start<OrderExecL3Msg>(sink, EventType::OrderExecL3, inst, h, rx_ts);
@@ -102,14 +106,16 @@ ParseStatus ItchDecoder::execute(const MessageHeader& h,
   m->exec_qty = nasdaq::shares_to_qty(shares);
   m->exec_price = exec_price;
   m->match_id = match;
+  m->exec_flags = flags;
   return commit(sink);
 }
 
+template <class Sink>
 ParseStatus ItchDecoder::cancel(const MessageHeader& h,
                                 std::uint64_t ref,
                                 Qty canceled,
                                 std::int64_t rx_ts,
-                                venues::EventSink& sink) noexcept {
+                                Sink& sink) noexcept {
   InstrumentId inst;
   if (!lookup(h, inst)) return ParseStatus::Ignored;
   auto* m = start<OrderCancelL3Msg>(sink, EventType::OrderCancelL3, inst, h, rx_ts);
@@ -119,13 +125,14 @@ ParseStatus ItchDecoder::cancel(const MessageHeader& h,
   return commit(sink);
 }
 
+template <class Sink>
 ParseStatus ItchDecoder::trade(const MessageHeader& h,
                                Price price,
                                Qty qty,
                                std::uint64_t match,
                                Side aggressor,
                                std::int64_t rx_ts,
-                               venues::EventSink& sink) noexcept {
+                               Sink& sink) noexcept {
   InstrumentId inst;
   if (!lookup(h, inst)) return ParseStatus::Ignored;
   auto* m = start<TradeMsg>(sink, EventType::Trade, inst, h, rx_ts);
@@ -140,6 +147,13 @@ ParseStatus ItchDecoder::trade(const MessageHeader& h,
 ParseStatus ItchDecoder::decode(const FrameView& frame,
                                 std::int64_t rx_ts,
                                 venues::EventSink& sink) noexcept {
+  return decode_into(frame, rx_ts, sink);
+}
+
+template <class Sink>
+ParseStatus ItchDecoder::decode_into(const FrameView& frame,
+                                     std::int64_t rx_ts,
+                                     Sink& sink) noexcept {
   const std::span<const std::byte> in = frame.payload;
   ++stats_.messages;
   if (FASTMM_UNLIKELY(in.empty())) {
@@ -185,6 +199,7 @@ ParseStatus ItchDecoder::decode(const FrameView& frame,
                      m.executed_shares.get(),
                      m.match_number.get(),
                      Price{},
+                     0,
                      rx_ts,
                      sink);
     }
@@ -195,6 +210,7 @@ ParseStatus ItchDecoder::decode(const FrameView& frame,
                      m.executed_shares.get(),
                      m.match_number.get(),
                      nasdaq::price4_to_price(m.execution_price.get()),
+                     m.printable == 'Y' ? std::uint8_t{0} : OrderExecL3Msg::kNonPrintable,
                      rx_ts,
                      sink);
     }
@@ -273,5 +289,12 @@ ParseStatus ItchDecoder::decode(const FrameView& frame,
       return ParseStatus::Ignored;
   }
 }
+
+template ParseStatus ItchDecoder::decode_into(const FrameView&,
+                                              std::int64_t,
+                                              venues::EventSink&) noexcept;
+template ParseStatus ItchDecoder::decode_into(const FrameView&,
+                                              std::int64_t,
+                                              ScratchSink&) noexcept;
 
 }  // namespace fastmm::codecs::itch

@@ -112,7 +112,8 @@ static void BM_L2_Features(benchmark::State& state) {
 BENCHMARK(BM_L2_Features);
 
 static void BM_L3_AddCancelExecMix(benchmark::State& state) {
-  auto b = std::make_unique<L3Book<1U << 16, 1U << 20>>(kTick);
+  auto b = std::make_unique<L3Book>(
+      kTick, L3BookConfig{.price_window_ticks = 1U << 16, .max_orders = 1U << 20});
   Xoshiro256ss rng(7);
   std::vector<std::uint64_t> live;
   live.reserve(1 << 16);  // > kHigh + 1: no reallocation in the timed loop
@@ -174,3 +175,30 @@ static void BM_L3_AddCancelExecMix(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_L3_AddCancelExecMix);
+
+// Add and cancel stub quotes far outside the price window (overflow store) while 20 000 orders
+// rest near the touch and 64 stub levels per side stay in the store.
+static void BM_L3_OverflowAddCancel(benchmark::State& state) {
+  auto b = std::make_unique<L3Book>(
+      kTick, L3BookConfig{.price_window_ticks = 1U << 12, .max_orders = 1U << 16});
+  Xoshiro256ss rng(9);
+  std::uint64_t next = 1;
+  for (int i = 0; i < 20000; ++i) {
+    const Side s = (i & 1) ? Side::Buy : Side::Sell;
+    const auto off = static_cast<std::int64_t>(rng.uniform(50));
+    b->add(next++, s, px(s == Side::Buy ? 10000 - off : 10001 + off), Qty::from_int(1));
+  }
+  for (std::int64_t i = 0; i < 64; ++i) {
+    b->add(next++, Side::Buy, px(100 + i * 10), Qty::from_int(1));
+    b->add(next++, Side::Sell, px(90000 + i * 10), Qty::from_int(1));
+  }
+  for (auto _ : state) {
+    const std::uint64_t r = rng.next();
+    const Side s = (r & 1) ? Side::Buy : Side::Sell;
+    const auto off = static_cast<std::int64_t>((r >> 8) % 640);
+    b->add(next, s, px(s == Side::Buy ? 100 + off : 90000 + off), Qty::from_int(1));
+    b->cancel(next++);
+    benchmark::DoNotOptimize(b->best_bid());
+  }
+}
+BENCHMARK(BM_L3_OverflowAddCancel);

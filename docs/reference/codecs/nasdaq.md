@@ -37,7 +37,7 @@ OUCH 5.0 (fixed part before Appendage Length, then `Appendage Length(2)` and Tag
 |---|---|
 | A, F Add Order | `OrderAddL3Msg` |
 | E Order Executed | `OrderExecL3Msg`, `exec_price` 0 (= at the order price) |
-| C Order Executed With Price | `OrderExecL3Msg`, `exec_price` = Execution Price |
+| C Order Executed With Price | `OrderExecL3Msg`, `exec_price` = Execution Price, `exec_flags` `kNonPrintable` unless Printable is `Y` |
 | X Order Cancel | `OrderCancelL3Msg`, `canceled_qty` = Cancelled Shares |
 | D Order Delete | `OrderCancelL3Msg`, `canceled_qty` 0 (= delete) |
 | U Order Replace | `OrderReplaceL3Msg` |
@@ -47,6 +47,28 @@ OUCH 5.0 (fixed part before Appendage Length, then `Appendage Length(2)` and Tag
 | S H Y L V W K J h B I N O | validated, ignored |
 
 Register symbols with `add_symbol()` before the directory spin (or `map_locate()` for replay). The locate table is a flat 65 536-entry array; messages for unmapped locates are ignored and counted in `stats().unknown_locate`. `ItchEncoder` writes the same messages (simulation, replay) and refuses values it cannot represent exactly.
+
+`decode()` writes into an `EventSink`. `decode_into()` also takes a `ScratchSink`, which holds the one event of a message for callers that consume it in place.
+
+## ITCH to L2 (`ItchL2Bridge`)
+
+`include/fastmm/codecs/itch/itch_l2_bridge.hpp` (ADR-0015, section 5). Keeps one `L3Book` per configured instrument and writes engine events to an `EventSink`. The caller passes each ITCH message with its sequence number and the datagram's `DatagramStamp` (`t0_cycles`, `recv_ts`) to `on_itch_message()`, then calls `end_datagram()`.
+
+| Input | Effect |
+|---|---|
+| R, S (any locate) | R maps the locate of a symbol registered with `add_instrument()`; S is kept in `last_system_event()` |
+| other types, unconfigured locate | skipped after the 11-byte header (`stats().skipped`) |
+| A F E C X D U | applied to the instrument's `L3Book`; unknown or duplicate references count in `stats().book_errors` |
+| E, C with Printable `Y` | `TradeMsg`: resting order price (E) or Execution Price (C), aggressor opposite to the resting side, `trade_id` = Match Number |
+| P, Q | `TradeMsg` from `ItchDecoder` |
+
+Books start incomplete: they are updated, nothing is emitted. `mark_complete(id)` (after GLIMPSE, or before sequence 1) emits a `BookSnapshotMsg` with `kSnapshot` and the top `depth` levels per side (default 20); once every book is complete, `ConnectionStateMsg{Live, channel 0}` follows. `mark_incomplete(reason)` clears every book and emits `ConnectionStateMsg{Resyncing, channel 0}`.
+
+`end_datagram()` emits at most one `BookDeltaMsg` per complete book: the top-`depth` levels that differ from the last emitted top, with absolute quantities (0 deletes). A level that enters the top because another emptied is included, and a level pushed out is deleted, so the engine's book holds exactly the top `depth`. Changes strictly below the emitted top of a full side do not trigger a delta. `first_update_id` / `last_update_id` are the sequences of the first and last message applied since the previous emission, `prev_update_id` is the previous emission's `last_update_id`, and `venue_seq` is `last_update_id`. A delta the sink has no room for is counted in `stats().overflow` and sent with the next one.
+
+Every emitted message carries the stamp's `t0_cycles` and `recv_ts`; `t1_delta` is taken after the decode and the L3 update.
+
+`L3Book` (`core/book/l3_book.hpp`) takes `L3BookConfig{price_window_ticks, max_orders, max_overflow_levels}` and allocates everything in the constructor. The bridge uses ITCH's tick, 0.0001. Levels outside the window, such as stub quotes, go to a bounded overflow store per side. The window moves only when a touch leaves it, to the midpoint of the touches when they are less than a window apart. When they are further apart, the window stays on the touch it holds (moves to the bid when it holds neither).
 
 ## MoldUDP64
 
@@ -112,6 +134,8 @@ Time In Force: DAY and GTC -> `0` (Day; OUCH 5.0 has no good-till-cancel), IOC -
 
 * `tests/codecs/itch_sim_property_test.cpp`: seeded random flow (limit, IOC, FOK, post-only, market, cancels, in-place amends and re-entering replaces) into the simulator's `MatchingEngine`. Its book events are published as ITCH (A/F, E/C, X, D, U, P), decoded and applied to an `L3Book`. After every step the L3 book must equal the engine's book: levels, quantities and each level's FIFO of (reference number, leaves). 16 seeds x 1 500 steps.
 * `tests/codecs/ouch_session_sim_test.cpp`: an OUCH client (encoder, SoupBinTCP client session, decoder) against a small OUCH acceptor (SoupBinTCP server session bridged to `MatchingEngine`), with a second account trading against it. Fills (count, quantity and notional per side) match the engine ledger, and open orders match the engine (ids, leaves, side), for OUCH 4.2 and 5.0, 12 seeds each.
+* `tests/codecs/itch_sim_property_test.cpp` also runs the flow with 5 % stub quotes and a drifting reference price through a 64-tick L3 window, so most levels sit in the overflow store and the window recentres.
+* `tests/codecs/itch_l2_bridge_test.cpp`: the same flow with stub quotes, a drifting market and C executions with Printable N and Y, grouped into datagrams of 1 to 12 messages and fed to `ItchL2Bridge`. After every datagram an `L2Book` built from the bridge's events equals the top `depth` of a `std::map` book rebuilt from the same ITCH bytes, and the trades match its executions. Each run starts incomplete, is marked complete, loses its books and recovers from a GLIMPSE-like spin. 12 seeds x 2 000 steps, depth 5 and 20, window 1 024 and 65 536 ticks.
 * `tests/codecs/moldudp_loss_test.cpp`: 20 seeds x 3 000 messages on one line, and on lines A and B that each drop 15 % of packets, duplicate and reorder independently; retransmissions arrive on a third line and lose 10 %. With a re-request server every message is delivered once, in order, with the published contents. Without one, every sequence is either delivered once in order or reported once through `on_gap_unrecoverable()`, and no sequence that reached a line promptly is reported.
 
 ## Benchmarks
@@ -122,6 +146,7 @@ Time In Force: DAY and GTC -> `0` (Day; OUCH 5.0 has no good-till-cancel), IOC -
 |---|---|---|
 | `BM_Itch_DecodeAddOrder` | ITCH 'A' (36 bytes) -> `OrderAddL3Msg` committed to an `EventSink` | 15.4 ns |
 | `BM_Itch_DecodeOrderExecuted` | ITCH 'E' (31 bytes) -> `OrderExecL3Msg` committed to an `EventSink` | 15.9 ns |
+| `BM_ItchL2Bridge_Message` | `ItchL2Bridge::on_itch_message()` per message of a replayed A/E/C/D/U stream around one touch, `end_datagram()` every 8 messages (a delta for about 1 in 8 messages). Measured separately: `release-native`, `taskset -c 5`, load average 1.5 | 60 ns |
 | `BM_MoldUdp64_FramePacket` | `parse_packet()` + iterate a 10-message packet | 19.5 ns per packet |
 | `BM_MoldUdp64_ReceiveAB` | `Receiver::on_packet()` for one datagram of line A or B (4 messages; B trails A by one packet, so every B copy is a duplicate) | 11.3 ns |
 | `BM_MoldUdp64_ReceiveABLossA` | as above; A loses 1 packet in 8 and B trails by two, so A's next packet waits in the reorder buffer | 26.6 ns |
@@ -135,7 +160,7 @@ Run them with `build/<dir>/bin/bench/bench_codecs_nasdaq --cpu=N --benchmark_min
 
 ## Limitations
 
-* ITCH: the Printable flag (C), Attribution (F), Cross Type (Q) and the P Buy/Sell Indicator (always `B` since 2014) have no field in the engine messages and are dropped.
+* ITCH: Attribution (F), Cross Type (Q) and the P Buy/Sell Indicator (always `B` since 2014) have no field in the engine messages and are dropped.
 * MoldUDP64: adopting a new session (`follow_session`) is not reported to the handler; `on_message` sequence numbers restart at 1.
 * SoupBinTCP: packet arrival time is attributed to the next `on_timer()` tick. A requested sequence number of 0 starts the server at the next new message, not at the most recently generated one.
 * OUCH: the Replace Shares field is sent as the command's quantity (OUCH defines it as total liable including prior executions). Modify Order, Mass Cancel, Disable / Enable Order Entry and Account Query are laid out but not produced by the encoders.

@@ -1,12 +1,13 @@
 // The Nasdaq codecs' hot paths do not allocate after construction: ITCH decode, MoldUDP64
-// framing, A/B arbitration, the reorder buffer and gap recovery, SoupBinTCP framing and session
-// traffic both ways (including heartbeats), OUCH 4.2 / 5.0 encode and decode (including order-table
-// inserts and erases).
+// framing, A/B arbitration, the reorder buffer and gap recovery, the ITCH-to-L2 bridge, SoupBinTCP
+// framing and session traffic both ways (including heartbeats), OUCH 4.2 / 5.0 encode and decode
+// (including order-table inserts and erases).
 #include "alloc_counter.hpp"
 #include "test_support.hpp"
 
 #include "fastmm/codecs/itch/itch_decoder.hpp"
 #include "fastmm/codecs/itch/itch_encoder.hpp"
+#include "fastmm/codecs/itch/itch_l2_bridge.hpp"
 #include "fastmm/codecs/moldudp/moldudp64.hpp"
 #include "fastmm/codecs/ouch/ouch42.hpp"
 #include "fastmm/codecs/ouch/ouch50.hpp"
@@ -236,4 +237,74 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
   CHECK(dec42->open_orders() == 0);
   CHECK(dec50->open_orders() == 0);
   CHECK(ids->size() == 0);
+}
+
+TEST_CASE("hotpath.noalloc: ITCH to L2 bridge (L3 updates, deltas, trades, snapshot, resync)") {
+  auto ring = std::make_unique<MsgRing>(1U << 20);
+  venues::EventSink sink(ring.get(), venues::SinkPolicy::Drop);
+  itch::ItchL2BridgeConfig cfg;
+  cfg.book = L3BookConfig{.price_window_ticks = 1024, .max_orders = 1U << 12};
+  auto bridge = std::make_unique<itch::ItchL2Bridge>(sink, cfg);
+  REQUIRE(bridge->add_instrument("FMHOT", InstrumentId{0}));
+
+  // Messages built before the guard: a directory entry, orders near the touch and far from it
+  // (overflow store), executions, cancels, replaces above the window (recentre) and a trade.
+  itch::ItchEncoder enc;
+  std::vector<std::array<std::byte, 64>> msgs(256);
+  std::vector<std::size_t> len;
+  std::size_t k = 0;
+  const auto cents = [](std::int64_t c) { return Price::from_raw(c * 1'000'000); };
+  len.push_back(enc.stock_directory(msgs[k++], 7, 1, "FMHOT"));
+  for (std::uint64_t i = 0; i < 40; ++i) {
+    const auto t = static_cast<std::int64_t>(i);
+    const Side s = i % 2 == 0 ? Side::Buy : Side::Sell;
+    const Price p = cents(s == Side::Buy ? 10'000 - t : 10'001 + t);
+    len.push_back(enc.add_order(msgs[k++], 7, 2, 100 + i, s, Qty::from_int(10), "FMHOT", p));
+  }
+  len.push_back(enc.add_order(
+      msgs[k++], 7, 2, 900, Side::Sell, Qty::from_int(5), "FMHOT", Price::from_int(900)));
+  len.push_back(enc.add_order(
+      msgs[k++], 7, 2, 901, Side::Buy, Qty::from_int(5), "FMHOT", Price::from_int(1)));
+  const std::size_t head = k;
+  for (std::uint64_t i = 0; i < 10; ++i) {
+    const auto t = static_cast<std::int64_t>(i);
+    len.push_back(enc.order_executed(msgs[k++], 7, 3, 100 + i, Qty::from_int(3), 50 + i));
+    len.push_back(enc.order_executed_with_price(
+        msgs[k++], 7, 3, 100 + i, Qty::from_int(2), 70 + i, Price::from_int(100), i % 2 == 0));
+    len.push_back(enc.order_cancel(msgs[k++], 7, 3, 110 + i, Qty::from_int(1)));
+    len.push_back(
+        enc.order_replace(msgs[k++], 7, 3, 120 + i, 200 + i, Qty::from_int(4), cents(10'050 + t)));
+    len.push_back(enc.order_delete(msgs[k++], 7, 3, 100 + i));
+  }
+  len.push_back(
+      enc.trade(msgs[k++], 7, 4, Side::Buy, Qty::from_int(1), "FMHOT", Price::from_int(100), 99));
+  REQUIRE(k <= msgs.size());
+
+  std::uint64_t seq = 0;
+  bool completed = true;
+  auto feed = [&](std::size_t from, std::size_t to) noexcept {
+    for (std::size_t i = from; i < to; ++i) {
+      bridge->on_itch_message(
+          ++seq, {msgs[i].data(), len[i]}, itch::DatagramStamp{rdtscp(), Timestamp{1}});
+      if (i % 4 == 3) bridge->end_datagram();
+    }
+    bridge->end_datagram();
+  };
+  {
+    NoAllocScope guard(true);
+    for (int round = 0; round < 3; ++round) {
+      feed(0, head);
+      completed = bridge->mark_complete(InstrumentId{0}) && completed;
+      feed(head, k);
+      drain(*ring);
+      bridge->mark_incomplete(1);
+      drain(*ring);
+    }
+  }
+  CHECK(completed);
+  CHECK(bridge->stats().book_errors == 0);
+  CHECK(bridge->stats().deltas > 0);
+  CHECK(bridge->stats().trades > 0);
+  CHECK(bridge->stats().snapshots == 3);
+  CHECK(bridge->stats().overflow == 0);
 }

@@ -45,6 +45,13 @@ All notable changes are recorded here (Keep a Changelog format).
   the private payloads are hand-written from the documentation because the Demo account had no
   futures margin balance. Funding payments are not booked. `binance::BinanceDepthSync` is now
   `BasicBinanceDepthSync<BinanceSpotSyncTraits>`.
+- `codecs::itch::ItchL2Bridge` (ADR-0015, step 3): ITCH messages to one `L3Book` per configured
+  instrument to `BookSnapshotMsg` / `BookDeltaMsg` / `TradeMsg` / `ConnectionStateMsg` for the
+  engine. At most one delta per instrument per datagram (`end_datagram()`) with absolute level
+  quantities over the top `depth` levels; trades for P/Q, E and printable C; `mark_complete()` /
+  `mark_incomplete()` for snapshot recovery; T0 from a per-datagram `DatagramStamp`. Messages for
+  unconfigured locates are skipped after the header. `ItchDecoder::decode_into()` and
+  `ScratchSink` decode one message without a ring.
 - Slow methods in live sessions (ADR-0013, sections 1 and 4): `fastmm.run_live` and
   `python -m fastmm run` run `on_start` before any venue connection, the `@fastmm.every` methods
   on a `fastmm-slow` thread and `on_stop` after the session, with snapshots, recent rows and fills
@@ -101,6 +108,14 @@ All notable changes are recorded here (Keep a Changelog format).
   `can_request` and `follow_session`; an optional `on_gap_unrecoverable(from_seq, count)` reports
   gaps that are given up. `ReceiverStats` gains per-line packets, duplicates and A/B skew, and
   held, overflow, unrecoverable and session counters.
+- `L3Book` is no longer a template: capacity and price window are constructor arguments
+  (`L3BookConfig{price_window_ticks, max_orders, max_overflow_levels}`), allocated once. Orders
+  outside the window go to a bounded per-side overflow store instead of failing with
+  `OutOfWindow` (now returned only when that store is full), and the window recentres only when a
+  touch leaves it. A bitmap of non-empty levels speeds up best-level repair and depth walks.
+  `find()`, `at()` and handle forms of `execute()` / `cancel()` are new.
+- `OrderExecL3Msg` gains `exec_flags` with `kNonPrintable`: `ItchDecoder` keeps the Printable flag
+  of C messages (zero, the old padding, reads as printable).
 - `fastmm-backtest`, `fastmm-replay` and `BacktestConfig.from_toml` report unknown configuration
   keys and sections with their line (stderr, or a `UserWarning` each and `BacktestConfig.warnings`),
   including unknown `[backtest]` keys. `GenericSection::lines` records the line of each
