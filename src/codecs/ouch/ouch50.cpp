@@ -732,6 +732,7 @@ bool parse_replace(std::span<const std::byte> msg, ReplaceView& out) noexcept {
   out.raw = &m;
   out.orig_user_ref_num = m.orig_user_ref_num.get();
   out.user_ref_num = m.user_ref_num.get();
+  out.seq_token = parse_seq_token(m.cl_ord_id);
   if (!nasdaq::shares_to_qty(m.quantity.get(), out.qty)) return false;
   return nasdaq::price4_to_price(m.price.get(), out.price);
 }

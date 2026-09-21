@@ -29,6 +29,7 @@ void usage(std::FILE* out) {
       "  --path <file>       read this status file (fastmm-live --status <file>)\n"
       "  --interval <ms>     refresh period, default 500\n"
       "  --once              print one frame and exit (exit code 3 if no status is available)\n"
+      "  --json              print the snapshot as one JSON object and exit (implies --once)\n"
       "  --no-color          plain output\n",
       out);
 }
@@ -47,6 +48,7 @@ int main(int argc, char** argv) {
   std::string path;
   int interval_ms = 500;
   bool once = false;
+  bool json = false;
   bool color = ::isatty(STDOUT_FILENO) != 0;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -76,6 +78,9 @@ int main(int argc, char** argv) {
         return 2;
       }
     } else if (a == "--once") {
+      once = true;
+    } else if (a == "--json") {
+      json = true;
       once = true;
     } else if (a == "--no-color") {
       color = false;
@@ -112,7 +117,8 @@ int main(int argc, char** argv) {
     // A writer of another build: its layout differs, so say so instead of waiting silently.
     const std::uint32_t version = reader.segment_version();
     if (reader.is_open() && reader.read(snap)) {
-      frame = fastmm::format_status(snap, fastmm::wall_now().ns, color);
+      frame = json ? fastmm::format_status_json(snap)
+                   : fastmm::format_status(snap, fastmm::wall_now().ns, color);
     } else if (version != 0 && version != fastmm::kStatusVersion) {
       const std::string message = other_build_message(path, version);
       if (once) {

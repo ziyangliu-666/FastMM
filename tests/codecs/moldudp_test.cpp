@@ -232,6 +232,46 @@ TEST_CASE("codecs.moldudp: the receiver delivers in order, detects gaps and reco
   }
 }
 
+TEST_CASE("codecs.moldudp: reset moves delivery back to a sequence and requests the hole") {
+  const SessionId s = make_session("SESS");
+  Recorder h;
+  ReceiverConfig cfg;
+  cfg.gap_timeout_ns = 100;
+  Receiver<Recorder> rx(h, cfg);
+  rx.on_packet(sp(packet(s, 10, {"m10", "m11"})), 0);  // joined at 10
+  CHECK(rx.next_sequence() == 12);
+  rx.on_packet(sp(packet(s, 14, {"m14"})), 10);  // held ahead of 12, 13
+  CHECK(rx.held() == 1);
+
+  // A snapshot says the stream resumes at 8: 8 .. 13 must be requested.
+  rx.reset(8);
+  CHECK(rx.next_sequence() == 8);
+  CHECK(rx.held() == 0);
+  rx.on_timer(50);
+  CHECK(h.requests.empty());  // within gap_timeout_ns of the reset
+  rx.on_timer(200);
+  REQUIRE(h.requests.size() == 1);
+  CHECK(parsed(h.requests[0]).sequence == 8);
+  CHECK(parsed(h.requests[0]).count == 7);  // up to the highest known, 15
+  rx.on_packet(sp(packet(s, 8, {"m8", "m9", "m10", "m11", "m12", "m13", "m14"})), 300);
+  CHECK(rx.next_sequence() == 15);
+  CHECK(rx.state() == SessionState::Up);
+  REQUIRE(h.messages.size() == 9);  // m10 m11, then m8 .. m14
+  CHECK(h.messages[2].first == 8);
+  CHECK(h.messages.back().first == 14);
+
+  // Before any packet: the first packet no longer sets the position.
+  Recorder h2;
+  Receiver<Recorder> rx2(h2, cfg);
+  rx2.reset(20);
+  rx2.on_packet(sp(packet(s, 22, {"m22"})), 0);
+  CHECK(rx2.next_sequence() == 20);
+  CHECK(rx2.held() == 1);
+  rx2.on_packet(sp(packet(s, 20, {"m20", "m21"})), 10);
+  CHECK(rx2.next_sequence() == 23);
+  CHECK(h2.messages.size() == 3);
+}
+
 TEST_CASE("codecs.moldudp: receiver configuration: expected session, start sequence, request cap") {
   const SessionId s = make_session("WANTED");
   Recorder h;

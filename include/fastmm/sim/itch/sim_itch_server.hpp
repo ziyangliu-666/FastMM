@@ -20,7 +20,7 @@
 // published up to End of Snapshot's sequence number minus one, sent or not.
 //
 // Wire-to-wire: every data datagram's first send is stamped with rdtscp right before the
-// sendmmsg call that carries it; an Enter Order whose ClOrdID is a sequence token
+// sendmmsg call that carries it; an Enter or Replace Order whose ClOrdID is a sequence token
 // (ouch50::put_seq_token) is stamped with rdtscp right after the read that returned it, and the
 // difference for the datagram holding that sequence number goes into a LogLinearHistogram.
 //

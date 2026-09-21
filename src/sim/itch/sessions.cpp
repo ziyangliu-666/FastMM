@@ -393,6 +393,7 @@ void OuchConn::replace(std::span<const std::byte> msg) noexcept {
     ++impl_.stats.malformed;
     return;
   }
+  if (r.seq_token != 0) impl_.record_wire_to_wire(r.seq_token, rx_tsc_);
   if (r.user_ref_num <= last_urn_) {
     ++impl_.stats.ignored;
     return;

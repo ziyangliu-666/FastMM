@@ -404,6 +404,25 @@ class Receiver {
     if (next_ < highest_) update(now_ns);
   }
 
+  // Delivery continues at `next_sequence` (a snapshot said where the stream must resume): held
+  // packets are dropped and request attempts start over. Sequences from there up to the highest
+  // one seen are a gap, declared and requested as usual; with next_sequence 0 the next packet
+  // received sets the position, as at construction. Not from inside a handler callback.
+  void reset(std::uint64_t next_sequence) noexcept {
+    next_ = next_sequence;
+    held_.clear();
+    requested_next_ = 0;
+    attempts_ = 0;
+    overflow_end_ = 0;
+    gap_since_ = kNoGap;
+    if (state_ == SessionState::Recovering) state_ = SessionState::Up;
+    if (next_ != 0 && highest_ < next_) {
+      highest_ = next_;
+      highest_ns_ = now_ns_;
+    }
+    if (next_ != 0 && next_ < highest_) gap_since_ = now_ns_;
+  }
+
   [[nodiscard]] SessionState state() const noexcept { return state_; }
   [[nodiscard]] std::uint64_t next_sequence() const noexcept { return next_; }
   [[nodiscard]] std::uint64_t highest_known() const noexcept { return highest_; }

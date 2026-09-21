@@ -553,6 +553,7 @@ struct ReplaceView {
   std::uint32_t user_ref_num = 0;
   Qty qty{};
   Price price{};
+  std::uint64_t seq_token = 0;  // parse_seq_token(ClOrdID)
 };
 [[nodiscard]] bool parse_replace(std::span<const std::byte> msg, ReplaceView& out) noexcept;
 

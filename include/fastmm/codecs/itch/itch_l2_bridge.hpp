@@ -93,6 +93,9 @@ class ItchL2Bridge {
   // Start of a trading day: locates are reassigned by the next directory spin.
   void clear_locates() noexcept;
   void set_midnight(Timestamp midnight) noexcept { decoder_.set_midnight(midnight); }
+  // Receive stamp of the events the next mark_*() call emits (they otherwise carry the stamp of
+  // the last message applied, which after a replay of buffered messages is an old datagram's).
+  void set_stamp(const DatagramStamp& stamp) noexcept { stamp_ = stamp; }
 
   venues::ParseStatus on_itch_message(std::uint64_t seq,
                                       std::span<const std::byte> msg,

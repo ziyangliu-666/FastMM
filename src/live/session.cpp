@@ -123,6 +123,7 @@ void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
   const int wait_ms = spin == SpinMode::Busy ? 0 : 1;
   while (!s.stop.load(std::memory_order_relaxed)) {
     s.reactor->run_once(wait_ms);
+    s.venue->poll();
     if (s.wake.exchange(false, std::memory_order_relaxed)) s.venue->on_wake();
   }
   s.venue->on_wake();  // flush cancels the engine queued during shutdown
@@ -211,6 +212,60 @@ void log_reject_breakdown(std::string_view kind, const RejectCounts& c) {
   emit();
 }
 
+StatusLatency wire_status_latency(const venues::WireLatencyStats& w) noexcept {
+  return StatusLatency{w.count, w.p50_ns, w.p99_ns, w.p999_ns, w.max_ns};
+}
+
+void copy_feed_status(const venues::VenueFeedStatus& f, StatusFeed& out) noexcept {
+  out.state = static_cast<std::uint8_t>(f.state);
+  out.backend = f.backend;
+  out.xdp_mode = f.xdp_mode;
+  out.packets = f.packets;
+  out.bytes = f.bytes;
+  for (std::size_t l = 0; l < 2; ++l) {
+    out.line_packets[l] = f.line_packets[l];
+    out.line_duplicates[l] = f.line_duplicates[l];
+    out.line_skew_mean_ns[l] = f.line_skew_mean_ns[l];
+    out.line_skew_max_ns[l] = f.line_skew_max_ns[l];
+  }
+  out.gaps = f.gaps;
+  out.recovered = f.recovered;
+  out.unrecovered = f.unrecovered;
+  out.snapshot_recoveries = f.snapshot_recoveries;
+  out.recovery_overflows = f.recovery_overflows;
+  out.reorder_high_water = f.reorder_high_water;
+  out.requests = f.requests;
+  out.malformed = f.malformed;
+  out.book_errors = f.book_errors;
+  out.kernel_to_t0 = wire_status_latency(f.kernel_to_t0);
+  out.xdp_rx_dropped = f.xdp_rx_dropped;
+  out.xdp_rx_invalid_descs = f.xdp_rx_invalid_descs;
+  out.xdp_rx_ring_full = f.xdp_rx_ring_full;
+  out.xdp_fill_ring_empty = f.xdp_fill_ring_empty;
+  out.xdp_fallback = f.xdp_fallback;
+}
+
+void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool final) {
+  if (f.state == venues::FeedState::None) return;
+  FASTMM_LOG_INFO(
+      "[{}] {}feed={} packets={} a={} b={} gaps={} recovered={} lost={} snapshots={} "
+      "overflows={} book_errors={} kernel_to_t0 p50={}ns p99={}ns",
+      venue,
+      final ? std::string_view("final ") : std::string_view(),
+      to_string(f.state),
+      f.packets,
+      f.line_packets[0],
+      f.line_packets[1],
+      f.gaps,
+      f.recovered,
+      f.unrecovered,
+      f.snapshot_recoveries,
+      f.recovery_overflows,
+      f.book_errors,
+      f.kernel_to_t0.p50_ns,
+      f.kernel_to_t0.p99_ns);
+}
+
 const char* short_state(venues::ChannelState s) {
   switch (s) {
     case venues::ChannelState::Down:
@@ -276,6 +331,8 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
     if (dry_run) {
       v.api_key.clear();
       v.api_secret.clear();
+    } else if (venues::venue_kind(v.kind) == venues::VenueKind::NasdaqItch) {
+      // Market data needs no keys; sim_ouch logs in with ouch_username / ouch_password.
     } else if (v.api_key.empty() || v.api_secret.empty()) {
       std::fprintf(stderr,
                    "%s: venue '%s' has no api_key/api_secret. Set them via ${ENV} references, or "
@@ -341,6 +398,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   venues::VenueFactoryOptions vopts;
   vopts.dry_run = opts.dry_run;
   vopts.record_raw_dir = opts.record_raw_dir;
+  vopts.busy_poll = cfg.spin_mode() == SpinMode::Busy;
   if (!vopts.record_raw_dir.empty()) std::filesystem::create_directories(vopts.record_raw_dir);
   for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
     auto slot = std::make_unique<VenueSlot>();
@@ -610,10 +668,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       sv.rest_errors = st.rest_errors;
       sv.rate_limit_cooldowns = st.rate_limit_cooldowns;
       sv.clock_offset_ms = st.clock_offset_ms;
-      sv.wire_tick_to_trade = StatusLatency{st.wire_tick_to_trade.count,
-                                            st.wire_tick_to_trade.p50_ns,
-                                            st.wire_tick_to_trade.p99_ns,
-                                            0};
+      sv.wire_tick_to_trade = wire_status_latency(st.wire_tick_to_trade);
+      copy_feed_status(st.feed, sv.feed);
     }
     status.publish(snap);
   };
@@ -726,6 +782,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
             st.reconnects,
             st.clock_offset_ms);
         log_wire_latency(v->name(), st, false);
+        log_feed(v->name(), st.feed, false);
       }
     }
   }
@@ -801,6 +858,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         st.order_events,
         st.reconnects);
     log_wire_latency(s->venue->name(), st, true);
+    log_feed(s->venue->name(), st.feed, true);
   }
   // The engine thread has stopped, so its clock can be read here.
   FASTMM_LOG_INFO("fastmm-live: tsc clock re-anchors={} steps={} last_offset_ns={}",
