@@ -143,6 +143,11 @@ venues::ParseStatus ItchL2Bridge::on_itch_message(std::uint64_t seq,
       ++stats_.skipped;
       return venues::ParseStatus::Ignored;
     }
+    // Executed, Executed With Price, Cancel, Delete and Replace name an existing order at
+    // offset 11: start its index lookup now, it overlaps with the decode below.
+    if ((type == 'E' || type == 'C' || type == 'X' || type == 'D' || type == 'U') &&
+        msg.size() >= 19)
+      slots_[slot_idx]->book.prefetch(nasdaq::load_be64(msg.data() + 11));
   }
   stamp_ = stamp;
   scratch_.reset();

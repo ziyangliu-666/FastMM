@@ -25,6 +25,7 @@
 // (binary search plus a memmove of the store) and best-level repair (bitmap scan).
 #include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/hot_array.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/strong_id.hpp"
 
@@ -84,7 +85,7 @@ class L3RefIndex {
   explicit L3RefIndex(std::size_t max_entries)
       : mask_(std::bit_ceil(std::max<std::size_t>(max_entries * 2, 4)) - 1),
         shift_(64 - std::countr_zero(mask_ + 1)),
-        slots_(new Slot[mask_ + 1]) {
+        slots_(make_hot_array<Slot>(mask_ + 1)) {
     clear();
   }
 
@@ -99,6 +100,10 @@ class L3RefIndex {
       if (s.key == key) return s.value;
       i = (i + 1) & mask_;
     }
+  }
+  // Starts loading the key's home slot (a cache and TLB miss on a large index).
+  FASTMM_FORCE_INLINE void prefetch(std::uint64_t key) const noexcept {
+    __builtin_prefetch(&slots_[home(key)]);
   }
   // False if the key is present.
   FASTMM_FORCE_INLINE bool insert(std::uint64_t key, std::uint32_t value) noexcept {
@@ -148,7 +153,7 @@ class L3RefIndex {
 
   std::size_t mask_;
   int shift_;
-  std::unique_ptr<Slot[]> slots_;
+  HotArray<Slot> slots_;  // 2 x max_orders x 16 bytes: 32 MiB by default, on huge pages
 };
 
 }  // namespace detail
@@ -164,14 +169,14 @@ class L3Book {
         words_(cfg.price_window_ticks / 64),
         max_orders_(cfg.max_orders),
         ov_cap_(cfg.max_overflow_levels),
-        orders_(new L3Order[cfg.max_orders]),
+        orders_(make_hot_array<L3Order>(cfg.max_orders)),
         by_ref_(cfg.max_orders),
         scratch_(new OvLevel[cfg.max_overflow_levels > 0 ? cfg.max_overflow_levels : 1]) {
     FASTMM_CHECK(tick.raw > 0);
     FASTMM_CHECK(cfg.price_window_ticks >= 64 && cfg.price_window_ticks % 64 == 0);
     FASTMM_CHECK(cfg.max_orders > 0 && cfg.max_orders < kNullHandle);
     for (std::size_t s = 0; s < 2; ++s) {
-      levels_[s] = std::make_unique<L3Level[]>(cfg.price_window_ticks);
+      levels_[s] = make_hot_array<L3Level>(cfg.price_window_ticks);
       bits_[s] = std::make_unique<std::uint64_t[]>(words_);
       ov_[s] = std::make_unique<OvLevel[]>(ov_cap_ > 0 ? ov_cap_ : 1);
       ov_tmp_[s] = std::make_unique<OvLevel[]>(ov_cap_ > 0 ? ov_cap_ : 1);
@@ -277,6 +282,8 @@ class L3Book {
 
   // ---- queries ---------------------------------------------------------------------------
 
+  // Issue before decoding a message that names `ref`, so the index lookup finds it cached.
+  FASTMM_FORCE_INLINE void prefetch(std::uint64_t ref) const noexcept { by_ref_.prefetch(ref); }
   [[nodiscard]] FASTMM_FORCE_INLINE OrderHandle find(std::uint64_t ref) const noexcept {
     return OrderHandle{by_ref_.find(ref)};
   }
@@ -812,12 +819,12 @@ class L3Book {
   std::uint32_t recentre_failures_ = 0;
   std::uint32_t free_head_ = kNullHandle;
   Timestamp last_update_{};
-  std::unique_ptr<L3Level[]> levels_[2];
+  HotArray<L3Level> levels_[2];
   std::unique_ptr<std::uint64_t[]> bits_[2];
   std::unique_ptr<OvLevel[]> ov_[2];
   std::unique_ptr<OvLevel[]> ov_tmp_[2];
   std::size_t ov_n_[2] = {0, 0};
-  std::unique_ptr<L3Order[]> orders_;
+  HotArray<L3Order> orders_;
   detail::L3RefIndex by_ref_;
   std::unique_ptr<OvLevel[]> scratch_;
 };
