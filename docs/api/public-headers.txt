@@ -102,6 +102,7 @@ tier2 net fastmm/net/udp_socket.hpp
 tier2 net fastmm/net/datagram_source.hpp
 tier2 net fastmm/net/kernel_datagram_source.hpp
 tier2 net fastmm/net/xdp_datagram_source.hpp
+tier2 net fastmm/net/dpdk_datagram_source.hpp
 
 # ---- tier 2: binary protocols -----------------------------------------------------------------------
 tier2 fastmm/codecs/codec.hpp

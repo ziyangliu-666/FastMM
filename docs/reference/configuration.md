@@ -115,7 +115,7 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `cancel_on_disconnect` | boolean |  | deribit: cancel-on-disconnect on the order connection (default true) |
 | `matching_engine_rate` | integer |  | deribit: order requests per second of the account tier (default 5) |
 | `matching_engine_burst` | integer |  | deribit: order request burst of the account tier (default 20) |
-| `rx_backend` | string |  | nasdaq_itch: multicast receive, kernel (UDP sockets) \| af_xdp (needs CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF, CAP_IPC_LOCK) (default kernel) |
+| `rx_backend` | string |  | nasdaq_itch: multicast receive, kernel (UDP sockets) \| af_xdp (needs CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF, CAP_IPC_LOCK) \| dpdk (a -DFASTMM_WITH_DPDK=ON build, spin_mode = "busy") (default kernel) |
 | `interface` | string |  | nasdaq_itch: interface of both lines, name or IPv4 address; af_xdp needs a name (default: routing table) |
 | `line_a` | string |  | nasdaq_itch: line A, "<multicast group>:<port>" (required) |
 | `line_b` | string |  | nasdaq_itch: line B, "<multicast group>:<port>"; absent = one line |
@@ -124,6 +124,8 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `line_a_source` | string |  | nasdaq_itch: source address of line A: a source-specific join (default any source) |
 | `line_b_source` | string |  | nasdaq_itch: source address of line B |
 | `queues` | any |  | nasdaq_itch, af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default 0) |
+| `dpdk_eal_args` | string |  | nasdaq_itch, dpdk: rte_eal_init arguments, space-separated (e.g. "--no-huge --no-pci --in-memory --vdev=net_af_packet0,iface=eth1") |
+| `dpdk_port` | string |  | nasdaq_itch, dpdk: ethdev name, e.g. net_af_packet0 or a PCI address (default: the first port) |
 | `xdp_mode` | string |  | nasdaq_itch, af_xdp: auto \| zerocopy \| native_copy \| generic (default auto: the first that works in that order) |
 | `rcvbuf` | integer |  | nasdaq_itch, kernel: SO_RCVBUF, bytes; 0 = system default (default 0) |
 | `batch` | integer |  | nasdaq_itch: datagrams per recvmmsg (kernel) or RX descriptors per poll (af_xdp), 1 to 1024 (default 32) |
@@ -142,6 +144,10 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `hw_clock` | string |  | nasdaq_itch: none \| phc_synced: use the NIC timestamp as recv_ts (only when the PHC is synchronised to CLOCK_REALTIME) (default none) |
 | `order_entry` | string |  | nasdaq_itch: none (every order is rejected) \| sim_ouch (OUCH 5.0 to fastmm-sim-itch) (default none) |
 | `ouch_url` | string |  | nasdaq_itch, sim_ouch: OUCH 5.0 server, "<IPv4 address>:<port>" |
+| `order_transport` | string |  | nasdaq_itch, sim_ouch: kernel (TCP socket) \| user_tcp (experimental user-space TCP over AF_PACKET; needs user_tcp_ip and CAP_NET_RAW) (default kernel) |
+| `user_tcp_ip` | string |  | nasdaq_itch, user_tcp: the connection's own IPv4 address on the interface's subnet, not assigned to any kernel interface |
+| `user_tcp_interface` | string |  | nasdaq_itch, user_tcp: netdev (default: interface) |
+| `user_tcp_gateway` | string |  | nasdaq_itch, user_tcp: next hop IPv4 address when the OUCH server is not on-link |
 | `ouch_username` | string |  | nasdaq_itch, sim_ouch: login, at most 6 characters (default fmouch, the simulator's) |
 | `ouch_password` | string |  | nasdaq_itch, sim_ouch: password, at most 10 characters (default ouch) |
 <!-- END config-keys -->

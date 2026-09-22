@@ -25,6 +25,23 @@ All notable changes are recorded here (Keep a Changelog format).
   `session.status` / `session.logout` and the unsigned `userDataStream.subscribe`.
 - `net::HmacSha256Key` (precomputed pad midstates) and `net::Ed25519Key` (parsed once, sign and
   verify).
+- `rx_backend = "dpdk"` for `nasdaq_itch` (`net::DpdkDatagramSource`, `-DFASTMM_WITH_DPDK=ON`, off
+  by default): `rte_eth_rx_burst` on one port, Ethernet/802.1Q/IPv4/UDP parsed with
+  `parse_udp_frame`, mbufs freed before `poll()` returns, IGMP joins through kernel sockets. DPDK
+  comes from pkg-config or is built into the build tree by `scripts/build-dpdk.sh` (static 25.11, no
+  root). Runs unprivileged with `--no-huge --no-pci --in-memory` and the `net_af_packet` vdev in a
+  user namespace: ctest label `dpdk` (only in DPDK builds) and `scripts/bench-e2e.sh --backend dpdk`.
+  Needs `spin_mode = "busy"`. Status `backend` 2.
+- `order_transport = "user_tcp"` for `nasdaq_itch` OUCH (experimental): `net::UserTcp`, a
+  single-connection user-space TCP client (ARP, MSS, RFC 6298 RTO, fast retransmit, out-of-order
+  reassembly, zero-window probes, FIN/RST, RFC 5961 challenge ACKs) over `net::PacketRing`
+  (`AF_PACKET` `PACKET_MMAP` RX/TX rings, `PACKET_QDISC_BYPASS`, BPF filter), with its own IPv4
+  address (`user_tcp_ip`). Tested against a scripted peer and against the kernel's TCP over a veth
+  with 3% loss each way; `scripts/bench-e2e.sh --order-transport user_tcp` and ctest
+  `integration.nasdaq_itch_processes_user_tcp` trade through it. The OUCH session writes through
+  `ByteLink` (`TcpLink` or `UserTcpLink`).
+- `bench_order_tcp`: the send call of a kernel TCP socket against `UserTcp` over a veth. Results
+  and a list of kernel-bypass order-entry options with the hardware each needs: `bench/README.md`.
 - Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
   docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
   `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one

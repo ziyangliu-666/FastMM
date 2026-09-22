@@ -114,6 +114,11 @@ if(FASTMM_BUILD_NET)
   # AF_XDP backend. The privileged cases (verifier load, BPF_PROG_TEST_RUN, veth receive) skip
   # without root or the capabilities; `sudo scripts/xdp-test.sh` runs them.
   fastmm_test(xdp       LABELS "unit"           LIBS fastmm::net)
+  # DPDK backend (-DFASTMM_WITH_DPDK=ON only; no CI job enables it): EAL without hugepages and the
+  # net_af_packet vdev on a veth in a user namespace, so it runs unprivileged.
+  if(TARGET fastmm_dpdk)
+    fastmm_test(dpdk    LABELS "dpdk"           LIBS fastmm::net)
+  endif()
   fastmm_test(venues    LABELS "unit;fixture"   LIBS fastmm::venues)
   # Opt-in testnet checks (tests/venues/live_*_test.cpp): `ctest -L live` selects them, the test
   # presets exclude the label, and without FASTMM_LIVE_TESTS=1 they skip.
@@ -365,6 +370,13 @@ if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top AND TARGE
     set_tests_properties(${_name} PROPERTIES
       LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
   endforeach()
+  # The same with the OUCH connection on the user-space TCP (order_transport = "user_tcp").
+  add_test(NAME integration.nasdaq_itch_processes_user_tcp
+    COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
+            --order-transport user_tcp --sim-cpu -1 --engine-cpu -1 --net-cpu -1
+            --build ${PROJECT_BINARY_DIR} --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e-user-tcp)
+  set_tests_properties(integration.nasdaq_itch_processes_user_tcp PROPERTIES
+    LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
 endif()
 
 # Apps built from the test strategy library: the module is listed for every transport, runs, and a

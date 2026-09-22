@@ -113,6 +113,30 @@ scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs 
 scripts/bench-e2e.sh --duration 30 --runs 3 --threading single
 ```
 
+### Receive backend and order transport
+
+Same machine and settings, 2026-09-22 (load average 2 to 4), one 20 s run per cell and round, three rounds with the four configurations interleaved; p50 in µs, range over the rounds. `dpdk` is EAL with `--no-huge --no-pci --in-memory` and the `net_af_packet` vdev on the veth; `user_tcp` is `order_transport = "user_tcp"` (UserTcp over an `AF_PACKET` ring).
+
+| rx_backend / order_transport | wire to wire | T0 to T5 | T0 to OUCH write returned |
+|---|---:|---:|---:|
+| kernel / kernel | 32.8 to 34.8 | 2.8 to 2.9 | 23.4 to 24.4 |
+| kernel / user_tcp | 31.7 to 34.8 | 2.8 to 2.9 | 22.5 to 23.4 |
+| dpdk / kernel | 30.7 to 31.7 | 2.8 to 3.1 | 24.4 to 25.4 |
+| dpdk / user_tcp | 29.7 | 2.8 to 2.9 | 21.5 to 23.4 |
+
+`bench_order_tcp` isolates the send call over a veth (one thread, the server in a second namespace, 64-byte messages, three runs): `write` on a TCP socket 3.97 µs p50, `UserTcp::send` (segment built, TX ring slot, `sendto` kick) 3.46 µs; until the server's `read` returns 7.9 µs and 7.7 µs. The kernel's TCP send path is about 0.5 µs of the send; the rest of the ~23 µs OUCH write in the table is the veth and the simulator's receive path and wake-up, which run inside whatever system call puts the frame on the veth. `af_packet` (for `dpdk` and `user_tcp`) is a copy of the kernel path, not kernel bypass: these numbers bound what the code adds, not what a NIC would give. A real gain needs a TX without a system call (DPDK on a `vfio-pci` or `mlx5` port, ef_vi, AF_XDP zero-copy with busy polling), which this machine cannot run.
+
+Kernel-bypass order-entry options:
+
+| option | status here | needs |
+|---|---|---|
+| `user_tcp` over `AF_PACKET` | implemented, experimental | `CAP_NET_RAW`; GRO/TSO off towards it |
+| `UserTcp` over DPDK (`rte_eth_tx_burst`, no syscall) | not wired: only a `FrameTx` over the DPDK port is missing | a NIC DPDK can own: AWS ENA (c6in, c7gn), Azure mlx5 (Accelerated Networking), GCP gVNIC, Intel E810/X710 |
+| `UserTcp` over AF_XDP | not wired (a `FrameTx` over the XSK TX ring) | root or `CAP_NET_ADMIN`+`CAP_BPF`; zero-copy on ice, i40e, mlx5, ENA |
+| F-Stack (DPDK + FreeBSD TCP) | not tried: owns the event loop and the port, hugepages | same NICs as DPDK |
+| NVIDIA XLIO / libvma (`LD_PRELOAD`) | not tried | ConnectX-5 or later (Azure Accelerated Networking VMs, OCI bare metal) |
+| Onload / TCPDirect / ef_vi | not tried; `kernel` sockets run under Onload unchanged | AMD Solarflare X2/X3/X4 (bare metal, colocation) |
+
 ## Reproduce
 
 ```bash

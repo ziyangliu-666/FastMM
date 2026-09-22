@@ -7,6 +7,7 @@
 
 #include <doctest/doctest.h>
 
+#include <cerrno>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -100,6 +101,38 @@ TEST_CASE("venues.nasdaq_itch: config keys and defaults") {
   CHECK(d.order_entry == OrderEntry::None);
 }
 
+TEST_CASE("venues.nasdaq_itch: dpdk backend and user_tcp order transport keys") {
+  const NasdaqItchVenueConfig c = make_nasdaq_itch_config(
+      section({{"rx_backend", "dpdk"},
+               {"interface", "eth1"},
+               {"line_a", "239.1.1.1:31001"},
+               {"dpdk_eal_args", "--no-huge --vdev=net_af_packet0,iface=eth1"},
+               {"dpdk_port", "net_af_packet0"},
+               {"order_entry", "sim_ouch"},
+               {"ouch_url", "10.0.0.6:18002"},
+               {"order_transport", "user_tcp"},
+               {"user_tcp_ip", "10.0.0.9"},
+               {"user_tcp_gateway", "10.0.0.1"}}),
+      false,
+      true);
+  CHECK(c.rx_backend == RxBackend::Dpdk);
+  CHECK(c.dpdk_eal_args == "--no-huge --vdev=net_af_packet0,iface=eth1");
+  CHECK(c.dpdk_port == "net_af_packet0");
+  CHECK(c.order_transport == OrderTransport::UserTcp);
+  CHECK(c.user_tcp_interface == "eth1");
+  CHECK(c.user_tcp_ip == "10.0.0.9");
+  CHECK(c.user_tcp_gateway == "10.0.0.1");
+  const NasdaqItchVenueConfig k =
+      make_nasdaq_itch_config(section({{"line_a", "239.1.1.1:31001"}}), false, false);
+  CHECK(k.order_transport == OrderTransport::Kernel);
+  // Without DPDK in the build the source says so at open.
+  if (!net::dpdk_available()) {
+    net::DpdkDatagramSource src;
+    CHECK(src.open(net::DpdkConfig{}) == -ENOTSUP);
+    CHECK(src.error().find("FASTMM_WITH_DPDK") != std::string::npos);
+  }
+}
+
 TEST_CASE("venues.nasdaq_itch: bad config values are refused with the key") {
   const auto refused = [](std::initializer_list<std::pair<const char*, const char*>> kv,
                           const char* key) {
@@ -129,6 +162,17 @@ TEST_CASE("venues.nasdaq_itch: bad config values are refused with the key") {
   refused({{"line_a", "239.1.1.1:1"}, {"order_entry", "sim_ouch"}}, "ouch_url");
   refused({{"line_a", "239.1.1.1:1"}, {"glimpse_username", "toolong"}}, "glimpse_username");
   refused({{"line_a", "239.1.1.1:1"}, {"hw_timestamps", "yes"}}, "hw_timestamps");
+  refused({{"line_a", "239.1.1.1:1"}, {"rx_backend", "rdma"}}, "rx_backend");
+  refused({{"line_a", "239.1.1.1:1"}, {"order_transport", "onload"}}, "order_transport");
+  refused({{"line_a", "239.1.1.1:1"}, {"order_transport", "user_tcp"}}, "user_tcp_interface");
+  refused({{"line_a", "239.1.1.1:1"}, {"interface", "eth1"}, {"order_transport", "user_tcp"}},
+          "user_tcp_ip");
+  refused({{"line_a", "239.1.1.1:1"},
+           {"interface", "eth1"},
+           {"order_transport", "user_tcp"},
+           {"user_tcp_ip", "10.0.0.9"},
+           {"user_tcp_gateway", "gw"}},
+          "user_tcp_gateway");
 
   net::SockAddr a;
   CHECK(parse_ip_port("127.0.0.1:31000", a));

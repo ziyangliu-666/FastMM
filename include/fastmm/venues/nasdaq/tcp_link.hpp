@@ -29,7 +29,21 @@ class TcpLinkHandler {
   virtual void on_link_down(int err) noexcept = 0;
 };
 
-class TcpLink final : public net::IoHandler {
+// The byte stream an OUCH session writes to: TcpLink (kernel TCP) or UserTcpLink (user-space TCP,
+// user_tcp_link.hpp). Same callbacks (TcpLinkHandler) and threading for both.
+class ByteLink {
+ public:
+  virtual ~ByteLink() = default;
+  virtual bool open(net::Reactor& reactor, const net::SockAddr& addr) noexcept = 0;
+  virtual void close() noexcept = 0;
+  virtual bool shutdown_from_any_thread() noexcept = 0;
+  virtual bool send(std::span<const std::byte> bytes) noexcept = 0;
+  virtual void cork() noexcept = 0;
+  virtual bool uncork() noexcept = 0;
+  [[nodiscard]] virtual bool connected() const noexcept = 0;
+};
+
+class TcpLink final : public net::IoHandler, public ByteLink {
  public:
   TcpLink(TcpLinkHandler& handler, std::size_t rx_bytes, std::size_t tx_bytes);
   ~TcpLink() override;
@@ -39,23 +53,23 @@ class TcpLink final : public net::IoHandler {
   TcpLink& operator=(TcpLink&&) = delete;
 
   // Starts a connect to `addr`; false when the socket cannot be created or registered.
-  bool open(net::Reactor& reactor, const net::SockAddr& addr) noexcept;
+  bool open(net::Reactor& reactor, const net::SockAddr& addr) noexcept override;
   // Unregisters and closes; no callback.
-  void close() noexcept;
+  void close() noexcept override;
   // Thread-safe: shuts the connection down (SHUT_RDWR) without closing the descriptor, so the
   // reactor thread sees EOF and closes it. For cancel-all from another thread.
-  bool shutdown_from_any_thread() noexcept;
+  bool shutdown_from_any_thread() noexcept override;
 
   // Writes bytes, queueing what the kernel does not take; false when not connected or the send
   // buffer is full (the link is then closed and on_link_down reports ENOBUFS).
-  bool send(std::span<const std::byte> bytes) noexcept;
+  bool send(std::span<const std::byte> bytes) noexcept override;
   // Between cork() and uncork() send() only appends to the send buffer (writing early when it
   // fills); uncork() writes the buffer with one write(2) and queues the rest for writability.
   // uncork() returns false when the link failed (closed; on_link_down was called).
-  void cork() noexcept { corked_ = true; }
-  bool uncork() noexcept;
+  void cork() noexcept override { corked_ = true; }
+  bool uncork() noexcept override;
 
-  [[nodiscard]] bool connected() const noexcept { return up_; }
+  [[nodiscard]] bool connected() const noexcept override { return up_; }
   [[nodiscard]] bool is_open() const noexcept { return sock_.valid(); }
 
   void on_readable() override;

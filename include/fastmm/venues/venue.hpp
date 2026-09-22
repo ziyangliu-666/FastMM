@@ -76,7 +76,7 @@ enum class FeedState : std::uint8_t {
 
 struct VenueFeedStatus {
   FeedState state = FeedState::None;
-  std::uint8_t backend = 0;   // 0 kernel, 1 af_xdp
+  std::uint8_t backend = 0;   // 0 kernel, 1 af_xdp, 2 dpdk
   std::uint8_t xdp_mode = 0;  // net::XdpMode the first interface settled on (af_xdp)
   std::uint64_t packets = 0;  // MoldUDP64 packets accepted (all lines, retransmissions included)
   std::uint64_t bytes = 0;    // datagram payload bytes received

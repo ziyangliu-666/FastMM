@@ -476,8 +476,9 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                      "k2t0_p99");
     }
     const std::string_view fstate = feed_state_name(f.state);
-    const std::string rx = f.backend == 1 ? fmt::format("af_xdp/{}", xdp_mode_name(f.xdp_mode))
-                                          : std::string("kernel");
+    const std::string rx = f.backend == 1   ? fmt::format("af_xdp/{}", xdp_mode_name(f.xdp_mode))
+                           : f.backend == 2 ? std::string("dpdk")
+                                            : std::string("kernel");
     const std::int64_t skew = std::max(f.line_skew_max_ns[0], f.line_skew_max_ns[1]);
     fmt::format_to(std::back_inserter(out),
                    "{:<14} {}{:<9}{} {:<18} {:>10} {:>10} {:>10} {:>9} {:>6} {:>8} {:>8} {:>6} "
@@ -575,7 +576,9 @@ std::string format_status_json(const StatusSnapshot& s) {
                    "\"reorder_high_water\": {}, \"requests\": {}, \"malformed\": {}, "
                    "\"book_errors\": {}, ",
                    feed_state_name(f.state),
-                   f.backend == 1 ? "af_xdp" : "kernel",
+                   f.backend == 1   ? "af_xdp"
+                   : f.backend == 2 ? "dpdk"
+                                    : "kernel",
                    xdp_mode_name(f.xdp_mode),
                    f.packets,
                    f.bytes,
