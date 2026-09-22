@@ -374,7 +374,9 @@ TEST_CASE("sim_itch: lines A and B with drops recover through re-requests") {
   REQUIRE_MESSAGE(sim.open(), sim.last_error());
   FeedClient feed(cfg, sim.rerequest_port());
 
-  pump(sim, 800, [] { return false; }, [&] { feed.poll(); });
+  // A gap needs both lines to drop the same packet (0.25 % per packet), so run until one has been
+  // requested rather than for a fixed time: under load the generator publishes fewer packets.
+  REQUIRE(pump(sim, 20000, [&] { return sim.stats().requests_answered > 0; }, [&] { feed.poll(); }));
   sim.set_generator_enabled(false);
   REQUIRE(pump(sim, 5000, [&] { return caught_up(sim, feed); }, [&] { feed.poll(); }));
 
