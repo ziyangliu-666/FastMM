@@ -1,6 +1,6 @@
 #include "fastmm/sim/sim_transport.hpp"
 
-#include <cstdio>
+#include <charconv>
 #include <cstring>
 
 namespace fastmm::sim {
@@ -9,9 +9,9 @@ namespace {
 
 FixedString<40> decimal_id(std::uint64_t v) noexcept {
   char buf[24];
-  const int n = std::snprintf(buf, sizeof buf, "%llu", static_cast<unsigned long long>(v));
+  const auto r = std::to_chars(buf, buf + sizeof buf, v);
   FixedString<40> s;
-  s.assign(std::string_view(buf, static_cast<std::size_t>(n > 0 ? n : 0)));
+  s.assign(std::string_view(buf, static_cast<std::size_t>(r.ptr - buf)));
   return s;
 }
 

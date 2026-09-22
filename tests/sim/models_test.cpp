@@ -9,6 +9,7 @@
 #include "fastmm/sim/sha256.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -172,6 +173,39 @@ TEST_CASE("sim.sha256: FIPS test vectors and streaming equivalence") {
   Sha256 v;
   v.update(million.data(), million.size());
   CHECK(v.hex() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+  // Uneven chunks cross the block boundary at every offset.
+  Sha256 w;
+  for (std::size_t off = 0, step = 1; off < million.size(); off += step, step = step % 97 + 1)
+    w.update(million.data() + off, std::min(step, million.size() - off));
+  CHECK(w.hex() == v.hex());
+}
+
+TEST_CASE("sim.sha256: SHA-NI and portable compression agree") {
+  if (!fastmm::sim::detail::sha256_hardware_available()) {
+    MESSAGE("no SHA-NI on this CPU; only the portable path runs");
+    return;
+  }
+  std::vector<std::uint8_t> data(64 * 37);
+  std::uint64_t x = 88172645463325252ULL;
+  for (auto& b : data) {
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    b = static_cast<std::uint8_t>(x);
+  }
+  std::uint32_t a[8] = {0x6a09e667,
+                        0xbb67ae85,
+                        0x3c6ef372,
+                        0xa54ff53a,
+                        0x510e527f,
+                        0x9b05688c,
+                        0x1f83d9ab,
+                        0x5be0cd19};
+  std::uint32_t b[8];
+  std::memcpy(b, a, sizeof a);
+  fastmm::sim::detail::sha256_blocks_hardware(a, data.data(), 37);
+  fastmm::sim::detail::sha256_blocks_portable(b, data.data(), 37);
+  CHECK(std::memcmp(a, b, sizeof a) == 0);
 }
 
 TEST_CASE("sim.outbound_hash: normalization ignores journal seq/flags") {
