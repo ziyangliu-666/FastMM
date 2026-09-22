@@ -1,6 +1,6 @@
 {
   "context": {
-    "date": "2026-09-13T18:07:29+00:00",
+    "date": "2026-09-22T17:00:23+00:00",
     "executable": "build/release-native/bin/bench/bench_http",
     "num_cpus": 8,
     "mhz_per_cpu": 4192,
@@ -32,7 +32,11 @@
         "num_sharing": 8
       }
     ],
-    "load_avg": [18.9619,11.3711,6.49268],
+    "load_avg": [
+      1.08398,
+      1.78955,
+      5.28662
+    ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
     "json_schema_version": 1
@@ -49,10 +53,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.3797025526851610e+04,
-      "cpu_time": 1.4399303699444883e+04,
+      "real_time": 13382.98786339509,
+      "cpu_time": 14043.986892273842,
       "time_unit": "ns",
-      "items_per_second": 7.2489026909336841e+04
+      "items_per_second": 74723.48526459918
     },
     {
       "name": "BM_HttpRoundTripLoopback/real_time_median",
@@ -65,10 +69,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.3719911617005331e+04,
-      "cpu_time": 1.4390314076130056e+04,
+      "real_time": 13346.283001487467,
+      "cpu_time": 14064.052449873852,
       "time_unit": "ns",
-      "items_per_second": 7.2886766906029952e+04
+      "items_per_second": 74927.22879385581
     },
     {
       "name": "BM_HttpRoundTripLoopback/real_time_stddev",
@@ -81,10 +85,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.7871557098354148e+02,
-      "cpu_time": 5.6022780851470046e+01,
+      "real_time": 72.63892689071504,
+      "cpu_time": 75.06099124651739,
       "time_unit": "ns",
-      "items_per_second": 9.2996113823762619e+02
+      "items_per_second": 404.3380011401852
     },
     {
       "name": "BM_HttpRoundTripLoopback/real_time_cv",
@@ -97,10 +101,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 1.2953195646099756e-02,
-      "cpu_time": 3.8906590221879831e-03,
+      "real_time": 0.005427706251561039,
+      "cpu_time": 0.00534470672909923,
       "time_unit": "ns",
-      "items_per_second": 1.2828991888672241e-02
+      "items_per_second": 0.00541112342001188
     },
     {
       "name": "BM_HttpParseResponse_mean",
@@ -113,10 +117,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.4098148785213658e+02,
-      "cpu_time": 1.4531515552644359e+02,
+      "real_time": 137.9932644933178,
+      "cpu_time": 144.6188907754892,
       "time_unit": "ns",
-      "bytes_per_second": 1.1148225790413010e+09
+      "bytes_per_second": 1120216800.8904238
     },
     {
       "name": "BM_HttpParseResponse_median",
@@ -129,10 +133,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.4129227312741486e+02,
-      "cpu_time": 1.4534334194045761e+02,
+      "real_time": 138.09834652918693,
+      "cpu_time": 144.73148965828184,
       "time_unit": "ns",
-      "bytes_per_second": 1.1146021402642999e+09
+      "bytes_per_second": 1119314120.1164305
     },
     {
       "name": "BM_HttpParseResponse_stddev",
@@ -145,10 +149,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.2071799444160534e+00,
-      "cpu_time": 3.1688660753771208e-01,
+      "real_time": 0.8118696008158679,
+      "cpu_time": 0.8510172429313242,
       "time_unit": "ns",
-      "bytes_per_second": 2.4316989520251062e+06
+      "bytes_per_second": 6626219.415866033
     },
     {
       "name": "BM_HttpParseResponse_cv",
@@ -161,10 +165,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 8.5626840999306307e-03,
-      "cpu_time": 2.1806851899907093e-03,
+      "real_time": 0.005883400206501977,
+      "cpu_time": 0.0058845510318044775,
       "time_unit": "ns",
-      "bytes_per_second": 2.1812430047086612e-03
+      "bytes_per_second": 0.005915122332212004
     }
   ]
 }

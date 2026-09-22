@@ -6,27 +6,93 @@ Machine: {{MACHINE}}
 
 WSL2 scheduling jitter inflates p99 tails. p50 / p99 come from a `LogLinearHistogram`; for
 `BM_TickToOrder_Sim` they cover the events that sent orders, while the median is the time per
-iteration over all events.
+iteration over all events. The codec benchmarks' `p50_ns` is the median per-operation time of
+64-operation batches.
 
 {{TABLE}}
 
+## Hot-path changes, 2026-09-23
+
+Before: 6d43d8e. After: the commits listed. `release-native`, pinned to one core, 5 repetitions,
+median; ns per operation (p50 where the benchmark records one).
+
+| benchmark | before | after | change |
+|---|---:|---:|---|
+| `BM_Ouch50_EncodeColdMap` p50 | 1770 | 12.8 | UserRefMap tables resident at construction (no page fault per new order), direct-mapped |
+| `BM_Ouch50_EncodeNewIds` p50 | 26.6 | 14.8 | same, and the message written in place (no store-forwarding stall) |
+| `BM_Ouch50_EncodeEnterOrder` p50 | 19.5 | 9.7 | in place, SWAR ClOrdID hex |
+| `BM_Ouch42_EncodeNewIds` p50 | 14.8 | 7.4 | in place, SWAR ClOrdID hex |
+| `BM_Encode_BinanceOrderPlace` | 1440 | 522 | HMAC key schedule done once; bulk JSON and query appends |
+| `BM_Encode_BybitOrderCreate` | 313 | 223 | same |
+| `BM_Encode_DeribitBuy` | 319 | 207 | bulk JSON appends |
+| `BM_TickToOrder_Sim` p50 | 991 | 247 | SHA-NI outbound hash, index heap in the order scheduler; running PnL totals |
+| `BM_EngineStep_Sim` (32 events) | 9200 | 2900 | running PnL totals (the max-loss check summed 256 positions per event) |
+| `BM_ItchL2Bridge_Message` p50 | 61.4 | 55.3 | L3 tables on huge pages, prefetch of the named order |
+| `BM_ItchL2Bridge_Message_DefaultBook` p50 | 82 to 86 | 55.3 | same, 2^20-order book |
+| one-day synthetic backtest, wall time | 21.5 s | 17.4 s | same outbound SHA-256 |
+
+End to end (`scripts/bench-e2e.sh`, settings as below), the builds interleaved, 3 runs of 20 s
+each; p50 in µs, range over the runs. The OUCH encode row is the network thread's `encode` figure
+from the `final order latency` log line.
+
+| build | wire to wire | T0 to T5 | T0 to OUCH write returned | OUCH encode |
+|---|---:|---:|---:|---:|
+| before (6d43d8e) | 34.8 to 38.9 | 2.9 to 3.2 | 24.4 to 28.3 | 4.40 to 4.64 |
+| after | 24.6 to 25.6 | 2.6 to 2.7 | 16.6 | 0.09 to 0.11 |
+| after, PGO (`scripts/build-pgo.sh`) | 23.6 to 28.7 | 2.6 to 3.2 | 16.6 to 18.6 | 0.09 to 0.15 |
+| after, PGO + BOLT (`--bolt`) | 24.6 to 25.6 | 2.7 to 2.8 | 16.6 to 17.6 | 0.07 to 0.09 |
+
+## Build variants, 2026-09-23
+
+Same machine, 3 interleaved rounds of 5 repetitions, median; ns per operation (p50 where
+recorded). All gcc 13 unless noted; `release-native` is `-O3 -march=native` with LTO.
+
+| benchmark | release-native | PGO | PGO + BOLT | `-O2` | no LTO | `x86-64-v2` | clang 18 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `BM_TickToOrder_Sim` p50 | 247 | 215 | 215 | 231 | 247 | 271 | 271 |
+| `BM_EngineStep_Sim` | 2877 | 2748 | 2751 | 2784 | 2896 | 3397 | 4182 |
+| `BM_Encode_BinanceOrderPlace` | 522 | 462 | 464 | 553 | 513 | 570 | 541 |
+| `BM_ItchL2Bridge_Message` p50 | 55.3 | 53.2 | 53.2 | 57.3 | 57.3 | 63.5 | 57.3 |
+| `BM_ItchL2Bridge_Message_DefaultBook` p50 | 57.3 | 53.2 | 55.3 | 57.3 | 57.3 | 63.5 | 59.4 |
+| `BM_Ouch42_EncodeNewIds` p50 | 7.4 | 7.4 | 7.4 | 7.4 | 8.7 | 7.7 | 6.4 |
+| `BM_Ouch50_EncodeNewIds` p50 | 14.8 | 12.3 | 11.8 | 15.4 | 13.8 | 14.8 | 12.8 |
+
+`release-native` stays gcc `-O3 -march=native` with LTO: `-O2` and no-LTO are within the noise, the
+portable `x86-64-v2` build is 9 to 18 % slower, and clang 45 % slower on the engine step (faster on
+the OUCH encoders). PGO gains another 4 to 17 % on the micro-benchmarks and nothing measurable end
+to end, where the OUCH `write` system call dominates; BOLT adds nothing on top (the hot code fits
+the instruction cache). `scripts/build-pgo.sh [--bolt]` builds both.
+
 ## End to end: fastmm-sim-itch to fastmm-live over veth
 
-Measured by `scripts/bench-e2e.sh` on 2026-09-21: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 340 to 400 samples per run, so their p99.9 is the largest sample.
+Measured by `scripts/bench-e2e.sh` on 2026-09-23: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 275 to 358 samples per run, so their p99.9 is the largest sample. In runs 1 and 3 a few orders had T0 to T5 near 3 ms while every engine hop stayed below 1.2 ms at p99.9 (as in run 3 of the 2026-09-22 measurement); they set the upper end of the T0 to T5 and OUCH p99 columns.
 
 | hop | samples per run | p50 | p99 | p99.9 |
 |---|---:|---:|---:|---:|
-| wire to wire: simulator `sendmmsg` to the order read | 346 / 339 / 395 | 49.2 to 53.2 | 90.1 to 114.7 | 129.0 to 291.5 |
-| kernel receive timestamp to T0 | 137664 / 138268 / 137350 | 3.1 to 3.2 | 12.8 to 18.4 | 69.6 to 90.1 |
-| T0 to T1: MoldUDP64, ITCH decode, L3 update | 80247 / 80397 / 79635 | 0.8 to 0.9 | 2.4 to 3.7 | 7.2 to 13.3 |
-| T1 to T2: ring hand-off, L2 book apply | 80247 / 80397 / 79635 | 0.2 | 5.9 to 15.4 | 77.8 to 155.6 |
-| T2 to T3: strategy | 68925 / 69224 / 68765 | 0.4 | 0.8 to 0.9 | 1.7 to 12.8 |
-| T3 to T4: quote manager, risk, OMS | 661 / 651 / 415 | 0.5 to 0.6 | 1.4 to 1.7 | 1.8 to 12.8 |
-| T4 to T5: outbound ring push and wake | 745 / 734 / 454 | 1.9 to 2.4 | 4.4 to 16.4 | 10.8 to 98.9 |
-| T0 to T5: tick to trade (engine) | 197 / 187 / 219 | 4.9 to 5.4 | 14.2 to 27.6 | 14.2 to 82.6 |
-| T0 to OUCH write returned (network thread) | 346 / 339 / 395 | 33.2 to 35.2 | 66.4 to 74.3 | 92.8 to 103.4 |
+| wire to wire: simulator `sendmmsg` to the order read | 312 / 354 / 275 | 23.6 to 25.6 | 61.4 to 139.3 | 76.1 to 217.1 |
+| kernel receive timestamp to T0 | 137934 / 139164 / 139986 | 3.1 to 3.2 | 11.8 to 22.5 | 61.4 to 688.1 |
+| T0 to T1: MoldUDP64, ITCH decode, L3 update | 79020 / 81569 / 82623 | 0.8 | 2.4 to 5.9 | 6.7 to 15.4 |
+| T1 to T2: ring hand-off, L2 book apply | 79020 / 81569 / 82623 | 0.2 | 5.9 to 19.5 | 63.5 to 1179.6 |
+| T2 to T3: strategy | 69044 / 69662 / 70143 | 0.1 | 0.2 | 0.2 to 11.3 |
+| T3 to T4: quote manager, risk, OMS | 488 / 548 / 1112 | 0.4 to 0.5 | 1.3 to 1.7 | 1.6 to 49.2 |
+| T4 to T5: outbound ring push (no eventfd write when busy) | 536 / 594 / 1243 | 0.2 | 0.4 to 0.6 | 0.6 to 1.5 |
+| T0 to T5: tick to trade (engine) | 186 / 215 / 184 | 2.4 to 2.6 | 32.8 to 3183.9 | 46.0 to 3183.9 |
+| T0 to OUCH write returned (network thread) | 316 / 358 / 279 | 16.6 | 52.8 to 3194.4 | 63.6 to 3194.4 |
 
-The OUCH write (`send` on the TCP socket, p50 12 µs) runs the veth and the simulator's TCP receive path inside the system call; the second order of an event waits for the first. With `spin_mode = "adaptive"` (one 30 s run) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
+The network thread writes all orders of one drain of the outbound ring with one `write`; the write (p50 7 to 9 µs) runs the veth and the simulator's TCP receive path inside the system call. With `spin_mode = "adaptive"` (one 30 s run, 2026-09-21) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
+
+Order send path, 2026-09-22 (before the hot-path changes above), same machine and settings, 3 runs of 20 s per row (9 for the first and third), p50 in µs, range over the runs:
+
+| network thread | wire to wire | T0 to T5 | T0 to OUCH write returned |
+|---|---:|---:|---:|
+| before: two writes per order (SoupBinTCP header, then OUCH message), one order after the other; eventfd write per wake | 47.1 to 55.3 | 4.6 to 5.4 | 30.3 to 39.1 |
+| one write per drain | 32.8 to 34.8 | 4.9 to 5.1 | 24.4 |
+| one write per drain, no eventfd write when busy | 32.8 to 34.8 | 2.7 to 3.1 | 23.4 to 26.4 |
+| `IORING_OP_SEND` + `io_uring_enter` instead of `write` | 32.8 to 34.8 | 2.7 to 2.9 | 24.4 to 26.4 |
+| `IORING_OP_SEND` with SQPOLL, thread on core 0 | 34.8 | 2.8 to 3.1 | 12.7 to 13.2 |
+| `IORING_OP_SEND` with SQPOLL, thread unpinned | 163.8 to 172.0 | 2.9 | 12.2 to 13.2 |
+
+The io_uring rows were a prototype and are not in the code: the plain submission costs what `write` costs, and SQPOLL only moves the send to another core (the call returns in 0.3 µs) without shortening wire to wire.
 
 ```bash
 scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs root
@@ -38,4 +104,5 @@ scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs 
 ./scripts/bench.sh --preset release-native --cpu 2
 python3 tools/check_budgets.py bench/results/latest          # compare to bench/ci_budget.toml
 python3 tools/bench_compare.py bench/results/baseline bench/results/latest
+scripts/build-pgo.sh --bolt                                   # PGO (+ BOLT) build in build/pgo
 ```

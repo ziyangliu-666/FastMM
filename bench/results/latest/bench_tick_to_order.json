@@ -1,6 +1,6 @@
 {
   "context": {
-    "date": "2026-09-14T22:08:43+00:00",
+    "date": "2026-09-22T17:04:20+00:00",
     "executable": "build/release-native/bin/bench/bench_tick_to_order",
     "num_cpus": 8,
     "mhz_per_cpu": 4192,
@@ -33,9 +33,9 @@
       }
     ],
     "load_avg": [
-      1.81885,
-      5.23486,
-      5.94873
+      1.32324,
+      1.44531,
+      4.38086
     ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
@@ -53,14 +53,14 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1757.1827700482506,
-      "cpu_time": 1744.3090232828915,
+      "real_time": 839.0581440445163,
+      "cpu_time": 873.7165891082041,
       "time_unit": "ns",
-      "all_p50": 1048.6000000000001,
+      "all_p50": 255.0,
       "kills": 0.0,
       "order_events_pct": 100.0,
-      "p50": 1048.6000000000001,
-      "p99": 1586.2
+      "p50": 255.0,
+      "p99": 383.0
     },
     {
       "name": "BM_TickToOrder_Sim_median",
@@ -73,14 +73,14 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1720.1659146447414,
-      "cpu_time": 1732.4798115020374,
+      "real_time": 839.5048009044982,
+      "cpu_time": 873.8449237566467,
       "time_unit": "ns",
-      "all_p50": 1023.0,
+      "all_p50": 255.0,
       "kills": 0.0,
       "order_events_pct": 100.0,
-      "p50": 1023.0,
-      "p99": 1535.0
+      "p50": 255.0,
+      "p99": 383.0
     },
     {
       "name": "BM_TickToOrder_Sim_stddev",
@@ -93,14 +93,14 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 61.42253278523583,
-      "cpu_time": 29.527286666453314,
+      "real_time": 2.0659348641877693,
+      "cpu_time": 1.3106537708463546,
       "time_unit": "ns",
-      "all_p50": 35.05424368032715,
+      "all_p50": 0.0,
       "kills": 0.0,
       "order_events_pct": 0.0,
-      "p50": 35.05424368032715,
-      "p99": 70.1084873606626
+      "p50": 0.0,
+      "p99": 0.0
     },
     {
       "name": "BM_TickToOrder_Sim_cv",
@@ -113,14 +113,14 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.034955118973508496,
-      "cpu_time": 0.01692778416686811,
+      "real_time": 0.002462207033983763,
+      "cpu_time": 0.0015000902892139535,
       "time_unit": "ns",
-      "all_p50": 0.03342956673691316,
+      "all_p50": 0.0,
       "kills": 0.0,
       "order_events_pct": 0.0,
-      "p50": 0.03342956673691316,
-      "p99": 0.04419902115790102
+      "p50": 0.0,
+      "p99": 0.0
     },
     {
       "name": "BM_EngineStep_Sim_mean",
@@ -133,10 +133,10 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 9851.456648241845,
-      "cpu_time": 9733.715507949022,
+      "real_time": 2923.67370872401,
+      "cpu_time": 3078.831655916182,
       "time_unit": "ns",
-      "items_per_second": 3287552.3293493935,
+      "items_per_second": 10393607.405648574,
       "out_msgs_per_step": 2.0
     },
     {
@@ -150,10 +150,10 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 9866.107065713353,
-      "cpu_time": 9741.491213359936,
+      "real_time": 2923.1651996285314,
+      "cpu_time": 3079.28075971992,
       "time_unit": "ns",
-      "items_per_second": 3284918.017080764,
+      "items_per_second": 10392037.133668385,
       "out_msgs_per_step": 2.0
     },
     {
@@ -167,10 +167,10 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 52.91097929014087,
-      "cpu_time": 19.13376654161067,
+      "real_time": 9.414581410699451,
+      "cpu_time": 7.867158357441701,
       "time_unit": "ns",
-      "items_per_second": 6473.5985661760105,
+      "items_per_second": 26613.799608649926,
       "out_msgs_per_step": 0.0
     },
     {
@@ -184,10 +184,10 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.0053708787623385325,
-      "cpu_time": 0.001965720749284804,
+      "real_time": 0.0032201204199384797,
+      "cpu_time": 0.0025552414800999027,
       "time_unit": "ns",
-      "items_per_second": 0.0019691241135185627,
+      "items_per_second": 0.002560593119400125,
       "out_msgs_per_step": 0.0
     }
   ]

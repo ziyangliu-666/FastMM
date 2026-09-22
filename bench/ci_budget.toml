@@ -13,7 +13,7 @@
 "BM_Log_Emit_3Args" = 40
 "BM_Journal_Record/1024" = 80
 "BM_WsAssemble/16384" = 200
-"BM_TickToOrder_Sim" = 2000                     # 1720 ns median per iteration (p50 counter 1023 ns), 2026-09-15
+"BM_TickToOrder_Sim" = 1200                     # 840 ns median per iteration (p50 counter 255 ns), 2026-09-23
 "BM_Json_BinanceDepth20" = 1500                 # bench/bench_json.cpp
 
 # Wire codecs (M3). Budgets are about twice the p50 measured while the machine was heavily loaded.
@@ -43,9 +43,9 @@
 "BM_Json_BybitExecution" = 800            # 380 ns, private: fill
 "BM_Json_DeribitUserOrder" = 600          # 294 ns, private: user.orders open
 "BM_Json_DeribitUserTrade" = 900          # 431 ns, private: user.trades fill
-"BM_Encode_BinanceOrderPlace" = 3000      # 1474 ns, order.place with HMAC-SHA256 signature
-"BM_Encode_BybitOrderCreate" = 650        # 312 ns, order.create
-"BM_Encode_DeribitBuy" = 650              # 319 ns, private/buy
+"BM_Encode_BinanceOrderPlace" = 1100      # 523 ns, order.place with HMAC-SHA256 signature (2026-09-23)
+"BM_Encode_BybitOrderCreate" = 450        # 223 ns, order.create (2026-09-23)
+"BM_Encode_DeribitBuy" = 450              # 207 ns, private/buy (2026-09-23)
 
 # Median-counter floors. A benchmark below a floor, or one that reported an error, fails: its
 # timing no longer measures the work it is named for.
