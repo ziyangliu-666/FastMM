@@ -36,6 +36,7 @@
 // Response updates UserRefMap::set_next(), 'R' 'X' 'G' 'K' 'T' 'P' 'B' 'S' produce no event.
 #include "fastmm/codecs/codec.hpp"
 #include "fastmm/codecs/ouch/ouch_common.hpp"
+#include "fastmm/core/containers/counter_key_map.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/order_commands.hpp"
 
@@ -417,8 +418,9 @@ class UserRefMap {
   [[nodiscard]] std::size_t size() const noexcept { return by_urn_.size(); }
 
  private:
-  OpenHashMap<std::uint64_t, std::uint32_t, kSlots> by_id_;
-  OpenHashMap<std::uint64_t, ClientOrderId, kSlots> by_urn_;
+  // Both keys come from counters (ClientOrderId sequence, UserRefNum).
+  CounterKeyMap<std::uint32_t, kSlots> by_id_;
+  CounterKeyMap<ClientOrderId, kSlots> by_urn_;
   std::uint32_t next_;
 };
 

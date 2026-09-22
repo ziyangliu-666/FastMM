@@ -7,7 +7,13 @@
 // and break replay determinism. Iterate the owning Pool in handle order instead.
 //
 // Keys are integral or StrongId-like (a `.value` integral member).
+//
+// Layout: the occupancy flag lives in the slot, so a probe touches one cache line, not a
+// slot line plus a line of a separate flag array. The table is a HotArray: zeroed and
+// resident at construction (no page fault on the first insert into a page), on huge pages
+// from 1 MiB.
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/hot_array.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -42,7 +48,7 @@ class OpenHashMap {
 
   // Construction happens at startup only; failing to allocate the table is fatal by design.
   // NOLINTNEXTLINE(bugprone-unhandled-exception-at-new)
-  OpenHashMap() noexcept : slots_(new Slot[N]), used_(new std::uint8_t[N]()) {}
+  OpenHashMap() noexcept : slots_(make_hot_array<Slot>(N)) {}
   OpenHashMap(const OpenHashMap&) = delete;
   OpenHashMap& operator=(const OpenHashMap&) = delete;
 
@@ -51,13 +57,13 @@ class OpenHashMap {
   [[nodiscard]] static constexpr std::size_t capacity() noexcept { return N; }
 
   void clear() noexcept {
-    for (std::size_t i = 0; i < N; ++i) used_[i] = 0;
+    for (std::size_t i = 0; i < N; ++i) slots_[i].used = 0;
     size_ = 0;
   }
 
   [[nodiscard]] FASTMM_FORCE_INLINE V* find(const K& k) noexcept {
     std::size_t i = index_of(k);
-    while (used_[i] != 0) {
+    while (slots_[i].used != 0) {
       if (slots_[i].key == k) return &slots_[i].value;
       i = (i + 1) & (N - 1);
     }
@@ -71,12 +77,12 @@ class OpenHashMap {
   // {pointer to value, inserted}. Existing key -> old value, false. Full -> {nullptr,false}.
   std::pair<V*, bool> insert(const K& k, const V& v) noexcept {
     std::size_t i = index_of(k);
-    while (used_[i] != 0) {
+    while (slots_[i].used != 0) {
       if (slots_[i].key == k) return {&slots_[i].value, false};
       i = (i + 1) & (N - 1);
     }
     if (FASTMM_UNLIKELY(size_ >= kMaxSize)) return {nullptr, false};
-    used_[i] = 1;
+    slots_[i].used = 1;
     slots_[i].key = k;
     slots_[i].value = v;
     ++size_;
@@ -90,7 +96,7 @@ class OpenHashMap {
 
   bool erase(const K& k) noexcept {
     std::size_t i = index_of(k);
-    while (used_[i] != 0) {
+    while (slots_[i].used != 0) {
       if (slots_[i].key == k) {
         erase_slot(i);
         return true;
@@ -104,6 +110,7 @@ class OpenHashMap {
   struct Slot {
     K key;
     V value;
+    std::uint8_t used;  // usually in what would be tail padding
   };
 
   [[nodiscard]] static FASTMM_FORCE_INLINE std::size_t index_of(const K& k) noexcept {
@@ -118,7 +125,7 @@ class OpenHashMap {
     std::size_t j = hole;
     for (;;) {
       j = (j + 1) & (N - 1);
-      if (used_[j] == 0) break;
+      if (slots_[j].used == 0) break;
       const std::size_t home = index_of(slots_[j].key);
       // Slot j may move into `hole` iff home is not in the cyclic range (hole, j].
       const bool in_range = hole <= j ? (home > hole && home <= j) : (home > hole || home <= j);
@@ -127,12 +134,11 @@ class OpenHashMap {
         hole = j;
       }
     }
-    used_[hole] = 0;
+    slots_[hole].used = 0;
     --size_;
   }
 
-  std::unique_ptr<Slot[]> slots_;
-  std::unique_ptr<std::uint8_t[]> used_;
+  HotArray<Slot> slots_;
   std::size_t size_ = 0;
 };
 

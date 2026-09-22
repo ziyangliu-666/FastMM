@@ -295,7 +295,9 @@ inline constexpr std::uint32_t kMaxShares = 999'999;            // "less than 1,
 [[nodiscard]] std::string_view reject_reason_text(char reason) noexcept;
 [[nodiscard]] std::string_view cancel_reason_text(char reason) noexcept;
 
-void put_token(char* dst14, ClientOrderId id) noexcept;
+inline void put_token(char* dst14, ClientOrderId id) noexcept {
+  write_cl_ord_id(dst14, id);
+}
 [[nodiscard]] std::optional<ClientOrderId> token_to_cl_ord_id(const char* token14) noexcept;
 
 struct EncoderConfig {

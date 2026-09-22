@@ -13,6 +13,7 @@
 // Everything is allocated at construction; lookups, inserts and emits never allocate.
 #include "fastmm/codecs/codec.hpp"
 #include "fastmm/codecs/itch/nasdaq_fields.hpp"
+#include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/messages.hpp"
@@ -26,6 +27,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 namespace fastmm::codecs::ouch {
 
@@ -34,6 +36,15 @@ using venues::ParseStatus;
 template <class M>
 [[nodiscard]] inline const M& view_as(const std::byte* p) noexcept {
   return *reinterpret_cast<const M*>(p);
+}
+// A zeroed M at the start of `out` (the caller checked the size) for the encoder to fill in
+// place. Building M on the stack and copying it out would load right after a run of narrow
+// stores to the same bytes, which store-to-load forwarding cannot serve.
+template <class M>
+[[nodiscard]] FASTMM_FORCE_INLINE M& emplace(std::span<std::byte> out) noexcept {
+  static_assert(alignof(M) == 1 && std::is_trivially_copyable_v<M>);
+  std::memset(out.data(), 0, sizeof(M));
+  return *reinterpret_cast<M*>(out.data());
 }
 template <class M>
 inline std::size_t put(std::span<std::byte> out, const M& m) noexcept {

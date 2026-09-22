@@ -8,8 +8,14 @@
 //   BM_MoldUdp64_ReceiveAB        Receiver, one datagram of A or B (B trails by one packet)
 //   BM_MoldUdp64_ReceiveABLossA   as above, A loses 1 packet in 8, B trails by two packets
 //   BM_SoupBin_FrameSequenced     SoupBinFramer + ClientSession::on_frame, Sequenced Data
-//   BM_Ouch42_EncodeEnterOrder    OrderCommand -> OUCH 4.2 Enter Order (49 bytes)
+//   BM_Ouch42_EncodeEnterOrder    OrderCommand -> OUCH 4.2 Enter Order (49 bytes); the same
+//                                 command each time, so the compiler may hoist part of it
+//   BM_Ouch42_EncodeNewIds        as above with a new ClOrdID (Order Token) per order
 //   BM_Ouch50_EncodeEnterOrder    OrderCommand -> OUCH 5.0 Enter Order (47 bytes, UserRefNum)
+//   BM_Ouch50_EncodeNewIds        as above with a new ClOrdID per order (UserRefNum assigned),
+//                                 then a Cancel and the id's erase, as when the order is done
+//   BM_Ouch50_EncodeColdMap       new ids into a UserRefMap built right before the batch: what
+//                                 the first orders of a session pay (page faults, cold lines)
 //
 // Each benchmark iteration runs kBatch operations between two rdtsc readings and records the
 // per-operation average in picoseconds into a LogLinearHistogram; counter p50_ns is its median in
@@ -388,6 +394,25 @@ static void BM_Ouch42_EncodeEnterOrder(benchmark::State& state) {
 }
 BENCHMARK(BM_Ouch42_EncodeEnterOrder);
 
+static void BM_Ouch42_EncodeNewIds(benchmark::State& state) {
+  auto enc = std::make_unique<ouch42::OuchEncoder>();
+  enc->add_symbol("AAPL", InstrumentId{0});
+  venues::OrderCommand cmd = bench_order();
+  std::array<std::byte, 128> out{};
+  std::uint32_t next = 1;
+  BatchTimer timer;
+  for (auto _ : state) {
+    timer.start();
+    for (int i = 0; i < kBatch; ++i) {
+      cmd.cl_ord_id = make_cl_ord_id(1, next++);
+      benchmark::DoNotOptimize(enc->encode(cmd, out));
+    }
+    timer.stop();
+  }
+  timer.report(state);
+}
+BENCHMARK(BM_Ouch42_EncodeNewIds);
+
 static void BM_Ouch50_EncodeEnterOrder(benchmark::State& state) {
   auto ids = std::make_unique<ouch50::UserRefMap>();
   auto enc = std::make_unique<ouch50::OuchEncoder>(*ids);
@@ -403,3 +428,57 @@ static void BM_Ouch50_EncodeEnterOrder(benchmark::State& state) {
   timer.report(state);
 }
 BENCHMARK(BM_Ouch50_EncodeEnterOrder);
+
+static void BM_Ouch50_EncodeNewIds(benchmark::State& state) {
+  auto ids = std::make_unique<ouch50::UserRefMap>();
+  auto enc = std::make_unique<ouch50::OuchEncoder>(*ids);
+  enc->add_symbol("AAPL", InstrumentId{0});
+  venues::OrderCommand cmd = bench_order();
+  venues::OrderCommand cancel = cmd;
+  cancel.kind = venues::OrderCommandKind::Cancel;
+  std::array<std::byte, 128> out{};
+  std::array<std::uint32_t, kBatch> urns{};
+  std::uint32_t next = 1;
+  BatchTimer timer;
+  for (auto _ : state) {
+    timer.start();
+    for (int i = 0; i < kBatch; ++i) {
+      cmd.cl_ord_id = make_cl_ord_id(1, next + static_cast<std::uint32_t>(i));
+      benchmark::DoNotOptimize(enc->encode(cmd, out));
+      cancel.cl_ord_id = cmd.cl_ord_id;
+      benchmark::DoNotOptimize(enc->encode(cancel, out));
+      urns[static_cast<std::size_t>(i)] = ids->find(cmd.cl_ord_id);
+    }
+    timer.stop();
+    for (const std::uint32_t u : urns) ids->erase(u);
+    next += kBatch;
+  }
+  timer.report(state);
+}
+BENCHMARK(BM_Ouch50_EncodeNewIds);
+
+static void BM_Ouch50_EncodeColdMap(benchmark::State& state) {
+  venues::OrderCommand cmd = bench_order();
+  std::array<std::byte, 128> out{};
+  std::uint32_t next = 1;
+  std::unique_ptr<ouch50::UserRefMap> ids;
+  std::unique_ptr<ouch50::OuchEncoder> enc;
+  BatchTimer timer;
+  for (auto _ : state) {
+    state.PauseTiming();
+    enc.reset();
+    ids.reset();
+    ids = std::make_unique<ouch50::UserRefMap>();
+    enc = std::make_unique<ouch50::OuchEncoder>(*ids);
+    enc->add_symbol("AAPL", InstrumentId{0});
+    state.ResumeTiming();
+    timer.start();
+    for (int i = 0; i < kBatch; ++i) {
+      cmd.cl_ord_id = make_cl_ord_id(1, next++);
+      benchmark::DoNotOptimize(enc->encode(cmd, out));
+    }
+    timer.stop();
+  }
+  timer.report(state);
+}
+BENCHMARK(BM_Ouch50_EncodeColdMap);

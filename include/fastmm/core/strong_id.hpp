@@ -1,10 +1,13 @@
 #pragma once
 // Strongly typed identifiers. Mixing an InstrumentId with a VenueId is a compile error.
+#include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/fixed_string.hpp"
+#include "fastmm/core/hex.hpp"
 
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <optional>
@@ -58,17 +61,21 @@ struct Handle {
 // "fm" + 12 lowercase hex digits (48 bits) = 14 chars. Fits Binance (36) and Bybit (36).
 inline constexpr std::size_t kClOrdIdChars = 14;
 
+// Writes the kClOrdIdChars characters of the wire form to dst (no terminator) with two
+// 8-byte stores.
+FASTMM_FORCE_INLINE void write_cl_ord_id(char* dst, ClientOrderId id) noexcept {
+  const std::uint64_t hi = hex8(static_cast<std::uint32_t>((id.value >> 32) & 0xFFFF));
+  const std::uint64_t lo = hex8(static_cast<std::uint32_t>(id.value));
+  // "fm" + the last 4 characters of hi (its upper 4 bytes); bytes 6 and 7 are then
+  // overwritten by lo.
+  const std::uint64_t head = std::uint64_t{'f'} | (std::uint64_t{'m'} << 8) | ((hi >> 32) << 16);
+  std::memcpy(dst, &head, 8);
+  std::memcpy(dst + 6, &lo, 8);
+}
+
 [[nodiscard]] inline FixedString<16> encode_cl_ord_id(ClientOrderId id) noexcept {
-  static constexpr char kHex[] = "0123456789abcdef";
   FixedString<16> out;
-  char* p = out.data();
-  p[0] = 'f';
-  p[1] = 'm';
-  std::uint64_t v = id.value & 0xFFFF'FFFF'FFFFULL;
-  for (int i = 11; i >= 0; --i) {
-    p[2 + i] = kHex[v & 0xF];
-    v >>= 4;
-  }
+  write_cl_ord_id(out.data(), id);
   out.set_size(kClOrdIdChars);
   return out;
 }
