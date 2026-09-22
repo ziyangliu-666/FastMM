@@ -9,6 +9,7 @@
 //   MessageHeader     blockLength, templateId, schemaId, version (8 bytes, little-endian)
 //   GroupView<E, D>   read-only repeating group: bounds-checked once, then O(1) entry access
 //   GroupWriter<E, D> writes a group dimension header and hands out entry writers
+//   VarData           one length-prefixed <data> field (Binance: the trailing symbol)
 //   Decimal<M, e>     mantissa with a constant exponent (CME PRICE9 = int64 x 10^-9); converts
 //                     exactly to and from the engine's 1e-8 fixed point, or reports failure
 #include "fastmm/core/config_macros.hpp"
@@ -252,6 +253,53 @@ class GroupView {
   std::size_t offset_ = 0;
   std::uint16_t block_length_ = 0;
   std::uint16_t version_ = 0;
+  bool valid_ = false;
+};
+
+// ---- variable-length data ---------------------------------------------------------------------
+
+// One <data> field: a length prefix of type L followed by that many bytes. `offset` is where the
+// prefix starts inside the message body; the next data field starts at end_offset().
+class VarData {
+ public:
+  VarData() noexcept = default;
+
+  template <class L>
+    requires std::is_unsigned_v<L>
+  [[nodiscard]] static VarData load(const std::byte* body,
+                                    std::size_t size,
+                                    std::size_t at) noexcept {
+    VarData d;
+    if (at > size || size - at < sizeof(L)) return d;
+    const std::size_t n = load_le<L>(body + at);
+    if (size - at - sizeof(L) < n) return d;
+    d.data_ = reinterpret_cast<const char*>(body + at + sizeof(L));
+    d.size_ = n;
+    d.end_ = at + sizeof(L) + n;
+    d.valid_ = true;
+    return d;
+  }
+  // Writes the prefix and bytes at p; returns the bytes used, 0 if they do not fit in `cap` or
+  // v is longer than L can express.
+  template <class L>
+    requires std::is_unsigned_v<L>
+  [[nodiscard]] static std::size_t store(std::byte* p,
+                                         std::size_t cap,
+                                         std::string_view v) noexcept {
+    if (v.size() > std::numeric_limits<L>::max() || cap < sizeof(L) + v.size()) return 0;
+    store_le<L>(p, static_cast<L>(v.size()));
+    if (!v.empty()) std::memcpy(p + sizeof(L), v.data(), v.size());
+    return sizeof(L) + v.size();
+  }
+
+  [[nodiscard]] bool valid() const noexcept { return valid_; }
+  [[nodiscard]] std::string_view value() const noexcept { return {data_, size_}; }
+  [[nodiscard]] std::size_t end_offset() const noexcept { return end_; }
+
+ private:
+  const char* data_ = nullptr;
+  std::size_t size_ = 0;
+  std::size_t end_ = 0;
   bool valid_ = false;
 };
 

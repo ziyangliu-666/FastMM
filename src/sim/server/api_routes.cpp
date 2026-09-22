@@ -308,13 +308,20 @@ OpResult Impl::dispatch_ws_api(net::WsSession& s, const WsApiRequest& req, std::
   if (m == "exchangeInfo") return op_exchange_info(p);
   if (m == "depth") return op_depth(p);
   if (m == "ticker.book") return op_book_ticker(p);
-  if (m == "session.logon")
-    return OpResult::error(400,
-                           -1002,
-                           "session.logon needs an Ed25519 API key; the simulator only supports "
-                           "HMAC keys (use userDataStream.subscribe.signature).");
-  if (m == "userDataStream.subscribe")
-    return OpResult::error(401, -1002, "You are not authorized to execute this request.");
+  if (m == "session.logon" || m == "session.status" || m == "session.logout")
+    return op_session(s, m, p, now_ms);
+  if (m == "userDataStream.subscribe") {
+    SessionState* st = session_state(&s);
+    if (st == nullptr || st->logon_account == nullptr)
+      return OpResult::error(401, -1002, "You are not authorized to execute this request.");
+    const std::int64_t id = st->next_subscription_id++;
+    st->user_subs.push_back(SessionState::UserSub{id, st->logon_account->id});
+    std::string body;
+    JsonObjectWriter w(body);
+    w.num("subscriptionId", id);
+    w.close();
+    return OpResult::ok(std::move(body));
+  }
   if (m == "userDataStream.unsubscribe") {
     SessionState* st = session_state(&s);
     if (st == nullptr) return OpResult::ok("{}");
@@ -330,9 +337,17 @@ OpResult Impl::dispatch_ws_api(net::WsSession& s, const WsApiRequest& req, std::
     return OpResult::error(400, -1020, "This operation is not supported.");
 
   Account* acct = nullptr;
-  if (auto err =
-          authenticate(p.get("apiKey"), p, p.sorted_payload(), p.get("signature"), now_ms, acct))
+  const SessionState* logon = session_state(&s);
+  if (logon != nullptr && logon->logon_account != nullptr && !p.has("apiKey") &&
+      !p.has("signature")) {
+    // web-socket-api "session.logon": after logon apiKey and signature may be omitted; the
+    // timestamp is still required.
+    if (auto err = check_timing(p, now_ms)) return *err;
+    acct = logon->logon_account;
+  } else if (auto err = authenticate(
+                 p.get("apiKey"), p, p.sorted_payload(), p.get("signature"), now_ms, acct)) {
     return *err;
+  }
   if (m == "userDataStream.subscribe.signature") {
     SessionState* st = session_state(&s);
     if (st == nullptr) return OpResult::error(500, -1000, "Session closed.");
@@ -353,6 +368,43 @@ OpResult Impl::dispatch_ws_api(net::WsSession& s, const WsApiRequest& req, std::
   if (m == "openOrders.status") return op_open_orders(*acct, p);
   if (m == "openOrders.cancelAll") return op_cancel_all(*acct, p);
   return op_account(*acct);  // account.status
+}
+
+// session.logon / session.status / session.logout (web-socket-api "Session Authentication").
+OpResult Impl::op_session(net::WsSession& s,
+                          std::string_view method,
+                          const ParamList& p,
+                          std::int64_t now_ms) {
+  SessionState* st = session_state(&s);
+  if (st == nullptr) return OpResult::error(500, -1000, "Session closed.");
+  if (method == "session.logon") {
+    Account* acct = nullptr;
+    if (auto err =
+            authenticate(p.get("apiKey"), p, p.sorted_payload(), p.get("signature"), now_ms, acct))
+      return *err;
+    if (acct->ed25519 == nullptr)
+      return OpResult::error(
+          400, -4056, "HMAC_SHA256 API key is not supported. Only Ed25519 keys are supported.");
+    st->logon_account = acct;
+    st->authorized_since_ms = now_ms;
+    ++stats_.session_logons;
+  } else if (method == "session.logout") {
+    st->logon_account = nullptr;
+    st->authorized_since_ms = 0;
+  }
+  std::string body;
+  JsonObjectWriter w(body);
+  if (st->logon_account != nullptr) {
+    w.str("apiKey", st->logon_account->api_key).num("authorizedSince", st->authorized_since_ms);
+  } else {
+    w.null("apiKey").null("authorizedSince");
+  }
+  w.num("connectedSince", st->connected_since_ms)
+      .boolean("returnRateLimits", true)
+      .num("serverTime", now_ms)
+      .boolean("userDataStream", !st->user_subs.empty());
+  w.close();
+  return OpResult::ok(std::move(body));
 }
 
 }  // namespace fastmm::sim::server

@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Binance Spot SBE market data (`md_format = "sbe"`, `sbe_ws_url`): `@depth`, `@bestBidAsk` and
+  `@trade` from the SBE stream host decoded by `BinanceSbeMdParser` into the same messages as the
+  JSON feed; depth sync unchanged. Needs an Ed25519 API key (upgrade header only, works in a dry
+  run). Decode per message: depth 10+10 levels 51 ns (JSON 680 ns), trade 19 ns (JSON 120 ns).
+- Ed25519 keys for Binance USDⓈ-M (`session.logon` on the WS API order connection, unsigned
+  orders after it, Ed25519-signed REST); `private_key_env` for both Binance connectors.
+- `tools/sbe_gen.py`: `<data>` fields, implicit block lengths and `valueRef` constants
+  (Binance `stream_1_0.xml`, generated into `venues/binance/generated/binance_stream_sbe.hpp`).
+- fastmm-sim-exchange: Ed25519 accounts (`account.ed25519_public_key_file`), `session.logon` /
+  `session.status` / `session.logout` and the unsigned `userDataStream.subscribe`.
+- `net::HmacSha256Key` (precomputed pad midstates) and `net::Ed25519Key` (parsed once, sign and
+  verify).
 - Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
   docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
   `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one
@@ -145,6 +157,12 @@ All notable changes are recorded here (Keep a Changelog format).
   `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- HMAC-SHA256 signing no longer fetches an OpenSSL provider and allocates per call: Binance order
+  encode 1628 -> 736 ns (`BM_Encode_BinanceOrderPlace`). Ed25519 keys are parsed once, not per
+  signature.
+- The simulator's outbound SHA-256 (replay proof) uses the x86 SHA extensions when present: it was
+  half of `BM_TickToOrder_Sim` (p50 991 -> 543 ns, p99 1279 -> 671 ns). That benchmark runs through
+  `SimTransport` and never signs a Binance request.
 - Order sends are coalesced on the network thread: `on_wake()` of every venue drains the outbound
   ring through `drain_outbound_coalesced()` and writes all orders of the drain with one system call.
   `TcpLink::cork()` / `uncork()` (SoupBinTCP/OUCH: header and message no longer go out in two writes
@@ -465,6 +483,12 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- Binance Spot with `key_type = "ed25519"` never sent `session.logon` on the order connection
+  (the connection waited in Authenticating for a logon that is sent from the subscribe callback),
+  so the order channel never went Live. A revoked session (`id` null, 401) now clears the logon
+  state and applies the error action; a transient logon failure retries after 2 s.
+- `resolve_venue_env` no longer requires `api_secret` for Ed25519 keys, and keeps `api_key` in a
+  dry run with `md_format = "sbe"`.
 - Two GCC 13 `-Wstringop-overflow` warnings in `fastmm-sim-exchange` (`append_user_event`).
 - **`BM_TickToOrder_Sim` measured no order events.** Since the quote manager applies a requote
   target on the ack of a pending order, every timed tick found both quotes pending and sent

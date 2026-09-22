@@ -92,8 +92,11 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
 | `depth_limit` | integer |  | binance: REST snapshot depth, 5 to 5000; binance_usdm: 5, 10, 20, 50, 100, 500 or 1000 |
-| `key_type` | string |  | binance: hmac (default) \| ed25519 |
-| `private_key_file` | string |  | binance: Ed25519 private key file (PEM), with key_type = ed25519 |
+| `key_type` | string |  | binance, binance_usdm: hmac (default) \| ed25519 |
+| `private_key_file` | string |  | binance, binance_usdm: Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
+| `private_key_env` | string |  | binance, binance_usdm: environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
+| `md_format` | string |  | binance: json (default) \| sbe (binary market data; needs an Ed25519 api_key) |
+| `sbe_ws_url` | string |  | binance: SBE stream URL; empty = ws_url with stream. -> stream-sbe. |
 | `user_stream` | string |  | binance: ws_api (default) \| listen_key \| none |
 | `position_from_balance` | boolean |  | binance: derive positions from account balances |
 | `position_from_account_update` | boolean |  | binance_usdm: correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |

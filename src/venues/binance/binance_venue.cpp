@@ -9,6 +9,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -22,6 +23,7 @@ constexpr std::int64_t kListenKeyKeepaliveNs = 30LL * 60 * 1'000'000'000;  // ev
 constexpr std::int64_t kClockResyncNs = 30LL * 60 * 1'000'000'000;
 constexpr std::int64_t kHousekeepingNs = 1'000'000'000;
 constexpr std::int64_t kDefaultCooldownNs = 10'000'000'000;
+constexpr std::int64_t kLogonRetryNs = 2'000'000'000;
 // rest-api.md "Order book" weight by limit: 1-100:5, 101-500:25, 501-1000:50, 1001-5000:250.
 std::uint32_t depth_weight(int limit) noexcept {
   if (limit <= 100) return 5;
@@ -255,7 +257,8 @@ void BinanceVenue::attach(const SymbolTable& symbols,
                                       id_,
                                       md_sink,
                                       SnapshotRequester{&BinanceVenue::snapshot_requester, this},
-                                      cfg_.min_snapshot_interval_ns);
+                                      cfg_.min_snapshot_interval_ns,
+                                      cfg_.md_format);
   user_parser_ = std::make_unique<BinanceUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<BinanceWsApiDecoder>();
@@ -338,12 +341,17 @@ void BinanceVenue::open_rest() {
 }
 
 void BinanceVenue::open_md() {
-  const auto base = net::Url::parse(cfg_.ws_url);
-  if (!base) throw std::invalid_argument("binance: bad ws_url " + cfg_.ws_url);
+  const bool sbe = cfg_.md_format == MdFormat::Sbe;
+  const std::string& ws_url = sbe ? cfg_.sbe_ws_url : cfg_.ws_url;
+  const auto base = net::Url::parse(ws_url);
+  if (!base) throw std::invalid_argument("binance: bad market-data url " + ws_url);
   std::string path(base->path);
   if (path == "/" || path.empty()) path = "/stream";
   const std::string url = origin_of(*base) + md_feed_->stream_target(path);
-  md_conn_.open(*reactor_, ws_config(url, /*manual_subscribe=*/false), md_handler_);
+  net::ConnectionConfig c = ws_config(url, /*manual_subscribe=*/false);
+  // SBE streams authenticate the connection with the API key header only (no signature).
+  if (sbe) c.extra_headers = api_key_header(signer_.api_key());
+  md_conn_.open(*reactor_, c, md_handler_);
   md_conn_.connect();
 }
 
@@ -364,8 +372,9 @@ void BinanceVenue::open_user() {
 
 void BinanceVenue::open_order() {
   net::ConnectionConfig c = ws_config(cfg_.ws_api_url, /*manual_subscribe=*/false);
-  // Ed25519 keys log on once (session.logon) and then send unsigned requests.
-  c.manual_auth = signer_.type() == KeyType::Ed25519;
+  // Ed25519 keys log on once (session.logon from on_connected_send_subscriptions) and send
+  // unsigned requests after that; the channel goes Live on the logon reply.
+  c.manual_subscribe = signer_.type() == KeyType::Ed25519;
   order_conn_.open(*reactor_, c, order_handler_);
   order_conn_.connect();
 }
@@ -417,7 +426,20 @@ void BinanceVenue::on_md_open() {
 
 void BinanceVenue::on_md_text(std::string_view t, std::int64_t ts) {
   if (raw_md_.enabled()) raw_md_.record(ts, t);
-  const ParseStatus st = md_feed_->on_message(t, ts);
+  if (cfg_.md_format == MdFormat::Sbe) {
+    // Only control replies / errors arrive as text on an SBE stream connection.
+    FASTMM_LOG_WARN("{}: text frame on the SBE stream: {}", cfg_.name, t.substr(0, 200));
+    return;
+  }
+  note_md_status(md_feed_->on_message(t, ts), ts);
+}
+
+void BinanceVenue::on_md_binary(std::span<const std::byte> b, std::int64_t ts) {
+  if (raw_md_.enabled()) raw_md_.record_hex(ts, b);
+  note_md_status(md_feed_->on_binary(b, ts), ts);
+}
+
+void BinanceVenue::note_md_status(ParseStatus st, std::int64_t ts) {
   ++stats_.md_messages;
   stats_.last_md_rx_ns = ts;
   if (st == ParseStatus::Malformed) {
@@ -609,16 +631,18 @@ void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_vi
     if (r.is_error) {
       const ErrorMapping m = map_error(r.code, r.msg);
       FASTMM_LOG_ERROR("{}: session.logon failed: {} {}", cfg_.name, r.code, r.msg);
-      apply_action(m.action == VenueAction::None ? VenueAction::Fatal : m.action,
-                   r.code,
-                   r.msg,
-                   r.retry_after_ms);
+      const VenueAction action = m.action == VenueAction::None ? VenueAction::Fatal : m.action;
+      apply_action(action, r.code, r.msg, r.retry_after_ms);
+      // Transient (timestamp, rate limit, server busy): log on again once the action had
+      // time to work (clock resync, cooldown). Bad key / signature / permission is Fatal.
+      if (action != VenueAction::Fatal && action != VenueAction::HardStop)
+        schedule_logon_retry(r.id == "logon-o" ? Channel::Order : Channel::User);
       return;
     }
     if (r.id == "logon-o") {
       session_logged_on_ = true;
       encoder_->set_session_authenticated(true);
-      order_conn_.auth_done();
+      order_conn_.subscribe_done();
     } else {
       const std::size_t n =
           encoder_->encode_ws_user_stream_subscribe("uds", venue_time_ms(), false, request_buf_);
@@ -654,8 +678,38 @@ void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_vi
       FASTMM_LOG_WARN("{}: openOrders.cancelAll failed: {} {}", cfg_.name, r.code, r.msg);
     return;
   }
+  if (r.id.empty() && r.is_error && r.status == 401) {
+    // "Session revocation" (web-socket-api request-security): the logged-on key became invalid
+    // (deleted, IP whitelist, permissions) and the server revoked the session with id null.
+    // Requests would now need apiKey/signature, which an Ed25519 session no longer sends.
+    FASTMM_LOG_ERROR("{}: WS API session revoked: {} {}", cfg_.name, r.code, r.msg);
+    session_logged_on_ = false;
+    encoder_->set_session_authenticated(false);
+    const ErrorMapping m = map_error(r.code, r.msg);
+    apply_action(m.action == VenueAction::None ? VenueAction::Fatal : m.action,
+                 r.code,
+                 r.msg,
+                 r.retry_after_ms);
+    return;
+  }
   if (r.is_error)
     FASTMM_LOG_WARN("{}: WS API error for id '{}': {} {}", cfg_.name, r.id, r.code, r.msg);
+}
+
+void BinanceVenue::schedule_logon_retry(Channel ch) {
+  if (reactor_ == nullptr) return;
+  std::weak_ptr<int> alive = alive_;
+  reactor_->add_timer_after(kLogonRetryNs, [this, alive, ch] {
+    if (alive.expired() || !connected_ || fatal_) return;
+    const bool order = ch == Channel::Order;
+    if (order && session_logged_on_) return;
+    const std::size_t n =
+        encoder_->encode_ws_logon(order ? "logon-o" : "logon-u", venue_time_ms(), request_buf_);
+    if (n == 0) return;
+    const std::string_view frame(request_buf_, n);
+    const bool sent = order ? order_conn_.send_text(frame) : user_conn_.send_text(frame);
+    if (!sent) FASTMM_LOG_WARN("{}: session.logon retry not sent", cfg_.name);
+  });
 }
 
 void BinanceVenue::handle_order_response(RequestKind kind,
@@ -1349,6 +1403,52 @@ VenueStatus BinanceVenue::status() const noexcept {
 
 // ---- config ---------------------------------------------------------------------------------
 
+std::string derive_sbe_ws_url(std::string_view ws_url) {
+  const auto u = net::Url::parse(ws_url);
+  if (!u) return {};
+  std::string host(u->host);
+  if (host.starts_with("stream.")) {
+    host.insert(6, "-sbe");
+  } else if (host.starts_with("demo-stream.")) {
+    host.insert(11, "-sbe");
+  } else {
+    return {};
+  }
+  net::Url copy = *u;
+  copy.host = host;
+  return origin_of(copy) + std::string(u->path);
+}
+
+// Ed25519 private key (PKCS#8 PEM) from a file or an environment variable holding the PEM.
+// Live sessions refuse a key that does not parse; a dry run carries on without it (market data
+// needs only the API key).
+std::string load_ed25519_pem(const std::string& venue,
+                             const std::string& path,
+                             const std::string& env,
+                             bool dry_run) {
+  std::string pem;
+  std::string source;
+  if (!env.empty()) {
+    source = "$" + env;
+    if (const char* e = std::getenv(env.c_str()); e != nullptr) pem = e;
+  } else if (!path.empty()) {
+    source = path;
+    std::ifstream in(path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    pem = ss.str();
+  }
+  if (!net::Ed25519Key::from_private_pem(pem).has_private()) {
+    const std::string why = "venue '" + venue +
+                            "': key_type = ed25519 needs private_key_file or private_key_env " +
+                            "with a PKCS#8 Ed25519 private key" +
+                            (source.empty() ? "" : " (" + source + " is not one)");
+    if (!dry_run) throw std::invalid_argument(why);
+    FASTMM_LOG_WARN("{}; dry run continues without order entry", why);
+  }
+  return pem;
+}
+
 BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) {
   BinanceVenueConfig c;
   c.name = v.name;
@@ -1372,15 +1472,33 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
     if (s.empty()) return def;
     return s == "true" || s == "1" || s == "yes";
   };
-  if (extra("key_type") == "ed25519") {
+  const std::string key_type = extra("key_type");
+  if (!key_type.empty() && key_type != "hmac" && key_type != "ed25519")
+    throw std::invalid_argument("venue '" + v.name + "': key_type must be hmac or ed25519");
+  if (key_type == "ed25519") {
     c.credentials.type = KeyType::Ed25519;
-    const std::string path = extra("private_key_file");
-    if (!path.empty()) {
-      std::ifstream in(path);
-      std::stringstream ss;
-      ss << in.rdbuf();
-      c.credentials.private_key_pem.value = ss.str();
-    }
+    c.credentials.private_key_pem.value =
+        load_ed25519_pem(v.name, extra("private_key_file"), extra("private_key_env"), dry_run);
+  }
+  const std::string md_format = extra("md_format");
+  if (md_format == "sbe") {
+    c.md_format = MdFormat::Sbe;
+  } else if (!md_format.empty() && md_format != "json") {
+    throw std::invalid_argument("venue '" + v.name + "': md_format must be json or sbe");
+  }
+  if (c.md_format == MdFormat::Sbe) {
+    // sbe-market-data-streams.md: "An API Key is necessary for access"; only Ed25519 keys.
+    if (c.credentials.api_key.empty() || c.credentials.type != KeyType::Ed25519)
+      throw std::invalid_argument("venue '" + v.name +
+                                  "': md_format = \"sbe\" needs api_key with key_type = "
+                                  "\"ed25519\" (SBE streams accept Ed25519 keys only)");
+    c.sbe_ws_url = extra("sbe_ws_url");
+    if (c.sbe_ws_url.empty()) c.sbe_ws_url = derive_sbe_ws_url(c.ws_url);
+    if (c.sbe_ws_url.empty())
+      throw std::invalid_argument("venue '" + v.name +
+                                  "': md_format = \"sbe\" needs sbe_ws_url (cannot derive it "
+                                  "from ws_url " +
+                                  c.ws_url + ")");
   }
   const std::string us = extra("user_stream");
   if (us == "ws_api") c.user_stream = UserStreamMode::WsApi;

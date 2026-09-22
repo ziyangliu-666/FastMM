@@ -1,6 +1,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
+#include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_rest_decoder.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/decimal.hpp"
@@ -25,6 +26,8 @@ constexpr std::int64_t kClockResyncNs = 30LL * 60 * kSecNs;
 constexpr std::int64_t kHousekeepingNs = kSecNs;
 constexpr std::int64_t kDefaultCooldownNs = 10 * kSecNs;
 constexpr std::int64_t kReconcileRetryNs = 5 * kSecNs;
+constexpr std::int64_t kLogonRetryNs = 2 * kSecNs;
+constexpr std::string_view kLogonId = "logon";
 // The futures servers ping every 3 minutes ("Websocket Market Streams" / "WebSocket API General
 // Info"), and pings count as receive activity: a quiet connection is dead only after that.
 constexpr std::uint32_t kQuietDeadMs = 240'000;
@@ -494,8 +497,23 @@ void BinanceUsdmVenue::open_user() {
 }
 
 void BinanceUsdmVenue::open_order() {
-  order_conn_.open(*reactor_, ws_config(cfg_.ws_api_url, kQuietDeadMs), order_handler_);
+  net::ConnectionConfig c = ws_config(cfg_.ws_api_url, kQuietDeadMs);
+  // Ed25519 keys log on once (session.logon from on_connected_send_subscriptions) and send
+  // unsigned requests after that; the channel goes Live on the logon reply.
+  c.manual_subscribe = signer_.type() == binance::KeyType::Ed25519 && signer_.usable();
+  order_conn_.open(*reactor_, c, order_handler_);
   order_conn_.connect();
+}
+
+void BinanceUsdmVenue::on_order_open() {
+  if (signer_.type() == binance::KeyType::Ed25519 && signer_.usable()) send_logon();
+}
+
+void BinanceUsdmVenue::send_logon() {
+  char buf[kMaxRequestBytes];
+  const std::size_t n = encoder_->encode_ws_logon(kLogonId, venue_time_ms(), buf);
+  if (n == 0 || !order_conn_.send_text(std::string_view(buf, n)))
+    FASTMM_LOG_ERROR("{}: could not send session.logon", cfg_.name);
 }
 
 // ---- market data channels -----------------------------------------------------------------
@@ -778,6 +796,8 @@ void BinanceUsdmVenue::on_order_state(net::ConnState s) {
   }
   if (mapped == ConnState::Stale) return;  // quiet order channels are normal
   if (prev == ConnState::Live || prev == ConnState::Stale) {
+    session_logged_on_ = false;
+    encoder_->set_session_authenticated(false);
     report_channel_state(Channel::Order, ConnState::Disconnected);
     // disconnect() clears connected_ first: a requested shutdown runs the blocking cancel_all().
     if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run && connected_) cancel_all_async();
@@ -799,6 +819,40 @@ void BinanceUsdmVenue::handle_ws_api_response(const binance::WsApiResponse& r) {
   rate_.on_headers(r.rate.used_weight, r.rate.order_count, now_ns());
   if (const auto req = parse_request_id(r.id)) {
     handle_order_response(req->first, req->second, r);
+    return;
+  }
+  if (r.id == kLogonId) {
+    if (!r.is_error) {
+      session_logged_on_ = true;
+      encoder_->set_session_authenticated(true);
+      order_conn_.subscribe_done();
+      FASTMM_LOG_INFO("{}: WS API session logged on", cfg_.name);
+      return;
+    }
+    FASTMM_LOG_ERROR("{}: session.logon failed: {} {}", cfg_.name, r.code, r.msg);
+    const ErrorMapping m = map_error(r.code, r.msg);
+    const VenueAction action = m.action == VenueAction::None ? VenueAction::Fatal : m.action;
+    apply_action(action, r.code, r.msg, r.retry_after_ms);
+    // Transient (timestamp, rate limit, busy): log on again after the action had time to work.
+    if (action != VenueAction::Fatal && action != VenueAction::HardStop && reactor_ != nullptr) {
+      std::weak_ptr<int> alive = alive_;
+      reactor_->add_timer_after(kLogonRetryNs, [this, alive] {
+        if (alive.expired() || !connected_ || fatal_ || session_logged_on_) return;
+        send_logon();
+      });
+    }
+    return;
+  }
+  if (r.id.empty() && r.is_error && r.status == 401) {
+    // Session revocation: the logged-on key became invalid (deleted, IP whitelist, permissions).
+    FASTMM_LOG_ERROR("{}: WS API session revoked: {} {}", cfg_.name, r.code, r.msg);
+    session_logged_on_ = false;
+    encoder_->set_session_authenticated(false);
+    const ErrorMapping m = map_error(r.code, r.msg);
+    apply_action(m.action == VenueAction::None ? VenueAction::Fatal : m.action,
+                 r.code,
+                 r.msg,
+                 r.retry_after_ms);
     return;
   }
   if (r.is_error)
@@ -1557,8 +1611,14 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
     if (s.empty()) return def;
     return s == "true" || s == "1" || s == "yes";
   };
-  if (extra("key_type") == "ed25519")
-    throw std::invalid_argument("venue '" + v.name + "': binance_usdm supports HMAC keys only");
+  const std::string key_type = extra("key_type");
+  if (!key_type.empty() && key_type != "hmac" && key_type != "ed25519")
+    throw std::invalid_argument("venue '" + v.name + "': key_type must be hmac or ed25519");
+  if (key_type == "ed25519") {
+    c.credentials.type = binance::KeyType::Ed25519;
+    c.credentials.private_key_pem.value = binance::load_ed25519_pem(
+        v.name, extra("private_key_file"), extra("private_key_env"), dry_run);
+  }
   c.ws_private_url = extra("ws_private_url");
   if (extra("order_api") == "rest") c.ws_order_api = false;
   if (const std::string d = extra("depth_limit"); !d.empty()) {

@@ -17,11 +17,35 @@ Every connector runs on its own `net::Reactor` thread and writes normalised mess
 | channel | endpoint | purpose |
 |---|---|---|
 | md | `<ws_url>?streams=<sym>@depth@100ms/<sym>@bookTicker/<sym>@trade` | combined stream, dispatch by stream suffix |
+| md (`md_format = "sbe"`) | `<sbe_ws_url>?streams=<sym>@depth/<sym>@bestBidAsk/<sym>@trade` | binary SBE frames, dispatch by template id |
 | user | `<ws_api_url>` + `userDataStream.subscribe.signature` (HMAC) or `session.logon` + `userDataStream.subscribe` (Ed25519) | `executionReport`, `outboundAccountPosition` |
 | order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.cancelReplace` / `openOrders.status` / `openOrders.cancelAll` | order entry; REST fallback |
 | rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `openOrders`, REST order entry, kill-switch cancel-all |
 
 The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`) is kept as `user_stream = "listen_key"` for the simulator only: Binance removed it on 2026-02-20 (spot API CHANGELOG, 2025-10-24 announcement).
+
+### Keys and session logon
+
+* HMAC keys (`key_type = "hmac"`, the default) sign every request: apiKey + hex HMAC-SHA256. The key pads are hashed once (`net::HmacSha256Key`), so a signature costs about 170 ns.
+* Ed25519 keys (`key_type = "ed25519"`, `private_key_file` or `private_key_env`) log on once per WS API connection with `session.logon` (the only signed request) on the order and user connections. Later requests carry neither `apiKey` nor `signature`, only `timestamp` and `recvWindow`. The order channel is Live only after the logon reply. A failed logon is fatal for bad key, signature or permission errors; timestamp, rate-limit and server errors retry the logon after 2 s. A revoked session (`{"id":null,"status":401,...}`, key deleted or IP not whitelisted) is logged and acted on through the error map (-2015 is fatal). REST requests (fallback, reconciliation, kill switch) are signed with Ed25519 per request, about 30 µs each: keep `order_api = "ws"` with Ed25519 keys.
+* Binance supports `session.logon` with Ed25519 keys only, on production, the Spot testnet (`wss://ws-api.testnet.binance.vision/ws-api/v3`) and Demo Mode (`wss://demo-ws-api.binance.com/ws-api/v3`); RSA keys are not supported by FastMM.
+
+Measured on the order encode (`bench_order_encoders`, release-native, one pinned core): HMAC 736 ns (1628 ns before the key pads were precomputed), Ed25519 after `session.logon` 284 ns, Ed25519 without a session 31 µs.
+
+### SBE market data
+
+`md_format = "sbe"` reads the SBE market-data streams (<https://developers.binance.com/docs/binance-spot-api-docs/sbe-market-data-streams>): `wss://stream-sbe.binance.com[:9443]`, Demo Mode `wss://demo-stream-sbe.binance.com`, testnet `wss://stream-sbe.testnet.binance.vision`. `sbe_ws_url` defaults to `ws_url` with `stream.` / `demo-stream.` replaced by `stream-sbe.` / `demo-stream-sbe.`. The connection needs an Ed25519 API key in the `X-MBX-APIKEY` upgrade header (no signature; the server answers `400 No X-MBX-APIKEY header` without it), so the setting requires `key_type = "ed25519"` and works in a dry run without the private key.
+
+| stream | template | message |
+|---|---|---|
+| `<sym>@depth` | `DepthDiffStreamEvent` 10003 | `BookDelta` (`firstBookUpdateId` / `lastBookUpdateId` as U / u) |
+| `<sym>@bestBidAsk` | `BestBidAskStreamEvent` 10001 | `BookTicker` (`bookUpdateId` as sequence) |
+| `<sym>@trade` | `TradesStreamEvent` 10000 | one `Trade` per group entry |
+| `<sym>@depth20` | `DepthSnapshotStreamEvent` 10002 | decoded, not subscribed |
+
+The schema is `tools/sbe/binance_spot_stream_1_0.xml` (schema id 1, version 0, from the binance-spot-api-docs repository); `tools/sbe_gen.py` generates `include/fastmm/venues/binance/generated/binance_stream_sbe.hpp` (CI checks it is current). Timestamps are microseconds; prices and quantities are int64 mantissas with a per-message exponent, converted exactly to 1e-8 fixed point (a value finer than 1e-8 makes the frame malformed). The depth snapshot still comes from REST (JSON), and depth sync is unchanged. Decode per message (`bench_json`, release-native): depth 10+10 levels 51 ns (JSON 680 ns), 50+50 levels 147 ns (JSON 2.9 µs), best bid/ask 17 ns (bookTicker 118 ns), trade 19 ns (JSON 120 ns).
+
+WS API responses stay JSON: `responseFormat=sbe` would move order acks and execution reports to SBE schema 3 (retired every few months, currently version 5), for a saving of about 300 ns per order event.
 
 Depth sync follows "How to manage a local order book correctly": buffer deltas, fetch `GET /api/v3/depth?symbol=S&limit=1000`, drop `u <= lastUpdateId`, first applied delta must have `U <= lastUpdateId+1 <= u`, then `U == prev_u + 1`. A gap emits `ConnectionState{Resyncing}` and re-snapshots (at most once per `min_snapshot_interval`, 2 s by default).
 
@@ -62,7 +86,8 @@ A raw `/ws/<stream>` payload without the wrapper is also accepted. Server pings 
 | method | params used | result read |
 |---|---|---|
 | `userDataStream.subscribe.signature` | apiKey, recvWindow, timestamp, signature | `{"subscriptionId":N}` (request id `"uds"`) |
-| `session.logon` / `userDataStream.subscribe` | Ed25519 keys only | status 200 |
+| `session.logon` | apiKey, recvWindow, timestamp, signature (Ed25519 keys only; request ids `"logon-o"` / `"logon-u"`) | status 200 |
+| `userDataStream.subscribe` | none, after `session.logon` | `{"subscriptionId":N}` |
 | `order.place` | newClientOrderId, newOrderRespType=ACK, price (not MARKET), quantity, side BUY/SELL, symbol, timeInForce (LIMIT only), type LIMIT/LIMIT_MAKER/MARKET | `{symbol,orderId,clientOrderId,transactTime}` |
 | `order.cancel` | orderId or origClientOrderId, symbol | `{symbol,origClientOrderId,orderId,executedQty,status}` |
 | `order.cancelReplace` | cancelOrderId or cancelOrigClientOrderId, cancelReplaceMode=STOP_ON_FAILURE, newClientOrderId, newOrderRespType=ACK, price, quantity, side, symbol, timeInForce, type | `{cancelResult,newOrderResult,cancelResponse{orderId,origClientOrderId,executedQty},newOrderResponse{orderId,clientOrderId}}`; on failure `error.data` carries the same keys plus `newOrderResponse.code/msg` |
@@ -82,7 +107,7 @@ Error codes the connector acts on: -1003/-1015 (cool down), -1021 (resync clock)
 
 ## Binance USDⓈ-M futures
 
-Perpetual contracts in one-way position mode, with HMAC keys. Sources: the USDⓈ-M documentation at <https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info> (read 2026-09-15), the field names of the official connector's generated models (`binance-connector-python`, `derivatives_trading_usds_futures`) and recorded Demo Trading market data (`tests/fixtures/binance_usdm/fixtures.meta.json`).
+Perpetual contracts in one-way position mode, with HMAC or Ed25519 keys. Sources: the USDⓈ-M documentation at <https://developers.binance.com/docs/derivatives/usds-margined-futures/general-info> (read 2026-09-15), the field names of the official connector's generated models (`binance-connector-python`, `derivatives_trading_usds_futures`) and recorded Demo Trading market data (`tests/fixtures/binance_usdm/fixtures.meta.json`).
 
 | channel | endpoint | purpose |
 |---|---|---|
@@ -93,6 +118,8 @@ Perpetual contracts in one-way position mode, with HMAC keys. Sources: the USD�
 | rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `listenKey`, `openOrders`, `positionRisk`, account checks, kill-switch `DELETE /fapi/v1/allOpenOrders` |
 
 The `/public`, `/market` and `/private` paths come from the 2026-03-05 URL split; the unrouted `/ws` and `/stream` URLs were decommissioned on 2026-04-23 ("Important WebSocket Change Notice"). Demo Trading hosts: REST `https://demo-fapi.binance.com`, streams `wss://demo-fstream.binance.com`, WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`.
+
+Ed25519 keys (`key_type = "ed25519"`) log on to the WS API order connection with `session.logon` (request id `"logon"`; the USDⓈ-M WS API documents it for Ed25519 keys only) and send `order.place` / `order.cancel` / `order.modify` without `apiKey` and `signature` after that, as on Spot. REST requests are signed with Ed25519. There are no SBE streams for USDⓈ-M.
 
 The listenKey comes from `POST /fapi/v1/listenKey` and is kept alive with `PUT` every 30 minutes (valid for 60). On `listenKeyExpired` or a failed keepalive the connector requests a key, reopens the user connection and reconciles.
 
@@ -224,8 +251,8 @@ Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` ([se
 
 Venue-specific keys ([Configuration](configuration.md#connector-specific-keys)):
 
-* Binance: `user_stream` (`ws_api` | `listen_key` | `none`), `key_type` (`ed25519`), `private_key_file`, `order_api` (`ws` | `rest`), `depth_limit`, `stale_ms`, `dead_ms`, `position_from_balance`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
-* Binance USDⓈ-M: `ws_private_url`, `order_api`, `depth_limit` (5, 10, 20, 50, 100, 500 or 1000), `stale_ms`, `dead_ms`, `position_from_account_update`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`. `key_type = "ed25519"` is refused. Example: `configs/binance-usdm-demo.toml`.
+* Binance: `user_stream` (`ws_api` | `listen_key` | `none`), `key_type` (`hmac` | `ed25519`), `private_key_file`, `private_key_env`, `md_format` (`json` | `sbe`), `sbe_ws_url`, `order_api` (`ws` | `rest`), `depth_limit`, `stale_ms`, `dead_ms`, `position_from_balance`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
+* Binance USDⓈ-M: `ws_private_url`, `order_api`, `depth_limit` (5, 10, 20, 50, 100, 500 or 1000), `stale_ms`, `dead_ms`, `position_from_account_update`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`, `key_type`, `private_key_file`, `private_key_env`. Example: `configs/binance-usdm-demo.toml`.
 * Bybit: `ws_private_url`, `depth`, `order_api`, `stale_ms`, `dead_ms`, `ping_interval_ms`, `orders_per_second`, `position_from_wallet`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
 * Deribit: `api_key` / `api_secret` are the client id and client secret (`${FASTMM_DERIBIT_CLIENT_ID}` / `${FASTMM_DERIBIT_CLIENT_SECRET}`); extras `ws_private_url`, `currencies` (`"BTC"` or `["BTC", "ETH"]`), `book_interval` / `ticker_interval` / `trades_interval` (`100ms` | `agg2`; `raw` needs an authenticated connection), `heartbeat_interval_s` (>= 10), `reject_post_only`, `cancel_on_disconnect`, `cancel_on_order_channel_loss`, `matching_engine_rate`, `matching_engine_burst`, `stale_ms`, `dead_ms`, `allow_offline_reference_data`, `emit_ack_from_response`. Example: `configs/deribit-testnet.toml`.
 * Nasdaq TotalView-ITCH: no `api_key` / `api_secret` (`resolve_venue_env` does not ask for them); `rx_backend`, `interface`, `line_a`, `line_b`, `line_a_interface`, `line_b_interface`, `line_a_source`, `line_b_source`, `queues`, `xdp_mode`, `rcvbuf`, `batch`, `rerequest`, `glimpse_url`, `glimpse_username`, `glimpse_password`, `reorder_packets`, `gap_timeout_ns`, `max_request_attempts`, `request_timeout_ns`, `recovery_buffer_packets`, `depth`, `price_window_ticks`, `max_orders`, `hw_timestamps`, `hw_clock`, `order_entry`, `ouch_url`, `ouch_username`, `ouch_password`. Example: `configs/nasdaq-itch-sim.toml`.
@@ -238,5 +265,6 @@ Venue-specific keys ([Configuration](configuration.md#connector-specific-keys)):
 * Bybit: whether amend `qty` includes the filled quantity (the testnet config therefore uses cancel + new, `supports_replace = false`).
 * Bybit: whether `walletBalance` includes `locked`; balance-related `rejectReason` strings.
 * Binance USDⓈ-M: the private payloads (`ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, WS API order responses) follow the documentation and the official connector's models but were not recorded, because the Demo account had no futures margin balance. Whether Demo rejects a crossing GTX order with -5022 or accepts and expires it is not confirmed; both are handled. `order.modify` is covered by the scripted fake exchange only.
+* Binance Ed25519 and SBE: `session.logon`, unsigned orders and the SBE streams were tested against fastmm-sim-exchange, a scripted fake exchange and frames built from `stream_1_0.xml`, not against Binance (no Ed25519 key yet). Unconfirmed: whether Demo Mode accepts Ed25519 keys for the SBE streams, the error Binance returns when an HMAC key calls `session.logon` (the simulator answers -4056), and whether a combined SBE stream sends one event per binary frame.
 * Binance: `GET /api/v3/time` weight (1 vs 2) and listenKey validity/keepalive figures (the documentation was removed; simulator mode only).
 * Deribit: the private payloads (`user.orders`, `user.trades`, order and auth responses, open orders) follow the OpenAPI/AsyncAPI schemas but were not recorded, because that needs testnet keys; the live test covers them when the keys are exported. Whether `reject_post_only` rejections arrive as error 11054 (complete reference) or 11006 (the error page's summary table) is not confirmed; the error map also matches on the message text. The public `trades` `direction` is taken as the taker side, which the current documentation does not state. The account's matching-engine tier is not queried.

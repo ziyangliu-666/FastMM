@@ -57,7 +57,11 @@ jobs:
           python3 tools/sbe_gen.py generate --schema tools/sbe/mdp3_templates_subset.xml
           --schema-label tools/sbe/mdp3_templates_subset.xml
           --out include/fastmm/codecs/mdp3/generated/mdp3_schema.hpp
-          --namespace fastmm::codecs::mdp3::schema --check
+          --namespace fastmm::codecs::mdp3::schema --check &&
+          python3 tools/sbe_gen.py generate --schema tools/sbe/binance_spot_stream_1_0.xml
+          --schema-label tools/sbe/binance_spot_stream_1_0.xml
+          --out include/fastmm/venues/binance/generated/binance_stream_sbe.hpp
+          --namespace fastmm::venues::binance::sbe_stream --check
       - name: forbidden patterns
         run: |
           ! grep -rnE 'dynamic_cast|std::cout' include src || (echo "forbidden pattern in hot-path code" && exit 1)

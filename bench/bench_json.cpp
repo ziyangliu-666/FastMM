@@ -3,8 +3,13 @@
 // same scratch buffer the connectors use; the frames are synthesised in the shape of the
 // recorded testnet fixtures (tests/fixtures/{binance,bybit}). "20 levels" = 10 bids + 10
 // asks, matching tests/fixtures/binance/depth_update_20.json.
+//
+// BM_Sbe_Binance*: the same Binance events as SBE frames (md_format = "sbe", stream_1_0 schema)
+// through BinanceSbeMdParser into the same messages, for a per-message JSON vs SBE comparison.
 #include "fastmm/venues/binance/binance_md_parser.hpp"
+#include "fastmm/venues/binance/binance_sbe_md_parser.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
+#include "fastmm/venues/binance/generated/binance_stream_sbe.hpp"
 #include "fastmm/venues/bybit/bybit_md_parser.hpp"
 #include "fastmm/venues/bybit/bybit_private_parser.hpp"
 #include "fastmm/venues/deribit/deribit_md_parser.hpp"
@@ -15,6 +20,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -130,6 +136,113 @@ void BM_Json_BinanceExecutionReport(benchmark::State& state) {
   run_decode(state, kExecReport, p);
 }
 BENCHMARK(BM_Json_BinanceExecutionReport);
+
+// ---- SBE (md_format = "sbe") -----------------------------------------------------------------
+
+namespace ss = binance::sbe_stream;
+using Frame = std::vector<std::byte>;
+
+// DepthDiffStreamEvent with the same levels as binance_depth(per_side), exponents -8 / -8.
+Frame sbe_depth(int per_side) {
+  Frame f(64 + 32 * static_cast<std::size_t>(per_side) * 2);
+  ss::DepthDiffStreamEventWriter w(std::span<std::byte>(f).subspan(8));
+  w.set_event_time(1789295134334000);
+  w.set_first_book_update_id(1801512);
+  w.set_last_book_update_id(1801600);
+  w.set_price_exponent(-8);
+  w.set_qty_exponent(-8);
+  auto fill = [&](auto g, int start_cents, int step_cents) {
+    for (int i = 0; i < per_side; ++i) {
+      g[static_cast<std::size_t>(i)].set_price(
+          static_cast<std::int64_t>(start_cents + i * step_cents) * 1'000'000);
+      g[static_cast<std::size_t>(i)].set_qty(static_cast<std::int64_t>(i % 7) * 100'000'000 +
+                                             12345678 + i);
+    }
+  };
+  fill(w.bids(static_cast<std::size_t>(per_side)), 7674518, -1);
+  fill(w.asks(static_cast<std::size_t>(per_side)), 7674519, 1);
+  static_cast<void>(w.set_symbol("BTCUSDT"));
+  ss::DepthDiffStreamEventWriter::header().store(f.data());
+  f.resize(8 + w.size_bytes());
+  return f;
+}
+
+Frame sbe_best_bid_ask() {
+  Frame f(128);
+  ss::BestBidAskStreamEventWriter w(std::span<std::byte>(f).subspan(8));
+  w.set_event_time(1789295134226000);
+  w.set_book_update_id(1801512);
+  w.set_price_exponent(-8);
+  w.set_qty_exponent(-8);
+  w.set_bid_price(7674518000000);
+  w.set_bid_qty(874206000);
+  w.set_ask_price(7674519000000);
+  w.set_ask_qty(1206313000);
+  static_cast<void>(w.set_symbol("BTCUSDT"));
+  ss::BestBidAskStreamEventWriter::header().store(f.data());
+  f.resize(8 + w.size_bytes());
+  return f;
+}
+
+Frame sbe_trade() {
+  Frame f(128);
+  ss::TradesStreamEventWriter w(std::span<std::byte>(f).subspan(8));
+  w.set_event_time(1789295134226000);
+  w.set_transact_time(1789295134225000);
+  w.set_price_exponent(-8);
+  w.set_qty_exponent(-8);
+  auto t = w.trades(1);
+  t[0].set_id(388510);
+  t[0].set_price(7674519000000);
+  t[0].set_qty(65000);
+  t[0].set_is_buyer_maker(ss::boolEnum::False);
+  static_cast<void>(w.set_symbol("BTCUSDT"));
+  ss::TradesStreamEventWriter::header().store(f.data());
+  f.resize(8 + w.size_bytes());
+  return f;
+}
+
+void run_sbe(benchmark::State& state, const Frame& frame) {
+  Universe u;
+  binance::BinanceSbeMdParser p(u.symbols, VenueId{0});
+  static Scratch scratch;
+  std::uint32_t emitted = 0;
+  for (auto _ : state) {
+    const ParseStatus st =
+        p.decode(frame, Timestamp{}, Cycles{}, scratch.buf, [&](EventHeader& h, MdKind) {
+          benchmark::DoNotOptimize(h);
+          ++emitted;
+        });
+    ParseStatus sink = st;
+    benchmark::DoNotOptimize(sink);
+    if (st != ParseStatus::Ok) state.SkipWithError("decode failed");
+  }
+  benchmark::DoNotOptimize(emitted);
+  state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(frame.size()));
+  state.counters["ns/msg"] =
+      benchmark::Counter(static_cast<double>(state.iterations()),
+                         benchmark::Counter::kIsRate | benchmark::Counter::kInvert);
+}
+
+void BM_Sbe_BinanceDepth20(benchmark::State& state) {
+  run_sbe(state, sbe_depth(10));
+}
+BENCHMARK(BM_Sbe_BinanceDepth20);
+
+void BM_Sbe_BinanceDepth100(benchmark::State& state) {
+  run_sbe(state, sbe_depth(50));
+}
+BENCHMARK(BM_Sbe_BinanceDepth100);
+
+void BM_Sbe_BinanceBestBidAsk(benchmark::State& state) {
+  run_sbe(state, sbe_best_bid_ask());
+}
+BENCHMARK(BM_Sbe_BinanceBestBidAsk);
+
+void BM_Sbe_BinanceTrade(benchmark::State& state) {
+  run_sbe(state, sbe_trade());
+}
+BENCHMARK(BM_Sbe_BinanceTrade);
 
 void BM_Json_BybitOrderbook20(benchmark::State& state) {
   Universe u;

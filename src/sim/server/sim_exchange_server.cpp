@@ -54,7 +54,7 @@ Impl::Impl(SimServerConfig c)
       reactor_(usable_backend(cfg_.net_backend)) {
   if (cfg_.symbols.empty()) throw std::invalid_argument("SimExchangeServer: no symbols configured");
   if (cfg_.symbols.size() > 64) throw std::invalid_argument("SimExchangeServer: too many symbols");
-  if (cfg_.api_key.empty() || cfg_.api_secret.empty())
+  if (cfg_.api_key.empty() || (cfg_.api_secret.empty() && cfg_.ed25519_public_key_pem.empty()))
     throw std::invalid_argument("SimExchangeServer: api_key/api_secret must not be empty");
   if (cfg_.depth_update_ms == 0 || cfg_.driver_tick_ms == 0)
     throw std::invalid_argument("SimExchangeServer: depth_update_ms/driver_tick_ms must be > 0");
@@ -81,6 +81,12 @@ Impl::Impl(SimServerConfig c)
   acct.id = kStrategyAccount;
   acct.api_key = cfg_.api_key;
   acct.api_secret = cfg_.api_secret;
+  if (!cfg_.ed25519_public_key_pem.empty()) {
+    auto key = net::Ed25519Key::from_public_pem(cfg_.ed25519_public_key_pem);
+    if (!key.valid())
+      throw std::invalid_argument("SimExchangeServer: ed25519_public_key is not an Ed25519 PEM");
+    acct.ed25519 = std::make_shared<const net::Ed25519Key>(std::move(key));
+  }
   if (cfg_.balances.empty()) {
     for (const SymbolRuntime& s : symbols_) {
       acct.balance(s.cfg.base_asset).free = Qty::from_int(100);
@@ -419,6 +425,7 @@ void Impl::on_open(net::WsSession& s) {
   SessionState st;
   st.token = next_token_++;
   st.last_rx_ns = net::Reactor::now_ns();
+  st.connected_since_ms = server_ms();
   const std::string_view path = s.path();
   if (path == "/ws-api/v3") {
     st.kind = SessionKind::WsApi;

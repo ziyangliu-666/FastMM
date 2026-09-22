@@ -2,7 +2,9 @@
 // BinanceVenue: the Binance Spot (testnet / Binance-compatible simulator) connector (6.4).
 //
 // Channels on one reactor thread:
-//   md    wss://<stream>/stream?streams=...          combined market-data stream (BinanceMdFeed)
+//   md    wss://<stream>/stream?streams=...          combined market-data stream (BinanceMdFeed);
+//         md_format = "sbe": wss://<stream-sbe>/stream?streams=... binary SBE frames, the API
+//         key (Ed25519) in the X-MBX-APIKEY upgrade header
 //   user  wss://<ws-api>/ws-api/v3                   user data stream via the WebSocket API
 //         (userDataStream.subscribe.signature for HMAC keys, session.logon +
 //         userDataStream.subscribe for Ed25519 keys), or the legacy listenKey stream
@@ -56,6 +58,8 @@ struct BinanceVenueConfig {
   std::string name = "binance";
   std::string ws_url;      // stream base: wss://stream.testnet.binance.vision[/stream]
   std::string ws_api_url;  // wss://ws-api.testnet.binance.vision/ws-api/v3
+  MdFormat md_format = MdFormat::Json;
+  std::string sbe_ws_url;  // SBE stream base (md_format = sbe); derived from ws_url when empty
   std::string rest_url;    // https://testnet.binance.vision
   Credentials credentials;
   int recv_window_ms = kDefaultRecvWindowMs;
@@ -120,7 +124,7 @@ class BinanceVenue final : public Venue {
     BinanceVenue* v;
     void on_state(net::ConnState s) { v->on_md_state(s); }
     void on_text(std::string_view t, std::int64_t ts) { v->on_md_text(t, ts); }
-    void on_binary(std::span<const std::byte>, std::int64_t) {}
+    void on_binary(std::span<const std::byte> b, std::int64_t ts) { v->on_md_binary(b, ts); }
     void on_connected_send_subscriptions() { v->on_md_open(); }
   };
   struct UserHandler {
@@ -144,6 +148,8 @@ class BinanceVenue final : public Venue {
   // channel callbacks (reactor thread)
   void on_md_state(net::ConnState s);
   void on_md_text(std::string_view t, std::int64_t ts);
+  void on_md_binary(std::span<const std::byte> b, std::int64_t ts);
+  void note_md_status(ParseStatus st, std::int64_t ts);
   void on_md_open();
   void on_user_state(net::ConnState s);
   void on_user_text(std::string_view t, std::int64_t ts);
@@ -166,6 +172,8 @@ class BinanceVenue final : public Venue {
   void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
   // Sends ControlCommand::TripVenueKill to the engine, once per session.
   void trip_venue_kill(KillReason reason);
+  // Re-sends session.logon on `ch` after a transient failure (kLogonRetryNs).
+  void schedule_logon_retry(Channel ch);
   void apply_action(VenueAction action,
                     int code,
                     std::string_view msg,
@@ -257,6 +265,7 @@ class BinanceVenue final : public Venue {
 
 // Builds a BinanceVenueConfig from a config section (fastmm::VenueSection); shared by the
 // live app and the tests. `extra` keys: user_stream, key_type, private_key_file,
+// private_key_env, md_format ("json"|"sbe"), sbe_ws_url,
 // depth_limit, position_from_balance, stale_ms, dead_ms, order_api ("ws"|"rest"),
 // allow_offline_reference_data, cancel_on_order_channel_loss.
 struct VenueSectionView {
@@ -273,5 +282,16 @@ struct VenueSectionView {
   const std::map<std::string, std::string>* extra = nullptr;
 };
 BinanceVenueConfig make_binance_config(const VenueSectionView& section, bool dry_run);
+
+// SBE stream base for a JSON stream base: stream.<x> -> stream-sbe.<x>, demo-stream.<x> ->
+// demo-stream-sbe.<x> (scheme, port and path kept). Empty when the host follows neither pattern.
+std::string derive_sbe_ws_url(std::string_view ws_url);
+
+// Ed25519 private key PEM from `path` or the environment variable `env` (env wins). Throws
+// std::invalid_argument when it is not a PKCS#8 Ed25519 private key, unless `dry_run` (then logs).
+std::string load_ed25519_pem(const std::string& venue,
+                             const std::string& path,
+                             const std::string& env,
+                             bool dry_run);
 
 }  // namespace fastmm::venues::binance

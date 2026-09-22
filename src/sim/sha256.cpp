@@ -3,6 +3,10 @@
 #include <cstddef>
 #include <cstring>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 namespace fastmm::sim {
 
 namespace {
@@ -19,6 +23,51 @@ constexpr std::uint32_t kK[64] = {
 constexpr std::uint32_t rotr(std::uint32_t x, int n) noexcept {
   return (x >> n) | (x << (32 - n));
 }
+
+#if defined(__x86_64__)
+// One block with the x86 SHA extensions (SHA-NI): the state is kept as ABEF / CDGH halves, four
+// rounds per message group, the schedule from sha256msg1 / sha256msg2. The outbound hash runs on
+// every order the engine sends in the simulator (and in BM_TickToOrder_Sim), where the portable
+// transform was about half of the measured time.
+__attribute__((target("sha,sse4.1"))) void transform_shani(std::uint32_t state[8],
+                                                           const std::uint8_t block[64]) noexcept {
+  const __m128i kMask = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
+  __m128i tmp = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&state[0]));
+  __m128i state1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&state[4]));
+  tmp = _mm_shuffle_epi32(tmp, 0xB1);                // CDAB
+  state1 = _mm_shuffle_epi32(state1, 0x1B);          // EFGH
+  __m128i state0 = _mm_alignr_epi8(tmp, state1, 8);  // ABEF
+  state1 = _mm_blend_epi16(state1, tmp, 0xF0);       // CDGH
+  const __m128i abef = state0;
+  const __m128i cdgh = state1;
+  __m128i w[4];
+  for (int i = 0; i < 16; ++i) {
+    if (i < 4) {
+      w[i] = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(block + 16 * i)),
+                              kMask);
+    } else {
+      __m128i t = _mm_sha256msg1_epu32(w[(i - 4) & 3], w[(i - 3) & 3]);
+      t = _mm_add_epi32(t, _mm_alignr_epi8(w[(i - 1) & 3], w[(i - 2) & 3], 4));
+      w[i & 3] = _mm_sha256msg2_epu32(t, w[(i - 1) & 3]);
+    }
+    __m128i msg =
+        _mm_add_epi32(w[i & 3], _mm_loadu_si128(reinterpret_cast<const __m128i*>(&kK[4 * i])));
+    state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+    msg = _mm_shuffle_epi32(msg, 0x0E);
+    state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  }
+  state0 = _mm_add_epi32(state0, abef);
+  state1 = _mm_add_epi32(state1, cdgh);
+  tmp = _mm_shuffle_epi32(state0, 0x1B);        // FEBA
+  state1 = _mm_shuffle_epi32(state1, 0xB1);     // DCHG
+  state0 = _mm_blend_epi16(tmp, state1, 0xF0);  // DCBA
+  state1 = _mm_alignr_epi8(state1, tmp, 8);     // HGFE
+  _mm_storeu_si128(reinterpret_cast<__m128i*>(&state[0]), state0);
+  _mm_storeu_si128(reinterpret_cast<__m128i*>(&state[4]), state1);
+}
+
+const bool kHasShaNi = __builtin_cpu_supports("sha") && __builtin_cpu_supports("sse4.1");
+#endif
 }  // namespace
 
 void Sha256::reset() noexcept {
@@ -35,6 +84,12 @@ void Sha256::reset() noexcept {
 }
 
 void Sha256::transform(const std::uint8_t block[64]) noexcept {
+#if defined(__x86_64__)
+  if (kHasShaNi) {
+    transform_shani(h_, block);
+    return;
+  }
+#endif
   std::uint32_t w[64];
   for (std::size_t i = 0; i < 16; ++i) {
     w[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
@@ -79,6 +134,12 @@ void Sha256::update(const void* data, std::size_t len) noexcept {
   const auto* p = static_cast<const std::uint8_t*>(data);
   total_ += len;
   while (len > 0) {
+    if (buf_len_ == 0 && len >= 64) {  // whole blocks straight from the input
+      transform(p);
+      p += 64;
+      len -= 64;
+      continue;
+    }
     const std::size_t take = 64 - buf_len_ < len ? 64 - buf_len_ : len;
     std::memcpy(buf_ + buf_len_, p, take);
     buf_len_ += take;

@@ -4,6 +4,8 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -130,7 +132,15 @@ SimServerConfig SimServerConfig::from_config(const Config& cfg) {
   if (const char* k = std::getenv("FASTMM_SIM_API_KEY"); k != nullptr && *k != '\0') c.api_key = k;
   if (const char* k = std::getenv("FASTMM_SIM_API_SECRET"); k != nullptr && *k != '\0')
     c.api_secret = k;
-  if (c.api_key.empty() || c.api_secret.empty())
+  if (const std::string path = resolve_env(s.get_string("account.ed25519_public_key_file", ""));
+      !path.empty()) {
+    std::ifstream in(path);
+    if (!in) throw std::invalid_argument("sim config: cannot read " + path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    c.ed25519_public_key_pem = ss.str();
+  }
+  if (c.api_key.empty() || (c.api_secret.empty() && c.ed25519_public_key_pem.empty()))
     throw std::invalid_argument("sim config: [sim.account] api_key/api_secret are empty");
   for (const auto& [key, value] : s.values) {
     static constexpr std::string_view kPrefix = "account.balances.";

@@ -4,11 +4,16 @@
 // runs on the venue's reactor thread; after add_instrument() nothing allocates.
 //
 // Stream selection (6.4): one combined-stream connection
-//   /stream?streams=<sym>@depth@100ms/<sym>@bookTicker/<sym>@trade/...
-// (web-socket-streams.md: combined streams, lowercase symbols, 1024 streams per connection).
+//   json  /stream?streams=<sym>@depth@100ms/<sym>@bookTicker/<sym>@trade/...
+//         (web-socket-streams.md: combined streams, lowercase symbols, 1024 streams per
+//         connection), text frames through BinanceMdParser (simdjson);
+//   sbe   /stream?streams=<sym>@depth/<sym>@bestBidAsk/<sym>@trade/... on the SBE stream host
+//         (sbe-market-data-streams.md), binary frames through BinanceSbeMdParser.
+// Both produce the same messages; the depth snapshot comes from REST (JSON) either way.
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/binance/binance_depth_sync.hpp"
 #include "fastmm/venues/binance/binance_md_parser.hpp"
+#include "fastmm/venues/binance/binance_sbe_md_parser.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/feed.hpp"
 #include "fastmm/venues/symbology.hpp"
@@ -21,6 +26,8 @@
 #include <vector>
 
 namespace fastmm::venues::binance {
+
+enum class MdFormat : std::uint8_t { Json = 0, Sbe = 1 };
 
 struct MdFeedStats {
   std::uint64_t messages = 0;
@@ -39,13 +46,16 @@ class BinanceMdFeed {
                 VenueId venue,
                 EventSink& sink,
                 SnapshotRequester requester,
-                std::int64_t min_snapshot_interval_ns = BinanceDepthSync::kDefaultMinInterval)
+                std::int64_t min_snapshot_interval_ns = BinanceDepthSync::kDefaultMinInterval,
+                MdFormat format = MdFormat::Json)
       : symbols_(symbols),
         venue_(venue),
         sink_(sink),
         requester_(requester),
         min_interval_(min_snapshot_interval_ns),
-        parser_(symbols, venue) {
+        format_(format),
+        parser_(symbols, venue),
+        sbe_(symbols, venue) {
     index_.fill(-1);
   }
 
@@ -61,14 +71,19 @@ class BinanceMdFeed {
   }
   [[nodiscard]] std::span<const InstrumentId> instruments() const noexcept { return ids_; }
 
-  // "/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker/btcusdt@trade"
+  [[nodiscard]] MdFormat format() const noexcept { return format_; }
+
+  // json: "/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker/btcusdt@trade"
+  // sbe:  "/stream?streams=btcusdt@depth/btcusdt@bestBidAsk/btcusdt@trade"
   [[nodiscard]] std::string stream_target(std::string_view base_path = "/stream") const {
+    static constexpr std::array<const char*, 3> kJson = {"@depth@100ms", "@bookTicker", "@trade"};
+    static constexpr std::array<const char*, 3> kSbe = {"@depth", "@bestBidAsk", "@trade"};
     std::string t(base_path);
     t += "?streams=";
     bool first = true;
     for (InstrumentId id : ids_) {
       const std::string sym(symbols_.lower_symbol(id));
-      for (const char* suffix : {"@depth@100ms", "@bookTicker", "@trade"}) {
+      for (const char* suffix : format_ == MdFormat::Sbe ? kSbe : kJson) {
         if (!first) t += '/';
         first = false;
         t += sym;
@@ -112,6 +127,46 @@ class BinanceMdFeed {
     }
     ++stats_.pushed;
     return ParseStatus::Ok;
+  }
+  // One SBE binary frame (md_format = "sbe"). A trade frame can yield several TradeMsgs.
+  ParseStatus on_binary(std::span<const std::byte> frame, std::int64_t rx_ts) noexcept {
+    ++stats_.messages;
+    const Cycles t0 = rdtscp();
+    const Timestamp recv = wall_now();
+    bool overflow = false;
+    const ParseStatus st =
+        sbe_.decode(frame, recv, t0, scratch_, [&](EventHeader& h, MdKind kind) noexcept {
+          h.t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
+          if (kind == MdKind::BookDelta) {
+            if (BinanceDepthSync* s = sync(h.instrument)) {
+              s->on_delta(*reinterpret_cast<const BookDeltaMsg*>(&h), rx_ts);
+              ++stats_.pushed;
+            }
+            return;
+          }
+          // depth<N> partial books are not used for synchronisation (diff + REST snapshot is).
+          if (kind == MdKind::BookSnapshot) return;
+          if (!sink_.push(h)) {
+            ++stats_.dropped;
+            overflow = true;
+            return;
+          }
+          ++stats_.pushed;
+        });
+    switch (st) {
+      case ParseStatus::Ok:
+        break;
+      case ParseStatus::Malformed:
+        ++stats_.malformed;
+        break;
+      case ParseStatus::UnknownSymbol:
+        ++stats_.unknown_symbol;
+        break;
+      default:
+        ++stats_.ignored;
+        break;
+    }
+    return overflow ? ParseStatus::Overflow : st;
   }
   void on_connected() noexcept {
     const std::int64_t now = steady_now().ns;
@@ -163,7 +218,9 @@ class BinanceMdFeed {
     return n;
   }
   [[nodiscard]] const MdFeedStats& stats() const noexcept { return stats_; }
-  [[nodiscard]] const MdParserStats& parser_stats() const noexcept { return parser_.stats(); }
+  [[nodiscard]] const MdParserStats& parser_stats() const noexcept {
+    return format_ == MdFormat::Sbe ? sbe_.stats() : parser_.stats();
+  }
 
  private:
   const SymbolTable& symbols_;
@@ -171,7 +228,9 @@ class BinanceMdFeed {
   EventSink& sink_;
   SnapshotRequester requester_;
   std::int64_t min_interval_;
-  BinanceMdParser parser_;
+  MdFormat format_;
+  BinanceMdParser parser_;  // JSON frames and the REST depth snapshot
+  BinanceSbeMdParser sbe_;
   std::array<std::int16_t, kMaxInstruments> index_{};
   std::vector<std::unique_ptr<BinanceDepthSync>> syncs_;
   std::vector<InstrumentId> ids_;

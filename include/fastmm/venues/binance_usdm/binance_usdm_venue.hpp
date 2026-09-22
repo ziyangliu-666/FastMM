@@ -1,6 +1,7 @@
 #pragma once
 // BinanceUsdmVenue: the Binance USDⓈ-M perpetual futures connector (Demo Trading or production
-// hosts; one-way position mode, HMAC keys).
+// hosts; one-way position mode, HMAC or Ed25519 keys). Ed25519 keys log on to the WS API order
+// connection once (session.logon) and send unsigned requests after that.
 //
 // Channels on one reactor thread:
 //   md      <ws_url>/public/stream?streams=<sym>@depth@100ms/<sym>@bookTicker   (BinanceUsdmMdFeed)
@@ -141,7 +142,7 @@ class BinanceUsdmVenue final : public Venue {
     void on_state(net::ConnState s) { v->on_order_state(s); }
     void on_text(std::string_view t, std::int64_t ts) { v->on_order_text(t, ts); }
     void on_binary(std::span<const std::byte>, std::int64_t) {}
-    void on_connected_send_subscriptions() {}
+    void on_connected_send_subscriptions() { v->on_order_open(); }
   };
   friend struct MdHandler;
   friend struct TradesHandler;
@@ -177,6 +178,8 @@ class BinanceUsdmVenue final : public Venue {
   void on_user_text(std::string_view t, std::int64_t ts);
   void on_order_state(net::ConnState s);
   void on_order_text(std::string_view t, std::int64_t ts);
+  void on_order_open();
+  void send_logon();
 
   // helpers
   void open_md();
@@ -269,6 +272,7 @@ class BinanceUsdmVenue final : public Venue {
   bool time_request_pending_ = false;
   bool clock_resync_wanted_ = false;
   bool fatal_ = false;
+  bool session_logged_on_ = false;
   bool venue_kill_sent_ = false;
   bool connected_ = false;
   bool rest_hard_stopped_ = false;
@@ -289,7 +293,7 @@ class BinanceUsdmVenue final : public Venue {
 // Builds a BinanceUsdmVenueConfig from a [venues.<name>] section. Extra keys: ws_private_url,
 // order_api ("ws" | "rest"), depth_limit, stale_ms, dead_ms, position_from_account_update,
 // allow_offline_reference_data, cancel_on_order_channel_loss, emit_ack_from_response. Throws
-// std::invalid_argument for key_type = "ed25519" (HMAC keys only).
+// std::invalid_argument when key_type = "ed25519" has no parsable private key (live sessions).
 BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_run);
 
 }  // namespace fastmm::venues::binance_usdm

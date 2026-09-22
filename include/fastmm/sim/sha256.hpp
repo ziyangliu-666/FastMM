@@ -1,7 +1,8 @@
 #pragma once
 // Minimal streaming SHA-256 (FIPS 180-4) for the replay proof: the outbound message stream
-// of a run is hashed and compared with the journal's. Not a hot-path component; kept in
-// fastmm::sim so the simulator does not depend on fastmm::net's OpenSSL wrapper.
+// of a run is hashed and compared with the journal's. Kept in fastmm::sim so the simulator does
+// not depend on fastmm::net's OpenSSL wrapper. Uses the x86 SHA extensions when the CPU has them
+// (runtime check), the portable transform otherwise.
 #include <cstddef>
 #include <cstdint>
 #include <string>

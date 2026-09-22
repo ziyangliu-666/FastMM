@@ -1,11 +1,13 @@
 #pragma once
-// RawRecorder: appends every raw WebSocket text frame to <dir>/<venue>-<channel>.jsonl (one
-// frame per line, prefixed with the receive timestamp) so fixtures can be captured from a
-// live session (`fastmm-live --record-raw DIR`, plan 8.8). Off by default; when enabled it
+// RawRecorder: appends every raw WebSocket frame to <dir>/<venue>-<channel>.jsonl (one frame per
+// line, prefixed with the receive timestamp; binary frames as hex) so fixtures can be captured
+// from a live session (`fastmm-live --record-raw DIR`, plan 8.8). Off by default; when enabled it
 // does buffered stdio writes on the net thread, so it is a diagnostic tool, not a hot-path
 // feature.
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -36,6 +38,19 @@ class RawRecorder {
     if (file_ == nullptr) return;
     std::fprintf(file_, "%lld\t", static_cast<long long>(rx_ns));
     std::fwrite(frame.data(), 1, frame.size(), file_);
+    std::fputc('\n', file_);
+    ++frames_;
+  }
+  // Binary frame (SBE market data) as lowercase hex on one line, same timestamp prefix.
+  void record_hex(std::int64_t rx_ns, std::span<const std::byte> frame) noexcept {
+    if (file_ == nullptr) return;
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::fprintf(file_, "%lld\t", static_cast<long long>(rx_ns));
+    for (const std::byte b : frame) {
+      const auto v = static_cast<unsigned>(b);
+      std::fputc(kHex[v >> 4], file_);
+      std::fputc(kHex[v & 15U], file_);
+    }
     std::fputc('\n', file_);
     ++frames_;
   }

@@ -73,7 +73,7 @@ bool finish_rest(ParamList& params, const Signer& signer, RestRequest& out) {
 }
 
 void add_auth(ParamList& p, const Signer& signer, bool ws) noexcept {
-  // REST sends the key in the X-MBX-APIKEY header instead.
+  // REST sends the key in the X-MBX-APIKEY header instead; a logged-on WS session sends none.
   if (ws && signer.usable()) p.add("apiKey", signer.api_key());
 }
 
@@ -174,13 +174,23 @@ std::size_t BinanceUsdmOrderEncoder::finish_ws(ParamList& params,
                                                std::string_view request_id,
                                                std::span<char> out) noexcept {
   if (!params.ok || !params.sorted()) return 0;
-  net::QueryBuilder<kMaxRequestBytes> q;
-  params.to_query(q);
-  if (!q.ok()) return 0;
-  // HMAC only: Ed25519 keys are refused by make_binance_usdm_config().
-  const bool signed_request = signer_.usable() && signer_.type() == binance::KeyType::Hmac;
+  std::string_view signature;
   net::HexSha256 hmac;
-  if (signed_request) hmac = signer_.sign_hmac(q.view());
+  char ed[net::kEd25519Base64Size];
+  const bool signed_request = !session_auth_ && signer_.usable();
+  if (signed_request) {
+    net::QueryBuilder<kMaxRequestBytes> q;
+    params.to_query(q);
+    if (!q.ok()) return 0;
+    if (signer_.type() == binance::KeyType::Hmac) {
+      hmac = signer_.sign_hmac(q.view());
+      signature = hmac.view();
+    } else {
+      const std::size_t n = signer_.sign_ed25519(q.view(), ed);
+      if (n == 0) return 0;
+      signature = std::string_view(ed, n);
+    }
+  }
   JsonWriter w(out);
   w.begin_object()
       .key("id")
@@ -198,9 +208,24 @@ std::size_t BinanceUsdmOrderEncoder::finish_ws(ParamList& params,
       w.string(p.value);
     }
   }
-  if (signed_request) w.key("signature").string(hmac.view());
+  if (signed_request) w.key("signature").string(signature);
   w.end_object().end_object();
   return w.ok() ? w.size() : 0;
+}
+
+std::size_t BinanceUsdmOrderEncoder::encode_ws_logon(std::string_view request_id,
+                                                     std::int64_t timestamp_ms,
+                                                     std::span<char> out) noexcept {
+  // session.logon is always signed (it is what establishes the session).
+  const bool saved = session_auth_;
+  session_auth_ = false;
+  ParamList p;
+  p.add("apiKey", signer_.api_key());
+  p.add_int("recvWindow", recv_window_ms_);
+  p.add_int("timestamp", timestamp_ms);
+  const std::size_t n = finish_ws(p, "session.logon", request_id, out);
+  session_auth_ = saved;
+  return n;
 }
 
 std::size_t BinanceUsdmOrderEncoder::encode_ws(const OrderCommand& cmd,
@@ -210,7 +235,9 @@ std::size_t BinanceUsdmOrderEncoder::encode_ws(const OrderCommand& cmd,
   const std::string_view symbol = symbols_.venue_symbol(cmd.instrument);
   if (symbol.empty()) return 0;
   ParamList p;
-  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, true)) return 0;
+  // A logged-on session sends no apiKey (the `ws` flag only controls it).
+  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, !session_auth_))
+    return 0;
   std::string_view method;
   RequestKind kind = RequestKind::New;
   switch (cmd.kind) {

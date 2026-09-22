@@ -11,6 +11,7 @@
 #include "fastmm/venues/binance/binance_auth.hpp"
 #include "fastmm/venues/binance/binance_md_parser.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
+#include "fastmm/venues/binance/binance_sbe_md_parser.hpp"
 #include "fastmm/venues/binance/binance_user_parser.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_md_parser.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
@@ -178,6 +179,60 @@ TEST_CASE("hotpath.noalloc: Binance market-data parser, user parser and order en
   check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
     return enc.encode_ws(c, &shadow, 1789295199000, out);
   });
+  // Ed25519 key after session.logon: unsigned requests.
+  binance::Credentials ed;
+  ed.api_key = "test-key";
+  ed.type = binance::KeyType::Ed25519;
+  ed.private_key_pem.value = fastmm::test::fixture("binance/ed25519-test-private.pem");
+  const binance::Signer ed_signer(ed);
+  REQUIRE(ed_signer.usable());
+  binance::BinanceOrderEncoder session(ed_signer, u.symbols, 3000);
+  session.set_session_authenticated(true);
+  check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
+    return session.encode_ws(c, &shadow, 1789295199000, out);
+  });
+}
+
+TEST_CASE("hotpath.noalloc: Binance SBE market-data decoder") {
+  TestUniverse u;
+  binance::BinanceSbeMdParser p(u.symbols, VenueId{0});
+  std::vector<std::vector<std::byte>> in;
+  for (const char* name : {"binance/sbe/depth_diff.hex",
+                           "binance/sbe/best_bid_ask.hex",
+                           "binance/sbe/trades.hex",
+                           "binance/sbe/depth_snapshot20.hex"}) {
+    std::vector<std::byte> f;
+    int high = -1;
+    bool comment = false;
+    for (const char c : fastmm::test::fixture(name)) {
+      if (c == '\n') comment = false;
+      if (c == '#') comment = true;
+      if (comment) continue;
+      const int v = (c >= '0' && c <= '9') ? c - '0' : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+      if (v < 0) continue;
+      if (high < 0) {
+        high = v;
+      } else {
+        f.push_back(static_cast<std::byte>(high * 16 + v));
+        high = -1;
+      }
+    }
+    in.push_back(std::move(f));
+  }
+  alignas(64) static std::byte scratch[kDecoderScratchBytes];
+  std::uint64_t emitted = 0;
+  auto sink = [&](EventHeader&, MdKind) { ++emitted; };
+  for (const auto& f : in)
+    REQUIRE(p.decode(f, Timestamp{}, Cycles{}, scratch, sink) == ParseStatus::Ok);
+  {
+    NoAllocScope guard;
+    for (int r = 0; r < 100; ++r) {
+      for (const auto& f : in) {
+        if (p.decode(f, Timestamp{}, Cycles{}, scratch, sink) != ParseStatus::Ok) FAIL("decode");
+      }
+    }
+  }
+  CHECK(emitted == 5 * 101);
 }
 
 TEST_CASE("hotpath.noalloc: Binance USD-M market-data parser, user parser and order encoder") {
