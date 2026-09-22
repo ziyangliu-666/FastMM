@@ -1,6 +1,6 @@
 # ADR-0015: UDP multicast market data and kernel-bypass receive
 
-Status: proposed (2026-09)
+Status: accepted (2026-09)
 
 `fastmm-live` receives exchange multicast feeds, starting with Nasdaq TotalView-ITCH 5.0 over MoldUDP64 with GLIMPSE 5.0 for the initial book. Datagrams arrive through one of two backends: kernel UDP sockets or AF_XDP. This record amends ADR-0014, which listed live ITCH as out of scope. Order entry to Nasdaq (OUCH, sponsored access) stays out of scope.
 
