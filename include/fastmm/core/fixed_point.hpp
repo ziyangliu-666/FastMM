@@ -30,6 +30,24 @@ struct RatioTag;
 
 namespace detail {
 
+// a * b / d truncated toward zero, as through Int128. When a * b fits int64 (prices and
+// quantities in practice) the division stays 64-bit: a constant divisor becomes a multiply,
+// where an Int128 division is a call to __divti3 (~40 cycles). Same result either way.
+[[nodiscard]] FASTMM_FORCE_INLINE constexpr std::int64_t mul_div(std::int64_t a,
+                                                                 std::int64_t b,
+                                                                 std::int64_t d) noexcept {
+  std::int64_t p = 0;
+  if (FASTMM_LIKELY(!__builtin_mul_overflow(a, b, &p) && d != -1)) return p / d;
+  return static_cast<std::int64_t>(static_cast<Int128>(a) * b / d);
+}
+template <std::int64_t D>
+[[nodiscard]] FASTMM_FORCE_INLINE constexpr std::int64_t mul_div(std::int64_t a,
+                                                                 std::int64_t b) noexcept {
+  std::int64_t p = 0;
+  if (FASTMM_LIKELY(!__builtin_mul_overflow(a, b, &p))) return p / D;
+  return static_cast<std::int64_t>(static_cast<Int128>(a) * b / D);
+}
+
 // Exact parse of "[+-]digits[.digits][(e|E)[+-]digits]" into value * 10^decimals. The result must
 // be an integer that fits int64: digits left over after the scale must be zeros, so "2e-05" with 8
 // decimals is 2000 and "1.5e-8" is rejected. With `literal` (numeric literal characters) no sign is
@@ -291,47 +309,41 @@ static_assert(std::is_trivially_copyable_v<Price> && sizeof(Price) == 8);
 // mid * 5_bps, qty * ratio(filled, total).
 template <class T>
 [[nodiscard]] constexpr Fixed<T> operator*(Fixed<T> v, Ratio r) noexcept {
-  return Fixed<T>::from_raw(
-      static_cast<std::int64_t>(static_cast<Int128>(v.raw) * r.raw / kFixedScale));
+  return Fixed<T>::from_raw(detail::mul_div<kFixedScale>(v.raw, r.raw));
 }
 template <class T>
 [[nodiscard]] constexpr Fixed<T> operator*(Ratio r, Fixed<T> v) noexcept {
   return v * r;
 }
 [[nodiscard]] constexpr Ratio operator*(Ratio a, Ratio b) noexcept {
-  return Ratio::from_raw(
-      static_cast<std::int64_t>(static_cast<Int128>(a.raw) * b.raw / kFixedScale));
+  return Ratio::from_raw(detail::mul_div<kFixedScale>(a.raw, b.raw));
 }
 // num / den as a Ratio, truncated toward zero; zero when den is zero. The quotient must fit
 // +-92,233,720,368.
 template <class T>
 [[nodiscard]] constexpr Ratio ratio(Fixed<T> num, Fixed<T> den) noexcept {
   if (den.raw == 0) return Ratio{};
-  return Ratio::from_raw(
-      static_cast<std::int64_t>(static_cast<Int128>(num.raw) * kFixedScale / den.raw));
+  return Ratio::from_raw(detail::mul_div(num.raw, kFixedScale, den.raw));
 }
 
 // price * qty with a 128-bit intermediate, truncated toward zero to 1e-8.
 [[nodiscard]] constexpr Notional mul(Price p, Qty q) noexcept {
-  const Int128 r = static_cast<Int128>(p.raw) * static_cast<Int128>(q.raw) / kFixedScale;
-  return Notional::from_raw(static_cast<std::int64_t>(r));
+  return Notional::from_raw(detail::mul_div<kFixedScale>(p.raw, q.raw));
 }
 // Generic scaled multiply for fixed*fixed in one domain (e.g. qty * multiplier).
 template <class A, class B>
 [[nodiscard]] constexpr std::int64_t mul_raw(Fixed<A> a, Fixed<B> b) noexcept {
-  return static_cast<std::int64_t>(static_cast<Int128>(a.raw) * static_cast<Int128>(b.raw) /
-                                   kFixedScale);
+  return detail::mul_div<kFixedScale>(a.raw, b.raw);
 }
 // notional / qty -> price (used for average cost). Truncates toward zero.
 [[nodiscard]] constexpr Price div(Notional n, Qty q) noexcept {
   if (q.raw == 0) return Price{};
-  const Int128 r = static_cast<Int128>(n.raw) * kFixedScale / static_cast<Int128>(q.raw);
-  return Price::from_raw(static_cast<std::int64_t>(r));
+  return Price::from_raw(detail::mul_div(n.raw, kFixedScale, q.raw));
 }
 // value * bps / 10000 in one domain.
 template <class T>
 [[nodiscard]] constexpr Fixed<T> apply_bps(Fixed<T> v, std::int64_t bps) noexcept {
-  return Fixed<T>::from_raw(static_cast<std::int64_t>(static_cast<Int128>(v.raw) * bps / 10'000));
+  return Fixed<T>::from_raw(detail::mul_div<10'000>(v.raw, bps));
 }
 
 // Floor division for possibly-negative numerators (prices are >= 0, but be safe).

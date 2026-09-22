@@ -3,13 +3,20 @@
 //   BM_Itch_DecodeAddOrder        ITCH 5.0 'A' (36 bytes) -> OrderAddL3Msg in an EventSink
 //   BM_Itch_DecodeOrderExecuted   ITCH 5.0 'E' (31 bytes) -> OrderExecL3Msg in an EventSink
 //   BM_ItchL2Bridge_Message       ItchL2Bridge per ITCH message (L3 update, trades, one
-//                                 BookDeltaMsg per 8-message datagram)
+//                                 BookDeltaMsg per 8-message datagram), 2^16-order book
+//   BM_ItchL2Bridge_Message_DefaultBook  the same with the default 2^20-order book
 //   BM_MoldUdp64_FramePacket      parse_packet() + walk the messages of a 10-message packet
 //   BM_MoldUdp64_ReceiveAB        Receiver, one datagram of A or B (B trails by one packet)
 //   BM_MoldUdp64_ReceiveABLossA   as above, A loses 1 packet in 8, B trails by two packets
 //   BM_SoupBin_FrameSequenced     SoupBinFramer + ClientSession::on_frame, Sequenced Data
-//   BM_Ouch42_EncodeEnterOrder    OrderCommand -> OUCH 4.2 Enter Order (49 bytes)
+//   BM_Ouch42_EncodeEnterOrder    OrderCommand -> OUCH 4.2 Enter Order (49 bytes); the same
+//                                 command each time, so the compiler may hoist part of it
+//   BM_Ouch42_EncodeNewIds        as above with a new ClOrdID (Order Token) per order
 //   BM_Ouch50_EncodeEnterOrder    OrderCommand -> OUCH 5.0 Enter Order (47 bytes, UserRefNum)
+//   BM_Ouch50_EncodeNewIds        as above with a new ClOrdID per order (UserRefNum assigned),
+//                                 then a Cancel and the id's erase, as when the order is done
+//   BM_Ouch50_EncodeColdMap       new ids into a UserRefMap built right before the batch: what
+//                                 the first orders of a session pay (page faults, cold lines)
 //
 // Each benchmark iteration runs kBatch operations between two rdtsc readings and records the
 // per-operation average in picoseconds into a LogLinearHistogram; counter p50_ns is its median in
@@ -196,12 +203,12 @@ ItchStream make_itch_stream(std::size_t n) {
 
 }  // namespace
 
-static void BM_ItchL2Bridge_Message(benchmark::State& state) {
+static void itch_bridge_bench(benchmark::State& state, const L3BookConfig& book) {
   static const ItchStream stream = make_itch_stream(1U << 18);
   auto ring = std::make_unique<MsgRing>(1U << 22);
   venues::EventSink sink(ring.get(), venues::SinkPolicy::Drop);
   itch::ItchL2BridgeConfig cfg;
-  cfg.book = L3BookConfig{.price_window_ticks = 1U << 16, .max_orders = 1U << 16};
+  cfg.book = book;
   auto bridge = std::make_unique<itch::ItchL2Bridge>(sink, cfg);
   bridge->add_instrument("BENCH", InstrumentId{0});
   bridge->map_locate(7, InstrumentId{0});
@@ -228,7 +235,18 @@ static void BM_ItchL2Bridge_Message(benchmark::State& state) {
       static_cast<double>(bridge->stats().deltas) / static_cast<double>(bridge->stats().messages);
   if (bridge->stats().book_errors != 0) state.SkipWithError("book errors");
 }
+
+static void BM_ItchL2Bridge_Message(benchmark::State& state) {
+  itch_bridge_bench(state, L3BookConfig{.price_window_ticks = 1U << 16, .max_orders = 1U << 16});
+}
 BENCHMARK(BM_ItchL2Bridge_Message);
+
+// The nasdaq_itch venue's default book: 2^20 orders (a 32 MiB reference index, 40 MiB of
+// orders), so index and order lookups miss the caches and, without huge pages, the dTLB.
+static void BM_ItchL2Bridge_Message_DefaultBook(benchmark::State& state) {
+  itch_bridge_bench(state, L3BookConfig{});
+}
+BENCHMARK(BM_ItchL2Bridge_Message_DefaultBook);
 
 static void BM_MoldUdp64_FramePacket(benchmark::State& state) {
   itch::ItchEncoder enc;
@@ -388,6 +406,25 @@ static void BM_Ouch42_EncodeEnterOrder(benchmark::State& state) {
 }
 BENCHMARK(BM_Ouch42_EncodeEnterOrder);
 
+static void BM_Ouch42_EncodeNewIds(benchmark::State& state) {
+  auto enc = std::make_unique<ouch42::OuchEncoder>();
+  enc->add_symbol("AAPL", InstrumentId{0});
+  venues::OrderCommand cmd = bench_order();
+  std::array<std::byte, 128> out{};
+  std::uint32_t next = 1;
+  BatchTimer timer;
+  for (auto _ : state) {
+    timer.start();
+    for (int i = 0; i < kBatch; ++i) {
+      cmd.cl_ord_id = make_cl_ord_id(1, next++);
+      benchmark::DoNotOptimize(enc->encode(cmd, out));
+    }
+    timer.stop();
+  }
+  timer.report(state);
+}
+BENCHMARK(BM_Ouch42_EncodeNewIds);
+
 static void BM_Ouch50_EncodeEnterOrder(benchmark::State& state) {
   auto ids = std::make_unique<ouch50::UserRefMap>();
   auto enc = std::make_unique<ouch50::OuchEncoder>(*ids);
@@ -403,3 +440,57 @@ static void BM_Ouch50_EncodeEnterOrder(benchmark::State& state) {
   timer.report(state);
 }
 BENCHMARK(BM_Ouch50_EncodeEnterOrder);
+
+static void BM_Ouch50_EncodeNewIds(benchmark::State& state) {
+  auto ids = std::make_unique<ouch50::UserRefMap>();
+  auto enc = std::make_unique<ouch50::OuchEncoder>(*ids);
+  enc->add_symbol("AAPL", InstrumentId{0});
+  venues::OrderCommand cmd = bench_order();
+  venues::OrderCommand cancel = cmd;
+  cancel.kind = venues::OrderCommandKind::Cancel;
+  std::array<std::byte, 128> out{};
+  std::array<std::uint32_t, kBatch> urns{};
+  std::uint32_t next = 1;
+  BatchTimer timer;
+  for (auto _ : state) {
+    timer.start();
+    for (int i = 0; i < kBatch; ++i) {
+      cmd.cl_ord_id = make_cl_ord_id(1, next + static_cast<std::uint32_t>(i));
+      benchmark::DoNotOptimize(enc->encode(cmd, out));
+      cancel.cl_ord_id = cmd.cl_ord_id;
+      benchmark::DoNotOptimize(enc->encode(cancel, out));
+      urns[static_cast<std::size_t>(i)] = ids->find(cmd.cl_ord_id);
+    }
+    timer.stop();
+    for (const std::uint32_t u : urns) ids->erase(u);
+    next += kBatch;
+  }
+  timer.report(state);
+}
+BENCHMARK(BM_Ouch50_EncodeNewIds);
+
+static void BM_Ouch50_EncodeColdMap(benchmark::State& state) {
+  venues::OrderCommand cmd = bench_order();
+  std::array<std::byte, 128> out{};
+  std::uint32_t next = 1;
+  std::unique_ptr<ouch50::UserRefMap> ids;
+  std::unique_ptr<ouch50::OuchEncoder> enc;
+  BatchTimer timer;
+  for (auto _ : state) {
+    state.PauseTiming();
+    enc.reset();
+    ids.reset();
+    ids = std::make_unique<ouch50::UserRefMap>();
+    enc = std::make_unique<ouch50::OuchEncoder>(*ids);
+    enc->add_symbol("AAPL", InstrumentId{0});
+    state.ResumeTiming();
+    timer.start();
+    for (int i = 0; i < kBatch; ++i) {
+      cmd.cl_ord_id = make_cl_ord_id(1, next++);
+      benchmark::DoNotOptimize(enc->encode(cmd, out));
+    }
+    timer.stop();
+  }
+  timer.report(state);
+}
+BENCHMARK(BM_Ouch50_EncodeColdMap);

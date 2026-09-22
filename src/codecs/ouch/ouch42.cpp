@@ -155,11 +155,6 @@ std::string_view cancel_reason_text(char reason) noexcept {
   }
 }
 
-void put_token(char* dst14, ClientOrderId id) noexcept {
-  const FixedString<16> s = encode_cl_ord_id(id);
-  std::memcpy(dst14, s.data(), kClOrdIdChars);
-}
-
 std::optional<ClientOrderId> token_to_cl_ord_id(const char* token14) noexcept {
   return decode_cl_ord_id(std::string_view(token14, kClOrdIdChars));
 }
@@ -215,7 +210,7 @@ std::size_t OuchEncoder::encode_new(const venues::OrderCommand& cmd,
     ++stats_.bad_value;
     return 0;
   }
-  EnterOrder m{};
+  EnterOrder& m = ouch::emplace<EnterOrder>(out);
   m.type = 'O';
   put_token(m.order_token, cmd.cl_ord_id);
   m.buy_sell_indicator = ouch::side_code(cmd.side);
@@ -231,7 +226,7 @@ std::size_t OuchEncoder::encode_new(const venues::OrderCommand& cmd,
   m.cross_type = cfg_.cross_type;
   m.customer_type = cfg_.customer_type;
   ++stats_.encoded;
-  return ouch::put(out, m);
+  return sizeof(EnterOrder);
 }
 
 std::size_t OuchEncoder::encode_replace(const venues::OrderCommand& cmd,
@@ -248,7 +243,7 @@ std::size_t OuchEncoder::encode_replace(const venues::OrderCommand& cmd,
     ++stats_.bad_value;
     return 0;
   }
-  ReplaceOrder m{};
+  ReplaceOrder& m = ouch::emplace<ReplaceOrder>(out);
   m.type = 'U';
   put_token(m.existing_order_token, cmd.orig_cl_ord_id);
   put_token(m.replacement_order_token, cmd.cl_ord_id);
@@ -259,7 +254,7 @@ std::size_t OuchEncoder::encode_replace(const venues::OrderCommand& cmd,
   m.intermarket_sweep_eligibility = cfg_.intermarket_sweep;
   m.minimum_quantity.set(0);
   ++stats_.encoded;
-  return ouch::put(out, m);
+  return sizeof(ReplaceOrder);
 }
 
 std::size_t OuchEncoder::encode_cancel(const venues::OrderCommand& cmd,
@@ -268,12 +263,12 @@ std::size_t OuchEncoder::encode_cancel(const venues::OrderCommand& cmd,
     ++stats_.buffer_too_small;
     return 0;
   }
-  CancelOrder m{};
+  CancelOrder& m = ouch::emplace<CancelOrder>(out);
   m.type = 'X';
   put_token(m.order_token, cmd.cl_ord_id);
   m.shares.set(0);
   ++stats_.encoded;
-  return ouch::put(out, m);
+  return sizeof(CancelOrder);
 }
 
 // ---- decoder -------------------------------------------------------------------------------

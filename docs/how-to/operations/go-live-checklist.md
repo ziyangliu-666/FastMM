@@ -39,7 +39,9 @@ A `[risk]` limit is off when it is `0` or missing ([Configuration](../../referen
 
 ## The host
 
-- [ ] On bare metal, `[engine] cpu` and `net_cpus` pin the engine and network threads to isolated cores with `spin_mode = "busy"`. Shared machines use `"adaptive"`; WSL2 and laptops also use `cpu = -1`.
+- [ ] On bare metal, `[engine] cpu` and `net_cpus` pin the engine and network threads to isolated cores with `spin_mode = "busy"`. Shared machines use `"adaptive"`; WSL2 and laptops also use `cpu = -1`. `configs/profiles/production-latency.toml` has the `[engine]` table for a dedicated host: busy spinning on isolated cores, `timer_slack_ns = 1`, `lock_memory = true` (raise `ulimit -l`, `LimitMEMLOCK=infinity` under systemd) and a larger journal ring.
+- [ ] The engine and network cores are isolated (`isolcpus`, `nohz_full` and `rcu_nocbs`, or a cpuset), the CPU governor is `performance`, NIC interrupts go to other cores, and transparent huge pages are `madvise` or `always` (`/sys/kernel/mm/transparent_hugepage/enabled`): the order and book tables ask for 2 MiB pages.
+- [ ] Latency figures in `fastmm-top` and the log are not zero. Hosts without `nonstop_tsc` (many cloud VMs) take wall time from `clock_gettime` and still time intervals with the TSC when `constant_tsc` is present.
 - [ ] The system clock is synchronised (chrony or systemd-timesyncd), and the status line's `clock_offset_ms` stays well below `recv_window_ms`.
 - [ ] The journal directory has room for the session ([Journal files](journals-replay-pnl.md#journal-files)); check with `df -h runs`.
 - [ ] The status file works: `./build/release/bin/fastmm-top --name <engine name> --once` prints a frame while the engine runs.

@@ -12,9 +12,8 @@ namespace {
 [[nodiscard]] bool blank4(const char* f) noexcept {
   return f[0] == ' ' && f[1] == ' ' && f[2] == ' ' && f[3] == ' ';
 }
-void put_cl_ord_id(char* dst14, ClientOrderId id) noexcept {
-  const FixedString<16> s = encode_cl_ord_id(id);
-  std::memcpy(dst14, s.data(), kClOrdIdChars);
+FASTMM_FORCE_INLINE void put_cl_ord_id(char* dst14, ClientOrderId id) noexcept {
+  write_cl_ord_id(dst14, id);
 }
 }  // namespace
 
@@ -242,12 +241,13 @@ std::string_view reject_reason_text(std::uint16_t reason) noexcept {
 
 std::uint32_t UserRefMap::assign(ClientOrderId id) noexcept {
   if (const std::uint32_t* have = by_id_.find(id.value)) return *have;
-  if (next_ == 0 || by_id_.size() >= decltype(by_id_)::kMaxSize ||
-      by_urn_.size() >= decltype(by_urn_)::kMaxSize)
-    return 0;
+  if (next_ == 0 || id.value == 0) return 0;
   const std::uint32_t urn = next_;
-  by_id_.insert(id.value, urn);
-  by_urn_.insert(urn, id);
+  if (!by_id_.insert(id.value, urn)) return 0;
+  if (!by_urn_.insert(urn, id)) {
+    by_id_.erase(id.value);
+    return 0;
+  }
   ++next_;  // wraps to 0 after 0xFFFFFFFF: the map then refuses new ids
   return urn;
 }
@@ -315,23 +315,11 @@ std::size_t OuchEncoder::encode_new(const venues::OrderCommand& cmd,
     ++stats_.bad_value;
     return 0;
   }
-  // Options appendage (at most Firm 6 + MinQty 6 + PostOnly 3 bytes).
-  std::array<std::byte, 32> app{};
-  std::size_t app_len = 0;
-  if (!blank4(cfg_.firm))
-    append_option(
-        app, app_len, OptionTag::Firm, std::as_bytes(std::span<const char>(cfg_.firm, 4)));
-  if (cmd.tif == TimeInForce::Fok) {
-    std::array<std::byte, 4> v{};
-    be32_t be{};
-    be.set(qty);
-    std::memcpy(v.data(), &be, 4);
-    append_option(app, app_len, OptionTag::MinQty, v);
-  }
-  if (cmd.type == OrderType::PostOnly) {
-    const std::array<std::byte, 1> v{std::byte{'P'}};
-    append_option(app, app_len, OptionTag::PostOnly, v);
-  }
+  // Options appendage (Firm 6, MinQty 6, PostOnly 3 bytes), written after the fixed part.
+  const bool firm = !blank4(cfg_.firm);
+  const bool fok = cmd.tif == TimeInForce::Fok;
+  const bool post_only = cmd.type == OrderType::PostOnly;
+  const std::size_t app_len = (firm ? 6U : 0U) + (fok ? 6U : 0U) + (post_only ? 3U : 0U);
   const std::size_t total = sizeof(EnterOrder) + app_len;
   if (FASTMM_UNLIKELY(out.size() < total)) {
     ++stats_.buffer_too_small;
@@ -342,7 +330,7 @@ std::size_t OuchEncoder::encode_new(const venues::OrderCommand& cmd,
     ++stats_.id_table_full;
     return 0;
   }
-  EnterOrder m{};
+  EnterOrder& m = ouch::emplace<EnterOrder>(out);
   m.type = 'O';
   m.user_ref_num.set(urn);
   m.side = ouch::side_code(cmd.side);
@@ -356,8 +344,22 @@ std::size_t OuchEncoder::encode_new(const venues::OrderCommand& cmd,
   m.cross_type = cfg_.cross_type;
   put_cl_ord_id(m.cl_ord_id, cmd.cl_ord_id);
   m.appendage_length.set(static_cast<std::uint16_t>(app_len));
-  ouch::put(out, m);
-  if (app_len != 0) std::memcpy(out.data() + sizeof(EnterOrder), app.data(), app_len);
+  if (FASTMM_UNLIKELY(app_len != 0)) {
+    std::size_t used = sizeof(EnterOrder);
+    if (firm)
+      append_option(out, used, OptionTag::Firm, std::as_bytes(std::span<const char>(cfg_.firm, 4)));
+    if (fok) {
+      std::array<std::byte, 4> v{};
+      be32_t be{};
+      be.set(qty);
+      std::memcpy(v.data(), &be, 4);
+      append_option(out, used, OptionTag::MinQty, v);
+    }
+    if (post_only) {
+      const std::array<std::byte, 1> v{std::byte{'P'}};
+      append_option(out, used, OptionTag::PostOnly, v);
+    }
+  }
   ++stats_.encoded;
   return total;
 }
@@ -386,7 +388,7 @@ std::size_t OuchEncoder::encode_replace(const venues::OrderCommand& cmd,
     ++stats_.id_table_full;
     return 0;
   }
-  ReplaceOrder m{};
+  ReplaceOrder& m = ouch::emplace<ReplaceOrder>(out);
   m.type = 'U';
   m.orig_user_ref_num.set(orig);
   m.user_ref_num.set(urn);
@@ -398,7 +400,7 @@ std::size_t OuchEncoder::encode_replace(const venues::OrderCommand& cmd,
   put_cl_ord_id(m.cl_ord_id, cmd.cl_ord_id);
   m.appendage_length.set(0);
   ++stats_.encoded;
-  return ouch::put(out, m);
+  return sizeof(ReplaceOrder);
 }
 
 std::size_t OuchEncoder::encode_cancel(const venues::OrderCommand& cmd,
@@ -412,13 +414,13 @@ std::size_t OuchEncoder::encode_cancel(const venues::OrderCommand& cmd,
     ++stats_.unknown_order;
     return 0;
   }
-  CancelOrder m{};
+  CancelOrder& m = ouch::emplace<CancelOrder>(out);
   m.type = 'X';
   m.user_ref_num.set(urn);
   m.quantity.set(0);
   m.appendage_length.set(0);
   ++stats_.encoded;
-  return ouch::put(out, m);
+  return sizeof(CancelOrder);
 }
 
 // ---- decoder -------------------------------------------------------------------------------

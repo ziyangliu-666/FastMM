@@ -95,6 +95,19 @@ TEST_CASE("core.strong_id: distinct types and cl_ord_id round trip") {
   CHECK_FALSE(decode_cl_ord_id("fm1234deadbee").has_value());
   CHECK_FALSE(decode_cl_ord_id("fm000000000000").has_value());
   CHECK(encode_cl_ord_id(make_cl_ord_id(1, 1)).view() == "fm000100000001");
+  // The SWAR encoder against a per-digit reference, bits above 48 ignored.
+  std::uint64_t v = 0x9E37'79B9'7F4A'7C15ULL;
+  for (int n = 0; n < 2000; ++n) {
+    v = v * 6364136223846793005ULL + 1442695040888963407ULL;
+    std::string want = "fm";
+    for (int d = 11; d >= 0; --d) want += "0123456789abcdef"[(v >> (4 * d)) & 0xF];
+    CAPTURE(v);
+    REQUIRE(encode_cl_ord_id(ClientOrderId{v}).view() == want);
+    char raw[16] = {};
+    write_cl_ord_id(raw, ClientOrderId{v});
+    CHECK(std::string_view(raw, 14) == want);
+    CHECK(raw[14] == 0);
+  }
 }
 
 TEST_CASE("core.fixed: decimal parse / format round trip") {

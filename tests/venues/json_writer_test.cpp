@@ -4,8 +4,41 @@
 
 #include "fastmm/venues/order_commands.hpp"
 
+#include <string>
+
 using namespace fastmm;
 using namespace fastmm::venues;
+
+TEST_CASE("venues.json_writer: escapes at every position of long strings") {
+  // put_string() scans 8 bytes at a time before falling back to the escaping loop.
+  const std::string plain = "abcdefghijklmnopqrstu";  // 21 characters
+  for (const char special : {'"', '\\', '\x01', '\n', '\x1f'}) {
+    for (std::size_t pos = 0; pos < plain.size(); ++pos) {
+      std::string s = plain;
+      s[pos] = special;
+      std::string want = "\"" + plain.substr(0, pos);
+      if (special == '"') {
+        want += "\\\"";
+      } else if (special == '\\') {
+        want += "\\\\";
+      } else if (special == '\n') {
+        want += "\\n";
+      } else {
+        want += special == '\x01' ? "\\u0001" : "\\u001f";
+      }
+      want += plain.substr(pos + 1) + "\"";
+      char buf[128];
+      JsonWriter w(buf);
+      w.string(s);
+      CAPTURE(pos);
+      CHECK(w.view() == want);
+    }
+  }
+  char buf[128];
+  JsonWriter w(buf);
+  w.string("h\xc3\xa9llo w\xc3\xb6rld \x7f ~ 0123456789");  // UTF-8 and DEL pass through
+  CHECK(w.view() == "\"h\xc3\xa9llo w\xc3\xb6rld \x7f ~ 0123456789\"");
+}
 
 TEST_CASE("venues.json_writer: nested objects, arrays, escaping, overflow") {
   char buf[256];

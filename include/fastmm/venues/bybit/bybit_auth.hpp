@@ -35,7 +35,9 @@ struct Credentials {
 class Signer {
  public:
   Signer() = default;
-  explicit Signer(Credentials c) : creds_(std::move(c)) {}
+  explicit Signer(Credentials c) : creds_(std::move(c)) {
+    hmac_ = net::HmacSha256Key(creds_.secret.value);
+  }
 
   [[nodiscard]] bool usable() const noexcept { return creds_.usable(); }
   [[nodiscard]] std::string_view api_key() const noexcept { return creds_.api_key; }
@@ -51,7 +53,7 @@ class Signer {
     pre.append(creds_.api_key);
     pre.append(buf, format_int64(recv_window_ms, buf));
     pre.append(payload);
-    return net::hmac_sha256_hex(creds_.secret.value, pre);
+    return hmac_.sign_hex(pre);
   }
 
   // "GET/realtime" + expires.
@@ -59,7 +61,7 @@ class Signer {
     char buf[48] = "GET/realtime";
     constexpr std::size_t kPrefix = 12;
     const std::size_t n = format_int64(expires_ms, buf + kPrefix);
-    return net::hmac_sha256_hex(creds_.secret.value, std::string_view(buf, kPrefix + n));
+    return hmac_.sign_hex(std::string_view(buf, kPrefix + n));
   }
 
   // "X-BAPI-API-KEY: ..\r\nX-BAPI-TIMESTAMP: ..\r\nX-BAPI-RECV-WINDOW: ..\r\nX-BAPI-SIGN: ..\r\n"
@@ -81,6 +83,7 @@ class Signer {
 
  private:
   Credentials creds_;
+  net::HmacSha256Key hmac_{std::string_view{}};  // keyed from creds_.secret
 };
 
 }  // namespace fastmm::venues::bybit

@@ -56,6 +56,7 @@ class PositionTracker {
     const std::int64_t f = side == Side::Buy ? qty.raw : -qty.raw;
     const std::int64_t cur = p.qty.raw;
     p.fees += fee;
+    fees_total_ += fee;
     p.gross_traded += qty;
     ++p.fills;
     if (cur == 0 || (cur > 0) == (f > 0)) {
@@ -71,7 +72,9 @@ class PositionTracker {
       const std::int64_t closed = abs_f < abs_cur ? abs_f : abs_cur;
       const std::int64_t dir = cur > 0 ? 1 : -1;
       const Int128 pnl = static_cast<Int128>(px.raw - p.avg_px.raw) * closed * dir / kFixedScale;
-      p.realized += scale(Notional::from_raw(static_cast<std::int64_t>(pnl)), inst);
+      const Notional r = scale(Notional::from_raw(static_cast<std::int64_t>(pnl)), inst);
+      p.realized += r;
+      realized_total_ += r;
       const std::int64_t remaining = abs_f - closed;
       if (remaining > 0) {  // flipped through zero: the remainder opens at px
         p.qty = Qty::from_raw(f > 0 ? remaining : -remaining);
@@ -88,12 +91,13 @@ class PositionTracker {
   void mark(InstrumentId id, Price mid, const Instrument& inst) noexcept {
     Position& p = pos_[id.value];
     p.last_mark = mid;
-    if (p.qty.is_zero() || mid.is_zero()) {
-      p.unrealized = Notional{};
-      return;
+    Notional u{};
+    if (!p.qty.is_zero() && !mid.is_zero()) {
+      u = scale(Notional::from_raw(detail::mul_div<kFixedScale>(mid.raw - p.avg_px.raw, p.qty.raw)),
+                inst);
     }
-    const Int128 u = static_cast<Int128>(mid.raw - p.avg_px.raw) * p.qty.raw / kFixedScale;
-    p.unrealized = scale(Notional::from_raw(static_cast<std::int64_t>(u)), inst);
+    unrealized_total_ += u - p.unrealized;
+    p.unrealized = u;
   }
 
   // Reconciliation: overwrite qty/avg with the venue's view (PnL history is kept).
@@ -102,33 +106,28 @@ class PositionTracker {
     p.qty = qty;
     p.avg_px = qty.is_zero() ? Price{} : avg_px;
   }
-  void reset(InstrumentId id) noexcept { pos_[id.value] = Position{}; }
+  void reset(InstrumentId id) noexcept {
+    Position& p = pos_[id.value];
+    realized_total_ -= p.realized;
+    unrealized_total_ -= p.unrealized;
+    fees_total_ -= p.fees;
+    p = Position{};
+  }
 
-  [[nodiscard]] Notional total_realized() const noexcept {
-    Notional n{};
-    for (const auto& p : pos_) n += p.realized;
-    return n;
-  }
-  [[nodiscard]] Notional total_unrealized() const noexcept {
-    Notional n{};
-    for (const auto& p : pos_) n += p.unrealized;
-    return n;
-  }
-  [[nodiscard]] Notional total_fees() const noexcept {
-    Notional n{};
-    for (const auto& p : pos_) n += p.fees;
-    return n;
-  }
+  // Totals over every instrument, kept up to date by the updates above (the engine checks
+  // net_pnl() on every market-data event; summing kMaxInstruments positions there cost more
+  // than the rest of the event).
+  [[nodiscard]] Notional total_realized() const noexcept { return realized_total_; }
+  [[nodiscard]] Notional total_unrealized() const noexcept { return unrealized_total_; }
+  [[nodiscard]] Notional total_fees() const noexcept { return fees_total_; }
   [[nodiscard]] Notional net_pnl() const noexcept {
     return total_realized() + total_unrealized() - total_fees();
   }
   [[nodiscard]] Portfolio portfolio() const noexcept {
     Portfolio t;
-    for (const auto& p : pos_) {
-      t.realized += p.realized;
-      t.unrealized += p.unrealized;
-      t.fees += p.fees;
-    }
+    t.realized = realized_total_;
+    t.unrealized = unrealized_total_;
+    t.fees = fees_total_;
     t.net = t.realized + t.unrealized - t.fees;
     return t;
   }
@@ -139,6 +138,9 @@ class PositionTracker {
     return Notional::from_raw(mul_raw(n, inst.contract_multiplier));
   }
   Position pos_[kMaxInstruments] = {};
+  Notional realized_total_{};
+  Notional unrealized_total_{};
+  Notional fees_total_{};
 };
 
 }  // namespace fastmm

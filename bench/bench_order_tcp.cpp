@@ -19,14 +19,14 @@
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/user_tcp.hpp"
 
+#include <benchmark/benchmark.h>
+
 #include <arpa/inet.h>
-#include <sched.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sched.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-#include <benchmark/benchmark.h>
 
 #include <array>
 #include <atomic>
@@ -129,7 +129,9 @@ int accept_one(int lfd) {
   return -1;
 }
 
-void report(benchmark::State& state, const LogLinearHistogram& send, const LogLinearHistogram& all) {
+void report(benchmark::State& state,
+            const LogLinearHistogram& send,
+            const LogLinearHistogram& all) {
   state.counters["send_p50"] = static_cast<double>(send.percentile(0.50));
   state.counters["send_p99"] = static_cast<double>(send.percentile(0.99));
   state.counters["p50"] = static_cast<double>(all.percentile(0.50));
@@ -209,7 +211,8 @@ void BM_UserTcpSend(benchmark::State& state) {
   auto tcp = std::make_unique<UserTcp>(ring, h, tc);
   const auto poll = [&] {
     const std::int64_t now = Reactor::now_ns();
-    ring.poll([&](std::span<const std::byte> f, bool unverified) { tcp->on_frame(f, now, unverified); });
+    ring.poll(
+        [&](std::span<const std::byte> f, bool unverified) { tcp->on_frame(f, now, unverified); });
     tcp->flush();
     if (now >= tcp->next_timer_ns()) tcp->on_timer(now);
   };

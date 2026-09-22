@@ -2,6 +2,10 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/core/thread_utils.hpp"
+
+#include <sys/prctl.h>
+
 #include <thread>
 
 using namespace fastmm;
@@ -65,4 +69,18 @@ TEST_CASE("core.time: SimClock set/advance") {
   CHECK(sc.cycles().v == 5'000'000);
   CHECK(sc.to_timestamp(Cycles{7}).ns == 7);
   static_assert(ClockLike<SimClock>);
+}
+
+TEST_CASE("core.thread_utils: timer slack applies to the thread and the threads it starts") {
+  // In a thread of its own so the test runner keeps its slack.
+  std::thread([] {
+    const long before = ::prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0);
+    CHECK(set_timer_slack(Duration{}));  // no-op
+    CHECK(::prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0) == before);
+    REQUIRE(set_timer_slack(nanoseconds(1)));
+    CHECK(::prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0) == 1);
+    long child = 0;
+    std::thread([&child] { child = ::prctl(PR_GET_TIMERSLACK, 0, 0, 0, 0); }).join();
+    CHECK(child == 1);
+  }).join();
 }

@@ -26,6 +26,7 @@
 #include <bit>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -666,6 +667,22 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       FASTMM_LOG_INFO("thread affinity: {} thread(s) of this process moved to CPUs {}",
                       confined.threads,
                       std::string_view(cpus));
+    }
+  }
+  // Threads started from here on (journal, network, engine) inherit the timer slack.
+  if (cfg.engine.timer_slack_ns > 0) {
+    if (set_timer_slack(nanoseconds(cfg.engine.timer_slack_ns))) {
+      FASTMM_LOG_INFO("timer slack: {} ns", cfg.engine.timer_slack_ns);
+    } else {
+      FASTMM_LOG_WARN("timer slack: prctl(PR_SET_TIMERSLACK) refused");
+    }
+  }
+  if (cfg.engine.lock_memory) {
+    if (const int err = lock_all_memory(); err != 0) {
+      FASTMM_LOG_WARN("lock_memory: mlockall failed: {} (raise ulimit -l / LimitMEMLOCK)",
+                      std::strerror(err));
+    } else {
+      FASTMM_LOG_INFO("lock_memory: all memory locked");
     }
   }
   const SignalGuard signals;

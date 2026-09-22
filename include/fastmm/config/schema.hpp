@@ -115,6 +115,18 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "fastmm-live: TSC recalibration period, s; 0 = off (default 10)"},
     {"engine",
+     "timer_slack_ns",
+     KeyType::Int,
+     false,
+     "fastmm-live: timer slack of its threads, ns; how late a sleep may end (adaptive spin_mode "
+     "sleeps 50 us when idle); 0 = the kernel's, 50000 (default 0)"},
+    {"engine",
+     "lock_memory",
+     KeyType::Bool,
+     false,
+     "fastmm-live: mlockall() the process, so no page is swapped out or faulted in on the hot "
+     "path; needs ulimit -l above the process size, a warning otherwise (default false)"},
+    {"engine",
      "min_requote_ticks",
      KeyType::Int,
      false,

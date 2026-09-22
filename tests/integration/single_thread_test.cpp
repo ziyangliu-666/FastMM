@@ -58,7 +58,10 @@ struct SessionResult {
 };
 
 // Runs BasicMM until the simulator has seen `fills` fills, then stops the session like SIGTERM.
-SessionResult run_single(ServerFixture& fx, bool tls, const std::string& name, std::uint64_t fills) {
+SessionResult run_single(ServerFixture& fx,
+                         bool tls,
+                         const std::string& name,
+                         std::uint64_t fills) {
   register_strategies_once();
   Config cfg = sim_local_config(fx, tls);
   cfg.engine.name = name;

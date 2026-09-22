@@ -9,6 +9,7 @@
 #include "fastmm/sim/sha256.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -172,6 +173,11 @@ TEST_CASE("sim.sha256: FIPS test vectors and streaming equivalence") {
   Sha256 v;
   v.update(million.data(), million.size());
   CHECK(v.hex() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+  // Uneven chunks cross the block boundary at every offset.
+  Sha256 w;
+  for (std::size_t off = 0, step = 1; off < million.size(); off += step, step = step % 97 + 1)
+    w.update(million.data() + off, std::min(step, million.size() - off));
+  CHECK(w.hex() == v.hex());
 }
 
 TEST_CASE("sim.outbound_hash: normalization ignores journal seq/flags") {

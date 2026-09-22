@@ -65,6 +65,18 @@ All notable changes are recorded here (Keep a Changelog format).
   `ByteLink` (`TcpLink` or `UserTcpLink`).
 - `bench_order_tcp`: the send call of a kernel TCP socket against `UserTcp` over a veth. Results
   and a list of kernel-bypass order-entry options with the hardware each needs: `bench/README.md`.
+- `[engine] timer_slack_ns` (PR_SET_TIMERSLACK for fastmm-live's threads; 0 keeps the kernel's
+  50 us) and `[engine] lock_memory` (mlockall). `configs/profiles/production-latency.toml`: the
+  `[engine]` settings for a dedicated host (busy spinning on isolated cores, timer slack 1 ns,
+  locked memory); the shipped-config test loads `configs/profiles/` too.
+- `scripts/build-pgo.sh [--compiler gcc|clang] [--bolt]`: PGO build of `release-native` trained on
+  the hot-path benchmarks, a synthetic backtest and `scripts/bench-e2e.sh`; `--bolt` rewrites
+  `fastmm-live`, `fastmm-sim-itch` and three benchmarks with `llvm-bolt` (instrumentation mode;
+  llvm-bolt is unpacked from the distribution package without root when not installed).
+- `HotArray` (`core/hot_array.hpp`): zeroed, resident, 2 MiB-page tables; `CounterKeyMap` for keys
+  handed out by counters; `net::HmacSha256` with a precomputed key.
+- Benchmarks `BM_Ouch50_EncodeNewIds`, `BM_Ouch50_EncodeColdMap`, `BM_Ouch42_EncodeNewIds`,
+  `BM_ItchL2Bridge_Message_DefaultBook`; `scripts/bench-e2e.sh --timer-slack`.
 - Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
   docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
   `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one
@@ -211,6 +223,25 @@ All notable changes are recorded here (Keep a Changelog format).
 - The simulator's outbound SHA-256 (replay proof) uses the x86 SHA extensions when present: it was
   half of `BM_TickToOrder_Sim` (p50 991 -> 543 ns, p99 1279 -> 671 ns). That benchmark runs through
   `SimTransport` and never signs a Binance request.
+- Hot paths (bench/README.md, "Hot-path changes"): OUCH 5.0 encode in bench-e2e 4.4 us -> 0.1 us
+  p50 and wire to wire 35 -> 25 us p50; `BM_TickToOrder_Sim` p50 991 -> 247 ns; `BM_EngineStep_Sim`
+  9.2 -> 2.9 us; Binance order.place encode 1440 -> 523 ns; ITCH bridge with the default book 84 ->
+  55 ns per message. Outbound hashes and journals are unchanged.
+  - `OpenHashMap` keeps the occupancy flag in the slot and allocates a `HotArray`: no page fault on
+    the first insert into a page (every new OUCH order paid one), one cache line per probe.
+  - `ouch50::UserRefMap` is direct-mapped (`CounterKeyMap`); the OUCH 4.2 / 5.0 encoders write
+    messages in place; `write_cl_ord_id()` formats the ClOrdID with SWAR hex.
+  - `PositionTracker` keeps realized / unrealized / fee totals; `net_pnl()` no longer sums every
+    instrument on each market-data event.
+  - Fixed-point products and quotients stay in 64 bits unless they overflow (`detail::mul_div`).
+  - The simulator hashes outbound orders with SHA-NI when available, its order scheduler heaps keys
+    instead of 200-byte payloads, and acks format ids with `std::to_chars`.
+  - L3 book index, orders and levels are `HotArray`s; `ItchL2Bridge` prefetches the index slot of
+    the order a message names.
+  - Binance and Bybit signers key HMAC-SHA256 once; `JsonWriter` and `QueryBuilder` append in bulk
+    and `QueryBuilder` no longer zeroes its buffer.
+- `release-native` stays gcc `-O3 -march=native` with LTO (bench/README.md compares `-O2`, no LTO,
+  `x86-64-v2`, clang 18, PGO and BOLT).
 - Order sends are coalesced on the network thread: `on_wake()` of every venue drains the outbound
   ring through `drain_outbound_coalesced()` and writes all orders of the drain with one system call.
   `TcpLink::cork()` / `uncork()` (SoupBinTCP/OUCH: header and message no longer go out in two writes
@@ -550,6 +581,11 @@ All notable changes are recorded here (Keep a Changelog format).
   state and applies the error action; a transient logon failure retries after 2 s.
 - `resolve_venue_env` no longer requires `api_secret` for Ed25519 keys, and keeps `api_key` in a
   dry run with `md_format = "sbe"`.
+- Latencies printed 0 on hosts with `constant_tsc` but without `nonstop_tsc` (KVM cloud VMs): the
+  clock fell back to `clock_gettime` and the TSC rate was dropped with it, so the venues converted
+  their rdtscp histograms with a zero rate and the engine subtracted rdtscp stamps from wall-clock
+  nanoseconds. The calibration keeps the rate for intervals (`TscKind::Constant`,
+  `TscCalibration::has_rate()`); wall time still comes from `clock_gettime`.
 - Two GCC 13 `-Wstringop-overflow` warnings in `fastmm-sim-exchange` (`append_user_event`).
 - **`BM_TickToOrder_Sim` measured no order events.** Since the quote manager applies a requote
   target on the ack of a pending order, every timed tick found both quotes pending and sent

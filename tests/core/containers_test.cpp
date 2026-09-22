@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include "fastmm/core/containers/counter_key_map.hpp"
 #include "fastmm/core/containers/flat_map.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
@@ -120,6 +121,46 @@ TEST_CASE("core.open_hash_map: randomized 1M ops vs std::unordered_map") {
   m.clear();
   CHECK(m.empty());
   CHECK(m.find(1) == nullptr);
+}
+
+TEST_CASE("core.counter_key_map: direct slots, overflow for colliding keys, vs a reference") {
+  CounterKeyMap<std::uint32_t, 64, 16> m;  // overflow holds 14
+  std::unordered_map<std::uint64_t, std::uint32_t> ref;
+  CHECK_FALSE(m.insert(0, 1));  // 0 marks an empty slot
+  CHECK(m.find(0) == nullptr);
+  // Keys 64 apart share a slot: the first takes it, the next 14 go to the overflow table.
+  for (std::uint64_t k = 5; k < 5 + 64 * 15; k += 64) {
+    REQUIRE(m.insert(k, static_cast<std::uint32_t>(k)));
+    ref.emplace(k, static_cast<std::uint32_t>(k));
+  }
+  CHECK_FALSE(m.insert(5 + 64 * 15, 0));  // slot and overflow taken
+  CHECK(m.size() == 15);
+  CHECK(m.erase(5));  // the slot's owner leaves; the others stay findable
+  ref.erase(5);
+  CHECK(m.find(5) == nullptr);
+  for (const auto& [k, v] : ref) {
+    REQUIRE(m.find(k) != nullptr);
+    CHECK(*m.find(k) == v);
+  }
+  // A counter's keys: randomized erase order, then the next keys reuse the freed slots.
+  std::mt19937_64 rng(7);
+  std::uint64_t next = 1000;
+  for (int i = 0; i < 100'000; ++i) {
+    if (ref.size() < 40 && rng() % 2 == 0) {
+      const std::uint64_t k = next++;
+      if (m.insert(k, static_cast<std::uint32_t>(i))) ref.emplace(k, static_cast<std::uint32_t>(i));
+    } else if (!ref.empty()) {
+      auto it = ref.begin();
+      std::advance(it, static_cast<std::ptrdiff_t>(rng() % ref.size()));
+      REQUIRE(m.erase(it->first));
+      ref.erase(it);
+    }
+    REQUIRE(m.size() == ref.size());
+  }
+  for (const auto& [k, v] : ref) {
+    REQUIRE(m.find(k) != nullptr);
+    CHECK(*m.find(k) == v);
+  }
 }
 
 TEST_CASE("core.open_hash_map: load cap and StrongId keys") {

@@ -74,12 +74,12 @@ namespace detail {
 template <class T, bool big_endian>
 struct EndianField {
   unsigned char raw[sizeof(T)];
-  [[nodiscard]] T get() const noexcept {
+  [[nodiscard]] FASTMM_FORCE_INLINE T get() const noexcept {
     T v;
     std::memcpy(&v, raw, sizeof(T));
     return big_endian ? swap(v) : v;
   }
-  void set(T v) noexcept {
+  FASTMM_FORCE_INLINE void set(T v) noexcept {
     const T w = big_endian ? swap(v) : v;
     std::memcpy(raw, &w, sizeof(T));
   }

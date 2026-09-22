@@ -10,12 +10,14 @@
 #                        [--user-tcp-ip 10.211.0.3] [--user-tcp-port 0]
 #                        [--duration 30] [--runs 3] [--speed 4]
 #                        [--spin busy|adaptive] [--threading split|single] [--replay]
+#                        [--timer-slack NS]
 #                        [--sim-cpu 2] [--engine-cpu 4] [--net-cpu 6]
 #                        [--build build/release] [--out runs/bench-e2e-<time>]
 #
 # A CPU of -1 leaves that process unpinned (ctest runs it that way). --threading single runs the
 # venue on the engine thread ([engine] threading, --net-cpu unused). --replay journals the session
-# and requires fastmm-replay --verify to match it. Exit codes: 0 ok, 1 a run
+# and requires fastmm-replay --verify to match it. --timer-slack sets [engine] timer_slack_ns
+# (0: the kernel's 50 us). Exit codes: 0 ok, 1 a run
 # failed (fastmm-live exit code, feed not live, no orders), 2 usage, 77 no namespaces here.
 # kernel runs unprivileged in `unshare -Urn`. af_xdp loads an XDP program and needs root:
 #   sudo scripts/bench-e2e.sh --backend af_xdp
@@ -35,9 +37,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BACKEND=kernel; TRANSPORT=kernel; MD=multicast; EXCEPTION=0; DURATION=30; RUNS=1; SPEED=4; SPIN=busy
-THREADING=split; REPLAY=0; SIM_CPU=2; ENGINE_CPU=4; NET_CPU=6; BUILD=build/release; OUT=""
+THREADING=split; REPLAY=0; SLACK=0; SIM_CPU=2; ENGINE_CPU=4; NET_CPU=6; BUILD=build/release; OUT=""
 USER_TCP_IP=10.211.0.3; USER_TCP_PORT=0
-usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --backend) BACKEND="$2"; shift 2;;
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --spin) SPIN="$2"; shift 2;;
     --threading) THREADING="$2"; shift 2;;
     --replay) REPLAY=1; shift;;
+    --timer-slack) SLACK="$2"; shift 2;;
     --sim-cpu) SIM_CPU="$2"; shift 2;;
     --engine-cpu) ENGINE_CPU="$2"; shift 2;;
     --net-cpu) NET_CPU="$2"; shift 2;;
@@ -83,7 +86,7 @@ if [[ -z "${FASTMM_BENCH_E2E_NS:-}" ]]; then
   mkdir -p "$OUT"
   OUT="$(cd "$OUT" && pwd)"
   args=(--backend "$BACKEND" --order-transport "$TRANSPORT" --md "$MD" --duration "$DURATION" --runs "$RUNS"
-        --speed "$SPEED" --spin "$SPIN" --threading "$THREADING"
+        --speed "$SPEED" --spin "$SPIN" --threading "$THREADING" --timer-slack "$SLACK"
         --sim-cpu "$SIM_CPU" --engine-cpu "$ENGINE_CPU" --net-cpu "$NET_CPU" --build "$BUILD" --out "$OUT"
         --user-tcp-ip "$USER_TCP_IP" --user-tcp-port "$USER_TCP_PORT")
   [[ "$EXCEPTION" == 1 ]] && args+=(--dpdk-exception)
@@ -160,7 +163,7 @@ sed -e "s/^interface = \"lo\"/interface = \"$MD_IF\"/" \
     -e "s/^line_a = .*/line_a = \"$LINE_A\"/" \
     -e "s/^line_b = .*/line_b = \"$LINE_B\"/" \
     -e "s/^rx_backend = \"kernel\"/rx_backend = \"$BACKEND\"/" \
-    -e "s/^spin_mode = .*/spin_mode = \"$SPIN\"/" \
+    -e "s/^spin_mode = .*/spin_mode = \"$SPIN\"\ntimer_slack_ns = $SLACK/" \
     -e "s/^cpu = -1 .*/cpu = $ENGINE_CPU/" \
     -e "s/^net_cpus = \[\].*/net_cpus = $NET_CPUS/" \
     -e "s/^name = \"nasdaq-itch-sim\"/name = \"nasdaq-itch-bench\"/" \
