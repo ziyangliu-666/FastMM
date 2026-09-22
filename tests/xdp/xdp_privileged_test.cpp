@@ -241,15 +241,18 @@ void veth_receive(XdpMode mode, XdpMode expect) {
 
   std::vector<Received> got;
   got.reserve(2 * kPerLine);
+  // Poll until empty: one poll takes at most `batch` frames, and a burst larger than the UMEM
+  // runs the fill ring dry unless frames go back as fast as they arrive.
   const auto drain = [&] {
-    src.poll([&](std::span<const std::byte> p, const RxMeta& m) noexcept {
+    while (src.poll([&](std::span<const std::byte> p, const RxMeta& m) noexcept {
       got.push_back({std::string(reinterpret_cast<const char*>(p.data()), p.size()), m});
-    });
+    }) != 0) {
+    }
   };
   for (int i = 0; i < kPerLine; ++i) {
     REQUIRE(send_to(tx, ip("239.10.0.1"), kPortA, "A" + std::to_string(i)));
     REQUIRE(send_to(tx, ip("239.10.0.2"), kPortB, "B" + std::to_string(i)));
-    if (i % 32 == 0) drain();
+    if (i % 16 == 0) drain();
   }
   CHECK(wait_until([&] {
     drain();
@@ -257,8 +260,12 @@ void veth_receive(XdpMode mode, XdpMode expect) {
   }));
   src.refresh_stats();
   MESSAGE("datagrams " << src.stats().datagrams << ", bad frames " << src.stats().bad_frames
-                       << ", unmatched " << src.stats().unmatched << ", fallback "
-                       << src.interfaces()[0].fallback_packets);
+                       << ", unmatched " << src.stats().unmatched << ", fill short "
+                       << src.stats().fill_short << ", fallback "
+                       << src.interfaces()[0].fallback_packets << ", rx ring full "
+                       << src.socket_stats()[0].rx_ring_full << ", fill ring empty "
+                       << src.socket_stats()[0].rx_fill_ring_empty_descs);
+  CHECK(src.stats().fill_short == 0);
   REQUIRE(got.size() == 2U * kPerLine);
   int next_a = 0;
   int next_b = 0;
