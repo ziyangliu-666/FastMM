@@ -104,7 +104,7 @@ struct NasdaqItchVenueConfig {
   std::string name = "nasdaq_itch";
   RxBackend rx_backend = RxBackend::Kernel;
   std::array<ItchLine, 2> lines;
-  std::vector<std::uint32_t> queues;  // af_xdp RX queues on every interface (empty: queue 0)
+  std::vector<std::uint32_t> queues;  // af_xdp RX queues on every interface (empty: all)
   net::XdpMode xdp_mode = net::XdpMode::Auto;
   int rcvbuf_bytes = 0;             // kernel: SO_RCVBUF, 0 = system default
   std::uint32_t batch = 32;         // datagrams per recvmmsg (kernel) / RX descriptors per poll

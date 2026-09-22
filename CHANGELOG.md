@@ -531,6 +531,19 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- `af_xdp` on virtio_net lost market data: attaching an XDP program raises the device's queue
+  pairs by one per CPU (XDP_TX queues), the host then delivers on those RX queues too, and the
+  single socket on queue 0 saw one line, or none after the first packets. The program is now
+  attached before the sockets are bound, and without `queues` there is a socket on every RX queue
+  the interface has at that point (ETHTOOL_GCHANNELS). The final status kept zero XDP counters
+  (`xdp_fallback` among them) because the source was closed before the last publish; the venue
+  also logs the source's totals when it stops.
+- Hosts with `constant_tsc` but without `nonstop_tsc` (KVM cloud VMs): the engine's latency hops
+  subtracted wall-clock ns from TSC stamps (T1 to T2 printed about 1.8e15 us) and the venues'
+  order latencies were 0. The TSC rate is kept for intervals while wall time stays on
+  `clock_gettime`.
+- `scripts/host-setup.sh firewall <iface>` (also run by `xdp-prep` and `dpdk-bind`): with ufw
+  active, allow the interface's subnet.
 - Binance Spot with `key_type = "ed25519"` never sent `session.logon` on the order connection
   (the connection waited in Authenticating for a logon that is sent from the subscribe callback),
   so the order channel never went Live. A revoked session (`id` null, 401) now clears the logon

@@ -84,13 +84,17 @@ struct VethPair {
   int home_ns = -1;
   bool ok = false;
 
-  VethPair() {
+  // `queues`: RX and TX queues on each end.
+  explicit VethPair(unsigned queues = 1) {
     teardown();
+    const std::string q = queues == 1 ? std::string()
+                                      : " numrxqueues " + std::to_string(queues) + " numtxqueues " +
+                                            std::to_string(queues);
     home_ns = ::open("/proc/thread-self/ns/net", O_RDONLY | O_CLOEXEC);
     const std::string r = "ip -n " + rx_ns + " ";
     const std::string t = "ip -n " + tx_ns + " ";
     ok = home_ns >= 0 && sh("ip netns add " + rx_ns) && sh("ip netns add " + tx_ns) &&
-         sh(r + "link add " + rx_if + " type veth peer name " + tx_if) &&
+         sh(r + "link add " + rx_if + q + " type veth peer name " + tx_if + q) &&
          sh(r + "link set " + tx_if + " netns " + tx_ns) &&
          sh(r + "addr add 10.203.0.2/24 dev " + rx_if) && sh(r + "link set lo up") &&
          sh(r + "link set " + rx_if + " up") && sh(t + "addr add 10.203.0.1/24 dev " + tx_if) &&
@@ -549,6 +553,70 @@ TEST_CASE("veth: receive in native copy mode") {
 
 TEST_CASE("veth: auto settles on native copy (veth has no zero-copy)") {
   veth_receive(XdpMode::Auto, XdpMode::NativeCopy);
+}
+
+// Unlisted queues: a socket on every RX queue the interface has once the program is attached
+// (virtio_net adds queues with XDP and the host delivers on all of them). Datagrams from many
+// flows, which the sender spreads over its TX queues and so over the receiver's RX queues, all
+// arrive and none falls back to the kernel.
+TEST_CASE("veth: a socket on every RX queue unless the queues are listed") {
+  FASTMM_XDP_SKIP_UNLESS(veth_skip_reason());
+  constexpr unsigned kQueues = 4;
+  constexpr int kFlows = 32;
+  constexpr int kPerFlow = 4;
+  VethPair net(kQueues);
+  REQUIRE_MESSAGE(net.ok, "veth setup failed (ip netns / ip link)");
+  REQUIRE(net.enter_tx());
+  std::vector<int> tx;
+  for (int i = 0; i < kFlows; ++i) {
+    tx.push_back(udp_socket());
+    REQUIRE(tx.back() >= 0);
+  }
+  REQUIRE(net.enter_rx());
+  XdpConfig cfg;
+  cfg.subscriptions.push_back({net.rx_if, ip("10.203.0.2"), kPortUnicast, 0});
+  cfg.frame_count = 256;
+  cfg.mode = XdpMode::NativeCopy;
+  XdpDatagramSource src;
+  int rc = src.open(cfg);
+  net.go_home();
+  REQUIRE_MESSAGE(rc == 0, src.error());
+  REQUIRE(src.fds().size() == kQueues);
+  for (unsigned q = 0; q < kQueues; ++q) CHECK(src.socket_stats()[q].queue == q);
+
+  std::size_t got = 0;
+  const auto drain = [&] {
+    while (src.poll([&](std::span<const std::byte>, const RxMeta&) noexcept { ++got; }) != 0) {
+    }
+  };
+  for (int i = 0; i < kPerFlow; ++i) {
+    for (const int fd : tx) REQUIRE(send_to(fd, ip("10.203.0.2"), kPortUnicast, "x"));
+    drain();
+  }
+  CHECK(wait_until([&] {
+    drain();
+    return got >= static_cast<std::size_t>(kFlows * kPerFlow);
+  }));
+  CHECK(got == static_cast<std::size_t>(kFlows * kPerFlow));
+  REQUIRE(src.refresh_stats() == 0);
+  CHECK(src.interfaces()[0].fallback_packets == 0);
+  src.close();
+
+  cfg.queues.push_back({net.rx_if, {2}});
+  REQUIRE(net.enter_rx());
+  XdpDatagramSource listed;
+  rc = -EBUSY;
+  CHECK(wait_until(  // the previous sockets' bindings clear from a workqueue
+      [&] {
+        rc = listed.open(cfg);
+        return rc != -EBUSY;
+      },
+      2000));
+  net.go_home();
+  REQUIRE_MESSAGE(rc == 0, listed.error());
+  REQUIRE(listed.fds().size() == 1);
+  CHECK(listed.socket_stats()[0].queue == 2);
+  for (const int fd : tx) ::close(fd);
 }
 
 TEST_CASE("veth: zero-copy fails cleanly and a second program is refused with EBUSY") {

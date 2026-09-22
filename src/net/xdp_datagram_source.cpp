@@ -3,6 +3,9 @@
 #include "xdp_uapi.hpp"
 
 #include <arpa/inet.h>
+#include <dirent.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
@@ -113,6 +116,34 @@ std::size_t possible_cpus() noexcept {
     count = n > 0 ? static_cast<std::size_t>(n) : 1;
   }
   return count;
+}
+
+// XSKMAP entries when the queues are not listed: RX queue indexes the program can redirect.
+constexpr std::uint32_t kXskMapSlots = 256;
+
+// RX queues the interface has now: ETHTOOL_GCHANNELS (rx + combined channels) in this thread's
+// network namespace, else /sys/class/net/<if>/queues/rx-* (real_num_rx_queues, but of the
+// namespace sysfs was mounted in), else 1.
+std::uint32_t rx_queue_count(const std::string& ifname) noexcept {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd >= 0) {
+    ethtool_channels ch{};
+    ch.cmd = ETHTOOL_GCHANNELS;
+    ifreq ifr{};
+    std::strncpy(ifr.ifr_name, ifname.c_str(), IFNAMSIZ - 1);
+    ifr.ifr_data = reinterpret_cast<char*>(&ch);
+    const bool ok = ::ioctl(fd, SIOCETHTOOL, &ifr) == 0;
+    ::close(fd);
+    if (ok && ch.rx_count + ch.combined_count != 0) return ch.rx_count + ch.combined_count;
+  }
+  const std::string path = "/sys/class/net/" + ifname + "/queues";
+  DIR* d = ::opendir(path.c_str());
+  if (d == nullptr) return 1;
+  std::uint32_t n = 0;
+  while (const dirent* e = ::readdir(d))
+    if (std::strncmp(e->d_name, "rx-", 3) == 0) ++n;
+  ::closedir(d);
+  return n != 0 ? n : 1;
 }
 
 bool is_power_of_two(std::uint32_t v) noexcept {
@@ -501,7 +532,7 @@ int XdpDatagramSource::create_socket(detail::XskSocket& s,
 }
 
 int XdpDatagramSource::open_interface(std::size_t iface,
-                                      std::span<const std::uint32_t> queues,
+                                      std::span<const std::uint32_t> listed,
                                       std::uint32_t routes_begin,
                                       std::uint32_t routes_end,
                                       const XdpConfig& cfg) {
@@ -511,7 +542,9 @@ int XdpDatagramSource::open_interface(std::size_t iface,
   std::vector<xdp::Key> keys;
   for (std::uint32_t r = routes_begin; r < routes_end; ++r)
     keys.push_back(xdp::Key{routes_[r].dst_ip, htons(routes_[r].dst_port), 0});
-  const std::uint32_t slots = *std::max_element(queues.begin(), queues.end()) + 1;
+  const std::uint32_t slots =
+      listed.empty() ? kXskMapSlots
+                     : std::max(kXskMapSlots, *std::max_element(listed.begin(), listed.end()) + 1);
   const bool tcp_here = cfg.tcp_ip != 0 && cfg.tcp_interface == st.name;
   xdp::TcpMatch tcp;
   if (tcp_here) tcp = {cfg.tcp_ip, cfg.tcp_port, cfg.tcp_arp};
@@ -520,29 +553,13 @@ int XdpDatagramSource::open_interface(std::size_t iface,
     return fail(rc, "af_xdp " + st.name + ": " + err);
 
   const std::size_t first = sockets_.size();
-  for (const std::uint32_t q : queues) {
-    detail::XskSocket s;
-    s.ifindex = st.ifindex;
-    s.queue = q;
-    s.routes_begin = routes_begin;
-    s.routes_end = routes_end;
-    // The first socket of the UserTcp interface transmits; its UMEM has the TX frames too.
-    s.tx_frames = tcp_here && sockets_.size() == first ? cfg.tx_frames : 0;
-    s.umem_len = static_cast<std::size_t>(cfg.frame_count + s.tx_frames) * cfg.frame_size;
-    void* mem = ::mmap(nullptr,
-                       s.umem_len,
-                       PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
-                       -1,
-                       0);
-    if (mem == MAP_FAILED) {
-      const int e = errno;
-      return fail(-e, "af_xdp " + st.name + ": UMEM mmap: " + std::strerror(e));
+  const auto drop_sockets = [&] {
+    for (std::size_t i = first; i < sockets_.size(); ++i) {
+      close_socket(sockets_[i]);
+      if (sockets_[i].umem != nullptr) ::munmap(sockets_[i].umem, sockets_[i].umem_len);
     }
-    s.umem = static_cast<std::byte*>(mem);
-    sockets_.push_back(s);
-  }
-  const std::span<detail::XskSocket> socks(sockets_.data() + first, queues.size());
+    sockets_.resize(first);
+  };
 
   static constexpr std::array<XdpMode, 3> kAutoOrder = {
       XdpMode::ZeroCopy, XdpMode::NativeCopy, XdpMode::Generic};
@@ -551,6 +568,7 @@ int XdpDatagramSource::open_interface(std::size_t iface,
                                              : std::span<const XdpMode>(&cfg.mode, 1);
   std::string tried;
   bool native_unsupported = false;
+  bool attached_generic = false;
   int last_rc = -EOPNOTSUPP;
   for (const XdpMode m : order) {
     const bool generic = m == XdpMode::Generic;
@@ -559,38 +577,79 @@ int XdpDatagramSource::open_interface(std::size_t iface,
       last_rc = rc;
       if (!tried.empty()) tried += "; ";
       tried += std::string(to_string(m)) + ": " + why;
-      for (auto& s : socks) close_socket(s);
+      drop_sockets();
     };
+    // Attach first: a driver may change its RX queue count with the program (virtio_net adds a
+    // queue pair per CPU for XDP_TX, and the host then spreads the traffic over them too), and
+    // bind() accepts only queues that exist.
+    if (filter.link_fd() >= 0 && attached_generic != generic) filter.detach();
+    if (filter.link_fd() < 0) {
+      const int rc = filter.attach(st.ifindex, generic);
+      if (rc == -EBUSY || rc == -EEXIST) {
+        return fail(-EBUSY,
+                    "af_xdp " + st.name +
+                        ": the interface already has an XDP program (see `ip link show dev " +
+                        st.name + "`)");
+      }
+      if (rc < 0) {
+        if (!generic) native_unsupported = true;
+        note(rc, std::string(generic ? "generic" : "native") + " attach: " + errno_text(rc));
+        continue;
+      }
+      attached_generic = generic;
+    }
+    std::vector<std::uint32_t> queues(listed.begin(), listed.end());
+    if (queues.empty()) {
+      const std::uint32_t n = rx_queue_count(st.name);
+      if (n > slots) {
+        filter.detach();
+        return fail(-EINVAL,
+                    "af_xdp " + st.name + ": " + std::to_string(n) +
+                        " RX queues; list the ones that carry the feed in `queues`");
+      }
+      for (std::uint32_t q = 0; q < n; ++q) queues.push_back(q);
+    }
     bool bound = true;
-    for (auto& s : socks) {
+    for (const std::uint32_t q : queues) {
+      detail::XskSocket s;
+      s.ifindex = st.ifindex;
+      s.queue = q;
+      s.routes_begin = routes_begin;
+      s.routes_end = routes_end;
+      // The first socket of the UserTcp interface transmits; its UMEM has the TX frames too.
+      s.tx_frames = tcp_here && sockets_.size() == first ? cfg.tx_frames : 0;
+      s.umem_len = static_cast<std::size_t>(cfg.frame_count + s.tx_frames) * cfg.frame_size;
+      void* mem = ::mmap(nullptr,
+                         s.umem_len,
+                         PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
+                         -1,
+                         0);
+      if (mem == MAP_FAILED) {
+        const int e = errno;
+        drop_sockets();
+        return fail(-e, "af_xdp " + st.name + ": UMEM mmap: " + std::strerror(e));
+      }
+      s.umem = static_cast<std::byte*>(mem);
+      sockets_.push_back(s);
+      detail::XskSocket& sock = sockets_.back();
       std::string why;
-      if (const int rc = create_socket(s, m == XdpMode::ZeroCopy, cfg, why); rc < 0) {
-        note(rc, "queue " + std::to_string(s.queue) + " " + why);
+      if (const int rc = create_socket(sock, m == XdpMode::ZeroCopy, cfg, why); rc < 0) {
+        note(rc, "queue " + std::to_string(q) + " " + why);
         bound = false;
         break;
       }
-      if (const int rc = filter.set_socket(s.queue, s.fd); rc < 0) {
+      if (const int rc = filter.set_socket(q, sock.fd); rc < 0) {
         note(rc, "BPF_MAP_UPDATE_ELEM (xskmap): " + errno_text(rc));
         bound = false;
         break;
       }
     }
     if (!bound) continue;
-    const int rc = filter.attach(st.ifindex, generic);
-    if (rc == -EBUSY || rc == -EEXIST) {
-      return fail(-EBUSY,
-                  "af_xdp " + st.name +
-                      ": the interface already has an XDP program (see `ip link show dev " +
-                      st.name + "`)");
-    }
-    if (rc < 0) {
-      if (!generic) native_unsupported = true;
-      note(rc, std::string(generic ? "generic" : "native") + " attach: " + errno_text(rc));
-      continue;
-    }
     st.mode = m;
     return 0;
   }
+  filter.detach();
   return fail(last_rc, "af_xdp " + st.name + ": no mode worked (" + tried + ")");
 }
 
@@ -652,19 +711,16 @@ int XdpDatagramSource::open(const XdpConfig& cfg) {
         routes_.push_back({sub.group, sub.port, static_cast<std::uint8_t>(k)});
     }
   }
-  std::size_t socket_count = 0;
+  // Unlisted interfaces (empty): every RX queue, counted once the program is attached.
   std::vector<std::vector<std::uint32_t>> queues(names.size());
   for (std::size_t i = 0; i < names.size(); ++i) {
     for (const auto& q : cfg.queues)
       if (q.interface == names[i])
         queues[i].insert(queues[i].end(), q.queues.begin(), q.queues.end());
-    if (queues[i].empty()) queues[i].push_back(0);
     std::sort(queues[i].begin(), queues[i].end());
     if (std::adjacent_find(queues[i].begin(), queues[i].end()) != queues[i].end())
       return fail(-EINVAL, "af_xdp: " + names[i] + " lists a queue twice");
-    socket_count += queues[i].size();
   }
-  sockets_.reserve(socket_count);  // XskSocket spans stay valid while sockets are added
 
   std::uint32_t begin = 0;
   for (std::size_t i = 0; i < names.size(); ++i) {

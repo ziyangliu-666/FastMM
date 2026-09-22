@@ -123,7 +123,7 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `line_b_interface` | string |  | nasdaq_itch: interface of line B, overrides interface |
 | `line_a_source` | string |  | nasdaq_itch: source address of line A: a source-specific join (default any source) |
 | `line_b_source` | string |  | nasdaq_itch: source address of line B |
-| `queues` | any |  | nasdaq_itch, af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default 0) |
+| `queues` | any |  | nasdaq_itch, af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default: every RX queue the interface has with the program attached) |
 | `dpdk_eal_args` | string |  | nasdaq_itch, dpdk: rte_eal_init arguments, space-separated (e.g. "--no-huge --no-pci --in-memory --vdev=net_af_packet0,iface=eth1") |
 | `dpdk_port` | string |  | nasdaq_itch, dpdk: ethdev name, e.g. net_af_packet0 or a PCI address (default: the first port) |
 | `dpdk_exception_port` | string |  | nasdaq_itch, dpdk: ethdev name of a net_tap vdev that carries the kernel's traffic on the port (ARP, GLIMPSE, re-requests, IGMP, kernel TCP); default none |

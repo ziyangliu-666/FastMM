@@ -17,6 +17,7 @@ On both hosts:
 ```bash
 cd /opt && tar xzf fastmm-*-x86_64.tar.gz && ln -sfn /opt/fastmm-*-x86_64 /opt/fastmm
 /opt/fastmm/scripts/host-setup.sh all     # packages, hugepages, irqbalance off, interrupts to CPU 0, info
+/opt/fastmm/scripts/host-setup.sh firewall enp6s0   # ufw (on by default on Vultr): allow the VPC subnet
 ```
 
 `info` lists each NIC with its PCI address, driver and queues. Check that the VPC addresses ping each other, and give the live host a key for `ssh root@<sim public address>` (the live host's VPC NIC leaves the kernel for DPDK, so use the public address for ssh).
@@ -32,7 +33,7 @@ C="--remote-sim root@<sim public ip> --sim-ip <sim vpc ip> --live-ip <live vpc i
 scripts/bench-2host.sh $C --backend kernel --iface enp6s0
 scripts/bench-2host.sh $C --backend kernel --iface enp6s0 --md multicast   # only if the VPC carries multicast
 
-scripts/host-setup.sh xdp-prep enp6s0                                        # one queue, GRO/LRO off
+scripts/host-setup.sh xdp-prep enp6s0                                        # fewest queues, GRO/LRO off
 scripts/bench-2host.sh $C --backend af_xdp --iface enp6s0
 scripts/bench-2host.sh $C --backend af_xdp --iface enp6s0 --order-transport user_tcp
 

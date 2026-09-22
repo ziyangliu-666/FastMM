@@ -17,8 +17,9 @@
 #
 # Backends on this host:
 #   kernel  sockets on --iface (which has --live-ip)
-#   af_xdp  the XDP program on --iface (native mode on virtio_net; set its queue count to 1, see
-#           scripts/host-setup.sh xdp-prep, or list the RX queues with --queues)
+#   af_xdp  the XDP program on --iface (native mode on virtio_net) and a socket on each of its RX
+#           queues, or on the ones listed with --queues; scripts/host-setup.sh xdp-prep keeps
+#           them few (virtio_net adds a queue pair per CPU while the program is attached)
 #   dpdk    the NIC bound to vfio-pci (scripts/host-setup.sh dpdk-bind <iface>); fastmm-live gives
 #           the kernel a tap (fmx0) with --live-ip/--prefix-len through the DPDK port for ARP,
 #           GLIMPSE, re-requests and kernel TCP; hugepages required
@@ -37,7 +38,7 @@ REMOTE=""; SIM_IP=""; LIVE_IP=""; IFACE=""; SIM_IFACE=""; PREFIX_LEN=24
 BACKEND=kernel; TRANSPORT=kernel; MD=unicast; USER_TCP_IP=""; USER_TCP_PORT=61001
 DPDK_PCI=""; DPDK_EAL=""; QUEUES=""; DURATION=30; RUNS=1; SPEED=4; SPIN=busy; THREADING=split
 SIM_CPU=1; ENGINE_CPU=1; NET_CPU=2; REMOTE_DIR=/opt/fastmm; PUSH=0; BUILD=build/release; OUT=""
-usage() { sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --remote-sim) REMOTE="$2"; shift 2;;

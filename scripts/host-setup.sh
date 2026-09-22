@@ -6,19 +6,23 @@
 #   scripts/host-setup.sh tune [--hugepages N] hugepages (N x 2 MiB, default 512), irqbalance off,
 #                                              NIC interrupts to CPU 0, performance governor where
 #                                              there is one, THP and NUMA balancing off
-#   scripts/host-setup.sh xdp-prep <iface>     one combined queue and no GRO/LRO on <iface> (af_xdp)
+#   scripts/host-setup.sh firewall <iface>     when ufw is active: allow everything from <iface>'s
+#                                              subnet (Vultr images enable ufw)
+#   scripts/host-setup.sh xdp-prep <iface>     one combined queue and no GRO/LRO on <iface> (af_xdp),
+#                                              then firewall <iface>
 #   scripts/host-setup.sh dpdk-bind <iface>    vfio (no-IOMMU mode) and vfio-pci loaded, <iface>'s PCI
 #                                              function bound to vfio-pci; prints its PCI address
 #   scripts/host-setup.sh dpdk-unbind <pci>    back to the kernel driver, addresses restored
 #   scripts/host-setup.sh info                 CPUs, NICs, drivers, queues, hugepages, vfio, governor
 #   scripts/host-setup.sh all                  deps, tune, info
 #
-# dpdk-bind refuses the interface of the default route (keep the public NIC for SSH). Its state
-# (driver, MAC, addresses) is kept in /var/lib/fastmm for dpdk-unbind.
+# dpdk-bind refuses the interface of the default route (keep the public NIC for SSH), and runs
+# firewall <iface> first. Its state (driver, MAC, addresses) is kept in /var/lib/fastmm for
+# dpdk-unbind.
 set -euo pipefail
 
 STATE=/var/lib/fastmm
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "host-setup: $*" >&2; exit 1; }
 [[ $# -ge 1 ]] || { usage; exit 2; }
 [[ "$1" == -h || "$1" == --help ]] && { usage; exit 0; }
@@ -68,6 +72,25 @@ cmd_tune() {
   echo "THP: $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo n/a)"
 }
 
+# The subnets of <iface>'s IPv4 addresses (the kernel's link routes), e.g. 10.77.0.0/24.
+subnets_of() { ip -o -4 route show dev "$1" proto kernel scope link 2>/dev/null | awk '{print $1}'; }
+
+cmd_firewall() {
+  local ifc="${1:?firewall <iface>}"
+  [[ -d "/sys/class/net/$ifc" ]] || die "no interface $ifc"
+  if ! command -v ufw >/dev/null 2>&1 || ! ufw status 2>/dev/null | grep -q '^Status: active'; then
+    echo "firewall: ufw not active; nothing to do"
+    return 0
+  fi
+  local nets
+  nets="$(subnets_of "$ifc")"
+  [[ -n "$nets" ]] || die "$ifc has no IPv4 subnet"
+  for n in $nets; do
+    ufw allow from "$n" comment "fastmm $ifc" >/dev/null
+    echo "firewall: ufw allows everything from $n"
+  done
+}
+
 cmd_xdp_prep() {
   local ifc="${1:?xdp-prep <iface>}"
   [[ -d "/sys/class/net/$ifc" ]] || die "no interface $ifc"
@@ -75,6 +98,7 @@ cmd_xdp_prep() {
   ethtool -K "$ifc" gro off lro off 2>/dev/null || true
   ethtool -l "$ifc" 2>/dev/null | sed -n '/Current/,$p' || true
   ip -d link show "$ifc" | head -3
+  cmd_firewall "$ifc"
 }
 
 cmd_dpdk_bind() {
@@ -86,6 +110,7 @@ cmd_dpdk_bind() {
   [[ -e "/sys/bus/pci/devices/$pci" ]] || die "$pci is not a PCI function"
   drv="$(basename "$(readlink -f "/sys/bus/pci/devices/$pci/driver")")"
   mac="$(cat "/sys/class/net/$ifc/address")"
+  cmd_firewall "$ifc"
   mkdir -p "$STATE"
   {
     echo "IFACE=$ifc"
@@ -158,6 +183,7 @@ cmd_info() {
 case "$1" in
   deps) cmd_deps;;
   tune) shift; cmd_tune "$@";;
+  firewall) shift; cmd_firewall "$@";;
   xdp-prep) shift; cmd_xdp_prep "$@";;
   dpdk-bind) shift; cmd_dpdk_bind "$@";;
   dpdk-unbind) shift; cmd_dpdk_unbind "$@";;

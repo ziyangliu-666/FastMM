@@ -94,7 +94,7 @@ The tap gets the port's MAC. Frames the venue does not take (datagrams of no lin
 
 ## 3. Steer the groups to one RX queue (af_xdp)
 
-The NIC spreads multicast over its RX queues by RSS; the XDP socket reads one queue. Pin each group to a queue and list it in `queues`:
+The NIC spreads the datagrams over its RX queues by RSS, and an XDP socket reads one queue. Without `queues` the source opens a socket on every RX queue the interface has once the program is attached (virtio_net adds a queue pair per CPU for XDP, and the host delivers on those too). Each socket has its own UMEM (`frame_count` × `frame_size`, 16 MiB by default) and is polled on every loop, so on a NIC with many queues pin each group to a queue and list it in `queues`:
 
 ```bash
 sudo ethtool -N eth1 flow-type udp4 dst-ip 233.54.12.111 action 2

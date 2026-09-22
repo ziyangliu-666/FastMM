@@ -68,10 +68,12 @@ struct XdpInterfaceQueues {
 
 struct XdpConfig {
   std::vector<XdpSubscription> subscriptions;  // line = index, at most 256
-  std::vector<XdpInterfaceQueues> queues;      // RX queues per interface; unlisted: queue 0
-  std::uint32_t frame_count = 4096;            // UMEM frames per socket, power of two
-  std::uint32_t frame_size = 4096;             // 2048 or 4096 (at most the page size)
-  std::uint32_t batch = 64;                    // RX descriptors per socket per poll
+  // RX queues per interface. Unlisted: every RX queue the interface has once the program is
+  // attached (virtio_net, for one, adds queues for XDP and the host delivers on all of them).
+  std::vector<XdpInterfaceQueues> queues;
+  std::uint32_t frame_count = 4096;  // UMEM frames per socket, power of two
+  std::uint32_t frame_size = 4096;   // 2048 or 4096 (at most the page size)
+  std::uint32_t batch = 64;          // RX descriptors per socket per poll
   XdpMode mode = XdpMode::Auto;
   // SO_PREFER_BUSY_POLL, SO_BUSY_POLL and SO_BUSY_POLL_BUDGET on every socket, and a recvfrom
   // on every poll that finds the RX ring empty (drives NAPI from this thread).
@@ -402,7 +404,7 @@ class XdpDatagramSource {
 
   int fail(int err, std::string msg);
   int open_interface(std::size_t iface,
-                     std::span<const std::uint32_t> queues,
+                     std::span<const std::uint32_t> listed,
                      std::uint32_t routes_begin,
                      std::uint32_t routes_end,
                      const XdpConfig& cfg);

@@ -492,7 +492,21 @@ void NasdaqItchVenue::disconnect() {
   }
   if (kernel_) kernel_->close();
   if (xdp_) {
+    const int stats_rc = xdp_->refresh_stats();
     const net::XdpStats& x = xdp_->stats();
+    std::uint64_t fallback = 0;
+    for (const net::XdpInterfaceStatus& i : xdp_->interfaces()) fallback += i.fallback_packets;
+    FASTMM_LOG_INFO(
+        "{}: af_xdp: {} socket(s), {} datagrams, {} unmatched, {} bad frames, {} passed to the "
+        "kernel (no socket on their RX queue){}",
+        cfg_.name,
+        xdp_->fds().size(),
+        x.datagrams,
+        x.unmatched,
+        x.bad_frames,
+        fallback,
+        stats_rc < 0 ? "; statistics incomplete" : "");
+    publish_status();  // the final XDP counters, before close() clears them
     if (user_tcp_ != nullptr)
       FASTMM_LOG_INFO("{}: af_xdp: {} frames to user_tcp, {} sent, {} TX drops, {} kicks",
                       cfg_.name,
@@ -1111,7 +1125,8 @@ void NasdaqItchVenue::publish_status() noexcept {
     f.requests = r.requests;
     f.malformed = r.malformed + (kernel_ ? kernel_->stats().truncated : 0);
   }
-  if (xdp_) {
+  // After close() the source has no statistics left: keep the last ones.
+  if (xdp_ && !xdp_->interfaces().empty()) {
     f.malformed = (rx_ ? rx_->stats().malformed : 0) + xdp_->stats().bad_frames;
     f.xdp_rx_dropped = 0;
     f.xdp_rx_invalid_descs = 0;
