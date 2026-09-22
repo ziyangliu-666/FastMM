@@ -4,4 +4,4 @@ add_library(fastmm_venues STATIC ${FASTMM_VENUES_SOURCES} ${FASTMM_VENUES_HEADER
 add_library(fastmm::venues ALIAS fastmm_venues)
 set_target_properties(fastmm_venues PROPERTIES EXPORT_NAME venues)
 fastmm_target_defaults(fastmm_venues)
-target_link_libraries(fastmm_venues PUBLIC fastmm::net PRIVATE simdjson::simdjson)
+target_link_libraries(fastmm_venues PUBLIC fastmm::net fastmm::codecs PRIVATE simdjson::simdjson)

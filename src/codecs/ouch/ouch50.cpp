@@ -672,7 +672,81 @@ ParseStatus OuchDecoder::on_executed(const OrderExecuted& m,
 
 // ---- host builders -------------------------------------------------------------------------
 
+bool put_seq_token(char* cl_ord_id14, std::uint64_t venue_seq) noexcept {
+  if (venue_seq == 0 || venue_seq > kMaxSeqToken) return false;
+  cl_ord_id14[0] = kSeqTokenPrefix;
+  for (std::size_t i = kClOrdIdChars; i > 1; --i) {
+    cl_ord_id14[i - 1] = static_cast<char>('0' + static_cast<int>(venue_seq % 10U));
+    venue_seq /= 10U;
+  }
+  return true;
+}
+
+std::uint64_t parse_seq_token(const char* cl_ord_id14) noexcept {
+  if (cl_ord_id14[0] != kSeqTokenPrefix) return 0;
+  std::uint64_t v = 0;
+  for (std::size_t i = 1; i < kClOrdIdChars; ++i) {
+    const char c = cl_ord_id14[i];
+    if (c < '0' || c > '9') return 0;
+    v = v * 10U + static_cast<std::uint64_t>(c - '0');
+  }
+  return v;
+}
+
 namespace host {
+
+bool parse_enter(std::span<const std::byte> msg, EnterView& out) noexcept {
+  std::span<const std::byte> app;
+  if (msg.empty() || static_cast<char>(msg[0]) != 'O' ||
+      !split_message(msg, offsetof(EnterOrder, appendage_length), false, app))
+    return false;
+  const auto& m = ouch::view_as<EnterOrder>(msg.data());
+  out = EnterView{};
+  out.raw = &m;
+  out.user_ref_num = m.user_ref_num.get();
+  if (!ouch::side_from_code(m.side, out.side)) return false;
+  const std::uint32_t n = m.quantity.get();
+  if (n == 0 || !nasdaq::shares_to_qty(n, out.qty)) return false;
+  if (!nasdaq::price4_to_price(m.price.get(), out.price)) return false;
+  out.symbol = nasdaq::get_alpha_trimmed(m.symbol, sizeof m.symbol);
+  std::span<const std::byte> v;
+  if (find_option(app, OptionTag::MinQty, v) && v.size() == 4) {
+    be32_t min{};
+    std::memcpy(&min, v.data(), 4);
+    out.min_qty = min.get();
+  }
+  if (m.time_in_force == kTifIoc) out.tif = out.min_qty == n ? TimeInForce::Fok : TimeInForce::Ioc;
+  out.post_only =
+      find_option(app, OptionTag::PostOnly, v) && v.size() == 1 && static_cast<char>(v[0]) == 'P';
+  out.seq_token = parse_seq_token(m.cl_ord_id);
+  return true;
+}
+
+bool parse_replace(std::span<const std::byte> msg, ReplaceView& out) noexcept {
+  std::span<const std::byte> app;
+  if (msg.empty() || static_cast<char>(msg[0]) != 'U' ||
+      !split_message(msg, offsetof(ReplaceOrder, appendage_length), false, app))
+    return false;
+  const auto& m = ouch::view_as<ReplaceOrder>(msg.data());
+  out = ReplaceView{};
+  out.raw = &m;
+  out.orig_user_ref_num = m.orig_user_ref_num.get();
+  out.user_ref_num = m.user_ref_num.get();
+  out.seq_token = parse_seq_token(m.cl_ord_id);
+  if (!nasdaq::shares_to_qty(m.quantity.get(), out.qty)) return false;
+  return nasdaq::price4_to_price(m.price.get(), out.price);
+}
+
+bool parse_cancel(std::span<const std::byte> msg, CancelView& out) noexcept {
+  std::span<const std::byte> app;
+  if (msg.empty() || static_cast<char>(msg[0]) != 'X' ||
+      !split_message(msg, offsetof(CancelOrder, appendage_length), false, app))
+    return false;
+  const auto& m = ouch::view_as<CancelOrder>(msg.data());
+  out.user_ref_num = m.user_ref_num.get();
+  out.quantity = m.quantity.get();
+  return true;
+}
 
 std::size_t system_event(std::span<std::byte> out, std::uint64_t ts, char event_code) noexcept {
   SystemEvent m{};

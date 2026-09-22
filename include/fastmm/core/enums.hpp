@@ -403,6 +403,7 @@ enum class KillReason : std::uint8_t {
   VenueHardStop = 7,      // venue error map: REST stopped (IP ban)
   OrderRingOverflow = 8,  // fastmm-live: a venue's order-event ring overflowed
   StrategyError = 9,      // a strategy hook reported an error (Python hot hooks)
+  FeedLost = 10,          // a multicast feed cannot rebuild its books (nasdaq_itch)
 };
 // Kill reasons are kept per venue id for ids 0..kKillVenueSlots-1; higher ids share the last slot,
 // as they share the last kill bit (RiskEngine::venue_bit).
@@ -429,6 +430,8 @@ inline constexpr std::size_t kKillVenueSlots = 31;
       return "OrderRingOverflow";
     case KillReason::StrategyError:
       return "StrategyError";
+    case KillReason::FeedLost:
+      return "FeedLost";
   }
   return "?";
 }

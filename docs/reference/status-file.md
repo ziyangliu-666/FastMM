@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 3) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 4) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal ([Public API](public-api.md)).
 
 ## Snapshot fields
@@ -35,7 +35,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `risk_reject_reasons`, `venue_reject_reasons` | 6 x {u64 count, u8 reason} | the most frequent `RejectReason`s, most frequent first; count 0 marks an unused entry |
 | `kills`, `kill_flags`, `venue_kills` | u64, u32, u32 | global kill switch trips, the current flag word, per-venue kill switch trips |
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | quote currency, raw fixed point (divide by 1e8) |
-| `latency` | 7 x {count, p50_ns, p99_ns, max_ns} | engine latency intervals, below |
+| `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 
 A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is more than 3 s old.
@@ -63,6 +63,7 @@ A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is mo
 | 7 | `VenueHardStop` | venue error map: REST stopped (IP ban) |
 | 8 | `OrderRingOverflow` | a venue's order-event ring overflowed |
 | 9 | `StrategyError` | a strategy hook reported an error; `fastmm-top` shows `StrategyError` |
+| 10 | `FeedLost` | a multicast venue cannot rebuild its books ([Venue connectors](venues.md#startup-and-recovery)) |
 
 ### Latency intervals
 
@@ -90,4 +91,26 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | `orders_sent`, `cancels_sent`, `replaces_sent`, `order_events` | u64 | order traffic on this venue |
 | `reconnects`, `rest_errors`, `rate_limit_cooldowns` | u64 | connection health |
 | `clock_offset_ms` | i64 | venue clock minus local clock, ms |
-| `wire_tick_to_trade` | {count, p50_ns, p99_ns, max_ns} | socket read to order write on the network thread |
+| `wire_tick_to_trade` | {count, p50_ns, p99_ns, p999_ns, max_ns} | socket read to order write on the network thread |
+| `feed` | feed entry | multicast venues only (below); `state` 0 for the others |
+
+### Multicast feed
+
+The `feed` entry of a `nasdaq_itch` venue ([Venue connectors](venues.md#nasdaq-totalview-itch-nasdaq_itch)); counters are cumulative for the session.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `state` | u8 | 0 none (not a multicast venue), 1 down, 2 snapshot (buffering while a GLIMPSE snapshot is taken), 3 live, 4 lost |
+| `backend`, `xdp_mode` | u8, u8 | 0 `kernel`, 1 `af_xdp`; the attach mode: 1 zerocopy, 2 native_copy, 3 generic |
+| `packets`, `bytes` | u64 | MoldUDP64 packets accepted on every line, datagram payload bytes |
+| `line_packets`, `line_duplicates` | 2 x u64 | per line A, B: packets, copies that arrived after the first copy |
+| `line_skew_mean_ns`, `line_skew_max_ns` | 2 x i64 | per line: delay of a duplicate behind the first copy, ns |
+| `gaps`, `recovered`, `unrecovered` | u64 | gaps declared, messages delivered from re-requests, sequences given up |
+| `snapshot_recoveries`, `recovery_overflows` | u64 | GLIMPSE snapshots after the first, recovery buffer overflows |
+| `reorder_high_water`, `requests` | u64 | most packets held ahead of a gap, re-request packets sent |
+| `malformed`, `book_errors` | u64 | datagrams that are not MoldUDP64 packets (and bad frames on `af_xdp`), L3 book inconsistencies |
+| `kernel_to_t0` | {count, p50_ns, p99_ns, p999_ns, max_ns} | kernel receive timestamp to T0 while live (`kernel` backend) |
+| `xdp_rx_dropped`, `xdp_rx_invalid_descs`, `xdp_rx_ring_full`, `xdp_fill_ring_empty` | u64 | `XDP_STATISTICS` summed over the sockets |
+| `xdp_fallback` | u64 | subscribed datagrams passed to the kernel because their RX queue has no socket |
+
+`fastmm-top --json` prints the snapshot as one JSON object, with states, kill reasons and latency intervals by name ([Command lines](cli.md#fastmm-top)); `scripts/bench-e2e.sh` reads it.

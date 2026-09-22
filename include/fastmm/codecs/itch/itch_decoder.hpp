@@ -6,7 +6,8 @@
 //
 //   A / F  Add Order (1.3)                   -> OrderAddL3Msg
 //   E      Order Executed (1.4.1)            -> OrderExecL3Msg, exec_price 0 (= the order price)
-//   C      Order Executed With Price (1.4.2) -> OrderExecL3Msg, exec_price = Execution Price
+//   C      Order Executed With Price (1.4.2) -> OrderExecL3Msg, exec_price = Execution Price,
+//                                               kNonPrintable unless Printable is 'Y'
 //   X      Order Cancel (1.4.3)              -> OrderCancelL3Msg, canceled_qty = Cancelled Shares
 //   D      Order Delete (1.4.4)              -> OrderCancelL3Msg, canceled_qty 0 (= delete)
 //   U      Order Replace (1.4.5)             -> OrderReplaceL3Msg
@@ -25,9 +26,12 @@
 // trading day, US/Eastern, as Unix nanoseconds); recv_ts = rx_ts; venue_seq = the value last
 // passed to set_venue_seq() (the MoldUDP64 / SoupBinTCP sequence number of the message).
 //
-// Not carried into the engine messages (no field for them): the Printable flag of C, the
-// Attribution of F, the Cross Type of Q and the Buy/Sell Indicator semantics of P (Nasdaq
-// sends 'B' for every P message since 2014-07-14, so TradeMsg::aggressor is not meaningful).
+// decode_into() writes into any sink with EventSink's reserve<M>() / commit(); ScratchSink holds
+// the one event of a call for callers that consume it in place (ItchL2Bridge).
+//
+// Not carried into the engine messages (no field for them): the Attribution of F, the Cross
+// Type of Q and the Buy/Sell Indicator semantics of P (Nasdaq sends 'B' for every P message
+// since 2014-07-14, so TradeMsg::aggressor is not meaningful).
 #include "fastmm/codecs/codec.hpp"
 #include "fastmm/codecs/itch/itch_messages.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
@@ -58,6 +62,31 @@ struct DecoderStats {
   std::uint64_t overflow = 0;          // the sink had no room
 };
 
+// Room for the one event a single ITCH message produces.
+class ScratchSink {
+ public:
+  static constexpr std::size_t kBytes = 128;
+
+  template <MessageLike M>
+  [[nodiscard]] M* reserve() noexcept {
+    static_assert(sizeof(M) <= kBytes && alignof(M) <= 64);
+    return reinterpret_cast<M*>(buf_);
+  }
+  void commit() noexcept { committed_ = true; }
+  // The committed event, or nullptr.
+  [[nodiscard]] const EventHeader* event() const noexcept {
+    return committed_ ? reinterpret_cast<const EventHeader*>(buf_) : nullptr;
+  }
+  [[nodiscard]] EventHeader* event() noexcept {
+    return committed_ ? reinterpret_cast<EventHeader*>(buf_) : nullptr;
+  }
+  void reset() noexcept { committed_ = false; }
+
+ private:
+  alignas(64) std::byte buf_[kBytes];
+  bool committed_ = false;
+};
+
 class ItchDecoder {
  public:
   static constexpr std::size_t kLocateSlots = 65'536;
@@ -79,46 +108,55 @@ class ItchDecoder {
   void set_venue_seq(std::uint64_t seq) noexcept { venue_seq_ = seq; }
 
   ParseStatus decode(const FrameView& frame, std::int64_t rx_ts, venues::EventSink& sink) noexcept;
+  // Same as decode() into venues::EventSink or ScratchSink (explicitly instantiated).
+  template <class Sink>
+  ParseStatus decode_into(const FrameView& frame, std::int64_t rx_ts, Sink& sink) noexcept;
 
   [[nodiscard]] const DecoderStats& stats() const noexcept { return stats_; }
   [[nodiscard]] VenueId venue() const noexcept { return venue_; }
 
  private:
-  template <class M>
-  M* start(venues::EventSink& sink,
+  template <class M, class Sink>
+  M* start(Sink& sink,
            EventType type,
            InstrumentId inst,
            const MessageHeader& h,
            std::int64_t rx_ts) noexcept;
-  ParseStatus commit(venues::EventSink& sink) noexcept;
+  template <class Sink>
+  ParseStatus commit(Sink& sink) noexcept;
   bool lookup(const MessageHeader& h, InstrumentId& out) noexcept;
 
+  template <class Sink>
   ParseStatus add(const MessageHeader& h,
                   std::uint64_t ref,
                   char side,
                   std::uint32_t shares,
                   std::uint32_t price4,
                   std::int64_t rx_ts,
-                  venues::EventSink& sink) noexcept;
+                  Sink& sink) noexcept;
+  template <class Sink>
   ParseStatus execute(const MessageHeader& h,
                       std::uint64_t ref,
                       std::uint32_t shares,
                       std::uint64_t match,
                       Price exec_price,
+                      std::uint8_t flags,
                       std::int64_t rx_ts,
-                      venues::EventSink& sink) noexcept;
+                      Sink& sink) noexcept;
+  template <class Sink>
   ParseStatus cancel(const MessageHeader& h,
                      std::uint64_t ref,
                      Qty canceled,
                      std::int64_t rx_ts,
-                     venues::EventSink& sink) noexcept;
+                     Sink& sink) noexcept;
+  template <class Sink>
   ParseStatus trade(const MessageHeader& h,
                     Price price,
                     Qty qty,
                     std::uint64_t match,
                     Side aggressor,
                     std::int64_t rx_ts,
-                    venues::EventSink& sink) noexcept;
+                    Sink& sink) noexcept;
 
   VenueId venue_;
   std::int64_t midnight_ns_ = 0;

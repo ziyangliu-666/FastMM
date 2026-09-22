@@ -4,6 +4,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 #include "fastmm/venues/bybit/bybit_venue.hpp"
 #include "fastmm/venues/deribit/deribit_venue.hpp"
+#include "fastmm/venues/nasdaq/nasdaq_itch_venue.hpp"
 
 #include <stdexcept>
 
@@ -14,6 +15,7 @@ VenueKind venue_kind(std::string_view kind) noexcept {
   if (kind == "bybit" || kind == "bybit_spot") return VenueKind::BybitSpot;
   if (kind == "deribit") return VenueKind::Deribit;
   if (kind == "binance_usdm") return VenueKind::BinanceUsdm;
+  if (kind == "nasdaq_itch") return VenueKind::NasdaqItch;
   return VenueKind::Unknown;
 }
 
@@ -54,11 +56,15 @@ std::unique_ptr<Venue> make_venue(VenueId id,
       c.record_raw_dir = opts.record_raw_dir;
       return std::make_unique<binance_usdm::BinanceUsdmVenue>(id, std::move(c));
     }
+    case VenueKind::NasdaqItch:
+      return std::make_unique<nasdaq::NasdaqItchVenue>(
+          id, nasdaq::make_nasdaq_itch_config(s, opts.dry_run, opts.busy_poll));
     case VenueKind::Unknown:
       break;
   }
-  throw std::invalid_argument("venue '" + s.name + "': unsupported kind '" + s.kind +
-                              "' (expected binance_spot, binance_usdm, sim, bybit or deribit)");
+  throw std::invalid_argument(
+      "venue '" + s.name + "': unsupported kind '" + s.kind +
+      "' (expected binance_spot, binance_usdm, sim, bybit, deribit or nasdaq_itch)");
 }
 
 }  // namespace fastmm::venues

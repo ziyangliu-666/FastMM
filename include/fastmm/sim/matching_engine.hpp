@@ -162,6 +162,19 @@ class MatchingEngine {
   void for_each_open_order(F&& f) const noexcept {
     pool_.for_each([&](Handle<SimOrder>, const SimOrder& o) { f(o); });
   }
+  // Resting orders of one side, best level first and in queue order within a level (the order
+  // a market-by-order snapshot lists them). F(const SimOrder&).
+  template <class F>
+  void for_each_resting(InstrumentId id, Side side, F&& f) const noexcept {
+    const SimBook::Levels& levels = books_[id.value].levels(side);
+    for (std::size_t i = levels.size(); i > 0; --i) {
+      for (std::uint32_t idx = levels[i - 1].head; idx != kNullHandle;) {
+        const SimOrder& o = pool_.get(Handle32{idx});
+        idx = o.next;
+        f(o);
+      }
+    }
+  }
   // Open orders of one account on one instrument/side: count and total leaves.
   struct SideExposure {
     std::uint32_t orders = 0;

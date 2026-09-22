@@ -80,7 +80,8 @@ TEST_CASE("hotpath.noalloc: L2 apply_level / apply_delta") {
 }
 
 TEST_CASE("hotpath.noalloc: L3 add/execute/cancel/replace") {
-  auto book = std::make_unique<L3Book<1U << 12, 1U << 12>>(px("0.01"));
+  auto book = std::make_unique<L3Book>(
+      px("0.01"), L3BookConfig{.price_window_ticks = 1U << 12, .max_orders = 1U << 12});
   {
     NoAllocScope guard(true);
     for (std::uint64_t i = 1; i <= 1000; ++i)

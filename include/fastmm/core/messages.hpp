@@ -409,12 +409,18 @@ struct OrderAddL3Msg {
 static_assert(sizeof(OrderAddL3Msg) == 128);
 
 struct OrderExecL3Msg {
+  // exec_flags. Zero (E, and records written before the field existed) is a printable execution.
+  static constexpr std::uint8_t kNonPrintable = 1U << 0;  // ITCH C with Printable = N
+
   EventHeader hdr;
   std::uint64_t order_ref;
   Qty exec_qty;
   Price exec_price;  // zero -> at the order's price
   std::uint64_t match_id;
-  std::uint8_t pad_[32];
+  std::uint8_t exec_flags;
+  std::uint8_t pad_[31];
+
+  [[nodiscard]] bool printable() const noexcept { return (exec_flags & kNonPrintable) == 0; }
 };
 static_assert(sizeof(OrderExecL3Msg) == 128);
 

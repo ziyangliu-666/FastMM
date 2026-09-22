@@ -1,0 +1,92 @@
+# fastmm-sim-itch: Nasdaq-style simulator (docs/reference/sim-itch.md).
+#   ./build/release/bin/fastmm-sim-itch --config configs/sim-itch.toml
+#
+# Only [[instruments]] and [sim] are read. [venues.itch] declares the venue the instruments belong
+# to so that the file validates.
+
+[venues.itch]
+kind = "sim"
+
+[[instruments]]
+venue = "itch"
+symbol = "FMAA"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+enabled = true
+
+[[instruments]]
+venue = "itch"
+symbol = "FMBB"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+enabled = true
+
+[sim]
+seed = 7
+start_mid = "100"            # symbols.<SYM>.start_mid overrides per symbol
+speed = 1.0                  # generator time per wall-clock time
+bind = "127.0.0.1"           # re-request, GLIMPSE and OUCH servers
+busy_poll = false            # true: never block (pin with --cpu)
+
+[sim.symbols.FMAA]
+locate = 1                   # ITCH Stock Locate; 0 or absent = position + 1
+
+[sim.symbols.FMBB]
+locate = 2
+start_mid = "50"
+
+[sim.itch]
+session = "FMSIM00001"       # MoldUDP64 session, 10 characters
+line_a = "239.192.0.1:31001"
+line_b = "239.192.0.2:31002" # "" disables the line
+line_a_drop_rate = 0.0       # probability that a data datagram is not sent on the line
+line_b_drop_rate = 0.0
+drop_seed = 1
+interface = "lo"             # IP_MULTICAST_IF: name, IPv4 address, "" = routing table
+source = ""                  # local address of the sending socket
+ttl = 1
+loop = true                  # IP_MULTICAST_LOOP: receivers on this host
+max_datagram = 1472
+max_messages = 0             # messages per datagram, 0 = as many as fit
+burst = 32                   # datagrams per sendmmsg
+packet_rate = 0              # datagrams per second per line, 0 = unpaced
+flush_us = 0                 # hold messages this long to fill datagrams
+heartbeat_ms = 1000
+history_messages = 1048576   # re-request history (a ring)
+history_bytes = 67108864
+sndbuf_bytes = 0
+rerequest_port = 31000       # UDP; 0 = ephemeral, -1 = off
+
+[sim.glimpse]
+port = 31010
+username = "glimps"
+password = "glimpse"
+session = "GLIMPSE"
+max_messages = 262144        # messages in one snapshot
+
+[sim.ouch]
+port = 31020
+username = "fmouch"
+password = "ouch"
+session = "OUCH"
+history_messages = 262144
+
+[sim.generator]
+enabled = true
+seed_levels = 10
+limit_rate_per_s = 150.0
+cancel_rate_per_order_s = 0.5
+market_rate_per_s = 10.0
+mid_step_rate_per_s = 2.0
+offset_p = 0.35
+base_spread_ticks = 1
+limit_qty_median_lots = 100.0
+limit_qty_sigma = 0.8
+market_qty_median_lots = 50.0
+market_qty_sigma = 1.0
+regimes = true
+regime_switch_rate_per_s = 0.02
+volatile_mult = 4.0
+max_resting = 2000

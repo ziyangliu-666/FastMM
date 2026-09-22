@@ -55,7 +55,7 @@ One table per venue; `<name>` is how instruments refer to it.
 <!-- BEGIN config-keys venues.* -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `kind` | string | yes | connector: binance_spot (alias binance) \| binance_usdm \| bybit (alias bybit_spot) \| deribit \| sim (fastmm-sim-exchange and backtest configs) |
+| `kind` | string | yes | connector: binance_spot (alias binance) \| binance_usdm \| bybit (alias bybit_spot) \| deribit \| nasdaq_itch \| sim (fastmm-sim-exchange and backtest configs) |
 | `ws_url` | string |  | market-data WebSocket URL |
 | `ws_api_url` | string |  | order-entry WebSocket API URL, where the venue has one |
 | `rest_url` | string |  | REST base URL |
@@ -97,7 +97,7 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `user_stream` | string |  | binance: ws_api (default) \| listen_key \| none |
 | `position_from_balance` | boolean |  | binance: derive positions from account balances |
 | `position_from_account_update` | boolean |  | binance_usdm: correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
-| `depth` | integer |  | bybit: order book subscription depth, 1 to 1000 |
+| `depth` | integer |  | bybit: order book subscription depth, 1 to 1000; nasdaq_itch: price levels per side sent to the engine, 1 to 256 (default 20) |
 | `ws_private_url` | string |  | bybit, deribit, binance_usdm: private WebSocket URL; empty = derived from ws_url |
 | `ping_interval_ms` | integer |  | bybit: application ping interval, ms, at least 1000 |
 | `orders_per_second` | integer |  | bybit: client-side order rate cap, orders/s |
@@ -111,6 +111,35 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `cancel_on_disconnect` | boolean |  | deribit: cancel-on-disconnect on the order connection (default true) |
 | `matching_engine_rate` | integer |  | deribit: order requests per second of the account tier (default 5) |
 | `matching_engine_burst` | integer |  | deribit: order request burst of the account tier (default 20) |
+| `rx_backend` | string |  | nasdaq_itch: multicast receive, kernel (UDP sockets) \| af_xdp (needs CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF, CAP_IPC_LOCK) (default kernel) |
+| `interface` | string |  | nasdaq_itch: interface of both lines, name or IPv4 address; af_xdp needs a name (default: routing table) |
+| `line_a` | string |  | nasdaq_itch: line A, "<multicast group>:<port>" (required) |
+| `line_b` | string |  | nasdaq_itch: line B, "<multicast group>:<port>"; absent = one line |
+| `line_a_interface` | string |  | nasdaq_itch: interface of line A, overrides interface |
+| `line_b_interface` | string |  | nasdaq_itch: interface of line B, overrides interface |
+| `line_a_source` | string |  | nasdaq_itch: source address of line A: a source-specific join (default any source) |
+| `line_b_source` | string |  | nasdaq_itch: source address of line B |
+| `queues` | any |  | nasdaq_itch, af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default 0) |
+| `xdp_mode` | string |  | nasdaq_itch, af_xdp: auto \| zerocopy \| native_copy \| generic (default auto: the first that works in that order) |
+| `rcvbuf` | integer |  | nasdaq_itch, kernel: SO_RCVBUF, bytes; 0 = system default (default 0) |
+| `batch` | integer |  | nasdaq_itch: datagrams per recvmmsg (kernel) or RX descriptors per poll (af_xdp), 1 to 1024 (default 32) |
+| `rerequest` | string |  | nasdaq_itch: MoldUDP64 re-request server, "<IPv4 address>:<port>"; absent = gaps are unrecoverable |
+| `glimpse_url` | string |  | nasdaq_itch: GLIMPSE 5.0 server, "<IPv4 address>:<port>"; absent = start at sequence 1 (before the directory spin) |
+| `glimpse_username` | string |  | nasdaq_itch: GLIMPSE login, at most 6 characters (default glimps, the simulator's) |
+| `glimpse_password` | string |  | nasdaq_itch: GLIMPSE password, at most 10 characters (default glimpse) |
+| `reorder_packets` | integer |  | nasdaq_itch: packets held ahead of a gap (default 256) |
+| `gap_timeout_ns` | integer |  | nasdaq_itch: a missing sequence awaited this long on every line is a gap, ns; size it from the A/B skew in the status (default 2000000) |
+| `max_request_attempts` | integer |  | nasdaq_itch: re-requests of one gap before it is unrecoverable; 0 = no limit (default 4) |
+| `request_timeout_ns` | integer |  | nasdaq_itch: re-send an unanswered re-request after this long, ns (default 250000000) |
+| `recovery_buffer_packets` | integer |  | nasdaq_itch: datagrams buffered while a GLIMPSE snapshot is taken, allocated at start (default 65536) |
+| `price_window_ticks` | integer |  | nasdaq_itch: L3 book price window per side, in 0.0001 steps, a multiple of 64; orders outside go to an overflow store (default 65536) |
+| `max_orders` | integer |  | nasdaq_itch: resting orders per instrument the L3 book holds (default 262144) |
+| `hw_timestamps` | boolean |  | nasdaq_itch, kernel: enable NIC receive timestamps on the line interfaces (SIOCSHWTSTAMP, CAP_NET_ADMIN) (default false) |
+| `hw_clock` | string |  | nasdaq_itch: none \| phc_synced: use the NIC timestamp as recv_ts (only when the PHC is synchronised to CLOCK_REALTIME) (default none) |
+| `order_entry` | string |  | nasdaq_itch: none (every order is rejected) \| sim_ouch (OUCH 5.0 to fastmm-sim-itch) (default none) |
+| `ouch_url` | string |  | nasdaq_itch, sim_ouch: OUCH 5.0 server, "<IPv4 address>:<port>" |
+| `ouch_username` | string |  | nasdaq_itch, sim_ouch: login, at most 6 characters (default fmouch, the simulator's) |
+| `ouch_password` | string |  | nasdaq_itch, sim_ouch: password, at most 10 characters (default ouch) |
 <!-- END config-keys -->
 
 ## `[[instruments]]`
@@ -221,7 +250,7 @@ Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=va
 
 ## `[sim]`
 
-Parameters of the synthetic market used when the data source is synthetic; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` reads its own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml)).
+Parameters of the synthetic market used when the data source is synthetic; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` and `fastmm-sim-itch` read their own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml), [fastmm-sim-itch](sim-itch.md#configuration-configssim-itchtoml)).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

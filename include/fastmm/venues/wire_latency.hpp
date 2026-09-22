@@ -22,6 +22,8 @@ struct WireLatencyStats {
   std::uint64_t count = 0;
   std::uint64_t p50_ns = 0;
   std::uint64_t p99_ns = 0;
+  std::uint64_t p999_ns = 0;
+  std::uint64_t max_ns = 0;
 };
 
 class WireLatencyRecorder {
@@ -69,6 +71,8 @@ class WireLatencyRecorder {
     out.count = h.count();
     out.p50_ns = to_ns(h.percentile(0.50), c);
     out.p99_ns = to_ns(h.percentile(0.99), c);
+    out.p999_ns = to_ns(h.percentile(0.999), c);
+    out.max_ns = to_ns(h.max(), c);
   }
 
   LogLinearHistogram encode_;

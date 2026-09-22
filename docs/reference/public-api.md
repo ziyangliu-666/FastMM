@@ -7,7 +7,7 @@ Which headers and CMake targets a project outside FastMM may use, and what may c
 | Tier | Contents | Promise |
 |---|---|---|
 | 1 | Writing, testing, registering and running strategies: `fastmm/strategy.hpp`, `strategies/{strategy,hooks,params,param_publisher,quoting,registry,module,factories,factory_*}.hpp`, `testing/strategy_harness.hpp`, the core types a strategy sees (`core/{strategy_context,fixed_point,instrument,enums,strong_id,time,result,rng,messages,order,oms,position,quote_manager,engine_config,log}.hpp`, `core/book/{book_view,l2_book}.hpp`, `core/options/black76.hpp`), backtests and replay (`backtest/*`, `sim/param_schedule.hpp`, `cli/backtest.hpp`, `cli/replay.hpp`) and live trading (`cli/live.hpp`, `live/session.hpp`, `live/live_backend.hpp`) | Stable within a minor version from 1.0. Before 1.0, breaking changes are listed under **Breaking** in the [CHANGELOG](../../CHANGELOG.md) |
-| 2 | Extending FastMM: configuration (`config/*`), venue connectors (`venues/*.hpp` outside the venue subdirectories), `core/book/book_syncer.hpp`, networking (`net/{reactor,connection,crypto,backoff,url,ws_client,http_client}.hpp`) and `codecs/codec.hpp` | Documented; may change in any release before 1.0 |
+| 2 | Extending FastMM: configuration (`config/*`), venue connectors (`venues/*.hpp` outside the venue subdirectories), `core/book/book_syncer.hpp`, networking (`net/{reactor,connection,crypto,backoff,url,ws_client,http_client,udp_socket,datagram_source,kernel_datagram_source}.hpp`) and `codecs/codec.hpp` | Documented; may change in any release before 1.0 |
 | internal | Everything else: engine internals (`core/engine.hpp`, rings, containers, the journal writer, timers, latency, the status segment), the simulator (`sim/*`), the reference connectors (`venues/binance/`, `venues/bybit/`, `venues/deribit/`), protocol-specific codec headers and the built-in strategies | No promise; may change in any release |
 
 - Use the built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`, `options_mm.hpp`) by name through the registry; their parameters and behaviour may change.
@@ -25,7 +25,7 @@ Installed FastMM exports these targets through `find_package(fastmm)`; `add_subd
 | `fastmm::strategies` | the built-in strategies and their registration | `fastmm::sim` |
 | `fastmm::backtest` | backtests, sweeps, replay, `cli::backtest`, `cli::replay` | `fastmm::strategies` |
 | `fastmm::codecs` | FIX, ITCH, OUCH, SoupBinTCP, MoldUDP64, MDP 3.0 | `fastmm::core` |
-| `fastmm::net` | reactor, TLS, WebSocket, HTTP | OpenSSL, zlib (`FASTMM_BUILD_NET=ON`) |
+| `fastmm::net` | reactor, TLS, WebSocket, HTTP, UDP multicast receive | OpenSSL, zlib (`FASTMM_BUILD_NET=ON`) |
 | `fastmm::venues` | venue connectors | `fastmm::net`, simdjson |
 | `fastmm::live` | `run_live`, `cli::live` | `fastmm::venues`, `fastmm::strategies` |
 | `fastmm::lowlatency` | FastMM's code generation flags (link privately where you instantiate engines) | |

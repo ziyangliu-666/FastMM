@@ -50,6 +50,59 @@ enum class ChannelState : std::uint8_t { Down = 0, Connecting = 1, Live = 2, Sta
   return "?";
 }
 
+// Multicast feed (nasdaq_itch, ADR-0015 section 5); zero for the WebSocket venues.
+enum class FeedState : std::uint8_t {
+  None = 0,      // not a multicast venue
+  Down = 1,      // not joined yet
+  Snapshot = 2,  // joined and buffering; waiting for GLIMPSE (or sequence 1)
+  Live = 3,      // books built, messages applied as they arrive
+  Lost = 4,      // cannot rebuild the books: the venue's kill switch is tripped (FeedLost)
+};
+[[nodiscard]] constexpr std::string_view to_string(FeedState s) noexcept {
+  switch (s) {
+    case FeedState::None:
+      return "none";
+    case FeedState::Down:
+      return "down";
+    case FeedState::Snapshot:
+      return "snapshot";
+    case FeedState::Live:
+      return "live";
+    case FeedState::Lost:
+      return "lost";
+  }
+  return "?";
+}
+
+struct VenueFeedStatus {
+  FeedState state = FeedState::None;
+  std::uint8_t backend = 0;   // 0 kernel, 1 af_xdp
+  std::uint8_t xdp_mode = 0;  // net::XdpMode the first interface settled on (af_xdp)
+  std::uint64_t packets = 0;  // MoldUDP64 packets accepted (all lines, retransmissions included)
+  std::uint64_t bytes = 0;    // datagram payload bytes received
+  std::uint64_t line_packets[2] = {0, 0};      // lines A, B
+  std::uint64_t line_duplicates[2] = {0, 0};   // copies that arrived after the first
+  std::int64_t line_skew_mean_ns[2] = {0, 0};  // arrival of a duplicate after the first copy
+  std::int64_t line_skew_max_ns[2] = {0, 0};
+  std::uint64_t gaps = 0;                 // gaps declared
+  std::uint64_t recovered = 0;            // messages delivered from retransmissions
+  std::uint64_t unrecovered = 0;          // sequences given up
+  std::uint64_t snapshot_recoveries = 0;  // GLIMPSE snapshots applied after the first
+  std::uint64_t recovery_overflows = 0;   // recovery buffer full during a snapshot
+  std::uint64_t reorder_high_water = 0;
+  std::uint64_t requests = 0;     // MoldUDP64 request packets sent
+  std::uint64_t malformed = 0;    // datagrams that are not MoldUDP64 packets, bad frames (af_xdp)
+  std::uint64_t book_errors = 0;  // L3 inconsistencies (each starts a resync)
+  WireLatencyStats kernel_to_t0;  // t0_wall_ns - sw_ts_ns (kernel backend only)
+  // af_xdp: XDP_STATISTICS summed over the sockets, and packets passed to the kernel because
+  // their RX queue had no socket.
+  std::uint64_t xdp_rx_dropped = 0;
+  std::uint64_t xdp_rx_invalid_descs = 0;
+  std::uint64_t xdp_rx_ring_full = 0;
+  std::uint64_t xdp_fill_ring_empty = 0;
+  std::uint64_t xdp_fallback = 0;
+};
+
 // Snapshot for the stats line; every field is a plain counter so it can be copied out from
 // the control thread (the venue publishes it through a Seqlocked).
 struct VenueStatus {
@@ -78,6 +131,7 @@ struct VenueStatus {
   WireLatencyStats wire_tick_to_trade;  // inbound receive (t0_cycles) -> send call returned
   WireLatencyStats order_encode;        // JSON encoding + signing
   WireLatencyStats order_send;          // WebSocket write / REST request call
+  VenueFeedStatus feed;                 // multicast venues only
 };
 
 class Venue {
@@ -113,6 +167,9 @@ class Venue {
   virtual void on_timer(std::int64_t now_ns) = 0;
   // The engine pushed Out*Msg into the outbound ring: drain, encode, send.
   virtual void on_wake() = 0;
+  // Called by the network thread after every reactor iteration. Venues whose sockets are not
+  // registered with the reactor poll them here (nasdaq_itch with [engine] spin_mode = "busy").
+  virtual void poll() noexcept {}
 
   // Venue view of open orders -> ReconcileMsg Begin/OpenOrder*/End into the order sink.
   virtual void request_open_orders() = 0;

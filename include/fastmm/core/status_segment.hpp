@@ -24,7 +24,8 @@ namespace fastmm {
 inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTAT1" little-endian
 // 2: venue_rejects and the per-reason reject counts.
 // 3: kill reasons (global and per venue), per-venue kill flags and venue_kills.
-inline constexpr std::uint32_t kStatusVersion = 3;
+// 4: p99.9 in every latency, the multicast feed block of each venue.
+inline constexpr std::uint32_t kStatusVersion = 4;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -37,7 +38,38 @@ struct StatusLatency {
   std::uint64_t count = 0;
   std::uint64_t p50_ns = 0;
   std::uint64_t p99_ns = 0;
+  std::uint64_t p999_ns = 0;
   std::uint64_t max_ns = 0;
+};
+
+// Multicast feed of a venue (nasdaq_itch); `state` 0 for the other venues. Mirrors
+// venues::VenueFeedStatus.
+struct StatusFeed {
+  std::uint8_t state = 0;     // venues::FeedState: 0 none, 1 down, 2 snapshot, 3 live, 4 lost
+  std::uint8_t backend = 0;   // 0 kernel, 1 af_xdp
+  std::uint8_t xdp_mode = 0;  // net::XdpMode: 1 zerocopy, 2 native_copy, 3 generic
+  std::uint8_t pad_[5] = {};
+  std::uint64_t packets = 0;
+  std::uint64_t bytes = 0;
+  std::uint64_t line_packets[2] = {0, 0};
+  std::uint64_t line_duplicates[2] = {0, 0};
+  std::int64_t line_skew_mean_ns[2] = {0, 0};
+  std::int64_t line_skew_max_ns[2] = {0, 0};
+  std::uint64_t gaps = 0;
+  std::uint64_t recovered = 0;
+  std::uint64_t unrecovered = 0;
+  std::uint64_t snapshot_recoveries = 0;
+  std::uint64_t recovery_overflows = 0;
+  std::uint64_t reorder_high_water = 0;
+  std::uint64_t requests = 0;
+  std::uint64_t malformed = 0;
+  std::uint64_t book_errors = 0;
+  StatusLatency kernel_to_t0;
+  std::uint64_t xdp_rx_dropped = 0;
+  std::uint64_t xdp_rx_invalid_descs = 0;
+  std::uint64_t xdp_rx_ring_full = 0;
+  std::uint64_t xdp_fill_ring_empty = 0;
+  std::uint64_t xdp_fallback = 0;
 };
 
 // One reason's reject count (`reason` holds a RejectReason value); count 0 marks an unused entry.
@@ -68,6 +100,7 @@ struct StatusVenue {
   std::uint64_t rate_limit_cooldowns = 0;
   std::int64_t clock_offset_ms = 0;
   StatusLatency wire_tick_to_trade;
+  StatusFeed feed;
 };
 
 struct StatusSnapshot {
@@ -172,6 +205,9 @@ class StatusReader {
   const Segment* seg_ = nullptr;
   std::uint32_t refused_version_ = 0;
 };
+
+// The snapshot as one JSON object (fastmm-top --once --json; scripts/bench-e2e.sh reads it).
+[[nodiscard]] std::string format_status_json(const StatusSnapshot& s);
 
 // Human-readable dashboard frame. `now_ns` is the wall clock; a running engine that has not
 // published for over 3 s is shown as stale. `color` adds ANSI colours.

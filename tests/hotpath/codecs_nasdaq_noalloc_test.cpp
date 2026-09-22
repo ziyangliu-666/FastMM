@@ -1,11 +1,13 @@
 // The Nasdaq codecs' hot paths do not allocate after construction: ITCH decode, MoldUDP64
-// framing and gap recovery, SoupBinTCP framing and session traffic both ways (including
-// heartbeats), OUCH 4.2 / 5.0 encode and decode (including order-table inserts and erases).
+// framing, A/B arbitration, the reorder buffer and gap recovery, the ITCH-to-L2 bridge, SoupBinTCP
+// framing and session traffic both ways (including heartbeats), OUCH 4.2 / 5.0 encode and decode
+// (including order-table inserts and erases).
 #include "alloc_counter.hpp"
 #include "test_support.hpp"
 
 #include "fastmm/codecs/itch/itch_decoder.hpp"
 #include "fastmm/codecs/itch/itch_encoder.hpp"
+#include "fastmm/codecs/itch/itch_l2_bridge.hpp"
 #include "fastmm/codecs/moldudp/moldudp64.hpp"
 #include "fastmm/codecs/ouch/ouch42.hpp"
 #include "fastmm/codecs/ouch/ouch50.hpp"
@@ -38,10 +40,17 @@ struct NullApp {
   std::uint64_t n = 0;
   void on_unsequenced(std::span<const std::byte>) noexcept { ++n; }
 };
+struct MoldMeta {
+  std::int64_t t0 = 0;
+};
 struct MoldHandler {
   std::uint64_t messages = 0;
   std::uint64_t requests = 0;
-  void on_message(std::uint64_t, std::span<const std::byte>) noexcept { ++messages; }
+  std::int64_t last_t0 = 0;
+  void on_message(std::uint64_t, std::span<const std::byte>, const MoldMeta& m) noexcept {
+    ++messages;
+    last_t0 = m.t0;
+  }
   void send_request(std::span<const std::byte>) noexcept { ++requests; }
   void on_end_of_session() noexcept {}
 };
@@ -83,17 +92,23 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
   itch_len[7] = itch_enc.trade(itch_msgs[7], 7, 8, Side::Buy, q, "FMHOT", p, 11);
   REQUIRE(itch_dec->add_symbol("FMHOT", InstrumentId{0}));
 
-  // MoldUDP64: a stream with a gap and its retransmission.
-  auto tx = std::make_unique<moldudp::Transmitter>("HOTPATH");
-  for (int i = 0; i < 64; ++i)
+  // MoldUDP64: 30 messages per iteration on lines A and B; 11..20 of each iteration are lost
+  // on both and recovered from a retransmission on line 2.
+  moldudp::TransmitterConfig tc;
+  tc.history_bytes = 1U << 23;
+  tc.history_messages = 1U << 18;
+  auto tx = std::make_unique<moldudp::Transmitter>("HOTPATH", tc);
+  for (int i = 0; i < 5'000 * 30; ++i)
     REQUIRE(tx->publish(std::span<const std::byte>(itch_msgs[1].data(), itch_len[1])) != 0);
   std::array<std::byte, 1500> d1{};
   std::array<std::byte, 1500> d2{};
   std::array<std::byte, 1500> d3{};
-  const std::size_t n1 = tx->packet_at(d1, 1, 10);
-  const std::size_t n2 = tx->packet_at(d2, 21, 10);  // 11..20 missing
   std::array<std::byte, 20> req{};
   MoldHandler mh;
+  moldudp::ReceiverConfig rc;
+  rc.next_sequence = 1;
+  rc.gap_timeout_ns = 50'000;
+  auto rx = std::make_unique<moldudp::Receiver<MoldHandler, MoldMeta>>(mh, rc);
 
   // SoupBinTCP sessions over fixed buffers, logged in before the guard.
   auto c2s = std::make_unique<FixedWriter>();
@@ -140,15 +155,18 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
       }
       drain(*ring);
 
-      moldudp::ReceiverConfig rc;
-      rc.next_sequence = 1;
-      moldudp::Receiver<MoldHandler> rx(mh, rc);
-      rx.on_packet(std::span<const std::byte>(d1.data(), n1));
-      rx.on_packet(std::span<const std::byte>(d2.data(), n2));
-      rx.on_timer(1'000'000'000);
-      moldudp::write_request(req, tx->session(), 11, 10);
+      const std::uint64_t base = (i - 1) * 30ULL;
+      const std::int64_t t = static_cast<std::int64_t>(i) * 1'000'000;
+      const std::size_t n1 = tx->packet_at(d1, base + 1, 10);
+      const std::size_t n2 = tx->packet_at(d2, base + 21, 10);
+      rx->on_packet(0, std::span<const std::byte>(d1.data(), n1), t, MoldMeta{t});
+      rx->on_packet(1, std::span<const std::byte>(d1.data(), n1), t + 1'000, MoldMeta{t});
+      rx->on_packet(0, std::span<const std::byte>(d2.data(), n2), t + 2'000, MoldMeta{t});
+      rx->on_packet(1, std::span<const std::byte>(d2.data(), n2), t + 3'000, MoldMeta{t});
+      rx->on_timer(t + 52'000);  // gap declared: request
+      moldudp::write_request(req, tx->session(), base + 11, 10);
       const std::size_t n3 = tx->answer_request(req, d3);
-      rx.on_packet(std::span<const std::byte>(d3.data(), n3));
+      rx->on_packet(2, std::span<const std::byte>(d3.data(), n3), t + 60'000, MoldMeta{t});
 
       // OUCH 4.2 over SoupBinTCP: client Unsequenced -> server, server Sequenced -> client.
       venues::OrderCommand cmd;
@@ -208,7 +226,10 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
   }
   CHECK(events == 55'000);  // 7 ITCH + 2 OUCH 4.2 + 2 OUCH 5.0 events per iteration
   CHECK(app_messages == 10'000);
-  CHECK(mh.messages > 0);
+  CHECK(mh.messages == 5'000 * 30);
+  CHECK(mh.requests == 5'000);
+  CHECK(rx->stats().lines[1].duplicate_packets == 10'000);
+  CHECK(rx->stats().held_packets == 5'000);
   CHECK(client->state() == SessionState::Up);
   CHECK(client->stats().heartbeats_sent >= 4);
   CHECK(server->stats().heartbeats_sent >= 4);
@@ -216,4 +237,74 @@ TEST_CASE("hotpath.noalloc: Nasdaq codecs (ITCH, MoldUDP64, SoupBinTCP, OUCH 4.2
   CHECK(dec42->open_orders() == 0);
   CHECK(dec50->open_orders() == 0);
   CHECK(ids->size() == 0);
+}
+
+TEST_CASE("hotpath.noalloc: ITCH to L2 bridge (L3 updates, deltas, trades, snapshot, resync)") {
+  auto ring = std::make_unique<MsgRing>(1U << 20);
+  venues::EventSink sink(ring.get(), venues::SinkPolicy::Drop);
+  itch::ItchL2BridgeConfig cfg;
+  cfg.book = L3BookConfig{.price_window_ticks = 1024, .max_orders = 1U << 12};
+  auto bridge = std::make_unique<itch::ItchL2Bridge>(sink, cfg);
+  REQUIRE(bridge->add_instrument("FMHOT", InstrumentId{0}));
+
+  // Messages built before the guard: a directory entry, orders near the touch and far from it
+  // (overflow store), executions, cancels, replaces above the window (recentre) and a trade.
+  itch::ItchEncoder enc;
+  std::vector<std::array<std::byte, 64>> msgs(256);
+  std::vector<std::size_t> len;
+  std::size_t k = 0;
+  const auto cents = [](std::int64_t c) { return Price::from_raw(c * 1'000'000); };
+  len.push_back(enc.stock_directory(msgs[k++], 7, 1, "FMHOT"));
+  for (std::uint64_t i = 0; i < 40; ++i) {
+    const auto t = static_cast<std::int64_t>(i);
+    const Side s = i % 2 == 0 ? Side::Buy : Side::Sell;
+    const Price p = cents(s == Side::Buy ? 10'000 - t : 10'001 + t);
+    len.push_back(enc.add_order(msgs[k++], 7, 2, 100 + i, s, Qty::from_int(10), "FMHOT", p));
+  }
+  len.push_back(enc.add_order(
+      msgs[k++], 7, 2, 900, Side::Sell, Qty::from_int(5), "FMHOT", Price::from_int(900)));
+  len.push_back(enc.add_order(
+      msgs[k++], 7, 2, 901, Side::Buy, Qty::from_int(5), "FMHOT", Price::from_int(1)));
+  const std::size_t head = k;
+  for (std::uint64_t i = 0; i < 10; ++i) {
+    const auto t = static_cast<std::int64_t>(i);
+    len.push_back(enc.order_executed(msgs[k++], 7, 3, 100 + i, Qty::from_int(3), 50 + i));
+    len.push_back(enc.order_executed_with_price(
+        msgs[k++], 7, 3, 100 + i, Qty::from_int(2), 70 + i, Price::from_int(100), i % 2 == 0));
+    len.push_back(enc.order_cancel(msgs[k++], 7, 3, 110 + i, Qty::from_int(1)));
+    len.push_back(
+        enc.order_replace(msgs[k++], 7, 3, 120 + i, 200 + i, Qty::from_int(4), cents(10'050 + t)));
+    len.push_back(enc.order_delete(msgs[k++], 7, 3, 100 + i));
+  }
+  len.push_back(
+      enc.trade(msgs[k++], 7, 4, Side::Buy, Qty::from_int(1), "FMHOT", Price::from_int(100), 99));
+  REQUIRE(k <= msgs.size());
+
+  std::uint64_t seq = 0;
+  bool completed = true;
+  auto feed = [&](std::size_t from, std::size_t to) noexcept {
+    for (std::size_t i = from; i < to; ++i) {
+      bridge->on_itch_message(
+          ++seq, {msgs[i].data(), len[i]}, itch::DatagramStamp{rdtscp(), Timestamp{1}});
+      if (i % 4 == 3) bridge->end_datagram();
+    }
+    bridge->end_datagram();
+  };
+  {
+    NoAllocScope guard(true);
+    for (int round = 0; round < 3; ++round) {
+      feed(0, head);
+      completed = bridge->mark_complete(InstrumentId{0}) && completed;
+      feed(head, k);
+      drain(*ring);
+      bridge->mark_incomplete(1);
+      drain(*ring);
+    }
+  }
+  CHECK(completed);
+  CHECK(bridge->stats().book_errors == 0);
+  CHECK(bridge->stats().deltas > 0);
+  CHECK(bridge->stats().trades > 0);
+  CHECK(bridge->stats().snapshots == 3);
+  CHECK(bridge->stats().overflow == 0);
 }

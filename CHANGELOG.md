@@ -5,6 +5,83 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
+  docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
+  `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one
+  `L3Book` per instrument through `ItchL2Bridge`, T0 per receive batch and `recv_ts` from the kernel
+  receive time. Joins mid-stream from a GLIMPSE snapshot plus a recovery buffer
+  (`recovery_buffer_packets`, allocated at start); an unrecoverable gap or any L3 book error rebuilds
+  the books from GLIMPSE, and the buffer overflowing during two snapshots in a row trips the venue's
+  kill switch with the new `KillReason::FeedLost`. `order_entry = "none"` rejects orders
+  (`VenueReject`); `"sim_ouch"` trades OUCH 5.0 over SoupBinTCP with `fastmm-sim-itch`, naming the
+  triggering ITCH sequence number in the ClOrdID. No API keys are needed for this kind.
+- `Venue::poll()`: called by the network thread after every reactor iteration; `nasdaq_itch` polls
+  its sockets there with `spin_mode = "busy"`.
+- Status file version 4: p99.9 in every latency, and a multicast feed block per venue (packets per
+  line, A/B skew, gaps, recovered and given-up sequences, snapshots, reorder high-water mark,
+  kernel-to-T0 histogram, XDP statistics and mode). `fastmm-top` shows p99.9 and a feed line, and
+  `--json` prints the snapshot as JSON. `WireLatencyStats` carries p99.9 and max.
+- `scripts/bench-e2e.sh`: `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a
+  veth pair, pinned to separate cores; prints wire-to-wire, kernel-to-T0, the engine hops and the
+  network thread's tick-to-trade at p50, p99 and p99.9 (`--backend af_xdp` needs root). ctest runs it
+  for 5 s unpinned (`integration.nasdaq_itch_processes`).
+- `moldudp::Receiver::reset()`: resume delivery at a given sequence number (the End of Snapshot
+  sequence); the hole up to the highest sequence seen is requested as a gap.
+- `ItchL2Bridge::set_stamp()`: the receive stamp of the snapshot and state events `mark_*()` emits.
+- `fastmm-sim-itch` times Replace Orders whose ClOrdID is a sequence token, as it times Enter Orders
+  (`host::ReplaceView::seq_token`).
+- `fastmm-sim-itch` (ADR-0015, section 6; `configs/sim-itch.toml`, docs/reference/sim-itch.md): a
+  Nasdaq-style simulator. `MatchingEngine` and `MarketGenerator` per symbol, engine effects
+  published as ITCH 5.0 (A, E, X, D; opening spin O, R, S, Q, H), packed into MoldUDP64 and sent
+  to lines A and B with `sendmmsg`, with seeded per-line drops, token-bucket pacing and bursts,
+  heartbeats and End of Session. It answers MoldUDP64 re-requests from a ring history, serves
+  GLIMPSE 5.0 snapshots (R, H, A per resting order, End of Snapshot) consistent with the stream,
+  and accepts OUCH 5.0 Enter / Replace / Cancel over SoupBinTCP (Accepted with the ITCH order
+  reference, Replaced, Canceled, Executed with the ITCH match number, Rejected; cancel on
+  disconnect). Orders whose ClOrdID is a sequence token are timed wire to wire, from the
+  `sendmmsg` of the datagram carrying that sequence number to the read that returned the order;
+  `--summary-json` writes the histogram. `--cpu`, `--busy-poll`, `--duration` and the bind and
+  port flags serve `scripts/bench-e2e.sh`.
+- `codecs::itch::glimpse` (`itch/glimpse.hpp`): End of Snapshot `G` and `GlimpseClient`, a
+  SoupBinTCP client session that hands every snapshot message and the End of Snapshot sequence
+  number to a handler.
+- OUCH 5.0 host side: `host::parse_enter()`, `parse_replace()`, `parse_cancel()`, and the
+  sequence token `put_seq_token()` / `parse_seq_token()` (ClOrdID `T` + 13 digits).
+- `sim::itch::ItchPublisher` (`sim/itch/itch_publisher.hpp`): `MatchingEngine` effects as ITCH
+  messages, with reference and match numbers shared across symbols. The ITCH property and L2
+  bridge tests use it instead of their own publisher.
+- `moldudp::TransmitterConfig::overwrite_oldest`: a ring history that evicts the oldest messages;
+  `Transmitter::oldest()`, `evicted()`, and a message limit for `next_packet()`.
+- `MatchingEngine::for_each_resting()`: resting orders best level first, in queue order.
+- AF_XDP multicast receive (ADR-0015, section 3): `net::XdpDatagramSource`
+  (`net/xdp_datagram_source.hpp`) opens one XDP socket per (interface, RX queue) with its own UMEM,
+  fill and RX rings, attaches a BPF filter per interface through `BPF_LINK_CREATE` (native with a
+  zero-copy bind, native with a copy bind, then generic; `xdp_mode` pins one), joins each group with
+  a kernel socket for IGMP, and delivers UDP payloads with `RxMeta` (T0 per batch, line index).
+  `poll()` allocates nothing and returns RX descriptors to the fill ring before it returns.
+  `open()` fails with the missing capabilities and the `setcap` command, before Linux 5.11, and with
+  `-EBUSY` when an interface already has an XDP program. Statistics: `XDP_STATISTICS`, the per-CPU
+  count of packets passed to the kernel for lack of a socket on their queue, bad frames, the chosen
+  mode, and busy-poll options the kernel refused. The filter is BPF bytecode built in C++
+  (`net/bpf_asm.hpp`, `net/xdp_program.hpp`) and loaded over raw `bpf(2)`; no libbpf, libxdp or
+  BPF compiler. `net/udp_frame.hpp` parses Ethernet/802.1Q/IPv4/UDP frames and optionally verifies
+  checksums (`bench_udp_frame`).
+- `scripts/xdp-test.sh` (run with `sudo`) runs the privileged AF_XDP tests: verifier load,
+  `BPF_PROG_TEST_RUN` against crafted frames compared with the parser, and receive over a veth pair
+  in generic and native copy modes. Without privileges `ctest` skips them; the parser, the
+  assembler encodings and the program (under a small BPF interpreter) are tested unprivileged.
+- UDP multicast receive (ADR-0015, step 1): `net::UdpSocket` (any-source and source-specific
+  joins with the interface by name or address, `SO_RCVBUF`, `recvmmsg`/`sendmmsg`, `send_to`,
+  `IP_MULTICAST_IF`/`TTL`/`LOOP`, `SO_TIMESTAMPING`, and `SO_BUSY_POLL`, `SO_PREFER_BUSY_POLL` and
+  `SO_BUSY_POLL_BUDGET` setters that return the errno), `net::enable_hw_timestamps(ifname)`
+  (`SIOCSHWTSTAMP`, not called by default), the `net::DatagramSource` concept with `net::RxMeta`
+  (`net/datagram_source.hpp`), and its `kernel` backend `net::KernelDatagramSource`: one socket
+  per subscription (interface, group, port, optional source), batches of `recvmmsg` into buffers
+  allocated at `open`, kernel and NIC receive timestamps, T0 as `rdtscp` plus a `CLOCK_REALTIME`
+  read per batch, oversized datagrams counted and dropped. Busy-poll options that the process may
+  not set are reported by `open` and do not fail it. Multicast tests run in an unprivileged user
+  and network namespace and pass with a message where none can be created; `bench_udp` measures
+  unicast and multicast receive on loopback.
 - Binance USDⓈ-M perpetual futures connector (`kind = "binance_usdm"`,
   `binance_usdm::BinanceUsdmVenue`) and `configs/binance-usdm-demo.toml` for Demo Trading: depth
   sync with `pu` chaining on the `/public` stream, `bookTicker` and `aggTrade` (`/market`), orders
@@ -16,6 +93,13 @@ All notable changes are recorded here (Keep a Changelog format).
   the private payloads are hand-written from the documentation because the Demo account had no
   futures margin balance. Funding payments are not booked. `binance::BinanceDepthSync` is now
   `BasicBinanceDepthSync<BinanceSpotSyncTraits>`.
+- `codecs::itch::ItchL2Bridge` (ADR-0015, step 3): ITCH messages to one `L3Book` per configured
+  instrument to `BookSnapshotMsg` / `BookDeltaMsg` / `TradeMsg` / `ConnectionStateMsg` for the
+  engine. At most one delta per instrument per datagram (`end_datagram()`) with absolute level
+  quantities over the top `depth` levels; trades for P/Q, E and printable C; `mark_complete()` /
+  `mark_incomplete()` for snapshot recovery; T0 from a per-datagram `DatagramStamp`. Messages for
+  unconfigured locates are skipped after the header. `ItchDecoder::decode_into()` and
+  `ScratchSink` decode one message without a ring.
 - Slow methods in live sessions (ADR-0013, sections 1 and 4): `fastmm.run_live` and
   `python -m fastmm run` run `on_start` before any venue connection, the `@fastmm.every` methods
   on a `fastmm-slow` thread and `on_stop` after the session, with snapshots, recent rows and fills
@@ -61,6 +145,25 @@ All notable changes are recorded here (Keep a Changelog format).
   `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- `moldudp::Receiver` (ADR-0015, step 2): A/B arbitration, a reorder buffer and
+  `gap_timeout_ns`. `on_packet(line, datagram, now_ns, meta)` replaces `on_packet(datagram)`
+  (`on_packet(datagram, now_ns)` is line 0); requests are stamped with the packet time instead of
+  the last `on_timer()` tick. `Receiver<H, Meta>` passes `meta` to `on_message(seq, msg, meta)`
+  when the handler takes it, also for messages drained later. Packets ahead of a gap are copied
+  into a `ReorderBuffer` (`reorder_packets`, default 256, of `max_packet_bytes`) instead of
+  dropped; a gap is declared after `gap_timeout_ns` (default 2 ms) or when the buffer is full,
+  and requested one hole at a time. New `ReceiverConfig` fields `max_request_attempts`,
+  `can_request` and `follow_session`; an optional `on_gap_unrecoverable(from_seq, count)` reports
+  gaps that are given up. `ReceiverStats` gains per-line packets, duplicates and A/B skew, and
+  held, overflow, unrecoverable and session counters.
+- `L3Book` is no longer a template: capacity and price window are constructor arguments
+  (`L3BookConfig{price_window_ticks, max_orders, max_overflow_levels}`), allocated once. Orders
+  outside the window go to a bounded per-side overflow store instead of failing with
+  `OutOfWindow` (now returned only when that store is full), and the window recentres only when a
+  touch leaves it. A bitmap of non-empty levels speeds up best-level repair and depth walks.
+  `find()`, `at()` and handle forms of `execute()` / `cancel()` are new.
+- `OrderExecL3Msg` gains `exec_flags` with `kNonPrintable`: `ItchDecoder` keeps the Printable flag
+  of C messages (zero, the old padding, reads as printable).
 - `fastmm-backtest`, `fastmm-replay` and `BacktestConfig.from_toml` report unknown configuration
   keys and sections with their line (stderr, or a `UserWarning` each and `BacktestConfig.warnings`),
   including unknown `[backtest]` keys. `GenericSection::lines` records the line of each

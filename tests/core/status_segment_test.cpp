@@ -27,7 +27,7 @@ StatusSnapshot sample() {
   s.fills = 2;
   s.realized_pnl_raw = 150'000'000;  // 1.5
   s.latency[static_cast<std::size_t>(LatencyInterval::TickToTrade)] = {
-      10, 106'495, 216'053, 300'000};
+      10, 106'495, 216'053, 250'000, 300'000};
   s.venue_count = 1;
   set_status_name(s.venues[0].name, "binance");
   s.venues[0].md = 2;
@@ -274,4 +274,43 @@ TEST_CASE(
   CHECK(back.venues[1].killed == 1);
   CHECK(back.venues[1].kill_reason == static_cast<std::uint8_t>(KillReason::VenueFatal));
   CHECK(back.venues[0].killed == 0);
+}
+
+TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
+  StatusSnapshot s = sample();
+  CHECK(format_status(s, s.updated_ns, false).find("k2t0_p50") == std::string::npos);
+  StatusFeed& f = s.venues[0].feed;
+  f.state = 3;  // live
+  f.packets = 1234;
+  f.line_packets[0] = 700;
+  f.line_packets[1] = 534;
+  f.line_skew_max_ns[1] = 12'000;
+  f.gaps = 3;
+  f.recovered = 17;
+  f.kernel_to_t0 = {100, 2'500, 9'000, 20'000, 40'000};
+  std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("k2t0_p50") != std::string::npos);
+  CHECK(frame.find("kernel") != std::string::npos);
+  CHECK(frame.find("1234") != std::string::npos);
+  CHECK(frame.find("2.5 us") != std::string::npos);
+  CHECK(frame.find("250.0 us") != std::string::npos);  // tick-to-trade p99.9
+  f.backend = 1;
+  f.xdp_mode = 3;
+  f.xdp_fallback = 5;
+  frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("af_xdp/generic") != std::string::npos);
+  CHECK(frame.find("fallback=5") != std::string::npos);
+
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("version": 4)") != std::string::npos);
+  CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
+  CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
+                  R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
+  CHECK(json.find(R"("state": "live", "backend": "af_xdp", "xdp_mode": "generic")") !=
+        std::string::npos);
+  CHECK(json.find(R"("line_packets": [700, 534])") != std::string::npos);
+  CHECK(json.find(R"("kernel_to_t0": {"count": 100, "p50_ns": 2500)") != std::string::npos);
+  CHECK(json.back() == '\n');
+  set_status_name(s.engine_name, "a\"b");
+  CHECK(format_status_json(s).find(R"("engine": "a\"b")") != std::string::npos);
 }

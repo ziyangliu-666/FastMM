@@ -67,6 +67,63 @@ const char* reset(bool color) {
   return color ? "\x1b[0m" : "";
 }
 
+std::string_view feed_state_name(std::uint8_t s) noexcept {
+  switch (s) {
+    case 1:
+      return "down";
+    case 2:
+      return "snapshot";
+    case 3:
+      return "live";
+    case 4:
+      return "lost";
+    default:
+      return "none";
+  }
+}
+
+std::string_view xdp_mode_name(std::uint8_t m) noexcept {
+  switch (m) {
+    case 1:
+      return "zerocopy";
+    case 2:
+      return "native_copy";
+    case 3:
+      return "generic";
+    default:
+      return "-";
+  }
+}
+
+void json_latency(std::string& out, std::string_view key, const StatusLatency& l) {
+  fmt::format_to(std::back_inserter(out),
+                 "\"{}\": {{\"count\": {}, \"p50_ns\": {}, \"p99_ns\": {}, \"p999_ns\": {}, "
+                 "\"max_ns\": {}}}",
+                 key,
+                 l.count,
+                 l.p50_ns,
+                 l.p99_ns,
+                 l.p999_ns,
+                 l.max_ns);
+}
+
+// Names come from config values; escape what JSON requires.
+std::string json_string(std::string_view v) {
+  std::string out = "\"";
+  for (const char c : v) {
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += c;
+    } else if (static_cast<unsigned char>(c) < 0x20) {
+      out += fmt::format("\\u{:04x}", static_cast<unsigned>(c));
+    } else {
+      out += c;
+    }
+  }
+  out += '"';
+  return out;
+}
+
 }  // namespace
 
 struct StatusWriter::Segment : SegmentLayout {};
@@ -109,7 +166,7 @@ void set_status_name(char* dst, std::size_t capacity, std::string_view s) noexce
 }
 
 StatusLatency to_status_latency(const LatencyStats& s) noexcept {
-  return StatusLatency{s.count, s.p50, s.p99, s.max};
+  return StatusLatency{s.count, s.p50, s.p99, s.p999, s.max};
 }
 
 std::string status_version_mismatch(std::uint32_t version) {
@@ -323,20 +380,22 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.unrealized_pnl_raw),
                  money(s.fees_raw));
   fmt::format_to(std::back_inserter(out),
-                 "{:<12} {:>10} {:>10} {:>10} {:>10}\n",
+                 "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
                  "latency",
                  "count",
                  "p50",
                  "p99",
+                 "p99.9",
                  "max");
   for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i) {
     const StatusLatency& l = s.latency[i];
     fmt::format_to(std::back_inserter(out),
-                   "{:<12} {:>10} {:>10} {:>10} {:>10}\n",
+                   "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
                    to_string(static_cast<LatencyInterval>(i)),
                    l.count,
                    fmt_ns(l.p50_ns),
                    fmt_ns(l.p99_ns),
+                   fmt_ns(l.p999_ns),
                    fmt_ns(l.max_ns));
   }
   fmt::format_to(std::back_inserter(out),
@@ -390,6 +449,164 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
         fmt_ns(v.wire_tick_to_trade.p50_ns),
         venue_kill);
   }
+  // Multicast feeds: one line per venue that has one.
+  bool feed_header = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusVenue& v = s.venues[i];
+    const StatusFeed& f = v.feed;
+    if (f.state == 0) continue;
+    if (!feed_header) {
+      feed_header = true;
+      fmt::format_to(std::back_inserter(out),
+                     "\n{:<14} {:<9} {:<18} {:>10} {:>10} {:>10} {:>9} {:>6} {:>8} {:>8} {:>6} "
+                     "{:>7} {:>10} {:>10}\n",
+                     "feed",
+                     "state",
+                     "rx",
+                     "packets",
+                     "pkts_a",
+                     "pkts_b",
+                     "skew_max",
+                     "gaps",
+                     "recov",
+                     "lost",
+                     "snaps",
+                     "reorder",
+                     "k2t0_p50",
+                     "k2t0_p99");
+    }
+    const std::string_view fstate = feed_state_name(f.state);
+    const std::string rx = f.backend == 1 ? fmt::format("af_xdp/{}", xdp_mode_name(f.xdp_mode))
+                                          : std::string("kernel");
+    const std::int64_t skew = std::max(f.line_skew_max_ns[0], f.line_skew_max_ns[1]);
+    fmt::format_to(std::back_inserter(out),
+                   "{:<14} {}{:<9}{} {:<18} {:>10} {:>10} {:>10} {:>9} {:>6} {:>8} {:>8} {:>6} "
+                   "{:>7} {:>10} {:>10}\n",
+                   name_of(v.name, sizeof v.name),
+                   paint(color, fstate),
+                   fstate,
+                   reset(color),
+                   rx,
+                   f.packets,
+                   f.line_packets[0],
+                   f.line_packets[1],
+                   fmt_ns(static_cast<std::uint64_t>(std::max<std::int64_t>(skew, 0))),
+                   f.gaps,
+                   f.recovered,
+                   f.unrecovered,
+                   f.snapshot_recoveries,
+                   f.reorder_high_water,
+                   fmt_ns(f.kernel_to_t0.p50_ns),
+                   fmt_ns(f.kernel_to_t0.p99_ns));
+    if (f.backend == 1) {
+      fmt::format_to(std::back_inserter(out),
+                     "{:<14} xdp rx_dropped={} rx_invalid_descs={} rx_ring_full={} "
+                     "fill_ring_empty={} fallback={}\n",
+                     "",
+                     f.xdp_rx_dropped,
+                     f.xdp_rx_invalid_descs,
+                     f.xdp_rx_ring_full,
+                     f.xdp_fill_ring_empty,
+                     f.xdp_fallback);
+    }
+  }
+  return out;
+}
+
+std::string format_status_json(const StatusSnapshot& s) {
+  std::string out;
+  auto it = std::back_inserter(out);
+  fmt::format_to(it,
+                 "{{\"version\": {}, \"pid\": {}, \"session_id\": {}, \"state\": \"{}\", "
+                 "\"engine\": {}, \"strategy\": {}, \"events\": {}, \"book_updates\": {}, "
+                 "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
+                 "\"risk_rejects\": {}, \"venue_rejects\": {}, \"kill_flags\": {}, "
+                 "\"kill_reason\": \"{}\", \"latency\": {{",
+                 s.version,
+                 s.pid,
+                 s.session_id,
+                 to_string(s.state),
+                 json_string(name_of(s.engine_name, sizeof s.engine_name)),
+                 json_string(name_of(s.strategy, sizeof s.strategy)),
+                 s.events,
+                 s.book_updates,
+                 s.orders_sent,
+                 s.cancels_sent,
+                 s.replaces_sent,
+                 s.fills,
+                 s.risk_rejects,
+                 s.venue_rejects,
+                 s.kill_flags,
+                 to_string(static_cast<KillReason>(s.kill_reason)));
+  for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i) {
+    if (i != 0) out += ", ";
+    json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);
+  }
+  out += "}, \"venues\": [";
+  const std::size_t n = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusVenue& v = s.venues[i];
+    const StatusFeed& f = v.feed;
+    if (i != 0) out += ", ";
+    fmt::format_to(it,
+                   "{{\"name\": {}, \"md\": \"{}\", \"order\": \"{}\", \"killed\": {}, "
+                   "\"kill_reason\": \"{}\", \"books_synced\": {}, \"books_total\": {}, "
+                   "\"md_messages\": {}, \"resyncs\": {}, \"orders_sent\": {}, "
+                   "\"cancels_sent\": {}, \"order_events\": {}, ",
+                   json_string(name_of(v.name, sizeof v.name)),
+                   channel_state_name(v.md),
+                   channel_state_name(v.order),
+                   v.killed != 0 ? "true" : "false",
+                   to_string(static_cast<KillReason>(v.kill_reason)),
+                   v.books_synced,
+                   v.books_total,
+                   v.md_messages,
+                   v.resyncs,
+                   v.orders_sent,
+                   v.cancels_sent,
+                   v.order_events);
+    json_latency(out, "wire_tick_to_trade", v.wire_tick_to_trade);
+    fmt::format_to(it,
+                   ", \"feed\": {{\"state\": \"{}\", \"backend\": \"{}\", \"xdp_mode\": \"{}\", "
+                   "\"packets\": {}, \"bytes\": {}, \"line_packets\": [{}, {}], "
+                   "\"line_duplicates\": [{}, {}], \"line_skew_mean_ns\": [{}, {}], "
+                   "\"line_skew_max_ns\": [{}, {}], \"gaps\": {}, \"recovered\": {}, "
+                   "\"unrecovered\": {}, \"snapshot_recoveries\": {}, \"recovery_overflows\": {}, "
+                   "\"reorder_high_water\": {}, \"requests\": {}, \"malformed\": {}, "
+                   "\"book_errors\": {}, ",
+                   feed_state_name(f.state),
+                   f.backend == 1 ? "af_xdp" : "kernel",
+                   xdp_mode_name(f.xdp_mode),
+                   f.packets,
+                   f.bytes,
+                   f.line_packets[0],
+                   f.line_packets[1],
+                   f.line_duplicates[0],
+                   f.line_duplicates[1],
+                   f.line_skew_mean_ns[0],
+                   f.line_skew_mean_ns[1],
+                   f.line_skew_max_ns[0],
+                   f.line_skew_max_ns[1],
+                   f.gaps,
+                   f.recovered,
+                   f.unrecovered,
+                   f.snapshot_recoveries,
+                   f.recovery_overflows,
+                   f.reorder_high_water,
+                   f.requests,
+                   f.malformed,
+                   f.book_errors);
+    json_latency(out, "kernel_to_t0", f.kernel_to_t0);
+    fmt::format_to(it,
+                   ", \"xdp_rx_dropped\": {}, \"xdp_rx_invalid_descs\": {}, \"xdp_rx_ring_full\": "
+                   "{}, \"xdp_fill_ring_empty\": {}, \"xdp_fallback\": {}}}}}",
+                   f.xdp_rx_dropped,
+                   f.xdp_rx_invalid_descs,
+                   f.xdp_rx_ring_full,
+                   f.xdp_fill_ring_empty,
+                   f.xdp_fallback);
+  }
+  out += "]}\n";
   return out;
 }
 

@@ -9,7 +9,7 @@ The kill switch is one atomic 32-bit flag word in the risk engine (`include/fast
 | 0 | `0x1` | Global: no new orders on any venue |
 | 1 + venue id | `0x2` (venue 0), `0x4` (venue 1), ... | One venue only (`RejectReason::VenueKilled`); venues from id 30 up share bit 31 (`0x80000000`) |
 
-Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`, `OrderRingOverflow`, `StrategyError`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)). `fastmm-live` has no command to reset the kill switch: restart the process.
+Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`, `OrderRingOverflow`, `StrategyError`, `FeedLost`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)). `fastmm-live` has no command to reset the kill switch: restart the process.
 
 ## What trips it
 
@@ -22,6 +22,7 @@ Venue ids follow the order of the `[venues.<name>]` tables in the config, starti
 | The outbound ring to a venue was full | Global | `outbound transport full: <n> message(s) dropped; tripping kill switch`, then `kill switch engaged (TransportFull, ...)` | ERROR | `on_kill` |
 | The journal ring was full | Global | `kill switch engaged (JournalOverflow, ...)` | ERROR | `on_kill` |
 | A fatal venue error (see [below](#venue-kill-switch)) | That venue | `<venue>: asking the engine to kill this venue (VenueFatal)`, `venue <id> kill switch engaged (VenueFatal, flags=0x2); ...`, `[<venue>] venue kill switch engaged (VenueFatal): ...; <n> of <m> venue(s) still trading` | ERROR | Only that venue stops; the others keep trading |
+| A `nasdaq_itch` feed cannot rebuild its books: the recovery buffer overflowed during two snapshots in a row, or a gap without `glimpse_url` ([Venue connectors](../../reference/venues.md#startup-and-recovery)) | That venue | `<venue>: market data lost (<cause>): the venue stops`, then `venue <id> kill switch engaged (FeedLost, ...)` | ERROR | Only that venue stops |
 | Every venue that has instruments is killed | Global | `kill switch engaged (AllVenuesKilled, ...)` | ERROR | `on_kill` |
 | A hot hook of a Python strategy raised, called `ctx.fail` or set a float level that is not finite; no hook runs again | Global | `kill switch engaged (StrategyError, ...)`; after the session, `fastmm: py:<Class>.<hook> ... kill switch tripped: StrategyError` on stderr | ERROR | `on_kill` |
 | A slow method of a Python strategy raised | Global, requested | `fastmm-live: slow tier failed (Exception): a slow method raised`, then `fastmm-live: shutting down (slow tier failed)`; the traceback on stderr | ERROR | Shutdown sequence; exit code 7 |

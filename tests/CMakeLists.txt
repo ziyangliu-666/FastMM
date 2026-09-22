@@ -57,7 +57,7 @@ target_link_libraries(fastmm_test_strategy_module PUBLIC fastmm::sim)
 fastmm_test(modules   LABELS "unit"          LIBS fastmm_test_strategy_module fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
-fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim)
+fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim_itch_publisher)
 # Shipped configs/*.toml: load, schema and [strategy.params] through the registry (label config).
 fastmm_test(config    LABELS "config"        LIBS fastmm::backtest)
 if(TARGET fastmm_config_tests)
@@ -111,6 +111,9 @@ if(NOT FASTMM_ENABLE_ASAN AND NOT FASTMM_ENABLE_TSAN)
 endif()
 if(FASTMM_BUILD_NET)
   fastmm_test(net       LABELS "unit"           LIBS fastmm::net)
+  # AF_XDP backend. The privileged cases (verifier load, BPF_PROG_TEST_RUN, veth receive) skip
+  # without root or the capabilities; `sudo scripts/xdp-test.sh` runs them.
+  fastmm_test(xdp       LABELS "unit"           LIBS fastmm::net)
   fastmm_test(venues    LABELS "unit;fixture"   LIBS fastmm::venues)
   # Opt-in testnet checks (tests/venues/live_*_test.cpp): `ctest -L live` selects them, the test
   # presets exclude the label, and without FASTMM_LIVE_TESTS=1 they skip.
@@ -118,7 +121,7 @@ if(FASTMM_BUILD_NET)
     fastmm_relabel_tests(fastmm_venues_tests "^venues\\.live\\." "live")
   endif()
   if(TARGET fastmm::sim_server)
-    fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::backtest fastmm::live)
+    fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::sim_itch fastmm::backtest fastmm::live)
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
@@ -334,6 +337,26 @@ if(TARGET fastmm-live)
   fastmm_cli_test(apps.fastmm-live.help_lists_exit_codes EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-live> --help
     EXPECT_REGEX "Exit codes:.*  6  kill switch tripped by the engine \\(on_kill = \"exit\"\\)")
+endif()
+
+if(TARGET fastmm-sim-itch)
+  fastmm_cli_test(apps.fastmm-sim-itch.bad_drop_rate EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-sim-itch> --drop-a 1.5 EXPECT_REGEX "fastmm-sim-itch: bad --drop-a '1.5'")
+  fastmm_cli_test(apps.fastmm-sim-itch.bad_config EXPECT_RC 3
+    CMD $<TARGET_FILE:fastmm-sim-itch> --line-a off --line-b off
+    EXPECT_REGEX "sim-itch config: no multicast line")
+endif()
+
+# fastmm-live against fastmm-sim-itch as processes in two network namespaces joined by a veth pair
+# (scripts/bench-e2e.sh, kernel backend, unpinned, 5 s): the feed goes live and orders are sent.
+# Exit code 77 (no user namespaces here) skips it.
+if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top)
+  add_test(NAME integration.nasdaq_itch_processes
+    COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
+            --sim-cpu -1 --engine-cpu -1 --net-cpu -1 --build ${PROJECT_BINARY_DIR}
+            --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e)
+  set_tests_properties(integration.nasdaq_itch_processes PROPERTIES
+    LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
 endif()
 
 # Apps built from the test strategy library: the module is listed for every transport, runs, and a
