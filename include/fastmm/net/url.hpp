@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -128,9 +129,7 @@ class QueryBuilder {
     if (!ok_) return *this;
     const std::size_t start = len_;
     if (len_ > 0 && !put('&')) return fail(start);
-    for (char c : key) {
-      if (!put(c)) return fail(start);
-    }
+    if (!put_all(key)) return fail(start);
     if (!put('=')) return fail(start);
     const std::size_t n =
         percent_encode(value, std::span<char>(buf_.data() + len_, Capacity - len_));
@@ -159,9 +158,7 @@ class QueryBuilder {
   QueryBuilder& append_raw(std::string_view raw) noexcept {
     if (!ok_) return *this;
     const std::size_t start = len_;
-    for (char c : raw) {
-      if (!put(c)) return fail(start);
-    }
+    if (!put_all(raw)) return fail(start);
     return *this;
   }
 
@@ -180,13 +177,21 @@ class QueryBuilder {
     buf_[len_++] = c;
     return true;
   }
+  bool put_all(std::string_view s) noexcept {
+    if (s.size() > Capacity - len_) return false;
+    if (!s.empty()) std::memcpy(buf_.data() + len_, s.data(), s.size());
+    len_ += s.size();
+    return true;
+  }
   QueryBuilder& fail(std::size_t rollback_to) noexcept {
     len_ = rollback_to;
     ok_ = false;
     return *this;
   }
 
-  std::array<char, Capacity> buf_{};
+  // Not zeroed: only [0, len_) is ever read, and zeroing kilobytes per request showed up in
+  // the order encoders' profiles.
+  std::array<char, Capacity> buf_;  // NOLINT(cppcoreguidelines-pro-type-member-init)
   std::size_t len_ = 0;
   bool ok_ = true;
 };

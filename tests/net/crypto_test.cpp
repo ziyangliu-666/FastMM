@@ -61,6 +61,31 @@ TEST_CASE("crypto: HMAC-SHA256 RFC 4231 vectors") {
   }
 }
 
+TEST_CASE("crypto: HmacSha256 with a precomputed key equals hmac_sha256") {
+  const std::string long_key(131, '\xaa');  // longer than a block: hashed first
+  const std::string payload(1000, 'p');
+  // EVP_MAC refuses an empty key (hmac_sha256() then fails); the precomputed form does not.
+  CHECK(HmacSha256(std::string_view{}).sign_hex("").view() ==
+        "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad");
+  for (const std::string_view key : {std::string_view("Jefe"),
+                                     std::string_view("0123456789abcdef0123456789abcdef0123456789"
+                                                      "abcdef0123456789abcdef"),  // exactly 64
+                                     std::string_view(long_key)}) {
+    const HmacSha256 h(key);
+    REQUIRE(h.keyed());
+    for (const std::string_view data : {std::string_view{},
+                                        std::string_view("what do ya want for nothing?"),
+                                        std::string_view(payload)}) {
+      CHECK(h.sign_hex(data).view() == hmac_sha256_hex(key, data).view());
+    }
+  }
+  CHECK(HmacSha256(long_key)
+            .sign_hex("Test Using Larger Than Block-Size Key - Hash Key First")
+            .view() == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+  Sha256Digest d{};
+  CHECK_FALSE(HmacSha256().sign("x", d));
+}
+
 TEST_CASE("crypto: SHA-1 / SHA-256 known answers") {
   CHECK(hex(sha1("abc")) == "a9993e364706816aba3e25717850c26c9cd0d89d");
   CHECK(hex(sha1("")) == "da39a3ee5e6b4b0d3255bfef95601890afd80709");

@@ -3,9 +3,12 @@
 // SHA-1 (WebSocket accept key), SHA-256, base64 (own implementation), CSPRNG bytes and an
 // optional Ed25519 signer (Binance WS API session logon). Everything is OpenSSL 3 EVP-based
 // but the header keeps OpenSSL out of the public interface.
+#include "fastmm/core/hex.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,10 +29,13 @@ class FixedHexString {
 
   constexpr FixedHexString() noexcept { data_[0] = '\0'; }
   explicit FixedHexString(std::span<const std::uint8_t, N> bytes) noexcept {
-    static constexpr char kDigits[] = "0123456789abcdef";
-    for (std::size_t i = 0; i < N; ++i) {
-      data_[2 * i] = kDigits[bytes[i] >> 4];
-      data_[2 * i + 1] = kDigits[bytes[i] & 0x0F];
+    static_assert(N % 4 == 0);
+    for (std::size_t i = 0; i < N; i += 4) {  // 4 bytes -> 8 characters per step
+      const std::uint32_t be = (std::uint32_t{bytes[i]} << 24) |
+                               (std::uint32_t{bytes[i + 1]} << 16) |
+                               (std::uint32_t{bytes[i + 2]} << 8) | std::uint32_t{bytes[i + 3]};
+      const std::uint64_t hex = fastmm::hex8(be);
+      std::memcpy(data_.data() + 2 * i, &hex, 8);
     }
     data_[kCapacity] = '\0';
   }
@@ -53,6 +59,30 @@ bool hmac_sha256(std::string_view key,
                  std::string_view data,
                  std::span<std::uint8_t, kSha256Size> out) noexcept;
 HexSha256 hmac_sha256_hex(std::string_view key, std::string_view data) noexcept;
+
+// HMAC-SHA256 with the key schedule done once: the SHA-256 states after the ipad and opad
+// blocks are kept, so signing a message is two SHA-256 runs over it and the digest, without
+// the OpenSSL context allocation, algorithm fetch and key hashing hmac_sha256() pays per call.
+// Same output as hmac_sha256(key, data).
+class HmacSha256 {
+ public:
+  HmacSha256() noexcept = default;
+  explicit HmacSha256(std::string_view key) noexcept;
+  HmacSha256(const HmacSha256&) noexcept = default;
+  HmacSha256& operator=(const HmacSha256&) noexcept = default;
+  ~HmacSha256();
+
+  [[nodiscard]] bool keyed() const noexcept { return keyed_; }
+  // false when unkeyed.
+  bool sign(std::string_view data, std::span<std::uint8_t, kSha256Size> out) const noexcept;
+  [[nodiscard]] HexSha256 sign_hex(std::string_view data) const noexcept;
+
+ private:
+  static constexpr std::size_t kStateBytes = 128;  // >= sizeof(SHA256_CTX), checked in crypto.cpp
+  alignas(16) std::array<std::uint8_t, kStateBytes> inner_{};
+  alignas(16) std::array<std::uint8_t, kStateBytes> outer_{};
+  bool keyed_ = false;
+};
 
 bool sha1(std::string_view data, std::span<std::uint8_t, kSha1Size> out) noexcept;
 bool sha256(std::string_view data, std::span<std::uint8_t, kSha256Size> out) noexcept;

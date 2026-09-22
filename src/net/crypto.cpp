@@ -1,9 +1,15 @@
 #include "fastmm/net/crypto.hpp"
 
+// HmacSha256 uses the SHA256_* functions (deprecated, still in OpenSSL 3): their state is a
+// plain struct that can be copied per message; EVP contexts are heap objects.
+#define OPENSSL_SUPPRESS_DEPRECATED
+
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include <cstring>
 #include <limits>
@@ -75,6 +81,60 @@ bool hmac_sha256(std::string_view key,
 HexSha256 hmac_sha256_hex(std::string_view key, std::string_view data) noexcept {
   Sha256Digest d{};
   hmac_sha256(key, data, d);
+  return HexSha256(std::span<const std::uint8_t, kSha256Size>(d));
+}
+
+// ---- HmacSha256 (RFC 2104 with precomputed pad states) ---------------------------------------
+// The low-level SHA256_* functions run OpenSSL's SHA-NI / AVX2 block code directly; the state is
+// a plain struct, so the two keyed states are copied per message instead of re-derived.
+static_assert(sizeof(SHA256_CTX) <= 128 && alignof(SHA256_CTX) <= 16);
+
+HmacSha256::HmacSha256(std::string_view key) noexcept {
+  constexpr std::size_t kBlock = 64;
+  std::array<std::uint8_t, kBlock> k{};
+  if (key.size() > kBlock) {
+    SHA256(reinterpret_cast<const unsigned char*>(key.data()), key.size(), k.data());
+  } else {
+    std::memcpy(k.data(), key.data(), key.size());
+  }
+  std::array<std::uint8_t, kBlock> pad{};
+  SHA256_CTX c;
+  for (std::size_t i = 0; i < kBlock; ++i) pad[i] = static_cast<std::uint8_t>(k[i] ^ 0x36U);
+  SHA256_Init(&c);
+  SHA256_Update(&c, pad.data(), kBlock);
+  std::memcpy(inner_.data(), &c, sizeof c);
+  for (std::size_t i = 0; i < kBlock; ++i) pad[i] = static_cast<std::uint8_t>(k[i] ^ 0x5CU);
+  SHA256_Init(&c);
+  SHA256_Update(&c, pad.data(), kBlock);
+  std::memcpy(outer_.data(), &c, sizeof c);
+  OPENSSL_cleanse(k.data(), k.size());
+  OPENSSL_cleanse(pad.data(), pad.size());
+  OPENSSL_cleanse(&c, sizeof c);
+  keyed_ = true;
+}
+
+HmacSha256::~HmacSha256() {
+  OPENSSL_cleanse(inner_.data(), inner_.size());
+  OPENSSL_cleanse(outer_.data(), outer_.size());
+}
+
+bool HmacSha256::sign(std::string_view data,
+                      std::span<std::uint8_t, kSha256Size> out) const noexcept {
+  if (!keyed_) return false;
+  SHA256_CTX c;
+  std::memcpy(&c, inner_.data(), sizeof c);
+  SHA256_Update(&c, data.data(), data.size());
+  std::array<std::uint8_t, kSha256Size> inner_digest{};
+  SHA256_Final(inner_digest.data(), &c);
+  std::memcpy(&c, outer_.data(), sizeof c);
+  SHA256_Update(&c, inner_digest.data(), inner_digest.size());
+  SHA256_Final(out.data(), &c);
+  return true;
+}
+
+HexSha256 HmacSha256::sign_hex(std::string_view data) const noexcept {
+  Sha256Digest d{};
+  sign(data, d);
   return HexSha256(std::span<const std::uint8_t, kSha256Size>(d));
 }
 

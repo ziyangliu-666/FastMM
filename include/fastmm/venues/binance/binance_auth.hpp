@@ -51,7 +51,10 @@ inline std::string api_key_header(std::string_view api_key) {
 class Signer {
  public:
   Signer() = default;
-  explicit Signer(Credentials c) : creds_(std::move(c)) {}
+  explicit Signer(Credentials c) : creds_(std::move(c)) {
+    if (creds_.type == KeyType::Hmac && !creds_.secret.value.empty())
+      hmac_ = net::HmacSha256(creds_.secret.value);
+  }
 
   [[nodiscard]] const Credentials& credentials() const noexcept { return creds_; }
   [[nodiscard]] KeyType type() const noexcept { return creds_.type; }
@@ -60,7 +63,8 @@ class Signer {
 
   // Hot path (HMAC keys): no allocation.
   [[nodiscard]] net::HexSha256 sign_hmac(std::string_view payload) const noexcept {
-    return net::hmac_sha256_hex(creds_.secret.value, payload);
+    return hmac_.keyed() ? hmac_.sign_hex(payload)
+                         : net::hmac_sha256_hex(creds_.secret.value, payload);
   }
   // Control path: either key type; Ed25519 output is base64.
   [[nodiscard]] std::string sign(std::string_view payload) const {
@@ -86,6 +90,7 @@ class Signer {
 
  private:
   Credentials creds_;
+  net::HmacSha256 hmac_;  // keyed from creds_.secret for HMAC keys
 };
 
 }  // namespace fastmm::venues::binance

@@ -3,8 +3,11 @@
 // the order encoders on the hot path. Overflow is sticky (ok() == false, size() frozen), so
 // a truncated request can never be sent. Strings are escaped minimally (quote, backslash,
 // control chars) - venue symbols and ids are plain ASCII anyway.
+#include "fastmm/core/config_macros.hpp"
+
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string_view>
 
@@ -91,7 +94,35 @@ class JsonWriter {
     if (depth_ > 0) --depth_;
     return *this;
   }
+  // Any byte < 0x20, '"' or '\\'; 8 bytes per step (SWAR "has zero byte" tests).
+  [[nodiscard]] static bool needs_escape(std::string_view s) noexcept {
+    constexpr std::uint64_t kOnes = 0x0101'0101'0101'0101ULL;
+    constexpr std::uint64_t kHigh = 0x8080'8080'8080'8080ULL;
+    std::size_t i = 0;
+    std::uint64_t hit = 0;
+    for (; i + 8 <= s.size(); i += 8) {
+      std::uint64_t x = 0;
+      std::memcpy(&x, s.data() + i, 8);
+      const std::uint64_t quote = x ^ (kOnes * 0x22U);  // zero byte where x has '"'
+      const std::uint64_t slash = x ^ (kOnes * 0x5CU);  // zero byte where x has a backslash
+      hit |= (x - kOnes * 0x20) & ~x & kHigh;           // some byte < 0x20
+      hit |= (quote - kOnes) & ~quote & kHigh;
+      hit |= (slash - kOnes) & ~slash & kHigh;
+    }
+    bool any = hit != 0;
+    for (; i < s.size(); ++i) {
+      const char c = s[i];
+      any |= static_cast<unsigned char>(c) < 0x20 || c == '"' || c == '\\';
+    }
+    return any;
+  }
   void put_string(std::string_view s) noexcept {
+    if (FASTMM_LIKELY(!needs_escape(s))) {  // ids, symbols, decimals: one copy
+      raw_char('"');
+      raw(s);
+      raw_char('"');
+      return;
+    }
     raw_char('"');
     for (char c : s) {
       switch (c) {
@@ -124,7 +155,13 @@ class JsonWriter {
     raw_char('"');
   }
   JsonWriter& raw(std::string_view s) noexcept {
-    for (char c : s) raw_char(c);
+    if (!ok_) return *this;
+    if (s.size() > buf_.size() - len_) {
+      ok_ = false;
+      return *this;
+    }
+    if (!s.empty()) std::memcpy(buf_.data() + len_, s.data(), s.size());
+    len_ += s.size();
     return *this;
   }
   JsonWriter& raw_char(char c) noexcept {
