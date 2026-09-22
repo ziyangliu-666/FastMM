@@ -50,11 +50,25 @@ Kernel-bypass order-entry options:
 | option | status here | needs |
 |---|---|---|
 | `user_tcp` over `AF_PACKET` | implemented, experimental | `CAP_NET_RAW`; GRO/TSO off towards it |
-| `UserTcp` over DPDK (`rte_eth_tx_burst`, no syscall) | not wired: only a `FrameTx` over the DPDK port is missing | a NIC DPDK can own: AWS ENA (c6in, c7gn), Azure mlx5 (Accelerated Networking), GCP gVNIC, Intel E810/X710 |
-| `UserTcp` over AF_XDP | not wired (a `FrameTx` over the XSK TX ring) | root or `CAP_NET_ADMIN`+`CAP_BPF`; zero-copy on ice, i40e, mlx5, ENA |
+| `UserTcp` over DPDK (`rte_eth_tx_burst`, no syscall) | implemented (`rx_backend = "dpdk"`, `order_transport = "user_tcp"`); measured on virtio below | a NIC DPDK can own: AWS ENA (c6in, c7gn), Azure mlx5 (Accelerated Networking), GCP gVNIC, Intel E810/X710 |
+| `UserTcp` over AF_XDP | implemented (XSK TX ring); measured on virtio below | root or `CAP_NET_ADMIN`+`CAP_BPF`; zero-copy on ice, i40e, mlx5, ENA |
 | F-Stack (DPDK + FreeBSD TCP) | not tried: owns the event loop and the port, hugepages | same NICs as DPDK |
 | NVIDIA XLIO / libvma (`LD_PRELOAD`) | not tried | ConnectX-5 or later (Azure Accelerated Networking VMs, OCI bare metal) |
 | Onload / TCPDirect / ef_vi | not tried; `kernel` sockets run under Onload unchanged | AMD Solarflare X2/X3/X4 (bare metal, colocation) |
+
+## End to end across two hosts (Vultr VMs)
+
+`scripts/bench-2host.sh`, 2026-09-23: fastmm-sim-itch and fastmm-live on two Vultr `vhf-2c-4gb` VMs in Tokyo (2 vCPU, Ubuntu 24.04, Linux 6.8, virtio_net), joined by a VPC (MTU 1450, ping round trip 0.27 to 0.85 ms). Unicast market data, `threading = "single"`, busy spin, the engine on CPU 1 and interrupts on CPU 0. `dpdk` binds the VPC NIC to `vfio-pci` (no-IOMMU) with the virtio PMD; `af_xdp` runs native with a socket on each RX queue. Three 30 s runs per cell; p50 in µs, range over the runs.
+
+| rx_backend / order_transport | wire to wire | T4 to T5 (encode + write) | T0 to T5 |
+|---|---:|---:|---:|
+| kernel / kernel | 327.7 to 344.1 | 27.6 to 47.1 | 61.4 to 69.6 |
+| af_xdp / kernel | 327.7 to 344.1 | 30.7 to 59.4 | 77.8 to 81.9 |
+| af_xdp / user_tcp | 294.9 to 311.3 | 12.8 to 21.5 | 45.1 to 51.2 |
+| dpdk / kernel | 311.3 to 360.4 | 29.7 to 86.0 | 77.8 to 110.6 |
+| dpdk / user_tcp | 278.5 to 311.3 | 8.7 to 27.6 | 57.3 to 73.7 |
+
+The VPC dominates wire to wire (p99 0.6 to 15 ms in every cell). On the host, `user_tcp` halves to thirds the send: an order leaves without a system call on `dpdk` and with one TX-ring kick on `af_xdp`. `kernel / user_tcp` is not in the table: on the kernel backend it needs an address the VPC did not assign. The kernel backend's kernel-to-T0 was 10.8 to 15.9 µs p50 (61 to 107 µs p99), against 3 µs on the WSL2 machine above.
 
 ## Reproduce
 
