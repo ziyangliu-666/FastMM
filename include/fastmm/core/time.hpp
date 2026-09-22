@@ -3,8 +3,9 @@
 //
 // TscClock converts rdtsc to wall-clock ns with a 32.32 fixed-point multiplier calibrated
 // against CLOCK_REALTIME, refreshed at run time through a Seqlocked<TscCalibration> without
-// letting time go backwards. On machines without constant_tsc it transparently falls back to
-// clock_gettime (detected once from /proc/cpuinfo, see src/core/time.cpp). SimClock is the
+// letting time go backwards. Without an invariant TSC (constant_tsc and nonstop_tsc) wall time
+// comes from clock_gettime (detected once from /proc/cpuinfo, see src/core/time.cpp); with
+// constant_tsc alone, as on many cloud VMs, the TSC still stamps latency intervals. SimClock is the
 // deterministic replacement for backtests/replay: same interface, time only moves when told.
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/seqlock.hpp"
@@ -71,16 +72,34 @@ FASTMM_FORCE_INLINE Cycles rdtsc() noexcept {
 // CLOCK_REALTIME via vDSO (~20 ns). Implemented in src/core/time.cpp.
 [[nodiscard]] Timestamp wall_now() noexcept;
 [[nodiscard]] Timestamp steady_now() noexcept;
-// true if /proc/cpuinfo advertises constant_tsc + nonstop_tsc (cached after first call).
-[[nodiscard]] bool has_invariant_tsc() noexcept;
+// What /proc/cpuinfo says about the TSC (cached after the first call):
+//   Invariant  constant_tsc + nonstop_tsc: wall time and intervals from the TSC.
+//   Constant   constant_tsc only (KVM guests such as Vultr's): fixed rate, but not promised
+//              to count through deep C-states. Wall time from clock_gettime; the TSC still
+//              times intervals, which are far shorter than any drift that could matter.
+//   None       neither: clock_gettime for everything.
+enum class TscKind : std::uint8_t { None, Constant, Invariant };
+[[nodiscard]] TscKind tsc_kind() noexcept;
+[[nodiscard]] inline bool has_invariant_tsc() noexcept {
+  return tsc_kind() == TscKind::Invariant;
+}
 
 struct TscCalibration {
   std::uint64_t tsc0 = 0;              // TSC reading at the anchor
   std::int64_t ns0 = 0;                // wall time at the anchor
-  std::uint64_t ns_per_cycle_q32 = 0;  // 32.32 fixed point
+  std::uint64_t ns_per_cycle_q32 = 0;  // 32.32 fixed point; 0: no TSC rate
   double ghz = 0.0;                    // diagnostics only
+  // Wall time from the TSC. False with a non-zero rate (TscKind::Constant): wall time from
+  // clock_gettime, TSC cycle intervals still convert with the rate.
   bool use_tsc = false;
+  [[nodiscard]] constexpr bool has_rate() const noexcept { return ns_per_cycle_q32 != 0; }
 };
+
+// A TSC cycle interval in ns; 0 without a rate.
+[[nodiscard]] FASTMM_FORCE_INLINE std::uint64_t tsc_interval_ns(const TscCalibration& c,
+                                                                std::uint64_t cycles) noexcept {
+  return static_cast<std::uint64_t>((static_cast<Uint128>(cycles) * c.ns_per_cycle_q32) >> 32);
+}
 
 // Clock readings used by TscCalibrator. Plain function pointers so tests can inject a
 // deterministic clock; system_clock_readings() reads rdtsc, CLOCK_REALTIME and CLOCK_MONOTONIC_RAW.
@@ -88,7 +107,8 @@ struct ClockReadings {
   std::uint64_t (*tsc)() noexcept = nullptr;
   std::int64_t (*realtime_ns)() noexcept = nullptr;
   std::int64_t (*monotonic_raw_ns)() noexcept = nullptr;
-  bool check_invariant_tsc = true;  // false for injected clocks
+  bool check_invariant_tsc = true;            // false for injected clocks
+  TscKind assumed_kind = TscKind::Invariant;  // injected clocks (check_invariant_tsc false)
 };
 [[nodiscard]] ClockReadings system_clock_readings() noexcept;
 
@@ -273,18 +293,19 @@ class TscClock {
     if (FASTMM_LIKELY(calib_.use_tsc)) return to_timestamp(rdtsc());
     return wall_now();
   }
+  // TSC cycles whenever the rate is known (also without an invariant TSC), so that they share
+  // a time base with the network threads' rdtscp stamps; wall ns without a rate.
   FASTMM_FORCE_INLINE Cycles cycles() const noexcept {
-    if (FASTMM_LIKELY(calib_.use_tsc)) return rdtscp();
+    if (FASTMM_LIKELY(calib_.has_rate())) return rdtscp();
     return Cycles{static_cast<std::uint64_t>(wall_now().ns)};
   }
   [[nodiscard]] FASTMM_FORCE_INLINE Timestamp to_timestamp(Cycles c) const noexcept {
-    if (FASTMM_LIKELY(calib_.use_tsc)) return Timestamp{tsc_to_ns(calib_, c.v)};
+    if (FASTMM_LIKELY(calib_.has_rate())) return Timestamp{tsc_to_ns(calib_, c.v)};
     return Timestamp{static_cast<std::int64_t>(c.v)};
   }
   [[nodiscard]] FASTMM_FORCE_INLINE std::int64_t cycles_to_ns(std::uint64_t dc) const noexcept {
-    if (FASTMM_LIKELY(calib_.use_tsc)) {
-      return static_cast<std::int64_t>((static_cast<Uint128>(dc) * calib_.ns_per_cycle_q32) >> 32);
-    }
+    if (FASTMM_LIKELY(calib_.has_rate()))
+      return static_cast<std::int64_t>(tsc_interval_ns(calib_, dc));
     return static_cast<std::int64_t>(dc);
   }
 

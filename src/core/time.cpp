@@ -21,11 +21,11 @@ Timestamp steady_now() noexcept {
 
 namespace {
 
-bool detect_invariant_tsc() noexcept {
-  // Both flags are required: constant_tsc (rate independent of P-state) and nonstop_tsc
-  // (keeps counting in deep C-states). Falls back to false on any read failure.
+TscKind detect_tsc_kind() noexcept {
+  // Invariant needs both flags: constant_tsc (rate independent of P-state) and nonstop_tsc
+  // (keeps counting in deep C-states). None on any read failure.
   std::FILE* f = std::fopen("/proc/cpuinfo", "r");
-  if (f == nullptr) return false;
+  if (f == nullptr) return TscKind::None;
   bool constant = false;
   bool nonstop = false;
   char line[4096];
@@ -36,13 +36,14 @@ bool detect_invariant_tsc() noexcept {
     break;
   }
   std::fclose(f);
-  return constant && nonstop;
+  if (!constant) return TscKind::None;
+  return nonstop ? TscKind::Invariant : TscKind::Constant;
 }
 
 }  // namespace
 
-bool has_invariant_tsc() noexcept {
-  static const bool cached = detect_invariant_tsc();
+TscKind tsc_kind() noexcept {
+  static const TscKind cached = detect_tsc_kind();
   return cached;
 }
 
@@ -101,7 +102,8 @@ TscAnchor TscCalibrator::sample() const noexcept {
 
 TscCalibration TscCalibrator::start(Duration window) noexcept {
   current_ = TscCalibration{};
-  if (r_.check_invariant_tsc && !has_invariant_tsc()) return current_;
+  const TscKind kind = r_.check_invariant_tsc ? tsc_kind() : r_.assumed_kind;
+  if (kind == TscKind::None) return current_;
   const TscAnchor a0 = sample();
   const std::int64_t end = a0.raw_ns + window.ns;
   while (r_.monotonic_raw_ns() < end) {
@@ -111,6 +113,9 @@ TscCalibration TscCalibrator::start(Duration window) noexcept {
   const TscAnchor a1 = sample();
   TscCalibration c{};
   if (rate_between(a0, a1, c)) {
+    // Constant only: keep the rate for intervals, wall time stays on clock_gettime, and
+    // update() does not recalibrate.
+    if (kind == TscKind::Constant) c.use_tsc = false;
     current_ = c;
     last_ = a1;
   }

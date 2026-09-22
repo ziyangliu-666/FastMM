@@ -5,10 +5,12 @@
 
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/venues/wire_latency.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <thread>
 
 using namespace fastmm;
@@ -384,4 +386,50 @@ TEST_CASE("core.time: the calibrator refuses a baseline that is too short") {
   CHECK_FALSE(cal.update().ok);
   fake_clock::advance(1'000'000'000);
   CHECK(cal.update().ok);
+}
+
+// Cloud VMs (Vultr KVM, among others) advertise constant_tsc but not nonstop_tsc. Wall time then
+// comes from clock_gettime, but the engine's latency hops and the venues' order latency are
+// rdtscp stamps: without a rate they all printed 0 (and the engine mixed wall ns with cycles).
+TEST_CASE("core.time: constant_tsc without nonstop_tsc keeps a TSC rate for intervals") {
+  ClockReadings readings = fake_clock::reset(0.25);
+  readings.assumed_kind = TscKind::Constant;
+  TscCalibrator cal(readings);
+  const TscCalibration c = cal.start(milliseconds(50));
+  CHECK_FALSE(c.use_tsc);
+  REQUIRE(c.has_rate());
+  CHECK(std::llabs(q32_error(c)) <= kPpmOfQuarter);
+  fake_clock::advance(10'000'000'000);
+  CHECK_FALSE(cal.update().ok);  // no recalibration without an invariant TSC
+
+  const TscClock clk(c);
+  CHECK(std::llabs(clk.now().ns - wall_now().ns) < 10'000'000);  // wall time: clock_gettime
+  CHECK(std::llabs(clk.cycles_to_ns(4'000'000) - 1'000'000) <= 2);
+  // Engine stamps share the network threads' rdtscp time base.
+  const std::uint64_t before = rdtscp().v;
+  const std::uint64_t stamp = clk.cycles().v;
+  const std::uint64_t after = rdtscp().v;
+  CHECK(before <= stamp);
+  CHECK(stamp <= after);
+
+  auto rec = std::make_unique<venues::WireLatencyRecorder>();
+  rec->record(Cycles{1'000}, Cycles{2'000}, Cycles{6'000}, Cycles{14'000});
+  venues::WireLatencyStats t2t;
+  venues::WireLatencyStats encode;
+  venues::WireLatencyStats send;
+  rec->summarize(c, t2t, encode, send);
+  CHECK(std::llabs(static_cast<std::int64_t>(encode.p50_ns) - 1'000) <= 1);  // 4000 cycles
+  CHECK(std::llabs(static_cast<std::int64_t>(send.p50_ns) - 2'000) <= 1);    // 8000 cycles
+  CHECK(std::llabs(static_cast<std::int64_t>(t2t.p50_ns) - 3'250) <= 1);     // 13000 cycles
+}
+
+TEST_CASE("core.time: without constant_tsc latency intervals use clock_gettime") {
+  ClockReadings readings = fake_clock::reset(0.25);
+  readings.assumed_kind = TscKind::None;
+  const TscCalibration c = TscCalibrator(readings).start(milliseconds(50));
+  CHECK_FALSE(c.use_tsc);
+  CHECK_FALSE(c.has_rate());
+  const TscClock clk(c);
+  CHECK(clk.cycles_to_ns(42) == 42);
+  CHECK(std::llabs(static_cast<std::int64_t>(clk.cycles().v) - wall_now().ns) < 10'000'000);
 }
