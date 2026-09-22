@@ -731,10 +731,10 @@ void BinanceVenue::on_wake() {
 }
 
 // The orders the ring holds go out as one write of all their WebSocket frames.
-void BinanceVenue::drain_outbound() {
-  if (outbound_ == nullptr) return;
+template <class Ring>
+void BinanceVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
-      *outbound_,
+      ring,
       wire_,
       [this] { order_conn_.cork(); },
       [this](const EventHeader& h) {
@@ -744,6 +744,15 @@ void BinanceVenue::drain_outbound() {
         }
       },
       [this] { return order_conn_.uncork(); });
+}
+
+void BinanceVenue::drain_outbound() {
+  if (outbound_ != nullptr) write_orders(*outbound_);
+}
+
+void BinanceVenue::send_now(std::span<const EventHeader* const> batch) {
+  OutboundBatch b(batch);
+  write_orders(b);
 }
 
 void BinanceVenue::send_command(const OrderCommand& cmd) {

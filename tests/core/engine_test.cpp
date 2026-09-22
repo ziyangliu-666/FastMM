@@ -5,6 +5,7 @@
 
 #include "fastmm/strategies/basic_mm.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -42,10 +43,14 @@ struct FakeTransport {
   std::vector<std::vector<std::byte>> out;
   bool replace = false;
   bool full = false;
+  // Called on every send (a venue that reacts on the engine's thread, run-to-completion).
+  void (*on_send)(void* ctx) noexcept = nullptr;
+  void* on_send_ctx = nullptr;
   bool send(const EventHeader& m) noexcept {
     if (full) return false;
     const auto* b = reinterpret_cast<const std::byte*>(&m);
     out.emplace_back(b, b + m.len);
+    if (on_send != nullptr) on_send(on_send_ctx);
     return true;
   }
   std::size_t send(std::span<const EventHeader* const> batch) noexcept {
@@ -774,4 +779,61 @@ TEST_CASE("core.engine: End frees the quote manager's slots of orders the venue 
   CHECK_FALSE(qm.slot_handle(InstrumentId{0}, Side::Buy, 0).valid());
   CHECK_FALSE(qm.slot_handle(InstrumentId{0}, Side::Sell, 0).valid());
   CHECK(f.transport.count(EventType::OutNewOrder) == 2);
+}
+
+TEST_CASE("core.engine: drain() takes every ready event, and does nothing from inside the engine") {
+  Fixture f;
+  struct Reentry {
+    TestEngine* engine;
+    std::size_t calls = 0;
+    std::size_t processed = 0;
+  } re{f.engine.get()};
+  // What the venue does when it refuses an order the engine is sending: its event goes to the
+  // ring and the drain hook runs while the engine is still inside the event that sent the order.
+  f.transport.on_send = [](void* ctx) noexcept {
+    auto* r = static_cast<Reentry*>(ctx);
+    ++r->calls;
+    r->processed += r->engine->drain();
+  };
+  f.transport.on_send_ctx = &re;
+  f.push_book("100.00", "100.10", 1, true);
+  f.push_book("100.01", "100.11", 2);
+  const std::uint64_t steps = f.engine->stats().steps;
+  CHECK(f.engine->drain() == 2);
+  CHECK(f.engine->stats().events == 2);
+  CHECK(f.engine->stats().steps == steps);  // no step, no timers
+  CHECK_FALSE(f.news().empty());
+  CHECK(re.calls > 0);
+  CHECK(re.processed == 0);
+  CHECK(f.engine->drain() == 0);
+}
+
+TEST_CASE("core.engine: LiveTransport::set_direct hands batches to one function, no ring") {
+  struct Sink {
+    std::size_t messages = 0;
+    std::size_t take = 64;
+  } sink;
+  LiveTransport t;
+  MsgRing ring(1U << 16);
+  REQUIRE(t.set_venue(VenueId{0}, &ring, true));
+  t.set_direct(
+      [](void* ctx, std::span<const EventHeader* const> batch) noexcept {
+        auto* s = static_cast<Sink*>(ctx);
+        const std::size_t n = std::min(batch.size(), s->take);
+        s->messages += n;
+        return n;
+      },
+      &sink);
+  OutCancelMsg m{};
+  init_header(m, EventType::OutCancel, InstrumentId{0}, VenueId{0});
+  const EventHeader* batch[3] = {&m.hdr, &m.hdr, &m.hdr};
+  CHECK(t.send(m.hdr));
+  CHECK(t.send(std::span<const EventHeader* const>(batch, 3)) == 3);
+  sink.take = 1;
+  CHECK(t.send(std::span<const EventHeader* const>(batch, 3)) == 1);
+  CHECK(sink.messages == 5);
+  CHECK(t.sent() == 5);
+  CHECK(t.dropped_full() == 2);
+  CHECK(ring.empty_approx());
+  CHECK(t.supports_replace(VenueId{0}));
 }

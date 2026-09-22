@@ -3,6 +3,11 @@
 // MsgRing that the parsers write normalised events into. Two sinks per venue: market data
 // (lossy: a full ring drops the delta and the book resyncs) and order events (never dropped:
 // bounded spin then overflow callback, which the venue treats as fatal).
+//
+// Run-to-completion (fastmm-live [engine] threading = "single"): the engine runs on the venue's
+// thread and a drain hook hands it the ring's events in place. With `on_commit` the hook runs
+// after every commit, so the engine takes each event as soon as it is decoded; a full ring runs it
+// before the policy's spin either way.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
 
@@ -22,6 +27,7 @@ enum class SinkPolicy : std::uint8_t {
 class EventSink {
  public:
   using OverflowFn = void (*)(void* ctx, const EventSink& sink) noexcept;
+  using DrainFn = void (*)(void* ctx) noexcept;
 
   EventSink() noexcept = default;
   EventSink(MsgRing* ring, SinkPolicy policy, std::uint32_t spin_limit = 1'000'000) noexcept
@@ -36,6 +42,11 @@ class EventSink {
     overflow_fn_ = fn;
     overflow_ctx_ = ctx;
   }
+  void set_drain_hook(DrainFn fn, void* ctx, bool on_commit) noexcept {
+    drain_fn_ = fn;
+    drain_ctx_ = ctx;
+    drain_on_commit_ = fn != nullptr && on_commit;
+  }
   [[nodiscard]] bool attached() const noexcept { return ring_ != nullptr; }
   [[nodiscard]] MsgRing* ring() const noexcept { return ring_; }
 
@@ -49,7 +60,12 @@ class EventSink {
     if (ring_ == nullptr) return nullptr;
     std::byte* p = ring_->try_reserve(len);
     if (FASTMM_LIKELY(p != nullptr)) return p;
-    if (policy_ == SinkPolicy::Spin) {
+    if (drain_fn_ != nullptr) {
+      // The consumer is this thread: spinning frees nothing.
+      drain_fn_(drain_ctx_);
+      p = ring_->try_reserve(len);
+      if (p != nullptr) return p;
+    } else if (policy_ == SinkPolicy::Spin) {
       for (std::uint32_t i = 0; i < spin_limit_; ++i) {
         _mm_pause();
         p = ring_->try_reserve(len);
@@ -62,6 +78,7 @@ class EventSink {
   void commit() noexcept {
     ring_->commit();
     ++pushed_;
+    if (drain_on_commit_) drain_fn_(drain_ctx_);
   }
 
   // Copy-in: `m.len` bytes starting at the header.
@@ -90,6 +107,9 @@ class EventSink {
   std::uint64_t overflows_ = 0;
   OverflowFn overflow_fn_ = nullptr;
   void* overflow_ctx_ = nullptr;
+  DrainFn drain_fn_ = nullptr;
+  void* drain_ctx_ = nullptr;
+  bool drain_on_commit_ = false;
 };
 
 }  // namespace fastmm::venues

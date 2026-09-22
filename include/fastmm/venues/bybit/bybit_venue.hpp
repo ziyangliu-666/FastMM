@@ -89,6 +89,7 @@ class BybitVenue final : public Venue {
   void subscribe(std::span<const InstrumentId> instruments) override;
   void on_timer(std::int64_t now_ns) override;
   void on_wake() override;
+  void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
@@ -140,6 +141,9 @@ class BybitVenue final : public Venue {
                                   bool manual_subscribe) const;
   void send_auth(ConnectionSlot<PrivateHandler>* priv, ConnectionSlot<TradeHandler>* trade);
   void drain_outbound();
+  // Encodes and writes the orders `ring` holds (the outbound MsgRing or an OutboundBatch).
+  template <class Ring>
+  void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
   void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow);
   void handle_order_response(RequestKind kind, ClientOrderId id, const TradeResponse& r);

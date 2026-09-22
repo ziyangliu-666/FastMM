@@ -53,12 +53,20 @@ struct EngineLiveStats {
 // Human-readable one-line summary (src/core/engine_runner.cpp).
 std::string format_runner_stats(const RunnerStats& s);
 
+// Run-to-completion (fastmm-live [engine] threading = "single"): one iteration of the venue's
+// network loop on the engine thread; returns the number of things it handled (0: idle).
+using InlinePollFn = std::size_t (*)(void* ctx) noexcept;
+
 class IEngineRunner {
  public:
   virtual ~IEngineRunner() = default;
   virtual void run() = 0;          // blocks until stop() or the feed ends
   virtual void stop() = 0;         // thread-safe request to leave run()
   virtual std::size_t step() = 0;  // process a bounded batch (sim/backtest driver)
+  // run() with `poll(ctx)` before every step, on the calling thread. False: not supported.
+  virtual bool run_inline(InlinePollFn /*poll*/, void* /*ctx*/) { return false; }
+  // Processes the events the feed holds now (no timers); 0 when called from inside the engine.
+  virtual std::size_t drain() { return 0; }
   [[nodiscard]] virtual RunnerStats stats() const = 0;
   // Safe to call from any thread while run() is active (a seqlocked copy, up to a second old).
   [[nodiscard]] virtual EngineLiveStats live_stats() const { return {}; }
@@ -74,6 +82,11 @@ class EngineRunner final : public IEngineRunner {
   void run() override { engine_->run(); }
   void stop() override { engine_->stop(); }
   std::size_t step() override { return engine_->step(); }
+  bool run_inline(InlinePollFn poll, void* ctx) override {
+    engine_->run_inline(poll, ctx);
+    return true;
+  }
+  std::size_t drain() override { return engine_->drain(); }
   [[nodiscard]] RunnerStats stats() const override { return engine_->runner_stats(); }
   [[nodiscard]] EngineLiveStats live_stats() const override { return engine_->live_stats(); }
   [[nodiscard]] std::string_view strategy_name() const override { return Strategy::name(); }

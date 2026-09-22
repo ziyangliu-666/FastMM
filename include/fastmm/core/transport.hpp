@@ -101,9 +101,14 @@ class InlineFeed {
 // Writes Out*Msg into the per-venue outbound MsgRing consumed by that venue's net thread,
 // then optionally pokes a wake hook (the net layer registers an eventfd writer) so a
 // reactor blocked in epoll_wait picks it up immediately.
+//
+// Run-to-completion (fastmm-live [engine] threading = "single"): with set_direct() every batch
+// goes to one function on the calling thread instead (the venue encodes and writes it), no ring.
 class LiveTransport {
  public:
   using WakeFn = void (*)(void* ctx, VenueId venue) noexcept;
+  // Returns how many messages of the batch it took (a prefix).
+  using DirectFn = std::size_t (*)(void* ctx, std::span<const EventHeader* const> batch) noexcept;
 
   LiveTransport() noexcept = default;
 
@@ -117,8 +122,17 @@ class LiveTransport {
     wake_ = fn;
     wake_ctx_ = ctx;
   }
+  // Every venue's messages go to `fn` (single-venue sessions); the rings are not used.
+  void set_direct(DirectFn fn, void* ctx) noexcept {
+    direct_ = fn;
+    direct_ctx_ = ctx;
+  }
 
   [[nodiscard]] bool send(const EventHeader& m) noexcept {
+    if (direct_ != nullptr) {
+      const EventHeader* const one = &m;
+      return send(std::span<const EventHeader* const>(&one, 1)) == 1;
+    }
     MsgRing* r = ring_for(m.venue);
     if (FASTMM_UNLIKELY(r == nullptr)) return false;
     if (FASTMM_UNLIKELY(!r->try_push(&m, m.len))) {
@@ -132,6 +146,12 @@ class LiveTransport {
   // Batch: all messages are enqueued first, then each touched venue is woken once. Stops at the
   // first message a ring refuses, so the accepted messages are a prefix of the batch.
   [[nodiscard]] std::size_t send(std::span<const EventHeader* const> batch) noexcept {
+    if (direct_ != nullptr) {
+      const std::size_t taken = direct_(direct_ctx_, batch);
+      sent_ += taken;
+      full_ += batch.size() - taken;
+      return taken;
+    }
     std::size_t ok = 0;
     std::uint32_t touched = 0;
     for (const EventHeader* m : batch) {
@@ -165,6 +185,8 @@ class LiveTransport {
   bool replace_[kMaxVenues] = {};
   WakeFn wake_ = nullptr;
   void* wake_ctx_ = nullptr;
+  DirectFn direct_ = nullptr;
+  void* direct_ctx_ = nullptr;
   std::uint64_t sent_ = 0;
   std::uint64_t full_ = 0;
 };

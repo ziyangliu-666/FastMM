@@ -47,6 +47,9 @@ struct EngineSection {
   std::vector<int> net_cpus;
   std::string spin_mode = "adaptive";
   std::string net_backend = "epoll";  // net::Reactor backend: "epoll" | "io_uring"
+  // fastmm-live: "split" runs the engine and each venue's network loop on their own threads;
+  // "single" runs the one venue's network loop, the engine and order sending on the engine thread.
+  std::string threading = "split";
   bool journal = true;
   std::string journal_dir = "runs";
   std::string epoch_file = "runs/session_epoch";
@@ -184,6 +187,7 @@ class Config {
   [[nodiscard]] LogLevel log_level() const;
   [[nodiscard]] LogLevel mirror_level() const;
   [[nodiscard]] SpinMode spin_mode() const;
+  [[nodiscard]] bool single_threaded() const noexcept { return engine.threading == "single"; }
 
   // Dump with api_key/api_secret masked; safe to log.
   [[nodiscard]] std::string redacted() const;

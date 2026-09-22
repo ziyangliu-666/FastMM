@@ -348,15 +348,23 @@ if(TARGET fastmm-sim-itch)
 endif()
 
 # fastmm-live against fastmm-sim-itch as processes in two network namespaces joined by a veth pair
-# (scripts/bench-e2e.sh, kernel backend, unpinned, 5 s): the feed goes live and orders are sent.
-# Exit code 77 (no user namespaces here) skips it.
-if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top)
-  add_test(NAME integration.nasdaq_itch_processes
-    COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
-            --sim-cpu -1 --engine-cpu -1 --net-cpu -1 --build ${PROJECT_BINARY_DIR}
-            --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e)
-  set_tests_properties(integration.nasdaq_itch_processes PROPERTIES
-    LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
+# (scripts/bench-e2e.sh, kernel backend, unpinned, 5 s), with [engine] threading = "split" and
+# "single": the feed goes live, orders are sent and fastmm-replay --verify matches the journal.
+# Exit code 77 (no user namespaces here) skips them.
+if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top AND TARGET fastmm-replay)
+  foreach(_threading split single)
+    set(_name integration.nasdaq_itch_processes)
+    if(_threading STREQUAL "single")
+      set(_name ${_name}_single)
+    endif()
+    add_test(NAME ${_name}
+      COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
+              --threading ${_threading} --replay
+              --sim-cpu -1 --engine-cpu -1 --net-cpu -1 --build ${PROJECT_BINARY_DIR}
+              --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e-${_threading})
+    set_tests_properties(${_name} PROPERTIES
+      LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
+  endforeach()
 endif()
 
 # Apps built from the test strategy library: the module is listed for every transport, runs, and a

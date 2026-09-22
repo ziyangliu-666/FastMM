@@ -637,10 +637,10 @@ void BybitVenue::on_wake() {
 }
 
 // The orders the ring holds go out as one write of all their WebSocket frames.
-void BybitVenue::drain_outbound() {
-  if (outbound_ == nullptr) return;
+template <class Ring>
+void BybitVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
-      *outbound_,
+      ring,
       wire_,
       [this] { trade_conn_.cork(); },
       [this](const EventHeader& h) {
@@ -650,6 +650,15 @@ void BybitVenue::drain_outbound() {
         }
       },
       [this] { return trade_conn_.uncork(); });
+}
+
+void BybitVenue::drain_outbound() {
+  if (outbound_ != nullptr) write_orders(*outbound_);
+}
+
+void BybitVenue::send_now(std::span<const EventHeader* const> batch) {
+  OutboundBatch b(batch);
+  write_orders(b);
 }
 
 void BybitVenue::send_command(const OrderCommand& cmd) {

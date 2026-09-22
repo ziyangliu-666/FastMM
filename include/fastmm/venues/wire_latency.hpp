@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace fastmm::venues {
 
@@ -126,16 +127,29 @@ class WireLatencyRecorder {
   bool batching_ = false;
 };
 
-// Drains the engine's outbound ring in batches of at most kMaxBatch messages: cork() holds the
-// connection's writes back, on_message(header) encodes and "sends" each message into the
-// connection's buffer, uncork() writes the batch with one system call and returns false when the
-// connection failed. Every order of a batch gets the stamp taken after uncork() returned.
-template <class Cork, class OnMessage, class Uncork>
-void drain_outbound_coalesced(MsgRing& ring,
-                              WireLatencyRecorder& wire,
-                              Cork&& cork,
-                              OnMessage&& on_message,
-                              Uncork&& uncork) {
+// The engine's batch handed over directly (run-to-completion, Venue::send_now) behind the
+// consumer side of MsgRing, so drain_outbound_coalesced takes either.
+class OutboundBatch {
+ public:
+  explicit OutboundBatch(std::span<const EventHeader* const> batch) noexcept : batch_(batch) {}
+  [[nodiscard]] const std::byte* try_peek() const noexcept {
+    return next_ < batch_.size() ? reinterpret_cast<const std::byte*>(batch_[next_]) : nullptr;
+  }
+  void release() noexcept { ++next_; }
+
+ private:
+  std::span<const EventHeader* const> batch_;
+  std::size_t next_ = 0;
+};
+
+// Drains the engine's outbound ring (or an OutboundBatch) in batches of at most kMaxBatch
+// messages: cork() holds the connection's writes back, on_message(header) encodes and "sends" each
+// message into the connection's buffer, uncork() writes the batch with one system call and returns
+// false when the connection failed. Every order of a batch gets the stamp taken after uncork()
+// returned.
+template <class Ring, class Cork, class OnMessage, class Uncork>
+void drain_outbound_coalesced(
+    Ring& ring, WireLatencyRecorder& wire, Cork&& cork, OnMessage&& on_message, Uncork&& uncork) {
   while (ring.try_peek() != nullptr) {
     cork();
     wire.begin_batch();

@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -131,6 +132,60 @@ void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
       s.venue->on_wake();
   }
   s.venue->on_wake();  // flush cancels the engine queued during shutdown
+  for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
+  s.venue->disconnect();
+  s.reactor->run_once(0);
+}
+
+// Run-to-completion ([engine] threading = "single"): the engine thread runs the venue's network
+// loop between engine steps (inline_poll). Market data reaches the engine as soon as the venue
+// commits it to the md ring (inline_drain, the md sink's drain hook), and the engine's orders go
+// straight to Venue::send_now (send_direct): no event crosses a thread between the packet read and
+// the order write. The rings stay as same-thread FIFOs: order events, control messages and events
+// the venue emits while the engine is running (a refused order) wait for the next step.
+struct Inline {
+  VenueSlot* slot = nullptr;
+  IEngineRunner* runner = nullptr;
+  bool active = false;  // between the engine's start and finish
+  std::size_t drained = 0;
+  std::atomic<bool> unsupported{false};
+};
+
+void inline_drain(void* ctx) noexcept {
+  auto* in = static_cast<Inline*>(ctx);
+  if (in->active) in->drained += in->runner->drain();
+}
+
+std::size_t inline_poll(void* ctx) noexcept {
+  auto* in = static_cast<Inline*>(ctx);
+  in->active = true;  // the engine has started
+  in->drained = 0;
+  VenueSlot& s = *in->slot;
+  const int io = s.reactor->run_once(0);
+  s.venue->poll();
+  return static_cast<std::size_t>(io > 0 ? io : 0) + in->drained;
+}
+
+// Venue::send_now writes every message or refuses it through the order sink.
+std::size_t send_direct(void* ctx, std::span<const EventHeader* const> batch) noexcept {
+  static_cast<venues::Venue*>(ctx)->send_now(batch);
+  return batch.size();
+}
+
+void inline_loop(Inline& in, int cpu) {
+  VenueSlot& s = *in.slot;
+  set_thread_name("fm-engine");
+  pin_to_cpu(cpu);
+  Logger::instance().attach_current_thread();
+  s.venue->connect(*s.reactor);
+  if (!in.runner->run_inline(&inline_poll, &in)) {
+    FASTMM_LOG_ERROR("the strategy's runner cannot run inline ([engine] threading = \"single\")");
+    in.unsupported.store(true);
+  }
+  // The engine has finished: nothing reaches it any more. Let the cancels it sent go out.
+  in.active = false;
+  s.md_sink.set_drain_hook(nullptr, nullptr, false);
+  s.order_sink.set_drain_hook(nullptr, nullptr, false);
   for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
   s.venue->disconnect();
   s.reactor->run_once(0);
@@ -572,6 +627,25 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     return kExitConfig;
   }
 
+  const bool single = cfg.single_threaded();
+  Inline inline_ctx;
+  if (single) {
+    if (slots.size() != 1) {
+      std::fprintf(stderr, "%s: [engine] threading = \"single\" needs exactly one venue\n", prog);
+      return kExitConfig;
+    }
+    VenueSlot& s = *slots[0];
+    inline_ctx.slot = &s;
+    inline_ctx.runner = runner.get();
+    s.md_sink.set_drain_hook(&inline_drain, &inline_ctx, /*on_commit=*/true);
+    s.order_sink.set_drain_hook(&inline_drain, &inline_ctx, /*on_commit=*/false);
+    transport.set_direct(&send_direct, s.venue.get());
+    if (!cfg.engine.net_cpus.empty())
+      FASTMM_LOG_WARN(
+          "[engine] threading = \"single\": net_cpus is ignored (the engine thread, "
+          "cpu, runs the network loop)");
+  }
+
   // ---- threads --------------------------------------------------------------------------
   if (opts.confine_other_threads) {
     std::vector<int> reserved{cfg.engine.cpu};
@@ -588,21 +662,28 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   }
   const SignalGuard signals;
   if (journal) journal->start();
-  for (std::size_t i = 0; i < slots.size(); ++i) {
-    const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-    slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode());
+  std::thread engine_thread;
+  if (single) {
+    engine_thread = std::thread(inline_loop, std::ref(inline_ctx), cfg.engine.cpu);
+  } else {
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
+      slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode());
+    }
+    engine_thread = std::thread([&] { runner->run(); });
   }
-  std::thread engine_thread([&] { runner->run(); });
 
   FASTMM_LOG_INFO(
-      "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={} net={}",
+      "fastmm-live: session {} strategy={} venues={} instruments={} dry_run={} epoch={} net={} "
+      "threading={}",
       deps.engine.session_id,
       strategy_name,
       slots.size(),
       instruments.size(),
       opts.dry_run,
       deps.engine.session_epoch,
-      net::to_string(net_backend));
+      net::to_string(net_backend),
+      std::string_view(cfg.engine.threading));
 
   // ---- live status for fastmm-top --------------------------------------------------------
   StatusWriter status;
@@ -687,7 +768,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   std::int64_t next_recalibration = start + recalibrate_ns;
   if (recalibrate_ns > 0 && !last_tsc.use_tsc)
     FASTMM_LOG_INFO("no invariant TSC: the clock uses clock_gettime; TSC recalibration is off");
-  // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog
+  // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
+  // 6 the runner cannot run inline (threading = "single")
   int reason = 0;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
@@ -706,6 +788,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         reason = 3;
       }
     }
+    if (reason == 0 && inline_ctx.unsupported.load()) reason = 6;
     if (reason == 0 && opts.watchdog) {
       watchdog_cause = opts.watchdog();
       if (!watchdog_cause.empty()) {
@@ -797,6 +880,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                      engine_kill);
   } else if (reason == 5) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (slow tier failed)");
+  } else if (reason == 6) {
+    FASTMM_LOG_ERROR("fastmm-live: shutting down (the engine could not run inline)");
   } else {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                     reason == 1   ? std::string_view("duration elapsed")
@@ -818,11 +903,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   runner->stop();
   engine_thread.join();
   if (custom != nullptr && custom->finished) custom->finished(*runner);
+  // Single: the engine thread ran the network loop and has flushed it.
   for (auto& s : slots) {
     s->stop.store(true);
     s->reactor->wake();
   }
-  for (auto& s : slots) s->thread.join();
+  for (auto& s : slots) {
+    if (s->thread.joinable()) s->thread.join();
+  }
   if (journal) journal->stop();
 
   const RunnerStats rs = runner->stats();
@@ -884,11 +972,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       "fastmm-live: shutdown took {} ms (cancel_all {})", shutdown_ms, cancel_ok ? "ok" : "FAILED");
   // The file stays: monitors show the final numbers and the kill reason.
   publish_status(StatusRunState::Stopped, final_live);
-  const int rc = !cancel_ok    ? kExitRuntime
-                 : reason == 4 ? kExitKilled
-                 : reason == 5 ? kExitSlowTier
-                 : reason == 3 ? kExitRuntime
-                               : kExitOk;
+  const int rc = !cancel_ok                   ? kExitRuntime
+                 : reason == 4                ? kExitKilled
+                 : reason == 5                ? kExitSlowTier
+                 : reason == 3 || reason == 6 ? kExitRuntime
+                                              : kExitOk;
   FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);
   return rc;
 }

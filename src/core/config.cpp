@@ -260,6 +260,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "net_backend", e.net_backend);
     if (e.net_backend != "epoll" && e.net_backend != "io_uring")
       fail_at(*t->get("net_backend"), "net_backend must be epoll|io_uring");
+    get(*t, "threading", e.threading);
+    if (e.threading != "split" && e.threading != "single")
+      fail_at(*t->get("threading"), "threading must be split|single");
     get(*t, "journal", e.journal);
     get(*t, "journal_dir", e.journal_dir);
     get(*t, "epoch_file", e.epoch_file);
@@ -351,6 +354,11 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       cfg.venues.push_back(std::move(v));
     }
     if (cfg.venues.size() > kMaxVenuesConfig) throw ConfigError("too many venues");
+  }
+  if (cfg.single_threaded() && cfg.venues.size() > 1) {
+    throw ConfigError(
+        fmt::format("[engine] threading = \"single\" runs one venue; this configuration has {}",
+                    cfg.venues.size()));
   }
 
   // [[instruments]]
@@ -509,6 +517,7 @@ std::string Config::redacted() const {
   kv("cpu", engine.cpu);
   kq("spin_mode", engine.spin_mode);
   kq("net_backend", engine.net_backend);
+  kq("threading", engine.threading);
   kv("journal", engine.journal);
   kq("journal_dir", engine.journal_dir);
   kq("epoch_file", engine.epoch_file);
@@ -628,6 +637,7 @@ std::string Config::effective_toml() const {
   e.insert("net_cpus", std::move(cpus));
   e.insert("spin_mode", engine.spin_mode);
   e.insert("net_backend", engine.net_backend);
+  e.insert("threading", engine.threading);
   e.insert("journal", engine.journal);
   e.insert("journal_dir", engine.journal_dir);
   e.insert("epoch_file", engine.epoch_file);

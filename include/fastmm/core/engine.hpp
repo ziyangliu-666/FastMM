@@ -6,7 +6,8 @@
 //
 // Everything the engine touches after warm_up() is preallocated; no virtual calls, no
 // exceptions, no heap. The same template runs live (TscClock, LiveTransport, RingFeed),
-// in the simulator (SimClock, SimTransport, InlineFeed) and in replay.
+// in the simulator (SimClock, SimTransport, InlineFeed) and in replay. Live, it runs on its own
+// thread (run()) or on the venue's network thread (run_inline() and drain(), run-to-completion).
 //
 // Strategy hooks are optional member functions, checked in the constructor and dispatched at
 // compile time through the table in strategies/hooks.hpp: a hook with a wrong signature is a
@@ -162,6 +163,7 @@ class Engine {
   std::size_t step() noexcept {
     std::size_t n = 0;
     ++stats_.steps;
+    in_engine_ = true;
     while (n < cfg_.max_events_per_step) {
       const EventHeader* h = feed_.next();
       if (h == nullptr) break;
@@ -173,6 +175,24 @@ class Engine {
     const Timestamp now = clock_.now();
     n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
     if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
+    in_engine_ = false;
+    return n;
+  }
+
+  // Run-to-completion: processes every event the feed holds now, without timers. The venue calls
+  // it (EventSink drain hook) right after decoding an event on this thread. Returns 0 when called
+  // from inside the engine (the venue refused an order the engine was sending): the event stays in
+  // its ring for the loop that is already running.
+  std::size_t drain() noexcept {
+    if (in_engine_) return 0;
+    in_engine_ = true;
+    std::size_t n = 0;
+    while (const EventHeader* h = feed_.next()) {
+      ++n;
+      process(h);
+      feed_.release();
+    }
+    in_engine_ = false;
     return n;
   }
 
@@ -190,11 +210,30 @@ class Engine {
     }
     finish();
   }
+  // run() with the venue's network loop on this thread (fastmm-live [engine] threading =
+  // "single"): `poll` runs one reactor iteration before every step. Market data decoded in it
+  // reaches drain() at once; order events, control messages and timers wait for the step.
+  void run_inline(InlinePollFn poll, void* ctx) {
+    pin_to_cpu(cfg_.cpu);
+    set_thread_name("fm-engine");
+    warm_up();
+    start();
+    while (!stop_.load(std::memory_order_relaxed)) {
+      const std::size_t n = poll(ctx) + step();
+      if (n == 0) {
+        spin_.idle();
+      } else {
+        spin_.active();
+      }
+    }
+    finish();
+  }
   // Calls on_start. on_quoting does not fire for the initial state (on_start reads
   // ctx.quoting_enabled()), only for a change made during on_start.
   void start() noexcept {
     if (started_) return;
     started_ = true;
+    in_engine_ = true;
     latch_clock();
     // The rate limiter refills from the start time, not from construction (replay constructs the
     // engine at a different time).
@@ -208,10 +247,12 @@ class Engine {
     if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
     flush_out();
     unlatch_clock();
+    in_engine_ = false;
   }
   void finish() noexcept {
     if (!started_ || finished_) return;
     finished_ = true;
+    in_engine_ = true;
     latch_clock();
     if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Finish, now_))
       ++stats_.journal_overflows;
@@ -219,6 +260,7 @@ class Engine {
     flush_out();
     publish_latency(now_);
     unlatch_clock();
+    in_engine_ = false;
   }
   void stop() noexcept { stop_.store(true, std::memory_order_release); }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
@@ -1281,6 +1323,7 @@ class Engine {
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
   bool latched_ = false;
+  bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;
   bool reconciling_ = false;
   bool params_stale_;                  // max_param_age passed, or no ParamUpdate yet

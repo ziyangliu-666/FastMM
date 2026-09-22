@@ -95,10 +95,22 @@ Order send path, same machine and settings, 3 runs of 20 s per row (9 for the fi
 | `IORING_OP_SEND` with SQPOLL, thread on core 0 | 34.8 | 2.8 to 3.1 | 12.7 to 13.2 |
 | `IORING_OP_SEND` with SQPOLL, thread unpinned | 163.8 to 172.0 | 2.9 | 12.2 to 13.2 |
 
+`[engine] threading`, same machine and settings (network thread on core 6 for split; single runs everything on core 4), 3 runs of 30 s per mode, 2026-09-22, µs, range over the runs:
+
+| hop | split p50 | single p50 | split p99 | single p99 | split p99.9 | single p99.9 |
+|---|---:|---:|---:|---:|---:|---:|
+| wire to wire | 30.7 to 34.8 | 29.7 to 32.8 | 59.4 to 3670.0 | 73.7 to 4456.4 | 67.4 to 7535.7 | 95.2 to 6154.3 |
+| T1 to T2: ring hand-off (split) or none (single), book apply | 0.2 | 0.1 | 5.9 to 4456.4 | 0.4 | 73.7 to 11534.3 | 0.8 to 6.1 |
+| T4 to T5: ring push (split) or encode + write (single) | 0.1 to 0.2 | 8.2 to 13.8 | 0.5 to 0.7 | 28.7 to 45.1 | 1.4 to 11.9 | 53.2 to 244.8 |
+| T0 to OUCH write returned | 22.5 to 26.4 | 21.5 to 24.4 | 39.1 to 3501.9 | 39.1 to 66.4 | 103.4 to 7399.8 | 51.2 to 169.0 |
+
+Wire to wire is the `write` into veth and the simulator's side; the ring hops the single thread removes are about 1 µs of it at p50. The millisecond p99 values are host stalls that hit both modes (kernel to T0 p99 above 3 ms in the same runs). In single mode every event that sends writes at once, so two instruments moving in one datagram cost two writes where the split network thread coalesces them into one.
+
 The io_uring rows were a prototype and are not in the code: the plain submission costs what `write` costs, and SQPOLL only moves the send to another core (the call returns in 0.3 µs) without shortening wire to wire.
 
 ```bash
 scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs root
+scripts/bench-e2e.sh --duration 30 --runs 3 --threading single
 ```
 
 ## Reproduce

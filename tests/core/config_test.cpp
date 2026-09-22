@@ -270,3 +270,24 @@ TEST_CASE("core.config: [engine] on_kill defaults to exit, accepts stay and reje
                        doctest::Contains("on_kill must be exit|stay"),
                        ConfigError);
 }
+
+TEST_CASE("core.config: [engine] threading is split or single, and single takes one venue") {
+  CHECK(Config::parse("[engine]\n").engine.threading == "split");
+  CHECK_FALSE(Config::parse("[engine]\n").single_threaded());
+  const Config single = Config::parse("[engine]\nthreading = \"single\"\n");
+  CHECK(single.single_threaded());
+  CHECK(single.warnings.empty());
+  CHECK(Config::parse(single.effective_toml()).single_threaded());
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nthreading = \"inline\"\n"),
+                       doctest::Contains("threading must be split|single"),
+                       ConfigError);
+  const char* two = R"([engine]
+threading = "single"
+[venues.a]
+kind = "binance"
+[venues.b]
+kind = "binance"
+)";
+  CHECK_THROWS_WITH_AS(
+      Config::parse(two), doctest::Contains("threading = \"single\" runs one venue"), ConfigError);
+}

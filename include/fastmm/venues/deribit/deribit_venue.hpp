@@ -109,6 +109,7 @@ class DeribitVenue final : public Venue {
   void subscribe(std::span<const InstrumentId> instruments) override;
   void on_timer(std::int64_t now_ns) override;
   void on_wake() override;
+  void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
@@ -155,6 +156,9 @@ class DeribitVenue final : public Venue {
   void handle_order_response(RequestKind kind, ClientOrderId id, const PrivateDecodeResult& r);
   void handle_open_orders_response(std::size_t currency_index, std::string_view json, bool error);
   void drain_outbound();
+  // Encodes and writes the orders `ring` holds (the outbound MsgRing or an OutboundBatch).
+  template <class Ring>
+  void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
   // Sends ControlCommand::TripVenueKill to the engine, once per session.
   void trip_venue_kill(KillReason reason);

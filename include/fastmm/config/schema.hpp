@@ -56,6 +56,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "event loop of fastmm-live and fastmm-sim-exchange: epoll | io_uring (Linux 5.13 or newer; "
      "falls back to epoll with a warning) (default epoll)"},
     {"engine",
+     "threading",
+     KeyType::String,
+     false,
+     "fastmm-live: split (engine and network threads, rings between them) | single (one venue; "
+     "its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is "
+     "ignored) (default split)"},
+    {"engine",
      "journal",
      KeyType::Bool,
      false,

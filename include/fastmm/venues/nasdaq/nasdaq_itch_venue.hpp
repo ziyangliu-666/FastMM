@@ -145,6 +145,7 @@ class NasdaqItchVenue final : public Venue {
   void subscribe(std::span<const InstrumentId> instruments) override;
   void on_timer(std::int64_t now_ns) override;
   void on_wake() override;
+  void send_now(std::span<const EventHeader* const> batch) override;
   void poll() noexcept override;
   void request_open_orders() override;
   bool cancel_all() override;
@@ -255,6 +256,9 @@ class NasdaqItchVenue final : public Venue {
   std::size_t on_ouch_data(std::span<const std::byte> bytes) noexcept;
   void on_ouch_down(int err) noexcept;
   void ouch_lost() noexcept;
+  // Encodes and writes the orders `ring` holds (the outbound MsgRing or an OutboundBatch).
+  template <class Ring>
+  void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd) noexcept;
   void refuse(const OrderCommand& cmd, RejectReason reason, std::string_view why) noexcept;
   void emit_empty_reconcile() noexcept;

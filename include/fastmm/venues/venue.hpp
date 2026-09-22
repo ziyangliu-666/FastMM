@@ -167,6 +167,11 @@ class Venue {
   virtual void on_timer(std::int64_t now_ns) = 0;
   // The engine pushed Out*Msg into the outbound ring: drain, encode, send.
   virtual void on_wake() = 0;
+  // Run-to-completion ([engine] threading = "single"): the engine runs on the reactor thread and
+  // hands its Out*Msg batch over here instead of the outbound ring. Encode and write them now, as
+  // on_wake() does; a message that cannot go out is refused through the order sink. Called from
+  // inside the venue's own callbacks (a market-data event reaches the engine as it is decoded).
+  virtual void send_now(std::span<const EventHeader* const> batch) = 0;
   // Called by the network thread after every reactor iteration. Venues whose sockets are not
   // registered with the reactor poll them here (nasdaq_itch with [engine] spin_mode = "busy").
   virtual void poll() noexcept {}

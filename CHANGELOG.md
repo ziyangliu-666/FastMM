@@ -5,6 +5,14 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Run-to-completion: `[engine] threading = "single"` (default `"split"`) runs the one venue's
+  reactor, the engine and order sending on the engine thread, with no ring hop between the packet
+  read and the order write (docs/explanation/architecture.md#run-to-completion). Market data reaches
+  the engine as the venue commits it (`EventSink::set_drain_hook`, `Engine::drain()`), orders go to
+  the new `Venue::send_now` through `LiveTransport::set_direct`, and `Engine::run_inline` /
+  `IEngineRunner::run_inline` run the loop. More than one venue is a configuration error. Journals
+  and replay are unchanged. `scripts/bench-e2e.sh --threading single|split --replay`; ctest runs
+  both modes with `fastmm-replay --verify` (`integration.nasdaq_itch_processes[_single]`).
 - Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
   docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
   `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one

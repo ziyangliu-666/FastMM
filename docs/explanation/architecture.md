@@ -50,6 +50,16 @@ The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 
 All queues are single-producer/single-consumer (`MsgRing`, byte-oriented, variable-length 64-byte-aligned messages). N producers means N rings; the engine polls them round-robin with a batch cap so one venue cannot starve another. The journal records events in the order the engine consumes them.
 
+### Run-to-completion
+
+`[engine] threading = "single"` (one venue; a configuration with more is refused) removes `fm-net-0`. The `fm-engine` thread, pinned to `[engine] cpu`, runs the venue's reactor iteration and `Venue::poll()` before every engine step (`Engine::run_inline`), so no event crosses a core between the packet read and the order write:
+
+* Market data: the md sink's drain hook calls `Engine::drain()` after every commit. The event is journaled, applied and given to the strategy while the venue is still in the receive callback that decoded it; the rest of the datagram or frame is decoded afterwards.
+* Orders: `LiveTransport::set_direct` passes the engine's batch to `Venue::send_now`, which encodes and writes it with one write, as the network thread's drain of the outbound ring does. T4 to T5 is then encoding plus the write system call, and the engine's tick-to-trade ends with the order on the socket.
+* Order events, control messages, parameter rings and timers are taken by the step after each reactor iteration. An event the venue emits while the engine is running (an order it refuses) waits in its ring for that step: `drain()` does nothing when entered from inside the engine.
+
+The rings stay, as same-thread FIFOs. The journal thread, the log sink and the main thread are unchanged, and the journal records events in the order the engine consumed them, so `fastmm-replay` works the same way. The costs: while the engine works nobody reads the sockets, and a slow strategy hook delays the venue's heartbeats and timers too. Measured with `scripts/bench-e2e.sh`: [Benchmarks](benchmarks.md#end-to-end-over-veth).
+
 ## Network reactor
 
 `net::Reactor` (`include/fastmm/net/reactor.hpp`) is the single-threaded event loop under every connection: descriptors registered with an `IoHandler`, a timer min-heap, and a mailbox (`post()` / `wake()` through an eventfd), the only part that other threads may call. One `run_once()` waits for I/O (at most until the next timer or `max_wait_ms`), dispatches it, then runs posted tasks and expired timers, without allocating. The connection, TLS, WebSocket and HTTP code only uses registration (`add`, `modify`, `remove`) and timers, so it runs unchanged on either backend. `[engine] net_backend` selects the backend for `fastmm-live` and `fastmm-sim-exchange`.
@@ -82,7 +92,7 @@ The io_uring backend talks to the kernel through the raw `io_uring_setup` / `io_
 1. No heap allocation after `warm_up()`; enforced by `tests/hotpath` (global `operator new` counter).
 2. No exceptions; hot functions return `Result<T, E>` and are `noexcept`.
 3. No `double` in price/quantity arithmetic: `Price`/`Qty`/`Notional` are `int64` with a global 1e-8 scale; products go through `__int128`.
-4. No virtual calls inside `Engine::run()`: strategies, clocks, transports and feeds are template parameters (CRTP/concepts); virtual dispatch is only used on the control path.
+4. No virtual calls inside `Engine::run()`: strategies, clocks, transports and feeds are template parameters (CRTP/concepts); virtual dispatch is only used on the control path. Run-to-completion adds one indirect call per market-data event (the drain hook into `IEngineRunner::drain()`) and one per outbound batch (`Venue::send_now`).
 5. Every cross-thread message is trivially copyable with an explicit size.
 
 ## Determinism
@@ -114,7 +124,7 @@ Stamps are `rdtscp` readings (`Cycles`); intervals go into allocation-free log-l
 | T1 | network | decoded into an engine message (`t1_delta`) |
 | T2 | engine | book (or position/OMS) updated |
 | T3 | engine | strategy hook returned |
-| T4, T5 | engine | around `transport.send()` of the outbound batch; live, that is the push into the venue's outbound ring |
+| T4, T5 | engine | around `transport.send()` of the outbound batch; live, that is the push into the venue's outbound ring, or with `threading = "single"` the encoding and write |
 
 The engine's `LatencyTracker` (decode, book apply, strategy, serialize = T3 to T4, send = T4 to T5, tick-to-trade = T0 to T5, wire-to-book = T0 to T2) is published through a seqlock every `latency_publish_ms`. The engine copies the triggering event's `t0_cycles` into every outbound message header, and the network thread measures the rest in `venues::WireLatencyRecorder`: for each outbound order message it stamps before encoding, after encoding and signing, and after the WebSocket write (or REST request call) returned, and records
 

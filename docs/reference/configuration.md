@@ -25,6 +25,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `net_cpus` | integer array |  | CPU cores of the network threads, one per venue in order (default []) |
 | `spin_mode` | string |  | busy (spin forever) \| adaptive (back off to short sleeps when idle; use on WSL2 and laptops) (default adaptive) |
 | `net_backend` | string |  | event loop of fastmm-live and fastmm-sim-exchange: epoll \| io_uring (Linux 5.13 or newer; falls back to epoll with a warning) (default epoll) |
+| `threading` | string |  | fastmm-live: split (engine and network threads, rings between them) \| single (one venue; its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is ignored) (default split) |
 | `journal` | boolean |  | record every consumed event to a .fmj journal (default true) |
 | `journal_dir` | string |  | directory for journals (default "runs") |
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |

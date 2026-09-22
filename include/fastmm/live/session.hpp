@@ -19,6 +19,10 @@
 //                the session keeps running and logs an ERROR line every 10 s. Venue kills are
 //                logged once per venue.
 //
+// [engine] threading = "single" (one venue): no fm-net-0; fm-engine runs the venue's reactor
+// iteration between engine steps (Engine::run_inline), takes each market-data event as the venue
+// commits it (EventSink drain hook -> Engine::drain) and hands its orders to Venue::send_now.
+//
 // The thread set is fixed for the whole session (the logger keeps a ring per thread). The strategy
 // is built by the StrategyRegistry's TransportKind::Live factory for [strategy] name; register it
 // (register_builtin_strategies, a strategy module) before calling run_live, or pass a

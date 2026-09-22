@@ -817,10 +817,10 @@ void DeribitVenue::on_wake() {
 }
 
 // The orders the ring holds go out as one write of all their WebSocket frames.
-void DeribitVenue::drain_outbound() {
-  if (outbound_ == nullptr) return;
+template <class Ring>
+void DeribitVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
-      *outbound_,
+      ring,
       wire_,
       [this] { private_conn_.cork(); },
       [this](const EventHeader& h) {
@@ -830,6 +830,15 @@ void DeribitVenue::drain_outbound() {
         }
       },
       [this] { return private_conn_.uncork(); });
+}
+
+void DeribitVenue::drain_outbound() {
+  if (outbound_ != nullptr) write_orders(*outbound_);
+}
+
+void DeribitVenue::send_now(std::span<const EventHeader* const> batch) {
+  OutboundBatch b(batch);
+  write_orders(b);
 }
 
 void DeribitVenue::send_command(const OrderCommand& cmd) {
