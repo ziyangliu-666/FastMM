@@ -5,6 +5,7 @@
 // the kill-switch cancel_all, and the documented Binance error codes.
 #include "integration_util.hpp"
 
+#include "fastmm/live/session.hpp"
 #include "fastmm/net/crypto.hpp"
 #include "fastmm/sim/server/binance_json.hpp"
 #include "fastmm/venues/binance/binance_venue.hpp"
@@ -561,4 +562,86 @@ TEST_CASE("sim_exchange: the generated book is deterministic for a seed") {
   std::string text;
   sim::server::append_decimal(text, Qty::from_decimal("0.001").value());
   CHECK(text == "0.00100000");
+}
+
+TEST_CASE("sim_exchange: Ed25519 key logs on once per connection and trades unsigned") {
+  sim::server::SimServerConfig cfg = test_server_config();
+  cfg.ed25519_public_key_pem = fastmm::test::fixture("binance/ed25519-test-public.pem");
+  ServerFixture fx(std::move(cfg));
+  BinanceVenueConfig vc = venue_config(fx);
+  vc.credentials.secret.value.clear();
+  vc.credentials.type = KeyType::Ed25519;
+  vc.credentials.private_key_pem.value = fastmm::test::fixture("binance/ed25519-test-private.pem");
+  VenueHarness h(std::move(vc));
+  REQUIRE(h.venue->load_reference_data(h.instruments));
+  h.connect();
+  // Order channel: session.logon, then Live. User channel: session.logon, then the unsigned
+  // userDataStream.subscribe.
+  REQUIRE(h.pump(
+      [&] { return h.venue->md_feed()->synced_count() == 1 && h.live_order_channels() >= 2; }));
+  sim::server::SimServerStats st = fx.server.stats();
+  CHECK(st.session_logons == 2);
+  CHECK(st.user_subscriptions == 1);
+  CHECK(st.signature_errors == 0);
+  const Price far = st.best_bid.price - Price::from_int(150);
+  const Qty qty = Qty::from_decimal("0.001").value();
+
+  // order.place without apiKey/signature: ack from the response and from executionReport NEW.
+  h.send(new_order(cid(20), Side::Buy, OrderType::PostOnly, TimeInForce::Gtc, far, qty).hdr);
+  REQUIRE(h.pump([&] { return h.acks(cid(20)) >= 2; }));
+  OutCancelMsg cancel{};
+  init_header(cancel, EventType::OutCancel, InstrumentId{0}, VenueId{0});
+  cancel.cl_ord_id = cid(20);
+  cancel.venue_order_id.assign(h.last_ack(cid(20))->venue_order_id.view());
+  h.send(cancel.hdr);
+  REQUIRE(h.pump([&] { return h.cancel_acks(cid(20)) >= 2; }));
+
+  // REST with an Ed25519 signature (percent-encoded base64): the kill switch.
+  h.send(new_order(cid(21), Side::Buy, OrderType::PostOnly, TimeInForce::Gtc, far, qty).hdr);
+  REQUIRE(h.pump([&] { return h.acks(cid(21)) >= 1; }));
+  CHECK(h.venue->cancel_all());
+  CHECK(fx.server.stats().open_orders == 0);
+  CHECK(fx.server.stats().signature_errors == 0);
+  CHECK(fx.server.stats().session_logons == 2);
+  CHECK_FALSE(h.venue->fatal());
+}
+
+TEST_CASE("sim_exchange: session.logon with an HMAC account is refused and fatal") {
+  ServerFixture fx;  // HMAC account: an Ed25519 signature cannot verify
+  BinanceVenueConfig vc = venue_config(fx);
+  vc.credentials.secret.value.clear();
+  vc.credentials.type = KeyType::Ed25519;
+  vc.credentials.private_key_pem.value = fastmm::test::fixture("binance/ed25519-test-private.pem");
+  VenueHarness h(std::move(vc));
+  REQUIRE(h.venue->load_reference_data(h.instruments));
+  h.connect();
+  REQUIRE(h.pump([&] { return h.venue->fatal(); }));
+  CHECK(fx.server.stats().session_logons == 0);
+  CHECK(fx.server.stats().signature_errors >= 1);
+}
+
+TEST_CASE("sim_exchange: resolve_venue_env takes Ed25519 keys without a secret") {
+  Config cfg;
+  VenueSection v;
+  v.name = "binance";
+  v.kind = "binance_spot";
+  v.api_key = "ed-key";
+  v.extra["key_type"] = "ed25519";
+  cfg.venues.push_back(v);
+  CHECK(live::resolve_venue_env(cfg, false, "test"));
+  // A dry run keeps the API key for SBE market data (the stream needs it), not otherwise.
+  cfg.venues[0].extra["md_format"] = "sbe";
+  CHECK(live::resolve_venue_env(cfg, true, "test"));
+  CHECK(cfg.venues[0].api_key == "ed-key");
+  cfg.venues[0].extra.erase("md_format");
+  CHECK(live::resolve_venue_env(cfg, true, "test"));
+  CHECK(cfg.venues[0].api_key.empty());
+  // HMAC keys still need the secret.
+  VenueSection h;
+  h.name = "hmac";
+  h.kind = "binance_spot";
+  h.api_key = "k";
+  Config hc;
+  hc.venues.push_back(h);
+  CHECK_FALSE(live::resolve_venue_env(hc, false, "test"));
 }

@@ -77,6 +77,12 @@ class FakeVenueServer final : public net::WsSessionHandler {
       for (net::WsSession* s : sessions_[path]) s->send_text(text);
     });
   }
+  // Sends a binary frame to every open session on `path` (server thread).
+  void send_binary_to(const std::string& path, std::vector<std::byte> data) {
+    run_on_server([this, path, data = std::move(data)] {
+      for (net::WsSession* s : sessions_[path]) s->send_binary(data);
+    });
+  }
   void close_sessions(const std::string& path) {
     run_on_server([this, path] {
       for (net::WsSession* s : sessions_[path]) s->close_abrupt();
@@ -153,6 +159,16 @@ inline std::string json_str(std::string_view json, std::string_view key) {
   const std::size_t start = p + needle.size();
   const std::size_t end = json.find('"', start);
   return std::string(json.substr(start, end - start));
+}
+
+// Extracts "key":123 (unquoted integer) as text; empty if absent. Test helper only.
+inline std::string json_int(std::string_view json, std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\":";
+  const std::size_t p = json.find(needle);
+  if (p == std::string_view::npos) return {};
+  std::size_t end = p + needle.size();
+  while (end < json.size() && ((json[end] >= '0' && json[end] <= '9') || json[end] == '-')) ++end;
+  return std::string(json.substr(p + needle.size(), end - p - needle.size()));
 }
 
 // Copies every message out of a ring sink and returns those of `type`.

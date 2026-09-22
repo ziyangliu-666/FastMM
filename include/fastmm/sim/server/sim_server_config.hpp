@@ -57,9 +57,12 @@ struct SimServerConfig {
   // [engine] net_backend; io_uring falls back to epoll (with a warning) when unsupported.
   net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
 
-  // the single trading account (HMAC key); the secret is never logged
+  // the single trading account; the secret is never logged. With an Ed25519 public key (PEM,
+  // "-----BEGIN PUBLIC KEY-----") the account key is an Ed25519 key: signatures are verified
+  // with it, session.logon works and api_secret is not used.
   std::string api_key = "sim-key";
   std::string api_secret = "sim-secret";
+  std::string ed25519_public_key_pem;
   std::vector<SimBalanceConfig> balances;  // empty: 100 base + 10,000,000 quote per symbol
 
   // market

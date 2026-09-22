@@ -387,12 +387,20 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
     for (auto& [k, val] : v.extra) {
       if (!resolve(k.c_str(), val, false)) return false;
     }
+    auto extra = [&](const char* key) {
+      const auto it = v.extra.find(key);
+      return it == v.extra.end() ? std::string_view{} : std::string_view(it->second);
+    };
+    // Ed25519 keys have no secret (the private key comes from private_key_file / _env), and
+    // Binance SBE market data needs the API key even in a dry run.
+    const bool ed25519 = extra("key_type") == "ed25519";
+    const bool sbe_md = extra("md_format") == "sbe";
     if (dry_run) {
-      v.api_key.clear();
+      if (!sbe_md) v.api_key.clear();
       v.api_secret.clear();
     } else if (venues::venue_kind(v.kind) == venues::VenueKind::NasdaqItch) {
       // Market data needs no keys; sim_ouch logs in with ouch_username / ouch_password.
-    } else if (v.api_key.empty() || v.api_secret.empty()) {
+    } else if (v.api_key.empty() || (v.api_secret.empty() && !ed25519)) {
       std::fprintf(stderr,
                    "%s: venue '%s' has no api_key/api_secret. Set them via ${ENV} references, or "
                    "run with --dry-run for public market data only.\n",

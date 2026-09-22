@@ -44,6 +44,12 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Fees: the config books 10 bps maker and taker (`[venues.binance.fees]`), the commission the Demo account charged in our sessions.
 - Commission asset: buys are charged in the base asset (BTC) and sells in the quote asset (USDT) ([Journals, replay and PnL](journals-replay-pnl.md#check-pnl)).
 - Config: `stale_ms = 10000`; `[engine] min_requote_ticks = 50` and `min_requote_interval_ms = 1000` keep the order rate below Binance's limits.
+- Ed25519 key (unsigned orders after `session.logon`, and SBE market data):
+  1. `openssl genpkey -algorithm ed25519 -out ed25519-private.pem` and `openssl pkey -in ed25519-private.pem -pubout -out ed25519-public.pem`; keep the private key out of the repository (`chmod 600`).
+  2. In Demo Trading, API Key Management: create an API key of type "Self-generated" (Ed25519), paste the contents of `ed25519-public.pem`, enable Spot trading (and Futures for USDⓈ-M). Binance shows the API key; the private key never leaves your machine.
+  3. Export `FASTMM_BINANCE_API_KEY=<that key>` and either keep the PEM file or export it (`export FASTMM_BINANCE_ED25519_PEM="$(cat ed25519-private.pem)"`).
+  4. In `[venues.binance]`: `key_type = "ed25519"`, `private_key_file = "/path/ed25519-private.pem"` or `private_key_env = "FASTMM_BINANCE_ED25519_PEM"`, remove `api_secret`, and optionally `md_format = "sbe"` (derives `wss://demo-stream-sbe.binance.com/stream`).
+  5. `fastmm-live --config configs/binance-demo.toml --dry-run` first: the SBE market-data channel goes Live and the book syncs. In a live run the order channel goes Live only after the `session.logon` reply; `session.logon failed` in the log means the key, its permissions or the IP whitelist are wrong.
 
 ### Binance USDⓈ-M futures Demo Trading
 

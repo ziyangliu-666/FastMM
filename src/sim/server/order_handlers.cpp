@@ -383,6 +383,22 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
   Account* a = find_account(api_key);
   if (a == nullptr)
     return OpResult::error(401, -2015, "Invalid API-key, IP, or permissions for action.");
+  if (params.find("timestamp") == nullptr)
+    return OpResult::error(400, -1102, mandatory("timestamp"));
+  if (signature.empty()) return OpResult::error(400, -1102, mandatory("signature"));
+  const bool sig_ok = a->ed25519 != nullptr
+                          ? a->ed25519->verify_base64(payload, signature)
+                          : verify_hmac_signature(a->api_secret, payload, signature);
+  if (!sig_ok) {
+    ++stats_.signature_errors;
+    return OpResult::error(400, -1022, "Signature for this request is not valid.");
+  }
+  if (auto err = check_timing(params, now_ms)) return err;
+  out = a;
+  return std::nullopt;
+}
+
+std::optional<OpResult> Impl::check_timing(const ParamList& params, std::int64_t now_ms) {
   const auto ts = parse_int(params.get("timestamp"));
   if (!ts) return OpResult::error(400, -1102, mandatory("timestamp"));
   std::int64_t recv_window = 5000;
@@ -395,11 +411,6 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
           -1131,
           "recvWindow must be less than " + std::to_string(cfg_.max_recv_window_ms) + ".");
     recv_window = *rw;
-  }
-  if (signature.empty()) return OpResult::error(400, -1102, mandatory("signature"));
-  if (!verify_hmac_signature(a->api_secret, payload, signature)) {
-    ++stats_.signature_errors;
-    return OpResult::error(400, -1022, "Signature for this request is not valid.");
   }
   if (faults_.timestamp_once) {
     faults_.timestamp_once = false;
@@ -417,7 +428,6 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
     ++stats_.timestamp_errors;
     return OpResult::error(400, -1021, "Timestamp for this request is outside of the recvWindow.");
   }
-  out = a;
   return std::nullopt;
 }
 

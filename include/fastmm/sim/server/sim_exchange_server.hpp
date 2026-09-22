@@ -44,6 +44,7 @@ struct SimServerStats {
   std::uint64_t open_orders_queries = 0;
   std::uint64_t cancel_all_requests = 0;
   std::uint64_t signature_errors = 0;
+  std::uint64_t session_logons = 0;  // successful session.logon (Ed25519 accounts)
   std::uint64_t timestamp_errors = 0;
   std::uint64_t rate_limited = 0;
   std::uint64_t unanswered_rest = 0;

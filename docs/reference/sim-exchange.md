@@ -45,6 +45,7 @@ The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, 
 | `ping_interval_ms`, `pong_timeout_ms` | 20000, 60000 | server-initiated WebSocket pings |
 | `listen_key_validity_ms` | 3600000 | legacy listenKey lifetime |
 | `account.api_key`, `account.api_secret` | sim-key, sim-secret | the HMAC key (env overrides) |
+| `account.ed25519_public_key_file` | none | Ed25519 public key (PEM): the account key becomes an Ed25519 key, `session.logon` works |
 | `account.balances.<ASSET>` | 100 base, 10,000,000 quote | starting balances |
 | `fees.maker_bps`, `fees.taker_bps` | 1, 4 | commission, charged in the quote asset |
 | `limits.weight_per_minute` | 6000 | REQUEST_WEIGHT / 1 MINUTE |
@@ -85,7 +86,7 @@ Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry `X-MBX
 
 ### WebSocket API
 
-`/ws-api/v3` echoes the request id verbatim. Methods: `ping`, `time`, `exchangeInfo`, `depth`, `ticker.book`, `userDataStream.subscribe.signature` (returns `{"subscriptionId":N}`), `userDataStream.unsubscribe`, `order.place`, `order.test`, `order.cancel`, `order.cancelReplace`, `order.amend.keepPriority`, `order.status`, `openOrders.status`, `openOrders.cancelAll` and `account.status`. A 429 error carries `data.retryAfter`.
+`/ws-api/v3` echoes the request id verbatim. Methods: `ping`, `time`, `exchangeInfo`, `depth`, `ticker.book`, `userDataStream.subscribe.signature` (returns `{"subscriptionId":N}`), `session.logon` / `session.status` / `session.logout` and `userDataStream.subscribe` (Ed25519 account), `userDataStream.unsubscribe`, `order.place`, `order.test`, `order.cancel`, `order.cancelReplace`, `order.amend.keepPriority`, `order.status`, `openOrders.status`, `openOrders.cancelAll` and `account.status`. A 429 error carries `data.retryAfter`.
 
 ### User data events
 
@@ -142,7 +143,8 @@ The generator, order ids and trade ids depend only on the configuration and seed
 
 Not implemented:
 
-* Ed25519 / RSA keys and `session.logon`: HMAC only, one account. `session.logon` and the unsigned `userDataStream.subscribe` answer an error.
+* RSA keys and more than one account. With `[sim.account] ed25519_public_key_file` (a `-----BEGIN PUBLIC KEY-----` PEM) the account key is Ed25519: signatures are verified with it, `session.logon`, `session.status`, `session.logout` and the unsigned `userDataStream.subscribe` work, and later requests on that connection may omit `apiKey` and `signature`. `session.logon` with an HMAC account answers `-4056`. Session revocation is not simulated.
+* SBE market data and `responseFormat=sbe`: JSON only.
 * Order types other than LIMIT / LIMIT_MAKER / MARKET: no stop, take-profit, iceberg, trailing, `quoteOrderQty`, OCO/OTO/OPO lists, SOR or pegged orders (`-1014`).
 * Other market data: klines, aggTrades, 24 h tickers, avgPrice, `@depth<N>` partial books, `/api/v3/trades`. `@depth` and `@depth@100ms` share one interval, and bookTicker is batched per interval rather than sent on every change.
 * The events `balanceUpdate`, `listStatus`, `externalLockUpdate` and `eventStreamTerminated`.

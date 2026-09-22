@@ -40,6 +40,11 @@ supports_replace = true      # order.cancelReplace (STOP_ON_FAILURE)
 recv_window_ms = 3000
 # The 2 s default flags quiet Demo Mode spells as Stale (book clear + resync).
 stale_ms = 10000
+# Ed25519 key instead (docs/how-to/operations/run-on-testnet.md): orders go unsigned after
+# session.logon, and md_format = "sbe" reads wss://demo-stream-sbe.binance.com. Drop api_secret.
+# key_type = "ed25519"
+# private_key_env = "FASTMM_BINANCE_ED25519_PEM"
+# md_format = "sbe"
 
 [venues.binance.fees]
 maker_bps = 10.0

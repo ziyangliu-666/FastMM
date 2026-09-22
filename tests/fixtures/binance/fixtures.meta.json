@@ -12,6 +12,8 @@
   "trade.json": "recorded",
   "server_time.json": "recorded",
   "raw_md_stream.jsonl": "recorded, one frame per line",
-  "exec_report_*.json, outbound_account_position.json, ws_api_*.json, open_orders.json, listen_key.json, error_*.json": "docs-example (hand-written following https://github.com/binance/binance-spot-api-docs user-data-stream.md / web-socket-api.md, with FastMM client ids)"
+  "exec_report_*.json, outbound_account_position.json, ws_api_*.json, open_orders.json, listen_key.json, error_*.json": "docs-example (hand-written following https://github.com/binance/binance-spot-api-docs user-data-stream.md / web-socket-api.md, with FastMM client ids)",
+  "sbe/*.hex": "built from the schema (sbe/make_fixtures.py, stream_1_0.xml): SBE streams need an Ed25519 API key, the stream host answers 400 'No X-MBX-APIKEY header' without one (checked 2026-09-22)",
+  "ed25519-test-*.pem": "test-only Ed25519 key pair (openssl genpkey -algorithm ed25519), also used by tests/net/crypto_test.cpp"
  }
 }

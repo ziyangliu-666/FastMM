@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -37,6 +38,7 @@ struct Credentials {
   Secret<std::string> private_key_pem{};  // Ed25519 PKCS#8 PEM (empty for HMAC keys)
   KeyType type = KeyType::Hmac;
 
+  // Presence only; Signer::usable() also requires the Ed25519 PEM to parse.
   [[nodiscard]] bool usable() const noexcept {
     if (api_key.empty()) return false;
     return type == KeyType::Hmac ? !secret.value.empty() : !private_key_pem.value.empty();
@@ -48,24 +50,42 @@ inline std::string api_key_header(std::string_view api_key) {
   return "X-MBX-APIKEY: " + std::string(api_key) + "\r\n";
 }
 
+// Holds the parsed key material: the HMAC pad midstates (net::HmacSha256Key) or the parsed
+// Ed25519 key, so no request re-reads the secret. Copies share the Ed25519 key.
 class Signer {
  public:
   Signer() = default;
-  explicit Signer(Credentials c) : creds_(std::move(c)) {}
+  explicit Signer(Credentials c) : creds_(std::move(c)) {
+    if (creds_.type == KeyType::Hmac) {
+      hmac_ = net::HmacSha256Key(creds_.secret.value);
+    } else if (!creds_.private_key_pem.value.empty()) {
+      auto k = net::Ed25519Key::from_private_pem(creds_.private_key_pem.value);
+      if (k.has_private()) ed_ = std::make_shared<const net::Ed25519Key>(std::move(k));
+    }
+  }
 
   [[nodiscard]] const Credentials& credentials() const noexcept { return creds_; }
   [[nodiscard]] KeyType type() const noexcept { return creds_.type; }
   [[nodiscard]] std::string_view api_key() const noexcept { return creds_.api_key; }
-  [[nodiscard]] bool usable() const noexcept { return creds_.usable(); }
+  // HMAC: key and secret present. Ed25519: key present and the PEM parsed as an Ed25519
+  // private key.
+  [[nodiscard]] bool usable() const noexcept {
+    if (creds_.api_key.empty()) return false;
+    return creds_.type == KeyType::Hmac ? !creds_.secret.value.empty() : ed_ != nullptr;
+  }
 
   // Hot path (HMAC keys): no allocation.
   [[nodiscard]] net::HexSha256 sign_hmac(std::string_view payload) const noexcept {
-    return net::hmac_sha256_hex(creds_.secret.value, payload);
+    return hmac_.sign_hex(payload);
+  }
+  // Ed25519: base64 signature into `out` (>= net::kEd25519Base64Size); 0 on failure.
+  std::size_t sign_ed25519(std::string_view payload, std::span<char> out) const noexcept {
+    return ed_ != nullptr ? ed_->sign_base64(payload, out) : 0;
   }
   // Control path: either key type; Ed25519 output is base64.
   [[nodiscard]] std::string sign(std::string_view payload) const {
     if (creds_.type == KeyType::Hmac) return std::string(sign_hmac(payload).view());
-    return net::ed25519_sign_base64(creds_.private_key_pem.value, payload);
+    return ed_ != nullptr ? ed_->sign_base64(payload) : std::string{};
   }
 
   // Appends "&signature=<sig>" to a REST query built with QueryBuilder. Percent-encodes
@@ -77,15 +97,18 @@ class Signer {
       const net::HexSha256 sig = sign_hmac(q.view());
       q.add("signature", sig.view());
     } else {
-      const std::string sig = sign(q.view());
-      if (sig.empty()) return false;
-      q.add("signature", sig);
+      char sig[net::kEd25519Base64Size];
+      const std::size_t n = sign_ed25519(q.view(), sig);
+      if (n == 0) return false;
+      q.add("signature", std::string_view(sig, n));
     }
     return q.ok();
   }
 
  private:
   Credentials creds_;
+  net::HmacSha256Key hmac_{};
+  std::shared_ptr<const net::Ed25519Key> ed_;
 };
 
 }  // namespace fastmm::venues::binance

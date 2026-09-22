@@ -132,3 +132,49 @@ TEST_CASE("crypto: ed25519 signature matches openssl pkeyutl") {
         "BCNp/ayIaamIRXyK+pXncZr5dCxdXEFOu69LPyYJdiRRNs6UeW3U4VihzyuVRyafhQR1JzCzGq2vy+YlFBxSDg==");
   CHECK(ed25519_sign_base64("not a pem", "x").empty());
 }
+
+TEST_CASE("crypto: HmacSha256Key reuses the pad midstates across messages") {
+  const HmacSha256Key key("Jefe");
+  CHECK(key.sign_hex("what do ya want for nothing?").view() ==
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+  // Signing does not disturb the stored state: same answer twice.
+  CHECK(key.sign_hex("what do ya want for nothing?").view() ==
+        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+  // Messages across SHA-256 block boundaries match the one-shot form.
+  for (const std::size_t n : {0UL, 1UL, 55UL, 56UL, 63UL, 64UL, 65UL, 200UL, 1000UL}) {
+    const std::string msg(n, 'x');
+    CHECK(key.sign_hex(msg).view() == hmac_sha256_hex("Jefe", msg).view());
+  }
+  const HmacSha256Key copy = key;
+  CHECK(copy.sign_hex("abc").view() == key.sign_hex("abc").view());
+  CHECK(HmacSha256Key().sign_hex("").view() ==
+        "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad");  // HMAC("", "")
+}
+
+TEST_CASE("crypto: Ed25519Key signs, verifies and exports the public key") {
+  const std::string priv = fastmm::test::fixture("binance/ed25519-test-private.pem");
+  const std::string pub_pem = fastmm::test::fixture("binance/ed25519-test-public.pem");
+  const Ed25519Key key = Ed25519Key::from_private_pem(priv);
+  REQUIRE(key.has_private());
+  CHECK(key.public_pem() == pub_pem);
+  // Deterministic signatures (RFC 8032): same value as the one-shot helper.
+  CHECK(key.sign_base64("hello fastmm") ==
+        "BCNp/ayIaamIRXyK+pXncZr5dCxdXEFOu69LPyYJdiRRNs6UeW3U4VihzyuVRyafhQR1JzCzGq2vy+YlFBxSDg==");
+  const Ed25519Key pub = Ed25519Key::from_public_pem(pub_pem);
+  REQUIRE(pub.valid());
+  CHECK_FALSE(pub.has_private());
+  const std::string sig = key.sign_base64("payload");
+  CHECK(pub.verify_base64("payload", sig));
+  CHECK_FALSE(pub.verify_base64("payload!", sig));
+  CHECK_FALSE(pub.verify_base64("payload", "not base64"));
+  CHECK_FALSE(pub.verify_base64("payload", base64_encode(std::string(63, 'a'))));
+  CHECK(pub.sign_base64("x").empty());  // no private key
+  char small[10];
+  CHECK(key.sign_base64("x", std::span<char>(small)) == 0);
+  CHECK_FALSE(Ed25519Key::from_private_pem("junk").valid());
+  CHECK_FALSE(Ed25519Key::from_public_pem(priv).valid());
+  Ed25519Key moved = Ed25519Key::from_private_pem(priv);
+  Ed25519Key target;
+  target = std::move(moved);
+  CHECK(target.has_private());
+}

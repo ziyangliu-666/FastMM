@@ -1,10 +1,17 @@
 // Venue order encoders: one new post-only limit order encoded into the connector's request buffer,
-// as the network thread does for every OutNewOrder. Binance signs each WebSocket API request with
-// HMAC-SHA256 (apiKey and signature inline, no session logon); Bybit's trade stream is
-// authenticated once per connection, so its frame carries no signature; Deribit carries the access
-// token. The ids and prices are those of tests/venues/*_order_encoder_test.cpp.
+// as the network thread does for every OutNewOrder. The ids and prices are those of
+// tests/venues/*_order_encoder_test.cpp.
+//
+//   BM_Encode_BinanceOrderPlace          HMAC key: apiKey + HMAC-SHA256 signature per request
+//   BM_Encode_BinanceOrderPlace_Ed25519  Ed25519 key before session.logon: Ed25519 per request
+//   BM_Encode_BinanceOrderPlace_Session  Ed25519 key after session.logon: no apiKey, no signature
+//   BM_Encode_BinanceUsdmOrderPlace[_Session]  the same for USDⓈ-M futures
+//   BM_Sign_HmacSha256                   the signature alone over the order.place payload
+// Bybit's trade stream is authenticated once per connection, so its frame carries no signature;
+// Deribit carries the access token.
 #include "fastmm/venues/binance/binance_auth.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
+#include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
 #include "fastmm/venues/bybit/bybit_auth.hpp"
 #include "fastmm/venues/bybit/bybit_order_encoder.hpp"
 #include "fastmm/venues/deribit/deribit_order_encoder.hpp"
@@ -103,6 +110,87 @@ void BM_Encode_BinanceOrderPlace(benchmark::State& state) {
              });
 }
 BENCHMARK(BM_Encode_BinanceOrderPlace);
+
+// Test-only key (tests/fixtures/binance/ed25519-test-private.pem).
+constexpr const char* kEd25519Pem =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MC4CAQAwBQYDK2VwBCIEIMiNHZWMX5DqXpUqYby34Xu7FODcF13zDfu9PXiBvdtZ\n"
+    "-----END PRIVATE KEY-----\n";
+
+binance::Signer ed25519_signer() {
+  binance::Credentials c;
+  c.api_key = kApiKey;
+  c.type = binance::KeyType::Ed25519;
+  c.private_key_pem.value = kEd25519Pem;
+  return binance::Signer(c);
+}
+
+void BM_Encode_BinanceOrderPlace_Ed25519(benchmark::State& state) {
+  Universe u;
+  const binance::Signer signer = ed25519_signer();
+  binance::BinanceOrderEncoder enc(signer, u.symbols, 3000);
+  run_encode(state,
+             new_order(0, 0, "70000.5", "0.001"),
+             [&](const OrderCommand& cmd, std::span<char> out) {
+               return enc.encode_ws(cmd, nullptr, 1789295199000, out);
+             });
+}
+BENCHMARK(BM_Encode_BinanceOrderPlace_Ed25519);
+
+void BM_Encode_BinanceOrderPlace_Session(benchmark::State& state) {
+  Universe u;
+  const binance::Signer signer = ed25519_signer();
+  binance::BinanceOrderEncoder enc(signer, u.symbols, 3000);
+  enc.set_session_authenticated(true);
+  run_encode(state,
+             new_order(0, 0, "70000.5", "0.001"),
+             [&](const OrderCommand& cmd, std::span<char> out) {
+               return enc.encode_ws(cmd, nullptr, 1789295199000, out);
+             });
+}
+BENCHMARK(BM_Encode_BinanceOrderPlace_Session);
+
+void BM_Encode_BinanceUsdmOrderPlace(benchmark::State& state) {
+  Universe u;
+  binance::Credentials c;
+  c.api_key = kApiKey;
+  c.secret.value = kSecret;
+  const binance::Signer signer(c);
+  binance_usdm::BinanceUsdmOrderEncoder enc(signer, u.symbols, 3000);
+  run_encode(state,
+             new_order(0, 0, "70000.5", "0.001"),
+             [&](const OrderCommand& cmd, std::span<char> out) {
+               return enc.encode_ws(cmd, nullptr, 1789295199000, out);
+             });
+}
+BENCHMARK(BM_Encode_BinanceUsdmOrderPlace);
+
+void BM_Encode_BinanceUsdmOrderPlace_Session(benchmark::State& state) {
+  Universe u;
+  const binance::Signer signer = ed25519_signer();
+  binance_usdm::BinanceUsdmOrderEncoder enc(signer, u.symbols, 3000);
+  enc.set_session_authenticated(true);
+  run_encode(state,
+             new_order(0, 0, "70000.5", "0.001"),
+             [&](const OrderCommand& cmd, std::span<char> out) {
+               return enc.encode_ws(cmd, nullptr, 1789295199000, out);
+             });
+}
+BENCHMARK(BM_Encode_BinanceUsdmOrderPlace_Session);
+
+// The signature alone over the sorted order.place payload (~230 bytes).
+void BM_Sign_HmacSha256(benchmark::State& state) {
+  const net::HmacSha256Key key(kSecret);
+  const std::string payload =
+      std::string("apiKey=") + kApiKey +
+      "&newClientOrderId=fm000100000001&newOrderRespType=ACK&price=70000.5&quantity=0.001&"
+      "recvWindow=3000&side=BUY&symbol=BTCUSDT&timestamp=1789295199000&type=LIMIT_MAKER";
+  for (auto _ : state) {
+    auto sig = key.sign_hex(payload);
+    benchmark::DoNotOptimize(sig);
+  }
+}
+BENCHMARK(BM_Sign_HmacSha256);
 
 void BM_Encode_BybitOrderCreate(benchmark::State& state) {
   Universe u;

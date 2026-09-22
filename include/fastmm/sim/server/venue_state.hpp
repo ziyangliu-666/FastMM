@@ -6,12 +6,14 @@
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/net/crypto.hpp"
 #include "fastmm/sim/server/binance_json.hpp"
 #include "fastmm/sim/sim_book.hpp"
 
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -68,7 +70,8 @@ struct Balance {
 struct Account {
   AccountId id = kStrategyAccount;
   std::string api_key;
-  std::string api_secret;  // never logged
+  std::string api_secret;                          // never logged
+  std::shared_ptr<const net::Ed25519Key> ed25519;  // set: an Ed25519 key (verify, session.logon)
   std::map<std::string, Balance, std::less<>> balances;
   FixedWindowCounter orders_10s{10'000};
   FixedWindowCounter orders_1d{86'400'000};

@@ -74,23 +74,25 @@ std::size_t BinanceOrderEncoder::finish_ws(ParamList& params,
                                            std::string_view request_id,
                                            std::span<char> out) {
   if (!params.ok || !params.sorted()) return 0;
-  // Signature payload: sorted "k=v&k=v" (values percent-encoded exactly as the REST
-  // variant; decimals and ids contain only unreserved characters).
-  net::QueryBuilder<kMaxRequestBytes> q;
-  params.to_query(q);
-  if (!q.ok()) return 0;
   std::string_view signature;
   net::HexSha256 hmac;
-  std::string ed;
+  char ed[net::kEd25519Base64Size];
   const bool signed_request = !session_auth_ && signer_.usable();
   if (signed_request) {
+    // Signature payload: sorted "k=v&k=v" (values percent-encoded exactly as the REST
+    // variant; decimals and ids contain only unreserved characters). A logged-on session
+    // skips all of this.
+    net::QueryBuilder<kMaxRequestBytes> q;
+    params.to_query(q);
+    if (!q.ok()) return 0;
     if (signer_.type() == KeyType::Hmac) {
       hmac = signer_.sign_hmac(q.view());
       signature = hmac.view();
     } else {
-      ed = signer_.sign(q.view());  // control path only (Ed25519 sessions log on instead)
-      if (ed.empty()) return 0;
-      signature = ed;
+      // Only before session.logon completes (or for session.logon itself).
+      const std::size_t n = signer_.sign_ed25519(q.view(), ed);
+      if (n == 0) return 0;
+      signature = std::string_view(ed, n);
     }
   }
   JsonWriter w(out);

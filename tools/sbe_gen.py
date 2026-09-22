@@ -13,15 +13,23 @@ Two sub-commands, standard library only:
             casts), static_asserted block lengths and field offsets, repeating-group views for
             any dimension composite (groupSize / groupSize8Byte), optional (null) values,
             constant fields that are not on the wire, enums with validity checks, bitsets,
-            decimal composites (mantissa + constant exponent) and a writer for every message.
+            decimal composites (mantissa + constant exponent), variable-length <data> fields
+            after the groups (length-prefixed, read as std::string_view), implicit block
+            lengths (sum of the fields when blockLength is omitted), constant fields with
+            valueRef, and a writer for every message.
             --check compares against the existing file instead of writing it (exit 1 if stale).
 
-Deliberately unsupported (the generator stops with an error): variable-length <data> fields,
-nested groups, non-constant exponents, array members in composites, big-endian schemas.
+Deliberately unsupported (the generator stops with an error): nested groups, <data> inside
+groups, non-constant decimal exponents, array members in composites, big-endian schemas.
+Schemas that carry the exponent in a separate field (Binance: `mbx:exponent`) get plain integer
+mantissa accessors; the caller applies the exponent.
 
   python3 tools/sbe_gen.py generate --schema tools/sbe/mdp3_templates_subset.xml \\
       --out include/fastmm/codecs/mdp3/generated/mdp3_schema.hpp \\
       --namespace fastmm::codecs::mdp3::schema
+  python3 tools/sbe_gen.py generate --schema tools/sbe/binance_spot_stream_1_0.xml \\
+      --out include/fastmm/venues/binance/generated/binance_stream_sbe.hpp \\
+      --namespace fastmm::venues::binance::sbe_stream
 """
 import argparse
 import hashlib
@@ -180,11 +188,16 @@ class Field:
         self.since = int(el.get("sinceVersion", "0"))
         self.description = el.get("description", "")
         self.kind, self.type = schema.resolve(self.type_name)
-        self.size = self.type.size
+        # presence="constant" on the field itself (valueRef="enum.Value"): not on the wire.
+        self.value_ref = el.get("valueRef") if el.get("presence") == "constant" else None
+        if self.value_ref is not None and self.kind != "enum":
+            die("field %s: valueRef constants are supported for enums only" % self.name)
+        self.size = 0 if self.value_ref is not None else self.type.size
 
     @property
     def constant(self):
-        return self.kind == "type" and self.type.presence == "constant"
+        return self.value_ref is not None or (
+            self.kind == "type" and self.type.presence == "constant")
 
     @property
     def accessor(self):
@@ -192,6 +205,7 @@ class Field:
 
 
 def layout(owner, fields, block_length):
+    """Assigns offsets; returns the block length (the fields' end when block_length is None)."""
     pos = 0
     for f in fields:
         if f.size == 0:
@@ -201,15 +215,23 @@ def layout(owner, fields, block_length):
         elif f.offset < pos:
             die("%s: field %s at offset %d overlaps the previous field" % (owner, f.name, f.offset))
         pos = f.offset + f.size
+    if block_length is None:
+        return pos
     if pos > block_length:
         die("%s: fields end at %d beyond blockLength %d" % (owner, pos, block_length))
+    return block_length
+
+
+def optional_int(el, attr):
+    v = el.get(attr)
+    return int(v) if v is not None else None
 
 
 class Group:
     def __init__(self, el, schema, since):
         self.name = el.get("name")
         self.id = el.get("id")
-        self.block_length = int(el.get("blockLength"))
+        self.block_length = optional_int(el, "blockLength")
         self.dimension = el.get("dimensionType", "groupSizeEncoding")
         self.description = el.get("description", "")
         self.since = max(since, int(el.get("sinceVersion", "0")))
@@ -221,28 +243,49 @@ class Group:
             if t != "field":
                 die("group %s: <%s> not supported (nested groups / data)" % (self.name, t))
             self.fields.append(Field(child, schema))
-        layout(self.name, self.fields, self.block_length)
+        self.block_length = layout(self.name, self.fields, self.block_length)
+
+
+class DataField:
+    """A variable-length <data> field: a composite of a length prefix and varData bytes."""
+
+    def __init__(self, el, schema):
+        self.name = el.get("name")
+        self.id = el.get("id")
+        self.type_name = el.get("type")
+        self.description = el.get("description", "")
+        c = schema.composites.get(self.type_name)
+        if c is None or [m.name for m in c.members] != ["length", "varData"]:
+            die("data %s: type %s must be a composite of length + varData" % (
+                self.name, self.type_name))
+        self.length = c.members[0]
+        if self.length.prim not in ("uint8", "uint16", "uint32"):
+            die("data %s: unsupported length type %s" % (self.name, self.length.prim))
 
 
 class Message:
     def __init__(self, el, schema):
         self.name = el.get("name")
         self.id = int(el.get("id"))
-        self.block_length = int(el.get("blockLength"))
+        self.block_length = optional_int(el, "blockLength")
         self.since = int(el.get("sinceVersion", "0"))
         self.description = el.get("description", "")
-        self.fields, self.groups = [], []
+        self.fields, self.groups, self.datas = [], [], []
         for child in el:
             t = local(child.tag)
             if t == "field":
-                if self.groups:
-                    die("message %s: field after a group" % self.name)
+                if self.groups or self.datas:
+                    die("message %s: field after a group or data" % self.name)
                 self.fields.append(Field(child, schema))
             elif t == "group":
+                if self.datas:
+                    die("message %s: group after data" % self.name)
                 self.groups.append(Group(child, schema, self.since))
+            elif t == "data":
+                self.datas.append(DataField(child, schema))
             else:
                 die("message %s: <%s> not supported" % (self.name, t))
-        layout(self.name, self.fields, self.block_length)
+        self.block_length = layout(self.name, self.fields, self.block_length)
 
 
 class Schema:
@@ -515,6 +558,14 @@ class Gen:
         acc = f.accessor
         k, t = f.kind, f.type
         lines = ["// %s (tag %s): %s" % (f.name, f.id, one_line(f.description))]
+        if f.value_ref is not None:
+            enum_name, _, value = f.value_ref.partition(".")
+            if enum_name != t.name or value not in [v[0] for v in t.values]:
+                die("field %s: bad valueRef %s" % (f.name, f.value_ref))
+            lines.append("// constant, not on the wire")
+            lines.append("[[nodiscard]] static constexpr %s %s() noexcept { return %s::%s; }"
+                         % (t.name, acc, t.name, value))
+            return [indent + x for x in lines]
         if f.constant:
             lines.append("// constant, not on the wire")
             lines.append("[[nodiscard]] static constexpr %s %s() noexcept { return %s; }"
@@ -675,20 +726,48 @@ class Gen:
             w("    return %s(p_ + at, size_ - at, at, version_, %s::kRequiredBlockLength);"
               % (view, gcls))
             w("  }")
-        w("  // Encoded length of the root block and all groups; 0 when truncated or malformed.")
+        for i, d in enumerate(m.datas):
+            acc = snake(d.name)
+            w("  // data %s (id %s, %s): %s" % (d.name, d.id, d.type_name, one_line(d.description)))
+            w("  [[nodiscard]] sbe::VarData %s_data() const noexcept {" % acc)
+            w("    if (p_ == nullptr || size_ < block_length_) return {};")
+            if i > 0:
+                w("    const auto prev = %s_data();" % snake(m.datas[i - 1].name))
+                w("    if (!prev.valid()) return {};")
+                w("    const std::size_t at = prev.end_offset();")
+            elif m.groups:
+                w("    const auto last = %s();" % snake(m.groups[-1].name))
+                w("    if (!last.valid()) return {};")
+                w("    const std::size_t at = last.end_offset();")
+            else:
+                w("    const std::size_t at = block_length_;")
+            w("    return sbe::VarData::load<%s>(p_, size_, at);" % d.length.cpp)
+            w("  }")
+            w("  [[nodiscard]] std::string_view %s() const noexcept { return %s_data().value(); }"
+              % (acc, acc))
+        w("  // Encoded length of the root block and all %s; 0 when truncated or malformed."
+          % ("groups and data" if m.datas else "groups"))
         w("  [[nodiscard]] std::size_t size_bytes() const noexcept {")
         w("    if (p_ == nullptr || size_ < block_length_ || block_length_ < kRequiredBlockLength) {")
         w("      return 0;")
         w("    }")
-        if m.groups:
+        if m.datas:
+            w("    const auto last = %s_data();" % snake(m.datas[-1].name))
+            w("    return last.valid() ? last.end_offset() : 0;")
+        elif m.groups:
             w("    const auto last = %s();" % snake(m.groups[-1].name))
             w("    return last.valid() ? last.end_offset() : 0;")
         else:
             w("    return block_length_;")
         w("  }")
+        tail = ""
+        if m.datas:
+            tail = " && %s_data().valid()" % snake(m.datas[-1].name)
+        elif m.groups:
+            tail = " && %s().valid()" % snake(m.groups[-1].name)
         w("  [[nodiscard]] bool valid() const noexcept {")
         w("    return p_ != nullptr && size_ >= block_length_ && block_length_ >= kRequiredBlockLength%s;"
-          % ((" && %s().valid()" % snake(m.groups[-1].name)) if m.groups else ""))
+          % tail)
         w("  }")
         w()
         w(" private:")
@@ -741,6 +820,18 @@ class Gen:
             w("    }")
             w("    return g;")
             w("  }")
+        for d in m.datas:
+            w("  // Appends the %s data field (after every group, in schema order)." % d.name)
+            w("  bool set_%s(std::string_view v) noexcept {" % snake(d.name).rstrip("_"))
+            w("    const std::size_t n = ok_ ? sbe::VarData::store<%s>(p_ + used_, cap_ - used_, v) : 0;"
+              % d.length.cpp)
+            w("    if (n == 0) {")
+            w("      ok_ = false;")
+            w("      return false;")
+            w("    }")
+            w("    used_ += n;")
+            w("    return true;")
+            w("  }")
         w()
         w(" private:")
         w("  [[nodiscard]] std::byte* root() noexcept { return ok_ ? p_ : scratch_; }")
@@ -773,6 +864,9 @@ class Gen:
         w("#include <string_view>")
         w()
         w("namespace %s {" % self.ns)
+        if not self.ns.startswith("fastmm::codecs"):
+            w()
+            w("namespace sbe = ::fastmm::codecs::sbe;")
         w()
         w("inline constexpr std::uint16_t kSchemaId = %d;" % s.id)
         w("inline constexpr std::uint16_t kSchemaVersion = %d;" % s.version)
@@ -820,7 +914,7 @@ class Gen:
         w("}  // namespace %s" % self.ns)
         w("// NOLINTEND(readability-*,modernize-*,cppcoreguidelines-*,misc-*,bugprone-reserved-identifier)")
         w("// clang-format on")
-        return "\n".join(self.out) + "\n"
+        return "\n".join(line.rstrip() for line in self.out) + "\n"
 
 
 def cmd_generate(args):

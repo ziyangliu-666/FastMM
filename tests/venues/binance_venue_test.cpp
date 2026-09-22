@@ -9,6 +9,7 @@
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
+#include "fastmm/venues/binance/generated/binance_stream_sbe.hpp"
 
 #include <atomic>
 #include <string>
@@ -334,6 +335,101 @@ TEST_CASE("binance.venue: dry run opens market data only and refuses orders") {
     CHECK(oc.last<OrderRejectMsg>(EventType::OrderReject)->reason == RejectReason::VenueKilled);
     CHECK(venue.cancel_all());  // no-op without order entry
     CHECK(h.cancel_all_ok.load() == 0);
+    venue.disconnect();
+  }
+  h.srv.stop();
+}
+
+namespace {
+
+// One SBE frame (header + body) built with the generated stream_1_0 writers.
+std::vector<std::byte> sbe_depth(std::int64_t first, std::int64_t last, std::int64_t bid_cents) {
+  namespace ss = fastmm::venues::binance::sbe_stream;
+  std::vector<std::byte> buf(512);
+  ss::DepthDiffStreamEventWriter w(std::span<std::byte>(buf).subspan(8));
+  w.set_event_time(1789295134334000);
+  w.set_first_book_update_id(first);
+  w.set_last_book_update_id(last);
+  w.set_price_exponent(-2);
+  w.set_qty_exponent(-8);
+  auto bids = w.bids(1);
+  bids[0].set_price(bid_cents);
+  bids[0].set_qty(150000000);
+  static_cast<void>(w.asks(0));
+  static_cast<void>(w.set_symbol("BTCUSDT"));
+  ss::DepthDiffStreamEventWriter::header().store(buf.data());
+  buf.resize(8 + w.size_bytes());
+  return buf;
+}
+std::vector<std::byte> sbe_trade(std::int64_t id) {
+  namespace ss = fastmm::venues::binance::sbe_stream;
+  std::vector<std::byte> buf(256);
+  ss::TradesStreamEventWriter w(std::span<std::byte>(buf).subspan(8));
+  w.set_event_time(1789295134226000);
+  w.set_transact_time(1789295134225000);
+  w.set_price_exponent(-2);
+  w.set_qty_exponent(-8);
+  auto t = w.trades(1);
+  t[0].set_id(id);
+  t[0].set_price(7000010);
+  t[0].set_qty(65000);
+  t[0].set_is_buyer_maker(ss::boolEnum::False);
+  static_cast<void>(w.set_symbol("BTCUSDT"));
+  ss::TradesStreamEventWriter::header().store(buf.data());
+  buf.resize(8 + w.size_bytes());
+  return buf;
+}
+
+}  // namespace
+
+TEST_CASE("binance.venue: md_format sbe reads binary frames from the SBE stream url") {
+  Harness h;
+  h.srv.on_ws_open("/sbe/stream", [&h](net::WsSession& s) {
+    h.srv.record("sbe-query", std::string(s.query()));
+    s.send_text(R"({"id":null,"result":null})");  // text on an SBE stream: ignored
+    s.send_binary(sbe_depth(95, 100, 6999900));   // stale: u <= lastUpdateId
+    s.send_binary(sbe_depth(101, 101, 7000000));
+  });
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenueConfig cfg = h.config(true);  // dry run: market data only
+    cfg.md_format = MdFormat::Sbe;
+    cfg.sbe_ws_url = h.srv.ws_base() + "/sbe/stream";
+    cfg.credentials.secret.value.clear();
+    cfg.credentials.type = KeyType::Ed25519;  // the API key alone opens SBE streams
+    BinanceVenue venue(VenueId{0}, std::move(cfg));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected mdc;
+    REQUIRE(pump_until(reactor, [&] {
+      mdc.take(md);
+      return venue.md_feed()->synced_count() == 1 && mdc.count(EventType::BookDelta) >= 1;
+    }));
+    REQUIRE(h.srv.frames("sbe-query").size() == 1);
+    CHECK(h.srv.frames("sbe-query")[0] == "streams=btcusdt@depth/btcusdt@bestBidAsk/btcusdt@trade");
+    CHECK(h.srv.open_count("/stream") == 0);  // the JSON stream is not used
+    CHECK(mdc.count(EventType::BookSnapshot) == 1);
+    CHECK(mdc.last<BookDeltaMsg>(EventType::BookDelta)->first_update_id == 101);
+    CHECK(mdc.last<BookDeltaMsg>(EventType::BookDelta)->bids()[0].price ==
+          Price::from_decimal("70000").value());
+    h.srv.send_binary_to("/sbe/stream", sbe_trade(388512));
+    REQUIRE(pump_until(reactor, [&] {
+      mdc.take(md);
+      return mdc.count(EventType::Trade) == 1;
+    }));
+    CHECK(mdc.last<TradeMsg>(EventType::Trade)->trade_id == 388512);
+    CHECK(mdc.last<TradeMsg>(EventType::Trade)->aggressor == Side::Buy);
+    CHECK(venue.md_feed()->stats().malformed == 0);
     venue.disconnect();
   }
   h.srv.stop();

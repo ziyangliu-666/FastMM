@@ -54,11 +54,32 @@ std::string account_update(const char* amount) {
          R"(","ep":"70000.0","bep":"70000.0","cr":"0","up":"0","mt":"cross","iw":"0","ps":"BOTH"}]}})";
 }
 
+std::string percent_decode(std::string_view s) {
+  std::string out;
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size()) {
+      out += static_cast<char>(std::stoi(std::string(s.substr(i + 1, 2)), nullptr, 16));
+      i += 2;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+const net::Ed25519Key& ed_public_key() {
+  static const net::Ed25519Key k =
+      net::Ed25519Key::from_public_pem(fastmm::test::fixture("binance/ed25519-test-public.pem"));
+  return k;
+}
+
+// HMAC (kSecret) or Ed25519 (the test key pair) signature over the query before it.
 bool signed_ok(std::string_view query) {
   const std::size_t p = query.rfind("&signature=");
   if (p == std::string_view::npos) return false;
   const std::string expected(net::hmac_sha256_hex(kSecret, query.substr(0, p)).view());
-  return query.substr(p + 11) == expected;
+  if (query.substr(p + 11) == expected) return true;
+  return ed_public_key().verify_base64(query.substr(0, p), percent_decode(query.substr(p + 11)));
 }
 
 std::string ws_result(const std::string& id, const std::string& result) {
@@ -141,7 +162,21 @@ struct Harness {
     srv.on_ws_text("/ws-fapi/v1", [](net::WsSession& s, std::string_view t) {
       const std::string method = json_str(t, "method");
       const std::string id = json_str(t, "id");
-      if (method == "order.place") {
+      if (method == "session.logon") {
+        // Verify the Ed25519 signature over the sorted params before accepting the session.
+        const std::string payload = "apiKey=" + json_str(t, "apiKey") +
+                                    "&recvWindow=" + json_int(t, "recvWindow") +
+                                    "&timestamp=" + json_int(t, "timestamp");
+        if (ed_public_key().verify_base64(payload, json_str(t, "signature"))) {
+          s.send_text(ws_result(
+              id,
+              R"({"apiKey":"fake-key","authorizedSince":1,"connectedSince":1,"returnRateLimits":true,"serverTime":1})"));
+        } else {
+          s.send_text(
+              R"({"id":")" + id +
+              R"(","status":400,"error":{"code":-1022,"msg":"Signature for this request is not valid."}})");
+        }
+      } else if (method == "order.place") {
         s.send_text(ws_result(
             id,
             R"({"orderId":4293153,"symbol":"BTCUSDT","status":"NEW","clientOrderId":")" +
@@ -497,9 +532,73 @@ TEST_CASE("binance_usdm.config: section mapping and factory registration") {
   CHECK_FALSE(v->caps().user_stream);  // dry run
   VenueSection ed = s;
   ed.extra["key_type"] = "ed25519";
+  // Ed25519 needs a parsable private key (session.logon on the WS API order connection).
   CHECK_THROWS_AS(static_cast<void>(make_binance_usdm_config(ed, false)), std::invalid_argument);
+  ed.extra["private_key_file"] =
+      (fastmm::test::fixtures_dir() / "binance" / "ed25519-test-private.pem").string();
+  CHECK(make_binance_usdm_config(ed, false).credentials.type == binance::KeyType::Ed25519);
   VenueSection no_url = s;
   no_url.rest_url.clear();
   CHECK_THROWS_AS(static_cast<void>(make_binance_usdm_config(no_url, false)),
                   std::invalid_argument);
+}
+
+TEST_CASE("binance_usdm.venue: Ed25519 key logs on to the WS API and sends unsigned orders") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceUsdmVenueConfig cfg = h.config(false);
+    cfg.credentials.secret.value.clear();
+    cfg.credentials.type = binance::KeyType::Ed25519;
+    cfg.credentials.private_key_pem.value =
+        fastmm::test::fixture("binance/ed25519-test-private.pem");
+    BinanceUsdmVenue venue(VenueId{0}, std::move(cfg));
+    REQUIRE(venue.load_reference_data(instruments));  // Ed25519-signed REST
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return live_states(oc) >= 2 && reconcile_ends(oc) == 1;
+    }));
+    CHECK(h.unsigned_requests.load() == 0);
+    OutNewOrderMsg n{};
+    init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+    n.cl_ord_id = cid("fm000100000001");
+    n.side = Side::Buy;
+    n.type = OrderType::PostOnly;
+    n.price = Price::from_decimal("70000").value();
+    n.qty = Qty::from_decimal("0.001").value();
+    REQUIRE(outbound.try_push(&n, n.hdr.len));
+    venue.on_wake();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderAck) >= 1;
+    }));
+    const auto frames = h.srv.frames("/ws-fapi/v1");
+    REQUIRE(frames.size() >= 2);
+    CHECK(frames[0].find("\"session.logon\"") != std::string::npos);
+    std::string place;
+    for (const auto& f : frames) {
+      if (f.find("\"order.place\"") != std::string::npos) place = f;
+    }
+    REQUIRE_FALSE(place.empty());
+    CHECK(place.find("apiKey") == std::string::npos);
+    CHECK(place.find("signature") == std::string::npos);
+    CHECK(place.find("\"timestamp\":") != std::string::npos);
+    CHECK(venue.cancel_all());  // blocking REST, Ed25519 signature
+    CHECK(h.cancel_all_ok.load() == 1);
+    CHECK_FALSE(venue.fatal());
+    venue.disconnect();
+    reactor.run_once(0);
+  }
 }

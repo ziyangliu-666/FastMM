@@ -56,6 +56,10 @@ struct SessionState {
   std::int64_t next_subscription_id = 0;
   std::string listen_key;
   AccountId listen_account = kStrategyAccount;
+  // session.logon (Ed25519 accounts): requests without apiKey/signature act as this account.
+  Account* logon_account = nullptr;
+  std::int64_t authorized_since_ms = 0;
+  std::int64_t connected_since_ms = 0;
   std::int64_t last_rx_ns = 0;
 };
 
@@ -271,6 +275,12 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   void release_lock(OrderRecord& r);
   [[nodiscard]] std::string next_client_id(std::string_view prefix);
 
+  // timestamp / recvWindow checks shared by signed and session-authenticated requests.
+  std::optional<OpResult> check_timing(const ParamList& params, std::int64_t now_ms);
+  OpResult op_session(net::WsSession& s,
+                      std::string_view method,
+                      const ParamList& p,
+                      std::int64_t now_ms);
   std::optional<OpResult> authenticate(std::string_view api_key,
                                        const ParamList& params,
                                        std::string_view payload,
