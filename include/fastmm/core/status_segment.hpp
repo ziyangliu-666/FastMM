@@ -46,7 +46,7 @@ struct StatusLatency {
 // venues::VenueFeedStatus.
 struct StatusFeed {
   std::uint8_t state = 0;     // venues::FeedState: 0 none, 1 down, 2 snapshot, 3 live, 4 lost
-  std::uint8_t backend = 0;   // 0 kernel, 1 af_xdp
+  std::uint8_t backend = 0;   // 0 kernel, 1 af_xdp, 2 dpdk
   std::uint8_t xdp_mode = 0;  // net::XdpMode: 1 zerocopy, 2 native_copy, 3 generic
   std::uint8_t pad_[5] = {};
   std::uint64_t packets = 0;

@@ -5,7 +5,7 @@
 //
 // Market data, all on the venue's network thread:
 //
-//   KernelDatagramSource | XdpDatagramSource      lines A and B      (rx_backend)
+//   Kernel | Xdp | DpdkDatagramSource             lines A and B      (rx_backend)
 //     -> moldudp::Receiver<RxHandler, ItchRxMeta> A/B arbitration, reorder, gap timeout,
 //                                                 re-requests to `rerequest` (line 2)
 //     -> RecoveryBuffer                           while waiting for a snapshot
@@ -48,6 +48,10 @@
 // snapshots) carry the regular ClOrdID. The simulator cancels an account's orders when its
 // connection closes, so a lost OUCH connection is reported as a reconciliation with no open
 // orders; cancel_all() shuts the connection down from the calling thread for the same effect.
+//
+// order_transport = "kernel" runs the OUCH connection on a kernel TCP socket (TcpLink);
+// "user_tcp" (experimental) on net::UserTcp over an AF_PACKET ring with its own IPv4 address
+// (UserTcpLink, user_tcp_link.hpp), polled from poll() on every loop iteration.
 #include "fastmm/codecs/itch/glimpse.hpp"
 #include "fastmm/codecs/itch/itch_l2_bridge.hpp"
 #include "fastmm/codecs/moldudp/moldudp64.hpp"
@@ -56,11 +60,13 @@
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/seqlock.hpp"
+#include "fastmm/net/dpdk_datagram_source.hpp"
 #include "fastmm/net/kernel_datagram_source.hpp"
 #include "fastmm/net/udp_socket.hpp"
 #include "fastmm/net/xdp_datagram_source.hpp"
 #include "fastmm/venues/nasdaq/recovery_buffer.hpp"
 #include "fastmm/venues/nasdaq/tcp_link.hpp"
+#include "fastmm/venues/nasdaq/user_tcp_link.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -75,7 +81,8 @@
 
 namespace fastmm::venues::nasdaq {
 
-enum class RxBackend : std::uint8_t { Kernel = 0, AfXdp = 1 };
+enum class RxBackend : std::uint8_t { Kernel = 0, AfXdp = 1, Dpdk = 2 };
+enum class OrderTransport : std::uint8_t { Kernel = 0, UserTcp = 1 };
 enum class OrderEntry : std::uint8_t { None = 0, SimOuch = 1 };
 enum class HwClock : std::uint8_t { None = 0, PhcSynced = 1 };
 
@@ -92,11 +99,13 @@ struct NasdaqItchVenueConfig {
   std::array<ItchLine, 2> lines;
   std::vector<std::uint32_t> queues;  // af_xdp RX queues on every interface (empty: queue 0)
   net::XdpMode xdp_mode = net::XdpMode::Auto;
-  int rcvbuf_bytes = 0;      // kernel: SO_RCVBUF, 0 = system default
-  std::uint32_t batch = 32;  // datagrams per recvmmsg (kernel) / RX descriptors per poll (af_xdp)
-  bool busy_poll = false;    // [engine] spin_mode = "busy"
-  std::string rerequest;     // "ip:port" of the MoldUDP64 re-request server; "" = none
-  std::string glimpse_url;   // "ip:port" of GLIMPSE 5.0; "" = start at sequence 1
+  int rcvbuf_bytes = 0;       // kernel: SO_RCVBUF, 0 = system default
+  std::uint32_t batch = 32;   // datagrams per recvmmsg (kernel) / RX descriptors per poll
+  std::string dpdk_eal_args;  // dpdk: space-separated rte_eal_init arguments
+  std::string dpdk_port;      // dpdk: ethdev name; "" = the first port
+  bool busy_poll = false;     // [engine] spin_mode = "busy"
+  std::string rerequest;      // "ip:port" of the MoldUDP64 re-request server; "" = none
+  std::string glimpse_url;    // "ip:port" of GLIMPSE 5.0; "" = start at sequence 1
   std::string glimpse_username = "glimps";
   std::string glimpse_password = "glimpse";
   std::uint32_t reorder_packets = 256;
@@ -113,7 +122,11 @@ struct NasdaqItchVenueConfig {
   std::string ouch_url;  // "ip:port" (sim_ouch)
   std::string ouch_username = "fmouch";
   std::string ouch_password = "ouch";
-  bool dry_run = false;  // no order entry
+  OrderTransport order_transport = OrderTransport::Kernel;
+  std::string user_tcp_interface;  // "" = interface
+  std::string user_tcp_ip;         // user_tcp: the link's own IPv4 address
+  std::string user_tcp_gateway;    // user_tcp: next hop when the OUCH server is not on-link
+  bool dry_run = false;            // no order entry
 };
 
 class NasdaqItchVenue final : public Venue {
@@ -210,7 +223,7 @@ class NasdaqItchVenue final : public Venue {
     void on_snapshot_end(std::uint64_t seq) noexcept { v->on_snapshot_end(seq); }
   };
   using Glimpse = codecs::itch::glimpse::GlimpseClient<TcpLink, SnapshotHandler>;
-  using OuchSession = codecs::soupbin::ClientSession<TcpLink>;
+  using OuchSession = codecs::soupbin::ClientSession<ByteLink>;
 
   // t0_cycles of a receive batch -> sequence number of its first message (the order token).
   struct TokenSlot {
@@ -279,6 +292,7 @@ class NasdaqItchVenue final : public Venue {
   std::unique_ptr<codecs::itch::ItchL2Bridge> bridge_;
   std::unique_ptr<net::KernelDatagramSource> kernel_;
   std::unique_ptr<net::XdpDatagramSource> xdp_;
+  std::unique_ptr<net::DpdkDatagramSource> dpdk_;
   std::vector<int> registered_fds_;
   SourceIo source_io_;
   RerequestIo rerequest_io_;
@@ -315,7 +329,8 @@ class NasdaqItchVenue final : public Venue {
 
   // OUCH
   OuchLink ouch_link_;
-  std::unique_ptr<TcpLink> ouch_tcp_;
+  std::unique_ptr<ByteLink> ouch_tcp_;
+  UserTcpLink* user_tcp_ = nullptr;  // ouch_tcp_ with order_transport = "user_tcp"
   std::optional<OuchSession> ouch_session_;
   net::SockAddr ouch_addr_{};
   std::unique_ptr<codecs::ouch50::UserRefMap> ouch_ids_;

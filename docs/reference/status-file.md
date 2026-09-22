@@ -101,16 +101,16 @@ The `feed` entry of a `nasdaq_itch` venue ([Venue connectors](venues.md#nasdaq-t
 | Field | Type | Meaning |
 |---|---|---|
 | `state` | u8 | 0 none (not a multicast venue), 1 down, 2 snapshot (buffering while a GLIMPSE snapshot is taken), 3 live, 4 lost |
-| `backend`, `xdp_mode` | u8, u8 | 0 `kernel`, 1 `af_xdp`; the attach mode: 1 zerocopy, 2 native_copy, 3 generic |
+| `backend`, `xdp_mode` | u8, u8 | 0 `kernel`, 1 `af_xdp`, 2 `dpdk`; the attach mode: 1 zerocopy, 2 native_copy, 3 generic |
 | `packets`, `bytes` | u64 | MoldUDP64 packets accepted on every line, datagram payload bytes |
 | `line_packets`, `line_duplicates` | 2 x u64 | per line A, B: packets, copies that arrived after the first copy |
 | `line_skew_mean_ns`, `line_skew_max_ns` | 2 x i64 | per line: delay of a duplicate behind the first copy, ns |
 | `gaps`, `recovered`, `unrecovered` | u64 | gaps declared, messages delivered from re-requests, sequences given up |
 | `snapshot_recoveries`, `recovery_overflows` | u64 | GLIMPSE snapshots after the first, recovery buffer overflows |
 | `reorder_high_water`, `requests` | u64 | most packets held ahead of a gap, re-request packets sent |
-| `malformed`, `book_errors` | u64 | datagrams that are not MoldUDP64 packets (and bad frames on `af_xdp`), L3 book inconsistencies |
+| `malformed`, `book_errors` | u64 | datagrams that are not MoldUDP64 packets (and bad frames on `af_xdp` and `dpdk`), L3 book inconsistencies |
 | `kernel_to_t0` | {count, p50_ns, p99_ns, p999_ns, max_ns} | kernel receive timestamp to T0 while live (`kernel` backend) |
-| `xdp_rx_dropped`, `xdp_rx_invalid_descs`, `xdp_rx_ring_full`, `xdp_fill_ring_empty` | u64 | `XDP_STATISTICS` summed over the sockets |
+| `xdp_rx_dropped`, `xdp_rx_invalid_descs`, `xdp_rx_ring_full`, `xdp_fill_ring_empty` | u64 | `XDP_STATISTICS` summed over the sockets; on `dpdk`, `xdp_rx_dropped` is the port's `imissed` plus `rx_nombuf` |
 | `xdp_fallback` | u64 | subscribed datagrams passed to the kernel because their RX queue has no socket |
 
 `fastmm-top --json` prints the snapshot as one JSON object, with states, kill reasons and latency intervals by name ([Command lines](cli.md#fastmm-top)); `scripts/bench-e2e.sh` reads it.

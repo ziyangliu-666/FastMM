@@ -38,6 +38,7 @@ Against `fastmm-sim-itch` on one host, both processes need a network namespace w
 |---|---|---|
 | `kernel` | nothing | one UDP socket per line, `recvmmsg`, kernel receive timestamps |
 | `af_xdp` | Linux 5.11, `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_BPF`, `CAP_IPC_LOCK`; an interface name per line | an XDP program redirects the lines' datagrams to AF_XDP sockets; everything else goes to the kernel |
+| `dpdk` | a `-DFASTMM_WITH_DPDK=ON` build, `spin_mode = "busy"` | `rte_eth_rx_burst` on one DPDK port (`dpdk_port`, `dpdk_eal_args`); IGMP joins through kernel sockets on the line interfaces |
 
 For `af_xdp`, grant the capabilities to the binary (or run it as root):
 
@@ -54,6 +55,21 @@ onload --profile=latency build/release/bin/fastmm-live --config configs/nasdaq-i
 ```
 
 The order connection (OUCH over SoupBinTCP, `order_entry = "sim_ouch"`) is a plain non-blocking kernel TCP socket driven by `connect`, `read`, `write` and the reactor, so Onload accelerates it in the same process without changes. Keep `[engine] net_backend = "epoll"` (the default): Onload intercepts epoll, not io_uring. FastMM has no TCPDirect or ef_vi path. Not tested on Solarflare hardware.
+
+### DPDK
+
+Build with DPDK: `cmake --preset release -DFASTMM_WITH_DPDK=ON`. CMake uses pkg-config's `libdpdk`; without one it runs `scripts/build-dpdk.sh`, which builds a static DPDK 25.11 (a few minutes, no root; meson, ninja and pyelftools in a venv under the build directory) into `<build>/_deps/dpdk`. The EAL starts once per process with `dpdk_eal_args`; the venue's network thread registers itself as an EAL thread on its first poll.
+
+Without hugepages, PCI access or root, for example over a veth (what `scripts/bench-e2e.sh --backend dpdk` and the `dpdk` ctest label run inside `unshare -Urn`):
+
+```toml
+rx_backend = "dpdk"
+interface = "fmlive"
+dpdk_eal_args = "--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 --vdev=net_af_packet0,iface=fmlive,framecnt=4096"
+dpdk_port = "net_af_packet0"
+```
+
+`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. On a NIC, bind it to `vfio-pci` (or use a bifurcated `mlx5` port), give the EAL hugepages and name the PCI address in `dpdk_port`. A port bound to `vfio-pci` has no kernel netdev: the IGMP join needs another kernel interface on the same segment, or static multicast forwarding on the switch. EAL's `Error creating '/var/run/dpdk'` in a user namespace is harmless with `--in-memory`.
 
 ## 3. Steer the groups to one RX queue (af_xdp)
 
@@ -103,3 +119,20 @@ echo 5 | sudo tee /proc/irq/<irq>/smp_affinity_list
 - `skew_max` is the largest delay of a line's copy behind the first copy. Set `gap_timeout_ns` above it: a smaller value re-requests packets that the other line is about to deliver.
 - `gaps`, `recov`, `lost`: gaps declared, messages recovered by re-request, sequences given up. Every given-up range and every L3 book inconsistency starts a GLIMPSE snapshot (`snaps`).
 - `reorder`: most packets held ahead of a gap; at `reorder_packets` later packets are dropped and re-requested.
+
+## 8. Order entry without the kernel TCP stack (experimental)
+
+`order_transport = "user_tcp"` runs the OUCH connection on a user-space TCP client (`net::UserTcp`) over an `AF_PACKET` ring (`PACKET_MMAP` RX and TX rings, `PACKET_QDISC_BYPASS`); it needs `CAP_NET_RAW` only:
+
+```toml
+order_transport = "user_tcp"
+user_tcp_ip = "10.211.0.3"    # its own address on the interface's subnet
+# user_tcp_interface = "eth1" # default: interface
+# user_tcp_gateway = "10.0.0.1"  # when the OUCH server is not on-link
+```
+
+- `user_tcp_ip` must not be assigned to any kernel interface: the kernel would answer the server's segments with RSTs. The link answers ARP for it.
+- The server's segments must arrive as sent: GRO off on the NIC (`ethtool -K eth1 gro off`), TSO/GSO off on a veth peer. A merged segment larger than a ring frame (2 KiB) is dropped as a bad frame.
+- One connection, client side only: MSS option, no window scaling, SACK or timestamps; RTO per RFC 6298 (minimum 200 ms, as Linux), fast retransmit, out-of-order segments kept for reassembly, FIN, RST and RFC 5961 challenge ACKs. The venue logs its counters (retransmits, out-of-order segments, RSTs) at shutdown.
+
+The send still makes one `sendto` per drain to kick the TX ring; on veth that call runs the simulator's receive path, as `write` does. `bench/README.md` has the numbers.

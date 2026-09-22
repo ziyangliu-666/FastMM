@@ -8,6 +8,8 @@
 
 #include <fmt/format.h>
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -48,6 +50,30 @@ bool parse_u64(std::string_view s, std::uint64_t& out) noexcept {
   return r.ec == std::errc{} && r.ptr == s.data() + s.size();
 }
 
+std::string_view backend_name(RxBackend b) noexcept {
+  switch (b) {
+    case RxBackend::Kernel:
+      return "kernel";
+    case RxBackend::AfXdp:
+      return "af_xdp";
+    case RxBackend::Dpdk:
+      return "dpdk";
+  }
+  return "?";
+}
+
+std::vector<std::string> split_args(std::string_view text) {
+  std::vector<std::string> out;
+  std::size_t i = 0;
+  while (i < text.size()) {
+    while (i < text.size() && text[i] == ' ') ++i;
+    const std::size_t j = std::min(text.find(' ', i), text.size());
+    if (j > i) out.emplace_back(text.substr(i, j - i));
+    i = j;
+  }
+  return out;
+}
+
 }  // namespace
 
 bool parse_ip_port(std::string_view text, net::SockAddr& out) noexcept {
@@ -76,14 +102,27 @@ NasdaqItchVenue::NasdaqItchVenue(VenueId id, NasdaqItchVenueConfig cfg)
     throw std::invalid_argument(cfg_.name + ": ouch_url must be ip:port");
   glimpse_tcp_ = std::make_unique<TcpLink>(glimpse_link_, kLinkRxBytes, kLinkTxBytes);
   if (cfg_.order_entry == OrderEntry::SimOuch) {
-    ouch_tcp_ = std::make_unique<TcpLink>(ouch_link_, kLinkRxBytes, kLinkTxBytes);
+    if (cfg_.order_transport == OrderTransport::UserTcp) {
+      UserTcpLinkConfig uc;
+      uc.interface = cfg_.user_tcp_interface;
+      if (!net::parse_ipv4(cfg_.user_tcp_ip, uc.local_ip))
+        throw std::invalid_argument(cfg_.name + ": user_tcp_ip must be an IPv4 address");
+      if (!cfg_.user_tcp_gateway.empty() && !net::parse_ipv4(cfg_.user_tcp_gateway, uc.gateway))
+        throw std::invalid_argument(cfg_.name + ": user_tcp_gateway must be an IPv4 address");
+      uc.register_fd = !cfg_.busy_poll;
+      auto link = std::make_unique<UserTcpLink>(ouch_link_, uc);
+      user_tcp_ = link.get();
+      ouch_tcp_ = std::move(link);
+    } else {
+      ouch_tcp_ = std::make_unique<TcpLink>(ouch_link_, kLinkRxBytes, kLinkTxBytes);
+    }
     ouch_ids_ = std::make_unique<ouch50::UserRefMap>(1);
     ouch_encoder_ = std::make_unique<ouch50::OuchEncoder>(*ouch_ids_);
     ouch_decoder_ = std::make_unique<ouch50::OuchDecoder>(ouch_ids_.get(), id_);
     ouch_decoder_->set_midnight(utc_midnight());
   }
   stats_.feed.state = FeedState::Down;
-  stats_.feed.backend = cfg_.rx_backend == RxBackend::AfXdp ? 1 : 0;
+  stats_.feed.backend = static_cast<std::uint8_t>(cfg_.rx_backend);
   published_.store(stats_);
 }
 
@@ -130,11 +169,17 @@ Result<void, std::string> NasdaqItchVenue::load_reference_data(InstrumentTable& 
   } catch (const std::exception& e) {
     return fail(std::string(e.what()));
   }
+  if (user_tcp_ != nullptr) {
+    std::string err;
+    if (user_tcp_->init(err) != 0)
+      return fail(fmt::format(
+          "{}: order_transport = user_tcp on {}: {}", cfg_.name, cfg_.user_tcp_interface, err));
+  }
   FASTMM_LOG_INFO("{}: {} instruments from [[instruments]]; {} lines on {} backend",
                   cfg_.name,
                   n,
                   cfg_.lines[1].group.empty() ? 1 : 2,
-                  cfg_.rx_backend == RxBackend::AfXdp ? "af_xdp" : "kernel");
+                  backend_name(cfg_.rx_backend));
   return {};
 }
 
@@ -174,7 +219,7 @@ void NasdaqItchVenue::subscribe(std::span<const InstrumentId> instruments) {
 }
 
 void NasdaqItchVenue::open_sources() {
-  if (kernel_ != nullptr || xdp_ != nullptr) return;
+  if (kernel_ != nullptr || xdp_ != nullptr || dpdk_ != nullptr) return;
   const std::size_t lines = cfg_.lines[1].group.empty() ? 1 : 2;
   if (cfg_.rx_backend == RxBackend::Kernel) {
     net::KernelSourceConfig kc;
@@ -219,6 +264,29 @@ void NasdaqItchVenue::open_sources() {
           r.busy_poll_budget);
     }
     kernel_ = std::move(src);
+    return;
+  }
+  if (cfg_.rx_backend == RxBackend::Dpdk) {
+    net::DpdkConfig dc;
+    dc.eal_args = split_args(cfg_.dpdk_eal_args);
+    dc.port = cfg_.dpdk_port;
+    dc.batch = std::min<std::uint32_t>(cfg_.batch, 256);
+    for (std::size_t i = 0; i < lines; ++i) {
+      const ItchLine& l = cfg_.lines[i];
+      net::DpdkSubscription s;
+      s.interface = l.interface;
+      if (!net::parse_ipv4(l.group, s.group))
+        throw std::runtime_error(fmt::format("{}: bad group {}", cfg_.name, l.group));
+      s.port = l.port;
+      if (!l.source.empty() && !net::parse_ipv4(l.source, s.source))
+        throw std::runtime_error(fmt::format("{}: bad source {}", cfg_.name, l.source));
+      dc.subscriptions.push_back(s);
+    }
+    auto src = std::make_unique<net::DpdkDatagramSource>();
+    if (src->open(dc) != 0)
+      throw std::runtime_error(fmt::format("{}: dpdk: {}", cfg_.name, src->error()));
+    FASTMM_LOG_INFO("{}: dpdk port {}", cfg_.name, src->port_name());
+    dpdk_ = std::move(src);
     return;
   }
   net::XdpConfig xc;
@@ -295,7 +363,7 @@ void NasdaqItchVenue::connect(net::Reactor& reactor) {
     if (kernel_) {
       for (std::size_t i = 0; i < kernel_->line_count(); ++i)
         registered_fds_.push_back(kernel_->fd(i));
-    } else {
+    } else if (xdp_) {
       for (const int fd : xdp_->fds()) registered_fds_.push_back(fd);
     }
     for (const int fd : registered_fds_) {
@@ -316,13 +384,16 @@ void NasdaqItchVenue::connect(net::Reactor& reactor) {
   const std::int64_t now = now_ns();
   next_service_ns_ = now;
   next_session_timer_ns_ = now + kSessionTimerNs;
-  FASTMM_LOG_INFO("{}: joined {} line(s); order_entry={} busy_poll={} rerequest={} glimpse={}",
-                  cfg_.name,
-                  cfg_.lines[1].group.empty() ? 1 : 2,
-                  cfg_.order_entry == OrderEntry::SimOuch ? "sim_ouch" : "none",
-                  cfg_.busy_poll,
-                  cfg_.rerequest.empty() ? std::string_view("none") : cfg_.rerequest,
-                  cfg_.glimpse_url.empty() ? std::string_view("none") : cfg_.glimpse_url);
+  FASTMM_LOG_INFO(
+      "{}: joined {} line(s); order_entry={} order_transport={} busy_poll={} rerequest={} "
+      "glimpse={}",
+      cfg_.name,
+      cfg_.lines[1].group.empty() ? 1 : 2,
+      cfg_.order_entry == OrderEntry::SimOuch ? "sim_ouch" : "none",
+      user_tcp_ != nullptr ? "user_tcp" : "kernel",
+      cfg_.busy_poll,
+      cfg_.rerequest.empty() ? std::string_view("none") : cfg_.rerequest,
+      cfg_.glimpse_url.empty() ? std::string_view("none") : cfg_.glimpse_url);
   publish_status();
 }
 
@@ -344,8 +415,48 @@ void NasdaqItchVenue::disconnect() {
     ouch_tcp_->close();
     ouch_up_ = false;
   }
+  if (user_tcp_ != nullptr) {
+    // Let the FIN go out and be acknowledged.
+    for (int i = 0; i < 200; ++i) {
+      user_tcp_->poll();
+      if (i % 20 == 19) ::usleep(1000);
+    }
+    if (const net::UserTcpStats* t = user_tcp_->tcp_stats()) {
+      FASTMM_LOG_INFO(
+          "{}: user_tcp: {} segments out, {} in, {} retransmits ({} RTO, {} fast), {} out of "
+          "order, {} bad frames, {} unknown, {} RSTs in, {} TX drops, srtt {} us",
+          cfg_.name,
+          t->segments_out,
+          t->segments_in,
+          t->retransmits,
+          t->rto_expiries,
+          t->fast_retransmits,
+          t->out_of_order,
+          t->bad_frames,
+          t->unknown_segments,
+          t->rst_in,
+          t->tx_drops,
+          t->srtt_ns / 1000);
+    }
+  }
   if (kernel_) kernel_->close();
   if (xdp_) xdp_->close();
+  if (dpdk_) {
+    static_cast<void>(dpdk_->refresh_stats());
+    const net::DpdkStats& d = dpdk_->stats();
+    FASTMM_LOG_INFO(
+        "{}: dpdk: {} packets, {} missed, {} errors, {} no-mbuf, {} bad frames, {} other, {} "
+        "unmatched",
+        cfg_.name,
+        d.ipackets,
+        d.imissed,
+        d.ierrors,
+        d.rx_nombuf,
+        d.bad_frames,
+        d.other,
+        d.unmatched);
+    dpdk_->close();
+  }
   publish_status();
 }
 
@@ -364,6 +475,9 @@ void NasdaqItchVenue::drain_sources() noexcept {
     }
   } else if (xdp_) {
     while (xdp_->poll(handler) != 0) {
+    }
+  } else if (dpdk_) {
+    while (dpdk_->poll(handler) != 0) {
     }
   }
 }
@@ -640,6 +754,7 @@ void NasdaqItchVenue::on_snapshot_end(std::uint64_t) noexcept {
 void NasdaqItchVenue::poll() noexcept {
   if (!connected_) return;
   if (cfg_.busy_poll) drain_sources();
+  if (user_tcp_ != nullptr) user_tcp_->poll();
   const std::int64_t now = now_ns();
   if (now < next_service_ns_) return;
   next_service_ns_ = now + kServiceIntervalNs;
@@ -681,9 +796,10 @@ void NasdaqItchVenue::service(std::int64_t now) noexcept {
     }
     publish_status();
   }
-  if (xdp_ && now >= next_xdp_stats_ns_) {
+  if ((xdp_ || dpdk_) && now >= next_xdp_stats_ns_) {
     next_xdp_stats_ns_ = now + kXdpStatsNs;
-    static_cast<void>(xdp_->refresh_stats());
+    if (xdp_) static_cast<void>(xdp_->refresh_stats());
+    if (dpdk_) static_cast<void>(dpdk_->refresh_stats());
   }
 }
 
@@ -801,7 +917,7 @@ bool NasdaqItchVenue::cancel_all() {
 // All orders the ring holds go out in one write (SoupBinTCP header and OUCH message of each).
 void NasdaqItchVenue::on_wake() {
   if (outbound_ == nullptr) return;
-  TcpLink* const link = ouch_tcp_.get();
+  ByteLink* const link = ouch_tcp_.get();
   drain_outbound_coalesced(
       *outbound_,
       wire_,
@@ -936,6 +1052,10 @@ void NasdaqItchVenue::publish_status() noexcept {
     for (const net::XdpInterfaceStatus& i : xdp_->interfaces())
       f.xdp_fallback += i.fallback_packets;
   }
+  if (dpdk_) {
+    f.malformed = (rx_ ? rx_->stats().malformed : 0) + dpdk_->stats().bad_frames;
+    f.xdp_rx_dropped = dpdk_->stats().imissed + dpdk_->stats().rx_nombuf;
+  }
   const TscCalibration cal = tsc_calibration();
   f.kernel_to_t0.count = kernel_to_t0_.count();
   f.kernel_to_t0.p50_ns = kernel_to_t0_.percentile(0.50);
@@ -1005,9 +1125,16 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
     c.rx_backend = RxBackend::Kernel;
   } else if (backend == "af_xdp") {
     c.rx_backend = RxBackend::AfXdp;
+  } else if (backend == "dpdk") {
+    c.rx_backend = RxBackend::Dpdk;
+    if (!busy_poll)
+      throw bad("rx_backend",
+                "dpdk has no descriptor to wait on: needs [engine] spin_mode = \"busy\"");
   } else {
-    throw bad("rx_backend", "expected kernel or af_xdp");
+    throw bad("rx_backend", "expected kernel, af_xdp or dpdk");
   }
+  c.dpdk_eal_args = extra("dpdk_eal_args");
+  c.dpdk_port = extra("dpdk_port");
   const std::string interface = extra("interface");
   const char* line_keys[2] = {"line_a", "line_b"};
   for (std::size_t i = 0; i < 2; ++i) {
@@ -1112,6 +1239,25 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
   if (const std::string p = extra("ouch_password"); !p.empty()) c.ouch_password = p;
   if (c.ouch_username.size() > 6) throw bad("ouch_username", "at most 6 characters");
   if (c.ouch_password.size() > 10) throw bad("ouch_password", "at most 10 characters");
+  const std::string transport = extra("order_transport");
+  if (transport.empty() || transport == "kernel") {
+    c.order_transport = OrderTransport::Kernel;
+  } else if (transport == "user_tcp") {
+    c.order_transport = OrderTransport::UserTcp;
+    c.user_tcp_interface = extra("user_tcp_interface");
+    if (c.user_tcp_interface.empty()) c.user_tcp_interface = interface;
+    if (c.user_tcp_interface.empty())
+      throw bad("user_tcp_interface", "user_tcp needs an interface name (or interface)");
+    c.user_tcp_ip = extra("user_tcp_ip");
+    std::uint32_t probe_ip = 0;
+    if (!net::parse_ipv4(c.user_tcp_ip, probe_ip))
+      throw bad("user_tcp_ip", "user_tcp needs its own IPv4 address");
+    c.user_tcp_gateway = extra("user_tcp_gateway");
+    if (!c.user_tcp_gateway.empty() && !net::parse_ipv4(c.user_tcp_gateway, probe_ip))
+      throw bad("user_tcp_gateway", "expected an IPv4 address");
+  } else {
+    throw bad("order_transport", "expected kernel or user_tcp");
+  }
   if (dry_run) c.order_entry = OrderEntry::None;
   return c;
 }
