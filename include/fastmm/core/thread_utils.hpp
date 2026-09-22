@@ -15,6 +15,14 @@ bool set_thread_name(const char* name) noexcept;  // <= 15 chars
 [[nodiscard]] int current_cpu() noexcept;
 [[nodiscard]] int cpu_count() noexcept;
 void sleep_for(Duration d) noexcept;  // nanosleep
+// PR_SET_TIMERSLACK for the calling thread; threads it creates afterwards inherit the value.
+// The kernel default (50 us) lets a 50 us nanosleep return up to 50 us late. slack.ns <= 0 is a
+// no-op. Returns false when prctl refused.
+bool set_timer_slack(Duration slack) noexcept;
+// mlockall(MCL_CURRENT | MCL_FUTURE): no page of the process is paged out, and later
+// allocations are faulted in by the allocating call. Returns errno (0 on success); ENOMEM or
+// EPERM usually mean RLIMIT_MEMLOCK (ulimit -l) is too small.
+int lock_all_memory() noexcept;
 
 enum class SpinMode : std::uint8_t { Busy = 0, Adaptive = 1 };
 

@@ -6,9 +6,10 @@
 # simulator times it from the sendmmsg of that datagram to the read that returned the order.
 #
 #   scripts/bench-e2e.sh [--backend kernel|af_xdp] [--duration 30] [--runs 3] [--speed 4]
-#                        [--spin busy|adaptive] [--sim-cpu 2] [--engine-cpu 4] [--net-cpu 6]
-#                        [--build build/release] [--out runs/bench-e2e-<time>]
+#                        [--spin busy|adaptive] [--timer-slack NS] [--sim-cpu 2] [--engine-cpu 4]
+#                        [--net-cpu 6] [--build build/release] [--out runs/bench-e2e-<time>]
 #
+# --timer-slack sets fastmm-live's [engine] timer_slack_ns (0: the kernel's 50 us).
 # A CPU of -1 leaves that process unpinned (ctest runs it that way). Exit codes: 0 ok, 1 a run
 # failed (fastmm-live exit code, feed not live, no orders), 2 usage, 77 no namespaces here.
 # kernel runs unprivileged in `unshare -Urn`. af_xdp loads an XDP program and needs root:
@@ -19,9 +20,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BACKEND=kernel; DURATION=30; RUNS=1; SPEED=4; SPIN=busy
+BACKEND=kernel; DURATION=30; RUNS=1; SPEED=4; SPIN=busy; SLACK=0
 SIM_CPU=2; ENGINE_CPU=4; NET_CPU=6; BUILD=build/release; OUT=""
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --backend) BACKEND="$2"; shift 2;;
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --runs) RUNS="$2"; shift 2;;
     --speed) SPEED="$2"; shift 2;;
     --spin) SPIN="$2"; shift 2;;
+    --timer-slack) SLACK="$2"; shift 2;;
     --sim-cpu) SIM_CPU="$2"; shift 2;;
     --engine-cpu) ENGINE_CPU="$2"; shift 2;;
     --net-cpu) NET_CPU="$2"; shift 2;;
@@ -55,7 +57,8 @@ if [[ -z "${FASTMM_BENCH_E2E_NS:-}" ]]; then
   mkdir -p "$OUT"
   OUT="$(cd "$OUT" && pwd)"
   args=(--backend "$BACKEND" --duration "$DURATION" --runs "$RUNS" --speed "$SPEED" --spin "$SPIN"
-        --sim-cpu "$SIM_CPU" --engine-cpu "$ENGINE_CPU" --net-cpu "$NET_CPU" --build "$BUILD" --out "$OUT")
+        --timer-slack "$SLACK" --sim-cpu "$SIM_CPU" --engine-cpu "$ENGINE_CPU" --net-cpu "$NET_CPU"
+        --build "$BUILD" --out "$OUT")
   # Root keeps its capabilities in a plain network namespace; everyone else maps to root in a new
   # user namespace, which is enough for veth pairs, addresses, routes and multicast.
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -93,7 +96,7 @@ NET_CPUS="[$NET_CPU]"; [[ "$NET_CPU" == -1 ]] && NET_CPUS="[]"
 sed -e "s/^interface = \"lo\"/interface = \"fmlive\"/" \
     -e "s/127\.0\.0\.1:/$SIM_IP:/" \
     -e "s/^rx_backend = \"kernel\"/rx_backend = \"$BACKEND\"/" \
-    -e "s/^spin_mode = .*/spin_mode = \"$SPIN\"/" \
+    -e "s/^spin_mode = .*/spin_mode = \"$SPIN\"\ntimer_slack_ns = $SLACK/" \
     -e "s/^cpu = -1 .*/cpu = $ENGINE_CPU/" \
     -e "s/^net_cpus = \[\].*/net_cpus = $NET_CPUS/" \
     -e "s/^name = \"nasdaq-itch-sim\"/name = \"nasdaq-itch-bench\"/" \

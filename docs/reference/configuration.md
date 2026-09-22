@@ -36,6 +36,8 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `crossed_grace_ms` | integer |  | tolerate a crossed book this long before pulling its quotes, ms (default 100) |
 | `latency_publish_ms` | integer |  | latency histogram publish interval, ms (default 1000) |
 | `tsc_recalibrate_s` | integer |  | fastmm-live: TSC recalibration period, s; 0 = off (default 10) |
+| `timer_slack_ns` | integer |  | fastmm-live: timer slack of its threads, ns; how late a sleep may end (adaptive spin_mode sleeps 50 us when idle); 0 = the kernel's, 50000 (default 0) |
+| `lock_memory` | boolean |  | fastmm-live: mlockall() the process, so no page is swapped out or faulted in on the hot path; needs ulimit -l above the process size, a warning otherwise (default false) |
 | `min_requote_ticks` | integer |  | keep a resting quote whose price is within this many ticks of the desired price (default 1) |
 | `min_requote_interval_ms` | integer |  | change the same quote slot at most this often, ms (default 50) |
 | `min_qty_bps` | integer |  | keep a resting quote whose remaining quantity covers this share of the desired quantity, bps (default 8000 = 80 %) |

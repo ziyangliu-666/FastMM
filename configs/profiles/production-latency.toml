@@ -1,0 +1,105 @@
+# FastMM: latency settings for a dedicated host. The shipped configs keep the laptop-friendly
+# defaults (spin_mode = "adaptive", nothing pinned, kernel timer slack); copy the [engine] table
+# below into your config instead. The rest of this file is configs/nasdaq-itch-sim.toml, so it
+# runs as is against fastmm-sim-itch.
+#
+# Host: isolate the cores named below (isolcpus=2,4 nohz_full=2,4 rcu_nocbs=2,4, or a cpuset),
+# set the CPU governor to performance, keep the NIC's interrupts off them, enable transparent
+# huge pages (madvise is enough) and raise ulimit -l (LimitMEMLOCK=infinity under systemd) for
+# lock_memory. docs/how-to/operations/go-live-checklist.md#the-host has the list.
+
+[engine]
+name = "production-latency"
+cpu = 2                      # engine thread: an isolated core
+net_cpus = [4]               # one isolated core per venue, not the engine's SMT sibling
+spin_mode = "busy"           # never sleep; the nasdaq_itch venue also polls its sockets (SO_BUSY_POLL)
+timer_slack_ns = 1           # sleeps that remain (control thread, adaptive fallbacks) end on time
+lock_memory = true           # mlockall: no page faults or swap-ins after startup
+net_backend = "epoll"        # busy mode never blocks in the event loop
+journal = true               # written by its own thread; the engine only copies into a ring
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 67108864  # bursts do not fill the journal ring while the disk catches up
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+tsc_recalibrate_s = 10
+min_requote_ticks = 1
+min_requote_interval_ms = 0
+min_qty_bps = 8000
+post_only = false
+supports_replace = true
+
+[venues.itch]
+kind = "nasdaq_itch"
+rx_backend = "kernel"        # af_xdp on a real NIC (docs/how-to/operations/multicast-feeds.md)
+interface = "lo"
+line_a = "239.192.0.1:31001"
+line_b = "239.192.0.2:31002"
+rerequest = "127.0.0.1:31000"
+glimpse_url = "127.0.0.1:31010"
+glimpse_username = "glimps"
+glimpse_password = "glimpse"
+reorder_packets = 256
+gap_timeout_ns = 2000000
+max_request_attempts = 4
+recovery_buffer_packets = 65536
+depth = 20
+order_entry = "sim_ouch"
+ouch_url = "127.0.0.1:31020"
+ouch_username = "fmouch"
+ouch_password = "ouch"
+supports_replace = true
+
+[[instruments]]
+venue = "itch"
+symbol = "FMAA"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+max_qty = "10000"
+enabled = true
+
+[[instruments]]
+venue = "itch"
+symbol = "FMBB"
+asset_class = "equity"
+tick = "0.01"
+lot = "1"
+min_qty = "1"
+max_qty = "10000"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 1.0
+skew_bps_per_unit = 0.0
+quote_qty = 100
+max_inventory = 2000
+requote_threshold_ticks = 1
+pull_on_stale_ms = 0
+levels = 1
+
+[risk]
+max_order_qty = "1000"
+max_order_notional = "200000"
+max_position = "5000"
+max_open_orders = 8
+price_collar_bps = 200
+fat_finger_bps = 1000
+stale_md_ms = 5000
+max_loss = "100000"
+orders_per_sec = 500
+burst = 100
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

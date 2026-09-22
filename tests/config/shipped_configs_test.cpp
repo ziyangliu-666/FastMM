@@ -102,7 +102,8 @@ std::filesystem::path mutated_copy(const std::string& config,
 
 TEST_CASE("config.shipped: every configs/*.toml loads and configures its strategy") {
   std::vector<std::filesystem::path> files;
-  for (const auto& e : std::filesystem::directory_iterator(configs_dir())) {
+  // configs/*.toml and configs/profiles/*.toml
+  for (const auto& e : std::filesystem::recursive_directory_iterator(configs_dir())) {
     if (e.is_regular_file() && e.path().extension() == ".toml") files.push_back(e.path());
   }
   std::sort(files.begin(), files.end());

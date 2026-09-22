@@ -2,8 +2,12 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <cerrno>
 
 namespace fastmm {
 
@@ -26,6 +30,15 @@ int current_cpu() noexcept {
 int cpu_count() noexcept {
   const long n = ::sysconf(_SC_NPROCESSORS_ONLN);
   return n < 1 ? 1 : static_cast<int>(n);
+}
+
+bool set_timer_slack(Duration slack) noexcept {
+  if (slack.ns <= 0) return true;
+  return ::prctl(PR_SET_TIMERSLACK, static_cast<unsigned long>(slack.ns), 0, 0, 0) == 0;
+}
+
+int lock_all_memory() noexcept {
+  return ::mlockall(MCL_CURRENT | MCL_FUTURE) == 0 ? 0 : errno;
 }
 
 void sleep_for(Duration d) noexcept {
