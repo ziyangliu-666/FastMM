@@ -75,7 +75,7 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | 1 | book apply | T1 to T2 (book updated on the engine thread) |
 | 2 | strategy | T2 to T3 (hook returned) |
 | 3 | serialize | T3 to T4 (batch handed to the transport) |
-| 4 | send | T4 to T5 (push into the outbound ring) |
+| 4 | send | T4 to T5 (push into the outbound ring; with `spin_mode = "adaptive"` also the eventfd write that wakes the network thread) |
 | 5 | tick to trade | T0 to T5 |
 | 6 | wire to book | T0 to T2 |
 
@@ -91,7 +91,7 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | `orders_sent`, `cancels_sent`, `replaces_sent`, `order_events` | u64 | order traffic on this venue |
 | `reconnects`, `rest_errors`, `rate_limit_cooldowns` | u64 | connection health |
 | `clock_offset_ms` | i64 | venue clock minus local clock, ms |
-| `wire_tick_to_trade` | {count, p50_ns, p99_ns, p999_ns, max_ns} | socket read to order write on the network thread |
+| `wire_tick_to_trade` | {count, p50_ns, p99_ns, p999_ns, max_ns} | socket read to order write on the network thread (the return of the write that carried the order; one write per drain of the outbound ring) |
 | `feed` | feed entry | multicast venues only (below); `state` 0 for the others |
 
 ### Multicast feed

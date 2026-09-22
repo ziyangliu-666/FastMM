@@ -53,6 +53,15 @@ class ConnectionSlot {
     if (tls_) return tls_->send_text(t);
     return false;
   }
+  void cork() noexcept {
+    if (plain_) plain_->cork();
+    if (tls_) tls_->cork();
+  }
+  bool uncork() noexcept {
+    if (plain_) return plain_->uncork();
+    if (tls_) return tls_->uncork();
+    return true;
+  }
   void auth_done() {
     if (plain_) plain_->auth_done();
     if (tls_) tls_->auth_done();

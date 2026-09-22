@@ -798,16 +798,23 @@ bool NasdaqItchVenue::cancel_all() {
   return true;
 }
 
+// All orders the ring holds go out in one write (SoupBinTCP header and OUCH message of each).
 void NasdaqItchVenue::on_wake() {
   if (outbound_ == nullptr) return;
-  while (const std::byte* p = outbound_->try_peek()) {
-    const auto* h = reinterpret_cast<const EventHeader*>(p);
-    if (const auto cmd = OrderCommand::from(*h)) {
-      sent_.note(*cmd);
-      send_command(*cmd);
-    }
-    outbound_->release();
-  }
+  TcpLink* const link = ouch_tcp_.get();
+  drain_outbound_coalesced(
+      *outbound_,
+      wire_,
+      [link] {
+        if (link != nullptr) link->cork();
+      },
+      [this](const EventHeader& h) {
+        if (const auto cmd = OrderCommand::from(h)) {
+          sent_.note(*cmd);
+          send_command(*cmd);
+        }
+      },
+      [link] { return link != nullptr && link->uncork(); });
 }
 
 void NasdaqItchVenue::refuse(const OrderCommand& cmd,

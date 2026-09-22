@@ -53,6 +53,8 @@ On Solarflare NICs, run the `kernel` backend under Onload instead:
 onload --profile=latency build/release/bin/fastmm-live --config configs/nasdaq-itch-sim.toml
 ```
 
+The order connection (OUCH over SoupBinTCP, `order_entry = "sim_ouch"`) is a plain non-blocking kernel TCP socket driven by `connect`, `read`, `write` and the reactor, so Onload accelerates it in the same process without changes. Keep `[engine] net_backend = "epoll"` (the default): Onload intercepts epoll, not io_uring. FastMM has no TCPDirect or ef_vi path. Not tested on Solarflare hardware.
+
 ## 3. Steer the groups to one RX queue (af_xdp)
 
 The NIC spreads multicast over its RX queues by RSS; the XDP socket reads one queue. Pin each group to a queue and list it in `queues`:

@@ -636,16 +636,20 @@ void BybitVenue::on_wake() {
   drain_outbound();
 }
 
+// The orders the ring holds go out as one write of all their WebSocket frames.
 void BybitVenue::drain_outbound() {
   if (outbound_ == nullptr) return;
-  while (const std::byte* p = outbound_->try_peek()) {
-    const auto* h = reinterpret_cast<const EventHeader*>(p);
-    if (const auto cmd = OrderCommand::from(*h)) {
-      sent_.note(*cmd);
-      send_command(*cmd);
-    }
-    outbound_->release();
-  }
+  drain_outbound_coalesced(
+      *outbound_,
+      wire_,
+      [this] { trade_conn_.cork(); },
+      [this](const EventHeader& h) {
+        if (const auto cmd = OrderCommand::from(h)) {
+          sent_.note(*cmd);
+          send_command(*cmd);
+        }
+      },
+      [this] { return trade_conn_.uncork(); });
 }
 
 void BybitVenue::send_command(const OrderCommand& cmd) {

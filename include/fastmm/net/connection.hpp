@@ -158,6 +158,19 @@ class Connection {
     if (!ok) ++stats_.drops;
     return ok;
   }
+  // Coalesces the send_text()/send_binary() calls up to uncork() into one write (WsClient::cork).
+  // uncork() returns false when the corked session failed meanwhile (true when none was open).
+  void cork() noexcept {
+    corked_ = send_target();
+    if (corked_ != nullptr) corked_->ws.cork();
+  }
+  bool uncork() noexcept {
+    Session* s = corked_;
+    corked_ = nullptr;
+    if (s == nullptr) return true;
+    if (s != active_.get() && s != pending_.get()) return false;
+    return s->ws.uncork();
+  }
   bool send_binary(std::span<const std::byte> data) noexcept {
     Session* s = send_target();
     if (s == nullptr || !s->ws.is_open()) return false;
@@ -529,6 +542,7 @@ class Connection {
   std::size_t addr_index_ = 0;
   std::unique_ptr<Session> active_;
   std::unique_ptr<Session> pending_;
+  Session* corked_ = nullptr;  // between cork() and uncork()
   std::vector<std::unique_ptr<Session>> graveyard_;
   bool reap_pending_ = false;
   ConnState state_ = ConnState::Idle;

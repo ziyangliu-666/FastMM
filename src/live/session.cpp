@@ -100,14 +100,17 @@ struct VenueSlot {
 
 struct Wake {
   std::vector<std::unique_ptr<VenueSlot>>* slots;
+  bool busy;  // [engine] spin_mode = "busy": the network threads never block
 };
 
+// The flag is published after the messages (release; the network thread acquires it). A busy
+// network thread polls it on every loop iteration, so only an adaptive one needs the eventfd.
 void wake_venue(void* ctx, VenueId v) noexcept {
   auto* w = static_cast<Wake*>(ctx);
   if (v.value >= w->slots->size()) return;
   VenueSlot& s = *(*w->slots)[v.value];
-  s.wake.store(true, std::memory_order_relaxed);
-  s.reactor->wake();
+  s.wake.store(true, std::memory_order_release);
+  if (!w->busy) s.reactor->wake();
 }
 
 void on_order_overflow(void* ctx, const venues::EventSink&) noexcept {
@@ -124,7 +127,8 @@ void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
   while (!s.stop.load(std::memory_order_relaxed)) {
     s.reactor->run_once(wait_ms);
     s.venue->poll();
-    if (s.wake.exchange(false, std::memory_order_relaxed)) s.venue->on_wake();
+    if (s.wake.load(std::memory_order_relaxed) && s.wake.exchange(false, std::memory_order_acquire))
+      s.venue->on_wake();
   }
   s.venue->on_wake();  // flush cancels the engine queued during shutdown
   for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
@@ -446,7 +450,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
   }
-  Wake wake_ctx{&slots};
+  Wake wake_ctx{&slots, cfg.spin_mode() == SpinMode::Busy};
   net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
   static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, net_backend));  // validated
   if (net::Reactor::resolve_backend(net_backend) != net_backend) {

@@ -146,6 +146,18 @@ void echo_scenario(Reactor& reactor,
     for (int i = 0; i < 500; ++i)
       CHECK(ev.texts[static_cast<std::size_t>(i)] == "m" + std::to_string(i));
   }
+  SUBCASE("corked frames go out together at uncork, in order") {
+    const std::uint64_t before = client.stats().bytes_tx;
+    client.cork();
+    for (int i = 0; i < 50; ++i) REQUIRE(client.send_text("c" + std::to_string(i)));
+    CHECK(client.stats().bytes_tx == before);  // nothing written while corked
+    REQUIRE(client.uncork());
+    CHECK(client.stats().frames_tx == 50);
+    CHECK(client.stats().bytes_tx > before);
+    REQUIRE(run_until(reactor, [&] { return ev.texts.size() == 50; }));
+    for (int i = 0; i < 50; ++i)
+      CHECK(ev.texts[static_cast<std::size_t>(i)] == "c" + std::to_string(i));
+  }
   SUBCASE("ping/pong both directions") {
     REQUIRE(client.send_ping(bytes("p")));
     REQUIRE(run_until(reactor, [&] { return ev.pongs == 1; }));

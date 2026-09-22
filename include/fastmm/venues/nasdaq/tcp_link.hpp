@@ -46,9 +46,14 @@ class TcpLink final : public net::IoHandler {
   // reactor thread sees EOF and closes it. For cancel-all from another thread.
   bool shutdown_from_any_thread() noexcept;
 
-  // Queues bytes; false when not connected or the send buffer is full (the link is then closed
-  // and on_link_down reports ENOBUFS).
+  // Writes bytes, queueing what the kernel does not take; false when not connected or the send
+  // buffer is full (the link is then closed and on_link_down reports ENOBUFS).
   bool send(std::span<const std::byte> bytes) noexcept;
+  // Between cork() and uncork() send() only appends to the send buffer (writing early when it
+  // fills); uncork() writes the buffer with one write(2) and queues the rest for writability.
+  // uncork() returns false when the link failed (closed; on_link_down was called).
+  void cork() noexcept { corked_ = true; }
+  bool uncork() noexcept;
 
   [[nodiscard]] bool connected() const noexcept { return up_; }
   [[nodiscard]] bool is_open() const noexcept { return sock_.valid(); }
@@ -75,6 +80,7 @@ class TcpLink final : public net::IoHandler {
   std::uint64_t gen_ = 0;  // bumped by open() and close(): a callback may reopen the link
   bool up_ = false;
   bool writing_ = false;  // registered for Write
+  bool corked_ = false;
 };
 
 }  // namespace fastmm::venues::nasdaq

@@ -190,6 +190,19 @@ class Harness {
     REQUIRE(outbound_.try_push(&m, m.hdr.len));
     venue_->on_wake();
   }
+  template <class M>
+  void push_outbound_batch(M a, M b) {
+    REQUIRE(outbound_.try_push(&a, a.hdr.len));
+    REQUIRE(outbound_.try_push(&b, b.hdr.len));
+    venue_->on_wake();
+  }
+  [[nodiscard]] std::size_t count(EventType type) const {
+    std::size_t n = 0;
+    for (const auto& e : order_events_) {
+      if (reinterpret_cast<const EventHeader*>(e.data())->type == type) ++n;
+    }
+    return n;
+  }
 
   NasdaqItchVenue& venue() { return *venue_; }
   std::uint64_t md_snapshots = 0;
@@ -450,6 +463,33 @@ TEST_CASE("nasdaq_itch venue: sim_ouch orders round trip and are timed wire to w
   CHECK(f.qty.is_positive());
   CHECK(sim.wire_to_wire().count() == 2);
 
+  // 4b. Two orders drained by one wake go out in one write; both are acknowledged.
+  {
+    h.run_for(50);
+    while (h.take(EventType::OrderAck)) {
+    }
+    OutNewOrderMsg a = o;
+    a.hdr.t0_cycles = Cycles{};
+    a.cl_ord_id = ClientOrderId{110};
+    a.price = Price::from_int(48);
+    OutNewOrderMsg b = a;
+    b.cl_ord_id = ClientOrderId{111};
+    b.price = Price::from_int(47);
+    h.push_outbound_batch(a, b);
+    REQUIRE(h.pump(2000, [&] { return h.count(EventType::OrderAck) == 2; }));
+    OutCancelMsg ca{};
+    init_header(ca, EventType::OutCancel, InstrumentId{0}, VenueId{0});
+    ca.cl_ord_id = ClientOrderId{110};
+    OutCancelMsg cb = ca;
+    cb.cl_ord_id = ClientOrderId{111};
+    h.push_outbound_batch(ca, cb);
+    REQUIRE(h.pump(2000, [&] { return h.count(EventType::OrderCancelAck) == 2; }));
+    while (h.take(EventType::OrderAck)) {
+    }
+    while (h.take(EventType::OrderCancelAck)) {
+    }
+  }
+
   // 5. A resting order, then cancel_all from another thread: the simulator cancels on disconnect
   //    and the venue reports the session down with an empty reconciliation.
   o.cl_ord_id = ClientOrderId{104};
@@ -472,9 +512,9 @@ TEST_CASE("nasdaq_itch venue: sim_ouch orders round trip and are timed wire to w
   REQUIRE(h.pump(1000, [&] { return h.has(EventType::OrderReject); }));
   h.run_for(200);
   const venues::VenueStatus st = h.venue().status();
-  CHECK(st.orders_sent == 3);
+  CHECK(st.orders_sent == 5);
   CHECK(st.replaces_sent == 1);
-  CHECK(st.cancels_sent == 1);
+  CHECK(st.cancels_sent == 3);
   CHECK(st.wire_tick_to_trade.count == 3);  // the orders with a receive stamp: 101, 102, 104
   CHECK(sim.wire_to_wire().count() == 3);
   CHECK(st.order == venues::ChannelState::Down);

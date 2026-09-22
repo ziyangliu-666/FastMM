@@ -145,6 +145,16 @@ All notable changes are recorded here (Keep a Changelog format).
   `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- Order sends are coalesced on the network thread: `on_wake()` of every venue drains the outbound
+  ring through `drain_outbound_coalesced()` and writes all orders of the drain with one system call.
+  `TcpLink::cork()` / `uncork()` (SoupBinTCP/OUCH: header and message no longer go out in two writes
+  per order) and `WsClient` / `net::Connection` / `ConnectionSlot` `cork()` / `uncork()` (WebSocket
+  frames of one drain in one TLS record write); a short write or `EAGAIN` stays queued for
+  writability. `WireLatencyRecorder::begin_batch()` / `end_batch()` stamp every order of a drain with
+  the return of that write. With `spin_mode = "busy"` the engine no longer writes the network
+  thread's eventfd; it sets the wake flag (release) that the busy loop checks. `bench-e2e.sh` over
+  veth (WSL2): wire to wire p50 47 to 55 µs -> 30 to 35 µs, T0 to T5 p50 4.6 to 5.4 µs -> 2.6 to
+  3.1 µs, T0 to OUCH write p50 30 to 39 µs -> 20 to 26 µs (bench/README.md).
 - `moldudp::Receiver` (ADR-0015, step 2): A/B arbitration, a reorder buffer and
   `gap_timeout_ns`. `on_packet(line, datagram, now_ns, meta)` replaces `on_packet(datagram)`
   (`on_packet(datagram, now_ns)` is line 0); requests are stamped with the packet time instead of

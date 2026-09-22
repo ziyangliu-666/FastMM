@@ -35,6 +35,7 @@ bool TcpLink::open(net::Reactor& reactor, const net::SockAddr& addr) noexcept {
   rx_len_ = 0;
   tx_len_ = 0;
   up_ = false;
+  corked_ = false;
   writing_ = true;  // connect completion is reported as writability
   if (!reactor.add(sock_.fd(), *this, net::IoEvent::ReadWrite)) {
     close();
@@ -79,7 +80,10 @@ void TcpLink::want_write(bool on) noexcept {
 
 bool TcpLink::send(std::span<const std::byte> bytes) noexcept {
   if (!up_) return false;
-  if (tx_len_ == 0) {
+  if (corked_) {
+    // A full buffer is written early; what the kernel leaves stays queued ahead of `bytes`.
+    if (tx_cap_ - tx_len_ < bytes.size() && !flush()) return false;
+  } else if (tx_len_ == 0) {
     while (!bytes.empty()) {
       const net::IoResult r = sock_.write(bytes);
       if (r.failed() || r.closed) {
@@ -97,7 +101,16 @@ bool TcpLink::send(std::span<const std::byte> bytes) noexcept {
   }
   std::memcpy(tx_.get() + tx_len_, bytes.data(), bytes.size());
   tx_len_ += bytes.size();
-  want_write(true);
+  if (!corked_) want_write(true);
+  return true;
+}
+
+bool TcpLink::uncork() noexcept {
+  corked_ = false;
+  if (!sock_.valid()) return false;
+  if (tx_len_ == 0 || writing_) return true;  // nothing queued, or waiting for writability
+  if (!flush()) return false;
+  if (tx_len_ != 0) want_write(true);
   return true;
 }
 

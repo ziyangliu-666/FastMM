@@ -169,6 +169,18 @@ class WsClient final : public IoHandler {
     return send_frame(WsOpcode::Pong, data);
   }
 
+  // Between cork() and uncork() data frames are only encoded into the send buffer; uncork()
+  // writes them together (one TLS write and one write(2) for the lot when the kernel takes it).
+  // uncork() may invoke on_ws_error, like send_text(); it returns false when the client is not
+  // open afterwards.
+  void cork() noexcept { corked_ = true; }
+  bool uncork() noexcept {
+    corked_ = false;
+    if (state_ != WsState::Open) return false;
+    flush();
+    return state_ == WsState::Open;
+  }
+
   // Starts the closing handshake; on_ws_close fires when the peer echoes the close frame.
   bool send_close(WsCloseCode code = WsCloseCode::Normal, std::string_view reason = {}) noexcept {
     if (state_ != WsState::Open) return false;
@@ -422,8 +434,13 @@ class WsClient final : public IoHandler {
   // callers must not touch members afterwards unless they re-check state_.
   bool send_frame(WsOpcode op, std::span<const std::byte> payload) noexcept {
     if (state_ != WsState::Open) return false;
+    if (corked_ && op != WsOpcode::Text && op != WsOpcode::Binary) corked_ = false;
+    if (corked_ && tx_.free_space() < payload.size() + kWsMaxHeaderSize) {
+      flush();  // full while corked: write what is queued first
+      if (state_ != WsState::Open) return false;
+    }
     if (!encode_frame(op, payload)) return false;
-    flush();
+    if (!corked_) flush();
     return true;
   }
 
@@ -474,6 +491,7 @@ class WsClient final : public IoHandler {
   WsStats stats_;
   WsState state_ = WsState::Idle;
   bool registered_ = false;
+  bool corked_ = false;
   bool tcp_reported_ = false;
   bool tls_ = false;
   std::uint16_t port_ = 0;

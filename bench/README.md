@@ -68,21 +68,34 @@ iteration over all events.
 
 ## End to end: fastmm-sim-itch to fastmm-live over veth
 
-Measured by `scripts/bench-e2e.sh` on 2026-09-21: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 340 to 400 samples per run, so their p99.9 is the largest sample.
+Measured by `scripts/bench-e2e.sh` on 2026-09-22: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 226 to 456 samples per run, so their p99.9 is the largest sample. Run 3 had a stall of several ms (T1 to T2 p99.9 2.5 ms); it sets the upper end of the p99.9 column and of the T0 to T5 p99.
 
 | hop | samples per run | p50 | p99 | p99.9 |
 |---|---:|---:|---:|---:|
-| wire to wire: simulator `sendmmsg` to the order read | 346 / 339 / 395 | 49.2 to 53.2 | 90.1 to 114.7 | 129.0 to 291.5 |
-| kernel receive timestamp to T0 | 137664 / 138268 / 137350 | 3.1 to 3.2 | 12.8 to 18.4 | 69.6 to 90.1 |
-| T0 to T1: MoldUDP64, ITCH decode, L3 update | 80247 / 80397 / 79635 | 0.8 to 0.9 | 2.4 to 3.7 | 7.2 to 13.3 |
-| T1 to T2: ring hand-off, L2 book apply | 80247 / 80397 / 79635 | 0.2 | 5.9 to 15.4 | 77.8 to 155.6 |
-| T2 to T3: strategy | 68925 / 69224 / 68765 | 0.4 | 0.8 to 0.9 | 1.7 to 12.8 |
-| T3 to T4: quote manager, risk, OMS | 661 / 651 / 415 | 0.5 to 0.6 | 1.4 to 1.7 | 1.8 to 12.8 |
-| T4 to T5: outbound ring push and wake | 745 / 734 / 454 | 1.9 to 2.4 | 4.4 to 16.4 | 10.8 to 98.9 |
-| T0 to T5: tick to trade (engine) | 197 / 187 / 219 | 4.9 to 5.4 | 14.2 to 27.6 | 14.2 to 82.6 |
-| T0 to OUCH write returned (network thread) | 346 / 339 / 395 | 33.2 to 35.2 | 66.4 to 74.3 | 92.8 to 103.4 |
+| wire to wire: simulator `sendmmsg` to the order read | 371 / 452 / 226 | 29.7 to 32.8 | 81.9 to 94.2 | 102.2 to 8833.0 |
+| kernel receive timestamp to T0 | 138234 / 138454 / 140642 | 3.2 | 15.4 to 17.4 | 73.7 to 155.6 |
+| T0 to T1: MoldUDP64, ITCH decode, L3 update | 80994 / 81932 / 82469 | 0.8 | 3.1 to 3.8 | 13.3 |
+| T1 to T2: ring hand-off, L2 book apply | 80994 / 81932 / 82469 | 0.2 | 5.6 to 5.9 | 47.1 to 2490.4 |
+| T2 to T3: strategy | 69195 / 69307 / 70408 | 0.4 | 0.8 | 1.4 to 1.7 |
+| T3 to T4: quote manager, risk, OMS | 617 / 750 / 1346 | 0.4 to 0.5 | 1.0 to 1.2 | 1.5 to 7.7 |
+| T4 to T5: outbound ring push (no eventfd write when busy) | 699 / 829 / 1540 | 0.1 to 0.2 | 0.4 | 0.5 to 1.6 |
+| T0 to T5: tick to trade (engine) | 202 / 249 / 151 | 2.6 to 2.7 | 10.8 to 1013.3 | 13.3 to 3020.4 |
+| T0 to OUCH write returned (network thread) | 371 / 456 / 230 | 19.5 to 24.4 | 74.3 to 1063.1 | 95.7 to 8822.9 |
 
-The OUCH write (`send` on the TCP socket, p50 12 µs) runs the veth and the simulator's TCP receive path inside the system call; the second order of an event waits for the first. With `spin_mode = "adaptive"` (one 30 s run) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
+The network thread writes all orders of one drain of the outbound ring with one `write`; the write (p50 8 to 12 µs) runs the veth and the simulator's TCP receive path inside the system call. With `spin_mode = "adaptive"` (one 30 s run, 2026-09-21) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
+
+Order send path, same machine and settings, 3 runs of 20 s per row (9 for the first and third), p50 in µs, range over the runs:
+
+| network thread | wire to wire | T0 to T5 | T0 to OUCH write returned |
+|---|---:|---:|---:|
+| before: two writes per order (SoupBinTCP header, then OUCH message), one order after the other; eventfd write per wake | 47.1 to 55.3 | 4.6 to 5.4 | 30.3 to 39.1 |
+| one write per drain | 32.8 to 34.8 | 4.9 to 5.1 | 24.4 |
+| one write per drain, no eventfd write when busy (current) | 32.8 to 34.8 | 2.7 to 3.1 | 23.4 to 26.4 |
+| `IORING_OP_SEND` + `io_uring_enter` instead of `write` | 32.8 to 34.8 | 2.7 to 2.9 | 24.4 to 26.4 |
+| `IORING_OP_SEND` with SQPOLL, thread on core 0 | 34.8 | 2.8 to 3.1 | 12.7 to 13.2 |
+| `IORING_OP_SEND` with SQPOLL, thread unpinned | 163.8 to 172.0 | 2.9 | 12.2 to 13.2 |
+
+The io_uring rows were a prototype and are not in the code: the plain submission costs what `write` costs, and SQPOLL only moves the send to another core (the call returns in 0.3 µs) without shortening wire to wire.
 
 ```bash
 scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs root
