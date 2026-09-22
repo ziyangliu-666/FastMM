@@ -103,6 +103,7 @@ Strategies are built through the `StrategyRegistry`, which keeps one factory per
 * Re-anchoring keeps time continuous: at the refresh point the clock computes the old mapping's time for the current TSC reading and anchors there, so successive `now()` calls never go backwards. From there it runs at the newly measured rate plus a bounded correction that absorbs the measured offset over one recalibration period (offset × rate ÷ period, at most 500 ppm), so the mapping converges on the measurements instead of accumulating error. If the old mapping disagrees with the fresh measurement by more than 1 ms, the clock steps to the measured anchor instead, counts the step (`EngineStats::clock_steps`) and the engine logs a warning.
 * The calibration follows `CLOCK_REALTIME`. If the host steps its wall clock (NTP corrections, or WSL2 resynchronising with Windows, which can jump by hundreds of milliseconds), the next recalibration steps the engine clock with it.
 * The venues read the latest calibration when they publish their status, to convert their cycle-based latency histograms to ns.
+* Without an invariant TSC (`/proc/cpuinfo` lacks `constant_tsc` or `nonstop_tsc`) wall time comes from `clock_gettime` and there is no recalibration. With `constant_tsc` alone, as on many KVM cloud instances, the calibration still carries the measured rate (`use_tsc = false`, `has_rate()`): `TscClock::cycles()` stays on the TSC and latency intervals are converted with that rate. Without `constant_tsc` the intervals are `clock_gettime` nanoseconds.
 
 ## Latency instrumentation
 

@@ -70,7 +70,8 @@ class WireLatencyRecorder {
   [[nodiscard]] const LogLinearHistogram& send() const noexcept { return send_; }
   [[nodiscard]] const LogLinearHistogram& tick_to_trade() const noexcept { return tick_to_trade_; }
 
-  // Percentiles in ns under `c`; without a TSC calibration only the counts are filled in.
+  // Percentiles in ns under `c`'s TSC rate (also set when only constant_tsc is present);
+  // without a rate only the counts are filled in.
   void summarize(const TscCalibration& c,
                  WireLatencyStats& tick_to_trade,
                  WireLatencyStats& encode,
@@ -105,8 +106,7 @@ class WireLatencyRecorder {
     return later.v > earlier.v ? later.v - earlier.v : 0;
   }
   [[nodiscard]] static std::uint64_t to_ns(std::uint64_t cycles, const TscCalibration& c) noexcept {
-    if (!c.use_tsc) return 0;
-    return static_cast<std::uint64_t>((static_cast<Uint128>(cycles) * c.ns_per_cycle_q32) >> 32);
+    return tsc_interval_ns(c, cycles);  // 0 without a TSC rate
   }
   static void fill(const LogLinearHistogram& h,
                    const TscCalibration& c,

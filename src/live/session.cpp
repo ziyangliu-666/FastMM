@@ -686,7 +686,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       static_cast<std::int64_t>(cfg.engine.tsc_recalibrate_s) * 1'000'000'000;
   std::int64_t next_recalibration = start + recalibrate_ns;
   if (recalibrate_ns > 0 && !last_tsc.use_tsc)
-    FASTMM_LOG_INFO("no invariant TSC: the clock uses clock_gettime; TSC recalibration is off");
+    FASTMM_LOG_INFO(
+        "no invariant TSC: the clock uses clock_gettime; TSC recalibration is off; latency "
+        "intervals {}",
+        last_tsc.has_rate() ? "use the TSC (constant_tsc)" : "use clock_gettime");
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog
   int reason = 0;
   std::string watchdog_cause;
