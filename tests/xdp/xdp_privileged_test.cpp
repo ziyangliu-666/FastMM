@@ -12,9 +12,12 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sched.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -121,6 +124,19 @@ int udp_socket() {
   return ::socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 }
 
+// veth offloads the UDP checksum: frames leave with only the pseudo-header sum filled in, and the
+// user-space check would reject them. Turning TX checksumming off on the sender makes the stack
+// compute it, so verify_udp_checksum can be tested over veth.
+bool disable_tx_checksum(int fd, const std::string& ifname) {
+  ethtool_value v{};
+  v.cmd = ETHTOOL_STXCSUM;
+  v.data = 0;
+  ifreq ifr{};
+  std::strncpy(ifr.ifr_name, ifname.c_str(), IFNAMSIZ - 1);
+  ifr.ifr_data = reinterpret_cast<char*>(&v);
+  return ::ioctl(fd, SIOCETHTOOL, &ifr) == 0;
+}
+
 // Kernel receiver bound to `port` on `bind_ip` (network order), joined to `group` on `ifname`
 // when group != 0.
 int kernel_receiver(std::uint32_t bind_ip,
@@ -196,6 +212,7 @@ void veth_receive(XdpMode mode, XdpMode expect) {
   REQUIRE(net.enter_tx());
   const int tx = udp_socket();
   REQUIRE(tx >= 0);
+  REQUIRE(disable_tx_checksum(tx, net.tx_if));
   ip_mreqn mif{};
   mif.imr_ifindex = static_cast<int>(::if_nametoindex(net.tx_if.c_str()));
   REQUIRE(::setsockopt(tx, IPPROTO_IP, IP_MULTICAST_IF, &mif, sizeof(mif)) == 0);
@@ -238,6 +255,10 @@ void veth_receive(XdpMode mode, XdpMode expect) {
     drain();
     return got.size() >= 2U * kPerLine;
   }));
+  src.refresh_stats();
+  MESSAGE("datagrams " << src.stats().datagrams << ", bad frames " << src.stats().bad_frames
+                       << ", unmatched " << src.stats().unmatched << ", fallback "
+                       << src.interfaces()[0].fallback_packets);
   REQUIRE(got.size() == 2U * kPerLine);
   int next_a = 0;
   int next_b = 0;
@@ -402,8 +423,17 @@ TEST_CASE("veth: zero-copy fails cleanly and a second program is refused with EB
   CHECK(second.open(cfg) == -EBUSY);
   MESSAGE(second.error());
   first.close();
+  // The kernel clears the queue's socket binding from a workqueue after close, so a new bind on
+  // the same queue can see EBUSY for a moment.
   XdpDatagramSource third;
-  CHECK_MESSAGE(third.open(cfg) == 0, third.error());  // closing the link fd detached the program
+  int rc = -EBUSY;
+  CHECK(wait_until(
+      [&] {
+        rc = third.open(cfg);
+        return rc != -EBUSY;
+      },
+      2000));
+  CHECK_MESSAGE(rc == 0, third.error());  // closing the link fd detached the program
   net.go_home();
 }
 

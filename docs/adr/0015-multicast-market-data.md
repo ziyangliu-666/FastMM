@@ -85,7 +85,7 @@ Minimum Linux 5.11. Hand-written over raw syscalls like the io_uring backend, wi
   - An interface that already has an XDP program fails `open` with `EBUSY`.
 - **IGMP**: a kernel UDP socket per subscription still joins the group so IGMP reports reach the switch. It reads nothing.
 - **User-space checks**: the parser repeats the Ethernet/VLAN/IPv4/UDP checks, checks lengths, and counts bad frames.
-  - The UDP checksum is not verified by default (`verify_udp_checksum`).
+  - The UDP checksum is not verified by default (`verify_udp_checksum`). Frames from a local sender through veth with TX checksum offload carry only the pseudo-header sum and fail the check.
   - RX descriptors return to the fill ring when `poll` returns.
 - **Polling**: uses `XDP_USE_NEED_WAKEUP`.
   - In busy mode, the socket gets `SO_PREFER_BUSY_POLL` and `SO_BUSY_POLL_BUDGET`, and the fill ring is refilled on every poll.
