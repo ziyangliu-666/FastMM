@@ -335,6 +335,13 @@ bool UserTcp::connect(std::int64_t now_ns, std::uint32_t isn) noexcept {
   tx_len_ = 0;
   rx_len_ = 0;
   ooo_n_ = 0;
+  if (cfg_.peer_mac_static) {
+    peer_mac_ = cfg_.peer_mac;
+    mac_known_ = true;
+    send_syn();
+    tx_.flush();
+    return true;
+  }
   // Every connection resolves the next hop again (it may have moved since the last one).
   mac_known_ = false;
   state_ = TcpState::Arp;

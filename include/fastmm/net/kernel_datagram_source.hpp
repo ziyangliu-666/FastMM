@@ -1,6 +1,7 @@
 #pragma once
 // `kernel` DatagramSource (ADR-0015, section 2): one UDP socket per subscription, bound to the
-// group and port, SO_REUSEADDR, IP_MULTICAST_ALL off, joined any-source or source-specific;
+// group and port, SO_REUSEADDR, IP_MULTICAST_ALL off, joined any-source or source-specific (a
+// unicast "group" is a local address: bound, not joined);
 // recvmmsg in fixed batches; SO_TIMESTAMPING for kernel and NIC receive times. Runs unmodified
 // under Onload.
 //
@@ -30,9 +31,9 @@ namespace fastmm::net {
 
 struct DatagramSubscription {
   std::string interface;  // name ("eth1") or IPv4 address; "" = routing table
-  std::string group;      // IPv4 multicast group
+  std::string group;      // IPv4 multicast group, or a local unicast address
   std::uint16_t port = 0;
-  std::string source;  // "" = any source; otherwise a source-specific join
+  std::string source;  // "" = any source; otherwise a source-specific join (multicast only)
 };
 
 struct KernelSourceConfig {

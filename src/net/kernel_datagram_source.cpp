@@ -68,9 +68,10 @@ KernelSourceOpen KernelDatagramSource::open(const KernelSourceConfig& cfg) {
       return fail(i, "interface", rc);
     }
     std::uint32_t group = 0;
-    if (!parse_ipv4(sub.group, group) || !is_ipv4_multicast(group) || sub.port == 0) {
+    if (!parse_ipv4(sub.group, group) || group == 0 || sub.port == 0) {
       return fail(i, "group", -EINVAL);
     }
+    const bool multicast = is_ipv4_multicast(group);
     std::uint32_t source = 0;
     if (!sub.source.empty() && !parse_ipv4(sub.source, source)) return fail(i, "source", -EINVAL);
 
@@ -87,9 +88,11 @@ KernelSourceOpen KernelDatagramSource::open(const KernelSourceConfig& cfg) {
     SockAddr bind_addr = SockAddr::any_v4(sub.port);
     reinterpret_cast<sockaddr_in*>(&bind_addr.storage)->sin_addr.s_addr = group;
     if (const int rc = s.bind(bind_addr); rc != 0) return fail(i, "bind", rc);
-    const int join_rc =
-        source == 0 ? s.join_group(group, ifc) : s.join_source_group(group, source, ifc);
-    if (join_rc != 0) return fail(i, source == 0 ? "IP_ADD_MEMBERSHIP" : "source join", join_rc);
+    if (multicast) {
+      const int join_rc =
+          source == 0 ? s.join_group(group, ifc) : s.join_source_group(group, source, ifc);
+      if (join_rc != 0) return fail(i, source == 0 ? "IP_ADD_MEMBERSHIP" : "source join", join_rc);
+    }
     if (cfg.busy_poll) {
       auto first_error = [](int& slot, int rc) noexcept {
         if (slot == 0) slot = rc;

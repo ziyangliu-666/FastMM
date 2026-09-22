@@ -43,6 +43,14 @@
       }
     },
     {
+      "name": "release-dpdk",
+      "inherits": "release",
+      "displayName": "Release with the DPDK backend (portable, DPDK linked statically)",
+      "cacheVariables": {
+        "FASTMM_WITH_DPDK": "ON"
+      }
+    },
+    {
       "name": "asan",
       "inherits": "base",
       "displayName": "ASan+UBSan (gcc)",
@@ -129,6 +137,10 @@
       "configurePreset": "release-native"
     },
     {
+      "name": "release-dpdk",
+      "configurePreset": "release-dpdk"
+    },
+    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -187,6 +199,11 @@
       "name": "release-native",
       "inherits": "base-test",
       "configurePreset": "release-native"
+    },
+    {
+      "name": "release-dpdk",
+      "inherits": "base-test",
+      "configurePreset": "release-dpdk"
     },
     {
       "name": "asan",

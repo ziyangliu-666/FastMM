@@ -21,6 +21,10 @@ int DpdkDatagramSource::open(const DpdkConfig&) {
   return fail(-ENOTSUP, "built without DPDK (configure with -DFASTMM_WITH_DPDK=ON)");
 }
 
+int DpdkDatagramSource::open_exception(const DpdkConfig&, unsigned) {
+  return -ENOTSUP;
+}
+
 void DpdkDatagramSource::close() noexcept {}
 
 std::uint32_t DpdkDatagramSource::rx_burst() noexcept {
@@ -28,6 +32,16 @@ std::uint32_t DpdkDatagramSource::rx_burst() noexcept {
 }
 
 void DpdkDatagramSource::free_burst(std::uint32_t) noexcept {}
+
+void DpdkDatagramSource::divert(std::uint32_t) noexcept {}
+
+void DpdkDatagramSource::service_exception() noexcept {}
+
+bool DpdkDatagramSource::tx_frame(std::span<const std::byte>) noexcept {
+  return false;
+}
+
+void DpdkDatagramSource::tx_flush() noexcept {}
 
 int DpdkDatagramSource::refresh_stats() noexcept {
   return -ENOTSUP;

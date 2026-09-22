@@ -147,7 +147,7 @@ TEST_CASE("venues.nasdaq_itch: bad config values are refused with the key") {
     FAIL("accepted: " << key);
   };
   refused({}, "line_a");
-  refused({{"line_a", "10.0.0.1:31001"}}, "line_a");  // not multicast
+  refused({{"line_a", "0.0.0.0:31001"}}, "line_a");  // no address (unicast is fine)
   refused({{"line_a", "239.1.1.1"}}, "line_a");
   refused({{"line_a", "239.1.1.1:1"}, {"rx_backend", "dpdk"}}, "rx_backend");
   refused({{"line_a", "239.1.1.1:1"}, {"rx_backend", "af_xdp"}}, "line_a_interface");

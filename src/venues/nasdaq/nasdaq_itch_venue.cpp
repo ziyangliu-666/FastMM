@@ -8,6 +8,8 @@
 
 #include <fmt/format.h>
 
+#include <ifaddrs.h>
+#include <netinet/in.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -22,6 +24,19 @@ namespace {
 
 namespace glimpse = codecs::itch::glimpse;
 namespace ouch50 = codecs::ouch50;
+
+// True when a kernel interface in this network namespace has the IPv4 address (network order).
+bool host_has_address(std::uint32_t ip) noexcept {
+  ifaddrs* list = nullptr;
+  if (::getifaddrs(&list) != 0) return false;
+  bool found = false;
+  for (const ifaddrs* a = list; a != nullptr && !found; a = a->ifa_next) {
+    if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET) continue;
+    found = reinterpret_cast<const sockaddr_in*>(a->ifa_addr)->sin_addr.s_addr == ip;
+  }
+  ::freeifaddrs(list);
+  return found;
+}
 namespace soupbin = codecs::soupbin;
 namespace nasdaq_fields = codecs::nasdaq;
 
@@ -109,7 +124,20 @@ NasdaqItchVenue::NasdaqItchVenue(VenueId id, NasdaqItchVenueConfig cfg)
         throw std::invalid_argument(cfg_.name + ": user_tcp_ip must be an IPv4 address");
       if (!cfg_.user_tcp_gateway.empty() && !net::parse_ipv4(cfg_.user_tcp_gateway, uc.gateway))
         throw std::invalid_argument(cfg_.name + ": user_tcp_gateway must be an IPv4 address");
+      uc.local_port = cfg_.user_tcp_port;
       uc.register_fd = !cfg_.busy_poll;
+      // af_xdp on the host's own address: the kernel keeps the ARP traffic.
+      if (cfg_.rx_backend == RxBackend::AfXdp && host_has_address(uc.local_ip)) {
+        if (uc.local_port == 0)
+          throw std::invalid_argument(
+              cfg_.name + ": user_tcp_ip is a local address: user_tcp_port must be set");
+        uc.neighbour_mac = true;
+      }
+      if (cfg_.rx_backend == RxBackend::Dpdk && cfg_.user_tcp_port == 0 &&
+          !cfg_.dpdk_exception_ip.empty() &&
+          cfg_.dpdk_exception_ip.substr(0, cfg_.dpdk_exception_ip.find('/')) == cfg_.user_tcp_ip)
+        throw std::invalid_argument(
+            cfg_.name + ": user_tcp_ip is the exception interface's address: set user_tcp_port");
       auto link = std::make_unique<UserTcpLink>(ouch_link_, uc);
       user_tcp_ = link.get();
       ouch_tcp_ = std::move(link);
@@ -169,7 +197,7 @@ Result<void, std::string> NasdaqItchVenue::load_reference_data(InstrumentTable& 
   } catch (const std::exception& e) {
     return fail(std::string(e.what()));
   }
-  if (user_tcp_ != nullptr) {
+  if (user_tcp_ != nullptr && cfg_.rx_backend == RxBackend::Kernel) {
     std::string err;
     if (user_tcp_->init(err) != 0)
       return fail(fmt::format(
@@ -282,10 +310,21 @@ void NasdaqItchVenue::open_sources() {
         throw std::runtime_error(fmt::format("{}: bad source {}", cfg_.name, l.source));
       dc.subscriptions.push_back(s);
     }
+    dc.exception_port = cfg_.dpdk_exception_port;
+    dc.exception_ip = cfg_.dpdk_exception_ip;
+    dc.exception_interval_ns = cfg_.dpdk_exception_interval_ns;
     auto src = std::make_unique<net::DpdkDatagramSource>();
     if (src->open(dc) != 0)
       throw std::runtime_error(fmt::format("{}: dpdk: {}", cfg_.name, src->error()));
-    FASTMM_LOG_INFO("{}: dpdk port {}", cfg_.name, src->port_name());
+    FASTMM_LOG_INFO("{}: dpdk port {}{}{}",
+                    cfg_.name,
+                    src->port_name(),
+                    src->exception_interface().empty() ? "" : ", kernel exception interface ",
+                    src->exception_interface());
+    if (user_tcp_ != nullptr) {
+      user_tcp_->init_shared(src->frame_tx(), src->mac(), src->mtu());
+      src->set_frame_sink(user_tcp_->frame_sink());
+    }
     dpdk_ = std::move(src);
     return;
   }
@@ -308,6 +347,13 @@ void NasdaqItchVenue::open_sources() {
   xc.batch = cfg_.batch;
   xc.mode = cfg_.xdp_mode;
   xc.busy_poll = cfg_.busy_poll;
+  if (user_tcp_ != nullptr) {
+    xc.tcp_interface = cfg_.user_tcp_interface;
+    if (!net::parse_ipv4(cfg_.user_tcp_ip, xc.tcp_ip))
+      throw std::runtime_error(fmt::format("{}: bad user_tcp_ip", cfg_.name));
+    xc.tcp_port = cfg_.user_tcp_port;
+    xc.tcp_arp = !host_has_address(xc.tcp_ip);
+  }
   auto src = std::make_unique<net::XdpDatagramSource>();
   if (src->open(xc) != 0)
     throw std::runtime_error(fmt::format("{}: af_xdp: {}", cfg_.name, src->error()));
@@ -318,6 +364,10 @@ void NasdaqItchVenue::open_sources() {
   }
   if (!src->interfaces().empty())
     stats_.feed.xdp_mode = static_cast<std::uint8_t>(src->interfaces()[0].mode);
+  if (user_tcp_ != nullptr) {
+    user_tcp_->init_shared(src->frame_tx(), src->mac(), src->mtu());
+    src->set_frame_sink(user_tcp_->frame_sink());
+  }
   xdp_ = std::move(src);
 }
 
@@ -418,6 +468,7 @@ void NasdaqItchVenue::disconnect() {
   if (user_tcp_ != nullptr) {
     // Let the FIN go out and be acknowledged.
     for (int i = 0; i < 200; ++i) {
+      if (user_tcp_->shared()) drain_sources();  // the link's frames arrive through the source
       user_tcp_->poll();
       if (i % 20 == 19) ::usleep(1000);
     }
@@ -440,13 +491,23 @@ void NasdaqItchVenue::disconnect() {
     }
   }
   if (kernel_) kernel_->close();
-  if (xdp_) xdp_->close();
+  if (xdp_) {
+    const net::XdpStats& x = xdp_->stats();
+    if (user_tcp_ != nullptr)
+      FASTMM_LOG_INFO("{}: af_xdp: {} frames to user_tcp, {} sent, {} TX drops, {} kicks",
+                      cfg_.name,
+                      x.to_sink,
+                      x.tx_frames,
+                      x.tx_drops,
+                      x.tx_kicks);
+    xdp_->close();
+  }
   if (dpdk_) {
     static_cast<void>(dpdk_->refresh_stats());
     const net::DpdkStats& d = dpdk_->stats();
     FASTMM_LOG_INFO(
         "{}: dpdk: {} packets, {} missed, {} errors, {} no-mbuf, {} bad frames, {} other, {} "
-        "unmatched",
+        "unmatched, {} to user_tcp, {} to / {} from the kernel, {} sent, {} TX drops",
         cfg_.name,
         d.ipackets,
         d.imissed,
@@ -454,7 +515,12 @@ void NasdaqItchVenue::disconnect() {
         d.rx_nombuf,
         d.bad_frames,
         d.other,
-        d.unmatched);
+        d.unmatched,
+        d.to_sink,
+        d.to_kernel,
+        d.from_kernel,
+        d.tx_frames,
+        d.tx_drops);
     dpdk_->close();
   }
   publish_status();
@@ -1144,6 +1210,14 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
   }
   c.dpdk_eal_args = extra("dpdk_eal_args");
   c.dpdk_port = extra("dpdk_port");
+  c.dpdk_exception_port = extra("dpdk_exception_port");
+  c.dpdk_exception_ip = extra("dpdk_exception_ip");
+  c.dpdk_exception_interval_ns = static_cast<std::int64_t>(
+      extra_u64("dpdk_exception_interval_us",
+                static_cast<std::uint64_t>(c.dpdk_exception_interval_ns / 1000),
+                0,
+                1'000'000) *
+      1000);
   const std::string interface = extra("interface");
   const char* line_keys[2] = {"line_a", "line_b"};
   for (std::size_t i = 0; i < 2; ++i) {
@@ -1159,8 +1233,8 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
     std::uint32_t group_be = 0;
     if (colon == std::string::npos || !parse_u64(std::string_view(spec).substr(colon + 1), port) ||
         port == 0 || port > 65535 || !net::parse_ipv4(spec.substr(0, colon), group_be) ||
-        !net::is_ipv4_multicast(group_be))
-      throw bad(key, "expected \"<IPv4 multicast group>:<port>\"");
+        group_be == 0)
+      throw bad(key, "expected \"<IPv4 multicast group or local address>:<port>\"");
     l.group = spec.substr(0, colon);
     l.port = static_cast<std::uint16_t>(port);
     l.interface = extra((key + "_interface").c_str());
@@ -1255,8 +1329,9 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
     c.order_transport = OrderTransport::UserTcp;
     c.user_tcp_interface = extra("user_tcp_interface");
     if (c.user_tcp_interface.empty()) c.user_tcp_interface = interface;
-    if (c.user_tcp_interface.empty())
+    if (c.user_tcp_interface.empty() && c.rx_backend != RxBackend::Dpdk)
       throw bad("user_tcp_interface", "user_tcp needs an interface name (or interface)");
+    c.user_tcp_port = static_cast<std::uint16_t>(extra_u64("user_tcp_port", 0, 0, 65535));
     c.user_tcp_ip = extra("user_tcp_ip");
     std::uint32_t probe_ip = 0;
     if (!net::parse_ipv4(c.user_tcp_ip, probe_ip))

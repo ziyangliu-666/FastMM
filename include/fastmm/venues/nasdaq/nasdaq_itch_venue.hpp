@@ -50,8 +50,15 @@
 // orders; cancel_all() shuts the connection down from the calling thread for the same effect.
 //
 // order_transport = "kernel" runs the OUCH connection on a kernel TCP socket (TcpLink);
-// "user_tcp" (experimental) on net::UserTcp over an AF_PACKET ring with its own IPv4 address
-// (UserTcpLink, user_tcp_link.hpp), polled from poll() on every loop iteration.
+// "user_tcp" (experimental) on net::UserTcp with its own IPv4 address (UserTcpLink,
+// user_tcp_link.hpp), polled from poll() on every loop iteration. Its frames go through the
+// market-data device: an AF_PACKET ring with the kernel backend, the XDP sockets (the program also
+// redirects the link's TCP and ARP; the first socket gets a TX ring) with af_xdp, the DPDK port
+// with dpdk.
+//
+// Market data may be unicast: a line's "group" is then a local address the simulator sends to (no
+// IGMP). With dpdk_exception_port (a net_tap vdev) the kernel keeps an interface on the DPDK port
+// for everything the venue does not take itself (ARP, GLIMPSE, re-requests, IGMP, kernel TCP).
 #include "fastmm/codecs/itch/glimpse.hpp"
 #include "fastmm/codecs/itch/itch_l2_bridge.hpp"
 #include "fastmm/codecs/moldudp/moldudp64.hpp"
@@ -99,13 +106,16 @@ struct NasdaqItchVenueConfig {
   std::array<ItchLine, 2> lines;
   std::vector<std::uint32_t> queues;  // af_xdp RX queues on every interface (empty: queue 0)
   net::XdpMode xdp_mode = net::XdpMode::Auto;
-  int rcvbuf_bytes = 0;       // kernel: SO_RCVBUF, 0 = system default
-  std::uint32_t batch = 32;   // datagrams per recvmmsg (kernel) / RX descriptors per poll
-  std::string dpdk_eal_args;  // dpdk: space-separated rte_eal_init arguments
-  std::string dpdk_port;      // dpdk: ethdev name; "" = the first port
-  bool busy_poll = false;     // [engine] spin_mode = "busy"
-  std::string rerequest;      // "ip:port" of the MoldUDP64 re-request server; "" = none
-  std::string glimpse_url;    // "ip:port" of GLIMPSE 5.0; "" = start at sequence 1
+  int rcvbuf_bytes = 0;             // kernel: SO_RCVBUF, 0 = system default
+  std::uint32_t batch = 32;         // datagrams per recvmmsg (kernel) / RX descriptors per poll
+  std::string dpdk_eal_args;        // dpdk: space-separated rte_eal_init arguments
+  std::string dpdk_port;            // dpdk: ethdev name; "" = the first port
+  std::string dpdk_exception_port;  // dpdk: net_tap vdev for the kernel's traffic; "" = none
+  std::string dpdk_exception_ip;    // dpdk: "a.b.c.d/len" for its interface
+  std::int64_t dpdk_exception_interval_ns = 20'000;
+  bool busy_poll = false;   // [engine] spin_mode = "busy"
+  std::string rerequest;    // "ip:port" of the MoldUDP64 re-request server; "" = none
+  std::string glimpse_url;  // "ip:port" of GLIMPSE 5.0; "" = start at sequence 1
   std::string glimpse_username = "glimps";
   std::string glimpse_password = "glimpse";
   std::uint32_t reorder_packets = 256;
@@ -123,10 +133,11 @@ struct NasdaqItchVenueConfig {
   std::string ouch_username = "fmouch";
   std::string ouch_password = "ouch";
   OrderTransport order_transport = OrderTransport::Kernel;
-  std::string user_tcp_interface;  // "" = interface
-  std::string user_tcp_ip;         // user_tcp: the link's own IPv4 address
-  std::string user_tcp_gateway;    // user_tcp: next hop when the OUCH server is not on-link
-  bool dry_run = false;            // no order entry
+  std::string user_tcp_interface;   // "" = interface
+  std::string user_tcp_ip;          // user_tcp: the link's own IPv4 address
+  std::string user_tcp_gateway;     // user_tcp: next hop when the OUCH server is not on-link
+  std::uint16_t user_tcp_port = 0;  // user_tcp: fixed local port; 0 = random per connection
+  bool dry_run = false;             // no order entry
 };
 
 class NasdaqItchVenue final : public Venue {

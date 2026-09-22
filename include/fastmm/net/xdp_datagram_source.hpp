@@ -1,10 +1,15 @@
 #pragma once
 // AF_XDP datagram source (ADR-0015, section 3): one XDP socket per (interface, RX queue), each with
-// its own UMEM, fill and RX rings (the completion ring exists because bind requires it; there is
-// no TX ring). A BPF program per interface, loaded and attached over raw bpf(2) calls, redirects
-// UDP datagrams for the subscribed (group, port) pairs to the sockets and passes everything else to
-// the kernel. A kernel UDP socket per subscription joins the group so IGMP reports go out; it
-// reads nothing. Linux 5.11 or later; needs CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF and CAP_IPC_LOCK.
+// its own UMEM, fill and RX rings (the completion ring exists because bind requires it). A BPF
+// program per interface, loaded and attached over raw bpf(2) calls, redirects UDP datagrams for
+// the subscribed (group, port) pairs to the sockets and passes everything else to the kernel. A
+// kernel UDP socket per multicast subscription joins the group so IGMP reports go out; it reads
+// nothing. A unicast subscription is a local address (no join). Linux 5.11 or later; needs
+// CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF and CAP_IPC_LOCK.
+//
+// UserTcp on the same sockets (XdpConfig::tcp_*): the program also redirects TCP to tcp_ip (and
+// tcp_port) and ARP for tcp_ip; poll() hands those frames to the FrameSink, and the first socket
+// on tcp_interface gets a TX ring (tx_frames more UMEM frames) behind frame_tx().
 //
 // Single-threaded: open, poll and the stats calls belong to the net thread. poll() allocates
 // nothing and returns every RX descriptor it took to the fill ring before it returns, so payload
@@ -13,6 +18,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/datagram_source.hpp"
 #include "fastmm/net/udp_frame.hpp"
+#include "fastmm/net/user_tcp.hpp"
 #include "fastmm/net/xdp_program.hpp"
 
 #include <sys/socket.h>
@@ -50,7 +56,7 @@ enum class XdpMode : std::uint8_t { Auto, ZeroCopy, NativeCopy, Generic };
 
 struct XdpSubscription {
   std::string interface;     // netdev name
-  std::uint32_t group = 0;   // IPv4 multicast group, network byte order
+  std::uint32_t group = 0;   // IPv4 multicast group or local unicast address, network byte order
   std::uint16_t port = 0;    // host byte order
   std::uint32_t source = 0;  // network byte order; 0 = any. Joins only: the XDP map ignores it.
 };
@@ -74,6 +80,12 @@ struct XdpConfig {
   int busy_poll_budget = 64;
   // IPv4 header and UDP checksums in user space (a zero UDP checksum is accepted).
   bool verify_udp_checksum = false;
+  // UserTcp sharing the sockets ("" = none). tcp_interface must carry a subscription.
+  std::string tcp_interface;
+  std::uint32_t tcp_ip = 0;       // network byte order
+  std::uint16_t tcp_port = 0;     // host byte order; 0 = any destination port
+  bool tcp_arp = true;            // redirect ARP for tcp_ip (false when the kernel owns tcp_ip)
+  std::uint32_t tx_frames = 256;  // TX ring and its UMEM frames, power of two
 };
 
 struct XdpStats {
@@ -82,6 +94,10 @@ struct XdpStats {
   std::uint64_t bad_frames = 0;  // failed the user-space checks (udp_frame.hpp)
   std::uint64_t unmatched = 0;   // valid, but no subscription on that interface
   std::uint64_t fill_short = 0;  // descriptors not returned because the fill ring was full
+  std::uint64_t to_sink = 0;     // frames given to the FrameSink
+  std::uint64_t tx_frames = 0;   // frames put on the TX ring
+  std::uint64_t tx_drops = 0;    // no free TX frame or ring slot
+  std::uint64_t tx_kicks = 0;    // sendto() wake-ups
 };
 
 // XDP_STATISTICS of one socket, as of the last refresh_stats().
@@ -124,10 +140,13 @@ class XdpFilter {
     return *this;
   }
 
-  // Creates the maps (XSKMAP with `xsk_slots` entries), inserts `keys` and loads the program.
-  // Returns 0 or -errno; `err` names the failing step and carries the verifier log when the load
-  // fails.
-  int create(std::span<const xdp::Key> keys, std::uint32_t xsk_slots, std::string& err);
+  // Creates the maps (XSKMAP with `xsk_slots` entries), inserts `keys` and loads the program
+  // (with `tcp`: build_program's TcpMatch). Returns 0 or -errno; `err` names the failing step and
+  // carries the verifier log when the load fails.
+  int create(std::span<const xdp::Key> keys,
+             std::uint32_t xsk_slots,
+             std::string& err,
+             xdp::TcpMatch tcp = {});
   // BPF_LINK_CREATE (attach type BPF_XDP) on `ifindex` with XDP_FLAGS_DRV_MODE or
   // XDP_FLAGS_SKB_MODE. Returns 0 or -errno: -EBUSY or -EEXIST when the interface already has an
   // XDP program, -EOPNOTSUPP when the driver has no native XDP.
@@ -232,6 +251,14 @@ struct XskSocket {
   std::size_t rx_map_len = 0;
   XskRing fill;
   XskRing rx;
+  // TX (the UserTcp socket only): frames [rx_frames, rx_frames + tx_frames) of the UMEM.
+  void* tx_map = nullptr;
+  std::size_t tx_map_len = 0;
+  void* comp_map = nullptr;
+  std::size_t comp_map_len = 0;
+  XskRing tx;
+  XskRing comp;
+  std::uint32_t tx_frames = 0;
 };
 
 }  // namespace detail
@@ -254,7 +281,8 @@ class XdpDatagramSource {
   // Busy-poll options the kernel refused at open (the sockets poll from user space without them).
   [[nodiscard]] std::span<const std::string> warnings() const noexcept { return warnings_; }
 
-  // Delivers up to `batch` datagrams per socket; returns the number delivered.
+  // Delivers up to `batch` datagrams per socket; returns the number delivered, plus the frames
+  // given to the FrameSink (so a drain loop keeps going while UserTcp traffic arrives).
   template <class H>
   std::size_t poll(H&& handler) noexcept {
     std::size_t total = 0;
@@ -264,6 +292,14 @@ class XdpDatagramSource {
 
   // XDP socket fds, readable when their RX ring has descriptors (adaptive mode waits on them).
   [[nodiscard]] std::span<const int> fds() const noexcept { return fds_; }
+
+  // UserTcp on these sockets (XdpConfig::tcp_*): frames that are not datagrams go to `sink`, and
+  // frame_tx() sends through the TX ring. mac() and mtu() are tcp_interface's.
+  void set_frame_sink(const FrameSink& sink) noexcept { sink_ = sink; }
+  [[nodiscard]] FrameTx& frame_tx() noexcept { return tx_; }
+  [[nodiscard]] bool has_tx() const noexcept { return tx_sock_ != nullptr; }
+  [[nodiscard]] const MacAddr& mac() const noexcept { return mac_; }
+  [[nodiscard]] std::uint32_t mtu() const noexcept { return mtu_; }
 
   // Reads XDP_STATISTICS and the fallback counters (system calls; not for the hot loop).
   int refresh_stats() noexcept;
@@ -294,6 +330,7 @@ class XdpDatagramSource {
     const auto* descs = static_cast<const detail::XdpDescView*>(s.rx.entries);
     auto* fill_addrs = static_cast<std::uint64_t*>(s.fill.entries);
     std::size_t delivered = 0;
+    std::size_t sunk = 0;
     for (std::uint32_t i = 0; i < n; ++i) {
       const detail::XdpDescView d = descs[(rx_idx + i) & s.rx.mask];
       if (can_fill) fill_addrs[(fill_idx + i) & s.fill.mask] = d.addr & frame_mask_;
@@ -301,10 +338,18 @@ class XdpDatagramSource {
         ++stats_.bad_frames;
         continue;
       }
-      const UdpFrame f =
-          parse_udp_frame(std::span<const std::byte>(s.umem + d.addr, d.len), verify_checksums_);
+      const std::span<const std::byte> frame(s.umem + d.addr, d.len);
+      const UdpFrame f = parse_udp_frame(frame, verify_checksums_);
       if (FASTMM_UNLIKELY(f.status != FrameStatus::Ok)) {
-        ++stats_.bad_frames;
+        // TCP and ARP the program redirected for UserTcp.
+        if ((f.status == FrameStatus::NotUdp || f.status == FrameStatus::NotIpv4) &&
+            sink_.fn != nullptr) {
+          sink_.fn(sink_.ctx, frame);
+          ++stats_.to_sink;
+          ++sunk;
+        } else {
+          ++stats_.bad_frames;
+        }
         continue;
       }
       const detail::XdpRoute* route = nullptr;
@@ -333,12 +378,27 @@ class XdpDatagramSource {
       stats_.fill_short += n;  // cannot happen: the fill ring holds every frame of the UMEM
     }
     stats_.datagrams += delivered;
-    return delivered;
+    return delivered + sunk;
   }
 
   static void wake(const detail::XskSocket& s) noexcept {
     ::recvfrom(s.fd, nullptr, 0, MSG_DONTWAIT, nullptr, nullptr);
   }
+
+  class Tx final : public FrameTx {
+   public:
+    explicit Tx(XdpDatagramSource& s) noexcept : s_(s) {}
+    bool send_frame(std::span<const std::byte> frame) noexcept override {
+      return s_.tx_frame(frame);
+    }
+    void flush() noexcept override { s_.tx_flush(); }
+
+   private:
+    XdpDatagramSource& s_;
+  };
+  bool tx_frame(std::span<const std::byte> frame) noexcept;
+  void tx_flush() noexcept;
+  void tx_reclaim() noexcept;
 
   int fail(int err, std::string msg);
   int open_interface(std::size_t iface,
@@ -347,6 +407,7 @@ class XdpDatagramSource {
                      std::uint32_t routes_end,
                      const XdpConfig& cfg);
   int create_socket(detail::XskSocket& s, bool zerocopy, const XdpConfig& cfg, std::string& why);
+  int map_tx(detail::XskSocket& s, const XdpConfig& cfg, std::string& why);
   static void close_socket(detail::XskSocket& s) noexcept;
 
   std::vector<detail::XskSocket> sockets_;
@@ -359,6 +420,15 @@ class XdpDatagramSource {
   std::vector<std::string> warnings_;
   std::string error_;
   XdpStats stats_;
+  FrameSink sink_{};
+  Tx tx_{*this};
+  detail::XskSocket* tx_sock_ = nullptr;
+  std::vector<std::uint64_t> tx_free_;  // free TX frame addresses (a stack)
+  std::uint32_t tx_pending_ = 0;        // descriptors written, not yet submitted
+  bool tx_copy_ = true;                 // XDP_COPY: every flush needs a sendto()
+  MacAddr mac_{};
+  std::uint32_t mtu_ = 1500;
+  std::uint32_t frame_size_ = 4096;
   std::uint64_t frame_mask_ = 0;
   std::uint32_t batch_ = 64;
   bool busy_poll_ = false;

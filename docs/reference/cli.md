@@ -165,8 +165,9 @@ usage: fastmm-sim-itch [--config <file.toml>] [options]
   --rerequest-port <n>     MoldUDP64 re-request server, UDP (default 31000, 0 = ephemeral)
   --glimpse-port <n>       GLIMPSE 5.0 over SoupBinTCP (default 31010)
   --ouch-port <n>          OUCH 5.0 over SoupBinTCP (default 31020)
-  --line-a <group:port>    multicast line A (default 239.192.0.1:31001)
-  --line-b <group:port>    multicast line B (default 239.192.0.2:31002, off = none)
+  --line-a <addr:port>     line A: multicast group or unicast address (default
+                           239.192.0.1:31001)
+  --line-b <addr:port>     line B (default 239.192.0.2:31002, off = none)
   --interface <if>         multicast interface, name or IPv4 address (default lo)
   --source <ip>            local address of the multicast socket
   --ttl <n>                multicast TTL (default 1)

@@ -222,7 +222,10 @@ TEST_CASE("KernelDatagramSource: open rejects bad configuration") {
   CHECK(r.err == -EINVAL);
   CHECK(r.step == "config");
 
-  cfg.subscriptions = {{.interface = "", .group = "10.0.0.1", .port = 30001, .source = ""}};
+  cfg.subscriptions = {{.interface = "",
+                        .group = "0.0.0.0",
+                        .port = 30001,
+                        .source = ""}};  // unicast is fine, 0 is not
   r = src.open(cfg);
   CHECK(r.err == -EINVAL);
   CHECK(r.step == "group");

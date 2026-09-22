@@ -27,7 +27,7 @@ struct SimItchSymbol {
 };
 
 struct SimItchLine {
-  std::string group;  // IPv4 multicast group; empty disables the line
+  std::string group;  // IPv4 multicast group or unicast address; empty disables the line
   std::uint16_t port = 0;
   double drop_rate = 0.0;  // probability that a data datagram is not sent on this line
 };

@@ -32,13 +32,22 @@ Every key: [Configuration](../../reference/configuration.md#connector-specific-k
 
 Against `fastmm-sim-itch` on one host, both processes need a network namespace whose `lo` carries multicast (the command is at the top of `configs/nasdaq-itch-sim.toml`); `scripts/bench-e2e.sh` runs them in two namespaces joined by a veth pair.
 
+Networks without multicast (cloud VPCs): make a line's address the receiving host's own and send the lines there (`fastmm-sim-itch --line-a 10.0.0.2:31001 --line-b 10.0.0.2:31002`):
+
+```toml
+line_a = "10.0.0.2:31001"   # a local unicast address: bound, not joined
+line_b = "10.0.0.2:31002"
+```
+
+All three backends take unicast lines; `af_xdp` and `dpdk` match them by address and port like groups.
+
 ## 2. Choose the receive backend
 
 | `rx_backend` | Needs | Receive path |
 |---|---|---|
 | `kernel` | nothing | one UDP socket per line, `recvmmsg`, kernel receive timestamps |
 | `af_xdp` | Linux 5.11, `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_BPF`, `CAP_IPC_LOCK`; an interface name per line | an XDP program redirects the lines' datagrams to AF_XDP sockets; everything else goes to the kernel |
-| `dpdk` | a `-DFASTMM_WITH_DPDK=ON` build, `spin_mode = "busy"` | `rte_eth_rx_burst` on one DPDK port (`dpdk_port`, `dpdk_eal_args`); IGMP joins through kernel sockets on the line interfaces |
+| `dpdk` | a `-DFASTMM_WITH_DPDK=ON` build, `spin_mode = "busy"` | `rte_eth_rx_burst` on one DPDK port (`dpdk_port`, `dpdk_eal_args`); the kernel's traffic through an exception tap (below) |
 
 For `af_xdp`, grant the capabilities to the binary (or run it as root):
 
@@ -58,7 +67,7 @@ The order connection (OUCH over SoupBinTCP, `order_entry = "sim_ouch"`) is a pla
 
 ### DPDK
 
-Build with DPDK: `cmake --preset release -DFASTMM_WITH_DPDK=ON`. CMake uses pkg-config's `libdpdk`; without one it runs `scripts/build-dpdk.sh`, which builds a static DPDK 25.11 (a few minutes, no root; meson, ninja and pyelftools in a venv under the build directory) into `<build>/_deps/dpdk`. The EAL starts once per process with `dpdk_eal_args`; the venue's network thread registers itself as an EAL thread on its first poll.
+Build with DPDK: `cmake --preset release-dpdk` (portable; `scripts/package-release.sh` packs the binaries for other hosts). CMake uses pkg-config's `libdpdk`; without one it runs `scripts/build-dpdk.sh`, which builds a static DPDK 25.11 (a few minutes, no root; meson, ninja and pyelftools in a venv under the build directory) into `<build>/_deps/dpdk`. The EAL starts once per process with `dpdk_eal_args`; the venue's network thread registers itself as an EAL thread on its first poll.
 
 Without hugepages, PCI access or root, for example over a veth (what `scripts/bench-e2e.sh --backend dpdk` and the `dpdk` ctest label run inside `unshare -Urn`):
 
@@ -69,7 +78,19 @@ dpdk_eal_args = "--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 --vde
 dpdk_port = "net_af_packet0"
 ```
 
-`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. On a NIC, bind it to `vfio-pci` (or use a bifurcated `mlx5` port), give the EAL hugepages and name the PCI address in `dpdk_port`. A port bound to `vfio-pci` has no kernel netdev: the IGMP join needs another kernel interface on the same segment, or static multicast forwarding on the switch. EAL's `Error creating '/var/run/dpdk'` in a user namespace is harmless with `--in-memory`.
+`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. EAL's `Error creating '/var/run/dpdk'` in a user namespace is harmless with `--in-memory`.
+
+On a NIC, bind it to `vfio-pci` (`scripts/host-setup.sh dpdk-bind <iface>`; no-IOMMU mode on a VM), give the EAL hugepages and name the PCI address in `dpdk_port`. The port then has no kernel netdev; an exception port gives the kernel one:
+
+```toml
+dpdk_eal_args = "-l 0 --in-memory --no-telemetry -a 0000:06:00.0 --vdev=net_tap0,iface=fmx0"
+dpdk_port = "0000:06:00.0"
+dpdk_exception_port = "net_tap0"      # a net_tap vdev
+dpdk_exception_ip = "10.0.0.2/24"     # the host's address, now on fmx0
+interface = "fmx0"                    # IGMP joins go out through it
+```
+
+The tap gets the port's MAC. Frames the venue does not take (datagrams of no line, ARP, ICMP, IGMP, TCP other than `user_tcp`'s) go to the kernel through it, and what the kernel sends there leaves through the port: GLIMPSE, re-requests, IGMP reports and kernel TCP keep working. The tap is read every `dpdk_exception_interval_us` (20 µs; each read is a system call); set 0 when the OUCH connection is kernel TCP through it. Without an exception port the source answers ARP for unicast line addresses itself and drops the rest.
 
 ## 3. Steer the groups to one RX queue (af_xdp)
 
@@ -122,7 +143,13 @@ echo 5 | sudo tee /proc/irq/<irq>/smp_affinity_list
 
 ## 8. Order entry without the kernel TCP stack (experimental)
 
-`order_transport = "user_tcp"` runs the OUCH connection on a user-space TCP client (`net::UserTcp`) over an `AF_PACKET` ring (`PACKET_MMAP` RX and TX rings, `PACKET_QDISC_BYPASS`); it needs `CAP_NET_RAW` only:
+`order_transport = "user_tcp"` runs the OUCH connection on a user-space TCP client (`net::UserTcp`) over the receive backend's device:
+
+| `rx_backend` | Frames |
+|---|---|
+| `kernel` | an `AF_PACKET` ring (`PACKET_MMAP` RX and TX rings, `PACKET_QDISC_BYPASS`); `CAP_NET_RAW` |
+| `af_xdp` | the XDP sockets: the program also redirects TCP to `user_tcp_ip` (and `user_tcp_port`) and ARP for it; the first socket on `user_tcp_interface` gets a TX ring |
+| `dpdk` | the DPDK port: its RX burst hands ARP and TCP to `user_tcp_ip` (and `user_tcp_port`) to the link, which transmits on the same queue |
 
 ```toml
 order_transport = "user_tcp"
@@ -131,8 +158,12 @@ user_tcp_ip = "10.211.0.3"    # its own address on the interface's subnet
 # user_tcp_gateway = "10.0.0.1"  # when the OUCH server is not on-link
 ```
 
-- `user_tcp_ip` must not be assigned to any kernel interface: the kernel would answer the server's segments with RSTs. The link answers ARP for it.
+- `user_tcp_ip` must not be assigned to any kernel interface: the kernel would answer the server's segments with RSTs. The link answers ARP for it. On `af_xdp` and `dpdk` it may be the host's own address with a fixed `user_tcp_port` outside the kernel's ephemeral range (61001): only TCP to that port reaches the link (on `af_xdp` the kernel keeps ARP, and the link takes the next hop's MAC from the kernel's neighbour table). Use that where the network drops addresses it did not assign.
 - The server's segments must arrive as sent: GRO off on the NIC (`ethtool -K eth1 gro off`), TSO/GSO off on a veth peer. A merged segment larger than a ring frame (2 KiB) is dropped as a bad frame.
 - One connection, client side only: MSS option, no window scaling, SACK or timestamps; RTO per RFC 6298 (minimum 200 ms, as Linux), fast retransmit, out-of-order segments kept for reassembly, FIN, RST and RFC 5961 challenge ACKs. The venue logs its counters (retransmits, out-of-order segments, RSTs) at shutdown.
 
-The send still makes one `sendto` per drain to kick the TX ring; on veth that call runs the simulator's receive path, as `write` does. `bench/README.md` has the numbers.
+With the `AF_PACKET` ring, and with AF_XDP in copy mode, the send still makes one `sendto` per drain to kick the TX ring; on veth that call runs the simulator's receive path, as `write` does. DPDK sends with `rte_eth_tx_burst`. `bench/README.md` has the numbers.
+
+## 9. Two hosts
+
+`scripts/bench-2host.sh` runs `fastmm-sim-itch` on another host over ssh and `fastmm-live` here, with unicast lines, and prints the `bench-e2e.sh` table. [Two-host benchmark](two-host-benchmark.md) has the steps for two cloud VMs.

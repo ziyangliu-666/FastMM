@@ -4,10 +4,13 @@
 //
 // The veth cases need root: they create two network namespaces with `ip netns add`, a veth pair
 // between them, and switch this thread into each with setns(2) to create the sockets there.
+#include "../net/user_tcp_test_util.hpp"
 #include "test_support.hpp"
 #include "xdp_test_util.hpp"
 
+#include "fastmm/net/reactor.hpp"
 #include "fastmm/net/udp_frame.hpp"
+#include "fastmm/net/user_tcp.hpp"
 #include "fastmm/net/xdp_datagram_source.hpp"
 
 #include <arpa/inet.h>
@@ -26,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -335,7 +339,156 @@ void veth_receive(XdpMode mode, XdpMode expect) {
   ::close(k_ucast);
 }
 
+// UserTcp on the XDP socket (tcp_* in XdpConfig) against a kernel TCP echo server in the sender
+// namespace, with a unicast line on the receiver's address. shared_ip: the stack uses the
+// receiver's own address (the kernel keeps ARP; fixed port, the peer's MAC given).
+void veth_user_tcp(XdpMode mode, bool shared_ip) {
+  FASTMM_XDP_SKIP_UNLESS(veth_skip_reason());
+  if (std::system("ethtool --version >/dev/null 2>&1") != 0) {
+    if (require_privileged()) FAIL("needs ethtool");
+    MESSAGE("skipped: needs ethtool");
+    return;
+  }
+  VethPair net;
+  REQUIRE_MESSAGE(net.ok, "veth setup failed (ip netns / ip link)");
+  REQUIRE(
+      sh("ip netns exec " + net.tx_ns + " ethtool -K " + net.tx_if + " tso off gso off tx off"));
+
+  // Sender side: the echo server, a UDP sender, and its MAC.
+  REQUIRE(net.enter_tx());
+  const int lfd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  REQUIRE(lfd >= 0);
+  sockaddr_in la{};
+  la.sin_family = AF_INET;
+  la.sin_port = htons(7000);
+  la.sin_addr.s_addr = ip("10.203.0.1");
+  REQUIRE(::bind(lfd, reinterpret_cast<const sockaddr*>(&la), sizeof la) == 0);
+  REQUIRE(::listen(lfd, 4) == 0);
+  const int tx = udp_socket();
+  REQUIRE(tx >= 0);
+  MacAddr peer_mac{};
+  {
+    ifreq ifr{};
+    std::strncpy(ifr.ifr_name, net.tx_if.c_str(), IFNAMSIZ - 1);
+    REQUIRE(::ioctl(tx, SIOCGIFHWADDR, &ifr) == 0);
+    std::memcpy(peer_mac.data(), ifr.ifr_hwaddr.sa_data, 6);
+  }
+
+  // Receiver side.
+  REQUIRE(net.enter_rx());
+  const std::uint32_t tcp_ip = shared_ip ? ip("10.203.0.2") : ip("10.203.0.5");
+  XdpDatagramSource src;
+  XdpConfig cfg;
+  cfg.subscriptions.push_back({net.rx_if, ip("10.203.0.2"), kPortA, 0});  // unicast line
+  cfg.frame_count = 256;
+  cfg.batch = 16;
+  cfg.mode = mode;
+  cfg.tcp_interface = net.rx_if;
+  cfg.tcp_ip = tcp_ip;
+  cfg.tcp_port = shared_ip ? 7100 : 0;
+  cfg.tcp_arp = !shared_ip;
+  cfg.tx_frames = 64;
+  const int rc = src.open(cfg);
+  net.go_home();
+  REQUIRE_MESSAGE(rc == 0, src.error());
+  REQUIRE(src.has_tx());
+
+  test::RecordingHandler h;
+  UserTcpConfig tc;
+  tc.local_mac = src.mac();
+  tc.local_ip = tcp_ip;
+  tc.local_port = shared_ip ? 7100 : 0;
+  tc.remote_ip = ip("10.203.0.1");
+  tc.remote_port = 7000;
+  tc.rto_min_ns = 2'000'000;
+  tc.rto_initial_ns = 20'000'000;
+  tc.peer_mac = peer_mac;
+  tc.peer_mac_static = shared_ip;
+  UserTcp tcp(src.frame_tx(), h, tc);
+  FrameSink sink;
+  sink.fn = [](void* p, std::span<const std::byte> f) noexcept {
+    auto* t = static_cast<UserTcp*>(p);
+    t->on_frame(f, Reactor::now_ns());
+    t->flush();
+  };
+  sink.ctx = &tcp;
+  sink.ip = tcp_ip;
+  sink.port = tc.local_port;
+  src.set_frame_sink(sink);
+  REQUIRE(tcp.connect(Reactor::now_ns()));
+
+  std::vector<std::string> datagrams;
+  const auto poll = [&] {
+    src.poll([&](std::span<const std::byte> p, const RxMeta& m) noexcept {
+      datagrams.emplace_back(reinterpret_cast<const char*>(p.data()), p.size());
+      CHECK(m.dst_ip == ip("10.203.0.2"));
+    });
+    if (Reactor::now_ns() >= tcp.next_timer_ns()) tcp.on_timer(Reactor::now_ns());
+  };
+  int cfd = -1;
+  std::string sent;
+  std::string pending;
+  std::mt19937_64 gen(9);
+  const std::size_t total = 256U << 10;
+  int udp_sent = 0;
+  const std::int64_t deadline = Reactor::now_ns() + 30'000'000'000;
+  while (Reactor::now_ns() < deadline) {
+    poll();
+    if (udp_sent < kPerLine)
+      REQUIRE(send_to(tx, ip("10.203.0.2"), kPortA, "U" + std::to_string(udp_sent++)));
+    if (cfd < 0) {
+      cfd = ::accept4(lfd, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    } else {
+      char buf[65536];
+      const ssize_t r = ::read(cfd, buf, sizeof buf);
+      if (r > 0) pending.append(buf, static_cast<std::size_t>(r));
+      if (!pending.empty()) {
+        const ssize_t w = ::write(cfd, pending.data(), pending.size());
+        if (w > 0) pending.erase(0, static_cast<std::size_t>(w));
+      }
+    }
+    if (tcp.established() && sent.size() < total && tcp.unacked() < (64U << 10)) {
+      std::string chunk(1 + gen() % 1400, '\0');
+      for (char& ch : chunk) ch = static_cast<char>(gen());
+      chunk.resize(std::min(chunk.size(), total - sent.size()));
+      REQUIRE(tcp.send(test::bytes_of(chunk)));
+      sent += chunk;
+    }
+    if (sent.size() == total && h.data.size() == total &&
+        datagrams.size() == static_cast<std::size_t>(kPerLine))
+      break;
+    REQUIRE(h.closed == -1);
+  }
+  MESSAGE("mode " << to_string(src.interfaces()[0].mode) << (shared_ip ? ", shared address" : "")
+                  << ": to_sink " << src.stats().to_sink << ", tx " << src.stats().tx_frames
+                  << ", tx drops " << src.stats().tx_drops << ", kicks " << src.stats().tx_kicks
+                  << ", retransmits " << tcp.stats().retransmits);
+  REQUIRE(h.data.size() == total);
+  CHECK(h.data == sent);
+  CHECK(tcp.stats().bad_frames == 0);
+  CHECK(src.stats().tx_drops == 0);
+  REQUIRE(datagrams.size() == static_cast<std::size_t>(kPerLine));
+  for (int i = 0; i < kPerLine; ++i)
+    CHECK(datagrams[static_cast<std::size_t>(i)] == "U" + std::to_string(i));
+  tcp.abort();
+  if (cfd >= 0) ::close(cfd);
+  ::close(lfd);
+  ::close(tx);
+}
+
 }  // namespace
+
+TEST_CASE("veth: UserTcp on the XDP socket and a unicast line in generic mode") {
+  veth_user_tcp(XdpMode::Generic, false);
+}
+
+TEST_CASE("veth: UserTcp on the XDP socket and a unicast line in native copy mode") {
+  veth_user_tcp(XdpMode::NativeCopy, false);
+}
+
+TEST_CASE("veth: UserTcp on the XDP socket with the host's own address and a fixed port") {
+  veth_user_tcp(XdpMode::NativeCopy, true);
+}
 
 TEST_CASE("bpf: the verifier accepts the filter program") {
   FASTMM_XDP_SKIP_UNLESS(bpf_skip_reason());
@@ -348,6 +501,13 @@ TEST_CASE("bpf: the verifier accepts the filter program") {
   std::uint64_t fallback = 1;
   REQUIRE(f.fallback_count(fallback) == 0);
   CHECK(fallback == 0);
+  // With the UserTcp rules (address and port, with and without ARP).
+  for (const bool arp : {true, false}) {
+    XdpFilter g;
+    const int rc2 = g.create(keys, 4, err, {ip("10.203.0.200"), 7000, arp});
+    REQUIRE_MESSAGE(rc2 == 0, err);
+    CHECK(g.prog_fd() >= 0);
+  }
 }
 
 TEST_CASE("bpf: BPF_PROG_TEST_RUN verdicts agree with the parser") {

@@ -62,6 +62,9 @@ struct UserTcpConfig {
   std::uint16_t remote_port = 0;  // host byte order
   std::uint32_t next_hop_ip = 0;  // ARP target; 0 = remote_ip (on-link peer)
   std::uint16_t local_port = 0;   // 0 = pick one per connect() (49152..65535)
+  // The next hop's MAC, when ARP cannot be used (the kernel owns local_ip and sees the replies).
+  MacAddr peer_mac{};
+  bool peer_mac_static = false;
   std::uint16_t mtu = 1500;
   std::size_t tx_buffer = std::size_t{1} << 20;  // bytes, power of two
   std::size_t rx_buffer = std::size_t{1} << 20;

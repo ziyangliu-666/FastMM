@@ -5,6 +5,29 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `order_transport = "user_tcp"` on every receive backend: the OUCH frames go through the
+  backend's device. `af_xdp`: the XDP program also redirects TCP to `user_tcp_ip` (and
+  `user_tcp_port`) and ARP for it, poll() hands those frames to the link (`net::FrameSink`), and
+  the first socket on `user_tcp_interface` has a TX ring. `dpdk`: the RX burst demuxes ARP and
+  the link's TCP, which sends with `rte_eth_tx_burst` on the same port. `user_tcp_port` fixes the
+  local port, which lets the link use the host's own address on `af_xdp` and `dpdk` (the next
+  hop's MAC then comes from the kernel's neighbour table on `af_xdp`).
+- DPDK kernel exception path: `dpdk_exception_port` (a `net_tap` vdev) with
+  `dpdk_exception_ip` gives the kernel an interface with the port's MAC behind a `vfio-pci` port;
+  frames the venue does not take go to it and its frames leave through the port (ARP, GLIMPSE,
+  re-requests, IGMP joins, kernel TCP). Read every `dpdk_exception_interval_us` (20). Without one,
+  the source answers ARP for unicast line addresses.
+- Unicast market data: a `nasdaq_itch` line may be a local unicast address (no join) on all three
+  backends; `fastmm-sim-itch --line-a/--line-b` send to it. For networks without multicast.
+- `scripts/bench-2host.sh`: the end-to-end benchmark across two hosts (simulator over ssh, unicast
+  lines, kernel / af_xdp / dpdk, kernel or user_tcp OUCH). `scripts/host-setup.sh` prepares an
+  Ubuntu 24.04 VM (packages, hugepages, irqbalance, interrupts, `vfio-pci` no-IOMMU bind and
+  restore, AF_XDP queue setup, NIC report). `scripts/package-release.sh` and the `release-dpdk`
+  preset build a portable tarball with DPDK linked in. `docs/how-to/operations/two-host-benchmark.md`.
+- `scripts/bench-e2e.sh --md unicast`, `--dpdk-exception`, `--user-tcp-ip`, `--user-tcp-port`;
+  the table is `scripts/bench-table.py`. ctest: `integration.nasdaq_itch_processes_unicast`,
+  `dpdk.nasdaq_itch_processes_exception_user_tcp`, DPDK unicast/ARP and UserTcp echo cases.
+  `scripts/xdp-test.sh --e2e` (root) adds the AF_XDP UserTcp cases and bench-e2e runs.
 - Run-to-completion: `[engine] threading = "single"` (default `"split"`) runs the one venue's
   reactor, the engine and order sending on the engine thread, with no ring hop between the packet
   read and the order write (docs/explanation/architecture.md#run-to-completion). Market data reaches
