@@ -81,6 +81,16 @@ Measured by `scripts/bench-e2e.sh` on 2026-09-23: WSL2 (Linux 6.6, 8 cores), `fa
 
 The network thread writes all orders of one drain of the outbound ring with one `write`; the write (p50 7 to 9 µs) runs the veth and the simulator's TCP receive path inside the system call. With `spin_mode = "adaptive"` (one 30 s run, 2026-09-21) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
 
+`[engine] timer_slack_ns` with `spin_mode = "adaptive"` (2026-09-23, `--spin adaptive
+--timer-slack N`, 2 interleaved runs of 20 s each, µs, range over the runs). The engine sleeps
+50 µs when idle; the network thread waits in `epoll_wait`, which the slack does not delay, so
+wire to wire does not change. In busy mode nothing sleeps.
+
+| timer slack | wire to wire p50 | T0 to T5 p50 | T0 to T5 p99 |
+|---|---:|---:|---:|
+| 0 (the kernel's 50 µs) | 69.6 to 77.8 | 11.8 to 13.3 | 147.5 to 155.6 |
+| 1 ns | 73.7 to 81.9 | 7.4 to 9.2 | 98.3 to 127.0 |
+
 Order send path, 2026-09-22 (before the hot-path changes above), same machine and settings, 3 runs of 20 s per row (9 for the first and third), p50 in µs, range over the runs:
 
 | network thread | wire to wire | T0 to T5 | T0 to OUCH write returned |
