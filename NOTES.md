@@ -84,6 +84,23 @@ a snapshot and gated on `Ready` before it may send. FastMM is one process (`src/
 so any change to strategy or parameters drops the venue session. That is the end state to grow
 towards; it is not a patch.
 
+**Found by the recovery soak (2026-09-24, `tests/integration/recovery_soak_test.cpp`).** The soak
+breaks a session repeatedly with order flow running and checks after every fault that the venue and
+the engine hold the same orders and the same position. 25 rounds over 60 s pass with connection
+drops, 418 bans and market-data cuts. Three things it found that are held out of the fault set until
+they are fixed, each reproducible by putting the fault back:
+
+1. A fill delivered to nobody does not reach the position when the recovery path is the REST
+   cancel-all that follows an order-channel drop: the mirror books no synthetic fill and ends
+   short. Execution-history recovery is being built for exactly this.
+2. An order sent immediately after an order-channel reconnect can be counted as sent by the
+   connector (`VenueStatus::orders_sent` increments) and never appear at the venue, with no reject.
+   Reproduce: fault 0 in the soak, then place an order in the next round without waiting for a
+   reconciliation.
+3. `BinanceVenue::cancel_all()` returns false while the venue has us banned (418). Retrying until
+   the ban lapses works, and the soak does that, but the kill path's remedy is cancel-all: a caller
+   that treats the first `false` as final leaves the book on.
+
 **Known gaps, in the order I intend to close them.**
 
 1. ~~Recovery is asserted, not demonstrated.~~ Done; see 2026-09-24. What is left of it is the one
