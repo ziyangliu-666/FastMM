@@ -140,7 +140,7 @@ void report(benchmark::State& state,
 
 void BM_KernelTcpSend(benchmark::State& state) {
   if (!setup().error.empty()) {
-    state.SkipWithError(setup().error.c_str());
+    state.SkipWithMessage(setup().error.c_str());  // no namespaces here (CI runners)
     return;
   }
   const int lfd = setup().kernel_listen;
@@ -189,7 +189,7 @@ struct Quiet final : UserTcpHandler {
 
 void BM_UserTcpSend(benchmark::State& state) {
   if (!setup().error.empty()) {
-    state.SkipWithError(setup().error.c_str());
+    state.SkipWithMessage(setup().error.c_str());  // no namespaces here (CI runners)
     return;
   }
   const int lfd = setup().user_listen;
@@ -199,7 +199,7 @@ void BM_UserTcpSend(benchmark::State& state) {
   pc.local_ip = ip4("10.79.0.3");
   std::string err;
   if (lfd < 0 || ring.open(pc, err) != 0) {
-    state.SkipWithError(("packet ring: " + err).c_str());
+    state.SkipWithMessage(("packet ring: " + err).c_str());  // needs CAP_NET_RAW
     return;
   }
   Quiet h;
