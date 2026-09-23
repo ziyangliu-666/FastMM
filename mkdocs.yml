@@ -192,6 +192,7 @@ nav:
   - Explanation:
       - explanation/how-it-works.md
       - explanation/economics.md
+      - explanation/backtesting.md
       - explanation/architecture.md
       - explanation/event-flow.md
       - explanation/determinism.md

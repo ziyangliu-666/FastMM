@@ -29,7 +29,7 @@ struct MulticoreRegistrar {
 
 // Declares that `name` (a benchmark function name; all its arguments are covered) needs `cores`
 // cores. Place it next to the BENCHMARK() registration.
-#define FASTMM_BENCH_NEEDS_CORES(name, cores)                              \
+#define FASTMM_BENCH_NEEDS_CORES(name, cores)                               \
   static const ::fastmm::bench::MulticoreRegistrar name##_needs_cores_reg { \
-    #name, (cores)                                                         \
+    #name, (cores)                                                          \
   }

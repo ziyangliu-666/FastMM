@@ -74,7 +74,7 @@ Result<void, std::string> write_file_atomic(const std::string& path, std::string
 // ---- session epoch ----------------------------------------------------------------------------
 
 Result<std::uint16_t, std::string> SessionEpochStore::next_epoch(const std::string& path,
-                                                                bool* wrapped) {
+                                                                 bool* wrapped) {
   if (wrapped != nullptr) *wrapped = false;
   std::uint64_t counter = 0;
   std::error_code ec;
