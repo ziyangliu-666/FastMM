@@ -20,6 +20,19 @@ fees: net −499 USDT. Spread captured 0.032 bps against 2 bps of fees, and mark
 10 s and 1 min — the fills lose money before fees. The shipped strategies are reference
 implementations of published rules, not an edge.
 
+**Verified connector gaps (2026-09-23, third review).** Being fixed now: no exchange-side dead man's
+switch on any venue but Deribit (`countdownCancelAll`, `set_dcp`), which is the only protection that
+survives the process dying; Binance Spot replaces with `order.cancelReplace` only, so every
+size-down loses queue position where `PUT /api/v3/order/amend/keepPriority` would keep it; no batch
+or mass-quote endpoints, so quote throughput is metered against the wrong limiter.
+
+**Longer-term shape worth knowing.** Roq splits a gateway process per venue from the strategy
+process over a Unix socket, so restarting a strategy keeps the authenticated venue session, its
+sequence numbers, rate-limit budget and order cache alive, and the reconnecting strategy is replayed
+a snapshot and gated on `Ready` before it may send. FastMM is one process (`src/live/session.cpp`),
+so any change to strategy or parameters drops the venue session. That is the end state to grow
+towards; it is not a patch.
+
 **Known gaps, in the order I intend to close them.**
 
 1. Recovery is asserted, not demonstrated. There is no test that disconnects a venue mid-flight,
