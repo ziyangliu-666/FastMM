@@ -12,7 +12,7 @@ A strategy with @fastmm.hot methods (compiled with Numba) runs in backtests, rep
     cfg = fastmm.BacktestConfig.from_toml("configs/backtest-example.toml")
     result = fastmm.run_backtest(cfg, data="synthetic", strategy=MyMM)
     print(result.summary_table())
-    frames = result.to_pandas()          # fills / equity / orders DataFrames
+    frames = result.to_pandas()          # fills / equity / orders / markouts DataFrames
     fastmm.run_live(MyMM, "configs/sim-local.toml")    # needs fastmm-engine-live
 
 A class with plain fastmm.Strategy hooks (no @fastmm.hot) runs in backtests only.
@@ -48,7 +48,7 @@ from ._slow.decl import every
 from ._slow.replay import ReplayResult, replay
 from .data import load_csv
 from .live import run_live
-from .results import FIXED_SCALE, sweep_frame, to_pandas
+from .results import FIXED_SCALE, markout_frame, sweep_frame, to_pandas
 from .strategy import (
     BUY,
     LIQUIDITY_UNKNOWN,
@@ -108,6 +108,7 @@ __all__ = [
     "strategies",
     "sweep",
     "sweep_frame",
+    "markout_frame",
     "to_pandas",
 ]
 

@@ -11,7 +11,7 @@ def test_to_pandas_round_trip(example_config):
     cfg.duration_s = 10
     r = fastmm.run_backtest(cfg, data="synthetic")
     frames = r.to_pandas()
-    assert set(frames) == {"fills", "equity", "orders"}
+    assert set(frames) == {"fills", "equity", "orders", "markouts"}
     fills, equity, orders = frames["fills"], frames["equity"], frames["orders"]
 
     assert len(fills) == len(r.fills["ts"]) > 0

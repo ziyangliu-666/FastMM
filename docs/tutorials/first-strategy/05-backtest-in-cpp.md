@@ -12,7 +12,7 @@ cfg.set_seed(7);                       // the synthetic market and the latency m
 cfg.generator.limit_rate_per_s = 400;  // a busier market than the defaults
 cfg.generator.market_rate_per_s = 30;
 cfg.generator.market_qty_median_lots = 1500;
-cfg.transport.fees = sim::FeeModel::from_bps(-0.5, 3.0);  // maker rebate 0.5 bps, taker fee 3 bps
+cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);  // Binance spot VIP 0: 0.1 % both sides
 cfg.params = {{"edge_bps", "0.002"}, {"max_position", "0.004"}, {"report_ms", "0"}};
 ```
 
@@ -47,17 +47,24 @@ return failures == 0 ? 0 : 1;
 
 ```text
 backtest first_mm  seed=7  md_events=18478  steps=20023  wall=0.01s
-  net pnl                        1.3575
-  realized / unrealized / fees   0.0067 / 0.0000 / -1.3507
+  net pnl                        -27.0083
+  realized / unrealized / fees   0.0067 / 0.0000 / 27.0150
   fills (maker / taker)          467 (467 / 0)
   orders / cancels / replaces    762 / 316 / 0
   inventory mean / |mean| / max  -0.00025 / 0.00172 / 0.00387
   outbound messages / sha256     1078 / f29af3d82986f7e18291c51a7d46503cf3097cfff09a22f2068e1f60c29f5deb
+...
+where the PnL came from (quote currency, 27014.99 traded notional)
+  gross spread capture                 0.0046  +0.002 bps of 20974.79, over the 366 of 467 fills that had a venue mid
+  mid drift after the fills            0.0021  adverse selection + the open inventory, marked at the final mid
+  fees paid                          -27.0150
+  = net                              -27.0083
+...
 ok    : the strategy traded
 ok    : the position stayed within max_position
 ok    : two runs sent the same orders
 ```
 
-Negative fees are rebates. Amounts are in USDT, the position in BTC. The fill model and the synthetic flow are simplified; the PnL does not predict live results.
+Amounts are in USDT, the position in BTC. FirstMM captures 0.002 bps of the traded notional gross and pays 10 bps in maker fees, so it loses money on every fill; quoting one tick inside the touch of this market earns nothing. Read the decomposition and the markouts, not the net PnL ([Backtesting](../../explanation/backtesting.md)).
 
 Next: [6. Register it](06-register.md)

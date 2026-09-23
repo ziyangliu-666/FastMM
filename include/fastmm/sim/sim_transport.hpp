@@ -85,6 +85,15 @@ struct SimTransportStats {
   Notional fees_charged{};
 };
 
+// The venue's own view of the book at the moment of a fill, for fill-quality reporting.
+struct FillContext {
+  Price mid;       // venue mid; zero when the book has no two sides
+  Price best_bid;  // venue best bid / ask, to tell a fill at the touch from one behind it
+  Price best_ask;
+  Qty queue_ahead;           // displayed quantity still ahead of us just before the fill
+  bool queue_known = false;  // only FillModel::L2Queue tracks a queue position
+};
+
 // Result-side hooks (backtest collectors). Called on the venue side, in virtual time.
 class SimObserver {
  public:
@@ -92,7 +101,7 @@ class SimObserver {
   // `venue_ts` is the scheduled arrival at the venue; invalid (0) when the latency model
   // dropped the message or the scheduler was full.
   virtual void on_order_sent(const EventHeader&, Timestamp /*send_ts*/, Timestamp /*venue_ts*/) {}
-  virtual void on_fill(const OrderFillMsg&, Timestamp /*venue_ts*/, Price /*venue mid*/) {}
+  virtual void on_fill(const OrderFillMsg&, Timestamp /*venue_ts*/, const FillContext&) {}
   virtual void on_order_event(const EventHeader&, Timestamp /*venue_ts*/) {}
 };
 
@@ -137,6 +146,10 @@ class SimTransport final : public MatchingSink {
     return mirror_[id.value];
   }
   [[nodiscard]] Price venue_mid(InstrumentId id) const noexcept;
+  // Best price on one side of the venue book, zero when that side is empty. Same book as
+  // venue_mid(): the mirror of the historical levels under L2Queue, the matching engine's own
+  // book (strategy orders included) under Matching.
+  [[nodiscard]] Price venue_best(InstrumentId id, Side side) const noexcept;
   [[nodiscard]] MatchingEngine::SideExposure strategy_exposure(InstrumentId id,
                                                                Side side) const noexcept;
   [[nodiscard]] const SimTransportStats& stats() const noexcept { return stats_; }
@@ -199,7 +212,9 @@ class SimTransport final : public MatchingSink {
                  Qty leaves,
                  Liquidity liq,
                  std::uint64_t exec_id,
-                 Timestamp ts) noexcept;
+                 Timestamp ts,
+                 Qty queue_ahead = Qty{},
+                 bool queue_known = false) noexcept;
   void push_order_wire(EventHeader& h, Timestamp venue_ts) noexcept;
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
   static void emit_md_thunk(void* ctx, EventHeader& m, Timestamp venue_ts) noexcept;

@@ -31,6 +31,7 @@ FastMM is a market-making engine in C++20. These pages describe version 0.1.
 
 - [Architecture](explanation/architecture.md): threads, rings, the network reactor, clocks
 - [Event flow](explanation/event-flow.md): from a venue message to an order on the wire
+- [Backtesting](explanation/backtesting.md): markouts, the PnL decomposition and what the simulator cannot tell you
 - [Determinism](explanation/determinism.md): why replays match, and what breaks them
 - [Risk model](explanation/risk-model.md): the pre-trade checks and the kill switch
 - [Benchmarks](explanation/benchmarks.md): how the latency numbers are measured

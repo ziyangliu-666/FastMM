@@ -37,6 +37,14 @@ class BacktestConfig:
         """
     def copy(self) -> BacktestConfig:
         ...
+    def instrument_fees(self, instrument: typing.SupportsInt | typing.SupportsIndex) -> tuple[float, float]:
+        """
+        (maker_bps, taker_bps) charged to one instrument.
+        """
+    def set_instrument_fees(self, instrument: typing.SupportsInt | typing.SupportsIndex, maker_bps: typing.SupportsFloat | typing.SupportsIndex, taker_bps: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        """
+        Charge one instrument its own maker / taker schedule (negative = rebate).
+        """
     def set_param(self, key: str, value: typing.Any) -> None:
         """
         Set one strategy parameter (str / int / float / bool).
@@ -90,25 +98,12 @@ class BacktestConfig:
     def initial_capital(self, arg0: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
     @property
-    def warnings(self) -> list[str]:
-        """
-        Unknown keys and sections of the TOML file, each with its line.
-        """
-    @property
     def journal_out(self) -> str:
         """
         Record the session to this .fmj ('' = no journal).
         """
     @journal_out.setter
     def journal_out(self, arg0: str) -> None:
-        ...
-    @property
-    def max_param_age_ms(self) -> int:
-        """
-        [strategy] max_param_age_ms: quoting is disabled before the first parameter update and while none was applied for this long (0 disables).
-        """
-    @max_param_age_ms.setter
-    def max_param_age_ms(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def latency_fixed_us(self) -> int:
@@ -153,7 +148,7 @@ class BacktestConfig:
     @property
     def maker_fee_bps(self) -> float:
         """
-        Maker fee in bps (negative = rebate), 0.01 bps resolution.
+        Maker fee in bps (negative = rebate), 0.01 bps resolution. Setting it makes every instrument pay the same schedule; use set_instrument_fees() afterwards for per-instrument rates.
         """
     @maker_fee_bps.setter
     def maker_fee_bps(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
@@ -165,6 +160,22 @@ class BacktestConfig:
         """
     @market_rate_per_s.setter
     def market_rate_per_s(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
+        ...
+    @property
+    def markout_horizons_s(self) -> list[float]:
+        """
+        Post-fill markout horizons in seconds; [] turns markouts off.
+        """
+    @markout_horizons_s.setter
+    def markout_horizons_s(self, arg1: collections.abc.Sequence[typing.SupportsFloat | typing.SupportsIndex]) -> None:
+        ...
+    @property
+    def max_param_age_ms(self) -> int:
+        """
+        [strategy] max_param_age_ms: quoting is disabled before the first parameter update and while none was applied for this long (0 disables).
+        """
+    @max_param_age_ms.setter
+    def max_param_age_ms(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
     def measure_wall_clock(self) -> bool:
@@ -273,20 +284,33 @@ class BacktestConfig:
     @property
     def taker_fee_bps(self) -> float:
         """
-        Taker fee in bps, 0.01 bps resolution.
+        Taker fee in bps, 0.01 bps resolution. Setting it clears per-instrument schedules.
         """
     @taker_fee_bps.setter
     def taker_fee_bps(self, arg1: typing.SupportsFloat | typing.SupportsIndex) -> None:
         ...
+    @property
+    def warnings(self) -> list[str]:
+        """
+        Unknown keys and sections of the TOML file, each with its line.
+        """
 class BacktestResult:
     """
     Outcome of one backtest. fills / equity / orders are dicts of read-only numpy views over the C++ vectors (prices, quantities, fees and PnL are raw int64 with a 1e-8 scale); to_pandas() converts them.
     """
     def __repr__(self) -> str:
         ...
+    def _set_slow_methods(self, arg0: collections.abc.Sequence[tuple[str, typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex, typing.SupportsInt | typing.SupportsIndex]]) -> None:
+        """
+        Internal: set slow_methods from (name, calls, p50_ns, p99_ns, max_ns) rows.
+        """
     def engine_stats(self) -> dict:
         """
         The engine's own counters (PnL converted to float).
+        """
+    def markouts(self) -> list:
+        """
+        Post-fill markouts, one entry per horizon: {'horizon_ns', 'label', 'excluded_fills', 'total', 'buy', 'sell', 'maker', 'taker', 'instrument'}. Each bucket has markout / capture / adverse_selection in quote currency and in bps of notional, over the fills that had a mid at the horizon.
         """
     def stats(self) -> dict:
         """
@@ -1080,9 +1104,113 @@ class TradeView:
     @property
     def trade_id(self) -> int:
         ...
+class _SlowChannel:
+    """
+    Internal: the channel between the engine and a strategy's slow methods. The constructor (tests, live runner) makes one whose updates go to its own ring.
+    """
+    def __init__(self, instruments: typing.SupportsInt | typing.SupportsIndex = 1, fills_capacity: typing.SupportsInt | typing.SupportsIndex = 4096, recent_rows: typing.SupportsInt | typing.SupportsIndex = 4096, snapshot_interval_ns: typing.SupportsInt | typing.SupportsIndex = 10000000, symbols: collections.abc.Sequence[str] = []) -> None:
+        ...
+    def begin_call(self, steady_ns: typing.SupportsInt | typing.SupportsIndex, timeout_ns: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def check(self, steady_ns: typing.SupportsInt | typing.SupportsIndex) -> int:
+        """
+        Watchdog check: records a timeout when a call ran past its deadline; the failure code.
+        """
+    def close(self) -> None:
+        """
+        Later publishes return False.
+        """
+    def drain_fills(self) -> bytes:
+        """
+        Bytes of the SlowFill records taken out of the ring.
+        """
+    def end_call(self, steady_ns: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def fail(self, code: typing.SupportsInt | typing.SupportsIndex) -> bool:
+        """
+        Record a failure unless one is recorded; True when this one is kept.
+        """
+    def failure(self) -> int:
+        """
+        The recorded failure code (0: none).
+        """
+    def heartbeat(self, steady_ns: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    def publish(self, inst: typing.SupportsInt | typing.SupportsIndex, fields: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex], values: collections.abc.Sequence[typing.SupportsInt | typing.SupportsIndex]) -> bool:
+        """
+        Send a validated update (inst -1: every instrument). False when refused or closed.
+        """
+    def recent(self, inst: typing.SupportsInt | typing.SupportsIndex) -> tuple[bytes, int]:
+        """
+        (bytes of SlowRecentRow oldest first, rows dropped since the previous call).
+        """
+    def snapshot(self) -> tuple[int, int, bool, bool, bytes]:
+        """
+        (ts_ns, version, quoting_enabled, killed, bytes of SlowInstrumentState per instrument).
+        """
+    @property
+    def closed(self) -> bool:
+        ...
+    @property
+    def fills_capacity(self) -> int:
+        """
+        Fills the ring holds.
+        """
+    @property
+    def instruments(self) -> int:
+        """
+        Instruments.
+        """
+    @property
+    def last_heartbeat(self) -> int:
+        ...
+    @property
+    def published(self) -> int:
+        ...
+    @property
+    def recent_rows(self) -> int:
+        """
+        Rows per instrument in the recent window.
+        """
+    @property
+    def refused(self) -> int:
+        ...
+    @property
+    def symbols(self) -> list[str]:
+        """
+        Instrument symbols by id.
+        """
+def _hot_abi() -> dict:
+    """
+    Internal: layout of the hot hook C ABI (include/fastmm/strategies/hot_abi.h).
+    """
+def _hot_fixed_raw(x: typing.SupportsFloat | typing.SupportsIndex) -> int:
+    """
+    Internal (tests): the `_raw` twin the engine computes for a published float.
+    """
+def _hot_hold_gil(min_calls: typing.SupportsInt | typing.SupportsIndex, timeout_s: typing.SupportsFloat | typing.SupportsIndex) -> tuple[bool, int]:
+    """
+    Internal (tests): wait for a hot backtest to start, then hold the GIL until its hooks have run min_calls more times. Returns (reached, calls).
+    """
+def _journal_config(path: typing.Any) -> BacktestConfig:
+    """
+    Internal: the configuration a journal embeds (RuntimeError when it has none).
+    """
+def _replay_hot_strategy(path: typing.Any, config: BacktestConfig, name: str, program: dict, verify: bool, param_updates: bool) -> dict:
+    """
+    Internal: replay of a compiled hot strategy from a journal; use fastmm.replay().
+    """
+def _run_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, params: dict, program: dict, metadata: str = '', slow: typing.Any = None) -> tuple:
+    """
+    Internal: backtest of a compiled hot strategy with the GIL released; use fastmm.run_backtest(config, data, strategy=MyStrategy).
+    """
 def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any, name: str, hooks: collections.abc.Sequence[str], params: dict) -> tuple:
     """
     Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy).
+    """
+def _slow_abi() -> dict:
+    """
+    Internal: layout of the slow channel structs (include/fastmm/strategies/slow_channel.hpp).
     """
 def build_info() -> str:
     """

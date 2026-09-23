@@ -5,4 +5,5 @@
 
 namespace fastmm::bt {
 using sim::FeeModel;
+using sim::FeeSchedule;
 }  // namespace fastmm::bt

@@ -66,7 +66,7 @@ struct FillCollector final : SimObserver {
   Notional fees{};
   std::uint64_t fills = 0;
   std::uint64_t makers = 0;
-  void on_fill(const OrderFillMsg& f, Timestamp, Price) override {
+  void on_fill(const OrderFillMsg& f, Timestamp, const FillContext&) override {
     ++fills;
     if (f.liquidity == Liquidity::Maker) ++makers;
     fees += f.fee;

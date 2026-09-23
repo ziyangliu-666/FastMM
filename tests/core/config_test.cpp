@@ -72,7 +72,7 @@ TEST_CASE("core.config: shipped configs parse, validate and build instruments") 
   const Config bt = Config::load((configs_dir() / "backtest-example.toml").string());
   CHECK(bt.backtest.get_string("fill_model") == "l2_queue");
   CHECK(bt.backtest.get_double("queue_conservatism") == doctest::Approx(0.5));
-  CHECK(bt.venues[0].fees.maker_bps == doctest::Approx(-0.5));
+  CHECK(bt.venues[0].fees.maker_bps == doctest::Approx(10.0));  // Binance spot VIP 0
   CHECK(bt.strategy.params.at("level_step_ticks") == "5");
   CHECK(bt.strategy.params.at("half_spread_bps") == "0.01");  // shortest round-trip form
 }

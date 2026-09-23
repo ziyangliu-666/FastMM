@@ -123,15 +123,18 @@ class QueuePositionModel {
     });
   }
 
-  // A trade printed at px with the given aggressor side. F(Handle32, QueuedOrder&, Qty fill)
-  // is called for every order that executes; the order's cum_qty is already advanced.
-  // Fully filled orders must be removed by the caller (after emitting the fill).
+  // A trade printed at px with the given aggressor side. F(Handle32, QueuedOrder&, Qty fill,
+  // Qty ahead_before) is called for every order that executes; the order's cum_qty is already
+  // advanced and `ahead_before` is the displayed quantity that was still ahead of it (its queue
+  // position at the fill). Fully filled orders must be removed by the caller (after emitting the
+  // fill).
   template <class F>
   void on_trade(InstrumentId inst, Price px, Qty qty, Side aggressor, F&& f) noexcept {
     const Side maker_side = opposite(aggressor);
     pool_.for_each([&](Handle32 h, QueuedOrder& o) {
       if (o.instrument != inst || o.side != maker_side || o.leaves().is_zero()) return;
       Qty fill{};
+      const Qty ahead_before = o.ahead;
       if (better(aggressor, px, o.price)) {
         // trade-through: price moved past us, our whole level was consumed
         fill = o.leaves();
@@ -146,7 +149,7 @@ class QueuePositionModel {
       }
       if (fill.is_positive()) {
         o.cum_qty += fill;
-        f(h, o, fill);
+        f(h, o, fill, ahead_before);
       }
     });
   }

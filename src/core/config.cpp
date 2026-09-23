@@ -142,6 +142,13 @@ void get(const toml::table& t, std::string_view key, T& out) {
 void get_decimal(const toml::table& t, std::string_view key, std::string& out) {
   if (const auto* n = t.get(key)) out = stringify(*n);
 }
+// An optional number: absent leaves `out` empty, so "not set" and "set to 0" stay distinct.
+void get_optional(const toml::table& t, std::string_view key, std::optional<double>& out) {
+  if (const auto* n = t.get(key)) {
+    const auto v = n->value<double>();
+    if (v) out = *v;
+  }
+}
 
 bool looks_like_inline_secret(std::string_view key, std::string_view value) noexcept {
   const bool secret_key =
@@ -388,6 +395,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       get(*t, "expiry", i.expiry);
       get_decimal(*t, "strike", i.strike);
       get(*t, "option_type", i.option_type);
+      get_optional(*t, "maker_bps", i.maker_bps);
+      get_optional(*t, "taker_bps", i.taker_bps);
       if (cfg.venue(i.venue) == nullptr)
         fail_at(*t->get("venue"),
                 fmt::format("instrument '{}' references unknown venue '{}'", i.symbol, i.venue));
@@ -566,6 +575,8 @@ std::string Config::redacted() const {
     if (!i.min_notional.empty()) kq("min_notional", i.min_notional);
     kq("contract_multiplier", i.contract_multiplier);
     kv("enabled", i.enabled);
+    if (i.maker_bps) kv("maker_bps", *i.maker_bps);
+    if (i.taker_bps) kv("taker_bps", *i.taker_bps);
   }
   out += "\n[strategy]\n";
   kq("name", strategy.name);
@@ -708,6 +719,8 @@ std::string Config::effective_toml() const {
       t.insert("expiry", i.expiry);
       t.insert("strike", i.strike);
       t.insert("option_type", i.option_type);
+      if (i.maker_bps) t.insert("maker_bps", *i.maker_bps);
+      if (i.taker_bps) t.insert("taker_bps", *i.taker_bps);
       arr.push_back(std::move(t));
     }
     root.insert("instruments", std::move(arr));

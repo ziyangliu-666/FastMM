@@ -28,12 +28,23 @@ def main() -> None:
 
     stats = result.stats()
     venue = result.transport_stats()
-    # Fees are negative when the venue pays a maker rebate, so -fees is rebate income.
+    # Where the money came from. The net PnL of a passive quoter says little on its own: the
+    # spread capture is positive by construction, so read it against the fees and the markouts.
     print(
         f"fills={stats['fills']}  net_pnl={stats['net_pnl']:.4f} "
-        f"(spread and inventory {stats['realized_pnl'] + stats['unrealized_pnl']:.4f}, "
-        f"maker rebates {-stats['fees']:.4f})"
+        f"(spread capture {stats['spread_capture']:.4f} = {stats['spread_capture_bps']:.3f} bps, "
+        f"mid drift {stats['mid_drift']:.4f}, fees {-stats['fees_paid']:.4f}, "
+        f"rebates {stats['rebates_received']:.4f})"
     )
+    # Markout: the same fills marked against the mid 1 s, 10 s and 60 s later. A positive capture
+    # with a negative markout is adverse selection, not edge.
+    for h in result.markouts():
+        print(
+            f"markout {h['label']:>4}: {h['total']['markout_bps']:+7.4f} bps vs capture "
+            f"{h['total']['capture_bps']:+7.4f} bps over {h['total']['fills']} fills "
+            f"({h['excluded_past_end']} past the end of the run, "
+            f"{h['excluded_no_mid']} with no two-sided book)"
+        )
     # A per-bar Sharpe on 1 s bars is the number to read here: stats['sharpe_annualized'] is NaN
     # for runs shorter than a day.
     print(f"sharpe per 1s bar={stats['sharpe_bar']:.3f}  quote uptime={stats['quote_uptime']:.1%}")

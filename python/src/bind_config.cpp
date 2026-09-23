@@ -8,9 +8,11 @@
 
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace fastmm::py_bind {
 
@@ -302,17 +304,71 @@ void bind_config(py::module_& m) {
       .def_property(
           "maker_fee_bps",
           [](const BacktestConfig& c) {
-            return static_cast<double>(c.transport.fees.maker_cbps) / 100.0;
+            return static_cast<double>(c.transport.fees.maker_cbps()) / 100.0;
           },
-          [](BacktestConfig& c, double bps) { c.transport.fees.maker_cbps = cbps_from_bps(bps); },
-          "Maker fee in bps (negative = rebate), 0.01 bps resolution.")
+          [](BacktestConfig& c, double bps) {
+            sim::FeeSchedule s = c.transport.fees.default_schedule();
+            s.maker_cbps = static_cast<std::int32_t>(cbps_from_bps(bps));
+            c.transport.fees = sim::FeeModel::uniform(s);
+          },
+          "Maker fee in bps (negative = rebate), 0.01 bps resolution. Setting it makes every "
+          "instrument pay the same schedule; use set_instrument_fees() afterwards for "
+          "per-instrument rates.")
       .def_property(
           "taker_fee_bps",
           [](const BacktestConfig& c) {
-            return static_cast<double>(c.transport.fees.taker_cbps) / 100.0;
+            return static_cast<double>(c.transport.fees.taker_cbps()) / 100.0;
           },
-          [](BacktestConfig& c, double bps) { c.transport.fees.taker_cbps = cbps_from_bps(bps); },
-          "Taker fee in bps, 0.01 bps resolution.")
+          [](BacktestConfig& c, double bps) {
+            sim::FeeSchedule s = c.transport.fees.default_schedule();
+            s.taker_cbps = static_cast<std::int32_t>(cbps_from_bps(bps));
+            c.transport.fees = sim::FeeModel::uniform(s);
+          },
+          "Taker fee in bps, 0.01 bps resolution. Setting it clears per-instrument schedules.")
+      .def(
+          "set_instrument_fees",
+          [](BacktestConfig& c, std::uint32_t instrument, double maker_bps, double taker_bps) {
+            if (instrument >= kMaxInstruments)
+              throw py::value_error("instrument id is out of range");
+            sim::FeeSchedule s;
+            s.maker_cbps = static_cast<std::int32_t>(cbps_from_bps(maker_bps));
+            s.taker_cbps = static_cast<std::int32_t>(cbps_from_bps(taker_bps));
+            c.transport.fees.set_instrument(InstrumentId{instrument}, s);
+          },
+          py::arg("instrument"),
+          py::arg("maker_bps"),
+          py::arg("taker_bps"),
+          "Charge one instrument its own maker / taker schedule (negative = rebate).")
+      .def_property(
+          "markout_horizons_s",
+          [](const BacktestConfig& c) {
+            std::vector<double> out;
+            out.reserve(c.markout_horizons.size());
+            for (Duration d : c.markout_horizons) out.push_back(static_cast<double>(d.ns) / 1e9);
+            return out;
+          },
+          [](BacktestConfig& c, const std::vector<double>& secs) {
+            std::vector<Duration> out;
+            for (double v : secs) {
+              if (!(v > 0.0) || v > 86'400.0)
+                throw py::value_error("markout horizons must be in (0, 86400] seconds");
+              out.push_back(Duration{static_cast<std::int64_t>(v * 1e9 + 0.5)});
+            }
+            std::sort(out.begin(), out.end(), [](Duration a, Duration b) { return a.ns < b.ns; });
+            c.markout_horizons = std::move(out);
+          },
+          "Post-fill markout horizons in seconds; [] turns markouts off.")
+      .def(
+          "instrument_fees",
+          [](const BacktestConfig& c, std::uint32_t instrument) {
+            if (instrument >= kMaxInstruments)
+              throw py::value_error("instrument id is out of range");
+            const sim::FeeSchedule& s = c.transport.fees.schedule(InstrumentId{instrument});
+            return py::make_tuple(static_cast<double>(s.maker_cbps) / 100.0,
+                                  static_cast<double>(s.taker_cbps) / 100.0);
+          },
+          py::arg("instrument"),
+          "(maker_bps, taker_bps) charged to one instrument.")
       .def_property(
           "supports_replace",
           [](const BacktestConfig& c) { return c.transport.supports_replace; },

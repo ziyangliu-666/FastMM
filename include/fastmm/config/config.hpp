@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -115,6 +116,10 @@ struct InstrumentSection {
   std::string expiry;
   std::string strike;
   std::string option_type;
+  // Per-instrument fee schedule; unset means the instrument pays its venue's [venues.<x>.fees].
+  // Positive == a fee, negative == a rebate.
+  std::optional<double> maker_bps;
+  std::optional<double> taker_bps;
 };
 
 struct StrategySection {

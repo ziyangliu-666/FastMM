@@ -60,7 +60,7 @@ int main() {
   cfg.generator.market_rate_per_s = 30;
   cfg.generator.market_qty_median_lots = 1500;
   cfg.generator.mid_step_rate_per_s = 20;
-  cfg.transport.fees = sim::FeeModel::from_bps(-0.5, 3.0);  // maker rebate, taker fee
+  cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);  // Binance spot VIP 0: 0.1 % both sides
   cfg.params = {{"edge_ticks", "1"}};
   cfg.measure_wall_clock = false;
 

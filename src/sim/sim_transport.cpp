@@ -418,7 +418,7 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                   t.price,
                   t.qty,
                   t.aggressor,
-                  [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill) {
+                  [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
                     emit_fill(o.cl_ord_id,
                               o.order_id,
                               id,
@@ -429,7 +429,9 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                               o.leaves(),
                               Liquidity::Maker,
                               next_exec_id_++,
-                              now);
+                              now,
+                              ahead,
+                              true);
                     if (o.leaves().is_zero()) queue_.remove(h);
                   });
 }
@@ -587,7 +589,9 @@ void SimTransport::emit_fill(ClientOrderId id,
                              Qty leaves,
                              Liquidity liq,
                              std::uint64_t exec_id,
-                             Timestamp ts) noexcept {
+                             Timestamp ts,
+                             Qty queue_ahead,
+                             bool queue_known) noexcept {
   ++stats_.fills;
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, inst, cfg_.venue);
@@ -598,12 +602,20 @@ void SimTransport::emit_fill(ClientOrderId id,
   m.qty = qty;
   m.cum_qty = cum;
   m.leaves_qty = leaves;
-  m.fee = cfg_.fees.fee(px, qty, liq);
+  m.fee = cfg_.fees.fee(inst, px, qty, liq);
   m.side = side;
   m.liquidity = liq;
   stats_.fees_charged += m.fee;
   m.hdr.exch_ts = ts;
-  if (observer_ != nullptr) observer_->on_fill(m, ts, venue_mid(inst));
+  if (observer_ != nullptr) {
+    FillContext ctx;
+    ctx.mid = venue_mid(inst);
+    ctx.best_bid = venue_best(inst, Side::Buy);
+    ctx.best_ask = venue_best(inst, Side::Sell);
+    ctx.queue_ahead = queue_ahead;
+    ctx.queue_known = queue_known;
+    observer_->on_fill(m, ts, ctx);
+  }
   push_order_wire(m.hdr, ts);
 }
 
@@ -687,6 +699,19 @@ Price SimTransport::venue_mid(InstrumentId id) const noexcept {
   const MatchingEngine::TopOfBook top = me_.top_of_book(id);
   if (top.bid.qty.is_zero() || top.ask.qty.is_zero()) return mirror_[id.value].mid();
   return Price::from_raw((top.bid.price.raw + top.ask.price.raw) / 2);
+}
+
+Price SimTransport::venue_best(InstrumentId id, Side side) const noexcept {
+  if (id.value >= instruments_.size()) return Price{};
+  const L2Book<256>& mirror = mirror_[id.value];
+  const Level m = side == Side::Buy ? mirror.best_bid() : mirror.best_ask();
+  if (cfg_.fill_model == FillModel::L2Queue ||
+      (agg_ == nullptr && me_.book(id).depth(Side::Buy) == 0)) {
+    return m.price;
+  }
+  const MatchingEngine::TopOfBook top = me_.top_of_book(id);
+  const Level& t = side == Side::Buy ? top.bid : top.ask;
+  return t.qty.is_zero() ? m.price : t.price;
 }
 
 MatchingEngine::SideExposure SimTransport::strategy_exposure(InstrumentId id,
