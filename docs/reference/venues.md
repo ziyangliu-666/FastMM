@@ -12,6 +12,8 @@ FastMM ships five connectors behind the control-path `fastmm::venues::Venue` int
 
 Every connector runs on its own `net::Reactor` thread and writes normalised messages into two rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order events (never dropped: bounded spin, overflow trips the kill switch in `fastmm-live`). `cancel_all()` uses an independent blocking REST connection, so it works from any thread even if the reactor is wedged (`nasdaq_itch`: it shuts the OUCH connection down, see below). `Venue::poll()` runs after every reactor iteration; `nasdaq_itch` polls its sockets there in `spin_mode = "busy"`.
 
+A venue-fatal error and a REST hard stop stop new orders and replaces; Cancel and cancel-all are always admitted, on whatever transport is still usable, because that is what the kill switch asks for. Orders leave in batches: between `cork()` and `uncork()` a frame is only encoded, so a failed `uncork()` rejects every order of the batch (`RejectReason::TransportFull`) rather than counting them as sent. A reconciliation snapshot reaches the engine only when the whole reply parsed: `Oms::reconcile_end()` cancels every order the snapshot does not name, so a rejected or truncated reply is dropped instead of being emitted as an empty snapshot.
+
 ## Binance Spot
 
 | channel | endpoint | purpose |
@@ -157,6 +159,8 @@ Signing: REST `X-BAPI-SIGN` = hex HMAC-SHA256(secret, timestamp + api_key + recv
 
 Book sync: the stream's `snapshot` resets the book; each `delta` must have a larger `u`; `u == 1` or a missing snapshot (10 s) re-subscribes the depth topic to get a fresh snapshot. Amend keeps the venue's `orderLinkId`: the engine receives an ack for its new client id and later `order`/`execution` events for the old link id are translated to it.
 
+Reconciliation: `GET /v5/order/realtime?category=spot&limit=50` is paged with `cursor` = `result.nextPageCursor` until the cursor is empty (at most 40 pages). Bybit answers a rate limit (10006/10018) and a clock or signature error (10002/10004) with HTTP 200 and a non-zero `retCode`, so the snapshot is gated on `retCode == 0` as well as the HTTP status.
+
 ## Deribit (options and futures)
 
 Deribit speaks JSON-RPC 2.0 over one WebSocket endpoint (`wss://test.deribit.com/ws/api/v2`), and the same methods are available over REST (`https://test.deribit.com/api/v2/<method>`). The sources are the official documentation at <https://docs.deribit.com> (articles, OpenAPI and AsyncAPI specs) and recorded testnet responses (`tests/fixtures/deribit/fixtures.meta.json`).
@@ -173,7 +177,7 @@ Requests are `{"jsonrpc":"2.0","id":..,"method":..,"params":{..}}`. Order reques
 
 ### Units
 
-Engine quantities are contracts: `contract_multiplier` = Deribit `contract_size` (1 BTC for BTC options, 10 USD for BTC-PERPETUAL). Orders are sent with `contracts`, and book, trade and fill amounts are divided by the contract size. The label is the FastMM client id, and `post_only` is always sent (Deribit defaults it to `true`). Post-only orders set `reject_post_only` (config `reject_post_only`), so a crossing order is rejected (11054) rather than repriced. Prices are rounded passively onto `tick_size_steps` (BTC options: 0.0001, and 0.0005 from 0.005).
+Engine quantities are contracts: `contract_multiplier` = Deribit `contract_size` (1 BTC for BTC options, 10 USD for BTC-PERPETUAL). Fills carry `fee_currency`: a fee in the quote coin is `FeeAsset::Quote` (BTC options are quoted in BTC, so base == quote), a base-coin fee on a linear instrument is `FeeAsset::Base`, and the base-coin fee of an inverse future is `FeeAsset::Other` — it is neither a quote amount nor a number of contracts, so the engine counts it (`unconverted_fees`) instead of booking it. Orders are sent with `contracts`, and book, trade and fill amounts are divided by the contract size. The label is the FastMM client id, and `post_only` is always sent (Deribit defaults it to `true`). Post-only orders set `reject_post_only` (config `reject_post_only`), so a crossing order is rejected (11054) rather than repriced. Prices are rounded passively onto `tick_size_steps` (BTC options: 0.0001, and 0.0005 from 0.005).
 
 ### Book sync
 

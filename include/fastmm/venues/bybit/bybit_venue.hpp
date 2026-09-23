@@ -146,6 +146,8 @@ class BybitVenue final : public Venue {
   void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
   void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow);
+  // uncork() failed: the batch never left, so its orders are rejected (see BatchedOrders).
+  void fail_batch();
   void handle_order_response(RequestKind kind, ClientOrderId id, const TradeResponse& r);
   void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
   // Sends ControlCommand::TripVenueKill to the engine, once per session.
@@ -157,7 +159,10 @@ class BybitVenue final : public Venue {
   void request_resubscribe(InstrumentId id);
   void request_server_time();
   void cancel_all_async();
-  void emit_reconcile(std::string_view json, ClientOrderId sent_watermark);
+  // Requests one page of GET /v5/order/realtime; the reply reads the next page or, on the last
+  // one, emits the whole snapshot (emit_reconcile). Nothing is emitted unless every page parsed.
+  void request_open_orders_page(const std::string& cursor);
+  void emit_reconcile();
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   void forget_order(ClientOrderId id) noexcept;
@@ -210,6 +215,12 @@ class BybitVenue final : public Venue {
   bool private_was_live_ = false;
   bool trade_was_live_ = false;
   SentWatermark sent_;
+  BatchedOrders batch_;  // orders written into the corked trade connection
+  // Open-order snapshot, collected across pages before anything reaches the engine.
+  std::vector<ReconcileMsg> reconcile_records_;
+  ClientOrderId reconcile_watermark_{};  // sent watermark when the first page was requested
+  std::size_t reconcile_pages_ = 0;
+  bool reconcile_in_flight_ = false;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;
   ConnState trade_state_ = ConnState::Disconnected;

@@ -85,7 +85,10 @@ class BybitOrderEncoder {
   // ---- REST ----------------------------------------------------------------------------
   bool encode_rest(const OrderCommand& cmd, const OrderShadow* shadow, RestRequest& out) const;
   bool encode_rest_cancel_all(std::string_view symbol, RestRequest& out) const;
-  bool encode_rest_open_orders(std::string_view symbol, RestRequest& out) const;
+  // `cursor` is result.nextPageCursor of the previous page (empty for the first).
+  bool encode_rest_open_orders(std::string_view symbol,
+                               std::string_view cursor,
+                               RestRequest& out) const;
   // Header block signing exactly out.payload().
   [[nodiscard]] std::string rest_headers(const RestRequest& req, std::int64_t timestamp_ms) const {
     return signer_.rest_headers(timestamp_ms, recv_window_ms_, req.payload(), req.method == "POST");
@@ -164,8 +167,11 @@ class BybitResponseDecoder {
   // into `json` (padded).
   ParseStatus decode_ws(std::string_view json, TradeResponse& out) noexcept;
   ParseStatus decode_rest(std::string_view json, RestResponse& out) noexcept;
-  // GET /v5/order/realtime body: result.list[]
+  // GET /v5/order/realtime body: result.list[]. Error for a retCode != 0 body (Bybit answers
+  // rate limits and clock/signature errors with HTTP 200). `next_cursor` receives
+  // result.nextPageCursor, empty after the last page.
   ParseStatus decode_open_orders(std::string_view json,
+                                 std::string& next_cursor,
                                  const std::function<void(const OpenOrderRecord&)>& fn) noexcept;
 
  private:

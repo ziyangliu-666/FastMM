@@ -6,6 +6,7 @@
 #include <simdjson.h>
 
 #include <cstdlib>
+#include <cstring>
 
 namespace fastmm::venues::bybit {
 
@@ -55,6 +56,12 @@ void stamp(M& m, Timestamp recv_ts, Cycles t0, std::int64_t exch_ms) noexcept {
   if (s.empty()) return Qty{};
   const auto q = parse_qty(s);
   return q ? *q : Qty{};
+}
+
+[[nodiscard]] Notional notional_or_zero(std::string_view s) noexcept {
+  if (s.empty()) return Notional{};
+  const auto n = parse_notional(s);
+  return n ? *n : Notional{};
 }
 
 // decode() is split per frame and item kind: one function holding every simdjson
@@ -122,6 +129,15 @@ struct ItemCtx {
     if (written + n <= out.size()) return true;
     ++stats->overflow;
     return false;
+  }
+  // The output buffer is a scratch buffer the venue reuses for every frame, so each message is
+  // zeroed before it is filled: a field a decoder leaves alone must not carry over from the
+  // previous decode.
+  template <class M>
+  M* place() noexcept {
+    std::byte* p = out.data() + written;
+    std::memset(p, 0, sizeof(M));
+    return reinterpret_cast<M*>(p);
   }
 };
 
@@ -203,7 +219,7 @@ struct OrderIds {
   const auto qty = parse_qty(qty_s);
   if (!px || !qty) return Item::Malformed;
   if (!c.room(sizeof(OrderFillMsg))) return Item::Stop;
-  auto* m = reinterpret_cast<OrderFillMsg*>(c.out.data() + c.written);
+  auto* m = c.place<OrderFillMsg>();
   init_header(*m, EventType::OrderFill, ids.inst, c.venue);
   m->cl_ord_id = ids.cl;
   m->venue_order_id.assign(ids.order_id);
@@ -212,7 +228,7 @@ struct OrderIds {
   m->qty = *qty;
   m->leaves_qty = qty_or_zero(leaves_s);
   m->cum_qty = qty_or_zero(order_qty_s) - m->leaves_qty;
-  if (const auto fee = parse_notional(fee_s)) m->fee = *fee;
+  m->fee = notional_or_zero(fee_s);
   // Spot fee currency (enum page, "Spot Fee Currency Instruction"): with a positive fee rate
   // (and always for takers) a buy pays in the base coin and a sell in the quote coin; a maker
   // with a negative rate is the other way round. feeCurrency names it when present; recorded
@@ -255,7 +271,7 @@ struct OrderIds {
   ++c.stats->orders;
   if (status == "New") {
     if (!c.room(sizeof(OrderAckMsg))) return Item::Stop;
-    auto* m = reinterpret_cast<OrderAckMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderAckMsg>();
     init_header(*m, EventType::OrderAck, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->venue_order_id.assign(ids.order_id);
@@ -264,7 +280,7 @@ struct OrderIds {
     ++c.count;
   } else if (status == "Rejected") {
     if (!c.room(sizeof(OrderRejectMsg))) return Item::Stop;
-    auto* m = reinterpret_cast<OrderRejectMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderRejectMsg>();
     init_header(*m, EventType::OrderReject, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->reason = map_reject_reason(reject);
@@ -275,7 +291,7 @@ struct OrderIds {
     ++c.count;
   } else if (status == "Cancelled" || status == "PartiallyFilledCanceled") {
     if (!c.room(sizeof(OrderCancelAckMsg))) return Item::Stop;
-    auto* m = reinterpret_cast<OrderCancelAckMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderCancelAckMsg>();
     init_header(*m, EventType::OrderCancelAck, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->venue_order_id.assign(ids.order_id);
@@ -285,7 +301,7 @@ struct OrderIds {
     ++c.count;
   } else if (status == "Deactivated") {
     if (!c.room(sizeof(OrderExpiredMsg))) return Item::Stop;
-    auto* m = reinterpret_cast<OrderExpiredMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderExpiredMsg>();
     init_header(*m, EventType::OrderExpired, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->venue_order_id.assign(ids.order_id);

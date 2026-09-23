@@ -171,6 +171,8 @@ class BinanceVenue final : public Venue {
   void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
   void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow);
+  // uncork() failed: the batch never left, so its orders are rejected (see BatchedOrders).
+  void fail_batch();
   void handle_ws_api_response(const WsApiResponse& r, std::string_view raw);
   void handle_order_response(RequestKind kind, ClientOrderId id, const WsApiResponse& r);
   void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
@@ -256,6 +258,9 @@ class BinanceVenue final : public Venue {
   bool order_was_live_ = false;
   bool user_was_live_ = false;
   SentWatermark sent_;
+  BatchedOrders batch_;  // orders written into the corked order connection
+  // Open-order snapshot, decoded in full before anything reaches the engine.
+  std::vector<ReconcileMsg> reconcile_records_;
   // Sent watermark of each openOrders.status request on the order connection, in send order (the
   // replies come back in that order).
   std::vector<ClientOrderId> oo_watermarks_;

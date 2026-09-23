@@ -176,7 +176,9 @@ bool BybitOrderEncoder::encode_rest_cancel_all(std::string_view symbol, RestRequ
   return true;
 }
 
-bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol, RestRequest& out) const {
+bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol,
+                                                std::string_view cursor,
+                                                RestRequest& out) const {
   out.method = "GET";
   out.path = "/v5/order/realtime";
   out.body.clear();
@@ -186,6 +188,10 @@ bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol, RestReq
     out.query += symbol;
   }
   out.query += "&limit=50";
+  if (!cursor.empty()) {
+    out.query += "&cursor=";
+    out.query += cursor;
+  }
   out.is_order = false;
   return true;
 }
@@ -338,7 +344,10 @@ ParseStatus BybitResponseDecoder::decode_rest(std::string_view json, RestRespons
 }
 
 ParseStatus BybitResponseDecoder::decode_open_orders(
-    std::string_view json, const std::function<void(const OpenOrderRecord&)>& fn) noexcept {
+    std::string_view json,
+    std::string& next_cursor,
+    const std::function<void(const OpenOrderRecord&)>& fn) noexcept {
+  next_cursor.clear();
   od::document doc;
   od::object root;
   if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS ||
@@ -346,8 +355,10 @@ ParseStatus BybitResponseDecoder::decode_open_orders(
     return ParseStatus::Malformed;
   std::int64_t code = 0;
   if (root["retCode"].get_int64().get(code) != sj::SUCCESS || code != 0) return ParseStatus::Error;
+  od::object result;
+  if (root["result"].get_object().get(result) != sj::SUCCESS) return ParseStatus::Malformed;
   od::array list;
-  if (root["result"]["list"].get_array().get(list) != sj::SUCCESS) return ParseStatus::Malformed;
+  if (result["list"].get_array().get(list) != sj::SUCCESS) return ParseStatus::Malformed;
   for (auto item : list) {
     od::object o;
     if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
@@ -355,6 +366,9 @@ ParseStatus BybitResponseDecoder::decode_open_orders(
     if (!read_open_order(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
+  result.reset();
+  std::string_view cursor;
+  if (result["nextPageCursor"].get_string().get(cursor) == sj::SUCCESS) next_cursor = cursor;
   return ParseStatus::Ok;
 }
 

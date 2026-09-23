@@ -965,14 +965,47 @@ void BinanceUsdmVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
       ring,
       wire_,
-      [this] { order_conn_.cork(); },
+      [this] {
+        order_conn_.cork();
+        batch_.clear();
+      },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
           sent_.note(*cmd);
           send_command(*cmd);
         }
       },
-      [this] { return order_conn_.uncork(); });
+      [this] {
+        if (order_conn_.uncork()) return true;
+        fail_batch();
+        return false;
+      });
+}
+
+void BinanceUsdmVenue::fail_batch() {
+  for (const BatchedOrders::Entry& e : batch_.entries()) {
+    ++stats_.order_send_failures;
+    ++stats_.order_events;
+    if (e.kind == OrderCommandKind::Cancel) {
+      emit_cancel_reject(*order_sink_,
+                         id_,
+                         e.instrument,
+                         e.cl_ord_id,
+                         RejectReason::TransportFull,
+                         0,
+                         "order batch not written");
+    } else {
+      emit_order_reject(*order_sink_,
+                        id_,
+                        e.instrument,
+                        e.cl_ord_id,
+                        RejectReason::TransportFull,
+                        0,
+                        "order batch not written");
+      shadows_.erase(e.cl_ord_id);
+    }
+  }
+  batch_.clear();
 }
 
 void BinanceUsdmVenue::drain_outbound() {
@@ -996,7 +1029,10 @@ void BinanceUsdmVenue::refuse(const OrderCommand& cmd, RejectReason reason, std:
 void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
   const std::int64_t now = now_ns();
   if (cfg_.dry_run) return refuse(cmd, RejectReason::VenueKilled, "dry-run: orders disabled");
-  if (fatal_) return refuse(cmd, RejectReason::VenueKilled, "venue fatal");
+  // A venue-fatal error and a REST hard stop stop new orders, never cancels: the kill path's
+  // whole remedy is to cancel, so a cancel goes out on whatever transport is still usable.
+  if (fatal_ && cmd.kind != OrderCommandKind::Cancel)
+    return refuse(cmd, RejectReason::VenueKilled, "venue fatal");
   const OrderShadow* shadow = nullptr;  // New: unused; Cancel: the order; Replace: the original
   const bool is_order = cmd.kind != OrderCommandKind::Cancel;
   switch (cmd.kind) {
@@ -1017,7 +1053,6 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
                                   Qty{}});
       break;
     case OrderCommandKind::Cancel:
-      if (rate_.hard_stopped()) return refuse(cmd, RejectReason::VenueRateLimit, "rest hard stop");
       shadow = shadows_.find(cmd.cl_ord_id);
       break;
     case OrderCommandKind::Replace: {
@@ -1041,6 +1076,7 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
     const Cycles after_encode = rdtscp();
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
       wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+      batch_.note(cmd);
       rate_.on_sent(1, now, is_order);
       switch (cmd.kind) {
         case OrderCommandKind::New:
@@ -1063,7 +1099,7 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
 void BinanceUsdmVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow) {
   RestRequest rr;
   const Cycles before_encode = rdtscp();
-  if (rest_ == nullptr || rest_hard_stopped_ ||
+  if (rest_ == nullptr || (rest_hard_stopped_ && cmd.kind != OrderCommandKind::Cancel) ||
       !encoder_->encode_rest(cmd, shadow, venue_time_ms(), rr)) {
     refuse(cmd, RejectReason::VenueReject, "no order channel");
     if (cmd.kind != OrderCommandKind::Cancel) shadows_.erase(cmd.cl_ord_id);
@@ -1303,6 +1339,9 @@ void BinanceUsdmVenue::on_reconcile_reply(std::uint64_t generation,
   if (reconcile_.again) request_open_orders();
 }
 
+// Decodes the whole open-order snapshot before anything reaches the engine: Oms::reconcile_end()
+// cancels every order the snapshot does not name, so a reply that did not parse must not be
+// emitted as an empty snapshot.
 void BinanceUsdmVenue::emit_reconcile() {
   std::vector<PositionRecord> records;
   if (const std::string err = decode_position_risk(reconcile_.positions_body, records);
@@ -1311,13 +1350,7 @@ void BinanceUsdmVenue::emit_reconcile() {
     reconcile_retry_ns_ = now_ns() + kReconcileRetryNs;
     return;
   }
-  ReconcileMsg begin{};
-  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
-  begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, reconcile_.watermark);
-  begin.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(begin.hdr));
-  std::size_t count = 0;
+  reconcile_records_.clear();
   const PaddedJson padded(reconcile_.orders_body);
   const ParseStatus st = ws_api_decoder_->decode_open_orders(
       padded.view(), /*rest_array=*/true, [&](const binance::OpenOrderRecord& o) {
@@ -1338,9 +1371,23 @@ void BinanceUsdmVenue::emit_reconcile() {
         if (const auto q = parse_qty(o.orig_qty)) m.orig_qty = non_negative(*q - base);
         if (const auto q = parse_qty(o.executed_qty)) m.cum_qty = non_negative(*q - base);
         m.hdr.recv_ts = wall_now();
-        static_cast<void>(order_sink_->push(m.hdr));
-        ++count;
+        reconcile_records_.push_back(m);
       });
+  if (st != ParseStatus::Ok) {
+    FASTMM_LOG_WARN("{}: open orders reply could not be parsed; reconciliation retried", cfg_.name);
+    reconcile_records_.clear();
+    reconcile_retry_ns_ = now_ns() + kReconcileRetryNs;
+    return;
+  }
+  ReconcileMsg begin{};
+  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
+  begin.kind = ReconcileMsg::Kind::Begin;
+  SentWatermark::stamp(begin, reconcile_.watermark);
+  begin.hdr.recv_ts = wall_now();
+  static_cast<void>(order_sink_->push(begin.hdr));
+  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
+  const std::size_t count = reconcile_records_.size();
+  reconcile_records_.clear();
   std::string summary;
   for (InstrumentId id : subscribed_) {
     const std::string_view sym = symbols_->venue_symbol(id);
@@ -1377,11 +1424,7 @@ void BinanceUsdmVenue::emit_reconcile() {
   end.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(end.hdr));
   stats_.order_events += count + subscribed_.size() + 2;
-  if (st != ParseStatus::Ok) {
-    FASTMM_LOG_WARN("{}: open orders reply could not be parsed", cfg_.name);
-  } else {
-    FASTMM_LOG_INFO("{}: reconciled {} open orders, positions{}", cfg_.name, count, summary);
-  }
+  FASTMM_LOG_INFO("{}: reconciled {} open orders, positions{}", cfg_.name, count, summary);
 }
 
 // ---- control requests -----------------------------------------------------------------------
@@ -1482,7 +1525,8 @@ void BinanceUsdmVenue::keepalive_listen_key() {
 }
 
 void BinanceUsdmVenue::cancel_all_async() {
-  if (rest_ == nullptr || !signer_.usable() || rest_hard_stopped_) return;
+  // No rest_hard_stopped_ check: cancelling is what a hard stop asks for.
+  if (rest_ == nullptr || !signer_.usable()) return;
   for (InstrumentId id : subscribed_) {
     RestRequest rr;
     if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr))

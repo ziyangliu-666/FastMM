@@ -562,6 +562,31 @@ All notable changes are recorded here (Keep a Changelog format).
   319 ns.
 
 ### Fixed
+- Deribit fills never set `fee_asset`, so a leftover byte of the connector's scratch buffer decided
+  how the engine booked the commission (`Base` made it rewrite the filled quantity). It now follows
+  `user.trades` `fee_currency`: `Quote` for a fee in the quote coin (BTC options are quoted in BTC),
+  `Base` for a base-coin fee on a linear instrument, and `Other` for the base-coin fee of an inverse
+  future, which is neither a quote amount nor a number of contracts. The Deribit and Bybit private
+  parsers zero each message in the scratch buffer before filling it, and the engine books a
+  `fee_asset` outside the enum as `Quote` and counts it (`EngineStats::invalid_fee_assets`).
+- `net::WsClient::send_text()` returned true when the write failed and closed the stream, so the
+  venues counted the order as sent, charged the rate limiter and skipped the REST fallback. It now
+  returns false, and a failed `uncork()` rejects every order of that batch
+  (`venues::BatchedOrders`) instead of only dropping its latency samples.
+- Bybit answers a rate limit (10006/10018) or a clock/signature error (10002/10004) with HTTP 200
+  and a non-zero `retCode`. The connector emitted the reconciliation Begin/End around the failed
+  parse, and `Oms::reconcile_end()` then cancelled every order still resting at the venue. Bybit,
+  Binance Spot and Binance USDⓈ-M now decode the whole open-order snapshot before anything reaches
+  the engine, and Bybit pages `GET /v5/order/realtime` with `nextPageCursor` (it used to stop at
+  the first 50 orders).
+- A venue-fatal error or a REST hard stop refused cancels as well as new orders, and Binance's
+  `cancel_all_async()` returned without doing anything after a hard stop, so the kill path could no
+  longer clear the book. All four connectors admit Cancel and CancelAll on whatever transport is
+  still usable.
+- Bybit executions without `execFee` kept the previous fill's fee, and Binance Spot and USDⓈ-M
+  fills without a trade id shared the exec id "-1" / "0", which made the OMS dedupe window drop
+  the second fill of an order. The exec id falls back to the venue order id and the cumulative
+  filled quantity.
 - `af_xdp` on virtio_net lost market data: attaching an XDP program raises the device's queue
   pairs by one per CPU (XDP_TX queues), the host then delivers on those RX queues too, and the
   single socket on queue 0 saw one line, or none after the first packets. The program is now

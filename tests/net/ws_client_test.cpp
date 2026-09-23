@@ -6,6 +6,8 @@
 #include "fastmm/net/tls_stream.hpp"
 #include "fastmm/net/ws_server.hpp"
 
+#include <sys/socket.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -322,4 +324,37 @@ FASTMM_BACKEND_TEST("ws: server broadcast reaches every session and reaps closed
   CHECK(handler.errors == 1);
   server.close_all();
   REQUIRE(run_until(reactor, [&] { return ev2.errored && server.ws_sessions() == 0; }));
+}
+
+FASTMM_BACKEND_TEST("ws: send_text reports a write that failed and closed the stream",
+                    test_ws_client_7) {
+  Reactor reactor(backend);
+  EchoHandler handler;
+  PlainServer server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
+  server.set_ws_handler(&handler);
+  REQUIRE(server.listen(SockAddr::loopback_v4(0)));
+  {
+    ClientEvents ev;
+    PlainClient client(reactor, connect_plain(server.port()), ev);
+    REQUIRE(client.start("localhost", server.port(), false, "/"));
+    REQUIRE(run_until(reactor, [&] { return ev.open; }));
+    CHECK(client.send_text("ok"));
+    // Half-closing the socket makes the next write fail with EPIPE (sends use MSG_NOSIGNAL).
+    REQUIRE(::shutdown(client.fd(), SHUT_WR) == 0);
+    CHECK_FALSE(client.send_text("never leaves"));
+    CHECK_FALSE(client.is_open());
+    CHECK(ev.errored);
+  }
+  {
+    // Corked, a data frame is only encoded: uncork() reports the write of the batch.
+    ClientEvents ev;
+    PlainClient client(reactor, connect_plain(server.port()), ev);
+    REQUIRE(client.start("localhost", server.port(), false, "/"));
+    REQUIRE(run_until(reactor, [&] { return ev.open; }));
+    client.cork();
+    REQUIRE(::shutdown(client.fd(), SHUT_WR) == 0);
+    CHECK(client.send_text("queued"));
+    CHECK_FALSE(client.uncork());
+    CHECK_FALSE(client.is_open());
+  }
 }

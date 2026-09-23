@@ -20,6 +20,8 @@ constexpr std::int64_t kNsPerMs = 1'000'000;
 constexpr std::int64_t kHousekeepingNs = 1'000'000'000;
 constexpr std::int64_t kClockResyncNs = 30LL * 60 * 1'000'000'000;
 constexpr std::int64_t kDefaultCooldownNs = 10'000'000'000;
+// 50 open orders per page; more than this many pages is a runaway, not a book we can reconcile.
+constexpr std::size_t kMaxReconcilePages = 40;
 
 ConnState map_state(net::ConnState s) noexcept {
   switch (s) {
@@ -642,14 +644,47 @@ void BybitVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
       ring,
       wire_,
-      [this] { trade_conn_.cork(); },
+      [this] {
+        trade_conn_.cork();
+        batch_.clear();
+      },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
           sent_.note(*cmd);
           send_command(*cmd);
         }
       },
-      [this] { return trade_conn_.uncork(); });
+      [this] {
+        if (trade_conn_.uncork()) return true;
+        fail_batch();
+        return false;
+      });
+}
+
+void BybitVenue::fail_batch() {
+  for (const BatchedOrders::Entry& e : batch_.entries()) {
+    ++stats_.order_send_failures;
+    ++stats_.order_events;
+    if (e.kind == OrderCommandKind::Cancel) {
+      emit_cancel_reject(*order_sink_,
+                         id_,
+                         e.instrument,
+                         e.cl_ord_id,
+                         RejectReason::TransportFull,
+                         0,
+                         "order batch not written");
+    } else {
+      emit_order_reject(*order_sink_,
+                        id_,
+                        e.instrument,
+                        e.cl_ord_id,
+                        RejectReason::TransportFull,
+                        0,
+                        "order batch not written");
+      shadows_.erase(e.cl_ord_id);
+    }
+  }
+  batch_.clear();
 }
 
 void BybitVenue::drain_outbound() {
@@ -673,7 +708,9 @@ void BybitVenue::send_command(const OrderCommand& cmd) {
     ++stats_.order_events;
   };
   if (cfg_.dry_run) return refuse(RejectReason::VenueKilled, "dry-run: orders disabled");
-  if (fatal_) return refuse(RejectReason::VenueKilled, "venue fatal");
+  // A venue-fatal error and a REST hard stop stop new orders, never cancels: the kill path's
+  // whole remedy is to cancel, so a cancel goes out on whatever transport is still usable.
+  if (fatal_ && !is_cancel) return refuse(RejectReason::VenueKilled, "venue fatal");
   const OrderShadow* shadow = nullptr;
   if (cmd.kind == OrderCommandKind::New) {
     if (!rate_.can_send(1, now, true)) {
@@ -703,6 +740,7 @@ void BybitVenue::send_command(const OrderCommand& cmd) {
     const Cycles after_encode = rdtscp();
     if (n > 0 && trade_conn_.send_text(std::string_view(request_buf_, n))) {
       wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+      batch_.note(cmd);
       rate_.on_sent(1, now, !is_cancel);
       switch (cmd.kind) {
         case OrderCommandKind::New:
@@ -726,7 +764,8 @@ void BybitVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* s
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
   RestRequest rr;
   const Cycles before_encode = rdtscp();
-  if (rest_ == nullptr || rest_hard_stopped_ || !encoder_->encode_rest(cmd, shadow, rr)) {
+  if (rest_ == nullptr || (rest_hard_stopped_ && !is_cancel) ||
+      !encoder_->encode_rest(cmd, shadow, rr)) {
     if (is_cancel) {
       emit_cancel_reject(*order_sink_,
                          id_,
@@ -903,72 +942,111 @@ void BybitVenue::apply_action(VenueAction action,
 
 // ---- control requests -----------------------------------------------------------------------
 
-void BybitVenue::emit_reconcile(std::string_view json, ClientOrderId sent_watermark) {
+// Collects one page of the open-order snapshot. Nothing reaches the engine before every page
+// parsed: Oms::reconcile_end() cancels every order the snapshot does not name, so a truncated or
+// unparsed snapshot would cancel orders that are still resting at the venue.
+void BybitVenue::request_open_orders() {
+  if (reconcile_in_flight_) return;
+  reconcile_records_.clear();
+  reconcile_pages_ = 0;
+  reconcile_watermark_ = sent_.value();
+  request_open_orders_page({});
+}
+
+void BybitVenue::request_open_orders_page(const std::string& cursor) {
+  if (cfg_.dry_run || !connected_ || !signer_.usable() || rest_ == nullptr || rest_hard_stopped_) {
+    reconcile_in_flight_ = false;
+    return;
+  }
+  RestRequest rr;
+  if (!encoder_->encode_rest_open_orders({}, cursor, rr)) {
+    reconcile_in_flight_ = false;
+    return;
+  }
+  const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
+  std::weak_ptr<int> alive = alive_;
+  reconcile_in_flight_ = true;
+  const bool queued =
+      rest_->request("GET", rr.target(), headers, {}, [this, alive](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        reconcile_in_flight_ = false;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: GET order/realtime failed: status={} err={}",
+                          cfg_.name,
+                          r.status,
+                          net::to_string(r.error));
+          reconcile_records_.clear();
+          return;
+        }
+        std::string next_cursor;
+        const PaddedJson padded(r.body);
+        const ParseStatus st =
+            decoder_->decode_open_orders(padded.view(), next_cursor, [&](const OpenOrderRecord& o) {
+              const InstrumentId inst = symbols_->find(id_, o.symbol);
+              if (!inst.valid()) return;
+              ReconcileMsg m{};
+              init_header(m, EventType::Reconcile, inst, id_);
+              m.kind = ReconcileMsg::Kind::OpenOrder;
+              m.side = o.side == "Sell" ? Side::Sell : Side::Buy;
+              m.state =
+                  o.status == "PartiallyFilled" ? OrderState::PartiallyFilled : OrderState::Live;
+              if (const auto cl = decode_cl_ord_id(o.order_link_id)) m.cl_ord_id = current_id(*cl);
+              m.venue_order_id.assign(o.order_id);
+              if (const auto p = parse_price(o.price)) m.price = *p;
+              if (const auto q = parse_qty(o.qty)) m.orig_qty = *q;
+              if (!o.cum_exec_qty.empty()) {
+                if (const auto q = parse_qty(o.cum_exec_qty)) m.cum_qty = *q;
+              }
+              m.hdr.recv_ts = wall_now();
+              reconcile_records_.push_back(m);
+            });
+        if (st != ParseStatus::Ok) {
+          // retCode != 0 comes back with HTTP 200: rate limits (10006/10018) and clock or
+          // signature errors (10002/10004) among others.
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: open orders reply rejected ({}); reconciliation skipped",
+                          cfg_.name,
+                          st == ParseStatus::Error ? "retCode != 0" : "malformed");
+          reconcile_records_.clear();
+          return;
+        }
+        if (!next_cursor.empty() && ++reconcile_pages_ < kMaxReconcilePages) {
+          request_open_orders_page(next_cursor);
+          return;
+        }
+        if (!next_cursor.empty()) {
+          FASTMM_LOG_WARN("{}: more than {} pages of open orders; reconciliation skipped",
+                          cfg_.name,
+                          kMaxReconcilePages);
+          reconcile_records_.clear();
+          return;
+        }
+        emit_reconcile();
+      });
+  if (!queued) {
+    reconcile_in_flight_ = false;
+    reconcile_records_.clear();
+  }
+}
+
+void BybitVenue::emit_reconcile() {
   ReconcileMsg begin{};
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, sent_watermark);
+  SentWatermark::stamp(begin, reconcile_watermark_);
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
-  std::size_t count = 0;
-  const PaddedJson padded(json);
-  const ParseStatus st = decoder_->decode_open_orders(padded.view(), [&](const OpenOrderRecord& o) {
-    const InstrumentId inst = symbols_->find(id_, o.symbol);
-    if (!inst.valid()) return;
-    ReconcileMsg m{};
-    init_header(m, EventType::Reconcile, inst, id_);
-    m.kind = ReconcileMsg::Kind::OpenOrder;
-    m.side = o.side == "Sell" ? Side::Sell : Side::Buy;
-    m.state = o.status == "PartiallyFilled" ? OrderState::PartiallyFilled : OrderState::Live;
-    if (const auto cl = decode_cl_ord_id(o.order_link_id)) m.cl_ord_id = current_id(*cl);
-    m.venue_order_id.assign(o.order_id);
-    if (const auto p = parse_price(o.price)) m.price = *p;
-    if (const auto q = parse_qty(o.qty)) m.orig_qty = *q;
-    if (!o.cum_exec_qty.empty()) {
-      if (const auto q = parse_qty(o.cum_exec_qty)) m.cum_qty = *q;
-    }
-    m.hdr.recv_ts = wall_now();
-    static_cast<void>(order_sink_->push(m.hdr));
-    ++count;
-  });
+  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
   ReconcileMsg end{};
   init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
   end.kind = ReconcileMsg::Kind::End;
   end.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(end.hdr));
-  if (st != ParseStatus::Ok) {
-    FASTMM_LOG_WARN("{}: open orders reply could not be parsed", cfg_.name);
-  } else {
-    FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, count);
-  }
-}
-
-void BybitVenue::request_open_orders() {
-  if (cfg_.dry_run || !connected_ || !signer_.usable() || rest_ == nullptr || rest_hard_stopped_)
-    return;
-  RestRequest rr;
-  if (!encoder_->encode_rest_open_orders({}, rr)) return;
-  const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
-  std::weak_ptr<int> alive = alive_;
-  static_cast<void>(
-      rest_->request("GET",
-                     rr.target(),
-                     headers,
-                     {},
-                     [this, alive, watermark = sent_.value()](const net::HttpResponse& r) {
-                       if (alive.expired()) return;
-                       ++stats_.rest_requests;
-                       note_rate_headers(r);
-                       if (!r.ok()) {
-                         ++stats_.rest_errors;
-                         FASTMM_LOG_WARN("{}: GET order/realtime failed: status={} err={}",
-                                         cfg_.name,
-                                         r.status,
-                                         net::to_string(r.error));
-                         return;
-                       }
-                       emit_reconcile(r.body, watermark);
-                     }));
+  FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
+  reconcile_records_.clear();
 }
 
 void BybitVenue::request_server_time() {
@@ -1002,7 +1080,8 @@ void BybitVenue::request_server_time() {
 }
 
 void BybitVenue::cancel_all_async() {
-  if (rest_ == nullptr || !signer_.usable() || rest_hard_stopped_) return;
+  // No rest_hard_stopped_ check: cancelling is what a hard stop asks for.
+  if (rest_ == nullptr || !signer_.usable()) return;
   for (InstrumentId id : subscribed_) {
     RestRequest rr;
     if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), rr)) continue;

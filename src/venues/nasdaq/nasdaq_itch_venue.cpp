@@ -1001,8 +1001,9 @@ void NasdaqItchVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
       ring,
       wire_,
-      [link] {
+      [this, link] {
         if (link != nullptr) link->cork();
+        batch_.clear();
       },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
@@ -1010,7 +1011,23 @@ void NasdaqItchVenue::write_orders(Ring& ring) {
           send_command(*cmd);
         }
       },
-      [link] { return link != nullptr && link->uncork(); });
+      [this, link] {
+        if (link != nullptr && link->uncork()) return true;
+        fail_batch();
+        return false;
+      });
+}
+
+void NasdaqItchVenue::fail_batch() noexcept {
+  for (const BatchedOrders::Entry& e : batch_.entries()) {
+    ++stats_.order_send_failures;
+    OrderCommand c;
+    c.kind = e.kind;
+    c.instrument = e.instrument;
+    c.cl_ord_id = e.cl_ord_id;
+    refuse(c, RejectReason::TransportFull, "order batch not written");
+  }
+  batch_.clear();
 }
 
 void NasdaqItchVenue::on_wake() {
@@ -1067,6 +1084,7 @@ void NasdaqItchVenue::send_command(const OrderCommand& cmd) noexcept {
     return refuse(cmd, RejectReason::VenueReject, "OUCH send failed");
   }
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+  batch_.note(cmd);
   switch (cmd.kind) {
     case OrderCommandKind::New:
       ++stats_.orders_sent;

@@ -2,6 +2,8 @@
 
 #include "venue_test_util.hpp"
 
+#include <string_view>
+
 using namespace fastmm;
 using namespace fastmm::venues;
 using namespace fastmm::venues::bybit;
@@ -74,6 +76,22 @@ TEST_CASE("bybit.private_parser: execution -> fill, wallet -> position, control 
   CHECK(f.fee_asset == FeeAsset::Base);  // a spot buy without feeCurrency: fee in BTC
   CHECK(f.liquidity == Liquidity::Taker);
   CHECK(f.hdr.exch_ts.ns == 1789299703453LL * 1'000'000);
+
+  // An execution without execFee must report a zero fee, not the previous fill's: the venue
+  // decodes every frame into the same scratch buffer.
+  static constexpr std::string_view kNoFee =
+      R"({"topic":"execution","id":"e2","creationTime":1789299703470,"data":[{"category":"spot",)"
+      R"("symbol":"BTCUSDT","execId":"ex-nofee","execPrice":"77140.5","execQty":"0.001",)"
+      R"("execType":"Trade","orderId":"2012345678901234569","orderLinkId":"fm000100000003",)"
+      R"("orderQty":"0.001","side":"Buy","leavesQty":"0","execTime":"1789299703463",)"
+      R"("isMaker":false}]})";
+  {
+    const PaddedJson j(kNoFee);
+    r = p.decode(j.view(), Timestamp{11}, Cycles{12}, s.span());
+    REQUIRE(r.ok());
+    CHECK(s.as<OrderFillMsg>().fee.is_zero());
+    CHECK(s.as<OrderFillMsg>().fee_asset == FeeAsset::Quote);  // no fee: nothing to convert
+  }
 
   r = decode(p, "bybit/private_wallet.json", s);
   REQUIRE(r.ok());

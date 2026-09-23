@@ -4,7 +4,9 @@
 
 #include "venue_test_util.hpp"
 
+#include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fastmm;
@@ -27,11 +29,14 @@ struct Universe {
   InstrumentTable instruments;
   SymbolTable symbols;
   Universe() {
+    // Both are Deribit `reversed` (inverse) instruments; the option is quoted in BTC.
     Instrument call = make_instrument("BTC-15SEP26-77000-C", kVenue.value, "BTC", "BTC");
     call.asset_class = AssetClass::Option;
+    call.flags |= Instrument::kInverse;
     REQUIRE(instruments.add(call));
     Instrument perp = make_instrument("BTC-PERPETUAL", kVenue.value, "BTC", "USD");
     perp.asset_class = AssetClass::Perpetual;
+    perp.flags |= Instrument::kInverse;
     perp.contract_multiplier = Qty::from_int(10);
     REQUIRE(instruments.add(perp));
     REQUIRE(symbols.build(instruments));
@@ -97,6 +102,36 @@ TEST_CASE("deribit.private_parser: user.trades become fills") {
   CHECK(f.side == Side::Buy);
   CHECK(f.liquidity == Liquidity::Maker);
   CHECK(f.hdr.exch_ts.ns == 1789345401234LL * 1'000'000);
+}
+
+TEST_CASE("deribit.private_parser: fee_asset comes from fee_currency, never from the scratch") {
+  Universe u;
+  DeribitPrivateParser p(u.symbols, u.instruments, kVenue);
+  Scratch s;
+  // The venue reuses one scratch buffer for every frame; a stale byte must not decide how the
+  // engine books the fee (Base makes it rewrite the filled quantity, Other drops the fee).
+  std::memset(s.buf, 0xFF, sizeof s.buf);
+  PrivateDecodeResult r = decode(p, "deribit/user_trades.json", s);
+  REQUIRE(r.ok());
+  REQUIRE(r.count == 1);
+  // BTC options are quoted in BTC (base == quote), so their BTC fee is a quote amount.
+  CHECK(s.as<OrderFillMsg>().fee_asset == FeeAsset::Quote);
+
+  // An inverse future is quoted in USD and charges the fee in BTC: neither a quote amount nor a
+  // number of contracts, so the engine counts it instead of booking it.
+  static constexpr std::string_view kPerpTrade =
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.trades.future.BTC.raw",)"
+      R"("data":[{"trade_id":"267259002","timestamp":1789345401300,"order_id":"42710123457",)"
+      R"("label":"fm000100000001","instrument_name":"BTC-PERPETUAL","fee_currency":"BTC",)"
+      R"("fee":0.0000012,"direction":"buy","amount":100.0,"price":76950.5,"liquidity":"T"}]}})";
+  const PaddedJson perp(kPerpTrade);
+  r = p.decode(perp.view(), Timestamp{42}, Cycles{7}, s.span());
+  REQUIRE(r.ok());
+  REQUIRE(r.count == 1);
+  const auto& f = s.as<OrderFillMsg>();
+  CHECK(f.fee == Notional::from_decimal("0.0000012").value());
+  CHECK(f.fee_asset == FeeAsset::Other);
+  CHECK(f.qty == qt("10"));  // 100 USD / 10 USD per contract
 }
 
 TEST_CASE("deribit.private_parser: order, auth, subscribe and error responses") {

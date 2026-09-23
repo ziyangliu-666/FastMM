@@ -622,6 +622,18 @@ TEST_CASE(
   CHECK(pos.qty == qt("0.00499"));
   CHECK(pos.fees == Notional::from_decimal("0.001399").value());
   CHECK(f.engine->stats().unconverted_fees == 1);
+  // A fee_asset outside the enum (a venue parser that left the field unset) must not decide the
+  // booking: it is counted and treated as a quote amount.
+  push_fill(ClientOrderId{0x1236},
+            Side::Sell,
+            "100.10",
+            "0.001",
+            "0.0001",
+            static_cast<FeeAsset>(0xFF),
+            "s3");
+  CHECK(pos.qty == qt("0.00399"));  // the quantity is booked as reported, not rewritten
+  CHECK(pos.fees == Notional::from_decimal("0.001499").value());
+  CHECK(f.engine->stats().invalid_fee_assets == 1);
 }
 
 TEST_CASE("core.engine: quotes pulled for a reconciliation work again after End, mid unchanged") {

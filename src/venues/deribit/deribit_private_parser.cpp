@@ -5,6 +5,7 @@
 #include <simdjson.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 
 namespace fastmm::venues::deribit {
@@ -90,6 +91,15 @@ struct ItemCtx {
     ++stats->overflow;
     return false;
   }
+  // The output buffer is a scratch buffer the venue reuses for every frame, so each message is
+  // zeroed before it is filled: a field a decoder leaves alone must not carry over from the
+  // previous decode.
+  template <class M>
+  M* place() noexcept {
+    std::byte* p = out.data() + written;
+    std::memset(p, 0, sizeof(M));
+    return reinterpret_cast<M*>(p);
+  }
 };
 
 // Fields common to user.orders and user.trades objects.
@@ -105,6 +115,7 @@ struct ItemIds {
   std::string_view trade_id;
   std::string_view direction;
   std::string_view liquidity;
+  std::string_view fee_ccy;
   std::int64_t ts = 0;
   Price px{};
   Qty amount{};
@@ -116,8 +127,9 @@ struct ItemIds {
   if (o["timestamp"].get_int64().get(ts) != sj::SUCCESS) ts = 0;
   if (o["liquidity"].get_string().get(liquidity) != sj::SUCCESS) liquidity = {};
   static_cast<void>(fixed_of(o["fee"], fee));
+  if (o["fee_currency"].get_string().get(fee_ccy) != sj::SUCCESS) fee_ccy = {};
   if (!c.room(sizeof(OrderFillMsg))) return true;
-  auto* m = reinterpret_cast<OrderFillMsg*>(c.out.data() + c.written);
+  auto* m = c.place<OrderFillMsg>();
   init_header(*m, EventType::OrderFill, ids.inst, c.venue);
   m->cl_ord_id = ids.cl;
   m->venue_order_id.assign(ids.order_id);
@@ -127,6 +139,18 @@ struct ItemIds {
   m->cum_qty = Qty{};
   m->leaves_qty = Qty{};
   m->fee = fee;
+  // Deribit charges the fee in the instrument's settlement currency and names it in
+  // fee_currency: the quote coin for linear instruments, the base coin for inverse ones. BTC
+  // options are quoted in BTC (base == quote), so their fee is a quote amount; the base-coin fee
+  // of an inverse future is neither a quote amount nor a number of contracts, so the engine
+  // cannot book it (Other: counted, not converted).
+  {
+    const Instrument& in = c.instruments->get(ids.inst);
+    if (fee_ccy.empty()) fee_ccy = in.inverse() ? in.base.view() : in.quote.view();
+    m->fee_asset = fee.is_zero() || iequals_symbol(in.quote.view(), fee_ccy)  ? FeeAsset::Quote
+                   : !in.inverse() && iequals_symbol(in.base.view(), fee_ccy) ? FeeAsset::Base
+                                                                              : FeeAsset::Other;
+  }
   m->side = direction == "sell" ? Side::Sell : Side::Buy;
   m->liquidity = Liquidity::Unknown;
   if (liquidity == "M") m->liquidity = Liquidity::Maker;
@@ -148,7 +172,7 @@ struct ItemIds {
   ++c.stats->orders;
   if (state == "open") {
     if (!c.room(sizeof(OrderAckMsg))) return true;
-    auto* m = reinterpret_cast<OrderAckMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderAckMsg>();
     init_header(*m, EventType::OrderAck, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->venue_order_id.assign(ids.order_id);
@@ -157,7 +181,7 @@ struct ItemIds {
     ++c.count;
   } else if (state == "cancelled") {
     if (!c.room(sizeof(OrderCancelAckMsg))) return true;
-    auto* m = reinterpret_cast<OrderCancelAckMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderCancelAckMsg>();
     init_header(*m, EventType::OrderCancelAck, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->venue_order_id.assign(ids.order_id);
@@ -167,7 +191,7 @@ struct ItemIds {
     ++c.count;
   } else if (state == "rejected") {
     if (!c.room(sizeof(OrderRejectMsg))) return true;
-    auto* m = reinterpret_cast<OrderRejectMsg*>(c.out.data() + c.written);
+    auto* m = c.place<OrderRejectMsg>();
     init_header(*m, EventType::OrderReject, ids.inst, c.venue);
     m->cl_ord_id = ids.cl;
     m->reason = RejectReason::VenueReject;

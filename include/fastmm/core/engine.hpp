@@ -76,7 +76,8 @@ struct EngineStats {
   std::uint64_t unknown_order_cancels = 0;
   std::uint64_t kills = 0;        // global kill switch trips
   std::uint64_t venue_kills = 0;  // per-venue kill switch trips (ControlCommand::TripVenueKill)
-  std::uint64_t unconverted_fees = 0;  // fills whose commission asset is neither base nor quote
+  std::uint64_t unconverted_fees = 0;    // fills whose commission asset is neither base nor quote
+  std::uint64_t invalid_fee_assets = 0;  // fills whose fee_asset is out of range (booked as quote)
   std::uint64_t unknown_instrument_fills = 0;  // not booked, not passed to on_fill
   std::uint64_t param_updates = 0;             // ParamUpdate events applied
   std::uint64_t param_expiries = 0;            // max_param_age passed: quoting disabled
@@ -681,17 +682,28 @@ class Engine {
     const bool known_instrument = instruments_.contains(id);
     Qty booked = f.qty;
     Notional fee = f.fee;
+    // A parser that leaves fee_asset unset would let a byte of its scratch buffer decide how the
+    // fill is booked. An out-of-range value is booked as Quote, the neutral case, and counted.
+    FeeAsset fee_asset = f.fee_asset;
+    if (FASTMM_UNLIKELY(fee_asset > FeeAsset::Other)) {
+      if (stats_.invalid_fee_assets++ == 0) {
+        FASTMM_LOG_ERROR("fill with fee_asset {} booked as quote (first on order {})",
+                         static_cast<unsigned>(fee_asset),
+                         encode_cl_ord_id(f.cl_ord_id));
+      }
+      fee_asset = FeeAsset::Quote;
+    }
     if (FASTMM_LIKELY(known_instrument)) {
       const Instrument& inst = instruments_.get(id);
       // Commission in the base asset changes what we hold (a buy receives qty - fee, a sell
       // delivers qty + fee) and costs fee * price in quote terms; commission in another asset
       // (BNB) cannot be valued here and is counted instead of being booked as quote.
-      if (f.fee_asset == FeeAsset::Base) {
+      if (fee_asset == FeeAsset::Base) {
         const Qty fee_base = Qty::from_raw(f.fee.raw);
         fee = inst.notional(f.price, fee_base);
         const Qty held = side == Side::Buy ? f.qty - fee_base : f.qty + fee_base;
         if (held.raw > 0) booked = held;
-      } else if (f.fee_asset == FeeAsset::Other) {
+      } else if (fee_asset == FeeAsset::Other) {
         if (stats_.unconverted_fees++ == 0) {
           FASTMM_LOG_WARN(
               "fill commission in an asset other than base or quote is not included in "
@@ -718,7 +730,7 @@ class Engine {
         fill.qty = f.qty;
         fill.position_delta = side == Side::Buy ? booked : -booked;
         fill.fee = fee;
-        fill.fee_converted = f.fee_asset != FeeAsset::Other;
+        fill.fee_converted = fee_asset != FeeAsset::Other;
         fill.liquidity = f.liquidity;
         fill.known = u.known;
         fill.late = u.action == OmsAction::LateFill;
