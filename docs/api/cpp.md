@@ -153,7 +153,9 @@ only with `FASTMM_BUILD_NET`.
 The protocol implementations (FIX, Nasdaq ITCH and OUCH, CME MDP 3.0) are internal; the wire
 formats are documented in [FIX 4.4](../reference/codecs/fix.md),
 [Nasdaq ITCH and OUCH](../reference/codecs/nasdaq.md) and
-[CME MDP 3.0](../reference/codecs/cme-mdp3.md).
+[CME MDP 3.0](../reference/codecs/cme-mdp3.md). FIX and CME MDP 3.0 have no connector behind
+them yet and are built only with `-DFASTMM_CODEC_FIX=ON` / `-DFASTMM_CODEC_MDP3=ON`
+([Optional codecs](../getting-started/install.md#optional-codecs)).
 
 ## Simulation and live
 

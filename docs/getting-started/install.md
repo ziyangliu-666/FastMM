@@ -63,6 +63,19 @@ The first command lists the built-in strategies with their parameters. The secon
 
 `ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets). They set no job count: without `-j`, ctest runs one test at a time unless `CTEST_PARALLEL_LEVEL` is set.
 
+## Optional codecs
+
+Two wire codecs are complete and tested but have no connector behind them yet, so the default build leaves them out of `fastmm::codecs`, along with their tests and benchmarks. Their headers stay in the tree; add the option to build one.
+
+| Option | Builds | Documented in |
+|---|---|---|
+| `FASTMM_CODEC_FIX=ON` | FIX 4.4 framing, session layer, decoder and encoder | [FIX 4.4](../reference/codecs/fix.md) |
+| `FASTMM_CODEC_MDP3=ON` | CME MDP 3.0 (SBE) packet framing, decoder, feed handler | [CME MDP 3.0](../reference/codecs/cme-mdp3.md) |
+
+```bash
+cmake --preset release -DFASTMM_CODEC_FIX=ON -DFASTMM_CODEC_MDP3=ON
+```
+
 ## Docker
 
 ```bash

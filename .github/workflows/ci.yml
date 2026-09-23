@@ -142,7 +142,7 @@ jobs:
         run: |
           mkdir -p bench/results/ci
           for b in bench_book bench_risk bench_oms bench_quote_manager bench_logger bench_journal \
-                   bench_codecs_fix bench_codecs_mdp3; do
+                   bench_codecs_nasdaq; do
             ./build/release/bin/bench/$b --benchmark_min_time=0.1s --benchmark_repetitions=3 \
               --benchmark_out_format=json --benchmark_out="bench/results/ci/$b.json"
           done
@@ -160,6 +160,42 @@ jobs:
         run: |
           cmake --install build/release --prefix build/install
           CXX=${{ matrix.cxx }} JOBS=$(nproc) ./scripts/ci-external-project.sh build/release build/install build/external-project
+
+  optional-codecs:
+    needs: plan
+    if: needs.plan.outputs.full == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # FIX 4.4 and CME MDP 3.0 have no venue behind them yet, so the default build leaves them out
+    # (docs/reference/codecs/fix.md, cme-mdp3.md). This job is the one that compiles and tests
+    # them, and runs their benchmarks against bench/ci_budget.toml.
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev zlib1g-dev ccache
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: optional-codecs
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      - name: configure
+        run: >-
+          cmake --preset release -DCMAKE_CXX_COMPILER=g++-13 -DFASTMM_WERROR=ON
+          -DFASTMM_CODEC_FIX=ON -DFASTMM_CODEC_MDP3=ON
+      - name: build
+        run: cmake --build --preset release -j$(nproc) -- -k 0
+      - name: test
+        run: ctest --preset release -j$(nproc) -R '^(codecs|hotpath|bench)\.'
+      - name: benchmark budgets (FIX, MDP3)
+        run: |
+          mkdir -p bench/results/ci
+          for b in bench_codecs_fix bench_codecs_mdp3; do
+            ./build/release/bin/bench/$b --benchmark_min_time=0.1s --benchmark_repetitions=3 \
+              --benchmark_out_format=json --benchmark_out="bench/results/ci/$b.json"
+          done
+          python3 tools/check_budgets.py bench/results/ci --slack 2
 
   docker:
     needs: plan

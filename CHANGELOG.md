@@ -182,6 +182,17 @@ All notable changes are recorded here (Keep a Changelog format).
   latches every write error and `fastmm-live` trips the kill switch and exits with code 5 on one.
 
 ### Changed
+- **FIX 4.4 and CME MDP 3.0 are behind build options, off by default.** No connector drives either
+  codec, so `-DFASTMM_CODEC_FIX=ON` and `-DFASTMM_CODEC_MDP3=ON` now decide whether they are
+  compiled into `fastmm::codecs`; their tests and benchmarks follow the option, and their headers,
+  fixtures and generated SBE flyweights stay in the tree
+  (`docs/getting-started/install.md#optional-codecs`). The default build carries 8,631 fewer lines
+  of source.
+- **Connector plumbing lives in one place.** `include/fastmm/venues/connector_common.hpp` holds the
+  `net::ConnState` mapping, response-header parsing, URL origins, the venue kill switch, the
+  published-status read and the `extra`-key readers the five connectors each had a copy of, and
+  `include/fastmm/venues/book_sync.hpp` holds `StreamBookSync<Traits>`, which `BybitBookSync` and
+  `DeribitBookSync` are instantiations of. No behaviour change.
 - **`fastmm-live` exits after a kill switch it did not ask for.** `[engine] on_kill = "exit" |
   "stay"` (default `"exit"`): the session runs the normal shutdown (quotes pulled, REST cancel-all,
   summary, status file, journal trailer) and exits with the new exit code 6, or 5 if a cancel-all

@@ -33,6 +33,13 @@ foreach(src ${_benches})
   if(NOT TARGET ${_lib})
     continue()  # e.g. FASTMM_BUILD_NET=OFF skips net and venue benchmarks
   endif()
+  # The optional codecs (FASTMM_CODEC_FIX / FASTMM_CODEC_MDP3) take their benchmarks with them.
+  if(name STREQUAL "bench_codecs_fix" AND NOT FASTMM_CODEC_FIX)
+    continue()
+  endif()
+  if(name STREQUAL "bench_codecs_mdp3" AND NOT FASTMM_CODEC_MDP3)
+    continue()
+  endif()
   add_executable(${name} ${src})
   fastmm_target_defaults(${name})
   target_link_libraries(${name} PRIVATE fastmm_bench_main ${_lib})

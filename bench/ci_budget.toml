@@ -41,6 +41,8 @@
 "BM_WsAssemble/16384" = 160
 
 # Wire codecs. An iteration is 64 operations for the ITCH, MoldUDP64, SoupBinTCP and OUCH rows.
+# The BM_Fix_* and BM_Mdp3_* rows need -DFASTMM_CODEC_FIX=ON / -DFASTMM_CODEC_MDP3=ON; without
+# them their benchmarks are not built and check_budgets.py reports them as missing, not failed.
 "BM_Fix_ParseExecReportFill" = 265        # ~250-byte ExecutionReport, 25 fields
 "BM_Fix_DecodeExecReportFill" = 420       # parse + map to OrderFillMsg
 "BM_Fix_BuildNewOrderSingle" = 155

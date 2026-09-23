@@ -1,5 +1,13 @@
 # FIX 4.4 codec (`fastmm::codecs::fix`)
 
+!!! note "Not in the default build"
+
+    No connector speaks FIX yet, so `fastmm::codecs` leaves this codec out unless you configure
+    with `-DFASTMM_CODEC_FIX=ON`; its tests and `bench/bench_codecs_fix.cpp` follow the same
+    option. It is here because FIX is what most equity and futures brokers, and the crypto
+    venues' institutional gateways, offer for order entry: a `Venue` over it needs a transport
+    and a symbology, not a codec. The headers stay in the tree either way.
+
 A tag=value FIX 4.4 codec: framing, session layer for initiators and acceptors, and a decoder and encoder between FIX messages and the engine's normalised messages. There is no XML dictionary: the tags and enumerations the codec uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`.
 
 Everything on the hot path is `noexcept` and allocation-free after construction (`tests/hotpath/codecs_fix_noalloc_test.cpp` checks it). The library depends on core only.

@@ -30,6 +30,11 @@ option(FASTMM_HOT_PATH_NOALLOC_CHECK "Compile no-allocation assertions into hot 
 option(FASTMM_INSTALL            "Generate install/export rules" ${PROJECT_IS_TOP_LEVEL})
 option(FASTMM_USE_CCACHE         "Use ccache if available" ON)
 option(FASTMM_WITH_DPDK          "DPDK DatagramSource (rx_backend = \"dpdk\"; needs FASTMM_BUILD_NET)" OFF)
+# Wire codecs no venue drives yet (docs/reference/codecs/fix.md, cme-mdp3.md). Off by default so
+# the codec library, its tests and its benchmarks stay out of the default build; the headers stay
+# in the tree. Turn one on to build a venue on top of it.
+option(FASTMM_CODEC_FIX          "Build the FIX 4.4 codec and session layer" OFF)
+option(FASTMM_CODEC_MDP3         "Build the CME MDP 3.0 (SBE) codec" OFF)
 option(FASTMM_DPDK_FETCH         "Build DPDK into the build tree when pkg-config finds none" ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -134,4 +139,4 @@ if(FASTMM_INSTALL)
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fastmm)
 endif()
 
-message(STATUS "fastmm ${PROJECT_VERSION}: type=${CMAKE_BUILD_TYPE} tests=${FASTMM_BUILD_TESTS} bench=${FASTMM_BUILD_BENCH} net=${FASTMM_BUILD_NET} python=${FASTMM_BUILD_PYTHON} dpdk=${FASTMM_WITH_DPDK} lto=${FASTMM_ENABLE_LTO} native=${FASTMM_NATIVE_ARCH}")
+message(STATUS "fastmm ${PROJECT_VERSION}: type=${CMAKE_BUILD_TYPE} tests=${FASTMM_BUILD_TESTS} bench=${FASTMM_BUILD_BENCH} net=${FASTMM_BUILD_NET} python=${FASTMM_BUILD_PYTHON} dpdk=${FASTMM_WITH_DPDK} lto=${FASTMM_ENABLE_LTO} native=${FASTMM_NATIVE_ARCH} fix=${FASTMM_CODEC_FIX} mdp3=${FASTMM_CODEC_MDP3}")

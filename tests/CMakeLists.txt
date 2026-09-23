@@ -8,13 +8,17 @@ target_compile_definitions(fastmm_test_support PUBLIC
   FASTMM_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/tmp")
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tmp)
 
-# fastmm_test(<name> LABELS <labels...> LIBS <targets...>) globs tests/<dir>/*.cpp
+# fastmm_test(<name> LABELS <labels...> LIBS <targets...> [EXCLUDE_REGEX <regex>]) globs
+# tests/<dir>/*.cpp, minus the paths matching EXCLUDE_REGEX (tests of an optional library).
 function(fastmm_test name)
-  cmake_parse_arguments(T "SERIAL" "DIR" "LABELS;LIBS;SOURCES" ${ARGN})
+  cmake_parse_arguments(T "SERIAL" "DIR;EXCLUDE_REGEX" "LABELS;LIBS;SOURCES" ${ARGN})
   if(NOT T_DIR)
     set(T_DIR ${name})
   endif()
   file(GLOB _src CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/${T_DIR}/*.cpp)
+  if(T_EXCLUDE_REGEX)
+    list(FILTER _src EXCLUDE REGEX "${T_EXCLUDE_REGEX}")
+  endif()
   list(APPEND _src ${T_SOURCES})
   if(NOT _src)
     return()
@@ -60,7 +64,18 @@ target_link_libraries(fastmm_test_strategy_module PUBLIC fastmm::sim)
 fastmm_test(modules   LABELS "unit"          LIBS fastmm_test_strategy_module fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
-fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim_itch_publisher)
+# The FIX and MDP3 tests (here and in hotpath/) follow their codec's option: without it the
+# library has no such code to link against.
+set(_codec_skip)
+if(NOT FASTMM_CODEC_FIX)
+  list(APPEND _codec_skip "/fix_" "/codecs_fix_")
+endif()
+if(NOT FASTMM_CODEC_MDP3)
+  list(APPEND _codec_skip "/mdp3_" "/sbe_schema_" "/codecs_mdp3_")
+endif()
+list(JOIN _codec_skip "|" _codec_skip_regex)
+fastmm_test(codecs    LABELS "unit;fixture"  LIBS fastmm::codecs fastmm::sim_itch_publisher
+                      EXCLUDE_REGEX "${_codec_skip_regex}")
 # Shipped configs/*.toml: load, schema and [strategy.params] through the registry (label config).
 fastmm_test(config    LABELS "config"        LIBS fastmm::backtest)
 if(TARGET fastmm_config_tests)
@@ -137,6 +152,9 @@ endif()
 # Hot-path no-allocation harness: the ONLY binary that overrides global operator new. Not built
 # under TSan: its runtime defines operator new/delete itself and the link fails on duplicates.
 file(GLOB _hot CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/hotpath/*.cpp)
+if(_codec_skip_regex)
+  list(FILTER _hot EXCLUDE REGEX "${_codec_skip_regex}")
+endif()
 if(_hot AND NOT FASTMM_ENABLE_TSAN)
   add_executable(fastmm_hotpath_tests ${_hot} support/alloc_counter.cpp)
   fastmm_target_defaults(fastmm_hotpath_tests)
