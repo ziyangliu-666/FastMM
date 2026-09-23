@@ -1,0 +1,220 @@
+# FastMM documentation site (MkDocs + Material). Preview: ./scripts/docs-serve.sh
+# The Markdown under docs/ is the source and stays readable on GitHub; this file only orders it.
+site_name: FastMM
+site_description: A market-making engine in C++20. Backtests, replay and live trading run the same strategy code.
+site_url: https://ziyangliu-666.github.io/FastMM/
+site_author: Ziyang Liu
+repo_url: https://github.com/ziyangliu-666/FastMM
+repo_name: ziyangliu-666/FastMM
+edit_uri: edit/main/docs/
+copyright: MIT licence
+
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+hooks:
+  - tools/mkdocs_hooks.py
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle: { icon: material/brightness-auto, name: Follow the system theme }
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/brightness-7, name: Switch to dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle: { icon: material/brightness-4, name: Switch to light mode }
+  font:
+    text: Roboto
+    code: Roboto Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - toc.follow
+    - content.code.copy
+    - content.action.edit
+    - content.tooltips
+
+extra_css:
+  - assets/fastmm.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ziyangliu-666/FastMM
+      name: FastMM on GitHub
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          # Static analysis (griffe): the site builds without compiling fastmm._core.
+          paths: [python]
+          options:
+            docstring_style: google
+            docstring_section_style: table
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            members_order: source
+            filters: ["!^_"]
+            heading_level: 3
+            merge_init_into_class: true
+            extensions:
+              - tools/griffe_fastmm.py:EscapeStubBrackets
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # GitHub's anchor rules, so a `#fragment` works both here and on GitHub
+      # (tools/docs_links.py checks the GitHub spelling).
+      slugify: !!python/object/apply:pymdownx.slugs.slugify { kwds: { case: lower } }
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# `mkdocs build --strict` turns each of these into a build failure.
+validation:
+  nav:
+    omitted_files: warn # a new page under docs/ needs a nav entry here
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
+
+nav:
+  - Home: README.md
+  - Get started:
+      - getting-started/install.md
+      - getting-started/quickstart.md
+      - python.md
+      - Your first market maker:
+          - tutorials/first-strategy/README.md
+          - tutorials/first-strategy/01-set-up.md
+          - tutorials/first-strategy/02-the-model.md
+          - tutorials/first-strategy/03-write-the-strategy.md
+          - tutorials/first-strategy/04-unit-test.md
+          - tutorials/first-strategy/05-backtest-in-cpp.md
+          - tutorials/first-strategy/06-register.md
+          - tutorials/first-strategy/07-cli-backtest-and-replay.md
+          - tutorials/first-strategy/08-sim-exchange.md
+          - tutorials/first-strategy/09-binance-demo.md
+  - How-to:
+      - Strategies:
+          - how-to/strategies/register-a-strategy.md
+          - how-to/strategies/python-hot-hooks.md
+          - how-to/strategies/python-slow-methods.md
+          - how-to/strategies/python-live.md
+      - Venues:
+          - how-to/venues/add-a-venue.md
+      - Operations:
+          - how-to/operations/run-on-testnet.md
+          - how-to/operations/running-in-production.md
+          - how-to/operations/runbook.md
+          - how-to/operations/go-live-checklist.md
+          - how-to/operations/kill-switch-and-shutdown.md
+          - how-to/operations/journals-replay-pnl.md
+          - how-to/operations/monitor-with-fastmm-top.md
+          - how-to/operations/multicast-feeds.md
+          - how-to/operations/two-host-benchmark.md
+          - how-to/operations/troubleshooting.md
+  - Reference:
+      - Strategies:
+          - reference/strategy-api.md
+          - reference/python-api.md
+          - reference/fixed-point.md
+          - reference/public-api.md
+      - Programs and files:
+          - reference/cli.md
+          - reference/configuration.md
+          - reference/errors.md
+          - reference/journal-format.md
+          - reference/status-file.md
+      - Venues and protocols:
+          - reference/venues.md
+          - reference/sim-exchange.md
+          - reference/sim-itch.md
+          - reference/options.md
+          - reference/codecs/fix.md
+          - reference/codecs/nasdaq.md
+          - reference/codecs/cme-mdp3.md
+      - reference/glossary.md
+  - API:
+      - api/cpp.md
+      - api/python.md
+  - Explanation:
+      - explanation/how-it-works.md
+      - explanation/economics.md
+      - explanation/architecture.md
+      - explanation/event-flow.md
+      - explanation/determinism.md
+      - explanation/risk-model.md
+      - explanation/benchmarks.md
+      - Design records:
+          - adr/README.md
+          - adr/0001-fixed-point-int64-price-qty.md
+          - adr/0002-exceptions-off-hot-path.md
+          - adr/0003-pragma-once.md
+          - adr/0004-doctest-over-gtest.md
+          - adr/0005-cpm-over-submodules-conan-vcpkg.md
+          - adr/0006-static-libs-lto.md
+          - adr/0007-hand-written-net-stack.md
+          - adr/0008-sim-exchange-speaks-binance.md
+          - adr/0009-crtp-strategies-over-virtual.md
+          - adr/0010-fmj-journal-format.md
+          - adr/0011-scikit-build-core.md
+          - adr/0012-strategy-developer-experience.md
+          - adr/0013-python-strategies-live.md
+          - adr/0014-us-equities.md
+          - adr/0015-multicast-market-data.md
+  - Contributing:
+      - contributing/writing-docs.md
+      - contributing/dependencies.md
+      - contributing/python-packages.md

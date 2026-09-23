@@ -1,5 +1,7 @@
 # build
 build/
+# docs site (mkdocs.yml); the API reference is generated, never committed
+site/
 .cpm-cache/
 compile_commands.json
 *.o

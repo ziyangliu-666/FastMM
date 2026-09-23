@@ -1,6 +1,15 @@
 # Writing docs
 
-The docs are Markdown rendered on GitHub; there is no site generator.
+The Markdown under `docs/` is the source of both the site at <https://ziyangliu-666.github.io/FastMM/>
+(MkDocs + Material, `mkdocs.yml`) and the pages GitHub renders, so relative links have to work in
+both. Preview the site:
+
+```bash
+./scripts/docs-serve.sh          # http://127.0.0.1:8000, reloads on edit; --api adds the API reference
+```
+
+The script builds `build/docs-venv` from [`docs/requirements.txt`](../requirements.txt) the first
+time and touches nothing else on the machine.
 
 ## Where a page goes
 
@@ -14,7 +23,7 @@ The docs are Markdown rendered on GitHub; there is no site generator.
 | `docs/contributing/` | how-to | covers work on FastMM itself |
 | `docs/adr/` | decision record | records one decision; not edited after acceptance except for amendments |
 
-A new page gets a link from [`docs/README.md`](../README.md); the glossary defines each term once. Python pages (`docs/python.md` and the Python reference) belong to the Python package.
+A new page gets an entry in the `nav` of [`mkdocs.yml`](../../mkdocs.yml) and a link from [`docs/README.md`](../README.md), which is the site's home page; the site build fails on a page that is missing from the nav. The glossary defines each term once. Python pages (`docs/python.md` and the Python reference) belong to the Python package.
 
 ## Style
 
@@ -61,6 +70,17 @@ Code that the docs show should be compiled or run by a test: the examples and th
 
 Only the regions between `<!-- BEGIN ... -->` and `<!-- END ... -->` are generated; edit the rest of the page by hand. Change a flag or a configuration key in the code (usage text or schema doc string), then run the tool.
 
+## The API reference
+
+Two pages are built from the code by the site, not committed:
+
+| Page | Built from | By |
+|---|---|---|
+| `/api/cpp/` | the headers in [`docs/api/public-headers.txt`](../api/public-headers.txt) | Doxygen (`doxygen/Doxyfile.in`), through `tools/mkdocs_hooks.py` |
+| `/api/python/` | the docstrings of `python/fastmm/` and the stub `_core.pyi` | mkdocstrings, from `docs/api/python.md` |
+
+The headers document themselves with `//` comments; `tools/doxygen_filter.py` presents them to Doxygen as `///` and `///<` documentation, so a header needs no Doxygen markup. Adding a header to the manifest adds it to the reference. [`docs/api/cpp.md`](../api/cpp.md) is the hand-written index in front of the Doxygen output, grouped by subsystem; its links are checked against the generated pages on every build.
+
 ## Checks
 
 CI runs these checks:
@@ -74,5 +94,6 @@ CI runs these checks:
 | strategy API as documented, every public header compiles alone | `ctest --test-dir build/release -L docs` | all build jobs |
 | quick start, examples and tutorial run | `ctest --test-dir build/release -L 'examples\|tutorial'` | all build jobs |
 | every `configs/*.toml` loads without warnings | `ctest --test-dir build/release -L config` | all build jobs |
+| the site builds with no broken link and every page in the nav | `./scripts/docs-serve.sh --build` | docs |
 
 The tutorial script test (`tutorial.script`) runs the simulated exchange on a free port (`FASTMM_SIM_PORT=0`) and is not registered under sanitizers. The public header manifest is [`docs/api/public-headers.txt`](../api/public-headers.txt) ([Public API](../reference/public-api.md)).

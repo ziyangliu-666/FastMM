@@ -25,7 +25,7 @@ The backtest prints a summary table; `run-sim.sh` runs a full live session again
 | Going to run this with real money | [Economics of the shipped strategies](explanation/economics.md), then [Running this in production](how-to/operations/running-in-production.md), then the [Go-live checklist](how-to/operations/go-live-checklist.md) |
 | Operating a running session | [Operations runbook](how-to/operations/runbook.md), [Troubleshooting](how-to/operations/troubleshooting.md), [Errors and exit codes](reference/errors.md) |
 
-Terms are defined once, in the [Glossary](reference/glossary.md).
+Terms are defined once, in the [Glossary](reference/glossary.md). The [C++ API](api/cpp.md) and [Python API](api/python.md) pages are generated from the public headers and the `fastmm` package on every build.
 
 ## Before real money
 
@@ -50,6 +50,7 @@ Terms are defined once, in the [Glossary](reference/glossary.md).
 - Programs and files: [Command lines](reference/cli.md), [Configuration](reference/configuration.md), [Errors and exit codes](reference/errors.md), [Journal format](reference/journal-format.md), [Status file](reference/status-file.md)
 - Venues and protocols: [Venue connectors](reference/venues.md), [Simulated exchange](reference/sim-exchange.md), [fastmm-sim-itch](reference/sim-itch.md), [Options](reference/options.md), [FIX 4.4](reference/codecs/fix.md), [Nasdaq ITCH and OUCH](reference/codecs/nasdaq.md), [CME MDP 3.0](reference/codecs/cme-mdp3.md)
 - Python: [Python](python.md), [Python strategy API](reference/python-api.md)
+- Generated from the code: [C++ API](api/cpp.md), [Python API](api/python.md)
 - [Glossary](reference/glossary.md)
 
 ## Explanation
