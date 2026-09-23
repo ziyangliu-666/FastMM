@@ -772,6 +772,9 @@ void DeribitVenue::handle_order_response(RequestKind kind,
       ++stats_.order_events;
       return;
     }
+    // No connector but Binance Spot sends an amend, so a response carrying that kind here is a
+    // request id this venue never minted.
+    case RequestKind::Amend:
     case RequestKind::Other:
       return;
   }

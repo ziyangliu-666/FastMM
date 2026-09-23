@@ -378,10 +378,53 @@ void BybitVenue::on_private_state(net::ConnState s) {
 }
 
 void BybitVenue::on_private_open() {
+  // DCP only fires for connections that subscribed a `dcp.*` topic: "for those private
+  // connections subscribing 'dcp' topic are all dead, then DCP will be triggered". Without the
+  // subscription the account setting exists and does nothing.
   constexpr std::string_view kTopics[] = {"order", "execution", "wallet"};
-  const std::size_t n = BybitOrderEncoder::encode_subscribe("private", kTopics, request_buf_);
+  constexpr std::string_view kTopicsDcp[] = {"order", "execution", "wallet", "dcp.spot"};
+  const bool dcp = cfg_.dead_mans_switch_s > 0;
+  const std::size_t n = BybitOrderEncoder::encode_subscribe(
+      "private", dcp ? std::span<const std::string_view>(kTopicsDcp) : kTopics, request_buf_);
   if (n == 0 || !private_conn_.send_text(std::string_view(request_buf_, n)))
     FASTMM_LOG_ERROR("{}: could not subscribe the private topics", cfg_.name);
+  if (dcp) set_dcp();
+}
+
+// Bybit's dead man's switch is a persistent account setting, not a countdown to refresh: Bybit
+// starts the clock when every private connection that subscribed a `dcp.*` topic has died, and
+// resets it when one comes back. So this goes out once per private connect and that is all.
+// There is nothing to disarm on a clean shutdown either — with no connection subscribed there is
+// no "all dead" transition to trigger on, and Session::stop cancels the orders itself.
+void BybitVenue::set_dcp() {
+  if (rest_ == nullptr || !signer_.usable() || cfg_.dry_run) return;
+  RestRequest rr;
+  if (!encoder_->encode_rest_set_dcp("SPOT", cfg_.dead_mans_switch_s, rr)) return;
+  const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
+  std::weak_ptr<int> alive = alive_;
+  static_cast<void>(rest_->request(
+      "POST", rr.target(), headers, rr.body, [this, alive](const net::HttpResponse& r) {
+        if (alive.expired() || r.error == net::NetError::Canceled) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        int code = -1;
+        std::string msg;
+        if (r.ok() && decode_envelope(r.body, code, msg) && code == 0) {
+          FASTMM_LOG_INFO("{}: disconnect-cancel-all armed, window {} s (spot)",
+                          cfg_.name,
+                          cfg_.dead_mans_switch_s);
+          return;
+        }
+        ++stats_.rest_errors;
+        // Not fatal: quoting without it is what every account that is not an Ins client does.
+        FASTMM_LOG_ERROR(
+            "{}: disconnect-cancel-all refused: status={} retCode={} {} (the "
+            "account has to be configured for DCP by Bybit first)",
+            cfg_.name,
+            r.status,
+            code,
+            msg);
+      }));
 }
 
 ClientOrderId BybitVenue::current_id(ClientOrderId link) const noexcept {
@@ -581,6 +624,9 @@ void BybitVenue::handle_order_response(RequestKind kind, ClientOrderId id, const
       }
       ++stats_.order_events;
       return;
+    // No connector but Binance Spot sends an amend, so a response carrying that kind here is a
+    // request id this venue never minted.
+    case RequestKind::Amend:
     case RequestKind::Other:
       return;
   }
@@ -1177,6 +1223,11 @@ BybitVenueConfig make_bybit_config(const VenueSection& v, bool dry_run) {
   c.position_from_wallet = extra_bool("position_from_wallet", false);
   c.allow_offline_reference_data = extra_bool("allow_offline_reference_data", false);
   c.cancel_on_order_channel_loss = extra_bool("cancel_on_order_channel_loss", true);
+  // 0 = off; anything else is clamped to the [3, 300] s the venue accepts.
+  const std::int64_t dcp = extra_int("dead_mans_switch_s", c.dead_mans_switch_s);
+  c.dead_mans_switch_s =
+      dcp <= 0 ? 0
+               : static_cast<int>(std::clamp<std::int64_t>(dcp, kMinDcpWindowS, kMaxDcpWindowS));
   c.emit_ack_from_response = extra_bool("emit_ack_from_response", true);
   return c;
 }

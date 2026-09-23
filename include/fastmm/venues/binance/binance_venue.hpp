@@ -73,7 +73,14 @@ struct BinanceVenueConfig {
   bool cancel_on_order_channel_loss = true;
   bool allow_offline_reference_data = false;  // keep config tick/lot if exchangeInfo fails
   bool supports_replace = true;               // cancelReplace
-  int depth_limit = 1000;                     // GET /api/v3/depth limit (weight 50)
+  // PUT /api/v3/order/amend/keepPriority for a replace that only reduces the quantity at the
+  // same price: the order keeps its id and its place in the queue. Everything else, and this
+  // set to false, uses order.cancelReplace, which starts again at the back of the queue.
+  bool amend_keep_priority = true;
+  // Amendments allowed on one order before falling back to cancelReplace; the venue's own
+  // MAX_NUM_ORDER_AMENDS filter is 10 where it is published.
+  std::uint16_t max_order_amends = kDefaultMaxOrderAmends;
+  int depth_limit = 1000;  // GET /api/v3/depth limit (weight 50)
   std::uint32_t stale_ms = 2000;
   std::uint32_t dead_ms = 10'000;
   std::uint64_t max_lifetime_ms = 23ULL * 3600 * 1000;  // roll over before the 24 h cut
@@ -115,6 +122,8 @@ class BinanceVenue final : public Venue {
   [[nodiscard]] std::int64_t clock_offset_ms() const noexcept { return clock_offset_ms_; }
   [[nodiscard]] const BinanceVenueConfig& config() const noexcept { return cfg_; }
   [[nodiscard]] bool fatal() const noexcept { return fatal_; }
+  // Replaces sent as order.amend.keepPriority rather than order.cancelReplace.
+  [[nodiscard]] std::uint64_t amends_sent() const noexcept { return amends_sent_; }
   // Venue time in ms (local wall clock + measured offset).
   [[nodiscard]] std::int64_t venue_time_ms() const noexcept;
 
@@ -170,12 +179,14 @@ class BinanceVenue final : public Venue {
   template <class Ring>
   void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
-  void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow);
+  void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow, bool amend_in_place);
   // uncork() failed: the batch never left, so its orders are rejected (see BatchedOrders).
   void fail_batch();
   void handle_ws_api_response(const WsApiResponse& r, std::string_view raw);
   void handle_order_response(RequestKind kind, ClientOrderId id, const WsApiResponse& r);
-  void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
+  void handle_rest_order_response(const OrderCommand& cmd,
+                                  const net::HttpResponse& r,
+                                  bool amend_in_place);
   // Sends ControlCommand::TripVenueKill to the engine, once per session.
   void trip_venue_kill(KillReason reason);
   // Re-sends session.logon on `ch` after a transient failure (kLogonRetryNs).
@@ -188,7 +199,10 @@ class BinanceVenue final : public Venue {
       InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text);
   void emit_cancel_reject(
       InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text);
-  void emit_ack(InstrumentId inst, ClientOrderId id, std::int64_t order_id);
+  void emit_ack(InstrumentId inst,
+                ClientOrderId id,
+                std::int64_t order_id,
+                bool amended_in_place = false);
   void emit_cancel_ack(InstrumentId inst,
                        ClientOrderId id,
                        std::int64_t order_id,
@@ -258,6 +272,7 @@ class BinanceVenue final : public Venue {
   bool order_was_live_ = false;
   bool user_was_live_ = false;
   SentWatermark sent_;
+  std::uint64_t amends_sent_ = 0;
   BatchedOrders batch_;  // orders written into the corked order connection
   // Open-order snapshot, decoded in full before anything reaches the engine.
   std::vector<ReconcileMsg> reconcile_records_;

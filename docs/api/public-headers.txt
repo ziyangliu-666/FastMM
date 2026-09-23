@@ -82,6 +82,7 @@ tier2 net fastmm/venues/order_events.hpp
 tier2 net fastmm/venues/error_action.hpp
 tier2 net fastmm/venues/symbology.hpp
 tier2 net fastmm/venues/rate_limiter.hpp
+tier2 net fastmm/venues/dead_mans_switch.hpp
 tier2 net fastmm/venues/rest_channel.hpp
 tier2 net fastmm/venues/connection_slot.hpp
 tier2 net fastmm/venues/blocking_http.hpp

@@ -33,13 +33,29 @@ Orders a previous run left resting therefore stay on the venue, unknown to the O
 
 Mitigation: cancel all orders on the venue's own interface before every start, and verify it. The [Go-live checklist](go-live-checklist.md#stopping) says the same for stopping.
 
-### Cancel-on-disconnect is armed only on Deribit
+### Binance Spot has no dead man's switch, and Bybit's is not self-serve
 
-`cancel_on_disconnect` exists on exactly one connector (`private/enable_cancel_on_disconnect`, scope `connection`, `src/venues/deribit/deribit_venue.cpp`). Binance Spot, Binance USDⓈ-M, Bybit and `nasdaq_itch` have no venue-side equivalent.
+Every connector also has `cancel_on_order_channel_loss = true`, a client-side REST cancel-all the connector issues when its order channel drops. That is not a dead man's switch: it needs the process to be alive and the network to work. `kill -9`, an OOM kill, a kernel panic or a host that loses power leaves nothing to run it. Only the venue can clear your orders then, and what the venue offers differs:
 
-What the others have is `cancel_on_order_channel_loss = true`, a client-side REST cancel-all issued by the connector when its order channel drops. It requires the process to be alive and the network to work. `kill -9`, an OOM kill, a kernel panic or a host that loses power leaves your orders resting on Binance and Bybit with nothing to cancel them.
+| venue | venue-side switch | default | after a hard kill |
+|---|---|---|---|
+| Binance USDⓈ-M | `POST /fapi/v1/countdownCancelAll`, refreshed every `dead_mans_switch_ms`/3 | 60 s | orders gone within the window |
+| Deribit | `private/enable_cancel_on_disconnect`, scope `connection`, plus `public/set_heartbeat` | on, 10 s heartbeat | orders gone once the heartbeat misses |
+| Bybit | `POST /v5/order/disconnected-cancel-all` + the `dcp.spot` topic | **off** | orders rest until you cancel them |
+| Binance Spot | **none exists** | — | orders rest until you cancel them |
+| `nasdaq_itch` | none | — | orders rest until you cancel them |
 
-Mitigation: keep quote sizes at a level you can survive being filled entirely while you are not connected, and know where the venue's own cancel-all is before you need it.
+Deribit's cancel-on-disconnect only fires promptly because the connector also runs heartbeats: without them the venue waits out a ten-minute inactivity timeout before it notices a socket that died without a FIN.
+
+Bybit's window is off by default because the venue does not grant it on request: the documentation says the feature "is only available for Ins clients" and has to be enabled by an account manager first. Set `dead_mans_switch_s` once your account has it — the connector then arms the window and subscribes the `dcp.spot` topic that DCP needs in order to fire at all. Until then the connector logs the refusal and keeps quoting.
+
+Binance Spot has no equivalent at all. Checked against the current `rest-api.md`, `web-socket-api.md` and `fix-api.md`: there is no countdown, no session auto-cancel and no cancel-on-disconnect. The FIX session's "countdown" message counts down to a maintenance logout and leaves orders alone. The only venue-side primitive is the manual `openOrders.cancelAll`.
+
+Mitigation, for Binance Spot and for Bybit without DCP: keep quote sizes at a level you can survive being filled entirely while you are not connected, and know where the venue's own cancel-all is before you need it.
+
+### A dead man's switch that lapses is a kill, not a retry
+
+On Binance USDⓈ-M, if the countdown cannot be refreshed for a whole window while the process is still running, the venue has cancelled every order on that symbol. The connector does not quietly put them back: it sets its fatal flag and trips the venue's kill bit with `DeadMansSwitchLost`, so the quoter stops rather than racing a kill switch it cannot see. Restarting is an operator decision ([Kill switch and shutdown](kill-switch-and-shutdown.md)).
 
 ## 3. Fills you will not book
 

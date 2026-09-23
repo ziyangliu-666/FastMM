@@ -41,6 +41,7 @@ testnet = true
 supports_replace = false     # cancel + new; order.modify is implemented but moves the order in the queue anyway
 recv_window_ms = 3000
 stale_ms = 10000
+dead_mans_switch_ms = 60000  # countdownCancelAll: the venue cancels this symbol if we go quiet
 
 [venues.binance_usdm.fees]
 maker_bps = 2.0              # GET /fapi/v1/commissionRate on the Demo account

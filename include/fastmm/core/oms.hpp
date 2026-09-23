@@ -241,7 +241,11 @@ class Oms {
         // ends and let the new leg's ack read a freed slot while that order stays live untracked.
         if (m.cl_ord_id == o.pending_cl_ord_id) {
           const ClientOrderId old_id = o.cl_ord_id;
-          apply_replace(o, o.pending_cl_ord_id != o.cl_ord_id);
+          const bool rekey = o.pending_cl_ord_id != o.cl_ord_id;
+          // An in-place amend keeps the venue's order even when it is given a new client id
+          // (Binance Spot keepPriority), so the fills booked against it stay.
+          const bool new_venue_order = rekey && (m.flags & OrderAckMsg::kAmendedInPlace) == 0;
+          apply_replace(o, rekey, new_venue_order);
           if (o.cl_ord_id != old_id) u.replaced_cl_ord_id = old_id;
           o.venue_order_id = m.venue_order_id;
           u.changed = true;
@@ -589,15 +593,18 @@ class Oms {
     u.handle = h;
   }
 
-  void apply_replace(Order& o, bool new_venue_order) noexcept {
+  // `rekey`: the replacement carries a new client id. `new_venue_order`: it is a different order
+  // on the venue (cancel-replace), so its cumulative quantity starts at zero; an in-place amend
+  // rekeys without that.
+  void apply_replace(Order& o, bool rekey, bool new_venue_order) noexcept {
     const std::size_t s = static_cast<std::size_t>(o.side);
     Qty& open = open_qty_[o.instrument.value][s];
     open -= o.leaves_qty();
-    if (new_venue_order) {
+    if (rekey) {
       by_id_.erase(o.cl_ord_id);
       o.cl_ord_id = o.pending_cl_ord_id;
-      o.cum_qty = Qty{};
     }
+    if (new_venue_order) o.cum_qty = Qty{};
     const Price old_px = o.price;
     o.price = o.pending_price;
     o.qty = o.pending_qty;

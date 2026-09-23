@@ -23,6 +23,12 @@ constexpr VenueKeySpec kBybitKeys[] = {
      KeyType::Bool,
      false,
      "start without REST reference data, using the configured tick and lot (default false)"},
+    {"dead_mans_switch_s",
+     KeyType::Int,
+     false,
+     "Bybit disconnect-cancel-all window in seconds, 3 to 300; the venue cancels every spot "
+     "order once no private connection is left. 0 disables it (default 0: Bybit only grants "
+     "DCP to institutional accounts)"},
     {"cancel_on_order_channel_loss",
      KeyType::Bool,
      false,

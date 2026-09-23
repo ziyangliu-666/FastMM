@@ -374,6 +374,122 @@ TEST_CASE("sim_exchange: order lifecycle over the WS API with real fills and rec
   CHECK_FALSE(h.venue->fatal());
 }
 
+TEST_CASE("sim_exchange: a size-down amends in place and keeps the order id, a reprice does not") {
+  // The point of order.amend.keepPriority for a quoter: shrinking a quote at the same price is
+  // the common requote, and cancelReplace pays for it with the queue position. Here the
+  // difference is visible as the venue's orderId — the identity of the entry in the book. The
+  // queue consequence itself is in sim.matching ("replace keeps priority only for same price
+  // and qty <= leaves" against "cancel then a new order ... goes to the back").
+  ServerFixture fx;
+  VenueHarness h(venue_config(fx));
+  REQUIRE(h.venue->load_reference_data(h.instruments));
+  h.connect();
+  REQUIRE(h.pump(
+      [&] { return h.venue->md_feed()->synced_count() == 1 && h.live_order_channels() >= 2; }));
+  const Price bid = fx.server.stats().best_bid.price;
+  REQUIRE(bid.is_positive());
+  const Price px = bid - Price::from_int(100);
+  const Qty big = Qty::from_decimal("0.004").value();
+  const Qty small = Qty::from_decimal("0.002").value();
+
+  const ClientOrderId o1 = cid(11);
+  h.send(new_order(o1, Side::Buy, OrderType::PostOnly, TimeInForce::Gtc, px, big).hdr);
+  REQUIRE(h.pump([&] { return h.acks(o1) >= 1; }));
+  const std::string venue_id(h.last_ack(o1)->venue_order_id.view());
+  REQUIRE_FALSE(venue_id.empty());
+
+  // Same price, smaller quantity -> order.amend.keepPriority.
+  const ClientOrderId o2 = cid(12);
+  OutReplaceMsg down{};
+  init_header(down, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+  down.cl_ord_id = o2;
+  down.orig_cl_ord_id = o1;
+  down.venue_order_id.assign(venue_id);
+  down.price = px;
+  down.qty = small;
+  h.send(down.hdr);
+  REQUIRE(h.pump([&] { return h.acks(o2) >= 2; }));  // WS API response + executionReport REPLACED
+  sim::server::SimServerStats st = fx.server.stats();
+  CHECK(st.amends == 1);
+  CHECK(st.replaces == 0);  // no cancelReplace was used
+  CHECK(st.open_orders == 1);
+  CHECK(h.venue->amends_sent() == 1);
+  // Same order on the venue, under the engine's new id, and the ack says so.
+  CHECK(h.last_ack(o2)->venue_order_id.view() == venue_id);
+  CHECK((h.last_ack(o2)->flags & OrderAckMsg::kAmendedInPlace) != 0);
+  CHECK(h.cancel_acks(o1) == 0);  // nothing was cancelled
+
+  // A price change cannot be an amendment: cancelReplace, a new venue order, a new id.
+  const ClientOrderId o3 = cid(13);
+  OutReplaceMsg moved{};
+  init_header(moved, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+  moved.cl_ord_id = o3;
+  moved.orig_cl_ord_id = o2;
+  moved.venue_order_id.assign(venue_id);
+  moved.price = px - Price::from_int(10);
+  moved.qty = small;
+  h.send(moved.hdr);
+  REQUIRE(h.pump([&] { return h.acks(o3) >= 1 && h.cancel_acks(o2) >= 1; }));
+  st = fx.server.stats();
+  CHECK(st.amends == 1);
+  CHECK(st.replaces == 1);
+  CHECK(h.venue->amends_sent() == 1);
+  CHECK(h.last_ack(o3)->venue_order_id.view() != venue_id);
+  CHECK((h.last_ack(o3)->flags & OrderAckMsg::kAmendedInPlace) == 0);
+
+  // A size-up at the same price is not one either (-2038 territory): cancelReplace again.
+  const ClientOrderId o4 = cid(14);
+  OutReplaceMsg up{};
+  init_header(up, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+  up.cl_ord_id = o4;
+  up.orig_cl_ord_id = o3;
+  up.venue_order_id.assign(h.last_ack(o3)->venue_order_id.view());
+  up.price = moved.price;
+  up.qty = big;
+  h.send(up.hdr);
+  REQUIRE(h.pump([&] { return h.acks(o4) >= 1; }));
+  CHECK(fx.server.stats().replaces == 2);
+  CHECK(h.venue->amends_sent() == 1);
+  CHECK(h.venue->cancel_all());
+}
+
+TEST_CASE("sim_exchange: amend_keep_priority = false keeps every replace on cancelReplace") {
+  ServerFixture fx;
+  BinanceVenueConfig cfg = venue_config(fx);
+  cfg.amend_keep_priority = false;
+  VenueHarness h(std::move(cfg));
+  REQUIRE(h.venue->load_reference_data(h.instruments));
+  h.connect();
+  REQUIRE(h.pump(
+      [&] { return h.venue->md_feed()->synced_count() == 1 && h.live_order_channels() >= 2; }));
+  const Price px = fx.server.stats().best_bid.price - Price::from_int(100);
+  const ClientOrderId o1 = cid(21);
+  h.send(new_order(o1,
+                   Side::Buy,
+                   OrderType::PostOnly,
+                   TimeInForce::Gtc,
+                   px,
+                   Qty::from_decimal("0.004").value())
+             .hdr);
+  REQUIRE(h.pump([&] { return h.acks(o1) >= 1; }));
+  const std::string venue_id(h.last_ack(o1)->venue_order_id.view());
+  const ClientOrderId o2 = cid(22);
+  OutReplaceMsg down{};
+  init_header(down, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+  down.cl_ord_id = o2;
+  down.orig_cl_ord_id = o1;
+  down.venue_order_id.assign(venue_id);
+  down.price = px;
+  down.qty = Qty::from_decimal("0.002").value();
+  h.send(down.hdr);
+  REQUIRE(h.pump([&] { return h.acks(o2) >= 1 && h.cancel_acks(o1) >= 1; }));
+  CHECK(fx.server.stats().amends == 0);
+  CHECK(fx.server.stats().replaces == 1);
+  CHECK(h.venue->amends_sent() == 0);
+  CHECK(h.last_ack(o2)->venue_order_id.view() != venue_id);
+  CHECK(h.venue->cancel_all());
+}
+
 TEST_CASE(
     "sim_exchange: documented REST errors for signatures and timestamps and filters and limits") {
   ServerFixture fx;

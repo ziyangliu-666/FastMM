@@ -32,6 +32,16 @@ constexpr VenueKeySpec kBinanceKeys[] = {
      KeyType::Bool,
      false,
      "acknowledge orders from the request response, not the event stream (default true)"},
+    {"amend_keep_priority",
+     KeyType::Bool,
+     false,
+     "reduce size with order.amend.keepPriority, which keeps the queue position, instead of "
+     "order.cancelReplace (default true)"},
+    {"max_order_amends",
+     KeyType::Int,
+     false,
+     "keepPriority amendments allowed on one order before falling back to cancelReplace "
+     "(default 10, the venue's MAX_NUM_ORDER_AMENDS filter)"},
     {"depth_limit", KeyType::Int, false, "REST snapshot depth, 5 to 5000"},
     {"key_type", KeyType::String, false, "hmac (default) | ed25519"},
     {"private_key_file",

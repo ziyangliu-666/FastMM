@@ -299,6 +299,16 @@ TEST_CASE("sim.matching: replace keeps priority only for same price and qty <= l
     CHECK(r.resting == qt("4"));
     CHECK(f.me.top_of_book(InstrumentId{0}).bid == Level{px("101"), qt("4")});
   }
+  SUBCASE("cancel then a new order at the same price goes to the back, even smaller") {
+    // This is what a Binance cancelReplace does, and what the sim exchange's
+    // /api/v3/order/cancelReplace route does: cancel, then submit. The size-down that
+    // order.amend.keepPriority would have kept in front ends up behind everything at the level.
+    CHECK(f.me.cancel(0, ClientOrderId{1}, f.now));
+    f.submit(0, Side::Buy, "100", "1");  // id 3, the replacement
+    auto s = f.submit(1, Side::Sell, "100", "1");
+    CHECK(s.filled == qt("1"));
+    CHECK(f.rec.find(Event::Fill, 0)->a == 2);  // id 2 overtook it
+  }
   SUBCASE("unknown orig -> cancel reject + reject of the new leg") {
     auto r = f.me.replace(0, ClientOrderId{99}, ClientOrderId{10}, px("100"), qt("1"), f.now);
     CHECK(r.reason == RejectReason::VenueUnknownOrder);

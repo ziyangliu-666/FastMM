@@ -9,6 +9,13 @@
 //   order.cancelReplace    cancelReplaceMode=STOP_ON_FAILURE, cancelOrigClientOrderId |
 //                          cancelOrderId, side, type, timeInForce, price, quantity,
 //                          newClientOrderId, newOrderRespType=ACK
+//   order.amend.keepPriority  symbol, orderId | origClientOrderId, newQty, newClientOrderId.
+//                          Reduces the quantity of a resting order without giving up its place
+//                          in the queue: the venue keeps the orderId and the executed quantity
+//                          and only shrinks the remainder. Quantity down only — there is no
+//                          price parameter, and newQty at or above the current quantity is
+//                          refused (-2038). A replace that is not a pure size-down falls back
+//                          to order.cancelReplace, which does go to the back of the queue.
 //   openOrders.cancelAll   symbol
 //   openOrders.status      symbol
 //   session.logon          apiKey, timestamp, signature (Ed25519 only)
@@ -20,10 +27,11 @@
 // are omitted.
 //
 // REST fallback (rest-api.md): POST /api/v3/order, DELETE /api/v3/order,
-// POST /api/v3/order/cancelReplace, DELETE /api/v3/openOrders, GET /api/v3/openOrders with
+// POST /api/v3/order/cancelReplace, PUT /api/v3/order/amend/keepPriority,
+// DELETE /api/v3/openOrders, GET /api/v3/openOrders with
 // every parameter in the query string and X-MBX-APIKEY in the headers.
 //
-// Request ids: "<kind><cl_ord_id>" with kind n/c/r (request_id.hpp). The WS API id is
+// Request ids: "<kind><cl_ord_id>" with kind n/c/r/a (request_id.hpp). The WS API id is
 // "INT / STRING / null", echoed back verbatim (websocket-api general-api-information), so a
 // response maps back to the command with no lookup table.
 #include "fastmm/core/fixed_string.hpp"
@@ -48,15 +56,33 @@
 namespace fastmm::venues::binance {
 
 inline constexpr int kDefaultRecvWindowMs = 3000;  // plan 6.4 (docs default 5000, max 60000)
+// PUT /api/v3/order/amend/keepPriority: "Weight: 4", "Unfilled Order Count: 0".
+inline constexpr std::uint32_t kAmendWeight = 4;
+// exchangeInfo's MAX_NUM_ORDER_AMENDS filter caps amendments per order (10 on the symbols that
+// publish it); past it the venue answers -2038 "Filter failure: MAX_NUM_ORDER_AMENDS".
+inline constexpr std::uint16_t kDefaultMaxOrderAmends = 10;
 
 // What the encoder must remember about a working order to build a cancelReplace (the
-// engine's OutReplaceMsg carries only ids/price/qty; Binance wants side/type/tif again).
+// engine's OutReplaceMsg carries only ids/price/qty; Binance wants side/type/tif again), and
+// its last requested price/quantity, which decide whether a replace can be an amend.
 struct OrderShadow {
   Side side = Side::Buy;
   OrderType type = OrderType::Limit;
   TimeInForce tif = TimeInForce::Gtc;
   InstrumentId instrument{};
+  Price price{};
+  Qty qty{};
+  std::uint16_t amends = 0;  // keepPriority amendments applied to this venue order so far
 };
+
+// True when the replace is a pure quantity reduction at the order's price, the only amendment
+// `order.amend.keepPriority` accepts. Anything else (a price change, a size-up, an unknown
+// resting size) has to go through cancelReplace and loses the queue position.
+[[nodiscard]] inline bool is_quantity_reduction(const OrderCommand& cmd,
+                                                const OrderShadow& shadow) noexcept {
+  return cmd.kind == OrderCommandKind::Replace && shadow.price == cmd.price &&
+         shadow.qty.is_positive() && cmd.qty.is_positive() && cmd.qty < shadow.qty;
+}
 
 struct RestRequest {
   std::string_view method;
@@ -78,10 +104,13 @@ class BinanceOrderEncoder {
   [[nodiscard]] bool session_authenticated() const noexcept { return session_auth_; }
 
   // ---- WebSocket API frames (bytes written; 0 = unsupported command / overflow) ----------
+  // `amend_in_place`: encode a Replace as order.amend.keepPriority instead of
+  // order.cancelReplace. Only valid when is_quantity_reduction(cmd, *shadow).
   std::size_t encode_ws(const OrderCommand& cmd,
                         const OrderShadow* shadow,  // required for Replace
                         std::int64_t timestamp_ms,
-                        std::span<char> out) noexcept;
+                        std::span<char> out,
+                        bool amend_in_place = false) noexcept;
   std::size_t encode_ws_cancel_all(std::string_view symbol,
                                    std::string_view request_id,
                                    std::int64_t timestamp_ms,
@@ -103,7 +132,8 @@ class BinanceOrderEncoder {
   bool encode_rest(const OrderCommand& cmd,
                    const OrderShadow* shadow,
                    std::int64_t timestamp_ms,
-                   RestRequest& out) noexcept;
+                   RestRequest& out,
+                   bool amend_in_place = false) noexcept;
   bool encode_rest_cancel_all(std::string_view symbol, std::int64_t timestamp_ms, RestRequest& out);
   bool encode_rest_open_orders(std::string_view symbol,
                                std::int64_t timestamp_ms,
@@ -179,6 +209,8 @@ struct WsApiResponse {
   std::string_view order_status;
   std::string_view executed_qty;
   std::string_view transact_time_unused;
+  // order.amend.keepPriority: the fields above come from result.amendedOrder.
+  bool amended = false;
   // cancelReplace
   std::string_view cancel_result;
   std::string_view new_order_result;

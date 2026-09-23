@@ -210,6 +210,22 @@ bool BinanceUsdmOrderEncoder::encode_rest_cancel_all(std::string_view symbol,
   return finish_rest(p, signer_, out);
 }
 
+bool BinanceUsdmOrderEncoder::encode_rest_countdown_cancel_all(std::string_view symbol,
+                                                               std::int64_t countdown_ms,
+                                                               std::int64_t timestamp_ms,
+                                                               RestRequest& out) {
+  ParamList p;
+  p.add_int("countdownTime", countdown_ms);
+  p.add_int("recvWindow", recv_window_ms_);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "POST";
+  out.path = "/fapi/v1/countdownCancelAll";
+  out.weight = kCountdownCancelAllWeight;
+  out.is_order = false;
+  return finish_rest(p, signer_, out);
+}
+
 bool BinanceUsdmOrderEncoder::encode_rest_open_orders(std::string_view symbol,
                                                       std::int64_t timestamp_ms,
                                                       RestRequest& out) {

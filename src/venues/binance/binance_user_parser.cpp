@@ -180,6 +180,9 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
       auto* m = reinterpret_cast<OrderAckMsg*>(out.data());
       init_header(*m, EventType::OrderAck, inst, venue_);
       m->cl_ord_id = cl_ord_id;
+      // REPLACED is only ever produced by order.amend.keepPriority: the venue order survived,
+      // and so did everything it had filled. cancelReplace reports CANCELED then NEW instead.
+      m->flags = x.exec_type == "REPLACED" ? OrderAckMsg::kAmendedInPlace : 0;
       set_venue_order_id(m->venue_order_id, x.order_id);
       stamp(*m, recv_ts, t0, x.tx_time);
       r.order_kind = OrderEventKind::Ack;

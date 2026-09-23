@@ -2,6 +2,32 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
+## [Unreleased]
+
+### Added
+- Venue-side dead man's switch, the only thing that clears resting quotes after a SIGKILL, an OOM
+  kill or a dead host. Binance USDⓈ-M arms `POST /fapi/v1/countdownCancelAll` per symbol and
+  refreshes it every `dead_mans_switch_ms`/3 (default 60000 ms, 0 disables); a clean shutdown sends
+  `countdownTime=0`. Bybit sets `POST /v5/order/disconnected-cancel-all` and subscribes the
+  `dcp.spot` topic that DCP needs to fire, off by default (`dead_mans_switch_s`, 3 to 300 s)
+  because Bybit grants DCP to institutional accounts only. Binance Spot has no such endpoint at
+  all, and the production guide now says so instead of claiming only Deribit has one.
+- `KillReason::DeadMansSwitchLost`: if Binance USDⓈ-M refuses the countdown refresh for a whole
+  window while the process is alive, the venue has cancelled that symbol's orders, so the connector
+  goes fatal and kills the venue rather than requoting into a kill switch it cannot see.
+- Binance Spot `order.amend.keepPriority` (`PUT /api/v3/order/amend/keepPriority`): a replace that
+  only reduces the quantity at the same price keeps the venue order, its id and its place in the
+  queue, instead of going to the back of it through `order.cancelReplace`. Anything else, and
+  `amend_keep_priority = false`, still uses `cancelReplace`, as does an order that has used up
+  `max_order_amends` (the venue's `MAX_NUM_ORDER_AMENDS` filter, 10). `OrderAckMsg::kAmendedInPlace`
+  tells the OMS to rekey the order without resetting its filled quantity.
+
+### Fixed
+- Binance USDⓈ-M charged one unit of IP weight for every WebSocket API order request. The endpoints
+  charge 0 for a place and a modify and 1 for a cancel, with the order limits taking the other
+  side, so at the venue's 1200 orders/minute the overcharge alone consumed half the 2400/minute IP
+  budget and the connector refused to quote long before the venue would.
+
 ## [0.2.0] - 2026-09-23
 
 ### Added

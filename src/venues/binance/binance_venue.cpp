@@ -700,6 +700,28 @@ void BinanceVenue::handle_order_response(RequestKind kind,
         apply_action(m.action, r.code, r.msg, r.retry_after_ms);
       }
       return;
+    case RequestKind::Amend: {
+      // order.amend.keepPriority: the venue kept the order, its id and its place in the queue,
+      // and only shrank the remaining quantity. There is no cancel leg and no new venue order,
+      // so the ack says so and the engine keeps the fills booked against it.
+      if (!r.is_error) {
+        ClientOrderId orig{};
+        if (const auto o = decode_cl_ord_id(r.orig_client_order_id)) orig = *o;
+        if (orig.valid() && orig != id) shadows_.erase(orig);
+        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id, true);
+        return;
+      }
+      // The amend was refused (-2038 quantity not below the current one, -2013 gone, a filter
+      // failure). Nothing changed on the venue: the original is still resting under its old id,
+      // so the replacement id is rejected and the OMS leaves the order working. The quote
+      // manager requotes on the next reconcile; it does not retry as a cancelReplace here,
+      // because by then the order may have traded.
+      const ErrorMapping m = map_error(r.code, r.msg);
+      emit_reject(inst, id, m.reason, r.code, r.msg);
+      shadows_.erase(id);
+      apply_action(m.action, r.code, r.msg, r.retry_after_ms);
+      return;
+    }
     case RequestKind::Replace: {
       ClientOrderId orig{};
       if (const auto o = decode_cl_ord_id(r.cancel_client_order_id)) orig = *o;
@@ -797,15 +819,21 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
     return;
   }
   const OrderShadow* shadow = nullptr;
-  const bool is_order = cmd.kind != OrderCommandKind::Cancel;
+  bool amend_in_place = false;
+  // Weight and unfilled-order-count cost of this request, from the endpoint tables. An amend
+  // costs IP weight 4 and nothing at all on the ORDERS bucket ("Unfilled Order Count: 0"),
+  // where a place and a cancelReplace cost weight 1 and one order.
+  std::uint32_t weight = 1;
+  bool is_order = cmd.kind != OrderCommandKind::Cancel;
   if (cmd.kind == OrderCommandKind::New) {
-    if (!rate_.can_send(1, now, true)) {
+    if (!rate_.can_send(weight, now, true)) {
       ++stats_.rate_limit_cooldowns;
       emit_reject(
           cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
       return;
     }
-    shadows_.assign(cmd.cl_ord_id, OrderShadow{cmd.side, cmd.type, cmd.tif, cmd.instrument});
+    shadows_.assign(cmd.cl_ord_id,
+                    OrderShadow{cmd.side, cmd.type, cmd.tif, cmd.instrument, cmd.price, cmd.qty});
   } else if (cmd.kind == OrderCommandKind::Replace) {
     shadow = shadows_.find(cmd.orig_cl_ord_id);
     if (shadow == nullptr) {
@@ -816,24 +844,39 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
                   "replace: original unknown");
       return;
     }
-    if (!rate_.can_send(1, now, true)) {
+    // Same price, smaller quantity: order.amend.keepPriority keeps the venue order and its
+    // place in the queue. Anything else has to be a cancelReplace. So does an order that has
+    // used up its MAX_NUM_ORDER_AMENDS budget: past it the venue answers -2038 and the order
+    // would sit at the wrong size until the next requote.
+    amend_in_place = cfg_.amend_keep_priority && is_quantity_reduction(cmd, *shadow) &&
+                     shadow->amends < cfg_.max_order_amends;
+    if (amend_in_place) {
+      weight = kAmendWeight;
+      is_order = false;
+    }
+    if (!rate_.can_send(weight, now, is_order)) {
       ++stats_.rate_limit_cooldowns;
       emit_reject(
           cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
       return;
     }
     OrderShadow copy = *shadow;
+    copy.price = cmd.price;
+    copy.qty = cmd.qty;
+    // The venue counts amendments per order, and the amended order is the same order.
+    copy.amends = amend_in_place ? static_cast<std::uint16_t>(copy.amends + 1) : 0;
     shadows_.assign(cmd.cl_ord_id, copy);
     shadow = shadows_.find(cmd.orig_cl_ord_id);
   }
   if (cfg_.ws_order_api && order_conn_.is_live()) {
     const Cycles before_encode = rdtscp();
-    const std::size_t n = encoder_->encode_ws(cmd, shadow, venue_time_ms(), request_buf_);
+    const std::size_t n =
+        encoder_->encode_ws(cmd, shadow, venue_time_ms(), request_buf_, amend_in_place);
     const Cycles after_encode = rdtscp();
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
       wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
       batch_.note(cmd);
-      rate_.on_sent(1, now, is_order);
+      rate_.on_sent(weight, now, is_order);
       switch (cmd.kind) {
         case OrderCommandKind::New:
           ++stats_.orders_sent;
@@ -843,16 +886,19 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
           break;
         case OrderCommandKind::Replace:
           ++stats_.replaces_sent;
+          if (amend_in_place) ++amends_sent_;
           break;
       }
       return;
     }
     ++stats_.order_send_failures;
   }
-  send_command_rest(cmd, shadow);
+  send_command_rest(cmd, shadow, amend_in_place);
 }
 
-void BinanceVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow) {
+void BinanceVenue::send_command_rest(const OrderCommand& cmd,
+                                     const OrderShadow* shadow,
+                                     bool amend_in_place) {
   if (rest_ == nullptr || (rest_hard_stopped_ && cmd.kind != OrderCommandKind::Cancel)) {
     if (cmd.kind == OrderCommandKind::Cancel) {
       emit_cancel_reject(
@@ -866,7 +912,7 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow*
   }
   RestRequest rr;
   const Cycles before_encode = rdtscp();
-  if (!encoder_->encode_rest(cmd, shadow, venue_time_ms(), rr)) {
+  if (!encoder_->encode_rest(cmd, shadow, venue_time_ms(), rr, amend_in_place)) {
     emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::VenueReject, 0, "encode failed");
     return;
   }
@@ -877,11 +923,15 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow*
   copy.venue_order_id = nullptr;
   copy.header = nullptr;
   std::weak_ptr<int> alive = alive_;
-  const bool queued = rest_->request(
-      rr.method, target, headers, {}, [this, alive, copy](const net::HttpResponse& r) {
-        if (alive.expired()) return;
-        handle_rest_order_response(copy, r);
-      });
+  const bool queued =
+      rest_->request(rr.method,
+                     target,
+                     headers,
+                     {},
+                     [this, alive, copy, amend_in_place](const net::HttpResponse& r) {
+                       if (alive.expired()) return;
+                       handle_rest_order_response(copy, r, amend_in_place);
+                     });
   if (!queued) {
     emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::TransportFull, 0, "rest queue full");
     ++stats_.order_send_failures;
@@ -898,15 +948,19 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow*
       break;
     case OrderCommandKind::Replace:
       ++stats_.replaces_sent;
+      if (amend_in_place) ++amends_sent_;
       break;
   }
 }
 
-void BinanceVenue::handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r) {
+void BinanceVenue::handle_rest_order_response(const OrderCommand& cmd,
+                                              const net::HttpResponse& r,
+                                              bool amend_in_place) {
   ++stats_.rest_requests;
   note_rate_headers(r);
   const RequestKind kind = cmd.kind == OrderCommandKind::New      ? RequestKind::New
                            : cmd.kind == OrderCommandKind::Cancel ? RequestKind::Cancel
+                           : amend_in_place                       ? RequestKind::Amend
                                                                   : RequestKind::Replace;
   if (r.error != net::NetError::None) {
     ++stats_.rest_errors;
@@ -1034,8 +1088,16 @@ void BinanceVenue::emit_cancel_reject(
   ++stats_.order_events;
 }
 
-void BinanceVenue::emit_ack(InstrumentId inst, ClientOrderId id, std::int64_t order_id) {
-  emit_order_ack(*order_sink_, id_, inst, id, IdText(order_id).view());
+void BinanceVenue::emit_ack(InstrumentId inst,
+                            ClientOrderId id,
+                            std::int64_t order_id,
+                            bool amended_in_place) {
+  emit_order_ack(*order_sink_,
+                 id_,
+                 inst,
+                 id,
+                 IdText(order_id).view(),
+                 amended_in_place ? OrderAckMsg::kAmendedInPlace : 0);
   ++stats_.order_events;
 }
 
@@ -1444,6 +1506,9 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
   c.position_from_balance = x.flag("position_from_balance", false);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
+  c.amend_keep_priority = x.flag("amend_keep_priority", true);
+  c.max_order_amends = static_cast<std::uint16_t>(
+      std::clamp<std::int64_t>(x.integer("max_order_amends", c.max_order_amends), 0, 65535));
   c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
   return c;
 }

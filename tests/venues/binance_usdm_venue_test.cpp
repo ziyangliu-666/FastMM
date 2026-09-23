@@ -96,6 +96,9 @@ struct Harness {
   std::atomic<int> reconcile_requests{0};
   std::atomic<int> unsigned_requests{0};
   std::atomic<int> cancel_all_ok{0};
+  std::atomic<int> countdowns{0};       // POST /fapi/v1/countdownCancelAll with a window
+  std::atomic<int> countdown_stops{0};  // ...with countdownTime=0
+  std::atomic<bool> countdown_fails{false};
 
   explicit Harness(bool hedge = false) : hedge_mode(hedge) {
     srv.route("GET", "/fapi/v1/exchangeInfo", [this](const net::HttpRequest&) {
@@ -142,6 +145,20 @@ struct Harness {
       if (r.header("X-MBX-APIKEY") != kKey) ++unsigned_requests;
       ++listen_keys;
       return net::HttpServerResponse::json(200, R"({"listenKey":"lk-test-0001"})");
+    });
+    srv.route("POST", "/fapi/v1/countdownCancelAll", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("countdown", std::string(r.query));
+      const bool stop = r.query.find("countdownTime=0&") != std::string_view::npos;
+      if (countdown_fails.load())
+        return net::HttpServerResponse::json(
+            400, R"({"code":-1130,"msg":"Data sent for parameter 'countdownTime' is not valid."})");
+      if (stop) {
+        ++countdown_stops;
+      } else {
+        ++countdowns;
+      }
+      return net::HttpServerResponse::json(200, R"({"symbol":"BTCUSDT","countdownTime":"3000"})");
     });
     srv.route("DELETE", "/fapi/v1/allOpenOrders", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") == kKey && signed_ok(r.query) &&
@@ -602,4 +619,152 @@ TEST_CASE("binance_usdm.venue: Ed25519 key logs on to the WS API and sends unsig
     venue.disconnect();
     reactor.run_once(0);
   }
+}
+
+// Fixture for the dead-man's-switch cases: everything a venue needs, nothing else.
+namespace {
+struct DmsFixture {
+  Harness h;
+  InstrumentTable instruments;
+  RecordingSink md{8U << 20};
+  RecordingSink orders{1U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  SymbolTable symbols;
+  std::unique_ptr<BinanceUsdmVenue> venue;
+  Collected oc;
+
+  explicit DmsFixture(std::int64_t window_ms) {
+    REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+    BinanceUsdmVenueConfig cfg = h.config(false);
+    cfg.dead_mans_switch_ms = window_ms;
+    venue = std::make_unique<BinanceUsdmVenue>(VenueId{0}, std::move(cfg));
+    REQUIRE(venue->load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue->subscribe(ids);
+    venue->connect(reactor);
+  }
+  ~DmsFixture() {
+    venue->disconnect();
+    reactor.run_once(0);
+  }
+  DmsFixture(const DmsFixture&) = delete;
+  DmsFixture& operator=(const DmsFixture&) = delete;
+
+  template <class Pred>
+  bool pump(Pred pred, int timeout_ms = 15000) {
+    return pump_until(
+        reactor,
+        [&] {
+          oc.take(orders);
+          return pred();
+        },
+        timeout_ms);
+  }
+};
+}  // namespace
+
+TEST_CASE("binance_usdm.venue: countdownCancelAll is armed, refreshed and stopped on shutdown") {
+  // The only thing that clears quotes after a SIGKILL, an OOM kill or a dead host is the venue's
+  // own timer. It is armed per symbol from the housekeeping tick, refreshed at a third of the
+  // window, and stopped when the session shuts down cleanly.
+  DmsFixture f(1500);  // the refresh floor is 500 ms, so a refresh lands well inside the test
+  REQUIRE(f.pump([&] { return f.h.countdowns.load() >= 2; }));  // armed once, then refreshed
+  const auto frames = f.h.srv.frames("countdown");
+  REQUIRE_FALSE(frames.empty());
+  CHECK(frames[0].find("countdownTime=1500&") != std::string::npos);
+  CHECK(frames[0].find("symbol=BTCUSDT") != std::string::npos);
+  CHECK(f.h.unsigned_requests.load() == 0);
+  CHECK(f.h.countdown_stops.load() == 0);
+
+  // A clean shutdown stops the timer: the session cancels its own orders, so leaving a countdown
+  // running against an account nobody is quoting is only a trap for the next run.
+  f.venue->disconnect();
+  REQUIRE(pump_until(f.reactor, [&] { return f.h.countdown_stops.load() == 1; }));
+  CHECK(f.h.srv.frames("countdown").back().find("countdownTime=0&") != std::string::npos);
+}
+
+TEST_CASE("binance_usdm.venue: a lapsed dead man's switch kills the venue instead of requoting") {
+  // The dangerous case is not the process dying, it is the process living while the switch
+  // fails. The venue cancels everything, and a quoter that only notices empty slots puts the
+  // quotes straight back, racing a kill switch it cannot see. The connector has to stop first.
+  DmsFixture f(1200);
+  REQUIRE(f.pump([&] { return f.h.countdowns.load() >= 1; }));
+  CHECK_FALSE(f.venue->fatal());
+
+  // Every refresh from here is refused, so after one window the venue has cancelled our orders.
+  f.h.countdown_fails.store(true);
+  REQUIRE(f.pump([&] { return f.venue->fatal(); }, 8000));
+  const auto* kill = f.oc.first_if<ControlMsg>(EventType::Control, [](const ControlMsg& m) {
+    return m.command == ControlCommand::TripVenueKill;
+  });
+  REQUIRE(kill != nullptr);
+  CHECK(static_cast<KillReason>(kill->arg) == KillReason::DeadMansSwitchLost);
+
+  // And the connector refuses to put a quote back.
+  const std::size_t rejects = f.oc.count(EventType::OrderReject);
+  OutNewOrderMsg n{};
+  init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  n.cl_ord_id = cid("fm000100000009");
+  n.side = Side::Buy;
+  n.type = OrderType::PostOnly;
+  n.price = Price::from_decimal("70000").value();
+  n.qty = Qty::from_decimal("0.001").value();
+  REQUIRE(f.outbound.try_push(&n, n.hdr.len));
+  f.venue->on_wake();
+  REQUIRE(f.pump([&] { return f.oc.count(EventType::OrderReject) > rejects; }));
+  CHECK(f.oc.last<OrderRejectMsg>(EventType::OrderReject)->reason == RejectReason::VenueKilled);
+}
+
+TEST_CASE("binance_usdm.venue: a quote is charged what the endpoint costs, not one of everything") {
+  // Placing and modifying cost 0 IP weight and 1 order; cancelling costs 1 IP weight and no
+  // order. Charging 1 IP weight per quote spends half the 2400/minute IP budget on requests that
+  // consume none of it, and the connector then refuses to quote long before the venue would.
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2; }));
+  const auto used = [&](bool order) {
+    const RateBucket* b =
+        order ? f.venue->rate_limiter().order_bucket(0) : f.venue->rate_limiter().weight_bucket(0);
+    REQUIRE(b != nullptr);
+    return b->used;
+  };
+  const std::uint32_t weight0 = used(false);
+  const std::uint32_t orders0 = used(true);
+
+  OutNewOrderMsg n{};
+  init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  n.cl_ord_id = cid("fm000100000001");
+  n.side = Side::Buy;
+  n.type = OrderType::PostOnly;
+  n.price = Price::from_decimal("70000").value();
+  n.qty = Qty::from_decimal("0.001").value();
+  REQUIRE(f.outbound.try_push(&n, n.hdr.len));
+  f.venue->on_wake();
+  // Read before the response: the venue's own rateLimits[] come back with it and overwrite the
+  // local estimate.
+  CHECK(used(false) == weight0);     // the place costs no IP weight
+  CHECK(used(true) == orders0 + 1);  // ...and one order
+  REQUIRE(f.pump([&] { return f.oc.count(EventType::OrderAck) >= 1; }));
+
+  OutCancelMsg c{};
+  init_header(c, EventType::OutCancel, InstrumentId{0}, VenueId{0});
+  c.cl_ord_id = n.cl_ord_id;
+  const std::uint32_t weight_before = used(false);
+  const std::uint32_t orders_before = used(true);
+  REQUIRE(f.outbound.try_push(&c, c.hdr.len));
+  f.venue->on_wake();
+  CHECK(used(false) == weight_before + 1);  // the cancel is the one that costs IP weight
+  CHECK(used(true) == orders_before);       // ...and adds no order
+  // Let the cancel's response land before the fixture tears the connections down.
+  REQUIRE(f.pump([&] { return f.oc.count(EventType::OrderCancelAck) >= 1; }));
+}
+
+TEST_CASE("binance_usdm.venue: dead_mans_switch_ms = 0 leaves the venue timer alone") {
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2; }));
+  idle(f.reactor, 2500);
+  CHECK(f.h.countdowns.load() == 0);
+  CHECK(f.h.countdown_stops.load() == 0);
 }
