@@ -250,8 +250,8 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `source` | string | `""` | `synthetic`, `journal` or `csv`. When empty, the format is inferred from `path` |
-| `path` | string | `""` | Data file. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
+| `source` | string | `""` | Market-data source: a name (`synthetic`, `journal`, `csv`, `binance`, `tardis`) or a whole spec with its options (`"binance:BTCUSDT,2024-03-27"`). When empty, the format is inferred from `path` ([Market-data sources](data-sources.md)) |
+| `path` | string | `""` | Data file, the positional argument of a bare `source` name. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
 | `seed` | int | `[sim] seed`, else `1` | Seed for the synthetic market and the simulated venue; the engine's random generator uses `[engine] rng_seed` |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
 | `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Treat its results as optimistic |

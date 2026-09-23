@@ -69,13 +69,14 @@ Exit codes:
 
 ## fastmm-backtest
 
-Backtests a registered strategy on synthetic data, a journal or a CSV file.
+Backtests a registered strategy on synthetic data, a journal, a CSV file or a public archive ([Market-data sources](data-sources.md)).
 
 <!-- BEGIN cli-help fastmm-backtest -->
 ```text
 usage: fastmm-backtest --config <file.toml> [options]
-  --data <path|synthetic>  market data: *.fmj journal, *.csv, or the synthetic
-                           generator (default: [backtest] source/path)
+  --data <spec>            market data: 'synthetic', a *.fmj / *.csv path, or
+                           <source>:<args> (default: [backtest] source/path).
+                           `fastmm-data list` prints the sources
   --strategy <name>        registered strategy (default: [strategy] name)
   --param <key=value>      strategy parameter override (repeatable)
   --out <dir>              write equity.csv fills.csv orders.csv summary.json
@@ -98,6 +99,35 @@ usage: fastmm-backtest --config <file.toml> [options]
 | 5 | the run failed |
 
 The flags override `[backtest]` ([Configuration](configuration.md#backtest)).
+
+## fastmm-data
+
+Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`.
+
+<!-- BEGIN cli-help fastmm-data -->
+```text
+usage: fastmm-data <command> [options]
+  list                     registered data sources, their options and what
+                           each one carries
+  convert                  decode a source into an .fmj journal, the format a
+                           backtest replays fastest
+    --data <spec>          source, e.g. binance:BTCUSDT,2024-03-27
+    --config <file.toml>   backtest config supplying the instruments
+    --out <file.fmj>       output journal
+    --seed <n>             session id stamped in the journal (default 1)
+  --version | --help
+
+Downloading what a source reads: python3 -m fastmm.data fetch --help
+```
+<!-- END cli-help -->
+
+| Exit code | Meaning |
+|---:|---|
+| 0 | the command ran |
+| 2 | bad command line |
+| 3 | bad configuration |
+| 4 | the source is unknown, its options are wrong, or its files are missing |
+| 5 | the journal could not be written |
 
 ## fastmm-replay
 

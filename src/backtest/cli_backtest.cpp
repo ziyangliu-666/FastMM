@@ -3,6 +3,7 @@
 //
 //   fastmm-backtest --config configs/backtest-example.toml --data synthetic
 //   fastmm-backtest --config cfg.toml --data tests/fixtures/journals/sample_1000.fmj
+//   fastmm-backtest --config configs/backtest-binance.toml --data binance:BTCUSDT,2024-03-27
 //       then: --strategy basic_mm --param half_spread_bps=2 --out runs/bt1 --seed 7
 //
 // Exit codes: 0 ok, 2 bad command line, 3 bad config / parameters (including a strategy name
@@ -37,8 +38,9 @@ constexpr int kExitRun = 5;
 void usage(std::FILE* out, const char* prog) {
   std::fprintf(out,
                "usage: %s --config <file.toml> [options]\n"
-               "  --data <path|synthetic>  market data: *.fmj journal, *.csv, or the synthetic\n"
-               "                           generator (default: [backtest] source/path)\n"
+               "  --data <spec>            market data: 'synthetic', a *.fmj / *.csv path, or\n"
+               "                           <source>:<args> (default: [backtest] source/path).\n"
+               "                           `fastmm-data list` prints the sources\n"
                "  --strategy <name>        registered strategy (default: [strategy] name)\n"
                "  --param <key=value>      strategy parameter override (repeatable)\n"
                "  --out <dir>              write equity.csv fills.csv orders.csv summary.json\n"
