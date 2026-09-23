@@ -181,6 +181,31 @@ All notable changes are recorded here (Keep a Changelog format).
   filesystem is an error rather than a `SIGBUS` on a sparse page; `JournalFileWriter::failed()`
   latches every write error and `fastmm-live` trips the kill switch and exits with code 5 on one.
 
+- **A control plane for a running session.** `fastmm-live` opens an `AF_UNIX` `SOCK_SEQPACKET`
+  socket at `<journal_dir>/<engine name>.ctl` (mode 0600; `--control <path>`, `--no-control`) and
+  the new `fastmm-ctl` talks to it: `pull` and `resume` for the session, one venue or one
+  instrument, `param name=value` (validated against the strategy's schema before anything is
+  published), `limits key=value` (the `[risk]` keys, applied with `RiskEngine::set_limits`),
+  `flatten`, `kill`, `unkill`, `stop` and `status`. One datagram is a command and one is the reply,
+  so `socat - UNIX-CONNECT:<socket>,socktype=5` works during an incident. Everything but `param`,
+  `status` and `stop` goes through the engine's control ring, so the journal records it and a
+  replay reproduces the session ([Operating a running
+  session](docs/how-to/operations/operate-a-running-session.md)).
+- **An engine-owned flatten.** `fastmm-ctl flatten [--instrument SYM] [--max-slippage-bps N]`
+  (`ControlCommand::Flatten`) stops quoting in its scope, cancels its orders and, on an engine
+  timer, sends reduce-only IOC orders priced that far through the touch until the position is gone
+  -- without asking the strategy, which may be what broke. A slice is exempt from `[risk]
+  max_position` and from self-trade prevention but not from the price collar or the other limits,
+  and only one is in flight per instrument. `[engine] flatten_interval_ms`,
+  `flatten_timeout_ms` (0 never gives up) and `flatten_slippage_bps` configure it; the state, the
+  instruments left and the orders sent are in the status file, in `fastmm-top` and in Prometheus. A
+  flatten that times out leaves the position and keeps quoting off; a restart abandons it.
+- `ControlCommand::PullQuotes` and `ResumeQuotes` honour `hdr.instrument` and `hdr.venue`, so
+  quoting can stop for one instrument or one venue while the rest of the session keeps trading, and
+  `ControlCommand::SetLimits` carries a whole `RiskLimits` (`ControlLimitsMsg`, a `ControlMsg` with
+  the limits after it). `tools/journal_dump.py` decodes control commands and names the engine
+  timers.
+
 ### Changed
 - **Venues are pluggable.** A connector is one entry in `fastmm::venues::VenueRegistry`
   (`include/fastmm/venues/registry.hpp`): the `kind` it answers to and its aliases, a one-line

@@ -10,6 +10,7 @@
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/fixed_string.hpp"
+#include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
 
@@ -269,6 +270,21 @@ struct ControlMsg {
   std::uint8_t pad_[48];
 };
 static_assert(sizeof(ControlMsg) == 128);
+
+// ControlCommand::SetLimits: a ControlMsg with the new limits after it. The prefix is a ControlMsg
+// (same type, same offsets), so the engine's dispatch reads `command` from either and only this
+// command looks past it; hdr.len tells the rings, the journal and a replay how long the record is.
+struct ControlLimitsMsg {
+  EventHeader hdr;
+  ControlCommand command;
+  std::uint8_t pad0_[7];
+  std::uint64_t arg;
+  RiskLimits limits;
+  std::uint8_t pad_[32];
+};
+static_assert(sizeof(ControlLimitsMsg) == 192 && std::is_trivially_copyable_v<ControlLimitsMsg>);
+static_assert(offsetof(ControlLimitsMsg, command) == offsetof(ControlMsg, command) &&
+              offsetof(ControlLimitsMsg, arg) == offsetof(ControlMsg, arg));
 
 struct ConnectionStateMsg {
   EventHeader hdr;

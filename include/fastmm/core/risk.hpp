@@ -11,6 +11,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/order.hpp"
 #include "fastmm/core/position.hpp"
+#include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/time.hpp"
 
 #include <atomic>
@@ -19,20 +20,6 @@
 #include <optional>
 
 namespace fastmm {
-
-struct RiskLimits {
-  Qty max_order_qty{};            // 0 = unlimited
-  Notional max_order_notional{};  // 0 = unlimited
-  Qty max_position{};             // absolute, predicted (position + same-side open); 0 = unlimited
-  std::uint32_t max_open_orders = 0;  // per instrument; 0 = unlimited
-  std::int64_t price_collar_bps = 0;  // vs mid; 0 = disabled
-  std::int64_t fat_finger_bps = 0;    // vs last trade; 0 = disabled
-  Duration stale_md{};                // reject if book older than this; 0 = disabled
-  Notional max_loss{};                // trip when net pnl <= -max_loss; 0 = disabled
-  std::uint32_t orders_per_sec = 0;   // token bucket rate; 0 = unlimited
-  std::uint32_t burst = 0;            // bucket capacity (defaults to orders_per_sec)
-  bool stp = true;                    // self-trade prevention against our own resting orders
-};
 
 // Integer token bucket: tokens in millionths, refilled from elapsed ns.
 class TokenBucket {

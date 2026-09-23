@@ -92,6 +92,12 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.max_events_per_step = cfg.engine.max_events_per_step;
   b.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
   b.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
+  // A replay reruns the engine's own timers from the journal; they must find the settings the
+  // recorded session ran with (the ack sweep's timeout, the flatten's period and deadline).
+  b.engine.ack_timeout = milliseconds(cfg.engine.ack_timeout_ms);
+  b.engine.flatten_interval = milliseconds(cfg.engine.flatten_interval_ms);
+  b.engine.flatten_timeout = milliseconds(cfg.engine.flatten_timeout_ms);
+  b.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
   b.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   b.engine.spin_mode = SpinMode::Busy;
   b.engine.risk = cfg.risk_limits();

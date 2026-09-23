@@ -99,6 +99,10 @@ def flags_str(f: int) -> str:
 
 
 FEE_ASSETS = ("quote", "base", "other")
+# ControlCommand and the TimerMsg.engine tags (include/fastmm/core/enums.hpp, core/engine.hpp).
+CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
+                    "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits")
+ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten"}
 
 
 def fill_fields(body: bytes) -> dict:
@@ -181,8 +185,20 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
                 f"qty={dec(f['qty_raw'])} cum={dec(f['cum_raw'])} leaves={dec(f['leaves_raw'])} fee={dec(f['fee_raw'])} "
                 f"fee_asset={f['fee_asset']} side={f['side']} liq={f['liq']}")
     if type_name == "Timer":
-        engine = " engine (max_param_age)" if body[4] else ""
+        tag = ENGINE_TIMERS.get(body[4], body[4]) if body[4] else ""
+        engine = f" engine ({tag})" if tag else ""
         return f"timer_id={struct.unpack_from('<I', body, 0)[0]} user_data={u64(8):#x} fire_ts={q(16)}{engine}"
+    if type_name == "Control":
+        cmd = CONTROL_COMMANDS[body[0]] if body[0] < len(CONTROL_COMMANDS) else body[0]
+        out = f"command={cmd} arg={u64(8)}"
+        if cmd == "SetLimits" and len(body) >= 89:  # ControlLimitsMsg: RiskLimits at body offset 16
+            u32 = lambda off: struct.unpack_from("<I", body, off)[0]  # noqa: E731
+            out += (f" max_order_qty={dec(q(16))} max_order_notional={dec(q(24))} "
+                    f"max_position={dec(q(32))} max_open_orders={u32(40)} "
+                    f"price_collar_bps={q(48)} fat_finger_bps={q(56)} stale_md_ms={q(64) // 1000000} "
+                    f"max_loss={dec(q(72))} orders_per_sec={u32(80)} burst={u32(84)} "
+                    f"stp={'true' if body[88] else 'false'}")
+        return out
     if type_name == "ParamUpdate":
         return param_update_fields(body, params)
     if type_name == "EngineTime":

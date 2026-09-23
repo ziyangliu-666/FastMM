@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 5) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 6) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal ([Public API](public-api.md)).
 
 ## Snapshot fields
@@ -34,6 +34,10 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `risk_rejects`, `venue_rejects` | u64 | orders refused by the pre-trade checks, by a venue |
 | `risk_reject_reasons`, `venue_reject_reasons` | 6 x {u64 count, u8 reason} | the most frequent `RejectReason`s, most frequent first; count 0 marks an unused entry |
 | `kills`, `kill_flags`, `venue_kills` | u64, u32, u32 | global kill switch trips, the current flag word, per-venue kill switch trips |
+| `kill_latched` | u8 | 1 while a `max_loss` trip is latched in `[engine] kill_file` |
+| `flatten_state` | u8 | operator flatten: 0 off, 1 working, 2 flat, 3 timed out, 4 stopped ([Operating a running session](../how-to/operations/operate-a-running-session.md#flatten)) |
+| `flatten_instruments_left` | u32 | instruments in the flatten's scope that still hold a position |
+| `flatten_orders` | u64 | reduce-only orders the flatten has sent |
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | quote currency, raw fixed point (divide by 1e8) |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |

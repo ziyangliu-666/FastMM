@@ -26,7 +26,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 3: kill reasons (global and per venue), per-venue kill flags and venue_kills.
 // 4: p99.9 in every latency, the multicast feed block of each venue.
 // 5: the latched kill state and the PnL carried over from earlier sessions.
-inline constexpr std::uint32_t kStatusVersion = 5;
+// 6: the operator flatten's state, the instruments it has left and the orders it has sent.
+inline constexpr std::uint32_t kStatusVersion = 6;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -118,7 +119,12 @@ struct StatusSnapshot {
   // A max-loss trip is latched in the durable kill state: the next start refuses to trade until an
   // operator clears it (core/session_state.hpp).
   std::uint8_t kill_latched = 0;
-  std::uint8_t pad_[3] = {};
+  // Operator flatten (fastmm-ctl flatten): FlattenState, how many instruments in its scope still
+  // hold a position and how many reduce-only orders it has sent.
+  std::uint8_t flatten_state = 0;
+  std::uint8_t pad_[2] = {};
+  std::uint32_t flatten_instruments_left = 0;
+  std::uint64_t flatten_orders = 0;
   char engine_name[32] = {};
   char strategy[32] = {};
   // engine

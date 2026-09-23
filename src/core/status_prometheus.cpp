@@ -142,6 +142,13 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
   e.counter("fastmm_fills_total", "executions received", s.fills);
   e.counter("fastmm_risk_rejects_total", "orders refused by the pre-trade checks", s.risk_rejects);
   e.counter("fastmm_venue_rejects_total", "orders refused by a venue", s.venue_rejects);
+  e.gauge("fastmm_flatten_state",
+          "FlattenState of the operator flatten: 0 off, 1 working, 2 flat, 3 timed out, 4 stopped",
+          static_cast<double>(s.flatten_state));
+  e.gauge("fastmm_flatten_instruments_left",
+          "instruments in the flatten's scope that still hold a position",
+          static_cast<double>(s.flatten_instruments_left));
+  e.counter("fastmm_flatten_orders_total", "reduce-only orders a flatten sent", s.flatten_orders);
   e.counter("fastmm_kills_total", "global kill switch trips", s.kills);
   e.counter("fastmm_venue_kills_total", "per-venue kill switch trips", s.venue_kills);
 

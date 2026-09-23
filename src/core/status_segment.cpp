@@ -349,6 +349,17 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
   if (s.kill_latched != 0) {
     kill += fmt::format("  {}LATCHED{}", color ? "\x1b[31m" : "", reset(color));
   }
+  if (s.flatten_state == static_cast<std::uint8_t>(FlattenState::Working)) {
+    kill += fmt::format("  {}FLATTENING ({} left){}",
+                        color ? "\x1b[33m" : "",
+                        s.flatten_instruments_left,
+                        reset(color));
+  } else if (s.flatten_state == static_cast<std::uint8_t>(FlattenState::TimedOut)) {
+    kill += fmt::format("  {}FLATTEN TIMED OUT ({} left){}",
+                        color ? "\x1b[31m" : "",
+                        s.flatten_instruments_left,
+                        reset(color));
+  }
   fmt::format_to(std::back_inserter(out),
                  "state      {}{}{}{}  uptime={}  updated {:.1f}s ago\n\n",
                  paint(color, state),
@@ -369,6 +380,13 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  s.kills,
                  s.venue_kills,
                  s.kill_flags);
+  if (s.flatten_state != static_cast<std::uint8_t>(FlattenState::Off)) {
+    fmt::format_to(std::back_inserter(out),
+                   "flatten    state={} instruments_left={} orders={}\n",
+                   to_string(static_cast<FlattenState>(s.flatten_state)),
+                   s.flatten_instruments_left,
+                   s.flatten_orders);
+  }
   const auto rejects = [](std::uint64_t total, const StatusRejectCount* entries) {
     return total == 0 ? std::string("0")
                       : fmt::format("{} ({})", total, format_status_rejects(entries, total));
@@ -528,7 +546,8 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
                  "\"risk_rejects\": {}, \"venue_rejects\": {}, \"kill_flags\": {}, "
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
-                 "\"latency\": {{",
+                 "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
+                 "\"flatten_orders\": {}, \"latency\": {{",
                  s.version,
                  s.pid,
                  s.session_id,
@@ -546,7 +565,10 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.kill_flags,
                  to_string(static_cast<KillReason>(s.kill_reason)),
                  s.kill_latched != 0,
-                 s.pnl_carry_raw);
+                 s.pnl_carry_raw,
+                 to_string(static_cast<FlattenState>(s.flatten_state)),
+                 s.flatten_instruments_left,
+                 s.flatten_orders);
   for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i) {
     if (i != 0) out += ", ";
     json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);

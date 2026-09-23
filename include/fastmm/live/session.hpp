@@ -29,11 +29,13 @@
 // LiveStrategy (fastmm_live._live runs Python hot strategies that way). run_live installs
 // process-wide SIGINT/SIGTERM handlers and restores the previous ones when it returns.
 #include "fastmm/config/config.hpp"
+#include "fastmm/core/strong_id.hpp"
 
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fastmm {
@@ -58,6 +60,12 @@ struct LiveStrategy {
   std::function<std::unique_ptr<IEngineRunner>(RunnerDeps& deps)> make;
   // Called after the engine thread has stopped, before the runner is destroyed.
   std::function<void(IEngineRunner& runner)> finished;
+  // The control socket's `param`: validates the (name, value) pairs against this strategy's schema
+  // and publishes them onto one of `inputs` (the caller owns the publisher, so its copy of the
+  // parameters stays the only one). Returns the error message, empty on success. Unset: the
+  // session answers `param` with an error.
+  std::function<std::string(const std::vector<std::pair<std::string, std::string>>&, InstrumentId)>
+      set_params;
 };
 
 struct LiveOptions {
@@ -69,6 +77,9 @@ struct LiveOptions {
   bool no_journal = false;
   std::string status_path;  // overrides the default /dev/shm/fastmm-<engine>.status
   bool no_status = false;
+  // Control socket (live/control_socket.hpp); empty takes <journal_dir>/<engine name>.ctl.
+  std::string control_path;
+  bool no_control = false;
   // Removes the durable kill state before starting: clears a latched max-loss trip and arms the
   // whole [risk] max_loss budget again ([engine] kill_file).
   bool clear_kill = false;

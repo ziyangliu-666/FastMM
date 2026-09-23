@@ -55,6 +55,9 @@ void usage(std::FILE* out, const char* prog) {
       "  --status <path>          live status file for fastmm-top (default "
       "/dev/shm/fastmm-<engine>.status)\n"
       "  --no-status              do not publish live status\n"
+      "  --control <path>         control socket for fastmm-ctl (default\n"
+      "                           <journal_dir>/<engine>.ctl, mode 0600)\n"
+      "  --no-control             do not open a control socket\n"
       "  --clear-kill             clear a latched kill switch and the cumulative PnL before\n"
       "                           starting; arms the whole [risk] max_loss budget again\n"
       "  --log <path>             write the log to a file (warnings are mirrored to stderr)\n"
@@ -67,6 +70,8 @@ void usage(std::FILE* out, const char* prog) {
       "e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.\n"
       "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n"
       "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
+      "fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,\n"
+      "kill, unkill, stop and status.\n"
       "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
       "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
       "A max_loss trip is latched in [engine] kill_file: the next start refuses to trade\n"
@@ -175,6 +180,10 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
       if (!value(opts.status_path)) return kExitUsage;
     } else if (a == "--no-status") {
       opts.no_status = true;
+    } else if (a == "--control") {
+      if (!value(opts.control_path)) return kExitUsage;
+    } else if (a == "--no-control") {
+      opts.no_control = true;
     } else if (a == "--clear-kill") {
       opts.clear_kill = true;
     } else if (a == "--log") {

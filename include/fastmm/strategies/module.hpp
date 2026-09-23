@@ -63,6 +63,24 @@ enum class Transports : std::uint8_t { None = 0, Sim = 1, Replay = 2, Live = 4, 
   return (static_cast<std::uint8_t>(set) & static_cast<std::uint8_t>(t)) != 0;
 }
 
+namespace detail {
+// The entry's publisher factory for a strategy whose parameters are a FASTMM_PARAMS struct; null
+// for one whose are not (it cannot be copied and validated generically).
+template <class S>
+constexpr StrategyEntry::PublisherFactory publisher_factory() noexcept {
+  if constexpr (requires { typename S::params_type; }) {
+    return [](ParamSink sink, const ParamMap& params) {
+      typename S::params_type p{};
+      if (auto err = p.apply(params)) throw std::invalid_argument(*err);
+      if (auto err = validate_params(p)) throw std::invalid_argument(*err);
+      return std::make_unique<ParamPublisher>(sink, p);
+    };
+  } else {
+    return nullptr;
+  }
+}
+}  // namespace detail
+
 // Adds the Sim, Replay and Live factories of S (or those in `Enabled`). Registering the same
 // strategy again does nothing; throws StrategyConflict when another strategy already uses the name.
 template <class S, Transports Enabled = Transports::All>
@@ -71,7 +89,7 @@ void register_strategy(StrategyRegistry& r) {
                 "fastmm: register_strategy<S> needs a strategy: static name(), static schema() "
                 "and a default constructor");
   const auto add = [&](TransportKind kind, StrategyEntry::Factory factory) {
-    switch (r.try_add(S::name(), &S::schema(), kind, factory)) {
+    switch (r.try_add(S::name(), &S::schema(), kind, factory, detail::publisher_factory<S>())) {
       case AddResult::Added:
       case AddResult::AlreadyPresent:
         return;

@@ -45,7 +45,12 @@ struct EngineLiveStats {
   std::uint64_t venue_kills = 0;  // venue trips (EngineStats::venue_kills)
   std::uint32_t kill_flags = 0;   // RiskEngine::kill_flags(): bit 0 global, bit 1 + venue per venue
   KillReason kill_reason = KillReason::None;  // why the global flag was first set
-  std::uint8_t pad_[3] = {};
+  // Operator flatten (ControlCommand::Flatten): how far it got, how many instruments in its scope
+  // still hold a position and how many reduce-only orders it has sent.
+  FlattenState flatten_state = FlattenState::Off;
+  std::uint8_t pad_[2] = {};
+  std::uint32_t flatten_instruments_left = 0;
+  std::uint64_t flatten_orders = 0;
   // Why each venue's flag was first set, by venue id (RiskEngine::venue_slot).
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons{};
   LatencySnapshot latency;
