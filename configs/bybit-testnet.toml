@@ -42,6 +42,9 @@ supports_replace = false
 recv_window_ms = 5000
 # The 2 s default flags quiet testnet spells as Stale (book clear + resync).
 stale_ms = 10000
+# Disconnect-Cancel-All is off: Bybit grants it to institutional accounts only, and an account
+# manager has to configure it first. Set it (3 to 300 s) once yours has it.
+# dead_mans_switch_s = 10
 
 [venues.bybit.fees]
 maker_bps = 10.0

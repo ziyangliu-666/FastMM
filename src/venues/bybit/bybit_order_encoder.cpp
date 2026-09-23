@@ -176,6 +176,22 @@ bool BybitOrderEncoder::encode_rest_cancel_all(std::string_view symbol, RestRequ
   return true;
 }
 
+bool BybitOrderEncoder::encode_rest_set_dcp(std::string_view product,
+                                            int time_window_s,
+                                            RestRequest& out) const {
+  char buf[96];
+  JsonWriter w(buf);
+  w.begin_object().key("product").string(product).key("timeWindow").integer(time_window_s);
+  w.end_object();
+  if (!w.ok()) return false;
+  out.method = "POST";
+  out.path = "/v5/order/disconnected-cancel-all";
+  out.query.clear();
+  out.body.assign(w.view());
+  out.is_order = false;
+  return true;
+}
+
 bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol,
                                                 std::string_view cursor,
                                                 RestRequest& out) const {

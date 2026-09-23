@@ -428,3 +428,114 @@ TEST_CASE("binance.rest_decoder: exchangeInfo filters, server time, errors, list
   CHECK_FALSE(
       decode_exchange_info("{\"symbols\":[{\"symbol\":\"X\",\"filters\":[]}]}", info).empty());
 }
+
+TEST_CASE("binance.encoder: order.amend.keepPriority for a pure size-down, cancelReplace else") {
+  TestUniverse u;
+  const Signer s = hmac_signer();
+  BinanceOrderEncoder enc(s, u.symbols, 3000);
+  char buf[kMaxRequestBytes];
+
+  const Price px = Price::from_int(69000);
+  OrderShadow shadow{Side::Buy,
+                     OrderType::PostOnly,
+                     TimeInForce::Gtc,
+                     InstrumentId{0},
+                     px,
+                     Qty::from_decimal("0.004").value()};
+  OutReplaceMsg r{};
+  init_header(r, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+  r.cl_ord_id = decode_cl_ord_id("fm000100000005").value();
+  r.orig_cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+  r.price = px;
+  r.qty = Qty::from_decimal("0.002").value();
+  const OrderCommand down = *OrderCommand::from(r.hdr);
+
+  // Only a smaller quantity at the same price is an amendment the venue will take.
+  CHECK(is_quantity_reduction(down, shadow));
+  OutReplaceMsg up = r;
+  up.qty = Qty::from_decimal("0.006").value();
+  CHECK_FALSE(is_quantity_reduction(*OrderCommand::from(up.hdr), shadow));
+  OutReplaceMsg same = r;
+  same.qty = shadow.qty;
+  CHECK_FALSE(is_quantity_reduction(*OrderCommand::from(same.hdr), shadow));
+  OutReplaceMsg moved = r;
+  moved.price = px + Price::from_int(1);
+  CHECK_FALSE(is_quantity_reduction(*OrderCommand::from(moved.hdr), shadow));
+
+  // WS frame: request kind 'a', no price, newQty is the new total.
+  std::size_t len = enc.encode_ws(down, &shadow, kTs, buf, true);
+  REQUIRE(len > 0);
+  const std::string payload =
+      "apiKey=" + std::string(kDocApiKey) +
+      "&newClientOrderId=fm000100000005&newQty=0.002&origClientOrderId=fm000100000001"
+      "&recvWindow=3000&symbol=BTCUSDT&timestamp=1789295199000";
+  const std::string expected =
+      R"({"id":"afm000100000005","method":"order.amend.keepPriority","params":{"apiKey":")" +
+      std::string(kDocApiKey) +
+      R"(","newClientOrderId":"fm000100000005","newQty":"0.002","origClientOrderId":"fm000100000001","recvWindow":3000,"symbol":"BTCUSDT","timestamp":1789295199000,"signature":")" +
+      std::string(s.sign_hmac(payload).view()) + R"("}})";
+  CHECK(std::string_view(buf, len) == expected);
+  CHECK(parse_request_id("afm000100000005")->first == RequestKind::Amend);
+
+  // With the venue's order id it is sent instead of the client id, as an integer.
+  r.venue_order_id = "4293153";
+  len = enc.encode_ws(*OrderCommand::from(r.hdr), &shadow, kTs, buf, true);
+  REQUIRE(len > 0);
+  std::string_view v(buf, len);
+  CHECK(v.find(R"("newQty":"0.002","orderId":4293153,"recvWindow":3000)") !=
+        std::string_view::npos);
+  CHECK(v.find("origClientOrderId") == std::string_view::npos);
+  CHECK(v.find("price") == std::string_view::npos);
+
+  // The encoder refuses to call an amendment that is not a size-down an amend.
+  CHECK(enc.encode_ws(*OrderCommand::from(moved.hdr), &shadow, kTs, buf, true) == 0);
+  // ...and without the flag the same command is a cancelReplace.
+  len = enc.encode_ws(down, &shadow, kTs, buf, false);
+  REQUIRE(len > 0);
+  CHECK(std::string_view(buf, len).find(R"("method":"order.cancelReplace")") !=
+        std::string_view::npos);
+
+  // REST: PUT, weight 4, and it adds no order to the ORDERS bucket. OrderCommand views the
+  // message, so drop the venue id again to get the client-id form back.
+  r.venue_order_id.assign("");
+  RestRequest rr;
+  REQUIRE(enc.encode_rest(down, &shadow, kTs, rr, true));
+  CHECK(rr.method == "PUT");
+  CHECK(rr.path == "/api/v3/order/amend/keepPriority");
+  CHECK(rr.weight == kAmendWeight);
+  CHECK_FALSE(rr.is_order);
+  CHECK(rr.query.view().starts_with(
+      "newClientOrderId=fm000100000005&newQty=0.002&origClientOrderId=fm000100000001"));
+  RestRequest rr2;
+  REQUIRE(enc.encode_rest(down, &shadow, kTs, rr2, false));
+  CHECK(rr2.method == "POST");
+  CHECK(rr2.path == "/api/v3/order/cancelReplace");
+  CHECK(rr2.weight == 1);
+  CHECK(rr2.is_order);
+}
+
+TEST_CASE("binance.decoder: order.amend.keepPriority response reads amendedOrder") {
+  BinanceWsApiDecoder dec;
+  const PaddedJson json(
+      R"({"id":"afm000100000005","status":200,"result":{"transactTime":1741926410255,)"
+      R"("executionId":75,"amendedOrder":{"symbol":"BTCUSDT","orderId":33,"orderListId":-1,)"
+      R"("origClientOrderId":"fm000100000001","clientOrderId":"fm000100000005",)"
+      R"("price":"69000.00","qty":"0.002","executedQty":"0.001","status":"PARTIALLY_FILLED",)"
+      R"("timeInForce":"GTC","type":"LIMIT","side":"BUY"}}})");
+  WsApiResponse r;
+  REQUIRE(dec.decode(json.view(), r) == ParseStatus::Ok);
+  CHECK(r.amended);
+  CHECK_FALSE(r.is_error);
+  CHECK(r.order_id == 33);
+  CHECK(r.client_order_id == "fm000100000005");
+  CHECK(r.orig_client_order_id == "fm000100000001");
+  CHECK(r.executed_qty == "0.001");
+  // -2038 is the amend's own rejection; the shape is the ordinary error envelope.
+  const PaddedJson err(R"({"id":"afm000100000005","status":400,"error":{"code":-2038,)"
+                       R"("msg":"Order amend (quantity increase) is not supported."}})");
+  WsApiResponse e;
+  REQUIRE(dec.decode(err.view(), e) == ParseStatus::Ok);
+  CHECK(e.is_error);
+  CHECK(e.code == -2038);
+  CHECK_FALSE(e.amended);
+}

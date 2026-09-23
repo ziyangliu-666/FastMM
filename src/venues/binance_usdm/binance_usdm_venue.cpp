@@ -62,7 +62,11 @@ Qty non_negative(Qty q) noexcept {
 // ---- construction ---------------------------------------------------------------------------
 
 BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
-    : id_(id), cfg_(std::move(cfg)), signer_(cfg_.credentials), rate_(cfg_.rate_threshold) {
+    : id_(id),
+      cfg_(std::move(cfg)),
+      signer_(cfg_.credentials),
+      rate_(cfg_.rate_threshold),
+      dms_(cfg_.dry_run ? 0 : cfg_.dead_mans_switch_ms) {
   std::memset(scratch_, 0, sizeof scratch_);
 }
 
@@ -386,6 +390,12 @@ void BinanceUsdmVenue::connect(net::Reactor& reactor) {
 
 void BinanceUsdmVenue::disconnect() {
   if (!connected_) return;
+  // A requested shutdown cancels its own orders (Session::stop runs cancel_all()), so the
+  // countdown has nothing left to protect: stop it, rather than leave a timer running against an
+  // account nobody is quoting. Best effort — this goes out before the REST channel is reset
+  // below, and if it does not make it the venue only cancels orders that are already gone.
+  if (dms_.enabled() && !cfg_.dry_run) send_countdown_cancel_all(0);
+  dms_.disarm();
   connected_ = false;
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
@@ -891,6 +901,9 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
       ++stats_.order_events;
       return;
     }
+    // No connector but Binance Spot sends an amend, so a response carrying that kind here is a
+    // request id this venue never minted.
+    case RequestKind::Amend:
     case RequestKind::Other:
       return;
   }
@@ -978,9 +991,15 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
     return refuse(cmd, RejectReason::VenueKilled, "venue fatal");
   const OrderShadow* shadow = nullptr;  // New: unused; Cancel: the order; Replace: the original
   const bool is_order = cmd.kind != OrderCommandKind::Cancel;
+  // The WS API charges what the REST endpoint charges. Placing and modifying cost nothing
+  // against the IP weight budget and one against the 10 s / 1 min order limits; cancelling is
+  // the other way round. Charging every quote 1 IP weight, as this used to, spends half the
+  // 2400/minute budget on orders that cost none of it and throttles the quoter well below what
+  // the venue allows.
+  const std::uint32_t weight = cmd.kind == OrderCommandKind::Cancel ? 1U : 0U;
   switch (cmd.kind) {
     case OrderCommandKind::New:
-      if (!rate_.can_send(1, now, true)) {
+      if (!rate_.can_send(weight, now, true)) {
         ++stats_.rate_limit_cooldowns;
         return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
       }
@@ -1002,7 +1021,7 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
       const OrderShadow* orig = shadows_.find(cmd.orig_cl_ord_id);
       if (orig == nullptr)
         return refuse(cmd, RejectReason::UnknownOrder, "modify: original unknown");
-      if (!rate_.can_send(1, now, true)) {
+      if (!rate_.can_send(weight, now, true)) {
         ++stats_.rate_limit_cooldowns;
         return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
       }
@@ -1020,7 +1039,7 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
       wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
       batch_.note(cmd);
-      rate_.on_sent(1, now, is_order);
+      rate_.on_sent(weight, now, is_order);
       switch (cmd.kind) {
         case OrderCommandKind::New:
           ++stats_.orders_sent;
@@ -1467,6 +1486,53 @@ void BinanceUsdmVenue::keepalive_listen_key() {
   if (queued) rate_.on_sent(1, now_ns());
 }
 
+// POST /fapi/v1/countdownCancelAll, one request per subscribed symbol: the countdown is per
+// symbol, and sending it again replaces the running one. A request that does not go out leaves
+// the switch unarmed so the next housekeeping tick retries; if this process is what broke, the
+// countdown runs out and the venue cancels, which is the whole point.
+void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
+  if (rest_ == nullptr || !signer_.usable() || subscribed_.empty()) return;
+  bool any = false;
+  for (InstrumentId id : subscribed_) {
+    const std::string_view symbol = symbols_ != nullptr ? symbols_->venue_symbol(id) : "";
+    if (symbol.empty()) continue;
+    RestRequest rr;
+    if (!encoder_->encode_rest_countdown_cancel_all(symbol, countdown_ms, venue_time_ms(), rr))
+      continue;
+    const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+    std::weak_ptr<int> alive = alive_;
+    const bool queued = rest_->request(
+        rr.method,
+        target,
+        api_headers(),
+        {},
+        [this, alive, id, countdown_ms](const net::HttpResponse& r) {
+          if (alive.expired() || r.error == net::NetError::Canceled) return;
+          ++stats_.rest_requests;
+          note_rate_headers(r);
+          if (r.ok()) {
+            // The countdown is running from here, not from when the request went out.
+            if (countdown_ms > 0) dms_.armed(now_ns());
+            return;
+          }
+          ++stats_.rest_errors;
+          // Not fatal by itself: the switch is a backstop, and a venue that refuses the request
+          // outright (no permission, symbol unknown) must not stop the session dead. It is loud,
+          // and if the switch was up and the window then lapses, on_timer() kills the venue.
+          FASTMM_LOG_ERROR("{}: countdownCancelAll for {} failed: status={} err={} body={}",
+                           cfg_.name,
+                           symbols_->venue_symbol(id),
+                           r.status,
+                           net::to_string(r.error),
+                           r.body.substr(0, 160));
+        });
+    if (!queued) continue;
+    any = true;
+    rate_.on_sent(rr.weight, now_ns());
+  }
+  if (any && countdown_ms > 0) dms_.attempted(now_ns());
+}
+
 void BinanceUsdmVenue::cancel_all_async() {
   // No rest_hard_stopped_ check: cancelling is what a hard stop asks for.
   if (rest_ == nullptr || !signer_.usable()) return;
@@ -1546,6 +1612,24 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
       reconcile_retry_ns_ = 0;
       request_open_orders();
     }
+    // Venue-side dead man's switch. Refreshed from the housekeeping timer, which is the same
+    // thread that would stop running if this process died, so there is nothing to keep the
+    // countdown alive when the process is gone.
+    //
+    // If the window ran out anyway, the venue has cancelled everything of ours and this process
+    // is still running: it must not quietly put the quotes back. Kill the venue and let an
+    // operator look, exactly as a venue-fatal error does.
+    if (dms_.expired(now)) {
+      FASTMM_LOG_ERROR(
+          "{}: countdownCancelAll not refreshed within {} ms; the venue has "
+          "cancelled this account's orders",
+          cfg_.name,
+          dms_.window_ms());
+      dms_.disarm();
+      fatal_ = true;
+      trip_venue_kill(KillReason::DeadMansSwitchLost);
+    }
+    if (dms_.due(now)) send_countdown_cancel_all(dms_.window_ms());
     check_positions(now);
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
@@ -1614,6 +1698,8 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   c.position_from_account_update = x.flag("position_from_account_update", true);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
+  c.dead_mans_switch_ms =
+      std::max<std::int64_t>(0, x.integer("dead_mans_switch_ms", c.dead_mans_switch_ms));
   c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
   if (c.ws_url.empty() || c.rest_url.empty())
     throw std::invalid_argument("venue '" + v.name + "': binance_usdm needs ws_url and rest_url");

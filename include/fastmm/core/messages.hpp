@@ -173,10 +173,16 @@ static_assert(offsetof(OptionTickerMsg, mark_iv) == 88 &&
 // ---- order events (venue -> engine) ----------------------------------------------------
 
 struct OrderAckMsg {
+  // The venue amended the resting order in place (Binance Spot order.amend.keepPriority,
+  // execution type REPLACED): same venue order, same queue position, fills so far kept. Without
+  // it an ack under a new client id means a new venue order whose cumulative quantity is zero.
+  static constexpr std::uint8_t kAmendedInPlace = 1U << 0;
+
   EventHeader hdr;
   ClientOrderId cl_ord_id;
   VenueOrderId venue_order_id;
-  std::uint8_t pad_[15];
+  std::uint8_t flags;
+  std::uint8_t pad_[14];
 };
 static_assert(sizeof(OrderAckMsg) == 128);
 

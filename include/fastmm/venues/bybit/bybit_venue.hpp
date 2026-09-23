@@ -55,6 +55,13 @@ struct BybitVenueConfig {
   bool emit_ack_from_response = true;
   bool position_from_wallet = false;
   bool cancel_on_order_channel_loss = true;
+  // Bybit's Disconnect-Cancel-All window, seconds; 0 disables it. Bybit accepts [3, 300] and
+  // defaults the account setting to 10. Off here by default because DCP is not self-serve: the
+  // docs say it "is only available for Ins clients" and has to be enabled by an account manager
+  // first, so arming it on an ordinary account only produces an error on every connect. Set it
+  // once the account has it and the connector will arm it and subscribe the `dcp.spot` topic
+  // that DCP needs in order to fire at all.
+  int dead_mans_switch_s = 0;
   bool allow_offline_reference_data = false;
   bool supports_replace = true;
   int depth = 50;
@@ -159,6 +166,8 @@ class BybitVenue final : public Venue {
   void request_resubscribe(InstrumentId id);
   void request_server_time();
   void cancel_all_async();
+  // POST /v5/order/disconnected-cancel-all, once per session after the private channel is up.
+  void set_dcp();
   // Requests one page of GET /v5/order/realtime; the reply reads the next page or, on the last
   // one, emits the whole snapshot (emit_reconcile). Nothing is emitted unless every page parsed.
   void request_open_orders_page(const std::string& cursor);

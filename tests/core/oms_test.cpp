@@ -336,6 +336,36 @@ TEST_CASE("core.oms: transition table and races") {
     CHECK(u.order.price == px(99));
     CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == qt(4));
   }
+  SUBCASE("an amend-in-place ack under a new id keeps the fills, a cancel-replace ack does not") {
+    // Binance Spot order.amend.keepPriority gives the resting order a new client id but leaves
+    // the venue order, its queue position and everything it has filled alone. Zeroing cum_qty
+    // there would double the leaves quantity the engine thinks is working.
+    const ClientOrderId id = oms.next_cl_ord_id();
+    auto h = *oms.submit(req(Side::Buy, 100, 5), id, {});
+    oms.on_ack(ack(id, "V1"));
+    oms.on_fill(fill(id, 100, 2, 2, "a0"));
+    const ClientOrderId amended = oms.next_cl_ord_id();
+    REQUIRE(oms.request_replace(h, amended, px(100), qt(4)));
+    OrderAckMsg a = ack(amended, "V1");  // same venue order id: it is the same order
+    a.flags = OrderAckMsg::kAmendedInPlace;
+    auto u = oms.on_ack(a);
+    CHECK(u.order.cl_ord_id == amended);
+    CHECK(u.replaced_cl_ord_id == id);
+    CHECK(u.order.state == OrderState::PartiallyFilled);
+    CHECK(u.order.cum_qty == qt(2));
+    CHECK(u.order.qty == qt(4));
+    CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == qt(2));
+    CHECK_FALSE(oms.find(id).valid());
+
+    // Without the flag the same sequence is a cancel-replace: a different venue order that has
+    // filled nothing yet.
+    const ClientOrderId replaced = oms.next_cl_ord_id();
+    REQUIRE(oms.request_replace(h, replaced, px(100), qt(4)));
+    u = oms.on_ack(ack(replaced, "V2"));
+    CHECK(u.order.state == OrderState::Live);
+    CHECK(u.order.cum_qty.is_zero());
+    CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == qt(4));
+  }
   SUBCASE("best own price tracking across instruments and sides") {
     auto h1 = *oms.submit(req(Side::Buy, 100, 1), oms.next_cl_ord_id(), {});
     auto h2 = *oms.submit(req(Side::Buy, 101, 1), oms.next_cl_ord_id(), {});

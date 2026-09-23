@@ -53,6 +53,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_user_parser.hpp"
 #include "fastmm/venues/connection_slot.hpp"
+#include "fastmm/venues/dead_mans_switch.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
@@ -84,6 +85,13 @@ struct BinanceUsdmVenueConfig {
   bool emit_ack_from_response = true;
   bool position_from_account_update = true;  // correct the engine position (see above)
   bool cancel_on_order_channel_loss = true;
+  // Venue-side dead man's switch (POST /fapi/v1/countdownCancelAll): the venue cancels every
+  // open order of a symbol unless the connector refreshes its countdown. 0 disables it. This is
+  // the only thing that clears quotes after a SIGKILL, an OOM kill or a dead host, so it is on
+  // by default. The window is the exposure after such a kill; the refresh goes out every
+  // window/3, costing IP weight 10 per symbol per refresh out of the 2400/minute budget
+  // (60 s window, 4 symbols: 120 weight per minute, 5 %).
+  std::int64_t dead_mans_switch_ms = 60'000;
   bool allow_offline_reference_data = false;
   bool supports_replace = true;  // order.modify
   int depth_limit = 1000;        // GET /fapi/v1/depth limit: 5, 10, 20, 50, 100, 500, 1000
@@ -228,6 +236,8 @@ class BinanceUsdmVenue final : public Venue {
   void request_listen_key();
   void keepalive_listen_key();
   void cancel_all_async();
+  // Arms or refreshes countdownCancelAll on every subscribed symbol. `countdown_ms` 0 stops it.
+  void send_countdown_cancel_all(std::int64_t countdown_ms);
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
   void emit_reconcile();
   void on_account_position(const PositionUpdateMsg& m);
@@ -283,6 +293,7 @@ class BinanceUsdmVenue final : public Venue {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
+  CountdownSwitch dms_;
   std::array<PositionCheck, kMaxInstruments> positions_{};
   ReconcileState reconcile_;
   std::int64_t reconcile_retry_ns_ = 0;

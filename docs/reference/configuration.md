@@ -121,6 +121,8 @@ its configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
+| `amend_keep_priority` | boolean |  | reduce size with order.amend.keepPriority, which keeps the queue position, instead of order.cancelReplace (default true) |
+| `max_order_amends` | integer |  | keepPriority amendments allowed on one order before falling back to cancelReplace (default 10, the venue's MAX_NUM_ORDER_AMENDS filter) |
 | `depth_limit` | integer |  | REST snapshot depth, 5 to 5000 |
 | `key_type` | string |  | hmac (default) \| ed25519 |
 | `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
@@ -140,6 +142,7 @@ its configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 45000 for market data and 240000 for the other channels |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `dead_mans_switch_ms` | integer |  | venue-side countdownCancelAll window in ms; the venue cancels every open order of a symbol if the connector goes quiet for this long. 0 disables it (default 60000) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
 | `depth_limit` | integer |  | REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000 |
@@ -159,6 +162,7 @@ its configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 45000 |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `dead_mans_switch_s` | integer |  | Bybit disconnect-cancel-all window in seconds, 3 to 300; the venue cancels every spot order once no private connection is left. 0 disables it (default 0: Bybit only grants DCP to institutional accounts) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
 | `depth` | integer |  | order book subscription depth, 1 to 1000 |

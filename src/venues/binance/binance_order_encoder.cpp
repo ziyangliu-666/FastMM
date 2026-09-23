@@ -104,6 +104,30 @@ void add_auth(BinanceOrderEncoder::ParamList& p, const Signer& signer, bool sess
   p.add("type", BinanceOrderEncoder::type_text(shadow.type));
 }
 
+// order.amend.keepPriority / PUT /api/v3/order/amend/keepPriority. Alphabetical order:
+//   apiKey < newClientOrderId < newQty < orderId < origClientOrderId < recvWindow < symbol
+//   < timestamp
+// There is no price parameter: the amendment is a quantity reduction and nothing else, which is
+// why the venue can keep the order where it is in the queue. newQty is the new *total* quantity,
+// as the engine's replace quantity is.
+[[gnu::noinline]] void add_amend_params(BinanceOrderEncoder::ParamList& p,
+                                        const OrderCommand& cmd,
+                                        std::string_view symbol,
+                                        std::int64_t timestamp_ms,
+                                        int recv_window_ms) noexcept {
+  p.add("newClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
+  p.add_decimal("newQty", cmd.qty);
+  const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
+  if (have_venue_id) {
+    p.add("orderId", cmd.venue_order_id->view(), true);
+  } else {
+    p.add("origClientOrderId", encode_cl_ord_id(cmd.orig_cl_ord_id).view());
+  }
+  p.add_int("recvWindow", recv_window_ms);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+}
+
 bool build_params(BinanceOrderEncoder::ParamList& p,
                   const OrderCommand& cmd,
                   const OrderShadow* shadow,
@@ -111,7 +135,8 @@ bool build_params(BinanceOrderEncoder::ParamList& p,
                   std::int64_t timestamp_ms,
                   int recv_window_ms,
                   const Signer& signer,
-                  bool session_auth) noexcept {
+                  bool session_auth,
+                  bool amend_in_place) noexcept {
   add_auth(p, signer, session_auth);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -122,6 +147,11 @@ bool build_params(BinanceOrderEncoder::ParamList& p,
       return true;
     case OrderCommandKind::Replace:
       if (shadow == nullptr) return false;
+      if (amend_in_place) {
+        if (!is_quantity_reduction(cmd, *shadow)) return false;
+        add_amend_params(p, cmd, symbol, timestamp_ms, recv_window_ms);
+        return true;
+      }
       add_replace_params(p, cmd, *shadow, symbol, timestamp_ms, recv_window_ms);
       return true;
   }
@@ -133,11 +163,20 @@ bool build_params(BinanceOrderEncoder::ParamList& p,
 std::size_t BinanceOrderEncoder::encode_ws(const OrderCommand& cmd,
                                            const OrderShadow* shadow,
                                            std::int64_t timestamp_ms,
-                                           std::span<char> out) noexcept {
+                                           std::span<char> out,
+                                           bool amend_in_place) noexcept {
   const std::string_view symbol = symbols_.venue_symbol(cmd.instrument);
   if (symbol.empty()) return 0;
   ParamList p;
-  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, session_auth_))
+  if (!build_params(p,
+                    cmd,
+                    shadow,
+                    symbol,
+                    timestamp_ms,
+                    recv_window_ms_,
+                    signer_,
+                    session_auth_,
+                    amend_in_place))
     return 0;
   std::string_view method;
   RequestKind kind = RequestKind::New;
@@ -151,8 +190,8 @@ std::size_t BinanceOrderEncoder::encode_ws(const OrderCommand& cmd,
       kind = RequestKind::Cancel;
       break;
     case OrderCommandKind::Replace:
-      method = "order.cancelReplace";
-      kind = RequestKind::Replace;
+      method = amend_in_place ? "order.amend.keepPriority" : "order.cancelReplace";
+      kind = amend_in_place ? RequestKind::Amend : RequestKind::Replace;
       break;
   }
   const RequestId id = make_request_id(kind, cmd.cl_ord_id);
@@ -233,13 +272,16 @@ std::size_t BinanceOrderEncoder::encode_ws_ping(std::string_view request_id,
 bool BinanceOrderEncoder::encode_rest(const OrderCommand& cmd,
                                       const OrderShadow* shadow,
                                       std::int64_t timestamp_ms,
-                                      RestRequest& out) noexcept {
+                                      RestRequest& out,
+                                      bool amend_in_place) noexcept {
   const std::string_view symbol = symbols_.venue_symbol(cmd.instrument);
   if (symbol.empty()) return false;
   ParamList p;
   // REST never uses a session: apiKey goes in the header, not the params.
-  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, true))
+  if (!build_params(
+          p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, true, amend_in_place))
     return false;
+  out.weight = 1;
   switch (cmd.kind) {
     case OrderCommandKind::New:
       out.method = "POST";
@@ -252,12 +294,18 @@ bool BinanceOrderEncoder::encode_rest(const OrderCommand& cmd,
       out.is_order = false;
       break;
     case OrderCommandKind::Replace:
+      if (amend_in_place) {
+        out.method = "PUT";
+        out.path = "/api/v3/order/amend/keepPriority";
+        out.is_order = false;  // "Unfilled Order Count: 0": an amend adds no order
+        out.weight = kAmendWeight;
+        break;
+      }
       out.method = "POST";
       out.path = "/api/v3/order/cancelReplace";
       out.is_order = true;
       break;
   }
-  out.weight = 1;
   return finish_rest(p, out);
 }
 
@@ -381,6 +429,15 @@ namespace {
     od::object nr;
     if (o["newOrderResponse"].get_object().get(nr) == sj::SUCCESS) read_order_fields(nr, r);
   } else {
+    o.reset();
+    od::object amended;
+    if (o["amendedOrder"].get_object().get(amended) == sj::SUCCESS) {
+      // order.amend.keepPriority: {"transactTime","executionId","amendedOrder":{...}}. The
+      // amended order keeps the orderId and reports origClientOrderId + the new clientOrderId.
+      r.amended = true;
+      read_order_fields(amended, r);
+      return;
+    }
     o.reset();
     if (o["subscriptionId"].get_int64().get(i) == sj::SUCCESS) {
       r.subscription_id = i;

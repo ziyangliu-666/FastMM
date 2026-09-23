@@ -80,6 +80,8 @@ struct Harness {
   std::atomic<int> open_orders_ok{0};
   std::atomic<int> open_orders_calls{0};
   std::atomic<int> rest_cancels{0};
+  std::atomic<int> dcp_ok{0};
+  std::atomic<bool> dcp_refused{false};       // "DCP feature is only available for Ins clients"
   net::WsSession* private_session = nullptr;  // server thread only
 
   explicit Harness(std::vector<std::string> pages = {}) {
@@ -103,6 +105,17 @@ struct Harness {
       return net::HttpServerResponse::json(
           200,
           R"({"retCode":0,"retMsg":"OK","result":{"orderId":"2012345678901234567","orderLinkId":"fm000100000002"},"retExtInfo":{},"time":1789299704000})");
+    });
+    srv.route("POST", "/v5/order/disconnected-cancel-all", [this](const net::HttpRequest& r) {
+      srv.record("dcp", std::string(r.body));
+      if (dcp_refused.load())
+        return net::HttpServerResponse::json(
+            200,
+            R"({"retCode":10005,"retMsg":"Permission denied","result":{},"retExtInfo":{},"time":1789299700000})");
+      if (rest_signed(r, r.body)) ++dcp_ok;
+      return net::HttpServerResponse::json(
+          200,
+          R"({"retCode":0,"retMsg":"success","result":{},"retExtInfo":{},"time":1789299700000})");
     });
     srv.route("POST", "/v5/order/cancel-all", [this](const net::HttpRequest& r) {
       const bool ok =
@@ -143,6 +156,7 @@ struct Harness {
                     R"(,"ret_msg":"","op":"auth","conn_id":"p1"})");
       } else if (op == "subscribe") {
         private_session = &s;
+        srv.record("private_subscribe", std::string(t));
         s.send_text(R"({"success":true,"ret_msg":"","op":"subscribe","conn_id":"p1","req_id":")" +
                     json_str(t, "req_id") + R"("})");
       }
@@ -568,4 +582,76 @@ TEST_CASE("bybit.venue: a batch whose write fails rejects its orders") {
     CHECK(batch_rejects == 2);
   }
   h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: disconnect-cancel-all is set once and needs the dcp topic to fire") {
+  // Bybit's dead man's switch is not a countdown the client refreshes. The window is an account
+  // setting, Bybit starts the clock itself once every private connection that subscribed a
+  // `dcp.*` topic is gone, and without that subscription the setting does nothing at all.
+  Harness h;
+  {
+    VenueSection s = h.section(true);
+    s.extra["dead_mans_switch_s"] = "30";
+    Live l(h, s);
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2 && h.dcp_ok.load() == 1; }));
+    const auto dcp = h.srv.frames("dcp");
+    REQUIRE(dcp.size() == 1);
+    CHECK(dcp[0] == R"({"product":"SPOT","timeWindow":30})");
+    const auto subs = h.srv.frames("private_subscribe");
+    REQUIRE_FALSE(subs.empty());
+    CHECK(subs[0].find("\"dcp.spot\"") != std::string::npos);
+    // Nothing to refresh: the setting persists, so it is not sent again.
+    l.spin(60);
+    CHECK(h.dcp_ok.load() == 1);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: dead_mans_switch_s is off by default and refusal is not fatal") {
+  Harness h;
+  {
+    Live l(h, h.section(true));  // no dead_mans_switch_s
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    l.spin(40);
+    CHECK(h.dcp_ok.load() == 0);
+    CHECK(h.srv.frames("dcp").empty());
+    // And no dcp topic, because there is no switch to arm.
+    const auto subs = h.srv.frames("private_subscribe");
+    REQUIRE_FALSE(subs.empty());
+    CHECK(subs[0].find("dcp") == std::string::npos);
+  }
+  h.srv.stop();
+
+  // Bybit grants DCP to institutional accounts only, so an ordinary key is refused. That has to
+  // be loud but survivable: the connector keeps quoting without a venue-side switch.
+  Harness h2;
+  h2.dcp_refused.store(true);
+  {
+    VenueSection s = h2.section(true);
+    s.extra["dead_mans_switch_s"] = "10";
+    Live l(h2, s);
+    REQUIRE(pump_until(l.reactor, [&] { return !h2.srv.frames("dcp").empty(); }));
+    l.spin(40);
+    CHECK(h2.dcp_ok.load() == 0);
+    CHECK_FALSE(l.venue->fatal());
+    CHECK(l.live_channels() >= 2);
+  }
+  h2.srv.stop();
+}
+
+TEST_CASE("bybit.venue: the dcp window is clamped to what the venue accepts") {
+  auto window = [](const char* value) {
+    VenueSection s;
+    s.name = "bybit";
+    s.kind = "bybit";
+    s.ws_url = "wss://stream-testnet.bybit.com/v5/public/spot";
+    s.rest_url = "https://api-testnet.bybit.com";
+    s.extra["dead_mans_switch_s"] = value;
+    return make_bybit_config(s, false).dead_mans_switch_s;
+  };
+  CHECK(window("0") == 0);   // off
+  CHECK(window("-5") == 0);  // off, not a negative window
+  CHECK(window("1") == kMinDcpWindowS);
+  CHECK(window("10") == 10);
+  CHECK(window("9000") == kMaxDcpWindowS);
 }

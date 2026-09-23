@@ -14,6 +14,32 @@ The registry is open: a project registers its own connector, with its own config
 
 Every connector runs on its own `net::Reactor` thread and writes normalised messages into two rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order events (never dropped: bounded spin, overflow trips the kill switch in `fastmm-live`). `cancel_all()` uses an independent blocking REST connection, so it works from any thread even if the reactor is wedged (`nasdaq_itch`: it shuts the OUCH connection down, see below). `Venue::poll()` runs after every reactor iteration; `nasdaq_itch` polls its sockets there in `spin_mode = "busy"`.
 
+### Venue-side dead man's switch
+
+`cancel_on_order_channel_loss` is the connector cancelling over REST when its order channel drops. It needs a live process. What survives a SIGKILL, an OOM kill or a dead host is the venue's own switch, and the four venues differ:
+
+| venue | request | shape | window | default |
+|---|---|---|---|---|
+| Binance USDⓈ-M | `POST /fapi/v1/countdownCancelAll` (IP weight 10, per symbol) | countdown the connector refreshes every window/3 | `dead_mans_switch_ms`, ms; `countdownTime=0` stops it | 60000 |
+| Deribit | `private/enable_cancel_on_disconnect`, scope `connection` | the venue watches its own socket | detection is the `public/set_heartbeat` interval; without heartbeats a socket that dies without a FIN takes the 10-minute inactivity timeout | on |
+| Bybit v5 | `POST /v5/order/disconnected-cancel-all` + the `dcp.spot` private topic | account setting; Bybit starts the clock when every private connection subscribing `dcp.*` is gone | `dead_mans_switch_s`, seconds, clamped to [3, 300] | off |
+| Binance Spot | — | none exists | — | — |
+
+Two consequences worth stating plainly. Bybit's is off by default because Bybit does not grant it on request ("DCP feature is only available for Ins clients", and the account has to be configured by an account manager); the connector arms it and subscribes `dcp.spot` only when `dead_mans_switch_s` is set, and a refusal is logged rather than fatal. Binance Spot has none: `rest-api.md`, `web-socket-api.md` and `fix-api.md` have no countdown, no session auto-cancel and no cancel-on-disconnect as of the 2026-09 docs, and the FIX `News` "countdown" counts down to a maintenance logout without touching orders.
+
+Only the countdown shape can lapse while the process lives. If Binance USDⓈ-M refuses the refresh for a whole window the venue has cancelled that symbol's orders, so the connector sets its fatal flag and trips the venue kill with `DeadMansSwitchLost` instead of requoting into a venue it cannot reach ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#what-trips-it)). `CountdownSwitch` (`include/fastmm/venues/dead_mans_switch.hpp`) keeps the two clocks that need keeping apart: when to retry, and when the venue last confirmed the countdown.
+
+### Batch order entry
+
+No connector batches order entry, and the reasons are per venue rather than one policy:
+
+* **Binance Spot** has no batch endpoint. The only multi-order primitives are the order lists (OCO/OTO/OTOCO/OPO/OPOCO), which are contingency structures, not a way to send two independent quotes.
+* **Binance USDⓈ-M** has `POST /fapi/v1/batchOrders` (5 orders, IP weight 5, 1 against the 1-minute order limit instead of 5) and `DELETE /fapi/v1/batchOrders` (10 orders, IP weight 1 instead of 1 each). Both are REST-only — there is no WebSocket API equivalent — so using them moves quote and cancel traffic off the WS API onto a fresh HTTP round trip. For a cancel, the operation whose latency matters most, that is the wrong trade. The connector already coalesces a whole engine batch into one TCP write between `cork()` and `uncork()`, so a batch request would not save a round trip on the WS path either.
+* **Bybit v5** does offer `order.create-batch` / `order.amend-batch` / `order.cancel-batch` on the WebSocket trade endpoint, with their own rate-limit pool. They are also explicitly asynchronous ("please use the websocket to confirm the order status") and report per-order outcomes positionally in `retExtInfo.list[]` while the top-level `retCode` stays 0. A two-sided quote sent as one batch can therefore come back half-accepted, discovered later, where two single orders each get their own response under their own `reqId` and go through the existing per-order error mapping. Spot batches are also charged per order, so there is no rate-limit saving to weigh against that.
+* **Deribit** has no bulk order placement other than `private/mass_quote`, which is not the same pathway at all: it needs administrator approval per user and per currency (`13902 mass_quotes_disabled`), needs cancel-on-disconnect enabled (`13042 cod_not_enabled`), needs an MMP group that continuously reserves initial margin, allows one quote per instrument per side per group, is not available for spot, and its quotes are not orders — `private/buy`, `private/sell` and `private/edit` do not apply to them and they are cancelled with `private/cancel_quotes`. Modelling it means a second order lifecycle beside the OMS's, for a feature no test account can exercise. Its bulk *cancels* (`private/cancel_all_by_instrument`, `private/cancel_all_by_currency`) are already what the kill switch and the channel-loss path use.
+
+What did change is the accounting. Binance USDⓈ-M's WebSocket order path used to charge one unit of IP weight for every request; the endpoints charge 0 for a place and a modify and 1 for a cancel, with the order limits taking the other side. At the venue's 1200 orders/minute that overcharge alone consumed half the 2400/minute IP budget, and the connector refused to quote well before the venue would. Binance Spot's `order.amend.keepPriority` is charged as the endpoint table has it: IP weight 4, and nothing against the ORDERS bucket ("Unfilled Order Count: 0").
+
 A venue-fatal error and a REST hard stop stop new orders and replaces; Cancel and cancel-all are always admitted, on whatever transport is still usable, because that is what the kill switch asks for. Orders leave in batches: between `cork()` and `uncork()` a frame is only encoded, so a failed `uncork()` rejects every order of the batch (`RejectReason::TransportFull`) rather than counting them as sent. A reconciliation snapshot reaches the engine only when the whole reply parsed: `Oms::reconcile_end()` cancels every order the snapshot does not name, so a rejected or truncated reply is dropped instead of being emitted as an empty snapshot.
 
 ## Binance Spot
@@ -23,7 +49,7 @@ A venue-fatal error and a REST hard stop stop new orders and replaces; Cancel an
 | md | `<ws_url>?streams=<sym>@depth@100ms/<sym>@bookTicker/<sym>@trade` | combined stream, dispatch by stream suffix |
 | md (`md_format = "sbe"`) | `<sbe_ws_url>?streams=<sym>@depth/<sym>@bestBidAsk/<sym>@trade` | binary SBE frames, dispatch by template id |
 | user | `<ws_api_url>` + `userDataStream.subscribe.signature` (HMAC) or `session.logon` + `userDataStream.subscribe` (Ed25519) | `executionReport`, `outboundAccountPosition` |
-| order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.cancelReplace` / `openOrders.status` / `openOrders.cancelAll` | order entry; REST fallback |
+| order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.amend.keepPriority` / `order.cancelReplace` / `openOrders.status` / `openOrders.cancelAll` | order entry; REST fallback |
 | rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `openOrders`, REST order entry, kill-switch cancel-all |
 
 The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`) is kept as `user_stream = "listen_key"` for the simulator only: Binance removed it on 2026-02-20 (spot API CHANGELOG, 2025-10-24 announcement).
@@ -68,7 +94,7 @@ Parameters go in the query string. Signed requests carry `timestamp`, `recvWindo
 | `GET /api/v3/depth?symbol=S&limit=1000` | public | `{"lastUpdateId":L,"bids":[["px","qty"]...],"asks":[...]}` |
 | `GET /api/v3/openOrders[?symbol=S]` | signed | array of `{symbol,orderId,clientOrderId,price,origQty,executedQty,status,timeInForce,type,side}` |
 | `DELETE /api/v3/openOrders?symbol=S` | signed | 200 with an array; `400 {"code":-2011,...}` is treated as "nothing open" |
-| `POST /api/v3/order`, `DELETE /api/v3/order`, `POST /api/v3/order/cancelReplace` | signed; same parameters as the WS API methods below | same bodies as the WS API `result` / `error` objects |
+| `POST /api/v3/order`, `DELETE /api/v3/order`, `POST /api/v3/order/cancelReplace`, `PUT /api/v3/order/amend/keepPriority` | signed; same parameters as the WS API methods below | same bodies as the WS API `result` / `error` objects |
 | `POST/PUT /api/v3/userDataStream` | simulator listenKey mode only | `{"listenKey":"..."}` |
 
 Headers read: `X-MBX-USED-WEIGHT-1M`, `X-MBX-ORDER-COUNT-10S`, `Retry-After` (429/418). Error envelope: `{"code":-NNNN,"msg":"..."}`.
@@ -95,10 +121,11 @@ A raw `/ws/<stream>` payload without the wrapper is also accepted. Server pings 
 | `order.place` | newClientOrderId, newOrderRespType=ACK, price (not MARKET), quantity, side BUY/SELL, symbol, timeInForce (LIMIT only), type LIMIT/LIMIT_MAKER/MARKET | `{symbol,orderId,clientOrderId,transactTime}` |
 | `order.cancel` | orderId or origClientOrderId, symbol | `{symbol,origClientOrderId,orderId,executedQty,status}` |
 | `order.cancelReplace` | cancelOrderId or cancelOrigClientOrderId, cancelReplaceMode=STOP_ON_FAILURE, newClientOrderId, newOrderRespType=ACK, price, quantity, side, symbol, timeInForce, type | `{cancelResult,newOrderResult,cancelResponse{orderId,origClientOrderId,executedQty},newOrderResponse{orderId,clientOrderId}}`; on failure `error.data` carries the same keys plus `newOrderResponse.code/msg` |
+| `order.amend.keepPriority` | newClientOrderId, newQty, orderId or origClientOrderId, symbol | `{transactTime,executionId,amendedOrder{symbol,orderId,origClientOrderId,clientOrderId,price,qty,executedQty,status}}` |
 | `openOrders.status` | recvWindow, timestamp (no symbol = all) | array as in REST openOrders (request id `"oo"`) |
 | `openOrders.cancelAll` | symbol | array (request id `"ca"`) |
 
-Request ids for orders are `n|c|r` + the 14-character client id (`fm` + 12 hex), so the simulator only has to echo `id`.
+Request ids for orders are `n|c|r|a` + the 14-character client id (`fm` + 12 hex), so the simulator only has to echo `id`. `a` is an amend, because its response has a different shape from a cancel-replace's.
 
 #### User data events
 
@@ -107,7 +134,20 @@ User data events arrive on the subscribed WS API connection as `{"subscriptionId
 * `executionReport`: `E,s,c,S,q,p,C,x,X,r,i,l,z,L,n,N,T,t,m`, with `x` in `NEW`, `CANCELED` (the cancelled id is in `C`), `REPLACED`, `REJECTED`, `TRADE`, `EXPIRED`, `TRADE_PREVENTION`
 * `outboundAccountPosition`: `E,B[]{a,f,l}` (forwarded only with `position_from_balance = true`)
 
-Error codes the connector acts on: -1003/-1015 (cool down), -1021 (resync clock), -1022/-2014/-2015 (fatal), -2010/-2011 message texts (`Order would immediately match and take.`, `Unknown order sent.`, `Account has insufficient balance for requested action.`, `Duplicate order sent.`), -2013, -2021/-2022, HTTP 418/429.
+### Replaces: amend where the venue allows it, cancel-replace otherwise
+
+`order.cancelReplace` cancels and places again, so the order goes to the back of the queue at its price. `order.amend.keepPriority` does not: the venue keeps the order, its `orderId` and its time priority, and only shrinks what is left. For a maker that is the difference between the front of the queue and the back of it, and a size-down at an unchanged price is the requote a quoter makes most often.
+
+The venue will only take it as a quantity *reduction*, and there is no price parameter. So the connector sends an amend when the replace is a pure size-down at the shadow's price, and a `cancelReplace` for anything else — a price change, a size-up, a replace whose original the connector has no shadow for. `newQty` at or above the current quantity is refused with -2038 either way, so the test is strict: `cmd.qty < shadow.qty`.
+
+Two details that are easy to get wrong:
+
+* The amended order gets the engine's **new** client id (`newClientOrderId`), and keeps its venue order id and its `executedQty`. A cancel-replace produces a different venue order whose fills start at zero. The connector marks the ack with `OrderAckMsg::kAmendedInPlace` — from the response, and from the user stream, where `x` is `REPLACED` — and `Oms::on_ack` uses it to rekey the order without resetting `cum_qty`. Without that flag a partly filled quote would be booked as working twice over. `QuoteManager` needs nothing: it holds a handle, not an id.
+* `exchangeInfo`'s `MAX_NUM_ORDER_AMENDS` filter caps amendments per order (10 where it is published) and returns -2038 past it. The connector counts them in the order's shadow and falls back to `cancelReplace` at `max_order_amends`, rather than letting the order sit at the wrong size until the next requote.
+
+`amend_keep_priority = false` puts every replace back on `cancelReplace`.
+
+Error codes the connector acts on: -1003/-1015 (cool down), -1021 (resync clock), -1022/-2014/-2015 (fatal), -2010/-2011 message texts (`Order would immediately match and take.`, `Unknown order sent.`, `Account has insufficient balance for requested action.`, `Duplicate order sent.`), -2013, -2021/-2022, -2038 (amend refused: the order is gone, the quantity did not go down, or `MAX_NUM_ORDER_AMENDS` is used up — nothing changed on the venue, so the original keeps working and the replacement id is rejected), HTTP 418/429.
 
 ## Binance USDⓈ-M futures
 
@@ -119,7 +159,7 @@ Perpetual contracts in one-way position mode, with HMAC or Ed25519 keys. Sources
 | trades | `<ws_url>/market/stream?streams=<sym>@aggTrade` | aggregate trades |
 | user | `<ws_private_url>/ws/<listenKey>`, default `<ws_url>/private` | `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `listenKeyExpired` |
 | order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.modify` | order entry; REST fallback `POST` / `DELETE` / `PUT /fapi/v1/order` |
-| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `listenKey`, `openOrders`, `positionRisk`, account checks, kill-switch `DELETE /fapi/v1/allOpenOrders` |
+| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `listenKey`, `openOrders`, `positionRisk`, account checks, kill-switch `DELETE /fapi/v1/allOpenOrders`, dead man's switch `POST /fapi/v1/countdownCancelAll` |
 
 The `/public`, `/market` and `/private` paths come from the 2026-03-05 URL split; the unrouted `/ws` and `/stream` URLs were decommissioned on 2026-04-23 ("Important WebSocket Change Notice"). Demo Trading hosts: REST `https://demo-fapi.binance.com`, streams `wss://demo-fstream.binance.com`, WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`.
 
@@ -135,7 +175,15 @@ The listenKey comes from `POST /fapi/v1/listenKey` and is kept alive with `PUT` 
 
 * LIMIT maps `timeInForce` GTC, IOC and FOK directly; post-only is LIMIT with `GTX`; MARKET has no price and no `timeInForce`. `reduceOnly=true` is sent when the engine sets it; `positionSide` is omitted (BOTH). A crossing GTX order is rejected with -5022 or expires (`OrderExpired`).
 * `order.modify` keeps the venue's `clientOrderId` and takes the total quantity. The connector sends the new remaining quantity plus the filled quantity, reports later events for that order under the engine's new client id, and counts their fills from the modify. A modify answered with status `CANCELED` or `EXPIRED` becomes a cancel of the original and a reject of the replacement. A modified order loses its queue position, so `configs/binance-usdm-demo.toml` uses cancel and new (`supports_replace = false`).
-* Rate limits come from `exchangeInfo.rateLimits`, the WS API `rateLimits` and the REST headers `X-MBX-USED-WEIGHT-1M` and `X-MBX-ORDER-COUNT-10S`.
+* Rate limits come from `exchangeInfo.rateLimits`, the WS API `rateLimits` and the REST headers `X-MBX-USED-WEIGHT-1M` and `X-MBX-ORDER-COUNT-10S`. Requests are charged what their endpoint charges, over the WS API as over REST: a place and a modify cost 0 IP weight and one against the 10 s and 1-minute order limits, a cancel costs 1 IP weight and no order.
+
+### Dead man's switch
+
+`POST /fapi/v1/countdownCancelAll?symbol=S&countdownTime=<ms>` (signed, IP weight 10). "If this endpoint is not called within 120 seconds, all your orders of the specified symbol will be automatically canceled" — the timer is per symbol, sending it again replaces the running one, and `countdownTime=0` stops it. Binance publishes no minimum or maximum for `/fapi` (the 5000 ms floor belongs to the options endpoint `/eapi/v1/countdownCancelAll`) and notes only that it checks countdowns about every 10 ms. There is no WebSocket API method and no way to read the armed state back.
+
+The connector arms it on every subscribed symbol from the housekeeping timer and refreshes at `dead_mans_switch_ms`/3, with a floor of 500 ms between refreshes. The default window is 60 s, which costs 10 IP weight per symbol per 20 s — 120 weight a minute for four symbols, 5 % of the 2400/minute budget. Shortening the window shortens the exposure after a hard kill and raises that cost in proportion. `disconnect()` sends `countdownTime=0`, because a clean shutdown already cancels its own orders.
+
+The refresh clock only advances when the venue answers. A refused refresh is logged and retried; if none succeeds for a whole window the venue has cancelled that symbol's orders, and the connector trips `DeadMansSwitchLost` rather than requoting.
 
 ### Positions and reconciliation
 
@@ -153,13 +201,15 @@ The listenKey comes from `POST /fapi/v1/listenKey` and is kept alive with `PUT` 
 | channel | endpoint | purpose |
 |---|---|---|
 | md | `ws_url` (`/v5/public/spot`) | `orderbook.<depth>.SYM` snapshot/delta, `orderbook.1.SYM` to BookTicker, `publicTrade.SYM` |
-| private | `ws_private_url` (default: ws_url host + `/v5/private`) | `op: auth`, then `order`, `execution`, `wallet` |
+| private | `ws_private_url` (default: ws_url host + `/v5/private`) | `op: auth`, then `order`, `execution`, `wallet`, and `dcp.spot` when `dead_mans_switch_s` is set |
 | trade | `ws_api_url` (`/v5/trade`) | `op: auth`, then `order.create` / `order.amend` / `order.cancel` with `reqId` and `X-BAPI-TIMESTAMP` / `X-BAPI-RECV-WINDOW` headers |
-| rest | `rest_url` | `/v5/market/instruments-info`, `/v5/market/time`, `/v5/order/realtime`, `/v5/order/create|amend|cancel|cancel-all` |
+| rest | `rest_url` | `/v5/market/instruments-info`, `/v5/market/time`, `/v5/order/realtime`, `/v5/order/create|amend|cancel|cancel-all`, `/v5/order/disconnected-cancel-all` |
 
 Signing: REST `X-BAPI-SIGN` = hex HMAC-SHA256(secret, timestamp + api_key + recv_window + payload), where the payload is the exact query string (GET) or JSON body (POST) sent. WS auth: `{"op":"auth","args":[key, expires_ms, hex HMAC("GET/realtime" + expires)]}`. Every channel sends `{"op":"ping"}` every 20 s.
 
 Book sync: the stream's `snapshot` resets the book; each `delta` must have a larger `u`; `u == 1` or a missing snapshot (10 s) re-subscribes the depth topic to get a fresh snapshot. Amend keeps the venue's `orderLinkId`: the engine receives an ack for its new client id and later `order`/`execution` events for the old link id are translated to it.
+
+Disconnect-Cancel-All: `POST /v5/order/disconnected-cancel-all` with `{"product":"SPOT","timeWindow":<3..300>}`, sent once per private connect when `dead_mans_switch_s` is set. It is not a countdown the client refreshes — the window is an account setting, and Bybit starts the clock itself once every private connection that subscribed a `dcp.*` topic is gone, resetting it when one reconnects. That subscription is load-bearing: "your private websocket connection must subscribe 'dcp' topic in order to trigger DCP successfully", so the connector adds `dcp.spot` to the private topics when the switch is on and leaves it off otherwise. There is nothing to disarm on shutdown: with no connection subscribed there is no "all dead" transition to fire on, and the session cancels its own orders. Off by default — Bybit documents DCP as available to institutional accounts only and configured by an account manager, so an ordinary key gets a refusal, which the connector logs without stopping.
 
 Reconciliation: `GET /v5/order/realtime?category=spot&limit=50` is paged with `cursor` = `result.nextPageCursor` until the cursor is empty (at most 40 pages). Bybit answers a rate limit (10006/10018) and a clock or signature error (10002/10004) with HTTP 200 and a non-zero `retCode`, so the snapshot is gated on `retCode == 0` as well as the HTTP status.
 
@@ -193,6 +243,8 @@ Each option ticker yields a `BookTicker` and an `OptionTicker` (mark, IVs, greek
 
 Both connections enable heartbeats (interval >= 10 s; smaller values are refused with -32602) and answer every `test_request` with `public/test`. The access token goes into `params.access_token` of every private request. It is refreshed with `grant_type=refresh_token` at 80 % of `expires_in`, and an order answered with 13009 re-authenticates. After a private reconnect the venue reconciles open orders across all configured currencies (one `ReconcileMsg` Begin/End pair). When the private connection drops it cancels every subscribed instrument over REST (`cancel_on_order_channel_loss`), in addition to the venue-side cancel-on-disconnect.
 
+Cancel-on-disconnect fires "when the TCP connection is properly terminated, when the connection is closed due to 10 minutes of inactivity, or when a heartbeat detects a disconnection", and not after `private/logout`. A host that dies without sending a FIN produces none of the first two quickly, so the heartbeat is what makes this a dead man's switch rather than a ten-minute one: it is why the connector always enables `public/set_heartbeat` (minimum interval 10 s) and answers every `test_request`. Scope is `connection`, so it reaps only that socket's orders.
+
 ### Edits
 
 `private/edit` keeps the order id and label, and its `contracts` is the new total including fills. The engine receives an ack for its new client id. While the edit is in flight, a `user.orders` "open" update for the old label is not acked; later updates and fills for the old label map to the new id. Fills get `cum_qty`/`leaves_qty` from the venue's order shadow, because `user.trades` has no cumulative quantity.
@@ -200,6 +252,8 @@ Both connections enable heartbeats (interval >= 10 s; smaller values are refused
 ### Rate limits
 
 The credit model is from the rate-limits article: order requests use a leaky bucket sized by `matching_engine_rate` / `matching_engine_burst` (Tier 4 default 5/s, burst 20); check `private/get_account_summary` `limits` for the account's tier. New orders and edits are refused locally when the bucket is empty; cancels are always sent. A 10028 `too_many_requests` (after which the venue drops the session) drains the bucket.
+
+`private/mass_quote` has its own buckets, outside this model entirely ("Rate limits described in this article do not apply to Mass Quotes"): `limits.matching_engine.maximum_quotes`, `maximum_mass_quotes` and `guaranteed_mass_quotes`. The connector does not use it, and [Batch order entry](#batch-order-entry) says why — briefly, quotes are a second order lifecycle rather than a faster way to send orders, and access is granted per user and per currency by Deribit.
 
 ### Errors
 
@@ -273,5 +327,8 @@ Example configurations: `configs/binance-usdm-demo.toml`, `configs/deribit-testn
 * Bybit: whether `walletBalance` includes `locked`; balance-related `rejectReason` strings.
 * Binance USDⓈ-M: the private payloads (`ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, WS API order responses) follow the documentation and the official connector's models but were not recorded, because the Demo account had no futures margin balance. Whether Demo rejects a crossing GTX order with -5022 or accepts and expires it is not confirmed; both are handled. `order.modify` is covered by the scripted fake exchange only.
 * Binance Ed25519 and SBE: `session.logon`, unsigned orders and the SBE streams were tested against fastmm-sim-exchange, a scripted fake exchange and frames built from `stream_1_0.xml`, not against Binance (no Ed25519 key yet). Unconfirmed: whether Demo Mode accepts Ed25519 keys for the SBE streams, the error Binance returns when an HMAC key calls `session.logon` (the simulator answers -4056), and whether a combined SBE stream sends one event per binary frame.
+* Binance USDⓈ-M `countdownCancelAll`: the documentation gives no minimum or maximum for `countdownTime` on `/fapi` and no way to read the armed state back, so `dead_mans_switch_ms` is only clamped to be non-negative. Nor does it say what, if anything, the user stream carries when the countdown fires — futures `ORDER_TRADE_UPDATE` has no field for a cancel reason, so a countdown cancel is expected to look like any other `x: "CANCELED"`. Covered by the scripted fake exchange only.
+* Binance Spot `order.amend.keepPriority`: the documentation does not say what happens when `newQty` is at or below what the order has already filled. The connector never sends it (the quote manager's target is a leaves quantity and the engine's replace quantity is a total above `cum_qty`), and the sim exchange refuses it with -1013. Also unstated, though strongly implied by the fields: that `C` on a `REPLACED` `executionReport` carries the pre-amend client id, which is what the connector reads.
+* Bybit Disconnect-Cancel-All: no test account has it enabled, so the arming request and the `dcp.spot` subscription are covered by the scripted fake exchange only. Bybit documents no way to turn the window off again other than asking an account manager.
 * Binance: `GET /api/v3/time` weight (1 vs 2) and listenKey validity/keepalive figures (the documentation was removed; simulator mode only).
 * Deribit: the private payloads (`user.orders`, `user.trades`, order and auth responses, open orders) follow the OpenAPI/AsyncAPI schemas but were not recorded, because that needs testnet keys; the live test covers them when the keys are exported. Whether `reject_post_only` rejections arrive as error 11054 (complete reference) or 11006 (the error page's summary table) is not confirmed; the error map also matches on the message text. The public `trades` `direction` is taken as the taker side, which the current documentation does not state. The account's matching-engine tier is not queried.

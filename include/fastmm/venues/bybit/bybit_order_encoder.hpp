@@ -34,6 +34,9 @@
 namespace fastmm::venues::bybit {
 
 inline constexpr std::size_t kMaxRequestBytes = 1024;
+// Disconnect-Cancel-All: "Disconnection timing window time. [3, 300], unit: second".
+inline constexpr int kMinDcpWindowS = 3;
+inline constexpr int kMaxDcpWindowS = 300;
 
 // Per working order: what an amend/cancel needs that the engine message does not carry.
 // `link_id` is the orderLinkId the venue knows the order by; after an in-place amend the
@@ -85,6 +88,11 @@ class BybitOrderEncoder {
   // ---- REST ----------------------------------------------------------------------------
   bool encode_rest(const OrderCommand& cmd, const OrderShadow* shadow, RestRequest& out) const;
   bool encode_rest_cancel_all(std::string_view symbol, RestRequest& out) const;
+  // POST /v5/order/disconnected-cancel-all: Bybit's Disconnect-Cancel-All. `product` is
+  // SPOT | DERIVATIVES | OPTIONS and `time_window_s` is seconds in [3, 300]. This is not a
+  // countdown the client refreshes: the setting persists on the account and Bybit starts the
+  // clock itself when every private connection that subscribed a `dcp.*` topic is gone.
+  bool encode_rest_set_dcp(std::string_view product, int time_window_s, RestRequest& out) const;
   // `cursor` is result.nextPageCursor of the previous page (empty for the first).
   bool encode_rest_open_orders(std::string_view symbol,
                                std::string_view cursor,

@@ -22,6 +22,11 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      KeyType::Bool,
      false,
      "start without REST reference data, using the configured tick and lot (default false)"},
+    {"dead_mans_switch_ms",
+     KeyType::Int,
+     false,
+     "venue-side countdownCancelAll window in ms; the venue cancels every open order of a "
+     "symbol if the connector goes quiet for this long. 0 disables it (default 60000)"},
     {"cancel_on_order_channel_loss",
      KeyType::Bool,
      false,

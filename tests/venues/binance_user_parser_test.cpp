@@ -204,3 +204,27 @@ TEST_CASE("binance.user: the commission asset of a fill is classified as base, q
   CHECK(m.fee_asset == FeeAsset::Quote);
   CHECK(m.fee.is_zero());
 }
+
+TEST_CASE("binance.user: executionReport REPLACED is an ack that says the order survived") {
+  // order.amend.keepPriority is the only thing that produces x=REPLACED: the orderId is the one
+  // the order already had, "c" is the new client id and "C" the old one, and "z" (what it has
+  // filled) carries over. cancelReplace reports CANCELED then NEW instead, which is why the
+  // engine needs the flag to tell the two apart.
+  TestUniverse u;
+  BinanceUserParser p(u.symbols, u.instruments, VenueId{0});
+  Scratch s;
+  const auto r =
+      p.decode(padded_fixture("binance/exec_report_replaced.json").view(), kRecv, kT0, s.span());
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK(r.order_kind == OrderEventKind::Ack);
+  const auto& rep = s.as<OrderAckMsg>();
+  CHECK(rep.cl_ord_id == decode_cl_ord_id("fm000100000005").value());
+  CHECK(rep.venue_order_id.view() == "4293153");
+  CHECK((rep.flags & OrderAckMsg::kAmendedInPlace) != 0);
+
+  // A plain NEW leaves the flag clear.
+  const auto n =
+      p.decode(padded_fixture("binance/exec_report_new.json").view(), kRecv, kT0, s.span());
+  REQUIRE(n.status == ParseStatus::Ok);
+  CHECK((s.as<OrderAckMsg>().flags & OrderAckMsg::kAmendedInPlace) == 0);
+}

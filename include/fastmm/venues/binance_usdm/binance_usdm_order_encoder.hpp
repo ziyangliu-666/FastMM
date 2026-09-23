@@ -42,6 +42,12 @@ using binance::kMaxRequestBytes;
 using binance::RestRequest;
 using binance::Signer;
 
+// "Auto-Cancel All Open Orders": IP weight 10. countdownTime is in milliseconds and 0 stops the
+// timer; the venue checks the countdowns about every 10 ms, so a window near that resolution is
+// not usable. No minimum or maximum is published for /fapi (the 5000 ms floor belongs to the
+// options endpoint /eapi/v1/countdownCancelAll).
+inline constexpr std::uint32_t kCountdownCancelAllWeight = 10;
+
 // What the connector remembers about one live order (by the engine's current client id).
 struct OrderShadow {
   InstrumentId instrument{};
@@ -84,6 +90,13 @@ class BinanceUsdmOrderEncoder {
 
   // DELETE /fapi/v1/allOpenOrders?symbol=S (weight 1).
   bool encode_rest_cancel_all(std::string_view symbol, std::int64_t timestamp_ms, RestRequest& out);
+  // POST /fapi/v1/countdownCancelAll?symbol=S&countdownTime=N (IP weight 10): the venue-side
+  // dead man's switch. `countdown_ms` is milliseconds and 0 stops the timer. One timer per
+  // symbol; sending it again replaces the running countdown, which is how it is refreshed.
+  bool encode_rest_countdown_cancel_all(std::string_view symbol,
+                                        std::int64_t countdown_ms,
+                                        std::int64_t timestamp_ms,
+                                        RestRequest& out);
   // GET /fapi/v1/openOrders (weight 1 with a symbol, 40 without).
   bool encode_rest_open_orders(std::string_view symbol,
                                std::int64_t timestamp_ms,

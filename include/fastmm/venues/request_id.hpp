@@ -1,5 +1,5 @@
 #pragma once
-// Request ids shared by the JSON order-entry encoders: "<kind><cl_ord_id>" with kind n/c/r
+// Request ids shared by the JSON order-entry encoders: "<kind><cl_ord_id>" with kind n/c/r/a
 // (1 + 14 chars), so a WebSocket API response maps back to the command with no lookup
 // table. Binance allows a 36-char string id, Bybit a 36-char reqId.
 #include "fastmm/core/fixed_string.hpp"
@@ -12,7 +12,15 @@
 namespace fastmm::venues {
 
 using RequestId = FixedString<16>;
-enum class RequestKind : char { New = 'n', Cancel = 'c', Replace = 'r', Other = 'x' };
+// Amend: a replace the venue applies to the resting order (Binance Spot keepPriority); its
+// response has a different shape from a cancel-replace, so it needs its own kind.
+enum class RequestKind : char {
+  New = 'n',
+  Cancel = 'c',
+  Replace = 'r',
+  Amend = 'a',
+  Other = 'x',
+};
 
 [[nodiscard]] inline RequestId make_request_id(RequestKind kind, ClientOrderId id) noexcept {
   RequestId out;
@@ -25,7 +33,7 @@ enum class RequestKind : char { New = 'n', Cancel = 'c', Replace = 'r', Other = 
     std::string_view id) noexcept {
   if (id.size() != 1 + kClOrdIdChars) return std::nullopt;
   const char k = id[0];
-  if (k != 'n' && k != 'c' && k != 'r') return std::nullopt;
+  if (k != 'n' && k != 'c' && k != 'r' && k != 'a') return std::nullopt;
   const auto cl = decode_cl_ord_id(id.substr(1));
   if (!cl) return std::nullopt;
   return std::make_pair(static_cast<RequestKind>(k), *cl);

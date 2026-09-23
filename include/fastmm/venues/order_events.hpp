@@ -51,15 +51,19 @@ inline void emit_cancel_reject(EventSink& sink,
   static_cast<void>(sink.push(m.hdr));
 }
 
+// `flags`: OrderAckMsg::kAmendedInPlace when the venue amended the resting order rather than
+// creating a new one.
 inline void emit_order_ack(EventSink& sink,
                            VenueId venue,
                            InstrumentId inst,
                            ClientOrderId id,
-                           std::string_view venue_order_id) noexcept {
+                           std::string_view venue_order_id,
+                           std::uint8_t flags = 0) noexcept {
   OrderAckMsg m{};
   init_header(m, EventType::OrderAck, inst, venue);
   m.cl_ord_id = id;
   m.venue_order_id.assign(venue_order_id);
+  m.flags = flags;
   m.hdr.recv_ts = wall_now();
   m.hdr.t0_cycles = rdtscp();
   static_cast<void>(sink.push(m.hdr));
