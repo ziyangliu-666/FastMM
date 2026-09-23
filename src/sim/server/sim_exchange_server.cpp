@@ -590,6 +590,40 @@ void Impl::drop_ws_api(bool include_user_streams) {
   }
 }
 
+void Impl::send_malformed(bool market_data, bool ws_api) {
+  std::vector<std::pair<net::WsSession*, std::uint64_t>> targets;
+  targets.reserve(sessions_.size());
+  for (const auto& [ptr, st] : sessions_) {
+    const bool md = st.kind == SessionKind::MarketData;
+    if ((md && market_data) || (!md && ws_api)) targets.emplace_back(ptr, st.token);
+  }
+  for (const auto& [ptr, token] : targets) {
+    deliver(ptr, token, R"(} not json at all {"id":)");
+    ++stats_.malformed_frames_sent;
+  }
+}
+
+std::vector<std::string> Impl::open_client_ids() {
+  std::vector<std::string> out;
+  for (const OrderRecord* r : orders_.open_orders(kStrategyAccount, -1))
+    out.push_back(r->client_order_id);
+  return out;
+}
+
+std::optional<OpResult> Impl::injected_stop(std::int64_t now_ms) {
+  if (faults_.ban_next == 0) return std::nullopt;
+  --faults_.ban_next;
+  ++stats_.banned_requests;
+  OpResult r =
+      OpResult::error(418,
+                      -1003,
+                      "Way too many requests; IP banned until " + std::to_string(now_ms + 120'000) +
+                          ". Please use WebSocket Streams for live updates to avoid "
+                          "bans.");
+  r.retry_after_s = 120;
+  return r;
+}
+
 void Impl::expire_all_listen_keys() {
   const std::int64_t now_ms = server_ms();
   std::vector<std::string> keys;
@@ -767,6 +801,32 @@ void SimExchangeServer::set_clock_offset_ms(std::int64_t offset_ms) {
 }
 void SimExchangeServer::expire_listen_keys() {
   impl_->call([this] { impl_->expire_all_listen_keys(); });
+}
+void SimExchangeServer::swallow_next_ws_api_responses(std::uint32_t count) {
+  impl_->call([this, count] { impl_->faults_.swallow_ws_api_next = count; });
+}
+void SimExchangeServer::duplicate_next_user_events(std::uint32_t count) {
+  impl_->call([this, count] { impl_->faults_.duplicate_user_events_next = count; });
+}
+void SimExchangeServer::set_user_stream_muted(bool muted) {
+  impl_->call([this, muted] { impl_->faults_.user_stream_muted = muted; });
+}
+Qty SimExchangeServer::fill_open_order(std::string_view client_order_id, Qty qty) {
+  Impl& impl = *impl_;
+  return impl.call([&impl, client_order_id, qty] { return impl.force_fill(client_order_id, qty); });
+}
+std::vector<std::string> SimExchangeServer::open_client_order_ids() const {
+  Impl& impl = *impl_;
+  return impl.call([&impl] { return impl.open_client_ids(); });
+}
+void SimExchangeServer::ban_next_requests(std::uint32_t count) {
+  impl_->call([this, count] { impl_->faults_.ban_next = count; });
+}
+void SimExchangeServer::fail_next_auth(std::uint32_t count) {
+  impl_->call([this, count] { impl_->faults_.auth_fail_next = count; });
+}
+void SimExchangeServer::send_malformed_frames(bool market_data, bool ws_api) {
+  impl_->call([this, market_data, ws_api] { impl_->send_malformed(market_data, ws_api); });
 }
 
 }  // namespace fastmm::sim::server

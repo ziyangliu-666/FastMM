@@ -530,14 +530,25 @@ void BinanceVenue::on_order_state(net::ConnState s) {
   order_state_ = mapped;
   if (mapped == ConnState::Live) {
     // 6.7: after the order channel comes back the OMS view may be stale (orders were cancelled
-    // over REST while it was down). Not on the first connect, and not when a quiet channel merely
-    // returns from Stale, which would query open orders on every idle period.
+    // over REST while it was down). Not when a quiet channel merely returns from Stale, which
+    // would query open orders on every idle period.
     const bool reconnected = order_was_live_ && prev != ConnState::Stale;
+    // On the first connect, sweep for orders nobody owns: a session that died without cancelling
+    // left its orders resting and nothing else would ever go looking for them. Their client order
+    // ids belong to an earlier session epoch, so the engine does not recognise them and cancels
+    // them. The empty watermark keeps that sweep from saying anything about our own orders.
+    const bool first_connect = !order_was_live_;
     order_was_live_ = true;
     // Stale is not reported for a quiet order channel, so neither is the return from it.
     if (prev != ConnState::Stale) emit_connection_state(Channel::Order, ConnState::Live);
     drain_outbound();  // anything queued while the channel was down
-    if (reconnected && !cfg_.dry_run) request_open_orders();
+    if (!cfg_.dry_run) {
+      if (reconnected) {
+        request_open_orders();
+      } else if (first_connect) {
+        request_open_orders(ClientOrderId{});
+      }
+    }
     return;
   }
   if (mapped == ConnState::Stale) return;  // quiet order channels are normal
@@ -1097,12 +1108,22 @@ void BinanceVenue::emit_reconcile(std::string_view json,
 // ---- control requests -----------------------------------------------------------------------
 
 void BinanceVenue::request_open_orders() {
+  request_open_orders(sent_.value());
+}
+
+// `watermark` bounds what the snapshot may conclude: the engine's orders above it had not been
+// sent when it was asked for, so their absence means nothing. The start-up sweep passes an empty
+// id, which makes the whole snapshot read-only for our own orders - an order sent over REST before
+// the order channel came up can still be in flight, and its absence is not proof that it is gone.
+// Orders the snapshot reports that the engine does not know are still cancelled: that is the point
+// of the sweep.
+void BinanceVenue::request_open_orders(ClientOrderId watermark) {
   if (cfg_.dry_run || !connected_ || !signer_.usable()) return;
   if (cfg_.ws_order_api && order_conn_.is_live()) {
     const std::size_t n = encoder_->encode_ws_open_orders({}, "oo", venue_time_ms(), request_buf_);
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
       rate_.on_sent(80, now_ns());
-      oo_watermarks_.push_back(sent_.value());
+      oo_watermarks_.push_back(watermark);
       return;
     }
   }
@@ -1111,25 +1132,21 @@ void BinanceVenue::request_open_orders() {
   if (!encoder_->encode_rest_open_orders({}, venue_time_ms(), rr)) return;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
-  const bool queued =
-      rest_->request("GET",
-                     target,
-                     api_headers(),
-                     {},
-                     [this, alive, watermark = sent_.value()](const net::HttpResponse& r) {
-                       if (alive.expired()) return;
-                       ++stats_.rest_requests;
-                       note_rate_headers(r);
-                       if (!r.ok()) {
-                         ++stats_.rest_errors;
-                         FASTMM_LOG_WARN("{}: GET openOrders failed: status={} err={}",
-                                         cfg_.name,
-                                         r.status,
-                                         net::to_string(r.error));
-                         return;
-                       }
-                       emit_reconcile(r.body, /*rest_array=*/true, watermark);
-                     });
+  const bool queued = rest_->request(
+      "GET", target, api_headers(), {}, [this, alive, watermark](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: GET openOrders failed: status={} err={}",
+                          cfg_.name,
+                          r.status,
+                          net::to_string(r.error));
+          return;
+        }
+        emit_reconcile(r.body, /*rest_array=*/true, watermark);
+      });
   if (queued) rate_.on_sent(rr.weight, now_ns());
 }
 

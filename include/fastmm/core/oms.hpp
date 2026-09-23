@@ -74,6 +74,10 @@ struct OmsUpdate {
   // one is gone. It never produces an update of its own (the OMS renames the record in place), so
   // anything that tracks orders by id closes it here.
   ClientOrderId replaced_cl_ord_id{};
+  // Quantity that was still working when a reconciliation snapshot failed to mention the order.
+  // The venue does not say whether it was cancelled or filled, so nothing can be booked; it is
+  // reported so the engine can say the position may be wrong instead of assuming it is not.
+  Qty unresolved_qty{};
 };
 
 struct OmsStats {
@@ -91,6 +95,9 @@ struct OmsStats {
   std::uint64_t unsolicited_cancels = 0;
   std::uint64_t missed_fills = 0;  // cum_qty jumps a fill message never reported
   std::uint64_t ack_timeouts = 0;  // PendingNew orders swept by sweep_pending()
+  // Orders a reconciliation snapshot did not report that still had working quantity: the venue
+  // ended them and never said how, so the position may be short by up to that much.
+  std::uint64_t reconcile_unresolved = 0;
 };
 
 enum class OrderClass : std::uint8_t { Open, RecentlyTerminal, Unknown };
@@ -468,6 +475,12 @@ class Oms {
       u.prev = o.state;
       u.known = true;
       o.flags |= Order::kReconciled;
+      // Working quantity nobody accounted for: the snapshot proves the order is over, not how it
+      // ended. Treating it as cancelled is a guess, so report it instead of hiding it.
+      if (o.leaves_qty().is_positive()) {
+        u.unresolved_qty = o.leaves_qty();
+        ++stats_.reconcile_unresolved;
+      }
       terminate(u, h, o, OrderState::Canceled, /*by_reconcile=*/true);
       f(u);
     }

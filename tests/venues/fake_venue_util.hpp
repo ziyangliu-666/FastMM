@@ -190,6 +190,15 @@ struct Collected {
     }
     return nullptr;
   }
+  template <class M, class Pred>
+  [[nodiscard]] const M* last_if(EventType t, Pred&& pred) const {
+    const M* out = nullptr;
+    for (const auto& m : all) {
+      if (RecordingSink::type_of(m) == t && pred(RecordingSink::as<M>(m)))
+        out = &RecordingSink::as<M>(m);
+    }
+    return out;
+  }
   template <class M>
   [[nodiscard]] const M* last(EventType t) const {
     const M* out = nullptr;

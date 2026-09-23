@@ -98,6 +98,16 @@ void Impl::emit_user_event(AccountId account, std::string event_json) {
 void Impl::publish_user_event(AccountId account,
                               std::string_view event_json,
                               std::uint32_t delay_ms) {
+  if (faults_.user_stream_muted) {
+    ++stats_.user_events_dropped;
+    return;  // as on a real venue, nothing replays an event nobody was listening for
+  }
+  std::uint32_t copies = 1;
+  if (faults_.duplicate_user_events_next > 0) {
+    --faults_.duplicate_user_events_next;
+    ++stats_.user_events_duplicated;
+    copies = 2;
+  }
   struct Target {
     net::WsSession* session;
     std::uint64_t token;
@@ -121,6 +131,7 @@ void Impl::publish_user_event(AccountId account,
     } else {
       append_user_event(text, t.subscription_id, event_json);
     }
+    for (std::uint32_t i = 1; i < copies; ++i) send_to_session(t.session, t.token, text, delay_ms);
     send_to_session(t.session, t.token, std::move(text), delay_ms);
   }
 }
@@ -369,6 +380,53 @@ void Impl::apply_fill(const SimOrder& o, Price px, Qty qty, bool maker, std::uin
   emit_exec(*r, ExecType::Trade, {}, {}, &f, maker);
 }
 
+// Crosses one named resting order with a counter-order from the generator account. Everything
+// ahead of it in price-time is swept first (a limit IOC at the order's own price for the sum of
+// the leaves ahead plus what is wanted), so the order named is the one that trades.
+Qty Impl::force_fill(std::string_view client_order_id, Qty want) {
+  OrderRecord* rec = nullptr;
+  for (std::uint32_t s = 0; s < symbols_.size() && rec == nullptr; ++s)
+    rec = orders_.by_client_id(kStrategyAccount, s, client_order_id);
+  if (rec == nullptr || rec->terminal()) return Qty{};
+  const Qty qty = want.is_positive() && want < rec->leaves() ? want : rec->leaves();
+  if (!qty.is_positive()) return Qty{};
+
+  const InstrumentId instrument{rec->symbol};
+  const std::int64_t order_id = rec->order_id;
+  const ClientOrderId internal = rec->internal;
+  const Side side = rec->side;
+  const Price price = rec->price;
+  const Qty executed_before = rec->executed;
+  Qty ahead{};
+  bool found = false;
+  me_->for_each_resting(instrument, side, [&](const SimOrder& o) {
+    if (found) return;
+    if (o.cl_ord_id == internal && o.account == kStrategyAccount) {
+      found = true;
+      return;
+    }
+    ahead += o.leaves();
+  });
+  if (!found) return Qty{};  // acknowledged but not resting (still in flight, or an IOC)
+
+  NewOrder n;
+  n.account = kGeneratorAccount;
+  // Well above any id a MarketGenerator issues on the same account.
+  n.cl_ord_id = ClientOrderId{(1ULL << 40U) + next_fault_order_++};
+  n.instrument = instrument;
+  n.side = side == Side::Buy ? Side::Sell : Side::Buy;
+  n.type = OrderType::Limit;
+  n.tif = TimeInForce::Ioc;
+  n.price = price;
+  n.qty = ahead + qty;
+  begin_request(0);
+  static_cast<void>(me_->submit(n, sim_now()));
+  const OrderRecord* after = orders_.by_order_id(order_id);
+  const Qty filled = after == nullptr ? Qty{} : after->executed - executed_before;
+  end_request();
+  return filled;
+}
+
 // ---- authentication
 // -------------------------------------------------------------------------------
 
@@ -379,10 +437,18 @@ std::optional<OpResult> Impl::authenticate(std::string_view api_key,
                                            std::int64_t now_ms,
                                            Account*& out) {
   out = nullptr;
+  constexpr std::string_view kBadKey = "Invalid API-key, IP, or permissions for action.";
+  if (faults_.auth_fail_next > 0) {
+    --faults_.auth_fail_next;
+    ++stats_.key_errors;
+    return OpResult::error(401, -2015, kBadKey);
+  }
   if (api_key.empty()) return OpResult::error(401, -2014, "API-key format invalid.");
   Account* a = find_account(api_key);
-  if (a == nullptr)
-    return OpResult::error(401, -2015, "Invalid API-key, IP, or permissions for action.");
+  if (a == nullptr) {
+    ++stats_.key_errors;
+    return OpResult::error(401, -2015, kBadKey);
+  }
   if (params.find("timestamp") == nullptr)
     return OpResult::error(400, -1102, mandatory("timestamp"));
   if (signature.empty()) return OpResult::error(400, -1102, mandatory("signature"));
@@ -645,6 +711,7 @@ OpResult Impl::submit_new_order(Account& a, const NewOrderSpec& spec, bool test_
   }
   ++stats_.orders_accepted;
   ++stats_.orders_since_mark;
+  if (!seen_client_ids_.insert(spec.client_order_id).second) ++stats_.duplicate_client_order_ids;
   stats_.max_order_qty = max(stats_.max_order_qty, spec.qty);
 
   std::string body;
