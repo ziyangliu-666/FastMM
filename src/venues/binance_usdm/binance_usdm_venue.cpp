@@ -4,6 +4,7 @@
 #include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_rest_decoder.hpp"
 #include "fastmm/venues/blocking_http.hpp"
+#include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/order_events.hpp"
 #include "fastmm/venues/padded_json.hpp"
@@ -48,67 +49,9 @@ int valid_depth_limit(std::int64_t n) noexcept {
   return 1000;
 }
 
-ConnState map_state(net::ConnState s) noexcept {
-  switch (s) {
-    case net::ConnState::Live:
-      return ConnState::Live;
-    case net::ConnState::Stale:
-      return ConnState::Stale;
-    case net::ConnState::Resolving:
-    case net::ConnState::Connecting:
-    case net::ConnState::TlsHandshake:
-    case net::ConnState::WsHandshake:
-    case net::ConnState::Authenticating:
-    case net::ConnState::Subscribing:
-      return ConnState::Connecting;
-    case net::ConnState::Idle:
-    case net::ConnState::Closing:
-    case net::ConnState::Backoff:
-      return ConnState::Disconnected;
-  }
-  return ConnState::Disconnected;
-}
-ChannelState channel_state(net::ConnState s) noexcept {
-  switch (map_state(s)) {
-    case ConnState::Live:
-      return ChannelState::Live;
-    case ConnState::Stale:
-      return ChannelState::Stale;
-    case ConnState::Connecting:
-      return ChannelState::Connecting;
-    default:
-      return ChannelState::Down;
-  }
-}
-
-// "scheme://host[:port][/path]" without a trailing slash.
 std::string url_root(const std::string& url) {
-  const auto u = net::Url::parse(url);
-  if (!u) throw std::invalid_argument("binance_usdm: bad URL " + url);
-  std::string s(u->scheme);
-  s += "://";
-  s += u->host;
-  const bool default_port = (u->tls && u->port == 443) || (!u->tls && u->port == 80);
-  if (!default_port) s += ":" + std::to_string(u->port);
-  std::string_view path = u->path;
-  while (!path.empty() && path.back() == '/') path.remove_suffix(1);
-  s += path;
-  return s;
+  return venues::url_root("binance_usdm", url);
 }
-
-std::int64_t header_int(const net::HttpResponse& r, std::string_view name) noexcept {
-  const std::string_view v = r.header(name);
-  if (v.empty()) return -1;
-  const auto parsed = parse_int64(v);
-  return parsed ? *parsed : -1;
-}
-
-struct IdText {
-  char buf[24];
-  std::size_t n;
-  explicit IdText(std::int64_t v) noexcept : n(format_int64(v, buf)) {}
-  [[nodiscard]] std::string_view view() const noexcept { return {buf, n}; }
-};
 
 Qty non_negative(Qty q) noexcept {
   return q.raw < 0 ? Qty{} : q;
@@ -519,7 +462,7 @@ void BinanceUsdmVenue::send_logon() {
 // ---- market data channels -----------------------------------------------------------------
 
 void BinanceUsdmVenue::on_md_state(net::ConnState s) {
-  const ConnState mapped = map_state(s);
+  const ConnState mapped = map_conn_state(s);
   stats_.md = channel_state(s);
   if (s == net::ConnState::Backoff) ++stats_.reconnects;
   if (mapped == md_state_) return;
@@ -560,7 +503,7 @@ void BinanceUsdmVenue::on_md_open() {
 // Trades are informational for the engine: their connection state is logged, not reported, so a
 // quiet aggTrade stream never clears the books.
 void BinanceUsdmVenue::on_trades_state(net::ConnState s) {
-  const ConnState mapped = map_state(s);
+  const ConnState mapped = map_conn_state(s);
   if (mapped == trades_state_ || mapped == ConnState::Stale) return;
   const ConnState prev = trades_state_;
   trades_state_ = mapped;
@@ -633,7 +576,7 @@ void BinanceUsdmVenue::request_snapshot(InstrumentId id) {
 // ---- user data channel --------------------------------------------------------------------
 
 void BinanceUsdmVenue::on_user_state(net::ConnState s) {
-  const ConnState mapped = map_state(s);
+  const ConnState mapped = map_conn_state(s);
   stats_.user = channel_state(s);
   if (mapped == user_state_) return;
   const ConnState prev = user_state_;
@@ -781,7 +724,7 @@ void BinanceUsdmVenue::check_positions(std::int64_t now) {
 // ---- order channel --------------------------------------------------------------------------
 
 void BinanceUsdmVenue::on_order_state(net::ConnState s) {
-  const ConnState mapped = map_state(s);
+  const ConnState mapped = map_conn_state(s);
   stats_.order = channel_state(s);
   if (mapped == order_state_) return;
   const ConnState prev = order_state_;
@@ -1182,11 +1125,11 @@ void BinanceUsdmVenue::note_rate_headers(const net::HttpResponse& r) {
       header_int(r, "X-MBX-USED-WEIGHT-1M"), header_int(r, "X-MBX-ORDER-COUNT-10S"), now_ns());
 }
 
+// First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled,
+// new orders refused by risk); the other venues keep trading.
 void BinanceUsdmVenue::trip_venue_kill(KillReason reason) {
-  if (venue_kill_sent_ || order_sink_ == nullptr) return;
-  venue_kill_sent_ = true;
-  FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
-  emit_venue_kill(*order_sink_, id_, reason);
+  if (trip_venue_kill_once(venue_kill_sent_, order_sink_, id_, reason))
+    FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
 }
 
 void BinanceUsdmVenue::apply_action(VenueAction action,
@@ -1633,11 +1576,7 @@ void BinanceUsdmVenue::publish_status() noexcept {
 }
 
 VenueStatus BinanceUsdmVenue::status() const noexcept {
-  VenueStatus s;
-  for (int i = 0; i < 100; ++i) {
-    if (published_.try_load(s)) return s;
-  }
-  return s;
+  return load_published_status(published_);
 }
 
 // ---- config ---------------------------------------------------------------------------------
@@ -1655,15 +1594,8 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   c.dry_run = dry_run;
   c.credentials.api_key = v.api_key;
   c.credentials.secret.value = v.api_secret;
-  auto extra = [&](const char* key) -> std::string {
-    const auto it = v.extra.find(key);
-    return it == v.extra.end() ? std::string{} : it->second;
-  };
-  auto extra_bool = [&](const char* key, bool def) {
-    const std::string s = extra(key);
-    if (s.empty()) return def;
-    return s == "true" || s == "1" || s == "yes";
-  };
+  const VenueExtras x(v.extra);
+  auto extra = [&](const char* key) { return x.get(key); };
   const std::string key_type = extra("key_type");
   if (!key_type.empty() && key_type != "hmac" && key_type != "ed25519")
     throw std::invalid_argument("venue '" + v.name + "': key_type must be hmac or ed25519");
@@ -1677,16 +1609,12 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   if (const std::string d = extra("depth_limit"); !d.empty()) {
     if (const auto n = parse_int64(d)) c.depth_limit = valid_depth_limit(*n);
   }
-  if (const std::string s = extra("stale_ms"); !s.empty()) {
-    if (const auto n = parse_int64(s)) c.stale_ms = static_cast<std::uint32_t>(*n);
-  }
-  if (const std::string s = extra("dead_ms"); !s.empty()) {
-    if (const auto n = parse_int64(s)) c.dead_ms = static_cast<std::uint32_t>(*n);
-  }
-  c.position_from_account_update = extra_bool("position_from_account_update", true);
-  c.allow_offline_reference_data = extra_bool("allow_offline_reference_data", false);
-  c.cancel_on_order_channel_loss = extra_bool("cancel_on_order_channel_loss", true);
-  c.emit_ack_from_response = extra_bool("emit_ack_from_response", true);
+  c.stale_ms = static_cast<std::uint32_t>(x.integer("stale_ms", c.stale_ms));
+  c.dead_ms = static_cast<std::uint32_t>(x.integer("dead_ms", c.dead_ms));
+  c.position_from_account_update = x.flag("position_from_account_update", true);
+  c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
+  c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
+  c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
   if (c.ws_url.empty() || c.rest_url.empty())
     throw std::invalid_argument("venue '" + v.name + "': binance_usdm needs ws_url and rest_url");
   static_cast<void>(url_root(c.ws_url));  // throws on a bad URL

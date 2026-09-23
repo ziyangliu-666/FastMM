@@ -1,6 +1,7 @@
 #include "fastmm/venues/deribit/deribit_venue.hpp"
 
 #include "fastmm/venues/blocking_http.hpp"
+#include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/deribit/deribit_rest_decoder.hpp"
 #include "fastmm/venues/order_events.hpp"
@@ -21,40 +22,6 @@ namespace {
 constexpr std::int64_t kNsPerMs = 1'000'000;
 constexpr std::int64_t kNsPerSec = 1'000'000'000;
 constexpr std::int64_t kHousekeepingNs = kNsPerSec;
-
-ConnState map_state(net::ConnState s) noexcept {
-  switch (s) {
-    case net::ConnState::Live:
-      return ConnState::Live;
-    case net::ConnState::Stale:
-      return ConnState::Stale;
-    case net::ConnState::Resolving:
-    case net::ConnState::Connecting:
-    case net::ConnState::TlsHandshake:
-    case net::ConnState::WsHandshake:
-    case net::ConnState::Authenticating:
-    case net::ConnState::Subscribing:
-      return ConnState::Connecting;
-    case net::ConnState::Idle:
-    case net::ConnState::Closing:
-    case net::ConnState::Backoff:
-      return ConnState::Disconnected;
-  }
-  return ConnState::Disconnected;
-}
-
-ChannelState channel_state(net::ConnState s) noexcept {
-  switch (map_state(s)) {
-    case ConnState::Live:
-      return ChannelState::Live;
-    case ConnState::Stale:
-      return ChannelState::Stale;
-    case ConnState::Connecting:
-      return ChannelState::Connecting;
-    default:
-      return ChannelState::Down;
-  }
-}
 
 std::string_view kind_of(AssetClass a) noexcept {
   switch (a) {
@@ -405,7 +372,7 @@ void DeribitVenue::open_private() {
 // ---- market data ------------------------------------------------------------------------------
 
 void DeribitVenue::on_md_state(net::ConnState s) {
-  const ConnState mapped = map_state(s);
+  const ConnState mapped = map_conn_state(s);
   stats_.md = channel_state(s);
   if (s == net::ConnState::Backoff) ++stats_.reconnects;
   if (mapped == md_state_) return;
@@ -507,7 +474,7 @@ void DeribitVenue::send_private(std::string_view frame, std::string_view what) {
 
 void DeribitVenue::on_private_state(net::ConnState s) {
   if (s == net::ConnState::Authenticating) send_auth(kIdAuth);
-  const ConnState mapped = map_state(s);
+  const ConnState mapped = map_conn_state(s);
   stats_.user = channel_state(s);
   stats_.order = stats_.user;
   if (mapped == private_state_) return;
@@ -993,13 +960,11 @@ void DeribitVenue::send_command(const OrderCommand& cmd) {
   }
 }
 
-// First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled, new
-// orders refused by risk); the other venues keep trading.
+// First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled,
+// new orders refused by risk); the other venues keep trading.
 void DeribitVenue::trip_venue_kill(KillReason reason) {
-  if (venue_kill_sent_ || order_sink_ == nullptr) return;
-  venue_kill_sent_ = true;
-  FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
-  emit_venue_kill(*order_sink_, id_, reason);
+  if (trip_venue_kill_once(venue_kill_sent_, order_sink_, id_, reason))
+    FASTMM_LOG_ERROR("{}: asking the engine to kill this venue ({})", cfg_.name, reason);
 }
 
 void DeribitVenue::apply_action(VenueAction action, int code, std::string_view msg) {
@@ -1210,11 +1175,7 @@ void DeribitVenue::publish_status() noexcept {
 }
 
 VenueStatus DeribitVenue::status() const noexcept {
-  VenueStatus s;
-  for (int i = 0; i < 100; ++i) {
-    if (published_.try_load(s)) return s;
-  }
-  return s;
+  return load_published_status(published_);
 }
 
 // ---- config ---------------------------------------------------------------------------------
@@ -1230,21 +1191,10 @@ DeribitVenueConfig make_deribit_config(const VenueSection& v, bool dry_run) {
   c.dry_run = dry_run;
   c.credentials.client_id = v.api_key;
   c.credentials.client_secret.value = v.api_secret;
-  auto extra = [&](const char* key) -> std::string {
-    const auto it = v.extra.find(key);
-    return it == v.extra.end() ? std::string{} : it->second;
-  };
-  auto extra_bool = [&](const char* key, bool def) {
-    const std::string s = extra(key);
-    if (s.empty()) return def;
-    return s == "true" || s == "1" || s == "yes";
-  };
-  auto extra_int = [&](const char* key, std::int64_t def) {
-    const std::string s = extra(key);
-    if (s.empty()) return def;
-    const auto n = parse_int64(s);
-    return n ? *n : def;
-  };
+  const VenueExtras x(v.extra);
+  auto extra = [&](const char* key) { return x.get(key); };
+  auto extra_bool = [&](const char* key, bool def) { return x.flag(key, def); };
+  auto extra_int = [&](const char* key, std::int64_t def) { return x.integer(key, def); };
   c.ws_private_url = extra("ws_private_url");
   if (c.ws_private_url.empty()) c.ws_private_url = v.ws_api_url.empty() ? v.ws_url : v.ws_api_url;
   // "BTC", "BTC,ETH" or a stringified TOML array ["BTC", "ETH"].

@@ -3,6 +3,7 @@
 
 #include "fastmm/codecs/itch/nasdaq_fields.hpp"
 #include "fastmm/core/log.hpp"
+#include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/order_events.hpp"
 
@@ -1192,11 +1193,7 @@ void NasdaqItchVenue::publish_status() noexcept {
 }
 
 VenueStatus NasdaqItchVenue::status() const noexcept {
-  VenueStatus s;
-  for (int i = 0; i < 100; ++i) {
-    if (published_.try_load(s)) return s;
-  }
-  return s;
+  return load_published_status(published_);
 }
 
 // ---- config -----------------------------------------------------------------------------------
@@ -1209,10 +1206,8 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
   const auto bad = [&](std::string_view key, std::string_view why) {
     return std::invalid_argument(fmt::format("venues.{}.{}: {}", v.name, key, why));
   };
-  auto extra = [&](const char* key) -> std::string {
-    const auto it = v.extra.find(key);
-    return it == v.extra.end() ? std::string{} : it->second;
-  };
+  const VenueExtras x(v.extra);
+  auto extra = [&](const char* key) { return x.get(key); };
   auto extra_u64 = [&](const char* key, std::uint64_t def, std::uint64_t lo, std::uint64_t hi) {
     const std::string s = extra(key);
     if (s.empty()) return def;

@@ -11,21 +11,11 @@
 // an injected callback and are rate limited to one per instrument per min_interval (2 s by
 // default) so a flapping stream cannot burn REST weight. A full market-data ring drops the
 // delta and forces a resync (6.7).
-#include "fastmm/core/book/book_syncer.hpp"
-#include "fastmm/core/messages.hpp"
-#include "fastmm/venues/event_sink.hpp"
-
-#include <cstdint>
+#include "fastmm/venues/book_sync.hpp"
 
 namespace fastmm::venues::binance {
 
-struct SnapshotRequester {
-  void (*fn)(void* ctx, InstrumentId id) noexcept = nullptr;
-  void* ctx = nullptr;
-  void operator()(InstrumentId id) const noexcept {
-    if (fn != nullptr) fn(ctx, id);
-  }
-};
+using SnapshotRequester = InstrumentCallback;
 
 // Traits: BinanceSpotSyncTraits (Spot, U/u chaining) or BinanceFuturesSyncTraits (USDⓈ-M, pu
 // chaining; see binance_usdm_md_feed.hpp).
