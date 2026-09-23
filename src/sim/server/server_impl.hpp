@@ -24,6 +24,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -148,6 +149,11 @@ struct FaultState {
   std::uint32_t delay_ack_ms = 0;
   std::uint32_t reject_next = 0;
   std::uint32_t rate_limit_next = 0;
+  std::uint32_t swallow_ws_api_next = 0;
+  std::uint32_t duplicate_user_events_next = 0;
+  std::uint32_t ban_next = 0;
+  std::uint32_t auth_fail_next = 0;
+  bool user_stream_muted = false;
   bool timestamp_once = false;
   bool rest_unresponsive = false;
   bool skip_depth = false;
@@ -234,6 +240,11 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   void drop_market_data();
   void drop_ws_api(bool include_user_streams);
   void expire_all_listen_keys();
+  void send_malformed(bool market_data, bool ws_api);
+  [[nodiscard]] Qty force_fill(std::string_view client_order_id, Qty qty);
+  [[nodiscard]] std::vector<std::string> open_client_ids();
+  // 418 / -2015 injection shared by REST and the WebSocket API; nullopt = serve the request.
+  [[nodiscard]] std::optional<OpResult> injected_stop(std::int64_t now_ms);
 
   // market data
   static void md_trampoline(void* ctx, EventHeader& h, Timestamp ts) noexcept;
@@ -356,6 +367,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   std::uint64_t trade_seq_ = 0;
   std::int64_t next_execution_id_ = 1;
   std::uint64_t next_generated_id_ = 1;
+  std::uint64_t next_fault_order_ = 1;  // counter-orders of fill_open_order()
 
   // per-request context
   bool in_request_ = false;
@@ -367,6 +379,9 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   bool amend_in_progress_ = false;
 
   FaultState faults_;
+  // Every clientOrderId the account has had accepted, so a repeat is visible long after the first
+  // order was forgotten (SimServerStats::duplicate_client_order_ids).
+  std::unordered_set<std::string> seen_client_ids_;
   SimServerStats stats_;
   std::vector<Level> level_buf_;
   std::string md_scratch_;

@@ -1,10 +1,10 @@
 #pragma once
 // Shared helpers for the sim-exchange integration tests: an in-process SimExchangeServer on
-// ephemeral ports, ring-backed sinks for driving BinanceVenue directly, and LiveEngine, the
-// apps/fastmm-live wiring (venue reactor thread + Engine<BasicMM, TscClock, LiveTransport,
-// RingFeed> thread + kill-switch shutdown) built from configs/sim-local(-tls).toml. With
-// LiveEngineOptions::journal_path it also journals like fastmm-live (session epoch, cancel-replace
-// from venue capability && config, effective config, TSC calibration source).
+// ephemeral ports, VenueHarness for driving BinanceVenue directly on this thread's reactor, and
+// LiveEngine, the apps/fastmm-live wiring (venue reactor thread + Engine<BasicMM, TscClock,
+// LiveTransport, RingFeed> thread + kill-switch shutdown) built from configs/sim-local(-tls).toml.
+// With LiveEngineOptions::journal_path it also journals like fastmm-live (session epoch,
+// cancel-replace from venue capability && config, effective config, TSC calibration source).
 //
 // Set FASTMM_IT_LOG=1 to see the connector/engine log on stderr.
 #include "test_support.hpp"
@@ -20,6 +20,7 @@
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/sim/server/sim_exchange_server.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
+#include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
@@ -200,6 +201,137 @@ struct Collected {
     const M* out = nullptr;
     for (const auto& m : all) {
       if (type_of(m) == t) out = &as<M>(m);
+    }
+    return out;
+  }
+};
+
+// ---- driving BinanceVenue directly ------------------------------------------------------------
+
+// BTCUSDT with a deliberately wrong tick: exchangeInfo must override it.
+inline Instrument btcusdt() {
+  Instrument i{};
+  i.symbol = "BTCUSDT";
+  i.venue = VenueId{0};
+  i.base = "BTC";
+  i.quote = "USDT";
+  i.asset_class = AssetClass::Spot;
+  i.flags = Instrument::kEnabled;
+  i.tick = Price::from_int(1);
+  i.lot = Qty::from_decimal("0.001").value();
+  i.min_qty = i.lot;
+  i.min_notional = Notional::from_int(1);
+  return i;
+}
+
+inline venues::binance::BinanceVenueConfig venue_config(const ServerFixture& fx,
+                                                        const char* secret = kApiSecret) {
+  venues::binance::BinanceVenueConfig c;
+  c.name = "sim";
+  c.ws_url = fx.ws() + "/stream";
+  c.ws_api_url = fx.ws() + "/ws-api/v3";
+  c.rest_url = fx.http();
+  c.credentials.api_key = kApiKey;
+  c.credentials.secret.value = secret;
+  c.user_stream = venues::binance::UserStreamMode::WsApi;
+  c.http_timeout_ms = 3000;
+  if (const char* d = std::getenv("FASTMM_IT_RAW_DIR")) c.record_raw_dir = d;
+  return c;
+}
+
+// Client order ids of a hand-driven test: epoch 1, sequence n (what Oms::next_cl_ord_id issues).
+inline ClientOrderId cid(std::uint64_t n) {
+  return ClientOrderId{0x0001'0000'0000ULL + n};
+}
+
+inline OutNewOrderMsg new_order(
+    ClientOrderId id, Side side, OrderType type, TimeInForce tif, Price px, Qty qty) {
+  OutNewOrderMsg m{};
+  init_header(m, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  m.cl_ord_id = id;
+  m.side = side;
+  m.type = type;
+  m.tif = tif;
+  m.price = px;
+  m.qty = qty;
+  return m;
+}
+
+// BinanceVenue + ring sinks on this thread's reactor (the connector's own threading model).
+struct VenueHarness {
+  InstrumentTable instruments;
+  venues::SymbolTable symbols;
+  RecordingSink md{8U << 20};
+  RecordingSink orders{1U << 20, venues::SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor{test_net_backend()};
+  std::unique_ptr<venues::binance::BinanceVenue> venue;
+  Collected mdc;
+  Collected oc;
+
+  explicit VenueHarness(venues::binance::BinanceVenueConfig cfg) {
+    REQUIRE(instruments.add(btcusdt()));
+    venue = std::make_unique<venues::binance::BinanceVenue>(VenueId{0}, std::move(cfg));
+  }
+  ~VenueHarness() {
+    venue->disconnect();
+    reactor.run_once(0);
+  }
+  VenueHarness(const VenueHarness&) = delete;
+  VenueHarness& operator=(const VenueHarness&) = delete;
+
+  void connect() {
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue->subscribe(ids);
+    venue->connect(reactor);
+  }
+  template <class Pred>
+  bool pump(Pred pred, int timeout_ms = 15000) {
+    return pump_until(
+        reactor,
+        [&] {
+          mdc.take(md);
+          oc.take(orders);
+          return pred();
+        },
+        timeout_ms);
+  }
+  void send(const EventHeader& h) {
+    REQUIRE(outbound.try_push(&h, h.len));
+    venue->on_wake();
+  }
+  [[nodiscard]] std::size_t live_order_channels() const {
+    return oc.count_if<ConnectionStateMsg>(
+        EventType::ConnectionState,
+        [](const ConnectionStateMsg& m) { return m.state == ConnState::Live; });
+  }
+  [[nodiscard]] std::size_t acks(ClientOrderId id) const {
+    return oc.count_if<OrderAckMsg>(EventType::OrderAck,
+                                    [id](const OrderAckMsg& m) { return m.cl_ord_id == id; });
+  }
+  [[nodiscard]] std::size_t cancel_acks(ClientOrderId id) const {
+    return oc.count_if<OrderCancelAckMsg>(
+        EventType::OrderCancelAck, [id](const OrderCancelAckMsg& m) { return m.cl_ord_id == id; });
+  }
+  [[nodiscard]] const OrderRejectMsg* reject(ClientOrderId id) const {
+    return last_for<OrderRejectMsg>(EventType::OrderReject, id);
+  }
+  [[nodiscard]] const OrderFillMsg* fill(ClientOrderId id) const {
+    return last_for<OrderFillMsg>(EventType::OrderFill, id);
+  }
+  [[nodiscard]] const OrderAckMsg* last_ack(ClientOrderId id) const {
+    return last_for<OrderAckMsg>(EventType::OrderAck, id);
+  }
+
+ private:
+  template <class M>
+  [[nodiscard]] const M* last_for(EventType t, ClientOrderId id) const {
+    const M* out = nullptr;
+    for (const auto& m : oc.all) {
+      if (Collected::type_of(m) == t && Collected::as<M>(m).cl_ord_id == id)
+        out = &Collected::as<M>(m);
     }
     return out;
   }

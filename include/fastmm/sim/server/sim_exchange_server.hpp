@@ -22,6 +22,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace fastmm::sim::server {
 
@@ -48,9 +50,19 @@ struct SimServerStats {
   std::uint64_t timestamp_errors = 0;
   std::uint64_t rate_limited = 0;
   std::uint64_t unanswered_rest = 0;
+  std::uint64_t key_errors = 0;           // -2015 (including the injected ones)
+  std::uint64_t banned_requests = 0;      // 418 answers from ban_next_requests()
+  std::uint64_t responses_swallowed = 0;  // WebSocket API replies never sent
+  std::uint64_t user_events_dropped = 0;  // dropped while the user stream was muted
+  std::uint64_t user_events_duplicated = 0;
+  std::uint64_t malformed_frames_sent = 0;
   // trading account
   std::uint64_t orders_accepted = 0;
   std::uint64_t orders_rejected = 0;
+  // A clientOrderId this run accepted more than once. The venue refuses a repeat while the first
+  // one is open, so this counts ids reused after the first order ended: a restarted engine that
+  // forgot its session epoch would show up here.
+  std::uint64_t duplicate_client_order_ids = 0;
   std::uint64_t cancels = 0;
   std::uint64_t cancel_rejects = 0;
   std::uint64_t replaces = 0;
@@ -123,6 +135,27 @@ class SimExchangeServer {
   void rate_limit_next_requests(std::uint32_t count);
   void set_clock_offset_ms(std::int64_t offset_ms);
   void expire_listen_keys();
+
+  // Uncertain outcomes. The next `count` WebSocket API requests are carried out in full and their
+  // reply is never sent: the venue acted, the client never learns whether it did.
+  void swallow_next_ws_api_responses(std::uint32_t count);
+  // The next `count` user-data events are delivered twice (a repeated executionReport).
+  void duplicate_next_user_events(std::uint32_t count);
+  // Drops every user-data event while set, without closing the connection: the private stream is
+  // out and, as on a real venue, nothing replays what was missed.
+  void set_user_stream_muted(bool muted);
+  // Fills up to `qty` of the open order with this client order id by crossing it with a
+  // counter-order from the generator account (`qty` zero or larger than the remainder: all of it).
+  // Everything ahead of it in price-time is taken first, so the order named is the one that fills.
+  // Returns the quantity it actually filled.
+  [[nodiscard]] Qty fill_open_order(std::string_view client_order_id, Qty qty = Qty{});
+  // Client order ids the account holds open, ascending venue order id.
+  [[nodiscard]] std::vector<std::string> open_client_order_ids() const;
+
+  // Venue-side chaos.
+  void ban_next_requests(std::uint32_t count);                // 418 + Retry-After, as an IP ban
+  void fail_next_auth(std::uint32_t count);                   // 401 / -2015, as a revoked key
+  void send_malformed_frames(bool market_data, bool ws_api);  // one non-JSON text frame each
 
   struct Impl;  // opaque; defined in src/sim/server/server_impl.hpp
 

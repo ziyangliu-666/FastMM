@@ -86,9 +86,12 @@ struct EngineStats {
   std::uint64_t param_updates = 0;             // ParamUpdate events applied
   std::uint64_t param_expiries = 0;            // max_param_age passed: quoting disabled
   std::uint64_t synthetic_fills = 0;  // fills booked from a cum_qty jump (missed fill messages)
-  std::uint64_t ack_timeouts = 0;     // PendingNew orders force-cancelled by the ack sweep
-  std::uint64_t flattens = 0;         // operator flattens started (ControlCommand::Flatten)
-  std::uint64_t flatten_orders = 0;   // reduce-only orders a flatten sent
+  // Orders a reconciliation snapshot dropped while they still had working quantity: the venue
+  // ended them without saying how, so the position may be short by up to that much.
+  std::uint64_t unresolved_orders = 0;
+  std::uint64_t ack_timeouts = 0;    // PendingNew orders force-cancelled by the ack sweep
+  std::uint64_t flattens = 0;        // operator flattens started (ControlCommand::Flatten)
+  std::uint64_t flatten_orders = 0;  // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
@@ -815,6 +818,19 @@ class Engine {
     return st != OrderState::PendingNew && !is_terminal(st);
   }
 
+  // The venue stopped holding an order that still had working quantity and did not say whether it
+  // was cancelled or filled. Nothing can be booked from that, so say it loudly: the position is
+  // right only if the order was cancelled.
+  void report_unresolved(const OmsUpdate& u) noexcept {
+    if (u.unresolved_qty.is_zero()) return;
+    ++stats_.unresolved_orders;
+    FASTMM_LOG_ERROR(
+        "order {} left the venue's open orders with {} still working and no fill or cancel to "
+        "explain it: the position may be short by that much",
+        encode_cl_ord_id(u.order.cl_ord_id),
+        u.unresolved_qty);
+  }
+
   void after_oms_update(const OmsUpdate& u, const EventHeader& h) noexcept {
     if (u.known) {
       const int delta =
@@ -822,6 +838,7 @@ class Engine {
       if (delta != 0) presence_.on_live_change(u.order.instrument, u.order.side, delta, now_);
     }
     book_missed_fill(u);
+    report_unresolved(u);
     if (u.action == OmsAction::CancelUnknown) {
       cancel_unknown(h, u);
     }

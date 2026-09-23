@@ -113,6 +113,7 @@ class BinanceVenue final : public Venue {
   void on_wake() override;
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
+  void request_open_orders(ClientOrderId watermark);
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 

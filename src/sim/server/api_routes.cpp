@@ -172,7 +172,9 @@ net::HttpServerResponse Impl::handle_rest(const net::HttpRequest& req, RestEndpo
   if (!req.body.empty()) parse_query(req.body, params);
   begin_request(0);
   OpResult r;
-  if (faults_.rate_limit_next > 0) {
+  if (auto banned = injected_stop(now_ms)) {
+    r = *banned;
+  } else if (faults_.rate_limit_next > 0) {
     --faults_.rate_limit_next;
     r = rate_limit_error(now_ms, false);
   } else if (weight_1m_.add(rest_weight(ep, params), now_ms) > cfg_.weight_limit_per_minute) {
@@ -280,16 +282,32 @@ void Impl::handle_ws_api(net::WsSession& s, std::string_view text) {
         req.method.starts_with("order.") || req.method == "openOrders.cancelAll";
     if (order_method) delay = faults_.delay_ack_ms;
     request_delay_ms_ = delay;
-    if (weight_1m_.add(ws_api_weight(req.method, req.params), now_ms) >
-        cfg_.weight_limit_per_minute) {
+    if (auto banned = injected_stop(now_ms)) {
+      r = *banned;
+    } else if (faults_.rate_limit_next > 0) {
+      --faults_.rate_limit_next;
+      r = rate_limit_error(now_ms, true);
+    } else if (weight_1m_.add(ws_api_weight(req.method, req.params), now_ms) >
+               cfg_.weight_limit_per_minute) {
       r = rate_limit_error(now_ms, true);
     } else {
       r = dispatch_ws_api(s, req, now_ms);
     }
   }
-  std::string out;
-  append_ws_api_response(out, req.id_json, r.status, r.is_error, r.body, rate_limits_json(now_ms));
-  send_to_session(&s, token, std::move(out), delay);
+  // The reply is dropped after the request has been carried out: the venue acted and the client
+  // never hears the outcome.
+  bool swallow = false;
+  if (faults_.swallow_ws_api_next > 0) {
+    --faults_.swallow_ws_api_next;
+    ++stats_.responses_swallowed;
+    swallow = true;
+  }
+  if (!swallow) {
+    std::string out;
+    append_ws_api_response(
+        out, req.id_json, r.status, r.is_error, r.body, rate_limits_json(now_ms));
+    send_to_session(&s, token, std::move(out), delay);
+  }
   end_request();  // user events follow the response (same delay)
 }
 

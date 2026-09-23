@@ -132,8 +132,19 @@ The `[sim.faults]` settings are one-shot and count from the moment the listeners
 | `rate_limit_next` | `rate_limit_next_requests(k)` | 429 / `-1003` / `Retry-After` cooldown |
 | — | `set_clock_offset_ms(ms)` | clock skew between client and venue |
 | — | `expire_listen_keys()` | legacy listenKey expiry |
+| — | `swallow_next_ws_api_responses(k)` | the request is carried out and the reply never sent: an outcome the client cannot know |
+| — | `duplicate_next_user_events(k)` | a repeated `executionReport`: duplicate acks, duplicate fills |
+| — | `set_user_stream_muted(bool)` | the private stream is out without the connection closing; nothing replays what was missed |
+| — | `fill_open_order(id, qty)` | crosses one named resting order (everything ahead of it in price-time is swept first), returns what it filled |
+| — | `ban_next_requests(k)` | 418 + `Retry-After`, as an IP ban |
+| — | `fail_next_auth(k)` | 401 / `-2015`, as a revoked key |
+| — | `send_malformed_frames(md, ws_api)` | one text frame that is not JSON on every open connection |
 
-`stats()` returns counters for all of the above, plus watermarks since `mark()`: minimum open orders, cancels, cancel-alls, open-order queries and reconnects.
+`open_client_order_ids()` lists what the account holds open, for comparing the two sides' views.
+
+`stats()` returns counters for all of the above, plus watermarks since `mark()`: minimum open orders, cancels, cancel-alls, open-order queries and reconnects. `duplicate_client_order_ids` counts ids the account has had accepted twice across the whole run, long after the first order was forgotten — a restarted engine that reused a session epoch shows up there.
+
+`tests/integration/recovery_test.cpp` drives all of them.
 
 ## Determinism
 
@@ -149,11 +160,11 @@ Not implemented:
 * Other market data: klines, aggTrades, 24 h tickers, avgPrice, `@depth<N>` partial books, `/api/v3/trades`. `@depth` and `@depth@100ms` share one interval, and bookTicker is batched per interval rather than sent on every change.
 * The events `balanceUpdate`, `listStatus`, `externalLockUpdate` and `eventStreamTerminated`.
 * Self-trade prevention is EXPIRE_MAKER only. Commission is always charged in the quote asset. There is no BNB discount.
-* Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. There are no 418 bans, no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
+* Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. A 418 ban only happens when a test asks for one (`ban_next_requests`), and there is no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
 * The legacy listenKey stream is kept ([venues.md](venues.md#binance-spot)).
 * The ack delay applies to WS API responses only. REST answers are synchronous.
-* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`.
+* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013` and there is no `myTrades`.
 
 ## Integration tests
 
-`tests/integration` (label `integration`) runs `BinanceVenue` and the `fastmm-live` wiring against the in-process server over TCP and TLS; `FASTMM_IT_LOG=1` prints the connector and engine log.
+`tests/integration` (label `integration`) runs `BinanceVenue` and the `fastmm-live` wiring against the in-process server over TCP and TLS; `FASTMM_IT_LOG=1` prints the connector and engine log. `recovery_test.cpp` and `recovery_restart_test.cpp` break a session with the fault controls above and check it recovers; the latter kills and restarts real `fastmm-live` processes.

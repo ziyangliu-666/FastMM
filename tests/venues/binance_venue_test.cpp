@@ -278,13 +278,16 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
       CHECK(st.order_send.p50_ns < 1'000'000'000);
     }
 
+    // The connector already reconciled once on the first connect (a crashed session's orders would
+    // be resting there); this is the snapshot the test asks for.
+    const std::size_t reconciles = oc.count(EventType::Reconcile);
     venue.request_open_orders();
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
-      return oc.count(EventType::Reconcile) == 2;
+      return oc.count(EventType::Reconcile) == reconciles + 2;
     }));
     // Begin carries the last order id the venue sent before it asked for the snapshot.
-    const auto* begin = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+    const auto* begin = oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
       return m.kind == ReconcileMsg::Kind::Begin;
     });
     REQUIRE(begin != nullptr);

@@ -158,6 +158,12 @@ if(FASTMM_BUILD_NET)
   endif()
   if(TARGET fastmm::sim_server)
     fastmm_test(integration SERIAL LABELS "integration" LIBS fastmm::venues fastmm::sim_server fastmm::sim_itch fastmm::backtest fastmm::live)
+    # recovery_restart_test.cpp kills and restarts whole fastmm-live processes against the
+    # in-process simulator; without the binary those cases are not compiled.
+    if(TARGET fastmm_integration_tests AND TARGET fastmm-live)
+      target_compile_definitions(fastmm_integration_tests PRIVATE
+        FASTMM_LIVE_EXE="$<TARGET_FILE:fastmm-live>")
+    endif()
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
