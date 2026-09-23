@@ -180,6 +180,18 @@ All notable changes are recorded here (Keep a Changelog format).
   files in `journal_dir` at start-up). Extents are reserved with `posix_fallocate`, so a full
   filesystem is an error rather than a `SIGBUS` on a sparse page; `JournalFileWriter::failed()`
   latches every write error and `fastmm-live` trips the kill switch and exits with code 5 on one.
+- `fastmm::research`, a feature and forward-markout extractor over any `MdSource`, so a signal can
+  be judged before anyone writes a strategy around it. `extract_features()` drives the data into
+  the engine's own `L2Book` and emits structure-of-arrays rows (mid, microprice, touch and sizes,
+  imbalance, spread) plus the mid at configurable horizons, default 100 ms, 1 s, 10 s and 1 minute;
+  a forward value past the end of the data stays unset and is counted, never substituted.
+  `evaluate_signal()` reports the Spearman information coefficient and its stability over blocks, a
+  decile table of the forward move, and the conditional touch markout: what a quote resting at the
+  touch would have made or lost per signal bucket, in basis points. In Python,
+  `fastmm.features(data=..., horizons=[...])` returns the columns as zero-copy numpy views and
+  `fastmm.evaluate_signal(table, values)` takes a built-in feature name or an array.
+  [Judging a signal before writing a strategy](docs/explanation/signal-research.md) publishes the
+  BTCUSDT 2024-03-27 tables.
 
 ### Changed
 - **FIX 4.4 and CME MDP 3.0 are behind build options, off by default.** No connector drives either

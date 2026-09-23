@@ -394,6 +394,19 @@ std::string resolve_strategy(const BacktestConfig& cfg, const std::optional<std:
 
 }  // namespace
 
+std::unique_ptr<sim::MdSource> open_md_source(const py::object& data,
+                                              const InstrumentTable* instruments,
+                                              std::vector<py::object>& keep) {
+  if (data.is_none()) {
+    throw py::value_error(
+        "data must be a '<source>:<args>' spec, a .fmj/.csv path or a dict of numpy arrays");
+  }
+  DataSpec spec = parse_data(data);
+  keep = std::move(spec.keep);  // the column spans point into these buffers
+  if (spec.kind == DataSpec::Kind::Arrays) return std::make_unique<bt::ArraySource>(spec.cols);
+  return bt::open_data(spec.path, instruments);
+}
+
 void bind_backtest(py::module_& m) {
   py::class_<BacktestResult, std::shared_ptr<BacktestResult>>(
       m,

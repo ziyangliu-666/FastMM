@@ -64,6 +64,9 @@ target_link_libraries(fastmm_test_strategy_module PUBLIC fastmm::sim)
 fastmm_test(modules   LABELS "unit"          LIBS fastmm_test_strategy_module fastmm::backtest)
 fastmm_test(sim       LABELS "unit;property" LIBS fastmm::sim)
 fastmm_test(backtest  LABELS "unit;replay"   LIBS fastmm::backtest)
+# The research extractor: features and forward markouts, and the cross-check that its forward
+# mid at a fill timestamp is the mid the backtest runner recorded there.
+fastmm_test(research  LABELS "unit"          LIBS fastmm::research)
 # The FIX and MDP3 tests (here and in hotpath/) follow their codec's option: without it the
 # library has no such code to link against.
 set(_codec_skip)

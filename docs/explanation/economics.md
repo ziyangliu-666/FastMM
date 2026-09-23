@@ -76,7 +76,7 @@ Widening the quote does not solve it, because the fill rate falls faster than th
   orders / cancels / replaces    260 / 258 / 0
 ```
 
-`configs/backtest-example.toml` sets `half_spread_bps = 0.01` (6 ticks at a mid of 60,000) to get fills at all, and the Demo session above saw the same thing at 15 bps. The routes out are all outside what FastMM ships: a fee tier at or below zero (maker rebate, market-maker programme, volume tier), a venue whose spread is wide relative to its fee, or a signal that makes the fills less adverse.
+`configs/backtest-example.toml` sets `half_spread_bps = 0.01` (6 ticks at a mid of 60,000) to get fills at all, and the Demo session above saw the same thing at 15 bps. The routes out are all outside what FastMM ships: a fee tier at or below zero (maker rebate, market-maker programme, volume tier), a venue whose spread is wide relative to its fee, or a signal that makes the fills less adverse. On BTCUSDT at VIP-0 the third route is measured and closed in [Judging a signal before writing a strategy](signal-research.md#was-a-quote-at-the-touch-adversely-selected).
 
 ## What the backtest does not model
 

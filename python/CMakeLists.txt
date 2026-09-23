@@ -1,7 +1,7 @@
 file(GLOB _py_src CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 pybind11_add_module(fastmm_py MODULE ${_py_src})
 fastmm_target_defaults(fastmm_py)
-target_link_libraries(fastmm_py PRIVATE fastmm::backtest)
+target_link_libraries(fastmm_py PRIVATE fastmm::backtest fastmm::research)
 set_target_properties(fastmm_py PROPERTIES OUTPUT_NAME _core)
 if(SKBUILD)
   # Component-scoped so the wheel holds only the module (pyproject install.components):

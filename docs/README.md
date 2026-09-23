@@ -69,6 +69,7 @@ Terms are defined once, in the [Glossary](reference/glossary.md). The [C++ API](
 - [Architecture](explanation/architecture.md): threads, rings, the network reactor, clocks
 - [Event flow](explanation/event-flow.md): from a venue message to an order on the wire
 - [Backtesting](explanation/backtesting.md): markouts, the PnL decomposition and what the simulator cannot tell you
+- [Judging a signal before writing a strategy](explanation/signal-research.md): the feature and forward-markout extractor, and what it says about a quote resting at the touch
 - [Determinism](explanation/determinism.md): why replays match, and what breaks them
 - [Risk model](explanation/risk-model.md): the pre-trade checks and the kill switch
 - [Benchmarks](explanation/benchmarks.md): how the latency numbers are measured

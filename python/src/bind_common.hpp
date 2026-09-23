@@ -3,9 +3,13 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
+namespace fastmm {
+class InstrumentTable;
+}  // namespace fastmm
 namespace fastmm::bt {
 struct BacktestConfig;
 }  // namespace fastmm::bt
@@ -23,6 +27,16 @@ void bind_book(py::module_& m);
 void bind_strategies(py::module_& m);
 void bind_strategy_api(py::module_& m);
 void bind_hot(py::module_& m);
+void bind_research(py::module_& m);
+
+// The `data=` argument of the entry points that take one without a BacktestConfig behind it: a
+// "<source>:<args>" spec, a .fmj / .csv path, or a dict of numpy columns. The buffers a dict
+// borrows are pushed onto `keep`, which must outlive the source. Throws TypeError / ValueError,
+// and ValueError for None (there is no configuration to fall back on). Defined in
+// bind_backtest.cpp, which owns the column parsing.
+std::unique_ptr<sim::MdSource> open_md_source(const py::object& data,
+                                              const InstrumentTable* instruments,
+                                              std::vector<py::object>& keep);
 
 // Backtest of a fastmm.Strategy instance with the GIL held (bind_strategy_api.cpp). `hooks` names
 // the hooks the class defines. Returns (BacktestResult, None) or (BacktestResult, (exception, hook,
