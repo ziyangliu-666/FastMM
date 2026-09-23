@@ -205,9 +205,20 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
         init_header(*m, EventType::OrderFill, inst, venue_);
         m->cl_ord_id = cl_ord_id;
         set_venue_order_id(m->venue_order_id, x.order_id);
+        // `t` is absent (0) on executions the venue reports without a trade id. The dedupe key
+        // must still differ per execution of an order, so it falls back to the order id and the
+        // cumulative filled quantity, which grows with every execution and repeats on a replay.
         {
-          char buf[24];
-          m->exec_id.assign(std::string_view(buf, format_int64(x.trade_id, buf)));
+          char buf[48];
+          std::size_t n = 0;
+          if (x.trade_id > 0) {
+            n = format_int64(x.trade_id, buf);
+          } else {
+            n = format_int64(x.order_id, buf);
+            buf[n++] = '-';
+            n += format_int64(cum->raw, buf + n);
+          }
+          m->exec_id.assign(std::string_view(buf, n));
         }
         m->price = *last_px;
         m->qty = *last_qty;

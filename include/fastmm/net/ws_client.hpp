@@ -154,6 +154,10 @@ class WsClient final : public IoHandler {
   }
 
   // --- sending (client frames are always masked) ---------------------------------------
+  // False means the frame did not go out: the client is not open, the frame did not fit, or the
+  // write failed and closed the stream (on_ws_error already fired). A frame the kernel did not
+  // take yet is queued for writability and counts as sent. Between cork() and uncork() a data
+  // frame is only encoded, so uncork() reports its write instead.
   bool send_text(std::string_view text) noexcept {
     return send_frame(
         WsOpcode::Text,
@@ -440,8 +444,9 @@ class WsClient final : public IoHandler {
       if (state_ != WsState::Open) return false;
     }
     if (!encode_frame(op, payload)) return false;
-    if (!corked_) flush();
-    return true;
+    if (corked_) return true;  // queued; uncork() reports the write
+    flush();
+    return state_ == WsState::Open;  // a failed write closed the stream: the frame never left
   }
 
   void flush() noexcept {

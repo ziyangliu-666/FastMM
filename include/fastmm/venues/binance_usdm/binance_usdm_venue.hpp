@@ -195,6 +195,8 @@ class BinanceUsdmVenue final : public Venue {
   void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
   void send_command_rest(const OrderCommand& cmd, const OrderShadow* shadow);
+  // uncork() failed: the batch never left, so its orders are rejected (see BatchedOrders).
+  void fail_batch();
   void handle_ws_api_response(const binance::WsApiResponse& r);
   void handle_order_response(RequestKind kind, ClientOrderId id, const binance::WsApiResponse& r);
   void handle_rest_order_response(const OrderCommand& cmd, const net::HttpResponse& r);
@@ -286,6 +288,9 @@ class BinanceUsdmVenue final : public Venue {
   ConnState order_state_ = ConnState::Disconnected;
   bool order_was_live_ = false;
   SentWatermark sent_;
+  BatchedOrders batch_;  // orders written into the corked order connection
+  // Open-order snapshot, decoded in full before anything reaches the engine.
+  std::vector<ReconcileMsg> reconcile_records_;
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 

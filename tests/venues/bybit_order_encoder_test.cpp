@@ -138,9 +138,13 @@ TEST_CASE("bybit.encoder: REST requests sign the exact bytes sent") {
   CHECK(enc.rest_headers(rr, kTs).find(
             "b1dc3b1adfec8bfa24d8b59bcb8e50d1f3cae9aba67e364add58709a0f8201fa") !=
         std::string::npos);
-  REQUIRE(enc.encode_rest_open_orders({}, rr));
+  REQUIRE(enc.encode_rest_open_orders({}, {}, rr));
   CHECK(rr.method == "GET");
   CHECK(rr.target() == "/v5/order/realtime?category=spot&limit=50");
+  // A page past the first carries the previous page's nextPageCursor.
+  RestRequest page2;
+  REQUIRE(enc.encode_rest_open_orders({}, "cur%3D2", page2));
+  CHECK(page2.target() == "/v5/order/realtime?category=spot&limit=50&cursor=cur%3D2");
   const std::string gh = enc.rest_headers(rr, kTs);
   CHECK(gh.find("f1fe062ac033b033a904223196723fce8fddbbf9e253f95207a166f9d584b314") !=
         std::string::npos);
@@ -182,8 +186,9 @@ TEST_CASE("bybit.decoder: trade responses, REST envelopes, open orders, referenc
   CHECK(map_error(rest.ret_code).action == VenueAction::ResyncClock);
 
   std::vector<std::string> links;
+  std::string cursor = "stale";
   j = padded_fixture("bybit/rest_open_orders.json");
-  REQUIRE(d.decode_open_orders(j.view(), [&](const OpenOrderRecord& o) {
+  REQUIRE(d.decode_open_orders(j.view(), cursor, [&](const OpenOrderRecord& o) {
     links.emplace_back(o.order_link_id);
     if (o.order_link_id == "fm000100000001") {
       CHECK(o.symbol == "BTCUSDT");
@@ -193,6 +198,11 @@ TEST_CASE("bybit.decoder: trade responses, REST envelopes, open orders, referenc
     }
   }) == ParseStatus::Ok);
   CHECK(links == std::vector<std::string>{"fm000100000001", "manual-1"});
+  CHECK(cursor.empty());  // last page
+  // retCode != 0 comes back with HTTP 200; the body must not read as an empty snapshot.
+  j = padded_fixture("bybit/rest_error.json");
+  CHECK(d.decode_open_orders(j.view(), cursor, [](const OpenOrderRecord&) {}) ==
+        ParseStatus::Error);
 
   std::vector<InstrumentInfo> infos;
   REQUIRE(decode_instruments(fastmm::test::fixture("bybit/instruments_info.json"), infos).empty());

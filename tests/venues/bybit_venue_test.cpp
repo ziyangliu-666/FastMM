@@ -11,8 +11,14 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <memory>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -65,15 +71,19 @@ struct Harness {
   std::string delta = fastmm::test::fixture("bybit/orderbook50_delta.json");
   std::string top = fastmm::test::fixture("bybit/orderbook1_snapshot.json");
   std::string trade = fastmm::test::fixture("bybit/public_trade.json");
-  std::string open_orders = fastmm::test::fixture("bybit/rest_open_orders.json");
+  // One entry per GET /v5/order/realtime, in request order; the last one repeats.
+  std::vector<std::string> open_orders_pages{fastmm::test::fixture("bybit/rest_open_orders.json")};
   std::atomic<int> snapshots_sent{0};
   std::atomic<int> auth_failures{0};
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
   std::atomic<int> open_orders_ok{0};
+  std::atomic<int> open_orders_calls{0};
+  std::atomic<int> rest_cancels{0};
   net::WsSession* private_session = nullptr;  // server thread only
 
-  Harness() {
+  explicit Harness(std::vector<std::string> pages = {}) {
+    if (!pages.empty()) open_orders_pages = std::move(pages);
     srv.route("GET", "/v5/market/time", [this](const net::HttpRequest&) {
       return net::HttpServerResponse::json(200, server_time);
     });
@@ -83,7 +93,16 @@ struct Harness {
     });
     srv.route("GET", "/v5/order/realtime", [this](const net::HttpRequest& r) {
       if (rest_signed(r, r.query)) ++open_orders_ok;
-      return net::HttpServerResponse::json(200, open_orders);
+      srv.record("open_orders", std::string(r.query));
+      const std::size_t i = static_cast<std::size_t>(open_orders_calls++);
+      return net::HttpServerResponse::json(
+          200, open_orders_pages[std::min(i, open_orders_pages.size() - 1)]);
+    });
+    srv.route("POST", "/v5/order/cancel", [this](const net::HttpRequest&) {
+      ++rest_cancels;
+      return net::HttpServerResponse::json(
+          200,
+          R"({"retCode":0,"retMsg":"OK","result":{"orderId":"2012345678901234567","orderLinkId":"fm000100000002"},"retExtInfo":{},"time":1789299704000})");
     });
     srv.route("POST", "/v5/order/cancel-all", [this](const net::HttpRequest& r) {
       const bool ok =
@@ -393,6 +412,160 @@ TEST_CASE("bybit.venue: a failed private authentication kills this venue, once")
     CHECK(static_cast<KillReason>(kill->arg) == KillReason::VenueFatal);
     venue.disconnect();
     reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
+namespace {
+
+// A connected BybitVenue on `h`, with its sinks and reactor.
+struct Live {
+  InstrumentTable instruments;
+  RecordingSink md{8U << 20};
+  RecordingSink orders{1U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  SymbolTable symbols;
+  std::unique_ptr<BybitVenue> venue;
+  Collected oc;
+
+  Live(Harness& h, const VenueSection& section) {
+    REQUIRE(instruments.add(make_instrument("BTCUSDT", 1, "BTC", "USDT")));
+    BybitVenueConfig cfg = make_bybit_config(section, false);
+    cfg.ws_private_url = h.srv.ws_base() + "/v5/private";
+    venue = std::make_unique<BybitVenue>(kVenue, cfg);
+    REQUIRE(venue->load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {kBtc};
+    venue->subscribe(ids);
+    venue->connect(reactor);
+  }
+  ~Live() {
+    venue->disconnect();
+    reactor.run_once(0);
+  }
+  std::size_t live_channels() {
+    oc.take(orders);
+    std::size_t n = 0;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::ConnectionState &&
+          RecordingSink::as<ConnectionStateMsg>(m).state == ConnState::Live)
+        ++n;
+    }
+    return n;
+  }
+  void spin(int iterations) {
+    for (int i = 0; i < iterations; ++i) reactor.run_once(5);
+    oc.take(orders);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("bybit.venue: an open-order reply with retCode != 0 reconciles nothing") {
+  // HTTP 200 with retCode 10006 (rate limit). Emitting Begin/End around it would make
+  // Oms::reconcile_end() cancel every order still resting at the venue.
+  Harness h(
+      {R"({"retCode":10006,"retMsg":"Too many visits!","result":{},"retExtInfo":{},"time":1789299704000})"});
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] { return h.open_orders_calls.load() == 1; }));
+    l.spin(40);
+    CHECK(l.oc.count(EventType::Reconcile) == 0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: the open-order snapshot follows nextPageCursor") {
+  auto page = [](const char* link, const char* cursor) {
+    return std::string(R"({"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[)"
+                       R"({"orderId":"2012345678901234567","orderLinkId":")") +
+           link +
+           R"(","symbol":"BTCUSDT","price":"60000.1","qty":"0.001","side":"Buy",)"
+           R"("orderStatus":"New","cumExecQty":"0","leavesQty":"0.001"}],"nextPageCursor":")" +
+           cursor + R"("},"retExtInfo":{},"time":1789299704000})";
+  };
+  Harness h({page("fm000100000001", "cursor-2"), page("fm000100000002", "")});
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 4;  // Begin, two orders, End
+    }));
+    CHECK(h.open_orders_calls.load() == 2);
+    const auto queries = h.srv.frames("open_orders");
+    REQUIRE(queries.size() == 2);
+    CHECK(queries[0].find("cursor=") == std::string::npos);
+    CHECK(queries[1].find("&cursor=cursor-2") != std::string::npos);
+    CHECK(h.open_orders_ok.load() == 2);  // both pages signed
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a cancel still goes out after a venue-fatal error") {
+  Harness h;
+  {
+    VenueSection s = h.section(true);
+    s.api_secret = "not-the-secret";  // both authenticated channels fail -> fatal
+    Live l(h, s);
+    REQUIRE(pump_until(l.reactor, [&] { return l.venue->fatal(); }));
+    OutCancelMsg c{};
+    init_header(c, EventType::OutCancel, kBtc, kVenue);
+    c.cl_ord_id = decode_cl_ord_id("fm000100000002").value();
+    c.venue_order_id.assign("2012345678901234567");
+    REQUIRE(l.outbound.try_push(&c, c.hdr.len));
+    l.venue->on_wake();
+    REQUIRE(pump_until(l.reactor, [&] { return h.rest_cancels.load() == 1; }));
+    l.spin(10);
+    // The cancel was sent, not refused with "venue fatal".
+    CHECK(l.oc.count(EventType::OrderCancelReject) == 0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a batch whose write fails rejects its orders") {
+  Harness h;
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    h.srv.close_sessions("/v5/trade");
+    // The reactor is not run from here on: the venue still believes the trade channel is live, so
+    // the orders are encoded into the corked connection and uncork() is what discovers that the
+    // batch never left. Writing to a closed peer fails on the write after the RST arrives.
+    std::uint32_t id = 0x100;
+    bool rejected = false;
+    for (int attempt = 0; attempt < 20 && !rejected; ++attempt) {
+      for (int i = 0; i < 2; ++i) {
+        OutNewOrderMsg n{};
+        init_header(n, EventType::OutNewOrder, kBtc, kVenue);
+        n.cl_ord_id = ClientOrderId{++id};
+        n.side = Side::Buy;
+        n.type = OrderType::PostOnly;
+        n.price = Price::from_decimal("60000.1").value();
+        n.qty = Qty::from_decimal("0.001").value();
+        REQUIRE(l.outbound.try_push(&n, n.hdr.len));
+      }
+      l.venue->on_wake();
+      l.oc.take(l.orders);
+      rejected = l.oc.first_if<OrderRejectMsg>(EventType::OrderReject, [](const OrderRejectMsg& m) {
+        return m.text.view() == "order batch not written";
+      }) != nullptr;
+      if (!rejected) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(rejected);
+    // Both orders of the failed batch are rejected, not silently counted as sent.
+    std::size_t batch_rejects = 0;
+    for (const auto& m : l.oc.all) {
+      if (RecordingSink::type_of(m) == EventType::OrderReject &&
+          RecordingSink::as<OrderRejectMsg>(m).text.view() == "order batch not written")
+        ++batch_rejects;
+    }
+    CHECK(batch_rejects == 2);
   }
   h.srv.stop();
 }

@@ -160,6 +160,8 @@ class DeribitVenue final : public Venue {
   template <class Ring>
   void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd);
+  // uncork() failed: the batch never left, so its orders are rejected (see BatchedOrders).
+  void fail_batch();
   // Sends ControlCommand::TripVenueKill to the engine, once per session.
   void trip_venue_kill(KillReason reason);
   void apply_action(VenueAction action, int code, std::string_view msg);
@@ -212,6 +214,7 @@ class DeribitVenue final : public Venue {
   bool reconcile_failed_ = false;
   ClientOrderId reconcile_watermark_{};  // sent watermark when the open orders were requested
   SentWatermark sent_;
+  BatchedOrders batch_;  // orders written into the corked private connection
 
   std::atomic<std::int64_t> clock_offset_ms_{0};
   bool fatal_ = false;

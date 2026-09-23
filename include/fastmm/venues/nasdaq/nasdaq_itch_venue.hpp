@@ -284,6 +284,8 @@ class NasdaqItchVenue final : public Venue {
   template <class Ring>
   void write_orders(Ring& ring);
   void send_command(const OrderCommand& cmd) noexcept;
+  // uncork() failed: the batch never left, so its orders are rejected (see BatchedOrders).
+  void fail_batch() noexcept;
   void refuse(const OrderCommand& cmd, RejectReason reason, std::string_view why) noexcept;
   void emit_empty_reconcile() noexcept;
   [[nodiscard]] std::uint64_t token_for(Cycles t0) const noexcept;
@@ -356,6 +358,7 @@ class NasdaqItchVenue final : public Venue {
   std::atomic<bool> cancel_all_done_{false};
   std::array<std::byte, 256> order_buf_{};
   SentWatermark sent_;
+  BatchedOrders batch_;  // orders written into the corked OUCH link
 
   // timers (poll())
   std::int64_t next_service_ns_ = 0;

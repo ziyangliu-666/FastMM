@@ -2,6 +2,8 @@
 
 #include "venue_test_util.hpp"
 
+#include <string>
+
 using namespace fastmm;
 using namespace fastmm::venues;
 using namespace fastmm::venues::binance;
@@ -60,6 +62,32 @@ TEST_CASE("binance.user: executionReport TRADE -> OrderFillMsg") {
   CHECK(m.side == Side::Buy);
   CHECK(m.liquidity == Liquidity::Maker);
   CHECK(m.hdr.exch_ts.ns == 1789295200990LL * 1'000'000);
+}
+
+TEST_CASE("binance.user: two fills of one order without a trade id get different exec ids") {
+  TestUniverse u;
+  BinanceUserParser p(u.symbols, u.instruments, VenueId{0});
+  Scratch s;
+  // Without `t` the exec id used to collapse to "-1" for every execution, and the OMS dedupe
+  // window dropped the second fill of the order.
+  auto trade_without_t = [](const char* last, const char* cum) {
+    return std::string(R"({"subscriptionId":0,"event":{"e":"executionReport","E":1789295201000,)"
+                       R"("s":"BTCUSDT","c":"fm000100000001","S":"BUY","o":"LIMIT_MAKER",)"
+                       R"("f":"GTC","q":"0.00100000","p":"70000.00000000","C":"","x":"TRADE",)"
+                       R"("X":"PARTIALLY_FILLED","r":"NONE","i":4293153,"l":")") +
+           last + R"(","z":")" + cum +
+           R"(","L":"70000.00000000","n":"0.00000000","T":1789295200990,"m":true}})";
+  };
+  const std::string first = trade_without_t("0.00040000", "0.00040000");
+  const PaddedJson j1(first);
+  REQUIRE(p.decode(j1.view(), kRecv, kT0, s.span()).status == ParseStatus::Ok);
+  const ExecId id1 = s.as<OrderFillMsg>().exec_id;
+  const std::string second = trade_without_t("0.00030000", "0.00070000");
+  const PaddedJson j2(second);
+  REQUIRE(p.decode(j2.view(), kRecv, kT0, s.span()).status == ParseStatus::Ok);
+  const ExecId id2 = s.as<OrderFillMsg>().exec_id;
+  CHECK_FALSE(id1.empty());
+  CHECK(id1.view() != id2.view());
 }
 
 TEST_CASE("binance.user: executionReport CANCELED uses C (original id) -> OrderCancelAckMsg") {

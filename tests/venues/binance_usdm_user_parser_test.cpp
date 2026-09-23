@@ -99,6 +99,20 @@ TEST_CASE("binance_usdm.user: TRADE -> OrderFillMsg with the USDT commission as 
   CHECK_FALSE(lf.cl_ord_id.valid());
   CHECK(lf.fee_asset == FeeAsset::Other);
   CHECK(p.stats().foreign_ids == 1);
+
+  // Without `t` the exec id used to collapse to "0" for every execution, and the OMS dedupe
+  // window dropped the second fill of the order.
+  std::string base = fastmm::test::fixture("binance_usdm/order_update_trade.json");
+  base.replace(base.find(R"("t":537853300,)"), 14, "");
+  const PaddedJson no_t1(base);
+  REQUIRE(p.decode(no_t1.view(), kRecv, kT0, s.span()).status == ParseStatus::Ok);
+  const ExecId first = s.as<OrderFillMsg>().exec_id;
+  std::string more = base;
+  more.replace(more.find(R"("z":"0.0004")"), 12, R"("z":"0.0007")");
+  const PaddedJson no_t2(more);
+  REQUIRE(p.decode(no_t2.view(), kRecv, kT0, s.span()).status == ParseStatus::Ok);
+  CHECK_FALSE(first.empty());
+  CHECK(first.view() != s.as<OrderFillMsg>().exec_id.view());
 }
 
 TEST_CASE("binance_usdm.user: ACCOUNT_UPDATE -> one-way positions, hedge and unknown skipped") {

@@ -20,7 +20,9 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/venues/order_commands.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -127,6 +129,35 @@ class WireLatencyRecorder {
   bool batching_ = false;
 };
 
+// The orders a venue encoded into a corked connection. Between cork() and uncork() a frame is
+// only queued, so a failed uncork() means none of them reached the venue and the venue must
+// reject them instead of leaving the engine with orders it believes are live. Only the fields a
+// reject needs are kept, because the ring slots are released before uncork() runs.
+//
+// An order whose frame filled the send buffer mid-batch did leave (send_frame() flushes then),
+// and gets rejected here too. That is the safe error: uncork() only fails when the connection
+// failed, and the venue answers that by cancelling everything over the control path.
+class BatchedOrders {
+ public:
+  struct Entry {
+    OrderCommandKind kind = OrderCommandKind::New;
+    InstrumentId instrument{};
+    ClientOrderId cl_ord_id{};
+    ClientOrderId orig_cl_ord_id{};  // Replace only
+  };
+
+  void clear() noexcept { len_ = 0; }
+  void note(const OrderCommand& c) noexcept {
+    if (len_ < entries_.size())
+      entries_[len_++] = Entry{c.kind, c.instrument, c.cl_ord_id, c.orig_cl_ord_id};
+  }
+  [[nodiscard]] std::span<const Entry> entries() const noexcept { return {entries_.data(), len_}; }
+
+ private:
+  std::array<Entry, WireLatencyRecorder::kMaxBatch> entries_{};
+  std::size_t len_ = 0;
+};
+
 // The engine's batch handed over directly (run-to-completion, Venue::send_now) behind the
 // consumer side of MsgRing, so drain_outbound_coalesced takes either.
 class OutboundBatch {
@@ -145,8 +176,8 @@ class OutboundBatch {
 // Drains the engine's outbound ring (or an OutboundBatch) in batches of at most kMaxBatch
 // messages: cork() holds the connection's writes back, on_message(header) encodes and "sends" each
 // message into the connection's buffer, uncork() writes the batch with one system call and returns
-// false when the connection failed. Every order of a batch gets the stamp taken after uncork()
-// returned.
+// false when the connection failed (the venue rejects the batch's orders there, see
+// BatchedOrders). Every order of a batch gets the stamp taken after uncork() returned.
 template <class Ring, class Cork, class OnMessage, class Uncork>
 void drain_outbound_coalesced(
     Ring& ring, WireLatencyRecorder& wire, Cork&& cork, OnMessage&& on_message, Uncork&& uncork) {

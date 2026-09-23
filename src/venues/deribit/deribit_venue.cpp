@@ -822,14 +822,50 @@ void DeribitVenue::write_orders(Ring& ring) {
   drain_outbound_coalesced(
       ring,
       wire_,
-      [this] { private_conn_.cork(); },
+      [this] {
+        private_conn_.cork();
+        batch_.clear();
+      },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
           sent_.note(*cmd);
           send_command(*cmd);
         }
       },
-      [this] { return private_conn_.uncork(); });
+      [this] {
+        if (private_conn_.uncork()) return true;
+        fail_batch();
+        return false;
+      });
+}
+
+void DeribitVenue::fail_batch() {
+  for (const BatchedOrders::Entry& e : batch_.entries()) {
+    ++stats_.order_send_failures;
+    ++stats_.order_events;
+    if (e.kind == OrderCommandKind::Cancel) {
+      emit_cancel_reject(*order_sink_,
+                         id_,
+                         e.instrument,
+                         e.cl_ord_id,
+                         RejectReason::TransportFull,
+                         0,
+                         "order batch not written");
+    } else {
+      emit_order_reject(*order_sink_,
+                        id_,
+                        e.instrument,
+                        e.cl_ord_id,
+                        RejectReason::TransportFull,
+                        0,
+                        "order batch not written");
+      shadows_.erase(e.cl_ord_id);
+      if (e.kind == OrderCommandKind::Replace) {
+        if (OrderShadow* orig = shadows_.find(e.orig_cl_ord_id)) orig->edit_pending = false;
+      }
+    }
+  }
+  batch_.clear();
 }
 
 void DeribitVenue::drain_outbound() {
@@ -856,7 +892,9 @@ void DeribitVenue::send_command(const OrderCommand& cmd) {
     refuse(RejectReason::VenueKilled, "dry-run: orders disabled");
     return;
   }
-  if (fatal_) {
+  // A venue-fatal error stops new orders, never cancels: the kill path's whole remedy is to
+  // cancel, so a cancel goes out as long as the private connection carries it.
+  if (fatal_ && !is_cancel) {
     refuse(RejectReason::VenueKilled, "venue fatal");
     return;
   }
@@ -941,6 +979,7 @@ void DeribitVenue::send_command(const OrderCommand& cmd) {
     return;
   }
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+  batch_.note(cmd);
   switch (cmd.kind) {
     case OrderCommandKind::New:
       ++stats_.orders_sent;
