@@ -2,7 +2,7 @@
 # The Markdown under docs/ is the source and stays readable on GitHub; this file only orders it.
 site_name: FastMM
 site_description: A market-making engine in C++20. Backtests, replay and live trading run the same strategy code.
-site_url: https://ziyangliu-666.github.io/FastMM/
+site_url: https://ziy.bio/FastMM/
 site_author: Ziyang Liu
 repo_url: https://github.com/ziyangliu-666/FastMM
 repo_name: ziyangliu-666/FastMM

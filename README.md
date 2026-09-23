@@ -1,9 +1,9 @@
 # FastMM
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
-[![docs](https://github.com/ziyangliu-666/FastMM/actions/workflows/docs.yml/badge.svg)](https://ziyangliu-666.github.io/FastMM/)
+[![docs](https://github.com/ziyangliu-666/FastMM/actions/workflows/docs.yml/badge.svg)](https://ziy.bio/FastMM/)
 
-Documentation: <https://ziyangliu-666.github.io/FastMM/>
+Documentation: <https://ziy.bio/FastMM/>
 
 FastMM is a fast market-making engine in C++20.
 
@@ -63,4 +63,4 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 - The shipped strategies are reference implementations, not an edge: the example backtest is profitable only because it is configured with a maker rebate ([Economics](docs/explanation/economics.md)).
 - No state survives a restart, there is no metrics export or alerting, and venue-side cancel-on-disconnect is armed only on Deribit ([Running this in production](docs/how-to/operations/running-in-production.md)).
 
-[Documentation](https://ziyangliu-666.github.io/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)
+[Documentation](https://ziy.bio/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)
