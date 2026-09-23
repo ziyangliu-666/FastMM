@@ -157,7 +157,9 @@ TEST_CASE("core.config: validation errors carry line numbers, unknown keys warn"
   CHECK_THROWS_AS(Config::load("/nonexistent/file.toml"), ConfigError);
   const Config w = Config::parse(
       "[engine]\nbogus = 1\n[weird]\nx = 1\n[venues.v]\nkind = \"sim\"\nfoo = \"bar\"\n");
-  REQUIRE(w.warnings.size() == 3);
+  // Two warnings, not three: `venues.v.foo` belongs to the connector, which warns about it when
+  // it validates the section (fastmm::venues::validate_venues).
+  REQUIRE(w.warnings.size() == 2);
   CHECK(w.warnings[0].find("[weird]") != std::string::npos);
   CHECK(w.warnings[1].find("engine.bogus") != std::string::npos);
   CHECK(w.venues[0].extra.at("foo") == "bar");
@@ -191,7 +193,7 @@ TEST_CASE("core.config: validation errors carry line numbers, unknown keys warn"
   CHECK(t.get(InstrumentId{0}).is_derivative());
 }
 
-TEST_CASE("core.config: connector-specific venue keys pass through to extra without warnings") {
+TEST_CASE("core.config: venue keys the generic parser does not read are kept for their connector") {
   const Config cfg = Config::parse(R"(
 [venues.b]
 kind = "binance_spot"
@@ -210,15 +212,15 @@ lot = "0.00001"
   CHECK(v.extra.at("stale_ms") == "10000");
   CHECK(v.extra.at("order_api") == "rest");
   CHECK(v.extra.at("cancel_on_order_channel_loss") == "false");
-  CHECK(v.extra.count("not_a_real_key") == 1);  // unknown keys are still forwarded
-  REQUIRE(cfg.warnings.size() == 1);            // but only they warn
-  CHECK(cfg.warnings[0].find("not_a_real_key") != std::string::npos);
-  CHECK_THROWS_AS(static_cast<void>(Config::parse(R"(
-[venues.b]
-kind = "binance_spot"
-stale_ms = "soon"
-)")),
-                  ConfigError);  // passthrough keys are still type-checked
+  CHECK(v.extra.count("not_a_real_key") == 1);
+  // The line of every one of them, so the connector can report it the way the schema does.
+  CHECK(v.extra_lines.at("stale_ms") == 4);
+  CHECK(v.extra_lines.at("not_a_real_key") == 7);
+  // The central schema knows none of these keys, so it neither warns nor type-checks: the venue
+  // does both (tests/venues/registry_test.cpp).
+  CHECK(cfg.warnings.empty());
+  CHECK_NOTHROW(static_cast<void>(
+      Config::parse("[venues.b]\nkind = \"binance_spot\"\nstale_ms = \"soon\"\n")));
 }
 
 TEST_CASE("core.config: shipped venue configs load without warnings") {

@@ -19,8 +19,8 @@
 #include "fastmm/store/store_thread.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
+#include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
-#include "fastmm/venues/venue_factory.hpp"
 #include "fastmm/version.hpp"
 
 #include <limits.h>
@@ -423,6 +423,7 @@ void restore_signal_handlers() noexcept {
 }
 
 bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
+  venues::register_builtin_venues();
   for (VenueSection& v : cfg.venues) {
     auto resolve = [&](const char* key, std::string& value, bool secret) {
       if (!has_env_reference(value)) return true;
@@ -470,12 +471,14 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
     // Binance SBE market data needs the API key even in a dry run.
     const bool ed25519 = extra("key_type") == "ed25519";
     const bool sbe_md = extra("md_format") == "sbe";
+    // The venue declares whether it needs credentials at all (venues/registry.hpp); nasdaq_itch,
+    // for one, takes market data without keys and logs OUCH in with ouch_username / ouch_password.
+    const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(v.kind);
+    const bool needs_keys = entry == nullptr || entry->caps.credentials;
     if (dry_run) {
       if (!sbe_md) v.api_key.clear();
       v.api_secret.clear();
-    } else if (venues::venue_kind(v.kind) == venues::VenueKind::NasdaqItch) {
-      // Market data needs no keys; sim_ouch logs in with ouch_username / ouch_password.
-    } else if (v.api_key.empty() || (v.api_secret.empty() && !ed25519)) {
+    } else if (needs_keys && (v.api_key.empty() || (v.api_secret.empty() && !ed25519))) {
       std::fprintf(stderr,
                    "%s: venue '%s' has no api_key/api_secret. Set them via ${ENV} references, or "
                    "run with --dry-run for public market data only.\n",

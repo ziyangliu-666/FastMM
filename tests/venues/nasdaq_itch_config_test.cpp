@@ -3,7 +3,7 @@
 // tests/integration/nasdaq_itch_venue_test.cpp.
 #include "fastmm/venues/nasdaq/nasdaq_itch_venue.hpp"
 #include "fastmm/venues/nasdaq/recovery_buffer.hpp"
-#include "fastmm/venues/venue_factory.hpp"
+#include "fastmm/venues/registry.hpp"
 
 #include <doctest/doctest.h>
 
@@ -181,7 +181,8 @@ TEST_CASE("venues.nasdaq_itch: bad config values are refused with the key") {
   CHECK_FALSE(parse_ip_port("127.0.0.1:0", a));
   CHECK_FALSE(parse_ip_port("127.0.0.1:70000", a));
   CHECK_FALSE(parse_ip_port("[::1]:5", a));
-  CHECK(venue_kind("nasdaq_itch") == VenueKind::NasdaqItch);
+  register_builtin_venues();
+  REQUIRE(VenueRegistry::instance().find("nasdaq_itch") != nullptr);
 }
 
 TEST_CASE("venues.nasdaq_itch: the recovery buffer groups messages by datagram and fills up") {

@@ -4,6 +4,8 @@
 //
 // Sections: [engine] [venues.<x>] [venues.<x>.fees] [[instruments]] [strategy]
 //           [strategy.params] [risk] [logging] [sim] [backtest] [storage]
+// A [venues.<x>] key the generic parser does not read is kept verbatim in VenueSection::extra:
+// the connector `kind` names owns it (include/fastmm/venues/registry.hpp).
 // Rules: ${VAR} is substituted only inside [venues.*] strings; a value that looks like an
 // inline secret (> 32 chars, no ${) is rejected unless allow_inline_secrets; redacted()
 // prints the config with secrets masked; validation errors carry line:col.
@@ -102,7 +104,13 @@ struct VenueSection {
   std::string ca_file;
   int recv_window_ms = 3000;
   FeesSection fees;
-  std::map<std::string, std::string> extra;  // unknown keys, stringified
+  // Every key the generic parser does not interpret, stringified. The venue `kind` names owns
+  // them: it declares them, validates them and reports an unknown one
+  // (fastmm::venues::validate_venues, include/fastmm/venues/registry.hpp), which is why the
+  // central schema knows none of them. `extra_lines` is the line each key came from, absent for a
+  // key set in code, so the owner can report with a position the way the schema does.
+  std::map<std::string, std::string> extra;
+  std::map<std::string, int> extra_lines;
 };
 
 struct InstrumentSection {

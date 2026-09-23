@@ -1,6 +1,6 @@
 # Venue connectors
 
-FastMM ships five connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet, Demo Mode or the local Binance-compatible simulator), Binance USDⓈ-M perpetual futures (Demo Trading), Bybit v5 spot (testnet), Deribit options and futures (testnet) and Nasdaq TotalView-ITCH market data (with order entry to fastmm-sim-itch). `make_venue()` (`venue_factory.hpp`) picks one from `[venues.<name>] kind`:
+FastMM ships five connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet, Demo Mode or the local Binance-compatible simulator), Binance USDⓈ-M perpetual futures (Demo Trading), Bybit v5 spot (testnet), Deribit options and futures (testnet) and Nasdaq TotalView-ITCH market data (with order entry to fastmm-sim-itch). Each registers itself in the venue registry (`include/fastmm/venues/registry.hpp`) under the `kind` a `[venues.<name>]` section names, and `make_venue()` resolves through it:
 
 | kind | connector |
 |---|---|
@@ -10,7 +10,7 @@ FastMM ships five connectors behind the control-path `fastmm::venues::Venue` int
 | `deribit` | `deribit::DeribitVenue` |
 | `nasdaq_itch` | `nasdaq::NasdaqItchVenue` |
 
-Writing a sixth: [Add a venue](../how-to/venues/add-a-venue.md). What a connector does not protect you from: [Running this in production](../how-to/operations/running-in-production.md).
+The registry is open: a project registers its own connector, with its own configuration keys, without changing FastMM ([Add a venue](../how-to/venues/add-a-venue.md), `examples/external-venue/`). What a connector does not protect you from: [Running this in production](../how-to/operations/running-in-production.md).
 
 Every connector runs on its own `net::Reactor` thread and writes normalised messages into two rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order events (never dropped: bounded spin, overflow trips the kill switch in `fastmm-live`). `cancel_all()` uses an independent blocking REST connection, so it works from any thread even if the reactor is wedged (`nasdaq_itch`: it shuts the OUCH connection down, see below). `Venue::poll()` runs after every reactor iteration; `nasdaq_itch` polls its sockets there in `spin_mode = "busy"`.
 
@@ -253,15 +253,16 @@ The venue fills the feed block of its status entry ([Status file](status-file.md
 
 ## Configuration keys
 
-Common: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` ([secrets](configuration.md#general-rules)), `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`.
+Generic, parsed by FastMM for every venue: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` ([secrets](configuration.md#general-rules)), `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`.
 
-Venue-specific keys ([Configuration](configuration.md#connector-specific-keys)):
+Everything else in a `[venues.<name>]` section belongs to its connector, which declares, validates and documents it: the tables under [Connectors](configuration.md#connectors) are generated from those declarations, one per `kind`. A key the connector does not own is a warning naming its line; a key of the wrong type stops the session.
 
-* Binance: `user_stream` (`ws_api` | `listen_key` | `none`), `key_type` (`hmac` | `ed25519`), `private_key_file`, `private_key_env`, `md_format` (`json` | `sbe`), `sbe_ws_url`, `order_api` (`ws` | `rest`), `depth_limit`, `stale_ms`, `dead_ms`, `position_from_balance`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
-* Binance USDⓈ-M: `ws_private_url`, `order_api`, `depth_limit` (5, 10, 20, 50, 100, 500 or 1000), `stale_ms`, `dead_ms`, `position_from_account_update`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`, `key_type`, `private_key_file`, `private_key_env`. Example: `configs/binance-usdm-demo.toml`.
-* Bybit: `ws_private_url`, `depth`, `order_api`, `stale_ms`, `dead_ms`, `ping_interval_ms`, `orders_per_second`, `position_from_wallet`, `allow_offline_reference_data`, `cancel_on_order_channel_loss`, `emit_ack_from_response`.
-* Deribit: `api_key` / `api_secret` are the client id and client secret (`${FASTMM_DERIBIT_CLIENT_ID}` / `${FASTMM_DERIBIT_CLIENT_SECRET}`); extras `ws_private_url`, `currencies` (`"BTC"` or `["BTC", "ETH"]`), `book_interval` / `ticker_interval` / `trades_interval` (`100ms` | `agg2`; `raw` needs an authenticated connection), `heartbeat_interval_s` (>= 10), `reject_post_only`, `cancel_on_disconnect`, `cancel_on_order_channel_loss`, `matching_engine_rate`, `matching_engine_burst`, `stale_ms`, `dead_ms`, `allow_offline_reference_data`, `emit_ack_from_response`. Example: `configs/deribit-testnet.toml`.
-* Nasdaq TotalView-ITCH: no `api_key` / `api_secret` (`resolve_venue_env` does not ask for them); `rx_backend`, `dpdk_eal_args`, `dpdk_port`, `dpdk_exception_port`, `dpdk_exception_ip`, `dpdk_exception_interval_us`, `interface`, `line_a`, `line_b`, `line_a_interface`, `line_b_interface`, `line_a_source`, `line_b_source`, `queues`, `xdp_mode`, `rcvbuf`, `batch`, `rerequest`, `glimpse_url`, `glimpse_username`, `glimpse_password`, `reorder_packets`, `gap_timeout_ns`, `max_request_attempts`, `request_timeout_ns`, `recovery_buffer_packets`, `depth`, `price_window_ticks`, `max_orders`, `hw_timestamps`, `hw_clock`, `order_entry`, `ouch_url`, `ouch_username`, `ouch_password`, `order_transport`, `user_tcp_ip`, `user_tcp_interface`, `user_tcp_gateway`, `user_tcp_port`. Example: `configs/nasdaq-itch-sim.toml`.
+Two notes the tables cannot carry:
+
+* Deribit's `api_key` / `api_secret` are the client id and client secret (`${FASTMM_DERIBIT_CLIENT_ID}` / `${FASTMM_DERIBIT_CLIENT_SECRET}`). `raw` book intervals need an authenticated connection.
+* Nasdaq TotalView-ITCH declares that it needs no credentials, so `fastmm-live` never asks for `api_key` / `api_secret`; OUCH order entry logs in with `ouch_username` / `ouch_password`.
+
+Example configurations: `configs/binance-usdm-demo.toml`, `configs/deribit-testnet.toml`, `configs/nasdaq-itch-sim.toml`.
 
 `stale_ms` defaults to 2000 ms for Binance and Bybit and 10000 ms for Deribit. `dead_ms` is raised to at least 45000 ms on Binance (the venue pings every 20 s), to 45000 ms for market data and 240000 ms for the other connections on Binance USDⓈ-M (pings every 3 minutes), twice `ping_interval_ms` plus 5000 ms on Bybit (45000 ms by default) and three heartbeat intervals on Deribit (30000 ms by default). A market-data connection without traffic for `stale_ms` is reported `Stale`: the engine pulls the venue's quotes and clears its books, and the connector fetches a new snapshot when data returns. Testnet BTCUSDT is often silent for more than 2 s, so the testnet and Demo configs set `stale_ms = 10000` (`configs/deribit-testnet.toml`: 15000).
 

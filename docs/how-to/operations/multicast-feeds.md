@@ -28,7 +28,7 @@ ouch_password = "ouch"
 supports_replace = true
 ```
 
-Every key: [Configuration](../../reference/configuration.md#connector-specific-keys). Each `[[instruments]]` symbol is the ITCH stock symbol (1 to 8 characters) with a tick that is a multiple of 0.0001. Without `glimpse_url` the process must start before the feed's first message (sequence 1).
+Every key: [Configuration](../../reference/configuration.md#nasdaq_itch). Each `[[instruments]]` symbol is the ITCH stock symbol (1 to 8 characters) with a tick that is a multiple of 0.0001. Without `glimpse_url` the process must start before the feed's first message (sequence 1).
 
 Against `fastmm-sim-itch` on one host, both processes need a network namespace whose `lo` carries multicast (the command is at the top of `configs/nasdaq-itch-sim.toml`); `scripts/bench-e2e.sh` runs them in two namespaces joined by a veth pair.
 

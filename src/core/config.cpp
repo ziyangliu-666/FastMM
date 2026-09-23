@@ -88,15 +88,19 @@ const KeySpec* find_spec(std::string_view section, std::string_view key) noexcep
   return wildcard;
 }
 
-// Validates one table's keys against the schema section name; warns on unknown keys.
+// Validates one table's keys against the schema section name; warns on unknown keys. With
+// `warn_unknown` false a key the schema does not know is left alone, because something else owns
+// it: the venue a [venues.<name>] section names validates its own keys (venues/registry.hpp).
 void validate_table(const toml::table& t,
                     std::string_view section,
-                    std::vector<std::string>& warnings) {
+                    std::vector<std::string>& warnings,
+                    bool warn_unknown = true) {
   for (const auto& [k, v] : t) {
     const KeySpec* spec = find_spec(section, k.str());
     if (spec == nullptr) {
-      warnings.push_back(
-          fmt::format("unknown key '{}.{}' ignored (line {})", section, k.str(), line_of(v)));
+      if (warn_unknown)
+        warnings.push_back(
+            fmt::format("unknown key '{}.{}' ignored (line {})", section, k.str(), line_of(v)));
       continue;
     }
     if (!type_matches(spec->type, v)) {
@@ -331,7 +335,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     for (const auto& [name, node] : *venues) {
       const auto* t = node.as_table();
       if (t == nullptr) fail_at(node, fmt::format("[venues.{}] must be a table", name.str()));
-      validate_table(*t, "venues.*", cfg.warnings);
+      validate_table(*t, "venues.*", cfg.warnings, /*warn_unknown=*/false);
       VenueSection v;
       v.name = std::string(name.str());
       auto str = [&](std::string_view key, std::string& out) {
@@ -381,9 +385,12 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         get(*fees, "maker_bps", v.fees.maker_bps);
         get(*fees, "taker_bps", v.fees.taker_bps);
       }
+      // Everything the generic parser did not read belongs to the connector: keep it verbatim,
+      // with its line, for the venue that owns it (venues/registry.hpp).
       for (const auto& [k, val] : *t) {
-        const KeySpec* spec = find_spec("venues.*", k.str());
-        if (spec == nullptr || spec->passthrough) v.extra[std::string(k.str())] = stringify(val);
+        if (find_spec("venues.*", k.str()) != nullptr) continue;
+        v.extra[std::string(k.str())] = stringify(val);
+        v.extra_lines[std::string(k.str())] = line_of(val);
       }
       cfg.venues.push_back(std::move(v));
     }
@@ -639,23 +646,17 @@ std::string Config::redacted() const {
 
 namespace {
 
-// A passthrough venue key was stored as text; emit it with the type its schema entry expects so
-// the TOML parses back to the same text.
+// A connector's venue key was stored as text (the connector owns its type, not this file): emit
+// the TOML literal that stringifies back to exactly this text, a quoted string when there is
+// none, so parsing the result gives the same VenueSection::extra back.
 void insert_typed(toml::table& t, const std::string& key, const std::string& text) {
-  const KeySpec* spec = find_spec("venues.*", key);
-  const KeyType type = spec == nullptr ? KeyType::String : spec->type;
-  if (type != KeyType::String) {
-    try {
-      toml::table probe = toml::parse("v = " + text);
-      if (toml::node* n = probe.get("v");
-          n != nullptr && type_matches(type, *n) && stringify(*n) == text) {
-        t.insert_or_assign(key, std::move(*n));
-        return;
-      }
-    } catch (const toml::parse_error&) {
-      t.insert_or_assign(key, text);  // not a literal of the expected type: keep the text
+  try {
+    toml::table probe = toml::parse("v = " + text);
+    if (toml::node* n = probe.get("v"); n != nullptr && !n->is_string() && stringify(*n) == text) {
+      t.insert_or_assign(key, std::move(*n));
       return;
     }
+  } catch (const toml::parse_error&) {  // not a TOML literal: it can only be a string
   }
   t.insert_or_assign(key, text);
 }

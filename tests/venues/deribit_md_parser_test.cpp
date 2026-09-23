@@ -8,7 +8,7 @@
 #include "fastmm/venues/deribit/deribit_md_feed.hpp"
 #include "fastmm/venues/deribit/deribit_rest_decoder.hpp"
 #include "fastmm/venues/deribit/deribit_venue.hpp"
-#include "fastmm/venues/venue_factory.hpp"
+#include "fastmm/venues/registry.hpp"
 
 #include <cmath>
 #include <sstream>
@@ -381,7 +381,8 @@ TEST_CASE("deribit.config: section mapping and factory registration") {
   CHECK(c.matching_engine_rate == 20);
   CHECK(c.matching_engine_burst == 50);
   CHECK(c.credentials.usable());
-  CHECK(venue_kind("deribit") == VenueKind::Deribit);
+  register_builtin_venues();
+  REQUIRE(VenueRegistry::instance().find("deribit") != nullptr);
   const auto venue = make_venue(VenueId{0}, s, VenueFactoryOptions{true, {}});
   REQUIRE(venue != nullptr);
   CHECK(venue->name() == "deribit");

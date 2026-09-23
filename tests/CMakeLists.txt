@@ -122,7 +122,17 @@ if(FASTMM_BUILD_NET)
   if(TARGET fastmm_dpdk)
     fastmm_test(dpdk    LABELS "dpdk"           LIBS fastmm::net)
   endif()
-  fastmm_test(venues    LABELS "unit;fixture"   LIBS fastmm::venues)
+  # examples/external-venue: a connector in a project of its own, compiled here against the
+  # in-tree targets so `ctest` proves the public API is enough to write one. CI also builds that
+  # project against an install prefix (scripts/ci-external-project.sh).
+  add_library(fastmm_example_echo_venue STATIC
+    ${PROJECT_SOURCE_DIR}/examples/external-venue/src/echo_venue.cpp
+    ${PROJECT_SOURCE_DIR}/examples/external-venue/src/register.cpp)
+  fastmm_target_defaults(fastmm_example_echo_venue)
+  target_include_directories(fastmm_example_echo_venue PUBLIC
+    ${PROJECT_SOURCE_DIR}/examples/external-venue/include)
+  target_link_libraries(fastmm_example_echo_venue PUBLIC fastmm::venues)
+  fastmm_test(venues    LABELS "unit;fixture"   LIBS fastmm::venues fastmm_example_echo_venue)
   # Opt-in testnet checks (tests/venues/live_*_test.cpp): `ctest -L live` selects them, the test
   # presets exclude the label, and without FASTMM_LIVE_TESTS=1 they skip.
   if(TARGET fastmm_venues_tests)

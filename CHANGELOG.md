@@ -182,6 +182,22 @@ All notable changes are recorded here (Keep a Changelog format).
   latches every write error and `fastmm-live` trips the kill switch and exits with code 5 on one.
 
 ### Changed
+- **Venues are pluggable.** A connector is one entry in `fastmm::venues::VenueRegistry`
+  (`include/fastmm/venues/registry.hpp`): the `kind` it answers to and its aliases, a one-line
+  summary, the capabilities it declares (`credentials`, `order_entry`, `replace`, `positions`,
+  `polls`), the `[venues.<name>]` keys it owns and a factory. `make_venue()` resolves through the
+  registry, `VenueKind` and `venue_factory.hpp` are gone, and `fastmm-live` asks the registry
+  whether a venue needs API keys instead of testing `kind == nasdaq_itch`. Adding a venue is one
+  new translation unit plus a call in `register_builtin_venues()`; a venue outside FastMM registers
+  the same way (`examples/external-venue/`, built against the installed headers).
+- **A venue owns its configuration keys.** The 68 connector entries left
+  `include/fastmm/config/schema.hpp` (811 lines and 154 entries down to 377 and 86) for the five
+  connectors, where they became 92 keys with per-venue defaults. `fastmm::venues::validate_venues()`
+  checks each `[venues.<name>]` section against its connector's declaration: a key the venue does
+  not own warns with its line, a key of the wrong type stops the session. The key tables of
+  [Configuration](docs/reference/configuration.md) are generated per connector from those
+  declarations. `VenueSection::extra_lines` carries the line of every key the generic parser did
+  not read.
 - **`fastmm-live` exits after a kill switch it did not ask for.** `[engine] on_kill = "exit" |
   "stay"` (default `"exit"`): the session runs the normal shutdown (quotes pulled, REST cancel-all,
   summary, status file, journal trailer) and exits with the new exit code 6, or 5 if a cancel-all

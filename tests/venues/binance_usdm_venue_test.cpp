@@ -9,7 +9,7 @@
 
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
-#include "fastmm/venues/venue_factory.hpp"
+#include "fastmm/venues/registry.hpp"
 
 #include <atomic>
 #include <string>
@@ -524,7 +524,8 @@ TEST_CASE("binance_usdm.config: section mapping and factory registration") {
   CHECK(c.recv_window_ms == 4000);
   CHECK(c.supports_replace);
   CHECK(c.ws_private_url.empty());
-  CHECK(venue_kind("binance_usdm") == VenueKind::BinanceUsdm);
+  register_builtin_venues();
+  REQUIRE(VenueRegistry::instance().find("binance_usdm") != nullptr);
   const auto v = make_venue(VenueId{3}, s, VenueFactoryOptions{true, {}});
   REQUIRE(v != nullptr);
   CHECK(v->name() == "usdm");

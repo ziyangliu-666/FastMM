@@ -570,7 +570,7 @@ TEST_CASE("sim_exchange: Ed25519 key logs on once per connection and trades unsi
   ServerFixture fx(std::move(cfg));
   BinanceVenueConfig vc = venue_config(fx);
   vc.credentials.secret.value.clear();
-  vc.credentials.type = KeyType::Ed25519;
+  vc.credentials.type = binance::KeyType::Ed25519;
   vc.credentials.private_key_pem.value = fastmm::test::fixture("binance/ed25519-test-private.pem");
   VenueHarness h(std::move(vc));
   REQUIRE(h.venue->load_reference_data(h.instruments));
@@ -610,7 +610,7 @@ TEST_CASE("sim_exchange: session.logon with an HMAC account is refused and fatal
   ServerFixture fx;  // HMAC account: an Ed25519 signature cannot verify
   BinanceVenueConfig vc = venue_config(fx);
   vc.credentials.secret.value.clear();
-  vc.credentials.type = KeyType::Ed25519;
+  vc.credentials.type = binance::KeyType::Ed25519;
   vc.credentials.private_key_pem.value = fastmm::test::fixture("binance/ed25519-test-private.pem");
   VenueHarness h(std::move(vc));
   REQUIRE(h.venue->load_reference_data(h.instruments));

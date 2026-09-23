@@ -18,6 +18,7 @@
 #include "fastmm/live/session.hpp"
 #include "fastmm/strategies/listing.hpp"
 #include "fastmm/strategies/registry.hpp"
+#include "fastmm/venues/registry.hpp"
 #include "fastmm/version.hpp"
 
 #include <cstdio>
@@ -221,6 +222,9 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
     lo.allow_inline_secrets = allow_inline;
     lo.substitute_env = false;  // resolved below so --dry-run works without keys
     cfg = Config::load(opts.config_path, lo);
+    // Each [venues.<name>] section is checked by the connector its `kind` names: the central
+    // schema knows only the generic keys (venues/registry.hpp).
+    venues::validate_venues(cfg, cfg.warnings);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return kExitConfig;
