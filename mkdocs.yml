@@ -1,7 +1,7 @@
 # FastMM documentation site (MkDocs + Material). Preview: ./scripts/docs-serve.sh
 # The Markdown under docs/ is the source and stays readable on GitHub; this file only orders it.
 site_name: FastMM
-site_description: Ultra-low-latency multi-asset market-making engine in C++20, with Python strategies
+site_description: A market-making engine in C++20. Backtests, replay and live trading run the same strategy code.
 site_url: https://ziyangliu-666.github.io/FastMM/
 site_author: Ziyang Liu
 repo_url: https://github.com/ziyangliu-666/FastMM
