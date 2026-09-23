@@ -21,8 +21,8 @@
 #include "fastmm/sim/server/sim_exchange_server.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 #include "fastmm/venues/event_sink.hpp"
+#include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
-#include "fastmm/venues/venue_factory.hpp"
 
 #include <atomic>
 #include <chrono>

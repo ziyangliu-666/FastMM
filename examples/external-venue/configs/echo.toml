@@ -1,0 +1,44 @@
+# echo-live --config configs/echo.toml --dry-run --duration 5s
+# One venue served by this project's connector. `kind = "echo"` reaches the registry entry in
+# src/register.cpp; bid, ask and qty are keys the connector owns and FastMM knows nothing about.
+[engine]
+name = "echo"
+journal = false
+
+[venues.e]
+kind = "echo"
+bid = "99.5"
+ask = "100.5"
+qty = "1"
+
+[[instruments]]
+venue = "e"
+symbol = "ECHO"
+base = "ECH"
+quote = "USD"
+tick = "0.5"
+lot = "1"
+min_qty = "1"
+max_qty = "100"
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 50.0
+skew_bps_per_unit = 1.0
+quote_qty = 1
+max_inventory = 10
+requote_threshold_ticks = 1
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "10"
+max_order_notional = "10000"
+max_position = "10"
+max_open_orders = 4
+orders_per_sec = 20
+
+[logging]
+level = "info"

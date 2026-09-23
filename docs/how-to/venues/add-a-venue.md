@@ -34,6 +34,7 @@ The Bybit connector, with the file names a new venue should mirror:
 | `include/fastmm/venues/bybit/bybit_rest_decoder.hpp`, `src/venues/bybit/bybit_rest_decoder.cpp` | Reference data and server time |
 | `include/fastmm/venues/bybit/bybit_error_map.hpp` | `map_error()`: `retCode` to `RejectReason` and `VenueAction` |
 | `include/fastmm/venues/bybit/bybit_venue.hpp`, `src/venues/bybit/bybit_venue.cpp` | `BybitVenueConfig`, `BybitVenue`, `make_bybit_config()` |
+| `src/venues/bybit/bybit_registration.cpp` | the registry entry: the `kind`, the capabilities, the config keys the venue owns and the factory (section 10) |
 
 Differences in the other connectors:
 
@@ -176,14 +177,115 @@ Subclass `Venue` and implement:
 
 ## 10. Registration
 
-Connectors are registered in code, in four places:
+A connector is one entry in the venue registry (`include/fastmm/venues/registry.hpp`): the `kind` that selects it, what it can do, the `[venues.<name>]` keys it owns, and a factory. Put it in its own translation unit next to the connector, `src/venues/foo/foo_registration.cpp`:
 
-1. `include/fastmm/venues/venue_factory.hpp`: add `Foo` to `enum class VenueKind`.
-2. `src/venues/venue_factory.cpp`: map the `kind` strings in `venue_kind()`, add a `case` to `make_venue()` that builds your config with `make_foo_config(const VenueSection&, bool dry_run)` and sets `record_raw_dir`, and add the kind to the "unsupported kind" message.
-3. `include/fastmm/config/schema.hpp`: add the kind to the `kind` description, and declare every connector-specific key as a passthrough entry (`{"venues.*", "<key>", KeyType::Int, false, "<meaning>", true}`), which the loader hands to the connector in `VenueSection::extra` without an "unknown key" warning.
-4. Documentation: the kind and keys in [Configuration](../../reference/configuration.md), the kind table and a section in [Venue connectors](../../reference/venues.md), a `configs/foo-testnet.toml`, the key variables in `.env.example`, an environment section in [Run on a testnet](../operations/run-on-testnet.md) and a CHANGELOG entry.
+```cpp
+#include "fastmm/venues/foo/foo_venue.hpp"
+#include "fastmm/venues/registry.hpp"
 
-## 11. Fixtures
+namespace fastmm::venues {
+namespace {
+
+// The keys this venue owns. The registry validates them before the factory runs, and
+// tools/docs_config_ref.py turns this table into the connector's table in the configuration
+// reference: say what the key does, its unit and its default.
+constexpr VenueKeySpec kFooKeys[] = {
+    {"stale_ms", KeyType::Int, false, "no traffic for this long pulls the quotes, ms (default 2000)"},
+    {"order_api", KeyType::String, false, "order entry: ws (default) | rest"},
+};
+
+std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
+  foo::FooVenueConfig c = foo::make_foo_config(s, opts.dry_run);
+  c.record_raw_dir = opts.record_raw_dir;
+  return std::make_unique<foo::FooVenue>(id, std::move(c));
+}
+
+}  // namespace
+
+void register_foo_venue(VenueRegistry& r) {
+  static_cast<void>(r.add({.name = "foo",
+                           .summary = "Foo spot (testnet)",
+                           .keys = kFooKeys,
+                           .caps = {.credentials = true, .order_entry = true,
+                                    .replace = true, .positions = true, .polls = false},
+                           .make = &make}));
+}
+
+}  // namespace fastmm::venues
+```
+
+Then two lines in `src/venues/registry.cpp`: a declaration of `register_foo_venue` and a call in `register_builtin_venues()`. Nothing self-registers, for the same reason nothing does in the strategy and storage registries: the linker drops a static library's self-registering object.
+
+That is the whole seam. `src/venues/CMakeLists.txt` globs `src/venues/**/*.cpp`, so the new file needs no CMake edit; re-run `cmake --preset release` so the glob sees it.
+
+### What the entry says
+
+| Field | Meaning |
+|---|---|
+| `name` | the `[venues.<name>] kind` value that selects this connector |
+| `aliases` | other `kind` values that select it (`binance_spot` answers to `binance` and `sim`) |
+| `summary` | one line for the connector table in [Configuration](../../reference/configuration.md#connectors) |
+| `keys` | the `[venues.<name>]` keys the venue owns, beyond the generic ones |
+| `caps` | `credentials`, `order_entry`, `replace`, `positions`, `polls`: what this connector can do |
+| `make` | the factory, called after the section's keys have been validated |
+
+`caps` is how the core stays free of `if (kind == X)`. `credentials = false` is why `fastmm-live` never asks `nasdaq_itch` for an API key; `polls = true` is why its sockets are driven from `Venue::poll()`. They say what the connector *can* do; whether a given instance does is `Venue::caps()`, which sees the configuration (a dry run, `order_entry = "none"`, missing credentials).
+
+### Configuration keys
+
+The central schema (`include/fastmm/config/schema.hpp`) knows only the generic keys (`kind`, the URLs, the credentials, `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`). Everything else in the section is kept verbatim in `VenueSection::extra`, with its line in `extra_lines`, and handed to the venue that owns it. `fastmm::venues::validate_venues()` then checks the section against `kFooKeys`: a key the venue does not own is a warning naming its line, a key of the wrong type or a missing required key stops the session. Values only the connector can judge (a URL, a range, a pair that must not cross) are `make_foo_config`'s job; throw `std::invalid_argument` with a message that starts `venues.<name>.<key>:`.
+
+### Documentation
+
+The key table and the connector table in [Configuration](../../reference/configuration.md) are generated from the registration file: add a section with the two region markers and run `python3 tools/docs_config_ref.py`.
+
+```markdown
+#### `foo`
+
+<!-- BEGIN config-keys venue:foo -->
+<!-- END config-keys -->
+```
+
+The rest is prose: a section in [Venue connectors](../../reference/venues.md), a `configs/foo-testnet.toml`, the key variables in `.env.example`, an environment section in [Run on a testnet](../operations/run-on-testnet.md) and a CHANGELOG entry.
+
+## 11. A venue outside FastMM
+
+Nothing above needs the connector to live in this repository. `examples/external-venue/` is a complete venue project built against the installed headers: a connector, its registration, a live app and a test, in 282 lines of C++ and a 38-line `CMakeLists.txt`.
+
+```cpp
+// apps/live.cpp: fastmm-live plus this project's connector.
+#include "echo/echo_venue.hpp"
+#include <fastmm/cli/live.hpp>
+
+int main(int argc, char** argv) {
+  echo::register_echo_venue();
+  return fastmm::cli::live(argc, argv);
+}
+```
+
+```cmake
+find_package(fastmm CONFIG REQUIRED COMPONENTS live)
+add_library(echo_venue STATIC src/echo_venue.cpp src/register.cpp)
+target_link_libraries(echo_venue PUBLIC fastmm::venues)
+add_executable(echo-live apps/live.cpp)
+target_link_libraries(echo-live PRIVATE echo_venue fastmm::live)
+```
+
+`kind = "echo"` in a configuration now selects it, its keys are validated by its own declaration, and FastMM has not changed. Build it against an install prefix, or against a source tree with `-DFASTMM_SOURCE_DIR=<checkout>`; `ctest` in this repository compiles the same two files into `fastmm_venues_tests` (`venues.external.*`), and the CI external-project job builds the project itself.
+
+## 12. What a venue costs
+
+| | Before the registry | Now |
+|---|---|---|
+| Core files a new venue edits | 3 (`venue_factory.hpp`, `venue_factory.cpp`, `schema.hpp`) | 1 (`src/venues/registry.cpp`, two lines) |
+| Files a new venue adds | 0 | 1 (`foo_registration.cpp`) |
+| Lines in `include/fastmm/config/schema.hpp` | 4 to 6 per connector key (`nasdaq_itch`: about 200) | 0 |
+| Registration, by connector | 9 to 14 lines spread over three files | 62 (`bybit`, 11 keys) to 181 (`nasdaq_itch`, 40 keys) lines in one file |
+| Out of tree | impossible | 282 lines of C++, no FastMM change |
+
+`schema.hpp` went from 811 lines and 154 entries to 377 and 86: the 68 connector entries moved to the five connectors that own them, where they became 92 keys with per-venue defaults instead of one merged row per shared key name. About 25 lines of a registration file are boilerplate; each key costs about 4.
+
+## 13. Fixtures
 
 Record public frames from the venue's testnet with the connector itself once market data works:
 
@@ -193,7 +295,7 @@ Record public frames from the venue's testnet with the connector itself once mar
 
 Each channel is appended to `<dir>/<venue>-<channel>.jsonl`, one frame per line prefixed with the receive timestamp and a tab. Cut single messages out into `tests/fixtures/foo/*.json`, remove keys, account ids and order ids that identify an account, and describe every file in `tests/fixtures/foo/fixtures.meta.json` as `recorded`, `synthesised from ...` or `docs-example (<url>)`, with the source URL and recording date (see `tests/fixtures/bybit/fixtures.meta.json`). Private payloads you cannot record yet come from the venue's documentation examples; say so in the meta file and in the CHANGELOG.
 
-## 12. Tests
+## 14. Tests
 
 Name the tests after the Bybit ones; they are picked up by the `fastmm_venues_tests` binary (labels `unit` and `fixture`):
 
@@ -217,7 +319,7 @@ ctest --preset release -R 'foo\.'
 
 Benchmarks: add the parsers to `bench/bench_json.cpp` and the order encoder to `bench/bench_order_encoders.cpp`, then a p50 budget for each in `bench/ci_budget.toml`.
 
-## 13. Conformance checklist
+## 15. Conformance checklist
 
 Your venue is done when each item has an equivalent test.
 
@@ -239,7 +341,7 @@ Your venue is done when each item has an equivalent test.
 | Fills and positions, with the commission asset | [`bybit_private_parser_test.cpp`](../../../tests/venues/bybit_private_parser_test.cpp) "bybit.private_parser: execution -> fill, wallet -> position, control frames"; [`binance_user_parser_test.cpp`](../../../tests/venues/binance_user_parser_test.cpp) "binance.user: the commission asset of a fill is classified as base, quote or other" |
 | Foreign client ids are ignored | [`binance_user_parser_test.cpp`](../../../tests/venues/binance_user_parser_test.cpp) "binance.user: foreign client ids, unknown symbol, malformed, ignored events" |
 | Config keys map onto the connector config | [`bybit_venue_test.cpp`](../../../tests/venues/bybit_venue_test.cpp) "bybit.venue: config mapping derives the private and trade URLs" |
-| The factory builds the connector from its `kind` | [`deribit_md_parser_test.cpp`](../../../tests/venues/deribit_md_parser_test.cpp) "deribit.config: section mapping and factory registration" |
+| The registry resolves the `kind` and builds the connector | [`registry_test.cpp`](../../../tests/venues/registry_test.cpp) "venues.registry: make_venue builds the connector its kind names" |
 | Reference data, subscribe, orders, reconciliation and `cancel_all()` against a fake exchange | [`bybit_venue_test.cpp`](../../../tests/venues/bybit_venue_test.cpp) "bybit.venue: scripted fake exchange end to end" |
 | Private-channel loss cancels over REST, re-authenticates and reconciles | [`deribit_venue_test.cpp`](../../../tests/venues/deribit_venue_test.cpp) "deribit.venue: scripted fake exchange end to end" |
 | Invalid credentials are fatal; the request limit refuses orders | [`deribit_venue_test.cpp`](../../../tests/venues/deribit_venue_test.cpp) "deribit.venue: invalid credentials are fatal and the credit limit refuses orders" |

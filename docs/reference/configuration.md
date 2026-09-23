@@ -63,7 +63,7 @@ One table per venue; `<name>` is how instruments refer to it.
 <!-- BEGIN config-keys venues.* -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `kind` | string | yes | connector: binance_spot (alias binance) \| binance_usdm \| bybit (alias bybit_spot) \| deribit \| nasdaq_itch \| sim (fastmm-sim-exchange and backtest configs) |
+| `kind` | string | yes | name of a registered connector; the keys it adds to this section are its own (see Connectors below) |
 | `ws_url` | string |  | market-data WebSocket URL |
 | `ws_api_url` | string |  | order-entry WebSocket API URL, where the venue has one |
 | `rest_url` | string |  | REST base URL |
@@ -86,81 +86,155 @@ One table per venue; `<name>` is how instruments refer to it.
 | `taker_bps` | number |  | taker fee, bps (default 0) |
 <!-- END config-keys -->
 
-### Connector-specific keys
+### Connectors
 
-These are validated like the keys above and handed to the connector unchanged; a key a connector does not use has no effect. Keys per connector: [Venue connectors](venues.md#configuration-keys).
+The connector `kind` names owns the rest of the section. It declares its keys, validates them and
+reports an unknown one with its line, so the central schema
+(`include/fastmm/config/schema.hpp`) knows only the generic keys above. A project can register
+its own connector and its own keys without touching FastMM
+([Add a venue](../how-to/venues/add-a-venue.md)); these ship with it.
 
-<!-- BEGIN config-keys venues.*:connector -->
+<!-- BEGIN config-keys connectors -->
+| `kind` | Aliases | Connector | API keys | Order entry | Replace | Positions |
+|---|---|---|---|---|---|---|
+| `binance_spot` | `binance`, `sim` | Binance Spot (testnet, Demo Mode, or the Binance-compatible simulator with kind = "sim") | yes | yes | yes | yes |
+| `binance_usdm` |  | Binance USDⓈ-M perpetual futures (Demo Trading) | yes | yes | yes | yes |
+| `bybit` | `bybit_spot` | Bybit v5 spot (testnet) | yes | yes | yes | yes |
+| `deribit` |  | Deribit options and futures (testnet) | yes | yes | yes | yes |
+| `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
+<!-- END config-keys -->
+
+`Replace` and `Order entry` are what the connector can do; whether a given session does depends on
+its configuration (a dry run, `order_entry = "none"`, missing credentials).
+
+#### `binance_spot`
+
+<!-- BEGIN config-keys venue:binance_spot -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000; deribit 10000) |
-| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to a per-connector minimum (binance and bybit 45000, deribit 30000 by default; binance_usdm 45000 for market data, 240000 for the other channels) |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 45000 |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
-| `depth_limit` | integer |  | binance: REST snapshot depth, 5 to 5000; binance_usdm: 5, 10, 20, 50, 100, 500 or 1000 |
-| `key_type` | string |  | binance, binance_usdm: hmac (default) \| ed25519 |
-| `private_key_file` | string |  | binance, binance_usdm: Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
-| `private_key_env` | string |  | binance, binance_usdm: environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
-| `md_format` | string |  | binance: json (default) \| sbe (binary market data; needs an Ed25519 api_key) |
-| `sbe_ws_url` | string |  | binance: SBE stream URL; empty = ws_url with stream. -> stream-sbe. |
-| `user_stream` | string |  | binance: ws_api (default) \| listen_key \| none |
-| `position_from_balance` | boolean |  | binance: derive positions from account balances |
-| `position_from_account_update` | boolean |  | binance_usdm: correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
-| `depth` | integer |  | bybit: order book subscription depth, 1 to 1000; nasdaq_itch: price levels per side sent to the engine, 1 to 256 (default 20) |
-| `ws_private_url` | string |  | bybit, deribit, binance_usdm: private WebSocket URL; empty = derived from ws_url |
-| `ping_interval_ms` | integer |  | bybit: application ping interval, ms, at least 1000 |
-| `orders_per_second` | integer |  | bybit: client-side order rate cap, orders/s |
-| `position_from_wallet` | boolean |  | bybit: derive positions from the wallet |
-| `currencies` | any |  | deribit: currencies for reference data, user channels and reconciliation, "BTC" or ["BTC", "ETH"] (default "BTC") |
-| `book_interval` | string |  | deribit: book channel interval, 100ms (default) \| agg2 |
-| `ticker_interval` | string |  | deribit: ticker channel interval, 100ms (default) \| agg2 |
-| `trades_interval` | string |  | deribit: trades channel interval, 100ms (default) \| agg2 |
-| `heartbeat_interval_s` | integer |  | deribit: public/set_heartbeat interval, s, at least 10 |
-| `reject_post_only` | boolean |  | deribit: reject crossing post-only orders instead of repricing them (default true) |
-| `cancel_on_disconnect` | boolean |  | deribit: cancel-on-disconnect on the order connection (default true) |
-| `matching_engine_rate` | integer |  | deribit: order requests per second of the account tier (default 5) |
-| `matching_engine_burst` | integer |  | deribit: order request burst of the account tier (default 20) |
-| `rx_backend` | string |  | nasdaq_itch: multicast receive, kernel (UDP sockets) \| af_xdp (needs CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF, CAP_IPC_LOCK) \| dpdk (a -DFASTMM_WITH_DPDK=ON build, spin_mode = "busy") (default kernel) |
-| `interface` | string |  | nasdaq_itch: interface of both lines, name or IPv4 address; af_xdp needs a name (default: routing table) |
-| `line_a` | string |  | nasdaq_itch: line A, "<multicast group or local unicast address>:<port>" (required) |
-| `line_b` | string |  | nasdaq_itch: line B, "<multicast group or local unicast address>:<port>"; absent = one line |
-| `line_a_interface` | string |  | nasdaq_itch: interface of line A, overrides interface |
-| `line_b_interface` | string |  | nasdaq_itch: interface of line B, overrides interface |
-| `line_a_source` | string |  | nasdaq_itch: source address of line A: a source-specific join (default any source) |
-| `line_b_source` | string |  | nasdaq_itch: source address of line B |
-| `queues` | any |  | nasdaq_itch, af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default 0) |
-| `dpdk_eal_args` | string |  | nasdaq_itch, dpdk: rte_eal_init arguments, space-separated (e.g. "--no-huge --no-pci --in-memory --vdev=net_af_packet0,iface=eth1") |
-| `dpdk_port` | string |  | nasdaq_itch, dpdk: ethdev name, e.g. net_af_packet0 or a PCI address (default: the first port) |
-| `dpdk_exception_port` | string |  | nasdaq_itch, dpdk: ethdev name of a net_tap vdev that carries the kernel's traffic on the port (ARP, GLIMPSE, re-requests, IGMP, kernel TCP); default none |
-| `dpdk_exception_ip` | string |  | nasdaq_itch, dpdk: "a.b.c.d/len" given to the exception port's interface |
-| `dpdk_exception_interval_us` | integer |  | nasdaq_itch, dpdk: how often the exception port is read, microseconds; 0 = every poll (default 20) |
-| `xdp_mode` | string |  | nasdaq_itch, af_xdp: auto \| zerocopy \| native_copy \| generic (default auto: the first that works in that order) |
-| `rcvbuf` | integer |  | nasdaq_itch, kernel: SO_RCVBUF, bytes; 0 = system default (default 0) |
-| `batch` | integer |  | nasdaq_itch: datagrams per recvmmsg (kernel) or RX descriptors per poll (af_xdp), 1 to 1024 (default 32) |
-| `rerequest` | string |  | nasdaq_itch: MoldUDP64 re-request server, "<IPv4 address>:<port>"; absent = gaps are unrecoverable |
-| `glimpse_url` | string |  | nasdaq_itch: GLIMPSE 5.0 server, "<IPv4 address>:<port>"; absent = start at sequence 1 (before the directory spin) |
-| `glimpse_username` | string |  | nasdaq_itch: GLIMPSE login, at most 6 characters (default glimps, the simulator's) |
-| `glimpse_password` | string |  | nasdaq_itch: GLIMPSE password, at most 10 characters (default glimpse) |
-| `reorder_packets` | integer |  | nasdaq_itch: packets held ahead of a gap (default 256) |
-| `gap_timeout_ns` | integer |  | nasdaq_itch: a missing sequence awaited this long on every line is a gap, ns; size it from the A/B skew in the status (default 2000000) |
-| `max_request_attempts` | integer |  | nasdaq_itch: re-requests of one gap before it is unrecoverable; 0 = no limit (default 4) |
-| `request_timeout_ns` | integer |  | nasdaq_itch: re-send an unanswered re-request after this long, ns (default 250000000) |
-| `recovery_buffer_packets` | integer |  | nasdaq_itch: datagrams buffered while a GLIMPSE snapshot is taken, allocated at start (default 65536) |
-| `price_window_ticks` | integer |  | nasdaq_itch: L3 book price window per side, in 0.0001 steps, a multiple of 64; orders outside go to an overflow store (default 65536) |
-| `max_orders` | integer |  | nasdaq_itch: resting orders per instrument the L3 book holds (default 262144) |
-| `hw_timestamps` | boolean |  | nasdaq_itch, kernel: enable NIC receive timestamps on the line interfaces (SIOCSHWTSTAMP, CAP_NET_ADMIN) (default false) |
-| `hw_clock` | string |  | nasdaq_itch: none \| phc_synced: use the NIC timestamp as recv_ts (only when the PHC is synchronised to CLOCK_REALTIME) (default none) |
-| `order_entry` | string |  | nasdaq_itch: none (every order is rejected) \| sim_ouch (OUCH 5.0 to fastmm-sim-itch) (default none) |
-| `ouch_url` | string |  | nasdaq_itch, sim_ouch: OUCH 5.0 server, "<IPv4 address>:<port>" |
-| `order_transport` | string |  | nasdaq_itch, sim_ouch: kernel (TCP socket) \| user_tcp (experimental user-space TCP over the rx_backend's device: AF_PACKET ring, XDP socket or DPDK port; needs user_tcp_ip) (default kernel) |
-| `user_tcp_ip` | string |  | nasdaq_itch, user_tcp: the connection's own IPv4 address on the interface's subnet, not assigned to any kernel interface (af_xdp, dpdk: or the host's own with user_tcp_port) |
-| `user_tcp_port` | integer |  | nasdaq_itch, user_tcp: fixed local TCP port; 0 = random per connection (default 0) |
-| `user_tcp_interface` | string |  | nasdaq_itch, user_tcp: netdev (default: interface) |
-| `user_tcp_gateway` | string |  | nasdaq_itch, user_tcp: next hop IPv4 address when the OUCH server is not on-link |
-| `ouch_username` | string |  | nasdaq_itch, sim_ouch: login, at most 6 characters (default fmouch, the simulator's) |
-| `ouch_password` | string |  | nasdaq_itch, sim_ouch: password, at most 10 characters (default ouch) |
+| `depth_limit` | integer |  | REST snapshot depth, 5 to 5000 |
+| `key_type` | string |  | hmac (default) \| ed25519 |
+| `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
+| `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
+| `md_format` | string |  | json (default) \| sbe (binary market data; needs an Ed25519 api_key) |
+| `sbe_ws_url` | string |  | SBE stream URL; empty = ws_url with stream. -> stream-sbe. |
+| `user_stream` | string |  | ws_api (default) \| listen_key \| none |
+| `position_from_balance` | boolean |  | derive positions from account balances |
+<!-- END config-keys -->
+
+#### `binance_usdm`
+
+<!-- BEGIN config-keys venue:binance_usdm -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 45000 for market data and 240000 for the other channels |
+| `order_api` | string |  | order entry: ws (default) \| rest |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
+| `depth_limit` | integer |  | REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000 |
+| `key_type` | string |  | hmac (default) \| ed25519 |
+| `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
+| `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
+| `ws_private_url` | string |  | private WebSocket URL; empty = derived from ws_url |
+| `position_from_account_update` | boolean |  | correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
+<!-- END config-keys -->
+
+#### `bybit`
+
+<!-- BEGIN config-keys venue:bybit -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 45000 |
+| `order_api` | string |  | order entry: ws (default) \| rest |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
+| `depth` | integer |  | order book subscription depth, 1 to 1000 |
+| `ws_private_url` | string |  | private WebSocket URL; empty = derived from ws_url |
+| `ping_interval_ms` | integer |  | application ping interval, ms, at least 1000 |
+| `orders_per_second` | integer |  | client-side order rate cap, orders/s |
+| `position_from_wallet` | boolean |  | derive positions from the wallet |
+<!-- END config-keys -->
+
+#### `deribit`
+
+<!-- BEGIN config-keys venue:deribit -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 10000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to three heartbeat intervals, 30000 by default |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
+| `ws_private_url` | string |  | private WebSocket URL; empty = derived from ws_url |
+| `currencies` | any |  | currencies for reference data, user channels and reconciliation, "BTC" or ["BTC", "ETH"] (default "BTC") |
+| `book_interval` | string |  | book channel interval, 100ms (default) \| agg2 |
+| `ticker_interval` | string |  | ticker channel interval, 100ms (default) \| agg2 |
+| `trades_interval` | string |  | trades channel interval, 100ms (default) \| agg2 |
+| `heartbeat_interval_s` | integer |  | public/set_heartbeat interval, s, at least 10 |
+| `reject_post_only` | boolean |  | reject crossing post-only orders instead of repricing them (default true) |
+| `cancel_on_disconnect` | boolean |  | cancel-on-disconnect on the order connection (default true) |
+| `matching_engine_rate` | integer |  | order requests per second of the account tier (default 5) |
+| `matching_engine_burst` | integer |  | order request burst of the account tier (default 20) |
+<!-- END config-keys -->
+
+#### `nasdaq_itch`
+
+Line and recovery keys apply to the multicast feed; `rx_backend` selects how it is received and
+`order_entry` whether OUCH order entry is opened at all.
+
+<!-- BEGIN config-keys venue:nasdaq_itch -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `rx_backend` | string |  | multicast receive, kernel (UDP sockets) \| af_xdp (needs CAP_NET_ADMIN, CAP_NET_RAW, CAP_BPF, CAP_IPC_LOCK) \| dpdk (a -DFASTMM_WITH_DPDK=ON build, spin_mode = "busy") (default kernel) |
+| `interface` | string |  | interface of both lines, name or IPv4 address; af_xdp needs a name (default: routing table) |
+| `line_a` | string |  | line A, "<multicast group or local unicast address>:<port>" (required) |
+| `line_b` | string |  | line B, "<multicast group or local unicast address>:<port>"; absent = one line |
+| `line_a_interface` | string |  | interface of line A, overrides interface |
+| `line_b_interface` | string |  | interface of line B, overrides interface |
+| `line_a_source` | string |  | source address of line A: a source-specific join (default any source) |
+| `line_b_source` | string |  | source address of line B |
+| `depth` | integer |  | price levels per side sent to the engine, 1 to 256 (default 20) |
+| `queues` | any |  | af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default 0) |
+| `dpdk_eal_args` | string |  | dpdk: rte_eal_init arguments, space-separated (e.g. "--no-huge --no-pci --in-memory --vdev=net_af_packet0,iface=eth1") |
+| `dpdk_port` | string |  | dpdk: ethdev name, e.g. net_af_packet0 or a PCI address (default: the first port) |
+| `dpdk_exception_port` | string |  | dpdk: ethdev name of a net_tap vdev that carries the kernel's traffic on the port (ARP, GLIMPSE, re-requests, IGMP, kernel TCP); default none |
+| `dpdk_exception_ip` | string |  | dpdk: "a.b.c.d/len" given to the exception port's interface |
+| `dpdk_exception_interval_us` | integer |  | dpdk: how often the exception port is read, microseconds; 0 = every poll (default 20) |
+| `xdp_mode` | string |  | af_xdp: auto \| zerocopy \| native_copy \| generic (default auto: the first that works in that order) |
+| `rcvbuf` | integer |  | kernel: SO_RCVBUF, bytes; 0 = system default (default 0) |
+| `batch` | integer |  | datagrams per recvmmsg (kernel) or RX descriptors per poll (af_xdp), 1 to 1024 (default 32) |
+| `rerequest` | string |  | MoldUDP64 re-request server, "<IPv4 address>:<port>"; absent = gaps are unrecoverable |
+| `glimpse_url` | string |  | GLIMPSE 5.0 server, "<IPv4 address>:<port>"; absent = start at sequence 1 (before the directory spin) |
+| `glimpse_username` | string |  | GLIMPSE login, at most 6 characters (default glimps, the simulator's) |
+| `glimpse_password` | string |  | GLIMPSE password, at most 10 characters (default glimpse) |
+| `reorder_packets` | integer |  | packets held ahead of a gap (default 256) |
+| `gap_timeout_ns` | integer |  | a missing sequence awaited this long on every line is a gap, ns; size it from the A/B skew in the status (default 2000000) |
+| `max_request_attempts` | integer |  | re-requests of one gap before it is unrecoverable; 0 = no limit (default 4) |
+| `request_timeout_ns` | integer |  | re-send an unanswered re-request after this long, ns (default 250000000) |
+| `recovery_buffer_packets` | integer |  | datagrams buffered while a GLIMPSE snapshot is taken, allocated at start (default 65536) |
+| `price_window_ticks` | integer |  | L3 book price window per side, in 0.0001 steps, a multiple of 64; orders outside go to an overflow store (default 65536) |
+| `max_orders` | integer |  | resting orders per instrument the L3 book holds (default 262144) |
+| `hw_timestamps` | boolean |  | kernel: enable NIC receive timestamps on the line interfaces (SIOCSHWTSTAMP, CAP_NET_ADMIN) (default false) |
+| `hw_clock` | string |  | none \| phc_synced: use the NIC timestamp as recv_ts (only when the PHC is synchronised to CLOCK_REALTIME) (default none) |
+| `order_entry` | string |  | none (every order is rejected) \| sim_ouch (OUCH 5.0 to fastmm-sim-itch) (default none) |
+| `ouch_url` | string |  | sim_ouch: OUCH 5.0 server, "<IPv4 address>:<port>" |
+| `order_transport` | string |  | sim_ouch: kernel (TCP socket) \| user_tcp (experimental user-space TCP over the rx_backend's device: AF_PACKET ring, XDP socket or DPDK port; needs user_tcp_ip) (default kernel) |
+| `user_tcp_ip` | string |  | user_tcp: the connection's own IPv4 address on the interface's subnet, not assigned to any kernel interface (af_xdp, dpdk: or the host's own with user_tcp_port) |
+| `user_tcp_port` | integer |  | user_tcp: fixed local TCP port; 0 = random per connection (default 0) |
+| `user_tcp_interface` | string |  | user_tcp: netdev (default: interface) |
+| `user_tcp_gateway` | string |  | user_tcp: next hop IPv4 address when the OUCH server is not on-link |
+| `ouch_username` | string |  | sim_ouch: login, at most 6 characters (default fmouch, the simulator's) |
+| `ouch_password` | string |  | sim_ouch: password, at most 10 characters (default ouch) |
 <!-- END config-keys -->
 
 ## `[[instruments]]`

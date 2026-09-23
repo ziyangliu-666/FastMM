@@ -11,6 +11,8 @@
 # 4. mm-live trades microprice_mm for 15 s against the build tree's fastmm-sim-exchange, journaling
 # 5. mm-replay --verify reproduces that journal's outbound stream
 # 6. an unknown --strategy exits with code 3
+# 7. examples/external-venue, a venue connector in its own project: builds against the same prefix,
+#    its unit test passes, and echo-live loads a configuration whose `kind` names that connector
 # Needs ports 9080 and 9443 free.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -89,5 +91,20 @@ rc=0
 grep -q "mm-live: unknown strategy 'nope' (available: .*microprice_mm" "$EXT/unknown.log" ||
   fail "mm-live --strategy nope does not list the available strategies"
 echo "unknown strategy: exit 3"
+
+step "configure and build examples/external-venue against $PREFIX"
+VENUE_EXT="$EXT-venue"
+cmake -S examples/external-venue -B "$VENUE_EXT" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$PREFIX" ${CXX:+-DCMAKE_CXX_COMPILER=$CXX}
+cmake --build "$VENUE_EXT" ${JOBS:+-j "$JOBS"}
+ctest --test-dir "$VENUE_EXT" --output-on-failure
+
+step "echo-live runs the out-of-tree connector"
+rc=0
+"$VENUE_EXT/echo-live" --config examples/external-venue/configs/echo.toml --dry-run --no-journal \
+  --no-status --duration 2s >"$VENUE_EXT/live.log" 2>&1 || rc=$?
+[[ $rc -eq 0 ]] || { tail -40 "$VENUE_EXT/live.log" >&2; fail "echo-live exited with $rc"; }
+! grep -q "unsupported kind" "$VENUE_EXT/live.log" || fail "echo-live did not resolve kind = \"echo\""
+echo "echo-live: a venue registered outside FastMM ran a session"
 
 echo "ci-external-project: OK"

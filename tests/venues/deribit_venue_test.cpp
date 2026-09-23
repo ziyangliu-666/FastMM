@@ -17,7 +17,7 @@
 
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
-#include "fastmm/venues/venue_factory.hpp"
+#include "fastmm/venues/registry.hpp"
 
 #include <atomic>
 #include <cstdlib>
