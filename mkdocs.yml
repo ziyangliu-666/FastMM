@@ -162,6 +162,7 @@ nav:
           - how-to/operations/running-in-production.md
           - how-to/operations/runbook.md
           - how-to/operations/go-live-checklist.md
+          - how-to/operations/operate-a-running-session.md
           - how-to/operations/kill-switch-and-shutdown.md
           - how-to/operations/journals-replay-pnl.md
           - how-to/operations/query-trading-records.md

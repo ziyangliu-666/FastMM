@@ -68,6 +68,11 @@ struct EngineSection {
   std::uint32_t max_events_per_step = 64;
   int crossed_grace_ms = 100;
   int ack_timeout_ms = 0;  // force-cancel an order without an ack after this long; 0 = off
+  // Operator flatten (fastmm-ctl flatten): the sweep period, how long the engine keeps working the
+  // position off (0 = until it is flat or an operator stops it) and the default slippage.
+  int flatten_interval_ms = 500;
+  int flatten_timeout_ms = 60000;
+  int flatten_slippage_bps = 25;
   int latency_publish_ms = 1000;
   int tsc_recalibrate_s = 10;       // fastmm-live: TSC recalibration period, 0 = never
   std::int64_t timer_slack_ns = 0;  // fastmm-live: PR_SET_TIMERSLACK of its threads, 0 = kernel's

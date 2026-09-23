@@ -13,7 +13,9 @@ The kill switch is one atomic 32-bit flag word in the risk engine (`include/fast
 
 Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`, `OrderRingOverflow`, `StrategyError`, `FeedLost`, `OrderIdsExhausted`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)).
 
-`SIGHUP` clears the kill switch of a running session and resumes quoting (`[engine] on_kill = "stay"`). It also clears a latched `max_loss` trip; the loss already spent stays in the budget.
+`SIGHUP`, or `fastmm-ctl unkill`, clears the kill switch of a running session and resumes quoting (`[engine] on_kill = "stay"`). It also clears a latched `max_loss` trip; the loss already spent stays in the budget.
+
+A kill leaves the inventory on: it pulls quotes and cancels orders, nothing more. Working the position off is `fastmm-ctl flatten`, and it has to run **before** the kill — while the kill switch is engaged the pre-trade check refuses the flatten's orders too ([Operating a running session](operate-a-running-session.md#flatten)).
 
 ## The latched loss budget
 
@@ -41,6 +43,8 @@ updated_ns 1758600000000000000
 
 | Cause | Scope | Log line | Level | What happens next |
 |---|---|---|---|---|
+| `fastmm-ctl kill` | Global, requested | `kill switch requested (flags=0x1); pulling quotes and cancelling all` | WARN | The session keeps running with quoting off; `fastmm-ctl unkill` clears it |
+| `fastmm-ctl stop` | Global, requested | `fastmm-live: shutting down (control socket: stop)`, then `kill switch requested` | WARN | [Shutdown sequence](#shutdown-sequence); exit code 0 |
 | Ctrl-C (SIGINT) or SIGTERM | Global, requested | `fastmm-live: shutting down (signal)`, then `kill switch requested (flags=0x1); pulling quotes and cancelling all` | WARN | [Shutdown sequence](#shutdown-sequence); exit code 0 |
 | `--duration` elapsed | Global, requested | `fastmm-live: shutting down (duration elapsed)`, then the same `kill switch requested` line | WARN | Shutdown sequence; exit code 0 |
 | A venue's order-event ring overflowed | Global, requested | `order ring overflow on <venue>: tripping the kill switch`, then `fastmm-live: shutting down (order ring overflow)` | ERROR | Shutdown sequence; exit code 5 |
@@ -97,14 +101,14 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
 
 From `run_live()` in `src/live/session.cpp`, which also runs Python strategies ([Run a Python strategy live](../strategies/python-live.md)):
 
-1. The control thread notices the signal, the elapsed duration, the ring overflow, a slow-tier failure or a kill the engine tripped itself (it checks every 50 ms), publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
+1. The control thread notices the signal, a `stop` on the [control socket](operate-a-running-session.md), the elapsed duration, the ring overflow, a slow-tier failure or a kill the engine tripped itself (it checks every 50 ms), publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
 2. Unless the engine tripped the kill switch itself (it has already pulled quotes and cancelled), it posts a kill-switch command to the engine. The engine logs `kill switch requested`, pulls every quote and queues cancels for every working order. If the control ring is full, the log says `control ring full: kill switch message dropped`; step 3 still runs.
 3. Independently of the engine, the control thread calls `cancel_all()` on every venue, one after another, over a new blocking REST connection (so it works even when the venue's network thread is stuck), and waits for each reply. It is skipped in `--dry-run`. Each request has a 5000 ms timeout (`http_timeout_ms`), and there is one request per subscribed instrument:
    - Binance: `DELETE /api/v3/openOrders` per symbol; error `-2011` (nothing open) counts as success.
    - Bybit: `/v5/order/cancel-all` per symbol.
    - Deribit: `private/cancel_all_by_instrument` per instrument.
 4. It waits 200 ms so that the engine's queued cancels reach the wire, then stops the engine thread.
-5. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and disconnects. The journal is flushed and closed with a trailer block.
+5. The control socket is closed and removed, so no further command can reach a session that is shutting down. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and disconnects. The journal is flushed and closed with a trailer block.
 6. The summary lines are logged: engine counters (`fastmm-live: events=... risk_rejects=<n> venue_rejects=<n>`), the rejects per reason for each kind that had any (`fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5`), PnL (`fastmm-live: realized_pnl=... unrealized_pnl=... fees=...`), one `[<venue>] final:` line per venue, the clock statistics, after a kill that was not requested or any venue kill `fastmm-live: kill switch flags=<hex> reason=<reason> kills=<n> venue_kills=<n>` (ERROR), then `fastmm-live: shutdown took <n> ms (cancel_all ok)` or `(cancel_all FAILED)`.
 7. The status file is marked `stopped` and left in place.
 8. `fastmm-live: exit code <n>` is logged last.

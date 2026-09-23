@@ -17,7 +17,7 @@ The engine keeps every piece of trading state in memory (`include/fastmm/core/en
 | OMS order table | empty | orders left on the venue are invisible; see [2](#2-orders-the-engine-cannot-see) |
 | Client order id sequence | continues | `[engine] epoch_file` (default `runs/session_epoch`) keeps ids unique; keep the file |
 
-Mitigation: treat a restart as a new trading decision. Before restarting, read the account's position and open orders on the venue, flatten or accept the inherited position deliberately, and size `[risk] max_position` and `max_loss` for the restarted session.
+Mitigation: treat a restart as a new trading decision. Before restarting, read the account's position and open orders on the venue, flatten or accept the inherited position deliberately, and size `[risk] max_position` and `max_loss` for the restarted session. A flatten is session state too: a restart during one abandons it and leaves the position ([Operating a running session](operate-a-running-session.md#a-restart-during-a-flatten)).
 
 ### The loss budget is per process
 
@@ -54,15 +54,15 @@ Binance USDⓈ-M is the only venue that repairs the position afterwards, because
 
 Mitigation: reconcile against the account after every disconnect, not only after the session ([Check PnL](journals-replay-pnl.md#check-pnl)). Treat `<venue>: private channel lost` in the log as an accounting event.
 
-## 4. You cannot watch it, and you cannot talk to it
+## 4. You can only watch it from outside
 
 The entire observability surface is the memory-mapped status file (`/dev/shm/fastmm-<name>.status`) and what reads it: `fastmm-top`, `fastmm-top --json`, and `fastmm-top --metrics <port>`, which serves the snapshot as Prometheus text from its own process ([Monitoring a live session](monitor-with-fastmm-top.md#scrape-it-with-prometheus)). The engine itself pushes nothing and alerts on nothing: grep for `statsd`, `otlp`, `webhook`, `pagerduty` or `alertmanager` and there are no hits.
 
 So everything is a pull, at the resolution of the snapshot: the control thread publishes every 250 ms, and the engine's own counters inside it refresh once a second. Anything shorter-lived than that — a burst of rejects, a one-second stall — is visible only in the log. `fastmm-top --json` prints one snapshot as JSON and carries fewer fields than the snapshot does (`format_status_json`, `src/core/status_segment.cpp`): PnL (`realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`), `started_ns` and `updated_ns`, `dry_run`, `kills` and `venue_kills`, and the per-reason reject breakdowns are all absent, although the text renderer and the exporter print them.
 
-The operator interface is SIGINT and SIGTERM. `ControlCommand` (pull quotes, resume quotes, reset the kill switch, reload, recalibrate) is pushed only from inside `src/live/session.cpp`; nothing external can send one. You cannot pull quotes, reset a kill switch or change a parameter on a running engine. To change anything, stop the process.
+Talking to it is a separate, small surface: the control socket and `fastmm-ctl` ([Operating a running session](operate-a-running-session.md)). You can pull and resume quoting for the session, one venue or one instrument, change strategy parameters and risk limits, flatten the position, trip and clear the kill switch, stop the session and read its status. You cannot change instruments, venues, threads, ring sizes or the strategy itself, and you cannot act on a single order: `ControlCommand::Reload` is still not implemented, so anything else needs a restart.
 
-Mitigation: scrape `fastmm-top --metrics`, and take PnL detail from the log's per-second stats line or the shutdown summary. Alert on `fastmm_up`, on `fastmm_status_age_seconds` above a few seconds, on `fastmm_kill_active`, on `fastmm_events_total` not rising, and on the process exiting with 5, 6 or 7.
+Mitigation: scrape `fastmm-top --metrics`, and take PnL detail from the log's per-second stats line or the shutdown summary. Alert on `fastmm_up`, on `fastmm_status_age_seconds` above a few seconds, on `fastmm_kill_active`, on `fastmm_flatten_state`, on `fastmm_events_total` not rising, and on the process exiting with 5, 6 or 7.
 
 ## 5. The journal
 
@@ -134,7 +134,7 @@ Mitigation: one key per engine, trading permission only, IP-allowlisted where th
 | Ulimits and cgroup limits for the container | `docker/Dockerfile.production` is non-root with the distro CA bundle and no test certificates, but sets no ulimits and no memory limit ([Deploy a release](deploy.md#run-the-container)); `docker/Dockerfile` and `docker-compose.yml` are the 120-second demo, as root |
 | A config profile mechanism | `configs/profiles/production-latency.toml` is one file with no loader and no `--profile` flag; copy its `[engine]` table by hand. Everything outside `[engine]` in that file is simulator config, including literal passwords |
 | Log rotation | point `[logging] file` at a path your own rotation handles, or let `mirror_level` send warnings to a collector on stderr |
-| Any alerting | see [4](#4-you-cannot-watch-it-and-you-cannot-talk-to-it) |
+| Any alerting | see [4](#4-you-can-only-watch-it-from-outside) |
 
 The host settings the latency profile needs but cannot set are `isolcpus`, `nohz_full` and `rcu_nocbs` on the engine and network cores, the `performance` governor, NIC interrupts elsewhere, transparent huge pages at `madvise` or `always`, and a raised `ulimit -l`. `scripts/host-setup.sh tune` does the hugepages, IRQ affinity and governor part as root.
 

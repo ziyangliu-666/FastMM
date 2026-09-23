@@ -23,6 +23,9 @@ usage: fastmm-live --config <file.toml> [options]
   --no-journal             disable journaling even if [engine] journal = true
   --status <path>          live status file for fastmm-top (default /dev/shm/fastmm-<engine>.status)
   --no-status              do not publish live status
+  --control <path>         control socket for fastmm-ctl (default
+                           <journal_dir>/<engine>.ctl, mode 0600)
+  --no-control             do not open a control socket
   --clear-kill             clear a latched kill switch and the cumulative PnL before
                            starting; arms the whole [risk] max_loss budget again
   --log <path>             write the log to a file (warnings are mirrored to stderr)
@@ -35,6 +38,8 @@ API keys come from the environment through ${VAR} references in [venues.*],
 e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.
 SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.
 SIGHUP clears the kill switch and resumes quoting (on_kill = "stay").
+fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,
+kill, unkill, stop and status.
 A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue
 killed) does the same and exits with code 6, unless [engine] on_kill = "stay".
 A max_loss trip is latched in [engine] kill_file: the next start refuses to trade
@@ -273,6 +278,55 @@ ITCH sequence number. See docs/reference/sim-itch.md.
 | 2 | bad command line |
 | 3 | bad configuration, CPU pinning failed, or the summary file cannot be written |
 | 4 | cannot open a socket |
+
+## fastmm-ctl
+
+Sends one command to a running `fastmm-live` session over its control socket
+([Operating a running session](../how-to/operations/operate-a-running-session.md)).
+
+<!-- BEGIN cli-help fastmm-ctl -->
+```text
+usage: fastmm-ctl [--name <engine> | --path <socket> | --config <file.toml>] <command>
+
+  --name <engine>     talk to <dir>/<engine>.ctl ([engine] name in the config)
+  --dir <directory>   where --name looks, default runs ([engine] journal_dir)
+  --path <socket>     talk to this socket (fastmm-live --control <path>)
+  --config <file>     take the engine name and journal_dir from a configuration file
+  --timeout <ms>      how long to wait for the reply, default 2000
+  --help
+
+commands (one per datagram; the reply starts with ok or error)
+  pull [--instrument SYM | --venue NAME]   stop quoting: everywhere, or in that scope
+  resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears
+                                           every scoped pull and stops a running flatten
+  param <name>=<value> ... [--instrument SYM]  new strategy parameters, validated here
+  limits <key>=<value> ...                 new risk limits (the [risk] keys)
+  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
+  kill                                     trip the kill switch (quotes pulled, all
+                                           orders cancelled; the position stays)
+  unkill                                   clear it and quote again (SIGHUP)
+  stop                                     shut the session down (SIGTERM)
+  status                                   one line per topic
+  help                                     this text
+
+examples:
+  fastmm-ctl --name mm status
+  fastmm-ctl --name mm pull --instrument BTCUSDT
+  fastmm-ctl --name mm param half_spread_bps=8
+  fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
+  fastmm-ctl --name mm flatten --max-slippage-bps 15
+
+Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,
+3 no session answered (no socket, or it is not running).
+```
+<!-- END cli-help -->
+
+| Exit code | Meaning |
+|---:|---|
+| 0 | the session answered `ok`, or printed its `status` or `help` |
+| 1 | the session answered `error` (an unknown command, a bad argument, a parameter the schema refuses, a full control ring) |
+| 2 | bad command line |
+| 3 | no session answered: no socket at that path, nobody listening, or no reply within `--timeout` |
 
 ## fastmm-top
 

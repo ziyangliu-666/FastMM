@@ -86,6 +86,8 @@ struct EngineStats {
   std::uint64_t param_expiries = 0;            // max_param_age passed: quoting disabled
   std::uint64_t synthetic_fills = 0;  // fills booked from a cum_qty jump (missed fill messages)
   std::uint64_t ack_timeouts = 0;     // PendingNew orders force-cancelled by the ack sweep
+  std::uint64_t flattens = 0;         // operator flattens started (ControlCommand::Flatten)
+  std::uint64_t flatten_orders = 0;   // reduce-only orders a flatten sent
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
@@ -102,6 +104,7 @@ class Engine {
   static constexpr std::size_t kOutSlotBytes = 192;  // largest Out*Msg
   // TimerMsg::engine values for the engine's own timers (1 is the max_param_age one).
   static constexpr std::uint8_t kAckSweepTimer = 2;
+  static constexpr std::uint8_t kFlattenTimer = 3;
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -326,6 +329,18 @@ class Engine {
   [[nodiscard]] bool quoting_enabled() const noexcept {
     return quoting_enabled_ && !reconciling_ && !params_stale_ && !risk_.killed();
   }
+  // ... and this instrument was not pulled on its own, nor its venue (ControlCommand::PullQuotes
+  // with a scope, an engine-owned flatten).
+  [[nodiscard]] bool quoting_enabled(InstrumentId id) const noexcept {
+    if (!quoting_enabled() || !instruments_.contains(id)) return false;
+    const Instrument& inst = instruments_.get(id);
+    return !inst_pulled_[id.value] && !venue_is_pulled(inst.venue) &&
+           !risk_.venue_killed(inst.venue);
+  }
+  // Where the operator's flatten stands, and how many orders it has sent.
+  [[nodiscard]] FlattenState flatten_state() const noexcept { return flatten_state_; }
+  // The instrument it covers; invalid when it covers every instrument.
+  [[nodiscard]] InstrumentId flatten_scope() const noexcept { return flatten_scope_; }
   [[nodiscard]] bool reconciling() const noexcept { return reconciling_; }
   // max_param_age is set and no ParamUpdate was applied within it (or none yet).
   [[nodiscard]] bool params_stale() const noexcept { return params_stale_; }
@@ -391,12 +406,15 @@ class Engine {
     flush_out();
     return r;
   }
-  // False when the quotes are ignored: quoting is disabled, the instrument is not in the table or
-  // its venue's kill switch is engaged (its quotes were pulled when it tripped).
+  // False when the quotes are ignored: quoting is disabled for the session or for this instrument
+  // or its venue (an operator pull, a flatten), the instrument is not in the table or its venue's
+  // kill switch is engaged (its quotes were pulled when it tripped).
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
     if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
+    if (FASTMM_UNLIKELY(inst_pulled_[id.value])) return false;
     const Instrument& inst = instruments_.get(id);
-    if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue))) return false;
+    if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue) || venue_is_pulled(inst.venue)))
+      return false;
     enter_api();
     Placer place{this};
     quotes_.reconcile(inst, q, oms_, now_, place);
@@ -546,6 +564,8 @@ class Engine {
         const auto& t = msg_cast<TimerMsg>(h);
         if (t.engine == kAckSweepTimer) {
           sweep_acks();  // replay of the engine's ack_timeout sweep
+        } else if (t.engine == kFlattenTimer) {
+          flatten_tick();  // replay of the engine's flatten sweep
         } else if (t.engine != 0) {
           check_param_age();  // replay of the engine's max_param_age timer
         } else {
@@ -950,12 +970,49 @@ class Engine {
       case ControlCommand::Stop:
         stop();
         break;
+      // With an instrument or a venue in the header only that scope stops quoting and has its
+      // quotes pulled; without either, quoting stops for the whole session (as it always did).
       case ControlCommand::PullQuotes:
-        quoting_enabled_ = false;
-        pull_all_quotes();
+        if (c.hdr.instrument.valid()) {
+          pull_instrument(c.hdr.instrument);
+        } else if (c.hdr.venue.valid()) {
+          pull_venue(c.hdr.venue);
+        } else {
+          quoting_enabled_ = false;
+          pull_all_quotes();
+        }
         break;
       case ControlCommand::ResumeQuotes:
-        quoting_enabled_ = true;
+        if (c.hdr.instrument.valid()) {
+          if (instruments_.contains(c.hdr.instrument)) inst_pulled_[c.hdr.instrument.value] = false;
+        } else if (c.hdr.venue.valid()) {
+          venue_pulled_ &= ~venue_mask(c.hdr.venue);
+        } else {
+          // A resume without a scope is the operator taking the session back: every scoped pull is
+          // cleared and a flatten that is still running is abandoned (the strategy quotes again).
+          quoting_enabled_ = true;
+          inst_pulled_.fill(false);
+          venue_pulled_ = 0;
+          if (flatten_state_ == FlattenState::Working) end_flatten(FlattenState::Stopped);
+        }
+        break;
+      case ControlCommand::Flatten:
+        begin_flatten(c.hdr.instrument, static_cast<std::int64_t>(c.arg));
+        break;
+      case ControlCommand::SetLimits:
+        // The payload sits past the ControlMsg prefix; a short record (another producer, an older
+        // journal) is ignored rather than read out of bounds.
+        if (c.hdr.len >= sizeof(ControlLimitsMsg)) {
+          const auto& m = msg_cast<ControlLimitsMsg>(&c.hdr);
+          risk_.set_limits(m.limits, now_);
+          FASTMM_LOG_WARN(
+              "risk limits replaced by the operator: max_position={} max_order_qty={} "
+              "price_collar_bps={} orders_per_sec={}",
+              m.limits.max_position,
+              m.limits.max_order_qty,
+              m.limits.price_collar_bps,
+              m.limits.orders_per_sec);
+        }
         break;
       case ControlCommand::TripKill:
         risk_.trip();
@@ -1045,17 +1102,171 @@ class Engine {
   // switch, quoting disabled, no valid book) is pulled for good instead: its kept quotes are stale.
   void resume_quotes() noexcept {
     Placer place{this};
-    const bool enabled = quoting_enabled();
     const Timestamp now = now_;
     for (const Instrument& inst : instruments_) {
       if (!quotes_.resumable(inst.id)) continue;
-      if (enabled && !risk_.venue_killed(inst.venue) && books_[inst.id.value].is_valid()) {
+      if (quoting_enabled(inst.id) && books_[inst.id.value].is_valid()) {
         quotes_.resume(inst, oms_, now, place);
       } else {
         quotes_.pull_quotes(inst, oms_, place);
       }
     }
     flush_out();
+  }
+
+  // ---- operator scopes and flatten -------------------------------------------------------------
+
+  [[nodiscard]] static constexpr std::uint32_t venue_mask(VenueId v) noexcept {
+    return v.value < 32U ? (1U << v.value) : 0U;
+  }
+  [[nodiscard]] bool venue_is_pulled(VenueId v) const noexcept {
+    return (venue_pulled_ & venue_mask(v)) != 0;
+  }
+  // One instrument stops quoting and its quotes go; the rest of the session keeps trading.
+  void pull_instrument(InstrumentId id) noexcept {
+    if (!instruments_.contains(id)) return;
+    inst_pulled_[id.value] = true;
+    pull_quotes(id);
+  }
+  void pull_venue(VenueId v) noexcept {
+    venue_pulled_ |= venue_mask(v);
+    enter_api();
+    Placer place{this};
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue == v) quotes_.pull_quotes(inst, oms_, place);
+    }
+    flush_out();
+  }
+
+  // The engine flattens by itself: the strategy may be what broke, so it is not asked and not
+  // told. Quoting stops in the scope, its working orders are cancelled, and a repeating engine
+  // timer sends reduce-only slices through the touch until the position is gone (flatten_tick).
+  void begin_flatten(InstrumentId scope, std::int64_t slippage_bps) noexcept {
+    if (scope.valid() && !instruments_.contains(scope)) return;  // not ours to flatten
+    flatten_scope_ = scope;
+    flatten_bps_ = slippage_bps > 0 ? slippage_bps : cfg_.flatten_slippage_bps;
+    flatten_state_ = FlattenState::Working;
+    flatten_deadline_ =
+        cfg_.flatten_timeout.ns > 0 ? now_ + cfg_.flatten_timeout : Timestamp::max();
+    ++stats_.flattens;
+    enter_api();
+    if (scope.valid()) {
+      pull_instrument(scope);
+      StaticVector<Handle<Order>, kMaxOpenOrders> handles;
+      oms_.for_each_open_order(scope, [&](Handle<Order> h, const Order& o) {
+        if (o.is_working()) static_cast<void>(handles.push_back(h));
+      });
+      for (Handle<Order> h : handles) static_cast<void>(submit_cancel(h));
+      flush_out();
+    } else {
+      quoting_enabled_ = false;
+      pull_all_quotes();
+      mass_cancel();
+    }
+    const std::string_view what =
+        scope.valid() ? instruments_.get(scope).symbol.view() : std::string_view("all instruments");
+    FASTMM_LOG_WARN(
+        "flatten requested ({}): quoting is off there, its orders are cancelled and reduce-only "
+        "orders go out {} bps through the touch every {} ms until it is flat",
+        what,
+        flatten_bps_,
+        cfg_.flatten_interval.millis());
+    if (!flatten_timer_.valid() && cfg_.flatten_interval.ns > 0)
+      flatten_timer_ = timers_.add(now_, cfg_.flatten_interval, /*repeat=*/true);
+    flatten_tick();  // do not wait a whole interval for the first slice
+  }
+
+  // Ends the flatten mode; the scope keeps its pull (quoting stays off until the operator
+  // resumes), so nothing starts quoting into whatever broke.
+  void end_flatten(FlattenState how) noexcept {
+    if (flatten_timer_.valid()) {
+      static_cast<void>(timers_.cancel(flatten_timer_));
+      flatten_timer_ = TimerId{};
+    }
+    flatten_state_ = how;
+    if (how == FlattenState::Flat) {
+      FASTMM_LOG_WARN("flatten finished: flat after {} order(s)", stats_.flatten_orders);
+    } else if (how == FlattenState::TimedOut) {
+      FASTMM_LOG_ERROR(
+          "flatten gave up after {} ms ([engine] flatten_timeout_ms) with {} instrument(s) still "
+          "holding a position; quoting stays off until an operator resumes it",
+          cfg_.flatten_timeout.millis(),
+          flatten_left());
+    }
+    publish_live(latency_pub_.load());
+  }
+
+  // Instruments in the flatten's scope that still hold a position.
+  [[nodiscard]] std::uint32_t flatten_left() const noexcept {
+    std::uint32_t n = 0;
+    for (const Instrument& inst : instruments_) {
+      if (flatten_scope_.valid() && inst.id != flatten_scope_) continue;
+      if (!positions_.get(inst.id).flat()) ++n;
+    }
+    return n;
+  }
+
+  // One pass over the scope: send what is missing, then decide whether it is done or out of time.
+  void flatten_tick() noexcept {
+    if (flatten_state_ != FlattenState::Working) return;
+    enter_api();
+    bool left = false;
+    for (const Instrument& inst : instruments_) {
+      if (flatten_scope_.valid() && inst.id != flatten_scope_) continue;
+      left = flatten_instrument(inst) || left;
+    }
+    flush_out();
+    if (!left) {
+      end_flatten(FlattenState::Flat);
+    } else if (now_ >= flatten_deadline_) {
+      end_flatten(FlattenState::TimedOut);
+    }
+  }
+
+  // True while `inst` still has a position to work off. Only one slice is out at a time: the
+  // previous one has to be filled, expired or cancelled before its successor is priced, so the
+  // flatten cannot sell the same position twice. The strategy's own orders do not hold it up:
+  // they were cancelled when the flatten started, and a cancel the venue never acknowledges
+  // would otherwise block the flatten for good.
+  bool flatten_instrument(const Instrument& inst) noexcept {
+    const Position& p = positions_.get(inst.id);
+    if (p.flat()) return false;
+    if (const ClientOrderId prev = flatten_order_[inst.id.value]; prev.valid()) {
+      const Handle<Order> h = oms_.find(prev);
+      if (h.valid() && oms_.is_live(h) && oms_.get(h).is_open()) return true;  // still in flight
+    }
+    const Side side = p.qty.raw > 0 ? Side::Sell : Side::Buy;
+    const Book& b = books_[inst.id.value];
+    if (!b.is_valid()) return true;  // no touch to price against; try again next tick
+    const Price touch = side == Side::Sell ? b.best_bid().price : b.best_ask().price;
+    if (!touch.is_positive()) return true;
+    const Price slip = apply_bps(touch, flatten_bps_);
+    const Price px = inst.round_price(side == Side::Sell ? touch - slip : touch + slip, side);
+    if (!px.is_positive()) return true;
+    Qty qty = p.qty.abs();
+    if (risk_.limits().max_order_qty.is_positive() && qty > risk_.limits().max_order_qty)
+      qty = risk_.limits().max_order_qty;  // one slice per tick until the rest is gone
+    qty = inst.round_qty(qty);
+    if (!inst.valid_qty(qty)) {
+      // Less than one lot (or than the venue's minimum) is left: no order can move it.
+      FASTMM_LOG_WARN("flatten leaves {} on {}: below the tradable minimum", p.qty, inst.symbol);
+      return false;
+    }
+    NewOrderRequest r{};
+    r.instrument = inst.id;
+    r.venue = inst.venue;
+    r.side = side;
+    r.type = OrderType::Limit;
+    r.tif = TimeInForce::Ioc;  // no resting remainder: the next tick reprices against the touch
+    r.post_only = false;
+    r.reduce_only = true;
+    r.price = px;
+    r.qty = qty;
+    if (const auto id = submit_new(r, /*flatten=*/true)) {
+      flatten_order_[inst.id.value] = *id;
+      ++stats_.flatten_orders;
+    }
+    return true;
   }
 
   // The global flag is already set. KillReason::Requested: the control thread asked for it
@@ -1140,13 +1351,15 @@ class Engine {
   void fire_timer(TimerId id, std::uint64_t user_data) noexcept {
     ++stats_.timers_fired;
     const bool ack_timer = ack_timer_.valid() && id == ack_timer_;
-    const bool engine_timer = ack_timer || (param_timer_.valid() && id == param_timer_);
+    const bool flatten_timer = flatten_timer_.valid() && id == flatten_timer_;
+    const bool engine_timer =
+        ack_timer || flatten_timer || (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
       init_header(t, EventType::Timer);
       t.timer_id = id;
-      t.engine = ack_timer ? kAckSweepTimer : (engine_timer ? 1 : 0);
+      t.engine = ack_timer ? kAckSweepTimer : flatten_timer ? kFlattenTimer : engine_timer ? 1 : 0;
       t.user_data = user_data;
       t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
@@ -1158,6 +1371,8 @@ class Engine {
     check_param_age();
     if (ack_timer) {
       sweep_acks();
+    } else if (flatten_timer) {
+      flatten_tick();
     } else if (engine_timer) {
       param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
       flush_out();
@@ -1223,17 +1438,24 @@ class Engine {
     return false;
   }
 
-  Result<ClientOrderId, RejectReason> submit_new(const NewOrderRequest& req) noexcept {
+  // `flatten`: the engine is working a position off (flatten_instrument). The order passes the
+  // same checks as any other except two, both expressed as missing RiskInputs: the position cap
+  // (a reduce-only slice exists to get under it) and self-trade prevention (the flatten cancelled
+  // every order of its scope before the first slice, so the only resting orders it could cross are
+  // already cancelled -- and a cancel the venue never acknowledges must not leave the position on).
+  // The price collar, the fat-finger band, the size, notional and rate limits all still apply.
+  Result<ClientOrderId, RejectReason> submit_new(const NewOrderRequest& req,
+                                                 bool flatten = false) noexcept {
     if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
       return fail(RejectReason::InstrumentDisabled);
     const Instrument& inst = instruments_.get(req.instrument);
     const Timestamp now = now_;
     OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty};
     RiskInputs in{now,
-                  &positions_.get(req.instrument),
+                  flatten ? nullptr : &positions_.get(req.instrument),
                   oms_.open_qty(req.instrument, req.side),
                   oms_.open_count(req.instrument),
-                  oms_.best_own_px(req.instrument, opposite(req.side))};
+                  flatten ? Price{} : oms_.best_own_px(req.instrument, opposite(req.side))};
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -1511,6 +1733,9 @@ class Engine {
     live.kill_flags = risk_.kill_flags();
     live.kill_reason = kill_reason_;
     live.venue_kill_reasons = venue_kill_reasons_;
+    live.flatten_state = flatten_state_;
+    live.flatten_instruments_left = flatten_state_ == FlattenState::Off ? 0 : flatten_left();
+    live.flatten_orders = stats_.flatten_orders;
     live.latency = latency;
     live_pub_.store(live);
   }
@@ -1556,8 +1781,19 @@ class Engine {
   bool params_stale_;                  // max_param_age passed, or no ParamUpdate yet
   bool param_deadline_armed_ = false;  // param_deadline_ applies (max_param_age set, fresh)
   Timestamp param_deadline_{};
-  TimerId param_timer_{};  // the engine's one-shot max_param_age timer
-  TimerId ack_timer_{};    // the engine's repeating ack_timeout sweep
+  TimerId param_timer_{};    // the engine's one-shot max_param_age timer
+  TimerId ack_timer_{};      // the engine's repeating ack_timeout sweep
+  TimerId flatten_timer_{};  // ... and its flatten sweep while one runs
+  FlattenState flatten_state_ = FlattenState::Off;
+  InstrumentId flatten_scope_{};  // the flatten's instrument; invalid: every instrument
+  std::int64_t flatten_bps_ = 0;
+  Timestamp flatten_deadline_ = Timestamp::max();
+  // Instruments and venues an operator pulled on their own (ControlCommand::PullQuotes with a
+  // scope, a flatten); they stay pulled until a matching resume.
+  std::array<bool, kMaxInstruments> inst_pulled_{};
+  // The flatten slice each instrument has in flight (invalid: none).
+  std::array<ClientOrderId, kMaxInstruments> flatten_order_{};
+  std::uint32_t venue_pulled_ = 0;
   KillReason kill_reason_ = KillReason::None;
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;

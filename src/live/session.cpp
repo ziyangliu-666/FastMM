@@ -12,16 +12,20 @@
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
+#include "fastmm/live/control_socket.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/store_thread.hpp"
+#include "fastmm/strategies/param_publisher.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
 #include "fastmm/version.hpp"
+
+#include <fmt/format.h>
 
 #include <limits.h>
 #include <unistd.h>
@@ -685,6 +689,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.max_events_per_step = cfg.engine.max_events_per_step;
   deps.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
   deps.engine.ack_timeout = milliseconds(cfg.engine.ack_timeout_ms);
+  deps.engine.flatten_interval = milliseconds(cfg.engine.flatten_interval_ms);
+  deps.engine.flatten_timeout = milliseconds(cfg.engine.flatten_timeout_ms);
+  deps.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   deps.engine.cpu = cfg.engine.cpu;
@@ -977,7 +984,6 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   snap.venue_count =
       static_cast<std::uint8_t>(std::min<std::size_t>(slots.size(), kStatusMaxVenues));
   const auto publish_status = [&](StatusRunState state, const EngineLiveStats& live) {
-    if (!status.is_open()) return;
     snap.state = state;
     snap.updated_ns = wall_now().ns;
     snap.events = live.stats.events;
@@ -994,6 +1000,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.venue_kills = static_cast<std::uint32_t>(live.venue_kills);
     snap.kill_flags = live.kill_flags;
     snap.kill_reason = static_cast<std::uint8_t>(live.kill_reason);
+    snap.flatten_state = static_cast<std::uint8_t>(live.flatten_state);
+    snap.flatten_instruments_left = live.flatten_instruments_left;
+    snap.flatten_orders = live.flatten_orders;
     snap.realized_pnl_raw = live.stats.realized_pnl_raw;
     snap.unrealized_pnl_raw = live.stats.unrealized_pnl_raw;
     snap.fees_raw = live.stats.fees_raw;
@@ -1026,7 +1035,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       sv.wire_tick_to_trade = wire_status_latency(st.wire_tick_to_trade);
       copy_feed_status(st.feed, sv.feed);
     }
-    status.publish(snap);
+    if (status.is_open()) status.publish(snap);
   };
   // Writes the cumulative PnL (and latches a max-loss trip) next to the journal, off the engine
   // thread. A write failure is logged once and does not stop the session.
@@ -1071,7 +1080,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         "intervals {}",
         last_tsc.has_rate() ? "use the TSC (constant_tsc)" : "use clock_gettime");
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
-  // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written
+  // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written,
+  // 8 the control socket's `stop`
   int reason = 0;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
@@ -1079,8 +1089,103 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   KillReason engine_kill = KillReason::None;  // the unrequested global kill, once seen
   std::int64_t next_kill_reminder = 0;
   std::uint32_t reported_venue_kills = 0;  // venue kill bits already logged
+
+  // ---- control socket ---------------------------------------------------------------------
+  // Everything an operator can do to a running session besides the signals, over an AF_UNIX
+  // socket this thread owns (live/control_socket.hpp). The commands that change what the engine
+  // does become messages on the control ring, so the journal records them and a replay
+  // reproduces them.
+  const auto clear_kill = [&] {
+    if (!push_control(control_ring, ControlCommand::ResetKill)) return false;
+    kill_state.latched = false;
+    kill_state.reason = KillReason::None;
+    engine_kill = KillReason::None;
+    reported_venue_kills = 0;
+    return true;
+  };
+  std::unique_ptr<ParamPublisher> publisher;
+  if (custom == nullptr && strategy != nullptr && strategy->publisher != nullptr) {
+    // The publisher shares the control ring, so a `param` and the `pull` after it reach the
+    // engine in the order the operator typed them. This thread is the ring's only producer.
+    try {
+      publisher = strategy->publisher(ParamSink::to_ring(control_ring), cfg.strategy.params);
+    } catch (const std::exception& e) {
+      FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
+    }
+  }
+  ControlPlane plane;
+  plane.instruments = &instruments;
+  plane.limits = cfg.risk_limits();
+  plane.submit = [&](const EventHeader& h) { return control_ring.try_push(&h, h.len); };
+  plane.venue = [&](std::string_view name, VenueId& out) {
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      if (slots[i]->venue->name() != name) continue;
+      out = VenueId{static_cast<std::uint8_t>(i)};
+      return true;
+    }
+    return false;
+  };
+  plane.request_stop = [&] {
+    if (reason == 0) reason = 8;
+  };
+  plane.clear_kill = [&] {
+    FASTMM_LOG_WARN("control socket: clearing the kill switch and resuming quoting");
+    return clear_kill();
+  };
+  plane.status = [&] {
+    std::string out = format_status(snap, wall_now().ns, /*color=*/false);
+    const RiskLimits& l = plane.limits;
+    const auto dec = [](auto v) {
+      char buf[48];
+      const std::size_t n = v.to_decimal(buf);
+      return std::string(buf, n);
+    };
+    out += fmt::format(
+        "limits     max_order_qty={} max_order_notional={} max_position={} max_open_orders={} "
+        "price_collar_bps={} fat_finger_bps={} stale_md_ms={} max_loss={} orders_per_sec={} "
+        "burst={} stp={}\n",
+        dec(l.max_order_qty),
+        dec(l.max_order_notional),
+        dec(l.max_position),
+        l.max_open_orders,
+        l.price_collar_bps,
+        l.fat_finger_bps,
+        l.stale_md.millis(),
+        dec(l.max_loss),
+        l.orders_per_sec,
+        l.burst,
+        l.stp);
+    return out;
+  };
+  if (publisher) {
+    plane.params = [&](const ControlPlane::ParamValues& values, InstrumentId inst) {
+      try {
+        if (!publisher->publish(values, inst.valid() ? inst : ParamPublisher::kAllInstruments))
+          return std::string("the control ring is full; try again");
+      } catch (const std::invalid_argument& e) {
+        return std::string(e.what());
+      }
+      return std::string();
+    };
+  } else if (custom != nullptr && custom->set_params) {
+    plane.params = custom->set_params;
+  }
+  ControlSocket control_socket;
+  if (!opts.no_control) {
+    const std::string ctl_path = opts.control_path.empty()
+                                     ? cfg.engine.journal_dir + "/" + cfg.engine.name + ".ctl"
+                                     : opts.control_path;
+    std::string ctl_error;
+    if (control_socket.open(ctl_path, &ctl_error)) {
+      FASTMM_LOG_INFO("control socket: {} (fastmm-ctl --path {} status)", ctl_path, ctl_path);
+    } else {
+      FASTMM_LOG_WARN("control socket {} unavailable: {}", ctl_path, ctl_error);
+    }
+  }
+
   while (reason == 0) {
     sleep_for(milliseconds(50));
+    control_socket.poll(plane);
     if (g_signal != 0) reason = 2;
     const std::int64_t now = steady_now().ns;
     if (opts.duration_ns > 0 && now - start >= opts.duration_ns) reason = reason == 0 ? 1 : reason;
@@ -1146,12 +1251,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (g_hup != 0) {
       g_hup = 0;
       FASTMM_LOG_WARN("SIGHUP: clearing the kill switch and resuming quoting");
-      if (!push_control(control_ring, ControlCommand::ResetKill))
-        FASTMM_LOG_ERROR("control ring full: kill reset message dropped");
-      kill_state.latched = false;
-      kill_state.reason = KillReason::None;
-      engine_kill = KillReason::None;
-      reported_venue_kills = 0;
+      if (!clear_kill()) FASTMM_LOG_ERROR("control ring full: kill reset message dropped");
     }
     if (now >= next_status) {
       next_status = now + 250'000'000;
@@ -1193,6 +1293,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
   }
+  control_socket.close();  // no command can reach a session that is shutting down
   const std::int64_t shutdown_start = steady_now().ns;
   persist_kill(runner->live_stats());
   publish_status(StatusRunState::Stopping, runner->live_stats());
@@ -1210,12 +1311,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                     reason == 1   ? std::string_view("duration elapsed")
                     : reason == 2 ? std::string_view("signal")
+                    : reason == 8 ? std::string_view("control socket: stop")
                                   : std::string_view("order ring overflow"));
   }
 
   // Kill switch: the engine pulls quotes and queues cancels (it already did when it tripped the
   // switch itself); independently every venue cancels all open orders over its own REST
   // connection (6.7).
+  if (publisher) publisher->close();
   if (reason != 4 && !push_control(control_ring, ControlCommand::TripKill))
     FASTMM_LOG_ERROR("control ring full: kill switch message dropped");
   bool cancel_ok = true;

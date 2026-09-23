@@ -319,15 +319,30 @@ class LiveEngine {
     started_ = true;
   }
 
+  // What fastmm-live's control thread does with a command from its control socket
+  // (src/live/control_socket.cpp): put it on the engine's control ring, where the journal records
+  // it and a replay reproduces it.
+  bool control(ControlCommand cmd,
+               InstrumentId inst = InstrumentId::invalid(),
+               VenueId venue = VenueId::invalid(),
+               std::uint64_t arg = 0) {
+    ControlMsg m{};
+    init_header(m, EventType::Control, inst, venue);
+    m.command = cmd;
+    m.arg = arg;
+    m.hdr.recv_ts = wall_now();
+    return control_.try_push(&m, m.hdr.len);
+  }
+  // The ring a ParamPublisher publishes onto, as fastmm-live's control thread does.
+  [[nodiscard]] MsgRing& control_ring() noexcept { return control_; }
+  // Safe while the engine runs (a seqlocked copy).
+  [[nodiscard]] EngineLiveStats live_stats() const noexcept { return engine_->live_stats(); }
+
   // Kill switch -> independent REST cancel_all -> stop the engine, then the net thread.
   void stop() {
     if (!started_ || stopped_) return;
     stopped_ = true;
-    ControlMsg m{};
-    init_header(m, EventType::Control);
-    m.command = ControlCommand::TripKill;
-    m.hdr.recv_ts = wall_now();
-    kill_pushed_ = control_.try_push(&m, m.hdr.len);
+    kill_pushed_ = control(ControlCommand::TripKill);
     cancel_all_ok_ = venue_->cancel_all();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     engine_->stop();

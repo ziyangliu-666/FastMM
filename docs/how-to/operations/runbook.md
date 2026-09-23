@@ -58,7 +58,7 @@ Every ERROR line should have a known cause ([Troubleshooting](troubleshooting.md
 
 ## When a kill fires
 
-The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fastmm-top` and in the status file's `kill_reason`. Nothing resets a kill switch; the process must restart.
+The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fastmm-top` and in the status file's `kill_reason`. A kill pulls the quotes and cancels the orders; the position stays. `fastmm-ctl unkill` (or `SIGHUP`) clears the switch of a session that is still running, and `fastmm-ctl flatten` works the position off — flatten first, because while the switch is engaged the pre-trade check refuses the flatten's orders too ([Operating a running session](operate-a-running-session.md)).
 
 | Reason | Diagnosis | Action |
 |---|---|---|
@@ -90,7 +90,7 @@ A crash is any stop that did not log `shutdown took <n> ms (cancel_all ok)`: `ki
 
 ## Roll back
 
-1. Stop the running session with SIGTERM and confirm `cancel_all ok` and no open orders on the venue.
+1. Stop the running session with SIGTERM or `fastmm-ctl stop` and confirm `cancel_all ok` and no open orders on the venue.
 2. Repoint the symlink: `ln -sfn /opt/fastmm-<previous version> /opt/fastmm`.
 3. Check the config still loads against the older binary: `fastmm-live --config <your.toml> --dry-run --duration 10s`. A configuration key the older build does not know is ignored with a warning naming the key and line, so a config written for a newer build usually starts, silently without that feature.
 4. Use the matching `fastmm-top`. The status file layout is versioned, and a mismatched reader refuses the file rather than showing wrong numbers.

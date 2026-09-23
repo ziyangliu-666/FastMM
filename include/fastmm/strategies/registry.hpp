@@ -15,6 +15,7 @@
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/strategies/param_publisher.hpp"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
@@ -60,9 +61,16 @@ inline constexpr std::size_t kTransportKinds = static_cast<std::size_t>(Transpor
 
 struct StrategyEntry {
   using Factory = std::unique_ptr<IEngineRunner> (*)(TransportKind, RunnerDeps&);
+  // Builds a publisher for this strategy's parameters over `sink`, its copy seeded with the
+  // values the session configured the strategy with, so fastmm-live can accept parameter changes
+  // while it runs (src/live/control_socket.cpp). Null when the parameters are not a FASTMM_PARAMS
+  // struct (a hot strategy builds its schema at run time and brings its own publisher). Throws
+  // std::invalid_argument on a value the schema refuses (startup only).
+  using PublisherFactory = std::unique_ptr<ParamPublisher> (*)(ParamSink, const ParamMap&);
   std::string_view name;  // must outlive the registry (S::name() returns a literal)
   const ParamSchema* schema = nullptr;
   std::array<Factory, kTransportKinds> factories{};  // indexed by TransportKind
+  PublisherFactory publisher = nullptr;
 
   [[nodiscard]] bool supports(TransportKind k) const noexcept {
     const auto i = static_cast<std::size_t>(k);
@@ -105,19 +113,21 @@ class StrategyRegistry {
   AddResult try_add(std::string_view name,
                     const ParamSchema* schema,
                     TransportKind kind,
-                    StrategyEntry::Factory factory) {
+                    StrategyEntry::Factory factory,
+                    StrategyEntry::PublisherFactory publisher = nullptr) {
     const auto k = static_cast<std::size_t>(kind);
     if (name.empty() || factory == nullptr || k >= kTransportKinds || schema == nullptr)
       return AddResult::Invalid;
     for (StrategyEntry& e : entries_) {
       if (e.name != name) continue;
       if (e.schema != schema) return AddResult::Conflict;
+      if (e.publisher == nullptr) e.publisher = publisher;
       if (e.factories[k] == factory) return AddResult::AlreadyPresent;
       if (e.factories[k] != nullptr) return AddResult::Conflict;
       e.factories[k] = factory;
       return AddResult::Added;
     }
-    StrategyEntry e{name, schema, {}};
+    StrategyEntry e{name, schema, {}, publisher};
     e.factories[k] = factory;
     entries_.push_back(e);
     return AddResult::Added;

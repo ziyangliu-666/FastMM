@@ -306,6 +306,15 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "ack_timeout_ms", e.ack_timeout_ms);
     if (e.ack_timeout_ms < 0)
       fail_at(*t->get("ack_timeout_ms"), "ack_timeout_ms must be >= 0 (0 disables)");
+    get(*t, "flatten_interval_ms", e.flatten_interval_ms);
+    if (e.flatten_interval_ms <= 0)
+      fail_at(*t->get("flatten_interval_ms"), "flatten_interval_ms must be > 0");
+    get(*t, "flatten_timeout_ms", e.flatten_timeout_ms);
+    if (e.flatten_timeout_ms < 0)
+      fail_at(*t->get("flatten_timeout_ms"), "flatten_timeout_ms must be >= 0 (0 never gives up)");
+    get(*t, "flatten_slippage_bps", e.flatten_slippage_bps);
+    if (e.flatten_slippage_bps < 0)
+      fail_at(*t->get("flatten_slippage_bps"), "flatten_slippage_bps must be >= 0");
     get(*t, "latency_publish_ms", e.latency_publish_ms);
     get(*t, "tsc_recalibrate_s", e.tsc_recalibrate_s);
     if (e.tsc_recalibrate_s < 0)
@@ -570,6 +579,9 @@ std::string Config::redacted() const {
   kv("max_events_per_step", engine.max_events_per_step);
   kv("crossed_grace_ms", engine.crossed_grace_ms);
   kv("ack_timeout_ms", engine.ack_timeout_ms);
+  kv("flatten_interval_ms", engine.flatten_interval_ms);
+  kv("flatten_timeout_ms", engine.flatten_timeout_ms);
+  kv("flatten_slippage_bps", engine.flatten_slippage_bps);
   kv("min_requote_ticks", engine.min_requote_ticks);
   kv("min_requote_interval_ms", engine.min_requote_interval_ms);
   kv("min_qty_bps", engine.min_qty_bps);
@@ -696,6 +708,9 @@ std::string Config::effective_toml() const {
   e.insert("max_events_per_step", static_cast<std::int64_t>(engine.max_events_per_step));
   e.insert("crossed_grace_ms", static_cast<std::int64_t>(engine.crossed_grace_ms));
   e.insert("ack_timeout_ms", static_cast<std::int64_t>(engine.ack_timeout_ms));
+  e.insert("flatten_interval_ms", static_cast<std::int64_t>(engine.flatten_interval_ms));
+  e.insert("flatten_timeout_ms", static_cast<std::int64_t>(engine.flatten_timeout_ms));
+  e.insert("flatten_slippage_bps", static_cast<std::int64_t>(engine.flatten_slippage_bps));
   e.insert("latency_publish_ms", static_cast<std::int64_t>(engine.latency_publish_ms));
   e.insert("tsc_recalibrate_s", static_cast<std::int64_t>(engine.tsc_recalibrate_s));
   e.insert("timer_slack_ns", engine.timer_slack_ns);

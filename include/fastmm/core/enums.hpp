@@ -365,6 +365,14 @@ enum class ControlCommand : std::uint8_t {
   // trips that venue's kill bit only. Sent through the venue's order ring, so it is journaled and
   // replays like any other engine input.
   TripVenueKill = 8,
+  // Operator flatten (arg: the slippage allowance in basis points, 0 takes [engine]
+  // flatten_slippage_bps; hdr.instrument: one instrument, invalid for every one): the engine
+  // stops quoting in that scope, cancels its orders and sends reduce-only IOC slices through the
+  // touch until the position is flat (core/engine.hpp).
+  Flatten = 9,
+  // New risk limits for RiskEngine::set_limits. The message is a ControlLimitsMsg: a ControlMsg
+  // with a RiskLimits payload (core/messages.hpp).
+  SetLimits = 10,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -386,6 +394,10 @@ enum class ControlCommand : std::uint8_t {
       return "RecalibrateTsc";
     case ControlCommand::TripVenueKill:
       return "TripVenueKill";
+    case ControlCommand::Flatten:
+      return "Flatten";
+    case ControlCommand::SetLimits:
+      return "SetLimits";
   }
   return "?";
 }
@@ -435,6 +447,31 @@ inline constexpr std::size_t kKillVenueSlots = 31;
       return "FeedLost";
     case KillReason::OrderIdsExhausted:
       return "OrderIdsExhausted";
+  }
+  return "?";
+}
+
+// How far an operator flatten (ControlCommand::Flatten) got. The engine publishes it with its
+// live stats and fastmm-live copies it into the status file and the control socket's `status`.
+enum class FlattenState : std::uint8_t {
+  Off = 0,       // none was asked for in this session
+  Working = 1,   // quoting is off in its scope and reduce-only slices are going out
+  Flat = 2,      // it finished: no position left in its scope
+  TimedOut = 3,  // [engine] flatten_timeout_ms elapsed with a position left; it gave up
+  Stopped = 4,   // the operator resumed quoting before it finished
+};
+[[nodiscard]] constexpr std::string_view to_string(FlattenState s) noexcept {
+  switch (s) {
+    case FlattenState::Off:
+      return "Off";
+    case FlattenState::Working:
+      return "Working";
+    case FlattenState::Flat:
+      return "Flat";
+    case FlattenState::TimedOut:
+      return "TimedOut";
+    case FlattenState::Stopped:
+      return "Stopped";
   }
   return "?";
 }

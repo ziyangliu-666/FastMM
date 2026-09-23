@@ -27,6 +27,13 @@ struct EngineConfig {
   // lost request cannot hold a pool slot, a max_open_orders slot and max_position exposure for
   // good (zero: off).
   Duration ack_timeout{};
+  // Operator flatten (ControlCommand::Flatten, the control socket's `flatten`): how often the
+  // engine looks at the remaining position and sends the next reduce-only slice, how long it
+  // keeps trying (zero: until it is flat or the operator stops it) and the slippage allowance a
+  // `flatten` without --max-slippage-bps uses.
+  Duration flatten_interval = milliseconds(500);
+  Duration flatten_timeout = seconds(60);
+  std::int64_t flatten_slippage_bps = 25;
   // Net PnL carried over from earlier sessions ([risk] max_loss is a budget for the deployment,
   // not per process); fastmm-live reads it from the durable kill state (core/session_state.hpp).
   Notional pnl_carry{};

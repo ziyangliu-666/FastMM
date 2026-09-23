@@ -34,6 +34,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
 | `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
 | `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |
+| `flatten_interval_ms` | integer |  | how often an operator flatten looks at the position left and sends the next reduce-only slice, ms (default 500) |
+| `flatten_timeout_ms` | integer |  | how long an operator flatten keeps trying before it gives up and leaves the position, ms; 0 = until it is flat or an operator stops it (default 60000) |
+| `flatten_slippage_bps` | integer |  | how far through the touch a flatten prices its orders when the command gives no --max-slippage-bps, basis points (default 25) |
 | `rng_seed` | integer |  | seed of the strategy random generator ctx.rng() (default 1) |
 | `md_ring_bytes` | integer |  | market-data ring per venue, bytes, a power of two (default 4194304) |
 | `order_ring_bytes` | integer |  | order-event ring per venue, bytes, a power of two (default 1048576) |
