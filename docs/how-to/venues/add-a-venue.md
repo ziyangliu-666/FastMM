@@ -1,6 +1,6 @@
 # Add a venue
 
-Model a JSON-over-WebSocket connector on the three that ship: Binance Spot (`include/fastmm/venues/binance/`), Bybit v5 spot (`include/fastmm/venues/bybit/`) and Deribit options and futures (`include/fastmm/venues/deribit/`). Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data. Binary protocols (FIX, ITCH/OUCH, SBE) are codecs instead; see [FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md) and [CME MDP 3.0](../../reference/codecs/cme-mdp3.md).
+Model a JSON-over-WebSocket connector on the four that ship: Binance Spot (`include/fastmm/venues/binance/`), Binance USDⓈ-M (`include/fastmm/venues/binance_usdm/`), Bybit v5 spot (`include/fastmm/venues/bybit/`) and Deribit options and futures (`include/fastmm/venues/deribit/`). Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data. Binary wire formats live in `codecs/` ([FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md), [CME MDP 3.0](../../reference/codecs/cme-mdp3.md)), and a connector can build on them: `nasdaq_itch` is a `Venue` over ITCH, MoldUDP64 and OUCH ([Venue connectors](../../reference/venues.md#nasdaq-totalview-itch-nasdaq_itch)), and Binance SBE market data is a connector option (`md_format = "sbe"`).
 
 Throughout, `foo` stands for your venue.
 
@@ -11,12 +11,13 @@ A connector is one control-path class that implements `fastmm::venues::Venue` (`
 The threading contract, from `venue.hpp`:
 
 - `load_reference_data()` and `attach()` run once on the main thread before any network thread starts; blocking REST calls are allowed there. `fastmm-live` also calls `subscribe()` once during that setup.
-- `connect()`, `disconnect()`, `on_timer()`, `on_wake()` and `request_open_orders()` run on the venue's reactor thread.
+- `connect()`, `disconnect()`, `on_timer()`, `on_wake()`, `poll()` and `request_open_orders()` run on the venue's reactor thread. `poll()` is called from the reactor loop, and `[engine] spin_mode = "busy"` needs it to make progress without an epoll wake-up.
+- `send_now()` is called on the engine thread with `[engine] threading = "single"`: encode and write the batch inline instead of pushing it to the outbound ring ([Architecture](../../explanation/architecture.md#run-to-completion)).
 - `cancel_all()` must work from any thread, including while the reactor thread is stuck: use an independent blocking REST connection (`BlockingHttp`, `include/fastmm/venues/blocking_http.hpp`).
 - Two sinks carry events to the engine (`include/fastmm/venues/event_sink.hpp`). The market-data sink is lossy: when its ring is full the delta is dropped and the book must resync. The order sink never drops: it spins, then calls its overflow callback, and `fastmm-live` shuts down.
 - Nothing on the hot path allocates, throws or calls a virtual function; the virtual `Venue` interface is control path only.
 
-Read [Venue connectors](../../reference/venues.md) for what the three connectors do today, and its section [What a Binance-compatible simulator must implement](../../reference/venues.md#what-a-binance-compatible-simulator-must-implement) as a list of venue behaviours your connector must handle.
+Read [Venue connectors](../../reference/venues.md) for what the five connectors do today, and its section [What a Binance-compatible simulator must implement](../../reference/venues.md#what-a-binance-compatible-simulator-must-implement) as a list of venue behaviours your connector must handle.
 
 ## 2. File layout
 
@@ -105,7 +106,7 @@ The sink receives `on_snapshot()`, `on_delta()`, `on_resync(SyncReason)` and `re
 
 On a gap, the connector emits `ConnectionStateMsg` with `ConnState::Resyncing` on channel 0 (`emit_connection_state()` in `include/fastmm/venues/order_events.hpp`) and fetches a new snapshot, rate limited: Bybit and Deribit resubscribe at most once every 2 s per instrument and again when no snapshot arrives within 10 s. Any state other than `Live` on channel 0 makes the engine clear the book and pull the quotes of that venue's instruments.
 
-A channel with no traffic for `stale_ms` reports `ConnState::Stale`; after `dead_ms` the connection is closed and reopened. Defaults are 2000 ms and 10000 ms (Binance), 2000 ms and 30000 ms (Bybit), 10000 ms and 30000 ms (Deribit); for quiet testnet feeds see [Venue connectors](../../reference/venues.md#configuration-keys).
+A channel with no traffic for `stale_ms` reports `ConnState::Stale`; after `dead_ms` the connection is closed and reopened. The `stale_ms` defaults are 2000 ms (Binance, Binance USDⓈ-M, Bybit) and 10000 ms (Deribit); the connectors raise the configured `dead_ms` to at least 45000 ms (Binance, Binance USDⓈ-M market data, Bybit), 240000 ms (Binance USDⓈ-M other channels) and three heartbeat intervals, 30000 ms by default (Deribit). For quiet testnet feeds see [Venue connectors](../../reference/venues.md#configuration-keys).
 
 ## 5. Order entry
 
@@ -157,7 +158,7 @@ Subclass `Venue` and implement:
 - `attach()`: keep the symbol table, instruments, both sinks and the outbound ring.
 - `connect()`, `disconnect()`, `subscribe()`: open the channels. Bybit uses one handler struct per channel (`on_state`, `on_text`, `on_binary`, `on_connected_send_subscriptions`) inside a `ConnectionSlot<Handler>` (`include/fastmm/venues/connection_slot.hpp`), which picks plain TCP for `ws://` and TLS for `wss://`; reconnect backoff comes from `net::BackoffConfig` (`include/fastmm/net/backoff.hpp`).
 - `on_timer()`: keepalives and application pings, clock-offset refresh, snapshot retries. The backend calls it about once a second.
-- `on_wake()`: drain the outbound ring (section 5).
+- `on_wake()`: drain the outbound ring (section 5). `poll()`: one non-blocking pass over the venue's sockets, for `spin_mode = "busy"`. `send_now()`: encode and write a batch handed over by the engine thread, for `threading = "single"`.
 - `request_open_orders()` and `cancel_all()` (sections 1 and 8).
 - `status()`: fill `VenueStatus`; `fastmm-live` logs it every second and `fastmm-top` shows it.
 - Control-path REST on the reactor thread goes through `RestChannel` (`include/fastmm/venues/rest_channel.hpp`). Honour `--record-raw` with `RawRecorder` (`include/fastmm/venues/raw_recorder.hpp`).

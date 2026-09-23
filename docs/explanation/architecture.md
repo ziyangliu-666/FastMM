@@ -85,7 +85,7 @@ The io_uring backend talks to the kernel through the raw `io_uring_setup` / `io_
 
 ### Backend latency
 
-`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a shared 8-core host) the two are within measurement noise: p50 about 12.8 µs for both when client and server share one reactor; 10.8 to 11.3 µs for both, depending on the run, with the server on its own busy-polling thread; about 74 µs for both when both sides block and each round trip needs two cross-thread wake-ups. Loopback TCP and the `read`/`write` system calls dominate, and both backends make those calls the same way; io_uring only saves the empty `epoll_wait` of an idle busy-polling loop.
+`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a shared 8-core host) the two are within measurement noise. Figures from [bench/README.md](../../bench/README.md), measured 2026-09-23: 11.7 to 12.2 µs for both backends when client and server share one reactor (`BM_ReactorEchoInline`); 17.1 to 17.7 µs for both when both sides block and each round trip needs two cross-thread wake-ups (`BM_ReactorEchoThread/*/0`). Loopback TCP and the `read`/`write` system calls dominate, and both backends make those calls the same way; io_uring only saves the empty `epoll_wait` of an idle busy-polling loop. The two rows with the server on its own busy-polling thread (`BM_ReactorEchoThread/*/1`) read 8.00 ms in the same results, which is not a round-trip cost; the cause is not established, so do not use those rows.
 
 ## Hot-path rules
 

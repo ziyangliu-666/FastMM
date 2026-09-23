@@ -114,14 +114,14 @@ F and G require Side, OrderQty and OrdType, which `OutCancelMsg` / `OutReplaceMs
 
 ## Performance
 
-`bench/bench_codecs_fix.cpp`, gcc 13 RelWithDebInfo, an 8-core desktop under WSL2, pinned, median of 9 repetitions:
+`bench/bench_codecs_fix.cpp`, from [bench/README.md](../../../bench/README.md) (`scripts/bench.sh`, preset `release-native`, gcc 13, an 8-core desktop under WSL2, pinned, median of 5 repetitions, 2026-09-23):
 
 | benchmark | p50 |
 |---|---|
-| `BM_Fix_ParseExecReportFill` (validate + index a 25-field, ~250-byte fill, one getter) | 201 ns |
-| `BM_Fix_DecodeExecReportFill` (parse + `OrderFillMsg` into a MsgRing, ExecID dedup) | 393 ns |
-| `BM_Fix_BuildNewOrderSingle` (`FixEncoder::encode`, post-only limit, 9 body fields) | 149 ns |
-| `BM_Fix_FramerNext` (one complete message) | 10.6 ns |
+| `BM_Fix_ParseExecReportFill` (validate + index a 25-field, ~250-byte fill, one getter) | 221 ns |
+| `BM_Fix_DecodeExecReportFill` (parse + `OrderFillMsg` into a MsgRing, ExecID dedup) | 404 ns |
+| `BM_Fix_BuildNewOrderSingle` (`FixEncoder::encode`, post-only limit, 9 body fields) | 122 ns |
+| `BM_Fix_FramerNext` (one complete message) | 8.3 ns |
 
 ```bash
 ./build/<dir>/bin/bench/bench_codecs_fix --cpu=5 --benchmark_repetitions=9 \

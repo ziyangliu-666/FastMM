@@ -78,7 +78,7 @@ dpdk_eal_args = "--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 --vde
 dpdk_port = "net_af_packet0"
 ```
 
-`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. EAL's `Error creating '/var/run/dpdk'` in a user namespace is harmless with `--in-memory`.
+`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. With `--in-memory` the EAL keeps no runtime files, so its `Error creating '/var/run/dpdk'` in a user namespace does not affect the run.
 
 On a NIC, bind it to `vfio-pci` (`scripts/host-setup.sh dpdk-bind <iface>`; no-IOMMU mode on a VM), give the EAL hugepages and name the PCI address in `dpdk_port`. The port then has no kernel netdev; an exception port gives the kernel one:
 

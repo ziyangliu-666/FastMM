@@ -3,6 +3,7 @@
 | Term | Meaning |
 |---|---|
 | **ack** | a venue's confirmation that it accepted an order (`OrderAckMsg`); an order is working only after it |
+| **adverse selection** | the cost of a maker fill that happened because the price was about to move against the quote; it is the gap between the quoted half spread and the PnL actually realised ([Economics](../explanation/economics.md)) |
 | **basis point (bp, bps)** | 0.01 % = 0.0001. `5_bps` is a `Ratio` of 0.0005; 5 bps of 60,000 USDT is 30 USDT |
 | **book** | the price levels of one instrument: an L2 book aggregates quantity per price, an L3 book keeps each order |
 | **book ticker** | a top-of-book update (best bid and ask with quantities) without depth |
@@ -16,6 +17,7 @@
 | **engine clock** | the time the engine uses for all decisions, read once per event; recorded in the journal |
 | **epoch** | see *session epoch* |
 | **fill** | an execution of one of our orders; `on_fill` receives a `Fill` |
+| **fill ratio** | fills divided by new orders sent, reported by `fastmm-backtest` |
 | **fixed point** | integers with an implied scale: `Price`, `Qty` and `Notional` count units of 1e-8 ([Fixed point](fixed-point.md)) |
 | **harness** | `StrategyHarness<S>`, a real engine with a simulated venue for unit tests |
 | **hook** | a strategy member function the engine calls on an event (`on_book`, `on_fill`, ...) |
@@ -34,10 +36,12 @@
 | **OMS** | the order management system: the state machine of every order from send to a terminal state |
 | **outbound hash** | the SHA-256 over every order message a run sent; equal hashes mean identical order streams |
 | **post-only** | an order the venue rejects (or reprices) if it would trade on arrival, so it is always a maker order |
+| **queue position** | the displayed quantity resting ahead of our order at its price; it decides whether a trade at that price reaches us. Simulated by `queue_conservatism` under `[backtest] fill_model = "l2_queue"` |
 | **quote** | a resting bid or ask a market maker keeps in the book; FastMM's quote manager owns quote orders |
 | **quote manager** | the engine component that turns desired quotes into new, cancel and replace orders |
 | **Ratio** | a dimensionless fixed-point factor; 1.0 is raw 100,000,000 and 1 bp is raw 10,000 |
 | **raw** | the integer inside a fixed-point value (`.raw`); `1.5_px` has raw 150,000,000 |
+| **rebate** | a negative fee: the venue pays the maker. `[venues.<name>.fees] maker_bps` below zero |
 | **reconciliation** | after a reconnect, the venue's open orders are compared with the OMS: Begin, open orders, End |
 | **registry** | the table of strategies by name with their Sim, Replay and Live factories |
 | **replay** | running a journal back through the engine and strategy; `--verify` compares the order stream |

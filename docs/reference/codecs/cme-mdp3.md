@@ -139,13 +139,13 @@ An RptSeq at or below the last applied one is a stale replay and is skipped sile
 
 ## Benchmarks
 
-`bench/bench_codecs_mdp3.cpp` (Google Benchmark, `RelWithDebInfo`, gcc 13, WSL2 on a shared 8-core desktop; see [Benchmarks](../../explanation/benchmarks.md#caveats)):
+`bench/bench_codecs_mdp3.cpp`, from [bench/README.md](../../../bench/README.md) (`scripts/bench.sh`, preset `release-native`, gcc 13, WSL2 on a shared 8-core desktop, 2026-09-23; see [Benchmarks](../../explanation/benchmarks.md#caveats)):
 
 | Benchmark | p50 | What is timed |
 |---|---|---|
-| `BM_Mdp3_DecodeBook46_4Entries` | 51.9 ns / packet | `Mdp3Decoder::decode_packet` of a Book46 packet with 4 Change entries (2 bid, 2 offer levels) into a `MsgRing` sink, one `BookDeltaMsg`, plus draining the ring |
-| `BM_Mdp3_ArbitrationAB_Heartbeat` | 10.0 ns / packet copy | a heartbeat packet on line A (processed) then line B (dropped) |
-| `BM_Mdp3_FeedAB_Book46_4Entries` | 57.2 ns / A+B pair | the 4-entry Book46 packet through `Mdp3Feed` on A, its duplicate on B, ring drain |
+| `BM_Mdp3_DecodeBook46_4Entries` | 39.5 ns / packet | `Mdp3Decoder::decode_packet` of a Book46 packet with 4 Change entries (2 bid, 2 offer levels) into a `MsgRing` sink, one `BookDeltaMsg`, plus draining the ring |
+| `BM_Mdp3_ArbitrationAB_Heartbeat` | 9.7 ns / packet copy | a heartbeat packet on line A (processed) then line B (dropped) |
+| `BM_Mdp3_FeedAB_Book46_4Entries` | 44.5 ns / A+B pair | the 4-entry Book46 packet through `Mdp3Feed` on A, its duplicate on B, ring drain |
 
 Run: `bench_codecs_mdp3 --cpu=5 --benchmark_repetitions=7 --benchmark_min_time=0.3s`.
 
