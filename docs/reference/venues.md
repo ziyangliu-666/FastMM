@@ -45,6 +45,33 @@ A venue-fatal error and a REST hard stop stop new orders and replaces; Cancel an
 
 Binance Spot also sweeps once when the order channel first goes Live, with an empty watermark so the snapshot says nothing about the engine's own orders: it only finds orders the engine does not know — what a session that died without cancelling left resting — and cancels them. Their client order ids carry an earlier session epoch, so they can never be confused with this session's.
 
+### Executions the private stream never delivered
+
+An open-order snapshot cannot report a fill that *finished* an order: the venue has nothing left to hold, so the order is simply absent and its quantity, price and fee are gone. Inferring the quantity from a `cum_qty` the venue reports later (`Oms::absorb_cum` → `Engine::book_missed_fill`) only works while the order is still open, and even then it is an estimate — the order's own price, and no fee.
+
+So a reconciliation asks what the account executed before it asks what is open. `Venue::request_executions(since_venue_ms)` runs the venue's trade-history query for every subscribed instrument and emits each execution into the order sink as an ordinary `OrderFillMsg` carrying the venue's execution id and `OrderFillMsg::kReplayed`; `Oms::on_fill` already deduplicates by execution id, so only the ones the engine never saw are booked, with their real price and their real fee. By the time the snapshot is read its `executedQty` is covered, and an order the snapshot drops has been proved cancelled rather than guessed at. The snapshot's `Begin` carries `ReconcileMsg::kExecutionsExact` when every instrument answered in full.
+
+Where the replay starts is the connector's watermark: the trade id after the last one it forwarded for that symbol, or — before it has seen one — the venue time of the last execution it forwarded, which starts at `connect()`. A connector replays nothing from before it connected, because the engine's position starts at zero and another session's fills do not belong in it; restoring a restarted session's position is a separate piece of work, and `request_executions(since_venue_ms)` is where its watermark would go.
+
+**When the query cannot be answered.** `VenueCapabilities::executions` says whether a connector can ask at all, and a reconciliation that was not preceded by a complete replay says so rather than passing for exact:
+
+* the snapshot's `Begin` carries no `kExecutionsExact`, and the engine counts it (`EngineStats::estimated_reconciles`) and logs that a quantity it reports which no fill covered will be booked at the order's own price with no fee;
+* an order the snapshot drops with quantity still working is reported as before (`EngineStats::unresolved_orders`), with the message saying which of the two it is: the executions were replayed first, so the order was cancelled, or the venue could not be asked and the position may be short;
+* a query that failed (a rate limit, a ban, a reply that did not parse) leaves the watermark where it was and is retried from the connector's housekeeping timer every 5 s until the venue answers, so recovery does not wait for the next reconnect. `VenueStatus::execution_queries`, `executions_fetched` and `execution_query_errors` count all three.
+
+A fill the venue reported as cumulative quantity before any execution named it stays remembered (`Oms`'s synthetic-fill pool). When the replay later names it, that execution does not add its quantity again: it corrects what the estimate got wrong, the price and the fee (`OmsUpdate::corrected_qty`, `PositionTracker::correct_fill`, `EngineStats::corrected_fills`). Correcting `qty` from `est_px` to `px` moves the position's PnL by `qty * (px - est_px)`, given up on a buy and received on a sell; the average entry price keeps the estimate, because moving it would need the position the fill was booked into, which is history.
+
+What each venue can answer, from their current documentation (2026-09-24):
+
+| venue | query | scope | window | identity | implemented |
+|---|---|---|---|---|---|
+| Binance Spot | `GET /api/v3/myTrades` | per symbol (`symbol` required) | `fromId` (ascending, exclusive of neither end) **or** `startTime`/`endTime` no more than 24 h apart; the two cannot be combined | `id` (int64, per symbol); the order only as `orderId` — there is no `clientOrderId`, and `side` is `isBuyer` | yes; weight 20, limit ≤ 1000 |
+| Binance USDⓈ-M | `GET /fapi/v1/userTrades` | per symbol | `fromId` **or** a range up to 7 days, within the last 3 months; neither given returns 7 days | `id` (int64), `orderId`, `side` | no |
+| Bybit v5 | `GET /v5/execution/list` | per account (only `category` is required) | a range up to 7 days, 2 years of history, opaque `nextPageCursor`, newest first | `execId` (string), and `orderLinkId` is the client id | no |
+| Deribit | `private/get_user_trades_by_instrument` | per instrument, or `..._by_currency` per currency | `historical: false` covers the last 24 h only and `true` covers everything older; a single call cannot span both | `trade_id` (string), `order_id`, and `direction` is the **taker's** side | no |
+
+The three that are not implemented declare `executions = false` in the registry, which is what makes their reconciliations report themselves as estimates instead of being assumed exact.
+
 ## Binance Spot
 
 | channel | endpoint | purpose |

@@ -248,7 +248,7 @@ TEST_CASE(
 
 // ---- 3. fills nobody was listening for --------------------------------------------------------
 
-TEST_CASE("recovery: a fill while the private stream is down comes back as a synthetic fill") {
+TEST_CASE("recovery: a fill while the private stream is down is booked from the venue's trades") {
   ServerFixture fx(quiet_server());
   ReadyHarness h(fx);
   OmsMirror m(h.instruments);
@@ -267,23 +267,21 @@ TEST_CASE("recovery: a fill while the private stream is down comes back as a syn
   CHECK(m.position().is_zero());  // the engine has heard nothing
   fx.server.set_user_stream_muted(false);
 
-  // The reconciliation snapshot carries executedQty: the OMS absorbs the jump and the engine
-  // books the difference at the order's own price.
+  // The reconciliation asks the venue what it filled before it asks what is open, so the execution
+  // arrives as an ordinary fill with its real price and its real fee. Nothing is estimated: the
+  // snapshot's executedQty is already covered by the time it is read.
   h.venue->request_open_orders();
   await_reconcile(h, m);
-  CHECK(m.synthetic_fills() == 1);
-  CHECK(m.synthetic_qty() == kLot);
+  CHECK(m.replayed_fills() == 1);
+  CHECK(m.synthetic_fills() == 0);
+  CHECK(m.exact_reconciles() >= 1);
   CHECK(m.position() == kLot);
   CHECK(m.position() == fx.server.stats().position);
-  // No fee is booked for a fill the venue never described, so the engine's fee total is short by
-  // exactly what the venue charged. That difference is the documented cost of this path.
-  CHECK(m.fees().is_zero());
-  CHECK(fx.server.stats().fees.is_positive());
+  CHECK(m.fees() == fx.server.stats().fees);
   check_orders_agree(fx, m);
 
-  // The rest of the order fills, still in the dark. Now the venue has nothing open to report, so
-  // the snapshot cannot carry the quantity: see NOTES.md, "A fill that finishes an order while the
-  // private stream is down is lost".
+  // The rest of the order fills, still in the dark. The venue now has nothing open to report - the
+  // order is gone from the snapshot entirely - so only its trade history can say what happened.
   fx.server.set_user_stream_muted(true);
   CHECK(fx.server.fill_open_order(wire, kLot) == kLot);
   REQUIRE(h.pump([&] { return fx.server.stats().open_orders == 0; }));
@@ -292,9 +290,116 @@ TEST_CASE("recovery: a fill while the private stream is down comes back as a syn
   await_reconcile(h, m);
   CHECK(m.oms().open_count() == 0);  // the order is gone from both views
   check_orders_agree(fx, m);
-  CHECK(fx.server.stats().position == Qty::from_raw(kLot.raw * 2));
-  CHECK(m.oms().stats().reconcile_unresolved == 1);  // and the engine says so
-  CHECK(m.position() == kLot);  // ... because it cannot book what it cannot see
+  CHECK(m.replayed_fills() == 2);
+  CHECK(m.synthetic_fills() == 0);
+  CHECK(m.oms().stats().reconcile_unresolved == 0);  // nothing left to guess at
+  CHECK(fx.server.stats().position == two);
+  CHECK(m.position() == two);
+  CHECK(m.fees() == fx.server.stats().fees);
+}
+
+TEST_CASE(
+    "recovery: a fill during an order-channel outage is booked when the cancel-all reconciles") {
+  ServerFixture fx(quiet_server());
+  ReadyHarness h(fx);
+  OmsMirror m(h.instruments);
+  const Qty two = Qty::from_raw(kLot.raw * 2);
+  const std::string wire = std::string(encode_cl_ord_id(cid(1)).view());
+
+  SUBCASE("the order is left part filled") {
+    place_resting(h, m, cid(1), resting_bid(fx, 170), two);
+    fx.server.set_user_stream_muted(true);
+    CHECK(fx.server.fill_open_order(wire, kLot) == kLot);
+    REQUIRE(h.pump([&] {
+      m.drain(h.oc);
+      return fx.server.stats().user_events_dropped >= 1;
+    }));
+    CHECK(m.position().is_zero());
+
+    // Both WS API connections go with the fill still unheard of. The connector cancels what is left
+    // over REST - so the cancel ack that would have carried executedQty is lost with the stream -
+    // and reconciles when it comes back.
+    fx.server.set_user_stream_muted(false);
+    fx.server.drop_ws_api_connections(true);
+    await_reconcile(h, m);
+    CHECK(m.replayed_fills() >= 1);
+    CHECK(m.position() == kLot);
+    CHECK(m.position() == fx.server.stats().position);
+    CHECK(m.fees() == fx.server.stats().fees);
+    check_orders_agree(fx, m);
+  }
+
+  SUBCASE("the order is finished") {
+    place_resting(h, m, cid(1), resting_bid(fx, 180), two);
+    fx.server.set_user_stream_muted(true);
+    CHECK(fx.server.fill_open_order(wire, two) == two);
+    REQUIRE(h.pump([&] {
+      m.drain(h.oc);
+      return fx.server.stats().open_orders == 0;
+    }));
+    CHECK(m.position().is_zero());
+
+    fx.server.set_user_stream_muted(false);
+    fx.server.drop_ws_api_connections(true);
+    await_reconcile(h, m);
+    CHECK(m.replayed_fills() >= 1);
+    CHECK(m.oms().open_count() == 0);
+    CHECK(m.oms().stats().reconcile_unresolved == 0);
+    CHECK(m.position() == two);
+    CHECK(m.position() == fx.server.stats().position);
+    CHECK(m.fees() == fx.server.stats().fees);
+    check_orders_agree(fx, m);
+  }
+}
+
+// A cancel ack that carries executedQty still books the missing quantity straight away - the engine
+// cannot wait for a reconciliation to know its position. That booking is an estimate: the order's
+// own price and no fee. The next reconciliation replays the execution that caused it, and the
+// estimate must be replaced, not added to.
+TEST_CASE("recovery: an execution replaces the synthetic fill a cancel ack booked") {
+  ServerFixture fx(quiet_server());
+  ReadyHarness h(fx);
+  OmsMirror m(h.instruments);
+  const Qty two = Qty::from_raw(kLot.raw * 2);
+  place_resting(h, m, cid(1), resting_bid(fx, 190), two);
+  const std::string wire = std::string(encode_cl_ord_id(cid(1)).view());
+
+  // Half trades with the stream muted; unmuting does not replay it, so the cancel ack is the first
+  // message that mentions the quantity.
+  fx.server.set_user_stream_muted(true);
+  CHECK(fx.server.fill_open_order(wire, kLot) == kLot);
+  REQUIRE(h.pump([&] {
+    m.drain(h.oc);
+    return fx.server.stats().user_events_dropped >= 1;
+  }));
+  fx.server.set_user_stream_muted(false);
+
+  OutCancelMsg c{};
+  init_header(c, EventType::OutCancel, InstrumentId{0}, VenueId{0});
+  c.cl_ord_id = cid(1);
+  c.venue_order_id = h.last_ack(cid(1))->venue_order_id;
+  m.request_cancel(cid(1));
+  h.send(c.hdr);
+  REQUIRE(h.pump([&] {
+    m.drain(h.oc);
+    return m.oms().open_count() == 0;
+  }));
+  CHECK(m.synthetic_fills() == 1);  // booked from the cancel ack's executedQty
+  CHECK(m.position() == kLot);
+  CHECK(m.fees().is_zero());  // ... at the order's own price and with no fee
+
+  // The reconciliation replays the execution. The quantity is already in the position, so what the
+  // execution changes is its price and its fee.
+  h.venue->request_executions();
+  REQUIRE(h.pump([&] {
+    m.drain(h.oc);
+    return m.replayed_fills() >= 1;
+  }));
+  CHECK(m.corrected_fills() == 1);
+  CHECK(m.position() == kLot);  // not two
+  CHECK(m.position() == fx.server.stats().position);
+  CHECK(m.fees() == fx.server.stats().fees);
+  CHECK(m.oms().stats().corrected_fills == 1);
 }
 
 // ---- 5. uncertain order outcomes --------------------------------------------------------------

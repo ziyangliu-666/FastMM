@@ -72,7 +72,10 @@ void register_binance_usdm_venue(VenueRegistry& r) {
                                     .order_entry = true,
                                     .replace = true,
                                     .positions = true,
-                                    .polls = false},
+                                    .polls = false,
+                                    // GET /fapi/v1/userTrades would serve it (7-day window,
+                                    // weight 5, `id` per symbol); not written yet.
+                                    .executions = false},
                            .make = &make}));
 }
 

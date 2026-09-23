@@ -138,6 +138,16 @@ class BinanceOrderEncoder {
   bool encode_rest_open_orders(std::string_view symbol,
                                std::int64_t timestamp_ms,
                                RestRequest& out);
+  // GET /api/v3/myTrades: the account's executions on `symbol`. `from_id` > 0 asks for trades from
+  // that trade id on (what a connector that has seen one uses); otherwise `start_ms` bounds the
+  // window, which the venue caps at 24 hours. The two cannot be combined - rest-api.md lists the
+  // legal parameter combinations - so from_id wins. Weight 20.
+  bool encode_rest_my_trades(std::string_view symbol,
+                             std::int64_t from_id,
+                             std::int64_t start_ms,
+                             int limit,
+                             std::int64_t timestamp_ms,
+                             RestRequest& out);
 
   // Sorted parameter list for one request; builds both the signature payload and the JSON.
   // Public so the .cpp helpers can build lists; not part of the stable API.
@@ -223,6 +233,23 @@ struct WsApiResponse {
   RateLimitInfo rate;
 };
 
+// One execution as returned by GET /api/v3/myTrades. Binance Spot identifies a trade by `id`,
+// unique per symbol, and names the order only by `orderId`: there is no clientOrderId, so a
+// connector maps it back through the order ids its own acks carried. `side` is not reported either
+// - `isBuyer` carries it.
+struct MyTradeRecord {
+  std::string_view symbol;
+  std::int64_t id = 0;
+  std::int64_t order_id = 0;
+  std::string_view price;
+  std::string_view qty;
+  std::string_view commission;
+  std::string_view commission_asset;
+  std::int64_t time_ms = 0;
+  bool is_buyer = false;
+  bool is_maker = false;
+};
+
 // One open order as returned by openOrders.status / GET /api/v3/openOrders.
 struct OpenOrderRecord {
   std::string_view symbol;
@@ -251,6 +278,10 @@ class BinanceWsApiDecoder {
   ParseStatus decode_open_orders(std::string_view json,
                                  bool rest_array,
                                  const std::function<void(const OpenOrderRecord&)>& fn) noexcept;
+  // Iterates the bare array GET /api/v3/myTrades returns, oldest trade id first. Views point
+  // into `json`.
+  ParseStatus decode_my_trades(std::string_view json,
+                               const std::function<void(const MyTradeRecord&)>& fn) noexcept;
 
  private:
   struct Impl;

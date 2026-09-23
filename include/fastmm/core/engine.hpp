@@ -86,6 +86,14 @@ struct EngineStats {
   std::uint64_t param_updates = 0;             // ParamUpdate events applied
   std::uint64_t param_expiries = 0;            // max_param_age passed: quoting disabled
   std::uint64_t synthetic_fills = 0;  // fills booked from a cum_qty jump (missed fill messages)
+  // Executions replayed from a venue's trade history (Venue::request_executions), and how many of
+  // them named a synthetic fill, replacing its estimated price and missing fee with the venue's.
+  std::uint64_t replayed_fills = 0;
+  std::uint64_t corrected_fills = 0;
+  // Reconciliations whose snapshot was preceded by a complete execution replay, and those where the
+  // connector could not ask or the query failed: only the first kind can be taken as exact.
+  std::uint64_t exact_reconciles = 0;
+  std::uint64_t estimated_reconciles = 0;
   // Orders a reconciliation snapshot dropped while they still had working quantity: the venue
   // ended them without saying how, so the position may be short by up to that much.
   std::uint64_t unresolved_orders = 0;
@@ -784,8 +792,11 @@ class Engine {
 
   // A venue message reported more filled quantity than the fills we received (a private-stream
   // outage, or a reconciliation snapshot): book the difference. The message does not say what the
-  // missing quantity traded at, so the order's own price is used and no fee is booked; the next
-  // position snapshot (ReconcileMsg::Kind::Position, PositionUpdateMsg) corrects the quantity.
+  // missing quantity traded at, so the order's own price is used and no fee is booked. That is an
+  // estimate, and it stays one only until an execution from the venue's trade history names it
+  // (OmsUpdate::corrected_qty); a venue that cannot be asked
+  // (VenueCapabilities::executions = false) leaves it standing, which is what
+  // EngineStats::estimated_reconciles counts.
   // The strategy's on_fill hook does not fire for these: there is no OrderFillMsg behind them.
   void book_missed_fill(const OmsUpdate& u) noexcept {
     if (u.missed_qty.is_zero()) return;
@@ -826,9 +837,12 @@ class Engine {
     ++stats_.unresolved_orders;
     FASTMM_LOG_ERROR(
         "order {} left the venue's open orders with {} still working and no fill or cancel to "
-        "explain it: the position may be short by that much",
+        "explain it: {}",
         encode_cl_ord_id(u.order.cl_ord_id),
-        u.unresolved_qty);
+        u.unresolved_qty,
+        reconcile_exact_ ? "the venue's executions were replayed first, so it was cancelled"
+                         : "the venue could not be asked what it filled, so the position may be "
+                           "short by that much");
   }
 
   void after_oms_update(const OmsUpdate& u, const EventHeader& h) noexcept {
@@ -885,6 +899,7 @@ class Engine {
     const OmsUpdate u = oms_.on_fill(f);
     if (u.action == OmsAction::Duplicate) return;
     ++stats_.fills;
+    if (FASTMM_UNLIKELY((f.flags & OrderFillMsg::kReplayed) != 0)) ++stats_.replayed_fills;
     // A fill for an order that is no longer open (late fill) or was never ours still changes the
     // position: without an instrument in the OMS snapshot, the fill itself says what was traded.
     const bool from_order = u.order.instrument.valid();
@@ -923,8 +938,25 @@ class Engine {
         }
         fee = Notional{};
       }
-      positions_.on_fill(id, side, f.price, booked, fee, inst);
-      emit_fill(id, side, f.price, f.qty, booked, fee, fee_asset, u, &f);
+      // Quantity a synthetic fill already put in the position is not booked again: this execution
+      // names what the estimate could only guess, so it replaces its price and its fee. The rest of
+      // the execution is an ordinary fill; the fee belongs to the correction, which adds it whole.
+      const Notional exec_fee = fee;  // what this execution cost, whichever path books it
+      if (FASTMM_UNLIKELY(!u.corrected_qty.is_zero())) {
+        const Qty corrected = u.corrected_qty < booked ? u.corrected_qty : booked;
+        ++stats_.corrected_fills;
+        FASTMM_LOG_INFO("order {}: execution {} of {} at {} replaces the estimate booked at {}",
+                        encode_cl_ord_id(f.cl_ord_id),
+                        f.exec_id,
+                        corrected,
+                        f.price,
+                        u.synthetic_px);
+        positions_.correct_fill(id, side, u.synthetic_px, f.price, corrected, fee, inst);
+        booked = booked - corrected;
+        fee = Notional{};
+      }
+      if (booked.is_positive()) positions_.on_fill(id, side, f.price, booked, fee, inst);
+      emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
@@ -1096,6 +1128,16 @@ class Engine {
     switch (m.kind) {
       case ReconcileMsg::Kind::Begin: {
         reconciling_ = true;
+        reconcile_exact_ = (m.flags & ReconcileMsg::kExecutionsExact) != 0;
+        if (reconcile_exact_) {
+          ++stats_.exact_reconciles;
+        } else {
+          ++stats_.estimated_reconciles;
+          FASTMM_LOG_WARN(
+              "reconciling without the venue's executions: filled quantity this snapshot reports "
+              "that no fill covered is an estimate, and an order it drops cannot be told from one "
+              "that filled");
+        }
         Placer place{this};
         for (const Instrument& inst : instruments_)
           quotes_.pull_quotes(inst, oms_, place, /*keep_desired=*/true);  // resumed at End
@@ -1818,6 +1860,9 @@ class Engine {
   bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;
   bool reconciling_ = false;
+  // The reconciliation in progress was preceded by a complete execution replay, so what it reports
+  // is the venue's own and nothing in it has to be estimated (ReconcileMsg::kExecutionsExact).
+  bool reconcile_exact_ = false;
   bool params_stale_;                  // max_param_age passed, or no ParamUpdate yet
   bool param_deadline_armed_ = false;  // param_deadline_ applies (max_param_age set, fresh)
   Timestamp param_deadline_{};

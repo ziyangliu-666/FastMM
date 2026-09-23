@@ -218,6 +218,10 @@ struct OrderCancelRejectMsg {
 static_assert(sizeof(OrderCancelRejectMsg) == 128);
 
 struct OrderFillMsg {
+  // The execution comes from the venue's trade history (Venue::request_executions), not from the
+  // private stream: it may already have been booked, so cum_qty and leaves_qty are not reported and
+  // the OMS works out how much of it is new (Oms::on_fill, OmsUpdate::corrected_qty).
+  static constexpr std::uint8_t kReplayed = 1U << 0;
   EventHeader hdr;
   ClientOrderId cl_ord_id;
   VenueOrderId venue_order_id;
@@ -225,13 +229,14 @@ struct OrderFillMsg {
   std::uint8_t pad0_[6];
   Price price;
   Qty qty;      // this execution
-  Qty cum_qty;  // cumulative after this execution
+  Qty cum_qty;  // cumulative after this execution (0 with kReplayed: the venue did not say)
   Qty leaves_qty;
   Notional fee;  // >= 0 paid, < 0 rebate; in units of fee_asset
   Side side;
   Liquidity liquidity;
   FeeAsset fee_asset;  // Quote: `fee` is a quote amount; Base: base units; Other: not convertible
-  std::uint8_t pad_[53];
+  std::uint8_t flags;  // kReplayed
+  std::uint8_t pad_[52];
 };
 static_assert(sizeof(OrderFillMsg) == 256);
 
@@ -312,6 +317,12 @@ static_assert(sizeof(ConnectionStateMsg) == 128);
 struct ReconcileMsg {
   enum class Kind : std::uint8_t { Begin = 0, OpenOrder = 1, Position = 2, End = 3 };
   static constexpr std::uint8_t kSentWatermark = 1U << 0;
+  // Begin: every execution the venue made since the last one the engine booked was replayed before
+  // this snapshot (Venue::request_executions succeeded), so the snapshot's quantities are the
+  // venue's own and nothing in it has to be guessed at. Without it the connector could not ask, and
+  // a quantity the snapshot reports that no fill covered is an estimate: see
+  // Engine::book_missed_fill and Oms::reconcile_end.
+  static constexpr std::uint8_t kExecutionsExact = 1U << 1;
   EventHeader hdr;
   Kind kind;
   Side side;

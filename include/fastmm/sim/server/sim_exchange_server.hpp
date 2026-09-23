@@ -44,6 +44,7 @@ struct SimServerStats {
   std::uint64_t depth_snapshots = 0;
   std::uint64_t time_requests = 0;
   std::uint64_t open_orders_queries = 0;
+  std::uint64_t my_trades_queries = 0;
   std::uint64_t cancel_all_requests = 0;
   std::uint64_t signature_errors = 0;
   std::uint64_t session_logons = 0;  // successful session.logon (Ed25519 accounts)
@@ -92,6 +93,7 @@ struct SimServerStats {
   std::uint64_t fills_since_mark = 0;
   std::uint64_t cancel_all_since_mark = 0;
   std::uint64_t open_orders_queries_since_mark = 0;
+  std::uint64_t my_trades_queries_since_mark = 0;
   std::uint64_t md_sessions_opened_since_mark = 0;
   std::uint64_t api_sessions_opened_since_mark = 0;
 };

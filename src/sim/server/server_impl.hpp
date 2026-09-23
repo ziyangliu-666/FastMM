@@ -111,6 +111,7 @@ enum class RestEndpoint : std::uint8_t {
   CancelReplace,
   Amend,
   OpenOrders,
+  MyTrades,
   CancelAll,
   ListenKeyCreate,
   ListenKeyKeepalive,
@@ -136,6 +137,22 @@ struct CancelOutcome {
   int code = -2011;
   std::string msg = "Unknown order sent.";
   std::string result;  // cancel result JSON when ok
+};
+
+// One execution of the account, kept for the life of the run: GET /api/v3/myTrades answers from
+// here, and unlike the order index it is never swept, because the whole point of the endpoint is to
+// report trades of orders the venue has already forgotten.
+struct TradeRecord {
+  std::int64_t id = 0;  // Binance trade id, unique per symbol and ascending
+  std::int64_t order_id = 0;
+  std::uint32_t symbol = 0;
+  AccountId account = kStrategyAccount;
+  Price price{};
+  Qty qty{};
+  Notional commission{};
+  std::int64_t time_ms = 0;
+  bool is_buyer = false;
+  bool is_maker = false;
 };
 
 struct CapturedFill {
@@ -311,6 +328,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   OpResult op_amend(Account& a, const ParamList& p);
   OpResult op_query_order(Account& a, const ParamList& p);
   OpResult op_open_orders(Account& a, const ParamList& p);
+  OpResult op_my_trades(Account& a, const ParamList& p);
   OpResult op_cancel_all(Account& a, const ParamList& p);
   OpResult op_account(Account& a);
   OpResult op_exchange_info(const ParamList& p);
@@ -357,6 +375,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
 
   std::vector<Account> accounts_;
   OrderIndex orders_;
+  std::vector<TradeRecord> trades_;  // every execution of the run, for GET /api/v3/myTrades
   std::map<std::string, ListenKey, std::less<>> listen_keys_;
   FixedWindowCounter weight_1m_{60'000};
   std::unordered_map<net::WsSession*, SessionState> sessions_;

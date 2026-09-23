@@ -50,6 +50,11 @@ struct VenueCapabilities {
   bool replace = false;     // can amend a resting order in place
   bool positions = false;   // reports positions from the venue
   bool polls = false;       // Venue::poll() drives its sockets; the reactor never wakes for them
+  // Can fetch what the account executed since a point in time, so a reconciliation replays the
+  // fills the private stream missed instead of inferring them from a cum_qty jump. False: a fill
+  // that finished an order while the stream was down is not recoverable on this venue, and the
+  // engine says so (EngineStats::estimated_reconciles) rather than assuming it did not happen.
+  bool executions = false;
 };
 
 // One `[venues.<name>]` key a venue owns. `doc` is the Meaning column of the configuration

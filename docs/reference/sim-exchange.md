@@ -76,6 +76,7 @@ Query string or form body; the signature covers query + body.
 | `POST /api/v3/order/cancelReplace` | STOP_ON_FAILURE and ALLOW_FAILURE, -2021/-2022 with `data` |
 | `PUT /api/v3/order/amend/keepPriority` | quantity decrease, keeps queue priority |
 | `GET /api/v3/openOrders[?symbol]`, `DELETE /api/v3/openOrders?symbol` | -2011 when nothing is open |
+| `GET /api/v3/myTrades?symbol[&fromId / &startTime&endTime][&limit]` | the account's executions, oldest id first; `fromId` with a time range is -1128, a window over 24 h is -1127, limit caps at 1000 |
 | `POST/PUT/DELETE /api/v3/userDataStream` | legacy listenKey (`/ws/<listenKey>`) |
 
 Every response carries `X-MBX-USED-WEIGHT-1M`. Order endpoints also carry `X-MBX-ORDER-COUNT-10S` and `X-MBX-ORDER-COUNT-1D`. 429 responses carry `Retry-After`.
@@ -163,7 +164,8 @@ Not implemented:
 * Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. A 418 ban only happens when a test asks for one (`ban_next_requests`), and there is no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
 * The legacy listenKey stream is kept ([venues.md](venues.md#binance-spot)).
 * The ack delay applies to WS API responses only. REST answers are synchronous.
-* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013` and there is no `myTrades`.
+* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`. Their *executions* are not: `myTrades` answers from a trade log that lives for the whole run, which is what makes it a recovery path rather than another view of the open orders.
+* `myTrades` charges IP weight 20 (5 with `orderId`, which the connector does not send), `commissionAsset` is always the quote asset, and trade ids are the matching engine's, so they are shared with the public trade stream and skip over the generator's own matches.
 
 ## Integration tests
 

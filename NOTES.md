@@ -29,22 +29,46 @@ WebSocket API reply, duplicate a user event, mute the user stream, fill a named 
   (`OmsUpdate::unresolved_qty`, `OmsStats::reconcile_unresolved`) and the engine logs it and counts
   `EngineStats::unresolved_orders`.
 
-**A gap too large for this change: a fill that finishes an order while the private stream is down
-is lost.** The documented recovery for a missed fill is the `cum_qty` jump a later message carries
-(`Oms::absorb_cum` → `Engine::book_missed_fill`), and it works — proved end to end, including that
-the synthetic fill is booked at the order's own price with **no fee**, so the engine's fee total
-runs short of the venue's by exactly what was charged. But it only works while the order is still
-open. If the missed execution *completed* the order, the venue has nothing left to report: the
-snapshot omits it, and the quantity is neither booked nor recoverable. Binance Spot has no position
-to reconcile against — `ReconcileMsg::Kind::Position` is emitted by the USD-M connector and never by
-the Spot one — so the engine's position stays short until a human notices. Today it at least says so
-(`unresolved_orders`). The honest fix is to fetch the executions rather than infer them: after a
-user-stream gap, `GET /api/v3/myTrades?startTime=<last seen>` per symbol, emitting the trades the
-engine never saw as ordinary fills with their real fees. That needs `myTrades` in the simulator
-(which currently forgets terminal orders at the end of each request) and a "last trade time" per
-instrument in the connector. Until then, treat `unresolved_orders > 0` as "check the position by
-hand". Covered by the last third of `recovery: a fill while the private stream is down comes back
-as a synthetic fill`.
+**Closed: a fill that happened while the private stream was down is now fetched, not inferred.**
+A reconciliation asks the venue what the account executed before it asks what is open
+(`Venue::request_executions`, `VenueCapabilities::executions`, Binance Spot `GET /api/v3/myTrades`).
+Each execution reaches the OMS as an ordinary fill carrying the venue's trade id
+(`OrderFillMsg::kReplayed`), which `Oms::on_fill` already deduplicates on, so only the unseen ones
+are booked - with their real price and their real fee. That covers both halves of the hole: the
+partial fill, where the old `cum_qty` estimate was at best priceless and feeless, and the fill that
+*finished* the order, where the snapshot has nothing to report at all. The snapshot's `Begin` carries
+`ReconcileMsg::kExecutionsExact` when the replay was complete, and without it the engine counts an
+estimated reconciliation and says what that costs. A failed query keeps its watermark and is retried
+every 5 s from the connector's housekeeping timer, so recovery does not wait for the next reconnect.
+A fill the engine had already booked from a `cum_qty` jump is corrected rather than counted twice
+when the replay names it (`OmsUpdate::corrected_qty`, `PositionTracker::correct_fill`): the quantity
+is already in the position, so the execution replaces the estimate's price and its missing fee.
+Proved by `recovery: a fill while the private stream is down is booked from the venue's trades`,
+`... is booked when the cancel-all reconciles` (partial and complete, which is what the soak found)
+and `... an execution replaces the synthetic fill a cancel ack booked`. The soak now fills an order
+in the dark, partially and completely, as one of its faults. Details in
+`docs/reference/venues.md#executions-the-private-stream-never-delivered`, including what each of the
+four venues can actually answer.
+
+**What execution history does *not* fix: a restart.** The connector replays nothing from before it
+connected, on purpose: the engine's position starts at zero, so booking another session's fills into
+it would make the number worse, not better. A restarted session needs its position back first (the
+store has it - `Recovery::positions` - and only logs it today); once it does,
+`request_executions(since_venue_ms)` is where the store's last-fill time goes, and everything after
+it comes back exactly. Until then, a restart recovers open orders and not the position.
+
+**Bybit, Deribit and Binance USDⓈ-M declare `executions = false`.** Their endpoints are verified and
+written down in `docs/reference/venues.md`; nobody has written the connector side. That is the point
+of the capability flag: their reconciliations report themselves as estimates rather than being
+assumed exact.
+
+**The soak's other two findings.** (2) An order sent right after an order-channel reconnect can be
+counted as sent and never reach the venue. The reconciliation now settles it *honestly* - the
+execution replay proves it never traded, so `reconcile_end` cancelling it is a fact rather than a
+guess - but `VenueStatus::orders_sent` still counts a WebSocket write that the socket discarded, and
+that is worth fixing at the source. (3) `cancel_all()` now retries a rate-limited refusal (418/429)
+three times before reporting failure, because the kill switch has no other remedy; a genuine
+multi-minute IP ban still ends in `false`, and the caller still treats that as final.
 
 **Smaller things seen and left alone.** `VenueStatus::reconnects` counts market-data backoffs only,
 so user and order channel reconnects are invisible in the status line. `BinanceVenue::shadows_` (a
@@ -90,21 +114,21 @@ the engine hold the same orders and the same position. 25 rounds over 60 s pass 
 drops, 418 bans and market-data cuts. Three things it found that are held out of the fault set until
 they are fixed, each reproducible by putting the fault back:
 
-1. A fill delivered to nobody does not reach the position when the recovery path is the REST
-   cancel-all that follows an order-channel drop: the mirror books no synthetic fill and ends
-   short. Execution-history recovery is being built for exactly this.
+1. ~~A fill delivered to nobody does not reach the position when the recovery path is the REST
+   cancel-all that follows an order-channel drop.~~ Closed by execution-history recovery; the fault
+   is back in the soak's fault set, partial and complete.
 2. An order sent immediately after an order-channel reconnect can be counted as sent by the
    connector (`VenueStatus::orders_sent` increments) and never appear at the venue, with no reject.
    Reproduce: fault 0 in the soak, then place an order in the next round without waiting for a
    reconciliation.
-3. `BinanceVenue::cancel_all()` returns false while the venue has us banned (418). Retrying until
-   the ban lapses works, and the soak does that, but the kill path's remedy is cancel-all: a caller
-   that treats the first `false` as final leaves the book on.
+3. ~~`BinanceVenue::cancel_all()` returns false while the venue has us banned (418).~~ It now
+   retries a rate-limited refusal three times before reporting it. A ban that outlasts that still
+   ends in `false`, and a caller that treats it as final still leaves the book on.
 
 **Known gaps, in the order I intend to close them.**
 
-1. ~~Recovery is asserted, not demonstrated.~~ Done; see 2026-09-24. What is left of it is the one
-   gap recorded there: a fill that finishes an order while the private stream is down.
+1. ~~Recovery is asserted, not demonstrated.~~ Done; see 2026-09-24, and the fill that finishes an
+   order in the dark is closed too. What is left of it is a restart's position.
 2. No flatten and no runtime control. A kill pulls quotes and cancels; inventory stays on. Being
    built now: an `AF_UNIX` control socket routed through the control ring so operator actions are
    journaled and replayable, plus an engine-owned flatten.

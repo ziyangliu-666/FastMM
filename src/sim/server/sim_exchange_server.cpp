@@ -266,6 +266,7 @@ void Impl::mark() {
   stats_.fills_since_mark = 0;
   stats_.cancel_all_since_mark = 0;
   stats_.open_orders_queries_since_mark = 0;
+  stats_.my_trades_queries_since_mark = 0;
   stats_.md_sessions_opened_since_mark = 0;
   stats_.api_sessions_opened_since_mark = 0;
 }

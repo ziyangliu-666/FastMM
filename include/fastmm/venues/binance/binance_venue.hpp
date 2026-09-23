@@ -114,6 +114,7 @@ class BinanceVenue final : public Venue {
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
   void request_open_orders(ClientOrderId watermark);
+  bool request_executions(std::int64_t since_venue_ms = 0) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -214,6 +215,14 @@ class BinanceVenue final : public Venue {
   void keepalive_listen_key();
   void cancel_all_async();
   void emit_reconcile(std::string_view json, bool rest_array, ClientOrderId sent_watermark);
+  // Emits the open-order snapshot request itself, once any execution replay before it has finished.
+  void send_open_orders(ClientOrderId watermark);
+  // GET /api/v3/myTrades for one subscribed instrument; `emit_executions` turns the reply into
+  // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
+  bool request_executions_for(InstrumentId id);
+  void emit_executions(InstrumentId id, std::string_view json);
+  void finish_execution_replay(bool ok);
+  [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   [[nodiscard]] std::int64_t now_ns() const noexcept { return net::Reactor::now_ns(); }
@@ -254,6 +263,25 @@ class BinanceVenue final : public Venue {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
+  // Execution replay (GET /api/v3/myTrades), parallel to subscribed_: the trade id to ask from next
+  // for each instrument, zero until the venue has named one. Before that the query is bounded by
+  // exec_since_ms_, the venue time of the last execution the engine booked - what the store knew of
+  // the previous session at start-up, then whatever the replay itself finds.
+  std::vector<std::int64_t> exec_from_id_;
+  // Venue order id -> the client order id this session gave it, so an execution the trade history
+  // reports (which names only orderId) reaches the order it belongs to. A restarted session starts
+  // empty: those executions arrive with no client order id and reach the position as unknown fills,
+  // which is what a restart needs from them.
+  OpenHashMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
+  std::int64_t exec_since_ms_ = 0;
+  std::size_t exec_pending_ = 0;  // myTrades replies still outstanding
+  bool exec_replay_ok_ = true;    // every reply so far covered its instrument in full
+  bool exec_replay_active_ = false;
+  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
+  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_retry_ns_ = 0;
+  bool oo_wanted_ = false;  // a snapshot was asked for while a replay was in flight
+  ClientOrderId oo_wanted_watermark_{};
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::atomic<std::int64_t> clock_offset_ms_{0};  // read by cancel_all() from any thread

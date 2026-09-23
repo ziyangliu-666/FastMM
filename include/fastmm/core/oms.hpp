@@ -14,7 +14,10 @@
 //   fill             cum >= qty -> Filled, else PartiallyFilled (pending states keep pending)
 //   expired          any open -> Expired; Filled when the venue's cum_qty covers the order
 // A cum_qty a venue reports that no fill message covered (a cancel ack, an expiry or a
-// reconciliation snapshot) becomes OmsUpdate::missed_qty for the engine to book.
+// reconciliation snapshot) becomes OmsUpdate::missed_qty for the engine to book. That booking is an
+// estimate - the order's own price, no fee - so it is remembered here until an execution from the
+// venue's trade history (OrderFillMsg::kReplayed) names it: the execution then corrects the price
+// and the fee (OmsUpdate::corrected_qty) instead of the quantity being counted twice.
 // Races: fill after cancel ack -> LateFill (position still updated from the terminal record's
 // instrument and side); cancel-reject after fill -> ignored; ack for unknown id -> CancelUnknown
 // (never leave an unknown live order); ack for an order reconciliation marked cancelled ->
@@ -42,6 +45,10 @@ namespace fastmm {
 
 inline constexpr std::size_t kMaxOpenOrders = 4096;
 inline constexpr std::size_t kRecentlyTerminal = 4096;
+// Fills booked from a cumulative quantity and never named by an execution. One entry per order, so
+// this is the number of orders that can be waiting for an execution-history replay at once; a
+// private-stream outage covers a handful, and the oldest entry is dropped (and counted) past that.
+inline constexpr std::size_t kMaxSyntheticFills = 64;
 // Client order ids per session: the wire form is 48 bits, epoch(16) << 32 | seq(32).
 inline constexpr std::uint64_t kMaxSeq = 0xFFFF'FFFFULL;
 
@@ -78,6 +85,12 @@ struct OmsUpdate {
   // The venue does not say whether it was cancelled or filled, so nothing can be booked; it is
   // reported so the engine can say the position may be wrong instead of assuming it is not.
   Qty unresolved_qty{};
+  // Part of a replayed execution (OrderFillMsg::kReplayed) whose quantity a synthetic fill already
+  // put in the position: the execution names what it was, so its price and its fee replace the
+  // estimate rather than the quantity being counted twice. `synthetic_px` is the price the estimate
+  // used. See Engine::on_fill and PositionTracker::correct_fill.
+  Qty corrected_qty{};
+  Price synthetic_px{};
 };
 
 struct OmsStats {
@@ -94,6 +107,11 @@ struct OmsStats {
   std::uint64_t late_fills = 0;
   std::uint64_t unsolicited_cancels = 0;
   std::uint64_t missed_fills = 0;  // cum_qty jumps a fill message never reported
+  // Missed fills a replayed execution later named, so their price and fee stopped being estimates.
+  std::uint64_t corrected_fills = 0;
+  // Missed fills whose entry was evicted before an execution named them: their price and fee stay
+  // estimates, and an execution for them would now be counted twice.
+  std::uint64_t synthetic_forgotten = 0;
   std::uint64_t ack_timeouts = 0;  // PendingNew orders swept by sweep_pending()
   // Orders a reconciliation snapshot did not report that still had working quantity: the venue
   // ended them and never said how, so the position may be short by up to that much.
@@ -368,6 +386,11 @@ class Oms {
       ++stats_.duplicates;
       return u;
     }
+    // A replayed execution may be one the venue already counted into a cum_qty the engine booked as
+    // a synthetic fill. Taking that quantity out of the pool here is what keeps it from being
+    // booked twice, whether the order is still open, recently terminal or gone.
+    if (FASTMM_UNLIKELY((m.flags & OrderFillMsg::kReplayed) != 0))
+      take_synthetic(m.cl_ord_id, m.qty, u);
     Handle<Order> h = lookup(m.cl_ord_id, u);
     ++stats_.fills;
     if (!h.valid()) {
@@ -383,7 +406,10 @@ class Oms {
     Order& o = pool_.get(h);
     u.prev = o.state;
     const Qty before = o.cum_qty;
-    Qty cum = m.cum_qty.is_positive() ? m.cum_qty : o.cum_qty + m.qty;
+    // Only the part the position does not already hold moves the order forward: a replayed
+    // execution carries no cumulative quantity of its own.
+    const Qty fresh = m.qty - u.corrected_qty;
+    Qty cum = m.cum_qty.is_positive() ? m.cum_qty : o.cum_qty + fresh;
     if (cum < before) cum = before;  // out-of-order cum: never go backwards
     if (cum > o.qty) cum = o.qty;
     open_qty_[o.instrument.value][static_cast<std::size_t>(o.side)] -= (cum - before);
@@ -557,6 +583,13 @@ class Oms {
     ClientOrderId watermark{};
     bool bounded = false;
   };
+  // Quantity booked at `price` because a venue message reported it as cumulative and no execution
+  // ever named it (Engine::book_missed_fill). It stays until an execution does.
+  struct SyntheticFill {
+    ClientOrderId cl_ord_id;
+    Qty qty;
+    Price price;
+  };
 
   [[nodiscard]] static bool in_scope(const Order& o, VenueId venue) noexcept {
     return !venue.valid() || o.venue == venue;
@@ -576,6 +609,42 @@ class Oms {
     u.missed_qty += diff;
     u.changed = true;
     ++stats_.missed_fills;
+    note_synthetic(o.cl_ord_id, diff, o.price);
+  }
+
+  // ---- synthetic fills waiting to be named ------------------------------------------------
+
+  // The engine is about to book `qty` at `px` without knowing what it really traded at. Remember
+  // it against the order so a later execution-history replay corrects it instead of adding it
+  // again. The pool is empty in normal operation, which is the only cost on_fill pays for this.
+  void note_synthetic(ClientOrderId id, Qty qty, Price px) noexcept {
+    for (SyntheticFill& f : synthetic_) {
+      if (f.cl_ord_id == id) {
+        f.qty += qty;
+        f.price = px;
+        return;
+      }
+    }
+    if (synthetic_.full()) {
+      ++stats_.synthetic_forgotten;
+      synthetic_.erase_front();
+    }
+    static_cast<void>(synthetic_.push_back(SyntheticFill{id, qty, px}));
+  }
+
+  // Takes up to `qty` of the order's outstanding estimate into `u`.
+  void take_synthetic(ClientOrderId id, Qty qty, OmsUpdate& u) noexcept {
+    if (FASTMM_LIKELY(synthetic_.empty())) return;
+    for (std::size_t i = 0; i < synthetic_.size(); ++i) {
+      SyntheticFill& f = synthetic_[i];
+      if (f.cl_ord_id != id) continue;
+      u.corrected_qty = qty < f.qty ? qty : f.qty;
+      u.synthetic_px = f.price;
+      f.qty -= u.corrected_qty;
+      ++stats_.corrected_fills;
+      if (!f.qty.is_positive()) synthetic_.erase_at(i);
+      return;
+    }
   }
 
   // Finds an open order; sets u.known if the id is open or recently terminal.
@@ -707,6 +776,7 @@ class Oms {
   Qty open_qty_[kMaxInstruments][2];
   std::uint32_t open_per_inst_[kMaxInstruments] = {};
   ReconcileScope recon_scope_[std::numeric_limits<VenueId::rep_type>::max() + 1U] = {};
+  StaticVector<SyntheticFill, kMaxSyntheticFills> synthetic_;
 };
 
 }  // namespace fastmm

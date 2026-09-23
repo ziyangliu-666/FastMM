@@ -125,7 +125,10 @@ struct VenueStatus {
   std::uint64_t rate_limit_cooldowns = 0;
   std::int64_t clock_offset_ms = 0;  // venue - local
   std::uint64_t reconnects = 0;
-  std::int64_t last_md_rx_ns = 0;  // reactor clock
+  std::uint64_t executions_fetched = 0;  // trade-history rows replayed into the order sink
+  std::uint64_t execution_queries = 0;
+  std::uint64_t execution_query_errors = 0;  // a reconciliation that could not be made exact
+  std::int64_t last_md_rx_ns = 0;            // reactor clock
   // Network-thread order latency (wire_latency.hpp), cumulative for the session. The ns
   // percentiles need a calibration source (Venue::set_tsc_calibration_source); counts do not.
   WireLatencyStats wire_tick_to_trade;  // inbound receive (t0_cycles) -> send call returned
@@ -176,8 +179,28 @@ class Venue {
   // registered with the reactor poll them here (nasdaq_itch with [engine] spin_mode = "busy").
   virtual void poll() noexcept {}
 
-  // Venue view of open orders -> ReconcileMsg Begin/OpenOrder*/End into the order sink.
+  // Venue view of open orders -> ReconcileMsg Begin/OpenOrder*/End into the order sink. A
+  // connector that can fetch executions (VenueCapabilities::executions) replays everything the
+  // account traded since the watermark first, as ordinary OrderFillMsg carrying the venue's
+  // execution id and OrderFillMsg::kReplayed, and only then emits the snapshot with
+  // ReconcileMsg::kExecutionsExact on its Begin. That order is what closes the hole: a fill that
+  // finished an order is booked from the execution itself, so the snapshot - which no longer
+  // mentions the order at all - has nothing left to explain.
   virtual void request_open_orders() = 0;
+  // The account's executions from `since_venue_ms` (the venue's clock, inclusive) onwards, for
+  // every subscribed instrument: the venue's trade-history query (myTrades / userTrades /
+  // execution/list / get_user_trades_by_instrument). Each one is emitted into the order sink as an
+  // ordinary OrderFillMsg carrying the venue's execution id and OrderFillMsg::kReplayed, so the OMS
+  // books only the ones it has not seen. Zero means "from wherever this connector last got to",
+  // which is what a reconciliation uses; a caller that knows better - the time of the last
+  // execution the engine booked, which the store and the journal both hold - passes it.
+  //
+  // Asynchronous and part of a reconciliation: the connector runs it before the open-order snapshot
+  // and stamps ReconcileMsg::kExecutionsExact on the snapshot's Begin when every instrument
+  // answered in full. Returns false when this connector cannot ask (VenueCapabilities::executions
+  // is false) or has nowhere to send the query, which is the only case where a fill the private
+  // stream missed stays an estimate.
+  virtual bool request_executions(std::int64_t /*since_venue_ms*/ = 0) { return false; }
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

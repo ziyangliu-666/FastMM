@@ -48,8 +48,7 @@ struct Harness : VenueHarness {
     REQUIRE(venue->load_reference_data(instruments));
     connect();
     REQUIRE(pump([&] {
-      return venue->md_feed()->synced_count() == 1 && live_order_channels() >= 2 &&
-             ends() >= 1;
+      return venue->md_feed()->synced_count() == 1 && live_order_channels() >= 2 && ends() >= 1;
     }));
     reconciles = ends();
   }
@@ -71,7 +70,8 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
   const auto orders_agree = [&] {
     std::vector<std::string> venue_ids = fx.server.open_client_order_ids();
     std::vector<std::string> engine_ids;
-    for (const ClientOrderId id : m.open_ids()) engine_ids.emplace_back(encode_cl_ord_id(id).view());
+    for (const ClientOrderId id : m.open_ids())
+      engine_ids.emplace_back(encode_cl_ord_id(id).view());
     std::sort(venue_ids.begin(), venue_ids.end());
     std::sort(engine_ids.begin(), engine_ids.end());
     return venue_ids == engine_ids;
@@ -116,10 +116,7 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
     }
 
     const std::vector<std::string> open = fx.server.open_client_order_ids();
-    // Fills during an outage are held back until execution-history recovery lands: a fill the
-    // private stream never delivered does not reach the position through the REST cancel-all that
-    // follows an order-channel drop (NOTES.md). Faults here are the ones recovery already handles.
-    const int fault = static_cast<int>(rng() % 3);
+    const int fault = static_cast<int>(rng() % 5);
     MESSAGE("round " << rounds << " fault " << fault);
     switch (fault) {
       case 0:  // both WS API connections go
@@ -129,6 +126,26 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
         fx.server.ban_next_requests(2);
         fx.server.drop_ws_api_connections(true);
         break;
+      case 2:    // a fill nobody hears about, then the channels go
+      case 3: {  // the same, but the fill finishes the order
+        if (open.empty()) {
+          fx.server.drop_market_data_connections();
+          break;
+        }
+        fx.server.set_user_stream_muted(true);
+        const Qty want = fault == 2 ? Qty::from_raw(kLot.raw / 2) : kLot;
+        const Qty got = fx.server.fill_open_order(open.front(), want);
+        static_cast<void>(h.pump(
+            [&] {
+              m.drain(h.oc);
+              return fx.server.stats().user_events_dropped >= 1;
+            },
+            5000));
+        fx.server.set_user_stream_muted(false);
+        MESSAGE("  filled " << got.raw << " of " << open.front() << " in the dark");
+        fx.server.drop_ws_api_connections(true);
+        break;
+      }
       default:  // market data cut
         fx.server.drop_market_data_connections();
         break;
@@ -146,12 +163,20 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
     m.drain(h.oc);
     h.reconciles = h.ends();
 
-    REQUIRE(h.pump([&] {
-      m.drain(h.oc);
-      return orders_agree();
-    }));
+    // Converging is the invariant, not converging by a particular message: a fill the private
+    // stream never delivered comes back with the executions the next reconciliation replays, and a
+    // replay the venue refused (a 418 in the middle of one) is retried until it answers.
+    REQUIRE(h.pump(
+        [&] {
+          m.drain(h.oc);
+          return orders_agree() && m.position() == fx.server.stats().position;
+        },
+        30000));
     CHECK(fx.server.stats().duplicate_client_order_ids == 0);
-    CHECK(m.position() == fx.server.stats().position);
+    CHECK_MESSAGE(m.position() == fx.server.stats().position,
+                  "engine " << m.position().raw << " venue " << fx.server.stats().position.raw
+                            << " replayed " << m.replayed_fills() << " synthetic "
+                            << m.synthetic_fills());
 
     // Clear the book for the next round through the engine's own path.
     // cancel_all() refuses while the venue has us banned (418): retry until it takes, the way an
@@ -169,7 +194,8 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
   }
 
   MESSAGE("soak: " << rounds << " rounds, " << faults << " faults, " << m.synthetic_fills()
-                   << " synthetic fill(s), position " << m.position().raw);
+                   << " synthetic fill(s), " << m.replayed_fills() << " replayed, position "
+                   << m.position().raw);
   CHECK(rounds >= 1);
   CHECK_FALSE(h.venue->fatal());
   // The venue is empty by the last round's cleanup; the engine's cancel acks may still be in the

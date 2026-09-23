@@ -85,6 +85,41 @@ inline void emit_cancel_ack(EventSink& sink,
   static_cast<void>(sink.push(m.hdr));
 }
 
+// An execution from the venue's trade history (Venue::request_executions), not from the private
+// stream. It carries the venue's execution id, which is what lets the OMS drop the ones it already
+// booked, and no cumulative quantity: the venue's trade history does not report one, so the OMS
+// works out how much of the execution is new. `cl_ord_id` may be empty when the connector cannot
+// map the venue's order id back to one of its own (a restarted session): the fill still reaches the
+// position, as an unknown fill.
+inline void emit_replayed_fill(EventSink& sink,
+                               VenueId venue,
+                               InstrumentId inst,
+                               ClientOrderId id,
+                               std::string_view venue_order_id,
+                               std::string_view exec_id,
+                               Side side,
+                               Price price,
+                               Qty qty,
+                               Notional fee,
+                               FeeAsset fee_asset,
+                               Liquidity liquidity) noexcept {
+  OrderFillMsg m{};
+  init_header(m, EventType::OrderFill, inst, venue);
+  m.cl_ord_id = id;
+  m.venue_order_id.assign(venue_order_id);
+  m.exec_id.assign(exec_id);
+  m.price = price;
+  m.qty = qty;
+  m.fee = fee;
+  m.side = side;
+  m.liquidity = liquidity;
+  m.fee_asset = fee_asset;
+  m.flags = OrderFillMsg::kReplayed;
+  m.hdr.recv_ts = wall_now();
+  m.hdr.t0_cycles = rdtscp();
+  static_cast<void>(sink.push(m.hdr));
+}
+
 // The connector cannot trade on this venue any more (error map HardStop / Fatal, failed
 // authentication): asks the engine to trip this venue's kill switch only
 // (ControlCommand::TripVenueKill, the reason in `arg`). Travels with the order events, so it is

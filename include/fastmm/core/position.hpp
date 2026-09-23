@@ -100,6 +100,33 @@ class PositionTracker {
     }
   }
 
+  // A fill booked from a venue's cumulative quantity, at the order's own price and with no fee,
+  // turned out to be an execution at `px` costing `fee`. Its quantity is already in the position,
+  // so on_fill() would count it twice; what was never booked is what it cost. Paying `px` instead
+  // of `est_px` for `qty` is worth qty * (px - est_px), given up on a buy and received on a sell,
+  // and that difference is exactly the error the estimate left in this position's PnL. The average
+  // entry price keeps the estimate: moving it would need the position the fill was booked into,
+  // which is history, and the error it carries is the one this correction has already taken out.
+  void correct_fill(InstrumentId id,
+                    Side side,
+                    Price est_px,
+                    Price px,
+                    Qty qty,
+                    Notional fee,
+                    const Instrument& inst) noexcept {
+    Position& p = pos_[id.value];
+    const Notional diff =
+        inst.inverse()
+            ? inst.inverse_pnl(est_px, px, qty)
+            : scale(Notional::from_raw(detail::mul_div<kFixedScale>(px.raw - est_px.raw, qty.raw)),
+                    inst);
+    const Notional adj = side == Side::Buy ? Notional{} - diff : diff;
+    p.realized += adj;
+    realized_total_ += adj;
+    p.fees += fee;
+    fees_total_ += fee;
+  }
+
   // Mark-to-market the open position, in the instrument's settlement currency.
   void mark(InstrumentId id, Price mid, const Instrument& inst) noexcept {
     Position& p = pos_[id.value];

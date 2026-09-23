@@ -5,6 +5,22 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Execution-history recovery: a reconciliation asks the venue what the account executed before it
+  asks what is open. `Venue::request_executions(since_venue_ms)` and
+  `VenueCapabilities::executions` are the interface; Binance Spot implements it with
+  `GET /api/v3/myTrades`. Each execution reaches the OMS as an ordinary fill carrying the venue's
+  execution id (`OrderFillMsg::kReplayed`), so only the ones the engine never saw are booked, with
+  their real price and their real fee. This is what makes a fill that *finished* an order during a
+  private-stream outage recoverable: the open-order snapshot no longer mentions such an order at
+  all. The snapshot's `Begin` carries `ReconcileMsg::kExecutionsExact` when the replay was complete;
+  without it the engine counts an estimated reconciliation and says so. A failed query is retried
+  every 5 s until the venue answers rather than waiting for the next reconnect.
+- A fill booked from a `cum_qty` jump before any execution named it is corrected, not counted twice,
+  when the replay names it: `OmsUpdate::corrected_qty`, `PositionTracker::correct_fill`,
+  `EngineStats::corrected_fills`. The quantity is already in the position, so what the execution
+  replaces is the estimate's price and its missing fee.
+- The simulated exchange serves `GET /api/v3/myTrades` from a trade log that outlives the orders, so
+  the executions of an order the venue has forgotten are still reportable.
 - Venue-side dead man's switch, the only thing that clears resting quotes after a SIGKILL, an OOM
   kill or a dead host. Binance USDⓈ-M arms `POST /fapi/v1/countdownCancelAll` per symbol and
   refreshes it every `dead_mans_switch_ms`/3 (default 60000 ms, 0 disables); a clean shutdown sends
@@ -23,6 +39,9 @@ All notable changes are recorded here (Keep a Changelog format).
   tells the OMS to rekey the order without resetting its filled quantity.
 
 ### Fixed
+- `BinanceVenue::cancel_all()` gave up on a rate-limited refusal (418/429). The kill switch has no
+  other remedy than that call, so it now retries a bounded number of times before reporting the
+  failure.
 - Binance USDⓈ-M charged one unit of IP weight for every WebSocket API order request. The endpoints
   charge 0 for a place and a modify and 1 for a cancel, with the order limits taking the other
   side, so at the venue's 1200 orders/minute the overcharge alone consumed half the 2400/minute IP

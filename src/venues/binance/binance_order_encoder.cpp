@@ -335,6 +335,26 @@ bool BinanceOrderEncoder::encode_rest_open_orders(std::string_view symbol,
   return finish_rest(p, out);
 }
 
+bool BinanceOrderEncoder::encode_rest_my_trades(std::string_view symbol,
+                                                std::int64_t from_id,
+                                                std::int64_t start_ms,
+                                                int limit,
+                                                std::int64_t timestamp_ms,
+                                                RestRequest& out) {
+  if (symbol.empty()) return false;  // rest-api.md: symbol is required
+  ParamList p;                       // sorted by name, as the signature payload requires
+  if (from_id > 0) p.add_int("fromId", from_id);
+  p.add_int("limit", limit);
+  p.add_int("recvWindow", recv_window_ms_);
+  if (from_id <= 0 && start_ms > 0) p.add_int("startTime", start_ms);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/api/v3/myTrades";
+  out.weight = 20;  // rest-api.md "Account trade list"
+  return finish_rest(p, out);
+}
+
 // ---- response decoder ----------------------------------------------------------------------
 
 struct BinanceWsApiDecoder::Impl {
@@ -484,6 +504,22 @@ namespace {
   }
 }
 
+// False if the trade is malformed.
+[[gnu::noinline]] bool read_my_trade(od::object& o, MyTradeRecord& rec) noexcept {
+  if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return false;
+  if (o["id"].get_int64().get(rec.id) != sj::SUCCESS) return false;
+  if (o["orderId"].get_int64().get(rec.order_id) != sj::SUCCESS) return false;
+  if (o["price"].get_string().get(rec.price) != sj::SUCCESS) return false;
+  if (o["qty"].get_string().get(rec.qty) != sj::SUCCESS) return false;
+  if (o["commission"].get_string().get(rec.commission) != sj::SUCCESS) rec.commission = {};
+  if (o["commissionAsset"].get_string().get(rec.commission_asset) != sj::SUCCESS)
+    rec.commission_asset = {};
+  if (o["time"].get_int64().get(rec.time_ms) != sj::SUCCESS) return false;
+  if (o["isBuyer"].get_bool().get(rec.is_buyer) != sj::SUCCESS) return false;
+  if (o["isMaker"].get_bool().get(rec.is_maker) != sj::SUCCESS) rec.is_maker = false;
+  return true;
+}
+
 // False if the order is malformed.
 [[gnu::noinline]] bool read_open_order(od::object& o, OpenOrderRecord& rec) noexcept {
   if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return false;
@@ -555,6 +591,22 @@ ParseStatus BinanceWsApiDecoder::decode_open_orders(
     if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
     OpenOrderRecord rec;
     if (!read_open_order(o, rec)) return ParseStatus::Malformed;
+    fn(rec);
+  }
+  return ParseStatus::Ok;
+}
+
+ParseStatus BinanceWsApiDecoder::decode_my_trades(
+    std::string_view json, const std::function<void(const MyTradeRecord&)>& fn) noexcept {
+  od::document doc;
+  if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS) return ParseStatus::Malformed;
+  od::array arr;
+  if (doc.get_array().get(arr) != sj::SUCCESS) return ParseStatus::Malformed;
+  for (auto item : arr) {
+    od::object o;
+    if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
+    MyTradeRecord rec;
+    if (!read_my_trade(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
   return ParseStatus::Ok;

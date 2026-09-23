@@ -375,6 +375,16 @@ void Impl::apply_fill(const SimOrder& o, Price px, Qty qty, bool maker, std::uin
     stats_.position += r->side == Side::Buy ? qty : -qty;
     stats_.max_abs_position = max(stats_.max_abs_position, stats_.position.abs());
   }
+  trades_.push_back(TradeRecord{static_cast<std::int64_t>(trade_id),
+                                r->order_id,
+                                r->symbol,
+                                r->account,
+                                px,
+                                qty,
+                                fee,
+                                r->update_ms,
+                                r->side == Side::Buy,
+                                maker});
   const CapturedFill f{px, qty, fee, trade_id};
   if (capture_order_id_ == r->order_id) captured_fills_.push_back(f);
   emit_exec(*r, ExecType::Trade, {}, {}, &f, maker);
@@ -975,6 +985,59 @@ OpResult Impl::op_open_orders(Account& a, const ParamList& p) {
     if (!first) body.push_back(',');
     first = false;
     append_order_object(body, view_of(*r));
+  }
+  body.push_back(']');
+  return OpResult::ok(std::move(body));
+}
+
+// GET /api/v3/myTrades: the account's executions on one symbol, oldest trade id first. `symbol` is
+// mandatory and `fromId` (trades from that id on) cannot be combined with a time range, which is
+// what rest-api.md's list of legal parameter combinations says. `limit` defaults to 500, caps at
+// 1000. Records live for the whole run, so a trade of an order the venue has long forgotten is
+// still reported - that is what makes it a recovery path rather than another view of the open
+// orders.
+OpResult Impl::op_my_trades(Account& a, const ParamList& p) {
+  const std::string_view symbol = p.get("symbol");
+  if (symbol.empty()) return OpResult::error(400, -1102, mandatory("symbol"));
+  const auto idx = find_symbol(symbol);
+  if (!idx) return OpResult::error(400, -1121, "Invalid symbol.");
+  const std::int64_t from_id = parse_int(p.get("fromId")).value_or(0);
+  const std::int64_t start_ms = parse_int(p.get("startTime")).value_or(0);
+  const std::int64_t end_ms = parse_int(p.get("endTime")).value_or(0);
+  if (from_id > 0 && (start_ms > 0 || end_ms > 0))
+    return OpResult::error(400, -1128, "Combination of optional parameters invalid.");
+  if (start_ms > 0 && end_ms > 0 && end_ms - start_ms > 24LL * 3600 * 1000)
+    return OpResult::error(400, -1127, "More than 24 hours between startTime and endTime.");
+  std::int64_t limit = parse_int(p.get("limit")).value_or(500);
+  if (limit <= 0 || limit > 1000) limit = 1000;
+  ++stats_.my_trades_queries;
+  ++stats_.my_trades_queries_since_mark;
+  std::string body = "[";
+  bool first = true;
+  std::int64_t n = 0;
+  for (const TradeRecord& t : trades_) {
+    if (t.account != a.id || t.symbol != *idx) continue;
+    if (from_id > 0 && t.id < from_id) continue;
+    if (start_ms > 0 && t.time_ms < start_ms) continue;
+    if (end_ms > 0 && t.time_ms > end_ms) continue;
+    if (n++ >= limit) break;
+    if (!first) body.push_back(',');
+    first = false;
+    JsonObjectWriter w(body);
+    w.str("symbol", symbols_[t.symbol].cfg.symbol)
+        .num("id", t.id)
+        .num("orderId", t.order_id)
+        .num("orderListId", -1)
+        .dec("price", t.price)
+        .dec("qty", t.qty)
+        .dec("quoteQty", mul(t.price, t.qty))
+        .dec("commission", t.commission)
+        .str("commissionAsset", symbols_[t.symbol].cfg.quote_asset)
+        .num("time", t.time_ms)
+        .boolean("isBuyer", t.is_buyer)
+        .boolean("isMaker", t.is_maker)
+        .boolean("isBestMatch", true);
+    w.close();
   }
   body.push_back(']');
   return OpResult::ok(std::move(body));

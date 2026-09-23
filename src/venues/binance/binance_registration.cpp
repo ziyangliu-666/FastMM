@@ -94,7 +94,8 @@ void register_binance_venue(VenueRegistry& r) {
                                     .order_entry = true,
                                     .replace = true,
                                     .positions = true,
-                                    .polls = false},
+                                    .polls = false,
+                                    .executions = true},
                            .make = &make}));
 }
 

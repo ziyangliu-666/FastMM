@@ -586,6 +586,12 @@ class OmsMirror {
   [[nodiscard]] Qty synthetic_qty() const noexcept { return synthetic_; }
   [[nodiscard]] std::uint64_t synthetic_fills() const noexcept { return synthetic_fills_; }
   [[nodiscard]] std::uint64_t unknown_orders() const noexcept { return unknown_; }
+  // Executions the connector replayed out of the venue's trade history, and how many of them named
+  // a fill that had been booked from a cum_qty jump instead.
+  [[nodiscard]] std::uint64_t replayed_fills() const noexcept { return replayed_; }
+  [[nodiscard]] std::uint64_t corrected_fills() const noexcept { return corrected_; }
+  // Reconciliations whose snapshot said the executions before it were complete.
+  [[nodiscard]] std::uint64_t exact_reconciles() const noexcept { return exact_; }
   // Orders the mirror holds open, ascending client order id.
   [[nodiscard]] std::vector<ClientOrderId> open_ids() const {
     std::vector<ClientOrderId> out;
@@ -616,7 +622,26 @@ class OmsMirror {
       case EventType::OrderFill: {
         const auto& f = Collected::as<OrderFillMsg>(raw);
         const OmsUpdate u = oms_.on_fill(f);
-        if (u.action != OmsAction::Duplicate) book(f.side, f.price, f.qty, f.fee);
+        if ((f.flags & OrderFillMsg::kReplayed) != 0) ++replayed_;
+        if (u.action != OmsAction::Duplicate) {
+          // Engine::on_fill: quantity a synthetic fill already put in the position is not booked
+          // again, only what it really cost.
+          Qty booked = f.qty;
+          Notional fee = f.fee;
+          if (!u.corrected_qty.is_zero()) {
+            ++corrected_;
+            positions_.correct_fill(InstrumentId{0},
+                                    f.side,
+                                    u.synthetic_px,
+                                    f.price,
+                                    u.corrected_qty,
+                                    fee,
+                                    instruments_.get(InstrumentId{0}));
+            booked = booked - u.corrected_qty;
+            fee = Notional{};
+          }
+          if (booked.is_positive()) book(f.side, f.price, booked, fee);
+        }
         after(u);
         break;
       }
@@ -624,6 +649,7 @@ class OmsMirror {
         const auto& m = Collected::as<ReconcileMsg>(raw);
         switch (m.kind) {
           case ReconcileMsg::Kind::Begin:
+            if ((m.flags & ReconcileMsg::kExecutionsExact) != 0) ++exact_;
             oms_.reconcile_begin(m.hdr.venue,
                                  (m.flags & ReconcileMsg::kSentWatermark) != 0
                                      ? std::optional<ClientOrderId>(m.sent_watermark)
@@ -666,6 +692,9 @@ class OmsMirror {
   Qty synthetic_{};
   std::uint64_t synthetic_fills_ = 0;
   std::uint64_t unknown_ = 0;
+  std::uint64_t replayed_ = 0;
+  std::uint64_t corrected_ = 0;
+  std::uint64_t exact_ = 0;
   std::size_t cursor_ = 0;
 };
 
