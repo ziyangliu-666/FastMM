@@ -2,17 +2,31 @@
 // InlineFeed> fed pre-generated BookDeltaMsgs that alternately move the touch up and down
 // by two ticks, so every event makes BasicMM requote both quotes.
 //
-//   BM_TickToOrder_Sim   one delta: bytes into the feed -> Engine::step() -> Out* serialized
-//                        into SimTransport (latency model, scheduler, outbound SHA-256).
-//                        Per-event rdtsc deltas go into a LogLinearHistogram; counters p50 /
-//                        p99 (ns) cover the events that produced orders. Venue processing and
-//                        ack delivery run outside the timed region, until nothing is in flight and
-//                        both quotes are working, so each timed event starts from a settled state
-//                        and sends a Cancel per side. The benchmark fails when fewer than
-//                        kMinOrderEventsPct of the events sent orders.
-//   BM_EngineStep_Sim    Engine::step() throughput on a 32-event batch (items_per_second), from
-//                        the same settled state. Only the batch's first event can requote: its
-//                        orders are still in flight for the other 31. Counter out_msgs_per_step.
+//   BM_TickToOrder_Sim       one delta: bytes into the feed -> Engine::step() -> Out* serialized
+//                            into SimTransport. Per-event rdtsc deltas go into a
+//                            LogLinearHistogram; counters p50 / p99 (ns) cover the events that
+//                            produced orders. Venue processing and ack delivery run outside the
+//                            timed region, until nothing is in flight and both quotes are working,
+//                            so each timed event starts from a settled state and sends a Cancel per
+//                            side. The benchmark fails when fewer than kMinOrderEventsPct of the
+//                            events sent orders.
+//   BM_TickToOrder_SimHash   the same with the simulator's outbound SHA-256 on. The difference is
+//                            what the hash costs; it is a determinism check of the simulator, not
+//                            engine work, so the headline benchmark runs without it.
+//   BM_EngineStep_Sim        Engine::step() throughput on a 32-event batch (items_per_second), from
+//                            the same settled state. Only the batch's first event can requote: its
+//                            orders are still in flight for the other 31. Counter
+//                            out_msgs_per_step.
+//
+// What the timed region includes: the feed push, the L2 book apply, the strategy, the quote
+// manager, risk, the OMS, message serialisation, and SimTransport::send -- which copies the message
+// into a 192-byte scheduler slot and pushes it on the arrival heap (the simulator's stand-in for
+// the live engine's outbound ring push). It excludes the venue, acks and the settle loop below.
+//
+// Timing is manual (UseManualTime): the reported time per iteration is the rdtsc interval above and
+// nothing else. The benchmarks used to wrap the settle loop in PauseTiming/ResumeTiming and report
+// Google Benchmark's own per-iteration time, which added about 600 ns of pause/resume overhead to a
+// ~300 ns operation.
 //
 // Why settle fully: QuoteManager never touches a Pending* order, it records the target and applies
 // it on the ack. A tick that meets an order still in flight therefore sends nothing, and with a
@@ -58,7 +72,7 @@ struct TapeMsg {
 
 class Rig {
  public:
-  Rig() {
+  explicit Rig(bool hash_outbound) {
     Instrument inst{};
     inst.symbol = "BTCUSDT";
     inst.flags = Instrument::kEnabled;
@@ -71,6 +85,7 @@ class Rig {
     tc.order_out = LatencyParams{microseconds(100), Duration{}};
     tc.ack_in = LatencyParams{microseconds(100), Duration{}};
     tc.seed = 1;
+    tc.hash_outbound = hash_outbound;
     clock_ = std::make_unique<SimClock>(Timestamp{seconds(1'700'000'000).ns});
     transport_ = std::make_unique<SimTransport>(*clock_, table_, tc);
     feed_ = std::make_unique<InlineFeed>(1U << 22);
@@ -121,6 +136,12 @@ class Rig {
   [[nodiscard]] SimEngine& engine() noexcept { return *engine_; }
   [[nodiscard]] SimTransport& transport() noexcept { return *transport_; }
   [[nodiscard]] bool settled() const noexcept { return settled_; }
+  // Outbound messages so far. Counted by SimTransport itself, so it is the same with and without
+  // the outbound hash (whose message counter the benchmark used to read).
+  [[nodiscard]] std::uint64_t sent() const noexcept {
+    const SimTransportStats& s = transport_->stats();
+    return s.orders_sent + s.cancels_sent + s.replaces_sent;
+  }
 
  private:
   static constexpr int kMaxSettlePasses = 16;
@@ -181,8 +202,8 @@ class Rig {
 
 }  // namespace
 
-static void BM_TickToOrder_Sim(benchmark::State& state) {
-  auto rig = std::make_unique<Rig>();
+static void tick_to_order(benchmark::State& state, bool hash_outbound) {
+  auto rig = std::make_unique<Rig>(hash_outbound);
   if (!rig->settled()) {
     state.SkipWithError("rig did not settle after the snapshot");
     return;
@@ -192,18 +213,17 @@ static void BM_TickToOrder_Sim(benchmark::State& state) {
   std::size_t i = 0;
   bool settled = true;
   for (auto _ : state) {
-    const std::uint64_t sent_before = rig->transport().outbound_hash().count();
+    const std::uint64_t sent_before = rig->sent();
     const TapeMsg& m = rig->tick_msg(i++);
     const Cycles t0 = rdtsc();
     rig->push(m);
     rig->engine().step();
     const Cycles t1 = rdtsc();
-    const auto ns = static_cast<std::uint64_t>(tsc().cycles_to_ns(t1 - t0));
-    all.record(ns);
-    if (rig->transport().outbound_hash().count() != sent_before) with_orders.record(ns);
-    state.PauseTiming();
+    const auto ns = static_cast<double>(tsc().cycles_to_ns(t1 - t0));
+    state.SetIterationTime(ns / 1e9);
+    all.record(static_cast<std::uint64_t>(ns));
+    if (rig->sent() != sent_before) with_orders.record(static_cast<std::uint64_t>(ns));
     settled = rig->settle() && settled;
-    state.ResumeTiming();
   }
   const double order_events_pct =
       all.count() == 0
@@ -220,11 +240,20 @@ static void BM_TickToOrder_Sim(benchmark::State& state) {
     state.SkipWithError("fewer than 50% of the timed events sent orders; p50/p99 are meaningless");
   }
 }
-BENCHMARK(BM_TickToOrder_Sim);
+
+static void BM_TickToOrder_Sim(benchmark::State& state) {
+  tick_to_order(state, false);
+}
+BENCHMARK(BM_TickToOrder_Sim)->UseManualTime();
+
+static void BM_TickToOrder_SimHash(benchmark::State& state) {
+  tick_to_order(state, true);
+}
+BENCHMARK(BM_TickToOrder_SimHash)->UseManualTime();
 
 static void BM_EngineStep_Sim(benchmark::State& state) {
   static constexpr std::int64_t kBatch = 32;
-  auto rig = std::make_unique<Rig>();
+  auto rig = std::make_unique<Rig>(false);
   if (!rig->settled()) {
     state.SkipWithError("rig did not settle after the snapshot");
     return;
@@ -233,15 +262,14 @@ static void BM_EngineStep_Sim(benchmark::State& state) {
   bool settled = true;
   std::uint64_t out_msgs = 0;
   for (auto _ : state) {
-    state.PauseTiming();
     for (std::int64_t k = 0; k < kBatch; ++k) rig->push(rig->tick_msg(i++));
-    const std::uint64_t sent_before = rig->transport().outbound_hash().count();
-    state.ResumeTiming();
+    const std::uint64_t sent_before = rig->sent();
+    const Cycles t0 = rdtsc();
     benchmark::DoNotOptimize(rig->engine().step());
-    state.PauseTiming();
-    out_msgs += rig->transport().outbound_hash().count() - sent_before;
+    const Cycles t1 = rdtsc();
+    state.SetIterationTime(static_cast<double>(tsc().cycles_to_ns(t1 - t0)) / 1e9);
+    out_msgs += rig->sent() - sent_before;
     settled = rig->settle() && settled;
-    state.ResumeTiming();
   }
   state.SetItemsProcessed(state.iterations() * kBatch);
   state.counters["out_msgs_per_step"] =
@@ -250,4 +278,4 @@ static void BM_EngineStep_Sim(benchmark::State& state) {
           : static_cast<double>(out_msgs) / static_cast<double>(state.iterations());
   if (!settled) state.SkipWithError("venue did not settle between steps");
 }
-BENCHMARK(BM_EngineStep_Sim);
+BENCHMARK(BM_EngineStep_Sim)->UseManualTime();

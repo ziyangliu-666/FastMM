@@ -1,0 +1,176 @@
+{
+  "context": {
+    "date": "2026-09-23T09:50:33+00:00",
+    "executable": "build/release-native/bin/bench/bench_strategies",
+    "num_cpus": 8,
+    "mhz_per_cpu": 4192,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [
+      35.4043,
+      34.0928,
+      36.4351
+    ],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_BasicMM_ComputeQuotes",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 27785782,
+      "real_time": 24.17521659106893,
+      "cpu_time": 10.469273385935297,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 1,
+      "threads": 1,
+      "iterations": 27785782,
+      "real_time": 25.545666557223935,
+      "cpu_time": 10.192336389884582,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 2,
+      "threads": 1,
+      "iterations": 27785782,
+      "real_time": 20.668567614073694,
+      "cpu_time": 10.354449480673246,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 3,
+      "threads": 1,
+      "iterations": 27785782,
+      "real_time": 20.805344402950745,
+      "cpu_time": 10.114143413347161,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 4,
+      "threads": 1,
+      "iterations": 27785782,
+      "real_time": 19.258115139303857,
+      "cpu_time": 10.312600847440608,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes_mean",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 22.090582060924234,
+      "cpu_time": 10.288560703456177,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes_median",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 20.805344402950745,
+      "cpu_time": 10.312600847440608,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes_stddev",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 2.6448128377751217,
+      "cpu_time": 0.13897557582723452,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_BasicMM_ComputeQuotes_cv",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_BasicMM_ComputeQuotes",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.11972581032409732,
+      "cpu_time": 0.01350777624129187,
+      "time_unit": "ns"
+    }
+  ]
+}

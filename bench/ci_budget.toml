@@ -1,53 +1,80 @@
-# p50 latency budgets in ns, from the design (plan section 5.12). tools/check_budgets.py fails a
-# benchmark whose median exceeds budget * (1 + slack), default slack 25%.
-# Keys are the exact Google Benchmark names (without the _median aggregate suffix).
-# Benchmarks not present in a results directory are reported as "missing" and do not fail.
+# Time budgets for tools/check_budgets.py, in ns per iteration -- the same figure bench/README.md
+# publishes in its first column, not a per-operation figure. For the codec benchmarks an iteration
+# is a batch of 64 operations; for BM_L2_ApplyDelta/20 a 20-level delta; for BM_EngineStep_Sim a
+# 32-event step. Keys are the exact Google Benchmark names (a /manual_time or /real_time suffix is
+# part of the name).
+#
+# How these were set (2026-09-23): each is the fastest of 15 repetitions (3 rounds x 5) of
+# `scripts/bench.sh --preset release-native --cpu 2 --min-time 0.2s --rounds 3` on the reference
+# machine -- an 8-core x86_64 desktop under WSL2, gcc 13, no CPU isolation, no cpufreq control --
+# rounded up by about 20 %. check_budgets.py compares the fastest repetition, because interference
+# only ever makes a benchmark slower, and allows another 10 % by default. A benchmark that is 30 %
+# slower than it was on that machine therefore fails; the earlier budgets sat at twice the measured
+# time and allowed 25 % on top, so a 2.5x regression passed.
+#
+# Two consequences to keep in mind:
+#   * These are absolute times for one machine and the `release-native` preset. CI runs the check on
+#     a hosted runner, and on the portable `release` build (x86-64-v2), with --slack 2 (three times
+#     the budget): there it catches errors, counter floors and collapses, not drift. The portable
+#     build alone is 10 to 30 % slower on some of these -- on the reference machine
+#     BM_TickToOrder_Sim measures 157 ns under `release` against 116 ns under `release-native`.
+#   * Re-measure and update this file when the reference machine changes. A budget that has to be
+#     raised without a code change is a sign the number was measured on a busy machine.
+#
+# Benchmarks not present in a results directory are reported as "missing" and do not fail, so a
+# subset run (the CI job) is fine.
 [p50_ns]
-"BM_L2_UpdateNearTop" = 30
-"BM_L2_ApplyDelta/20" = 300
-"BM_L3_AddCancelExecMix" = 60
-"BM_Risk_CheckNew_Pass" = 100
-"BM_Oms_Lifecycle" = 120
-"BM_QuoteManager_Reconcile_6Orders1Change" = 200
-"BM_SpscRing_PingPong/real_time" = 300          # round trip = two cross-core hops
-"BM_Log_Emit_3Args" = 40
-"BM_Journal_Record/1024" = 80
-"BM_WsAssemble/16384" = 200
-"BM_TickToOrder_Sim" = 1200                     # 840 ns median per iteration (p50 counter 255 ns), 2026-09-23
-"BM_Json_BinanceDepth20" = 1500                 # bench/bench_json.cpp
+# Engine and book
+"BM_TickToOrder_Sim/manual_time" = 150        # 122.9 ns; the tick, no outbound hash
+"BM_TickToOrder_SimHash/manual_time" = 375    # 310.1 ns; the same with the simulator's SHA-256
+"BM_EngineStep_Sim/manual_time" = 2000        # 1.66 us per 32-event step
+"BM_L2_UpdateNearTop" = 2.6
+"BM_L2_ApplyDelta/20" = 275
+"BM_L3_AddCancelExecMix" = 22
+"BM_Risk_CheckNew_Pass" = 7.7
+"BM_Oms_Lifecycle" = 135
+"BM_QuoteManager_Reconcile_6Orders1Change" = 50
+"BM_BasicMM_ComputeQuotes" = 11.6
+"BM_SpscRing_PingPong/real_time" = 150        # round trip = two cross-core hops
+"BM_Log_Emit_3Args" = 22
+"BM_Journal_Record/1024" = 19
+"BM_WsAssemble/16384" = 160
 
-# Wire codecs (M3). Budgets are about twice the p50 measured while the machine was heavily loaded.
-"BM_Fix_ParseExecReportFill" = 400        # ~250-byte ExecutionReport, 25 fields
-"BM_Fix_DecodeExecReportFill" = 800       # parse + map to OrderFillMsg
-"BM_Fix_BuildNewOrderSingle" = 300
-"BM_Fix_FramerNext" = 25
-"BM_Itch_DecodeAddOrder" = 30
-"BM_Itch_DecodeOrderExecuted" = 30
-"BM_MoldUdp64_FramePacket" = 40           # 10-message packet
-"BM_SoupBin_FrameSequenced" = 10
-"BM_Ouch42_EncodeEnterOrder" = 40
-"BM_Ouch50_EncodeEnterOrder" = 40
-"BM_Mdp3_DecodeBook46_4Entries" = 110     # packet with 4 book entries, decoded into the ring
-"BM_Mdp3_ArbitrationAB_Heartbeat" = 25    # per packet copy
-"BM_Mdp3_FeedAB_Book46_4Entries" = 120    # A plus its duplicate on B, full feed path
+# Wire codecs. An iteration is 64 operations for the ITCH, MoldUDP64, SoupBinTCP and OUCH rows.
+"BM_Fix_ParseExecReportFill" = 265        # ~250-byte ExecutionReport, 25 fields
+"BM_Fix_DecodeExecReportFill" = 420       # parse + map to OrderFillMsg
+"BM_Fix_BuildNewOrderSingle" = 155
+"BM_Fix_FramerNext" = 10.2
+"BM_Itch_DecodeAddOrder" = 715
+"BM_Itch_DecodeOrderExecuted" = 705
+"BM_MoldUdp64_FramePacket" = 1800         # 10-message packet, 64 per iteration
+"BM_SoupBin_FrameSequenced" = 195
+"BM_Ouch42_EncodeEnterOrder" = 580
+"BM_Ouch50_EncodeEnterOrder" = 775
+"BM_Mdp3_DecodeBook46_4Entries" = 49      # packet with 4 book entries, decoded into the ring
+"BM_Mdp3_ArbitrationAB_Heartbeat" = 11.6  # per packet copy
+"BM_Mdp3_FeedAB_Book46_4Entries" = 56     # A plus its duplicate on B, full feed path
+"BM_ItchL2Bridge_Message" = 4400          # 64 ITCH messages, 2^16-order book, small working set
+"BM_ItchL2Bridge_Message_LargeBook" = 4850  # the same, 2^20-order book and 200k+ resting orders
 
-# Venue connectors (bench/bench_json.cpp, bench/bench_order_encoders.cpp). Budgets are about twice
-# the median of three runs (release preset, pinned with taskset, scripts/bench.sh settings) on a
-# shared 8-core desktop under WSL2; the measured p50 is in the comment.
-"BM_Json_BybitOrderbook20" = 1500         # 703 ns, 10 bids + 10 asks delta
-"BM_Json_BybitTrade" = 300                # 144 ns
-"BM_Json_DeribitBookChange" = 1300        # 620 ns, 7 bids + 3 asks, exponent amounts
-"BM_Json_DeribitTickerOption" = 800       # 398 ns, BookTicker + OptionTicker
-"BM_Json_DeribitTrades3" = 800            # 398 ns, three trades in one frame
-"BM_Json_BinanceExecutionReport" = 650    # 309 ns, private: partial fill
-"BM_Json_BybitExecution" = 800            # 380 ns, private: fill
-"BM_Json_DeribitUserOrder" = 600          # 294 ns, private: user.orders open
-"BM_Json_DeribitUserTrade" = 900          # 431 ns, private: user.trades fill
-"BM_Encode_BinanceOrderPlace" = 1100      # 523 ns, order.place with HMAC-SHA256 signature (2026-09-23)
-"BM_Encode_BybitOrderCreate" = 450        # 223 ns, order.create (2026-09-23)
-"BM_Encode_DeribitBuy" = 450              # 207 ns, private/buy (2026-09-23)
+# Venue connectors (bench/bench_json.cpp, bench/bench_order_encoders.cpp).
+"BM_Json_BinanceDepth20" = 750
+"BM_Json_BybitOrderbook20" = 795          # 10 bids + 10 asks delta
+"BM_Json_BybitTrade" = 180
+"BM_Json_DeribitBookChange" = 755         # 7 bids + 3 asks, exponent amounts
+"BM_Json_DeribitTickerOption" = 465       # BookTicker + OptionTicker
+"BM_Json_DeribitTrades3" = 475            # three trades in one frame
+"BM_Json_BinanceExecutionReport" = 375    # private: partial fill
+"BM_Json_BybitExecution" = 480            # private: fill
+"BM_Json_DeribitUserOrder" = 320          # private: user.orders open
+"BM_Json_DeribitUserTrade" = 510          # private: user.trades fill
+"BM_Encode_BinanceOrderPlace" = 675       # order.place with HMAC-SHA256 signature
+"BM_Encode_BybitOrderCreate" = 275        # order.create
+"BM_Encode_DeribitBuy" = 250              # private/buy
 
 # Median-counter floors. A benchmark below a floor, or one that reported an error, fails: its
 # timing no longer measures the work it is named for.
 [min_counters]
-"BM_TickToOrder_Sim" = { order_events_pct = 50 }  # share of timed ticks that sent orders
+# Share of timed ticks that sent orders. Without it the timing is of ticks that did nothing.
+"BM_TickToOrder_Sim/manual_time" = { order_events_pct = 50 }
+"BM_TickToOrder_SimHash/manual_time" = { order_events_pct = 50 }

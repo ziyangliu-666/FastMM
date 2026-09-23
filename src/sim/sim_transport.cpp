@@ -76,7 +76,7 @@ bool SimTransport::send(const EventHeader& m) noexcept {
     default:
       return true;  // not an order message: accepted and ignored
   }
-  hasher_.add(m);
+  if (cfg_.hash_outbound) hasher_.add(m);
   const LatencySample s = lat_.order_out();
   if (s.dropped) {
     ++stats_.dropped;

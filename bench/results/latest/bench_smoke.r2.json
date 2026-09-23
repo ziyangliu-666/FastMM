@@ -1,0 +1,176 @@
+{
+  "context": {
+    "date": "2026-09-23T10:03:58+00:00",
+    "executable": "build/release-native/bin/bench/bench_smoke",
+    "num_cpus": 8,
+    "mhz_per_cpu": 4192,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 1048576,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 100663296,
+        "num_sharing": 8
+      }
+    ],
+    "load_avg": [
+      23.2891,
+      35.2964,
+      37.0562
+    ],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_Smoke_Noop",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1341266285,
+      "real_time": 0.2002293250733917,
+      "cpu_time": 0.20670939253498047,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 1,
+      "threads": 1,
+      "iterations": 1341266285,
+      "real_time": 0.20233827394761478,
+      "cpu_time": 0.20891679536998134,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 2,
+      "threads": 1,
+      "iterations": 1341266285,
+      "real_time": 0.20012897886653144,
+      "cpu_time": 0.20664479387849521,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 3,
+      "threads": 1,
+      "iterations": 1341266285,
+      "real_time": 0.19972890915822525,
+      "cpu_time": 0.20622788263107644,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 4,
+      "threads": 1,
+      "iterations": 1341266285,
+      "real_time": 0.203778162515016,
+      "cpu_time": 0.210412692957536,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop_mean",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 0.20124072991215583,
+      "cpu_time": 0.2077823114744139,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop_median",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 0.20022932507339167,
+      "cpu_time": 0.2067093925349805,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop_stddev",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 0.0017455442740871724,
+      "cpu_time": 0.001807436777366752,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_Smoke_Noop_cv",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Smoke_Noop",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.008673911463395731,
+      "cpu_time": 0.008698703775799116,
+      "time_unit": "ns"
+    }
+  ]
+}

@@ -85,7 +85,9 @@ The io_uring backend talks to the kernel through the raw `io_uring_setup` / `io_
 
 ### Backend latency
 
-`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a shared 8-core host) the two are within measurement noise: p50 about 12.8 µs for both when client and server share one reactor; 10.8 to 11.3 µs for both, depending on the run, with the server on its own busy-polling thread; about 74 µs for both when both sides block and each round trip needs two cross-thread wake-ups. Loopback TCP and the `read`/`write` system calls dominate, and both backends make those calls the same way; io_uring only saves the empty `epoll_wait` of an idle busy-polling loop.
+`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a shared 8-core host, 2026-09-23) the two are within measurement noise: p50 12.3 to 12.8 µs for both when client and server share one reactor; 10.75 µs for both with the server on its own busy-polling thread; 19.5 to 20.5 µs for both when both sides block and each round trip needs two cross-thread wake-ups. Loopback TCP and the `read`/`write` system calls dominate, and both backends make those calls the same way; io_uring only saves the empty `epoll_wait` of an idle busy-polling loop.
+
+The threaded variants are run unpinned, and the benchmark refuses to run with fewer than two cores in its affinity mask (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`): pinned to the same core as its echo thread, a busy-polling round trip costs a scheduler time slice, and `bench/README.md` published 8.0 ms rows for it until 2026-09-23. Two cores is a floor, not a guarantee: on a loaded host the busy variants still have runs a thousand times slower than their p50, because both spinning threads need a core of their own. `bench/README.md` gives the spread.
 
 ## Hot-path rules
 

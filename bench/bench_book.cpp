@@ -47,6 +47,10 @@ std::vector<std::byte> make_delta(int levels_per_side, std::int64_t offset, Xosh
 }
 }  // namespace
 
+// Dependent latency: the level the next update touches is derived from the best bid this one
+// produced, so one update cannot start before the previous one is visible. It measures the same
+// 2.2 ns as the version without the chain, because ClobberMemory() already made each iteration
+// reload the book; the chain is here so that stays true if the barrier goes.
 static void BM_L2_UpdateNearTop(benchmark::State& state) {
   L2Book<256> b;
   fill_book(b, 100);
@@ -55,10 +59,11 @@ static void BM_L2_UpdateNearTop(benchmark::State& state) {
   for (auto _ : state) {
     // update one of the top 4 bid levels in place (no memmove), rotating the level
     b.apply_level(Side::Buy, px(10000 - (i & 3)), Qty::from_int(1 + (i & 7)));
-    ++i;
-    benchmark::DoNotOptimize(b.best_bid());
-    benchmark::ClobberMemory();
+    const Level top = b.best_bid();
+    benchmark::ClobberMemory();  // the book's stores stay; DoNotOptimize(top) would add one
+    i += 1 + (top.qty.raw & 1);
   }
+  benchmark::DoNotOptimize(i);
 }
 BENCHMARK(BM_L2_UpdateNearTop);
 

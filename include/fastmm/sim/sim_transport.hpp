@@ -55,6 +55,10 @@ struct SimTransportConfig {
   bool supports_replace = false;
   StpMode stp = StpMode::None;  // applied to the strategy account
   MdAggregatorConfig md{};      // coupled-generator mode
+  // SHA-256 over every outbound message (outbound_hash()), used by the determinism and replay
+  // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
+  // benchmark that times send() turns it off; backtests and tests leave it on.
+  bool hash_outbound = true;
   std::size_t md_wire_bytes = 4U << 20;
   std::size_t order_wire_bytes = 1U << 20;
   VenueId venue{0};

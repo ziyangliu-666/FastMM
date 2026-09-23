@@ -76,7 +76,8 @@ All notable changes are recorded here (Keep a Changelog format).
 - `HotArray` (`core/hot_array.hpp`): zeroed, resident, 2 MiB-page tables; `CounterKeyMap` for keys
   handed out by counters; `net::HmacSha256` with a precomputed key.
 - Benchmarks `BM_Ouch50_EncodeNewIds`, `BM_Ouch50_EncodeColdMap`, `BM_Ouch42_EncodeNewIds`,
-  `BM_ItchL2Bridge_Message_DefaultBook`; `scripts/bench-e2e.sh --timer-slack`.
+  `BM_ItchL2Bridge_Message_LargeBook` (added as `_DefaultBook`, renamed when it was given a working
+  set that matches the book); `scripts/bench-e2e.sh --timer-slack`.
 - Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
   docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
   `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one
@@ -217,16 +218,53 @@ All notable changes are recorded here (Keep a Changelog format).
   `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
 
 ### Changed
+- **Benchmark harness: what the published numbers mean.** Several of them measured the harness
+  rather than the code, so they were corrected and everything was re-measured (bench/README.md,
+  docs/explanation/benchmarks.md).
+  - A benchmark declares how many cores it needs (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`)
+    and fails if it is given fewer; `scripts/bench.sh` runs those unpinned in a second pass.
+    `BM_ReactorEchoThread` was pinned to the same core as its echo thread: its busy-polling rows
+    published 8.0 ms per round trip against 11 µs unpinned.
+  - `SimTransportConfig::hash_outbound` makes the simulator's outbound SHA-256 optional.
+    `BM_TickToOrder_Sim` now runs without it, since it is a determinism check of the simulator and
+    not engine work; `BM_TickToOrder_SimHash` keeps it and shows what it costs (about 180 ns of a
+    300 ns figure, two messages per tick). The "p50 991 -> 247 ns" improvement recorded below was
+    therefore in large part the benchmark's own checksum getting faster, not the engine.
+  - `BM_TickToOrder_Sim` and `BM_EngineStep_Sim` use `UseManualTime`: the reported time is the
+    `rdtsc` interval around the tick. They used to report Google Benchmark's own per-iteration time
+    with `PauseTiming`/`ResumeTiming` around the untimed settle loop, which added about 600 ns
+    to a roughly 300 ns operation. That inflated figure was what `bench/ci_budget.toml` gated on.
+  - `scripts/bench.sh` keeps every repetition (and `--rounds N` full passes of the suite);
+    `tools/bench_table.py` publishes the median over them and the min-to-max spread, plus CPU time
+    next to wall time. Google Benchmark's `stddev` aggregate, the standard deviation of five
+    repetition means, is gone from the table: it read `0.0 ns` on more than sixty rows.
+  - `BM_Risk_CheckNew_Pass`, `BM_Fixed_Mul`, `BM_Fixed_RoundToTick` and `BM_L2_UpdateNearTop` chain
+    each result into the next iteration, so they measure the latency of one operation instead of how
+    many independent ones the pipeline overlaps: `BM_Fixed_RoundToTick` 0.7 -> 3.6 ns and
+    `BM_Fixed_Mul` 0.8 -> 2.2 ns, while `BM_L2_UpdateNearTop` (2.2 ns) and `BM_Risk_CheckNew_Pass`
+    (6.5 ns) do not move, because the book's memory barrier and the risk checks' own data flow
+    already serialised them. The benchmarks that stay throughput measurements say so in their
+    source.
+  - `BM_ItchL2Bridge_Message_LargeBook` replaces `_DefaultBook`: it drives the 2^20-order book with
+    200,000 to 260,000 resting orders. `_DefaultBook` configured the big book but replayed a stream
+    with 2,000 to 6,000 live orders, so it measured the same time as the small book while the docs
+    claimed it showed cache and dTLB misses.
+  - `bench/ci_budget.toml` budgets are set from the measured time on the reference machine rather
+    than at twice it, `tools/check_budgets.py` compares the fastest repetition and allows 10 % by
+    default instead of 25 %, and CI runs the check over a subset of the benchmarks.
 - HMAC-SHA256 signing no longer fetches an OpenSSL provider and allocates per call: Binance order
   encode 1628 -> 736 ns (`BM_Encode_BinanceOrderPlace`). Ed25519 keys are parsed once, not per
   signature.
 - The simulator's outbound SHA-256 (replay proof) uses the x86 SHA extensions when present: it was
   half of `BM_TickToOrder_Sim` (p50 991 -> 543 ns, p99 1279 -> 671 ns). That benchmark runs through
-  `SimTransport` and never signs a Binance request.
+  `SimTransport` and never signs a Binance request. It no longer hashes at all (see the harness
+  entry above), so that half of the gain was a benchmark artefact: the engine never did this work.
 - Hot paths (bench/README.md, "Hot-path changes"): OUCH 5.0 encode in bench-e2e 4.4 us -> 0.1 us
   p50 and wire to wire 35 -> 25 us p50; `BM_TickToOrder_Sim` p50 991 -> 247 ns; `BM_EngineStep_Sim`
   9.2 -> 2.9 us; Binance order.place encode 1440 -> 523 ns; ITCH bridge with the default book 84 ->
-  55 ns per message. Outbound hashes and journals are unchanged.
+  55 ns per message. Outbound hashes and journals are unchanged. Two of those figures are measured
+  differently now: the tick-to-order pair no longer includes the simulator's SHA-256 or Google
+  Benchmark's pause overhead, and the default-book row was measured with a working set that fit L2.
   - `OpenHashMap` keeps the occupancy flag in the slot and allocates a `HotArray`: no page fault on
     the first insert into a page (every new OUCH order paid one), one cache line per probe.
   - `ouch50::UserRefMap` is direct-mapped (`CounterKeyMap`); the OUCH 4.2 / 5.0 encoders write

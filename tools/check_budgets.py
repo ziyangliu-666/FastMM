@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Check measured medians against the p50 latency budgets in bench/ci_budget.toml.
+"""Check measured times against the budgets in bench/ci_budget.toml.
 
-usage: check_budgets.py bench/results/latest [--budget bench/ci_budget.toml] [--slack 0.25]
+usage: check_budgets.py bench/results/latest [--budget bench/ci_budget.toml] [--slack 0.10]
 Exit 1 if any benchmark exceeds budget * (1 + slack), reported an error (SkipWithError), or has a
 median counter below its floor in [min_counters]. Benchmarks missing from results are reported, not
 failed.
+
+The compared figure is the fastest repetition, not the median that bench/README.md publishes: the
+machines these run on are shared, and interference only ever makes a benchmark slower, so the
+fastest repetition is the least disturbed estimate and the one a budget can be tight around. The
+median is printed next to it.
+
+Budgets are set from a measurement on the reference machine named in bench/ci_budget.toml, so the
+default slack is small: it covers that machine's own run-to-run spread, nothing else. CI runs this
+on a hosted runner, whose hardware is slower and whose load is unknown, with an explicit larger
+--slack; see .github/workflows/ci.yml.
 """
 import argparse
 import glob
@@ -41,7 +51,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results")
     ap.add_argument("--budget", default=os.path.join(os.path.dirname(__file__), "..", "bench", "ci_budget.toml"))
-    ap.add_argument("--slack", type=float, default=0.25)
+    ap.add_argument("--slack", type=float, default=0.10,
+                    help="allowance over the budget (0.10 = 10%%); use more on unknown hardware")
     a = ap.parse_args()
     cfg = tomllib.load(open(a.budget, "rb"))
     budgets = cfg["p50_ns"]
@@ -56,14 +67,15 @@ def main():
             bad += 1
             continue
         r = rows.get(name)
-        if r is None or "median" not in r:
+        if r is None or "min" not in r:
             print(f"{name:60} missing")
             continue
-        med = r["median"]
+        best = r["min"]
         limit = budget * (1 + a.slack)
-        status = "OK" if med <= limit else "OVER"
+        status = "OK" if best <= limit else "OVER"
         bad += status == "OVER"
-        print(f"{name:60} {med:10.1f} ns  budget {budget:8.0f} ns (+{a.slack * 100:.0f}% = {limit:8.0f})  {status}")
+        print(f"{name:60} {best:10.1f} ns (median {r['median']:9.1f})  budget {budget:8.0f} ns "
+              f"(+{a.slack * 100:.0f}% = {limit:8.0f})  {status}")
     for name, counters in floors.items():
         if name in errs and name not in budgets:
             print(f"{name:60} ERROR  {errs[name]}")

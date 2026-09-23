@@ -8,8 +8,14 @@
 //                                          arrives (two cross-thread wake-ups per iteration)
 //
 // Arguments: backend 0 = epoll, 1 = io_uring (skipped when unsupported); busy 0 = blocking waits,
-// 1 = busy polling. Counters p50 / p99 are per-iteration round-trip times in ns. The threaded
-// variant needs two cores: do not pin the process with --cpu / FASTMM_BENCH_CPU for it.
+// 1 = busy polling. Counters p50 / p99 are per-iteration round-trip times in ns.
+//
+// The threaded variant needs two cores and says so (FASTMM_BENCH_NEEDS_CORES): on one core the
+// benchmark thread and the echo thread take turns, and a round trip costs a scheduler time slice
+// (8 ms) instead of 10 us. It fails rather than report that number when it is run pinned;
+// scripts/bench.sh runs it in a separate, unpinned pass.
+#include "bench_pin.hpp"
+
 #include "fastmm/core/latency.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/tcp_socket.hpp"
@@ -152,6 +158,10 @@ void BM_ReactorEchoInline(benchmark::State& state) {
 BENCHMARK(BM_ReactorEchoInline)->ArgsProduct({{0, 1}, {0, 1}})->UseRealTime();
 
 void BM_ReactorEchoThread(benchmark::State& state) {
+  if (fastmm::bench::affinity_cores() < 2) {
+    state.SkipWithError("needs two cores: run it without --cpu / taskset");
+    return;
+  }
   ReactorBackend backend{};
   if (!select_backend(state, backend)) return;
   const bool busy = state.range(1) != 0;
@@ -184,5 +194,6 @@ void BM_ReactorEchoThread(benchmark::State& state) {
   server_thread.join();
 }
 BENCHMARK(BM_ReactorEchoThread)->ArgsProduct({{0, 1}, {0, 1}})->UseRealTime();
+FASTMM_BENCH_NEEDS_CORES(BM_ReactorEchoThread, 2);
 
 }  // namespace

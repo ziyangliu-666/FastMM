@@ -131,6 +131,28 @@ jobs:
         # backtest and, outside sanitizers, scripts/docs/tutorial.sh up to the simulated exchange on
         # a free port) and docs (strategy API doc test, public headers compile alone).
         run: ctest --preset ${{ matrix.preset }} -j$(nproc)
+      - name: benchmark budgets (subset)
+        if: matrix.name == 'gcc-release'
+        # bench/ci_budget.toml holds absolute times measured on the reference machine. A hosted
+        # runner is roughly twice as slow and its load is not ours to control, so this gate is set
+        # at three times the budget: it catches a benchmark that errored, that stopped doing the
+        # work it is named for (the [min_counters] floors), or that collapsed by an order of
+        # magnitude -- the class of harness bug that once published an 8 ms reactor round trip. The
+        # tight gate is the local one (default --slack 0.10, scripts/bench.sh + check_budgets.py).
+        run: |
+          mkdir -p bench/results/ci
+          for b in bench_book bench_risk bench_oms bench_quote_manager bench_logger bench_journal \
+                   bench_codecs_fix bench_codecs_mdp3; do
+            ./build/release/bin/bench/$b --benchmark_min_time=0.1s --benchmark_repetitions=3 \
+              --benchmark_out_format=json --benchmark_out="bench/results/ci/$b.json"
+          done
+          # Each tick-to-order iteration runs an untimed settle loop that costs far more than the
+          # timed part, so this one gets a short min_time.
+          ./build/release/bin/bench/bench_tick_to_order --benchmark_min_time=0.02s \
+            --benchmark_repetitions=3 --benchmark_out_format=json \
+            --benchmark_out=bench/results/ci/bench_tick_to_order.json
+          python3 tools/check_budgets.py bench/results/ci --slack 2
+
       - name: install + external project
         if: matrix.name == 'gcc-release'
         # examples/external-project against the install prefix: strategy lists, a synthetic backtest,
