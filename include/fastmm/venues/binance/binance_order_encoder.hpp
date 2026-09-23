@@ -31,6 +31,7 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/net/url.hpp"
 #include "fastmm/venues/binance/binance_auth.hpp"
+#include "fastmm/venues/binance/binance_params.hpp"
 #include "fastmm/venues/feed.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/request_id.hpp"
@@ -46,7 +47,6 @@
 
 namespace fastmm::venues::binance {
 
-inline constexpr std::size_t kMaxRequestBytes = 1536;
 inline constexpr int kDefaultRecvWindowMs = 3000;  // plan 6.4 (docs default 5000, max 60000)
 
 // What the encoder must remember about a working order to build a cancelReplace (the
@@ -111,7 +111,7 @@ class BinanceOrderEncoder {
 
   // Sorted parameter list for one request; builds both the signature payload and the JSON.
   // Public so the .cpp helpers can build lists; not part of the stable API.
-  struct ParamList;
+  using ParamList = BinanceParams<20>;  // cancelReplace is the widest request
 
   [[nodiscard]] static std::string_view side_text(Side s) noexcept {
     return s == Side::Buy ? "BUY" : "SELL";

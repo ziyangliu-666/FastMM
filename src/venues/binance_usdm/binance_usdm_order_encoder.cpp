@@ -8,68 +8,12 @@
 
 namespace fastmm::venues::binance_usdm {
 
-// A request's parameters, added in alphabetical order. Text values are copied into a flat arena
-// so the signature payload and the JSON see identical bytes.
-struct BinanceUsdmOrderEncoder::ParamList {
-  struct Param {
-    std::string_view key;
-    std::string_view value;
-    bool numeric;  // JSON integer (timestamp, recvWindow, orderId)
-  };
-  std::array<Param, 16> items{};
-  std::size_t count = 0;
-  char arena[512];
-  std::size_t used = 0;
-  bool ok = true;
-
-  std::string_view intern(std::string_view v) noexcept {
-    if (used + v.size() > sizeof arena) {
-      ok = false;
-      return {};
-    }
-    std::memcpy(arena + used, v.data(), v.size());
-    std::string_view out(arena + used, v.size());
-    used += v.size();
-    return out;
-  }
-  void add(std::string_view key, std::string_view value, bool numeric = false) noexcept {
-    if (count >= items.size()) {
-      ok = false;
-      return;
-    }
-    items[count++] = Param{key, intern(value), numeric};
-  }
-  void add_int(std::string_view key, std::int64_t v) noexcept {
-    char buf[24];
-    add(key, std::string_view(buf, format_int64(v, buf)), true);
-  }
-  template <class Tag>
-  void add_decimal(std::string_view key, Fixed<Tag> v) noexcept {
-    DecimalText t(v);
-    add(key, t.view(), false);
-  }
-  [[nodiscard]] bool sorted() const noexcept {
-    for (std::size_t i = 1; i < count; ++i) {
-      if (!(items[i - 1].key < items[i].key)) return false;
-    }
-    return true;
-  }
-  template <std::size_t N>
-  void to_query(net::QueryBuilder<N>& q) const noexcept {
-    for (std::size_t i = 0; i < count; ++i) q.add(items[i].key, items[i].value);
-  }
-};
-
 namespace {
 
 using ParamList = BinanceUsdmOrderEncoder::ParamList;
 
 bool finish_rest(ParamList& params, const Signer& signer, RestRequest& out) {
-  if (!params.ok || !params.sorted()) return false;
-  out.query.clear();
-  params.to_query(out.query);
-  if (!out.query.ok()) return false;
-  return signer.sign_query(out.query);
+  return binance::write_signed_rest_query(params, signer, out.query);
 }
 
 void add_auth(ParamList& p, const Signer& signer, bool ws) noexcept {
@@ -173,44 +117,7 @@ std::size_t BinanceUsdmOrderEncoder::finish_ws(ParamList& params,
                                                std::string_view method,
                                                std::string_view request_id,
                                                std::span<char> out) noexcept {
-  if (!params.ok || !params.sorted()) return 0;
-  std::string_view signature;
-  net::HexSha256 hmac;
-  char ed[net::kEd25519Base64Size];
-  const bool signed_request = !session_auth_ && signer_.usable();
-  if (signed_request) {
-    net::QueryBuilder<kMaxRequestBytes> q;
-    params.to_query(q);
-    if (!q.ok()) return 0;
-    if (signer_.type() == binance::KeyType::Hmac) {
-      hmac = signer_.sign_hmac(q.view());
-      signature = hmac.view();
-    } else {
-      const std::size_t n = signer_.sign_ed25519(q.view(), ed);
-      if (n == 0) return 0;
-      signature = std::string_view(ed, n);
-    }
-  }
-  JsonWriter w(out);
-  w.begin_object()
-      .key("id")
-      .string(request_id)
-      .key("method")
-      .string(method)
-      .key("params")
-      .begin_object();
-  for (std::size_t i = 0; i < params.count; ++i) {
-    const auto& p = params.items[i];
-    w.key(p.key);
-    if (p.numeric) {
-      w.raw_value(p.value);
-    } else {
-      w.string(p.value);
-    }
-  }
-  if (signed_request) w.key("signature").string(signature);
-  w.end_object().end_object();
-  return w.ok() ? w.size() : 0;
+  return binance::write_signed_ws_request(params, signer_, session_auth_, method, request_id, out);
 }
 
 std::size_t BinanceUsdmOrderEncoder::encode_ws_logon(std::string_view request_id,

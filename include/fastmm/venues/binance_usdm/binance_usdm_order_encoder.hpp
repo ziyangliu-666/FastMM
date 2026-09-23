@@ -102,7 +102,7 @@ class BinanceUsdmOrderEncoder {
                                      std::uint32_t weight,
                                      RestRequest& out);
 
-  struct ParamList;
+  using ParamList = binance::BinanceParams<16>;  // order.modify is the widest
 
   [[nodiscard]] static std::string_view side_text(Side s) noexcept {
     return s == Side::Buy ? "BUY" : "SELL";
