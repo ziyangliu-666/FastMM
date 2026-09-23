@@ -23,6 +23,7 @@ struct RunnerStats {
   std::uint64_t fills = 0;
   std::uint64_t risk_rejects = 0;
   std::uint64_t journal_overflows = 0;
+  std::uint64_t records_dropped = 0;  // store records the ring could not take
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
   std::int64_t realized_pnl_raw = 0;  // Notional raw (1e-8)

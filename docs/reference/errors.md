@@ -14,9 +14,9 @@ The last two columns are what an operator has to decide. "Orders cancelled" is t
 |---:|---|---|---|
 | 0 | stopped by `--duration`, SIGINT or SIGTERM with `cancel_all ok`; also after a kill with `on_kill = "stay"`; `--help`, `--version`, `--list-strategies` | yes | yes |
 | 2 | bad command line; an unset `${VAR}` in `[venues.*]` | nothing started | no: fix the invocation |
-| 3 | the configuration, strategy or a parameter does not load | nothing started | no: fix the config |
+| 3 | the configuration, strategy or a parameter does not load, or a `[storage]` backend is unknown or cannot be opened | nothing started | no: fix the config |
 | 4 | a venue's reference data failed to load | nothing started | retry once; a repeat means the venue or the network |
-| 5 | `cancel_all FAILED`, the journal cannot be opened, an order-event ring overflowed, or an uncaught error | not certain | no: check the venue for open orders first |
+| 5 | `cancel_all FAILED`, the journal cannot be opened or written (a full filesystem trips the kill switch), an order-event ring overflowed, or an uncaught error | not certain | no: check the venue for open orders first |
 | 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok` | yes | no: find the kill reason in the log |
 | 7 | a Python strategy's slow tier failed, `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` never returns it) | yes | no: fix the slow method |
 
@@ -127,7 +127,7 @@ Nothing resets a kill switch. `fastmm-live` has no command to clear one; restart
 
 | Symptom | Meaning |
 |---|---|
-| `trailer MISSING` | the session did not shut down cleanly; events before the damaged block are still readable |
+| `trailer MISSING` | the session did not shut down cleanly; events before the damaged block are still readable. `fastmm-replay` refuses such a file without `--allow-incomplete`, because the outbound stream it compares against stops short of what the session sent |
 | a CRC failure on a block | the block is damaged; `--no-crc` reads past it |
 | `replay MISMATCH` | the replayed order stream differs from the recorded one; only the first difference means anything ([Determinism](../explanation/determinism.md)) |
 | a what-if warning | `--config` or `--strategy` differs from the recording, so a match is not expected |
@@ -136,4 +136,5 @@ Nothing resets a kill switch. `fastmm-live` has no command to clear one; restart
 
 - [Troubleshooting](../how-to/operations/troubleshooting.md): every log message with its cause and fix.
 - [Status file](status-file.md): where the counters and reasons are published.
+- [Storage](storage.md): `sessions.clean_shutdown`, `journal_complete` and `records_dropped` say what a session's record is missing.
 - [Running this in production](../how-to/operations/running-in-production.md): the failures that have no error at all.

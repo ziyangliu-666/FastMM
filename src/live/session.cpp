@@ -15,11 +15,15 @@
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/net/reactor.hpp"
+#include "fastmm/store/registry.hpp"
+#include "fastmm/store/store_thread.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/symbology.hpp"
 #include "fastmm/venues/venue_factory.hpp"
+#include "fastmm/version.hpp"
 
+#include <limits.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -333,6 +337,66 @@ void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool fin
       f.book_errors,
       f.kernel_to_t0.p50_ns,
       f.kernel_to_t0.p99_ns);
+}
+
+std::string host_name() {
+  char buf[HOST_NAME_MAX + 1] = {};
+  if (::gethostname(buf, sizeof buf - 1) != 0) return {};
+  return buf;
+}
+
+// What the previous session of this engine left behind. Logged before this one starts, so an
+// operator sees the open orders, the last position and the cumulative PnL without a query.
+//
+// It is what FastMM recorded, not what the venue holds: FastMM does not fetch execution history
+// from a venue at start-up, so a fill that happened while the process was down is missing until
+// the venue's reconciliation snapshot arrives (docs/reference/storage.md).
+void log_previous_session(const std::string& backend_name, const Config& cfg) {
+  auto reader = store::StoreRegistry::instance().make_reader(backend_name);
+  if (reader == nullptr) return;
+  store::BackendOptions opts;
+  opts.config = &cfg.storage;
+  opts.engine_name = cfg.engine.name;
+  opts.default_dir = cfg.engine.journal_dir;
+  opts.read_only = true;
+  if (auto r = reader->open(opts); !r) return;  // no store yet: the first session
+  store::QueryFilter f;
+  f.engine = cfg.engine.name;
+  auto rec = reader->recovery(f);
+  if (!rec || !rec->found) return;
+  const store::Recovery& p = *rec;
+  FASTMM_LOG_WARN(
+      "previous session {} ({}) started {} and {}: realized {} unrealized {} fees {} net {} over "
+      "{} fill(s)",
+      p.session_id,
+      p.strategy,
+      p.started_utc,
+      p.stopped_utc.empty() ? std::string("never recorded a shutdown") : "stopped " + p.stopped_utc,
+      p.realized,
+      p.unrealized,
+      p.fees,
+      p.net,
+      p.fills);
+  // A clean shutdown asks for the kill switch itself, so only an unrequested one is news.
+  if (p.kill_latched || (p.kill_reason != "None" && p.kill_reason != "Requested"))
+    FASTMM_LOG_WARN("previous session kill switch: {}{}",
+                    std::string_view(p.kill_reason),
+                    p.kill_latched ? " (latched)" : "");
+  if (!p.journal_complete)
+    FASTMM_LOG_ERROR(
+        "the previous session's journal was not closed: its tail is missing and a replay of it "
+        "will refuse to run");
+  if (p.records_dropped != 0)
+    FASTMM_LOG_WARN("the previous session dropped {} store record(s): its rows are incomplete",
+                    p.records_dropped);
+  for (const std::string& line : p.positions)
+    FASTMM_LOG_WARN("previous position: {}", std::string_view(line));
+  for (const std::string& line : p.open_orders)
+    FASTMM_LOG_ERROR(
+        "the previous session still had order {} open at its last record; the venue may still "
+        "hold it",
+        std::string_view(line));
+  FASTMM_LOG_INFO("previous session: fastmm-pnl recover --engine {}", cfg.engine.name);
 }
 
 const char* short_state(venues::ChannelState s) {
@@ -668,9 +732,60 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   ++kill_state.sessions;
   deps.engine.pnl_carry = kill_state.carry();
 
+  // ---- storage backend ([storage] backend) ------------------------------------------------
+  // The engine hands fills, orders, positions and kill events to a ring, exactly as it does the
+  // journal; a StoreThread turns them into rows. "none" costs nothing: no ring, no thread, and
+  // the engine's RecordWriter is disabled.
+  const std::string backend_name = store::configured_backend(cfg.storage);
+  std::unique_ptr<MsgRing> record_ring;
+  std::unique_ptr<store::StoreThread> store_thread;
+  if (backend_name != store::kNoBackend) {
+    store::register_builtin_backends();
+    auto& registry = store::StoreRegistry::instance();
+    auto backend = registry.make_backend(backend_name);
+    if (backend == nullptr) {
+      std::fprintf(stderr,
+                   "%s: [storage] backend = \"%s\" is not registered (have %s)\n",
+                   prog,
+                   backend_name.c_str(),
+                   registry.names().c_str());
+      return kExitConfig;
+    }
+    log_previous_session(backend_name, cfg);
+    store::BackendOptions bopts;
+    bopts.config = &cfg.storage;
+    bopts.engine_name = cfg.engine.name;
+    bopts.default_dir = cfg.engine.journal_dir;
+    // Fail closed: an operator who does not want a store sets backend = "none" rather than
+    // starting a session whose record silently goes nowhere.
+    if (auto r = backend->open(bopts); !r) {
+      std::fprintf(stderr, "%s: [storage] %s\n", prog, r.error().c_str());
+      return kExitConfig;
+    }
+    const auto ring_bytes =
+        static_cast<std::size_t>(cfg.storage.get_int("ring_bytes", 4 * 1024 * 1024));
+    record_ring = std::make_unique<MsgRing>(ring_size(ring_bytes));
+    store_thread = std::make_unique<store::StoreThread>(*record_ring, std::move(backend));
+    deps.record_ring = record_ring.get();
+    FASTMM_LOG_INFO("storage: {}", backend_name);
+  }
+
   std::unique_ptr<MsgRing> journal_ring;
   std::unique_ptr<JournalFileWriter> journal;
+  std::string journal_path;
   const bool journaling = !opts.no_journal && (!opts.journal_path.empty() || cfg.engine.journal);
+  if (journaling && cfg.engine.journal_retention_days > 0) {
+    std::string prune_error;
+    const std::size_t removed =
+        prune_journals(cfg.engine.journal_dir, cfg.engine.journal_retention_days, &prune_error);
+    if (removed != 0)
+      FASTMM_LOG_INFO("journal retention: {} file(s) older than {} day(s) removed from {}",
+                      removed,
+                      cfg.engine.journal_retention_days,
+                      cfg.engine.journal_dir);
+    if (!prune_error.empty())
+      FASTMM_LOG_WARN("journal retention: {}", std::string_view(prune_error));
+  }
   if (journaling) {
     std::string path = opts.journal_path;
     if (path.empty()) {
@@ -698,13 +813,20 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     info.config_toml = effective;
     info.params = param_schema;
     if (custom != nullptr) info.strategy_meta = custom->meta;
-    journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info);
+    JournalOptions jopts;
+    static_cast<void>(parse_journal_sync(cfg.engine.journal_sync, jopts.sync));  // validated
+    jopts.max_bytes = cfg.engine.journal_max_bytes;
+    journal = std::make_unique<JournalFileWriter>(*journal_ring, path, info, jopts);
     if (!journal->ok()) {
       std::fprintf(stderr, "%s: cannot open journal %s\n", prog, path.c_str());
       return kExitRuntime;
     }
     deps.journal_ring = journal_ring.get();
-    FASTMM_LOG_INFO("journal: {}", path);
+    journal_path = path;
+    FASTMM_LOG_INFO("journal: {} (sync {}, rotate at {} bytes, 0 = never)",
+                    path,
+                    to_string(jopts.sync),
+                    jopts.max_bytes);
   }
 
   LiveBackend backend{&clock, &transport, &feed};
@@ -776,6 +898,36 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const SignalGuard signals;
+  if (store_thread) {
+    store::SessionOpen so;
+    so.session_id = deps.engine.session_id;
+    so.session_epoch = deps.engine.session_epoch;
+    so.started_ns = wall_now().ns;
+    so.engine_name = cfg.engine.name;
+    so.strategy = std::string(strategy_name);
+    so.version = FASTMM_VERSION_STRING;
+    so.build_info = build_info();
+    so.config_hash = cfg.effective_hash();
+    so.config_toml = cfg.effective_toml();
+    so.journal_path = journal_path;
+    so.host = host_name();
+    so.pid = static_cast<std::uint32_t>(::getpid());
+    so.dry_run = opts.dry_run;
+    so.pnl_carry_raw = deps.engine.pnl_carry.raw;
+    store::Backend& store_backend = store_thread->backend();
+    if (auto r = store_backend.session_open(so); !r) {
+      std::fprintf(stderr, "%s: [storage] %s\n", prog, r.error().c_str());
+      return kExitConfig;
+    }
+    if (auto r = store_backend.instruments(
+            deps.engine.session_id,
+            std::span<const Instrument>(instruments.data(), instruments.size()));
+        !r) {
+      std::fprintf(stderr, "%s: [storage] %s\n", prog, r.error().c_str());
+      return kExitConfig;
+    }
+    store_thread->start();
+  }
   if (journal) journal->start();
   std::thread engine_thread;
   if (single) {
@@ -916,7 +1068,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         "intervals {}",
         last_tsc.has_rate() ? "use the TSC (constant_tsc)" : "use clock_gettime");
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
-  // 6 the runner cannot run inline (threading = "single")
+  // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written
   int reason = 0;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
@@ -936,6 +1088,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
     if (reason == 0 && inline_ctx.unsupported.load()) reason = 6;
+    // A journal that cannot be written (a full filesystem, an I/O error) means the session is no
+    // longer recoverable: stop trading rather than keep going blind.
+    if (reason == 0 && journal && journal->failed()) {
+      FASTMM_LOG_ERROR("journal write failed ({}): tripping the kill switch and shutting down",
+                       to_string(journal->error()));
+      reason = 7;
+    }
     if (reason == 0 && opts.watchdog) {
       watchdog_cause = opts.watchdog();
       if (!watchdog_cause.empty()) {
@@ -1041,6 +1200,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (slow tier failed)");
   } else if (reason == 6) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (the engine could not run inline)");
+  } else if (reason == 7) {
+    FASTMM_LOG_ERROR("fastmm-live: shutting down (the journal cannot be written: {})",
+                     to_string(journal->error()));
   } else {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                     reason == 1   ? std::string_view("duration elapsed")
@@ -1132,11 +1294,39 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   persist_kill(final_live);
   // The file stays: monitors show the final numbers and the kill reason.
   publish_status(StatusRunState::Stopped, final_live);
-  const int rc = !cancel_ok                   ? kExitRuntime
-                 : reason == 4                ? kExitKilled
-                 : reason == 5                ? kExitSlowTier
-                 : reason == 3 || reason == 6 ? kExitRuntime
-                                              : kExitOk;
+  const int rc = !cancel_ok                                  ? kExitRuntime
+                 : reason == 4                               ? kExitKilled
+                 : reason == 5                               ? kExitSlowTier
+                 : reason == 3 || reason == 6 || reason == 7 ? kExitRuntime
+                                                             : kExitOk;
+  if (store_thread) {
+    store_thread->stop();  // drains and commits everything the ring still holds
+    store::SessionClose sc;
+    sc.session_id = deps.engine.session_id;
+    sc.stopped_ns = wall_now().ns;
+    sc.exit_code = rc;
+    sc.kill_reason = final_live.kill_reason;
+    sc.kill_latched = kill_last.latched;
+    sc.stats = final_live.stats;
+    if (journal) {
+      sc.journal_complete = !journal->failed();
+      sc.journal_bytes = journal->bytes_written();
+      sc.journal_paths = journal->part_paths();
+    }
+    store::Backend& store_backend = store_thread->backend();
+    if (auto r = store_backend.session_close(sc); !r)
+      FASTMM_LOG_ERROR("store: {}", std::string_view(r.error()));
+    const store::StoreThreadStats ss = store_thread->stats();
+    FASTMM_LOG_INFO("store: {} record(s) in {} batch(es), {} row(s), {} error(s), {} dropped",
+                    ss.records,
+                    ss.batches,
+                    store_backend.rows(),
+                    store_backend.errors(),
+                    final_live.stats.records_dropped);
+    if (store_backend.errors() != 0)
+      FASTMM_LOG_ERROR("store: last error: {}", std::string_view(store_backend.last_error()));
+    store_backend.close();
+  }
   FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);
   return rc;
 }

@@ -35,6 +35,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
+#include "fastmm/core/record_stream.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/rng.hpp"
@@ -70,6 +71,8 @@ struct EngineStats {
   std::uint64_t risk_rejects = 0;
   std::uint64_t venue_rejects = 0;  // OrderReject messages that changed an order
   std::uint64_t journal_overflows = 0;
+  std::uint64_t records_written = 0;  // records handed to the store ring (core/record_stream.hpp)
+  std::uint64_t records_dropped = 0;  // ... and dropped because it was full
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
   std::uint64_t crossed_pulls = 0;
@@ -106,7 +109,8 @@ class Engine {
          Transport& transport,
          Feed& feed,
          Strategy& strategy,
-         MsgRing* journal_ring = nullptr)
+         MsgRing* journal_ring = nullptr,
+         MsgRing* record_ring = nullptr)
       : cfg_(cfg),
         instruments_(instruments),
         clock_(clock),
@@ -120,6 +124,7 @@ class Engine {
         quotes_(cfg.quotes),
         timers_(clock.now()),
         journal_(journal_ring),
+        records_(record_ring, cfg.session_id),
         rng_(cfg.rng_seed),
         spin_(cfg.spin_mode),
         reject_log_(cfg.reject_log_interval),
@@ -264,6 +269,13 @@ class Engine {
       ++stats_.journal_overflows;
     if constexpr (has_hook(Hook::Stop)) strategy_.on_stop(ctx_);
     flush_out();
+    // The last word on every position, so a store holds the state the session ended in.
+    if (records_.enabled()) {
+      for (const Instrument& inst : instruments_) {
+        const Position& p = positions_.get(inst.id);
+        if (p.fills != 0 || !p.qty.is_zero()) emit_position(inst.id);
+      }
+    }
     publish_latency(now_);
     unlatch_clock();
     in_engine_ = false;
@@ -300,6 +312,7 @@ class Engine {
   [[nodiscard]] const PositionTracker& positions() const noexcept { return positions_; }
   [[nodiscard]] LatencyTracker& latency() noexcept { return latency_; }
   [[nodiscard]] JournalWriter& journal() noexcept { return journal_; }
+  [[nodiscard]] RecordWriter& records() noexcept { return records_; }
   [[nodiscard]] QuoteManager& quote_manager() noexcept { return quotes_; }
   [[nodiscard]] TimerWheel<>& timers() noexcept { return timers_; }
   [[nodiscard]] Strategy& strategy() noexcept { return strategy_; }
@@ -333,6 +346,7 @@ class Engine {
     r.fills = stats_.fills;
     r.risk_rejects = stats_.risk_rejects;
     r.journal_overflows = stats_.journal_overflows;
+    r.records_dropped = stats_.records_dropped;
     r.transport_full = stats_.transport_full;
     r.timers_fired = stats_.timers_fired;
     r.realized_pnl_raw = positions_.total_realized().raw;
@@ -637,6 +651,109 @@ class Engine {
     flush_out();
   }
 
+  // ---- store records ---------------------------------------------------------------------------
+  // What a storage backend turns into rows (core/record_stream.hpp). Never on the risk path: a
+  // full ring drops the record and counts it, and nothing here can block or fail the session.
+  // hdr.engine_ts is the engine clock, which is the wall clock in a live session.
+
+  void account_record(bool ok) noexcept {
+    if (FASTMM_LIKELY(ok)) {
+      ++stats_.records_written;
+    } else {
+      ++stats_.records_dropped;
+    }
+  }
+
+  void emit_position(InstrumentId id) noexcept {
+    if (!records_.enabled() || !instruments_.contains(id)) return;
+    PositionRecord r;
+    records_.init(r, RecordType::Position, id, instruments_.get(id).venue, now_, now_);
+    r.pos = positions_.get(id);
+    r.total_realized = positions_.total_realized();
+    r.total_unrealized = positions_.total_unrealized();
+    r.total_fees = positions_.total_fees();
+    r.pnl_carry = cfg_.pnl_carry;
+    account_record(records_.put(r.hdr));
+  }
+
+  void emit_order(const OmsUpdate& u) noexcept {
+    if (!records_.enabled() || !u.known) return;
+    // A cancel-replace renames the OMS record in place, so the id it replaced never reports a
+    // terminal state of its own. Close it here, or a store shows it open forever.
+    if (u.replaced_cl_ord_id.valid()) {
+      OrderRecord old;
+      records_.init(old, RecordType::Order, u.order.instrument, u.order.venue, now_, now_);
+      old.hdr.flags |= RecordHeader::kTerminal;
+      old.hdr.aux[0] = static_cast<std::uint8_t>(u.prev);
+      old.hdr.aux[2] = 1;
+      old.order = u.order;
+      old.order.cl_ord_id = u.replaced_cl_ord_id;
+      account_record(records_.put(old.hdr));
+    }
+    OrderRecord r;
+    records_.init(r, RecordType::Order, u.order.instrument, u.order.venue, now_, now_);
+    if (u.terminal) r.hdr.flags |= RecordHeader::kTerminal;
+    r.hdr.aux[0] = static_cast<std::uint8_t>(u.prev);
+    r.hdr.aux[1] = static_cast<std::uint8_t>(u.action);
+    r.order = u.order;
+    account_record(records_.put(r.hdr));
+  }
+
+  void emit_kill(KillReason reason, VenueId venue, bool per_venue) noexcept {
+    if (!records_.enabled()) return;
+    KillRecord r;
+    records_.init(r, RecordType::Kill, InstrumentId{}, venue, now_, now_);
+    if (per_venue) r.hdr.flags |= RecordHeader::kVenue;
+    r.reason = reason;
+    r.kill_flags = risk_.kill_flags();
+    r.kills = stats_.kills;
+    r.venue_kills = stats_.venue_kills;
+    r.realized = positions_.total_realized();
+    r.unrealized = positions_.total_unrealized();
+    r.fees = positions_.total_fees();
+    r.pnl_carry = cfg_.pnl_carry;
+    account_record(records_.put(r.hdr));
+  }
+
+  // A fill the venue reported (msg != nullptr) or one the engine booked from a cum_qty jump.
+  void emit_fill(InstrumentId id,
+                 Side side,
+                 Price px,
+                 Qty qty,
+                 Qty booked,
+                 Notional fee,
+                 FeeAsset fee_asset,
+                 const OmsUpdate& u,
+                 const OrderFillMsg* msg) noexcept {
+    if (!records_.enabled() || !instruments_.contains(id)) return;
+    FillRecord r;
+    records_.init(r, RecordType::Fill, id, instruments_.get(id).venue, now_, now_);
+    if (msg == nullptr) r.hdr.flags |= RecordHeader::kSynthetic;
+    if (u.action == OmsAction::LateFill) r.hdr.flags |= RecordHeader::kLate;
+    if (u.action == OmsAction::UnknownFill) r.hdr.flags |= RecordHeader::kUnknown;
+    if (u.terminal) r.hdr.flags |= RecordHeader::kTerminal;
+    r.cl_ord_id = msg != nullptr ? msg->cl_ord_id : u.order.cl_ord_id;
+    r.price = px;
+    r.qty = qty;
+    r.booked_qty = booked;
+    r.cum_qty = msg != nullptr ? msg->cum_qty : u.order.cum_qty;
+    r.leaves_qty = msg != nullptr ? msg->leaves_qty : u.order.leaves_qty();
+    r.fee = fee;
+    r.fee_amount = msg != nullptr ? msg->fee : Notional{};
+    const Position& p = positions_.get(id);
+    r.position_qty = p.qty;
+    r.position_avg_px = p.avg_px;
+    r.position_realized = p.realized;
+    r.position_fees = p.fees;
+    r.side = side;
+    r.liquidity = msg != nullptr ? msg->liquidity : Liquidity::Unknown;
+    r.fee_asset = fee_asset;
+    r.venue_order_id = msg != nullptr ? msg->venue_order_id : u.order.venue_order_id;
+    if (msg != nullptr) r.exec_id = msg->exec_id;
+    account_record(records_.put(r.hdr));
+    emit_position(id);
+  }
+
   // ---- order events -------------------------------------------------------------------------
 
   // A venue message reported more filled quantity than the fills we received (a private-stream
@@ -657,6 +774,15 @@ class Engine {
         u.order.price);
     positions_.on_fill(
         u.order.instrument, u.order.side, u.order.price, u.missed_qty, Notional{}, inst);
+    emit_fill(u.order.instrument,
+              u.order.side,
+              u.order.price,
+              u.missed_qty,
+              u.missed_qty,
+              Notional{},
+              FeeAsset::Quote,
+              u,
+              nullptr);
     if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
@@ -677,6 +803,7 @@ class Engine {
       quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now_, place);
     }
     if (u.changed) {
+      emit_order(u);
       if constexpr (has_hook(Hook::OrderUpdate)) strategy_.on_order_update(ctx_, u);
     }
     flush_out();
@@ -746,6 +873,7 @@ class Engine {
         fee = Notional{};
       }
       positions_.on_fill(id, side, f.price, booked, fee, inst);
+      emit_fill(id, side, f.price, f.qty, booked, fee, fee_asset, u, &f);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
@@ -779,6 +907,7 @@ class Engine {
   void on_position_update(const PositionUpdateMsg& m) noexcept {
     if (!instruments_.contains(m.hdr.instrument)) return;
     positions_.set(m.hdr.instrument, m.qty, m.avg_px, instruments_.get(m.hdr.instrument));
+    emit_position(m.hdr.instrument);
     if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
@@ -936,6 +1065,7 @@ class Engine {
     ++stats_.kills;
     quoting_enabled_ = false;
     if (kill_reason_ == KillReason::None) kill_reason_ = reason;
+    emit_kill(reason, VenueId::invalid(), /*per_venue=*/false);
     if (reason == KillReason::Requested) {
       FASTMM_LOG_WARN("kill switch requested (flags={:#x}); pulling quotes and cancelling all",
                       risk_.kill_flags());
@@ -957,6 +1087,7 @@ class Engine {
     risk_.trip_venue(venue);
     ++stats_.venue_kills;
     venue_kill_reasons_[RiskEngine::venue_slot(venue)] = reason;
+    emit_kill(reason, venue, /*per_venue=*/true);
     FASTMM_LOG_ERROR(
         "venue {} kill switch engaged ({}, flags={:#x}); pulling its quotes and cancelling its "
         "orders, other venues keep trading",
@@ -1401,6 +1532,7 @@ class Engine {
   PositionTracker positions_;
   LatencyTracker latency_;
   JournalWriter journal_;
+  RecordWriter records_;
   Xoshiro256ss rng_;
   SpinPolicy spin_;
   RejectLogLimiter reject_log_;

@@ -1,5 +1,7 @@
 # Kill switch and shutdown
 
+Every trip, global or per venue, is also a row in the [store](../../reference/storage.md) with the reason and the PnL at the time: `fastmm-pnl recover --engine <name>` and `SELECT * FROM kill_events`.
+
 ## The kill switch
 
 The kill switch is one atomic 32-bit flag word in the risk engine (`include/fastmm/core/risk.hpp`). Any thread can set it. While the global bit is set, the pre-trade check refuses every new order and replace (`RejectReason::KillSwitch`); cancels are always allowed. When it trips, the engine turns quoting off, pulls every quote and sends a cancel for every working order over the venues' order channels.

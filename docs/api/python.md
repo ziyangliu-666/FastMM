@@ -82,6 +82,12 @@ An `@every` method runs on a second thread and publishes parameters to the hot h
 
 ::: fastmm.inspect_journal
 
+## Trading records
+
+::: fastmm.open_store
+
+::: fastmm.Store
+
 ## Errors
 
 ::: fastmm.StrategyError

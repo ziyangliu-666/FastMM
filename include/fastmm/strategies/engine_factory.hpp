@@ -24,8 +24,14 @@ std::unique_ptr<IEngineRunner> make_engine_runner(RunnerDeps& deps,
   auto strategy = std::make_unique<S>();
   if (auto err = strategy->configure(deps.params))
     throw std::invalid_argument(std::string(S::name()) + ": " + *err);
-  auto engine = std::make_unique<E>(
-      deps.engine, *deps.instruments, clock, transport, feed, *strategy, deps.journal_ring);
+  auto engine = std::make_unique<E>(deps.engine,
+                                    *deps.instruments,
+                                    clock,
+                                    transport,
+                                    feed,
+                                    *strategy,
+                                    deps.journal_ring,
+                                    deps.record_ring);
   return std::make_unique<EngineRunner<E, S>>(std::move(strategy), std::move(engine));
 }
 

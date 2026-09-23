@@ -70,6 +70,10 @@ struct OmsUpdate {
   // outage covered by a cancel ack, an expiry or a reconciliation snapshot). The engine books it
   // as a synthetic fill at the order's own price; see Engine::book_missed_fill.
   Qty missed_qty{};
+  // A cancel-replace to a new id completed: the order carries on under order.cl_ord_id and this
+  // one is gone. It never produces an update of its own (the OMS renames the record in place), so
+  // anything that tracks orders by id closes it here.
+  ClientOrderId replaced_cl_ord_id{};
 };
 
 struct OmsStats {
@@ -236,7 +240,9 @@ class Oms {
         // applying it would take the replace for confirmed, leave the new id mapped after the order
         // ends and let the new leg's ack read a freed slot while that order stays live untracked.
         if (m.cl_ord_id == o.pending_cl_ord_id) {
+          const ClientOrderId old_id = o.cl_ord_id;
           apply_replace(o, o.pending_cl_ord_id != o.cl_ord_id);
+          if (o.cl_ord_id != old_id) u.replaced_cl_ord_id = old_id;
           o.venue_order_id = m.venue_order_id;
           u.changed = true;
         } else {

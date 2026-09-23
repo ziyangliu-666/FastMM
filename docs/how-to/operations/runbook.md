@@ -81,11 +81,12 @@ A crash is any stop that did not log `shutdown took <n> ms (cancel_all ok)`: `ki
 
 1. Cancel every order on the venue's own interface. Only Deribit arms venue-side cancel-on-disconnect; on Binance and Bybit your orders are still resting.
 2. Read the venue's position and balances, and write them down. The engine's position is gone.
-3. Establish what the journal holds: `python3 tools/journal_dump.py <journal> --type OrderFill` and the tail of the file. `trailer MISSING` means the process did not close the file, and up to the last 100 ms of events were never synced ([durability](running-in-production.md#the-journal-is-not-durable-against-power-loss)).
-4. Recompute PnL from the journal: `python3 tools/pnl_report.py <journal> --start <before.json> --end <after.json>`. Where the account and the journal disagree, the account is right: fills that arrived while the private stream was down are not in the journal either.
-5. Decide what to do with the inherited position before restarting. The restarted engine will quote as if flat.
-6. Keep `[engine] epoch_file` (`runs/session_epoch`). Deleting it makes client order ids repeat across sessions.
-7. Set `[risk] max_position` and `max_loss` for the restarted session with the inherited position in mind.
+3. Read what the last session recorded: `/opt/fastmm/bin/fastmm-pnl recover --engine <name>` prints its PnL, its last position per instrument and every order it still had open ([Query what you traded](query-trading-records.md)). `stopped never recorded` confirms the crash.
+4. Establish what the journal holds: `python3 tools/journal_dump.py <journal> --type OrderFill` and the tail of the file. `trailer MISSING` means the process did not close the file, and up to the last 100 ms of events were never synced ([durability](running-in-production.md#the-journal-is-durable-against-a-crash-not-against-power-loss)).
+5. Recompute PnL from the journal: `python3 tools/pnl_report.py <journal> --start <before.json> --end <after.json>`. Where the account and the journal disagree, the account is right: fills that arrived while the private stream was down are not in the journal either.
+6. Decide what to do with the inherited position before restarting. The restarted engine will quote as if flat.
+7. Keep `[engine] epoch_file` (`runs/session_epoch`). Deleting it makes client order ids repeat across sessions.
+8. Set `[risk] max_position` and `max_loss` for the restarted session with the inherited position in mind.
 
 ## Roll back
 

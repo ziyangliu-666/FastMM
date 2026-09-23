@@ -161,6 +161,7 @@ nav:
           - how-to/operations/go-live-checklist.md
           - how-to/operations/kill-switch-and-shutdown.md
           - how-to/operations/journals-replay-pnl.md
+          - how-to/operations/query-trading-records.md
           - how-to/operations/monitor-with-fastmm-top.md
           - how-to/operations/multicast-feeds.md
           - how-to/operations/two-host-benchmark.md
@@ -176,6 +177,7 @@ nav:
           - reference/configuration.md
           - reference/errors.md
           - reference/journal-format.md
+          - reference/storage.md
           - reference/status-file.md
       - Venues and protocols:
           - reference/venues.md
@@ -215,6 +217,7 @@ nav:
           - adr/0013-python-strategies-live.md
           - adr/0014-us-equities.md
           - adr/0015-multicast-market-data.md
+          - adr/0016-storage-backends.md
   - Contributing:
       - contributing/writing-docs.md
       - contributing/dependencies.md

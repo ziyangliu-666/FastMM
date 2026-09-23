@@ -3,6 +3,7 @@
 
 #include "fastmm/config/env_subst.hpp"
 #include "fastmm/config/schema.hpp"
+#include "fastmm/core/journal.hpp"
 
 #include <fmt/format.h>
 #include <toml++/toml.hpp>
@@ -241,8 +242,15 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                       static_cast<int>(e.source().begin.column));
   }
 
-  static constexpr std::string_view kKnownSections[] = {
-      "engine", "venues", "instruments", "strategy", "risk", "logging", "sim", "backtest"};
+  static constexpr std::string_view kKnownSections[] = {"engine",
+                                                        "venues",
+                                                        "instruments",
+                                                        "strategy",
+                                                        "risk",
+                                                        "logging",
+                                                        "sim",
+                                                        "backtest",
+                                                        "storage"};
   for (const auto& [k, v] : doc) {
     bool known = false;
     for (auto s : kKnownSections) known = known || s == k.str();
@@ -272,6 +280,17 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       fail_at(*t->get("threading"), "threading must be split|single");
     get(*t, "journal", e.journal);
     get(*t, "journal_dir", e.journal_dir);
+    get(*t, "journal_sync", e.journal_sync);
+    if (JournalSync mode{}; !parse_journal_sync(e.journal_sync, mode))
+      fail_at(*t->get("journal_sync"), "journal_sync must be async|fdatasync");
+    get(*t, "journal_max_bytes", e.journal_max_bytes);
+    if (e.journal_max_bytes != 0 && e.journal_max_bytes < kJournalBlockBytes) {
+      fail_at(*t->get("journal_max_bytes"),
+              "journal_max_bytes must be 0 or at least one block (1048576)");
+    }
+    get(*t, "journal_retention_days", e.journal_retention_days);
+    if (e.journal_retention_days < 0)
+      fail_at(*t->get("journal_retention_days"), "journal_retention_days must be >= 0 (0 keeps)");
     get(*t, "epoch_file", e.epoch_file);
     get(*t, "kill_file", e.kill_file);
     get(*t, "rng_seed", e.rng_seed);
@@ -455,6 +474,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
 
   if (const auto* t = doc["sim"].as_table()) flatten(*t, "", cfg.sim);
   if (const auto* t = doc["backtest"].as_table()) flatten(*t, "", cfg.backtest);
+  if (const auto* t = doc["storage"].as_table()) flatten(*t, "", cfg.storage);
 
   return cfg;
 }
@@ -607,9 +627,11 @@ std::string Config::redacted() const {
   kq("level", logging.level);
   if (!logging.file.empty()) kq("file", logging.file);
   kq("mirror_level", logging.mirror_level);
-  for (const auto* sec : {&sim, &backtest}) {
+  const std::pair<const GenericSection*, std::string_view> generic[] = {
+      {&sim, "sim"}, {&backtest, "backtest"}, {&storage, "storage"}};
+  for (const auto& [sec, name] : generic) {
     if (sec->values.empty()) continue;
-    fmt::format_to(std::back_inserter(out), "\n[{}]\n", sec == &sim ? "sim" : "backtest");
+    fmt::format_to(std::back_inserter(out), "\n[{}]\n", name);
     for (const auto& [k, v] : sec->values) kq(k, v);
   }
   return out;
@@ -661,6 +683,9 @@ std::string Config::effective_toml() const {
   e.insert("threading", engine.threading);
   e.insert("journal", engine.journal);
   e.insert("journal_dir", engine.journal_dir);
+  e.insert("journal_sync", engine.journal_sync);
+  e.insert("journal_max_bytes", static_cast<std::int64_t>(engine.journal_max_bytes));
+  e.insert("journal_retention_days", static_cast<std::int64_t>(engine.journal_retention_days));
   e.insert("epoch_file", engine.epoch_file);
   e.insert("kill_file", engine.kill_file);
   e.insert("rng_seed", static_cast<std::int64_t>(engine.rng_seed));
@@ -764,6 +789,7 @@ std::string Config::effective_toml() const {
 
   if (!sim.values.empty()) root.insert("sim", generic_table(sim));
   if (!backtest.values.empty()) root.insert("backtest", generic_table(backtest));
+  if (!storage.values.empty()) root.insert("storage", generic_table(storage));
 
   std::ostringstream ss;
   ss << root << "\n";

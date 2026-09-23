@@ -3,7 +3,7 @@
 # only when FastMM was built with FASTMM_BUILD_NET=ON. Request what you link:
 #   find_package(fastmm CONFIG REQUIRED COMPONENTS live)
 set(fastmm_BUILD_NET @FASTMM_BUILD_NET@)
-foreach(_fastmm_c IN ITEMS core sim strategies backtest codecs)
+foreach(_fastmm_c IN ITEMS core store sim strategies backtest codecs)
   set(fastmm_${_fastmm_c}_FOUND TRUE)
 endforeach()
 foreach(_fastmm_c IN ITEMS net venues live)

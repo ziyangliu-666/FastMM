@@ -93,6 +93,14 @@ tier2 net fastmm/venues/raw_recorder.hpp
 tier2 net fastmm/venues/wire_latency.hpp
 tier2 fastmm/core/book/book_syncer.hpp
 
+# ---- tier 2: writing a storage backend ----------------------------------------------------------
+tier2 fastmm/core/record_stream.hpp
+tier2 fastmm/store/backend.hpp
+tier2 fastmm/store/reader.hpp
+tier2 fastmm/store/registry.hpp
+tier2 fastmm/store/store_thread.hpp
+tier2 fastmm/store/sqlite_store.hpp
+
 # ---- tier 2: networking -----------------------------------------------------------------------------
 tier2 net fastmm/net/reactor.hpp
 tier2 net fastmm/net/connection.hpp

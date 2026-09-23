@@ -23,6 +23,36 @@ All notable changes are recorded here (Keep a Changelog format).
 - `Fixed::from_double_checked()` and `Ratio::from_bps_checked()`, and `checked_add` / `checked_sub`
   / `checked_mul`. `avellaneda_stoikov` and `options_mm` skip a side whose price does not convert
   instead of quoting the result of an unchecked cast.
+- A queryable record of every session, next to the journal ([ADR-0016](docs/adr/0016-storage-backends.md),
+  `docs/reference/storage.md`). The engine hands fills, orders, position snapshots and kill events
+  to a second `MsgRing` exactly as it does the journal (`include/fastmm/core/record_stream.hpp`),
+  and a `fm-store` thread batches them into a storage backend. Backends are chosen by name from a
+  free-form `[storage]` section (`backend = "sqlite"` by default; `"none"` allocates no ring and
+  starts no thread) and sit behind `fastmm::store::StoreRegistry`, so one can be written out of
+  tree without touching engine code and its own keys never reach the central schema. The SQLite
+  backend (bundled amalgamation, WAL, `synchronous=NORMAL`) holds sessions, their journal parts and
+  instruments, fills with venue ids, exec ids, fees, fee asset and liquidity, orders in their
+  terminal state, position snapshots, per-day PnL by instrument and settlement currency, and kill
+  events; the schema is versioned with one migration step per version and a store from a newer
+  FastMM is refused. A full ring or a failing backend drops records and counts them rather than
+  blocking the engine or stopping the session; a backend that cannot be opened stops the session
+  before it trades.
+- `fastmm-pnl`: `sessions`, `fills`, `orders`, `pnl`, `positions` and `recover` over a store, with
+  `--since yesterday`, `--instrument`, `--session`, `--limit` and `--csv`
+  (`docs/how-to/operations/query-trading-records.md`).
+- `fastmm.open_store(path)` returns the same records as pandas DataFrames, with raw fixed point
+  decoded to floats and nanosecond columns to UTC datetimes.
+- `fastmm-live` logs what the previous session of the same `[engine] name` left behind before it
+  starts: PnL, whether it shut down cleanly, the kill state, the journal parts, the last position
+  per instrument and every order still open at its last record. It does not fetch execution history
+  from a venue, so a fill from while the process was down appears only when the venue's
+  reconciliation snapshot arrives.
+- Journal durability and lifecycle: `[engine] journal_sync` (`async`, the previous behaviour, or
+  `fdatasync`), `[engine] journal_max_bytes` (roll over into numbered parts, each a complete
+  journal with the same session id) and `[engine] journal_retention_days` (delete older `.fmj`
+  files in `journal_dir` at start-up). Extents are reserved with `posix_fallocate`, so a full
+  filesystem is an error rather than a `SIGBUS` on a sparse page; `JournalFileWriter::failed()`
+  latches every write error and `fastmm-live` trips the kill switch and exits with code 5 on one.
 
 ### Changed
 - `SessionEpochStore::next_epoch()` returns a `Result` and writes through a temporary file, an
@@ -45,6 +75,13 @@ All notable changes are recorded here (Keep a Changelog format).
   `INT64_MIN` for NaN and for anything out of range.
 - `RiskEngine::on_book()` / `on_trade()` leave the collar and fat-finger bands unset when the band
   would overflow, instead of wrapping into a pass-through.
+- `OmsUpdate::replaced_cl_ord_id` reports the client order id a completed cancel-replace superseded.
+  The OMS renames its record in place, so that id never produced an update of its own and anything
+  tracking orders by id saw it as open forever.
+- `fastmm-replay` refuses a journal whose writer never closed it, or whose last block is damaged,
+  instead of replaying a stream that stops short of what the session sent; `--allow-incomplete`
+  replays what is there with a warning. `JournalReader::complete()` and `JournalInfo::complete`
+  give the verdict that `truncated_tail()` and `has_trailer()` only hinted at.
 
 ### Added
 - `order_transport = "user_tcp"` on every receive backend: the OUCH frames go through the

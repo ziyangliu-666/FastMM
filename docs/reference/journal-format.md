@@ -14,6 +14,33 @@ block  := block header (64 B) | message* (byte_len bytes)
 - `header_bytes` in the header is the offset of the first block.
 - Blocks are at most 1 MiB (`block_bytes`); a message never straddles two blocks.
 - A clean shutdown appends a trailer: an empty block with flag bit 0 set. Without it the file was not closed cleanly; a reader drops a tail block whose checksum or length does not match.
+- `JournalReader::complete()` is true only for a file that ends in a trailer with no block discarded. `fastmm-replay` refuses an incomplete file unless `--allow-incomplete` is given, because the outbound stream it compares against stops short of what the session sent.
+
+## Durability
+
+`[engine] journal_sync` chooses how far a write is pushed before the writer moves on. Either way the journal batches into 1 MiB blocks, so no single record is durable at the instant the engine writes it; `msync` also runs whenever a block is flushed, every 100 ms.
+
+| `journal_sync` | Every 100 ms | A record survives | Costs |
+|---|---|---|---|
+| `async` (default) | `msync(MS_ASYNC)` | this process dying, as soon as its block is copied into the map | nothing measurable |
+| `fdatasync` | `msync(MS_SYNC)` and `fdatasync()` | power loss, once it is more than one tick old | one write-back of the dirty pages per tick |
+
+A clean `stop()` always writes the trailer, `msync(MS_SYNC)`s, truncates the preallocated tail away and `fdatasync()`s, in both modes.
+
+Extents are reserved with `posix_fallocate`, not `ftruncate`: a full filesystem fails when the next 64 MiB extent is reserved rather than with `SIGBUS` on the first store into a sparse page. `JournalFileWriter::failed()` latches that and every other write error, and `fastmm-live` polls it: a journal that cannot be written trips the kill switch, cancels everything and exits with code 5. `sessions.journal_complete` in the [store](storage.md) records whether the file was closed cleanly.
+
+## Rotation and retention
+
+`[engine] journal_max_bytes` rolls the file over when it reaches that size; 0 (the default) writes one file per session. A part only ends between blocks, so no message straddles two files. The first part keeps the configured name and the rest get a number before the extension:
+
+```text
+runs/mm1-1709510400123456789.fmj      part 0
+runs/mm1-1709510400123456789.1.fmj    part 1
+```
+
+Each part is a complete journal: it repeats the header, the instrument table, the configuration and the parameter table, and carries the same `session_id`. Sequence numbers continue across parts. `fastmm-replay` takes one part at a time; the [store](storage.md) records every part of a session in `session_journals`.
+
+`[engine] journal_retention_days` deletes `*.fmj` files in `[engine] journal_dir` that were last written more than that many days ago, once, when a session starts; 0 (the default) keeps everything. Only the `.fmj` extension is removed, and a file it cannot remove is skipped with a warning.
 
 ## Header
 
@@ -123,4 +150,5 @@ A raw value is the value of an `int` or `bool`, raw fixed point for `decimal` an
 
 - `python3 tools/journal_dump.py <file.fmj> [--first 20] [--type OrderFill] [--no-crc]` prints the header, instruments, parameter table, events and a count per type.
 - `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL ([Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md)).
-- `fastmm-replay --journal <file.fmj> --verify` replays it ([Determinism](../explanation/determinism.md)).
+- `fastmm-replay --journal <file.fmj> --verify` replays it ([Determinism](../explanation/determinism.md)); `--allow-incomplete` replays a file the writer never closed.
+- `fastmm-pnl` and `fastmm.open_store()` answer the same questions from the [store](storage.md), which is written alongside the journal and needs no replay.

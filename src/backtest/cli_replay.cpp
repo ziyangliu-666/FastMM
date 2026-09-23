@@ -59,6 +59,8 @@ void usage(std::FILE* out, const char* prog) {
                "  --out <file.fmj>      keep the re-simulated session journal (market-data input)\n"
                "  --expect <sha256>     expected outbound hash (default: <journal>.sha256)\n"
                "  --verify              fail (exit 1) unless every hash and message matches\n"
+               "  --allow-incomplete    replay a journal the writer never closed; its tail is\n"
+               "                        missing, so the outbound comparison proves nothing\n"
                "  --version | --help\n",
                prog);
 }
@@ -113,6 +115,7 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::string out;
   std::string expect;
   bool verify = false;
+  bool allow_incomplete = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
     auto value = [&](std::string& dst) -> bool {
@@ -142,6 +145,8 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
       ok = value(expect);
     } else if (a == "--verify") {
       verify = true;
+    } else if (a == "--allow-incomplete") {
+      allow_incomplete = true;
     } else {
       std::fprintf(stderr, "%s: unknown argument '%s'\n", prog, argv[i]);
       ok = false;
@@ -163,6 +168,18 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return kExitInput;
+  }
+  if (!info.complete) {
+    std::fprintf(stderr,
+                 "%s: %s was not closed by its writer: its last block is missing or damaged.%s\n",
+                 prog,
+                 journal.c_str(),
+                 allow_incomplete ? " Replaying what is there." : "");
+    if (!allow_incomplete) {
+      std::fprintf(
+          stderr, "%s: pass --allow-incomplete to replay the events before that point\n", prog);
+      return kExitInput;
+    }
   }
   const bool session = info.outbound_messages > 0;
   std::printf(
@@ -259,6 +276,7 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
       bt::ReplayOptions opt;
       opt.strategy = strategy;
       opt.verify = true;
+      opt.allow_incomplete = allow_incomplete;
       if (!strategy.empty() && strategy != info.strategy && strategy != cfg.strategy)
         cfg.params.clear();
       const bt::ReplayResult r = bt::replay_journal(journal, cfg, opt);

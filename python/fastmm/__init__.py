@@ -49,6 +49,7 @@ from ._slow.replay import ReplayResult, replay
 from .data import load_csv
 from .live import run_live
 from .results import FIXED_SCALE, markout_frame, sweep_frame, to_pandas
+from .store import Store, open_store
 from .strategy import (
     BUY,
     LIQUIDITY_UNKNOWN,
@@ -91,6 +92,7 @@ __all__ = [
     "ReplayResult",
     "StaleViewError",
     "State",
+    "Store",
     "Strategy",
     "StrategyError",
     "TradeView",
@@ -102,6 +104,7 @@ __all__ = [
     "hot",
     "inspect_journal",
     "load_csv",
+    "open_store",
     "replay",
     "run_backtest",
     "run_live",

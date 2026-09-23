@@ -57,9 +57,9 @@ Exit codes:
 |---:|---|
 | 0 | stopped by `--duration` or SIGINT/SIGTERM with `cancel_all ok`, also after a kill with `[engine] on_kill = "stay"`; `--help`, `--version` and `--list-strategies` |
 | 2 | bad command line, including a `--log` file that cannot be opened; a `${VAR}` in `[venues.*]` that is not set, except `api_key` and `api_secret` with `--dry-run` |
-| 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code |
+| 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code, a `[storage] backend` that is not registered or cannot be opened ([Storage](storage.md)) |
 | 4 | a venue's reference data failed to load |
-| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened; a venue's order-event ring overflowed; an uncaught error |
+| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; an uncaught error |
 | 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | 7 | a Python strategy's slow tier failed, and `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` does not return it) |
 
@@ -113,6 +113,8 @@ usage: fastmm-replay --journal <in.fmj> [options]
   --out <file.fmj>      keep the re-simulated session journal (market-data input)
   --expect <sha256>     expected outbound hash (default: <journal>.sha256)
   --verify              fail (exit 1) unless every hash and message matches
+  --allow-incomplete    replay a journal the writer never closed; its tail is
+                        missing, so the outbound comparison proves nothing
   --version | --help
 ```
 <!-- END cli-help -->
@@ -125,6 +127,46 @@ usage: fastmm-replay --journal <in.fmj> [options]
 | 3 | unreadable configuration or journal, unknown strategy |
 
 [Journals, replay and PnL](../how-to/operations/journals-replay-pnl.md#replay) explains what-if replays and journals without outbound copies.
+
+## fastmm-pnl
+
+Answers the daily questions from the [store](storage.md) a session wrote: what it traded, its PnL by day and instrument, and what the last session left behind. It reads the store, never a journal.
+
+<!-- BEGIN cli-help fastmm-pnl -->
+```text
+usage: fastmm-pnl <command> [options]
+
+commands:
+  sessions            one row per session: when it ran, what it made, how it ended
+  fills               one row per execution
+  orders              one row per order, in its last known state
+  pnl                 realised, fees and net by UTC day and instrument
+  positions           the last position snapshot of each session and instrument
+  recover             what the newest session left behind
+
+options:
+  --store <path>      store file (default runs/<engine>.db)
+  --backend <name>    storage backend (default sqlite)
+  --engine <name>     [engine] name to filter on
+  --session <id>      one session id
+  --instrument <sym>  one symbol
+  --since <day>       inclusive UTC day, YYYY-MM-DD, or today|yesterday
+  --until <day>       inclusive UTC day, YYYY-MM-DD, or today|yesterday
+  --day <day>         shorthand for --since <day> --until <day>
+  --limit <n>         at most n rows
+  --csv               comma-separated output instead of an aligned table
+  --version           print the version and exit
+  -h, --help          this text
+```
+<!-- END cli-help -->
+
+| Exit code | Meaning |
+|---:|---|
+| 0 | the query ran |
+| 2 | bad command line, unknown backend, or a store that cannot be opened or read |
+| 3 | `recover` found no session |
+
+[Query what you traded](../how-to/operations/query-trading-records.md) works through the questions.
 
 ## fastmm-sim-exchange
 
