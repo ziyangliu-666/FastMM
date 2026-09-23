@@ -1467,6 +1467,8 @@ class Engine {
     OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty};
     RiskInputs in{now,
                   flatten ? nullptr : &positions_.get(req.instrument),
+                  positions_.gross_exposure(),
+                  positions_.net_exposure(),
                   oms_.open_qty(req.instrument, req.side),
                   oms_.open_count(req.instrument),
                   flatten ? Price{} : oms_.best_own_px(req.instrument, opposite(req.side))};
@@ -1522,6 +1524,8 @@ class Engine {
     OrderIntent oi{o.instrument, o.venue, o.side, o.type, px, qty};
     RiskInputs in{now,
                   &positions_.get(o.instrument),
+                  positions_.gross_exposure(),
+                  positions_.net_exposure(),
                   oms_.open_qty(o.instrument, o.side),
                   oms_.open_count(o.instrument),
                   oms_.best_own_px(o.instrument, opposite(o.side))};

@@ -78,6 +78,9 @@ struct OrderIntent {
 struct RiskInputs {
   Timestamp now;
   const Position* position = nullptr;
+  // Portfolio exposure before this order (PositionTracker::gross_exposure / net_exposure).
+  Notional gross_exposure{};
+  Notional net_exposure{};
   Qty open_same_side{};           // leaves of our open orders on the same side
   std::uint32_t open_orders = 0;  // open orders on the instrument
   Price best_own_opposite{};      // best price of our own resting orders on the other side
@@ -262,6 +265,26 @@ class RiskEngine {
           in.position->qty.raw < 0 ? -in.position->qty.raw : in.position->qty.raw;
       if (abs_pred > limits_.max_position.raw && abs_pred > cur_abs)
         return RejectReason::MaxPosition;
+    }
+    // Portfolio exposure: what this order would add on top of what is already marked. Like
+    // max_position, an order that reduces exposure is never refused by it.
+    if ((limits_.max_gross_notional.is_positive() || limits_.max_net_notional.is_positive()) &&
+        in.position != nullptr) {
+      const std::int64_t dir = sign(o.side);
+      const bool reduces = in.position->qty.raw != 0 && (in.position->qty.raw > 0) != (dir > 0);
+      if (!reduces) {
+        if (limits_.max_gross_notional.is_positive() &&
+            in.gross_exposure + notional > limits_.max_gross_notional) {
+          return RejectReason::MaxGrossNotional;
+        }
+        if (limits_.max_net_notional.is_positive()) {
+          // The net can be over the cap already (a mark moved, or a limit was tightened); an order
+          // that brings it towards zero is how you get back under it.
+          const Notional net = in.net_exposure + (dir > 0 ? notional : Notional{} - notional);
+          if (net.abs() > limits_.max_net_notional && net.abs() > in.net_exposure.abs())
+            return RejectReason::MaxNetNotional;
+        }
+      }
     }
     if (count_order && limits_.max_open_orders > 0 && in.open_orders >= limits_.max_open_orders) {
       return RejectReason::MaxOpenOrders;

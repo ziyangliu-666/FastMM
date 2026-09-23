@@ -156,6 +156,8 @@ struct RiskSection {
   int fat_finger_bps = 0;
   int stale_md_ms = 0;
   std::string max_loss;
+  std::string max_gross_notional;
+  std::string max_net_notional;
   int orders_per_sec = 0;
   int burst = 0;
   bool stp = true;

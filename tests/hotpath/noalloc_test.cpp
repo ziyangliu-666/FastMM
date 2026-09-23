@@ -119,7 +119,7 @@ TEST_CASE("hotpath.noalloc: risk check, OMS lifecycle, quote manager, journal, l
     NoAllocScope guard(true);
     // risk
     OrderIntent oi{inst.id, VenueId{0}, Side::Buy, OrderType::Limit, px("99.5"), qt("0.01")};
-    RiskInputs in{now, &pos, Qty{}, 0, Price{}};
+    RiskInputs in{now, &pos, Notional{}, Notional{}, Qty{}, 0, Price{}};
     CHECK(risk->check_new(oi, inst, in) == RejectReason::None);
     // OMS submit -> ack -> partial fill -> cancel -> cancel ack
     NewOrderRequest r{};

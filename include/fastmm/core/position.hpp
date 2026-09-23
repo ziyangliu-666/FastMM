@@ -93,7 +93,11 @@ class PositionTracker {
         if (p.qty.is_zero()) p.avg_px = Price{};
       }
     }
-    if (p.last_mark.is_positive()) mark(id, p.last_mark, inst);
+    if (p.last_mark.is_positive()) {
+      mark(id, p.last_mark, inst);
+    } else {
+      set_exposure(id, signed_notional(p, px, inst));
+    }
   }
 
   // Mark-to-market the open position, in the instrument's settlement currency.
@@ -101,6 +105,7 @@ class PositionTracker {
     Position& p = pos_[id.value];
     p.last_mark = mid;
     set_unrealized(p, revalue(p, mid, inst));
+    set_exposure(id, signed_notional(p, mid, inst));
   }
 
   // Reconciliation: overwrite qty/avg with the venue's view. Realized PnL and fees are history and
@@ -111,12 +116,14 @@ class PositionTracker {
     p.qty = qty;
     p.avg_px = qty.is_zero() ? Price{} : avg_px;
     set_unrealized(p, revalue(p, p.last_mark, inst));
+    set_exposure(id, signed_notional(p, p.last_mark, inst));
   }
   void reset(InstrumentId id) noexcept {
     Position& p = pos_[id.value];
     realized_total_ -= p.realized;
     unrealized_total_ -= p.unrealized;
     fees_total_ -= p.fees;
+    set_exposure(id, Notional{});
     p = Position{};
   }
 
@@ -125,6 +132,10 @@ class PositionTracker {
   // than the rest of the event). Notional carries no currency, so these are only meaningful when
   // every instrument settles in the same one: InstrumentTable::settlement_mix() finds a table
   // that mixes them and fastmm-live refuses to start on one while [risk] max_loss is set.
+  // Portfolio exposure at the last marks: the sum of |position| and the signed sum. Like the PnL
+  // totals, they are only meaningful when every instrument settles in the same currency.
+  [[nodiscard]] Notional gross_exposure() const noexcept { return gross_exposure_; }
+  [[nodiscard]] Notional net_exposure() const noexcept { return net_exposure_; }
   [[nodiscard]] Notional total_realized() const noexcept { return realized_total_; }
   [[nodiscard]] Notional total_unrealized() const noexcept { return unrealized_total_; }
   [[nodiscard]] Notional total_fees() const noexcept { return fees_total_; }
@@ -163,11 +174,25 @@ class PositionTracker {
         static_cast<std::int64_t>(static_cast<Int128>(denom) * kFixedScale / inv));
   }
   // Open-position PnL at `mark`, in the settlement currency.
+  // |position| valued at `mark`, carrying the position's sign.
+  static Notional signed_notional(const Position& p, Price mark, const Instrument& inst) noexcept {
+    if (p.qty.is_zero() || !mark.is_positive()) return Notional{};
+    const Notional n = inst.notional(mark, p.qty.abs());
+    return p.qty.raw < 0 ? Notional{} - n : n;
+  }
   static Notional revalue(const Position& p, Price mark, const Instrument& inst) noexcept {
     if (p.qty.is_zero() || !mark.is_positive()) return Notional{};
     if (inst.inverse()) return inst.inverse_pnl(p.avg_px, mark, p.qty);
     return scale(
         Notional::from_raw(detail::mul_div<kFixedScale>(mark.raw - p.avg_px.raw, p.qty.raw)), inst);
+  }
+  // Every path that changes a position's quantity or its mark ends here, so the exposure totals
+  // cannot drift from the positions: one place updates both.
+  void set_exposure(InstrumentId id, Notional e) noexcept {
+    Notional& cur = exposure_[id.value];
+    gross_exposure_ += e.abs() - cur.abs();
+    net_exposure_ += e - cur;
+    cur = e;
   }
   void set_unrealized(Position& p, Notional u) noexcept {
     unrealized_total_ += u - p.unrealized;
@@ -177,6 +202,9 @@ class PositionTracker {
   Notional realized_total_{};
   Notional unrealized_total_{};
   Notional fees_total_{};
+  Notional exposure_[kMaxInstruments]{};
+  Notional gross_exposure_{};
+  Notional net_exposure_{};
 };
 
 }  // namespace fastmm

@@ -27,7 +27,8 @@ struct QuotePresenceStats {
 
   // Fraction of the elapsed time with a live order on both sides, 0 before anything rested.
   [[nodiscard]] double uptime() const noexcept {
-    return elapsed_ns > 0 ? static_cast<double>(two_sided_ns) / static_cast<double>(elapsed_ns) : 0.0;
+    return elapsed_ns > 0 ? static_cast<double>(two_sided_ns) / static_cast<double>(elapsed_ns)
+                          : 0.0;
   }
 };
 

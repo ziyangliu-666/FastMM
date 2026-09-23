@@ -13,7 +13,7 @@ constexpr Timestamp at(std::int64_t ms) noexcept {
 
 TEST_CASE("core.quote_presence: time counts only while both sides rest") {
   QuotePresence p;
-  p.on_live_change(kInst, Side::Buy, +1, at(0));    // bid alone from 0 ms
+  p.on_live_change(kInst, Side::Buy, +1, at(0));     // bid alone from 0 ms
   p.on_live_change(kInst, Side::Sell, +1, at(100));  // both from 100 ms
   p.on_live_change(kInst, Side::Sell, -1, at(400));  // bid alone again
   p.settle(at(500));
@@ -42,8 +42,8 @@ TEST_CASE("core.quote_presence: a second order on a side keeps the side live unt
   QuotePresence p;
   p.on_live_change(kInst, Side::Buy, +1, at(0));
   p.on_live_change(kInst, Side::Sell, +1, at(0));
-  p.on_live_change(kInst, Side::Sell, +1, at(10));   // two asks rest
-  p.on_live_change(kInst, Side::Sell, -1, at(20));   // one leaves; the side is still quoted
+  p.on_live_change(kInst, Side::Sell, +1, at(10));  // two asks rest
+  p.on_live_change(kInst, Side::Sell, -1, at(20));  // one leaves; the side is still quoted
   p.settle(at(30));
   CHECK(p.stats(kInst).two_sided_ns == 30'000'000);
 

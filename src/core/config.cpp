@@ -473,6 +473,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "fat_finger_bps", r.fat_finger_bps);
     get(*t, "stale_md_ms", r.stale_md_ms);
     get_decimal(*t, "max_loss", r.max_loss);
+    get_decimal(*t, "max_gross_notional", r.max_gross_notional);
+    get_decimal(*t, "max_net_notional", r.max_net_notional);
     get(*t, "orders_per_sec", r.orders_per_sec);
     get(*t, "burst", r.burst);
     get(*t, "stp", r.stp);
@@ -529,6 +531,8 @@ RiskLimits Config::risk_limits() const {
   l.fat_finger_bps = risk.fat_finger_bps;
   l.stale_md = milliseconds(risk.stale_md_ms);
   l.max_loss = parse_fixed<Notional>(risk.max_loss, "max_loss");
+  l.max_gross_notional = parse_fixed<Notional>(risk.max_gross_notional, "max_gross_notional");
+  l.max_net_notional = parse_fixed<Notional>(risk.max_net_notional, "max_net_notional");
   l.orders_per_sec = static_cast<std::uint32_t>(risk.orders_per_sec);
   l.burst = static_cast<std::uint32_t>(risk.burst);
   l.stp = risk.stp;

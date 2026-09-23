@@ -286,7 +286,7 @@ struct ControlLimitsMsg {
   std::uint8_t pad0_[7];
   std::uint64_t arg;
   RiskLimits limits;
-  std::uint8_t pad_[32];
+  std::uint8_t pad_[16];
 };
 static_assert(sizeof(ControlLimitsMsg) == 192 && std::is_trivially_copyable_v<ControlLimitsMsg>);
 static_assert(offsetof(ControlLimitsMsg, command) == offsetof(ControlMsg, command) &&

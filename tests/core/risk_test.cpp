@@ -205,3 +205,78 @@ TEST_CASE("core.risk: every reject reason in isolation and in order") {
     CHECK(risk.check_new(mkt, inst, in) == RejectReason::None);
   }
 }
+
+TEST_CASE("core.risk: portfolio exposure caps what a new order may add") {
+  const Instrument inst = make_inst();
+  RiskLimits l = limits();
+  l.max_gross_notional = Notional::from_int(10'000);
+  const Timestamp now{seconds(100).ns};
+  RiskEngine r(l, now);
+  r.on_book(InstrumentId{0}, Price::from_decimal("100").value(), now);
+  r.on_trade(InstrumentId{0}, Price::from_decimal("100").value());
+
+  Position flat{};
+  RiskInputs in{now, &flat, Notional::from_int(9'500), Notional{}, Qty{}, 0, Price{}};
+  // 100 * 4 = 400 on top of 9,500 fits; 100 * 6 = 600 does not.
+  CHECK(r.check_new(intent(Side::Buy, "100", "4"), inst, in) == RejectReason::None);
+  CHECK(r.check_new(intent(Side::Buy, "100", "6"), inst, in) == RejectReason::MaxGrossNotional);
+
+  // An order that reduces the instrument's position is never refused by the portfolio caps.
+  Position longs{};
+  longs.qty = Qty::from_int(5);
+  longs.avg_px = Price::from_decimal("100").value();
+  RiskInputs reducing{now, &longs, Notional::from_int(9'500), Notional{}, Qty{}, 0, Price{}};
+  CHECK(r.check_new(intent(Side::Sell, "100", "6"), inst, reducing) == RejectReason::None);
+}
+
+TEST_CASE("core.risk: the net cap lets a hedged pair through and stops a one-way build") {
+  const Instrument inst = make_inst();
+  RiskLimits l = limits();
+  l.max_net_notional = Notional::from_int(1'000);
+  const Timestamp now{seconds(100).ns};
+  RiskEngine r(l, now);
+  r.on_book(InstrumentId{0}, Price::from_decimal("100").value(), now);
+  r.on_trade(InstrumentId{0}, Price::from_decimal("100").value());
+
+  Position flat{};
+  // Short 9,000 of something else: buying 500 more brings the net towards zero.
+  RiskInputs hedging{
+      now, &flat, Notional::from_int(9'000), Notional::from_int(-9'000), Qty{}, 0, Price{}};
+  CHECK(r.check_new(intent(Side::Buy, "100", "5"), inst, hedging) == RejectReason::None);
+
+  RiskInputs one_way{
+      now, &flat, Notional::from_int(900), Notional::from_int(900), Qty{}, 0, Price{}};
+  CHECK(r.check_new(intent(Side::Buy, "100", "5"), inst, one_way) == RejectReason::MaxNetNotional);
+}
+
+TEST_CASE("core.position: exposure totals follow the positions and their marks") {
+  Instrument inst = make_inst();
+  inst.contract_multiplier = Qty::from_int(1);
+  PositionTracker t;
+  CHECK(t.gross_exposure().is_zero());
+
+  t.on_fill(InstrumentId{0},
+            Side::Buy,
+            Price::from_decimal("100").value(),
+            Qty::from_int(2),
+            Notional{},
+            inst);
+  CHECK(t.gross_exposure() == Notional::from_int(200));  // valued at the fill price
+  CHECK(t.net_exposure() == Notional::from_int(200));
+
+  t.mark(InstrumentId{0}, Price::from_decimal("110").value(), inst);
+  CHECK(t.gross_exposure() == Notional::from_int(220));
+
+  t.on_fill(InstrumentId{0},
+            Side::Sell,
+            Price::from_decimal("110").value(),
+            Qty::from_int(4),
+            Notional{},
+            inst);  // flips to short 2
+  CHECK(t.gross_exposure() == Notional::from_int(220));
+  CHECK(t.net_exposure() == Notional::from_int(-220));
+
+  t.reset(InstrumentId{0});
+  CHECK(t.gross_exposure().is_zero());
+  CHECK(t.net_exposure().is_zero());
+}

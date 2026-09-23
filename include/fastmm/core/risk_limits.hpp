@@ -18,11 +18,15 @@ struct RiskLimits {
   std::int64_t price_collar_bps = 0;  // vs mid; 0 = disabled
   std::int64_t fat_finger_bps = 0;    // vs last trade; 0 = disabled
   Duration stale_md{};                // reject if book older than this; 0 = disabled
-  Notional max_loss{};                // trip when net pnl <= -max_loss; 0 = disabled
-  std::uint32_t orders_per_sec = 0;   // token bucket rate; 0 = unlimited
-  std::uint32_t burst = 0;            // bucket capacity (defaults to orders_per_sec)
-  bool stp = true;                    // self-trade prevention against our own resting orders
+  // Portfolio exposure at the last marks, over every instrument; 0 = unlimited. Gross is the sum
+  // of |position|, net the signed sum: a hedged pair is small in net and large in gross.
+  Notional max_gross_notional{};
+  Notional max_net_notional{};
+  Notional max_loss{};               // trip when net pnl <= -max_loss; 0 = disabled
+  std::uint32_t orders_per_sec = 0;  // token bucket rate; 0 = unlimited
+  std::uint32_t burst = 0;           // bucket capacity (defaults to orders_per_sec)
+  bool stp = true;                   // self-trade prevention against our own resting orders
 };
-static_assert(std::is_trivially_copyable_v<RiskLimits> && sizeof(RiskLimits) == 80);
+static_assert(std::is_trivially_copyable_v<RiskLimits> && sizeof(RiskLimits) == 96);
 
 }  // namespace fastmm

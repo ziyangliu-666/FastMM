@@ -28,9 +28,11 @@ The first failing check decides the reason.
 | 10 | `MaxOrderQty` | the quantity exceeds the limit | `max_order_qty` |
 | 11 | `MaxOrderNotional` | the order value exceeds the limit | `max_order_notional` |
 | 12 | `MaxPosition` | position plus same-side open orders plus this order would exceed the limit in absolute value and increase exposure | `max_position` |
-| 13 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
-| 14 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
-| 15 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 13 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks would pass the cap, and this order adds to it | `max_gross_notional` |
+| 14 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap | `max_net_notional` |
+| 15 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
+| 16 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
+| 17 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.

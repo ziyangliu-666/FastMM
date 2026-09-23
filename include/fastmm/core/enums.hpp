@@ -136,6 +136,8 @@ enum class RejectReason : std::uint8_t {
   SelfTradePrevention = 14,
   RateLimit = 15,
   MaxLoss = 16,
+  MaxGrossNotional = 17,  // portfolio |position| at the last marks, over every instrument
+  MaxNetNotional = 18,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -187,6 +189,10 @@ enum class RejectReason : std::uint8_t {
       return "RateLimit";
     case RejectReason::MaxLoss:
       return "MaxLoss";
+    case RejectReason::MaxGrossNotional:
+      return "MaxGrossNotional";
+    case RejectReason::MaxNetNotional:
+      return "MaxNetNotional";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:

@@ -357,6 +357,18 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "trip the kill switch when net PnL falls to -max_loss, settlement currency, decimal; "
      "latched across restarts in kill_file"},
+    {"risk",
+     "max_gross_notional",
+     KeyType::Any,
+     false,
+     "refuse an order that would take the portfolio's summed |position| at the last marks past "
+     "this, settlement currency, decimal"},
+    {"risk",
+     "max_net_notional",
+     KeyType::Any,
+     false,
+     "refuse an order that would take the portfolio's signed position sum further past this, "
+     "settlement currency, decimal"},
     {"risk", "orders_per_sec", KeyType::Int, false, "token-bucket order rate, orders/s"},
     {"risk",
      "burst",

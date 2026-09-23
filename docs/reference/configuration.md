@@ -313,6 +313,8 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps |
 | `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms |
 | `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, settlement currency, decimal; latched across restarts in kill_file |
+| `max_gross_notional` | any |  | refuse an order that would take the portfolio's summed \|position\| at the last marks past this, settlement currency, decimal |
+| `max_net_notional` | any |  | refuse an order that would take the portfolio's signed position sum further past this, settlement currency, decimal |
 | `orders_per_sec` | integer |  | token-bucket order rate, orders/s |
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
