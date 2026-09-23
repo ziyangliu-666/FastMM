@@ -1,6 +1,6 @@
 # ADR-0012: Strategy developer experience
 
-Status: accepted (2026-09)
+Status: accepted (2026-09); section 7 superseded by [ADR-0013](0013-python-strategies-live.md)
 
 FastMM is pre-1.0 with no external users, so API changes are clean breaks with no deprecated shims.
 

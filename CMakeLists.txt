@@ -120,7 +120,8 @@ if(FASTMM_INSTALL)
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-  install(DIRECTORY include/fastmm DESTINATION ${CMAKE_INSTALL_INCLUDEDIR} FILES_MATCHING PATTERN "*.hpp")
+  install(DIRECTORY include/fastmm DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+          FILES_MATCHING PATTERN "*.hpp" PATTERN "*.h")  # hot_abi.h is C, included by hot_strategy.hpp
   install(FILES ${CMAKE_CURRENT_BINARY_DIR}/generated/fastmm/version.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/fastmm)
   install(EXPORT fastmmTargets NAMESPACE fastmm:: DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/fastmm)
   configure_package_config_file(cmake/fastmmConfig.cmake.in

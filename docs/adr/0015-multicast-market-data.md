@@ -160,7 +160,7 @@ Minimum Linux 5.11. Hand-written over raw syscalls like the io_uring backend, wi
 ### 7. Not in this record
 
 - ef_vi. `DatagramSource` already provides batch delivery, spans valid until return and hardware timestamps; it becomes a backend when a Solarflare NIC is available to test on.
-- DPDK.
+- DPDK (added later as an optional `rx_backend`; see the CHANGELOG).
 - AF_XDP hardware RX timestamps through XDP metadata kfuncs (Linux 6.3+ and driver support).
 - CME MDP3 and IEX over multicast. The source and session layers do not depend on the feed, and `Mdp3Feed` already takes datagrams.
 - IPv6 multicast.

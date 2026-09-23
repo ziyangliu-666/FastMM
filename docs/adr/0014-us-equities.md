@@ -1,6 +1,6 @@
 # ADR-0014: US equities
 
-Status: accepted (2026-09)
+Status: accepted (2026-09); not implemented (the symbols and files below are the plan, not the code)
 
 FastMM trades US-listed stocks on IEX data: first in backtests from IEX HIST, then in paper trading through Alpaca to validate the connector, then two-sided market making through Interactive Brokers with directed routing.
 
