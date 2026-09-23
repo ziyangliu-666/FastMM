@@ -21,7 +21,7 @@ The first failing check decides the reason.
 | 3 | `InstrumentDisabled` | the instrument is disabled or out of range | `[[instruments]] enabled` |
 | 4 | `InvalidTick` | a limit price is not a multiple of the tick | `tick` |
 | 5 | `InvalidLot` | the quantity is not a multiple of the lot or outside `min_qty`/`max_qty` | `lot`, `min_qty`, `max_qty` |
-| 6 | `BelowMinNotional` | price times quantity (the mid for market orders) is below the minimum | `min_notional` |
+| 6 | `BelowMinNotional` | the order notional (the mid for market orders) is below the minimum | `min_notional` |
 | 7 | `StaleMarketData` | the instrument's book is older than the limit, or there is none | `stale_md_ms` |
 | 8 | `PriceCollar` | a limit price is further from the mid than the collar | `price_collar_bps` |
 | 9 | `FatFinger` | a limit price is further from the last trade than the band | `fat_finger_bps` |
@@ -36,6 +36,27 @@ The first failing check decides the reason.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
 - Because `MaxPosition` counts same-side open orders, a quote ladder cannot exceed `max_position` even if it fills entirely.
 - Market orders skip the price checks (4, 8, 9, 14).
+- The notional of checks 6 and 11 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
+
+## Currencies
+
+`Price`, `Qty` and `Notional` carry no currency. PnL, fees, `max_order_notional`, `min_notional` and `max_loss` are all denominated in the instrument's **settlement currency**: the quote currency for a linear contract, the base coin for an inverse (coin-margined) one.
+
+Instruments of one session must settle in the same currency; otherwise the PnL totals add unrelated numbers and `max_loss` compares the sum with one limit. `fastmm-live` checks this after the venues' reference data has loaded (`InstrumentTable::settlement_mix()`): with `max_loss` set it refuses to start, otherwise it warns. Run one session per settlement currency.
+
+## Inverse contracts
+
+An inverse contract's size is quoted in the quote currency (Deribit `BTC-PERPETUAL`: 10 USD per contract) and settles in the base coin, so its PnL is not linear in the price:
+
+```text
+realized   = qty * multiplier * (1 / avg_entry - 1 / exit)     coins
+unrealized = qty * multiplier * (1 / avg_entry - 1 / mark)     coins
+notional   = qty * multiplier / price                          coins
+```
+
+The average entry price of an inverse position is the size-weighted **harmonic** mean: two lots of 10 contracts at 50000 and 40000 average to 44444.44444444, not 45000. `Instrument::pnl_per_tick()` is zero for an inverse contract; its tick value depends on the price.
+
+`Instrument::kInverse` is set from Deribit reference data, not from the configuration. An inverse contract on another connector is booked as a linear one.
 
 ## The kill switch
 
@@ -44,17 +65,19 @@ The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, 
 The global switch trips when:
 
 - the session shuts down: Ctrl-C, SIGTERM, `--duration` or an order ring overflow (the control thread requests it, then cancels all orders on every venue over a separate REST connection);
-- `[risk] max_loss` is reached: net PnL (realised plus unrealised, marked at the mid, minus fees) is re-evaluated on every book update and fill;
+- `[risk] max_loss` is reached: net PnL (realised plus unrealised, marked at the mid, minus fees) plus the PnL carried over from earlier sessions is re-evaluated on every book update, fill and position snapshot;
 - the outbound ring to a venue or the journal ring is full, because the engine can no longer guarantee that what it sends is what it records;
 - every venue with instruments has been killed.
 
 A venue's switch trips when its connector reports an error that makes the venue unusable: a bad key, signature or permission, failed authentication, or a Binance IP ban. The command travels through the venue's order ring, so it is journaled and a replay trips it at the same point.
+
+A `max_loss` trip is latched on disk (`[engine] kill_file`) together with the cumulative realized PnL and fees of every session since the file was last cleared. The next start reads that carry into the budget and refuses to trade while the trip is latched. Unrealized PnL is not carried; the position is remeasured from the venue's view after the restart.
 
 Nothing resets a kill switch automatically. After a kill the engine tripped itself (the last three causes), `[engine] on_kill` decides whether `fastmm-live` shuts down. The default, `exit`, cancels all orders and exits with code 6, so a supervisor can alert instead of an unattended process staying up with quoting off. [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) has the behaviour, the log lines and the shutdown sequence.
 
 ## What the layer does not do
 
 - It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second, independent limit that holds even when the strategy has a bug. Set the risk limit above the strategy's.
-- It keeps no cross-instrument or cross-venue exposure. Position limits are per instrument; `max_loss` is the only portfolio-wide limit.
+- It keeps no cross-instrument or cross-venue exposure. Position limits are per instrument; `max_loss` is the only portfolio-wide limit, and it is one number in one currency.
 - It knows no venue rules beyond reference data and its own order rate limit (check 15). Margin and account balances are enforced by the venue. The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
 - It does not protect against a venue that stops answering. Order-channel loss triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).

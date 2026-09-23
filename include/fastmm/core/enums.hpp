@@ -394,16 +394,17 @@ enum class ControlCommand : std::uint8_t {
 // flag; fastmm-live decides from it whether to exit ([engine] on_kill) and shows it in the status.
 enum class KillReason : std::uint8_t {
   None = 0,
-  Requested = 1,          // ControlCommand::TripKill: shutdown, operator
-  MaxLoss = 2,            // [risk] max_loss
-  TransportFull = 3,      // the outbound ring to a venue was full
-  JournalOverflow = 4,    // the journal ring was full
-  AllVenuesKilled = 5,    // every venue with instruments has its own kill bit set
-  VenueFatal = 6,         // venue error map: bad key, signature, permission, failed auth
-  VenueHardStop = 7,      // venue error map: REST stopped (IP ban)
-  OrderRingOverflow = 8,  // fastmm-live: a venue's order-event ring overflowed
-  StrategyError = 9,      // a strategy hook reported an error (Python hot hooks)
-  FeedLost = 10,          // a multicast feed cannot rebuild its books (nasdaq_itch)
+  Requested = 1,           // ControlCommand::TripKill: shutdown, operator
+  MaxLoss = 2,             // [risk] max_loss
+  TransportFull = 3,       // the outbound ring to a venue was full
+  JournalOverflow = 4,     // the journal ring was full
+  AllVenuesKilled = 5,     // every venue with instruments has its own kill bit set
+  VenueFatal = 6,          // venue error map: bad key, signature, permission, failed auth
+  VenueHardStop = 7,       // venue error map: REST stopped (IP ban)
+  OrderRingOverflow = 8,   // fastmm-live: a venue's order-event ring overflowed
+  StrategyError = 9,       // a strategy hook reported an error (Python hot hooks)
+  FeedLost = 10,           // a multicast feed cannot rebuild its books (nasdaq_itch)
+  OrderIdsExhausted = 11,  // the session's 32-bit client order id sequence is used up
 };
 // Kill reasons are kept per venue id for ids 0..kKillVenueSlots-1; higher ids share the last slot,
 // as they share the last kill bit (RiskEngine::venue_bit).
@@ -432,6 +433,8 @@ inline constexpr std::size_t kKillVenueSlots = 31;
       return "StrategyError";
     case KillReason::FeedLost:
       return "FeedLost";
+    case KillReason::OrderIdsExhausted:
+      return "OrderIdsExhausted";
   }
   return "?";
 }

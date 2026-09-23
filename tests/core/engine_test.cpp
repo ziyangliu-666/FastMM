@@ -187,11 +187,13 @@ struct Fixture {
   }
   void reconcile(ReconcileMsg::Kind kind,
                  ClientOrderId id = ClientOrderId{},
-                 std::optional<ClientOrderId> sent_watermark = std::nullopt) {
+                 std::optional<ClientOrderId> sent_watermark = std::nullopt,
+                 Qty cum = Qty{}) {
     ReconcileMsg m{};
     init_header(m, EventType::Reconcile, InstrumentId{0}, VenueId{0});
     m.kind = kind;
     m.cl_ord_id = id;
+    m.cum_qty = cum;
     m.venue_order_id = "V";
     if (sent_watermark) {
       m.sent_watermark = *sent_watermark;
@@ -848,4 +850,82 @@ TEST_CASE("core.engine: LiveTransport::set_direct hands batches to one function,
   CHECK(t.dropped_full() == 2);
   CHECK(ring.empty_approx());
   CHECK(t.supports_replace(VenueId{0}));
+}
+
+// A max-loss trip used to re-arm the whole budget on every restart: the engine measures the limit
+// against the session's PnL plus the loss carried over in the durable kill state.
+TEST_CASE("core.engine: max_loss counts the pnl carried over from earlier sessions") {
+  const auto run = [](bool with_carry) {
+    static bool s_carry = false;
+    s_carry = with_carry;
+    Fixture f(true, [](EngineConfig& cfg) {
+      cfg.risk.max_loss = Notional::from_decimal("0.01").value();
+      if (s_carry) cfg.pnl_carry = Notional::from_decimal("-0.009").value();
+    });
+    f.push_book("100.00", "100.02", 1, true);
+    f.drain();
+    f.ack_all_new();
+    f.drain();
+    const auto orders = f.news();
+    REQUIRE(orders.size() == 2);
+    f.fill(orders[0].cl_ord_id, Side::Buy, "99.90", "0.01", "e1");  // long 0.01 at 99.90
+    f.drain();
+    CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.01"));
+    f.push_book("99.70", "99.72", 2, /*snapshot=*/true);  // mid 99.71: 0.0019 of loss
+    f.drain();
+    return f.engine->kill_reason();
+  };
+  CHECK(run(false) == KillReason::None);    // 0.0019 of 0.01 spent
+  CHECK(run(true) == KillReason::MaxLoss);  // 0.009 was already gone
+}
+
+// The fills behind a cum_qty the venue reports but never sent used to vanish: the OMS counters
+// moved and the position did not.
+TEST_CASE("core.engine: a reconciliation cum_qty jump is booked as a synthetic fill") {
+  Fixture f;
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const auto orders = f.news();
+  REQUIRE(orders.size() == 2);
+  CHECK(f.engine->position(InstrumentId{0}).flat());
+  f.reconcile(ReconcileMsg::Kind::Begin);
+  f.drain();
+  // The venue says the bid is half filled; we never saw the fill.
+  f.reconcile(ReconcileMsg::Kind::OpenOrder, orders[0].cl_ord_id, std::nullopt, qt("0.005"));
+  f.drain();
+  CHECK(f.engine->stats().synthetic_fills == 1);
+  CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.005"));
+  CHECK(f.engine->position(InstrumentId{0}).avg_px == orders[0].price);
+  f.reconcile(ReconcileMsg::Kind::End);
+  f.drain();
+}
+
+// Order::created was never read: a request whose ack was lost held its pool slot, its
+// max_open_orders slot and its open quantity for the rest of the session.
+TEST_CASE("core.engine: an order without an ack is cancelled after ack_timeout") {
+  Fixture f(true, [](EngineConfig& cfg) { cfg.ack_timeout = milliseconds(500); });
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  REQUIRE(f.transport.count(EventType::OutNewOrder) == 2);
+  CHECK(f.transport.count(EventType::OutCancel) == 0);
+  f.clock.advance(milliseconds(200));
+  f.drain();
+  CHECK(f.transport.count(EventType::OutCancel) == 0);  // not old enough yet
+  f.clock.advance(seconds(1));
+  f.drain();
+  CHECK(f.engine->stats().ack_timeouts == 2);
+  CHECK(f.transport.count(EventType::OutCancel) == 2);
+  CHECK(f.state(f.news()[0].cl_ord_id) == OrderState::PendingCancel);
+  // The venue never had them: the cancel rejects free the slots and the open quantity.
+  for (const auto& n : f.news()) {
+    OrderCancelRejectMsg r{};
+    init_header(r, EventType::OrderCancelReject, InstrumentId{0}, VenueId{0});
+    r.cl_ord_id = n.cl_ord_id;
+    r.reason = RejectReason::VenueUnknownOrder;
+    f.push(r);
+  }
+  f.drain();
+  CHECK(f.engine->oms().open_qty(InstrumentId{0}, Side::Buy) == Qty{});
 }

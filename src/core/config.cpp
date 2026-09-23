@@ -273,12 +273,16 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "journal", e.journal);
     get(*t, "journal_dir", e.journal_dir);
     get(*t, "epoch_file", e.epoch_file);
+    get(*t, "kill_file", e.kill_file);
     get(*t, "rng_seed", e.rng_seed);
     get(*t, "md_ring_bytes", e.md_ring_bytes);
     get(*t, "order_ring_bytes", e.order_ring_bytes);
     get(*t, "journal_ring_bytes", e.journal_ring_bytes);
     get(*t, "max_events_per_step", e.max_events_per_step);
     get(*t, "crossed_grace_ms", e.crossed_grace_ms);
+    get(*t, "ack_timeout_ms", e.ack_timeout_ms);
+    if (e.ack_timeout_ms < 0)
+      fail_at(*t->get("ack_timeout_ms"), "ack_timeout_ms must be >= 0 (0 disables)");
     get(*t, "latency_publish_ms", e.latency_publish_ms);
     get(*t, "tsc_recalibrate_s", e.tsc_recalibrate_s);
     if (e.tsc_recalibrate_s < 0)
@@ -534,9 +538,11 @@ std::string Config::redacted() const {
   kv("journal", engine.journal);
   kq("journal_dir", engine.journal_dir);
   kq("epoch_file", engine.epoch_file);
+  kq("kill_file", engine.kill_file);
   kv("rng_seed", engine.rng_seed);
   kv("max_events_per_step", engine.max_events_per_step);
   kv("crossed_grace_ms", engine.crossed_grace_ms);
+  kv("ack_timeout_ms", engine.ack_timeout_ms);
   kv("min_requote_ticks", engine.min_requote_ticks);
   kv("min_requote_interval_ms", engine.min_requote_interval_ms);
   kv("min_qty_bps", engine.min_qty_bps);
@@ -656,12 +662,14 @@ std::string Config::effective_toml() const {
   e.insert("journal", engine.journal);
   e.insert("journal_dir", engine.journal_dir);
   e.insert("epoch_file", engine.epoch_file);
+  e.insert("kill_file", engine.kill_file);
   e.insert("rng_seed", static_cast<std::int64_t>(engine.rng_seed));
   e.insert("md_ring_bytes", static_cast<std::int64_t>(engine.md_ring_bytes));
   e.insert("order_ring_bytes", static_cast<std::int64_t>(engine.order_ring_bytes));
   e.insert("journal_ring_bytes", static_cast<std::int64_t>(engine.journal_ring_bytes));
   e.insert("max_events_per_step", static_cast<std::int64_t>(engine.max_events_per_step));
   e.insert("crossed_grace_ms", static_cast<std::int64_t>(engine.crossed_grace_ms));
+  e.insert("ack_timeout_ms", static_cast<std::int64_t>(engine.ack_timeout_ms));
   e.insert("latency_publish_ms", static_cast<std::int64_t>(engine.latency_publish_ms));
   e.insert("tsc_recalibrate_s", static_cast<std::int64_t>(engine.tsc_recalibrate_s));
   e.insert("timer_slack_ns", engine.timer_slack_ns);

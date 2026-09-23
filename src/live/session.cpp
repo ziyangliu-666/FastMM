@@ -7,6 +7,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/session_state.hpp"
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
@@ -42,22 +43,30 @@ namespace fastmm::live {
 namespace {
 
 volatile std::sig_atomic_t g_signal = 0;
+volatile std::sig_atomic_t g_hup = 0;  // SIGHUP: clear the kill switch and resume quoting
 extern "C" void on_signal(int sig) {
-  g_signal = sig;
+  if (sig == SIGHUP) {
+    g_hup = 1;
+  } else {
+    g_signal = sig;
+  }
 }
 
 struct sigaction g_old_int {};
 struct sigaction g_old_term {};
+struct sigaction g_old_hup {};
 std::atomic<bool> g_handlers_installed{false};
 
 void install_signal_handlers() {
   // Each session starts without a pending stop: a process can run several sessions (tests).
   g_signal = 0;
+  g_hup = 0;
   struct sigaction sa {};
   sa.sa_handler = &on_signal;
   sigemptyset(&sa.sa_mask);
   sigaction(SIGINT, &sa, &g_old_int);
   sigaction(SIGTERM, &sa, &g_old_term);
+  sigaction(SIGHUP, &sa, &g_old_hup);
   g_handlers_installed.store(true);
 }
 
@@ -192,9 +201,9 @@ void inline_loop(Inline& in, int cpu) {
   s.reactor->run_once(0);
 }
 
-bool push_control(MsgRing& ring, ControlCommand cmd) {
+bool push_control(MsgRing& ring, ControlCommand cmd, VenueId venue = VenueId::invalid()) {
   ControlMsg m{};
-  init_header(m, EventType::Control);
+  init_header(m, EventType::Control, InstrumentId{}, venue);
   m.command = cmd;
   m.hdr.recv_ts = wall_now();
   return ring.try_push(&m, m.hdr.len);
@@ -346,6 +355,7 @@ void restore_signal_handlers() noexcept {
   if (!g_handlers_installed.exchange(false)) return;
   sigaction(SIGINT, &g_old_int, nullptr);
   sigaction(SIGTERM, &g_old_term, nullptr);
+  sigaction(SIGHUP, &g_old_hup, nullptr);
 }
 
 bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
@@ -482,6 +492,34 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     slots.push_back(std::move(slot));
   }
+  // Every PnL total, and with it [risk] max_loss, is one currency-less Notional. The venues'
+  // reference data has been loaded, so kInverse is known here.
+  if (const SettlementMix mix = instruments.settlement_mix(); mix.mixed()) {
+    const std::string a(mix.first->settlement_ccy());
+    const std::string b(mix.other->settlement_ccy());
+    const std::string sa(mix.first->symbol.view());
+    const std::string sb(mix.other->symbol.view());
+    if (cfg.risk_limits().max_loss.is_positive()) {
+      std::fprintf(stderr,
+                   "%s: instruments settle in different currencies (%s in %s, %s in %s) and "
+                   "[risk] max_loss is one number in one currency. Split them into one session "
+                   "per settlement currency, or unset max_loss.\n",
+                   prog,
+                   sa.c_str(),
+                   a.empty() ? "?" : a.c_str(),
+                   sb.c_str(),
+                   b.empty() ? "?" : b.c_str());
+      return kExitConfig;
+    }
+    FASTMM_LOG_WARN(
+        "instruments settle in different currencies ({} in {}, {} in {}): the PnL totals in the "
+        "logs and the status file add unrelated numbers",
+        mix.first->symbol,
+        a.empty() ? std::string_view("?") : std::string_view(a),
+        mix.other->symbol,
+        b.empty() ? std::string_view("?") : std::string_view(b));
+  }
+
   venues::SymbolTable symbols;
   if (!symbols.build(instruments)) {
     std::fprintf(stderr, "%s: duplicate or empty instrument symbols\n", prog);
@@ -565,9 +603,21 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                       std::string_view(why));
     }
   }
-  deps.engine.session_epoch = SessionEpochStore::next_epoch(cfg.engine.epoch_file);
+  bool epoch_wrapped = false;
+  const auto epoch = SessionEpochStore::next_epoch(cfg.engine.epoch_file, &epoch_wrapped);
+  if (!epoch) {
+    // Fail closed: without a fresh epoch this session would reuse another one's client order ids.
+    std::fprintf(stderr, "%s: %s\n", prog, epoch.error().c_str());
+    return kExitConfig;
+  }
+  if (epoch_wrapped)
+    FASTMM_LOG_WARN(
+        "session epoch has cycled past 65535: client order ids of sessions that long ago can "
+        "repeat");
+  deps.engine.session_epoch = *epoch;
   deps.engine.max_events_per_step = cfg.engine.max_events_per_step;
   deps.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
+  deps.engine.ack_timeout = milliseconds(cfg.engine.ack_timeout_ms);
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   deps.engine.cpu = cfg.engine.cpu;
@@ -577,6 +627,46 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
+
+  // Latched kill switch and the loss budget already spent, so a restart does not re-arm
+  // [risk] max_loss (docs/how-to/operations/kill-switch-and-shutdown.md).
+  const std::string kill_path =
+      cfg.engine.kill_file.empty()
+          ? KillStateStore::default_path(cfg.engine.journal_dir, cfg.engine.name)
+          : cfg.engine.kill_file;
+  if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
+    std::error_code ec;
+    std::filesystem::create_directories(kp.parent_path(), ec);
+  }
+  if (opts.clear_kill) {
+    if (auto r = KillStateStore::clear(kill_path); !r) {
+      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
+      return kExitConfig;
+    }
+    FASTMM_LOG_WARN("--clear-kill: {} removed; the whole [risk] max_loss budget is armed again",
+                    kill_path);
+  }
+  KillState kill_state;
+  if (auto loaded = KillStateStore::load(kill_path)) {
+    kill_state = *loaded;
+  } else {
+    std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
+    return kExitConfig;
+  }
+  if (kill_state.latched) {
+    std::fprintf(stderr,
+                 "%s: a %s kill switch is latched in %s (net PnL %.8f over %llu session(s)). "
+                 "Check the positions, then clear it with --clear-kill or by removing the file; "
+                 "that arms the whole [risk] max_loss budget again.\n",
+                 prog,
+                 std::string(to_string(kill_state.reason)).c_str(),
+                 kill_path.c_str(),
+                 kill_state.carry().to_double(),
+                 static_cast<unsigned long long>(kill_state.sessions));
+    return kExitKilled;
+  }
+  ++kill_state.sessions;
+  deps.engine.pnl_carry = kill_state.carry();
 
   std::unique_ptr<MsgRing> journal_ring;
   std::unique_ptr<JournalFileWriter> journal;
@@ -783,6 +873,35 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     status.publish(snap);
   };
+  // Writes the cumulative PnL (and latches a max-loss trip) next to the journal, off the engine
+  // thread. A write failure is logged once and does not stop the session.
+  bool kill_write_failed = false;
+  bool kill_written = false;
+  KillState kill_last;
+  const auto persist_kill = [&](const EngineLiveStats& live) {
+    KillState st = kill_state;
+    st.realized = kill_state.realized + Notional::from_raw(live.stats.realized_pnl_raw);
+    st.fees = kill_state.fees + Notional::from_raw(live.stats.fees_raw);
+    if (live.kill_reason == KillReason::MaxLoss) {
+      st.latched = true;
+      st.reason = KillReason::MaxLoss;
+    }
+    snap.kill_latched = st.latched ? 1 : 0;
+    snap.pnl_carry_raw = kill_state.carry().raw;
+    // Nothing traded since the last write: no rewrite, and no fsync of the journal directory.
+    if (kill_written && st.realized == kill_last.realized && st.fees == kill_last.fees &&
+        st.latched == kill_last.latched) {
+      return;
+    }
+    st.updated_ns = wall_now().ns;
+    kill_last = st;
+    kill_written = true;
+    if (auto r = KillStateStore::store(kill_path, st); !r && !kill_write_failed) {
+      kill_write_failed = true;
+      FASTMM_LOG_ERROR("cannot persist the kill state: {}", std::string_view(r.error()));
+    }
+  };
+  persist_kill(runner->live_stats());
   publish_status(StatusRunState::Running, runner->live_stats());
 
   // ---- control loop -----------------------------------------------------------------------
@@ -862,8 +981,19 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
             live.kill_flags);
       }
     }
+    if (g_hup != 0) {
+      g_hup = 0;
+      FASTMM_LOG_WARN("SIGHUP: clearing the kill switch and resuming quoting");
+      if (!push_control(control_ring, ControlCommand::ResetKill))
+        FASTMM_LOG_ERROR("control ring full: kill reset message dropped");
+      kill_state.latched = false;
+      kill_state.reason = KillReason::None;
+      engine_kill = KillReason::None;
+      reported_venue_kills = 0;
+    }
     if (now >= next_status) {
       next_status = now + 250'000'000;
+      persist_kill(live);
       publish_status(StatusRunState::Running, live);
     }
     if (recalibrate_ns > 0 && last_tsc.use_tsc && now >= next_recalibration) {
@@ -902,6 +1032,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const std::int64_t shutdown_start = steady_now().ns;
+  persist_kill(runner->live_stats());
   publish_status(StatusRunState::Stopping, runner->live_stats());
   if (reason == 4) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (kill switch: {}; [engine] on_kill = \"exit\")",
@@ -998,6 +1129,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   const std::int64_t shutdown_ms = (steady_now().ns - shutdown_start) / 1'000'000;
   FASTMM_LOG_INFO(
       "fastmm-live: shutdown took {} ms (cancel_all {})", shutdown_ms, cancel_ok ? "ok" : "FAILED");
+  persist_kill(final_live);
   // The file stays: monitors show the final numbers and the kill reason.
   publish_status(StatusRunState::Stopped, final_live);
   const int rc = !cancel_ok                   ? kExitRuntime

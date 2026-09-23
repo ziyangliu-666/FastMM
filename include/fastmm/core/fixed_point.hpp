@@ -125,6 +125,23 @@ template <std::int64_t D>
   return neg ? -r : r;
 }
 
+// d * scale rounded half away from zero, or nullopt when the result is not an int64: NaN and
+// +-inf fail both comparisons, and the bounds are exclusive so the cast is always defined.
+[[nodiscard]] inline std::optional<std::int64_t> scaled_round(double d, double scale) noexcept {
+  constexpr double kTwoPow63 = 9223372036854775808.0;  // == -(double)INT64_MIN, exact
+  const double scaled = d * scale;
+  const double rounded = scaled < 0 ? scaled - 0.5 : scaled + 0.5;
+  if (!(rounded > -kTwoPow63 && rounded < kTwoPow63)) return std::nullopt;
+  return static_cast<std::int64_t>(rounded);
+}
+// What from_double() returns for a value scaled_round() refused: zero for NaN, the nearest bound
+// otherwise.
+template <class F>
+[[nodiscard]] inline F saturate(double d) noexcept {
+  if (d != d) return F{};  // NaN
+  return d < 0 ? F::min() : F::max();
+}
+
 }  // namespace detail
 
 template <class Tag>
@@ -205,11 +222,19 @@ struct Fixed {
   }
 
   // Ratio only. Startup only (double): Ratio::from_bps(2.5) == 2.5 bps, rounded to 0.0001 bp.
+  // Saturates like from_double; from_bps_checked() reports the loss instead.
   [[nodiscard]] static Fixed from_bps(double bps) noexcept
     requires std::is_same_v<Tag, RatioTag>
   {
-    const double scaled = bps * static_cast<double>(kRatioPerBp);
-    return from_raw(static_cast<std::int64_t>(scaled < 0 ? scaled - 0.5 : scaled + 0.5));
+    return from_bps_checked(bps).value_or(detail::saturate<Fixed>(bps));
+  }
+  [[nodiscard]] static std::optional<Fixed> from_bps_checked(double bps) noexcept
+    requires std::is_same_v<Tag, RatioTag>
+  {
+    const std::optional<std::int64_t> r =
+        detail::scaled_round(bps, static_cast<double>(kRatioPerBp));
+    if (!r) return std::nullopt;
+    return from_raw(*r);
   }
   // Ratio only. Diagnostics only.
   [[nodiscard]] double to_bps() const noexcept
@@ -256,11 +281,16 @@ struct Fixed {
     return static_cast<std::size_t>(p - buf);
   }
 
-  // Config / diagnostics only: never on the hot path.
+  // Rounds to the 1e-8 grid. NaN becomes zero and a value outside +-92,233,720,368.54775807
+  // saturates at max()/min(); the unchecked cast this replaced made both INT64_MIN.
   [[nodiscard]] static Fixed from_double(double d) noexcept {
-    const double scaled = d * static_cast<double>(kFixedScale);
-    const double rounded = scaled < 0 ? scaled - 0.5 : scaled + 0.5;
-    return from_raw(static_cast<std::int64_t>(rounded));
+    return from_double_checked(d).value_or(detail::saturate<Fixed>(d));
+  }
+  // nullopt for NaN, +-inf and anything outside the representable range; two compares more.
+  [[nodiscard]] static std::optional<Fixed> from_double_checked(double d) noexcept {
+    const std::optional<std::int64_t> r = detail::scaled_round(d, static_cast<double>(kFixedScale));
+    if (!r) return std::nullopt;
+    return from_raw(*r);
   }
   [[nodiscard]] double to_double() const noexcept {
     return static_cast<double>(raw) / static_cast<double>(kFixedScale);
@@ -385,6 +415,27 @@ template <class T>
 template <class T>
 [[nodiscard]] constexpr Fixed<T> max(Fixed<T> a, Fixed<T> b) noexcept {
   return a.raw < b.raw ? b : a;
+}
+
+// Checked arithmetic: nullopt instead of a wrapped int64. The operators stay unchecked; these are
+// for the places that combine a value from outside the engine with a configured one.
+template <class T>
+[[nodiscard]] constexpr std::optional<Fixed<T>> checked_add(Fixed<T> a, Fixed<T> b) noexcept {
+  std::int64_t r = 0;
+  if (__builtin_add_overflow(a.raw, b.raw, &r)) return std::nullopt;
+  return Fixed<T>::from_raw(r);
+}
+template <class T>
+[[nodiscard]] constexpr std::optional<Fixed<T>> checked_sub(Fixed<T> a, Fixed<T> b) noexcept {
+  std::int64_t r = 0;
+  if (__builtin_sub_overflow(a.raw, b.raw, &r)) return std::nullopt;
+  return Fixed<T>::from_raw(r);
+}
+template <class T>
+[[nodiscard]] constexpr std::optional<Fixed<T>> checked_mul(Fixed<T> a, std::int64_t k) noexcept {
+  std::int64_t r = 0;
+  if (__builtin_mul_overflow(a.raw, k, &r)) return std::nullopt;
+  return Fixed<T>::from_raw(r);
 }
 
 namespace detail {

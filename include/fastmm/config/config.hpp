@@ -54,12 +54,15 @@ struct EngineSection {
   bool journal = true;
   std::string journal_dir = "runs";
   std::string epoch_file = "runs/session_epoch";
+  // Latched kill switch and cumulative PnL; empty = "<journal_dir>/<name>.kill".
+  std::string kill_file;
   std::uint64_t rng_seed = 1;
   std::size_t md_ring_bytes = 4U << 20;
   std::size_t order_ring_bytes = 1U << 20;
   std::size_t journal_ring_bytes = 16U << 20;
   std::uint32_t max_events_per_step = 64;
   int crossed_grace_ms = 100;
+  int ack_timeout_ms = 0;  // force-cancel an order without an ack after this long; 0 = off
   int latency_publish_ms = 1000;
   int tsc_recalibrate_s = 10;       // fastmm-live: TSC recalibration period, 0 = never
   std::int64_t timer_slack_ns = 0;  // fastmm-live: PR_SET_TIMERSLACK of its threads, 0 = kernel's

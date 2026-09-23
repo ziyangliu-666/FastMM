@@ -23,6 +23,13 @@ struct EngineConfig {
   // [strategy] max_param_age_ms: quoting is disabled before the first ParamUpdate and while none
   // was applied for this long (zero: off).
   Duration max_param_age{};
+  // [engine] ack_timeout_ms: an order still waiting for its ack this long is force-cancelled, so a
+  // lost request cannot hold a pool slot, a max_open_orders slot and max_position exposure for
+  // good (zero: off).
+  Duration ack_timeout{};
+  // Net PnL carried over from earlier sessions ([risk] max_loss is a budget for the deployment,
+  // not per process); fastmm-live reads it from the durable kill state (core/session_state.hpp).
+  Notional pnl_carry{};
   bool quoting_enabled = true;
   int cpu = -1;
   SpinMode spin_mode = SpinMode::Busy;

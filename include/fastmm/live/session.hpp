@@ -69,6 +69,9 @@ struct LiveOptions {
   bool no_journal = false;
   std::string status_path;  // overrides the default /dev/shm/fastmm-<engine>.status
   bool no_status = false;
+  // Removes the durable kill state before starting: clears a latched max-loss trip and arms the
+  // whole [risk] max_loss budget again ([engine] kill_file).
+  bool clear_kill = false;
   std::string program = "fastmm-live";     // prefix of error messages (log lines keep fastmm-live:)
   const LiveStrategy* strategy = nullptr;  // nullptr: [strategy] name from the registry
   // Called by the control thread every 50 ms; must not block. A non-empty result stops the session

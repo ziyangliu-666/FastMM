@@ -54,6 +54,8 @@ void usage(std::FILE* out, const char* prog) {
       "  --status <path>          live status file for fastmm-top (default "
       "/dev/shm/fastmm-<engine>.status)\n"
       "  --no-status              do not publish live status\n"
+      "  --clear-kill             clear a latched kill switch and the cumulative PnL before\n"
+      "                           starting; arms the whole [risk] max_loss budget again\n"
       "  --log <path>             write the log to a file (warnings are mirrored to stderr)\n"
       "  --allow-inline-secrets   accept literal API secrets in the config file\n"
       "  --list-strategies        print the strategies this binary can run and exit\n"
@@ -63,8 +65,11 @@ void usage(std::FILE* out, const char* prog) {
       "API keys come from the environment through ${VAR} references in [venues.*],\n"
       "e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.\n"
       "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n"
+      "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
       "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
       "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
+      "A max_loss trip is latched in [engine] kill_file: the next start refuses to trade\n"
+      "(exit code 6) until --clear-kill or the file is removed.\n"
       "\n"
       "Exit codes:\n"
       "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
@@ -72,7 +77,7 @@ void usage(std::FILE* out, const char* prog) {
       "  3  bad config, strategy or parameters\n"
       "  4  venue reference data failed to load\n"
       "  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error\n"
-      "  6  kill switch tripped by the engine (on_kill = \"exit\"), cancel_all ok\n"
+      "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
       "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok\n",
       prog);
 }
@@ -169,6 +174,8 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
       if (!value(opts.status_path)) return kExitUsage;
     } else if (a == "--no-status") {
       opts.no_status = true;
+    } else if (a == "--clear-kill") {
+      opts.clear_kill = true;
     } else if (a == "--log") {
       if (!value(log_path)) return kExitUsage;
     } else if (a == "--allow-inline-secrets") {

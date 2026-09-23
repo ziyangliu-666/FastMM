@@ -5,6 +5,48 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Durable risk state (`include/fastmm/core/session_state.hpp`): `[engine] kill_file` (default
+  `<journal_dir>/<name>.kill`) latches a `[risk] max_loss` trip and carries the cumulative realized
+  PnL and fees, so `max_loss` is a budget for the deployment rather than one per process. A start
+  with a latched trip exits with code 6 until `fastmm-live --clear-kill` or the file is removed.
+  `fastmm-top` shows `LATCHED` and the carried PnL (status version 5: `kill_latched`,
+  `pnl_carry_raw`). SIGHUP clears the kill switch of a running session
+  (`ControlCommand::ResetKill`, which with a venue in the header clears that venue's bit only).
+- `[engine] ack_timeout_ms`: orders still waiting for their ack that long are force-cancelled,
+  freeing the pool slot, the `max_open_orders` slot and the `max_position` exposure a lost request
+  used to hold for the rest of the session. Off by default.
+- Inverse (coin-margined) contracts are booked in their settlement coin: `PositionTracker` uses
+  `qty * multiplier * (1/avg - 1/px)` and a size-weighted harmonic average entry price, and
+  `Instrument::notional()` returns `qty * multiplier / price`. `Instrument::inverse_pnl()` and
+  `settlement_ccy()` are new; `pnl_per_tick()` is zero for an inverse contract, whose tick value
+  depends on the price.
+- `Fixed::from_double_checked()` and `Ratio::from_bps_checked()`, and `checked_add` / `checked_sub`
+  / `checked_mul`. `avellaneda_stoikov` and `options_mm` skip a side whose price does not convert
+  instead of quoting the result of an unchecked cast.
+
+### Changed
+- `SessionEpochStore::next_epoch()` returns a `Result` and writes through a temporary file, an
+  `fsync` and a rename. It used to ignore every write error, so an unwritable path handed out epoch
+  1 to every session and client order ids repeated across restarts; `fastmm-live` refuses to start
+  instead. The epoch cycles through 1..65535 rather than wrapping to 0 and being mapped back to 1.
+- `Oms::next_cl_ord_id()` returns an invalid id once the session's 32-bit sequence is used up (the
+  wire form is 48 bits) instead of wrapping and reissuing ids; the engine turns that into a kill
+  switch (`KillReason::OrderIdsExhausted`).
+- A `cum_qty` a venue reports that no fill message covered (a cancel ack, an expiry or a
+  reconciliation snapshot after a private-stream outage) is reported as `OmsUpdate::missed_qty` and
+  booked as a synthetic fill at the order's own price; it used to move the OMS counters only. A
+  cancel ack or expiry for an order that filled completely ends it as `Filled`, not `Canceled`.
+- `PositionTracker::set()` takes the instrument and remeasures the unrealized PnL of the new
+  position at the last mark; it used to leave the previous position's unrealized PnL in the totals
+  the max-loss check reads.
+- `fastmm-live` refuses to start when the instruments settle in more than one currency and
+  `[risk] max_loss` is set (the PnL totals are one currency-less number); it warns otherwise.
+- `Fixed::from_double()` saturates at `max()`/`min()` and maps NaN to zero; it used to return
+  `INT64_MIN` for NaN and for anything out of range.
+- `RiskEngine::on_book()` / `on_trade()` leave the collar and fat-finger bands unset when the band
+  would overflow, instead of wrapping into a pass-through.
+
+### Added
 - `order_transport = "user_tcp"` on every receive backend: the OUCH frames go through the
   backend's device. `af_xdp`: the XDP program also redirects TCP to `user_tcp_ip` (and
   `user_tcp_port`) and ARP for it, poll() hands those frames to the link (`net::FrameSink`), and

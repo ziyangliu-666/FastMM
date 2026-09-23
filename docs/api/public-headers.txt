@@ -35,6 +35,7 @@ tier1 fastmm/core/rng.hpp
 tier1 fastmm/core/messages.hpp
 tier1 fastmm/core/order.hpp
 tier1 fastmm/core/oms.hpp
+tier1 fastmm/core/session_state.hpp
 tier1 fastmm/core/position.hpp
 tier1 fastmm/core/quote_manager.hpp
 tier1 fastmm/core/engine_config.hpp

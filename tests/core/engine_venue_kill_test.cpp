@@ -218,6 +218,12 @@ TEST_CASE("core.engine: a venue kill pulls that venue's quotes and refuses its n
   f.control(ControlCommand::TripVenueKill, kVenue1, KillReason::VenueHardStop);
   CHECK(f.engine->stats().venue_kills == 1);
   CHECK(f.engine->venue_kill_reason(kVenue1) == KillReason::VenueFatal);
+
+  // The venue recovered: a ResetKill naming it clears that venue's bit and nothing else.
+  f.control(ControlCommand::ResetKill, kVenue1);
+  CHECK_FALSE(f.engine->risk().venue_killed(kVenue1));
+  CHECK(f.engine->venue_kill_reason(kVenue1) == KillReason::None);
+  CHECK(f.engine->live_stats().kill_flags == 0);
 }
 
 TEST_CASE("core.engine: killing every venue with instruments trips the global kill switch") {
@@ -273,7 +279,10 @@ TEST_CASE("core.engine: the first global kill reason is kept and published, a re
   CHECK(f.engine->live_stats().kill_reason == KillReason::MaxLoss);
   CHECK(f.engine->stats().kills == 2);
 
-  f.control(ControlCommand::ResetKill);
+  // A ResetKill with a venue clears that venue's bit only; without one, every bit.
+  f.control(ControlCommand::ResetKill, kVenue0);
+  CHECK(f.engine->risk().killed());
+  f.control(ControlCommand::ResetKill, VenueId::invalid());
   CHECK_FALSE(f.engine->risk().killed());
   CHECK(f.engine->kill_reason() == KillReason::None);
   const EngineLiveStats live = f.engine->live_stats();

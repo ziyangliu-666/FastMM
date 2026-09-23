@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <string_view>
 
 namespace fastmm {
@@ -325,10 +326,12 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
     const bool can_sell = within(position, position - dq, max_position) &&
                           within(e.delta, e.delta - dq * p.contract_delta, cfg.max_delta) &&
                           within(e.vega, e.vega - dq * p.contract_vega, cfg.max_vega);
-    if (can_buy && reservation - half >= tick)
-      q.bid(inst.round_price(Price::from_double(reservation - half), Side::Buy), qty);
-    if (can_sell && reservation + half >= tick)
-      q.ask(inst.round_price(Price::from_double(reservation + half), Side::Sell), qty);
+    // A theo or spread that is NaN or out of the fixed-point range: that side is not quoted.
+    const std::optional<Price> bid = Price::from_double_checked(reservation - half);
+    const std::optional<Price> ask = Price::from_double_checked(reservation + half);
+    if (can_buy && bid && reservation - half >= tick) q.bid(inst.round_price(*bid, Side::Buy), qty);
+    if (can_sell && ask && reservation + half >= tick)
+      q.ask(inst.round_price(*ask, Side::Sell), qty);
     q.uncross(inst.tick);
     return q;
   }

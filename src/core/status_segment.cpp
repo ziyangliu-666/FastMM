@@ -346,6 +346,9 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
   } else if (s.kill_flags != 0) {
     kill = fmt::format("  {}VENUE KILLED{}", color ? "\x1b[33m" : "", reset(color));
   }
+  if (s.kill_latched != 0) {
+    kill += fmt::format("  {}LATCHED{}", color ? "\x1b[31m" : "", reset(color));
+  }
   fmt::format_to(std::back_inserter(out),
                  "state      {}{}{}{}  uptime={}  updated {:.1f}s ago\n\n",
                  paint(color, state),
@@ -375,10 +378,12 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  rejects(s.risk_rejects, s.risk_reject_reasons),
                  rejects(s.venue_rejects, s.venue_reject_reasons));
   fmt::format_to(std::back_inserter(out),
-                 "pnl        realized={} unrealized={} fees={}\n\n",
+                 "pnl        realized={} unrealized={} fees={} carried={} budget_used={}\n\n",
                  money(s.realized_pnl_raw),
                  money(s.unrealized_pnl_raw),
-                 money(s.fees_raw));
+                 money(s.fees_raw),
+                 money(s.pnl_carry_raw),
+                 money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
   fmt::format_to(std::back_inserter(out),
                  "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
                  "latency",
@@ -522,7 +527,8 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"engine\": {}, \"strategy\": {}, \"events\": {}, \"book_updates\": {}, "
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
                  "\"risk_rejects\": {}, \"venue_rejects\": {}, \"kill_flags\": {}, "
-                 "\"kill_reason\": \"{}\", \"latency\": {{",
+                 "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
+                 "\"latency\": {{",
                  s.version,
                  s.pid,
                  s.session_id,
@@ -538,7 +544,9 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.risk_rejects,
                  s.venue_rejects,
                  s.kill_flags,
-                 to_string(static_cast<KillReason>(s.kill_reason)));
+                 to_string(static_cast<KillReason>(s.kill_reason)),
+                 s.kill_latched != 0,
+                 s.pnl_carry_raw);
   for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i) {
     if (i != 0) out += ", ";
     json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);

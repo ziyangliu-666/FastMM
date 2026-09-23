@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <type_traits>
 
 namespace fastmm {
@@ -68,15 +69,38 @@ struct alignas(kCacheLine) Instrument {
   [[nodiscard]] constexpr bool valid_qty(Qty q) const noexcept {
     return q.is_positive() && on_lot(q, lot) && q >= min_qty && (max_qty.is_zero() || q <= max_qty);
   }
-  // Notional in quote currency: price * qty * multiplier.
+  // Notional in the settlement currency: price * qty * multiplier for a linear contract, and
+  // qty * multiplier / price (base coin) for an inverse one, whose contract size is quoted in the
+  // quote currency. Zero for an inverse contract at a non-positive price.
   [[nodiscard]] constexpr Notional notional(Price p, Qty q) const noexcept {
+    if (inverse()) {
+      if (!p.is_positive()) return Notional{};
+      return Notional::from_raw(
+          static_cast<std::int64_t>(static_cast<Int128>(q.raw) * contract_multiplier.raw / p.raw));
+    }
     const Notional n = mul(p, q);
     if (contract_multiplier == Qty::from_int(1)) return n;
     return Notional::from_raw(mul_raw(n, contract_multiplier));
   }
-  // PnL change (quote ccy) for one tick move on one contract.
+  // PnL change (settlement ccy) for one tick move on one contract. An inverse contract's tick
+  // value depends on the price (multiplier * tick / price^2), so this is zero for one: use
+  // inverse_pnl() instead.
   [[nodiscard]] constexpr Notional pnl_per_tick() const noexcept {
+    if (inverse()) return Notional{};
     return Notional::from_raw(mul_raw(tick, contract_multiplier));
+  }
+  // PnL in the base coin of moving `qty` contracts from `from` to `to`:
+  // qty * multiplier * (1/from - 1/to). Zero unless both prices are positive.
+  [[nodiscard]] constexpr Notional inverse_pnl(Price from, Price to, Qty qty) const noexcept {
+    if (!from.is_positive() || !to.is_positive()) return Notional{};
+    const Int128 num = static_cast<Int128>(qty.raw) * contract_multiplier.raw * (to.raw - from.raw);
+    const Int128 den = static_cast<Int128>(from.raw) * to.raw;
+    return Notional::from_raw(static_cast<std::int64_t>(num / den));
+  }
+  // The currency PnL, fees and notional are denominated in: the base coin for an inverse
+  // contract, the quote currency otherwise. Empty when the instrument does not name it.
+  [[nodiscard]] constexpr std::string_view settlement_ccy() const noexcept {
+    return inverse() ? base.view() : quote.view();
   }
   [[nodiscard]] constexpr bool is_derivative() const noexcept {
     return asset_class == AssetClass::Perpetual || asset_class == AssetClass::Future ||
@@ -86,6 +110,16 @@ struct alignas(kCacheLine) Instrument {
 static_assert(sizeof(Instrument) == 128);
 static_assert(alignof(Instrument) == 64);
 static_assert(std::is_trivially_copyable_v<Instrument>);
+
+// Instruments do not all settle in the same currency: an inverse contract settles in its base
+// coin, a linear one in its quote currency. PnL totals and [risk] max_loss are one currency-less
+// Notional, so a table that mixes them adds unrelated numbers; callers refuse such a table (see
+// docs/explanation/risk-model.md).
+struct SettlementMix {
+  const Instrument* first = nullptr;  // first enabled instrument
+  const Instrument* other = nullptr;  // first enabled instrument that settles in another currency
+  [[nodiscard]] bool mixed() const noexcept { return other != nullptr; }
+};
 
 enum class InstrumentError : std::uint8_t {
   TableFull,
@@ -136,6 +170,22 @@ class InstrumentTable {
   [[nodiscard]] const Instrument* begin() const noexcept { return by_id_.begin(); }
   [[nodiscard]] const Instrument* end() const noexcept { return by_id_.end(); }
   [[nodiscard]] const Instrument* data() const noexcept { return by_id_.data(); }
+  // Two instruments settle alike when both are linear (or both inverse) and name the same
+  // settlement currency; an unnamed currency only matches another unnamed one of the same kind.
+  [[nodiscard]] SettlementMix settlement_mix() const noexcept {
+    SettlementMix m;
+    for (const Instrument& inst : *this) {
+      if (!inst.enabled()) continue;
+      if (m.first == nullptr) {
+        m.first = &inst;
+      } else if (inst.inverse() != m.first->inverse() ||
+                 inst.settlement_ccy() != m.first->settlement_ccy()) {
+        m.other = &inst;
+        break;
+      }
+    }
+    return m;
+  }
   void clear() noexcept {
     by_id_.clear();
     by_symbol_.clear();
