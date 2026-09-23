@@ -1,0 +1,51 @@
+/* Typography and spacing on top of mkdocs-material (mkdocs.yml, extra_css). */
+
+:root {
+  --md-text-font: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: "Roboto Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* A measure of roughly 80 characters; tables and code still use the full column. */
+.md-typeset p,
+.md-typeset li,
+.md-typeset blockquote {
+  max-width: 44rem;
+}
+
+.md-typeset {
+  font-size: 0.78rem;
+  line-height: 1.65;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset h2 {
+  margin-top: 2em;
+  padding-top: 0.4em;
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+/* Reference pages are mostly tables: keep them dense and let them scroll on a phone. */
+.md-typeset table:not([class]) {
+  font-size: 0.72rem;
+  display: block;
+  overflow-x: auto;
+}
+
+.md-typeset table:not([class]) th {
+  white-space: nowrap;
+}
+
+.md-typeset pre > code {
+  font-size: 0.72rem;
+}
+
+.md-typeset code {
+  word-break: normal;
+}

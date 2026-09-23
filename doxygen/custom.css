@@ -1,0 +1,68 @@
+/* FastMM tweaks on top of doxygen-awesome-css: the indigo of the Material site, a link back to
+   the prose docs, and a reading measure that matches them. */
+
+html {
+    --primary-color: #3f51b5;
+    --primary-dark-color: #303f9f;
+    --primary-light-color: #7986cb;
+    --primary-lighter-color: #c5cae9;
+    --primary-lightest-color: #e8eaf6;
+    --page-foreground-color: #232629;
+    --content-maxwidth: 62rem;
+    --spacing-medium: 14px;
+    --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+        sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    --font-family-monospace: "Roboto Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html.dark-mode {
+    --primary-color: #9fa8da;
+    --primary-dark-color: #7986cb;
+    --primary-light-color: #5c6bc0;
+    --primary-lighter-color: #3949ab;
+    --primary-lightest-color: #283593;
+}
+
+/* Link back to the prose site, in the strip above the sidebar title. */
+a.fastmm-home,
+a.fastmm-home:link,
+a.fastmm-home:visited {
+    display: block;
+    box-sizing: border-box;
+    height: 30px;
+    padding: 0 var(--spacing-medium);
+    line-height: 30px;
+    background: var(--primary-dark-color);
+    color: #fff !important; /* doxygen-awesome sets link colours with !important */
+    font-size: 13px;
+    text-decoration: none;
+}
+
+a.fastmm-home::before {
+    content: "\2190\00a0";
+}
+
+a.fastmm-home:hover {
+    background: var(--primary-color);
+    color: #fff !important;
+}
+
+@media screen and (min-width: 768px) {
+    html {
+        /* doxygen-awesome-sidebar-only's 120px, plus the strip and the project brief. */
+        --top-height: 160px;
+    }
+
+    a.fastmm-home {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 12;
+        width: var(--side-nav-fixed-width);
+    }
+
+    #top {
+        box-sizing: border-box;
+        padding-top: 30px;
+    }
+}

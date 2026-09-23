@@ -1,0 +1,102 @@
+# Doxygen configuration for the FastMM C++ reference (docs/api/cpp.md, tools/mkdocs_hooks.py).
+#
+# @VAR@ placeholders are filled in by tools/mkdocs_hooks.py; the input is the public header
+# manifest docs/api/public-headers.txt, so a header becomes public by being listed there.
+# Run it through the site build, not by hand:  ./scripts/docs-serve.sh --api  /  mkdocs build
+
+PROJECT_NAME           = "FastMM C++ API"
+PROJECT_NUMBER         = "@VERSION@"
+PROJECT_BRIEF          = "Public headers, tier 1 and tier 2"
+OUTPUT_DIRECTORY       = @OUTPUT@
+CREATE_SUBDIRS         = NO
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_HTML          = YES
+
+INPUT                  = @INPUT@
+STRIP_FROM_PATH        = @INCLUDE_DIR@
+STRIP_FROM_INC_PATH    = @INCLUDE_DIR@
+INPUT_FILTER           = "@PYTHON@ @ROOT@/tools/doxygen_filter.py"
+FILTER_SOURCE_FILES    = NO
+RECURSIVE              = NO
+
+# The headers document themselves with `//` comments that doxygen_filter.py turns into `///`.
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+TAB_SIZE               = 2
+OPTIMIZE_OUTPUT_FOR_C  = NO
+BUILTIN_STL_SUPPORT    = YES
+DISTRIBUTE_GROUP_DOC   = YES
+TOC_INCLUDE_HEADINGS   = 0
+
+# Everything in a public header is public API, documented or not.
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = NO
+EXCLUDE_SYMBOLS        = *::detail *::detail::* detail::*
+EXTRACT_PRIVATE        = NO
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+INTERNAL_DOCS          = NO
+SHOW_INCLUDE_FILES     = YES
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+INLINE_INHERITED_MEMB  = NO
+SHOW_USED_FILES        = NO
+SHOW_FILES             = YES
+SHOW_NAMESPACES        = YES
+FULL_PATH_NAMES        = YES
+
+# The engine compiles with -DFASTMM_BUILD_NET; the attribute macros confuse the parser.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+SKIP_FUNCTION_MACROS   = NO
+SEARCH_INCLUDES        = YES
+INCLUDE_PATH           = @INCLUDE_DIR@
+PREDEFINED             = FASTMM_BUILD_NET=1 \
+                         DOXYGEN=1 \
+                         FASTMM_HOT= \
+                         FASTMM_COLD= \
+                         FASTMM_ALWAYS_INLINE=inline \
+                         FASTMM_NOINLINE= \
+                         FASTMM_LIKELY(x)=x \
+                         FASTMM_UNLIKELY(x)=x \
+                         "FASTMM_RESTRICT=" \
+                         __cplusplus=202002L
+
+# Warnings are reported but do not fail the site build: a C++20 concept or a fold expression that
+# Doxygen 1.9/1.12 misparses would otherwise take the whole site down.
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+WARN_LOGFILE           = @OUTPUT@/doxygen-warnings.log
+
+# doxygen-awesome-css (doxygen/awesome, v2.3.4, sidebar-only with the dark-mode toggle).
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+HTML_COLORSTYLE        = LIGHT
+HTML_HEADER            = @HEADER@
+HTML_EXTRA_STYLESHEET  = @ROOT@/doxygen/awesome/doxygen-awesome.css \
+                         @ROOT@/doxygen/awesome/doxygen-awesome-sidebar-only.css \
+                         @ROOT@/doxygen/awesome/doxygen-awesome-sidebar-only-darkmode-toggle.css \
+                         @ROOT@/doxygen/custom.css
+HTML_EXTRA_FILES       = @ROOT@/doxygen/awesome/doxygen-awesome-darkmode-toggle.js \
+                         @ROOT@/doxygen/awesome/doxygen-awesome-fragment-copy-button.js \
+                         @ROOT@/doxygen/awesome/doxygen-awesome-interactive-toc.js
+HTML_DYNAMIC_SECTIONS  = NO
+HTML_INDEX_NUM_ENTRIES = 100
+GENERATE_TODOLIST      = NO
+GENERATE_TESTLIST      = NO
+GENERATE_BUGLIST       = NO
+GENERATE_DEPRECATEDLIST = YES
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO
+
+# Graphviz is not a build dependency; the class hierarchy pages use the built-in text diagrams.
+HAVE_DOT               = NO

@@ -1,13 +1,21 @@
 # FastMM documentation
 
-FastMM is a market-making engine in C++20. These pages describe version 0.1.
+FastMM is a market-making engine in C++20. It receives a venue's market data, keeps an order book,
+asks your strategy what it wants resting, and sends the difference to the venue. The trading thread
+does not allocate or wait on network I/O; a market-data update becomes an order in about 250 ns
+(median, in simulation). Every session is recorded, and replaying the recording sends the same
+orders again. These pages describe version 0.1.
 
-## Start here
+## Three ways in
 
-- New to FastMM: [Install](getting-started/install.md), then the [Quick start](getting-started/quickstart.md)
-- Writing a strategy in C++: [Tutorial: your first market maker](tutorials/first-strategy/README.md) and the [Strategy API](reference/strategy-api.md)
-- Writing a strategy in Python: [Python](python.md), then [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md)
-- Running a keyed session: [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md), then the [Go-live checklist](how-to/operations/go-live-checklist.md)
+| You want to | Start here |
+|---|---|
+| See it run | [Install](getting-started/install.md), then [Quick start](getting-started/quickstart.md): a strategy, a backtest and the simulated exchange on localhost. |
+| Write a strategy | [Your first market maker](tutorials/first-strategy/README.md) in C++, or [Python](python.md) for hot hooks compiled with Numba. Then the [Strategy API](reference/strategy-api.md). |
+| Run a live session | [Run on a testnet or Binance Demo](how-to/operations/run-on-testnet.md), then the [Go-live checklist](how-to/operations/go-live-checklist.md) and [Kill switch and shutdown](how-to/operations/kill-switch-and-shutdown.md). |
+
+The [API reference](api/cpp.md) is generated from the public headers and from the `fastmm` package
+on every build.
 
 ## Tutorials
 
@@ -25,6 +33,7 @@ FastMM is a market-making engine in C++20. These pages describe version 0.1.
 - Programs and files: [Command lines](reference/cli.md), [Configuration](reference/configuration.md), [Journal format](reference/journal-format.md), [Status file](reference/status-file.md)
 - Venues and protocols: [Venue connectors](reference/venues.md), [Simulated exchange](reference/sim-exchange.md), [fastmm-sim-itch](reference/sim-itch.md), [Options](reference/options.md), [FIX 4.4](reference/codecs/fix.md), [Nasdaq ITCH and OUCH](reference/codecs/nasdaq.md), [CME MDP 3.0](reference/codecs/cme-mdp3.md)
 - Python: [Python](python.md), [Python strategy API](reference/python-api.md)
+- Generated: [C++ API](api/cpp.md), [Python API](api/python.md)
 - [Glossary](reference/glossary.md)
 
 ## Explanation
@@ -34,7 +43,7 @@ FastMM is a market-making engine in C++20. These pages describe version 0.1.
 - [Determinism](explanation/determinism.md): why replays match, and what breaks them
 - [Risk model](explanation/risk-model.md): the pre-trade checks and the kill switch
 - [Benchmarks](explanation/benchmarks.md): how the latency numbers are measured
-- [Design records](adr/)
+- [Design records](adr/0001-fixed-point-int64-price-qty.md): one page per decision
 
 ## Contributing
 

@@ -1,6 +1,9 @@
 # FastMM
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![docs](https://github.com/ziyangliu-666/FastMM/actions/workflows/docs.yml/badge.svg)](https://ziyangliu-666.github.io/FastMM/)
+
+Documentation: <https://ziyangliu-666.github.io/FastMM/>
 
 FastMM is a fast market-making engine in C++20.
 
@@ -60,4 +63,4 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 - Linux on x86-64 only.
 - Not yet used with real money.
 
-[Documentation](docs/README.md) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)
+[Documentation](https://ziyangliu-666.github.io/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)

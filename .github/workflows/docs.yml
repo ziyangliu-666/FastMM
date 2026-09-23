@@ -1,0 +1,98 @@
+name: docs
+
+# Builds the documentation site (mkdocs.yml) and publishes it to GitHub Pages.
+# A pull request builds it strictly without deploying, so a broken page or link fails before merge.
+
+# GitHub Actions does not expand YAML anchors, so the two path lists are kept identical by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - include/**
+      - python/**
+      - doxygen/**
+      - mkdocs.yml
+      - tools/mkdocs_hooks.py
+      - tools/doxygen_filter.py
+      - tools/griffe_fastmm.py
+      - scripts/docs-serve.sh
+      - CMakeLists.txt
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - docs/**
+      - include/**
+      - python/**
+      - doxygen/**
+      - mkdocs.yml
+      - tools/mkdocs_hooks.py
+      - tools/doxygen_filter.py
+      - tools/griffe_fastmm.py
+      - scripts/docs-serve.sh
+      - CMakeLists.txt
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: doxygen (the C++ reference)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends doxygen
+          doxygen --version
+
+      - run: pip install --requirement docs/requirements.txt
+
+      # --strict fails on a broken link, a missing anchor, a page that is not in the nav and a
+      # docstring that mkdocstrings cannot resolve; tools/mkdocs_hooks.py adds the C++ reference.
+      - name: mkdocs build --strict
+        run: mkdocs build --strict
+
+      - name: the generated reference is not empty
+        run: |
+          test -s site/api/cpp/index.html
+          test -s site/api/python/index.html
+          test -s site/api/cpp/classfastmm_1_1QuoteManager.html
+          test -s site/search/search_index.json
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One deployment at a time, and never cancel one halfway.
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/configure-pages@v5
+      - id: deployment
+        uses: actions/deploy-pages@v4
