@@ -179,6 +179,8 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `expiry` | string |  | expiry of a derivative, ISO-8601 |
 | `strike` | any |  | option strike, decimal |
 | `option_type` | string |  | call \| put |
+| `maker_bps` | number |  | maker fee of this instrument, bps; negative = rebate. Overrides the venue's fees table |
+| `taker_bps` | number |  | taker fee of this instrument, bps. Overrides the venue's fees table |
 <!-- END config-keys -->
 
 Live connectors replace `tick`, `lot` and the size bounds with the venue's reference data when they connect; the configured values are used by backtests and the simulator.
@@ -242,7 +244,7 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 
 ## `[backtest]`
 
-Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and strategy settings come from the sections above; fees come from the first venue's `fees` table, self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`.
+Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and strategy settings come from the sections above; each instrument pays its own venue's `fees` table (or its own `maker_bps` / `taker_bps`), self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -259,6 +261,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
 | `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
 | `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |
+| `markout_horizons_s` | string | `"1,10,60"` | Post-fill markout horizons in seconds, comma separated (`"0.5,5"` is allowed); `""` turns markouts off. The run stops the simulated clock at every fill time plus horizon to read the venue mid there, so the shortest horizon also bounds how often the run loop is entered ([Backtesting](../explanation/backtesting.md#markouts)) |
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 

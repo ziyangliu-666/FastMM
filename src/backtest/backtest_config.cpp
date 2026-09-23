@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace fastmm::bt {
 
@@ -21,8 +24,42 @@ std::int64_t positive(const GenericSection& s, std::string_view key, std::int64_
   return v;
 }
 
+// "1,10,60" or "[1, 10, 60]" (a TOML array arrives stringified) -> markout horizons. An empty
+// string turns markouts off; a value that is not a positive number of seconds is an error.
+std::vector<Duration> parse_horizons(const std::string& text) {
+  std::vector<Duration> out;
+  std::string_view s = text;
+  while (!s.empty() && (s.front() == '[' || s.front() == ' ')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ']' || s.back() == ' ')) s.remove_suffix(1);
+  std::size_t pos = 0;
+  while (pos <= s.size() && !s.empty()) {
+    const std::size_t comma = s.find(',', pos);
+    std::string item(s.substr(pos, comma == std::string_view::npos ? comma : comma - pos));
+    const auto first = item.find_first_not_of(" \t");
+    const auto last = item.find_last_not_of(" \t");
+    item = first == std::string::npos ? std::string() : item.substr(first, last - first + 1);
+    if (!item.empty()) {
+      char* end = nullptr;
+      const double v = std::strtod(item.c_str(), &end);
+      if (end == item.c_str() || *end != '\0' || !(v > 0.0) || v > 86'400.0) {
+        throw ConfigError("backtest.markout_horizons_s: '" + item +
+                          "' is not a number of seconds in (0, 86400]");
+      }
+      out.push_back(Duration{static_cast<std::int64_t>(v * 1e9 + 0.5)});
+    }
+    if (comma == std::string_view::npos) break;
+    pos = comma + 1;
+  }
+  std::sort(out.begin(), out.end(), [](Duration a, Duration b) { return a.ns < b.ns; });
+  out.erase(
+      std::unique(out.begin(), out.end(), [](Duration a, Duration b) { return a.ns == b.ns; }),
+      out.end());
+  return out;
+}
+
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 15> kBacktestKeys = {"source",
+constexpr std::array<std::string_view, 16> kBacktestKeys = {"markout_horizons_s",
+                                                            "source",
                                                             "path",
                                                             "seed",
                                                             "output_dir",
@@ -77,6 +114,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.equity_bar = seconds(positive(bt, "equity_bar_s", 1));
   b.duration = seconds(positive(bt, "duration_s", sm.get_int("duration_s", 60)));
   b.initial_capital = bt.get_double("initial_capital", 0.0);
+  if (bt.has("markout_horizons_s"))
+    b.markout_horizons = parse_horizons(bt.get_string("markout_horizons_s", ""));
   b.generator_seed_levels = static_cast<int>(positive(sm, "seed_levels", 20));
 
   sim::SimTransportConfig& t = b.transport;
@@ -100,8 +139,19 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.md.interval = milliseconds(positive(sm, "depth_update_ms", 100));
   t.md.book_ticker = sm.get_bool("book_ticker", true);
   t.venue = VenueId{0};
+  // Each instrument pays its own venue's schedule; [[instruments]] maker_bps / taker_bps
+  // override one instrument. The default covers instruments added outside the config.
   if (!cfg.venues.empty()) {
-    t.fees = sim::FeeModel::from_bps(cfg.venues[0].fees.maker_bps, cfg.venues[0].fees.taker_bps);
+    t.fees.set_default(
+        sim::FeeSchedule::from_bps(cfg.venues[0].fees.maker_bps, cfg.venues[0].fees.taker_bps));
+  }
+  for (std::size_t k = 0; k < cfg.instruments.size(); ++k) {
+    const InstrumentSection& is = cfg.instruments[k];
+    const VenueSection* v = cfg.venue(is.venue);
+    const FeesSection vf = v != nullptr ? v->fees : FeesSection{};
+    t.fees.set_instrument(InstrumentId{static_cast<std::uint32_t>(k)},
+                          sim::FeeSchedule::from_bps(is.maker_bps.value_or(vf.maker_bps),
+                                                     is.taker_bps.value_or(vf.taker_bps)));
   }
 
   sim::MarketGeneratorParams& g = b.generator;

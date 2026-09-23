@@ -42,10 +42,10 @@ cfg.set_param("half_spread_bps", 0.02)  # str / int / float / bool
 r = fastmm.run_backtest(cfg, data="synthetic")
 print(r.summary_table())
 r.stats()["net_pnl"], r.outbound_sha256
-frames = r.to_pandas()                  # {"fills", "equity", "orders"} DataFrames
+frames = r.to_pandas()                  # {"fills", "equity", "orders", "markouts"} DataFrames
 ```
 
-`from_toml` issues a `UserWarning` for each unknown key or section, with its line, and lists them in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
+`from_toml` issues a `UserWarning` for each unknown key or section, with its line, and lists them in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `markout_horizons_s`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
 
 ### Data
 
@@ -63,6 +63,8 @@ The GIL is released while a C++ strategy or hot hooks run, so several runs can p
 ### Results
 
 `r.fills`, `r.equity` and `r.orders` are dicts of read-only numpy views over the C++ result vectors (no copy; the arrays keep the result alive). Prices, quantities, fees and PnL are raw int64 with a 1e-8 scale (`fastmm.FIXED_SCALE`); timestamps are int64 ns. `to_pandas()` converts to floats and `datetime64[ns]`. `stats()` returns the summary metrics; `sharpe_annualized` is NaN for runs shorter than 1 day and `max_drawdown_pct` is NaN without `initial_capital` ([`[backtest]`](reference/configuration.md#backtest)). `engine_stats()` and `transport_stats()` return the component counters; `write_all(dir)` writes the same CSV/JSON files as `fastmm-backtest`.
+
+`markouts()` returns one dict per horizon of `cfg.markout_horizons_s` with the buckets `total`, `buy`, `sell`, `maker`, `taker` and `instrument`, each holding `markout`, `capture` and `adverse_selection` in quote currency and in bps of notional, plus `excluded_past_end` and `excluded_no_mid` for the fills that could not be marked. `fastmm.markout_frame(result)` puts the same rows in a DataFrame, and `stats()` carries the PnL decomposition (`spread_capture`, `mid_drift`, `fees_paid`, `rebates_received`, `decomposition_net`, `decomposition_residual`) and the fill-quality diagnostics. `r.fills` gains `best_bid`, `best_ask`, `queue_ahead` (-1 when the fill model has no queue position) and one `markout_mid_<ns>ns` column per horizon, 0 where the fill could not be marked ([Backtesting](explanation/backtesting.md)).
 
 ## Sweeps
 

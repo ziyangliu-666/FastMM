@@ -941,7 +941,7 @@ OpResult Impl::op_account(Account& a) {
   views.reserve(a.balances.size());
   for (const auto& [asset, b] : a.balances) views.push_back(BalanceView{asset, b.free, b.locked});
   std::string body;
-  append_account_info(body, server_ms(), fees_.maker_cbps / 100, fees_.taker_cbps / 100, views);
+  append_account_info(body, server_ms(), fees_.maker_cbps() / 100, fees_.taker_cbps() / 100, views);
   return OpResult::ok(std::move(body));
 }
 

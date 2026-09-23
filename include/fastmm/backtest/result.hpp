@@ -24,6 +24,18 @@ struct FillRows {
   std::vector<std::uint64_t> cl_ord_id;
   std::vector<std::uint8_t> liquidity;  // Liquidity: 1 maker, 2 taker
   std::vector<std::int64_t> mid;        // venue mid at fill time (raw)
+  std::vector<std::int64_t> best_bid;   // venue touch at fill time (raw); 0 when that side is empty
+  std::vector<std::int64_t> best_ask;
+  // Displayed quantity still ahead of the order when it filled (raw); -1 when the fill model
+  // does not track a queue position (FillModel::Matching).
+  std::vector<std::int64_t> queue_ahead;
+  // Markout horizons, in nanoseconds of simulated time, and the venue mid of the fill's
+  // instrument at fill ts + horizon (raw). markout_mid[h][i] is 0 when the run ended before the
+  // horizon or the book had no two sides there: that fill is excluded from the horizon, never
+  // marked at a substitute price.
+  std::vector<std::int64_t> markout_horizon_ns;
+  std::vector<std::vector<std::int64_t>> markout_mid;
+
   [[nodiscard]] std::size_t size() const noexcept { return ts.size(); }
   void reserve(std::size_t n);
 };

@@ -16,8 +16,13 @@
 ```text
 tutorial-backtest: note: ignoring [strategy.params] of 'basic_mm' for --strategy first_mm
 backtest first_mm  seed=7  md_events=15148  steps=16808  wall=0.03s
-  net pnl                        1.2964
+  net pnl                        -25.7849
   fills (maker / taker)          471 (471 / 0)
+  ...
+where the PnL came from (quote currency, 25791.74 traded notional)
+  gross spread capture                 0.0068  +0.003 bps of 25791.74, mid at the fill
+  fees paid                          -25.7917
+  = net                              -25.7849
   ...
   outbound messages / sha256     1189 / 6ccab4815434470ef46161a79f32f6bf18ef422229d26be328adacc73df80812
 results written to runs/tutorial/backtest/{equity,fills,orders}.csv and summary.json
@@ -28,10 +33,10 @@ session journal: runs/tutorial/backtest.fmj
 |---|---|
 | `summary.json` | the metrics of the summary table |
 | `equity.csv` | one row per 1 s bar: realised and unrealised PnL, fees, position, mid, which sides were quoted |
-| `fills.csv` | one row per fill: time, side, price, quantity, fee, liquidity, the mid at the fill |
+| `fills.csv` | one row per fill: time, side, price, quantity, fee, liquidity, the mid and the touch at the fill, the queue position, and the mid at each markout horizon |
 | `orders.csv` | one row per order message sent: new, cancel or replace |
 
-Prices, quantities, fees and PnL in the CSV files are decimals in quote currency or base units; `ts_ns` columns are nanoseconds since the epoch.
+Prices, quantities, fees and PnL in the CSV files are decimals in quote currency or base units; `ts_ns` columns are nanoseconds since the epoch. An empty markout column means the run ended before that horizon, so the fill is left out of it ([Backtesting](../../explanation/backtesting.md#markouts)).
 
 ## Replay
 

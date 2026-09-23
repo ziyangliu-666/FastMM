@@ -30,6 +30,7 @@ usage:
   pnl_report.py --self-test
 """
 import argparse
+import bisect
 import json
 import math
 import os
@@ -45,6 +46,17 @@ import journal_dump as jd  # noqa: E402
 
 SCALE = jd.SCALE
 NS_PER_HOUR = 3_600_000_000_000
+DEFAULT_MARKOUTS = (1.0, 10.0, 60.0)  # seconds
+
+
+def horizon_label(ns: int) -> str:
+    if ns % 60_000_000_000 == 0:
+        return f"{ns // 60_000_000_000}m"
+    if ns % 1_000_000_000 == 0:
+        return f"{ns // 1_000_000_000}s"
+    if ns % 1_000_000 == 0:
+        return f"{ns // 1_000_000}ms"
+    return f"{ns // 1_000}us"
 
 
 def nz(x: float, digits: int = 8) -> float:
@@ -73,6 +85,7 @@ class InstrumentBook:
         self.first_ts = None
         self.last_ts = None
         self.hours = OrderedDict()
+        self.fill_events = []  # (ts, sign, price, qty) for markouts
 
     def on_fill(self, ts: int, t0: int, f: dict) -> None:
         px = f["px_raw"] / SCALE
@@ -122,6 +135,7 @@ class InstrumentBook:
         b["notional"] += notional
         b["fees"] += fee_q
         b["inventory"] = self.inventory
+        self.fill_events.append((ts, 1.0 if buy else -1.0, px, qty))
 
     def pnl(self, mark: float) -> float:
         """Trading PnL in quote units: cash plus inventory at `mark`; commission is already in both."""
@@ -129,23 +143,71 @@ class InstrumentBook:
 
 
 def read_fills(path: str, verify_crc: bool):
+    """Journal fills per instrument plus, from the BookTicker stream, a (ts, mid) timeline.
+
+    The timeline is what markouts mark against: only BookTicker carries an exact best bid and
+    ask, so a journal recorded without it (``[sim] book_ticker = false``, a venue that publishes
+    depth only) has no timeline and no markouts.
+    """
     data = open(path, "rb").read()
     hdr = jd.parse_header(data, verify_crc=verify_crc)
     instruments = {i["id"]: i for i in jd.parse_instruments(data, hdr)}
     books = OrderedDict()
+    mids = {}  # instrument -> ([ts], [mid])
     stats = jd.BlockStats()
     events = 0
     for ev, body in jd.iter_events(data, hdr, verify_crc=verify_crc, stats=stats):
         events += 1
+        ts = ev["recv_ts"] if ev["recv_ts"] > 0 else ev["exch_ts"]
+        if ev["type"] == "BookTicker":
+            bid, ask = struct.unpack_from("<q", body, 0)[0], struct.unpack_from("<q", body, 16)[0]
+            if bid > 0 and ask > 0:
+                t, m = mids.setdefault(ev["instrument"], ([], []))
+                mid = (bid + ask) / 2 / SCALE
+                if t and t[-1] == ts:
+                    m[-1] = mid
+                else:
+                    t.append(ts)
+                    m.append(mid)
+            continue
         if ev["type"] != "OrderFill":
             continue
         inst = instruments.get(ev["instrument"])
         symbol = inst["symbol"] if inst else f"instrument {ev['instrument']}"
         mult = inst["multiplier_raw"] / SCALE if inst and inst["multiplier_raw"] > 0 else 1.0
         book = books.setdefault(ev["instrument"], InstrumentBook(symbol, mult))
-        ts = ev["recv_ts"] if ev["recv_ts"] > 0 else ev["exch_ts"]
         book.on_fill(ts, hdr["start_ts"], jd.fill_fields(body))
-    return hdr, instruments, books, stats, events
+    return hdr, instruments, books, stats, events, mids
+
+
+def markouts(book: InstrumentBook, timeline, horizons_ns) -> list:
+    """Post-fill markouts of one instrument: for a fill of signed quantity s at price p and time
+    t, s * (mid(t + h) - p), summed over fills and divided by the traded notional for the bps
+    figure. `capture` is s * (mid(t) - p) over the SAME fills, so the two are comparable and
+    their difference is the adverse selection. A fill whose horizon is past the last quote in
+    the journal is excluded, never marked at the last known mid.
+    """
+    ts, mid = timeline if timeline else ([], [])
+    out = []
+    for h in horizons_ns:
+        markout = capture = notional = 0.0
+        n = excluded = 0
+        for t, sign, px, qty in book.fill_events:
+            i0 = bisect.bisect_right(ts, t) - 1
+            i1 = bisect.bisect_right(ts, t + h) - 1
+            if i0 < 0 or i1 < 0 or not ts or ts[-1] < t + h:
+                excluded += 1
+                continue
+            value = qty * book.multiplier
+            markout += sign * (mid[i1] - px) * value
+            capture += sign * (mid[i0] - px) * value
+            notional += px * value
+            n += 1
+        out.append({"horizon": horizon_label(h), "markout": markout, "capture": capture,
+                    "notional": notional, "fills": n, "excluded": excluded,
+                    "markout_bps": 1e4 * markout / notional if notional else 0.0,
+                    "capture_bps": 1e4 * capture / notional if notional else 0.0})
+    return out
 
 
 def parse_engine_log(path: str) -> dict:
@@ -207,7 +269,8 @@ def fmt_hours(t0: int, ts: int) -> str:
 
 
 def report(args, out=sys.stdout) -> int:
-    hdr, instruments, books, stats, events = read_fills(args.journal, verify_crc=args.verify_crc)
+    hdr, instruments, books, stats, events, mids = read_fills(args.journal, verify_crc=args.verify_crc)
+    horizons_ns = [int(round(s * 1e9)) for s in getattr(args, "markout_horizons", DEFAULT_MARKOUTS)]
     base_a, quote_a = args.base_asset, args.quote_asset
     p = lambda *a: print(*a, file=out)  # noqa: E731
     p(f"journal {args.journal}")
@@ -231,6 +294,21 @@ def report(args, out=sys.stdout) -> int:
           + (f"; {b.fees_other} fills in another asset not included" if b.fees_other else "") + ")")
         p(f"inventory change {b.inventory:+.8f} {base_a}, cash change {b.cash:+.4f} {quote_a} (both after fees)")
         p(f"trading PnL at the last fill price {b.last_px:.2f}: {b.pnl(b.last_px):+.4f} {quote_a}")
+        if not horizons_ns:
+            pass
+        elif iid not in mids:
+            p("markouts: no BookTicker events in this journal, so there is no mid to mark against")
+        else:
+            p(f"{'horizon':>8} {'markout':>12} {'mo bps':>9} {'capture':>12} {'cap bps':>9} "
+              f"{'adv sel bps':>12} {'fills':>7} {'excluded':>9}")
+            for r in markouts(b, mids[iid], horizons_ns):
+                p(f"{r['horizon']:>8} {r['markout']:>+12.4f} {r['markout_bps']:>+9.4f} "
+                  f"{r['capture']:>+12.4f} {r['capture_bps']:>+9.4f} "
+                  f"{r['capture_bps'] - r['markout_bps']:>+12.4f} {r['fills']:>7} {r['excluded']:>9}")
+            p("markout = signed qty * (mid at fill + horizon - fill price): what the fill was still "
+              "worth later.")
+            p("capture - markout is adverse selection; a positive capture with a negative markout is "
+              "not edge.")
 
     engine = parse_engine_log(args.engine_log) if args.engine_log else {}
     if args.engine_log:
@@ -310,19 +388,39 @@ def _fill_body(px: str, qty: str, fee: str, fee_asset: int, side: int, liq: int,
     return bytes(body)
 
 
+def _ticker_body(bid: str, ask: str) -> bytes:
+    def raw(x):
+        whole, _, frac = x.partition(".")
+        return int(whole) * SCALE + int((frac + "0" * 8)[:8] or "0")
+
+    body = bytearray(64)
+    struct.pack_into("<qqqq", body, 0, raw(bid), SCALE, raw(ask), SCALE)
+    return bytes(body)
+
+
 def write_synthetic_journal(path: str) -> None:
-    """Two instruments' worth of header, one symbol with fills in hours 0 and 1, and a trailer."""
+    """Two instruments' worth of header, one symbol with fills in hours 0 and 1, and a trailer.
+
+    The BookTicker events give the mid timeline the markouts mark against: mid 100 from +5 ns,
+    102 from +1 s, 102 from +1 h and 101 from +1 h +1 s.
+    """
     start = 1_789_000_000_000_000_000
     fill = jd.EVENT_TYPES.index("OrderFill")
     trade = jd.EVENT_TYPES.index("Trade")
+    ticker = jd.EVENT_TYPES.index("BookTicker")
+    sec = 1_000_000_000
     events = [
         _event(trade, 1, 0, start + 1, bytes(64)),
+        _event(ticker, 2, 0, start + 5, _ticker_body("99", "101")),  # mid 100
         # buy 0.5 @ 100, commission 0.0005 base (the account receives 0.4995)
-        _event(fill, 2, 0, start + 10, _fill_body("100", "0.5", "0.0005", 1, 0, 1, 1)),
+        _event(fill, 3, 0, start + 10, _fill_body("100", "0.5", "0.0005", 1, 0, 1, 1)),
+        _event(ticker, 4, 0, start + sec + 10, _ticker_body("101", "103")),  # mid 102
+        _event(ticker, 5, 0, start + NS_PER_HOUR, _ticker_body("101.5", "102.5")),  # mid 102
         # sell 0.3 @ 102, commission 0.0306 quote
-        _event(fill, 3, 0, start + NS_PER_HOUR + 5, _fill_body("102", "0.3", "0.0306", 0, 1, 1, 2)),
+        _event(fill, 6, 0, start + NS_PER_HOUR + 5, _fill_body("102", "0.3", "0.0306", 0, 1, 1, 2)),
         # sell 0.1 @ 101 as taker, commission in another asset (ignored)
-        _event(fill, 4, 0, start + NS_PER_HOUR + 9, _fill_body("101", "0.1", "0.01", 2, 1, 2, 3)),
+        _event(fill, 7, 0, start + NS_PER_HOUR + 9, _fill_body("101", "0.1", "0.01", 2, 1, 2, 3)),
+        _event(ticker, 8, 0, start + NS_PER_HOUR + sec + 9, _ticker_body("100", "102")),  # mid 101
     ]
     payload = b"".join(events)
     inst = bytearray(128)
@@ -342,8 +440,8 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as d:
         fmj = os.path.join(d, "t.fmj")
         write_synthetic_journal(fmj)
-        hdr, instruments, books, stats, events = read_fills(fmj, verify_crc=True)
-        assert stats.bad_blocks == 0 and stats.trailer and events == 4, (stats.__dict__, events)
+        hdr, instruments, books, stats, events, mids = read_fills(fmj, verify_crc=True)
+        assert stats.bad_blocks == 0 and stats.trailer and events == 8, (stats.__dict__, events)
         assert instruments[0]["symbol"] == "TESTUSD"
         b = books[0]
         close = lambda a, x: math.isclose(a, x, rel_tol=0, abs_tol=1e-9)  # noqa: E731
@@ -356,6 +454,24 @@ def self_test() -> int:
         # Marked at 101: cash + inventory * 101. The base commission is inside the inventory and
         # must not be subtracted again (the bug of the first session script).
         assert close(b.pnl(101.0), -9.3306 + 0.0995 * 101.0), b.pnl(101.0)
+
+        # Markouts, by hand. Horizon 1 s:
+        #   buy  0.5 @ 100 at +10 ns:   mid 100 -> 102, markout +0.5 * 2 = +1.0, capture 0
+        #   sell 0.3 @ 102 at +1 h:     mid 102 -> 102, markout 0, capture 0
+        #   sell 0.1 @ 101 at +1 h+9:   mid 102 -> 101, markout 0, capture -0.1
+        mo = markouts(b, mids[0], [1_000_000_000])[0]
+        assert mo["fills"] == 3 and mo["excluded"] == 0, mo
+        assert close(mo["markout"], 1.0), mo
+        assert close(mo["capture"], -0.1), mo
+        assert close(mo["notional"], 90.7), mo
+        assert close(mo["markout_bps"], 1e4 * 1.0 / 90.7), mo
+        # A horizon past the last quote excludes that fill instead of marking it at the last
+        # known mid: at 1 h only the first fill still has a mid, at 2 h none of them do.
+        hour, two_hours = markouts(b, mids[0], [3_600_000_000_000, 7_200_000_000_000])
+        assert hour["fills"] == 1 and hour["excluded"] == 2, hour
+        assert close(hour["markout"], 1.0) and close(hour["notional"], 50.0), hour
+        assert two_hours["fills"] == 0 and two_hours["excluded"] == 3, two_hours
+        assert two_hours["markout"] == 0.0 and two_hours["markout_bps"] == 0.0, two_hours
 
         log = os.path.join(d, "engine.log")
         Path(log).write_text(
@@ -393,6 +509,7 @@ def self_test() -> int:
         class A:
             journal, verify_crc, base_asset, quote_asset = fmj, True, "BTC", "USDT"
             engine_log = log
+            markout_horizons = DEFAULT_MARKOUTS
         A.start, A.end = start, end
         import io
         buf = io.StringIO()
@@ -414,12 +531,20 @@ def main() -> int:
     ap.add_argument("--base-asset", default="BTC", help="base asset name for labels and snapshot keys (default BTC)")
     ap.add_argument("--quote-asset", default="USDT", help="quote asset name for labels and snapshot keys (default USDT)")
     ap.add_argument("--verify-crc", action="store_true", help="verify block checksums (slow on large journals)")
+    ap.add_argument("--markout-horizons", default=",".join(f"{h:g}" for h in DEFAULT_MARKOUTS),
+                    help="comma-separated post-fill markout horizons in seconds; empty disables them")
     ap.add_argument("--self-test", action="store_true", help="run the built-in checks on a synthetic journal")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
     if not args.journal:
         ap.error("a journal is required (or --self-test)")
+    try:
+        args.markout_horizons = [float(x) for x in args.markout_horizons.split(",") if x.strip()]
+    except ValueError:
+        ap.error("--markout-horizons takes comma-separated numbers of seconds")
+    if any(h <= 0 for h in args.markout_horizons):
+        ap.error("--markout-horizons values must be positive")
     try:
         return report(args)
     except (jd.JournalError, OSError, KeyError, ValueError) as e:

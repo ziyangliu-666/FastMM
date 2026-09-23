@@ -62,7 +62,48 @@ py::dict fills_dict(const ResultPtr& r) {
   d["cl_ord_id"] = column_view(r, f.cl_ord_id);
   d["liquidity"] = column_view(r, f.liquidity);
   d["mid"] = column_view(r, f.mid);
+  d["best_bid"] = column_view(r, f.best_bid);
+  d["best_ask"] = column_view(r, f.best_ask);
+  d["queue_ahead"] = column_view(r, f.queue_ahead);
+  for (std::size_t j = 0; j < f.markout_horizon_ns.size() && j < f.markout_mid.size(); ++j)
+    d[py::str("markout_mid_" + std::to_string(f.markout_horizon_ns[j]) + "ns")] =
+        column_view(r, f.markout_mid[j]);
   return d;
+}
+
+py::dict markout_bucket(const bt::MarkoutBucket& b) {
+  py::dict d;
+  d["markout"] = b.markout_quote();
+  d["markout_bps"] = b.markout_bps();
+  d["capture"] = b.capture_quote();
+  d["capture_bps"] = b.capture_bps();
+  d["adverse_selection"] = b.adverse_selection_quote();
+  d["adverse_selection_bps"] = b.adverse_selection_bps();
+  d["notional"] = b.notional();
+  d["fills"] = b.fills;
+  return d;
+}
+
+py::list markouts_list(const bt::Metrics& m) {
+  py::list out;
+  for (const bt::MarkoutHorizon& h : m.markouts) {
+    py::dict d;
+    d["horizon_ns"] = h.horizon_ns;
+    d["label"] = h.label();
+    d["excluded_fills"] = h.excluded_fills;
+    d["excluded_past_end"] = h.excluded_past_end;
+    d["excluded_no_mid"] = h.excluded_no_mid;
+    d["total"] = markout_bucket(h.total);
+    d["buy"] = markout_bucket(h.buy);
+    d["sell"] = markout_bucket(h.sell);
+    d["maker"] = markout_bucket(h.maker);
+    d["taker"] = markout_bucket(h.taker);
+    py::list per;
+    for (const bt::MarkoutBucket& b : h.instrument) per.append(markout_bucket(b));
+    d["instrument"] = per;
+    out.append(d);
+  }
+  return out;
 }
 
 py::dict equity_dict(const ResultPtr& r) {
@@ -126,6 +167,31 @@ py::dict metrics_dict(const bt::Metrics& x) {
   d["virtual_tick_to_order_p99_ns"] = x.virtual_tick_to_order_p99_ns;
   d["wall_tick_to_order_p50_ns"] = x.wall_tick_to_order_p50_ns;
   d["wall_tick_to_order_p99_ns"] = x.wall_tick_to_order_p99_ns;
+  d["spread_capture"] = x.decomposition.spread_capture;
+  d["spread_capture_bps"] = x.decomposition.spread_capture_bps;
+  d["mid_drift"] = x.decomposition.mid_drift;
+  d["fees_paid"] = x.decomposition.fees_paid;
+  d["rebates_received"] = x.decomposition.rebates_received;
+  d["decomposition_net"] = x.decomposition.net;
+  d["decomposition_residual"] = x.decomposition.residual;
+  d["traded_notional"] = x.decomposition.notional;
+  d["capture_notional"] = x.decomposition.capture_notional;
+  d["capture_fills"] = x.decomposition.capture_fills;
+  d["realized_spread_bps"] = x.fill_quality.realized_spread_bps;
+  d["realized_spread_quote"] = x.fill_quality.realized_spread_quote;
+  d["at_touch_share"] = x.fill_quality.at_touch_share;
+  d["behind_touch_share"] = x.fill_quality.behind_touch_share;
+  d["through_touch_share"] = x.fill_quality.through_touch_share;
+  d["time_to_fill_p50_ns"] = x.fill_quality.time_to_fill_p50_ns;
+  d["time_to_fill_p90_ns"] = x.fill_quality.time_to_fill_p90_ns;
+  d["time_to_fill_p99_ns"] = x.fill_quality.time_to_fill_p99_ns;
+  d["fill_rate_per_quote"] = x.fill_quality.fill_rate_per_quote;
+  d["quotes_placed"] = x.fill_quality.quotes_placed;
+  d["quotes_filled"] = x.fill_quality.quotes_filled;
+  d["queue_position_known"] = x.fill_quality.queue_position_known;
+  d["queue_ahead_mean"] = x.fill_quality.queue_ahead_mean;
+  d["queue_ahead_p50"] = x.fill_quality.queue_ahead_p50;
+  d["queue_ahead_p90"] = x.fill_quality.queue_ahead_p90;
   return d;
 }
 
@@ -387,6 +453,13 @@ void bind_backtest(py::module_& m) {
           [](const BacktestResult& r) { return metrics_dict(r.metrics); },
           "Every summary metric: PnL / volume / inventory in quote or base units (float), "
           "counts and latency percentiles (int, ns).")
+      .def(
+          "markouts",
+          [](const BacktestResult& r) { return markouts_list(r.metrics); },
+          "Post-fill markouts, one entry per horizon: {'horizon_ns', 'label', "
+          "'excluded_fills', 'total', 'buy', 'sell', 'maker', 'taker', 'instrument'}. Each "
+          "bucket has markout / capture / adverse_selection in quote currency and in bps of "
+          "notional, over the fills that had a mid at the horizon.")
       .def(
           "engine_stats",
           [](const BacktestResult& r) { return engine_dict(r.engine); },

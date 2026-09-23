@@ -13,6 +13,7 @@
 //   latency_fixed_us, latency_jitter_us,          market_qty_median_lots, regimes,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
 //   equity_bar_s = 1, initial_capital = 0
+//   markout_horizons_s = "1,10,60"
 //   output_dir = "runs/backtest", journal_out = ""
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/engine.hpp"
@@ -52,6 +53,10 @@ struct BacktestConfig {
   // must refresh or clear it.
   std::string config_toml;
   bool measure_wall_clock = true;
+  // Post-fill markout horizons in simulated time; empty turns markouts off. The run stops the
+  // simulated clock at every fill time + horizon to read the venue mid there, so the shortest
+  // horizon also bounds how often the run loop is entered.
+  std::vector<Duration> markout_horizons = {seconds(1), seconds(10), seconds(60)};
 
   // Throws ConfigError on invalid values.
   [[nodiscard]] static BacktestConfig from_config(const Config& cfg);

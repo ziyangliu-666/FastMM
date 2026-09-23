@@ -256,3 +256,70 @@ def test_transport_reject_breakdown_sums_to_total():
     parts = ("post_only", "level_full", "invalid", "duplicate", "other")
     assert sum(t[f"rejects_{p}"] for p in parts) == t["rejects"]
 
+
+
+def test_markouts_match_the_fill_columns(example_config):
+    cfg = _short(example_config, 30)
+    r = fastmm.run_backtest(cfg, data="synthetic")
+    horizons = r.markouts()
+    assert [h["label"] for h in horizons] == ["1s", "10s", "1m"]
+
+    f = r.fills
+    sign = np.where(f["side"] == 0, 1.0, -1.0)
+    price = f["price"] / 1e8
+    qty = f["qty"] / 1e8
+    mid = f["mid"] / 1e8
+    for h in horizons:
+        column = f[f"markout_mid_{h['horizon_ns']}ns"] / 1e8
+        # 0 means "not measured": the horizon is past the end of the run, or the venue book had
+        # only one side there. Those fills stay out of every bucket.
+        measured = (column > 0) & (mid > 0)
+        assert h["total"]["fills"] == int(measured.sum())
+        assert h["excluded_fills"] == len(price) - int(measured.sum())
+        assert h["excluded_fills"] == h["excluded_past_end"] + h["excluded_no_mid"]
+        markout = (sign * (column - price) * qty)[measured].sum()
+        capture = (sign * (mid - price) * qty)[measured].sum()
+        assert h["total"]["markout"] == pytest.approx(markout, abs=1e-6)
+        assert h["total"]["capture"] == pytest.approx(capture, abs=1e-6)
+        assert h["total"]["adverse_selection"] == pytest.approx(capture - markout, abs=1e-6)
+        assert h["buy"]["fills"] + h["sell"]["fills"] == h["total"]["fills"]
+        assert h["maker"]["fills"] + h["taker"]["fills"] == h["total"]["fills"]
+        if h["total"]["notional"] > 0:
+            # The C++ side sums exact 1e-8 fixed point, so the two differ by the truncation.
+            assert h["total"]["markout_bps"] == pytest.approx(
+                1e4 * markout / h["total"]["notional"], rel=1e-4
+            )
+
+
+def test_pnl_decomposition_adds_up(example_config):
+    s = fastmm.run_backtest(_short(example_config, 30), data="synthetic").stats()
+    net = s["spread_capture"] + s["mid_drift"] - s["fees_paid"] + s["rebates_received"]
+    assert s["decomposition_net"] == pytest.approx(net, abs=1e-9)
+    assert s["decomposition_residual"] == pytest.approx(s["net_pnl"] - net, abs=1e-9)
+    assert abs(s["decomposition_residual"]) < 1e-6
+    # Realistic fees: the example config charges Binance spot VIP 0 on both sides.
+    assert s["fees_paid"] > 0 and s["rebates_received"] == 0.0
+    assert s["quotes_filled"] <= s["quotes_placed"] == s["orders"]
+
+
+def test_markouts_can_be_turned_off(example_config):
+    cfg = _short(example_config)
+    cfg.markout_horizons_s = []
+    r = fastmm.run_backtest(cfg, data="synthetic")
+    assert r.markouts() == []
+    assert not any(k.startswith("markout_mid_") for k in r.fills)
+    # Turning them off does not change what the engine sent.
+    assert r.outbound_sha256 == fastmm.run_backtest(_short(example_config), "synthetic").outbound_sha256
+
+
+def test_per_instrument_fees(example_config):
+    cfg = example_config.copy()
+    cfg.set_instrument_fees(0, maker_bps=-0.5, taker_bps=3.0)
+    assert cfg.instrument_fees(0) == (-0.5, 3.0)
+    rebate = fastmm.run_backtest(_short(cfg, 20), data="synthetic").stats()
+    fee = fastmm.run_backtest(_short(example_config, 20), data="synthetic").stats()
+    assert rebate["rebates_received"] > 0 and rebate["fees_paid"] == 0.0
+    assert fee["fees_paid"] > 0 and fee["rebates_received"] == 0.0
+    # The rebate is the whole difference: the fills themselves are identical.
+    assert rebate["spread_capture"] == pytest.approx(fee["spread_capture"], abs=1e-9)
+    assert rebate["net_pnl"] > fee["net_pnl"]

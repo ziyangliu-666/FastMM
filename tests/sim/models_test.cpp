@@ -107,7 +107,11 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
   CHECK(q.get(h).ahead == qt("10"));
   // a sell-aggressor trade of 4 at 100 consumes queue ahead of us
   std::vector<Qty> fills;
-  auto sink = [&](QueuePositionModel::Handle32, QueuedOrder&, Qty f) { fills.push_back(f); };
+  std::vector<Qty> ahead_at_fill;
+  auto sink = [&](QueuePositionModel::Handle32, QueuedOrder&, Qty f, Qty ahead) {
+    fills.push_back(f);
+    ahead_at_fill.push_back(ahead);
+  };
   q.on_trade(inst, px("100"), qt("4"), Side::Sell, sink);
   CHECK(fills.empty());
   CHECK(q.get(h).ahead == qt("6"));
@@ -118,6 +122,7 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
   q.on_trade(inst, px("100"), qt("7"), Side::Sell, sink);
   REQUIRE(fills.size() == 1);
   CHECK(fills[0] == qt("1"));
+  CHECK(ahead_at_fill[0] == qt("6"));  // queue position at the fill
   CHECK(q.get(h).leaves() == qt("1"));
   // trade through (sell at 99.5): remainder fills entirely
   q.on_trade(inst, px("99.5"), qt("0.001"), Side::Sell, sink);
@@ -142,7 +147,7 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
                px("101"),
                qt("0.4"),
                Side::Buy,
-               [&](QueuePositionModel::Handle32, QueuedOrder&, Qty f) { f2.push_back(f); });
+               [&](QueuePositionModel::Handle32, QueuedOrder&, Qty f, Qty) { f2.push_back(f); });
     REQUIRE(f2.size() == 1);
     CHECK(f2[0] == qt("0.4"));
   }

@@ -13,7 +13,9 @@ def test_from_toml_reads_sections(example_config):
     assert cfg.duration_s == 60.0
     assert cfg.latency_fixed_us == 200 and cfg.latency_jitter_us == 50
     assert math.isclose(cfg.queue_conservatism, 0.5)
-    assert cfg.maker_fee_bps == -0.5 and cfg.taker_fee_bps == 3.0
+    assert cfg.maker_fee_bps == 10.0 and cfg.taker_fee_bps == 10.0  # Binance spot VIP 0
+    assert cfg.instrument_fees(0) == (10.0, 10.0)
+    assert cfg.markout_horizons_s == [1.0, 10.0, 60.0]
     assert cfg.params["half_spread_bps"] == "0.01"
     assert cfg.start_mid == "60000"
 

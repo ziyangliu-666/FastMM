@@ -159,8 +159,9 @@ initial_capital = 1000
   CHECK(b.transport.queue_conservatism_bps == 2500);
   CHECK(b.transport.order_out.fixed == microseconds(150));
   CHECK(b.transport.order_out.jitter.ns == 0);
-  CHECK(b.transport.fees.maker_cbps == -100);
-  CHECK(b.transport.fees.taker_cbps == 250);
+  CHECK(b.transport.fees.maker_cbps() == -100);
+  CHECK(b.transport.fees.taker_cbps() == 250);
+  CHECK(b.transport.fees.schedule(InstrumentId{0}).maker_cbps == -100);
   CHECK(b.transport.stp == sim::StpMode::CancelTaker);
   CHECK(b.generator.start_mid == px("2500"));
   CHECK(b.generator.tick == px("0.01"));

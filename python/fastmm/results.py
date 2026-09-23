@@ -34,9 +34,13 @@ SWEEP_STATS: Tuple[str, ...] = (
     "fills",
     "fill_ratio",
     "spread_captured_bps",
+    "realized_spread_bps",
     "inventory_abs_mean",
     "quote_uptime",
 )
+
+MARKOUT_PREFIX = "markout_mid_"
+"""Fill columns holding the venue mid at ts + horizon: ``markout_mid_<ns>ns``."""
 
 
 def _pandas():
@@ -82,11 +86,61 @@ def fills_frame(result: BacktestResult) -> pd.DataFrame:
             "liquidity": _categorical(pd, f["liquidity"].astype(np.int64), LIQUIDITY_NAMES),
             "cl_ord_id": f["cl_ord_id"].copy(),
             "mid": _fixed(f["mid"]),
+            "best_bid": _fixed(f["best_bid"]),
+            "best_ask": _fixed(f["best_ask"]),
+            # NaN where the fill model does not track a queue position (raw -1).
+            "queue_ahead": np.where(
+                f["queue_ahead"] < 0, np.nan, f["queue_ahead"].astype(np.float64) * FIXED_SCALE
+            ),
         },
         index=pd.DatetimeIndex(_time(f["ts"]), name="ts"),
     )
     df["notional"] = df["price"] * df["qty"]
+    sign = np.where(f["side"] == 0, 1.0, -1.0)
+    df["signed_qty"] = sign * df["qty"]
+    # Spread capture: what the quote earned against the mid it was filled at.
+    df["capture"] = df["signed_qty"] * (df["mid"] - df["price"])
+    for key in sorted(k for k in f if k.startswith(MARKOUT_PREFIX)):
+        ns = int(key[len(MARKOUT_PREFIX) : -2])
+        mid_h = f[key]
+        # 0 means the run ended before the horizon: excluded, not marked at the last mid.
+        marked = np.where(mid_h > 0, mid_h.astype(np.float64) * FIXED_SCALE, np.nan)
+        df[f"mid_{_horizon_label(ns)}"] = marked
+        df[f"markout_{_horizon_label(ns)}"] = df["signed_qty"] * (marked - df["price"])
     return df
+
+
+def _horizon_label(ns: int) -> str:
+    if ns % 60_000_000_000 == 0:
+        return f"{ns // 60_000_000_000}m"
+    if ns % 1_000_000_000 == 0:
+        return f"{ns // 1_000_000_000}s"
+    if ns % 1_000_000 == 0:
+        return f"{ns // 1_000_000}ms"
+    return f"{ns // 1_000}us"
+
+
+def markout_frame(result: BacktestResult) -> pd.DataFrame:
+    """One row per (horizon, bucket) of ``result.markouts()``: markout and spread capture in
+    quote currency and in bps of notional, plus the adverse selection between them."""
+    pd = _pandas()
+    rows = []
+    for h in result.markouts():
+        buckets = [(k, h[k]) for k in ("total", "buy", "sell", "maker", "taker")]
+        buckets += [(f"instrument_{i}", b) for i, b in enumerate(h["instrument"])]
+        for name, b in buckets:
+            if name != "total" and b["fills"] == 0:
+                continue
+            rows.append(
+                {
+                    "horizon": h["label"],
+                    "horizon_ns": h["horizon_ns"],
+                    "bucket": name,
+                    "excluded_fills": h["excluded_fills"] if name == "total" else 0,
+                    **b,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def equity_frame(result: BacktestResult) -> pd.DataFrame:
@@ -135,12 +189,13 @@ def orders_frame(result: BacktestResult) -> pd.DataFrame:
 
 
 def to_pandas(result: BacktestResult) -> Dict[str, pd.DataFrame]:
-    """``{"fills", "equity", "orders"}`` DataFrames with float prices / quantities / PnL and
-    ``datetime64[ns]`` timestamps."""
+    """``{"fills", "equity", "orders", "markouts"}`` DataFrames with float prices / quantities /
+    PnL and ``datetime64[ns]`` timestamps."""
     return {
         "fills": fills_frame(result),
         "equity": equity_frame(result),
         "orders": orders_frame(result),
+        "markouts": markout_frame(result),
     }
 
 

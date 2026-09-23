@@ -50,6 +50,7 @@ struct MyMM : StrategyBase<MyParams> {
 int main(int argc, char** argv) {
   auto cfg = bt::BacktestConfig::single_instrument("BTCUSDT", 0.01_px, 0.00001_qty);
   cfg.generator.market_qty_median_lots = 1500;  // synthetic market: larger taker orders
+  cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);  // Binance spot VIP 0: 0.1 % both sides
   auto source = bt::open_data(argc > 1 ? argv[1] : "synthetic");  // .fmj, .csv or synthetic
   std::fputs(bt::run_backtest<MyMM>(cfg, source.get()).summary_table().c_str(), stdout);
 }
@@ -98,16 +99,23 @@ Output (shortened):
 
 ```text
 backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
-  net pnl                        0.0012
-  realized / unrealized / fees   0.0011 / 0.0001 / 0.0000
+  net pnl                        -2.1594
+  realized / unrealized / fees   0.0011 / 0.0001 / 2.1606
   fills (maker / taker)          37 (37 / 0)
   orders / cancels / replaces    283 / 245 / 0
   inventory mean / |mean| / max  ...
   outbound messages / sha256     ... / ...
+
+where the PnL came from (quote currency, 2160.60 traded notional)
+  gross spread capture                 0.0005  +0.004 bps of 1320.60, over the 23 of 37 fills that had a venue mid
+  fees paid                           -2.1606
+  = net                               -2.1594
+  ...
 ```
 
 - Money is in the quote currency (USDT), quantities in the base currency (BTC).
 - `fills (maker / taker)`: quotes are post-only, so taker is 0.
+- The run charges Binance spot VIP 0 fees, 10 bps each side, so the spread this strategy captures does not cover them ([Backtesting](../explanation/backtesting.md)).
 - `outbound messages / sha256`: a hash of the order messages sent; it is identical on every run ([Determinism](../explanation/determinism.md)).
 
 ## Next

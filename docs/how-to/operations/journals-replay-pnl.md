@@ -87,7 +87,7 @@ A session's PnL has three views:
 2. The journal's, computed from the fills by `tools/pnl_report.py`.
 3. The account's, from balance snapshots taken before and after the session.
 
-`tools/pnl_report.py` prints fills, maker share, volume, fees and inventory per hour, the journal's trading PnL and, when given, the engine's summary and the account reconciliation:
+`tools/pnl_report.py` prints fills, maker share, volume, fees and inventory per hour, post-fill markouts, the journal's trading PnL and, when given, the engine's summary and the account reconciliation:
 
 ```bash
 python3 tools/pnl_report.py runs/demo-1/session.fmj --engine-log runs/demo-1/engine.log \
@@ -101,6 +101,8 @@ The snapshots are JSON objects that you produce from the venue's account and tic
 ```
 
 The balance keys are `base` and `quote`, or the lower-case asset names given by `--base-asset` and `--quote-asset` (default `BTC` and `USDT`). `equity` (or `equity_usdt`) is optional and computed as `quote + base * mid` when missing. `python3 tools/pnl_report.py --self-test` checks the tool on a synthetic journal.
+
+The markout table marks each fill against the mid `--markout-horizons` seconds later (default `1,10,60`), taken from the journal's `BookTicker` events; a journal without top-of-book updates has no mid to mark against and the report says so. A fill whose horizon falls after the last quote in the journal is excluded, not marked at the last known mid. The spread capture next to it is over the same fills, so the difference is the adverse selection ([Backtesting](../../explanation/backtesting.md#markouts)).
 
 ```text
 equity change = starting base balance * (end mid - start mid) + trading

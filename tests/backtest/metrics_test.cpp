@@ -17,8 +17,8 @@ using namespace fastmm::bt::testutil;
 
 TEST_CASE("backtest.fees: maker rebate and taker fee in centi-bps are exact") {
   const FeeModel f = FeeModel::from_bps(-0.5, 3.0);
-  CHECK(f.maker_cbps == -50);
-  CHECK(f.taker_cbps == 300);
+  CHECK(f.maker_cbps() == -50);
+  CHECK(f.taker_cbps() == 300);
   // 60000 * 0.002 = 120 quote: maker -0.006, taker +0.036
   CHECK(f.fee(px("60000"), qt("0.002"), Liquidity::Maker) == Notional::from_decimal("-0.006"));
   CHECK(f.fee(px("60000"), qt("0.002"), Liquidity::Taker) == Notional::from_decimal("0.036"));

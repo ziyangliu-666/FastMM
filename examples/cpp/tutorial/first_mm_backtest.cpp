@@ -16,7 +16,7 @@ int main() {
   cfg.generator.limit_rate_per_s = 400;  // a busier market than the defaults
   cfg.generator.market_rate_per_s = 30;
   cfg.generator.market_qty_median_lots = 1500;
-  cfg.transport.fees = sim::FeeModel::from_bps(-0.5, 3.0);  // maker rebate 0.5 bps, taker fee 3 bps
+  cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);  // Binance spot VIP 0: 0.1 % both sides
   cfg.params = {{"edge_bps", "0.002"}, {"max_position", "0.004"}, {"report_ms", "0"}};
   // [end:config]
 

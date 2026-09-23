@@ -26,9 +26,14 @@ supports_replace = false     # cancel-then-new
 kind = "sim"
 supports_replace = false
 
+# Binance spot VIP 0 as of September 2026: 0.100 % maker and 0.100 % taker, i.e. 10 bps each
+# (https://www.binance.com/en/fee/schedule). Positive == a fee the account pays; a NEGATIVE value
+# is a rebate the account receives, which very few venues pay on spot. Backtesting against a
+# rebate you cannot actually get is the fastest way to make a strategy with no edge look
+# profitable: see docs/explanation/backtesting.md.
 [venues.sim.fees]
-maker_bps = -0.5
-taker_bps = 3.0
+maker_bps = 10.0
+taker_bps = 10.0
 
 [[instruments]]
 venue = "sim"
@@ -91,4 +96,5 @@ latency_jitter_us = 50
 duration_s = 60              # synthetic horizon
 equity_bar_s = 1
 initial_capital = 10000
+markout_horizons_s = "1,10,60"   # post-fill markouts; "" turns them off
 output_dir = "runs/backtest"

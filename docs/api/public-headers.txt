@@ -49,6 +49,8 @@ tier1 fastmm/backtest/backtest_runner.hpp
 tier1 fastmm/sim/param_schedule.hpp
 tier1 fastmm/backtest/result.hpp
 tier1 fastmm/backtest/metrics.hpp
+tier1 fastmm/backtest/markout.hpp
+tier1 fastmm/backtest/fee_model.hpp
 tier1 fastmm/backtest/sweep.hpp
 tier1 fastmm/backtest/replay.hpp
 tier1 fastmm/backtest/data_source.hpp
