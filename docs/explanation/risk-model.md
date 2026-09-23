@@ -80,6 +80,6 @@ Nothing resets a kill switch automatically. After a kill the engine tripped itse
 ## What the layer does not do
 
 - It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second, independent limit that holds even when the strategy has a bug. Set the risk limit above the strategy's.
-- It keeps no cross-instrument or cross-venue exposure. Position limits are per instrument; `max_loss` is the only portfolio-wide limit, and it is one number in one currency.
+- Position limits are per instrument. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, all in one currency: they are only meaningful when every instrument settles in the same one, and `fastmm-live` refuses a mixed table while `max_loss` is set.
 - It knows no venue rules beyond reference data and its own order rate limit (check 15). Margin and account balances are enforced by the venue. The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
 - It does not protect against a venue that stops answering. Order-channel loss triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
