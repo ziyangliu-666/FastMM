@@ -80,6 +80,8 @@ struct EngineStats {
   std::uint64_t unknown_instrument_fills = 0;  // not booked, not passed to on_fill
   std::uint64_t param_updates = 0;             // ParamUpdate events applied
   std::uint64_t param_expiries = 0;            // max_param_age passed: quoting disabled
+  std::uint64_t synthetic_fills = 0;  // fills booked from a cum_qty jump (missed fill messages)
+  std::uint64_t ack_timeouts = 0;     // PendingNew orders force-cancelled by the ack sweep
   std::uint64_t steps = 0;
   std::uint64_t clock_reanchors = 0;     // TscClock picked up a recalibration continuously
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
@@ -94,6 +96,8 @@ class Engine {
   using Context = StrategyContext<Engine>;
   static constexpr std::size_t kOutBatch = 32;
   static constexpr std::size_t kOutSlotBytes = 192;  // largest Out*Msg
+  // TimerMsg::engine values for the engine's own timers (1 is the max_param_age one).
+  static constexpr std::uint8_t kAckSweepTimer = 2;
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -242,6 +246,7 @@ class Engine {
       ++stats_.journal_overflows;
     FASTMM_LOG_INFO(
         "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
+    if (cfg_.ack_timeout.ns > 0) ack_timer_ = timers_.add(now_, cfg_.ack_timeout, /*repeat=*/true);
     [[maybe_unused]] const bool quoting_before = quoting_enabled();
     if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
     if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
@@ -277,6 +282,10 @@ class Engine {
   [[nodiscard]] const Position& position(InstrumentId id) const noexcept {
     return positions_.get(id);
   }
+  // Net PnL [risk] max_loss is measured against: this session's, plus the loss carried over from
+  // earlier sessions (EngineConfig::pnl_carry, from the durable kill state), so a restart does not
+  // re-arm the whole budget.
+  [[nodiscard]] Notional net_pnl() const noexcept { return positions_.net_pnl() + cfg_.pnl_carry; }
   [[nodiscard]] const Instrument& instrument(InstrumentId id) const noexcept {
     return instruments_.get(id);
   }
@@ -520,7 +529,9 @@ class Engine {
         break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
-        if (t.engine != 0) {
+        if (t.engine == kAckSweepTimer) {
+          sweep_acks();  // replay of the engine's ack_timeout sweep
+        } else if (t.engine != 0) {
           check_param_age();  // replay of the engine's max_param_age timer
         } else {
           fire_strategy_timer(t.timer_id, t.user_data);
@@ -570,7 +581,7 @@ class Engine {
       const Price mid = b.mid();
       risk_.on_book(id, mid, d.hdr.recv_ts.valid() ? d.hdr.recv_ts : now);
       positions_.mark(id, mid, inst);
-      if (risk_.on_pnl(positions_.net_pnl())) on_kill(KillReason::MaxLoss);
+      if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (b.crossed() && b.crossed_for(now) > cfg_.crossed_grace) {
       ++stats_.crossed_pulls;
       pull_quotes(id);
@@ -627,7 +638,29 @@ class Engine {
 
   // ---- order events -------------------------------------------------------------------------
 
+  // A venue message reported more filled quantity than the fills we received (a private-stream
+  // outage, or a reconciliation snapshot): book the difference. The message does not say what the
+  // missing quantity traded at, so the order's own price is used and no fee is booked; the next
+  // position snapshot (ReconcileMsg::Kind::Position, PositionUpdateMsg) corrects the quantity.
+  // The strategy's on_fill hook does not fire for these: there is no OrderFillMsg behind them.
+  void book_missed_fill(const OmsUpdate& u) noexcept {
+    if (u.missed_qty.is_zero()) return;
+    ++stats_.synthetic_fills;
+    if (FASTMM_UNLIKELY(!instruments_.contains(u.order.instrument))) return;
+    const Instrument& inst = instruments_.get(u.order.instrument);
+    FASTMM_LOG_ERROR(
+        "order {} was {} filled while we were not listening: booking {} at its own price {}",
+        encode_cl_ord_id(u.order.cl_ord_id),
+        inst.symbol,
+        u.missed_qty,
+        u.order.price);
+    positions_.on_fill(
+        u.order.instrument, u.order.side, u.order.price, u.missed_qty, Notional{}, inst);
+    if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+  }
+
   void after_oms_update(const OmsUpdate& u, const EventHeader& h) noexcept {
+    book_missed_fill(u);
     if (u.action == OmsAction::CancelUnknown) {
       cancel_unknown(h, u);
     }
@@ -701,7 +734,7 @@ class Engine {
         fee = Notional{};
       }
       positions_.on_fill(id, side, f.price, booked, fee, inst);
-      if (risk_.on_pnl(positions_.net_pnl())) on_kill(KillReason::MaxLoss);
+      if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
     }
@@ -733,7 +766,8 @@ class Engine {
 
   void on_position_update(const PositionUpdateMsg& m) noexcept {
     if (!instruments_.contains(m.hdr.instrument)) return;
-    positions_.set(m.hdr.instrument, m.qty, m.avg_px);
+    positions_.set(m.hdr.instrument, m.qty, m.avg_px, instruments_.get(m.hdr.instrument));
+    if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
   // ---- parameters -----------------------------------------------------------------------------
@@ -790,9 +824,16 @@ class Engine {
         on_venue_kill(c.hdr.venue, static_cast<KillReason>(static_cast<std::uint8_t>(c.arg)));
         break;
       case ControlCommand::ResetKill:
-        risk_.reset();
-        kill_reason_ = KillReason::None;
-        venue_kill_reasons_.fill(KillReason::None);
+        // With a venue in the header only that venue's bit is cleared (it recovered and the rest
+        // kept trading); without one, every bit, global included.
+        if (c.hdr.venue.valid()) {
+          risk_.reset_venue(c.hdr.venue);
+          venue_kill_reasons_[RiskEngine::venue_slot(c.hdr.venue)] = KillReason::None;
+        } else {
+          risk_.reset();
+          kill_reason_ = KillReason::None;
+          venue_kill_reasons_.fill(KillReason::None);
+        }
         quoting_enabled_ = true;
         publish_live(latency_pub_.load());
         break;
@@ -842,8 +883,11 @@ class Engine {
         break;
       }
       case ReconcileMsg::Kind::Position:
-        if (instruments_.contains(m.hdr.instrument))
-          positions_.set(m.hdr.instrument, m.position_qty, m.avg_px);
+        if (instruments_.contains(m.hdr.instrument)) {
+          positions_.set(
+              m.hdr.instrument, m.position_qty, m.avg_px, instruments_.get(m.hdr.instrument));
+          if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+        }
         break;
       case ReconcileMsg::Kind::End:
         // Orders the venue no longer has end like any other update, so the quote manager frees
@@ -952,13 +996,14 @@ class Engine {
   }
   void fire_timer(TimerId id, std::uint64_t user_data) noexcept {
     ++stats_.timers_fired;
-    const bool engine_timer = param_timer_.valid() && id == param_timer_;
+    const bool ack_timer = ack_timer_.valid() && id == ack_timer_;
+    const bool engine_timer = ack_timer || (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
       init_header(t, EventType::Timer);
       t.timer_id = id;
-      t.engine = engine_timer ? 1 : 0;
+      t.engine = ack_timer ? kAckSweepTimer : (engine_timer ? 1 : 0);
       t.user_data = user_data;
       t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
@@ -968,12 +1013,37 @@ class Engine {
       }
     }
     check_param_age();
-    if (engine_timer) {
+    if (ack_timer) {
+      sweep_acks();
+    } else if (engine_timer) {
       param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
       flush_out();
     } else {
       fire_strategy_timer(id, user_data);
     }
+  }
+
+  // Orders whose ack never came: cancel them. Cancels are always allowed, so this runs even while
+  // the kill switch is engaged; a venue that never saw the order answers VenueUnknownOrder, which
+  // ends it and frees its slot, its open quantity and its max_open_orders slot.
+  void sweep_acks() noexcept {
+    const Duration timeout = cfg_.ack_timeout;
+    static_cast<void>(oms_.sweep_pending(now_, timeout, [&](Handle<Order> h, const Order& o) {
+      ++stats_.ack_timeouts;
+      FASTMM_LOG_WARN("order {} has no ack after {} ms: cancelling it",
+                      encode_cl_ord_id(o.cl_ord_id),
+                      timeout.millis());
+      if (!oms_.request_cancel_unacked(h)) return;
+      const Order& co = oms_.get(h);
+      OutCancelMsg m{};
+      init_header(m, EventType::OutCancel, co.instrument, co.venue);
+      m.hdr.recv_ts = now_;
+      m.cl_ord_id = co.cl_ord_id;
+      m.venue_order_id = co.venue_order_id;
+      queue_out(m.hdr);
+      ++stats_.cancels_sent;
+    }));
+    flush_out();
   }
   void fire_strategy_timer(TimerId id, std::uint64_t user_data) noexcept {
     if constexpr (has_hook(Hook::Timer)) strategy_.on_timer(ctx_, id, user_data);
@@ -1029,6 +1099,7 @@ class Engine {
       return fail(rr);
     }
     const ClientOrderId id = oms_.next_cl_ord_id();
+    if (FASTMM_UNLIKELY(!id.valid())) return fail(on_ids_exhausted());
     NewOrderRequest r = req;
     r.venue = inst.venue;
     auto h = oms_.submit(r, id, now);
@@ -1083,6 +1154,7 @@ class Engine {
       return fail(rr);
     }
     const ClientOrderId new_id = oms_.next_cl_ord_id();
+    if (FASTMM_UNLIKELY(!new_id.valid())) return fail(on_ids_exhausted());
     auto r = oms_.request_replace(h, new_id, px, qty);
     if (!r) return r;
     OutReplaceMsg m{};
@@ -1122,6 +1194,17 @@ class Engine {
                       px,
                       suppressed);
     }
+  }
+
+  // The session's client order id sequence is used up. Reusing one would repeat an id within the
+  // session and let a late venue message match the wrong order, so the session stops trading:
+  // restart it (the epoch file gives the next session a fresh sequence).
+  FASTMM_NOINLINE RejectReason on_ids_exhausted() noexcept {
+    if (!risk_.killed()) {
+      risk_.trip();
+      on_kill(KillReason::OrderIdsExhausted);
+    }
+    return RejectReason::PoolExhausted;
   }
 
   void cancel_unknown(const EventHeader& h, const OmsUpdate&) noexcept {
@@ -1330,6 +1413,7 @@ class Engine {
   bool param_deadline_armed_ = false;  // param_deadline_ applies (max_param_age set, fresh)
   Timestamp param_deadline_{};
   TimerId param_timer_{};  // the engine's one-shot max_param_age timer
+  TimerId ack_timer_{};    // the engine's repeating ack_timeout sweep
   KillReason kill_reason_ = KillReason::None;
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;

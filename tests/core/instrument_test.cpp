@@ -85,3 +85,46 @@ TEST_CASE("core.instrument_table: dense ids and symbol lookup") {
   }
   CHECK(t.size() == kMaxInstruments);
 }
+
+// PnL totals and [risk] max_loss are one currency-less Notional, so a table must not mix
+// settlement currencies; fastmm-live refuses such a configuration when max_loss is set.
+TEST_CASE("core.instrument_table: settlement_mix finds instruments of different currencies") {
+  const auto with = [](const char* sym, const char* quote, bool inverse, bool enabled = true) {
+    Instrument i = make(sym);
+    static_cast<void>(i.base.assign("BTC"));
+    static_cast<void>(i.quote.assign(quote));
+    i.flags = static_cast<std::uint8_t>((enabled ? Instrument::kEnabled : 0) |
+                                        (inverse ? Instrument::kInverse : 0));
+    return i;
+  };
+  SUBCASE("one currency") {
+    InstrumentTable t;
+    REQUIRE(t.add(with("BTCUSDT", "USDT", false)));
+    REQUIRE(t.add(with("ETHUSDT", "USDT", false)));
+    CHECK_FALSE(t.settlement_mix().mixed());
+  }
+  SUBCASE("linear and inverse") {
+    InstrumentTable t;
+    REQUIRE(t.add(with("BTCUSDT", "USDT", false)));
+    REQUIRE(t.add(with("BTC-PERPETUAL", "USD", true)));
+    const SettlementMix m = t.settlement_mix();
+    REQUIRE(m.mixed());
+    CHECK(m.first->symbol == "BTCUSDT");
+    CHECK(m.other->symbol == "BTC-PERPETUAL");
+    CHECK(m.first->settlement_ccy() == "USDT");
+    CHECK(m.other->settlement_ccy() == "BTC");
+  }
+  SUBCASE("two quote currencies") {
+    InstrumentTable t;
+    REQUIRE(t.add(with("BTCUSDT", "USDT", false)));
+    REQUIRE(t.add(with("BTCUSDC", "USDC", false)));
+    CHECK(t.settlement_mix().mixed());
+  }
+  SUBCASE("a disabled instrument does not count") {
+    InstrumentTable t;
+    REQUIRE(t.add(with("BTCUSDT", "USDT", false)));
+    REQUIRE(t.add(with("BTC-PERPETUAL", "USD", true, /*enabled=*/false)));
+    CHECK_FALSE(t.settlement_mix().mixed());
+  }
+  CHECK_FALSE(InstrumentTable{}.settlement_mix().mixed());  // empty
+}

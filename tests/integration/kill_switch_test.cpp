@@ -55,6 +55,8 @@ Config kill_config(const ServerFixture& fx, const std::string& name, const char*
   cfg.engine.name = name;
   cfg.engine.on_kill = on_kill;
   cfg.engine.epoch_file = fresh(name + ".epoch");
+  // A max_loss trip latches here; each session starts from a cleared state.
+  cfg.engine.kill_file = fresh(name + ".kill");
   cfg.risk.max_loss = "0.01";
   return cfg;
 }

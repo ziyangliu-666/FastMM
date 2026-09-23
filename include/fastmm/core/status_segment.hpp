@@ -25,7 +25,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 2: venue_rejects and the per-reason reject counts.
 // 3: kill reasons (global and per venue), per-venue kill flags and venue_kills.
 // 4: p99.9 in every latency, the multicast feed block of each venue.
-inline constexpr std::uint32_t kStatusVersion = 4;
+// 5: the latched kill state and the PnL carried over from earlier sessions.
+inline constexpr std::uint32_t kStatusVersion = 5;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -114,7 +115,10 @@ struct StatusSnapshot {
   std::uint8_t dry_run = 0;
   std::uint8_t venue_count = 0;
   std::uint8_t kill_reason = 0;  // KillReason of the global kill switch (0 while not set)
-  std::uint8_t pad_[4] = {};
+  // A max-loss trip is latched in the durable kill state: the next start refuses to trade until an
+  // operator clears it (core/session_state.hpp).
+  std::uint8_t kill_latched = 0;
+  std::uint8_t pad_[3] = {};
   char engine_name[32] = {};
   char strategy[32] = {};
   // engine
@@ -131,6 +135,8 @@ struct StatusSnapshot {
   std::int64_t realized_pnl_raw = 0;  // Notional raw (1e-8)
   std::int64_t unrealized_pnl_raw = 0;
   std::int64_t fees_raw = 0;
+  // Net PnL of earlier sessions that [risk] max_loss is measured against on top of this one's.
+  std::int64_t pnl_carry_raw = 0;
   std::uint64_t venue_rejects = 0;
   // The most frequent reasons, most frequent first; the totals above include reasons that did not
   // fit (set_status_rejects).

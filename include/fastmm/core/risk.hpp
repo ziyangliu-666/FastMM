@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace fastmm {
 
@@ -154,24 +155,28 @@ class RiskEngine {
     auto& m = md_[id.value];
     m.book_ts = ts;
     m.mid = mid;
+    m.collar_lo = m.collar_hi = Price{};
     if (limits_.price_collar_bps > 0 && mid.is_positive()) {
+      // The mid comes from the book and the width from the configuration: a mid near the
+      // fixed-point limit would wrap the upper band and turn the collar into a pass-through.
       const Price band = apply_bps(mid, limits_.price_collar_bps);
-      m.collar_lo = mid - band;
-      m.collar_hi = mid + band;
-    } else {
-      m.collar_lo = m.collar_hi = Price{};
+      if (const std::optional<Price> hi = checked_add(mid, band); hi) {
+        m.collar_lo = mid - band;
+        m.collar_hi = *hi;
+      }
     }
   }
   void on_trade(InstrumentId id, Price px) noexcept {
     if (FASTMM_UNLIKELY(id.value >= kMaxInstruments)) return;
     auto& m = md_[id.value];
     m.last_trade = px;
+    m.ff_lo = m.ff_hi = Price{};
     if (limits_.fat_finger_bps > 0 && px.is_positive()) {
       const Price band = apply_bps(px, limits_.fat_finger_bps);
-      m.ff_lo = px - band;
-      m.ff_hi = px + band;
-    } else {
-      m.ff_lo = m.ff_hi = Price{};
+      if (const std::optional<Price> hi = checked_add(px, band); hi) {
+        m.ff_lo = px - band;
+        m.ff_hi = *hi;
+      }
     }
   }
   // Returns true if the loss limit tripped the kill switch.

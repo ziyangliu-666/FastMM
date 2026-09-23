@@ -2,6 +2,8 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/core/session_state.hpp"
+
 #include <algorithm>
 #include <filesystem>
 #include <string>
@@ -77,11 +79,13 @@ OrderExpiredMsg expired(ClientOrderId id) {
 TEST_CASE("core.oms: cl_ord_id generation and session epoch store") {
   const auto path = (tmp_dir() / "epoch.txt").string();
   std::filesystem::remove(path);
-  const std::uint16_t e1 = SessionEpochStore::next_epoch(path);
-  const std::uint16_t e2 = SessionEpochStore::next_epoch(path);
-  CHECK(e1 == 1);
-  CHECK(e2 == 2);
-  Oms oms(e2);
+  const auto e1 = SessionEpochStore::next_epoch(path);
+  const auto e2 = SessionEpochStore::next_epoch(path);
+  REQUIRE(e1.has_value());
+  REQUIRE(e2.has_value());
+  CHECK(*e1 == 1);
+  CHECK(*e2 == 2);
+  Oms oms(*e2);
   const ClientOrderId a = oms.next_cl_ord_id();
   const ClientOrderId b = oms.next_cl_ord_id();
   CHECK(cl_ord_id_epoch(a) == 2);
@@ -385,6 +389,111 @@ TEST_CASE("core.oms: pool exhaustion") {
     REQUIRE(oms.submit(req(Side::Buy, 1, 1), oms.next_cl_ord_id(), {}));
   CHECK(oms.submit(req(Side::Buy, 1, 1), oms.next_cl_ord_id(), {}).error() ==
         RejectReason::PoolExhausted);
+}
+
+// Before the fix a cum_qty jump reported by a cancel ack, an expiry or a reconciliation snapshot
+// only moved the OMS counters: the fills behind it were never booked into the position.
+TEST_CASE("core.oms: a cum_qty jump is reported as a missed fill") {
+  SUBCASE("cancel ack") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    static_cast<void>(oms.submit(req(Side::Buy, 100, 5), id, {}));
+    oms.on_ack(ack(id));
+    const OmsUpdate u = oms.on_cancel_ack(cancel_ack(id, 2));
+    CHECK(u.missed_qty == qt(2));
+    CHECK(u.order.state == OrderState::Canceled);
+    CHECK(oms.stats().missed_fills == 1);
+    CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == Qty{});
+  }
+  SUBCASE("a cancel ack for an order that filled completely ends it as Filled") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    static_cast<void>(oms.submit(req(Side::Buy, 100, 5), id, {}));
+    oms.on_ack(ack(id));
+    const OmsUpdate u = oms.on_cancel_ack(cancel_ack(id, 5));
+    CHECK(u.missed_qty == qt(5));
+    CHECK(u.order.state == OrderState::Filled);
+    CHECK(oms.stats().canceled == 0);
+    CHECK(oms.stats().filled == 1);
+  }
+  SUBCASE("expiry") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    static_cast<void>(oms.submit(req(Side::Buy, 100, 5), id, {}));
+    oms.on_ack(ack(id));
+    OrderExpiredMsg m = expired(id);
+    m.cum_qty = qt(3);
+    const OmsUpdate u = oms.on_expired(m);
+    CHECK(u.missed_qty == qt(3));
+    CHECK(u.order.state == OrderState::Expired);
+  }
+  SUBCASE("reconciliation snapshot") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    static_cast<void>(oms.submit(req(Side::Buy, 100, 5), id, {}));
+    oms.on_ack(ack(id));
+    oms.reconcile_begin();
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.cl_ord_id = id;
+    m.cum_qty = qt(4);
+    const OmsUpdate u = oms.reconcile_open_order(m);
+    CHECK(u.missed_qty == qt(4));
+    CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == qt(1));
+    // A repeated snapshot of the same quantity reports nothing further.
+    CHECK(oms.reconcile_open_order(m).missed_qty == Qty{});
+    CHECK(oms.stats().missed_fills == 1);
+  }
+}
+
+// Nothing used to sweep PendingNew: a lost request held its pool slot, its max_open_orders slot
+// and its open quantity (which feeds max_position) for the life of the session.
+TEST_CASE("core.oms: the ack timeout sweep reports orders that never got an ack") {
+  Oms oms;
+  const ClientOrderId stale = oms.next_cl_ord_id();
+  const ClientOrderId fresh = oms.next_cl_ord_id();
+  const ClientOrderId acked = oms.next_cl_ord_id();
+  const Timestamp t0{1'000'000'000};
+  static_cast<void>(oms.submit(req(Side::Buy, 100, 5), stale, t0));
+  static_cast<void>(oms.submit(req(Side::Buy, 99, 5), acked, t0));
+  oms.on_ack(ack(acked));
+  const Timestamp t1 = t0 + seconds(3);
+  static_cast<void>(oms.submit(req(Side::Buy, 98, 5), fresh, t1));
+
+  std::vector<ClientOrderId> swept;
+  CHECK(oms.sweep_pending(t1, Duration{}, [&](Handle<Order>, const Order&) {}) == 0);  // off
+  const std::size_t n = oms.sweep_pending(t1, seconds(2), [&](Handle<Order> h, const Order& o) {
+    swept.push_back(o.cl_ord_id);
+    CHECK(oms.request_cancel_unacked(h));
+  });
+  CHECK(n == 1);
+  REQUIRE(swept.size() == 1);
+  CHECK(swept[0] == stale);
+  CHECK(oms.stats().ack_timeouts == 1);
+  CHECK(oms.get(oms.find(stale)).state == OrderState::PendingCancel);
+  // The venue never saw it: the cancel reject ends the order and frees everything it held.
+  const OmsUpdate u = oms.on_cancel_reject(cancel_reject(stale, RejectReason::VenueUnknownOrder));
+  CHECK(u.terminal);
+  CHECK(oms.open_count(InstrumentId{0}) == 2);
+  CHECK(oms.open_qty(InstrumentId{0}, Side::Buy) == qt(10));
+  // A working order is not for this sweep.
+  CHECK(oms.request_cancel_unacked(oms.find(acked)).error() == RejectReason::InvalidState);
+}
+
+// The 48-bit wire form is epoch(16) << 32 | seq(32): reusing a sequence would repeat an id within
+// the session, so the sequence runs out instead of wrapping.
+TEST_CASE("core.oms: the client order id sequence fails closed instead of wrapping") {
+  Oms oms(7, /*max_seq=*/3);
+  CHECK(oms.ids_left() == 3);
+  CHECK(cl_ord_id_seq(oms.next_cl_ord_id()) == 1);
+  CHECK(cl_ord_id_seq(oms.next_cl_ord_id()) == 2);
+  const ClientOrderId last = oms.next_cl_ord_id();
+  CHECK(cl_ord_id_seq(last) == 3);
+  CHECK(oms.ids_left() == 0);
+  CHECK(!oms.next_cl_ord_id().valid());
+  CHECK(!oms.next_cl_ord_id().valid());  // and it never starts over at 1
+  CHECK(Oms{}.ids_left() == kMaxSeq);
 }
 
 TEST_CASE("core.oms: reconcile") {

@@ -4,6 +4,7 @@
 #include "test_support.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <string>
 #include <utility>
@@ -135,4 +136,47 @@ TEST_CASE("core.fixed: mid * Ratio equals the centi-bps Int128 formula (property
       break;
     }
   }
+}
+
+// from_double used to cast an out-of-range or NaN double straight to int64: both became INT64_MIN,
+// i.e. a large negative price a strategy would happily quote.
+TEST_CASE("core.fixed: from_double saturates and from_double_checked reports the loss") {
+  CHECK(Price::from_double(1.23456789).raw == 123'456'789);
+  CHECK(Price::from_double(-1.5).raw == -150'000'000);
+  REQUIRE(Price::from_double_checked(1.23456789).has_value());
+  CHECK(Price::from_double_checked(1.23456789)->raw == 123'456'789);
+
+  // Through volatile: the cast the old code did is undefined for these, and a compiler that sees
+  // the constant folds it to 0 instead of the INT64_MIN a runtime cvttsd2si produces.
+  volatile double v = std::numeric_limits<double>::quiet_NaN();
+  const double nan = v;
+  v = std::numeric_limits<double>::infinity();
+  const double inf = v;
+  v = 1e12;
+  const double big = v;
+  CHECK(!Price::from_double_checked(nan).has_value());
+  CHECK(!Price::from_double_checked(inf).has_value());
+  CHECK(!Price::from_double_checked(-inf).has_value());
+  CHECK(!Price::from_double_checked(big).has_value());  // > 92,233,720,368.54775807
+  CHECK(!Price::from_double_checked(-big).has_value());
+  CHECK(Price::from_double(nan) == Price{});
+  CHECK(Price::from_double(big) == Price::max());
+  CHECK(Price::from_double(-big) == Price::min());
+  CHECK(Price::from_double(inf) == Price::max());
+  CHECK(Price::from_double_checked(92'233'720'368.0).has_value());
+  CHECK(Ratio::from_bps(2.5).raw == 25'000);
+  CHECK(!Ratio::from_bps_checked(nan).has_value());
+  CHECK(Ratio::from_bps(1e18) == Ratio::max());
+}
+
+TEST_CASE("core.fixed: checked arithmetic reports overflow instead of wrapping") {
+  const Price big = Price::from_raw(std::numeric_limits<std::int64_t>::max() - 5);
+  CHECK((big + Price::from_raw(10)).raw < 0);  // the plain operator still wraps
+  CHECK(!checked_add(big, Price::from_raw(10)).has_value());
+  REQUIRE(checked_add(big, Price::from_raw(5)).has_value());
+  CHECK(checked_add(big, Price::from_raw(5))->raw == std::numeric_limits<std::int64_t>::max());
+  CHECK(!checked_sub(Price::min(), Price::from_raw(1)).has_value());
+  CHECK(checked_sub(big, big)->raw == 0);
+  CHECK(!checked_mul(big, 2).has_value());
+  CHECK(checked_mul(Price::from_raw(21), 2)->raw == 42);
 }

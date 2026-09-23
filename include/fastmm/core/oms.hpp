@@ -7,10 +7,14 @@
 //   ack              PendingNew -> Live; PendingReplace -> Live/PartiallyFilled (replace ok)
 //   reject           PendingNew -> Rejected; PendingReplace -> back to previous working state
 //   cancel request   Live/PartiallyFilled -> PendingCancel
-//   cancel ack       any open -> Canceled (unsolicited if we did not ask)
-//   cancel reject    PendingCancel -> back; >3 rejects -> ReconcileNeeded; VenueUnknownOrder ->
-//   Canceled fill             cum >= qty -> Filled, else PartiallyFilled (pending states keep
-//   pending) expired          any open -> Expired
+//   cancel ack       any open -> Canceled (unsolicited if we did not ask); Filled when the
+//                    venue's cum_qty covers the order
+//   cancel reject    PendingCancel -> back; >3 rejects -> ReconcileNeeded;
+//                    VenueUnknownOrder -> Canceled
+//   fill             cum >= qty -> Filled, else PartiallyFilled (pending states keep pending)
+//   expired          any open -> Expired; Filled when the venue's cum_qty covers the order
+// A cum_qty a venue reports that no fill message covered (a cancel ack, an expiry or a
+// reconciliation snapshot) becomes OmsUpdate::missed_qty for the engine to book.
 // Races: fill after cancel ack -> LateFill (position still updated from the terminal record's
 // instrument and side); cancel-reject after fill -> ignored; ack for unknown id -> CancelUnknown
 // (never leave an unknown live order); ack for an order reconciliation marked cancelled ->
@@ -31,15 +35,15 @@
 #include "fastmm/core/result.hpp"
 
 #include <cstdint>
-#include <cstdio>
 #include <limits>
 #include <optional>
-#include <string>
 
 namespace fastmm {
 
 inline constexpr std::size_t kMaxOpenOrders = 4096;
 inline constexpr std::size_t kRecentlyTerminal = 4096;
+// Client order ids per session: the wire form is 48 bits, epoch(16) << 32 | seq(32).
+inline constexpr std::uint64_t kMaxSeq = 0xFFFF'FFFFULL;
 
 enum class OmsAction : std::uint8_t {
   None = 0,
@@ -62,6 +66,10 @@ struct OmsUpdate {
   bool terminal = false;  // the order reached a terminal state in this update
   Qty fill_qty{};         // for fills
   Price fill_px{};
+  // Quantity the venue reports as filled that we never saw a fill message for (a private-stream
+  // outage covered by a cancel ack, an expiry or a reconciliation snapshot). The engine books it
+  // as a synthetic fill at the order's own price; see Engine::book_missed_fill.
+  Qty missed_qty{};
 };
 
 struct OmsStats {
@@ -77,32 +85,18 @@ struct OmsStats {
   std::uint64_t duplicates = 0;
   std::uint64_t late_fills = 0;
   std::uint64_t unsolicited_cancels = 0;
+  std::uint64_t missed_fills = 0;  // cum_qty jumps a fill message never reported
+  std::uint64_t ack_timeouts = 0;  // PendingNew orders swept by sweep_pending()
 };
 
 enum class OrderClass : std::uint8_t { Open, RecentlyTerminal, Unknown };
 
-// Persists the 16-bit session epoch so ClientOrderIds never repeat across restarts.
-class SessionEpochStore {
- public:
-  // Reads the stored epoch, increments, writes back. Returns the new epoch (1 on first run).
-  static std::uint16_t next_epoch(const std::string& path) {
-    unsigned prev = 0;
-    if (std::FILE* f = std::fopen(path.c_str(), "r")) {
-      if (std::fscanf(f, "%u", &prev) != 1) prev = 0;
-      std::fclose(f);
-    }
-    const auto next = static_cast<std::uint16_t>((prev + 1U) & 0xFFFFU);
-    if (std::FILE* f = std::fopen(path.c_str(), "w")) {
-      std::fprintf(f, "%u\n", static_cast<unsigned>(next));
-      std::fclose(f);
-    }
-    return next == 0 ? 1 : next;
-  }
-};
-
 class Oms {
  public:
-  explicit Oms(std::uint16_t session_epoch = 1) noexcept : epoch_(session_epoch) {
+  // `max_seq` is the highest client order id sequence this session may issue; only tests lower it
+  // from kMaxSeq (reaching it takes 4.3 billion orders).
+  explicit Oms(std::uint16_t session_epoch = 1, std::uint64_t max_seq = kMaxSeq) noexcept
+      : epoch_(session_epoch), max_seq_(max_seq) {
     for (auto& per_inst : best_own_) per_inst[0] = per_inst[1] = Price{};
     for (auto& per_inst : open_qty_) per_inst[0] = per_inst[1] = Qty{};
   }
@@ -110,7 +104,15 @@ class Oms {
   Oms& operator=(const Oms&) = delete;
 
   [[nodiscard]] std::uint16_t session_epoch() const noexcept { return epoch_; }
-  [[nodiscard]] ClientOrderId next_cl_ord_id() noexcept { return make_cl_ord_id(epoch_, ++seq_); }
+  // An invalid id once the session's 32-bit sequence is used up: the wire form carries 48 bits
+  // (epoch 16 + seq 32), so reusing a sequence would repeat a ClientOrderId within the session and
+  // let a late venue message match the wrong order. The engine turns that into a kill switch.
+  [[nodiscard]] ClientOrderId next_cl_ord_id() noexcept {
+    if (FASTMM_UNLIKELY(seq_ >= max_seq_)) return ClientOrderId{};
+    return make_cl_ord_id(epoch_, static_cast<std::uint32_t>(++seq_));
+  }
+  // Client order ids left in this session.
+  [[nodiscard]] std::uint64_t ids_left() const noexcept { return max_seq_ - seq_; }
   [[nodiscard]] const OmsStats& stats() const noexcept { return stats_; }
   [[nodiscard]] std::uint32_t open_count() const noexcept { return stats_.open; }
   [[nodiscard]] std::uint32_t open_count(InstrumentId id) const noexcept {
@@ -167,6 +169,16 @@ class Oms {
     if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
     Order& o = pool_.get(h);
     if (!o.is_working()) return fail(RejectReason::InvalidState);
+    o.state = OrderState::PendingCancel;
+    return {};
+  }
+
+  // Cancel of an order that is still waiting for its ack (the ack-timeout sweep only). A venue
+  // that never saw the order answers VenueUnknownOrder, and on_cancel_reject ends it.
+  Result<void, RejectReason> request_cancel_unacked(Handle<Order> h) noexcept {
+    if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
+    Order& o = pool_.get(h);
+    if (o.state != OrderState::PendingNew) return fail(RejectReason::InvalidState);
     o.state = OrderState::PendingCancel;
     return {};
   }
@@ -282,11 +294,17 @@ class Oms {
     }
     Order& o = pool_.get(h);
     u.prev = o.state;
-    if (m.cum_qty > o.cum_qty) o.cum_qty = m.cum_qty;
+    absorb_cum(o, m.cum_qty, u);
     if (o.state == OrderState::PendingReplace && m.cl_ord_id == o.cl_ord_id) {
       // Old leg of a cancel-then-new replace: wait for the new leg's ack/reject.
       o.flags |= Order::kReplaceOldCanceled;
       finish_update(u, h, o);
+      return u;
+    }
+    // The cancel raced a fill that finished the order: it is Filled, not Canceled.
+    if (o.cum_qty >= o.qty) {
+      ++stats_.filled;
+      terminate(u, h, o, OrderState::Filled);
       return u;
     }
     if (o.state != OrderState::PendingCancel) {
@@ -375,7 +393,12 @@ class Oms {
     }
     Order& o = pool_.get(h);
     u.prev = o.state;
-    if (m.cum_qty > o.cum_qty) o.cum_qty = m.cum_qty;
+    absorb_cum(o, m.cum_qty, u);
+    if (o.cum_qty >= o.qty) {  // an IOC that filled completely is Filled, not Expired
+      ++stats_.filled;
+      terminate(u, h, o, OrderState::Filled);
+      return u;
+    }
     ++stats_.expired;
     terminate(u, h, o, OrderState::Expired);
     return u;
@@ -408,11 +431,7 @@ class Oms {
     u.prev = o.state;
     o.flags |= Order::kSeenInReconcile | Order::kReconciled;
     if (!o.venue_order_id.empty() || !m.venue_order_id.empty()) o.venue_order_id = m.venue_order_id;
-    if (m.cum_qty > o.cum_qty) {
-      open_qty_[o.instrument.value][static_cast<std::size_t>(o.side)] -= (m.cum_qty - o.cum_qty);
-      o.cum_qty = m.cum_qty;
-      u.changed = true;
-    }
+    absorb_cum(o, m.cum_qty, u);
     // The venue has it, so a new order was accepted. A cancel or replace is left pending: its ack
     // or reject is still on the way and settles the order (clearing it made that cancel ack look
     // unsolicited while the quote manager kept the order as a working quote).
@@ -446,6 +465,30 @@ class Oms {
       terminate(u, h, o, OrderState::Canceled, /*by_reconcile=*/true);
       f(u);
     }
+  }
+
+  // ---- ack timeout ------------------------------------------------------------------------
+
+  // Orders still PendingNew `timeout` after they were submitted: the request or its ack was lost,
+  // and nothing else ever frees them. They hold a pool slot, a max_open_orders slot and same-side
+  // open quantity that feeds max_position, so the engine force-cancels them (the venue may know
+  // the order even though we never saw its ack). F(Handle<Order>, const Order&) runs outside the
+  // pool iteration, so it may send. Returns the number reported.
+  template <class F>
+  std::size_t sweep_pending(Timestamp now, Duration timeout, F&& f) noexcept {
+    if (timeout.ns <= 0) return 0;
+    StaticVector<Handle<Order>, kMaxOpenOrders> stale;
+    pool_.for_each([&](Handle<Order> h, const Order& o) {
+      if (o.state != OrderState::PendingNew || !o.created.valid()) return;
+      if (now - o.created < timeout) return;
+      static_cast<void>(stale.push_back(h));
+    });
+    for (const Handle<Order> h : stale) {
+      if (!pool_.is_live(h)) continue;
+      ++stats_.ack_timeouts;
+      f(h, pool_.get(h));
+    }
+    return stale.size();
   }
 
   // ---- queries ----------------------------------------------------------------------------
@@ -494,6 +537,22 @@ class Oms {
 
   [[nodiscard]] static bool in_scope(const Order& o, VenueId venue) noexcept {
     return !venue.valid() || o.venue == venue;
+  }
+
+  // A venue message carries more cumulative quantity than the fills we booked: the difference
+  // traded while we were not listening. Advance cum_qty (and the open-quantity accounting) and
+  // report the difference so the caller can book it; without that the position, the PnL and the
+  // max-loss budget silently lose those fills.
+  void absorb_cum(Order& o, Qty reported, OmsUpdate& u) noexcept {
+    Qty cum = reported;
+    if (cum > o.qty) cum = o.qty;
+    if (cum <= o.cum_qty) return;
+    const Qty diff = cum - o.cum_qty;
+    open_qty_[o.instrument.value][static_cast<std::size_t>(o.side)] -= diff;
+    o.cum_qty = cum;
+    u.missed_qty += diff;
+    u.changed = true;
+    ++stats_.missed_fills;
   }
 
   // Finds an open order; sets u.known if the id is open or recently terminal.
@@ -610,7 +669,8 @@ class Oms {
   }
 
   std::uint16_t epoch_;
-  std::uint32_t seq_ = 0;
+  std::uint64_t max_seq_;
+  std::uint64_t seq_ = 0;  // 64-bit so the comparison with max_seq_ cannot itself wrap
   OmsStats stats_{};
   Pool<Order, kMaxOpenOrders> pool_;
   OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids

@@ -9,7 +9,31 @@ The kill switch is one atomic 32-bit flag word in the risk engine (`include/fast
 | 0 | `0x1` | Global: no new orders on any venue |
 | 1 + venue id | `0x2` (venue 0), `0x4` (venue 1), ... | One venue only (`RejectReason::VenueKilled`); venues from id 30 up share bit 31 (`0x80000000`) |
 
-Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`, `OrderRingOverflow`, `StrategyError`, `FeedLost`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)). `fastmm-live` has no command to reset the kill switch: restart the process.
+Venue ids follow the order of the `[venues.<name>]` tables in the config, starting at 0. The engine keeps the first reason each bit was set for (`KillReason`: `Requested`, `MaxLoss`, `TransportFull`, `JournalOverflow`, `AllVenuesKilled`, `VenueFatal`, `VenueHardStop`, `OrderRingOverflow`, `StrategyError`, `FeedLost`, `OrderIdsExhausted`); `fastmm-top` shows the flags and reasons ([Monitoring a live session](monitor-with-fastmm-top.md)).
+
+`SIGHUP` clears the kill switch of a running session and resumes quoting (`[engine] on_kill = "stay"`). It also clears a latched `max_loss` trip; the loss already spent stays in the budget.
+
+## The latched loss budget
+
+`[risk] max_loss` is a budget for the deployment, not for one process. `fastmm-live` keeps it in `[engine] kill_file` (default `<journal_dir>/<name>.kill`), written through a temporary file and a rename whenever the numbers change:
+
+```text
+fastmm-kill 1
+latched 1
+reason 2
+realized_raw -4200000000
+fees_raw 31000000
+sessions 7
+updated_ns 1758600000000000000
+```
+
+- `realized_raw` and `fees_raw` are the sum over every session since the file was last cleared, in 1e-8 units of the settlement currency. The engine adds `realized - fees` to the running session's PnL before comparing it with `max_loss`.
+- Unrealized PnL is not carried. An open position is remeasured from the venue's view once the session has reconciled.
+- A `max_loss` trip sets `latched`. The next start prints the reason, the carried PnL and the session count, and exits with code 6 before contacting any venue.
+- `fastmm-live --clear-kill`, or removing the file, arms the whole `max_loss` again and forgets the losses so far.
+- No other kill reason is latched.
+
+`fastmm-top` shows `LATCHED` next to the state and `carried=` / `budget_used=` on the `pnl` line.
 
 ## What trips it
 
@@ -18,7 +42,8 @@ Venue ids follow the order of the `[venues.<name>]` tables in the config, starti
 | Ctrl-C (SIGINT) or SIGTERM | Global, requested | `fastmm-live: shutting down (signal)`, then `kill switch requested (flags=0x1); pulling quotes and cancelling all` | WARN | [Shutdown sequence](#shutdown-sequence); exit code 0 |
 | `--duration` elapsed | Global, requested | `fastmm-live: shutting down (duration elapsed)`, then the same `kill switch requested` line | WARN | Shutdown sequence; exit code 0 |
 | A venue's order-event ring overflowed | Global, requested | `order ring overflow on <venue>: tripping the kill switch`, then `fastmm-live: shutting down (order ring overflow)` | ERROR | Shutdown sequence; exit code 5 |
-| `[risk] max_loss`: net PnL (realised plus unrealised minus fees) fell to `-max_loss` or below | Global | `kill switch engaged (MaxLoss, flags=0x1); pulling quotes and cancelling all` | ERROR | [`on_kill`](#after-a-kill-the-engine-trips-itself) |
+| `[risk] max_loss`: net PnL (realised plus unrealised minus fees, plus the carry from earlier sessions) fell to `-max_loss` or below | Global | `kill switch engaged (MaxLoss, flags=0x1); pulling quotes and cancelling all` | ERROR | [`on_kill`](#after-a-kill-the-engine-trips-itself), and the trip is [latched on disk](#the-latched-loss-budget) |
+| The session's 32-bit client order id sequence ran out (4.3 billion orders) | Global | `kill switch engaged (OrderIdsExhausted, ...)` | ERROR | `on_kill`; restart the process, which takes a fresh session epoch |
 | The outbound ring to a venue was full | Global | `outbound transport full: <n> message(s) dropped; tripping kill switch`, then `kill switch engaged (TransportFull, ...)` | ERROR | `on_kill` |
 | The journal ring was full | Global | `kill switch engaged (JournalOverflow, ...)` | ERROR | `on_kill` |
 | A fatal venue error (see [below](#venue-kill-switch)) | That venue | `<venue>: asking the engine to kill this venue (VenueFatal)`, `venue <id> kill switch engaged (VenueFatal, flags=0x2); ...`, `[<venue>] venue kill switch engaged (VenueFatal): ...; <n> of <m> venue(s) still trading` | ERROR | Only that venue stops; the others keep trading |
@@ -47,7 +72,7 @@ These events do not trip the kill switch:
 | `"exit"` (default) | Within 50 ms the control thread logs `fastmm-live: shutting down (kill switch: <reason>; [engine] on_kill = "exit")` at ERROR and runs the [shutdown sequence](#shutdown-sequence). Exit code 6, or 5 if a cancel-all failed |
 | `"stay"` | The process keeps running with quoting off and new orders refused. At once and then every 10 s it logs `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off and no new orders are sent; stop the process (SIGINT/SIGTERM) to cancel all and exit` at ERROR. SIGINT or SIGTERM then runs the shutdown sequence: exit code 0, or 5 if a cancel-all failed |
 
-Use `"stay"` only when someone watches the session. Alert on exit codes 5, 6 and 7. After a `max_loss` kill, check the PnL and the market before restarting.
+Use `"stay"` only when someone watches the session. Alert on exit codes 5, 6 and 7. After a `max_loss` kill, check the PnL and the market, then clear the [latched budget](#the-latched-loss-budget): a plain restart exits with code 6 again.
 
 ## Venue kill switch
 

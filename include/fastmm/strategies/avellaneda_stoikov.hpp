@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace fastmm {
@@ -156,10 +157,14 @@ class AvellanedaStoikov : public StrategyBase<AvellanedaStoikovParams> {
     const double min_delta = static_cast<double>(p.min_half_spread_ticks) * tick;
     if (delta < min_delta) delta = min_delta;
     const Qty qty = inst.round_qty(p.quote_qty);
-    if (inventory_allows(Side::Buy, position, p.quote_qty, p.max_inventory))
-      q.bid(inst.round_price(Price::from_double(r - delta), Side::Buy), qty);
-    if (inventory_allows(Side::Sell, position, p.quote_qty, p.max_inventory))
-      q.ask(inst.round_price(Price::from_double(r + delta), Side::Sell), qty);
+    // A parameter or a variance estimate can make these NaN or out of range; the side whose
+    // price does not convert is not quoted.
+    const std::optional<Price> bid = Price::from_double_checked(r - delta);
+    const std::optional<Price> ask = Price::from_double_checked(r + delta);
+    if (bid && inventory_allows(Side::Buy, position, p.quote_qty, p.max_inventory))
+      q.bid(inst.round_price(*bid, Side::Buy), qty);
+    if (ask && inventory_allows(Side::Sell, position, p.quote_qty, p.max_inventory))
+      q.ask(inst.round_price(*ask, Side::Sell), qty);
     q.uncross(inst.tick);
     return q;
   }

@@ -29,6 +29,8 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `journal` | boolean |  | record every consumed event to a .fmj journal (default true) |
 | `journal_dir` | string |  | directory for journals (default "runs") |
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
+| `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
+| `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |
 | `rng_seed` | integer |  | seed of the strategy random generator ctx.rng() (default 1) |
 | `md_ring_bytes` | integer |  | market-data ring per venue, bytes, a power of two (default 4194304) |
 | `order_ring_bytes` | integer |  | order-event ring per venue, bytes, a power of two (default 1048576) |
@@ -172,7 +174,7 @@ These are validated like the keys above and handed to the connector unchanged; a
 | `lot` | any | yes | quantity increment, decimal |
 | `min_qty` | any |  | smallest order quantity, decimal |
 | `max_qty` | any |  | largest order quantity, decimal |
-| `min_notional` | any |  | smallest order value, quote currency, decimal |
+| `min_notional` | any |  | smallest order value, settlement currency (base coin for an inverse contract), decimal |
 | `contract_multiplier` | any |  | units of the underlying per contract, decimal; PnL and notional use it (default 1) |
 | `enabled` | boolean |  | trade this instrument; false loads it without trading (default true) |
 | `price_decimals` | integer |  | price display precision (default 8) |
@@ -218,13 +220,13 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `max_order_qty` | any |  | largest order quantity, decimal |
-| `max_order_notional` | any |  | largest order value, quote currency, decimal |
+| `max_order_notional` | any |  | largest order value, settlement currency (base coin for an inverse contract), decimal |
 | `max_position` | any |  | largest absolute position per instrument, counting same-side open orders, decimal |
 | `max_open_orders` | integer |  | open orders per instrument |
 | `price_collar_bps` | integer |  | refuse limit prices further than this from the mid, bps |
 | `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps |
 | `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms |
-| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, quote currency, decimal |
+| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, settlement currency, decimal; latched across restarts in kill_file |
 | `orders_per_sec` | integer |  | token-bucket order rate, orders/s |
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |

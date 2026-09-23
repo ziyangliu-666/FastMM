@@ -23,6 +23,8 @@ usage: fastmm-live --config <file.toml> [options]
   --no-journal             disable journaling even if [engine] journal = true
   --status <path>          live status file for fastmm-top (default /dev/shm/fastmm-<engine>.status)
   --no-status              do not publish live status
+  --clear-kill             clear a latched kill switch and the cumulative PnL before
+                           starting; arms the whole [risk] max_loss budget again
   --log <path>             write the log to a file (warnings are mirrored to stderr)
   --allow-inline-secrets   accept literal API secrets in the config file
   --list-strategies        print the strategies this binary can run and exit
@@ -32,8 +34,11 @@ usage: fastmm-live --config <file.toml> [options]
 API keys come from the environment through ${VAR} references in [venues.*],
 e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.
 SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.
+SIGHUP clears the kill switch and resumes quoting (on_kill = "stay").
 A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue
 killed) does the same and exits with code 6, unless [engine] on_kill = "stay".
+A max_loss trip is latched in [engine] kill_file: the next start refuses to trade
+(exit code 6) until --clear-kill or the file is removed.
 
 Exit codes:
   0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
@@ -41,7 +46,7 @@ Exit codes:
   3  bad config, strategy or parameters
   4  venue reference data failed to load
   5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error
-  6  kill switch tripped by the engine (on_kill = "exit"), cancel_all ok
+  6  kill switch tripped by the engine (on_kill = "exit"), or a latched max_loss trip
   7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok
 ```
 <!-- END cli-help -->
@@ -55,7 +60,7 @@ Exit codes:
 | 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code |
 | 4 | a venue's reference data failed to load |
 | 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened; a venue's order-event ring overflowed; an uncaught error |
-| 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok` |
+| 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | 7 | a Python strategy's slow tier failed, and `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` does not return it) |
 
 - The journal records the configuration after `--strategy` and `--param`.
