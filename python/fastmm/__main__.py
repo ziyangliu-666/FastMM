@@ -1,7 +1,8 @@
 """The ``fastmm`` command, also reachable as ``python -m fastmm``.
 
-    fastmm init [directory]                             a starter project (fastmm._scaffold)
-    fastmm run module:Class --config file.toml [...]     fastmm.run_live from a shell
+    fastmm init [directory]                                a starter project (fastmm._scaffold)
+    fastmm report <run-dir | session.fmj> [-o out.html]     the HTML report of a run
+    fastmm run module:Class --config file.toml [...]        fastmm.run_live from a shell
 
 Before importing the strategy's module, ``run`` sets each of OPENBLAS_NUM_THREADS, OMP_NUM_THREADS
 and MKL_NUM_THREADS that is not set to 1. numpy reads them when it loads, and ``python -m fastmm``
@@ -34,6 +35,11 @@ def _parser() -> argparse.ArgumentParser:
                     "only this package and the hot extra.")
     init.add_argument("directory", nargs="?", default=".", help="where to write (default: .)")
     init.add_argument("--force", action="store_true", help="overwrite files that exist")
+    from . import report as report_command
+
+    report_command.add_arguments(commands.add_parser(
+        "report", help=report_command.COMMAND_HELP,
+        description=report_command.COMMAND_DESCRIPTION))
     run = commands.add_parser(
         "run", help="run a strategy with hot hooks against live venues",
         description="Run a fastmm.Strategy with @fastmm.hot methods against the venues in the "
@@ -94,6 +100,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(args_list)
     if args.command == "init":
         return _init(args.directory, args.force)
+    if args.command == "report":
+        from .report import run_command
+
+        return run_command(args)
     params = {}
     for item in args.param:
         key, sep, value = item.partition("=")

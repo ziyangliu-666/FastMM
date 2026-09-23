@@ -88,6 +88,10 @@ if wanted cli; then
     --out runs/tutorial/backtest --journal-out runs/tutorial/backtest.fmj
   # --8<-- [end:cli-backtest]
   [[ -s runs/tutorial/backtest/summary.json ]] || fail "no runs/tutorial/backtest/summary.json"
+  # --8<-- [start:cli-report]
+  python3 tools/report.py runs/tutorial/backtest --config configs/backtest-example.toml
+  # --8<-- [end:cli-report]
+  [[ -s runs/tutorial/backtest/report.html ]] || fail "no runs/tutorial/backtest/report.html"
   # --8<-- [start:cli-replay]
   "$BIN"/tutorial-replay --journal runs/tutorial/backtest.fmj --verify
   # --8<-- [end:cli-replay]

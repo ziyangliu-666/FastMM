@@ -52,7 +52,7 @@ The venue's acknowledgement or fill comes back on the order-event ring and re-en
 | Any state survives a restart | positions, PnL, the loss budget and the kill switch all start at zero, while the venue's orders and position carry on. Only Binance USDⓈ-M resyncs the position at startup |
 | Fills that arrive while the private stream is down are booked | reconnection compares open orders, not executions; no connector queries trade history |
 | PnL is correct across currencies or for inverse contracts | quote-currency amounts are summed unconverted; inverse contracts use linear PnL |
-| Anything is exported for monitoring | there is a status file and `fastmm-top`; no metrics endpoint, no alerting |
+| Monitoring beyond a pull | a status file, `fastmm-top` and its Prometheus endpoint, all published every 250 ms; the engine pushes nothing and alerts on nothing |
 | Portfolio-level risk | limits are per instrument, except `max_loss` |
 | The venue's margin, balance or position limits | those are enforced by the venue, and a rejection is a reject like any other |
 | Profit | the shipped strategies are reference implementations ([Economics](economics.md)) |

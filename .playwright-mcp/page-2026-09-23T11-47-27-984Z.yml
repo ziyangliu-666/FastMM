@@ -1,0 +1,516 @@
+- generic [active] [ref=f29e1]:
+  - banner [ref=f29e5]:
+    - generic [ref=f29e6]:
+      - link [ref=f29e7] [cursor=pointer]:
+        - /url: https://www.binance.com/en
+        - img "Binance" [ref=f29e8]
+      - link "Buy Crypto" [ref=f29e10] [cursor=pointer]:
+        - /url: https://www.binance.com/en/crypto/buy
+      - link "Markets" [ref=f29e12] [cursor=pointer]:
+        - /url: https://www.binance.com/en/markets/overview
+      - generic [ref=f29e13] [cursor=pointer]: Trade
+      - link "Futures" [ref=f29e18] [cursor=pointer]:
+        - /url: https://www.binance.com/en/futures/home
+      - link "Earn" [ref=f29e22] [cursor=pointer]:
+        - /url: https://www.binance.com/en/earn
+      - link "Square" [ref=f29e26] [cursor=pointer]:
+        - /url: https://www.binance.com/en/square
+      - generic [ref=f29e29] [cursor=pointer]: Institutional
+      - generic [ref=f29e33] [cursor=pointer]: AI
+      - generic [ref=f29e37] [cursor=pointer]: More
+    - generic [ref=f29e41]:
+      - img [ref=f29e47] [cursor=pointer]
+      - link [ref=f29e49] [cursor=pointer]:
+        - /url: https://accounts.binance.com/en/login?loginChannel=&return_to=aHR0cHM6Ly93d3cuYmluYW5jZS5jb20vZW4vZmVlL3RyYWRpbmc%3D
+        - button "Log In" [ref=f29e50]
+      - link [ref=f29e51] [cursor=pointer]:
+        - /url: https://accounts.binance.com/en/register?registerChannel=&return_to=aHR0cHM6Ly93d3cuYmluYW5jZS5jb20vZW4vZmVlL3RyYWRpbmc%3D
+        - button "Sign Up" [ref=f29e52]
+      - img [ref=f29e56] [cursor=pointer]
+      - img [ref=f29e62] [cursor=pointer]
+      - generic [ref=f29e64] [cursor=pointer]
+  - main [ref=f29e70]:
+    - generic [ref=f29e71]:
+      - heading "Fees & Transactions Overview" [level=1] [ref=f29e73]
+      - generic [ref=f29e76]:
+        - generic [ref=f29e77]:
+          - generic [ref=f29e78]:
+            - generic [ref=f29e79]: Fee Rate
+            - generic [ref=f29e80]:
+              - button "Invite Friends" [ref=f29e81] [cursor=pointer]
+              - button "Unlock VIP Benefits" [ref=f29e82] [cursor=pointer]
+          - generic [ref=f29e83]:
+            - tablist [ref=f29e84]:
+              - tab "Trading" [selected] [ref=f29e85] [cursor=pointer]
+              - tab "Spot Promotions" [ref=f29e88] [cursor=pointer]
+              - tab "Liquidity Program" [ref=f29e91] [cursor=pointer]
+              - tab "Interest Rate" [ref=f29e94] [cursor=pointer]
+              - tab "Deposit/Withdrawal" [ref=f29e97] [cursor=pointer]
+              - tab "Buy/Sell" [ref=f29e100] [cursor=pointer]
+            - tabpanel [ref=f29e104]:
+              - generic [ref=f29e105]:
+                - tablist [ref=f29e106]:
+                  - tab "Spot & Margin" [selected] [ref=f29e107] [cursor=pointer]
+                  - generic [ref=f29e109]:
+                    - tab "Stocks" [ref=f29e110] [cursor=pointer]
+                    - generic [ref=f29e112]: New
+                  - tab "USDⓈ-M Futures" [ref=f29e113] [cursor=pointer]
+                  - tab "COIN-M Futures" [ref=f29e115] [cursor=pointer]
+                  - tab "TradFi Futures" [ref=f29e117] [cursor=pointer]
+                  - tab "Options" [ref=f29e119] [cursor=pointer]
+                  - tab "NFT" [ref=f29e121] [cursor=pointer]
+                  - tab "P2P" [ref=f29e123] [cursor=pointer]
+                  - tab "Fiat" [ref=f29e125] [cursor=pointer]
+                - tabpanel "Trading" [ref=f29e128]:
+                  - table "Table" [ref=f29e134]:
+                    - rowgroup [ref=f29e144]:
+                      - row [ref=f29e145]:
+                        - columnheader "Level" [ref=f29e146]
+                        - columnheader "30D Trade Volume (USD)" [ref=f29e147]
+                        - columnheader "and/or" [ref=f29e154]
+                        - columnheader "BNB Balance" [ref=f29e155]
+                        - columnheader "Maker / Taker" [ref=f29e156]
+                        - columnheader [ref=f29e164]:
+                          - generic [ref=f29e165]:
+                            - text: Maker / Taker
+                            - link "BNB 25% off" [ref=f29e167] [cursor=pointer]:
+                              - /url: /support/announcement/844f0bae047d4be4903303cb743734e1
+                        - columnheader "USDC Maker / Taker" [ref=f29e168]
+                        - columnheader [ref=f29e170]:
+                          - generic [ref=f29e171]:
+                            - text: USDC Maker / Taker
+                            - link "BNB 25% off" [ref=f29e173] [cursor=pointer]:
+                              - /url: /support/announcement/844f0bae047d4be4903303cb743734e1
+                    - rowgroup [ref=f29e174]:
+                      - row [ref=f29e175]:
+                        - cell "Regular User" [ref=f29e176]
+                        - cell "< 1,000,000 USD" [ref=f29e179]
+                        - cell "or" [ref=f29e181]
+                        - cell "≥ 0 BNB" [ref=f29e182]
+                        - cell "0.100% / 0.100%" [ref=f29e184]
+                        - cell "0.07500% / 0.07500%" [ref=f29e186]
+                        - cell "Standard / 0.095%" [ref=f29e188]:
+                          - generic [ref=f29e189]:
+                            - text: Standard /
+                            - generic [ref=f29e190]: 0.095%
+                        - cell "Standard / 0.07125%" [ref=f29e191]:
+                          - generic [ref=f29e192]:
+                            - text: Standard /
+                            - generic [ref=f29e193]: 0.07125%
+                      - row [ref=f29e194]:
+                        - cell "VIP 1" [ref=f29e195]
+                        - cell "≥ 1,000,000 USD" [ref=f29e198]
+                        - cell "and" [ref=f29e200]
+                        - cell "≥ 5 BNB" [ref=f29e201]
+                        - cell "0.090% / 0.100%" [ref=f29e203]
+                        - cell "0.06750% / 0.07500%" [ref=f29e205]
+                        - cell "Standard / 0.095%" [ref=f29e207]:
+                          - generic [ref=f29e208]:
+                            - text: Standard /
+                            - generic [ref=f29e209]: 0.095%
+                        - cell "Standard / 0.07125%" [ref=f29e210]:
+                          - generic [ref=f29e211]:
+                            - text: Standard /
+                            - generic [ref=f29e212]: 0.07125%
+                      - row [ref=f29e213]:
+                        - cell "VIP 2" [ref=f29e214]
+                        - cell "≥ 5,000,000 USD" [ref=f29e217]
+                        - cell "and" [ref=f29e219]
+                        - cell "≥ 25 BNB" [ref=f29e220]
+                        - cell "0.080% / 0.100%" [ref=f29e222]
+                        - cell "0.06000% / 0.07500%" [ref=f29e224]
+                        - cell "Standard / 0.095%" [ref=f29e226]:
+                          - generic [ref=f29e227]:
+                            - text: Standard /
+                            - generic [ref=f29e228]: 0.095%
+                        - cell "Standard / 0.07125%" [ref=f29e229]:
+                          - generic [ref=f29e230]:
+                            - text: Standard /
+                            - generic [ref=f29e231]: 0.07125%
+                      - row [ref=f29e232]:
+                        - cell "VIP 3" [ref=f29e233]
+                        - cell "≥ 20,000,000 USD" [ref=f29e236]
+                        - cell "and" [ref=f29e238]
+                        - cell "≥ 100 BNB" [ref=f29e239]
+                        - cell "0.040% / 0.060%" [ref=f29e241]
+                        - cell "0.03000% / 0.04500%" [ref=f29e243]
+                        - cell "Standard / 0.055%" [ref=f29e245]:
+                          - generic [ref=f29e246]:
+                            - text: Standard /
+                            - generic [ref=f29e247]: 0.055%
+                        - cell "Standard / 0.04125%" [ref=f29e248]:
+                          - generic [ref=f29e249]:
+                            - text: Standard /
+                            - generic [ref=f29e250]: 0.04125%
+                      - row [ref=f29e251]:
+                        - cell "VIP 4" [ref=f29e252]
+                        - cell "≥ 75,000,000 USD" [ref=f29e255]
+                        - cell "and" [ref=f29e257]
+                        - cell "≥ 500 BNB" [ref=f29e258]
+                        - cell "0.040% / 0.052%" [ref=f29e260]
+                        - cell "0.03000% / 0.03900%" [ref=f29e262]
+                        - cell "Standard / 0.047%" [ref=f29e264]:
+                          - generic [ref=f29e265]:
+                            - text: Standard /
+                            - generic [ref=f29e266]: 0.047%
+                        - cell "Standard / 0.03525%" [ref=f29e267]:
+                          - generic [ref=f29e268]:
+                            - text: Standard /
+                            - generic [ref=f29e269]: 0.03525%
+                      - row [ref=f29e270]:
+                        - cell "VIP 5" [ref=f29e271]
+                        - cell "≥ 150,000,000 USD" [ref=f29e274]
+                        - cell "and" [ref=f29e276]
+                        - cell "≥ 1,000 BNB" [ref=f29e277]
+                        - cell "0.025% / 0.031%" [ref=f29e279]
+                        - cell "0.01875% / 0.02325%" [ref=f29e281]
+                        - cell "Standard / 0.026%" [ref=f29e283]:
+                          - generic [ref=f29e284]:
+                            - text: Standard /
+                            - generic [ref=f29e285]: 0.026%
+                        - cell "Standard / 0.01950%" [ref=f29e286]:
+                          - generic [ref=f29e287]:
+                            - text: Standard /
+                            - generic [ref=f29e288]: 0.01950%
+                      - row [ref=f29e289]:
+                        - cell "VIP 6" [ref=f29e290]
+                        - cell "≥ 400,000,000 USD" [ref=f29e293]
+                        - cell "and" [ref=f29e295]
+                        - cell "≥ 1,750 BNB" [ref=f29e296]
+                        - cell "0.020% / 0.029%" [ref=f29e298]
+                        - cell "0.01500% / 0.02175%" [ref=f29e300]
+                        - cell "Standard / 0.024%" [ref=f29e302]:
+                          - generic [ref=f29e303]:
+                            - text: Standard /
+                            - generic [ref=f29e304]: 0.024%
+                        - cell "Standard / 0.01800%" [ref=f29e305]:
+                          - generic [ref=f29e306]:
+                            - text: Standard /
+                            - generic [ref=f29e307]: 0.01800%
+                      - row [ref=f29e308]:
+                        - cell "VIP 7" [ref=f29e309]
+                        - cell "≥ 800,000,000 USD" [ref=f29e312]
+                        - cell "and" [ref=f29e314]
+                        - cell "≥ 3,000 BNB" [ref=f29e315]
+                        - cell "0.019% / 0.028%" [ref=f29e317]
+                        - cell "0.01425% / 0.02100%" [ref=f29e319]
+                        - cell "Standard / 0.023%" [ref=f29e321]:
+                          - generic [ref=f29e322]:
+                            - text: Standard /
+                            - generic [ref=f29e323]: 0.023%
+                        - cell "Standard / 0.01725%" [ref=f29e324]:
+                          - generic [ref=f29e325]:
+                            - text: Standard /
+                            - generic [ref=f29e326]: 0.01725%
+                      - row [ref=f29e327]:
+                        - cell "VIP 8" [ref=f29e328]
+                        - cell "≥ 2,000,000,000 USD" [ref=f29e331]
+                        - cell "and" [ref=f29e333]
+                        - cell "≥ 4,500 BNB" [ref=f29e334]
+                        - cell "0.016% / 0.025%" [ref=f29e336]
+                        - cell "0.01200% / 0.01875%" [ref=f29e338]
+                        - cell "Standard / 0.020%" [ref=f29e340]:
+                          - generic [ref=f29e341]:
+                            - text: Standard /
+                            - generic [ref=f29e342]: 0.020%
+                        - cell "Standard / 0.01500%" [ref=f29e343]:
+                          - generic [ref=f29e344]:
+                            - text: Standard /
+                            - generic [ref=f29e345]: 0.01500%
+                      - row [ref=f29e346]:
+                        - cell "VIP 9" [ref=f29e347]
+                        - cell "≥ 4,000,000,000 USD" [ref=f29e350]
+                        - cell "and" [ref=f29e352]
+                        - cell "≥ 5,500 BNB" [ref=f29e353]
+                        - cell "0.011% / 0.023%" [ref=f29e355]
+                        - cell "0.00825% / 0.01725%" [ref=f29e357]
+                        - cell "Standard / 0.018%" [ref=f29e359]:
+                          - generic [ref=f29e360]:
+                            - text: Standard /
+                            - generic [ref=f29e361]: 0.018%
+                        - cell "Standard / 0.01350%" [ref=f29e362]:
+                          - generic [ref=f29e363]:
+                            - text: Standard /
+                            - generic [ref=f29e364]: 0.01350%
+          - generic [ref=f29e365]:
+            - generic [ref=f29e366]: VIP fees and benefits gained from any VIP program will apply universally to all Binance products.
+            - generic [ref=f29e367]: Trade volume includes all Spot volumes from Spot, Margin, Convert, Copy Trading and Trading Bots. Values are in a USD equivalent amount based on the exchange rate under Multi-Asset mode.
+            - link "Margin Data" [ref=f29e368] [cursor=pointer]:
+              - /url: /margin-fee?utm_source=fee_page
+        - generic [ref=f29e370]:
+          - generic [ref=f29e371]: Explore the VIP Program
+          - generic [ref=f29e372]:
+            - link "Trader" [ref=f29e373] [cursor=pointer]:
+              - /url: /vip-institutional-services#trade-hold
+            - link "Holder" [ref=f29e377] [cursor=pointer]:
+              - /url: /vip-institutional-services#trade-hold
+            - link "Borrower" [ref=f29e381] [cursor=pointer]:
+              - /url: /vip-institutional-services#trade-hold
+            - link "Invitation" [ref=f29e385] [cursor=pointer]:
+              - /url: /vip-institutional-services?tab=invitation#program
+        - generic [ref=f29e389]:
+          - generic [ref=f29e390]: Log in and see a full overview of your fee and transaction history
+          - button "Log In" [ref=f29e391] [cursor=pointer]
+  - contentinfo [ref=f29e395]:
+    - generic [ref=f29e396]:
+      - generic [ref=f29e397]:
+        - heading "Community" [level=3] [ref=f29e398]
+        - generic [ref=f29e399]:
+          - link [ref=f29e400] [cursor=pointer]:
+            - /url: https://discord.gg/jE4wt8g2H2
+          - link [ref=f29e403] [cursor=pointer]:
+            - /url: https://www.binance.com/en/community#telegram-communities
+          - link [ref=f29e406] [cursor=pointer]:
+            - /url: https://www.tiktok.com/@binance?lang=en
+          - link [ref=f29e409] [cursor=pointer]:
+            - /url: https://www.facebook.com/binance
+          - link [ref=f29e412] [cursor=pointer]:
+            - /url: https://twitter.com/binance
+          - link [ref=f29e415] [cursor=pointer]:
+            - /url: https://www.reddit.com/r/binance
+          - link [ref=f29e418] [cursor=pointer]:
+            - /url: https://www.instagram.com/Binance/
+          - link [ref=f29e421] [cursor=pointer]:
+            - /url: https://coinmarketcap.com/exchanges/binance/
+          - link [ref=f29e424] [cursor=pointer]:
+            - /url: https://www.youtube.com/binanceyoutube
+          - link [ref=f29e427] [cursor=pointer]:
+            - /url: https://www.whatsapp.com/channel/0029VarQ6LL6rsQq7nwhmn1y
+          - link [ref=f29e430] [cursor=pointer]:
+            - /url: https://www.binance.com/en/community
+        - generic [ref=f29e433]:
+          - generic [ref=f29e434]: English
+          - generic [ref=f29e442]: USD-$
+          - generic [ref=f29e452]:
+            - generic [ref=f29e453]: Theme
+            - switch "switch" [checked] [ref=f29e454] [cursor=pointer]
+      - generic [ref=f29e458]:
+        - generic [ref=f29e460]:
+          - heading "About Us" [level=3] [ref=f29e461]
+          - list [ref=f29e462]:
+            - listitem [ref=f29e463]:
+              - link "About" [ref=f29e464] [cursor=pointer]:
+                - /url: https://www.binance.com/en/about
+            - listitem [ref=f29e465]:
+              - link "Careers" [ref=f29e466] [cursor=pointer]:
+                - /url: https://www.binance.com/en/careers
+            - listitem [ref=f29e467]:
+              - link "Announcements" [ref=f29e468] [cursor=pointer]:
+                - /url: https://www.binance.com/en/support/announcement
+            - listitem [ref=f29e469]:
+              - link "News" [ref=f29e470] [cursor=pointer]:
+                - /url: https://www.binance.com/en/square/news/all
+            - listitem [ref=f29e471]:
+              - link "Press" [ref=f29e472] [cursor=pointer]:
+                - /url: https://www.binance.com/en/press
+            - listitem [ref=f29e473]:
+              - link "Legal" [ref=f29e474] [cursor=pointer]:
+                - /url: https://www.binance.com/en/legal/home
+            - listitem [ref=f29e475]:
+              - link "Terms" [ref=f29e476] [cursor=pointer]:
+                - /url: https://www.binance.com/en/terms
+            - listitem [ref=f29e477]:
+              - link "Privacy" [ref=f29e478] [cursor=pointer]:
+                - /url: https://www.binance.com/en/about-legal/privacy-portal
+            - listitem [ref=f29e479]:
+              - link "Building Trust" [ref=f29e480] [cursor=pointer]:
+                - /url: https://www.binance.com/en/land/building_trust
+            - listitem [ref=f29e481]:
+              - link "Blog" [ref=f29e482] [cursor=pointer]:
+                - /url: https://www.binance.com/en/blog
+            - listitem [ref=f29e483]:
+              - link "Community" [ref=f29e484] [cursor=pointer]:
+                - /url: https://www.binance.com/en/community
+            - listitem [ref=f29e485]:
+              - link "Risk Warning" [ref=f29e486] [cursor=pointer]:
+                - /url: https://www.binance.com/en/risk-warning
+            - listitem [ref=f29e487]:
+              - link "Notices" [ref=f29e488] [cursor=pointer]:
+                - /url: https://www.binance.com/en/support/list/notices
+            - listitem [ref=f29e489]:
+              - link "Downloads" [ref=f29e490] [cursor=pointer]:
+                - /url: https://www.binance.com/en/download
+            - listitem [ref=f29e491]:
+              - link "Desktop Application" [ref=f29e492] [cursor=pointer]:
+                - /url: https://www.binance.com/en/desktop-download
+            - listitem [ref=f29e493]:
+              - link "Secure Internal Communication Channel" [ref=f29e494] [cursor=pointer]:
+                - /url: https://www.binance.com/en/whistleblowing/welcome
+        - generic [ref=f29e496]:
+          - heading "Products" [level=3] [ref=f29e497]
+          - list [ref=f29e498]:
+            - listitem [ref=f29e499]:
+              - link "Exchange" [ref=f29e500] [cursor=pointer]:
+                - /url: https://www.binance.com/en/trade
+            - listitem [ref=f29e501]:
+              - link "Buy Crypto" [ref=f29e502] [cursor=pointer]:
+                - /url: https://www.binance.com/en/crypto/buy
+            - listitem [ref=f29e503]:
+              - link "Pay" [ref=f29e504] [cursor=pointer]:
+                - /url: https://www.binance.com/en/my/wallet/account/payment
+            - listitem [ref=f29e505]:
+              - link "Crypto Payments" [ref=f29e506] [cursor=pointer]:
+                - /url: https://pay.binance.com/en
+            - listitem [ref=f29e507]:
+              - link "Binance Junior" [ref=f29e508] [cursor=pointer]:
+                - /url: https://www.binance.com/en/binance-junior
+            - listitem [ref=f29e509]:
+              - link "Academy" [ref=f29e510] [cursor=pointer]:
+                - /url: https://www.binance.com/en/academy
+            - listitem [ref=f29e511]:
+              - link "Gift Card" [ref=f29e512] [cursor=pointer]:
+                - /url: https://www.binance.com/en/gift-card
+            - listitem [ref=f29e513]:
+              - link "Launchpool" [ref=f29e514] [cursor=pointer]:
+                - /url: https://www.binance.com/en/launchpool
+            - listitem [ref=f29e515]:
+              - link "Auto-Invest" [ref=f29e516] [cursor=pointer]:
+                - /url: https://www.binance.com/en/auto-invest
+            - listitem [ref=f29e517]:
+              - link "ETH Staking" [ref=f29e518] [cursor=pointer]:
+                - /url: https://www.binance.com/en/eth2
+            - listitem [ref=f29e519]:
+              - link "BABT" [ref=f29e520] [cursor=pointer]:
+                - /url: https://www.binance.com/en/BABT?source=footer
+            - listitem [ref=f29e521]:
+              - link "Research" [ref=f29e522] [cursor=pointer]:
+                - /url: https://www.binance.com/en/research
+            - listitem [ref=f29e523]:
+              - link "Charity" [ref=f29e524] [cursor=pointer]:
+                - /url: https://www.binance.charity
+        - generic [ref=f29e525]:
+          - generic [ref=f29e526]:
+            - heading "Business" [level=3] [ref=f29e527]
+            - list [ref=f29e528]:
+              - listitem [ref=f29e529]:
+                - link "P2P Merchant Application" [ref=f29e530] [cursor=pointer]:
+                  - /url: https://c2c.binance.com/en/merchantApplication
+              - listitem [ref=f29e531]:
+                - link "Listing Application" [ref=f29e532] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/my/coin-apply
+              - listitem [ref=f29e533]:
+                - link "Institutional & VIP Services" [ref=f29e534] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/vip-institutional-services
+              - listitem [ref=f29e535]:
+                - link "Labs" [ref=f29e536] [cursor=pointer]:
+                  - /url: https://labs.binance.com/
+              - listitem [ref=f29e537]:
+                - link "Pay Onchain" [ref=f29e538] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/binance-connect
+          - generic [ref=f29e539]:
+            - heading "Learn" [level=3] [ref=f29e540]
+            - list [ref=f29e541]:
+              - listitem [ref=f29e542]:
+                - link "Learn & Earn" [ref=f29e543] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/academy/learn-and-earn
+              - listitem [ref=f29e544]:
+                - link "Browse Crypto Prices" [ref=f29e545] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price
+              - listitem [ref=f29e546]:
+                - link "Bitcoin Price" [ref=f29e547] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price/bitcoin
+              - listitem [ref=f29e548]:
+                - link "Ethereum Price" [ref=f29e549] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price/ethereum
+              - listitem [ref=f29e550]:
+                - link "Browse Crypto Price Predictions" [ref=f29e551] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price-prediction
+              - listitem [ref=f29e552]:
+                - link "Bitcoin Price Prediction" [ref=f29e553] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price-prediction/bitcoin
+              - listitem [ref=f29e554]:
+                - link "Ethereum Price Prediction" [ref=f29e555] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price-prediction/ethereum
+              - listitem [ref=f29e556]:
+                - link "Ethereum Upgrade (Pectra)" [ref=f29e557] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/ethereum-upgrade
+              - listitem [ref=f29e558]:
+                - link "Buy Bitcoin" [ref=f29e559] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/bitcoin
+              - listitem [ref=f29e560]:
+                - link "Buy BNB" [ref=f29e561] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/bnb
+              - listitem [ref=f29e562]:
+                - link "Buy XRP" [ref=f29e563] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/xrp
+              - listitem [ref=f29e564]:
+                - link "Buy Dogecoin" [ref=f29e565] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/dogecoin
+              - listitem [ref=f29e566]:
+                - link "Buy Ethereum" [ref=f29e567] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/ethereum
+              - listitem [ref=f29e568]:
+                - link "Buy Tradable Altcoins" [ref=f29e569] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/altcoins/tradable
+        - generic [ref=f29e570]:
+          - generic [ref=f29e571]:
+            - heading "Service" [level=3] [ref=f29e572]
+            - list [ref=f29e573]:
+              - listitem [ref=f29e574]:
+                - link "Affiliate" [ref=f29e575] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/activity/referral?stopRedirectToActivity=true
+              - listitem [ref=f29e576]:
+                - link "Referral" [ref=f29e577] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/activity/referral
+              - listitem [ref=f29e578]:
+                - link "BNB" [ref=f29e579] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/bnb
+              - listitem [ref=f29e580]:
+                - link "OTC & Execution Services" [ref=f29e581] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/otc
+              - listitem [ref=f29e582]:
+                - link "Historical Market Data" [ref=f29e583] [cursor=pointer]:
+                  - /url: https://data.binance.vision
+              - listitem [ref=f29e584]:
+                - link "Trading Insight" [ref=f29e585] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/trading_insight/glass?id=22&token=BTC
+              - listitem [ref=f29e586]:
+                - link "Proof of Reserves" [ref=f29e587] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/proof-of-reserves
+          - generic [ref=f29e588]:
+            - heading "Support" [level=3] [ref=f29e589]
+            - list [ref=f29e590]:
+              - listitem [ref=f29e591]:
+                - link "24/7 Chat Support" [ref=f29e592] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/chat?sourceEntry=4
+              - listitem [ref=f29e593]:
+                - link "Support Center" [ref=f29e594] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/support
+              - listitem [ref=f29e595]:
+                - link "Product Feedback & Suggestions" [ref=f29e596] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/my/user-support/feedback/entry
+              - listitem [ref=f29e597]:
+                - link "Fees" [ref=f29e598] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/fee
+              - listitem [ref=f29e599]:
+                - link "APIs" [ref=f29e600] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/binance-api
+              - listitem [ref=f29e601]:
+                - link "Binance Verify" [ref=f29e602] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/official-verification
+              - listitem [ref=f29e603]:
+                - link "Trading Parameters" [ref=f29e604] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/trade-parameters
+              - listitem [ref=f29e605]:
+                - link "Binance Airdrop Portal" [ref=f29e606] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/airdrop
+              - listitem [ref=f29e607]:
+                - link "Law Enforcement Requests" [ref=f29e608] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/support/law-enforcement
+              - listitem [ref=f29e609]:
+                - link "How to Raise a Complaint" [ref=f29e610] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/support/faq/detail/fcda7991306f4d5f91bb2a1709d26b4c
+    - generic [ref=f29e611]:
+      - generic [ref=f29e613]: "Binance ADGM entities are regulated by the Financial Services Regulatory Authority (FSRA) of the Abu Dhabi Global Markets (ADGM) as follows: (1) Nest Exchange Limited is recognised as a Recognised Investment Exchange (Derivatives), with a stipulation to Operate a Multilateral Trading Facility; (2) Nest Clearing and Custody Limited is recognised as a Recognised Clearing House, with a stipulation to Provide Custody and operating a Central Securities Depository; (3) Nest Trading Limited is authorised to carry out the following Regulated Activities: (i) Dealing in Investments as Principal; (ii) Dealing in Investments as Agent; (iii) Arranging Deals in Investments; (iv) Managing Assets; (v) Providing Money Services; and (vi) Arranging Custody. Risk Warning: virtual asset prices can be volatile. The value of your investment may go down or up and you may not get back the amount invested. You are solely responsible for your investment decisions and Binance is not liable for any trading losses you may incur."
+      - generic [ref=f29e615]:
+        - text: Binance
+        - generic [ref=f29e616]: © 2026
+        - text: Cookie Preferences
+  - dialog "Privacy" [ref=f29e618]:
+    - generic [ref=f29e619]:
+      - generic [ref=f29e620]: We use "Strictly Necessary" cookies to keep our site reliable and secure. We’d like to set additional cookies to understand site usage, make site improvements, to remember your settings and to assist in our marketing efforts.
+      - generic [ref=f29e623]:
+        - generic [ref=f29e624]:
+          - button "Accept Cookies & Continue" [ref=f29e625] [cursor=pointer]
+          - button "Reject Additional Cookies" [ref=f29e626] [cursor=pointer]
+        - button "Manage Cookies, Opens the preference center dialog" [ref=f29e627] [cursor=pointer]: Manage Cookies

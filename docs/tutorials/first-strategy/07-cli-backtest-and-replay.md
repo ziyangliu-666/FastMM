@@ -38,6 +38,19 @@ session journal: runs/tutorial/backtest.fmj
 
 Prices, quantities, fees and PnL in the CSV files are decimals in quote currency or base units; `ts_ns` columns are nanoseconds since the epoch. An empty markout column means the run ended before that horizon, so the fill is left out of it ([Backtesting](../../explanation/backtesting.md#markouts)).
 
+## Report
+
+<!-- snippet: scripts/docs/tutorial.sh#cli-report -->
+```bash
+python3 tools/report.py runs/tutorial/backtest --config configs/backtest-example.toml
+```
+
+```text
+runs/tutorial/backtest/report.html
+```
+
+One self-contained page from those four files: the equity curve and the inventory on one time axis, the PnL split into spread capture, mid drift and fees, the markout at each horizon, the fill quality, the counts and the configuration ([Run report](../../reference/run-report.md)). `--config` is optional; it names the instrument's currencies. With the Python package installed, `fastmm report runs/tutorial/backtest` is the same command.
+
 ## Replay
 
 <!-- snippet: scripts/docs/tutorial.sh#cli-replay -->

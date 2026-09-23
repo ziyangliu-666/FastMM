@@ -52,7 +52,15 @@ int main(int argc, char** argv) {
   cfg.generator.market_qty_median_lots = 1500;  // synthetic market: larger taker orders
   cfg.transport.fees = sim::FeeModel::from_bps(10.0, 10.0);  // Binance spot VIP 0: 0.1 % both sides
   auto source = bt::open_data(argc > 1 ? argv[1] : "synthetic");  // .fmj, .csv or synthetic
-  std::fputs(bt::run_backtest<MyMM>(cfg, source.get()).summary_table().c_str(), stdout);
+  const bt::BacktestResult result = bt::run_backtest<MyMM>(cfg, source.get());
+  std::fputs(result.summary_table().c_str(), stdout);
+
+  const char* out = argc > 2 ? argv[2] : "runs/quickstart";  // equity, fills, orders, summary
+  if (!result.write_all(out)) {
+    std::fprintf(stderr, "cannot write the results to %s\n", out);
+    return 1;
+  }
+  std::printf("\nresults in %s/ -- for the HTML report: fastmm report %s\n", out, out);
 }
 ```
 
@@ -64,8 +72,11 @@ In the FastMM build tree:
 
 ```bash
 cmake --build --preset release --target my_mm_backtest
-./build/release/examples/quickstart/my_mm_backtest
+./build/release/examples/quickstart/my_mm_backtest        # prints the summary, writes runs/quickstart/
+python3 tools/report.py runs/quickstart                   # -> runs/quickstart/report.html
 ```
+
+Open `runs/quickstart/report.html`: one self-contained page with the equity curve, the inventory, where the PnL came from, the markouts and the fill quality ([Run report](../reference/run-report.md)). `python3 tools/report.py` needs nothing but Python 3; with the Python package installed the same command is `fastmm report runs/quickstart`.
 
 In your own project, copy `examples/quickstart/`. Its `CMakeLists.txt` fetches FastMM:
 
@@ -95,7 +106,7 @@ Add `-DFETCHCONTENT_SOURCE_DIR_FASTMM=$PWD` to the first command to build agains
 
 ## 4. Read the result
 
-Output (shortened):
+The report is the whole run on one page; the summary table it printed is the same numbers:
 
 ```text
 backtest my_mm  seed=1  md_events=7129  steps=7694  wall=0.01s
@@ -117,6 +128,8 @@ where the PnL came from (quote currency, 2160.60 traded notional)
 - `fills (maker / taker)`: quotes are post-only, so taker is 0.
 - The run charges Binance spot VIP 0 fees, 10 bps each side, so the spread this strategy captures does not cover them ([Backtesting](../explanation/backtesting.md)).
 - `outbound messages / sha256`: a hash of the order messages sent; it is identical on every run ([Determinism](../explanation/determinism.md)).
+
+The report adds what a table cannot show: when the losses arrived, how much inventory the strategy carried while it earned them, and whether the mid kept moving against the fills afterwards.
 
 ## Next
 

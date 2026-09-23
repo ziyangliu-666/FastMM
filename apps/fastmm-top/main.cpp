@@ -1,5 +1,8 @@
 // fastmm-top: terminal dashboard for a running fastmm-live session. Reads the status file the
 // engine's control thread publishes (see fastmm/core/status_segment.hpp) and redraws it in place.
+// With --metrics it serves the same snapshot as Prometheus metrics instead of drawing.
+#include "metrics_server.hpp"
+
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
@@ -30,7 +33,11 @@ void usage(std::FILE* out) {
       "  --interval <ms>     refresh period, default 500\n"
       "  --once              print one frame and exit (exit code 3 if no status is available)\n"
       "  --json              print the snapshot as one JSON object and exit (implies --once)\n"
-      "  --no-color          plain output\n",
+      "  --no-color          plain output\n"
+      "  --metrics <[host:]port>  serve the snapshot at /metrics in Prometheus text format\n"
+      "                      until SIGINT, instead of drawing (default host 127.0.0.1; off\n"
+      "                      unless given). Scraping costs the engine nothing: this process\n"
+      "                      reads the status file, the engine never sees the request.\n",
       out);
 }
 
@@ -46,6 +53,7 @@ std::string other_build_message(const std::string& path, std::uint32_t version) 
 
 int main(int argc, char** argv) {
   std::string path;
+  std::string metrics;
   int interval_ms = 500;
   bool once = false;
   bool json = false;
@@ -84,6 +92,8 @@ int main(int argc, char** argv) {
       once = true;
     } else if (a == "--no-color") {
       color = false;
+    } else if (a == "--metrics") {
+      if (!value(metrics)) return 2;
     } else {
       std::fprintf(stderr, "fastmm-top: unknown argument '%s'\n\n", argv[i]);
       usage(stderr);
@@ -96,6 +106,24 @@ int main(int argc, char** argv) {
   }
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+
+  if (!metrics.empty()) {
+    if (once || json) {
+      std::fprintf(stderr, "fastmm-top: --metrics serves until SIGINT; drop --once / --json\n");
+      return 2;
+    }
+    fastmm::top::MetricsServer server;
+    std::string error;
+    if (!server.listen(metrics, &error)) {
+      std::fprintf(stderr, "fastmm-top: --metrics %s: %s\n", metrics.c_str(), error.c_str());
+      return 2;
+    }
+    std::printf(
+        "fastmm-top: serving http://%s/metrics from %s\n", server.address().c_str(), path.c_str());
+    std::fflush(stdout);
+    server.serve(path, g_signal);
+    return 0;
+  }
 
   fastmm::StatusReader reader;
   fastmm::StatusSnapshot snap;

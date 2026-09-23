@@ -1,0 +1,406 @@
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e5]:
+    - generic [ref=f2e6]:
+      - link [ref=f2e7] [cursor=pointer]:
+        - /url: https://www.binance.com/en
+        - img "Binance" [ref=f2e8]
+      - link "Buy Crypto" [ref=f2e10] [cursor=pointer]:
+        - /url: https://www.binance.com/en/crypto/buy
+      - link "Markets" [ref=f2e12] [cursor=pointer]:
+        - /url: https://www.binance.com/en/markets/overview
+      - generic [ref=f2e13] [cursor=pointer]: Trade
+      - link "Futures" [ref=f2e18] [cursor=pointer]:
+        - /url: https://www.binance.com/en/futures/home
+      - link "Earn" [ref=f2e22] [cursor=pointer]:
+        - /url: https://www.binance.com/en/earn
+      - link "Square" [ref=f2e26] [cursor=pointer]:
+        - /url: https://www.binance.com/en/square
+      - generic [ref=f2e29] [cursor=pointer]: Institutional
+      - generic [ref=f2e33] [cursor=pointer]: AI
+      - generic [ref=f2e37] [cursor=pointer]: More
+    - generic [ref=f2e41]:
+      - img [ref=f2e47] [cursor=pointer]
+      - link [ref=f2e49] [cursor=pointer]:
+        - /url: https://accounts.binance.com/en/login?loginChannel=
+        - button "Log In" [ref=f2e50]
+      - link [ref=f2e51] [cursor=pointer]:
+        - /url: https://accounts.binance.com/en/register?registerChannel=
+        - button "Sign Up" [ref=f2e52]
+  - iframe [ref=f2e62]:
+    - generic [ref=f3e2]:
+      - alert
+      - generic [ref=f3e3]:
+        - generic [ref=f3e6]:
+          - generic [ref=f3e7]:
+            - button "Toggle Sidebar" [ref=f3e8]
+            - button "Find" [ref=f3e11]
+            - generic [ref=f3e12]:
+              - button "Previous" [disabled]
+              - button "Next" [ref=f3e14]
+            - generic [ref=f3e15]:
+              - spinbutton "Page" [ref=f3e17]: "1"
+              - generic [ref=f3e18]: of ⁨73⁩
+          - generic [ref=f3e19]:
+            - generic [ref=f3e20]:
+              - button "Zoom Out" [ref=f3e21]
+              - button "Zoom In" [ref=f3e23]
+            - combobox "Zoom" [ref=f3e25]:
+              - option "Automatic Zoom" [selected]
+              - option "Actual Size"
+              - option "Page Fit"
+              - option "Page Width"
+              - option "⁨50⁩%"
+              - option "⁨75⁩%"
+              - option "⁨100⁩%"
+              - option "⁨125⁩%"
+              - option "⁨150⁩%"
+              - option "⁨200⁩%"
+              - option "⁨300⁩%"
+              - option "⁨400⁩%"
+          - button "Save" [ref=f3e28]
+        - generic [ref=f3e30]:
+          - region "Page ⁨1⁩" [ref=f3e31]:
+            - generic [ref=f3e32]:
+              - generic: TERMS OF USE
+              - generic: "Effective Date: 21 July 2026"
+              - generic: "These Terms constitute a legally binding agreement between you (\" you \" or \" your \") and the Binance entities identified below (each an \" ADGM Binance Entity \", collectively, \" ADGM Binance Entities \" \" Binance \", \" we \", \" our \" or \" us \"):"
+              - generic: "A NEST EXCHANGE LIMITED (formerly known as Nest Services Limited) (\" NEL \"), regulated by the Financial Services Regulatory Authority (the \" FSRA \") of the Abu Dhabi Global Market (\" ADGM \") as the operator of Binance RIE (a Multilateral Trading Facility for Digital Assets and Fiat-Referenced Tokens, and a Recognised Investment Exchange for Derivatives). Incorporated in ADGM with the registered address: Addax Tower, Office 4606, Al Reem Island, Abu Dhabi, UAE, with registration number 000032533;"
+              - generic: "B NEST CLEARING AND CUSTODY LIMITED (formerly known as Binance (AD) Limited) (\" NCCL \"), regulated by the FSRA as the operator of Binance RCH (a Recognised Clearing House), with additional stipulations for Providing Custody and to operate a Central Securities Depository. Incorporated in ADGM with the registered address: Addax Tower, Office 4606, Al Reem Island, Abu Dhabi, UAE, with registration number 000007529; and"
+              - generic: "C NEST TRADING LIMITED (formerly known as BCI Limited) (\" NTL \"), an Authorised Person holding Financial Services Permissions (\" FSPs \") from the FSRA to carry on Dealing in Investments as Principal, Dealing in Investments as Agent, Arranging Deals in Investments, Managing Assets, Providing Money Services, and Arranging Custody (the \" Binance Broker Dealer \"). Incorporated in ADGM with the registered address: Addax Tower, Office 4607, Al Reem Island, Abu Dhabi, UAE, with registration number 000032569."
+              - generic: Each ADGM Binance Entity is regulated by the FSRA.
+              - generic: This Agreement (as defined at Clause 1.3 below), governs your use of your Binance Account and any other Binance Services made available to you on or through the Binance Platform.
+              - generic: Each ADGM Binance Entity is a separate legal entity. You will have separate contractual obligations to and from each ADGM Binance Entity as described in the Agreement, supported by a single unified account structure for operational purposes.
+              - generic: Binance Services may be provided by one or more ADGM Binance Entities, or as specified in the Agreement. In addition, where any Local Terms apply to your use of the Binance Services, such Local Terms shall supplement the Agreement and govern your use of the Binance Services.
+              - generic: By registering for a Binance Account, you acknowledge that you have been provided with the Agreement before the provision of Binance Services.
+              - generic: "By accessing the Binance Platform and/or using the Binance Services, you: (i) agree that you have read, understood and accepted the Agreement; (ii) you acknowledge and agree that you will be bound by and will comply with the Agreement, as updated and amended from time to time; and (iii) you confirm that you have the legal capacity and authority to enter into the Agreement."
+              - generic: If you do not understand and accept the terms of the Agreement in their entirety, you should not register for a Binance Account nor access or use the Binance Platform or any Binance Service.
+          - region "Page ⁨2⁩" [ref=f3e34]
+          - region "Page ⁨3⁩" [ref=f3e36]
+          - region "Page ⁨4⁩" [ref=f3e37]
+          - region "Page ⁨5⁩" [ref=f3e38]
+          - region "Page ⁨6⁩" [ref=f3e39]
+          - region "Page ⁨7⁩" [ref=f3e40]
+          - region "Page ⁨8⁩" [ref=f3e41]
+          - region "Page ⁨9⁩" [ref=f3e42]
+          - region "Page ⁨10⁩" [ref=f3e43]
+          - region "Page ⁨11⁩" [ref=f3e44]
+          - region "Page ⁨12⁩" [ref=f3e45]
+          - region "Page ⁨13⁩" [ref=f3e46]
+          - region "Page ⁨14⁩" [ref=f3e47]
+          - region "Page ⁨15⁩" [ref=f3e48]
+          - region "Page ⁨16⁩" [ref=f3e49]
+          - region "Page ⁨17⁩" [ref=f3e50]
+          - region "Page ⁨18⁩" [ref=f3e51]
+          - region "Page ⁨19⁩" [ref=f3e52]
+          - region "Page ⁨20⁩" [ref=f3e53]
+          - region "Page ⁨21⁩" [ref=f3e54]
+          - region "Page ⁨22⁩" [ref=f3e55]
+          - region "Page ⁨23⁩" [ref=f3e56]
+          - region "Page ⁨24⁩" [ref=f3e57]
+          - region "Page ⁨25⁩" [ref=f3e58]
+          - region "Page ⁨26⁩" [ref=f3e59]
+          - region "Page ⁨27⁩" [ref=f3e60]
+          - region "Page ⁨28⁩" [ref=f3e61]
+          - region "Page ⁨29⁩" [ref=f3e62]
+          - region "Page ⁨30⁩" [ref=f3e63]
+          - region "Page ⁨31⁩" [ref=f3e64]
+          - region "Page ⁨32⁩" [ref=f3e65]
+          - region "Page ⁨33⁩" [ref=f3e66]
+          - region "Page ⁨34⁩" [ref=f3e67]
+          - region "Page ⁨35⁩" [ref=f3e68]
+          - region "Page ⁨36⁩" [ref=f3e69]
+          - region "Page ⁨37⁩" [ref=f3e70]
+          - region "Page ⁨38⁩" [ref=f3e71]
+          - region "Page ⁨39⁩" [ref=f3e72]
+          - region "Page ⁨40⁩" [ref=f3e73]
+          - region "Page ⁨41⁩" [ref=f3e74]
+          - region "Page ⁨42⁩" [ref=f3e75]
+          - region "Page ⁨43⁩" [ref=f3e76]
+          - region "Page ⁨44⁩" [ref=f3e77]
+          - region "Page ⁨45⁩" [ref=f3e78]
+          - region "Page ⁨46⁩" [ref=f3e79]
+          - region "Page ⁨47⁩" [ref=f3e80]
+          - region "Page ⁨48⁩" [ref=f3e81]
+          - region "Page ⁨49⁩" [ref=f3e82]
+          - region "Page ⁨50⁩" [ref=f3e83]
+          - region "Page ⁨51⁩" [ref=f3e84]
+          - region "Page ⁨52⁩" [ref=f3e85]
+          - region "Page ⁨53⁩" [ref=f3e86]
+          - region "Page ⁨54⁩" [ref=f3e87]
+          - region "Page ⁨55⁩" [ref=f3e88]
+          - region "Page ⁨56⁩" [ref=f3e89]
+          - region "Page ⁨57⁩" [ref=f3e90]
+          - region "Page ⁨58⁩" [ref=f3e91]
+          - region "Page ⁨59⁩" [ref=f3e92]
+          - region "Page ⁨60⁩" [ref=f3e93]
+          - region "Page ⁨61⁩" [ref=f3e94]
+          - region "Page ⁨62⁩" [ref=f3e95]
+          - region "Page ⁨63⁩" [ref=f3e96]
+          - region "Page ⁨64⁩" [ref=f3e97]
+          - region "Page ⁨65⁩" [ref=f3e98]
+          - region "Page ⁨66⁩" [ref=f3e99]
+          - region "Page ⁨67⁩" [ref=f3e100]
+          - region "Page ⁨68⁩" [ref=f3e101]
+          - region "Page ⁨69⁩" [ref=f3e102]
+          - region "Page ⁨70⁩" [ref=f3e103]
+          - region "Page ⁨71⁩" [ref=f3e104]
+          - region "Page ⁨72⁩" [ref=f3e105]
+          - region "Page ⁨73⁩" [ref=f3e106]
+  - contentinfo [ref=f2e66]:
+    - generic [ref=f2e67]:
+      - generic [ref=f2e68]:
+        - heading "Community" [level=3] [ref=f2e69]
+        - generic [ref=f2e70]:
+          - link [ref=f2e71] [cursor=pointer]:
+            - /url: https://discord.gg/jE4wt8g2H2
+          - link [ref=f2e74] [cursor=pointer]:
+            - /url: https://www.binance.com/en/community#telegram-communities
+          - link [ref=f2e77] [cursor=pointer]:
+            - /url: https://www.tiktok.com/@binance?lang=en
+          - link [ref=f2e80] [cursor=pointer]:
+            - /url: https://www.facebook.com/binance
+          - link [ref=f2e83] [cursor=pointer]:
+            - /url: https://twitter.com/binance
+          - link [ref=f2e86] [cursor=pointer]:
+            - /url: https://www.reddit.com/r/binance
+          - link [ref=f2e89] [cursor=pointer]:
+            - /url: https://www.instagram.com/Binance/
+          - link [ref=f2e92] [cursor=pointer]:
+            - /url: https://coinmarketcap.com/exchanges/binance/
+          - link [ref=f2e95] [cursor=pointer]:
+            - /url: https://www.youtube.com/binanceyoutube
+          - link [ref=f2e98] [cursor=pointer]:
+            - /url: https://www.whatsapp.com/channel/0029VarQ6LL6rsQq7nwhmn1y
+          - link [ref=f2e101] [cursor=pointer]:
+            - /url: https://www.binance.com/en/community
+        - generic [ref=f2e104]:
+          - generic [ref=f2e105]: English
+          - generic [ref=f2e113]: USD-$
+          - generic [ref=f2e123]:
+            - generic [ref=f2e124]: Theme
+            - switch "switch" [checked] [ref=f2e125] [cursor=pointer]
+      - generic [ref=f2e129]:
+        - generic [ref=f2e131]:
+          - heading "About Us" [level=3] [ref=f2e132]
+          - list [ref=f2e133]:
+            - listitem [ref=f2e134]:
+              - link "About" [ref=f2e135] [cursor=pointer]:
+                - /url: https://www.binance.com/en/about
+            - listitem [ref=f2e136]:
+              - link "Careers" [ref=f2e137] [cursor=pointer]:
+                - /url: https://www.binance.com/en/careers
+            - listitem [ref=f2e138]:
+              - link "Announcements" [ref=f2e139] [cursor=pointer]:
+                - /url: https://www.binance.com/en/support/announcement
+            - listitem [ref=f2e140]:
+              - link "News" [ref=f2e141] [cursor=pointer]:
+                - /url: https://www.binance.com/en/square/news/all
+            - listitem [ref=f2e142]:
+              - link "Press" [ref=f2e143] [cursor=pointer]:
+                - /url: https://www.binance.com/en/press
+            - listitem [ref=f2e144]:
+              - link "Legal" [ref=f2e145] [cursor=pointer]:
+                - /url: https://www.binance.com/en/legal/home
+            - listitem [ref=f2e146]:
+              - link "Terms" [ref=f2e147] [cursor=pointer]:
+                - /url: https://www.binance.com/en/terms
+            - listitem [ref=f2e148]:
+              - link "Privacy" [ref=f2e149] [cursor=pointer]:
+                - /url: https://www.binance.com/en/about-legal/privacy-portal
+            - listitem [ref=f2e150]:
+              - link "Building Trust" [ref=f2e151] [cursor=pointer]:
+                - /url: https://www.binance.com/en/land/building_trust
+            - listitem [ref=f2e152]:
+              - link "Blog" [ref=f2e153] [cursor=pointer]:
+                - /url: https://www.binance.com/en/blog
+            - listitem [ref=f2e154]:
+              - link "Community" [ref=f2e155] [cursor=pointer]:
+                - /url: https://www.binance.com/en/community
+            - listitem [ref=f2e156]:
+              - link "Risk Warning" [ref=f2e157] [cursor=pointer]:
+                - /url: https://www.binance.com/en/risk-warning
+            - listitem [ref=f2e158]:
+              - link "Notices" [ref=f2e159] [cursor=pointer]:
+                - /url: https://www.binance.com/en/support/list/notices
+            - listitem [ref=f2e160]:
+              - link "Downloads" [ref=f2e161] [cursor=pointer]:
+                - /url: https://www.binance.com/en/download
+            - listitem [ref=f2e162]:
+              - link "Desktop Application" [ref=f2e163] [cursor=pointer]:
+                - /url: https://www.binance.com/en/desktop-download
+            - listitem [ref=f2e164]:
+              - link "Secure Internal Communication Channel" [ref=f2e165] [cursor=pointer]:
+                - /url: https://www.binance.com/en/whistleblowing/welcome
+        - generic [ref=f2e167]:
+          - heading "Products" [level=3] [ref=f2e168]
+          - list [ref=f2e169]:
+            - listitem [ref=f2e170]:
+              - link "Exchange" [ref=f2e171] [cursor=pointer]:
+                - /url: https://www.binance.com/en/trade
+            - listitem [ref=f2e172]:
+              - link "Buy Crypto" [ref=f2e173] [cursor=pointer]:
+                - /url: https://www.binance.com/en/crypto/buy
+            - listitem [ref=f2e174]:
+              - link "Pay" [ref=f2e175] [cursor=pointer]:
+                - /url: https://www.binance.com/en/my/wallet/account/payment
+            - listitem [ref=f2e176]:
+              - link "Crypto Payments" [ref=f2e177] [cursor=pointer]:
+                - /url: https://pay.binance.com/en
+            - listitem [ref=f2e178]:
+              - link "Binance Junior" [ref=f2e179] [cursor=pointer]:
+                - /url: https://www.binance.com/en/binance-junior
+            - listitem [ref=f2e180]:
+              - link "Card" [ref=f2e181] [cursor=pointer]:
+                - /url: https://www.binance.com/en/cards/dashboard
+            - listitem [ref=f2e182]:
+              - link "Academy" [ref=f2e183] [cursor=pointer]:
+                - /url: https://www.binance.com/en/academy
+            - listitem [ref=f2e184]:
+              - link "Gift Card" [ref=f2e185] [cursor=pointer]:
+                - /url: https://www.binance.com/en/gift-card
+            - listitem [ref=f2e186]:
+              - link "Launchpool" [ref=f2e187] [cursor=pointer]:
+                - /url: https://www.binance.com/en/launchpool
+            - listitem [ref=f2e188]:
+              - link "Auto-Invest" [ref=f2e189] [cursor=pointer]:
+                - /url: https://www.binance.com/en/auto-invest
+            - listitem [ref=f2e190]:
+              - link "ETH Staking" [ref=f2e191] [cursor=pointer]:
+                - /url: https://www.binance.com/en/eth2
+            - listitem [ref=f2e192]:
+              - link "BABT" [ref=f2e193] [cursor=pointer]:
+                - /url: https://www.binance.com/en/BABT?source=footer
+            - listitem [ref=f2e194]:
+              - link "Research" [ref=f2e195] [cursor=pointer]:
+                - /url: https://www.binance.com/en/research
+            - listitem [ref=f2e196]:
+              - link "Charity" [ref=f2e197] [cursor=pointer]:
+                - /url: https://www.binance.charity
+        - generic [ref=f2e198]:
+          - generic [ref=f2e199]:
+            - heading "Business" [level=3] [ref=f2e200]
+            - list [ref=f2e201]:
+              - listitem [ref=f2e202]:
+                - link "P2P Merchant Application" [ref=f2e203] [cursor=pointer]:
+                  - /url: https://c2c.binance.com/en/merchantApplication
+              - listitem [ref=f2e204]:
+                - link "Listing Application" [ref=f2e205] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/my/coin-apply
+              - listitem [ref=f2e206]:
+                - link "Institutional & VIP Services" [ref=f2e207] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/vip-institutional-services
+              - listitem [ref=f2e208]:
+                - link "Labs" [ref=f2e209] [cursor=pointer]:
+                  - /url: https://labs.binance.com/
+              - listitem [ref=f2e210]:
+                - link "Pay Onchain" [ref=f2e211] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/binance-connect
+          - generic [ref=f2e212]:
+            - heading "Learn" [level=3] [ref=f2e213]
+            - list [ref=f2e214]:
+              - listitem [ref=f2e215]:
+                - link "Learn & Earn" [ref=f2e216] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/academy/learn-and-earn
+              - listitem [ref=f2e217]:
+                - link "Browse Crypto Prices" [ref=f2e218] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price
+              - listitem [ref=f2e219]:
+                - link "Bitcoin Price" [ref=f2e220] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price/bitcoin
+              - listitem [ref=f2e221]:
+                - link "Ethereum Price" [ref=f2e222] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price/ethereum
+              - listitem [ref=f2e223]:
+                - link "Browse Crypto Price Predictions" [ref=f2e224] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price-prediction
+              - listitem [ref=f2e225]:
+                - link "Bitcoin Price Prediction" [ref=f2e226] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price-prediction/bitcoin
+              - listitem [ref=f2e227]:
+                - link "Ethereum Price Prediction" [ref=f2e228] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/price-prediction/ethereum
+              - listitem [ref=f2e229]:
+                - link "Ethereum Upgrade (Pectra)" [ref=f2e230] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/ethereum-upgrade
+              - listitem [ref=f2e231]:
+                - link "Buy Bitcoin" [ref=f2e232] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/bitcoin
+              - listitem [ref=f2e233]:
+                - link "Buy BNB" [ref=f2e234] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/bnb
+              - listitem [ref=f2e235]:
+                - link "Buy XRP" [ref=f2e236] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/xrp
+              - listitem [ref=f2e237]:
+                - link "Buy Dogecoin" [ref=f2e238] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/dogecoin
+              - listitem [ref=f2e239]:
+                - link "Buy Ethereum" [ref=f2e240] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/how-to-buy/ethereum
+              - listitem [ref=f2e241]:
+                - link "Buy Tradable Altcoins" [ref=f2e242] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/altcoins/tradable
+        - generic [ref=f2e243]:
+          - generic [ref=f2e244]:
+            - heading "Service" [level=3] [ref=f2e245]
+            - list [ref=f2e246]:
+              - listitem [ref=f2e247]:
+                - link "Affiliate" [ref=f2e248] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/activity/referral?stopRedirectToActivity=true
+              - listitem [ref=f2e249]:
+                - link "Referral" [ref=f2e250] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/activity/referral
+              - listitem [ref=f2e251]:
+                - link "BNB" [ref=f2e252] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/bnb
+              - listitem [ref=f2e253]:
+                - link "OTC & Execution Services" [ref=f2e254] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/otc
+              - listitem [ref=f2e255]:
+                - link "Historical Market Data" [ref=f2e256] [cursor=pointer]:
+                  - /url: https://data.binance.vision
+              - listitem [ref=f2e257]:
+                - link "Trading Insight" [ref=f2e258] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/trading_insight/glass?id=22&token=BTC
+              - listitem [ref=f2e259]:
+                - link "Proof of Reserves" [ref=f2e260] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/proof-of-reserves
+          - generic [ref=f2e261]:
+            - heading "Support" [level=3] [ref=f2e262]
+            - list [ref=f2e263]:
+              - listitem [ref=f2e264]:
+                - link "24/7 Chat Support" [ref=f2e265] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/chat?sourceEntry=4
+              - listitem [ref=f2e266]:
+                - link "Support Center" [ref=f2e267] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/support
+              - listitem [ref=f2e268]:
+                - link "Product Feedback & Suggestions" [ref=f2e269] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/my/user-support/feedback/entry
+              - listitem [ref=f2e270]:
+                - link "Fees" [ref=f2e271] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/fee
+              - listitem [ref=f2e272]:
+                - link "APIs" [ref=f2e273] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/binance-api
+              - listitem [ref=f2e274]:
+                - link "Binance Verify" [ref=f2e275] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/official-verification
+              - listitem [ref=f2e276]:
+                - link "Trading Parameters" [ref=f2e277] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/trade-parameters
+              - listitem [ref=f2e278]:
+                - link "Binance Airdrop Portal" [ref=f2e279] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/airdrop
+              - listitem [ref=f2e280]:
+                - link "Law Enforcement Requests" [ref=f2e281] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/support/law-enforcement
+              - listitem [ref=f2e282]:
+                - link "How to Raise a Complaint" [ref=f2e283] [cursor=pointer]:
+                  - /url: https://www.binance.com/en/support/faq/detail/fcda7991306f4d5f91bb2a1709d26b4c
+    - generic [ref=f2e284]:
+      - generic [ref=f2e286]: "Binance ADGM entities are regulated by the Financial Services Regulatory Authority (FSRA) of the Abu Dhabi Global Markets (ADGM) as follows: (1) Nest Exchange Limited is recognised as a Recognised Investment Exchange (Derivatives), with a stipulation to Operate a Multilateral Trading Facility; (2) Nest Clearing and Custody Limited is recognised as a Recognised Clearing House, with a stipulation to Provide Custody and operating a Central Securities Depository; (3) Nest Trading Limited is authorised to carry out the following Regulated Activities: (i) Dealing in Investments as Principal; (ii) Dealing in Investments as Agent; (iii) Arranging Deals in Investments; (iv) Managing Assets; (v) Providing Money Services; and (vi) Arranging Custody. Risk Warning: virtual asset prices can be volatile. The value of your investment may go down or up and you may not get back the amount invested. You are solely responsible for your investment decisions and Binance is not liable for any trading losses you may incur."
+      - generic [ref=f2e288]:
+        - text: Binance
+        - generic [ref=f2e289]: © 2026
+        - text: Cookie Preferences

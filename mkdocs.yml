@@ -178,6 +178,7 @@ nav:
           - reference/configuration.md
           - reference/errors.md
           - reference/journal-format.md
+          - reference/run-report.md
           - reference/status-file.md
       - Venues and protocols:
           - reference/venues.md

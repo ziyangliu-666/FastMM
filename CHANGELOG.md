@@ -104,6 +104,36 @@ All notable changes are recorded here (Keep a Changelog format).
   `scripts/package-release.sh` with the `release-dpdk` preset builds a tarball with DPDK linked in.
   `examples/quickstart/` (a 29-line `main`), `examples/cpp/tutorial/` and
   `examples/external-project/` are strategy projects to copy.
+- `fastmm report <run-dir | session.fmj>` writes the run as one self-contained HTML page: equity
+  and inventory on one time axis, the PnL decomposition, markouts, fill quality, the quote and
+  reject counts and the configuration. Inline CSS and SVG, no JavaScript and no network, so it
+  works offline, in dark mode and on paper. Also `fastmm.write_report(result, path)` in Python and
+  `python3 tools/report.py <run-dir>` from a checkout with nothing installed
+  ([Run report](docs/reference/run-report.md)). `scripts/run-sim.sh` and the quick start end with
+  the report's path, and the quick-start example writes `runs/quickstart/`.
+- `fastmm-top --metrics <[host:]port>` serves the live status snapshot at `/metrics` in the
+  Prometheus text format: engine and venue counters, PnL, kill state, rejects by reason and the
+  latency quantiles, in seconds and quote currency. Off unless the flag is given, bound to
+  127.0.0.1 by default, and served from `fastmm-top`'s own process, so a scrape never reaches the
+  engine ([Monitoring a live session](docs/how-to/operations/monitor-with-fastmm-top.md#scrape-it-with-prometheus)).
+- Durable risk state (`include/fastmm/core/session_state.hpp`): `[engine] kill_file` (default
+  `<journal_dir>/<name>.kill`) latches a `[risk] max_loss` trip and carries the cumulative realized
+  PnL and fees, so `max_loss` is a budget for the deployment rather than one per process. A start
+  with a latched trip exits with code 6 until `fastmm-live --clear-kill` or the file is removed.
+  `fastmm-top` shows `LATCHED` and the carried PnL (status version 5: `kill_latched`,
+  `pnl_carry_raw`). SIGHUP clears the kill switch of a running session
+  (`ControlCommand::ResetKill`, which with a venue in the header clears that venue's bit only).
+- `[engine] ack_timeout_ms`: orders still waiting for their ack that long are force-cancelled,
+  freeing the pool slot, the `max_open_orders` slot and the `max_position` exposure a lost request
+  used to hold for the rest of the session. Off by default.
+- Inverse (coin-margined) contracts are booked in their settlement coin: `PositionTracker` uses
+  `qty * multiplier * (1/avg - 1/px)` and a size-weighted harmonic average entry price, and
+  `Instrument::notional()` returns `qty * multiplier / price`. `Instrument::inverse_pnl()` and
+  `settlement_ccy()` are new; `pnl_per_tick()` is zero for an inverse contract, whose tick value
+  depends on the price.
+- `Fixed::from_double_checked()` and `Ratio::from_bps_checked()`, and `checked_add` / `checked_sub`
+  / `checked_mul`. `avellaneda_stoikov` and `options_mm` skip a side whose price does not convert
+  instead of quoting the result of an unchecked cast.
 
 ### Changed
 - **`fastmm-live` exits after a kill switch it did not ask for.** `[engine] on_kill = "exit" |

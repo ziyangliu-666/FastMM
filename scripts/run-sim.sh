@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end demo on localhost: start the Binance-compatible sim exchange, wait until it accepts
-# connections, run the live engine against it, print a summary, stop the simulator.
-# Artifacts: runs/<timestamp>/{sim.log,engine.log,session.fmj}.
+# connections, run the live engine against it, print a summary, stop the simulator and write the
+# HTML report of the session.
+# Artifacts: runs/<timestamp>/{sim.log,engine.log,session.fmj,report.html}.
 #
 #   ./scripts/run-sim.sh [--duration 30s] [--preset release | --build-dir build/<dir>]
 #                        [--config configs/sim-local.toml] [--tls] [--sim-config configs/sim.toml]
@@ -114,4 +115,12 @@ WARNINGS=$(grep -cE " (WARN|ERROR) " "$RUN_DIR/engine.log" || true)
 echo "  engine warnings/errors: $WARNINGS (see $RUN_DIR/engine.log)"
 grep -hE "^\[sim\] final" "$RUN_DIR/sim.log" | sed 's/^/  /' || true
 echo "==> artifacts: $RUN_DIR/"
+
+if [[ -s "$RUN_DIR/session.fmj" ]]; then
+  if REPORT=$(python3 tools/report.py "$RUN_DIR/session.fmj" 2>&1); then
+    echo "==> report:  $REPORT"
+  else
+    echo "==> report:  not written ($REPORT)" >&2
+  fi
+fi
 exit "$RC"
