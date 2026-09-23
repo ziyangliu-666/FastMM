@@ -1,6 +1,16 @@
+// Pre-trade risk checks.
+//
+//   BM_Risk_CheckNew_Pass    dependent latency: the next intent index is derived from the previous
+//                            answer, so the checks cannot overlap in the pipeline the way an
+//                            independent loop lets them.
+//   BM_Risk_CheckNew_Killed  throughput of the kill-switch early out: the intent never changes and
+//                            nothing carries a dependency, so the figure is one check per
+//                            <time>, not the latency of a check.
 #include "fastmm/core/risk.hpp"
 
 #include <benchmark/benchmark.h>
+
+#include <cstddef>
 
 using namespace fastmm;
 
@@ -43,9 +53,12 @@ static void BM_Risk_CheckNew_Pass(benchmark::State& state) {
   }
   std::size_t k = 0;
   for (auto _ : state) {
-    benchmark::DoNotOptimize(risk.check_new(intents[k & 3], inst, in));
-    ++k;
+    const RejectReason r = risk.check_new(intents[k & 3], inst, in);
+    // The next intent depends on this answer, so one check must finish before the next starts.
+    // r is None (0) on this path, so the intents rotate exactly as they did without the chain.
+    k += 1 + static_cast<std::size_t>(r);
   }
+  benchmark::DoNotOptimize(k);  // outside the loop: in it, it would add a store to the chain
 }
 BENCHMARK(BM_Risk_CheckNew_Pass);
 

@@ -3,8 +3,12 @@
 //   BM_Itch_DecodeAddOrder        ITCH 5.0 'A' (36 bytes) -> OrderAddL3Msg in an EventSink
 //   BM_Itch_DecodeOrderExecuted   ITCH 5.0 'E' (31 bytes) -> OrderExecL3Msg in an EventSink
 //   BM_ItchL2Bridge_Message       ItchL2Bridge per ITCH message (L3 update, trades, one
-//                                 BookDeltaMsg per 8-message datagram), 2^16-order book
-//   BM_ItchL2Bridge_Message_DefaultBook  the same with the default 2^20-order book
+//                                 BookDeltaMsg per 8-message datagram), 2^16-order book, a
+//                                 stream that keeps 2,000 to 6,000 orders resting
+//   BM_ItchL2Bridge_Message_LargeBook          the venue's default 2^20-order book with a stream
+//                                 that keeps 200,000 to 260,000 orders resting
+//   BM_ItchL2Bridge_Message_LargeBookSmallSet  the default book with the small stream: the same
+//                                 capacity, a working set that fits L2
 //   BM_MoldUdp64_FramePacket      parse_packet() + walk the messages of a 10-message packet
 //   BM_MoldUdp64_ReceiveAB        Receiver, one datagram of A or B (B trails by one packet)
 //   BM_MoldUdp64_ReceiveABLossA   as above, A loses 1 packet in 8, B trails by two packets
@@ -127,15 +131,22 @@ BENCHMARK(BM_Itch_DecodeOrderExecuted);
 
 namespace {
 
-// A replayable ITCH stream for one instrument: orders arrive within 50 cents of $100 (1 % stub
-// quotes at $1 and $900), rest, get executed (E and C), cancelled (X, D) and replaced (U), and
-// the stream ends by deleting everything left, so the book is empty again at the end.
+// A replayable ITCH stream for one instrument: orders arrive within `spread` cents of $100 (1 %
+// stub quotes at $1 and $900), rest, get executed (E and C), cancelled (X, D) and replaced (U),
+// and the stream ends by deleting everything left, so the book is empty again at the end.
+//
+// live_lo / live_hi bound how many orders rest at once: below live_lo the generator only adds,
+// above live_hi it only deletes. That count and `spread` decide how much memory replaying the
+// stream touches; the book's configured capacity does not.
 struct ItchStream {
   std::vector<std::array<std::byte, 40>> msgs;
   std::vector<std::uint8_t> len;
 };
 
-ItchStream make_itch_stream(std::size_t n) {
+ItchStream make_itch_stream(std::size_t n,
+                            std::size_t live_lo = 2'000,
+                            std::size_t live_hi = 6'000,
+                            std::uint64_t spread = 50) {
   ItchStream s;
   itch::ItchEncoder enc;
   Xoshiro256ss rng(11);
@@ -160,13 +171,13 @@ ItchStream make_itch_stream(std::size_t n) {
     if (r == 0) {
       cents = side == Side::Buy ? 100 : 90'000;
     } else {
-      const auto off = static_cast<std::int64_t>(rng.uniform(50));
+      const auto off = static_cast<std::int64_t>(rng.uniform(spread));
       cents = side == Side::Buy ? 10'000 - off : 10'001 + off;
     }
     return Price::from_raw(cents * 1'000'000);
   };
   while (s.msgs.size() < n) {
-    const std::uint64_t op = live.size() < 2'000 ? 0 : live.size() > 6'000 ? 4 : rng.uniform(6);
+    const std::uint64_t op = live.size() < live_lo ? 0 : live.size() > live_hi ? 4 : rng.uniform(6);
     if (op <= 1) {
       const Side side = rng.uniform(2) == 0 ? Side::Buy : Side::Sell;
       const auto q = static_cast<std::int64_t>(1 + rng.uniform(20)) * 100;
@@ -203,8 +214,9 @@ ItchStream make_itch_stream(std::size_t n) {
 
 }  // namespace
 
-static void itch_bridge_bench(benchmark::State& state, const L3BookConfig& book) {
-  static const ItchStream stream = make_itch_stream(1U << 18);
+static void itch_bridge_bench(benchmark::State& state,
+                              const L3BookConfig& book,
+                              const ItchStream& stream) {
   auto ring = std::make_unique<MsgRing>(1U << 22);
   venues::EventSink sink(ring.get(), venues::SinkPolicy::Drop);
   itch::ItchL2BridgeConfig cfg;
@@ -236,17 +248,50 @@ static void itch_bridge_bench(benchmark::State& state, const L3BookConfig& book)
   if (bridge->stats().book_errors != 0) state.SkipWithError("book errors");
 }
 
+namespace {
+// 2,000 to 6,000 resting orders over about 100 price levels: a few hundred kiB of order records
+// and index slots, which stays in L2.
+const ItchStream& small_stream() {
+  static const ItchStream s = make_itch_stream(1U << 18);
+  return s;
+}
+// 200,000 to 260,000 resting orders over about 300 price levels. The 2^20-order book's reference
+// index is 2^21 slots; the live refs hash across all of them, so a lookup reads a cache line the
+// stream has not touched for a long time. Touched memory is roughly 10 MiB of order records plus
+// most of the 32 MiB index.
+//
+// The price spread stays small because the book's default price window is 2^16 ticks, and an ITCH
+// tick is $0.0001: 150 cents each way is already 30,000 ticks, and anything outside the window goes
+// to the 1,024-level overflow store and then fails. So this benchmark varies the number of resting
+// orders, not the number of price levels.
+const ItchStream& large_stream() {
+  static const ItchStream s = make_itch_stream(1U << 20, 200'000, 260'000, 150);
+  return s;
+}
+}  // namespace
+
 static void BM_ItchL2Bridge_Message(benchmark::State& state) {
-  itch_bridge_bench(state, L3BookConfig{.price_window_ticks = 1U << 16, .max_orders = 1U << 16});
+  itch_bridge_bench(
+      state, L3BookConfig{.price_window_ticks = 1U << 16, .max_orders = 1U << 16}, small_stream());
 }
 BENCHMARK(BM_ItchL2Bridge_Message);
 
-// The nasdaq_itch venue's default book: 2^20 orders (a 32 MiB reference index, 40 MiB of
-// orders), so index and order lookups miss the caches and, without huge pages, the dTLB.
-static void BM_ItchL2Bridge_Message_DefaultBook(benchmark::State& state) {
-  itch_bridge_bench(state, L3BookConfig{});
+// The nasdaq_itch venue's default book (2^20 orders), driven by the large stream. The earlier
+// version of this benchmark kept the default book but replayed the small stream: with 2,000 to
+// 6,000 live orders the big tables were allocated and never touched, and it measured the same
+// 55 ns as the small book. Only the working set moves this number, not the capacity.
+static void BM_ItchL2Bridge_Message_LargeBook(benchmark::State& state) {
+  itch_bridge_bench(state, L3BookConfig{}, large_stream());
 }
-BENCHMARK(BM_ItchL2Bridge_Message_DefaultBook);
+BENCHMARK(BM_ItchL2Bridge_Message_LargeBook);
+
+// The same working set in the small book's capacity is not possible (2^16 orders cannot hold
+// 200,000), so the pair below isolates the stream instead: the default book replaying the small
+// stream, which is what the old _DefaultBook case measured.
+static void BM_ItchL2Bridge_Message_LargeBookSmallSet(benchmark::State& state) {
+  itch_bridge_bench(state, L3BookConfig{}, small_stream());
+}
+BENCHMARK(BM_ItchL2Bridge_Message_LargeBookSmallSet);
 
 static void BM_MoldUdp64_FramePacket(benchmark::State& state) {
   itch::ItchEncoder enc;
