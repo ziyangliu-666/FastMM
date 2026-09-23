@@ -87,7 +87,7 @@ const Setup& setup() {
         tid = -1;
         return;
       }
-      tid = static_cast<int>(::gettid());
+      tid = ::gettid();
       while (!configured.load()) std::this_thread::yield();
       r.kernel_listen = listen_on(7100);
       r.user_listen = listen_on(7101);

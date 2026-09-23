@@ -197,7 +197,7 @@ TEST_CASE("UserTcp veth: echo through the kernel TCP stack with 3 percent loss e
   echo_round(0.03);
 }
 
-TEST_CASE("UserTcp veth: the server closing reports EOF; a closed port refuses") {
+TEST_CASE("UserTcp veth: the server closing reports EOF and a closed port refuses") {
   if (!in_multicast_netns() || !have_ethtool()) return;
   REQUIRE(make_veth());
   const int lfd = listen_on(7001);
