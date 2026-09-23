@@ -201,6 +201,7 @@ nav:
       - explanation/how-it-works.md
       - explanation/economics.md
       - explanation/backtesting.md
+      - explanation/signal-research.md
       - explanation/architecture.md
       - explanation/event-flow.md
       - explanation/determinism.md

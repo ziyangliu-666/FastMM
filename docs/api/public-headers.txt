@@ -62,6 +62,11 @@ tier1 fastmm/backtest/synthetic_source.hpp
 tier1 fastmm/cli/backtest.hpp
 tier1 fastmm/cli/replay.hpp
 
+# ---- tier 2: signal research ------------------------------------------------------------------------
+tier2 fastmm/research/feature_table.hpp
+tier2 fastmm/research/extractor.hpp
+tier2 fastmm/research/signal_eval.hpp
+
 # ---- tier 1: live trading ---------------------------------------------------------------------------
 tier1 net fastmm/cli/live.hpp
 tier1 net fastmm/live/session.hpp

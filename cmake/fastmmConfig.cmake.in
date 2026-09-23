@@ -1,9 +1,9 @@
 @PACKAGE_INIT@
-# Components: core, sim, strategies, backtest and codecs are always installed; net, venues and live
-# only when FastMM was built with FASTMM_BUILD_NET=ON. Request what you link:
+# Components: core, sim, strategies, backtest, research and codecs are always installed; net,
+# venues and live only when FastMM was built with FASTMM_BUILD_NET=ON. Request what you link:
 #   find_package(fastmm CONFIG REQUIRED COMPONENTS live)
 set(fastmm_BUILD_NET @FASTMM_BUILD_NET@)
-foreach(_fastmm_c IN ITEMS core store sim strategies backtest codecs)
+foreach(_fastmm_c IN ITEMS core store sim strategies backtest research codecs)
   set(fastmm_${_fastmm_c}_FOUND TRUE)
 endforeach()
 foreach(_fastmm_c IN ITEMS net venues live)

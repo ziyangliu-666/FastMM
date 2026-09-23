@@ -52,6 +52,7 @@ PYBIND11_MODULE(_core, m) {
   static_cast<void>(fastmm::bt::register_builtin_strategies());
   fb::bind_config(m);
   fb::bind_backtest(m);
+  fb::bind_research(m);
   fb::bind_book(m);
   fb::bind_strategies(m);
   fb::bind_strategy_api(m);

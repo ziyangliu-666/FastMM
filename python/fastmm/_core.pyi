@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -608,6 +608,58 @@ class Context:
         """
     @property
     def quoting_enabled(self) -> bool:
+        ...
+class FeatureTable:
+    """
+    Book features and forward mid moves, one row per sampled market-data event. Columns are read-only numpy views onto the C++ table and stay valid after it goes out of scope. Prices, quantities and spreads are raw 1e-8 fixed-point int64; imbalance is in the same scale, so 100000000 is 1.0.
+    """
+    def __len__(self) -> int:
+        ...
+    def csv(self) -> str:
+        """
+        Every column as CSV; an unset forward mid is empty.
+        """
+    def summary(self) -> str:
+        """
+        Row counts and per-horizon coverage.
+        """
+    @property
+    def book_updates(self) -> int:
+        ...
+    @property
+    def columns(self) -> dict:
+        """
+        Feature columns (zero-copy numpy views).
+        """
+    @property
+    def coverage(self) -> list:
+        """
+        Per horizon: how many rows got a forward mid, how many were past the end of the data and how many landed on a one-sided book.
+        """
+    @property
+    def end_ts(self) -> int:
+        ...
+    @property
+    def events(self) -> int:
+        ...
+    @property
+    def forward_mid(self) -> dict:
+        """
+        Forward mid per horizon, keyed by label ('100ms', '1s'). Zero-copy numpy views; 0 marks a row with no value at that horizon.
+        """
+    @property
+    def horizons(self) -> list[int]:
+        """
+        Horizons in nanoseconds, ascending.
+        """
+    @property
+    def skipped_one_sided(self) -> int:
+        ...
+    @property
+    def skipped_subsample(self) -> int:
+        ...
+    @property
+    def start_ts(self) -> int:
         ...
 class FillView:
     """
@@ -1232,6 +1284,28 @@ def enable_logging(level: str = 'warn', path: typing.Any = None) -> None:
     """
     Start writing C++ log records at `level` or above to `path` (appending) or to stderr. Calling it again restarts the logger with the new settings.
     """
+def evaluate_signal(table: FeatureTable, values: typing.Any, name: typing.Any = None, buckets: typing.SupportsInt | typing.SupportsIndex = 10, blocks: typing.SupportsInt | typing.SupportsIndex = 10) -> dict:
+    """
+    Information coefficient, bucket table and conditional touch markout of a signal, per horizon of `table`.
+    
+    values: a float64 array with one entry per row, or the name of a built-in feature ('imbalance', 'microprice_edge_bps', 'spread_bps').
+    name: label for the report; defaults to the feature name or 'signal'.
+    buckets: equal-count buckets of the signal; 10 is a decile table.
+    blocks: contiguous equal-sized blocks the IC is recomputed over.
+    
+    Each horizon reports 'ic' (Spearman), the per-block ICs, and buckets holding 'forward_bps' (the mean forward mid move), 'half_spread_bps', and 'buy_bps' / 'sell_bps': what a quote resting at the touch would have made or lost by the horizon, gross of fees, in basis points of the mid.
+    """
+def features(data: typing.Any, horizons: typing.Any = None, imbalance_levels: typing.SupportsInt | typing.SupportsIndex = 1, subsample: typing.SupportsFloat | typing.SupportsIndex = 0.0, sample_book_updates: bool = True, sample_trades: bool = False, instruments: typing.SupportsInt | typing.SupportsIndex = 1) -> FeatureTable:
+    """
+    Book features and forward mid moves from a market-data source.
+    
+    data: a '<source>:<args>' spec ('binance:BTCUSDT,2024-03-27'), a .fmj/.csv path, or a dict of numpy columns, the same argument run_backtest() takes.
+    horizons: forward horizons in seconds; None uses 0.1, 1, 10 and 60.
+    imbalance_levels: book levels summed into the imbalance column; 1 is the touch.
+    subsample: minimum spacing between rows in seconds; 0 samples every book update.
+    sample_book_updates / sample_trades: what emits a row. With book updates off and trades on, the table has one row per trade, at the timestamps a backtest's fills land on.
+    instruments: books kept; events for a higher instrument id are ignored.
+    """
 def inspect_journal(path: typing.Any) -> dict:
     """
     Header and message counts of an .fmj journal.
@@ -1251,4 +1325,4 @@ def sweep(config: BacktestConfig, grid: dict, data: typing.Any = None, strategy:
     """
     Cartesian parameter sweep on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread.
     """
-__version__: str = '0.1.0'
+__version__: str = '0.2.0'
