@@ -1,4 +1,7 @@
-"""python -m fastmm run module:Class --config file.toml [options]: fastmm.run_live from a shell.
+"""The ``fastmm`` command (also ``python -m fastmm``).
+
+    fastmm run module:Class --config file.toml [options]    fastmm.run_live from a shell
+    fastmm report <run-dir | session.fmj> [-o out.html]     the HTML report of a run
 
 Before importing the strategy's module, ``run`` sets each of OPENBLAS_NUM_THREADS, OMP_NUM_THREADS
 and MKL_NUM_THREADS that is not set to 1. numpy reads them when it loads, and ``python -m fastmm``
@@ -17,8 +20,14 @@ THREAD_VARIABLES = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m fastmm")
+    prog = "fastmm" if os.path.basename(sys.argv[0] or "") == "fastmm" else "python -m fastmm"
+    parser = argparse.ArgumentParser(prog=prog)
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    from . import report as report_command
+
+    report_command.add_arguments(commands.add_parser(
+        "report", help=report_command.COMMAND_HELP,
+        description=report_command.COMMAND_DESCRIPTION))
     run = commands.add_parser(
         "run", help="run a strategy with hot hooks against live venues",
         description="Run a fastmm.Strategy with @fastmm.hot methods against the venues in the "
@@ -61,6 +70,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args_list = sys.argv[1:] if argv is None else argv
     parser = _parser()
     args = parser.parse_args(args_list)
+    if args.command == "report":
+        from .report import run_command
+
+        return run_command(args)
     params = {}
     for item in args.param:
         key, sep, value = item.partition("=")

@@ -61,6 +61,8 @@ INFO  fastmm-live: shutdown took 320 ms (cancel_all ok)
 
 On WSL2 and in virtual machines the terminal may also show `TSC recalibration stepped the engine clock` warnings: the host's wall clock jumped ([Troubleshooting](../../how-to/operations/troubleshooting.md)).
 
+The session journal also renders as a page: `python3 tools/report.py runs/tutorial/sim.fmj` writes `runs/tutorial/report.html` with the equity, the inventory and the counts of the session ([Run report](../../reference/run-report.md)).
+
 ## Replay the live session
 
 <!-- snippet: scripts/docs/tutorial.sh#sim-replay -->

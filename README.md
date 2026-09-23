@@ -21,8 +21,9 @@ Requires Linux, gcc 13+ or clang 16+, CMake 3.25+, Ninja, OpenSSL 3 and zlib.
 git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
 ./scripts/bootstrap.sh                                   # checks toolchain, configures the release preset
 cmake --build --preset release -j && ctest --preset release -j"$(nproc)"
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
-./scripts/run-sim.sh --duration 30s                      # sim exchange + live engine on localhost
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic --out runs/first
+python3 tools/report.py runs/first                       # -> runs/first/report.html, open it
+./scripts/run-sim.sh --duration 30s                      # sim exchange + live engine, ends with a report
 ```
 
 ## Write a strategy
@@ -61,6 +62,6 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 - Exchanges: Binance Spot, Binance USDⓈ-M perpetuals, Bybit spot, Deribit, and Nasdaq ITCH market data.
 - Linux on x86-64 only.
 - The shipped strategies are reference implementations, not an edge: the example backtest is profitable only because it is configured with a maker rebate ([Economics](docs/explanation/economics.md)).
-- No state survives a restart, there is no metrics export or alerting, and venue-side cancel-on-disconnect is armed only on Deribit ([Running this in production](docs/how-to/operations/running-in-production.md)).
+- No state survives a restart, monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint) with no alerting of its own, and venue-side cancel-on-disconnect is armed only on Deribit ([Running this in production](docs/how-to/operations/running-in-production.md)).
 
 [Documentation](https://ziy.bio/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)

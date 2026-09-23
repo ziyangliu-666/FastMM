@@ -14,7 +14,7 @@ Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour.
 
 ## Read a journal
 
-`tools/journal_dump.py` needs only Python 3:
+`fastmm report runs/demo-1/session.fmj` writes the session as one HTML page — equity, inventory, fees, order and reject counts — beside the journal ([Run report](../../reference/run-report.md)). For the events themselves, `tools/journal_dump.py` needs only Python 3:
 
 ```bash
 python3 tools/journal_dump.py runs/demo-1/session.fmj --type OrderFill --first 3

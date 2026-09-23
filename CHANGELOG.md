@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `fastmm report <run-dir | session.fmj>` writes the run as one self-contained HTML page: equity
+  and inventory on one time axis, the PnL decomposition, markouts, fill quality, the quote and
+  reject counts and the configuration. Inline CSS and SVG, no JavaScript and no network, so it
+  works offline, in dark mode and on paper. Also `fastmm.write_report(result, path)` in Python and
+  `python3 tools/report.py <run-dir>` from a checkout with nothing installed
+  ([Run report](docs/reference/run-report.md)). `scripts/run-sim.sh` and the quick start end with
+  the report's path, and the quick-start example writes `runs/quickstart/`.
+- `fastmm-top --metrics <[host:]port>` serves the live status snapshot at `/metrics` in the
+  Prometheus text format: engine and venue counters, PnL, kill state, rejects by reason and the
+  latency quantiles, in seconds and quote currency. Off unless the flag is given, bound to
+  127.0.0.1 by default, and served from `fastmm-top`'s own process, so a scrape never reaches the
+  engine ([Monitoring a live session](docs/how-to/operations/monitor-with-fastmm-top.md#scrape-it-with-prometheus)).
 - Durable risk state (`include/fastmm/core/session_state.hpp`): `[engine] kill_file` (default
   `<journal_dir>/<name>.kill`) latches a `[risk] max_loss` trip and carries the cumulative realized
   PnL and fees, so `max_loss` is a budget for the deployment rather than one per process. A start

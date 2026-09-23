@@ -7,7 +7,7 @@
 ./build/release/bin/fastmm-top --name binance-demo          # or --path <status file>
 ```
 
-`fastmm-top` redraws the dashboard in place (`--interval <ms>`, default 500; `--no-color`; `--once` prints one frame; `--json` prints one snapshot as JSON). It shows:
+`fastmm-top` redraws the dashboard in place (`--interval <ms>`, default 500; `--no-color`; `--once` prints one frame; `--json` prints one snapshot as JSON; `--metrics <port>` serves it for Prometheus instead of drawing, [below](#scrape-it-with-prometheus)). It shows:
 
 - the session: engine and strategy name, session id, pid, dry-run flag, uptime and the state (starting, running, stopping, stopped). A running engine that has not published for more than 3 seconds is shown as `STALE`, which usually means the process died. Next to the state, `KILLED (<reason>)` means the global kill switch is engaged (the reason stays in the final `stopped` frame), `VENUE KILLED` that at least one venue's switch is, and `LATCHED` that a `max_loss` trip is recorded in `[engine] kill_file`, so the next start refuses to trade ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget));
 - engine counters: events, book updates, orders, cancels, replaces, fills, kill switch trips (`kills` global, `venue_kills` per venue) and flags;
@@ -18,6 +18,46 @@
 - per multicast venue (`nasdaq_itch`), a feed line: state, receive backend, packets per line, A/B skew, gaps, recovered and given-up sequences, snapshots, the reorder high-water mark and the kernel-to-T0 p50 and p99 ([Receive a multicast feed](multicast-feeds.md#7-check-the-feed)).
 
 The file stays after the session ends, so the last frame shows `stopped` with the final numbers. The layout is versioned (magic number and version field). A `fastmm-top` from another build refuses the file with `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>); use fastmm-top from the same build as fastmm-live` (with `--once`, exit code 3, as for a missing file).
+
+## Scrape it with Prometheus
+
+`fastmm-top --metrics <[host:]port>` serves the same snapshot at `/metrics` in the Prometheus text format instead of drawing it. It is off unless the flag is given.
+
+```bash
+./build/release/bin/fastmm-top --name binance-demo --metrics 9109 &
+curl -s http://127.0.0.1:9109/metrics | head
+```
+
+The exporter reads the status file in `fastmm-top`'s own process: a scrape never reaches `fastmm-live`, so no scrape can touch the trading thread, and losing the exporter cannot stop the session. It serves one request at a time, and answers `fastmm_up 0` while no session is publishing.
+
+The default host is `127.0.0.1`. `--metrics 0.0.0.0:9109` or `--metrics '[::]:9109'` exposes it on the network; there is no authentication and no TLS, so put it behind the same restrictions as the host itself.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: fastmm
+    scrape_interval: 5s          # the engine publishes every 250 ms
+    static_configs:
+      - targets: ["127.0.0.1:9109"]
+```
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `fastmm_up` | gauge | 1 while a snapshot can be read |
+| `fastmm_info{engine,strategy,pid,session_id}` | gauge | constant 1, labelled with what is running |
+| `fastmm_state` | gauge | 0 starting, 1 running, 2 stopping, 3 stopped |
+| `fastmm_status_age_seconds` | gauge | age of the snapshot; alert above a few seconds, as `fastmm-top` does with `STALE` |
+| `fastmm_uptime_seconds`, `fastmm_dry_run` | gauge | session wall clock, dry-run flag |
+| `fastmm_kill_active`, `fastmm_kill_latched`, `fastmm_kill_reason` | gauge | the global kill switch, the latched `max_loss` trip, and the `KillReason` |
+| `fastmm_realized_pnl`, `fastmm_unrealized_pnl`, `fastmm_fees`, `fastmm_pnl_carry` | gauge | quote currency |
+| `fastmm_events_total`, `fastmm_book_updates_total`, `fastmm_orders_sent_total`, `fastmm_cancels_sent_total`, `fastmm_replaces_sent_total`, `fastmm_fills_total` | counter | engine counters |
+| `fastmm_risk_rejects_total`, `fastmm_venue_rejects_total`, `fastmm_rejects_by_reason_total{kind,reason}` | counter | rejects, and the most frequent reasons the snapshot carries |
+| `fastmm_kills_total`, `fastmm_venue_kills_total` | counter | kill switch trips |
+| `fastmm_latency_quantile_seconds{interval,quantile}`, `fastmm_latency_samples_total{interval}` | gauge, counter | the engine intervals above, per publishing window |
+| `fastmm_venue_*{venue}` | gauge, counter | channel states, synced books, market-data messages, order traffic, reconnects, REST errors, rate-limit cooldowns, clock offset, wire tick-to-trade quantiles |
+| `fastmm_feed_*{venue}` | gauge, counter | multicast venues only: feed state, packets, gaps, recovered and given-up sequences, per-line duplicates |
+
+The quantiles are the ones the engine publishes (p50, p99, p99.9), not a histogram: they cannot be aggregated across instances or re-quantiled by Prometheus. Alert on `fastmm_up`, `fastmm_status_age_seconds`, `fastmm_kill_active` and the reject counters; chart the rest.
 
 ## Reject logging
 

@@ -216,6 +216,10 @@ usage: fastmm-top [--name <engine name> | --path <status file>] [options]
   --once              print one frame and exit (exit code 3 if no status is available)
   --json              print the snapshot as one JSON object and exit (implies --once)
   --no-color          plain output
+  --metrics <[host:]port>  serve the snapshot at /metrics in Prometheus text format
+                      until SIGINT, instead of drawing (default host 127.0.0.1; off
+                      unless given). Scraping costs the engine nothing: this process
+                      reads the status file, the engine never sees the request.
 ```
 <!-- END cli-help -->
 

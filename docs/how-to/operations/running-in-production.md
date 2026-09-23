@@ -56,13 +56,13 @@ Mitigation: reconcile against the account after every disconnect, not only after
 
 ## 4. You cannot watch it, and you cannot talk to it
 
-The entire observability surface is the memory-mapped status file (`/dev/shm/fastmm-<name>.status`) and `fastmm-top` ([Status file](../../reference/status-file.md)). There is no metrics endpoint, no push, no alerting: grep for `prometheus`, `statsd`, `otlp`, `webhook`, `pagerduty` or `alertmanager` and the only hit is `format_latency_prometheus` in `src/core/latency_export.cpp`, which has no caller outside its unit test.
+The entire observability surface is the memory-mapped status file (`/dev/shm/fastmm-<name>.status`) and what reads it: `fastmm-top`, `fastmm-top --json`, and `fastmm-top --metrics <port>`, which serves the snapshot as Prometheus text from its own process ([Monitoring a live session](monitor-with-fastmm-top.md#scrape-it-with-prometheus)). The engine itself pushes nothing and alerts on nothing: grep for `statsd`, `otlp`, `webhook`, `pagerduty` or `alertmanager` and there are no hits.
 
-`fastmm-top --json` prints one snapshot as JSON and is the only machine-readable output. It carries fewer fields than the snapshot does (`format_status_json`, `src/core/status_segment.cpp`): PnL (`realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`), `started_ns` and `updated_ns`, `dry_run`, `kills` and `venue_kills`, and the per-reason reject breakdowns are all absent, although the text renderer prints them.
+So everything is a pull, at the resolution of the snapshot: the control thread publishes every 250 ms, and the engine's own counters inside it refresh once a second. Anything shorter-lived than that — a burst of rejects, a one-second stall — is visible only in the log. `fastmm-top --json` prints one snapshot as JSON and carries fewer fields than the snapshot does (`format_status_json`, `src/core/status_segment.cpp`): PnL (`realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`), `started_ns` and `updated_ns`, `dry_run`, `kills` and `venue_kills`, and the per-reason reject breakdowns are all absent, although the text renderer and the exporter print them.
 
 The operator interface is SIGINT and SIGTERM. `ControlCommand` (pull quotes, resume quotes, reset the kill switch, reload, recalibrate) is pushed only from inside `src/live/session.cpp`; nothing external can send one. You cannot pull quotes, reset a kill switch or change a parameter on a running engine. To change anything, stop the process.
 
-Mitigation: poll `fastmm-top --json` from your own exporter, and scrape PnL from the log's per-second stats line or the shutdown summary. Alert when `events` stops rising between polls, when `kill_flags` becomes non-zero, when `fastmm-top --once` exits 3, and when the process exits with 5, 6 or 7.
+Mitigation: scrape `fastmm-top --metrics`, and take PnL detail from the log's per-second stats line or the shutdown summary. Alert on `fastmm_up`, on `fastmm_status_age_seconds` above a few seconds, on `fastmm_kill_active`, on `fastmm_events_total` not rising, and on the process exiting with 5, 6 or 7.
 
 ## 5. The journal
 
