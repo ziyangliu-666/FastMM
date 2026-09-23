@@ -34,14 +34,17 @@
 #include "fastmm/core/time.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace fastmm {
 
@@ -117,6 +120,7 @@ enum class JournalError : std::uint8_t {
   OpenFailed,
   MapFailed,
   IoError,
+  NoSpace,  // the filesystem refused to reserve the next extent
   BadMagic,
   BadVersion,
   HeaderCorrupt,
@@ -134,6 +138,8 @@ enum class JournalError : std::uint8_t {
       return "MapFailed";
     case JournalError::IoError:
       return "IoError";
+    case JournalError::NoSpace:
+      return "NoSpace";
     case JournalError::BadMagic:
       return "BadMagic";
     case JournalError::BadVersion:
@@ -249,11 +255,56 @@ struct JournalSessionInfo {
   std::string_view strategy_meta;       // `key=value` lines (v3 metadata; empty = none)
 };
 
+// How far a write is pushed before the writer moves on ([engine] journal_sync).
+//   Async     msync(MS_ASYNC) every 100 ms. A record survives the process dying as soon as the
+//             block is copied into the map; a host that loses power loses whatever the page cache
+//             had not written back.
+//   Fdatasync msync(MS_SYNC) + fdatasync() on the same 100 ms tick and before the trailer. A
+//             record older than one tick survives power loss.
+// Neither makes one record durable at the instant the engine writes it: the journal batches into
+// 1 MiB blocks. docs/reference/journal-format.md states the guarantee.
+enum class JournalSync : std::uint8_t { Async = 0, Fdatasync = 1 };
+[[nodiscard]] constexpr std::string_view to_string(JournalSync s) noexcept {
+  return s == JournalSync::Fdatasync ? "fdatasync" : "async";
+}
+// Parses the [engine] journal_sync value; false leaves `out` untouched.
+[[nodiscard]] constexpr bool parse_journal_sync(std::string_view text, JournalSync& out) noexcept {
+  if (text == "async") {
+    out = JournalSync::Async;
+    return true;
+  }
+  if (text == "fdatasync") {
+    out = JournalSync::Fdatasync;
+    return true;
+  }
+  return false;
+}
+
+struct JournalOptions {
+  JournalSync sync = JournalSync::Async;
+  // Roll over to the next part when the current file reaches this size, bytes (0: never). Each
+  // part is a complete journal: it repeats the header, instrument table, configuration and
+  // parameter table, and carries the same session id.
+  std::size_t max_bytes = 0;
+};
+
+// Deletes `dir`/*.fmj last modified more than `days` days ago ([engine] journal_retention_days);
+// 0 keeps everything. Returns how many files were removed; a file it cannot remove is skipped and
+// named in `error` (the first one only).
+std::size_t prune_journals(const std::string& dir, int days, std::string* error = nullptr);
+
 // Background side: drains the ring into 1 MiB blocks appended to an mmap'd file grown in
 // 64 MiB extents; msync every 100 ms; stop() writes the trailer and truncates.
+//
+// Extents are reserved with posix_fallocate, so a full filesystem fails here rather than with
+// SIGBUS on the first store into a sparse page. failed() latches that and every other write
+// error; fastmm-live polls it and trips the kill switch.
 class JournalFileWriter {
  public:
-  JournalFileWriter(MsgRing& ring, std::string path, const JournalSessionInfo& info);
+  JournalFileWriter(MsgRing& ring,
+                    std::string path,
+                    const JournalSessionInfo& info,
+                    const JournalOptions& opts = {});
   ~JournalFileWriter();
   JournalFileWriter(const JournalFileWriter&) = delete;
   JournalFileWriter& operator=(const JournalFileWriter&) = delete;
@@ -263,6 +314,12 @@ class JournalFileWriter {
     return {};
   }
   [[nodiscard]] bool ok() const noexcept { return fd_ >= 0; }
+  // A write, an extent reservation or a sync failed; the journal is incomplete from there on.
+  // Safe to poll from another thread while the drain thread runs.
+  [[nodiscard]] bool failed() const noexcept { return failed_.load(std::memory_order_acquire); }
+  [[nodiscard]] JournalError error() const noexcept {
+    return static_cast<JournalError>(error_code_.load(std::memory_order_acquire));
+  }
 
   void start();  // spawns the drain thread
   void stop();   // joins, flushes, writes trailer, closes
@@ -274,8 +331,14 @@ class JournalFileWriter {
 
   [[nodiscard]] std::uint64_t blocks_written() const noexcept { return blocks_; }
   [[nodiscard]] std::uint64_t messages_written() const noexcept { return messages_; }
-  [[nodiscard]] std::uint64_t bytes_written() const noexcept { return file_size_; }
+  [[nodiscard]] std::uint64_t bytes_written() const noexcept { return total_bytes_ + file_size_; }
   [[nodiscard]] const std::string& path() const noexcept { return path_; }
+  [[nodiscard]] std::uint64_t parts() const noexcept { return part_ + 1; }
+  // Every part written so far, in order, the first being the configured path. Read it after
+  // stop(); while the drain thread runs only the entries before parts() - 1 are final.
+  [[nodiscard]] std::vector<std::string> part_paths() const;
+  // The path of part `n` of `base` ("runs/x.fmj" -> "runs/x.1.fmj"); part 0 is `base` itself.
+  [[nodiscard]] static std::string part_path(const std::string& base, std::uint64_t n);
 
  private:
   void run();
@@ -283,8 +346,20 @@ class JournalFileWriter {
   void append(const void* data, std::size_t len) noexcept;
   void write_trailer() noexcept;
   void close() noexcept;
+  void set_failed(JournalError e) noexcept;
+  bool open_part() noexcept;  // opens path_ and writes the prologue
+  void rotate() noexcept;     // closes the current part and opens the next
 
   MsgRing& ring_;
+  std::string base_path_;
+  JournalOptions opts_;
+  std::vector<std::byte> prologue_;  // header + tables, rewritten at the head of every part
+  mutable std::mutex parts_mutex_;   // part_paths_ is read by other threads
+  std::vector<std::string> part_paths_;
+  std::uint64_t part_ = 0;
+  std::uint64_t total_bytes_ = 0;  // bytes of the parts already closed
+  std::atomic<bool> failed_{false};
+  std::atomic<std::uint8_t> error_code_{static_cast<std::uint8_t>(JournalError::Disabled)};
   std::string path_;
   int fd_ = -1;
   std::byte* map_ = nullptr;
@@ -343,6 +418,15 @@ class JournalReader {
   [[nodiscard]] bool truncated_tail() const noexcept { return truncated_tail_; }
   [[nodiscard]] bool has_trailer() const noexcept { return has_trailer_; }
   [[nodiscard]] std::uint64_t last_seq() const noexcept { return last_seq_; }
+  // The file was closed cleanly: it ends in a trailer and no block was discarded. Anything else
+  // means the writer died or ran out of space and the tail of the session is missing.
+  [[nodiscard]] bool complete() const noexcept { return has_trailer_ && !truncated_tail_; }
+  // Why it is not complete, for a message; empty when complete().
+  [[nodiscard]] std::string_view incomplete_reason() const noexcept {
+    if (truncated_tail_) return "its last block is truncated or corrupt";
+    if (!has_trailer_) return "it has no trailer, so the writer did not close it";
+    return {};
+  }
 
   // Sequential cursor over messages. next() returns nullptr at end.
   void reset() noexcept {

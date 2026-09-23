@@ -150,6 +150,36 @@ All notable changes are recorded here (Keep a Changelog format).
 - `Fixed::from_double_checked()` and `Ratio::from_bps_checked()`, and `checked_add` / `checked_sub`
   / `checked_mul`. `avellaneda_stoikov` and `options_mm` skip a side whose price does not convert
   instead of quoting the result of an unchecked cast.
+- A queryable record of every session, next to the journal ([ADR-0016](docs/adr/0016-storage-backends.md),
+  `docs/reference/storage.md`). The engine hands fills, orders, position snapshots and kill events
+  to a second `MsgRing` exactly as it does the journal (`include/fastmm/core/record_stream.hpp`),
+  and a `fm-store` thread batches them into a storage backend. Backends are chosen by name from a
+  free-form `[storage]` section (`backend = "sqlite"` by default; `"none"` allocates no ring and
+  starts no thread) and sit behind `fastmm::store::StoreRegistry`, so one can be written out of
+  tree without touching engine code and its own keys never reach the central schema. The SQLite
+  backend (bundled amalgamation, WAL, `synchronous=NORMAL`) holds sessions, their journal parts and
+  instruments, fills with venue ids, exec ids, fees, fee asset and liquidity, orders in their
+  terminal state, position snapshots, per-day PnL by instrument and settlement currency, and kill
+  events; the schema is versioned with one migration step per version and a store from a newer
+  FastMM is refused. A full ring or a failing backend drops records and counts them rather than
+  blocking the engine or stopping the session; a backend that cannot be opened stops the session
+  before it trades.
+- `fastmm-pnl`: `sessions`, `fills`, `orders`, `pnl`, `positions` and `recover` over a store, with
+  `--since yesterday`, `--instrument`, `--session`, `--limit` and `--csv`
+  (`docs/how-to/operations/query-trading-records.md`).
+- `fastmm.open_store(path)` returns the same records as pandas DataFrames, with raw fixed point
+  decoded to floats and nanosecond columns to UTC datetimes.
+- `fastmm-live` logs what the previous session of the same `[engine] name` left behind before it
+  starts: PnL, whether it shut down cleanly, the kill state, the journal parts, the last position
+  per instrument and every order still open at its last record. It does not fetch execution history
+  from a venue, so a fill from while the process was down appears only when the venue's
+  reconciliation snapshot arrives.
+- Journal durability and lifecycle: `[engine] journal_sync` (`async`, the previous behaviour, or
+  `fdatasync`), `[engine] journal_max_bytes` (roll over into numbered parts, each a complete
+  journal with the same session id) and `[engine] journal_retention_days` (delete older `.fmj`
+  files in `journal_dir` at start-up). Extents are reserved with `posix_fallocate`, so a full
+  filesystem is an error rather than a `SIGBUS` on a sparse page; `JournalFileWriter::failed()`
+  latches every write error and `fastmm-live` trips the kill switch and exits with code 5 on one.
 
 ### Changed
 - **`fastmm-live` exits after a kill switch it did not ask for.** `[engine] on_kill = "exit" |
@@ -226,6 +256,328 @@ All notable changes are recorded here (Keep a Changelog format).
   `[risk] max_loss` is set, and warns otherwise. `Fixed::from_double()` saturates at `max()` /
   `min()` and maps NaN to zero, and `RiskEngine` leaves a collar or fat-finger band unset when it
   would overflow instead of wrapping into a pass-through.
+- `PositionTracker::set()` takes the instrument and remeasures the unrealized PnL of the new
+  position at the last mark; it used to leave the previous position's unrealized PnL in the totals
+  the max-loss check reads.
+- `fastmm-live` refuses to start when the instruments settle in more than one currency and
+  `[risk] max_loss` is set (the PnL totals are one currency-less number); it warns otherwise.
+- `Fixed::from_double()` saturates at `max()`/`min()` and maps NaN to zero; it used to return
+  `INT64_MIN` for NaN and for anything out of range.
+- `RiskEngine::on_book()` / `on_trade()` leave the collar and fat-finger bands unset when the band
+  would overflow, instead of wrapping into a pass-through.
+- `OmsUpdate::replaced_cl_ord_id` reports the client order id a completed cancel-replace superseded.
+  The OMS renames its record in place, so that id never produced an update of its own and anything
+  tracking orders by id saw it as open forever.
+- `fastmm-replay` refuses a journal whose writer never closed it, or whose last block is damaged,
+  instead of replaying a stream that stops short of what the session sent; `--allow-incomplete`
+  replays what is there with a warning. `JournalReader::complete()` and `JournalInfo::complete`
+  give the verdict that `truncated_tail()` and `has_trailer()` only hinted at.
+
+### Added
+- `order_transport = "user_tcp"` on every receive backend: the OUCH frames go through the
+  backend's device. `af_xdp`: the XDP program also redirects TCP to `user_tcp_ip` (and
+  `user_tcp_port`) and ARP for it, poll() hands those frames to the link (`net::FrameSink`), and
+  the first socket on `user_tcp_interface` has a TX ring. `dpdk`: the RX burst demuxes ARP and
+  the link's TCP, which sends with `rte_eth_tx_burst` on the same port. `user_tcp_port` fixes the
+  local port, which lets the link use the host's own address on `af_xdp` and `dpdk` (the next
+  hop's MAC then comes from the kernel's neighbour table on `af_xdp`).
+- DPDK kernel exception path: `dpdk_exception_port` (a `net_tap` vdev) with
+  `dpdk_exception_ip` gives the kernel an interface with the port's MAC behind a `vfio-pci` port;
+  frames the venue does not take go to it and its frames leave through the port (ARP, GLIMPSE,
+  re-requests, IGMP joins, kernel TCP). Read every `dpdk_exception_interval_us` (20). Without one,
+  the source answers ARP for unicast line addresses.
+- Unicast market data: a `nasdaq_itch` line may be a local unicast address (no join) on all three
+  backends; `fastmm-sim-itch --line-a/--line-b` send to it. For networks without multicast.
+- `scripts/bench-2host.sh`: the end-to-end benchmark across two hosts (simulator over ssh, unicast
+  lines, kernel / af_xdp / dpdk, kernel or user_tcp OUCH). `scripts/host-setup.sh` prepares an
+  Ubuntu 24.04 VM (packages, hugepages, irqbalance, interrupts, `vfio-pci` no-IOMMU bind and
+  restore, AF_XDP queue setup, NIC report). `scripts/package-release.sh` and the `release-dpdk`
+  preset build a portable tarball with DPDK linked in. `docs/how-to/operations/two-host-benchmark.md`.
+- `scripts/bench-e2e.sh --md unicast`, `--dpdk-exception`, `--user-tcp-ip`, `--user-tcp-port`;
+  the table is `scripts/bench-table.py`. ctest: `integration.nasdaq_itch_processes_unicast`,
+  `dpdk.nasdaq_itch_processes_exception_user_tcp`, DPDK unicast/ARP and UserTcp echo cases.
+  `scripts/xdp-test.sh --e2e` (root) adds the AF_XDP UserTcp cases and bench-e2e runs.
+- Run-to-completion: `[engine] threading = "single"` (default `"split"`) runs the one venue's
+  reactor, the engine and order sending on the engine thread, with no ring hop between the packet
+  read and the order write (docs/explanation/architecture.md#run-to-completion). Market data reaches
+  the engine as the venue commits it (`EventSink::set_drain_hook`, `Engine::drain()`), orders go to
+  the new `Venue::send_now` through `LiveTransport::set_direct`, and `Engine::run_inline` /
+  `IEngineRunner::run_inline` run the loop. More than one venue is a configuration error. Journals
+  and replay are unchanged. `scripts/bench-e2e.sh --threading single|split --replay`; ctest runs
+  both modes with `fastmm-replay --verify` (`integration.nasdaq_itch_processes[_single]`).
+- Binance Spot SBE market data (`md_format = "sbe"`, `sbe_ws_url`): `@depth`, `@bestBidAsk` and
+  `@trade` from the SBE stream host decoded by `BinanceSbeMdParser` into the same messages as the
+  JSON feed; depth sync unchanged. Needs an Ed25519 API key (upgrade header only, works in a dry
+  run). Decode per message: depth 10+10 levels 51 ns (JSON 680 ns), trade 19 ns (JSON 120 ns).
+- Ed25519 keys for Binance USDⓈ-M (`session.logon` on the WS API order connection, unsigned
+  orders after it, Ed25519-signed REST); `private_key_env` for both Binance connectors.
+- `tools/sbe_gen.py`: `<data>` fields, implicit block lengths and `valueRef` constants
+  (Binance `stream_1_0.xml`, generated into `venues/binance/generated/binance_stream_sbe.hpp`).
+- fastmm-sim-exchange: Ed25519 accounts (`account.ed25519_public_key_file`), `session.logon` /
+  `session.status` / `session.logout` and the unsigned `userDataStream.subscribe`.
+- `net::HmacSha256Key` (precomputed pad midstates) and `net::Ed25519Key` (parsed once, sign and
+  verify).
+- `rx_backend = "dpdk"` for `nasdaq_itch` (`net::DpdkDatagramSource`, `-DFASTMM_WITH_DPDK=ON`, off
+  by default): `rte_eth_rx_burst` on one port, Ethernet/802.1Q/IPv4/UDP parsed with
+  `parse_udp_frame`, mbufs freed before `poll()` returns, IGMP joins through kernel sockets. DPDK
+  comes from pkg-config or is built into the build tree by `scripts/build-dpdk.sh` (static 25.11, no
+  root). Runs unprivileged with `--no-huge --no-pci --in-memory` and the `net_af_packet` vdev in a
+  user namespace: ctest label `dpdk` (only in DPDK builds) and `scripts/bench-e2e.sh --backend dpdk`.
+  Needs `spin_mode = "busy"`. Status `backend` 2.
+- `order_transport = "user_tcp"` for `nasdaq_itch` OUCH (experimental): `net::UserTcp`, a
+  single-connection user-space TCP client (ARP, MSS, RFC 6298 RTO, fast retransmit, out-of-order
+  reassembly, zero-window probes, FIN/RST, RFC 5961 challenge ACKs) over `net::PacketRing`
+  (`AF_PACKET` `PACKET_MMAP` RX/TX rings, `PACKET_QDISC_BYPASS`, BPF filter), with its own IPv4
+  address (`user_tcp_ip`). Tested against a scripted peer and against the kernel's TCP over a veth
+  with 3% loss each way; `scripts/bench-e2e.sh --order-transport user_tcp` and ctest
+  `integration.nasdaq_itch_processes_user_tcp` trade through it. The OUCH session writes through
+  `ByteLink` (`TcpLink` or `UserTcpLink`).
+- `bench_order_tcp`: the send call of a kernel TCP socket against `UserTcp` over a veth. Results
+  and a list of kernel-bypass order-entry options with the hardware each needs: `bench/README.md`.
+- `[engine] timer_slack_ns` (PR_SET_TIMERSLACK for fastmm-live's threads; 0 keeps the kernel's
+  50 us) and `[engine] lock_memory` (mlockall). `configs/profiles/production-latency.toml`: the
+  `[engine]` settings for a dedicated host (busy spinning on isolated cores, timer slack 1 ns,
+  locked memory); the shipped-config test loads `configs/profiles/` too.
+- `scripts/build-pgo.sh [--compiler gcc|clang] [--bolt]`: PGO build of `release-native` trained on
+  the hot-path benchmarks, a synthetic backtest and `scripts/bench-e2e.sh`; `--bolt` rewrites
+  `fastmm-live`, `fastmm-sim-itch` and three benchmarks with `llvm-bolt` (instrumentation mode;
+  llvm-bolt is unpacked from the distribution package without root when not installed).
+- `HotArray` (`core/hot_array.hpp`): zeroed, resident, 2 MiB-page tables; `CounterKeyMap` for keys
+  handed out by counters; `net::HmacSha256` with a precomputed key.
+- Benchmarks `BM_Ouch50_EncodeNewIds`, `BM_Ouch50_EncodeColdMap`, `BM_Ouch42_EncodeNewIds`,
+  `BM_ItchL2Bridge_Message_LargeBook` (added as `_DefaultBook`, renamed when it was given a working
+  set that matches the book); `scripts/bench-e2e.sh --timer-slack`.
+- Nasdaq TotalView-ITCH venue (`kind = "nasdaq_itch"`, ADR-0015 section 5; docs/reference/venues.md,
+  docs/how-to/operations/multicast-feeds.md, `configs/nasdaq-itch-sim.toml`): lines A and B over the
+  `kernel` or `af_xdp` datagram source, `moldudp::Receiver` arbitration and re-requests, one
+  `L3Book` per instrument through `ItchL2Bridge`, T0 per receive batch and `recv_ts` from the kernel
+  receive time. Joins mid-stream from a GLIMPSE snapshot plus a recovery buffer
+  (`recovery_buffer_packets`, allocated at start); an unrecoverable gap or any L3 book error rebuilds
+  the books from GLIMPSE, and the buffer overflowing during two snapshots in a row trips the venue's
+  kill switch with the new `KillReason::FeedLost`. `order_entry = "none"` rejects orders
+  (`VenueReject`); `"sim_ouch"` trades OUCH 5.0 over SoupBinTCP with `fastmm-sim-itch`, naming the
+  triggering ITCH sequence number in the ClOrdID. No API keys are needed for this kind.
+- `Venue::poll()`: called by the network thread after every reactor iteration; `nasdaq_itch` polls
+  its sockets there with `spin_mode = "busy"`.
+- Status file version 4: p99.9 in every latency, and a multicast feed block per venue (packets per
+  line, A/B skew, gaps, recovered and given-up sequences, snapshots, reorder high-water mark,
+  kernel-to-T0 histogram, XDP statistics and mode). `fastmm-top` shows p99.9 and a feed line, and
+  `--json` prints the snapshot as JSON. `WireLatencyStats` carries p99.9 and max.
+- `scripts/bench-e2e.sh`: `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a
+  veth pair, pinned to separate cores; prints wire-to-wire, kernel-to-T0, the engine hops and the
+  network thread's tick-to-trade at p50, p99 and p99.9 (`--backend af_xdp` needs root). ctest runs it
+  for 5 s unpinned (`integration.nasdaq_itch_processes`).
+- `moldudp::Receiver::reset()`: resume delivery at a given sequence number (the End of Snapshot
+  sequence); the hole up to the highest sequence seen is requested as a gap.
+- `ItchL2Bridge::set_stamp()`: the receive stamp of the snapshot and state events `mark_*()` emits.
+- `fastmm-sim-itch` times Replace Orders whose ClOrdID is a sequence token, as it times Enter Orders
+  (`host::ReplaceView::seq_token`).
+- `fastmm-sim-itch` (ADR-0015, section 6; `configs/sim-itch.toml`, docs/reference/sim-itch.md): a
+  Nasdaq-style simulator. `MatchingEngine` and `MarketGenerator` per symbol, engine effects
+  published as ITCH 5.0 (A, E, X, D; opening spin O, R, S, Q, H), packed into MoldUDP64 and sent
+  to lines A and B with `sendmmsg`, with seeded per-line drops, token-bucket pacing and bursts,
+  heartbeats and End of Session. It answers MoldUDP64 re-requests from a ring history, serves
+  GLIMPSE 5.0 snapshots (R, H, A per resting order, End of Snapshot) consistent with the stream,
+  and accepts OUCH 5.0 Enter / Replace / Cancel over SoupBinTCP (Accepted with the ITCH order
+  reference, Replaced, Canceled, Executed with the ITCH match number, Rejected; cancel on
+  disconnect). Orders whose ClOrdID is a sequence token are timed wire to wire, from the
+  `sendmmsg` of the datagram carrying that sequence number to the read that returned the order;
+  `--summary-json` writes the histogram. `--cpu`, `--busy-poll`, `--duration` and the bind and
+  port flags serve `scripts/bench-e2e.sh`.
+- `codecs::itch::glimpse` (`itch/glimpse.hpp`): End of Snapshot `G` and `GlimpseClient`, a
+  SoupBinTCP client session that hands every snapshot message and the End of Snapshot sequence
+  number to a handler.
+- OUCH 5.0 host side: `host::parse_enter()`, `parse_replace()`, `parse_cancel()`, and the
+  sequence token `put_seq_token()` / `parse_seq_token()` (ClOrdID `T` + 13 digits).
+- `sim::itch::ItchPublisher` (`sim/itch/itch_publisher.hpp`): `MatchingEngine` effects as ITCH
+  messages, with reference and match numbers shared across symbols. The ITCH property and L2
+  bridge tests use it instead of their own publisher.
+- `moldudp::TransmitterConfig::overwrite_oldest`: a ring history that evicts the oldest messages;
+  `Transmitter::oldest()`, `evicted()`, and a message limit for `next_packet()`.
+- `MatchingEngine::for_each_resting()`: resting orders best level first, in queue order.
+- AF_XDP multicast receive (ADR-0015, section 3): `net::XdpDatagramSource`
+  (`net/xdp_datagram_source.hpp`) opens one XDP socket per (interface, RX queue) with its own UMEM,
+  fill and RX rings, attaches a BPF filter per interface through `BPF_LINK_CREATE` (native with a
+  zero-copy bind, native with a copy bind, then generic; `xdp_mode` pins one), joins each group with
+  a kernel socket for IGMP, and delivers UDP payloads with `RxMeta` (T0 per batch, line index).
+  `poll()` allocates nothing and returns RX descriptors to the fill ring before it returns.
+  `open()` fails with the missing capabilities and the `setcap` command, before Linux 5.11, and with
+  `-EBUSY` when an interface already has an XDP program. Statistics: `XDP_STATISTICS`, the per-CPU
+  count of packets passed to the kernel for lack of a socket on their queue, bad frames, the chosen
+  mode, and busy-poll options the kernel refused. The filter is BPF bytecode built in C++
+  (`net/bpf_asm.hpp`, `net/xdp_program.hpp`) and loaded over raw `bpf(2)`; no libbpf, libxdp or
+  BPF compiler. `net/udp_frame.hpp` parses Ethernet/802.1Q/IPv4/UDP frames and optionally verifies
+  checksums (`bench_udp_frame`).
+- `scripts/xdp-test.sh` (run with `sudo`) runs the privileged AF_XDP tests: verifier load,
+  `BPF_PROG_TEST_RUN` against crafted frames compared with the parser, and receive over a veth pair
+  in generic and native copy modes. Without privileges `ctest` skips them; the parser, the
+  assembler encodings and the program (under a small BPF interpreter) are tested unprivileged.
+- UDP multicast receive (ADR-0015, step 1): `net::UdpSocket` (any-source and source-specific
+  joins with the interface by name or address, `SO_RCVBUF`, `recvmmsg`/`sendmmsg`, `send_to`,
+  `IP_MULTICAST_IF`/`TTL`/`LOOP`, `SO_TIMESTAMPING`, and `SO_BUSY_POLL`, `SO_PREFER_BUSY_POLL` and
+  `SO_BUSY_POLL_BUDGET` setters that return the errno), `net::enable_hw_timestamps(ifname)`
+  (`SIOCSHWTSTAMP`, not called by default), the `net::DatagramSource` concept with `net::RxMeta`
+  (`net/datagram_source.hpp`), and its `kernel` backend `net::KernelDatagramSource`: one socket
+  per subscription (interface, group, port, optional source), batches of `recvmmsg` into buffers
+  allocated at `open`, kernel and NIC receive timestamps, T0 as `rdtscp` plus a `CLOCK_REALTIME`
+  read per batch, oversized datagrams counted and dropped. Busy-poll options that the process may
+  not set are reported by `open` and do not fail it. Multicast tests run in an unprivileged user
+  and network namespace and pass with a message where none can be created; `bench_udp` measures
+  unicast and multicast receive on loopback.
+- Binance USDⓈ-M perpetual futures connector (`kind = "binance_usdm"`,
+  `binance_usdm::BinanceUsdmVenue`) and `configs/binance-usdm-demo.toml` for Demo Trading: depth
+  sync with `pu` chaining on the `/public` stream, `bookTicker` and `aggTrade` (`/market`), orders
+  over the WebSocket API (`order.place`, `order.cancel`, `order.modify`) with a REST fallback,
+  post-only as GTX, `reduceOnly`, the listenKey user stream (`ORDER_TRADE_UPDATE`,
+  `ACCOUNT_UPDATE`), reconciliation of open orders and positions, a check of `ACCOUNT_UPDATE`
+  positions against the fills, and a read-only account check that refuses hedge mode. New
+  connector key `position_from_account_update`. Market-data fixtures are recorded on Demo Trading;
+  the private payloads are hand-written from the documentation because the Demo account had no
+  futures margin balance. Funding payments are not booked. `binance::BinanceDepthSync` is now
+  `BasicBinanceDepthSync<BinanceSpotSyncTraits>`.
+- `codecs::itch::ItchL2Bridge` (ADR-0015, step 3): ITCH messages to one `L3Book` per configured
+  instrument to `BookSnapshotMsg` / `BookDeltaMsg` / `TradeMsg` / `ConnectionStateMsg` for the
+  engine. At most one delta per instrument per datagram (`end_datagram()`) with absolute level
+  quantities over the top `depth` levels; trades for P/Q, E and printable C; `mark_complete()` /
+  `mark_incomplete()` for snapshot recovery; T0 from a per-datagram `DatagramStamp`. Messages for
+  unconfigured locates are skipped after the header. `ItchDecoder::decode_into()` and
+  `ScratchSink` decode one message without a ring.
+- Slow methods in live sessions (ADR-0013, sections 1 and 4): `fastmm.run_live` and
+  `python -m fastmm run` run `on_start` before any venue connection, the `@fastmm.every` methods
+  on a `fastmm-slow` thread and `on_stop` after the session, with snapshots, recent rows and fills
+  from the engine as in backtests. The control thread's watchdog
+  (`live/slow_watchdog.hpp`) stops the session with exit code 7 when a slow method raises, a call
+  runs past its `timeout`, the fills ring is full or the slow thread ends, and logs
+  `fastmm-live: slow tier failed (<cause>)`. `run_live` gains `fills_capacity`, `recent_rows` and
+  `slow_tier_timeout_ms`; `python -m fastmm run` gains `--slow-tier-timeout-ms` and exits with
+  `os._exit` when the slow thread does not end in time. A class with slow methods defaults
+  `max_param_age_ms` to 3 periods (at least 1000 ms) live as in backtests, and live journals record
+  the starting parameters and `max_param_age_ms`, so `fastmm.replay` replays them.
+- Python strategies live (ADR-0013, section 3): `fastmm.run_live(StrategyClass, config, params=None,
+  ...)` and `python -m fastmm run module:Class --config file.toml` run a class with hot hooks in the
+  `fastmm-live` session from `fastmm_live._live`, with the GIL released, and return its exit code.
+  Hooks compile (exit code 3 on failure) and warm up before any venue is contacted; a failing hook
+  trips `StrategyError` (exit code 6 with `on_kill = "exit"`). The session moves every other thread
+  of the process off the CPUs pinned in `[engine]`, runs one per process (`RuntimeError`) and is
+  inert in a forked child. `strategy.publish` sends parameter updates through the session's slow
+  channel (`fastmm_live._live.SlowChannel`), the only producer on its ring. New exit code 7 (`kExitSlowTier`) and `LiveOptions::watchdog`, `strategy`
+  (`LiveStrategy`) and `confine_other_threads`; `run_live` restores the SIGINT/SIGTERM handlers it
+  replaced.
+- Journal format 3 gains optional strategy metadata (`meta_bytes`, `meta_crc32c`; `key=value` lines)
+  after the parameter table: a Python session records the class, a hash of the hot-hook source and
+  the package versions. `inspect_journal` returns it as `strategy_meta`. Journals without it read
+  unchanged.
+- `HotStrategy` applies `ParamUpdate` messages to its parameter blocks (`HotProgram::params`,
+  `strategies/hot_params.hpp`), and `ParamPublisher` takes a parameter schema built at run time.
+- Python hot hooks in backtests (ADR-0013, section 1): `@fastmm.hot` methods (`on_book`, `on_fill`,
+  `on_quoting`, `on_connection`, and timer hooks with `every=`) compiled by Numba and called by the
+  engine thread through the C ABI in `strategies/hot_abi.h`, with `fastmm.State`, `fastmm.fx` and
+  the `fastmm-engine[hot]` extra. A failing hook trips the kill switch with the new
+  `KillReason::StrategyError`; `StrategyContext::trip_kill(reason)` is new.
+- Python slow methods in backtests (ADR-0013, sections 1 and 2): `on_start`, `on_stop` and
+  `@fastmm.every(period, timeout=)` methods beside hot hooks, with `ctx.snapshot()`,
+  `ctx.recent(inst)`, `ctx.fills()`, `ctx.publish(inst=None, **values)`, `strategy.publish()` from
+  any thread and a hot `on_params` hook. They run at simulated times; `run_backtest` gains
+  `slow_delay_ms`, `max_param_age_ms`, `fills_capacity` and `recent_rows`, and
+  `BacktestResult.slow_methods` reports their wall time. `fastmm.replay(journal, MyMM)` replays a
+  hot strategy from a journal's parameter updates. The engine side is `strategies/slow_channel.hpp`
+  (snapshot seqlock, recent rows, fills ring, watchdog state, parameter sink); `HotStrategy` applies
+  per-instrument updates. `sim::SimDriver::set_slow_hooks`, `sim::ParamSchedule::threaded_sink`,
+  `bt::ReplayStrategy` and `BacktestConfig.max_param_age_ms` (Python) are new. Backtests with
+  `journal_out` record the strategy metadata with the starting parameters and `max_param_age_ms`.
+
+### Changed
+- **Benchmark harness: what the published numbers mean.** Several of them measured the harness
+  rather than the code, so they were corrected and everything was re-measured (bench/README.md,
+  docs/explanation/benchmarks.md).
+  - A benchmark declares how many cores it needs (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`)
+    and fails if it is given fewer; `scripts/bench.sh` runs those unpinned in a second pass.
+    `BM_ReactorEchoThread` was pinned to the same core as its echo thread: its busy-polling rows
+    published 8.0 ms per round trip against 11 µs unpinned.
+  - `SimTransportConfig::hash_outbound` makes the simulator's outbound SHA-256 optional.
+    `BM_TickToOrder_Sim` now runs without it, since it is a determinism check of the simulator and
+    not engine work; `BM_TickToOrder_SimHash` keeps it and shows what it costs (about 180 ns of a
+    300 ns figure, two messages per tick). The "p50 991 -> 247 ns" improvement recorded below was
+    therefore in large part the benchmark's own checksum getting faster, not the engine.
+  - `BM_TickToOrder_Sim` and `BM_EngineStep_Sim` use `UseManualTime`: the reported time is the
+    `rdtsc` interval around the tick. They used to report Google Benchmark's own per-iteration time
+    with `PauseTiming`/`ResumeTiming` around the untimed settle loop, which added about 600 ns
+    to a roughly 300 ns operation. That inflated figure was what `bench/ci_budget.toml` gated on.
+  - `scripts/bench.sh` keeps every repetition (and `--rounds N` full passes of the suite);
+    `tools/bench_table.py` publishes the median over them and the min-to-max spread, plus CPU time
+    next to wall time. Google Benchmark's `stddev` aggregate, the standard deviation of five
+    repetition means, is gone from the table: it read `0.0 ns` on more than sixty rows.
+  - `BM_Risk_CheckNew_Pass`, `BM_Fixed_Mul`, `BM_Fixed_RoundToTick` and `BM_L2_UpdateNearTop` chain
+    each result into the next iteration, so they measure the latency of one operation instead of how
+    many independent ones the pipeline overlaps: `BM_Fixed_RoundToTick` 0.7 -> 3.6 ns and
+    `BM_Fixed_Mul` 0.8 -> 2.2 ns, while `BM_L2_UpdateNearTop` (2.2 ns) and `BM_Risk_CheckNew_Pass`
+    (6.5 ns) do not move, because the book's memory barrier and the risk checks' own data flow
+    already serialised them. The benchmarks that stay throughput measurements say so in their
+    source.
+  - `BM_ItchL2Bridge_Message_LargeBook` replaces `_DefaultBook`: it drives the 2^20-order book with
+    200,000 to 260,000 resting orders. `_DefaultBook` configured the big book but replayed a stream
+    with 2,000 to 6,000 live orders, so it measured the same time as the small book while the docs
+    claimed it showed cache and dTLB misses.
+  - `bench/ci_budget.toml` budgets are set from the measured time on the reference machine rather
+    than at twice it, `tools/check_budgets.py` compares the fastest repetition and allows 10 % by
+    default instead of 25 %, and CI runs the check over a subset of the benchmarks.
+- HMAC-SHA256 signing no longer fetches an OpenSSL provider and allocates per call: Binance order
+  encode 1628 -> 736 ns (`BM_Encode_BinanceOrderPlace`). Ed25519 keys are parsed once, not per
+  signature.
+- The simulator's outbound SHA-256 (replay proof) uses the x86 SHA extensions when present: it was
+  half of `BM_TickToOrder_Sim` (p50 991 -> 543 ns, p99 1279 -> 671 ns). That benchmark runs through
+  `SimTransport` and never signs a Binance request. It no longer hashes at all (see the harness
+  entry above), so that half of the gain was a benchmark artefact: the engine never did this work.
+- Hot paths (bench/README.md, "Hot-path changes"): OUCH 5.0 encode in bench-e2e 4.4 us -> 0.1 us
+  p50 and wire to wire 35 -> 25 us p50; `BM_TickToOrder_Sim` p50 991 -> 247 ns; `BM_EngineStep_Sim`
+  9.2 -> 2.9 us; Binance order.place encode 1440 -> 523 ns; ITCH bridge with the default book 84 ->
+  55 ns per message. Outbound hashes and journals are unchanged. Two of those figures are measured
+  differently now: the tick-to-order pair no longer includes the simulator's SHA-256 or Google
+  Benchmark's pause overhead, and the default-book row was measured with a working set that fit L2.
+  - `OpenHashMap` keeps the occupancy flag in the slot and allocates a `HotArray`: no page fault on
+    the first insert into a page (every new OUCH order paid one), one cache line per probe.
+  - `ouch50::UserRefMap` is direct-mapped (`CounterKeyMap`); the OUCH 4.2 / 5.0 encoders write
+    messages in place; `write_cl_ord_id()` formats the ClOrdID with SWAR hex.
+  - `PositionTracker` keeps realized / unrealized / fee totals; `net_pnl()` no longer sums every
+    instrument on each market-data event.
+  - Fixed-point products and quotients stay in 64 bits unless they overflow (`detail::mul_div`).
+  - The simulator hashes outbound orders with SHA-NI when available, its order scheduler heaps keys
+    instead of 200-byte payloads, and acks format ids with `std::to_chars`.
+  - L3 book index, orders and levels are `HotArray`s; `ItchL2Bridge` prefetches the index slot of
+    the order a message names.
+  - Binance and Bybit signers key HMAC-SHA256 once; `JsonWriter` and `QueryBuilder` append in bulk
+    and `QueryBuilder` no longer zeroes its buffer.
+- `release-native` stays gcc `-O3 -march=native` with LTO (bench/README.md compares `-O2`, no LTO,
+  `x86-64-v2`, clang 18, PGO and BOLT).
+- Order sends are coalesced on the network thread: `on_wake()` of every venue drains the outbound
+  ring through `drain_outbound_coalesced()` and writes all orders of the drain with one system call.
+  `TcpLink::cork()` / `uncork()` (SoupBinTCP/OUCH: header and message no longer go out in two writes
+  per order) and `WsClient` / `net::Connection` / `ConnectionSlot` `cork()` / `uncork()` (WebSocket
+  frames of one drain in one TLS record write); a short write or `EAGAIN` stays queued for
+  writability. `WireLatencyRecorder::begin_batch()` / `end_batch()` stamp every order of a drain with
+  the return of that write. With `spin_mode = "busy"` the engine no longer writes the network
+  thread's eventfd; it sets the wake flag (release) that the busy loop checks. `bench-e2e.sh` over
+  veth (WSL2): wire to wire p50 47 to 55 µs -> 30 to 35 µs, T0 to T5 p50 4.6 to 5.4 µs -> 2.6 to
+  3.1 µs, T0 to OUCH write p50 30 to 39 µs -> 20 to 26 µs (bench/README.md).
+- `moldudp::Receiver` (ADR-0015, step 2): A/B arbitration, a reorder buffer and
+  `gap_timeout_ns`. `on_packet(line, datagram, now_ns, meta)` replaces `on_packet(datagram)`
+  (`on_packet(datagram, now_ns)` is line 0); requests are stamped with the packet time instead of
+  the last `on_timer()` tick. `Receiver<H, Meta>` passes `meta` to `on_message(seq, msg, meta)`
+  when the handler takes it, also for messages drained later. Packets ahead of a gap are copied
+  into a `ReorderBuffer` (`reorder_packets`, default 256, of `max_packet_bytes`) instead of
+  dropped; a gap is declared after `gap_timeout_ns` (default 2 ms) or when the buffer is full,
+  and requested one hole at a time. New `ReceiverConfig` fields `max_request_attempts`,
+  `can_request` and `follow_session`; an optional `on_gap_unrecoverable(from_seq, count)` reports
+  gaps that are given up. `ReceiverStats` gains per-line packets, duplicates and A/B skew, and
+  held, overflow, unrecoverable and session counters.
+- `L3Book` is no longer a template: capacity and price window are constructor arguments
+  (`L3BookConfig{price_window_ticks, max_orders, max_overflow_levels}`), allocated once. Orders
+  outside the window go to a bounded per-side overflow store instead of failing with
+  `OutOfWindow` (now returned only when that store is full), and the window recentres only when a
+  touch leaves it. A bitmap of non-empty levels speeds up best-level repair and depth walks.
+  `find()`, `at()` and handle forms of `execute()` / `cancel()` are new.
+- `OrderExecL3Msg` gains `exec_flags` with `kNonPrintable`: `ItchDecoder` keeps the Printable flag
+  of C messages (zero, the old padding, reads as printable).
 - `fastmm-backtest`, `fastmm-replay` and `BacktestConfig.from_toml` report unknown configuration
   keys and sections with their line. `sharpe_annualized` is NaN for runs shorter than 1 day and
   `max_drawdown_pct` is `max_drawdown / initial_capital`, NaN without initial capital.

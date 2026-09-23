@@ -9,8 +9,13 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <mutex>
 #include <string>
+#include <system_error>
+#include <vector>
 
 namespace fastmm {
 
@@ -41,17 +46,43 @@ std::string param_table(const ParamSchema* schema) {
 
 // ---- JournalFileWriter ----------------------------------------------------------------
 
+namespace {
+// Appends `len` bytes of `data` to `out`.
+void put_bytes(std::vector<std::byte>& out, const void* data, std::size_t len) {
+  const auto* p = static_cast<const std::byte*>(data);
+  out.insert(out.end(), p, p + len);
+}
+}  // namespace
+
+std::string JournalFileWriter::part_path(const std::string& base, std::uint64_t n) {
+  if (n == 0) return base;
+  const std::size_t dot = base.rfind('.');
+  const std::size_t slash = base.find_last_of('/');
+  const bool has_ext = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+  if (!has_ext) return base + "." + std::to_string(n);
+  return base.substr(0, dot) + "." + std::to_string(n) + base.substr(dot);
+}
+
+std::vector<std::string> JournalFileWriter::part_paths() const {
+  const std::lock_guard<std::mutex> lock(parts_mutex_);
+  return part_paths_;
+}
+
+void JournalFileWriter::set_failed(JournalError e) noexcept {
+  error_ = e;
+  error_code_.store(static_cast<std::uint8_t>(e), std::memory_order_release);
+  failed_.store(true, std::memory_order_release);
+}
+
 JournalFileWriter::JournalFileWriter(MsgRing& ring,
                                      std::string path,
-                                     const JournalSessionInfo& info)
+                                     const JournalSessionInfo& info,
+                                     const JournalOptions& opts)
     : ring_(ring),
-      path_(std::move(path)),
+      base_path_(std::move(path)),
+      opts_(opts),
+      path_(base_path_),
       block_(new std::byte[sizeof(JournalBlockHeader) + kJournalBlockBytes]) {
-  fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-  if (fd_ < 0) {
-    error_ = JournalError::OpenFailed;
-    return;
-  }
   const std::uint32_t ninst =
       info.instruments == nullptr ? 0 : static_cast<std::uint32_t>(info.instruments->size());
   JournalFileHeader h{};
@@ -90,22 +121,52 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
   h.meta_bytes = static_cast<std::uint32_t>(meta_bytes);
   h.meta_crc32c = crc32c(info.strategy_meta.data(), meta_bytes);
   h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
-  if (!ensure_mapped(h.header_bytes)) return;
-  append(&h, sizeof h);
-  if (ninst > 0) append(info.instruments->data(), ninst * sizeof(Instrument));
+  // The prologue is kept so every rotated part is a complete journal on its own.
+  prologue_.reserve(h.header_bytes);
+  put_bytes(prologue_, &h, sizeof h);
+  if (ninst > 0) put_bytes(prologue_, info.instruments->data(), ninst * sizeof(Instrument));
   if (config_bytes > 0) {
-    append(info.config_toml.data(), config_bytes);
-    append(kZeros, pad64(config_bytes) - config_bytes);
+    put_bytes(prologue_, info.config_toml.data(), config_bytes);
+    put_bytes(prologue_, kZeros, pad64(config_bytes) - config_bytes);
   }
   if (!params.empty()) {
-    append(params.data(), params.size());
-    append(kZeros, pad64(params.size()) - params.size());
+    put_bytes(prologue_, params.data(), params.size());
+    put_bytes(prologue_, kZeros, pad64(params.size()) - params.size());
   }
   if (meta_bytes > 0) {
-    append(info.strategy_meta.data(), meta_bytes);
-    append(kZeros, pad64(meta_bytes) - meta_bytes);
+    put_bytes(prologue_, info.strategy_meta.data(), meta_bytes);
+    put_bytes(prologue_, kZeros, pad64(meta_bytes) - meta_bytes);
   }
+  static_cast<void>(open_part());
   last_sync_ = last_flush_ = steady_now();
+}
+
+bool JournalFileWriter::open_part() noexcept {
+  fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  if (fd_ < 0) {
+    set_failed(JournalError::OpenFailed);
+    return false;
+  }
+  closed_ = false;
+  map_ = nullptr;
+  map_len_ = 0;
+  file_size_ = 0;
+  {
+    const std::lock_guard<std::mutex> lock(parts_mutex_);
+    part_paths_.push_back(path_);
+  }
+  append(prologue_.data(), prologue_.size());
+  return fd_ >= 0;
+}
+
+// A part is rolled over only between blocks, so no message straddles two files.
+void JournalFileWriter::rotate() noexcept {
+  write_trailer();
+  close();
+  total_bytes_ += file_size_;
+  ++part_;
+  path_ = part_path(base_path_, part_);
+  static_cast<void>(open_part());
 }
 
 JournalFileWriter::~JournalFileWriter() {
@@ -122,13 +183,17 @@ bool JournalFileWriter::ensure_mapped(std::size_t bytes) noexcept {
     ::munmap(map_, map_len_);
     map_ = nullptr;
   }
-  if (::ftruncate(fd_, static_cast<off_t>(new_len)) != 0) {
-    error_ = JournalError::IoError;
+  // posix_fallocate reserves blocks, so a full filesystem is reported here. ftruncate would
+  // succeed on a sparse file and the store into the mapped page would raise SIGBUS instead.
+  // It returns the error rather than setting errno.
+  if (const int err = ::posix_fallocate(fd_, 0, static_cast<off_t>(new_len)); err != 0) {
+    set_failed(err == ENOSPC || err == EDQUOT ? JournalError::NoSpace : JournalError::IoError);
+    map_len_ = 0;
     return false;
   }
   void* p = ::mmap(nullptr, new_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
   if (p == MAP_FAILED) {
-    error_ = JournalError::MapFailed;
+    set_failed(JournalError::MapFailed);
     map_len_ = 0;
     return false;
   }
@@ -165,7 +230,10 @@ std::size_t JournalFileWriter::drain_once() {
   while (const std::byte* p = ring_.try_peek()) {
     const auto* h = reinterpret_cast<const EventHeader*>(p);
     const std::uint32_t len = h->len;
-    if (block_used_ + len > kJournalBlockBytes) flush_block();
+    if (block_used_ + len > kJournalBlockBytes) {
+      flush_block();
+      if (opts_.max_bytes != 0 && file_size_ >= opts_.max_bytes) rotate();
+    }
     if (block_count_ == 0) block_seq_first_ = h->seq;
     block_seq_last_ = h->seq;
     std::memcpy(block_.get() + sizeof(JournalBlockHeader) + block_used_, p, len);
@@ -179,7 +247,16 @@ std::size_t JournalFileWriter::drain_once() {
 }
 
 void JournalFileWriter::sync() noexcept {
-  if (map_ != nullptr) ::msync(map_, file_size_, MS_ASYNC);
+  if (map_ != nullptr) {
+    const int flags = opts_.sync == JournalSync::Fdatasync ? MS_SYNC : MS_ASYNC;
+    if (::msync(map_, file_size_, flags) != 0) set_failed(JournalError::IoError);
+  }
+  if (opts_.sync == JournalSync::Fdatasync && fd_ >= 0) {
+    if (::fdatasync(fd_) != 0) {
+      set_failed(errno == ENOSPC || errno == EDQUOT ? JournalError::NoSpace
+                                                    : JournalError::IoError);
+    }
+  }
   last_sync_ = steady_now();
 }
 
@@ -189,6 +266,7 @@ void JournalFileWriter::run() {
     const std::size_t n = drain_once();
     const Timestamp now = steady_now();
     if (block_count_ > 0 && now - last_flush_ >= kSyncInterval) flush_block();
+    if (opts_.max_bytes != 0 && file_size_ >= opts_.max_bytes && block_count_ == 0) rotate();
     if (now - last_sync_ >= kSyncInterval) sync();
     if (n == 0) {
       if (++idle > 200) {
@@ -239,15 +317,45 @@ void JournalFileWriter::close() noexcept {
   if (closed_) return;
   closed_ = true;
   if (map_ != nullptr) {
-    ::msync(map_, file_size_, MS_SYNC);
+    if (::msync(map_, file_size_, MS_SYNC) != 0) set_failed(JournalError::IoError);
     ::munmap(map_, map_len_);
     map_ = nullptr;
   }
   if (fd_ >= 0) {
-    if (::ftruncate(fd_, static_cast<off_t>(file_size_)) != 0) error_ = JournalError::IoError;
+    // Releases the blocks posix_fallocate reserved past the logical end.
+    if (::ftruncate(fd_, static_cast<off_t>(file_size_)) != 0) set_failed(JournalError::IoError);
+    if (::fdatasync(fd_) != 0) set_failed(JournalError::IoError);
     ::close(fd_);
     fd_ = -1;
   }
+}
+
+std::size_t prune_journals(const std::string& dir, int days, std::string* error) {
+  if (days <= 0) return 0;
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec)) return 0;
+  const auto cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * days);
+  std::size_t removed = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (ec) break;
+    if (!entry.is_regular_file(ec) || ec) continue;
+    if (entry.path().extension() != ".fmj") continue;
+    const auto mtime = entry.last_write_time(ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    if (mtime >= cutoff) continue;
+    std::filesystem::remove(entry.path(), ec);
+    if (ec) {
+      if (error != nullptr && error->empty())
+        *error = "cannot remove " + entry.path().string() + ": " + ec.message();
+      ec.clear();
+      continue;
+    }
+    ++removed;
+  }
+  return removed;
 }
 
 // ---- JournalReader ----------------------------------------------------------------------

@@ -19,3 +19,4 @@ One record per decision, written when it was taken and not edited afterwards exc
 | [0013](0013-python-strategies-live.md) | Python strategies in live trading | accepted |
 | [0014](0014-us-equities.md) | US equities | accepted, not implemented: the page is a plan, not the code |
 | [0015](0015-multicast-market-data.md) | UDP multicast market data and kernel-bypass receive | accepted; amends 0014's market-data scope |
+| [0016](0016-storage-backends.md) | Pluggable storage backends, SQLite first | accepted |

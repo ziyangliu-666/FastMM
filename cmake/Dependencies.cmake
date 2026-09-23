@@ -48,6 +48,37 @@ if(FASTMM_BUILD_NET)
             "SIMDJSON_ENABLE_THREADS OFF" "BUILD_SHARED_LIBS OFF")
 endif()
 
+# --- SQLite (store: the queryable record of a session) ----------------------
+# The amalgamation, pinned and fetched by CPM like every other dependency (ADR-0005): a trading
+# host needs no -dev package, and the WAL and UPSERT behaviour the store relies on is the version
+# pinned here rather than whatever the distribution ships.
+enable_language(C)
+CPMAddPackage(
+  NAME sqlite3
+  URL https://sqlite.org/2025/sqlite-amalgamation-3500400.zip
+  URL_HASH SHA256=1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032
+  DOWNLOAD_ONLY YES)
+if(sqlite3_ADDED AND NOT TARGET sqlite3)
+  add_library(sqlite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
+  set_target_properties(sqlite3 PROPERTIES
+    C_STANDARD 11 C_EXTENSIONS OFF EXPORT_NAME sqlite3
+    POSITION_INDEPENDENT_CODE ${FASTMM_PIC})
+  # SYSTEM: the amalgamation is not compiled with fastmm::warnings and must not raise them in
+  # the translation units that include sqlite3.h either.
+  target_include_directories(sqlite3 SYSTEM PUBLIC $<BUILD_INTERFACE:${sqlite3_SOURCE_DIR}>)
+  target_compile_definitions(sqlite3 PRIVATE
+    SQLITE_THREADSAFE=1            # the store thread writes while another process reads
+    SQLITE_DQS=0                   # a double-quoted string is an identifier, never a literal
+    SQLITE_DEFAULT_MEMSTATUS=0
+    SQLITE_DEFAULT_WAL_SYNCHRONOUS=1
+    SQLITE_LIKE_DOESNT_MATCH_BLOBS
+    SQLITE_OMIT_DEPRECATED
+    SQLITE_OMIT_LOAD_EXTENSION
+    SQLITE_OMIT_SHARED_CACHE
+    SQLITE_USE_ALLOCA)
+  target_link_libraries(sqlite3 PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 # --- doctest (tests) --------------------------------------------------------
 if(FASTMM_BUILD_TESTS)
   CPMAddPackage(

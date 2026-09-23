@@ -11,6 +11,10 @@ compile_commands.json
 runs/
 *.fmj
 !tests/fixtures/journals/*.fmj
+# storage backends ([storage] path); SQLite's write-ahead log and shared-memory index
+*.db
+*.db-wal
+*.db-shm
 *.log
 # python
 .venv/

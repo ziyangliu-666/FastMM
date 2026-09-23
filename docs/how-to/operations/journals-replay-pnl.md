@@ -6,7 +6,9 @@ With `[engine] journal = true` (the default), `fastmm-live` writes `<journal_dir
 
 A journal holds the session header, the instrument table, the effective configuration (without API keys and secrets), each consumed event with the engine clock at which it was processed, and a copy of each order message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean shutdown writes a trailer block. The current format is version 3 ([Journal format](../../reference/journal-format.md), [ADR 0010](../../adr/0010-fmj-journal-format.md)); the tools also read versions 1 and 2.
 
-Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour.
+Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour. `[engine] journal_max_bytes` rolls the file over into numbered parts and `[engine] journal_retention_days` deletes old ones at start-up; `[engine] journal_sync` chooses how far a write is pushed before the writer moves on, and a journal that cannot be written trips the kill switch ([Journal format](../../reference/journal-format.md#durability)).
+
+Next to the journal, `[storage]` writes the same session as rows: fills, orders, positions, PnL by day and kill events, queryable without a replay ([Query what you traded](query-trading-records.md)). The journal stays the authority; the store is the convenient view.
 
 ### The session epoch
 
@@ -81,11 +83,12 @@ A mismatch with the embedded configuration and the same binary is a determinism 
 
 ## Check PnL
 
-A session's PnL has three views:
+A session's PnL has four views:
 
 1. The engine's, from the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u> fees=<f> ...` (also the final `fastmm-top` frame). Net PnL is `r + u - f`, marked at the engine's last mid.
 2. The journal's, computed from the fills by `tools/pnl_report.py`.
-3. The account's, from balance snapshots taken before and after the session.
+3. The store's, from `fastmm-pnl` or `fastmm.open_store()`: the same fills, indexed by day and instrument across sessions ([Query what you traded](query-trading-records.md)).
+4. The account's, from balance snapshots taken before and after the session.
 
 `tools/pnl_report.py` prints fills, maker share, volume, fees and inventory per hour, post-fill markouts, the journal's trading PnL and, when given, the engine's summary and the account reconciliation:
 

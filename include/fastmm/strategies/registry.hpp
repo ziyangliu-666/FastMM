@@ -50,6 +50,9 @@ struct RunnerDeps {
   const InstrumentTable* instruments = nullptr;
   ParamMap params;
   MsgRing* journal_ring = nullptr;
+  // Where the engine hands fills, orders, positions and kill events for a storage backend
+  // (core/record_stream.hpp); null disables them at no cost.
+  MsgRing* record_ring = nullptr;
   void* backend = nullptr;
 };
 

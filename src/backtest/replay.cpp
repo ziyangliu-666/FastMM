@@ -3,6 +3,7 @@
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/core/log.hpp"
 #include "fastmm/sim/outbound_hash.hpp"
 #include "fastmm/sim/sim_backend.hpp"
 #include "fastmm/strategies/registry.hpp"
@@ -20,6 +21,21 @@ void open_or_throw(JournalReader& reader, const std::string& path) {
     throw std::runtime_error("cannot open journal " + path + ": " +
                              std::string(to_string(r.error())));
   }
+}
+
+// A journal the writer never closed is missing its tail, so the outbound stream a replay compares
+// against stops short of what the session actually sent. Refuse it unless the caller asked for it.
+void check_complete(const JournalReader& reader, const std::string& path, bool allow) {
+  if (reader.complete()) return;
+  const std::string why(reader.incomplete_reason());
+  if (!allow) {
+    throw std::runtime_error("journal " + path + " is incomplete: " + why +
+                             ". The events before that point are intact; replay them with "
+                             "--allow-incomplete, which cannot prove the session matched.");
+  }
+  FASTMM_LOG_WARN("journal {} is incomplete: {}; the replay stops where the recording does",
+                  path,
+                  std::string_view(why));
 }
 
 std::string header_strategy(const JournalFileHeader& h) {
@@ -76,6 +92,7 @@ JournalInfo inspect_journal(const std::string& path) {
   open_or_throw(reader, path);
   JournalInfo info;
   const JournalFileHeader& h = reader.header();
+  info.complete = reader.complete();
   info.strategy = header_strategy(h);
   info.version = reader.version();
   info.rng_seed = h.rng_seed;
@@ -137,8 +154,10 @@ ReplayResult replay_impl(const std::string& path,
                          const ReplayStrategy* custom) {
   JournalReader reader;
   open_or_throw(reader, path);
+  check_complete(reader, path, opt.allow_incomplete);
 
   ReplayResult res;
+  res.incomplete = !reader.complete();
   if (custom != nullptr) {
     res.strategy = custom->name;
   } else {

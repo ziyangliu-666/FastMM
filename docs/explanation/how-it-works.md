@@ -39,7 +39,7 @@ The venue's acknowledgement or fill comes back on the order-event ring and re-en
 |---|---|---|
 | A refused order is never sent | the risk check runs on the engine thread between the quote manager and the OMS | limits you did not set are not checked; a limit of `0` is off |
 | Cancels always go out | the risk checks skip cancels, also while the kill switch is set | the venue can still refuse or lose one |
-| Every consumed event is recorded before it is acted on | `JournalWriter::record_at` runs before `dispatch` in `Engine::step` | the record reaches a ring, not the disk ([durability](../how-to/operations/running-in-production.md#the-journal-is-not-durable-against-power-loss)) |
+| Every consumed event is recorded before it is acted on | `JournalWriter::record_at` runs before `dispatch` in `Engine::step` | the record reaches a ring, not the disk ([durability](../how-to/operations/running-in-production.md#the-journal-is-durable-against-a-crash-not-against-power-loss)) |
 | Replaying a journal sends the same order messages | the clock, feed, transport and RNG are compile-time policies fed from the journal ([Determinism](determinism.md)) | needs the same binary and the embedded config |
 | Order events are never silently dropped | a full order-event ring trips the kill switch and ends the session (exit code 5) | market-data messages are dropped on a full ring, which forces a resync |
 | Client order ids are unique across restarts | `[engine] epoch_file` counts sessions into the upper 32 bits of the id | delete or lose the file and ids repeat |

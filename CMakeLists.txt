@@ -63,6 +63,7 @@ configure_file(include/fastmm/version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generat
 # Libraries
 # ---------------------------------------------------------------------------
 add_subdirectory(src/core)
+add_subdirectory(src/store)
 add_subdirectory(src/sim)
 add_subdirectory(src/strategies)
 add_subdirectory(src/backtest)
@@ -108,7 +109,7 @@ endif()
 if(FASTMM_INSTALL)
   include(GNUInstallDirs)
   include(CMakePackageConfigHelpers)
-  set(_fastmm_export_targets fastmm_core fastmm_sim fastmm_strategies fastmm_backtest fastmm_codecs fastmm_warnings fastmm_lowlatency)
+  set(_fastmm_export_targets fastmm_core fastmm_store fastmm_sim fastmm_strategies fastmm_backtest fastmm_codecs fastmm_warnings fastmm_lowlatency sqlite3)
   if(FASTMM_BUILD_NET)
     list(APPEND _fastmm_export_targets fastmm_net fastmm_venues fastmm_live)
     if(FASTMM_WITH_DPDK)

@@ -72,14 +72,16 @@ A full disk is silent. `JournalFileWriter::append` returns without writing when 
 
 Mitigation: put `journal_dir` on its own filesystem, alert on free space with room for a full session, and delete or archive old journals yourself. Check `df -h` before every start, as the [Go-live checklist](go-live-checklist.md#the-host) says.
 
-### The journal is not durable against power loss
+### The journal is durable against a crash, not against power loss
 
-The writer memcpys into an mmap and calls `msync(MS_ASYNC)` every 100 ms (`kSyncInterval`, `src/core/journal_file.cpp`). There is no `fsync`, `fdatasync` or `O_SYNC` in the journal path. `msync(MS_SYNC)` runs once, on a clean close.
+With `[engine] journal_sync = "async"` (the default) the writer memcpys into an mmap and calls `msync(MS_ASYNC)` every 100 ms (`kSyncInterval`, `src/core/journal_file.cpp`).
 
 - A process crash loses nothing: the page cache outlives the process.
-- A power loss or kernel panic loses up to the last 100 ms of events plus anything the kernel had not written back, and the file has no trailer block, so `tools/journal_dump.py` reports `trailer MISSING`.
+- A power loss or kernel panic loses up to the last 100 ms of events plus anything the kernel had not written back, and the file has no trailer block, so `tools/journal_dump.py` reports `trailer MISSING` and `fastmm-replay` refuses it without `--allow-incomplete`.
 
-Mitigation: the journal is your only execution record. If you need it durable, put it on a filesystem and device whose writeback you have measured, and reconcile against the venue rather than the journal after an unclean stop.
+`journal_sync = "fdatasync"` adds `msync(MS_SYNC)` and `fdatasync()` on the same tick, which costs one write-back per 100 ms and makes a record older than one tick survive power loss ([Journal format](../../reference/journal-format.md#durability)).
+
+Mitigation: the journal is the byte-exact execution record, and the [store](../../reference/storage.md) next to it holds the interpreted one with the same failure mode (a batch, not a block, is what is lost). Put both on a filesystem and device whose writeback you have measured, and reconcile against the venue rather than either of them after an unclean stop.
 
 ## 6. PnL and accounting
 

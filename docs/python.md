@@ -106,6 +106,7 @@ r = fastmm.run_backtest(cfg, data="synthetic", strategy=Joiner, params={"qty": 0
 - `fastmm.strategies()`: `{name: [{"name", "type", "default", "min", "max", "doc"}]}`.
 - `fastmm.OrderBook()`: L2 book (256 levels/side) with `apply_snapshot(bids, asks)`, `apply_delta(bids, asks)` (`(n, 2)` arrays or `(price, qty)` pairs, qty 0 deletes), `best_bid()`, `best_ask()`, `mid()`, `spread()`, `microprice()`, `weighted_mid(levels)`, `imbalance(levels)`, `bids(n)`, `asks(n)`.
 - `fastmm.inspect_journal(path)`: header and message counts of an `.fmj`.
+- `fastmm.open_store(path)`: the fills, orders, positions, PnL and kill events a live session recorded, as DataFrames ([Query what you traded](how-to/operations/query-trading-records.md)). Needs pandas.
 
 ## Logging
 

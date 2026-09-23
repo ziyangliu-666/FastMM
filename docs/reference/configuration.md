@@ -28,6 +28,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `threading` | string |  | fastmm-live: split (engine and network threads, rings between them) \| single (one venue; its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is ignored) (default split) |
 | `journal` | boolean |  | record every consumed event to a .fmj journal (default true) |
 | `journal_dir` | string |  | directory for journals (default "runs") |
+| `journal_sync` | string |  | how far a journal write is pushed: async (msync every 100 ms; survives the process dying) \| fdatasync (msync + fdatasync on the same tick; survives power loss) (default async) |
+| `journal_max_bytes` | integer |  | roll the journal over to the next part at this size, bytes; each part is a complete journal ("x.fmj", "x.1.fmj", ...); 0 = one file per session (default 0) |
+| `journal_retention_days` | integer |  | delete .fmj files in journal_dir last written more than this many days ago, at start; 0 = keep everything (default 0) |
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
 | `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
 | `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |

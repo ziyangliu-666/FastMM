@@ -47,6 +47,9 @@ function(fastmm_relabel_tests target regex labels)
 endfunction()
 
 fastmm_test(core      LABELS "unit;property" LIBS fastmm::core)
+# The store tests reach into src/store/sqlite_schema.hpp for the migration steps, so they link
+# SQLite directly; fastmm::store keeps it private.
+fastmm_test(store     LABELS "unit"          LIBS fastmm::store sqlite3)
 fastmm_test(strategies LABELS "unit"         LIBS fastmm::backtest)
 # A strategy library in its own STATIC archive, referenced only through its registration functions.
 add_library(fastmm_test_strategy_module STATIC
@@ -299,6 +302,18 @@ if(TARGET fastmm-backtest)
       EXPECT_REGEX "${_bt_typos_regex}")
   endif()
 endif()
+if(TARGET fastmm-pnl)
+  fastmm_cli_test(apps.fastmm-pnl.no_command EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-pnl> --engine mm
+    EXPECT_REGEX "a command is required")
+  fastmm_cli_test(apps.fastmm-pnl.unknown_backend EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-pnl> sessions --backend clickhouse
+    EXPECT_REGEX "no queryable backend 'clickhouse' \\(have none, sqlite\\)")
+  fastmm_cli_test(apps.fastmm-pnl.missing_store EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-pnl> sessions --store ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/no-such.db
+    EXPECT_REGEX "fastmm-pnl: .*no-such.db")
+endif()
+
 if(TARGET fastmm-live)
   # Built-in parity: the live and backtest apps offer the same strategies, for all three transports.
   fastmm_cli_test(apps.list_strategies.parity_text EXPECT_RC 0

@@ -3,7 +3,7 @@
 // private dependency of fastmm_core); this header exposes only plain structs.
 //
 // Sections: [engine] [venues.<x>] [venues.<x>.fees] [[instruments]] [strategy]
-//           [strategy.params] [risk] [logging] [sim] [backtest]
+//           [strategy.params] [risk] [logging] [sim] [backtest] [storage]
 // Rules: ${VAR} is substituted only inside [venues.*] strings; a value that looks like an
 // inline secret (> 32 chars, no ${) is rejected unless allow_inline_secrets; redacted()
 // prints the config with secrets masked; validation errors carry line:col.
@@ -53,6 +53,9 @@ struct EngineSection {
   std::string threading = "split";
   bool journal = true;
   std::string journal_dir = "runs";
+  std::string journal_sync = "async";  // "async" | "fdatasync" (core/journal.hpp)
+  std::size_t journal_max_bytes = 0;   // roll over to the next part at this size (0: never)
+  int journal_retention_days = 0;      // delete .fmj files older than this at start (0: keep)
   std::string epoch_file = "runs/session_epoch";
   // Latched kill switch and cumulative PnL; empty = "<journal_dir>/<name>.kill".
   std::string kill_file;
@@ -184,6 +187,10 @@ class Config {
   LoggingSection logging;
   GenericSection sim;
   GenericSection backtest;
+  // [storage]: the backend name and whatever keys that backend reads. Free-form, like [sim] and
+  // [backtest]: a storage backend parses its own keys and the central schema knows none of them
+  // (docs/reference/storage.md).
+  GenericSection storage;
   std::vector<std::string> warnings;
   std::string source;      // path or "<string>"
   std::uint64_t hash = 0;  // FNV-1a of the raw text

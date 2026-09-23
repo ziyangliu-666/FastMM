@@ -35,6 +35,11 @@ struct ReplayOptions {
   // Apply the journal's ParamUpdate records, their fields matched to the strategy's parameters by
   // name (false: skip them and keep the configured parameters, a what-if run).
   bool param_updates = true;
+  // Replay a journal whose writer never closed it (no trailer) or whose last block is corrupt.
+  // The events before the damage are intact, so a replay of them runs and the outbound comparison
+  // stops early; by default such a file is refused rather than compared against a stream that was
+  // cut off. fastmm-replay --allow-incomplete sets it and warns instead.
+  bool allow_incomplete = false;
 };
 
 struct ReplayResult {
@@ -48,6 +53,7 @@ struct ReplayResult {
   std::string expected_message;      // summaries at first_mismatch ("(none)" past the end)
   std::string actual_message;
   bool session_restored = false;  // the header's session settings were applied
+  bool incomplete = false;        // the journal has no trailer or a damaged tail block
   [[nodiscard]] bool ok() const noexcept {
     return first_mismatch < 0 && outbound_messages == recorded_messages &&
            outbound_sha256 == recorded_sha256;
@@ -55,6 +61,9 @@ struct ReplayResult {
 };
 
 struct JournalInfo {
+  // The file was closed cleanly: it ends in a trailer and no block was discarded. False means the
+  // writer died or ran out of space and the tail of the session is missing.
+  bool complete = true;
   std::string strategy;
   std::uint32_t version = 0;
   std::uint64_t rng_seed = 0;
