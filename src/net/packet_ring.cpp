@@ -10,6 +10,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+// manylinux's kernel headers predate this one (Linux 4.20).
+#ifndef PACKET_IGNORE_OUTGOING
+#define PACKET_IGNORE_OUTGOING 23  // NOLINT(cppcoreguidelines-macro-usage): <linux/if_packet.h>
+#endif
+
 #include <cerrno>
 #include <cstring>
 
