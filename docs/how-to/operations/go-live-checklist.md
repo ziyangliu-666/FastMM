@@ -1,6 +1,6 @@
 # Go-live checklist
 
-Repeat this list whenever the binary, config or strategy parameters change.
+Repeat this list whenever the binary, config or strategy parameters change. What this list does not cover, because no configuration fixes it, is in [Running this in production](running-in-production.md); the economics of the shipped strategies are in [Economics](../../explanation/economics.md).
 
 ## The build and the strategy
 

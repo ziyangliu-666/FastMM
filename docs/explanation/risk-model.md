@@ -8,7 +8,7 @@ Every new order and every replace passes through `RiskEngine` on the engine thre
 
 Cancels skip the checks, also after the kill switch has tripped, so a strategy or the engine can always reduce what is in the market.
 
-The checks are integer compares on state the engine already keeps; price bounds are recomputed on every book and trade update. `BM_Risk_CheckNew_Pass`, an order that passes all checks, takes 8.1 ns ([bench/README.md](../../bench/README.md)).
+The checks are integer compares on state the engine already keeps; price bounds are recomputed on every book and trade update. `BM_Risk_CheckNew_Pass`, an order that passes all checks, takes 6.5 ns ([bench/README.md](../../bench/README.md)).
 
 ## The checks, in order
 

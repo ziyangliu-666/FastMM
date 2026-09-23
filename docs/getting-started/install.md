@@ -40,6 +40,7 @@ The first command lists the built-in strategies with their parameters. The secon
 |---|---|---|
 | `release` | gcc, `-O3`, LTO, portable x86-64-v2 | everyday work, CI |
 | `release-native` | as `release` with `-march=native` | benchmarks on this machine only |
+| `release-dpdk` | as `release` with the DPDK receive backend linked in | `rx_backend = "dpdk"` ([Receive a multicast feed](../how-to/operations/multicast-feeds.md)), `scripts/package-release.sh` |
 | `debug` | gcc, `-O0 -g`, no-allocation assertions | debugging, clang-tidy |
 | `asan` | gcc, AddressSanitizer and UBSan | `cmake --workflow --preset asan` |
 | `tsan`, `clang-tsan` | ThreadSanitizer | `cmake --workflow --preset tsan` |
@@ -54,7 +55,7 @@ The first command lists the built-in strategies with their parameters. The secon
 docker compose up --build
 ```
 
-This builds one image and starts two containers: `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`.
+This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image runs as root and carries test TLS certificates; it is not a production container ([Running this in production](../how-to/operations/running-in-production.md#10-what-the-repository-does-not-ship)).
 
 ## WSL2
 

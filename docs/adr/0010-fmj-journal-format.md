@@ -1,6 +1,6 @@
 # ADR-0010: The .fmj journal format
 
-Status: accepted (2026-09); amended by format version 2 (2026-09)
+Status: accepted (2026-09); amended by format version 2 and version 3 (2026-09)
 
 ## Context
 
@@ -42,3 +42,21 @@ Replay (`bt::replay_journal`, `fastmm-replay`) sets `SimClock` to the recorded e
 - Every consumed event costs a subtraction and a compare in the journal writer; the extra records are two per session plus one per idle gap longer than 2.1 s.
 - Seq numbers now also count `EngineTime` records.
 - Tools reading the header must use the version 2 layout (`tools/journal_dump.py` does).
+
+## Amendment: format version 3 (2026-09)
+
+### Context
+
+ADR-0013 makes a strategy's parameters a journaled input: a `ParamUpdate` record (`EventType::ParamUpdate`) names a schema index, and replay has to resolve that index to the same field. A version 2 journal carries no parameter names, so a replay against a build whose schema order changed would apply the wrong field silently.
+
+### Decision
+
+`kJournalVersion` is 3. Readers open versions 1, 2 and 3.
+
+- **Parameter table.** After the padded configuration the header carries `param_count`, `param_table_bytes` and `param_table_crc32c`, followed by one entry per schema index with the parameter's name and `ParamType` (`include/fastmm/core/journal.hpp`, up to `kJournalMaxParams` = 32 entries). Replay matches recorded `ParamUpdate` records to the running strategy's schema by name, not by index.
+- **Strategy metadata.** `strategy_meta`, `key=value` lines describing the strategy, follows the same header region; it is empty when the strategy supplies none.
+
+### Consequences
+
+- A version 2 journal replays unchanged; its parameter table is empty, so a `ParamUpdate` in such a file resolves by index as before.
+- `tools/journal_dump.py` and `fastmm-replay` read all three versions ([Journal format](../reference/journal-format.md)).

@@ -10,6 +10,8 @@ FastMM ships five connectors behind the control-path `fastmm::venues::Venue` int
 | `deribit` | `deribit::DeribitVenue` |
 | `nasdaq_itch` | `nasdaq::NasdaqItchVenue` |
 
+Writing a sixth: [Add a venue](../how-to/venues/add-a-venue.md). What a connector does not protect you from: [Running this in production](../how-to/operations/running-in-production.md).
+
 Every connector runs on its own `net::Reactor` thread and writes normalised messages into two rings per venue: market data (lossy: a full ring drops the delta and forces a resync) and order events (never dropped: bounded spin, overflow trips the kill switch in `fastmm-live`). `cancel_all()` uses an independent blocking REST connection, so it works from any thread even if the reactor is wedged (`nasdaq_itch`: it shuts the OUCH connection down, see below). `Venue::poll()` runs after every reactor iteration; `nasdaq_itch` polls its sockets there in `spin_mode = "busy"`.
 
 ## Binance Spot
@@ -30,7 +32,7 @@ The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`
 * Ed25519 keys (`key_type = "ed25519"`, `private_key_file` or `private_key_env`) log on once per WS API connection with `session.logon` (the only signed request) on the order and user connections. Later requests carry neither `apiKey` nor `signature`, only `timestamp` and `recvWindow`. The order channel is Live only after the logon reply. A failed logon is fatal for bad key, signature or permission errors; timestamp, rate-limit and server errors retry the logon after 2 s. A revoked session (`{"id":null,"status":401,...}`, key deleted or IP not whitelisted) is logged and acted on through the error map (-2015 is fatal). REST requests (fallback, reconciliation, kill switch) are signed with Ed25519 per request, about 30 µs each: keep `order_api = "ws"` with Ed25519 keys.
 * Binance supports `session.logon` with Ed25519 keys only, on production, the Spot testnet (`wss://ws-api.testnet.binance.vision/ws-api/v3`) and Demo Mode (`wss://demo-ws-api.binance.com/ws-api/v3`); RSA keys are not supported by FastMM.
 
-Measured on the order encode (`bench_order_encoders`, release-native, one pinned core): HMAC 736 ns (1628 ns before the key pads were precomputed), Ed25519 after `session.logon` 284 ns, Ed25519 without a session 31 µs.
+Measured on the order encode (`bench/bench_order_encoders.cpp`): the HMAC path is 523 ns ([bench/README.md](../../bench/README.md), release-native, one pinned core, 2026-09-23; 1440 ns before the key pads were precomputed). `BM_Encode_BinanceOrderPlace_Session` and `_Ed25519` are not in `bench/results/latest`; run them for figures on your host.
 
 ### SBE market data
 
@@ -43,7 +45,7 @@ Measured on the order encode (`bench_order_encoders`, release-native, one pinned
 | `<sym>@trade` | `TradesStreamEvent` 10000 | one `Trade` per group entry |
 | `<sym>@depth20` | `DepthSnapshotStreamEvent` 10002 | decoded, not subscribed |
 
-The schema is `tools/sbe/binance_spot_stream_1_0.xml` (schema id 1, version 0, from the binance-spot-api-docs repository); `tools/sbe_gen.py` generates `include/fastmm/venues/binance/generated/binance_stream_sbe.hpp` (CI checks it is current). Timestamps are microseconds; prices and quantities are int64 mantissas with a per-message exponent, converted exactly to 1e-8 fixed point (a value finer than 1e-8 makes the frame malformed). The depth snapshot still comes from REST (JSON), and depth sync is unchanged. Decode per message (`bench_json`, release-native): depth 10+10 levels 51 ns (JSON 680 ns), 50+50 levels 147 ns (JSON 2.9 µs), best bid/ask 17 ns (bookTicker 118 ns), trade 19 ns (JSON 120 ns).
+The schema is `tools/sbe/binance_spot_stream_1_0.xml` (schema id 1, version 0, from the binance-spot-api-docs repository); `tools/sbe_gen.py` generates `include/fastmm/venues/binance/generated/binance_stream_sbe.hpp` (CI checks it is current). Timestamps are microseconds; prices and quantities are int64 mantissas with a per-message exponent, converted exactly to 1e-8 fixed point (a value finer than 1e-8 makes the frame malformed). The depth snapshot still comes from REST (JSON), and depth sync is unchanged. Decode per message, JSON figures from [bench/README.md](../../bench/README.md) (release-native, 2026-09-23): `BM_Json_BinanceDepth20` 608 ns, `BM_Json_BinanceDepth100` 2.73 µs, `BM_Json_BinanceBookTicker` 111 ns, `BM_Json_BinanceTrade` 109 ns. The matching `BM_Sbe_*` benchmarks are in `bench/bench_json.cpp` but not in `bench/results/latest`; run `bench_json --benchmark_filter=Sbe_Binance` for figures on your host.
 
 WS API responses stay JSON: `responseFormat=sbe` would move order acks and execution reports to SBE schema 3 (retired every few months, currently version 5), for a saving of about 300 ns per order event.
 

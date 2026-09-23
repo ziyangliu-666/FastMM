@@ -4,7 +4,7 @@
 
 With `[engine] journal = true` (the default), `fastmm-live` writes `<journal_dir>/<engine name>-<session id>.fmj`; `--journal <path>` chooses the file and `--no-journal` turns it off. The log names the file at startup (`journal: <path>`).
 
-A journal holds the session header, the instrument table, the effective configuration (without API keys and secrets), each consumed event with the engine clock at which it was processed, and a copy of each order message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean shutdown writes a trailer block. The current format is version 2 ([Journal format](../../reference/journal-format.md), [ADR 0010](../../adr/0010-fmj-journal-format.md)); the tools also read version 1.
+A journal holds the session header, the instrument table, the effective configuration (without API keys and secrets), each consumed event with the engine clock at which it was processed, and a copy of each order message the engine sent (marked `out`). Blocks carry CRC32C checksums, and a clean shutdown writes a trailer block. The current format is version 3 ([Journal format](../../reference/journal-format.md), [ADR 0010](../../adr/0010-fmj-journal-format.md)); the tools also read versions 1 and 2.
 
 Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour.
 

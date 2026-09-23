@@ -163,21 +163,19 @@ Sequence token: a ClOrdID of `'T'` followed by 13 zero-padded decimal digits nam
 
 ## Benchmarks
 
-`bench/bench_codecs_nasdaq.cpp`. Each benchmark iteration times a batch of 64 operations with rdtsc; `p50_ns` is the median per-operation time. Measured on the development machine (WSL2, gcc 13.3, RelWithDebInfo, `-march=x86-64-v2`, pinned with `--cpu=5`, 3 repetitions of 1 s) while other builds were running (load average about 6.7; see [Benchmarks](../../explanation/benchmarks.md#caveats)):
+`bench/bench_codecs_nasdaq.cpp`. Each benchmark iteration times a batch of 64 operations with rdtsc; `p50_ns` is the median per-operation time. Figures from [bench/README.md](../../../bench/README.md) and `bench/results/latest/bench_codecs_nasdaq.json` (`scripts/bench.sh`, preset `release-native`, gcc 13, WSL2, pinned, 5 repetitions, 2026-09-23; see [Benchmarks](../../explanation/benchmarks.md#caveats)):
 
 | Benchmark | What is timed | p50 |
 |---|---|---|
-| `BM_Itch_DecodeAddOrder` | ITCH 'A' (36 bytes) -> `OrderAddL3Msg` committed to an `EventSink` | 15.4 ns |
-| `BM_Itch_DecodeOrderExecuted` | ITCH 'E' (31 bytes) -> `OrderExecL3Msg` committed to an `EventSink` | 15.9 ns |
-| `BM_ItchL2Bridge_Message` | `ItchL2Bridge::on_itch_message()` per message of a replayed A/E/C/D/U stream around one touch, `end_datagram()` every 8 messages (a delta for about 1 in 8 messages). Measured separately: `release-native`, `taskset -c 5`, load average 1.5 | 60 ns |
-| `BM_MoldUdp64_FramePacket` | `parse_packet()` + iterate a 10-message packet | 19.5 ns per packet |
-| `BM_MoldUdp64_ReceiveAB` | `Receiver::on_packet()` for one datagram of line A or B (4 messages; B trails A by one packet, so every B copy is a duplicate) | 11.3 ns |
+| `BM_Itch_DecodeAddOrder` | ITCH 'A' (36 bytes) -> `OrderAddL3Msg` committed to an `EventSink` | 6.9 ns |
+| `BM_Itch_DecodeOrderExecuted` | ITCH 'E' (31 bytes) -> `OrderExecL3Msg` committed to an `EventSink` | 6.7 ns |
+| `BM_ItchL2Bridge_Message` | `ItchL2Bridge::on_itch_message()` per message of a replayed A/E/C/D/U stream around one touch, `end_datagram()` every 8 messages (a delta for about 1 in 8 messages). | 57.3 ns |
+| `BM_MoldUdp64_FramePacket` | `parse_packet()` + iterate a 10-message packet | 23.6 ns per packet |
+| `BM_MoldUdp64_ReceiveAB` | `Receiver::on_packet()` for one datagram of line A or B (4 messages; B trails A by one packet, so every B copy is a duplicate) | 11.8 ns |
 | `BM_MoldUdp64_ReceiveABLossA` | as above; A loses 1 packet in 8 and B trails by two, so A's next packet waits in the reorder buffer | 26.6 ns |
-| `BM_SoupBin_FrameSequenced` | `SoupBinFramer::next()` + `ClientSession::on_frame()` for a Sequenced Data packet | 2.4 ns |
-| `BM_Ouch42_EncodeEnterOrder` | `OrderCommand` -> OUCH 4.2 Enter Order (49 bytes) | 18.4 ns |
-| `BM_Ouch50_EncodeEnterOrder` | `OrderCommand` -> OUCH 5.0 Enter Order (47 bytes, UserRefNum lookup) | 15.9 ns |
-
-The two `Receiver` rows were measured later (release preset, load average about 10).
+| `BM_SoupBin_FrameSequenced` | `SoupBinFramer::next()` + `ClientSession::on_frame()` for a Sequenced Data packet | 2.3 ns |
+| `BM_Ouch42_EncodeEnterOrder` | `OrderCommand` -> OUCH 4.2 Enter Order (49 bytes) | 7.4 ns |
+| `BM_Ouch50_EncodeEnterOrder` | `OrderCommand` -> OUCH 5.0 Enter Order (47 bytes, UserRefNum lookup) | 10.2 ns |
 
 Run them with `build/<dir>/bin/bench/bench_codecs_nasdaq --cpu=N --benchmark_min_time=1s`.
 
