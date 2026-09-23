@@ -53,6 +53,9 @@ struct EngineLiveStats {
   std::uint64_t flatten_orders = 0;
   // Why each venue's flag was first set, by venue id (RiskEngine::venue_slot).
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons{};
+  // Time-weighted quoting presence for the session: what a market-maker programme measures.
+  std::int64_t quoting_elapsed_ns = 0;
+  std::int64_t quoting_two_sided_ns = 0;
   LatencySnapshot latency;
 };
 

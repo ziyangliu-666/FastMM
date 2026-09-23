@@ -27,7 +27,7 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 4: p99.9 in every latency, the multicast feed block of each venue.
 // 5: the latched kill state and the PnL carried over from earlier sessions.
 // 6: the operator flatten's state, the instruments it has left and the orders it has sent.
-inline constexpr std::uint32_t kStatusVersion = 6;
+inline constexpr std::uint32_t kStatusVersion = 7;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -148,6 +148,10 @@ struct StatusSnapshot {
   // fit (set_status_rejects).
   StatusRejectCount risk_reject_reasons[kStatusMaxRejectReasons];
   StatusRejectCount venue_reject_reasons[kStatusMaxRejectReasons];
+  // Time-weighted quoting presence: elapsed since the first order rested, and how much of it had a
+  // live order on both sides. A market-maker programme's rebate is measured this way.
+  std::int64_t quoting_elapsed_ns = 0;
+  std::int64_t quoting_two_sided_ns = 0;
   StatusLatency latency[static_cast<std::size_t>(LatencyInterval::Count)];
   StatusVenue venues[kStatusMaxVenues];
 };

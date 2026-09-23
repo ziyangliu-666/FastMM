@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 6) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 7) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal ([Public API](public-api.md)).
 
 ## Snapshot fields
@@ -39,6 +39,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `flatten_instruments_left` | u32 | instruments in the flatten's scope that still hold a position |
 | `flatten_orders` | u64 | reduce-only orders the flatten has sent |
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | quote currency, raw fixed point (divide by 1e8) |
+| `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides; a market-maker programme measures its rebate this way |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 

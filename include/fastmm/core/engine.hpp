@@ -35,6 +35,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
+#include "fastmm/core/quote_presence.hpp"
 #include "fastmm/core/record_stream.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/risk.hpp"
@@ -317,6 +318,8 @@ class Engine {
   [[nodiscard]] JournalWriter& journal() noexcept { return journal_; }
   [[nodiscard]] RecordWriter& records() noexcept { return records_; }
   [[nodiscard]] QuoteManager& quote_manager() noexcept { return quotes_; }
+  // Time-weighted two-sided quoting, what a market-maker programme pays for. settle() first.
+  [[nodiscard]] QuotePresence& presence() noexcept { return presence_; }
   [[nodiscard]] TimerWheel<>& timers() noexcept { return timers_; }
   [[nodiscard]] Strategy& strategy() noexcept { return strategy_; }
   [[nodiscard]] Transport& transport() noexcept { return transport_; }
@@ -806,7 +809,18 @@ class Engine {
     if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
+  // An order rests at the venue from its ack to its terminal state; a cancel or replace in flight
+  // does not take it off the book.
+  [[nodiscard]] static constexpr bool resting(OrderState st) noexcept {
+    return st != OrderState::PendingNew && !is_terminal(st);
+  }
+
   void after_oms_update(const OmsUpdate& u, const EventHeader& h) noexcept {
+    if (u.known) {
+      const int delta =
+          static_cast<int>(resting(u.order.state)) - static_cast<int>(resting(u.prev));
+      if (delta != 0) presence_.on_live_change(u.order.instrument, u.order.side, delta, now_);
+    }
     book_missed_fill(u);
     if (u.action == OmsAction::CancelUnknown) {
       cancel_unknown(h, u);
@@ -1736,6 +1750,10 @@ class Engine {
     live.flatten_state = flatten_state_;
     live.flatten_instruments_left = flatten_state_ == FlattenState::Off ? 0 : flatten_left();
     live.flatten_orders = stats_.flatten_orders;
+    presence_.settle(now_);
+    const QuotePresenceStats presence = presence_.total();
+    live.quoting_elapsed_ns = presence.elapsed_ns;
+    live.quoting_two_sided_ns = presence.two_sided_ns;
     live.latency = latency;
     live_pub_.store(live);
   }
@@ -1753,6 +1771,7 @@ class Engine {
   Oms oms_;
   RiskEngine risk_;
   QuoteManager quotes_;
+  QuotePresence presence_;
   TimerWheel<> timers_;
   PositionTracker positions_;
   LatencyTracker latency_;

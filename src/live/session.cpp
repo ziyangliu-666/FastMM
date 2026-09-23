@@ -996,6 +996,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.venue_rejects = live.stats.venue_rejects;
     set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
+    snap.quoting_elapsed_ns = live.quoting_elapsed_ns;
+    snap.quoting_two_sided_ns = live.quoting_two_sided_ns;
     snap.kills = live.kills;
     snap.venue_kills = static_cast<std::uint32_t>(live.venue_kills);
     snap.kill_flags = live.kill_flags;
@@ -1353,6 +1355,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       rs.fills,
       rs.risk_rejects,
       rs.venue_rejects);
+  {
+    const EngineLiveStats final_live = runner->live_stats();
+    if (final_live.quoting_elapsed_ns > 0) {
+      FASTMM_LOG_INFO("fastmm-live: quoting two_sided={}% of {} s",
+                      100.0 * static_cast<double>(final_live.quoting_two_sided_ns) /
+                          static_cast<double>(final_live.quoting_elapsed_ns),
+                      static_cast<double>(final_live.quoting_elapsed_ns) / 1e9);
+    }
+  }
   log_reject_breakdown("risk_rejects", rs.risk_rejects_by_reason);
   log_reject_breakdown("venue_rejects", rs.venue_rejects_by_reason);
   FASTMM_LOG_INFO(

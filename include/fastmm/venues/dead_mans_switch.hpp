@@ -45,13 +45,12 @@ class CountdownSwitch {
                            std::int64_t refresh_numerator = 1,
                            std::int64_t refresh_denominator = 3) noexcept
       : window_ms_(std::max<std::int64_t>(0, window_ms)),
-        period_ns_(window_ms_ <= 0 ? 0
-                                   : std::max<std::int64_t>(kMinPeriodNs,
-                                                            window_ms_ * 1'000'000 *
-                                                                std::max<std::int64_t>(
-                                                                    1, refresh_numerator) /
-                                                                std::max<std::int64_t>(
-                                                                    1, refresh_denominator))) {}
+        period_ns_(window_ms_ <= 0
+                       ? 0
+                       : std::max<std::int64_t>(
+                             kMinPeriodNs,
+                             window_ms_ * 1'000'000 * std::max<std::int64_t>(1, refresh_numerator) /
+                                 std::max<std::int64_t>(1, refresh_denominator))) {}
 
   // A refresh sent more often than this is wasted rate limit whatever the window is.
   static constexpr std::int64_t kMinPeriodNs = 500'000'000;
@@ -67,9 +66,7 @@ class CountdownSwitch {
   }
   // A refresh was written to the venue. Only stops due() from firing again immediately; it does
   // not mean the countdown is running.
-  void attempted(std::int64_t now_ns) noexcept {
-    last_attempt_ns_ = now_ns == 0 ? 1 : now_ns;
-  }
+  void attempted(std::int64_t now_ns) noexcept { last_attempt_ns_ = now_ns == 0 ? 1 : now_ns; }
   // The venue accepted the refresh: the countdown is running from here.
   void armed(std::int64_t now_ns) noexcept { last_armed_ns_ = now_ns == 0 ? 1 : now_ns; }
 
