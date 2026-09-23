@@ -1,6 +1,6 @@
 # Running this in production
 
-FastMM has not been run with real money. This page lists what an operator will hit, in the order it is likely to cost you, with the file that decides each behaviour and the mitigation where one exists. Read [Economics of the shipped strategies](../../explanation/economics.md) first: the shipped strategies lose money at any positive maker fee.
+This page lists what an operator will hit, in the order it is likely to cost you, with the file that decides each behaviour and the mitigation where one exists. Read [Economics of the shipped strategies](../../explanation/economics.md) first: the shipped strategies lose money at any positive maker fee.
 
 Every shipped config points at a testnet, Demo Mode or a local simulator. There is no main-net config in the repository; you write it.
 

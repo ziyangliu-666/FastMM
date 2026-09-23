@@ -55,7 +55,7 @@ The first command lists the built-in strategies with their parameters. The secon
 docker compose up --build
 ```
 
-This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image runs as root and carries test TLS certificates; it is not a production container ([Running this in production](../how-to/operations/running-in-production.md#10-what-the-repository-does-not-ship)).
+This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image runs as root and carries test TLS certificates; [Running this in production](../how-to/operations/running-in-production.md#10-what-the-repository-does-not-ship) lists what a deployment has to add.
 
 ## WSL2
 

@@ -29,8 +29,6 @@ Terms are defined once, in the [Glossary](reference/glossary.md).
 
 ## Before real money
 
-FastMM has not been run with real money, and the shipped strategies are reference implementations of published quoting rules, not an edge.
-
 - [Economics of the shipped strategies](explanation/economics.md): the example backtest's profit is a configured maker rebate; at a real fee it is negative.
 - [Running this in production](how-to/operations/running-in-production.md): what breaks, what is not covered, and the mitigation for each.
 - [Go-live checklist](how-to/operations/go-live-checklist.md): the list to run before every session.

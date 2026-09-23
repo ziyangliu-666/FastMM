@@ -55,10 +55,8 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 
 ## Limitations
 
-- Version 0.1; the API may change.
 - Exchanges: Binance Spot, Binance USDⓈ-M perpetuals, Bybit spot, Deribit, and Nasdaq ITCH market data.
 - Linux on x86-64 only.
-- Not yet used with real money.
 - The shipped strategies are reference implementations, not an edge: the example backtest is profitable only because it is configured with a maker rebate ([Economics](docs/explanation/economics.md)).
 - No state survives a restart, there is no metrics export or alerting, and venue-side cancel-on-disconnect is armed only on Deribit ([Running this in production](docs/how-to/operations/running-in-production.md)).
 
