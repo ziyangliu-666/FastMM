@@ -116,6 +116,22 @@ All notable changes are recorded here (Keep a Changelog format).
   latency quantiles, in seconds and quote currency. Off unless the flag is given, bound to
   127.0.0.1 by default, and served from `fastmm-top`'s own process, so a scrape never reaches the
   engine ([Monitoring a live session](docs/how-to/operations/monitor-with-fastmm-top.md#scrape-it-with-prometheus)).
+- Backtests on public market data. `--data <spec>`, `[backtest] source` and `run_backtest(data=)`
+  resolve through a registry of named sources (`include/fastmm/backtest/data_registry.hpp`), each
+  parsing its own options and declaring what it carries, so a new source is one file plus a
+  registration and nothing about it reaches the configuration schema
+  ([Market-data sources](docs/reference/data-sources.md)). Two archives ship:
+  `binance:BTCUSDT,2024-03-27` reads data.binance.vision `bookTicker` + `aggTrades` (top of book
+  and trades, USDⓈ-M futures 2023-05-16 to 2024-03-30), `tardis:binance-futures,BTCUSDT,2026-09-01`
+  reads datasets.tardis.dev `incremental_book_L2` + `trades` (full L2; free on the first day of a
+  month). `python3 -m fastmm.data fetch` downloads them into `$FASTMM_DATA_HOME` with the
+  archive's own checksums and resumable transfers, `fastmm-data list` prints the sources and
+  `fastmm-data convert` packs one into an `.fmj` that replays about twelve times faster.
+  `configs/backtest-binance.toml` runs `basic_mm` on BTCUSDT perpetual at Binance USDⓈ-M VIP 0
+  fees ([Backtest on real BTCUSDT data](docs/how-to/backtesting/binance-public-data.md)).
+- `fastmm.data_sources()` and `fastmm.convert_data()`; `fastmm.data` is now a package
+  (`fastmm.data.binance`, `fastmm.data.tardis`, `fastmm.data.Cache`), with `fastmm.load_csv`
+  unchanged.
 - Durable risk state (`include/fastmm/core/session_state.hpp`): `[engine] kill_file` (default
   `<journal_dir>/<name>.kill`) latches a `[risk] max_loss` trip and carries the cumulative realized
   PnL and fees, so `max_loss` is a budget for the deployment rather than one per process. A start

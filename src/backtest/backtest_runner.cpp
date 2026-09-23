@@ -1,6 +1,7 @@
 #include "fastmm/backtest/backtest_runner.hpp"
 
 #include "fastmm/backtest/csv_source.hpp"
+#include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/pnl.hpp"
 #include "fastmm/backtest/registrations.hpp"
@@ -321,23 +322,34 @@ bool ends_with(std::string_view s, std::string_view suffix) noexcept {
 }
 }  // namespace
 
-std::unique_ptr<MdSource> open_data(std::string_view spec) {
+std::unique_ptr<MdSource> open_data(std::string_view spec, const InstrumentTable* instruments) {
   if (spec.empty() || spec == "synthetic") return nullptr;
+  register_builtin_data_sources();
+  const std::string_view head = spec.substr(0, spec.find(':'));
+  const DataSourceEntry* entry = DataSourceRegistry::instance().find(head);
+  if (entry != nullptr) {
+    DataSourceOptions opts = DataSourceOptions::parse(spec, entry->positional);
+    opts.set_instruments(instruments);
+    return entry->open(opts);
+  }
+  // A bare path: infer the source from the extension.
   const std::string path(spec);
   if (ends_with(spec, ".fmj")) return std::make_unique<JournalSource>(path);
   if (ends_with(spec, ".csv")) return std::make_unique<CsvSource>(path);
-  throw std::runtime_error("backtest: cannot infer the data format of '" + path +
-                           "' (expected synthetic, *.fmj or *.csv)");
+  std::string known;
+  for (const DataSourceEntry& e : DataSourceRegistry::instance().entries())
+    known.append(known.empty() ? "" : ", ").append(e.name);
+  throw std::runtime_error("backtest: '" + path +
+                           "' is neither *.fmj, *.csv nor <source>:<args> (" + known + ")");
 }
 
 std::unique_ptr<MdSource> open_source(const BacktestConfig& cfg) {
-  const std::string& kind = cfg.source;
-  if (kind.empty()) return open_data(cfg.path);
-  if (kind == "synthetic") return nullptr;
-  if (cfg.path.empty()) throw std::runtime_error("backtest: source '" + kind + "' needs a path");
-  if (kind == "journal") return std::make_unique<JournalSource>(cfg.path);
-  if (kind == "csv") return std::make_unique<CsvSource>(cfg.path);
-  throw std::runtime_error("backtest: unknown source '" + kind + "' (journal | csv | synthetic)");
+  if (cfg.source.empty()) return open_data(cfg.path, &cfg.instruments);
+  // [backtest] source holds a whole spec; the older `source` + `path` pair is the same thing
+  // with the path as the source's one positional argument.
+  std::string spec = cfg.source;
+  if (spec.find(':') == std::string::npos && !cfg.path.empty()) spec += ":" + cfg.path;
+  return open_data(spec, &cfg.instruments);
 }
 
 }  // namespace fastmm::bt

@@ -9,6 +9,7 @@
 
 #include "fastmm/backtest/array_source.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/backtest/sweep.hpp"
@@ -366,7 +367,7 @@ DataSpec parse_data(const py::object& data) {
     return spec;
   }
   throw py::type_error(
-      "data must be None, 'synthetic', a .fmj/.csv path or a dict of numpy arrays");
+      "data must be None, a '<source>:<args>' spec, a .fmj/.csv path or a dict of numpy arrays");
 }
 
 // Runs without the GIL: touches only C++ state and the (kept-alive) column buffers.
@@ -375,7 +376,7 @@ std::unique_ptr<bt::MdSource> open_spec(const DataSpec& spec, const BacktestConf
     case DataSpec::Kind::Config:
       return bt::open_source(cfg);
     case DataSpec::Kind::Path:
-      return bt::open_data(spec.path);
+      return bt::open_data(spec.path, &cfg.instruments);
     case DataSpec::Kind::Arrays:
       return std::make_unique<bt::ArraySource>(spec.cols);
   }
@@ -518,10 +519,29 @@ void bind_backtest(py::module_& m) {
       py::arg("data") = py::none(),
       py::arg("strategy") = py::none(),
       "Run one backtest with the GIL released.\n\n"
-      "data: None (config.source / config.path), 'synthetic', a .fmj or .csv path, or a dict "
-      "of numpy arrays {ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw "
-      "1e-8) | float64, qty: int64 | float64, seq: uint64 (optional)} used without copying.\n"
+      "data: None (config.source), a source spec ('synthetic', 'binance:BTCUSDT,2024-03-27'; "
+      "fastmm.data_sources() lists them), a .fmj or .csv path, or a dict of numpy arrays "
+      "{ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw 1e-8) | float64, "
+      "qty: int64 | float64, seq: uint64 (optional)} used without copying.\n"
       "strategy: registry name; defaults to config.strategy.");
+
+  m.def(
+      "data_sources",
+      []() { return bt::format_data_sources(); },
+      "The registered market-data sources, their options and what each one carries.");
+
+  m.def(
+      "convert_data",
+      [](const std::string& data, const std::string& out, const BacktestConfig& config) {
+        const BacktestConfig cfg = config;
+        py::gil_scoped_release release;
+        return bt::convert_data(data, out, cfg.instruments);
+      },
+      py::arg("data"),
+      py::arg("out"),
+      py::arg("config"),
+      "Decode a data source into an .fmj journal, the format a backtest replays fastest, and "
+      "return the number of events written. The instruments come from `config`.");
 
   m.def(
       "_run_strategy",

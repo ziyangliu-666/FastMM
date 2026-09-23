@@ -147,6 +147,8 @@ nav:
           - tutorials/first-strategy/08-sim-exchange.md
           - tutorials/first-strategy/09-binance-demo.md
   - How-to:
+      - Backtesting:
+          - how-to/backtesting/binance-public-data.md
       - Strategies:
           - how-to/strategies/register-a-strategy.md
           - how-to/strategies/python-hot-hooks.md
@@ -176,6 +178,7 @@ nav:
           - reference/cli.md
           - reference/compatibility.md
           - reference/configuration.md
+          - reference/data-sources.md
           - reference/errors.md
           - reference/journal-format.md
           - reference/run-report.md

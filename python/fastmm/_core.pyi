@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'disable_logging', 'enable_logging', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -1216,6 +1216,14 @@ def build_info() -> str:
     """
     Compiler, flags and build type of the native module.
     """
+def convert_data(data: str, out: str, config: BacktestConfig) -> int:
+    """
+    Decode a data source into an .fmj journal, the format a backtest replays fastest, and return the number of events written. The instruments come from `config`.
+    """
+def data_sources() -> str:
+    """
+    The registered market-data sources, their options and what each one carries.
+    """
 def disable_logging() -> None:
     """
     Flush pending log records, stop the logger thread and close the log file.
@@ -1232,7 +1240,7 @@ def run_backtest(config: BacktestConfig, data: typing.Any = None, strategy: str 
     """
     Run one backtest with the GIL released.
     
-    data: None (config.source / config.path), 'synthetic', a .fmj or .csv path, or a dict of numpy arrays {ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw 1e-8) | float64, qty: int64 | float64, seq: uint64 (optional)} used without copying.
+    data: None (config.source), a source spec ('synthetic', 'binance:BTCUSDT,2024-03-27'; fastmm.data_sources() lists them), a .fmj or .csv path, or a dict of numpy arrays {ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw 1e-8) | float64, qty: int64 | float64, seq: uint64 (optional)} used without copying.
     strategy: registry name; defaults to config.strategy.
     """
 def strategies() -> dict:

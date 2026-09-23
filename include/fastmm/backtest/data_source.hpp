@@ -148,6 +148,32 @@ class RowAssembler {
   Level asks_[kMaxLevels];
 };
 
+// Concatenation of sources that cover consecutive spans of time (one file per day). The
+// caller owns them and is responsible for the order; events must not go back in time across a
+// boundary.
+class ChainSource final : public MdSource {
+ public:
+  explicit ChainSource(std::vector<MdSource*> sources) : sources_(std::move(sources)) {}
+  const EventHeader* next() override {
+    while (at_ < sources_.size()) {
+      if (const EventHeader* h = sources_[at_]->next()) return h;
+      ++at_;
+    }
+    return nullptr;
+  }
+  void reset() override {
+    for (MdSource* s : sources_) s->reset();
+    at_ = 0;
+  }
+  [[nodiscard]] Timestamp start_ts() const override {
+    return sources_.empty() ? Timestamp{} : sources_.front()->start_ts();
+  }
+
+ private:
+  std::vector<MdSource*> sources_;
+  std::size_t at_ = 0;
+};
+
 // k-way merge of several sources by event time (stable: lower source index first on ties).
 class MergedSource final : public MdSource {
  public:

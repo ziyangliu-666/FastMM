@@ -85,11 +85,14 @@ class BacktestRunner {
   BacktestConfig cfg_;
 };
 
-// Opens a data file by extension: "synthetic" (or "") -> nullptr, *.fmj -> JournalSource,
-// *.csv -> CsvSource. Throws std::runtime_error for anything else / unreadable files.
-[[nodiscard]] std::unique_ptr<MdSource> open_data(std::string_view spec);
-// Source for cfg.source / cfg.path ("journal" | "csv" | "synthetic"; empty source falls back
-// to open_data(cfg.path)).
+// Resolves `--data` through the data-source registry (data_registry.hpp): "<name>:<args>",
+// or a bare *.fmj / *.csv path. "synthetic" (and "") open to nullptr, which selects the market
+// generator. `instruments` lets a source map its symbols onto instrument ids; it may be null.
+// Throws std::runtime_error for an unknown source, bad options or unreadable files.
+[[nodiscard]] std::unique_ptr<MdSource> open_data(std::string_view spec,
+                                                  const InstrumentTable* instruments = nullptr);
+// Source for [backtest] source / path. `source` is a whole spec ("binance:BTCUSDT:2024-03-27");
+// a bare name plus `path` ("journal" + "x.fmj") is the same thing written as two keys.
 [[nodiscard]] std::unique_ptr<MdSource> open_source(const BacktestConfig& cfg);
 
 }  // namespace fastmm::bt

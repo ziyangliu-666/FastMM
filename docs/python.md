@@ -56,7 +56,10 @@ frames = r.to_pandas()                  # {"fills", "equity", "orders", "markout
 | `None` | the config's `[backtest] source / path` |
 | `"synthetic"` | the seeded synthetic market |
 | `"x.fmj"` / `"x.csv"` (str or `os.PathLike`) | journal / CSV (`ts_ns,type,inst,side,price,qty,seq`) |
+| `"binance:BTCUSDT,2024-03-27"` | a registered source and its options; `fastmm.data_sources()` lists them ([Market-data sources](reference/data-sources.md)) |
 | `dict` of numpy arrays | `ArraySource`, zero copy |
+
+`fastmm.data.binance.fetch(symbol, dates)` and `fastmm.data.tardis.fetch(exchange, symbol, dates)` download public archives into the cache, `python3 -m fastmm.data fetch` does it from a shell, and `fastmm.convert_data(spec, out, config)` packs a source into an `.fmj` for faster repeated replays ([Backtest on real BTCUSDT data](how-to/backtesting/binance-public-data.md)).
 
 Array columns: `ts` int64 (ns), `type` uint8 (0 snapshot level, 1 delta level, 2 trade, 3 book ticker), `inst` uint32, `side` int8 (0 bid/buy, 1 ask/sell), `price` and `qty` int64 (raw 1e-8) or float64, optional `seq` uint64. Dtypes must match exactly and arrays must be 1-D, C-contiguous, aligned and native-endian: a float32 column raises `TypeError` and a strided slice raises `ValueError` instead of being copied. `fastmm.load_csv(path)` reads a CSV into int64 columns (identical outbound hash to running the file by path).
 

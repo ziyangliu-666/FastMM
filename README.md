@@ -31,6 +31,16 @@ python3 tools/report.py runs/first                       # -> runs/first/report.
 ./scripts/run-sim.sh --duration 30s                      # sim exchange + live engine, ends with a report
 ```
 
+On real data, a day of Binance BTCUSDT perpetual at the venue's own fees:
+
+```bash
+python3 python/fastmm/data/__main__.py fetch --symbol BTCUSDT --date 2024-03-27
+./build/release/bin/fastmm-backtest --config configs/backtest-binance.toml \
+    --data binance:BTCUSDT,2024-03-27
+```
+
+What that result means, and what it cannot: [Backtest on real BTCUSDT data](docs/how-to/backtesting/binance-public-data.md).
+
 ## Write a strategy
 
 <!-- snippet: examples/quickstart/my_mm.hpp#strategy -->
