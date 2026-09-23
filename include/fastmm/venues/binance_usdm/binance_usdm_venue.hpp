@@ -24,6 +24,23 @@
 //
 // Funding payments, leverage and margin mode are not managed: load_reference_data() logs the
 // position mode, leverage, margin type and balances, and refuses to start in hedge mode.
+//
+// What this connector shares with Binance Spot, and what it does not. Shared, because Binance
+// documents one contract for both: request signing and the WS API frame
+// (binance/binance_params.hpp), the market-data feed machinery
+// (binance/binance_md_feed_base.hpp), the depth syncer (binance/binance_depth_sync.hpp, with
+// futures `pu` chaining instead of Spot's U/u), the credentials and Ed25519 key loading
+// (binance/binance_auth.hpp), the WS API response decoder and the REST error decoder. Its own,
+// because the protocols differ:
+//   * endpoints and weights: /fapi/v1 and /fapi/v3 against /api/v3, a different depth-weight
+//     table, exchangeInfo with contractType and no symbol filter;
+//   * user stream: listenKey only (Spot picks between the WS API user stream and listenKey);
+//   * market data: two connections (public + aggTrade market) against Spot's one, and no SBE;
+//   * account: one-way position mode is checked at start-up, and ACCOUNT_UPDATE positions are
+//     reconciled against the connector's own sum of forwarded fills (see above);
+//   * reconciliation: openOrders *and* positionRisk, emitted as one snapshot when both replies
+//     are in, against Spot's single openOrders reply;
+//   * cancel_all(): Spot treats the -2011 "no open orders" reply as success, this one does not.
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/log.hpp"

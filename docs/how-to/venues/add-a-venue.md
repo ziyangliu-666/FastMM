@@ -39,6 +39,16 @@ Differences in the other connectors:
 
 - Binance names its private parser `binance_user_parser.hpp` and its book sync `binance_depth_sync.hpp` (the snapshot comes from REST).
 - Deribit adds `deribit_json.hpp` (exact parsing of JSON numbers with exponents) and `deribit_credits.hpp` (`CreditBucket`, the matching-engine request credits).
+- Binance USDⓈ-M is the same exchange as Binance Spot, so it reuses the Spot signing, feed and depth-sync code and holds only the futures protocol itself; `include/fastmm/venues/binance_usdm/binance_usdm_venue.hpp` lists what is shared and what is not.
+
+Do not copy a connector's plumbing: the pieces that are the same for every venue already exist.
+
+| Header | What it gives you |
+|---|---|
+| `include/fastmm/venues/connector_common.hpp` | `map_conn_state()` / `channel_state()` (the transport state the engine is told about), `header_int()`, `origin_of()` / `url_root()`, `IdText`, `load_published_status()`, `trip_venue_kill_once()`, `VenueExtras` for the `extra` keys of your `make_foo_config()` |
+| `include/fastmm/venues/book_sync.hpp` | `StreamBookSync<Traits>` for a venue that sends its snapshot on the stream; write the traits, not the syncer |
+| `include/fastmm/venues/order_events.hpp` | `emit_order_ack()`, `emit_order_reject()`, `emit_cancel_ack()`, `emit_cancel_reject()`, `emit_connection_state()`, `emit_venue_kill()` |
+| `include/fastmm/venues/order_commands.hpp` | `OrderCommand`, `BatchedOrders`, `SentWatermark`, `drain_outbound_coalesced()` |
 
 `src/venues/CMakeLists.txt` globs `src/venues/**/*.cpp` and the test targets glob `tests/venues/*.cpp`, so new files need no CMake edits; re-run `cmake --preset release` so the glob sees them.
 
