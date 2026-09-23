@@ -127,9 +127,9 @@ Mitigation: one key per engine, trading permission only, IP-allowlisted where th
 
 | Missing | What you have to write |
 |---|---|
-| A systemd unit or any service file | the unit, including `Restart=no`, `LimitMEMLOCK=infinity` for `lock_memory`, and `CPUAffinity` outside the isolated cores |
-| An install target for the binaries | `CMakeLists.txt` installs libraries and headers only; `scripts/package-release.sh` makes a tarball of four binaries |
-| A production container | `docker/Dockerfile` runs as root, sets no ulimits and bakes in test TLS certificates; `docker-compose.yml` is a 120-second demo |
+| A service file for your host | `deploy/fastmm-live.service` sets `Restart=no`, `LimitMEMLOCK=infinity` and `CPUAffinity=2 3`; the paths, the user and the cores are yours to set ([Deploy a release](deploy.md#run-under-systemd)) |
+| An install target for the binaries | `CMakeLists.txt` installs libraries and headers only; `scripts/package-release.sh` makes the release tarball of four binaries |
+| Ulimits and cgroup limits for the container | `docker/Dockerfile.production` is non-root with the distro CA bundle and no test certificates, but sets no ulimits and no memory limit ([Deploy a release](deploy.md#run-the-container)); `docker/Dockerfile` and `docker-compose.yml` are the 120-second demo, as root |
 | A config profile mechanism | `configs/profiles/production-latency.toml` is one file with no loader and no `--profile` flag; copy its `[engine]` table by hand. Everything outside `[engine]` in that file is simulator config, including literal passwords |
 | Log rotation | point `[logging] file` at a path your own rotation handles, or let `mirror_level` send warnings to a collector on stderr |
 | Any alerting | see [4](#4-you-cannot-watch-it-and-you-cannot-talk-to-it) |

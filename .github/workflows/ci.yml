@@ -174,6 +174,11 @@ jobs:
         run: |
           docker compose up -d sim-exchange
           docker compose run --rm engine --config /fastmm/configs/sim-docker.toml --duration 20s
+      - name: the production image builds and runs as uid 10001
+        run: |
+          docker build -f docker/Dockerfile.production -t fastmm-production:ci .
+          test "$(docker run --rm --entrypoint id fastmm-production:ci -u)" = 10001
+          docker run --rm fastmm-production:ci fastmm-live --version
       - name: simulator log
         if: always()
         run: docker compose logs sim-exchange | tail -40

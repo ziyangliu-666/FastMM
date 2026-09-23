@@ -14,6 +14,8 @@ A strategy class uses one of two styles. Hot hooks (`@fastmm.hot`) are compiled 
 
 ## First strategy
 
+`fastmm init my-mm` writes a starter project: a config for the simulated market, a strategy with hot hooks and a backtest that runs it ([Install](getting-started/install.md#without-building-it)).
+
 Write it as hot hooks, the only style that trades live:
 
 1. [Write hot hooks in Python](how-to/strategies/python-hot-hooks.md): parameters, hooks and a backtest.

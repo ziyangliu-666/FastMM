@@ -15,7 +15,12 @@ FastMM is a fast market-making engine in C++20.
 
 ## Quick start
 
-Requires Linux, gcc 13+ or clang 16+, CMake 3.25+, Ninja, OpenSSL 3 and zlib.
+```bash
+pip install "fastmm-engine[hot]"                         # Linux x86-64, CPython 3.9+
+fastmm init my-mm && cd my-mm && python backtest.py      # a strategy, a config and a backtest
+```
+
+The C++ programs ship as a release tarball and as `ghcr.io/ziyangliu-666/fastmm` ([Deploy a release](docs/how-to/operations/deploy.md)). Building them needs Linux, gcc 13+ or clang 16+, CMake 3.25+, Ninja, OpenSSL 3 and zlib:
 
 ```bash
 git clone https://github.com/ziyangliu-666/FastMM && cd FastMM

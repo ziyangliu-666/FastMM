@@ -1,4 +1,7 @@
-"""python -m fastmm run module:Class --config file.toml [options]: fastmm.run_live from a shell.
+"""The ``fastmm`` command, also reachable as ``python -m fastmm``.
+
+    fastmm init [directory]                             a starter project (fastmm._scaffold)
+    fastmm run module:Class --config file.toml [...]     fastmm.run_live from a shell
 
 Before importing the strategy's module, ``run`` sets each of OPENBLAS_NUM_THREADS, OMP_NUM_THREADS
 and MKL_NUM_THREADS that is not set to 1. numpy reads them when it loads, and ``python -m fastmm``
@@ -16,9 +19,21 @@ from typing import List, Optional
 THREAD_VARIABLES = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 
 
+def _prog() -> str:
+    # argv[0] is the console script when it was run as `fastmm`, and __main__.py under `-m`.
+    return "fastmm" if os.path.basename(sys.argv[0]) == "fastmm" else "python -m fastmm"
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m fastmm")
+    parser = argparse.ArgumentParser(prog=_prog())
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
+    init = commands.add_parser(
+        "init", help="write a starter project: config, strategy and backtest",
+        description="Write config.toml, strategy.py, backtest.py and README.md into a directory. "
+                    "The project backtests a Python strategy on the simulated market and needs "
+                    "only this package and the hot extra.")
+    init.add_argument("directory", nargs="?", default=".", help="where to write (default: .)")
+    init.add_argument("--force", action="store_true", help="overwrite files that exist")
     run = commands.add_parser(
         "run", help="run a strategy with hot hooks against live venues",
         description="Run a fastmm.Strategy with @fastmm.hot methods against the venues in the "
@@ -47,6 +62,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _init(directory: str, force: bool) -> int:
+    from ._scaffold import write_project
+
+    try:
+        written = write_project(directory, force=force)
+    except (FileExistsError, OSError) as e:
+        print(f"fastmm init: {e}", file=sys.stderr)
+        return 2
+    root = os.path.relpath(os.path.dirname(str(written[0])) or ".")
+    for path in written:
+        print(os.path.relpath(str(path)))
+    prefix = "" if root == "." else f"cd {root} && "
+    print(f"\n  {prefix}pip install 'fastmm-engine[hot]'\n  {prefix}python backtest.py")
+    return 0
+
+
 def _load_class(target: str) -> type:
     module_name, sep, qualname = target.partition(":")
     if not sep or not module_name or not qualname:
@@ -61,6 +92,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     args_list = sys.argv[1:] if argv is None else argv
     parser = _parser()
     args = parser.parse_args(args_list)
+    if args.command == "init":
+        return _init(args.directory, args.force)
     params = {}
     for item in args.param:
         key, sep, value = item.partition("=")
@@ -70,6 +103,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None and any(v not in os.environ for v in THREAD_VARIABLES):
         for v in THREAD_VARIABLES:
             os.environ.setdefault(v, "1")
+        # `python -m fastmm` starts from the interpreter; the console script re-execs itself,
+        # which is what sys.orig_argv[0] names when it is also sys.argv[0].
+        if sys.orig_argv[0] == sys.argv[0] and os.path.exists(sys.argv[0]):
+            os.execv(sys.argv[0], sys.orig_argv)
         os.execv(sys.executable, sys.orig_argv)
 
     from .live import EXIT_CONFIG, SLOW_TIER_TIMEOUT_MS, _run_live

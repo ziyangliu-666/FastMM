@@ -1,6 +1,20 @@
 # Install
 
-All commands run from the repository root.
+## Without building it
+
+```bash
+pip install "fastmm-engine[hot]"     # backtests and Python strategies, CPython 3.9 or later
+fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest to run
+python backtest.py
+```
+
+`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py` and a README into the directory; the backtest runs on the simulated market with nothing else installed. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
+
+The C++ programs come as a tarball or a container image, one per release: [Deploy a release](../how-to/operations/deploy.md). What may change between releases: [Versions and compatibility](../reference/compatibility.md).
+
+## Build from source
+
+The rest of this page builds the repository; all commands run from its root.
 
 ## Requirements
 
@@ -55,7 +69,7 @@ The first command lists the built-in strategies with their parameters. The secon
 docker compose up --build
 ```
 
-This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image runs as root and carries test TLS certificates; [Running this in production](../how-to/operations/running-in-production.md#10-what-the-repository-does-not-ship) lists what a deployment has to add.
+This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image is the demo: it runs as root and carries test TLS certificates. The production image is `docker/Dockerfile.production`, non-root and without them ([Deploy a release](../how-to/operations/deploy.md#run-the-container)).
 
 ## WSL2
 
@@ -71,9 +85,16 @@ The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9
 | `fastmm-engine[live]` | `fastmm-engine-live` of the same version: networking, venue connectors and OpenSSL 3 inside the extension module | CPython 3.10 or later, Linux x86-64 |
 | `fastmm-engine[hot]` | numba and llvmlite | CPython 3.10 or later |
 
+```bash
+pip install "fastmm-engine[hot]"          # backtests, Python strategies, the fastmm command
+pip install "fastmm-engine[live]"         # adds fastmm-engine-live of the same version
+```
+
+Both wheels are `manylinux_2_28` x86-64 and have to be the same version ([Versions and compatibility](../reference/compatibility.md)). The `fastmm` console script is the same entry point as `python -m fastmm`: `fastmm init <dir>` writes a starter project, `fastmm run module:Class --config file.toml` runs a strategy live ([Run a Python strategy live](../how-to/strategies/python-live.md)).
+
 ### Install from source
 
-The packages are not published on PyPI yet, so `pip install fastmm-engine` fails. From a checkout, in a virtual environment and with the [requirements](#requirements) above installed:
+From a checkout, in a virtual environment and with the [requirements](#requirements) above installed:
 
 ```bash
 python3 -m venv .venv
@@ -81,7 +102,7 @@ python3 -m venv .venv
 .venv/bin/pip install ./python/live
 ```
 
-`pip install ".[hot,live]"` fails: the `live` extra asks PyPI for `fastmm-engine-live`. `./python/live` builds that package from the same checkout and links OpenSSL statically; with the `libssl-dev` of Ubuntu 24.04 that works as it is, and `FASTMM_OPENSSL_STATIC=OFF` links the shared libraries instead.
+`pip install ".[hot,live]"` takes `fastmm-engine-live` from PyPI, and a checkout whose version is not a release has no match there. `./python/live` builds that package from the same checkout and links OpenSSL statically; with the `libssl-dev` of Ubuntu 24.04 that works as it is, and `FASTMM_OPENSSL_STATIC=OFF` links the shared libraries instead.
 
 TLS connections, from the `fastmm-live` program or the Python package, trust the CA certificates in `SSL_CERT_FILE` and `SSL_CERT_DIR` if either is set, otherwise in the first existing file of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` and `/etc/ssl/cert.pem`, otherwise in `certifi` (Python package only), otherwise in OpenSSL's built-in paths. A venue's `ca_file` adds to them.
 

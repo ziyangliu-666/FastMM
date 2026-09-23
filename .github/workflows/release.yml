@@ -1,0 +1,81 @@
+name: release
+# On a `v*` tag: builds the portable tarball (scripts/package-release.sh), attaches it and its
+# SHA-256 to a GitHub Release with the CHANGELOG section as the notes, and pushes the production
+# image to GHCR. The PyPI distributions are built and published by wheels.yml on the same tag.
+# A manual run takes an existing tag and repeats both.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.2.0"
+        required: true
+permissions:
+  contents: read
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  tarball:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.tag || github.ref }}" }
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev zlib1g-dev
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      # The `release` preset, not `release-dpdk`: a hosted runner has no NIC to bind and building
+      # DPDK here would triple the job. A DPDK tarball is a local `scripts/package-release.sh` run.
+      - name: build the tarball
+        run: ./scripts/package-release.sh --preset release --out dist
+      - name: the checksum matches and the binaries run
+        run: |
+          (cd dist && sha256sum -c ./*.sha256)   # the file names one bare tarball, in dist/
+          tar xzf dist/*.tar.gz -C dist
+          dist/fastmm-*/bin/fastmm-live --version
+          dist/fastmm-*/bin/fastmm-top --help > /dev/null
+      - name: release notes from the CHANGELOG
+        run: |
+          awk -v v="${TAG#v}" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }' CHANGELOG.md > notes.md
+          printf '\n[Install](https://ziy.bio/FastMM/getting-started/install/) - [Deploy](https://ziy.bio/FastMM/how-to/operations/deploy/)\n' >> notes.md
+          test -s notes.md
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" --title "FastMM ${TAG#v}" --notes-file notes.md --verify-tag \
+            dist/*.tar.gz dist/*.tar.gz.sha256
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ inputs.tag || github.ref }}" }
+      # GHCR repository names are lower case; ${{ github.repository }} is not.
+      - name: build the production image
+        run: |
+          docker build -f docker/Dockerfile.production --build-arg "VERSION=${TAG#v}" \
+            -t "ghcr.io/ziyangliu-666/fastmm:${TAG#v}" -t ghcr.io/ziyangliu-666/fastmm:latest .
+      - name: the image runs as uid 10001 and starts
+        run: |
+          test "$(docker run --rm --entrypoint id "ghcr.io/ziyangliu-666/fastmm:${TAG#v}" -u)" = 10001
+          docker run --rm "ghcr.io/ziyangliu-666/fastmm:${TAG#v}" fastmm-live --version
+      - name: push to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "ghcr.io/ziyangliu-666/fastmm:${TAG#v}"
+          docker push ghcr.io/ziyangliu-666/fastmm:latest

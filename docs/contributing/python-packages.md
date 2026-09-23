@@ -32,10 +32,8 @@ OPENSSL_ROOT_DIR="$HOME/.cache/fastmm-openssl" .venv/bin/pip wheel ./python/live
 ./scripts/wheels/check-live-wheel.sh dist/fastmm_engine_live-*.whl
 ```
 
-`FASTMM_OPENSSL_STATIC=OFF` links the system's shared OpenSSL instead; the check script then fails. Publishing to PyPI makes the package and its source public. To publish:
+`FASTMM_OPENSSL_STATIC=OFF` links the system's shared OpenSSL instead; the check script then fails.
 
-1. On PyPI, add a trusted publisher for this repository, workflow `wheels.yml`, environment `pypi`.
-2. In the repository settings, create the `pypi` environment (optionally with required reviewers).
-3. Run the `wheels` workflow manually with **publish** checked.
+Publishing to PyPI makes the package and its source public. It happens on a `v*` tag, after the three build jobs pass, with the repository secret `PYPI_API_TOKEN` in the `pypi` environment; a run without a tag publishes only when started by hand with **publish** checked. The whole procedure is [Cutting a release](releasing.md).
 
 Locally, `python -m build --sdist && python -m twine check dist/*` checks the sdist metadata.

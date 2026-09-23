@@ -1,0 +1,50 @@
+# Production image: fastmm-live, fastmm-top and fastmm-replay, no simulator, no test certificates,
+# non-root, tini as PID 1. The demo is docker/Dockerfile with docker-compose.yml.
+#
+#   docker build -f docker/Dockerfile.production -t fastmm:0.2.0 .
+#   docker run --rm -v ./mm.toml:/etc/fastmm/live.toml:ro -v ./runs:/var/lib/fastmm/runs \
+#     -e FASTMM_API_KEY -e FASTMM_API_SECRET fastmm:0.2.0 /etc/fastmm/live.toml --duration 60s
+#
+# docs/how-to/operations/deploy.md#run-the-container
+FROM ubuntu:24.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential g++-13 ninja-build git ca-certificates curl libssl-dev zlib1g-dev \
+      python3 python3-pip python3-venv && \
+    pip3 install --break-system-packages "cmake>=3.25" && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+ENV CPM_SOURCE_CACHE=/root/.cache/CPM
+RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13 \
+      -DFASTMM_BUILD_TESTS=OFF -DFASTMM_BUILD_BENCH=OFF -DFASTMM_BUILD_EXAMPLES=OFF \
+      -DFASTMM_INSTALL=OFF && \
+    cmake --build build -j"$(nproc)" --target fastmm-live fastmm-top fastmm-replay && \
+    strip --strip-debug build/bin/fastmm-live build/bin/fastmm-top build/bin/fastmm-replay
+
+FROM ubuntu:24.04 AS runtime
+ARG VERSION=dev
+LABEL org.opencontainers.image.title="FastMM" \
+      org.opencontainers.image.description="Market-making engine (fastmm-live)" \
+      org.opencontainers.image.source="https://github.com/ziyangliu-666/FastMM" \
+      org.opencontainers.image.documentation="https://ziy.bio/FastMM/how-to/operations/deploy/" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="${VERSION}"
+# TLS trusts /etc/ssl/certs/ca-certificates.crt from the distro; tzdata keeps UTC log stamps
+# readable; tini reaps the children of a cancel-all that outlives the engine.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libssl3 zlib1g ca-certificates tzdata tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 10001 fastmm && \
+    useradd --uid 10001 --gid 10001 --home-dir /var/lib/fastmm --shell /usr/sbin/nologin fastmm && \
+    mkdir -p /etc/fastmm /var/lib/fastmm/runs && chown -R 10001:10001 /var/lib/fastmm
+COPY --from=builder /src/build/bin/fastmm-live /src/build/bin/fastmm-top \
+     /src/build/bin/fastmm-replay /usr/local/bin/
+COPY docker/entrypoint.sh /usr/local/bin/fastmm-entrypoint
+COPY LICENSE /usr/share/doc/fastmm/LICENSE
+RUN chmod 0755 /usr/local/bin/fastmm-entrypoint
+USER 10001:10001
+WORKDIR /var/lib/fastmm
+# Mount the config read-only at /etc/fastmm and a host directory at /var/lib/fastmm/runs, which
+# holds the journals, the epoch file and the latched kill file (uid 10001 has to be able to write it).
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/fastmm-entrypoint"]
+CMD ["/etc/fastmm/live.toml"]

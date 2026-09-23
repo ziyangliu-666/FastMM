@@ -156,6 +156,7 @@ nav:
           - how-to/venues/add-a-venue.md
       - Operations:
           - how-to/operations/run-on-testnet.md
+          - how-to/operations/deploy.md
           - how-to/operations/running-in-production.md
           - how-to/operations/runbook.md
           - how-to/operations/go-live-checklist.md
@@ -173,6 +174,7 @@ nav:
           - reference/public-api.md
       - Programs and files:
           - reference/cli.md
+          - reference/compatibility.md
           - reference/configuration.md
           - reference/errors.md
           - reference/journal-format.md
@@ -219,3 +221,4 @@ nav:
       - contributing/writing-docs.md
       - contributing/dependencies.md
       - contributing/python-packages.md
+      - contributing/releasing.md
