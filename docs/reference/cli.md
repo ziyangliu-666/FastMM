@@ -11,28 +11,34 @@ Trades a strategy on the venues of a configuration until SIGINT, SIGTERM or `--d
 
 <!-- BEGIN cli-help fastmm-live -->
 ```text
-usage: fastmm-live --config <file.toml> [options]
-  --config <file>          engine / venue / strategy configuration (required)
-  --strategy <name>        registered strategy (default: [strategy] name); a different
-                           strategy ignores [strategy.params]
-  --param <key=value>      strategy parameter override (repeatable)
-  --duration <t>           stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT)
-  --dry-run                public market data only: no API keys, no orders
-  --record-raw <dir>       append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl
-  --journal <path>         write the session journal (.fmj) here
-  --no-journal             disable journaling even if [engine] journal = true
-  --status <path>          live status file for fastmm-top (default /dev/shm/fastmm-<engine>.status)
-  --no-status              do not publish live status
-  --control <path>         control socket for fastmm-ctl (default
-                           <journal_dir>/<engine>.ctl, mode 0600)
-  --no-control             do not open a control socket
-  --clear-kill             clear a latched kill switch and the cumulative PnL before
-                           starting; arms the whole [risk] max_loss budget again
-  --log <path>             write the log to a file (warnings are mirrored to stderr)
-  --allow-inline-secrets   accept literal API secrets in the config file
-  --list-strategies        print the strategies this binary can run and exit
-  --format <text|json>     output format of --list-strategies (default text)
-  --version | --help
+Trades a strategy on the venues of a configuration.
+
+usage: fastmm-live [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --config <file>             engine / venue / strategy configuration (required)
+  --strategy <name>           registered strategy (default: [strategy] name); a different
+                              strategy ignores [strategy.params]
+  --param <key=value>         strategy parameter override (repeatable)
+  --duration <t>              stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT)
+  --dry-run                   public market data only: no API keys, no orders
+  --record-raw <dir>          append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl
+  --journal <path>            write the session journal (.fmj) here
+  --no-journal                disable journaling even if [engine] journal = true
+  --status <path>             live status file for fastmm-top (default
+                              /dev/shm/fastmm-<engine>.status)
+  --no-status                 do not publish live status
+  --control <path>            control socket for fastmm-ctl (default
+                              <journal_dir>/<engine>.ctl, mode 0600)
+  --no-control                do not open a control socket
+  --clear-kill                clear a latched kill switch and the cumulative PnL before
+                              starting; arms the whole [risk] max_loss budget again
+  --log <path>                write the log to a file (warnings are mirrored to stderr)
+  --allow-inline-secrets      accept literal API secrets in the config file
+  --list-strategies           print the strategies this binary can run and exit
+  --format <text|json>        output format of --list-strategies (default text)
 
 API keys come from the environment through ${VAR} references in [venues.*],
 e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.

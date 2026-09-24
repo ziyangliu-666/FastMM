@@ -313,6 +313,17 @@ function(fastmm_cli_test name)
   set_tests_properties(${name} PROPERTIES LABELS "unit;cli")
 endfunction()
 
+# Every program: --help exits 0 and prints a usage line, an unknown flag exits 2 and names it.
+foreach(_prog fastmm-live fastmm-backtest fastmm-data fastmm-replay fastmm-pnl fastmm-sim-exchange
+              fastmm-sim-itch fastmm-top fastmm-ctl)
+  if(TARGET ${_prog})
+    fastmm_cli_test(apps.${_prog}.help EXPECT_RC 0 CMD $<TARGET_FILE:${_prog}> --help
+      EXPECT_REGEX "usage: ${_prog} ")
+    fastmm_cli_test(apps.${_prog}.bogus_flag EXPECT_RC 2 CMD $<TARGET_FILE:${_prog}> --bogus-flag
+      EXPECT_REGEX "${_prog}: .*--bogus-flag")
+  endif()
+endforeach()
+
 set(_json_builtin ".name.: .options_mm., .transports.: \\[.sim., .replay., .live.\\]")
 if(TARGET fastmm-backtest)
   fastmm_cli_test(apps.fastmm-backtest.list_strategies_json EXPECT_RC 0
@@ -361,9 +372,9 @@ if(TARGET fastmm-live)
     COMPARE_CMD $<TARGET_FILE:fastmm-backtest> --list-strategies --format json
     EXPECT_REGEX "${_json_builtin}")
   fastmm_cli_test(apps.fastmm-live.bad_format EXPECT_RC 2
-    CMD $<TARGET_FILE:fastmm-live> --list-strategies --format yaml EXPECT_REGEX "fastmm-live: bad --format 'yaml'")
+    CMD $<TARGET_FILE:fastmm-live> --list-strategies --format yaml EXPECT_REGEX "fastmm-live: --format: yaml not in {text,json}")
   fastmm_cli_test(apps.fastmm-live.bad_param_syntax EXPECT_RC 2
-    CMD $<TARGET_FILE:fastmm-live> --config x.toml --param half_spread_bps EXPECT_REGEX "--param expects key=value")
+    CMD $<TARGET_FILE:fastmm-live> --config x.toml --param half_spread_bps EXPECT_REGEX "--param: expects key=value, got 'half_spread_bps'")
   # configs/sim-local.toml with its venue on a closed port: every case below fails before trading.
   file(READ ${PROJECT_SOURCE_DIR}/configs/sim-local.toml _sim_local)
   string(REPLACE "127.0.0.1:9080" "127.0.0.1:1" _sim_local "${_sim_local}")

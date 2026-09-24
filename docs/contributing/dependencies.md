@@ -4,6 +4,7 @@
 |---|---|---|---|
 | fmt | 12.2.0 | core (public) | async logger formatting |
 | toml++ | 3.4.0 | core (private) | configuration |
+| CLI11 | 2.7.2 | apps, `fastmm::cli::*` (private) | command lines |
 | simdjson | 4.6.11 | venues, sim server (private) | on-demand JSON parsing |
 | SQLite | 3.50.4 (amalgamation) | store (private) | the queryable record of a session ([ADR-0016](../adr/0016-storage-backends.md)) |
 | liburing | 2.15 (static) | net (private) | the io_uring reactor backend |

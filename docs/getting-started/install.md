@@ -27,7 +27,7 @@ The rest of this page builds the repository; all commands run from its root.
 | make | any | liburing's `configure` script calls it; not needed with `FASTMM_BUILD_NET=OFF` |
 | Python | 3.9 or newer | the tools in `tools/` and the Python package |
 
-On Ubuntu 24.04: `sudo apt install g++-13 make cmake ninja-build libssl-dev python3`. Every other dependency (fmt, toml++, simdjson, liburing, SQLite, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
+On Ubuntu 24.04: `sudo apt install g++-13 make cmake ninja-build libssl-dev python3`. Every other dependency (fmt, toml++, CLI11, simdjson, liburing, SQLite, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
 
 ## Build
 

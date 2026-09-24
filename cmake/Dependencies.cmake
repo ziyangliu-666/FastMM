@@ -36,6 +36,17 @@ CPMAddPackage(
   SYSTEM YES
   OPTIONS "TOMLPP_BUILD_EXAMPLES OFF")
 
+# --- CLI11 (apps: command lines, header-only) -------------------------------
+# Used through the internal fastmm_cli11 target (src/cli): only .cpp files include it, so the
+# installed package does not depend on it.
+CPMAddPackage(
+  NAME CLI11
+  GITHUB_REPOSITORY CLIUtils/CLI11
+  GIT_TAG v2.7.2
+  SYSTEM YES
+  OPTIONS "CLI11_PRECOMPILED OFF" "CLI11_BUILD_TESTS OFF" "CLI11_BUILD_EXAMPLES OFF"
+          "CLI11_BUILD_DOCS OFF" "CLI11_INSTALL OFF" "CLI11_SINGLE_FILE OFF")
+
 # --- simdjson (venues/sim: JSON) -------------------------------------------
 if(FASTMM_BUILD_NET)
   CPMAddPackage(

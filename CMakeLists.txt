@@ -67,6 +67,7 @@ configure_file(include/fastmm/version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/generat
 # ---------------------------------------------------------------------------
 # Libraries
 # ---------------------------------------------------------------------------
+add_subdirectory(src/cli)
 add_subdirectory(src/core)
 add_subdirectory(src/store)
 add_subdirectory(src/sim)

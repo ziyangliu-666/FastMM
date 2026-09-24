@@ -11,6 +11,8 @@
 // code), 4 venue reference data failed, 5 runtime failure (cancel-all failed, journal, ring
 // overflow), 6 the engine tripped the kill switch itself and [engine] on_kill = "exit", 7 the slow
 // tier of a Python strategy failed (python -m fastmm run; fastmm-live never returns it).
+#include "command_line.hpp"
+
 #include "fastmm/cli/live.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
@@ -19,15 +21,12 @@
 #include "fastmm/strategies/listing.hpp"
 #include "fastmm/strategies/registry.hpp"
 #include "fastmm/venues/registry.hpp"
-#include "fastmm/version.hpp"
 
 #include <cstdio>
-#include <cstdlib>
 #include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace fastmm::cli {
@@ -39,82 +38,26 @@ using live::kExitOk;
 using live::kExitRuntime;
 using live::kExitUsage;
 
-void usage(std::FILE* out, const char* prog) {
-  std::fprintf(
-      out,
-      "usage: %s --config <file.toml> [options]\n"
-      "  --config <file>          engine / venue / strategy configuration (required)\n"
-      "  --strategy <name>        registered strategy (default: [strategy] name); a different\n"
-      "                           strategy ignores [strategy.params]\n"
-      "  --param <key=value>      strategy parameter override (repeatable)\n"
-      "  --duration <t>           stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT)\n"
-      "  --dry-run                public market data only: no API keys, no orders\n"
-      "  --record-raw <dir>       append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl\n"
-      "  --journal <path>         write the session journal (.fmj) here\n"
-      "  --no-journal             disable journaling even if [engine] journal = true\n"
-      "  --status <path>          live status file for fastmm-top (default "
-      "/dev/shm/fastmm-<engine>.status)\n"
-      "  --no-status              do not publish live status\n"
-      "  --control <path>         control socket for fastmm-ctl (default\n"
-      "                           <journal_dir>/<engine>.ctl, mode 0600)\n"
-      "  --no-control             do not open a control socket\n"
-      "  --clear-kill             clear a latched kill switch and the cumulative PnL before\n"
-      "                           starting; arms the whole [risk] max_loss budget again\n"
-      "  --log <path>             write the log to a file (warnings are mirrored to stderr)\n"
-      "  --allow-inline-secrets   accept literal API secrets in the config file\n"
-      "  --list-strategies        print the strategies this binary can run and exit\n"
-      "  --format <text|json>     output format of --list-strategies (default text)\n"
-      "  --version | --help\n"
-      "\n"
-      "API keys come from the environment through ${VAR} references in [venues.*],\n"
-      "e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.\n"
-      "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n"
-      "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
-      "fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,\n"
-      "kill, unkill, stop and status.\n"
-      "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
-      "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
-      "A max_loss trip is latched in [engine] kill_file: the next start refuses to trade\n"
-      "(exit code 6) until --clear-kill or the file is removed.\n"
-      "\n"
-      "Exit codes:\n"
-      "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
-      "  2  bad command line, or a venue has no API keys\n"
-      "  3  bad config, strategy or parameters\n"
-      "  4  venue reference data failed to load\n"
-      "  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error\n"
-      "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
-      "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok\n",
-      prog);
-}
-
-// "60s", "5m", "1500ms", "2h", or a bare number of seconds.
-bool parse_duration(std::string_view s, std::int64_t& ns) {
-  if (s.empty()) return false;
-  std::size_t i = 0;
-  std::int64_t v = 0;
-  while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
-    v = v * 10 + (s[i] - '0');
-    if (v > 10'000'000) return false;
-    ++i;
-  }
-  if (i == 0) return false;
-  const std::string_view unit = s.substr(i);
-  std::int64_t mult = 1'000'000'000;
-  if (unit == "ms") {
-    mult = 1'000'000;
-  } else if (unit == "s" || unit.empty()) {
-    mult = 1'000'000'000;
-  } else if (unit == "m") {
-    mult = 60'000'000'000;
-  } else if (unit == "h") {
-    mult = 3'600'000'000'000;
-  } else {
-    return false;
-  }
-  ns = v * mult;
-  return true;
-}
+constexpr const char* kFooter =
+    "API keys come from the environment through ${VAR} references in [venues.*],\n"
+    "e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.\n"
+    "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n"
+    "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
+    "fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,\n"
+    "kill, unkill, stop and status.\n"
+    "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
+    "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
+    "A max_loss trip is latched in [engine] kill_file: the next start refuses to trade\n"
+    "(exit code 6) until --clear-kill or the file is removed.\n"
+    "\n"
+    "Exit codes:\n"
+    "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
+    "  2  bad command line, or a venue has no API keys\n"
+    "  3  bad config, strategy or parameters\n"
+    "  4  venue reference data failed to load\n"
+    "  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error\n"
+    "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
+    "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok";
 
 }  // namespace
 
@@ -125,105 +68,72 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
   opts.program = program;
   std::string log_path;
   std::string strategy;
-  std::string format_arg;
-  std::vector<std::pair<std::string, std::string>> overrides;
+  std::string format_arg = "text";
+  std::vector<std::string> params;
   bool allow_inline = false;
   bool list = false;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    auto value = [&](std::string& out) {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "%s: %s needs a value\n", prog, argv[i]);
-        return false;
-      }
-      out = argv[++i];
-      return true;
-    };
-    if (a == "--help" || a == "-h") {
-      usage(stdout, prog);
-      return kExitOk;
-    }
-    if (a == "--version") {
-      std::printf("%s %s\n", prog, fastmm::build_info());
-      return kExitOk;
-    }
-    if (a == "--config") {
-      if (!value(opts.config_path)) return kExitUsage;
-    } else if (a == "--strategy") {
-      if (!value(strategy)) return kExitUsage;
-    } else if (a == "--param") {
-      std::string v;
-      if (!value(v)) return kExitUsage;
-      const std::size_t eq = v.find('=');
-      if (eq == std::string::npos || eq == 0) {
-        std::fprintf(stderr, "%s: --param expects key=value, got '%s'\n", prog, v.c_str());
-        return kExitUsage;
-      }
-      overrides.emplace_back(v.substr(0, eq), v.substr(eq + 1));
-    } else if (a == "--duration") {
-      std::string d;
-      if (!value(d)) return kExitUsage;
-      if (!parse_duration(d, opts.duration_ns) || opts.duration_ns <= 0) {
-        std::fprintf(
-            stderr, "%s: bad --duration '%s' (examples: 60s, 5m, 1500ms)\n", prog, d.c_str());
-        return kExitUsage;
-      }
-    } else if (a == "--dry-run") {
-      opts.dry_run = true;
-    } else if (a == "--record-raw") {
-      if (!value(opts.record_raw_dir)) return kExitUsage;
-    } else if (a == "--journal") {
-      if (!value(opts.journal_path)) return kExitUsage;
-    } else if (a == "--no-journal") {
-      opts.no_journal = true;
-    } else if (a == "--status") {
-      if (!value(opts.status_path)) return kExitUsage;
-    } else if (a == "--no-status") {
-      opts.no_status = true;
-    } else if (a == "--control") {
-      if (!value(opts.control_path)) return kExitUsage;
-    } else if (a == "--no-control") {
-      opts.no_control = true;
-    } else if (a == "--clear-kill") {
-      opts.clear_kill = true;
-    } else if (a == "--log") {
-      if (!value(log_path)) return kExitUsage;
-    } else if (a == "--allow-inline-secrets") {
-      allow_inline = true;
-    } else if (a == "--list-strategies") {
-      list = true;
-    } else if (a == "--format") {
-      if (!value(format_arg)) return kExitUsage;
-    } else {
-      std::fprintf(stderr, "%s: unknown argument '%s'\n\n", prog, argv[i]);
-      usage(stderr, prog);
-      return kExitUsage;
-    }
-  }
-  std::optional<ListFormat> format = ListFormat::Text;
-  if (!format_arg.empty()) {
-    format = parse_list_format(format_arg);
-    if (!format) {
-      std::fprintf(stderr, "%s: bad --format '%s' (text or json)\n", prog, format_arg.c_str());
-      return kExitUsage;
-    }
-    if (!list) {
-      std::fprintf(stderr, "%s: --format applies to --list-strategies\n", prog);
-      return kExitUsage;
-    }
-  }
+
+  CLI::App app("Trades a strategy on the venues of a configuration.", program);
+  setup(app);
+  app.footer(kFooter);
+  app.add_option("--config", opts.config_path, "engine / venue / strategy configuration (required)")
+      ->option_text("<file>");
+  app.add_option("--strategy",
+                 strategy,
+                 "registered strategy (default: [strategy] name); a different strategy ignores "
+                 "[strategy.params]")
+      ->option_text("<name>");
+  app.add_option("--param", params, "strategy parameter override (repeatable)")
+      ->option_text("<key=value>")
+      ->allow_extra_args(false)
+      ->check(key_value());
+  add_duration(app,
+               "--duration",
+               opts.duration_ns,
+               "stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT)");
+  app.add_flag("--dry-run", opts.dry_run, "public market data only: no API keys, no orders");
+  app.add_option("--record-raw",
+                 opts.record_raw_dir,
+                 "append raw WebSocket frames to <dir>/<venue>-<channel>.jsonl")
+      ->option_text("<dir>");
+  app.add_option("--journal", opts.journal_path, "write the session journal (.fmj) here")
+      ->option_text("<path>");
+  app.add_flag(
+      "--no-journal", opts.no_journal, "disable journaling even if [engine] journal = true");
+  app.add_option("--status",
+                 opts.status_path,
+                 "live status file for fastmm-top (default /dev/shm/fastmm-<engine>.status)")
+      ->option_text("<path>");
+  app.add_flag("--no-status", opts.no_status, "do not publish live status");
+  app.add_option("--control",
+                 opts.control_path,
+                 "control socket for fastmm-ctl (default <journal_dir>/<engine>.ctl, mode 0600)")
+      ->option_text("<path>");
+  app.add_flag("--no-control", opts.no_control, "do not open a control socket");
+  app.add_flag("--clear-kill",
+               opts.clear_kill,
+               "clear a latched kill switch and the cumulative PnL before starting; arms the "
+               "whole [risk] max_loss budget again");
+  app.add_option("--log", log_path, "write the log to a file (warnings are mirrored to stderr)")
+      ->option_text("<path>");
+  app.add_flag(
+      "--allow-inline-secrets", allow_inline, "accept literal API secrets in the config file");
+  CLI::Option* list_opt =
+      app.add_flag("--list-strategies", list, "print the strategies this binary can run and exit");
+  app.add_option("--format", format_arg, "output format of --list-strategies (default text)")
+      ->option_text("<text|json>")
+      ->check(CLI::IsMember({"text", "json"}))
+      ->needs(list_opt);
+  if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
+
   if (!register_strategy_modules(program, modules)) return kExitConfig;
   if (list) {
-    const std::string text =
-        format_strategies(StrategyRegistry::instance(), TransportKind::Live, *format);
+    const std::string text = format_strategies(
+        StrategyRegistry::instance(), TransportKind::Live, *parse_list_format(format_arg));
     std::fputs(text.c_str(), stdout);
     return kExitOk;
   }
-  if (opts.config_path.empty()) {
-    std::fprintf(stderr, "%s: --config is required\n\n", prog);
-    usage(stderr, prog);
-    return kExitUsage;
-  }
+  if (opts.config_path.empty()) return usage_error(app, "--config is required");
 
   Config cfg;
   try {
@@ -251,7 +161,10 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
     cfg.strategy.params.clear();
     cfg.strategy.name = strategy;
   }
-  for (const auto& [k, v] : overrides) cfg.strategy.params[k] = v;
+  for (const std::string& p : params) {
+    const std::size_t eq = p.find('=');
+    cfg.strategy.params[p.substr(0, eq)] = p.substr(eq + 1);
+  }
   if (!live::resolve_venue_env(cfg, opts.dry_run, prog)) return kExitUsage;
 
   std::FILE* log_file = nullptr;
