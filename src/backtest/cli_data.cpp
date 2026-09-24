@@ -7,111 +7,66 @@
 // Downloading the files themselves is `python3 -m fastmm.data fetch` (no third-party packages).
 //
 // Exit codes: 0 ok, 2 bad command line, 3 bad config, 4 unreadable data, 5 write failure.
+#include "command_line.hpp"
+
 #include "fastmm/backtest/backtest_config.hpp"
 #include "fastmm/backtest/data_registry.hpp"
 #include "fastmm/cli/data.hpp"
 #include "fastmm/cli/modules.hpp"
 #include "fastmm/config/config.hpp"
-#include "fastmm/version.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <optional>
 #include <string>
-#include <string_view>
 
 namespace fastmm::cli {
 
 namespace {
 
-constexpr int kExitUsage = 2;
 constexpr int kExitConfig = 3;
 constexpr int kExitData = 4;
 constexpr int kExitWrite = 5;
-
-void usage(std::FILE* out, const char* prog) {
-  std::fprintf(out,
-               "usage: %s <command> [options]\n"
-               "  list                     registered data sources, their options and what\n"
-               "                           each one carries\n"
-               "  convert                  decode a source into an .fmj journal, the format a\n"
-               "                           backtest replays fastest\n"
-               "    --data <spec>          source, e.g. binance:BTCUSDT,2024-03-27\n"
-               "    --config <file.toml>   backtest config supplying the instruments\n"
-               "    --out <file.fmj>       output journal\n"
-               "    --seed <n>             session id stamped in the journal (default 1)\n"
-               "  --version | --help\n"
-               "\n"
-               "Downloading what a source reads: python3 -m fastmm.data fetch --help\n",
-               prog);
-}
 
 }  // namespace
 
 int data(int argc, char** argv) {
   const std::string program = program_name(argc, argv, "fastmm-data");
   const char* prog = program.c_str();
-  std::string command;
   std::string spec;
   std::string config_path;
   std::string out;
   std::uint64_t seed = 1;
 
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    auto value = [&](std::string& dst) {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "%s: %s needs a value\n", prog, argv[i]);
-        return false;
-      }
-      dst = argv[++i];
-      return true;
-    };
-    if (a == "--help" || a == "-h") {
-      usage(stdout, prog);
-      return 0;
-    } else if (a == "--version") {
-      std::printf("%s %s\n", prog, build_info());
-      return 0;
-    } else if (a == "--data") {
-      if (!value(spec)) return kExitUsage;
-    } else if (a == "--config") {
-      if (!value(config_path)) return kExitUsage;
-    } else if (a == "--out") {
-      if (!value(out)) return kExitUsage;
-    } else if (a == "--seed") {
-      std::string v;
-      if (!value(v)) return kExitUsage;
-      char* end = nullptr;
-      seed = std::strtoull(v.c_str(), &end, 10);
-      if (end == v.c_str() || *end != '\0') {
-        std::fprintf(stderr, "%s: --seed expects an unsigned integer\n", prog);
-        return kExitUsage;
-      }
-    } else if (!a.empty() && a.front() != '-' && command.empty()) {
-      command = a;
-    } else {
-      std::fprintf(stderr, "%s: unknown argument '%s'\n", prog, argv[i]);
-      usage(stderr, prog);
-      return kExitUsage;
-    }
-  }
+  CLI::App app("Lists the market-data sources a backtest can read and packs them into journals.",
+               program);
+  setup(app);
+  app.footer("Downloading what a source reads: python3 -m fastmm.data fetch --help");
+  // The options belong to convert but may come before it; `fallthrough` sends them here.
+  const CLI::App* list = app.add_subcommand(
+      "list", "registered data sources, their options and what each one carries");
+  const CLI::App* convert = app.add_subcommand(
+      "convert", "decode a source into an .fmj journal, the format a backtest replays fastest");
+  for (CLI::App* sub : app.get_subcommands({})) sub->fallthrough();
+  app.require_subcommand(0, 1);
+  app.add_option("--data", spec, "convert: source, e.g. binance:BTCUSDT,2024-03-27")
+      ->option_text("<spec>");
+  app.add_option("--config", config_path, "convert: backtest config supplying the instruments")
+      ->option_text("<file.toml>");
+  app.add_option("--out", out, "convert: output journal")->option_text("<file.fmj>");
+  app.add_option("--seed", seed, "convert: session id stamped in the journal (default 1)")
+      ->option_text("<n>");
+  if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
 
-  if (command.empty()) {
-    usage(stderr, prog);
-    return kExitUsage;
-  }
-  if (command == "list") {
+  if (!list->parsed() && !convert->parsed())
+    return usage_error(app, "a command is required: list or convert");
+  if (list->parsed()) {
     std::fputs(bt::format_data_sources().c_str(), stdout);
     return 0;
   }
-  if (command != "convert") {
-    std::fprintf(stderr, "%s: unknown command '%s' (list | convert)\n", prog, command.c_str());
-    return kExitUsage;
-  }
-  if (spec.empty() || out.empty() || config_path.empty()) {
-    std::fprintf(stderr, "%s: convert needs --data, --config and --out\n", prog);
-    return kExitUsage;
-  }
+  if (spec.empty() || out.empty() || config_path.empty())
+    return usage_error(app, "convert needs --data, --config and --out");
 
   bt::BacktestConfig cfg;
   try {

@@ -123,16 +123,23 @@ Lists the market-data sources a backtest can read and packs any of them into a j
 
 <!-- BEGIN cli-help fastmm-data -->
 ```text
-usage: fastmm-data <command> [options]
-  list                     registered data sources, their options and what
-                           each one carries
-  convert                  decode a source into an .fmj journal, the format a
-                           backtest replays fastest
-    --data <spec>          source, e.g. binance:BTCUSDT,2024-03-27
-    --config <file.toml>   backtest config supplying the instruments
-    --out <file.fmj>       output journal
-    --seed <n>             session id stamped in the journal (default 1)
-  --version | --help
+Lists the market-data sources a backtest can read and packs them into journals.
+
+usage: fastmm-data [OPTIONS] [SUBCOMMAND]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --data <spec>               convert: source, e.g. binance:BTCUSDT,2024-03-27
+  --config <file.toml>        convert: backtest config supplying the instruments
+  --out <file.fmj>            convert: output journal
+  --seed <n>                  convert: session id stamped in the journal (default 1)
+
+SUBCOMMANDS:
+  list                        registered data sources, their options and what each one
+                              carries
+  convert                     decode a source into an .fmj journal, the format a backtest
+                              replays fastest
 
 Downloading what a source reads: python3 -m fastmm.data fetch --help
 ```
