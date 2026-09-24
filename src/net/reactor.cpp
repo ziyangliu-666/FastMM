@@ -76,83 +76,48 @@ std::uint32_t to_poll(IoEvent ev) noexcept {
   return m;
 }
 
-// sqe->poll32_events is word-reversed on big-endian hosts.
-constexpr std::uint32_t poll32(std::uint32_t mask) noexcept {
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-  return (mask << 16) | (mask >> 16);
-#else
-  return mask;
-#endif
-}
-
-void prep_poll_add(io_uring_sqe& sqe, int fd, std::uint32_t mask, std::uint64_t ud) noexcept {
-  sqe.opcode = IORING_OP_POLL_ADD;
-  sqe.fd = fd;
-  detail::set_poll32_events(sqe, poll32(mask));
-  sqe.len = IORING_POLL_ADD_MULTI;
-  sqe.user_data = ud;
-}
-
-void prep_poll_update(io_uring_sqe& sqe,
-                      std::uint64_t target,
-                      std::uint32_t mask,
-                      std::uint64_t ud) noexcept {
-  sqe.opcode = IORING_OP_POLL_REMOVE;
-  sqe.fd = -1;
-  sqe.addr = target;
-  // ADD_MULTI keeps the updated request multishot.
-  sqe.len = IORING_POLL_UPDATE_EVENTS | IORING_POLL_ADD_MULTI;
-  detail::set_poll32_events(sqe, poll32(mask));
-  sqe.user_data = ud;
-}
-
-void prep_poll_remove(io_uring_sqe& sqe, std::uint64_t target, std::uint64_t ud) noexcept {
-  sqe.opcode = IORING_OP_POLL_REMOVE;
-  sqe.fd = -1;
-  sqe.addr = target;
-  sqe.user_data = ud;
-}
-
 // Functional probe: a multishot poll on an eventfd, updated to POLLOUT, must report the update
 // and then a POLLOUT completion flagged IORING_CQE_F_MORE.
 bool probe_io_uring() noexcept {
-  detail::IoUring ring;
-  if (ring.init(8, 16) != 0) return false;
+  detail::IoUring uring;
+  if (uring.init(8, 16) != 0) return false;
+  io_uring& ring = uring.ring();
   const int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   if (efd < 0) return false;
-  io_uring_sqe* add = ring.get_sqe();
-  io_uring_sqe* upd = ring.get_sqe();
+  io_uring_sqe* add = io_uring_get_sqe(&ring);
+  io_uring_sqe* upd = io_uring_get_sqe(&ring);
   if (add == nullptr || upd == nullptr) {
     ::close(efd);
     return false;
   }
-  prep_poll_add(*add, efd, POLLIN, 1);
-  prep_poll_update(*upd, 1, POLLIN | POLLOUT, 2);
+  io_uring_prep_poll_multishot(add, efd, POLLIN);
+  io_uring_sqe_set_data64(add, 1);
+  io_uring_prep_poll_update(
+      upd, 1, 0, POLLIN | POLLOUT, IORING_POLL_UPDATE_EVENTS | IORING_POLL_ADD_MULTI);
+  io_uring_sqe_set_data64(upd, 2);
   bool updated = false;
   bool multishot = false;
   bool failed = false;
   const std::int64_t deadline = Reactor::now_ns() + 1'000'000'000;
   while (!failed && !(updated && multishot) && Reactor::now_ns() < deadline) {
-    const int rc = ring.submit_and_wait(100'000'000);
+    const int rc = uring.submit_and_wait(100'000'000);
     if (rc < 0 && rc != -ETIME && rc != -EINTR) {
       failed = true;
       break;
     }
-    unsigned head = ring.cq_head();
-    const unsigned tail = ring.cq_tail();
-    for (; head != tail; ++head) {
-      const io_uring_cqe& cqe = ring.cqe_at(head);
-      if (cqe.user_data == 2) {
-        updated = cqe.res == 0;
-        failed = failed || cqe.res != 0;
-      } else if (cqe.user_data == 1) {
-        if (cqe.res < 0) failed = true;
-        if (cqe.res > 0 && (static_cast<std::uint32_t>(cqe.res) & POLLOUT) != 0 &&
-            (cqe.flags & IORING_CQE_F_MORE) != 0)
+    io_uring_cqe* cqe = nullptr;
+    while (io_uring_peek_cqe(&ring, &cqe) == 0 && cqe != nullptr) {
+      if (cqe->user_data == 2) {
+        updated = cqe->res == 0;
+        failed = failed || cqe->res != 0;
+      } else if (cqe->user_data == 1) {
+        if (cqe->res < 0) failed = true;
+        if (cqe->res > 0 && (static_cast<std::uint32_t>(cqe->res) & POLLOUT) != 0 &&
+            (cqe->flags & IORING_CQE_F_MORE) != 0)
           multishot = true;
       }
+      io_uring_cqe_seen(&ring, cqe);
     }
-    ring.set_cq_head(head);
   }
   ::close(efd);
   return !failed && updated && multishot;
@@ -266,7 +231,7 @@ bool Reactor::remove(int fd) noexcept {
   if (backend_ == ReactorBackend::IoUring) {
     if (!uring_queue_remove(fd, fd_state_[idx].gen)) return false;
     // Submit now: the poll request pins the file, and callers close the fd right after this.
-    static_cast<void>(uring_->submit());
+    static_cast<void>(io_uring_submit(&uring_->ring()));
     return true;
   }
   // The fd may already be closed by the caller (closing removes it from epoll implicitly).
@@ -394,15 +359,15 @@ void Reactor::deliver(int fd, IoHandler* h, bool error, bool readable, bool writ
 // ---- io_uring backend ------------------------------------------------------------------------
 
 int Reactor::uring_run_once(int max_wait_ms) {
-  detail::IoUring& ring = *uring_;
+  io_uring& ring = uring_->ring();
   const std::int64_t timeout_ns = compute_timeout_ns(max_wait_ms);
   int rc = 0;
-  if (timeout_ns == 0 || ring.cq_head() != ring.cq_tail()) {
-    // Nothing to wait for: only enter the kernel to submit or when it flags pending work.
-    const bool needs_enter = ring.needs_enter();
-    if (needs_enter || ring.sq_pending() != 0) rc = ring.submit(needs_enter);
+  if (timeout_ns == 0 || io_uring_cq_ready(&ring) != 0) {
+    // Nothing to wait for: io_uring_submit enters the kernel only for queued SQEs, or when the
+    // kernel flags deferred task work (COOP_TASKRUN) or overflowed completions.
+    rc = io_uring_submit(&ring);
   } else {
-    rc = ring.submit_and_wait(timeout_ns);
+    rc = uring_->submit_and_wait(timeout_ns);
   }
   if (rc < 0 && rc != -EINTR && rc != -ETIME && rc != -EBUSY && rc != -EAGAIN) return -1;
   const int n = uring_dispatch();
@@ -413,15 +378,19 @@ int Reactor::uring_run_once(int max_wait_ms) {
 }
 
 int Reactor::uring_dispatch() {
-  detail::IoUring& ring = *uring_;
-  unsigned head = ring.cq_head();
-  const unsigned tail = ring.cq_tail();
+  io_uring& ring = uring_->ring();
+  // Only what is ready now: completions produced by the callbacks wait for the next run_once.
+  const unsigned ready = io_uring_cq_ready(&ring);
   int n = 0;
-  while (head != tail) {
-    const io_uring_cqe cqe = ring.cqe_at(head);
-    ring.set_cq_head(++head);  // consumed before the callback runs
+  for (unsigned i = 0; i < ready; ++i) {
+    io_uring_cqe* cqe = nullptr;
+    if (io_uring_peek_cqe(&ring, &cqe) != 0 || cqe == nullptr) break;
+    const std::uint64_t user_data = cqe->user_data;
+    const std::int32_t res = cqe->res;
+    const std::uint32_t flags = cqe->flags;
+    io_uring_cqe_seen(&ring, cqe);  // consumed before the callback runs
     ++n;
-    uring_complete(cqe.user_data, cqe.res, cqe.flags);
+    uring_complete(user_data, res, flags);
   }
   return n;
 }
@@ -509,10 +478,11 @@ bool Reactor::uring_add(int fd, IoHandler& handler, IoEvent events) noexcept {
 }
 
 io_uring_sqe* Reactor::uring_sqe() noexcept {
-  io_uring_sqe* sqe = uring_->get_sqe();
+  io_uring& ring = uring_->ring();
+  io_uring_sqe* sqe = io_uring_get_sqe(&ring);
   if (sqe == nullptr) {
-    static_cast<void>(uring_->submit());
-    sqe = uring_->get_sqe();
+    static_cast<void>(io_uring_submit(&ring));
+    sqe = io_uring_get_sqe(&ring);
   }
   return sqe;
 }
@@ -521,7 +491,8 @@ bool Reactor::uring_arm(int fd) noexcept {
   io_uring_sqe* sqe = uring_sqe();
   if (sqe == nullptr) return false;
   const FdState& s = fd_state_[static_cast<std::size_t>(fd)];
-  prep_poll_add(*sqe, fd, s.mask, encode(UringOp::Poll, fd, s.gen));
+  io_uring_prep_poll_multishot(sqe, fd, s.mask);
+  io_uring_sqe_set_data64(sqe, encode(UringOp::Poll, fd, s.gen));
   return true;
 }
 
@@ -529,14 +500,21 @@ bool Reactor::uring_queue_update(int fd, std::uint32_t mask) noexcept {
   io_uring_sqe* sqe = uring_sqe();
   if (sqe == nullptr) return false;
   const std::uint32_t gen = fd_state_[static_cast<std::size_t>(fd)].gen;
-  prep_poll_update(*sqe, encode(UringOp::Poll, fd, gen), mask, encode(UringOp::Update, fd, gen));
+  // ADD_MULTI keeps the updated request multishot; its user_data is left as it was.
+  io_uring_prep_poll_update(sqe,
+                            encode(UringOp::Poll, fd, gen),
+                            0,
+                            mask,
+                            IORING_POLL_UPDATE_EVENTS | IORING_POLL_ADD_MULTI);
+  io_uring_sqe_set_data64(sqe, encode(UringOp::Update, fd, gen));
   return true;
 }
 
 bool Reactor::uring_queue_remove(int fd, std::uint32_t gen) noexcept {
   io_uring_sqe* sqe = uring_sqe();
   if (sqe == nullptr) return false;
-  prep_poll_remove(*sqe, encode(UringOp::Poll, fd, gen), encode(UringOp::Remove, fd, gen));
+  io_uring_prep_poll_remove(sqe, encode(UringOp::Poll, fd, gen));
+  io_uring_sqe_set_data64(sqe, encode(UringOp::Remove, fd, gen));
   return true;
 }
 

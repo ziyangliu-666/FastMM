@@ -5,6 +5,8 @@ add_library(fastmm::net ALIAS fastmm_net)
 set_target_properties(fastmm_net PROPERTIES EXPORT_NAME net)
 fastmm_target_defaults(fastmm_net)
 target_link_libraries(fastmm_net PUBLIC fastmm::core OpenSSL::SSL OpenSSL::Crypto)
+# liburing: the io_uring backend only; its header stays out of the public ones.
+target_link_libraries(fastmm_net PRIVATE uring)
 if(TARGET fastmm_dpdk)
   target_link_libraries(fastmm_net PUBLIC fastmm_dpdk)
   target_compile_definitions(fastmm_net PUBLIC FASTMM_HAS_DPDK=1)

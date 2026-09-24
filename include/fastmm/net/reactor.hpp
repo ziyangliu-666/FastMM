@@ -4,7 +4,7 @@
 //
 //   ReactorBackend::Epoll    edge-triggered epoll (the default)
 //   ReactorBackend::IoUring  io_uring, one multishot IORING_OP_POLL_ADD per registered fd,
-//                            timeouts through io_uring_enter(IORING_ENTER_EXT_ARG)
+//                            timeouts through IORING_ENTER_EXT_ARG, over liburing
 //
 // All handler callbacks and timers run on the thread that calls run()/run_once(); only wake()
 // and post() may be called from other threads.
@@ -29,7 +29,7 @@
 #include <unordered_map>
 #include <vector>
 
-struct io_uring_sqe;  // NOLINT(readability-identifier-naming): <linux/io_uring.h>
+struct io_uring_sqe;  // NOLINT(readability-identifier-naming): <liburing.h>
 
 namespace fastmm::net {
 

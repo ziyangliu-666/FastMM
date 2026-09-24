@@ -74,9 +74,9 @@ The rings stay, as same-thread FIFOs. The journal thread, the log sink and the m
 
 Both backends map events the same way: `POLLERR` calls `on_error(SO_ERROR)`, `POLLIN`, `POLLRDHUP` or `POLLHUP` call `on_readable()`, `POLLOUT` calls `on_writable()`. The handler is looked up again for every event, so a handler that an earlier callback in the same batch removed is not called, and one it replaced receives the event instead.
 
-The io_uring backend talks to the kernel through the raw `io_uring_setup` / `io_uring_enter` system calls and `<linux/io_uring.h>`; liburing is not a dependency.
+The io_uring backend uses liburing 2.15, linked statically into `fastmm_net`; SQE preparation, submission and completion reaping are liburing's inline helpers.
 
-* **Ring.** The SQ and CQ rings and the SQE array are mmap'd (one mapping when the kernel has `IORING_FEAT_SINGLE_MMAP`): 512 SQEs, 4096 CQEs, with `IORING_SETUP_SUBMIT_ALL`, `COOP_TASKRUN` and `TASKRUN_FLAG` on 5.19 and newer. `EXT_ARG` and `NODROP` are required. Registrations are queued and go out with the next wait, except `remove()`, which submits at once.
+* **Ring.** `io_uring_queue_init_params` with 512 SQEs, 4096 CQEs, and `IORING_SETUP_SUBMIT_ALL`, `COOP_TASKRUN` and `TASKRUN_FLAG` on 5.19 and newer. `EXT_ARG` and `NODROP` are required. Registrations are queued and go out with the next wait, except `remove()`, which submits at once.
 * **Support probe.** `Reactor::io_uring_supported()` creates a small ring once and checks that a multishot poll on an eventfd can be updated and then reports `IORING_CQE_F_MORE`. It is false on ENOSYS, EPERM (`kernel.io_uring_disabled`, seccomp), ENOMEM and kernels older than 5.13; `fastmm-live` and the simulator then log a warning and use epoll.
 * **Stale completions.** `user_data` packs the operation (4 bits), a registration generation (28 bits) and the fd (32 bits). `add()` bumps the generation, so completions still queued for a removed registration, or for an earlier file that had the same fd number, are dropped.
 * **Re-arming.** A multishot poll that ends without `IORING_CQE_F_MORE` (CQ overflow, a racing update) is re-armed while its registration exists. An update or remove that races with a completing poll (`-EALREADY`) is retried. A poll the kernel refuses (for example `-EBADF`) is reported once through `on_error(errno)`.

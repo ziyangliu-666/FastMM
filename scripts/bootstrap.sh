@@ -56,6 +56,7 @@ fi
 
 # --- system libs ---
 [[ -f /usr/include/openssl/ssl.h || -n "${OPENSSL_ROOT_DIR:-}" ]] || die "OpenSSL headers missing: sudo apt install libssl-dev"
+command -v make >/dev/null || die "make missing (liburing's configure calls it): sudo apt install make"
 
 # conda can shadow the system OpenSSL for CMake's find_package; warn if it is first in PATH.
 if [[ "$(command -v python3)" == *conda* && -z "${OPENSSL_ROOT_DIR:-}" ]]; then

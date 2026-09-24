@@ -6,6 +6,7 @@
 | toml++ | 3.4.0 | core (private) | configuration |
 | simdjson | 4.6.11 | venues, sim server (private) | on-demand JSON parsing |
 | SQLite | 3.50.4 (amalgamation) | store (private) | the queryable record of a session ([ADR-0016](../adr/0016-storage-backends.md)) |
+| liburing | 2.15 (static) | net (private) | the io_uring reactor backend |
 | doctest | 2.5.3 | tests | unit/property tests |
 | Google Benchmark | 1.9.5 | bench | micro-benchmarks |
 | pybind11 | 3.1.0 | python | bindings |

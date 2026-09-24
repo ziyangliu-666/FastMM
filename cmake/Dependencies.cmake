@@ -47,6 +47,52 @@ if(FASTMM_BUILD_NET)
             "SIMDJSON_ENABLE_THREADS OFF" "BUILD_SHARED_LIBS OFF")
 endif()
 
+# --- liburing (net: the io_uring reactor backend) ----------------------------
+# liburing builds with its own configure + make. Its configure only probes the libc and kernel
+# headers and writes config-host.h, compat.h and io_uring_version.h into the tree it runs in, so it
+# runs once on a copy under the build directory (the CPM cache stays untouched) and the five
+# library sources are compiled here as a static library with this project's compiler and PIC
+# setting. --use-libc: syscalls go through libc, which the sanitizer builds need.
+if(FASTMM_BUILD_NET)
+  enable_language(C)
+  CPMAddPackage(
+    NAME liburing
+    VERSION 2.15
+    URL https://github.com/axboe/liburing/archive/refs/tags/liburing-2.15.tar.gz
+    URL_HASH SHA256=8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb636120a
+    DOWNLOAD_ONLY YES)
+  if(liburing_ADDED AND NOT TARGET uring)
+    set(_uring_dir ${CMAKE_BINARY_DIR}/_deps/liburing-configured)
+    set(_uring_stamp ${_uring_dir}/.fastmm-configured-2.15)
+    if(NOT EXISTS ${_uring_stamp})
+      file(REMOVE_RECURSE ${_uring_dir})
+      file(COPY ${liburing_SOURCE_DIR}/ DESTINATION ${_uring_dir})
+      execute_process(
+        COMMAND ./configure --cc=${CMAKE_C_COMPILER} --use-libc
+        WORKING_DIRECTORY ${_uring_dir}
+        OUTPUT_FILE ${_uring_dir}/configure.log
+        ERROR_FILE ${_uring_dir}/configure.log
+        RESULT_VARIABLE _uring_rc)
+      if(NOT _uring_rc EQUAL 0)
+        message(FATAL_ERROR "liburing configure failed; see ${_uring_dir}/configure.log")
+      endif()
+      file(TOUCH ${_uring_stamp})
+    endif()
+    add_library(uring STATIC
+      ${_uring_dir}/src/setup.c ${_uring_dir}/src/queue.c ${_uring_dir}/src/register.c
+      ${_uring_dir}/src/syscall.c ${_uring_dir}/src/version.c)
+    set_target_properties(uring PROPERTIES
+      C_STANDARD 11 C_EXTENSIONS ON EXPORT_NAME uring
+      OUTPUT_NAME fastmm_uring  # installed next to the fastmm libraries; must not shadow a system liburing.a
+      POSITION_INDEPENDENT_CODE ${FASTMM_PIC})
+    # SYSTEM: liburing.h is not held to fastmm::warnings in the files that include it.
+    target_include_directories(uring SYSTEM PUBLIC $<BUILD_INTERFACE:${_uring_dir}/src/include>)
+    target_compile_definitions(uring PRIVATE
+      _GNU_SOURCE LIBURING_INTERNAL _LARGEFILE_SOURCE _FILE_OFFSET_BITS=64)
+    target_compile_options(uring PRIVATE -include ${_uring_dir}/config-host.h -w)
+  endif()
+endif()
+
 # --- SQLite (store: the queryable record of a session) ----------------------
 # The amalgamation, pinned and fetched by CPM like every other dependency (ADR-0005): a trading
 # host needs no -dev package, and the WAL and UPSERT behaviour the store relies on is the version

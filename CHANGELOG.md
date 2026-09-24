@@ -38,6 +38,13 @@ All notable changes are recorded here (Keep a Changelog format).
   `max_order_amends` (the venue's `MAX_NUM_ORDER_AMENDS` filter, 10). `OrderAckMsg::kAmendedInPlace`
   tells the OMS to rekey the order without resetting its filled quantity.
 
+### Changed
+- The io_uring reactor backend runs on liburing 2.15, fetched by CPM and linked statically into
+  `fastmm_net`. The hand-written ring setup, mmap, SQ/CQ barriers and SQE encoding are gone, and
+  `src/net/io_uring_uapi.hpp` with them. `ReactorBackend::IoUring`, its setup flags, the support
+  probe and the epoll default are unchanged. Configuring with `FASTMM_BUILD_NET=ON` now needs
+  `make`, which liburing's `configure` calls.
+
 ### Removed
 - The zlib dependency. Nothing called it: `fastmm_net` never negotiates permessage-deflate. The
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.

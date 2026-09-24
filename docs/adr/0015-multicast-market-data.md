@@ -68,7 +68,7 @@ struct RxMeta {
 
 ### 3. AF_XDP backend (`af_xdp`)
 
-Minimum Linux 5.11. Hand-written over raw syscalls like the io_uring backend, with no libbpf, libxdp or BPF compiler.
+Minimum Linux 5.11. Hand-written over raw syscalls, with no libbpf, libxdp or BPF compiler.
 
 - **UMEM**: one per XDP socket, `frame_count` frames of 4096 bytes (default 4096), mmapped at `open`, with fill, RX and completion rings and no TX ring.
 - **Sockets**: one XDP socket per `(interface, queue)` pair, and one net thread polls all of them.
