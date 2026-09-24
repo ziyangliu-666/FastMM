@@ -123,12 +123,16 @@ TEST_CASE("recovery: a market-data cut and a sequence gap pull the quotes and th
 
   // (a) The connection is cut. The engine clears the book on the Disconnected state, so no quote
   //     may rest at the venue until the stream is back and re-snapshotted.
+  // The status is republished once a second, so "synced" alone can still be the state from before
+  // the cut: wait for the new session's snapshot too.
+  const std::uint64_t snapshots_at_cut = fx.server.stats().depth_snapshots;
   fx.server.mark();
   fx.server.drop_market_data_connections();
   REQUIRE(wait_until(
       [&] {
         const sim::server::SimServerStats x = fx.server.stats();
-        return x.md_sessions_opened_since_mark >= 1 && x.md_sessions == 1;
+        return x.md_sessions_opened_since_mark >= 1 && x.md_sessions == 1 &&
+               x.depth_snapshots > snapshots_at_cut;
       },
       20000));
   REQUIRE(wait_until(
