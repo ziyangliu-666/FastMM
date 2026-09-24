@@ -40,6 +40,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -355,19 +356,20 @@ std::string host_name() {
 // It is what FastMM recorded, not what the venue holds: FastMM does not fetch execution history
 // from a venue at start-up, so a fill that happened while the process was down is missing until
 // the venue's reconciliation snapshot arrives (docs/reference/storage.md).
-void log_previous_session(const std::string& backend_name, const Config& cfg) {
+std::optional<store::Recovery> log_previous_session(const std::string& backend_name,
+                                                    const Config& cfg) {
   auto reader = store::StoreRegistry::instance().make_reader(backend_name);
-  if (reader == nullptr) return;
+  if (reader == nullptr) return std::nullopt;
   store::BackendOptions opts;
   opts.config = &cfg.storage;
   opts.engine_name = cfg.engine.name;
   opts.default_dir = cfg.engine.journal_dir;
   opts.read_only = true;
-  if (auto r = reader->open(opts); !r) return;  // no store yet: the first session
+  if (auto r = reader->open(opts); !r) return std::nullopt;  // no store yet: the first session
   store::QueryFilter f;
   f.engine = cfg.engine.name;
   auto rec = reader->recovery(f);
-  if (!rec || !rec->found) return;
+  if (!rec || !rec->found) return std::nullopt;
   const store::Recovery& p = *rec;
   FASTMM_LOG_WARN(
       "previous session {} ({}) started {} and {}: realized {} unrealized {} fees {} net {} over "
@@ -401,6 +403,61 @@ void log_previous_session(const std::string& backend_name, const Config& cfg) {
         "hold it",
         std::string_view(line));
   FASTMM_LOG_INFO("previous session: fastmm-pnl recover --engine {}", cfg.engine.name);
+  return *rec;
+}
+
+// Carries the previous session's positions over, on venues that can replay what happened while
+// nothing was running. The position enters the engine as a reconciliation on the venue's order
+// ring, so the journal records it and a replay starts from the same place; then the venue's
+// execution replay starts where the store's record ends and books every execution the store does
+// not have - fills of orders that were still resting when the process died, and trades made on the
+// account outside FastMM - with their real prices and fees. A venue that cannot replay executions
+// starts flat, as before: a stored position with nothing to bring it up to date could be wrong.
+template <class Slots>
+void restore_positions(const store::Recovery& prev,
+                       const Config& cfg,
+                       const InstrumentTable& instruments,
+                       Slots& slots) {
+  if (prev.position_state.empty() && prev.last_fill_ns == 0) return;
+  const std::int64_t since_ms =
+      prev.last_fill_ns > 0 ? (prev.last_fill_ns - store::Recovery::kResumeOverlapNs) / 1'000'000
+                            : 0;
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    auto& s = *slots[i];
+    const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+    const bool can_replay = entry != nullptr && entry->caps.executions;
+    const VenueId vid{static_cast<std::uint8_t>(i)};
+    for (const store::Recovery::PositionState& p : prev.position_state) {
+      if (p.qty_raw == 0) continue;
+      const Instrument* inst = nullptr;
+      for (const Instrument& in : instruments) {
+        if (in.venue == vid && in.symbol.view() == p.symbol) inst = &in;
+      }
+      if (inst == nullptr) continue;
+      if (!can_replay) {
+        FASTMM_LOG_WARN(
+            "{}: not restoring the previous position {} {} - this venue cannot replay what "
+            "happened "
+            "while nothing was running, so the session starts flat",
+            s.venue->name(),
+            p.symbol,
+            Qty::from_raw(p.qty_raw));
+        continue;
+      }
+      ReconcileMsg m{};
+      init_header(m, EventType::Reconcile, inst->id, vid);
+      m.kind = ReconcileMsg::Kind::Position;
+      m.position_qty = Qty::from_raw(p.qty_raw);
+      m.avg_px = Price::from_raw(p.avg_px_raw);
+      static_cast<void>(s.order_sink.push(m.hdr));
+      FASTMM_LOG_INFO("{}: restored position {} {} @ {} from the previous session",
+                      s.venue->name(),
+                      p.symbol,
+                      m.position_qty,
+                      m.avg_px);
+    }
+    if (can_replay && since_ms > 0) s.venue->resume_executions(since_ms, prev.recent_exec_ids);
+  }
 }
 
 const char* short_state(venues::ChannelState s) {
@@ -632,6 +689,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         "old, disabled or not permitted); falling back to epoll");
     net_backend = net::ReactorBackend::Epoll;
   }
+  // What the previous session left behind, read before the venues attach so its positions can be
+  // carried over (restore_positions). Read-only: the store itself is opened further down.
+  std::optional<store::Recovery> previous;
+  if (const std::string b = store::configured_backend(cfg.storage); b != store::kNoBackend) {
+    store::register_builtin_backends();
+    previous = log_previous_session(b, cfg);
+  }
   for (std::size_t i = 0; i < slots.size(); ++i) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
@@ -656,6 +720,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     s.venue->subscribe(mine);
   }
+  if (previous && cfg.engine.restore_position)
+    restore_positions(*previous, cfg, instruments, slots);
   transport.set_wake_hook(&wake_venue, &wake_ctx);
 
   // ---- engine + journal -------------------------------------------------------------------
@@ -761,7 +827,6 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
                    registry.names().c_str());
       return kExitConfig;
     }
-    log_previous_session(backend_name, cfg);
     store::BackendOptions bopts;
     bopts.config = &cfg.storage;
     bopts.engine_name = cfg.engine.name;

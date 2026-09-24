@@ -49,6 +49,8 @@ struct EngineSection {
   int cpu = -1;
   std::vector<int> net_cpus;
   std::string spin_mode = "adaptive";
+  // Carry the previous session's positions over from the store (venues that replay executions).
+  bool restore_position = true;
   std::string net_backend = "epoll";  // net::Reactor backend: "epoll" | "io_uring"
   // fastmm-live: "split" runs the engine and each venue's network loop on their own threads;
   // "single" runs the one venue's network loop, the engine and order sending on the engine thread.

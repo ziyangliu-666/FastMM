@@ -1271,6 +1271,12 @@ std::size_t BinanceVenue::exec_slot(InstrumentId id) const noexcept {
   return subscribed_.size();
 }
 
+void BinanceVenue::resume_executions(std::int64_t since_venue_ms, std::vector<std::string> known) {
+  exec_since_ms_ = since_venue_ms;
+  known_exec_ids_.clear();
+  for (std::string& id : known) known_exec_ids_.insert(std::move(id));
+}
+
 bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {
   if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
   if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
@@ -1375,6 +1381,12 @@ void BinanceVenue::emit_executions(InstrumentId id, std::string_view json) {
           } else {
             fee_asset = FeeAsset::Other;
           }
+        }
+        if (!known_exec_ids_.empty() &&
+            known_exec_ids_.count(std::string(IdText(t.id).view())) != 0) {
+          if (t.id > high_id) high_id = t.id;
+          if (t.time_ms > high_ms) high_ms = t.time_ms;
+          return;  // the earlier session booked it
         }
         emit_replayed_fill(*order_sink_,
                            id_,

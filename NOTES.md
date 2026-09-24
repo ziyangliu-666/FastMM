@@ -50,12 +50,18 @@ in the dark, partially and completely, as one of its faults. Details in
 `docs/reference/venues.md#executions-the-private-stream-never-delivered`, including what each of the
 four venues can actually answer.
 
-**What execution history does *not* fix: a restart.** The connector replays nothing from before it
-connected, on purpose: the engine's position starts at zero, so booking another session's fills into
-it would make the number worse, not better. A restarted session needs its position back first (the
-store has it - `Recovery::positions` - and only logs it today); once it does,
-`request_executions(since_venue_ms)` is where the store's last-fill time goes, and everything after
-it comes back exactly. Until then, a restart recovers open orders and not the position.
+**Closed: a restart carries the position over.** `fastmm-live` reads the previous session's
+positions from the store before the venues attach, pushes each as a `ReconcileMsg::Kind::Position`
+onto that venue's order ring (so the journal records it and a replay starts from the same place),
+and points the venue's first execution replay at the store's last fill, 10 s early, skipping the
+trade ids the store already holds (`Venue::resume_executions`). Executions after that - fills of
+orders that were resting when the process died, trades made on the account outside FastMM - are
+booked with their real price and fee. Only venues with `VenueCapabilities::executions` restore; the
+others start flat with a warning, because a stored position with nothing to bring it up to date
+could be wrong. `[engine] restore_position = false` turns it off. Proved by
+`recovery: a restart carries the position over and books what happened while it was down`: a
+session trades and stops, an outside market order moves the account, the next session ends at
+exactly the venue's position. With the restore off the same test ends 0.001 short.
 
 **Bybit, Deribit and Binance USDⓈ-M declare `executions = false`.** Their endpoints are verified and
 written down in `docs/reference/venues.md`; nobody has written the connector side. That is the point

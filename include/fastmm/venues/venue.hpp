@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fastmm::venues {
 
@@ -201,6 +202,13 @@ class Venue {
   // is false) or has nowhere to send the query, which is the only case where a fill the private
   // stream missed stays an estimate.
   virtual bool request_executions(std::int64_t /*since_venue_ms*/ = 0) { return false; }
+  // Where the first execution replay starts, for a session that carries a position over from an
+  // earlier one (fastmm-live restores it from the store before connect()): executions from
+  // `since_venue_ms` onwards are booked, except those whose venue trade id is in `known`, which the
+  // earlier session booked already. A connector that cannot replay executions ignores it, and the
+  // session does not restore a position for it (VenueCapabilities::executions).
+  virtual void resume_executions(std::int64_t /*since_venue_ms*/,
+                                 std::vector<std::string> /*known*/) {}
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

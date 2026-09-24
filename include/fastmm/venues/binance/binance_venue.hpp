@@ -43,6 +43,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::binance {
@@ -115,6 +116,7 @@ class BinanceVenue final : public Venue {
   void request_open_orders() override;
   void request_open_orders(ClientOrderId watermark);
   bool request_executions(std::int64_t since_venue_ms = 0) override;
+  void resume_executions(std::int64_t since_venue_ms, std::vector<std::string> known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -274,6 +276,8 @@ class BinanceVenue final : public Venue {
   // which is what a restart needs from them.
   OpenHashMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
   std::int64_t exec_since_ms_ = 0;
+  // Trade ids an earlier session booked; a resumed replay skips them (resume_executions).
+  std::unordered_set<std::string> known_exec_ids_;
   std::size_t exec_pending_ = 0;  // myTrades replies still outstanding
   bool exec_replay_ok_ = true;    // every reply so far covered its instrument in full
   bool exec_replay_active_ = false;

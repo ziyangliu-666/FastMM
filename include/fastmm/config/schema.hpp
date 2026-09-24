@@ -168,6 +168,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      "fastmm-live: timer slack of its threads, ns; how late a sleep may end (adaptive spin_mode "
      "sleeps 50 us when idle); 0 = the kernel's, 50000 (default 0)"},
     {"engine",
+     "restore_position",
+     KeyType::Bool,
+     false,
+     "carry the previous session's positions over from the store and replay the venue's executions "
+     "since its last recorded fill (venues that can replay executions); default true"},
+    {"engine",
      "lock_memory",
      KeyType::Bool,
      false,

@@ -97,6 +97,8 @@ struct EngineStats {
   // Orders a reconciliation snapshot dropped while they still had working quantity: the venue
   // ended them without saying how, so the position may be short by up to that much.
   std::uint64_t unresolved_orders = 0;
+  // Executions replayed from the venue that named no order of this session (booked, not errors).
+  std::uint64_t replayed_foreign_fills = 0;
   std::uint64_t ack_timeouts = 0;    // PendingNew orders force-cancelled by the ack sweep
   std::uint64_t flattens = 0;        // operator flattens started (ControlCommand::Flatten)
   std::uint64_t flatten_orders = 0;  // reduce-only orders a flatten sent
@@ -962,8 +964,18 @@ class Engine {
       FASTMM_LOG_WARN("fill on instrument {} outside the instrument table is not booked", id.value);
     }
     if (u.action == OmsAction::UnknownFill) {
-      FASTMM_LOG_ERROR(
-          "fill for unknown order {} qty {} @ {}", encode_cl_ord_id(f.cl_ord_id), f.qty, f.price);
+      // An execution replayed from before this session (a carried-over position, or a trade made
+      // outside FastMM) names no order of ours; it is booked, and it is not an error.
+      if ((f.flags & OrderFillMsg::kReplayed) != 0) {
+        ++stats_.replayed_foreign_fills;
+        FASTMM_LOG_INFO("execution {} of {} @ {} on no order of this session booked from the venue",
+                        f.exec_id,
+                        f.qty,
+                        f.price);
+      } else {
+        FASTMM_LOG_ERROR(
+            "fill for unknown order {} qty {} @ {}", encode_cl_ord_id(f.cl_ord_id), f.qty, f.price);
+      }
     }
     if constexpr (has_hook(Hook::Fill)) {
       if (FASTMM_LIKELY(known_instrument)) {
@@ -1157,6 +1169,7 @@ class Engine {
         if (instruments_.contains(m.hdr.instrument)) {
           positions_.set(
               m.hdr.instrument, m.position_qty, m.avg_px, instruments_.get(m.hdr.instrument));
+          emit_position(m.hdr.instrument);  // a session killed before it trades keeps it too
           if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
         }
         break;

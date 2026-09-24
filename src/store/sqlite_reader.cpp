@@ -199,6 +199,34 @@ class SqliteReader final : public Reader {
             "SELECT path FROM session_journals WHERE session_id = ? ORDER BY part",
             rec.session_id,
             [](sqlite3_stmt* s) { return text(s, 0); });
+
+    // The numbers behind rec.positions: the last snapshot of each instrument in that session.
+    std::vector<Recovery::PositionState> state;
+    collect(state,
+            "SELECT p.symbol, p.qty_raw, p.avg_px_raw FROM positions p JOIN (SELECT instrument_id,"
+            " MAX(seq) AS seq FROM positions WHERE session_id = ?1 GROUP BY instrument_id) l ON"
+            " p.instrument_id = l.instrument_id AND p.seq = l.seq WHERE p.session_id = ?1",
+            rec.session_id,
+            [](sqlite3_stmt* s) {
+              return Recovery::PositionState{
+                  text(s, 0), sqlite3_column_int64(s, 1), sqlite3_column_int64(s, 2)};
+            });
+    rec.position_state = std::move(state);
+    std::vector<std::int64_t> last;
+    collect(last,
+            "SELECT COALESCE(MAX(ts_ns), 0) FROM fills WHERE session_id = ?",
+            rec.session_id,
+            [](sqlite3_stmt* s) { return sqlite3_column_int64(s, 0); });
+    rec.last_fill_ns = last.empty() ? 0 : last.front();
+    if (rec.last_fill_ns > 0) {
+      std::vector<std::string> ids;
+      collect2(ids,
+               "SELECT exec_id FROM fills WHERE session_id = ? AND ts_ns >= ? AND exec_id <> ''",
+               rec.session_id,
+               rec.last_fill_ns - Recovery::kResumeOverlapNs,
+               [](sqlite3_stmt* s) { return text(s, 0); });
+      rec.recent_exec_ids = std::move(ids);
+    }
     return rec;
   }
 
@@ -324,11 +352,21 @@ class SqliteReader final : public Reader {
     return out;
   }
 
-  template <class F>
-  void collect(std::vector<std::string>& out, const char* sql, std::uint64_t session, F&& fmt) {
+  template <class T, class F>
+  void collect(std::vector<T>& out, const char* sql, std::uint64_t session, F&& fmt) {
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) return;
     sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session));
+    while (sqlite3_step(st) == SQLITE_ROW) out.push_back(fmt(st));
+    sqlite3_finalize(st);
+  }
+  template <class T, class F>
+  void collect2(
+      std::vector<T>& out, const char* sql, std::uint64_t session, std::int64_t arg, F&& fmt) {
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session));
+    sqlite3_bind_int64(st, 2, arg);
     while (sqlite3_step(st) == SQLITE_ROW) out.push_back(fmt(st));
     sqlite3_finalize(st);
   }

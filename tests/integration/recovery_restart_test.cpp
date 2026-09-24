@@ -8,6 +8,8 @@
 #include "fastmm/core/session_state.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/net/crypto.hpp"
+#include "fastmm/store/reader.hpp"
+#include "fastmm/store/registry.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 
 #include <spawn.h>
@@ -17,6 +19,7 @@
 #include <csignal>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 extern char** environ;
@@ -250,6 +253,78 @@ TEST_CASE("recovery: a latched max-loss trip survives a SIGKILL and the next sta
   REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > accepted; }, 60000));
   REQUIRE(::kill(third, SIGTERM) == 0);
   static_cast<void>(reap(third));
+  CHECK(fx.server.stats().duplicate_client_order_ids == 0);
+}
+
+// A restarted session has to pick its position up where the last one left it, and account for what
+// happened while nothing was running. The first session trades and stops; a trade is then made on
+// the account outside FastMM; the second session starts from the store's position, replays the
+// venue's executions since the store's last fill - which names the outside trade, not the ones the
+// store already has - and ends holding exactly what the venue holds.
+TEST_CASE(
+    "recovery: a restart carries the position over and books what happened while it was down") {
+  ServerFixture fx(test_server_config());
+  const SessionFiles f = write_config(fx, "recovery-position", "exit", "1000");
+  remove_all_of({f.epoch, f.kill, f.journal_dir, f.config + ".log"});
+
+  const pid_t first = spawn_live(f, 60);
+  REQUIRE(wait_until([&] { return !fx.server.stats().position.is_zero(); }, 45000));
+  REQUIRE(::kill(first, SIGTERM) == 0);
+  CHECK(reap(first) == 0);
+  const Qty after_first = fx.server.stats().position;
+  REQUIRE_FALSE(after_first.is_zero());
+
+  // A trade nobody running made: a market order over signed REST.
+  {
+    const std::string query =
+        "symbol=BTCUSDT&side=BUY&type=MARKET&quantity=0.002&recvWindow=5000&timestamp=" +
+        std::to_string(fx.server.server_time_ms());
+    venues::BlockingHttp http(fx.http());
+    const venues::HttpReply r = http.request(
+        "POST",
+        "/api/v3/order?" + query +
+            "&signature=" + std::string(net::hmac_sha256_hex(kApiSecret, query).view()),
+        std::string("X-MBX-APIKEY: ") + kApiKey + "\r\n");
+    REQUIRE_MESSAGE(r.status == 200, r.body);
+  }
+  const Qty before_second = fx.server.stats().position;
+  REQUIRE(before_second != after_first);
+
+  // The second session: it must start from before_second, not from zero and not from after_first.
+  const pid_t second = spawn_live(f, 60);
+  const std::string log = f.config + ".log";
+  REQUIRE(wait_until(
+      [&] {
+        return fastmm::test::read_file(log).find("restored position BTCUSDT") != std::string::npos;
+      },
+      30000));
+  // Let it quote and trade a little, then stop it; its final position is what the store records.
+  REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > 0; }, 30000));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  REQUIRE(::kill(second, SIGTERM) == 0);
+  CHECK(reap(second) == 0);
+
+  store::register_builtin_backends();
+  auto reader = store::StoreRegistry::instance().make_reader("sqlite");
+  REQUIRE(reader != nullptr);
+  store::BackendOptions opts;
+  opts.engine_name = "recovery-position";
+  opts.default_dir = f.journal_dir;
+  opts.read_only = true;
+  REQUIRE(reader->open(opts).has_value());
+  store::QueryFilter qf;
+  qf.engine = "recovery-position";
+  auto rec = reader->recovery(qf);
+  REQUIRE(rec.has_value());
+  REQUIRE(rec->found);
+  Qty engine_view{};
+  for (const store::Recovery::PositionState& p : rec->position_state) {
+    if (p.symbol == "BTCUSDT") engine_view = Qty::from_raw(p.qty_raw);
+  }
+  INFO("venue " << fx.server.stats().position.raw << ", engine " << engine_view.raw
+                << ", after the first session " << after_first.raw << ", before the second "
+                << before_second.raw);
+  CHECK(engine_view == fx.server.stats().position);
   CHECK(fx.server.stats().duplicate_client_order_ids == 0);
 }
 

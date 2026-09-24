@@ -52,6 +52,21 @@ struct Recovery {
   std::vector<std::string> positions;
   // "cl_ord_id SYMBOL side qty @ price state" per order that was not terminal at the last record.
   std::vector<std::string> open_orders;
+
+  // The same positions as numbers, for a session that carries them over (fastmm-live restores them
+  // before it connects; see Venue::resume_executions).
+  struct PositionState {
+    std::string symbol;
+    std::int64_t qty_raw = 0;
+    std::int64_t avg_px_raw = 0;
+  };
+  std::vector<PositionState> position_state;
+  // Local time of the session's last recorded fill (0: it recorded none), and the venue trade ids
+  // of its fills in the kResumeOverlapNs before it: an execution replay that starts a little early
+  // to absorb clock differences skips these rather than booking them twice.
+  std::int64_t last_fill_ns = 0;
+  std::vector<std::string> recent_exec_ids;
+  static constexpr std::int64_t kResumeOverlapNs = 10'000'000'000;  // 10 s
 };
 
 class Reader {
