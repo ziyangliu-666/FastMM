@@ -409,7 +409,7 @@ endif()
 
 if(TARGET fastmm-sim-itch)
   fastmm_cli_test(apps.fastmm-sim-itch.bad_drop_rate EXPECT_RC 2
-    CMD $<TARGET_FILE:fastmm-sim-itch> --drop-a 1.5 EXPECT_REGEX "fastmm-sim-itch: bad --drop-a '1.5'")
+    CMD $<TARGET_FILE:fastmm-sim-itch> --drop-a 1.5 EXPECT_REGEX "fastmm-sim-itch: --drop-a: bad '1.5'")
   fastmm_cli_test(apps.fastmm-sim-itch.bad_config EXPECT_RC 3
     CMD $<TARGET_FILE:fastmm-sim-itch> --line-a off --line-b off
     EXPECT_REGEX "sim-itch config: no multicast line")

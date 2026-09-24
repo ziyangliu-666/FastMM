@@ -275,31 +275,38 @@ A Nasdaq-style exchange: ITCH 5.0 over MoldUDP64 multicast, re-requests, GLIMPSE
 
 <!-- BEGIN cli-help fastmm-sim-itch -->
 ```text
-usage: fastmm-sim-itch [--config <file.toml>] [options]
-  --config <file>          [[instruments]] + [sim] configuration (default: FMAA, FMBB)
-  --bind <ip>              re-request, GLIMPSE and OUCH servers (default 127.0.0.1)
-  --rerequest-port <n>     MoldUDP64 re-request server, UDP (default 31000, 0 = ephemeral)
-  --glimpse-port <n>       GLIMPSE 5.0 over SoupBinTCP (default 31010)
-  --ouch-port <n>          OUCH 5.0 over SoupBinTCP (default 31020)
-  --line-a <addr:port>     line A: multicast group or unicast address (default
-                           239.192.0.1:31001)
-  --line-b <addr:port>     line B (default 239.192.0.2:31002, off = none)
-  --interface <if>         multicast interface, name or IPv4 address (default lo)
-  --source <ip>            local address of the multicast socket
-  --ttl <n>                multicast TTL (default 1)
-  --drop-a <p>             probability of not sending a data datagram on line A
-  --drop-b <p>             the same on line B
-  --drop-seed <n>          seed of the drop draws
-  --rate <n>               datagrams per second per line (default 0 = unpaced)
-  --burst <n>              datagrams per sendmmsg call (default 32)
-  --speed <x>              generator time per wall-clock time (default 1)
-  --seed <n>               generator seed
-  --busy-poll              never block waiting for I/O
-  --cpu <n>                pin the simulator thread to a CPU
-  --duration <t>           stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT/SIGTERM)
-  --stats-interval <t>     print statistics every t (default 5s, 0 = only at exit)
-  --summary-json <file>    write the wire-to-wire summary at exit
-  --version | --help
+A Nasdaq-style simulated exchange: TotalView-ITCH 5.0, GLIMPSE and OUCH.
+
+usage: fastmm-sim-itch [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --config <file>             [[instruments]] + [sim] configuration (default: FMAA, FMBB)
+  --bind <ip>                 re-request, GLIMPSE and OUCH servers (default 127.0.0.1)
+  --rerequest-port <n>        MoldUDP64 re-request server, UDP (default 31000, 0 =
+                              ephemeral)
+  --glimpse-port <n>          GLIMPSE 5.0 over SoupBinTCP (default 31010)
+  --ouch-port <n>             OUCH 5.0 over SoupBinTCP (default 31020)
+  --line-a <addr:port>        line A: multicast group or unicast address (default
+                              239.192.0.1:31001)
+  --line-b <addr:port>        line B (default 239.192.0.2:31002, off = none)
+  --interface <if>            multicast interface, name or IPv4 address (default lo)
+  --source <ip>               local address of the multicast socket
+  --ttl <n>                   multicast TTL (default 1)
+  --drop-a <p>                probability of not sending a data datagram on line A
+  --drop-b <p>                the same on line B
+  --drop-seed <n>             seed of the drop draws
+  --rate <n>                  datagrams per second per line (default 0 = unpaced)
+  --burst <n>                 datagrams per sendmmsg call (default 32)
+  --speed <x>                 generator time per wall-clock time (default 1)
+  --seed <n>                  generator seed
+  --busy-poll                 never block waiting for I/O
+  --cpu <n>                   pin the simulator thread to a CPU
+  --duration <t>              stop after t (e.g. 60s, 5m, 1500ms; default: until
+                              SIGINT/SIGTERM)
+  --stats-interval <t>        print statistics every t (default 5s, 0 = only at exit)
+  --summary-json <file>       write the wire-to-wire summary at exit
 
 Orders time wire-to-wire when their OUCH ClOrdID is 'T' + 13 digits of the triggering
 ITCH sequence number. See docs/reference/sim-itch.md.
