@@ -136,6 +136,28 @@ TEST_CASE("binance.depth_sync: snapshot too old is retried, failure is retried")
   REQUIRE(out.size() == 2);
 }
 
+TEST_CASE("binance.depth_sync: a request that fails synchronously is retried by the timer") {
+  // A connector with no REST connection fails the request from inside it. With no minimum
+  // interval, retrying there recursed until the stack ran out.
+  struct Failing {
+    BinanceDepthSync* sync = nullptr;
+    int calls = 0;
+    static void on_request(void* ctx, InstrumentId) noexcept {
+      auto* f = static_cast<Failing*>(ctx);
+      ++f->calls;
+      f->sync->on_snapshot_failed(kSec);
+    }
+  };
+  RecordingSink rs;
+  Failing f;
+  BinanceDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Failing::on_request, &f}, 0);
+  f.sync = &sync;
+  sync.start(kSec);
+  CHECK(f.calls == 1);
+  sync.on_timer(2 * kSec);
+  CHECK(f.calls == 2);
+}
+
 TEST_CASE("binance.depth_sync: full market-data ring forces a resync") {
   RecordingSink rs(64 * 4);  // room for ~2 messages
   Requests req;

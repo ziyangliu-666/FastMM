@@ -119,7 +119,9 @@ class BasicBinanceDepthSync {
   // Issues the deferred request if the rate limit allows it.
   void flush_request(std::int64_t now_ns) noexcept {
     if (stopped_) stopped_ = false;
-    if (!want_request_ || pending_request_) return;
+    // A requester that fails synchronously calls on_snapshot_failed from inside requester_(); the
+    // retry is left to the timer, or a zero interval would recurse until the stack runs out.
+    if (!want_request_ || pending_request_ || requesting_) return;
     if (last_request_ns_ != 0 && now_ns - last_request_ns_ < min_interval_ns_) {
       ++deferred_;
       return;
@@ -128,7 +130,9 @@ class BasicBinanceDepthSync {
     pending_request_ = true;
     last_request_ns_ = now_ns;
     ++requests_;
+    requesting_ = true;
     requester_(instrument_);
+    requesting_ = false;
   }
 
   InstrumentId instrument_;
@@ -142,6 +146,7 @@ class BasicBinanceDepthSync {
   std::uint64_t deferred_ = 0;
   bool want_request_ = false;
   bool pending_request_ = false;
+  bool requesting_ = false;
   bool overflowed_ = false;
   bool stopped_ = false;
   Inner inner_;
