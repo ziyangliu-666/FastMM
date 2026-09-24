@@ -181,7 +181,7 @@
       },
       "filter": {
         "exclude": {
-          "label": "live"
+          "label": "live|autobahn"
         }
       }
     },
@@ -211,7 +211,7 @@
       "configurePreset": "asan",
       "filter": {
         "exclude": {
-          "label": "live|noalloc"
+          "label": "live|noalloc|autobahn"
         }
       }
     },
@@ -221,7 +221,7 @@
       "configurePreset": "tsan",
       "filter": {
         "exclude": {
-          "label": "live|noalloc|bench-smoke"
+          "label": "live|noalloc|bench-smoke|autobahn"
         }
       }
     },
@@ -241,7 +241,7 @@
       "configurePreset": "clang-asan",
       "filter": {
         "exclude": {
-          "label": "live|noalloc"
+          "label": "live|noalloc|autobahn"
         }
       }
     },
@@ -251,7 +251,7 @@
       "configurePreset": "clang-tsan",
       "filter": {
         "exclude": {
-          "label": "live|noalloc|bench-smoke"
+          "label": "live|noalloc|bench-smoke|autobahn"
         }
       }
     }

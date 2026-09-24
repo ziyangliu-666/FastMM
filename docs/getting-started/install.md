@@ -61,7 +61,9 @@ The first command lists the built-in strategies with their parameters. The secon
 | `clang-release` | clang, LTO | the second compiler in CI |
 | `python` | the Python module only, no networking | wheel builds |
 
-`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in `live` label (tests against real testnets). They set no job count: without `-j`, ctest runs one test at a time unless `CTEST_PARALLEL_LEVEL` is set.
+`ctest --preset <name>` runs the tests of a preset; the test presets leave out the opt-in labels `live` (tests against real testnets) and `autobahn`. They set no job count: without `-j`, ctest runs one test at a time unless `CTEST_PARALLEL_LEVEL` is set.
+
+`ctest --test-dir build/release -L autobahn` runs [Autobahn|Testsuite](https://github.com/crossbario/autobahn-testsuite) cases 1-7, 9 and 10 against the WebSocket client and server (`scripts/autobahn.sh`), in the `crossbario/autobahn-testsuite` Docker image, or with the `wstest` named by `FASTMM_WSTEST`. Without either the two tests are skipped. Any FAILED case fails the test; the JSON and HTML reports are written to `build/release/autobahn/{client,server}/`. Cases 12 and 13 test permessage-deflate, which FastMM does not negotiate.
 
 ## Optional codecs
 

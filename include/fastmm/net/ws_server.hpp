@@ -63,6 +63,7 @@ struct WsServerConfig {
   std::size_t recv_capacity = std::size_t{1024} * 1024;
   std::size_t send_capacity = std::size_t{4} * 1024 * 1024;  // market-data fan-out bursts
   std::size_t max_message_bytes = 0;                         // 0 = recv_capacity - kWsMaxHeaderSize
+  bool validate_utf8 = true;  // reject text messages that are not UTF-8 (close code 1007)
 };
 
 template <ByteStream Stream>
@@ -88,7 +89,8 @@ class WsServerConnection final : public IoHandler, public WsSession {
         assembler_(rx_,
                    cfg.max_message_bytes != 0 ? cfg.max_message_bytes
                                               : cfg.recv_capacity - kWsMaxHeaderSize,
-                   /*require_masked=*/true),
+                   /*require_masked=*/true,
+                   cfg.validate_utf8),
         on_closed_(std::move(on_closed)) {
     detail::ws_compute_accept_key(
         client_key, std::span<char, detail::kWsAcceptLen>(accept_.data(), accept_.size()));

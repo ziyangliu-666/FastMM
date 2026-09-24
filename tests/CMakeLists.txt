@@ -131,7 +131,21 @@ if(NOT FASTMM_ENABLE_ASAN AND NOT FASTMM_ENABLE_TSAN)
     LABELS "docs" RESOURCE_LOCK fastmm_compile_fail TIMEOUT 3600)
 endif()
 if(FASTMM_BUILD_NET)
-  fastmm_test(net       LABELS "unit"           LIBS fastmm::net)
+  fastmm_test(net       LABELS "unit"           LIBS fastmm::net EXCLUDE_REGEX "/autobahn_")
+  # RFC 6455 conformance (label autobahn): Autobahn|Testsuite drives the WebSocket client and
+  # server through scripts/autobahn.sh, in docker (crossbario/autobahn-testsuite) or with a local
+  # wstest ($FASTMM_WSTEST). The test presets exclude the label; `ctest --test-dir <build> -L
+  # autobahn` runs it. Without docker or wstest the tests skip. Reports: <build>/autobahn/.
+  foreach(_ab client server)
+    add_executable(fastmm_autobahn_${_ab} net/autobahn_${_ab}.cpp)
+    fastmm_target_defaults(fastmm_autobahn_${_ab})
+    target_link_libraries(fastmm_autobahn_${_ab} PRIVATE fastmm::net)
+    add_test(NAME autobahn.${_ab}
+      COMMAND ${PROJECT_SOURCE_DIR}/scripts/autobahn.sh ${_ab} $<TARGET_FILE:fastmm_autobahn_${_ab}>
+              ${CMAKE_BINARY_DIR}/autobahn/${_ab})
+    set_tests_properties(autobahn.${_ab} PROPERTIES LABELS "autobahn" SKIP_RETURN_CODE 77
+                                                    TIMEOUT 1800)
+  endforeach()
   # AF_XDP backend. The privileged cases (verifier load, BPF_PROG_TEST_RUN, veth receive) skip
   # without root or the capabilities; `sudo scripts/xdp-test.sh` runs them.
   fastmm_test(xdp       LABELS "unit"           LIBS fastmm::net)

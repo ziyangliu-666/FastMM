@@ -203,6 +203,16 @@ inline std::uint16_t ws_decode_close_code(std::span<const std::byte> payload) no
                                     static_cast<std::uint16_t>(payload[1]));
 }
 
+// A close code a peer may put on the wire (§7.4): 1000-1003, 1007-1014, 3000-4999. 1004-1006 and
+// 1015 are reserved for local use, the rest of 0-2999 is unassigned.
+constexpr bool ws_close_code_sendable(std::uint16_t code) noexcept {
+  return (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) ||
+         (code >= 3000 && code <= 4999);
+}
+
+// simdjson::validate_utf8 (src/net/ws_frame.cpp): strict UTF-8, no overlong forms, no surrogates.
+bool ws_utf8_valid(std::span<const std::byte> text) noexcept;
+
 namespace detail {
 
 struct WsAssembleError {
@@ -222,10 +232,20 @@ struct WsAssembleError {
 //   on_message(WsOpcode, std::span<std::byte>)  -- Text/Binary, complete
 //   on_control(WsOpcode, std::span<std::byte>)  -- Ping/Pong/Close (unmasked already)
 // Sink callbacks may send but must not consume from the buffer.
+// A close frame is checked before it reaches the sink: a 1-byte payload or a code that may not
+// be sent is a protocol error, a reason that is not UTF-8 an invalid payload (§5.5.1, §7.4).
+// validate_utf8 checks every complete text message (§8.1). A peer whose text goes to simdjson
+// can leave it off: simdjson's first stage rejects invalid UTF-8 itself.
 class WsMessageAssembler {
  public:
-  WsMessageAssembler(RecvBuffer& rx, std::size_t max_message_bytes, bool require_masked) noexcept
-      : rx_(rx), max_message_(max_message_bytes), require_masked_(require_masked) {}
+  WsMessageAssembler(RecvBuffer& rx,
+                     std::size_t max_message_bytes,
+                     bool require_masked,
+                     bool validate_utf8) noexcept
+      : rx_(rx),
+        max_message_(max_message_bytes),
+        require_masked_(require_masked),
+        validate_utf8_(validate_utf8) {}
 
   template <class Sink>
   WsAssembleError process(Sink& sink) noexcept {
@@ -259,6 +279,9 @@ class WsMessageAssembler {
       if (h.masked) ws_mask_inplace(payload, h.mask);
 
       if (control) {
+        if (h.opcode == WsOpcode::Close) [[unlikely]] {
+          if (const WsAssembleError e = check_close(payload)) return e;
+        }
         sink.on_control(h.opcode, payload);
         if (frag_active_) {
           parse_off_ += total;  // leave it in the gap; consumed with the final fragment
@@ -275,7 +298,11 @@ class WsMessageAssembler {
         frag_len_ += payload.size();
         parse_off_ += total;
         if (h.fin) {
-          sink.on_message(frag_opcode_, std::span<std::byte>(base, frag_len_));
+          const std::span<std::byte> message(base, frag_len_);
+          if (validate_utf8_ && frag_opcode_ == WsOpcode::Text) [[unlikely]] {
+            if (!ws_utf8_valid(message)) return fail(WsCloseCode::InvalidPayload, kNotUtf8);
+          }
+          sink.on_message(frag_opcode_, message);
           rx_.consume(parse_off_);
           reset_fragment();
         }
@@ -286,6 +313,10 @@ class WsMessageAssembler {
       if (frag_active_)
         return fail(WsCloseCode::ProtocolError, "new data frame inside fragmented message");
       if (h.fin) {
+        // Off the inlined path: the venue receive loop runs with validate_utf8 off.
+        if (validate_utf8_ && h.opcode == WsOpcode::Text) [[unlikely]] {
+          if (!ws_utf8_valid(payload)) return fail(WsCloseCode::InvalidPayload, kNotUtf8);
+        }
         sink.on_message(h.opcode, payload);
         rx_.consume(total);
         continue;
@@ -307,6 +338,17 @@ class WsMessageAssembler {
   WsAssembleError fail(WsCloseCode code, const char* detail) noexcept {
     return WsAssembleError{code, detail};
   }
+  static constexpr const char* kNotUtf8 = "text message is not UTF-8";
+  [[gnu::cold, gnu::noinline]] WsAssembleError check_close(
+      std::span<const std::byte> payload) noexcept {
+    if (payload.empty()) return {};
+    if (payload.size() == 1) return fail(WsCloseCode::ProtocolError, "1-byte close payload");
+    if (!ws_close_code_sendable(ws_decode_close_code(payload)))
+      return fail(WsCloseCode::ProtocolError, "invalid close code");
+    if (!ws_utf8_valid(payload.subspan(2)))
+      return fail(WsCloseCode::InvalidPayload, "close reason is not UTF-8");
+    return {};
+  }
   void reset_fragment() noexcept {
     frag_active_ = false;
     frag_len_ = 0;
@@ -316,6 +358,7 @@ class WsMessageAssembler {
   RecvBuffer& rx_;
   std::size_t max_message_;
   bool require_masked_;
+  bool validate_utf8_;
   bool frag_active_ = false;
   WsOpcode frag_opcode_ = WsOpcode::Text;
   std::size_t frag_len_ = 0;   // assembled message bytes at readable()[0..frag_len_)

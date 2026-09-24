@@ -71,7 +71,9 @@ struct ConnectionConfig {
   bool manual_auth = false;       // handler calls auth_done()
   bool manual_subscribe = false;  // handler calls subscribe_done()
   std::string extra_headers;      // "Name: value\r\n" block for the upgrade request
-  WsClientConfig ws;
+  // Venue handlers parse text with simdjson, whose first stage rejects invalid UTF-8; the
+  // WebSocket-level check would scan every message a second time.
+  WsClientConfig ws{.validate_utf8 = false};
 };
 
 // Throws std::invalid_argument on a bad URL; fills `url` (views into cfg.url).

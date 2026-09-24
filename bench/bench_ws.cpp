@@ -47,7 +47,7 @@ void BM_WsAssemble(benchmark::State& state) {
   const auto payload_len = static_cast<std::size_t>(state.range(0));
   const auto frame = make_frame(payload_len, nullptr);
   RecvBuffer rx(1 << 20);
-  detail::WsMessageAssembler assembler(rx, 1 << 20, false);
+  detail::WsMessageAssembler assembler(rx, 1 << 20, false, /*validate_utf8=*/false);
   NullSink sink;
   for (auto _ : state) {
     auto w = rx.writable();
@@ -60,12 +60,31 @@ void BM_WsAssemble(benchmark::State& state) {
 }
 BENCHMARK(BM_WsAssemble)->Arg(64)->Arg(16 * 1024);
 
+// The same with UTF-8 validation of the text payload (WsClientConfig::validate_utf8, the
+// default outside Connection).
+void BM_WsAssembleUtf8(benchmark::State& state) {
+  const auto payload_len = static_cast<std::size_t>(state.range(0));
+  const auto frame = make_frame(payload_len, nullptr);
+  RecvBuffer rx(1 << 20);
+  detail::WsMessageAssembler assembler(rx, 1 << 20, false, /*validate_utf8=*/true);
+  NullSink sink;
+  for (auto _ : state) {
+    auto w = rx.writable();
+    std::memcpy(w.data(), frame.data(), frame.size());
+    rx.commit(frame.size());
+    assembler.process(sink);
+    benchmark::DoNotOptimize(sink.delivered);
+  }
+  state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(frame.size()));
+}
+BENCHMARK(BM_WsAssembleUtf8)->Arg(64)->Arg(1024)->Arg(16 * 1024);
+
 // Server-side path: masked frame must be unmasked in place.
 void BM_WsAssembleMasked16K(benchmark::State& state) {
   const std::uint8_t mask[4] = {0x37, 0xfa, 0x21, 0x3d};
   const auto frame = make_frame(16 * 1024, mask);
   RecvBuffer rx(1 << 20);
-  detail::WsMessageAssembler assembler(rx, 1 << 20, true);
+  detail::WsMessageAssembler assembler(rx, 1 << 20, true, /*validate_utf8=*/false);
   NullSink sink;
   for (auto _ : state) {
     auto w = rx.writable();

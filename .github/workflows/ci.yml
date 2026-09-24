@@ -197,6 +197,42 @@ jobs:
           done
           python3 tools/check_budgets.py bench/results/ci --slack 2
 
+  autobahn:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # RFC 6455 conformance of the WebSocket client and server: Autobahn|Testsuite cases 1-7, 9
+    # and 10 in the pinned crossbario/autobahn-testsuite image (scripts/autobahn.sh). Any FAILED
+    # case fails the job; the JSON and HTML reports are uploaded either way.
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev ccache
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: autobahn
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/CPM.cmake') }}
+      - name: configure
+        run: cmake --preset release -DCMAKE_CXX_COMPILER=g++-13 -DFASTMM_WERROR=ON
+      - name: build
+        run: cmake --build --preset release -j$(nproc) --target fastmm_autobahn_client fastmm_autobahn_server
+      - name: autobahn (client and server)
+        # A test without docker skips, and ctest counts a skip as a pass: the grep makes it fail
+        # this job instead.
+        shell: bash
+        run: |
+          ctest --test-dir build/release -L autobahn -j2 --output-on-failure --no-tests=error | tee autobahn.log
+          ! grep -q 'Skipped' autobahn.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: autobahn-reports
+          path: build/release/autobahn
+
   docker:
     needs: plan
     if: needs.plan.outputs.full == 'true'

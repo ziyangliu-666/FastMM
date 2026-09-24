@@ -57,6 +57,7 @@ struct WsClientConfig {
       std::size_t{4} * 1024 * 1024;                      // RecvBuffer; bounds the largest message
   std::size_t send_capacity = std::size_t{1024} * 1024;  // WireBuffer for outgoing frames
   std::size_t max_message_bytes = 0;                     // 0 = recv_capacity - kWsMaxHeaderSize
+  bool validate_utf8 = true;  // reject text messages that are not UTF-8 (close code 1007)
 };
 
 struct WsStats {
@@ -127,7 +128,8 @@ class WsClient final : public IoHandler {
         assembler_(rx_,
                    cfg.max_message_bytes != 0 ? cfg.max_message_bytes
                                               : cfg.recv_capacity - kWsMaxHeaderSize,
-                   /*require_masked=*/false) {}
+                   /*require_masked=*/false,
+                   cfg.validate_utf8) {}
 
   ~WsClient() override { detach(); }
   WsClient(const WsClient&) = delete;

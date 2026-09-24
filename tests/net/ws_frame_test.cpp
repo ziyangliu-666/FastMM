@@ -169,7 +169,7 @@ TEST_CASE("ws_frame: encode round-trips through parse") {
 
 TEST_CASE("ws_frame: assembler delivers messages and compacts fragments in place") {
   RecvBuffer rx(4096);
-  detail::WsMessageAssembler asm_(rx, 4000, /*require_masked=*/false);
+  detail::WsMessageAssembler asm_(rx, 4000, /*require_masked=*/false, /*validate_utf8=*/true);
   Sink sink;
 
   SUBCASE("two whole frames in one read") {
@@ -216,7 +216,7 @@ TEST_CASE("ws_frame: assembler delivers messages and compacts fragments in place
     // Push the read cursor deep into the buffer first, so the compaction path moves the
     // partially assembled message while a fragment is pending.
     RecvBuffer big(RecvBuffer::kCompactBelow + 4096);
-    detail::WsMessageAssembler a2(big, 1 << 20, false);
+    detail::WsMessageAssembler a2(big, 1 << 20, false, true);
     std::string junk(2000, 'j');
     feed(big, bytes(junk));
     big.consume(2000);  // rd_ = 2000
@@ -247,7 +247,7 @@ TEST_CASE("ws_frame: assembler delivers messages and compacts fragments in place
     CHECK(std::string_view(err.detail) == "masked server frame");
 
     RecvBuffer rx2(256);
-    detail::WsMessageAssembler server_side(rx2, 200, /*require_masked=*/true);
+    detail::WsMessageAssembler server_side(rx2, 200, /*require_masked=*/true, true);
     feed(rx2, bytes_of({0x81, 0x01, 'x'}));
     err = server_side.process(sink);
     CHECK(err.code == WsCloseCode::ProtocolError);
@@ -291,7 +291,7 @@ TEST_CASE("ws_frame: assembler delivers messages and compacts fragments in place
   }
   SUBCASE("64 KiB binary frame") {
     RecvBuffer rx64(70000);
-    detail::WsMessageAssembler a64(rx64, 69000, false);
+    detail::WsMessageAssembler a64(rx64, 69000, false, true);
     std::string payload(65536, '\0');
     for (std::size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<char>(i);
     WireBuffer enc(70000);
@@ -304,6 +304,58 @@ TEST_CASE("ws_frame: assembler delivers messages and compacts fragments in place
     CHECK_FALSE(a64.process(sink));
     REQUIRE(sink.messages.size() == 1);
     CHECK(sink.messages[0].second == payload);
+  }
+  SUBCASE("text messages must be UTF-8, binary messages need not be") {
+    feed(rx, bytes_of({0x81, 0x02, 0xC3, 0xA9}));  // "é"
+    CHECK_FALSE(asm_.process(sink));
+    CHECK(sink.messages.back().second == "\xC3\xA9");
+    feed(rx, bytes_of({0x82, 0x02, 0xC3, 0x28}));  // binary: no check
+    CHECK_FALSE(asm_.process(sink));
+    feed(rx, bytes_of({0x81, 0x02, 0xC3, 0x28}));  // truncated two-byte sequence
+    auto err = asm_.process(sink);
+    CHECK(err.code == WsCloseCode::InvalidPayload);
+    rx.clear();
+    asm_.reset();
+    feed(rx, bytes_of({0x81, 0x03, 0xED, 0xA0, 0x80}));  // UTF-16 surrogate U+D800
+    CHECK(asm_.process(sink).code == WsCloseCode::InvalidPayload);
+    rx.clear();
+    asm_.reset();
+    // A code point split across fragments is valid once the message is complete.
+    const std::size_t before = sink.messages.size();
+    feed(rx, bytes_of({0x01, 0x01, 0xE2, 0x00, 0x01, 0x82, 0x80, 0x01, 0xAC}));  // "€"
+    CHECK_FALSE(asm_.process(sink));
+    REQUIRE(sink.messages.size() == before + 1);
+    CHECK(sink.messages.back().second == "\xE2\x82\xAC");
+    feed(rx, bytes_of({0x01, 0x01, 0xE2, 0x80, 0x01, 0x82}));  // ends mid code point
+    CHECK(asm_.process(sink).code == WsCloseCode::InvalidPayload);
+  }
+  SUBCASE("text is not checked with validate_utf8 off") {
+    RecvBuffer rx2(256);
+    detail::WsMessageAssembler lax(rx2, 200, false, /*validate_utf8=*/false);
+    feed(rx2, bytes_of({0x81, 0x02, 0xC3, 0x28}));
+    CHECK_FALSE(lax.process(sink));
+    CHECK(sink.messages.back().second == "\xC3\x28");
+  }
+  SUBCASE("close frames: payload length, code and reason are checked") {
+    const auto close_err = [&](std::initializer_list<int> frame) {
+      rx.clear();
+      asm_.reset();
+      feed(rx, bytes_of(frame));
+      return asm_.process(sink).code;
+    };
+    CHECK(close_err({0x88, 0x00}) == WsCloseCode::Normal);              // empty: no code
+    CHECK(close_err({0x88, 0x02, 0x03, 0xE8}) == WsCloseCode::Normal);  // 1000
+    CHECK(close_err({0x88, 0x02, 0x0B, 0xB8}) == WsCloseCode::Normal);  // 3000
+    CHECK(close_err({0x88, 0x01, 0x03}) == WsCloseCode::ProtocolError);
+    CHECK(close_err({0x88, 0x02, 0x03, 0xE7}) == WsCloseCode::ProtocolError);  // 999
+    CHECK(close_err({0x88, 0x02, 0x03, 0xED}) == WsCloseCode::ProtocolError);  // 1005
+    CHECK(close_err({0x88, 0x02, 0x03, 0xF7}) == WsCloseCode::ProtocolError);  // 1015
+    CHECK(close_err({0x88, 0x02, 0x13, 0x88}) == WsCloseCode::ProtocolError);  // 5000
+    CHECK(close_err({0x88, 0x04, 0x03, 0xE8, 0xC3, 0x28}) == WsCloseCode::InvalidPayload);
+    CHECK(ws_close_code_sendable(1014));
+    CHECK_FALSE(ws_close_code_sendable(1004));
+    CHECK_FALSE(ws_close_code_sendable(2999));
+    CHECK(ws_close_code_sendable(4999));
   }
 }
 

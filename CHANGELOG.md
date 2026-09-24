@@ -37,6 +37,14 @@ All notable changes are recorded here (Keep a Changelog format).
   `amend_keep_priority = false`, still uses `cancelReplace`, as does an order that has used up
   `max_order_amends` (the venue's `MAX_NUM_ORDER_AMENDS` filter, 10). `OrderAckMsg::kAmendedInPlace`
   tells the OMS to rekey the order without resetting its filled quantity.
+- RFC 6455 conformance gate: Autobahn|Testsuite 25.10.1 (`crossbario/autobahn-testsuite`, pinned by
+  digest) runs cases 1-7, 9 and 10 against `net::WsClient` (`tests/net/autobahn_client.cpp`
+  against `wstest -m fuzzingserver`) and `net::WsServerConnection` (the echo server
+  `tests/net/autobahn_server.cpp` under `wstest -m fuzzingclient`). `scripts/autobahn.sh` runs a
+  side, `tools/autobahn_check.py` fails on any FAILED case; ctest label `autobahn`, left out of the
+  test presets, skipped without docker; CI job `autobahn` uploads the reports. Both sides: 294 OK,
+  4 NON-STRICT (6.4.1-6.4.4: invalid UTF-8 is caught when the message completes, not at the
+  fragment), 3 INFORMATIONAL, 0 FAILED.
 
 ### Changed
 - The command lines of all nine programs (`fastmm::cli::live`, `backtest`, `replay`, `data`, and
@@ -74,6 +82,15 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- The WebSocket client and server accepted text messages that are not UTF-8 and close frames with a
+  1-byte payload, a code that may not be sent (0-999, 1004-1006, 1015-2999, 5000 and up) or a
+  reason that is not UTF-8: 86 of the 301 Autobahn cases failed. `WsMessageAssembler` now answers
+  them with close code 1007 or 1002 (§5.5.1, §7.4, §8.1). Text is validated with
+  `simdjson::validate_utf8` (`fastmm_net` links simdjson privately), per complete message, under
+  `WsClientConfig::validate_utf8` and `WsServerConfig::validate_utf8` (default on).
+  `ConnectionConfig::ws` turns it off: every venue handler parses text with simdjson, whose first
+  stage rejects invalid UTF-8, so the venue receive path is unchanged (`bench_ws`
+  `BM_WsAssembleUtf8` measures the check).
 - `BinanceVenue::cancel_all()` gave up on a rate-limited refusal (418/429). The kill switch has no
   other remedy than that call, so it now retries a bounded number of times before reporting the
   failure.
