@@ -28,7 +28,12 @@ multi-program dispatcher, which libxdp pins: after a crash FastMM's program stay
 ten crashes the interface cannot be opened. The first attempt (libbpf for loading and UMEM, a
 bpf_link attach the kernel removes when the process dies) had the right crash behaviour and was
 failed only on an acceptance criterion that asked for the dispatcher, plus formatting and privileged
-tests that need root. That version is the one to finish.
+tests that need root. Deferred rather than finished: it compiles libbpf, libxdp and libelf from source
+and brings back zlib (S1 had just removed it) to save about 100 lines (+461/-562), while the
+hand-written loader already passed the privileged suite as root (22/22) and the AF_XDP end-to-end
+runs. Revisit when AF_XDP runs on production NICs and driver quirks make a maintained loader worth
+four source dependencies. Branch deleted; the design to use then is libbpf for loading and UMEM
+with a bpf_link attach, not the libxdp dispatcher.
 
 ## 2026-09-24
 
