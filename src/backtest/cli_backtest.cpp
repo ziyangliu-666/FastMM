@@ -8,6 +8,8 @@
 //
 // Exit codes: 0 ok, 2 bad command line, 3 bad config / parameters (including a strategy name
 // registered twice by different code), 4 unreadable data, 5 run or output failure.
+#include "command_line.hpp"
+
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/cli/backtest.hpp"
 #include "fastmm/cli/modules.hpp"
@@ -15,54 +17,21 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/strategies/listing.hpp"
 #include "fastmm/strategies/registry.hpp"
-#include "fastmm/version.hpp"
 
+#include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <exception>
 #include <optional>
 #include <string>
-#include <string_view>
-#include <utility>
 #include <vector>
 
 namespace fastmm::cli {
 
 namespace {
 
-constexpr int kExitUsage = 2;
 constexpr int kExitConfig = 3;
 constexpr int kExitData = 4;
 constexpr int kExitRun = 5;
-
-void usage(std::FILE* out, const char* prog) {
-  std::fprintf(out,
-               "usage: %s --config <file.toml> [options]\n"
-               "  --data <spec>            market data: 'synthetic', a *.fmj / *.csv path, or\n"
-               "                           <source>:<args> (default: [backtest] source/path).\n"
-               "                           `fastmm-data list` prints the sources\n"
-               "  --strategy <name>        registered strategy (default: [strategy] name)\n"
-               "  --param <key=value>      strategy parameter override (repeatable)\n"
-               "  --out <dir>              write equity.csv fills.csv orders.csv summary.json\n"
-               "                           (default: [backtest] output_dir; '-' = don't write)\n"
-               "  --seed <n>               synthetic market / latency model seed\n"
-               "  --duration <seconds>     synthetic horizon\n"
-               "  --journal-out <file>     record the session for fastmm-replay\n"
-               "  --list-strategies        print registered strategies and their parameters\n"
-               "  --format <text|json>     output format of --list-strategies (default text)\n"
-               "  --version | --help\n",
-               prog);
-}
-
-bool parse_u64(std::string_view s, std::uint64_t& out) {
-  if (s.empty()) return false;
-  char* end = nullptr;
-  const std::string tmp(s);
-  const unsigned long long v = std::strtoull(tmp.c_str(), &end, 10);
-  if (end == tmp.c_str() || *end != '\0' || tmp[0] == '-') return false;
-  out = v;
-  return true;
-}
 
 }  // namespace
 
@@ -74,97 +43,57 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::string strategy;
   std::string out_dir;
   std::string journal_out;
-  std::string format_arg;
-  std::vector<std::pair<std::string, std::string>> overrides;
+  std::string format_arg = "text";
+  std::vector<std::string> params;
   std::uint64_t seed = 0;
   std::uint64_t duration_s = 0;
-  bool have_seed = false;
-  bool have_out = false;
   bool list = false;
 
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    auto value = [&](std::string& dst) {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "%s: %s needs a value\n", prog, argv[i]);
-        return false;
-      }
-      dst = argv[++i];
-      return true;
-    };
-    std::string v;
-    if (a == "--help" || a == "-h") {
-      usage(stdout, prog);
-      return 0;
-    } else if (a == "--version") {
-      std::printf("%s %s\n", prog, build_info());
-      return 0;
-    } else if (a == "--config") {
-      if (!value(config_path)) return kExitUsage;
-    } else if (a == "--data") {
-      if (!value(data)) return kExitUsage;
-    } else if (a == "--strategy") {
-      if (!value(strategy)) return kExitUsage;
-    } else if (a == "--out") {
-      if (!value(out_dir)) return kExitUsage;
-      have_out = true;
-    } else if (a == "--journal-out") {
-      if (!value(journal_out)) return kExitUsage;
-    } else if (a == "--list-strategies") {
-      list = true;
-    } else if (a == "--format") {
-      if (!value(format_arg)) return kExitUsage;
-    } else if (a == "--param") {
-      if (!value(v)) return kExitUsage;
-      const std::size_t eq = v.find('=');
-      if (eq == std::string::npos || eq == 0) {
-        std::fprintf(stderr, "%s: --param expects key=value, got '%s'\n", prog, v.c_str());
-        return kExitUsage;
-      }
-      overrides.emplace_back(v.substr(0, eq), v.substr(eq + 1));
-    } else if (a == "--seed") {
-      if (!value(v)) return kExitUsage;
-      if (!parse_u64(v, seed)) {
-        std::fprintf(stderr, "%s: --seed expects an unsigned integer\n", prog);
-        return kExitUsage;
-      }
-      have_seed = true;
-    } else if (a == "--duration") {
-      if (!value(v)) return kExitUsage;
-      if (!parse_u64(v, duration_s) || duration_s == 0) {
-        std::fprintf(stderr, "%s: --duration expects a positive integer\n", prog);
-        return kExitUsage;
-      }
-    } else {
-      std::fprintf(stderr, "%s: unknown argument '%s'\n", prog, argv[i]);
-      usage(stderr, prog);
-      return kExitUsage;
-    }
-  }
-  std::optional<ListFormat> format = ListFormat::Text;
-  if (!format_arg.empty()) {
-    format = parse_list_format(format_arg);
-    if (!format) {
-      std::fprintf(stderr, "%s: bad --format '%s' (text or json)\n", prog, format_arg.c_str());
-      return kExitUsage;
-    }
-    if (!list) {
-      std::fprintf(stderr, "%s: --format applies to --list-strategies\n", prog);
-      return kExitUsage;
-    }
-  }
+  CLI::App app("Backtests a registered strategy.", program);
+  setup(app);
+  app.add_option("--config", config_path, "engine / strategy / backtest configuration (required)")
+      ->option_text("<file.toml>");
+  app.add_option("--data",
+                 data,
+                 "market data: 'synthetic', a *.fmj / *.csv path, or <source>:<args> (default: "
+                 "[backtest] source/path). `fastmm-data list` prints the sources")
+      ->option_text("<spec>");
+  app.add_option("--strategy", strategy, "registered strategy (default: [strategy] name)")
+      ->option_text("<name>");
+  app.add_option("--param", params, "strategy parameter override (repeatable)")
+      ->option_text("<key=value>")
+      ->allow_extra_args(false)
+      ->check(key_value());
+  const CLI::Option* out_opt =
+      app.add_option("--out",
+                     out_dir,
+                     "write equity.csv fills.csv orders.csv summary.json (default: [backtest] "
+                     "output_dir; '-' = don't write)")
+          ->option_text("<dir>");
+  const CLI::Option* seed_opt =
+      app.add_option("--seed", seed, "synthetic market / latency model seed")->option_text("<n>");
+  app.add_option("--duration", duration_s, "synthetic horizon")
+      ->option_text("<seconds>")
+      ->check(CLI::Range(std::uint64_t{1}, std::uint64_t{10'000'000}));
+  app.add_option("--journal-out", journal_out, "record the session for fastmm-replay")
+      ->option_text("<file>");
+  CLI::Option* list_opt =
+      app.add_flag("--list-strategies", list, "print registered strategies and their parameters");
+  app.add_option("--format", format_arg, "output format of --list-strategies (default text)")
+      ->option_text("<text|json>")
+      ->check(CLI::IsMember({"text", "json"}))
+      ->needs(list_opt);
+  if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
+  const bool have_seed = seed_opt->count() > 0;
+
   if (!register_strategy_modules(program, modules)) return kExitConfig;
   if (list) {
-    const std::string text =
-        format_strategies(StrategyRegistry::instance(), TransportKind::Sim, *format);
+    const std::string text = format_strategies(
+        StrategyRegistry::instance(), TransportKind::Sim, *parse_list_format(format_arg));
     std::fputs(text.c_str(), stdout);
     return 0;
   }
-  if (config_path.empty()) {
-    std::fprintf(stderr, "%s: --config is required\n", prog);
-    usage(stderr, prog);
-    return kExitUsage;
-  }
+  if (config_path.empty()) return usage_error(app, "--config is required");
 
   bt::BacktestConfig cfg;
   Config raw;
@@ -202,7 +131,10 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
     }
     return kExitConfig;
   }
-  for (const auto& [k, v] : overrides) cfg.set_param(k, v);
+  for (const std::string& p : params) {
+    const std::size_t eq = p.find('=');
+    cfg.set_param(p.substr(0, eq), p.substr(eq + 1));
+  }
   if (have_seed) cfg.set_seed(seed);
   if (duration_s > 0) cfg.duration = seconds(static_cast<std::int64_t>(duration_s));
   // The journal embeds the configuration the run used, command-line overrides included.
@@ -212,7 +144,7 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   if (duration_s > 0) raw.backtest.values["duration_s"] = std::to_string(duration_s);
   cfg.config_toml = raw.effective_toml();
   if (!journal_out.empty()) cfg.journal_out = journal_out;
-  if (have_out) cfg.output_dir = out_dir == "-" ? std::string() : out_dir;
+  if (out_opt->count() > 0) cfg.output_dir = out_dir == "-" ? std::string() : out_dir;
 
   std::unique_ptr<bt::MdSource> source;
   try {

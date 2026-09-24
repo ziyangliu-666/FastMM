@@ -84,20 +84,26 @@ Backtests a registered strategy on synthetic data, a journal, a CSV file or a pu
 
 <!-- BEGIN cli-help fastmm-backtest -->
 ```text
-usage: fastmm-backtest --config <file.toml> [options]
-  --data <spec>            market data: 'synthetic', a *.fmj / *.csv path, or
-                           <source>:<args> (default: [backtest] source/path).
-                           `fastmm-data list` prints the sources
-  --strategy <name>        registered strategy (default: [strategy] name)
-  --param <key=value>      strategy parameter override (repeatable)
-  --out <dir>              write equity.csv fills.csv orders.csv summary.json
-                           (default: [backtest] output_dir; '-' = don't write)
-  --seed <n>               synthetic market / latency model seed
-  --duration <seconds>     synthetic horizon
-  --journal-out <file>     record the session for fastmm-replay
-  --list-strategies        print registered strategies and their parameters
-  --format <text|json>     output format of --list-strategies (default text)
-  --version | --help
+Backtests a registered strategy.
+
+usage: fastmm-backtest [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --config <file.toml>        engine / strategy / backtest configuration (required)
+  --data <spec>               market data: 'synthetic', a *.fmj / *.csv path, or
+                              <source>:<args> (default: [backtest] source/path).
+                              `fastmm-data list` prints the sources
+  --strategy <name>           registered strategy (default: [strategy] name)
+  --param <key=value>         strategy parameter override (repeatable)
+  --out <dir>                 write equity.csv fills.csv orders.csv summary.json (default:
+                              [backtest] output_dir; '-' = don't write)
+  --seed <n>                  synthetic market / latency model seed
+  --duration <seconds>        synthetic horizon
+  --journal-out <file>        record the session for fastmm-replay
+  --list-strategies           print registered strategies and their parameters
+  --format <text|json>        output format of --list-strategies (default text)
 ```
 <!-- END cli-help -->
 

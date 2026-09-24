@@ -329,7 +329,7 @@ if(TARGET fastmm-backtest)
   fastmm_cli_test(apps.fastmm-backtest.list_strategies_json EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-backtest> --list-strategies --format json EXPECT_REGEX "${_json_builtin}")
   fastmm_cli_test(apps.fastmm-backtest.format_without_list EXPECT_RC 2
-    CMD $<TARGET_FILE:fastmm-backtest> --format json EXPECT_REGEX "fastmm-backtest: --format applies to --list-strategies")
+    CMD $<TARGET_FILE:fastmm-backtest> --format json EXPECT_REGEX "fastmm-backtest: --format requires --list-strategies")
   fastmm_cli_test(apps.fastmm-backtest.unknown_strategy EXPECT_RC 3
     CMD $<TARGET_FILE:fastmm-backtest> --config ${PROJECT_SOURCE_DIR}/configs/backtest-example.toml --strategy nope
     EXPECT_REGEX "fastmm-backtest: unknown strategy 'nope'")
