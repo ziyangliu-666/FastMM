@@ -3,6 +3,33 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-24 (later): reusing mature components
+
+A workflow researched where FastMM should adopt mature components (four independent reports, a
+plan, then each step implemented in a worktree, verified by a separate agent and merged only if it
+passed). Landed: zlib dropped (unused), the io_uring backend on liburing, every command line on
+CLI11, the user-space TCP and the AF_PACKET ring deleted, and the WebSocket client and server gated
+on the Autobahn|Testsuite. Deliberately kept, with reasons in the plan: the .fmj journal, rings and
+fixed containers, the latency histogram (fixed layout in the status segment), the epoll reactor,
+the WebSocket/HTTP/TLS code, the SBE generator (sbe-tool brings a JVM and exceptions), the codecs.
+Deferred until there is a reason: Aeron (no process boundary on the trading path yet; start with a
+lossy journal tap when a remote consumer is needed), QuickFIX (std::map fields and its own threads;
+decide when a FIX venue arrives), the OpenTelemetry SDK (an OTel Collector can scrape the existing
+Prometheus endpoint), secrets management.
+
+**Not merged: Quill for logging.** Measured on the step's branch rebuilt on main, interleaved and
+pinned with a second core for background threads: BM_TickToOrder_Sim within noise, but
+BM_EngineStep_Sim consistently about 3.5% slower (main 1703-1728 ns over six rounds, branch
+1758-1838 ns). The change was 524 lines added for 529 removed, so it saved no maintenance. The
+first attempt was worse (7-13%) because it also forced StaticVector's insert and erase inline.
+
+**Not merged yet: libbpf/libxdp for AF_XDP.** The second attempt attached through libxdp's
+multi-program dispatcher, which libxdp pins: after a crash FastMM's program stays in it, and after
+ten crashes the interface cannot be opened. The first attempt (libbpf for loading and UMEM, a
+bpf_link attach the kernel removes when the process dies) had the right crash behaviour and was
+failed only on an acceptance criterion that asked for the dispatcher, plus formatting and privileged
+tests that need root. That version is the one to finish.
+
 ## 2026-09-24
 
 **Recovery is now demonstrated.** `tests/integration/recovery_test.cpp` and
