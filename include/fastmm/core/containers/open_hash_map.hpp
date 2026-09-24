@@ -56,6 +56,14 @@ class OpenHashMap {
   [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
   [[nodiscard]] static constexpr std::size_t capacity() noexcept { return N; }
 
+  // Calls f(key) for every entry. Control path: it walks all N slots.
+  template <class F>
+  void for_each_key(F&& f) const {
+    for (std::size_t i = 0; i < N; ++i) {
+      if (slots_[i].used != 0) f(slots_[i].key);
+    }
+  }
+
   void clear() noexcept {
     for (std::size_t i = 0; i < N; ++i) slots_[i].used = 0;
     size_ = 0;

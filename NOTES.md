@@ -77,9 +77,9 @@ three times before reporting failure, because the kill switch has no other remed
 multi-minute IP ban still ends in `false`, and the caller still treats that as final.
 
 **Smaller things seen and left alone.** `VenueStatus::reconnects` counts market-data backoffs only,
-so user and order channel reconnects are invisible in the status line. `BinanceVenue::shadows_` (a
-fixed 8192-entry map) is never swept or cleared on disconnect, so an order whose terminal event is
-lost leaks its slot for the life of the process. Open-orders replies are matched to their sent
+so user and order channel reconnects are invisible in the status line. `BinanceVenue::shadows_` leaked
+a slot per order whose terminal event was lost (fixed 2026-09-24: a reconciliation sweeps shadows
+of orders the venue no longer holds that were sent before the snapshot was asked for). Open-orders replies are matched to their sent
 watermark by FIFO on a shared `"oo"` request id, and the REST fallback never enqueues one.
 `OmsAction::ReconcileNeeded` (more than three cancel rejects) is logged and nothing asks for a
 snapshot.

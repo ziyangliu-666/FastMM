@@ -121,6 +121,8 @@ struct VenueStatus {
   std::uint64_t replaces_sent = 0;
   std::uint64_t order_events = 0;
   std::uint64_t order_send_failures = 0;
+  std::uint64_t shadows_swept =
+      0;  // order shadows a reconciliation proved dead (lost terminal events)
   std::uint64_t rest_requests = 0;
   std::uint64_t rest_errors = 0;
   std::uint64_t rate_limit_cooldowns = 0;

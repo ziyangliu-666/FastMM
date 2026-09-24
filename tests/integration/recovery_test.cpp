@@ -702,3 +702,37 @@ TEST_CASE("recovery: a 418 hard stop and a revoked key stop new orders but never
     REQUIRE(h.pump([&] { return fx.server.stats().open_orders == 0; }));
   }
 }
+
+TEST_CASE("recovery: shadows of orders whose terminal events were lost are swept by the snapshot") {
+  // The fixed-size shadow table leaked a slot per order whose end the connector never heard about;
+  // enough of them and a new order had no shadow, so its replace was refused as "original unknown".
+  ServerFixture fx(quiet_server());
+  ReadyHarness h(fx);
+  OmsMirror m(h.instruments);
+  place_resting(h, m, cid(41), resting_bid(fx, 100), kLot);
+  place_resting(h, m, cid(42), resting_bid(fx, 110), kLot);
+  REQUIRE(fx.server.stats().open_orders == 2);
+
+  // Both orders fill completely while nobody is listening: their executionReports are dropped, the
+  // execution replay books the fills, and nothing ever tells the connector the orders are over.
+  fx.server.set_user_stream_muted(true);
+  const std::vector<std::string> open = fx.server.open_client_order_ids();
+  for (const std::string& id : open) static_cast<void>(fx.server.fill_open_order(id));
+  REQUIRE(fx.server.stats().user_events_dropped >= 2);
+  REQUIRE(h.venue->shadow_count() == 2);  // the leak: nothing told the connector they ended
+  fx.server.set_user_stream_muted(false);
+  REQUIRE(fx.server.stats().open_orders == 0);
+  fx.server.drop_ws_api_connections(true);
+  await_reconcile(h, m);
+  check_orders_agree(fx, m);
+  CHECK(m.position() == fx.server.stats().position);
+  CHECK(h.venue->shadow_count() == 0);  // the snapshot proved them over
+
+  // A new order after the sweep still has its shadow: it can be cancelled.
+  place_resting(h, m, cid(43), resting_bid(fx, 120), kLot);
+  REQUIRE(h.venue->cancel_all());
+  REQUIRE(h.pump([&] {
+    m.drain(h.oc);
+    return fx.server.stats().open_orders == 0;
+  }));
+}

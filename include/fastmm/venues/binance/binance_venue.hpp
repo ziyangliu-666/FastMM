@@ -116,6 +116,8 @@ class BinanceVenue final : public Venue {
   void request_open_orders() override;
   void request_open_orders(ClientOrderId watermark);
   bool request_executions(std::int64_t since_venue_ms = 0) override;
+  // Orders the connector still keeps a shadow for (tests: a lost terminal event leaks one).
+  [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
   void resume_executions(std::int64_t since_venue_ms, std::vector<std::string> known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
@@ -222,6 +224,7 @@ class BinanceVenue final : public Venue {
   // GET /api/v3/myTrades for one subscribed instrument; `emit_executions` turns the reply into
   // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
   bool request_executions_for(InstrumentId id);
+  void sweep_shadows(ClientOrderId sent_watermark);
   void emit_executions(InstrumentId id, std::string_view json);
   void finish_execution_replay(bool ok);
   [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;

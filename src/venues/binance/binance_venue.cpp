@@ -1185,7 +1185,32 @@ void BinanceVenue::emit_reconcile(std::string_view json,
   end.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(end.hdr));
   FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
+  sweep_shadows(sent_watermark);
   reconcile_records_.clear();
+}
+
+// An order's shadow is dropped when its terminal event arrives. When that event is lost with a
+// connection - the REST cancel-all that follows an order-channel drop is the usual way - the
+// shadow stays, and the table is fixed-size: enough of them and a new order gets no shadow, so its
+// replace and cancel are refused as "original unknown". A snapshot settles it: an order the venue
+// does not hold, sent before the snapshot was asked for, is over. Orders sent after the request
+// (ids above the watermark) may simply not have reached the venue yet and keep their shadows.
+void BinanceVenue::sweep_shadows(ClientOrderId sent_watermark) {
+  if (!sent_watermark.valid()) return;  // no watermark: nothing tells old from in flight
+  std::vector<ClientOrderId> dead;
+  shadows_.for_each_key([&](ClientOrderId id) {
+    if (id.value > sent_watermark.value) return;
+    for (const ReconcileMsg& m : reconcile_records_) {
+      if (m.cl_ord_id == id) return;
+    }
+    dead.push_back(id);
+  });
+  for (const ClientOrderId id : dead) shadows_.erase(id);
+  if (!dead.empty()) {
+    stats_.shadows_swept += dead.size();
+    FASTMM_LOG_INFO(
+        "{}: dropped {} order shadow(s) the venue no longer holds", cfg_.name, dead.size());
+  }
 }
 
 // ---- control requests -----------------------------------------------------------------------
