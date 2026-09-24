@@ -22,6 +22,8 @@
 // Exit codes: 0 match (or no verification requested), 1 mismatch, 2 bad command line,
 // 3 unreadable config / journal / unknown strategy (including a strategy name registered twice by
 // different code).
+#include "command_line.hpp"
+
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/journal_source.hpp"
 #include "fastmm/backtest/replay.hpp"
@@ -29,7 +31,6 @@
 #include "fastmm/cli/replay.hpp"
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/log.hpp"
-#include "fastmm/version.hpp"
 
 #include <unistd.h>
 
@@ -38,32 +39,16 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
-#include <string_view>
 
 namespace fastmm::cli {
 
 namespace {
 
 constexpr int kExitMismatch = 1;
-constexpr int kExitUsage = 2;
+constexpr int kExitUsage = kUsageError;
 constexpr int kExitInput = 3;
-
-void usage(std::FILE* out, const char* prog) {
-  std::fprintf(out,
-               "usage: %s --journal <in.fmj> [options]\n"
-               "  --config <file.toml>  configuration to replay with (default: the one embedded\n"
-               "                        in a session journal; configs/backtest-example.toml for\n"
-               "                        a market-data journal)\n"
-               "  --strategy <name>     strategy to run (default: journal header / config)\n"
-               "  --out <file.fmj>      keep the re-simulated session journal (market-data input)\n"
-               "  --expect <sha256>     expected outbound hash (default: <journal>.sha256)\n"
-               "  --verify              fail (exit 1) unless every hash and message matches\n"
-               "  --allow-incomplete    replay a journal the writer never closed; its tail is\n"
-               "                        missing, so the outbound comparison proves nothing\n"
-               "  --version | --help\n",
-               prog);
-}
 
 void print_replay(const fastmm::bt::ReplayResult& r) {
   std::printf("replay   strategy=%s events=%llu\n",
@@ -116,51 +101,29 @@ int replay(int argc, char** argv, std::span<const StrategyModule> modules) {
   std::string expect;
   bool verify = false;
   bool allow_incomplete = false;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    auto value = [&](std::string& dst) -> bool {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "%s: %s needs a value\n", prog, argv[i]);
-        return false;
-      }
-      dst = argv[++i];
-      return true;
-    };
-    bool ok = true;
-    if (a == "--help" || a == "-h") {
-      usage(stdout, prog);
-      return 0;
-    } else if (a == "--version") {
-      std::printf("%s %s\n", prog, build_info());
-      return 0;
-    } else if (a == "--journal") {
-      ok = value(journal);
-    } else if (a == "--config") {
-      ok = value(config_path);
-    } else if (a == "--strategy") {
-      ok = value(strategy);
-    } else if (a == "--out") {
-      ok = value(out);
-    } else if (a == "--expect") {
-      ok = value(expect);
-    } else if (a == "--verify") {
-      verify = true;
-    } else if (a == "--allow-incomplete") {
-      allow_incomplete = true;
-    } else {
-      std::fprintf(stderr, "%s: unknown argument '%s'\n", prog, argv[i]);
-      ok = false;
-    }
-    if (!ok) {
-      usage(stderr, prog);
-      return kExitUsage;
-    }
-  }
-  if (journal.empty()) {
-    std::fprintf(stderr, "%s: --journal is required\n", prog);
-    usage(stderr, prog);
-    return kExitUsage;
-  }
+  CLI::App app("Replays a journal through the same engine and strategy.", program);
+  setup(app);
+  app.add_option("--journal", journal, "session or market-data journal to replay (required)")
+      ->option_text("<in.fmj>");
+  app.add_option("--config",
+                 config_path,
+                 "configuration to replay with (default: the one embedded in a session journal; "
+                 "configs/backtest-example.toml for a market-data journal)")
+      ->option_text("<file.toml>");
+  app.add_option("--strategy", strategy, "strategy to run (default: journal header / config)")
+      ->option_text("<name>");
+  app.add_option("--out", out, "keep the re-simulated session journal (market-data input)")
+      ->option_text("<file.fmj>");
+  app.add_option("--expect", expect, "expected outbound hash (default: <journal>.sha256)")
+      ->option_text("<sha256>");
+  app.add_flag("--verify", verify, "fail (exit 1) unless every hash and message matches");
+  app.add_flag("--allow-incomplete",
+               allow_incomplete,
+               "replay a journal the writer never closed; its tail is missing, so the outbound "
+               "comparison proves nothing");
+  if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
+  // Checked here rather than with required(): an unknown flag is the better message.
+  if (journal.empty()) return usage_error(app, "--journal is required");
   if (!register_strategy_modules(program, modules)) return kExitInput;
   bt::JournalInfo info;
   try {

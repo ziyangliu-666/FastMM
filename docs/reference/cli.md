@@ -152,17 +152,23 @@ Replays a journal through the same engine and strategy and, with `--verify`, com
 
 <!-- BEGIN cli-help fastmm-replay -->
 ```text
-usage: fastmm-replay --journal <in.fmj> [options]
-  --config <file.toml>  configuration to replay with (default: the one embedded
-                        in a session journal; configs/backtest-example.toml for
-                        a market-data journal)
-  --strategy <name>     strategy to run (default: journal header / config)
-  --out <file.fmj>      keep the re-simulated session journal (market-data input)
-  --expect <sha256>     expected outbound hash (default: <journal>.sha256)
-  --verify              fail (exit 1) unless every hash and message matches
-  --allow-incomplete    replay a journal the writer never closed; its tail is
-                        missing, so the outbound comparison proves nothing
-  --version | --help
+Replays a journal through the same engine and strategy.
+
+usage: fastmm-replay [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --journal <in.fmj>          session or market-data journal to replay (required)
+  --config <file.toml>        configuration to replay with (default: the one embedded in a
+                              session journal; configs/backtest-example.toml for a
+                              market-data journal)
+  --strategy <name>           strategy to run (default: journal header / config)
+  --out <file.fmj>            keep the re-simulated session journal (market-data input)
+  --expect <sha256>           expected outbound hash (default: <journal>.sha256)
+  --verify                    fail (exit 1) unless every hash and message matches
+  --allow-incomplete          replay a journal the writer never closed; its tail is missing,
+                              so the outbound comparison proves nothing
 ```
 <!-- END cli-help -->
 
