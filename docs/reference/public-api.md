@@ -27,7 +27,7 @@ Installed FastMM exports these targets through `find_package(fastmm)`; `add_subd
 | `fastmm::research` | the feature and forward-markout extractor, and signal evaluation ([Judging a signal](../explanation/signal-research.md)) | `fastmm::backtest` |
 | `fastmm::store` | storage backends and the SQLite one ([Storage](storage.md)) | `fastmm::core` |
 | `fastmm::codecs` | FIX, ITCH, OUCH, SoupBinTCP, MoldUDP64, MDP 3.0 | `fastmm::core` |
-| `fastmm::net` | reactor, TLS, WebSocket, HTTP, UDP multicast receive | OpenSSL, zlib (`FASTMM_BUILD_NET=ON`) |
+| `fastmm::net` | reactor, TLS, WebSocket, HTTP, UDP multicast receive | OpenSSL (`FASTMM_BUILD_NET=ON`) |
 | `fastmm::venues` | venue connectors | `fastmm::net`, simdjson |
 | `fastmm::live` | `run_live`, `cli::live` | `fastmm::venues`, `fastmm::strategies` |
 | `fastmm::lowlatency` | FastMM's code generation flags (link privately where you instantiate engines) | |

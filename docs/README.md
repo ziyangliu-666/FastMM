@@ -18,7 +18,7 @@ cmake --build --preset release -j
 ./scripts/run-sim.sh --duration 30s                      # simulated exchange + live engine on localhost
 ```
 
-The build needs Linux, gcc 13+ or clang 16+, CMake 3.25+, Ninja, OpenSSL 3 and zlib; the wheel needs none of them ([Install](getting-started/install.md) has the details, the Docker route and [Deploy a release](how-to/operations/deploy.md) the tarball and the image).
+The build needs Linux, gcc 13+ or clang 16+, CMake 3.25+, Ninja and OpenSSL 3; the wheel needs none of them ([Install](getting-started/install.md) has the details, the Docker route and [Deploy a release](how-to/operations/deploy.md) the tarball and the image).
 
 The backtest prints a summary table; `run-sim.sh` runs a full live session against a local exchange and writes a journal you can replay. What those numbers mean: [Quick start](getting-started/quickstart.md).
 

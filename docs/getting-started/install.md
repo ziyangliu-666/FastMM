@@ -24,10 +24,9 @@ The rest of this page builds the repository; all commands run from its root.
 | CMake | 3.25 or newer | `scripts/bootstrap.sh` installs it with pip when it is missing |
 | Ninja | any | all presets use it |
 | OpenSSL | 3.0 or newer, development headers | networking; not needed with `FASTMM_BUILD_NET=OFF` |
-| zlib | development headers | networking |
 | Python | 3.9 or newer | the tools in `tools/` and the Python package |
 
-On Ubuntu 24.04: `sudo apt install g++-13 cmake ninja-build libssl-dev zlib1g-dev python3`. Every other dependency (fmt, toml++, simdjson, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
+On Ubuntu 24.04: `sudo apt install g++-13 cmake ninja-build libssl-dev python3`. Every other dependency (fmt, toml++, simdjson, doctest, Google Benchmark, pybind11) is downloaded and pinned by CPM; [Dependencies](../contributing/dependencies.md) lists the versions.
 
 ## Build
 

@@ -11,7 +11,6 @@
 | pybind11 | 3.1.0 | python | bindings |
 | OpenSSL | >= 3.0 (system); 3.5.8 linked statically in `fastmm-engine-live` wheels | net | TLS, HMAC, SHA |
 | certifi | any | `fastmm-engine-live` (Python) | last CA bundle before OpenSSL's built-in paths |
-| zlib | system | net | linked by `fastmm_net` |
 | CPM.cmake | 0.43.1 | build | fetches and pins the dependencies above |
 
 Pins are in `cmake/Dependencies.cmake`; `CPM_SOURCE_CACHE` (default `~/.cache/CPM`) makes repeat configures offline.

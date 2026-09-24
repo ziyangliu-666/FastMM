@@ -38,6 +38,10 @@ All notable changes are recorded here (Keep a Changelog format).
   `max_order_amends` (the venue's `MAX_NUM_ORDER_AMENDS` filter, 10). `OrderAckMsg::kAmendedInPlace`
   tells the OMS to rekey the order without resetting its filled quantity.
 
+### Removed
+- The zlib dependency. Nothing called it: `fastmm_net` never negotiates permessage-deflate. The
+  build, the installed package config and the Docker images no longer need `zlib1g-dev`.
+
 ### Fixed
 - `BinanceVenue::cancel_all()` gave up on a rate-limited refusal (418/429). The kill switch has no
   other remedy than that call, so it now retries a bounded number of times before reporting the

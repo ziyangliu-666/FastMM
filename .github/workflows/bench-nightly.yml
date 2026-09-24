@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev zlib1g-dev && cmake --version
+      - run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev && cmake --version
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM

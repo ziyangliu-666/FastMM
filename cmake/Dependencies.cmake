@@ -18,7 +18,6 @@ if(FASTMM_BUILD_NET)
     message(FATAL_ERROR "FASTMM_OPENSSL_STATIC: found ${OPENSSL_SSL_LIBRARY} and ${OPENSSL_CRYPTO_LIBRARY}, "
       "not static libraries; set OPENSSL_ROOT_DIR to an OpenSSL built with scripts/wheels/build-openssl.sh")
   endif()
-  find_package(ZLIB REQUIRED)
 endif()
 
 # --- fmt (core: logging / formatting) --------------------------------------

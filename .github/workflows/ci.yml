@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install tools
-        run: sudo apt-get update && sudo apt-get install -y clang-tidy-18 ninja-build libssl-dev zlib1g-dev && cmake --version
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy-18 ninja-build libssl-dev && cmake --version
       - uses: actions/cache@v4
         with:
           path: ~/.cache/CPM
@@ -105,7 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install
-        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev zlib1g-dev ccache && cmake --version
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.pkgs }} ninja-build libssl-dev ccache && cmake --version
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ matrix.name }}
@@ -172,7 +172,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: install
-        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev zlib1g-dev ccache
+        run: sudo apt-get update && sudo apt-get install -y g++-13 ninja-build libssl-dev ccache
       - uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: optional-codecs

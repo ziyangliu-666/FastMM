@@ -41,7 +41,7 @@ pci_of() {
 cmd_deps() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q
-  apt-get install -yq libssl3 zlib1g iproute2 ethtool pciutils python3 numactl rsync util-linux \
+  apt-get install -yq libssl3 iproute2 ethtool pciutils python3 numactl rsync util-linux \
     kmod linux-tools-common
   apt-get install -yq "linux-tools-$(uname -r)" "linux-modules-extra-$(uname -r)" ||
     echo "host-setup: linux-tools / linux-modules-extra for $(uname -r) not installed (optional)"

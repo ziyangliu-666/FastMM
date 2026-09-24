@@ -12,4 +12,4 @@ All fastmm libraries are STATIC; Release presets enable IPO. Frame pointers are 
 
 ## Consequences
 
-Binaries are self-contained apart from libssl/libz. Python builds force PIC.
+Binaries are self-contained apart from libssl. Python builds force PIC.
