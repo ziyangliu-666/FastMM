@@ -1,6 +1,7 @@
 // fastmm-top: terminal dashboard for a running fastmm-live session. Reads the status file the
 // engine's control thread publishes (see fastmm/core/status_segment.hpp) and redraws it in place.
 // With --metrics it serves the same snapshot as Prometheus metrics instead of drawing.
+#include "command_line.hpp"
 #include "metrics_server.hpp"
 
 #include "fastmm/core/status_segment.hpp"
@@ -10,35 +11,16 @@
 #include <unistd.h>
 
 #include <atomic>
-#include <charconv>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <string>
-#include <string_view>
 
 namespace {
 
 std::atomic<int> g_signal{0};
 void on_signal(int sig) {
   g_signal.store(sig);
-}
-
-void usage(std::FILE* out) {
-  std::fputs(
-      "usage: fastmm-top [--name <engine name> | --path <status file>] [options]\n"
-      "\n"
-      "  --name <engine>     read /dev/shm/fastmm-<engine>.status ([engine] name in the config)\n"
-      "  --path <file>       read this status file (fastmm-live --status <file>)\n"
-      "  --interval <ms>     refresh period, default 500\n"
-      "  --once              print one frame and exit (exit code 3 if no status is available)\n"
-      "  --json              print the snapshot as one JSON object and exit (implies --once)\n"
-      "  --no-color          plain output\n"
-      "  --metrics <[host:]port>  serve the snapshot at /metrics in Prometheus text format\n"
-      "                      until SIGINT, instead of drawing (default host 127.0.0.1; off\n"
-      "                      unless given). Scraping costs the engine nothing: this process\n"
-      "                      reads the status file, the engine never sees the request.\n",
-      out);
 }
 
 std::string other_build_message(const std::string& path, std::uint32_t version) {
@@ -52,58 +34,40 @@ std::string other_build_message(const std::string& path, std::uint32_t version) 
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::string name;
   std::string path;
   std::string metrics;
   int interval_ms = 500;
   bool once = false;
   bool json = false;
-  bool color = ::isatty(STDOUT_FILENO) != 0;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    const auto value = [&](std::string& out) {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "fastmm-top: %s needs a value\n", argv[i]);
-        return false;
-      }
-      out = argv[++i];
-      return true;
-    };
-    std::string v;
-    if (a == "--help" || a == "-h") {
-      usage(stdout);
-      return 0;
-    }
-    if (a == "--name") {
-      if (!value(v)) return 2;
-      path = fastmm::default_status_path(v);
-    } else if (a == "--path") {
-      if (!value(path)) return 2;
-    } else if (a == "--interval") {
-      if (!value(v)) return 2;
-      const auto r = std::from_chars(v.data(), v.data() + v.size(), interval_ms);
-      if (r.ec != std::errc{} || interval_ms < 50) {
-        std::fprintf(stderr, "fastmm-top: --interval needs milliseconds >= 50\n");
-        return 2;
-      }
-    } else if (a == "--once") {
-      once = true;
-    } else if (a == "--json") {
-      json = true;
-      once = true;
-    } else if (a == "--no-color") {
-      color = false;
-    } else if (a == "--metrics") {
-      if (!value(metrics)) return 2;
-    } else {
-      std::fprintf(stderr, "fastmm-top: unknown argument '%s'\n\n", argv[i]);
-      usage(stderr);
-      return 2;
-    }
-  }
-  if (path.empty()) {
-    usage(stderr);
-    return 2;
-  }
+  bool no_color = false;
+
+  CLI::App app("Terminal dashboard for a running fastmm-live session.", "fastmm-top");
+  fastmm::cli::setup(app);
+  app.usage("fastmm-top [--name <engine name> | --path <status file>] [OPTIONS]");
+  app.add_option(
+         "--name", name, "read /dev/shm/fastmm-<engine>.status ([engine] name in the config)")
+      ->option_text("<engine>");
+  app.add_option("--path", path, "read this status file (fastmm-live --status <file>)")
+      ->option_text("<file>");
+  app.add_option("--interval", interval_ms, "refresh period, default 500")
+      ->option_text("<ms>")
+      ->check(CLI::Range(50, 3'600'000));
+  app.add_flag("--once", once, "print one frame and exit (exit code 3 if no status is available)");
+  app.add_flag("--json", json, "print the snapshot as one JSON object and exit (implies --once)");
+  app.add_flag("--no-color", no_color, "plain output");
+  app.add_option("--metrics",
+                 metrics,
+                 "serve the snapshot at /metrics in Prometheus text format until SIGINT, instead "
+                 "of drawing (default host 127.0.0.1; off unless given). Scraping costs the "
+                 "engine nothing: this process reads the status file, the engine never sees the "
+                 "request.")
+      ->option_text("<[host:]port>");
+  if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
+  if (path.empty() && !name.empty()) path = fastmm::default_status_path(name);
+  if (path.empty()) return fastmm::cli::usage_error(app, "one of --name or --path is required");
+  once = once || json;
+  const bool color = !no_color && ::isatty(STDOUT_FILENO) != 0;
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
 

@@ -379,18 +379,26 @@ A terminal dashboard of a running `fastmm-live` session ([Status file](status-fi
 
 <!-- BEGIN cli-help fastmm-top -->
 ```text
-usage: fastmm-top [--name <engine name> | --path <status file>] [options]
+Terminal dashboard for a running fastmm-live session.
 
-  --name <engine>     read /dev/shm/fastmm-<engine>.status ([engine] name in the config)
-  --path <file>       read this status file (fastmm-live --status <file>)
-  --interval <ms>     refresh period, default 500
-  --once              print one frame and exit (exit code 3 if no status is available)
-  --json              print the snapshot as one JSON object and exit (implies --once)
-  --no-color          plain output
-  --metrics <[host:]port>  serve the snapshot at /metrics in Prometheus text format
-                      until SIGINT, instead of drawing (default host 127.0.0.1; off
-                      unless given). Scraping costs the engine nothing: this process
-                      reads the status file, the engine never sees the request.
+usage: fastmm-top [--name <engine name> | --path <status file>] [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --name <engine>             read /dev/shm/fastmm-<engine>.status ([engine] name in the
+                              config)
+  --path <file>               read this status file (fastmm-live --status <file>)
+  --interval <ms>             refresh period, default 500
+  --once                      print one frame and exit (exit code 3 if no status is
+                              available)
+  --json                      print the snapshot as one JSON object and exit (implies
+                              --once)
+  --no-color                  plain output
+  --metrics <[host:]port>     serve the snapshot at /metrics in Prometheus text format until
+                              SIGINT, instead of drawing (default host 127.0.0.1; off unless
+                              given). Scraping costs the engine nothing: this process reads
+                              the status file, the engine never sees the request.
 ```
 <!-- END cli-help -->
 
