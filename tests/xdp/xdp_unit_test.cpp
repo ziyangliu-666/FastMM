@@ -394,87 +394,12 @@ void check_structure(const xdp::Program& p) {
   for (std::size_t i = 0; i < insns.size(); ++i) CHECK_MESSAGE(seen[i], "unreachable " << i);
 }
 
-// An ARP request (who has `tpa`) from 10.203.0.1.
-std::vector<std::byte> arp_frame(std::uint32_t tpa) {
-  std::vector<std::byte> f(42, std::byte{0});
-  for (std::size_t k = 0; k < 6; ++k) f[k] = std::byte{0xFF};
-  f[11] = std::byte{1};
-  test::put16(f, 12, 0x0806);
-  test::put16(f, 14, 1);
-  test::put16(f, 16, 0x0800);
-  f[18] = std::byte{6};
-  f[19] = std::byte{4};
-  test::put16(f, 20, 1);
-  test::put_raw32(f, 28, ip("10.203.0.1"));
-  test::put_raw32(f, 38, tpa);
-  return f;
-}
-
 }  // namespace
 
 TEST_CASE("program: structure") {
   constexpr xdp::Program p = xdp::build_program(kFakeFds);
   static_assert(p.ok);
   check_structure(p);
-  check_structure(xdp::build_program(kFakeFds, {ip("10.203.0.200"), 7000, true}));
-  check_structure(xdp::build_program(kFakeFds, {ip("10.203.0.200"), 0, false}));
-}
-
-TEST_CASE("program: TCP and ARP for the user-space stack's address are redirected") {
-  // Both halves of the address are compared as 16-bit immediates: an octet >= 128 in either half
-  // must not be sign-extended away.
-  for (const std::uint32_t addr : {ip("10.203.0.7"), ip("192.168.200.250")}) {
-    for (const std::uint16_t port : {std::uint16_t{0}, std::uint16_t{7000}}) {
-      for (const bool arp : {true, false}) {
-        const xdp::Program p = xdp::build_program(kFakeFds, {addr, port, arp});
-        REQUIRE(p.ok);
-        const std::span<const b::Insn> prog(p.insns.data(), p.size);
-        struct Case {
-          std::vector<std::byte> frame;
-          bool redirect;
-        };
-        std::vector<Case> cases;
-        FrameSpec tcp;
-        tcp.proto = 6;
-        tcp.dst_ip = addr;
-        tcp.dst_port = 7000;
-        cases.push_back({build_frame(tcp), true});
-        tcp.ihl = 7;  // options before the port
-        cases.push_back({build_frame(tcp), true});
-        tcp.vlan = true;
-        cases.push_back({build_frame(tcp), true});
-        tcp = FrameSpec{};
-        tcp.proto = 6;
-        tcp.dst_ip = addr;
-        tcp.dst_port = 7001;
-        cases.push_back({build_frame(tcp), port == 0});
-        tcp.dst_ip = addr ^ 0x01000000U;  // last octet differs
-        tcp.dst_port = 7000;
-        cases.push_back({build_frame(tcp), false});
-        tcp.dst_ip = addr ^ 0x00000001U;  // first octet differs
-        cases.push_back({build_frame(tcp), false});
-        FrameSpec udp;  // UDP to the address, not subscribed
-        udp.dst_ip = addr;
-        udp.dst_port = 7000;
-        cases.push_back({build_frame(udp), false});
-        cases.push_back({build_frame(FrameSpec{}), true});  // a subscribed datagram
-        cases.push_back({arp_frame(addr), arp});
-        cases.push_back({arp_frame(addr ^ 0x01000000U), false});
-        for (const Case& c : cases) {
-          for (std::size_t n = 0; n <= c.frame.size(); ++n) {
-            const auto frame = std::span<const std::byte>(c.frame).first(n);
-            INFO("port " << port << " arp " << arp << ", " << n << " of " << c.frame.size());
-            test::BpfEnv env = env_for(frame);
-            env.xsks.insert(0);
-            const test::BpfRun run = bpf_run(prog, env);
-            REQUIRE_MESSAGE(run.ok, run.error);
-            if (n == c.frame.size())
-              CHECK(run.r0 == static_cast<std::uint64_t>(c.redirect ? xdp::kRedirect : xdp::kPass));
-          }
-        }
-      }
-    }
-  }
 }
 
 TEST_CASE("program: interpreter verdicts agree with the parser") {
@@ -542,15 +467,6 @@ TEST_CASE("source: open rejects bad configurations before touching the kernel") 
   cfg.batch = 0;
   CHECK(src.open(cfg) == -EINVAL);
   cfg.batch = 64;
-  cfg.tcp_ip = ip("10.0.0.3");
-  cfg.tcp_interface = "eth9";  // no subscription there
-  CHECK(src.open(cfg) == -EINVAL);
-  CHECK(src.error().find("tcp_interface") != std::string::npos);
-  cfg.tcp_interface = "lo";
-  cfg.tx_frames = 100;
-  CHECK(src.open(cfg) == -EINVAL);
-  CHECK(src.error().find("tx_frames") != std::string::npos);
-  cfg.tx_frames = 256;
   cfg.subscriptions.push_back({"lo", 0, 5001, 0});
   CHECK(src.open(cfg) == -EINVAL);                                           // address 0
   cfg.subscriptions.back().group = ip("127.0.0.1");                          // unicast is fine

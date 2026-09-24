@@ -41,16 +41,6 @@ struct DatagramHandlerArchetype {
   void operator()(std::span<const std::byte>, const RxMeta&) const noexcept {}
 };
 
-// Frames a source does not deliver as datagrams, handed to a user-space protocol sharing the
-// device (UserTcp: ARP, and TCP to its address). Called from poll(), on the poll thread; the frame
-// is valid only during the call.
-struct FrameSink {
-  void (*fn)(void* ctx, std::span<const std::byte> frame) noexcept = nullptr;
-  void* ctx = nullptr;
-  std::uint32_t ip = 0;    // network byte order: TCP to this address goes to fn
-  std::uint16_t port = 0;  // host byte order; 0 = any destination port
-};
-
 template <class S>
 concept DatagramSource = requires(S& s, DatagramHandlerArchetype h) {
   { s.poll(h) } noexcept -> std::same_as<std::size_t>;

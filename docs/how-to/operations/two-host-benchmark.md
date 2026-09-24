@@ -35,23 +35,20 @@ scripts/bench-2host.sh $C --backend kernel --iface enp6s0 --md multicast   # onl
 
 scripts/host-setup.sh xdp-prep enp6s0                                        # fewest queues, GRO/LRO off
 scripts/bench-2host.sh $C --backend af_xdp --iface enp6s0
-scripts/bench-2host.sh $C --backend af_xdp --iface enp6s0 --order-transport user_tcp
 
 scripts/host-setup.sh dpdk-bind enp6s0                                       # prints the PCI address
 scripts/bench-2host.sh $C --backend dpdk --dpdk-pci 0000:06:00.0
-scripts/bench-2host.sh $C --backend dpdk --dpdk-pci 0000:06:00.0 --order-transport user_tcp
 scripts/host-setup.sh dpdk-unbind 0000:06:00.0
 ```
 
 - Market data is unicast to `<live vpc ip>`:31001/31002; GLIMPSE, re-requests and OUCH go to the simulator's VPC address.
-- `user_tcp` uses the live host's own address with local port 61001 on `af_xdp` and `dpdk`; `--user-tcp-ip` picks a separate, unassigned address instead (required on `kernel`), if the VPC delivers it. The simulator host's NIC gets TSO/GSO off.
-- `dpdk`: `vfio-pci` in no-IOMMU mode; fastmm-live puts `<live vpc ip>` on a tap (`fmx0`) behind the DPDK port for ARP, GLIMPSE and re-requests ([exception port](multicast-feeds.md#dpdk)).
+- `dpdk`: `vfio-pci` in no-IOMMU mode; fastmm-live puts `<live vpc ip>` on a tap (`fmx0`) behind the DPDK port for ARP, GLIMPSE, re-requests and OUCH ([exception port](multicast-feeds.md#dpdk)).
 - Pinning defaults: simulator on CPU 1, engine on 1 and network thread on 2 of the live host (`--sim-cpu`, `--engine-cpu`, `--net-cpu`); CPU 0 takes the interrupts. `--threading single` runs everything on the engine CPU.
-- Output: `runs/bench-2host-<time>-<backend>-<transport>-<md>/` with the live config, both logs, `sim.json` and `live.json` per run. The live log ends with the backend's counters (`dpdk:`, `af_xdp:`, `user_tcp:` lines).
+- Output: `runs/bench-2host-<time>-<backend>-<md>/` with the live config, both logs, `sim.json` and `live.json` per run. The live log ends with the backend's counters (`dpdk:` and `af_xdp:` lines).
 
 ## 3. Privileged tests on the live host
 
 ```bash
-scripts/xdp-test.sh --build . --e2e        # verifier, XDP over veth, UserTcp on the XDP socket, bench-e2e af_xdp
+scripts/xdp-test.sh --build . --e2e        # verifier, XDP over veth, bench-e2e af_xdp
 tests/fastmm_dpdk_tests                     # DPDK over veth (af_packet vdev), in a user namespace
 ```

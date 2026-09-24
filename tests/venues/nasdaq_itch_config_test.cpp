@@ -101,7 +101,7 @@ TEST_CASE("venues.nasdaq_itch: config keys and defaults") {
   CHECK(d.order_entry == OrderEntry::None);
 }
 
-TEST_CASE("venues.nasdaq_itch: dpdk backend and user_tcp order transport keys") {
+TEST_CASE("venues.nasdaq_itch: dpdk backend keys") {
   const NasdaqItchVenueConfig c = make_nasdaq_itch_config(
       section({{"rx_backend", "dpdk"},
                {"interface", "eth1"},
@@ -110,21 +110,12 @@ TEST_CASE("venues.nasdaq_itch: dpdk backend and user_tcp order transport keys") 
                {"dpdk_port", "net_af_packet0"},
                {"order_entry", "sim_ouch"},
                {"ouch_url", "10.0.0.6:18002"},
-               {"order_transport", "user_tcp"},
-               {"user_tcp_ip", "10.0.0.9"},
-               {"user_tcp_gateway", "10.0.0.1"}}),
+               {"order_transport", "kernel"}}),
       false,
       true);
   CHECK(c.rx_backend == RxBackend::Dpdk);
   CHECK(c.dpdk_eal_args == "--no-huge --vdev=net_af_packet0,iface=eth1");
   CHECK(c.dpdk_port == "net_af_packet0");
-  CHECK(c.order_transport == OrderTransport::UserTcp);
-  CHECK(c.user_tcp_interface == "eth1");
-  CHECK(c.user_tcp_ip == "10.0.0.9");
-  CHECK(c.user_tcp_gateway == "10.0.0.1");
-  const NasdaqItchVenueConfig k =
-      make_nasdaq_itch_config(section({{"line_a", "239.1.1.1:31001"}}), false, false);
-  CHECK(k.order_transport == OrderTransport::Kernel);
   // Without DPDK in the build the source says so at open.
   if (!net::dpdk_available()) {
     net::DpdkDatagramSource src;
@@ -164,15 +155,6 @@ TEST_CASE("venues.nasdaq_itch: bad config values are refused with the key") {
   refused({{"line_a", "239.1.1.1:1"}, {"hw_timestamps", "yes"}}, "hw_timestamps");
   refused({{"line_a", "239.1.1.1:1"}, {"rx_backend", "rdma"}}, "rx_backend");
   refused({{"line_a", "239.1.1.1:1"}, {"order_transport", "onload"}}, "order_transport");
-  refused({{"line_a", "239.1.1.1:1"}, {"order_transport", "user_tcp"}}, "user_tcp_interface");
-  refused({{"line_a", "239.1.1.1:1"}, {"interface", "eth1"}, {"order_transport", "user_tcp"}},
-          "user_tcp_ip");
-  refused({{"line_a", "239.1.1.1:1"},
-           {"interface", "eth1"},
-           {"order_transport", "user_tcp"},
-           {"user_tcp_ip", "10.0.0.9"},
-           {"user_tcp_gateway", "gw"}},
-          "user_tcp_gateway");
 
   net::SockAddr a;
   CHECK(parse_ip_port("127.0.0.1:31000", a));
@@ -271,4 +253,26 @@ TEST_CASE("venues.nasdaq_itch: order_entry none rejects every order with VenueRe
   orders.release();
   CHECK(venue.cancel_all());
   CHECK(venue.feed_state() == FeedState::Down);
+}
+
+TEST_CASE("venues.nasdaq_itch: order_transport = user_tcp is refused, naming the valid value") {
+  // The user-space TCP transport was removed; a config that still selects it must not start.
+  const VenueSection v = section({{"line_a", "239.1.1.1:31001"},
+                                  {"order_entry", "sim_ouch"},
+                                  {"ouch_url", "10.0.0.6:18002"},
+                                  {"order_transport", "user_tcp"}});
+  std::string what;
+  try {
+    static_cast<void>(make_nasdaq_itch_config(v, false, false));
+  } catch (const std::invalid_argument& e) {
+    what = e.what();
+  }
+  INFO(what);
+  CHECK(what.find("venues.itch.order_transport") != std::string::npos);
+  CHECK(what.find("'user_tcp' is not supported") != std::string::npos);
+  CHECK(what.find("valid: kernel") != std::string::npos);
+  // The same through the registry, as fastmm-live builds the venue.
+  CHECK_THROWS_WITH_AS(static_cast<void>(make_venue(VenueId{1}, v, VenueFactoryOptions{})),
+                       doctest::Contains("valid: kernel"),
+                       std::invalid_argument);
 }

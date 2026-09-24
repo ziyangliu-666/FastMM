@@ -9,9 +9,7 @@
 
 #include <fmt/format.h>
 
-#include <ifaddrs.h>
 #include <netinet/in.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <cerrno>
@@ -26,18 +24,6 @@ namespace {
 namespace glimpse = codecs::itch::glimpse;
 namespace ouch50 = codecs::ouch50;
 
-// True when a kernel interface in this network namespace has the IPv4 address (network order).
-bool host_has_address(std::uint32_t ip) noexcept {
-  ifaddrs* list = nullptr;
-  if (::getifaddrs(&list) != 0) return false;
-  bool found = false;
-  for (const ifaddrs* a = list; a != nullptr && !found; a = a->ifa_next) {
-    if (a->ifa_addr == nullptr || a->ifa_addr->sa_family != AF_INET) continue;
-    found = reinterpret_cast<const sockaddr_in*>(a->ifa_addr)->sin_addr.s_addr == ip;
-  }
-  ::freeifaddrs(list);
-  return found;
-}
 namespace soupbin = codecs::soupbin;
 namespace nasdaq_fields = codecs::nasdaq;
 
@@ -118,33 +104,7 @@ NasdaqItchVenue::NasdaqItchVenue(VenueId id, NasdaqItchVenueConfig cfg)
     throw std::invalid_argument(cfg_.name + ": ouch_url must be ip:port");
   glimpse_tcp_ = std::make_unique<TcpLink>(glimpse_link_, kLinkRxBytes, kLinkTxBytes);
   if (cfg_.order_entry == OrderEntry::SimOuch) {
-    if (cfg_.order_transport == OrderTransport::UserTcp) {
-      UserTcpLinkConfig uc;
-      uc.interface = cfg_.user_tcp_interface;
-      if (!net::parse_ipv4(cfg_.user_tcp_ip, uc.local_ip))
-        throw std::invalid_argument(cfg_.name + ": user_tcp_ip must be an IPv4 address");
-      if (!cfg_.user_tcp_gateway.empty() && !net::parse_ipv4(cfg_.user_tcp_gateway, uc.gateway))
-        throw std::invalid_argument(cfg_.name + ": user_tcp_gateway must be an IPv4 address");
-      uc.local_port = cfg_.user_tcp_port;
-      uc.register_fd = !cfg_.busy_poll;
-      // af_xdp on the host's own address: the kernel keeps the ARP traffic.
-      if (cfg_.rx_backend == RxBackend::AfXdp && host_has_address(uc.local_ip)) {
-        if (uc.local_port == 0)
-          throw std::invalid_argument(
-              cfg_.name + ": user_tcp_ip is a local address: user_tcp_port must be set");
-        uc.neighbour_mac = true;
-      }
-      if (cfg_.rx_backend == RxBackend::Dpdk && cfg_.user_tcp_port == 0 &&
-          !cfg_.dpdk_exception_ip.empty() &&
-          cfg_.dpdk_exception_ip.substr(0, cfg_.dpdk_exception_ip.find('/')) == cfg_.user_tcp_ip)
-        throw std::invalid_argument(
-            cfg_.name + ": user_tcp_ip is the exception interface's address: set user_tcp_port");
-      auto link = std::make_unique<UserTcpLink>(ouch_link_, uc);
-      user_tcp_ = link.get();
-      ouch_tcp_ = std::move(link);
-    } else {
-      ouch_tcp_ = std::make_unique<TcpLink>(ouch_link_, kLinkRxBytes, kLinkTxBytes);
-    }
+    ouch_tcp_ = std::make_unique<TcpLink>(ouch_link_, kLinkRxBytes, kLinkTxBytes);
     ouch_ids_ = std::make_unique<ouch50::UserRefMap>(1);
     ouch_encoder_ = std::make_unique<ouch50::OuchEncoder>(*ouch_ids_);
     ouch_decoder_ = std::make_unique<ouch50::OuchDecoder>(ouch_ids_.get(), id_);
@@ -197,12 +157,6 @@ Result<void, std::string> NasdaqItchVenue::load_reference_data(InstrumentTable& 
     open_sources();
   } catch (const std::exception& e) {
     return fail(std::string(e.what()));
-  }
-  if (user_tcp_ != nullptr && cfg_.rx_backend == RxBackend::Kernel) {
-    std::string err;
-    if (user_tcp_->init(err) != 0)
-      return fail(fmt::format(
-          "{}: order_transport = user_tcp on {}: {}", cfg_.name, cfg_.user_tcp_interface, err));
   }
   FASTMM_LOG_INFO("{}: {} instruments from [[instruments]]; {} lines on {} backend",
                   cfg_.name,
@@ -322,10 +276,6 @@ void NasdaqItchVenue::open_sources() {
                     src->port_name(),
                     src->exception_interface().empty() ? "" : ", kernel exception interface ",
                     src->exception_interface());
-    if (user_tcp_ != nullptr) {
-      user_tcp_->init_shared(src->frame_tx(), src->mac(), src->mtu());
-      src->set_frame_sink(user_tcp_->frame_sink());
-    }
     dpdk_ = std::move(src);
     return;
   }
@@ -348,13 +298,6 @@ void NasdaqItchVenue::open_sources() {
   xc.batch = cfg_.batch;
   xc.mode = cfg_.xdp_mode;
   xc.busy_poll = cfg_.busy_poll;
-  if (user_tcp_ != nullptr) {
-    xc.tcp_interface = cfg_.user_tcp_interface;
-    if (!net::parse_ipv4(cfg_.user_tcp_ip, xc.tcp_ip))
-      throw std::runtime_error(fmt::format("{}: bad user_tcp_ip", cfg_.name));
-    xc.tcp_port = cfg_.user_tcp_port;
-    xc.tcp_arp = !host_has_address(xc.tcp_ip);
-  }
   auto src = std::make_unique<net::XdpDatagramSource>();
   if (src->open(xc) != 0)
     throw std::runtime_error(fmt::format("{}: af_xdp: {}", cfg_.name, src->error()));
@@ -365,10 +308,6 @@ void NasdaqItchVenue::open_sources() {
   }
   if (!src->interfaces().empty())
     stats_.feed.xdp_mode = static_cast<std::uint8_t>(src->interfaces()[0].mode);
-  if (user_tcp_ != nullptr) {
-    user_tcp_->init_shared(src->frame_tx(), src->mac(), src->mtu());
-    src->set_frame_sink(user_tcp_->frame_sink());
-  }
   xdp_ = std::move(src);
 }
 
@@ -435,16 +374,13 @@ void NasdaqItchVenue::connect(net::Reactor& reactor) {
   const std::int64_t now = now_ns();
   next_service_ns_ = now;
   next_session_timer_ns_ = now + kSessionTimerNs;
-  FASTMM_LOG_INFO(
-      "{}: joined {} line(s); order_entry={} order_transport={} busy_poll={} rerequest={} "
-      "glimpse={}",
-      cfg_.name,
-      cfg_.lines[1].group.empty() ? 1 : 2,
-      cfg_.order_entry == OrderEntry::SimOuch ? "sim_ouch" : "none",
-      user_tcp_ != nullptr ? "user_tcp" : "kernel",
-      cfg_.busy_poll,
-      cfg_.rerequest.empty() ? std::string_view("none") : cfg_.rerequest,
-      cfg_.glimpse_url.empty() ? std::string_view("none") : cfg_.glimpse_url);
+  FASTMM_LOG_INFO("{}: joined {} line(s); order_entry={} busy_poll={} rerequest={} glimpse={}",
+                  cfg_.name,
+                  cfg_.lines[1].group.empty() ? 1 : 2,
+                  cfg_.order_entry == OrderEntry::SimOuch ? "sim_ouch" : "none",
+                  cfg_.busy_poll,
+                  cfg_.rerequest.empty() ? std::string_view("none") : cfg_.rerequest,
+                  cfg_.glimpse_url.empty() ? std::string_view("none") : cfg_.glimpse_url);
   publish_status();
 }
 
@@ -466,31 +402,6 @@ void NasdaqItchVenue::disconnect() {
     ouch_tcp_->close();
     ouch_up_ = false;
   }
-  if (user_tcp_ != nullptr) {
-    // Let the FIN go out and be acknowledged.
-    for (int i = 0; i < 200; ++i) {
-      if (user_tcp_->shared()) drain_sources();  // the link's frames arrive through the source
-      user_tcp_->poll();
-      if (i % 20 == 19) ::usleep(1000);
-    }
-    if (const net::UserTcpStats* t = user_tcp_->tcp_stats()) {
-      FASTMM_LOG_INFO(
-          "{}: user_tcp: {} segments out, {} in, {} retransmits ({} RTO, {} fast), {} out of "
-          "order, {} bad frames, {} unknown, {} RSTs in, {} TX drops, srtt {} us",
-          cfg_.name,
-          t->segments_out,
-          t->segments_in,
-          t->retransmits,
-          t->rto_expiries,
-          t->fast_retransmits,
-          t->out_of_order,
-          t->bad_frames,
-          t->unknown_segments,
-          t->rst_in,
-          t->tx_drops,
-          t->srtt_ns / 1000);
-    }
-  }
   if (kernel_) kernel_->close();
   if (xdp_) {
     const int stats_rc = xdp_->refresh_stats();
@@ -508,13 +419,6 @@ void NasdaqItchVenue::disconnect() {
         fallback,
         stats_rc < 0 ? "; statistics incomplete" : "");
     publish_status();  // the final XDP counters, before close() clears them
-    if (user_tcp_ != nullptr)
-      FASTMM_LOG_INFO("{}: af_xdp: {} frames to user_tcp, {} sent, {} TX drops, {} kicks",
-                      cfg_.name,
-                      x.to_sink,
-                      x.tx_frames,
-                      x.tx_drops,
-                      x.tx_kicks);
     xdp_->close();
   }
   if (dpdk_) {
@@ -522,7 +426,7 @@ void NasdaqItchVenue::disconnect() {
     const net::DpdkStats& d = dpdk_->stats();
     FASTMM_LOG_INFO(
         "{}: dpdk: {} packets, {} missed, {} errors, {} no-mbuf, {} bad frames, {} other, {} "
-        "unmatched, {} to user_tcp, {} to / {} from the kernel, {} sent, {} TX drops",
+        "unmatched, {} to / {} from the kernel, {} ARP replies, {} TX drops",
         cfg_.name,
         d.ipackets,
         d.imissed,
@@ -531,10 +435,9 @@ void NasdaqItchVenue::disconnect() {
         d.bad_frames,
         d.other,
         d.unmatched,
-        d.to_sink,
         d.to_kernel,
         d.from_kernel,
-        d.tx_frames,
+        d.arp_replies,
         d.tx_drops);
     dpdk_->close();
   }
@@ -835,7 +738,6 @@ void NasdaqItchVenue::on_snapshot_end(std::uint64_t) noexcept {
 void NasdaqItchVenue::poll() noexcept {
   if (!connected_) return;
   if (cfg_.busy_poll) drain_sources();
-  if (user_tcp_ != nullptr) user_tcp_->poll();
   const std::int64_t now = now_ns();
   if (now < next_service_ns_) return;
   next_service_ns_ = now + kServiceIntervalNs;
@@ -998,7 +900,7 @@ bool NasdaqItchVenue::cancel_all() {
 // All orders the ring holds go out in one write (SoupBinTCP header and OUCH message of each).
 template <class Ring>
 void NasdaqItchVenue::write_orders(Ring& ring) {
-  ByteLink* const link = ouch_tcp_.get();
+  TcpLink* const link = ouch_tcp_.get();
   drain_outbound_coalesced(
       ring,
       wire_,
@@ -1350,26 +1252,12 @@ NasdaqItchVenueConfig make_nasdaq_itch_config(const VenueSection& v, bool dry_ru
   if (const std::string p = extra("ouch_password"); !p.empty()) c.ouch_password = p;
   if (c.ouch_username.size() > 6) throw bad("ouch_username", "at most 6 characters");
   if (c.ouch_password.size() > 10) throw bad("ouch_password", "at most 10 characters");
-  const std::string transport = extra("order_transport");
-  if (transport.empty() || transport == "kernel") {
-    c.order_transport = OrderTransport::Kernel;
-  } else if (transport == "user_tcp") {
-    c.order_transport = OrderTransport::UserTcp;
-    c.user_tcp_interface = extra("user_tcp_interface");
-    if (c.user_tcp_interface.empty()) c.user_tcp_interface = interface;
-    if (c.user_tcp_interface.empty() && c.rx_backend != RxBackend::Dpdk)
-      throw bad("user_tcp_interface", "user_tcp needs an interface name (or interface)");
-    c.user_tcp_port = static_cast<std::uint16_t>(extra_u64("user_tcp_port", 0, 0, 65535));
-    c.user_tcp_ip = extra("user_tcp_ip");
-    std::uint32_t probe_ip = 0;
-    if (!net::parse_ipv4(c.user_tcp_ip, probe_ip))
-      throw bad("user_tcp_ip", "user_tcp needs its own IPv4 address");
-    c.user_tcp_gateway = extra("user_tcp_gateway");
-    if (!c.user_tcp_gateway.empty() && !net::parse_ipv4(c.user_tcp_gateway, probe_ip))
-      throw bad("user_tcp_gateway", "expected an IPv4 address");
-  } else {
-    throw bad("order_transport", "expected kernel or user_tcp");
-  }
+  // Kernel TCP is the only transport; the user-space one was removed (CHANGELOG).
+  if (const std::string t = extra("order_transport"); !t.empty() && t != "kernel")
+    throw bad("order_transport",
+              fmt::format("'{}' is not supported; valid: kernel (the user-space TCP transport was "
+                          "removed; see docs/how-to/operations/low-latency-tcp.md)",
+                          t));
   if (dry_run) c.order_entry = OrderEntry::None;
   return c;
 }

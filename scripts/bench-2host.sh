@@ -4,8 +4,7 @@
 #
 #   scripts/bench-2host.sh --remote-sim root@<sim host> --sim-ip <sim VPC ip> --live-ip <live VPC ip>
 #       [--iface <live VPC nic>] [--sim-iface <sim VPC nic>] [--prefix-len 24]
-#       [--backend kernel|af_xdp|dpdk] [--order-transport kernel|user_tcp]
-#       [--md unicast|multicast] [--user-tcp-ip <ip>] [--user-tcp-port 61001]
+#       [--backend kernel|af_xdp|dpdk] [--md unicast|multicast]
 #       [--dpdk-pci 0000:06:00.0] [--dpdk-eal "<extra EAL args>"] [--queues 0,1]
 #       [--duration 30] [--runs 3] [--speed 4] [--spin busy|adaptive] [--threading split|single]
 #       [--sim-cpu 1] [--engine-cpu 1] [--net-cpu 2] [--remote-dir /opt/fastmm] [--push]
@@ -23,10 +22,7 @@
 #   dpdk    the NIC bound to vfio-pci (scripts/host-setup.sh dpdk-bind <iface>); fastmm-live gives
 #           the kernel a tap (fmx0) with --live-ip/--prefix-len through the DPDK port for ARP,
 #           GLIMPSE, re-requests and kernel TCP; hugepages required
-# --order-transport user_tcp: OUCH over UserTcp on the backend's device. Its address is
-# --user-tcp-ip (not assigned anywhere, on the VPC subnet) or, by default on af_xdp and dpdk,
-# --live-ip with the fixed local port --user-tcp-port (VPCs may drop addresses they did not
-# assign). The simulator host's NIC gets TSO/GSO off (so segments arrive unmerged).
+# OUCH runs on kernel TCP (through the tap with dpdk).
 #
 # --push copies fastmm-sim-itch and configs/ to --remote-dir first. Output: the live config, logs,
 # sim.json and live.json per run in --out. Exit codes as bench-e2e.sh (0 ok, 1 a run failed,
@@ -35,10 +31,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REMOTE=""; SIM_IP=""; LIVE_IP=""; IFACE=""; SIM_IFACE=""; PREFIX_LEN=24
-BACKEND=kernel; TRANSPORT=kernel; MD=unicast; USER_TCP_IP=""; USER_TCP_PORT=61001
+BACKEND=kernel; MD=unicast
 DPDK_PCI=""; DPDK_EAL=""; QUEUES=""; DURATION=30; RUNS=1; SPEED=4; SPIN=busy; THREADING=split
 SIM_CPU=1; ENGINE_CPU=1; NET_CPU=2; REMOTE_DIR=/opt/fastmm; PUSH=0; BUILD=build/release; OUT=""
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --remote-sim) REMOTE="$2"; shift 2;;
@@ -48,10 +44,7 @@ while [[ $# -gt 0 ]]; do
     --sim-iface) SIM_IFACE="$2"; shift 2;;
     --prefix-len) PREFIX_LEN="$2"; shift 2;;
     --backend) BACKEND="$2"; shift 2;;
-    --order-transport) TRANSPORT="$2"; shift 2;;
     --md) MD="$2"; shift 2;;
-    --user-tcp-ip) USER_TCP_IP="$2"; shift 2;;
-    --user-tcp-port) USER_TCP_PORT="$2"; shift 2;;
     --dpdk-pci) DPDK_PCI="$2"; shift 2;;
     --dpdk-eal) DPDK_EAL="$2"; shift 2;;
     --queues) QUEUES="$2"; shift 2;;
@@ -74,24 +67,18 @@ done
 die() { echo "bench-2host: $*" >&2; exit 2; }
 [[ -n "$REMOTE" && -n "$SIM_IP" && -n "$LIVE_IP" ]] || { usage >&2; exit 2; }
 case "$BACKEND" in kernel|af_xdp|dpdk) ;; *) die "--backend kernel|af_xdp|dpdk";; esac
-case "$TRANSPORT" in kernel|user_tcp) ;; *) die "--order-transport kernel|user_tcp";; esac
 case "$MD" in unicast|multicast) ;; *) die "--md unicast|multicast";; esac
 case "$SPIN" in busy|adaptive) ;; *) die "--spin busy|adaptive";; esac
 case "$THREADING" in split|single) ;; *) die "--threading split|single";; esac
 [[ "$BACKEND" != dpdk || "$SPIN" == busy ]] || die "--backend dpdk needs --spin busy"
 [[ "$BACKEND" == dpdk || -n "$IFACE" ]] || die "--iface is required with --backend $BACKEND"
 [[ "$BACKEND" != dpdk || -n "$DPDK_PCI" ]] || die "--dpdk-pci is required with --backend dpdk"
-if [[ "$TRANSPORT" == user_tcp && -z "$USER_TCP_IP" ]]; then
-  [[ "$BACKEND" != kernel ]] || die "user_tcp on the kernel backend needs --user-tcp-ip (an unassigned address)"
-  USER_TCP_IP="$LIVE_IP"
-fi
-[[ "$USER_TCP_IP" == "$LIVE_IP" ]] || USER_TCP_PORT=0
 [[ "$(id -u)" -eq 0 || "$BACKEND" == kernel ]] || die "--backend $BACKEND needs root"
 for b in fastmm-live fastmm-top; do
   [[ -x "$BUILD/bin/$b" ]] || die "$BUILD/bin/$b not found"
 done
 BUILD="$(cd "$BUILD" && pwd)"
-[[ -n "$OUT" ]] || OUT="runs/bench-2host-$(date -u +%Y%m%d-%H%M%S)-$BACKEND-$TRANSPORT-$MD"
+[[ -n "$OUT" ]] || OUT="runs/bench-2host-$(date -u +%Y%m%d-%H%M%S)-$BACKEND-$MD"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$REMOTE")
@@ -109,10 +96,6 @@ if [[ -z "$SIM_IFACE" ]]; then
   SIM_IFACE="$("${SSH[@]}" "ip -o -4 addr show | awk -v ip='$SIM_IP' '{split(\$4,a,\"/\"); if (a[1]==ip) print \$2}'")"
   [[ -n "$SIM_IFACE" ]] || die "no interface on $REMOTE has $SIM_IP (pass --sim-iface)"
 fi
-if [[ "$TRANSPORT" == user_tcp ]]; then
-  "${SSH[@]}" "ethtool -K '$SIM_IFACE' tso off gso off" >/dev/null 2>&1 ||
-    echo "bench-2host: warning: could not turn TSO/GSO off on $REMOTE $SIM_IFACE" >&2
-fi
 
 # ---- fastmm-live's configuration -------------------------------------------------------------
 if [[ "$MD" == unicast ]]; then
@@ -128,14 +111,10 @@ if [[ "$BACKEND" == dpdk ]]; then
   ALLOW=""; [[ "$DPDK_PCI" == *:* ]] && ALLOW="-a $DPDK_PCI"  # a PCI address, not a vdev name
   EXTRA+="dpdk_eal_args = \"-l 0 --in-memory --no-telemetry $ALLOW --vdev=net_tap0,iface=fmx0 $DPDK_EAL\"\n"
   EXTRA+="dpdk_exception_port = \"net_tap0\"\ndpdk_exception_ip = \"$LIVE_IP/$PREFIX_LEN\"\n"
-  # Kernel TCP (GLIMPSE, kernel OUCH) through the tap: read it on every poll when OUCH uses it.
-  [[ "$TRANSPORT" == kernel ]] && EXTRA+="dpdk_exception_interval_us = 0\n"
+  # Kernel TCP (GLIMPSE, OUCH) through the tap: read it on every poll.
+  EXTRA+="dpdk_exception_interval_us = 0\n"
 fi
 [[ -z "$QUEUES" ]] || EXTRA+="queues = [$QUEUES]\n"
-if [[ "$TRANSPORT" == user_tcp ]]; then
-  EXTRA+="order_transport = \"user_tcp\"\nuser_tcp_ip = \"$USER_TCP_IP\"\nuser_tcp_port = $USER_TCP_PORT\n"
-  [[ -z "$IFACE" ]] || EXTRA+="user_tcp_interface = \"$IFACE\"\n"
-fi
 EXTRA="${EXTRA//\//\\/}"
 CFG="$OUT/nasdaq-itch-2host.toml"
 NET_CPUS="[$NET_CPU]"; [[ "$NET_CPU" == -1 ]] && NET_CPUS="[]"
@@ -162,9 +141,8 @@ RDIR="/tmp/$TAG"
 stop_sim() { "${SSH[@]}" "test -f $RDIR/sim.pid && kill -INT \$(cat $RDIR/sim.pid) 2>/dev/null; true" || true; }
 trap stop_sim EXIT
 
-echo "bench-2host: backend=$BACKEND order_transport=$TRANSPORT md=$MD spin=$SPIN threading=$THREADING duration=${DURATION}s runs=$RUNS speed=$SPEED"
+echo "bench-2host: backend=$BACKEND md=$MD spin=$SPIN threading=$THREADING duration=${DURATION}s runs=$RUNS speed=$SPEED"
 echo "bench-2host: sim $REMOTE ($SIM_IP on $SIM_IFACE) -> live $(hostname) ($LIVE_IP${IFACE:+ on $IFACE}), output $OUT"
-[[ "$TRANSPORT" == kernel ]] || echo "bench-2host: user_tcp from $USER_TCP_IP (local port ${USER_TCP_PORT/#0/random})"
 for run in $(seq "$RUNS"); do
   d="$OUT/run$run"; mkdir -p "$d"
   # The simulator runs until stopped (SIGINT after fastmm-live exits) or DURATION + 60 s.

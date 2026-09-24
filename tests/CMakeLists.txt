@@ -433,13 +433,6 @@ if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top AND TARGE
     set_tests_properties(${_name} PROPERTIES
       LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
   endforeach()
-  # The same with the OUCH connection on the user-space TCP (order_transport = "user_tcp").
-  add_test(NAME integration.nasdaq_itch_processes_user_tcp
-    COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
-            --order-transport user_tcp --sim-cpu -1 --engine-cpu -1 --net-cpu -1
-            --build ${PROJECT_BINARY_DIR} --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e-user-tcp)
-  set_tests_properties(integration.nasdaq_itch_processes_user_tcp PROPERTIES
-    LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
   # Unicast market data (the simulator sends to fastmm-live's address; no multicast).
   add_test(NAME integration.nasdaq_itch_processes_unicast
     COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --spin adaptive --speed 4
@@ -447,15 +440,14 @@ if(TARGET fastmm-sim-itch AND TARGET fastmm-live AND TARGET fastmm-top AND TARGE
             --build ${PROJECT_BINARY_DIR} --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e-unicast)
   set_tests_properties(integration.nasdaq_itch_processes_unicast PROPERTIES
     LABELS "integration" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
-  # DPDK as on a NIC bound to vfio-pci: the kernel only behind the exception tap, unicast lines, and
-  # UserTcp on the DPDK port with fastmm-live's own address and a fixed port.
+  # DPDK as on a NIC bound to vfio-pci: the kernel only behind the exception tap (OUCH on kernel
+  # TCP through it) and unicast lines.
   if(TARGET fastmm_dpdk)
-    add_test(NAME dpdk.nasdaq_itch_processes_exception_user_tcp
+    add_test(NAME dpdk.nasdaq_itch_processes_exception
       COMMAND ${PROJECT_SOURCE_DIR}/scripts/bench-e2e.sh --duration 5 --speed 4 --backend dpdk
-              --dpdk-exception --md unicast --order-transport user_tcp --user-tcp-ip 10.211.0.2
-              --user-tcp-port 61001 --sim-cpu -1 --engine-cpu -1 --net-cpu -1
+              --dpdk-exception --md unicast --sim-cpu -1 --engine-cpu -1 --net-cpu -1
               --build ${PROJECT_BINARY_DIR} --out ${CMAKE_CURRENT_BINARY_DIR}/tmp/bench-e2e-dpdk)
-    set_tests_properties(dpdk.nasdaq_itch_processes_exception_user_tcp PROPERTIES
+    set_tests_properties(dpdk.nasdaq_itch_processes_exception PROPERTIES
       LABELS "dpdk" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 180)
   endif()
 endif()

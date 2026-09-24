@@ -49,12 +49,8 @@
 // connection closes, so a lost OUCH connection is reported as a reconciliation with no open
 // orders; cancel_all() shuts the connection down from the calling thread for the same effect.
 //
-// order_transport = "kernel" runs the OUCH connection on a kernel TCP socket (TcpLink);
-// "user_tcp" (experimental) on net::UserTcp with its own IPv4 address (UserTcpLink,
-// user_tcp_link.hpp), polled from poll() on every loop iteration. Its frames go through the
-// market-data device: an AF_PACKET ring with the kernel backend, the XDP sockets (the program also
-// redirects the link's TCP and ARP; the first socket gets a TX ring) with af_xdp, the DPDK port
-// with dpdk.
+// The OUCH connection runs on a kernel TCP socket (TcpLink, TCP_NODELAY). Kernel bypass for it is
+// OpenOnload or NVIDIA XLIO through LD_PRELOAD (docs/how-to/operations/low-latency-tcp.md).
 //
 // Market data may be unicast: a line's "group" is then a local address the simulator sends to (no
 // IGMP). With dpdk_exception_port (a net_tap vdev) the kernel keeps an interface on the DPDK port
@@ -73,7 +69,6 @@
 #include "fastmm/net/xdp_datagram_source.hpp"
 #include "fastmm/venues/nasdaq/recovery_buffer.hpp"
 #include "fastmm/venues/nasdaq/tcp_link.hpp"
-#include "fastmm/venues/nasdaq/user_tcp_link.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -89,7 +84,6 @@
 namespace fastmm::venues::nasdaq {
 
 enum class RxBackend : std::uint8_t { Kernel = 0, AfXdp = 1, Dpdk = 2 };
-enum class OrderTransport : std::uint8_t { Kernel = 0, UserTcp = 1 };
 enum class OrderEntry : std::uint8_t { None = 0, SimOuch = 1 };
 enum class HwClock : std::uint8_t { None = 0, PhcSynced = 1 };
 
@@ -132,12 +126,7 @@ struct NasdaqItchVenueConfig {
   std::string ouch_url;  // "ip:port" (sim_ouch)
   std::string ouch_username = "fmouch";
   std::string ouch_password = "ouch";
-  OrderTransport order_transport = OrderTransport::Kernel;
-  std::string user_tcp_interface;   // "" = interface
-  std::string user_tcp_ip;          // user_tcp: the link's own IPv4 address
-  std::string user_tcp_gateway;     // user_tcp: next hop when the OUCH server is not on-link
-  std::uint16_t user_tcp_port = 0;  // user_tcp: fixed local port; 0 = random per connection
-  bool dry_run = false;             // no order entry
+  bool dry_run = false;  // no order entry
 };
 
 class NasdaqItchVenue final : public Venue {
@@ -235,7 +224,7 @@ class NasdaqItchVenue final : public Venue {
     void on_snapshot_end(std::uint64_t seq) noexcept { v->on_snapshot_end(seq); }
   };
   using Glimpse = codecs::itch::glimpse::GlimpseClient<TcpLink, SnapshotHandler>;
-  using OuchSession = codecs::soupbin::ClientSession<ByteLink>;
+  using OuchSession = codecs::soupbin::ClientSession<TcpLink>;
 
   // t0_cycles of a receive batch -> sequence number of its first message (the order token).
   struct TokenSlot {
@@ -346,8 +335,7 @@ class NasdaqItchVenue final : public Venue {
 
   // OUCH
   OuchLink ouch_link_;
-  std::unique_ptr<ByteLink> ouch_tcp_;
-  UserTcpLink* user_tcp_ = nullptr;  // ouch_tcp_ with order_transport = "user_tcp"
+  std::unique_ptr<TcpLink> ouch_tcp_;
   std::optional<OuchSession> ouch_session_;
   net::SockAddr ouch_addr_{};
   std::unique_ptr<codecs::ouch50::UserRefMap> ouch_ids_;

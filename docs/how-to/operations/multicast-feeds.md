@@ -90,7 +90,7 @@ dpdk_exception_ip = "10.0.0.2/24"     # the host's address, now on fmx0
 interface = "fmx0"                    # IGMP joins go out through it
 ```
 
-The tap gets the port's MAC. Frames the venue does not take (datagrams of no line, ARP, ICMP, IGMP, TCP other than `user_tcp`'s) go to the kernel through it, and what the kernel sends there leaves through the port: GLIMPSE, re-requests, IGMP reports and kernel TCP keep working. The tap is read every `dpdk_exception_interval_us` (20 µs; each read is a system call); set 0 when the OUCH connection is kernel TCP through it. Without an exception port the source answers ARP for unicast line addresses itself and drops the rest.
+The tap gets the port's MAC. Frames the venue does not take (datagrams of no line, ARP, ICMP, IGMP, TCP) go to the kernel through it, and what the kernel sends there leaves through the port: GLIMPSE, re-requests, IGMP reports and kernel TCP keep working. The tap is read every `dpdk_exception_interval_us` (20 µs; each read is a system call); set 0 when the OUCH connection goes through it. Without an exception port the source answers ARP for unicast line addresses itself and drops the rest.
 
 ## 3. Steer the groups to one RX queue (af_xdp)
 
@@ -141,28 +141,9 @@ echo 5 | sudo tee /proc/irq/<irq>/smp_affinity_list
 - `gaps`, `recov`, `lost`: gaps declared, messages recovered by re-request, sequences given up. Every given-up range and every L3 book inconsistency starts a GLIMPSE snapshot (`snaps`).
 - `reorder`: most packets held ahead of a gap; at `reorder_packets` later packets are dropped and re-requested.
 
-## 8. Order entry without the kernel TCP stack (experimental)
+## 8. Order entry
 
-`order_transport = "user_tcp"` runs the OUCH connection on a user-space TCP client (`net::UserTcp`) over the receive backend's device:
-
-| `rx_backend` | Frames |
-|---|---|
-| `kernel` | an `AF_PACKET` ring (`PACKET_MMAP` RX and TX rings, `PACKET_QDISC_BYPASS`); `CAP_NET_RAW` |
-| `af_xdp` | the XDP sockets: the program also redirects TCP to `user_tcp_ip` (and `user_tcp_port`) and ARP for it; the first socket on `user_tcp_interface` gets a TX ring |
-| `dpdk` | the DPDK port: its RX burst hands ARP and TCP to `user_tcp_ip` (and `user_tcp_port`) to the link, which transmits on the same queue |
-
-```toml
-order_transport = "user_tcp"
-user_tcp_ip = "10.211.0.3"    # its own address on the interface's subnet
-# user_tcp_interface = "eth1" # default: interface
-# user_tcp_gateway = "10.0.0.1"  # when the OUCH server is not on-link
-```
-
-- `user_tcp_ip` must not be assigned to any kernel interface: the kernel would answer the server's segments with RSTs. The link answers ARP for it. On `af_xdp` and `dpdk` it may be the host's own address with a fixed `user_tcp_port` outside the kernel's ephemeral range (61001): only TCP to that port reaches the link (on `af_xdp` the kernel keeps ARP, and the link takes the next hop's MAC from the kernel's neighbour table). Use that where the network drops addresses it did not assign.
-- The server's segments must arrive as sent: GRO off on the NIC (`ethtool -K eth1 gro off`), TSO/GSO off on a veth peer. A merged segment larger than a ring frame (2 KiB) is dropped as a bad frame.
-- One connection, client side only: MSS option, no window scaling, SACK or timestamps; RTO per RFC 6298 (minimum 200 ms, as Linux), fast retransmit, out-of-order segments kept for reassembly, FIN, RST and RFC 5961 challenge ACKs. The venue logs its counters (retransmits, out-of-order segments, RSTs) at shutdown.
-
-With the `AF_PACKET` ring, and with AF_XDP in copy mode, the send still makes one `sendto` per drain to kick the TX ring; on veth that call runs the simulator's receive path, as `write` does. DPDK sends with `rte_eth_tx_burst`. `bench/README.md` has the numbers.
+The OUCH connection runs on kernel TCP with `TCP_NODELAY`. Busy polling and kernel bypass for it: [Low-latency TCP](low-latency-tcp.md).
 
 ## 9. Two hosts
 

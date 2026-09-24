@@ -116,7 +116,6 @@ constexpr std::size_t kEth = 14;
 constexpr std::uint16_t kEtherArp = 0x0806;
 constexpr std::uint16_t kEtherIpv4 = 0x0800;
 constexpr std::uint16_t kExcBurst = 32;
-constexpr std::uint16_t kTxPending = 64;
 
 std::uint16_t be16(const std::byte* p) noexcept {
   return static_cast<std::uint16_t>((std::to_integer<unsigned>(p[0]) << 8U) |
@@ -235,15 +234,12 @@ int DpdkDatagramSource::open(const DpdkConfig& cfg) {
   started_ = true;
   rte_ether_addr own{};
   if (::rte_eth_macaddr_get(port, &own) == 0) std::memcpy(mac_.data(), own.addr_bytes, 6);
-  std::uint16_t mtu = 1500;
-  if (::rte_eth_dev_get_mtu(port, &mtu) == 0) mtu_ = mtu;
 
   batch_ = static_cast<std::uint16_t>(cfg.batch);
   frames_.assign(batch_, {});
   mbufs_.assign(batch_, nullptr);
   to_exc_.assign(batch_, nullptr);
   exc_rx_.assign(kExcBurst, nullptr);
-  tx_pend_.assign(kTxPending, nullptr);
 
   if (!cfg.exception_port.empty()) {
     if (const int r = open_exception(cfg, sock); r != 0) return r;
@@ -328,17 +324,13 @@ void DpdkDatagramSource::close() noexcept {
   join_fds_.clear();
   if (to_exc_n_ != 0)
     ::rte_pktmbuf_free_bulk(reinterpret_cast<rte_mbuf**>(to_exc_.data()), to_exc_n_);
-  if (tx_pend_n_ != 0)
-    ::rte_pktmbuf_free_bulk(reinterpret_cast<rte_mbuf**>(tx_pend_.data()), tx_pend_n_);
   to_exc_n_ = 0;
-  tx_pend_n_ = 0;
   if (exc_started_) {
     static_cast<void>(::rte_eth_dev_stop(exc_));
     exc_started_ = false;
   }
   exc_ = kNoPort;
   exc_ifname_.clear();
-  sink_ = FrameSink{};
   if (started_) {
     static_cast<void>(::rte_eth_dev_stop(port_));
     started_ = false;
@@ -381,22 +373,16 @@ void DpdkDatagramSource::divert(std::uint32_t i) noexcept {
   };
   const std::uint16_t type = be16(f.data() + 12);
   if (type == kEtherArp) {
-    if (sink_.fn != nullptr) {
-      sink_.fn(sink_.ctx, f);
-      ++stats_.to_sink;
-    }
     if (exc_ != kNoPort) {
       to_kernel();
       return;
     }
-    // Requests for a unicast subscription address (not the sink's: it answers for its own).
+    // Requests for a unicast subscription address.
     if (f.size() < kEth + 28 || unicast_.empty()) return;
     const std::byte* a = f.data() + kEth;
     if (be16(a) != 1 || be16(a + 2) != kEtherIpv4 || be16(a + 6) != 1) return;
     const std::uint32_t tpa = raw32(a + 24);
-    if ((sink_.fn != nullptr && tpa == sink_.ip) ||
-        std::find(unicast_.begin(), unicast_.end(), tpa) == unicast_.end())
-      return;
+    if (std::find(unicast_.begin(), unicast_.end(), tpa) == unicast_.end()) return;
     std::byte r[60] = {};
     std::memcpy(r, a + 8, 6);  // to the requester
     std::memcpy(r + 6, mac_.data(), 6);
@@ -409,19 +395,8 @@ void DpdkDatagramSource::divert(std::uint32_t i) noexcept {
     std::memcpy(ra + 8, mac_.data(), 6);
     std::memcpy(ra + 14, a + 24, 4);  // spa: the address asked for
     std::memcpy(ra + 18, a + 8, 10);  // tha, tpa: the requester's
-    if (tx_frame(std::span<const std::byte>(r, sizeof r))) ++stats_.arp_replies;
-    tx_flush();
+    if (send_frame(std::span<const std::byte>(r, sizeof r))) ++stats_.arp_replies;
     return;
-  }
-  if (type == kEtherIpv4 && sink_.fn != nullptr && f.size() >= kEth + 20) {
-    const std::byte* ip = f.data() + kEth;
-    const std::size_t ihl = (std::to_integer<unsigned>(ip[0]) & 0x0FU) * 4U;
-    if (std::to_integer<unsigned>(ip[9]) == 6 && raw32(ip + 16) == sink_.ip &&
-        (sink_.port == 0 || (f.size() >= kEth + ihl + 4 && be16(ip + ihl + 2) == sink_.port))) {
-      sink_.fn(sink_.ctx, f);
-      ++stats_.to_sink;
-      return;
-    }
   }
   if (exc_ != kNoPort) to_kernel();
 }
@@ -446,12 +421,7 @@ void DpdkDatagramSource::service_exception() noexcept {
   if (n == kExcBurst) exc_next_ = 0;  // more waiting: read again on the next poll
 }
 
-bool DpdkDatagramSource::tx_frame(std::span<const std::byte> frame) noexcept {
-  if (FASTMM_UNLIKELY(!started_ || frame.size() > RTE_MBUF_DEFAULT_DATAROOM)) {
-    ++stats_.tx_drops;
-    return false;
-  }
-  if (tx_pend_n_ == tx_pend_.size()) tx_flush();
+bool DpdkDatagramSource::send_frame(std::span<const std::byte> frame) noexcept {
   rte_mbuf* m = ::rte_pktmbuf_alloc(static_cast<rte_mempool*>(pool_));
   if (FASTMM_UNLIKELY(m == nullptr)) {
     ++stats_.tx_drops;
@@ -464,21 +434,12 @@ bool DpdkDatagramSource::tx_frame(std::span<const std::byte> frame) noexcept {
     return false;
   }
   std::memcpy(p, frame.data(), frame.size());
-  tx_pend_[tx_pend_n_++] = m;
-  return true;
-}
-
-void DpdkDatagramSource::tx_flush() noexcept {
-  if (tx_pend_n_ == 0) return;
-  auto** m = reinterpret_cast<rte_mbuf**>(tx_pend_.data());
-  const std::uint16_t sent =
-      ::rte_eth_tx_burst(port_, 0, m, static_cast<std::uint16_t>(tx_pend_n_));
-  if (sent < tx_pend_n_) {
-    ::rte_pktmbuf_free_bulk(m + sent, tx_pend_n_ - sent);
-    stats_.tx_drops += tx_pend_n_ - sent;
+  if (FASTMM_UNLIKELY(::rte_eth_tx_burst(port_, 0, &m, 1) != 1)) {
+    ::rte_pktmbuf_free(m);
+    ++stats_.tx_drops;
+    return false;
   }
-  stats_.tx_frames += sent;
-  tx_pend_n_ = 0;
+  return true;
 }
 
 int DpdkDatagramSource::refresh_stats() noexcept {

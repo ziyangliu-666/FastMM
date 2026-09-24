@@ -56,6 +56,20 @@ All notable changes are recorded here (Keep a Changelog format).
   `make`, which liburing's `configure` calls.
 
 ### Removed
+- The experimental user-space TCP client (`net::UserTcp`, RFC 9293 subset), the `AF_PACKET` frame
+  ring (`net::PacketRing`) and `nasdaq_itch`'s `order_transport = "user_tcp"` with its keys
+  `user_tcp_ip`, `user_tcp_port`, `user_tcp_interface` and `user_tcp_gateway`. A config that still
+  sets `order_transport = "user_tcp"` is refused at start (`venues.<name>.order_transport: 'user_tcp'
+  is not supported; valid: kernel`); the other four keys are reported as unknown and ignored. OUCH
+  runs on kernel TCP with `TCP_NODELAY`; kernel bypass for it is OpenOnload or NVIDIA XLIO through
+  `LD_PRELOAD` ([Low-latency TCP](docs/how-to/operations/low-latency-tcp.md)). Over a veth the
+  kernel path measured the same (`bench_order_tcp`: 7.9 µs p50 to the server's read for both). With
+  it went the XDP program's TCP and ARP redirect (`xdp::TcpMatch`, `XdpConfig::tcp_*` and
+  `tx_frames`, the XDP TX ring), the DPDK source's frame sink and `frame_tx()`, `net::FrameSink`,
+  `net::FrameTx`, `nasdaq::ByteLink` and the counters `XdpStats::to_sink`, `tx_frames`, `tx_drops`,
+  `tx_kicks` and `DpdkStats::to_sink`, `tx_frames` (`DpdkStats::tx_drops` now counts ARP replies not
+  sent). `scripts/bench-e2e.sh` and `scripts/bench-2host.sh` lost `--order-transport`,
+  `--user-tcp-ip` and `--user-tcp-port`.
 - The zlib dependency. Nothing called it: `fastmm_net` never negotiates permessage-deflate. The
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 

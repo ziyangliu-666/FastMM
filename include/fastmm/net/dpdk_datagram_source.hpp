@@ -6,8 +6,6 @@
 // handler call.
 //
 // Frames that are not a subscribed datagram:
-//   - ARP, and TCP to the FrameSink's address (and port), go to the sink: UserTcp on the same port
-//     (order_transport = "user_tcp"), sending through frame_tx()
 //   - with an exception port (a net_tap vdev), everything else goes to the kernel through it, and
 //     what the kernel sends there goes out of the port: the kernel keeps an interface with the
 //     port's MAC and exception_ip (ARP, ICMP, IGMP joins, GLIMPSE, re-requests, kernel TCP). The
@@ -30,8 +28,8 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/datagram_source.hpp"
 #include "fastmm/net/udp_frame.hpp"
-#include "fastmm/net/user_tcp.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -69,12 +67,10 @@ struct DpdkStats {
   std::uint64_t bad_frames = 0;   // truncated, bad IPv4 header, lengths or checksums, chained mbufs
   std::uint64_t other = 0;        // not IPv4 UDP (ARP, TCP, IGMP, fragments): not for this source
   std::uint64_t unmatched = 0;    // UDP, but no subscription
-  std::uint64_t to_sink = 0;      // frames given to the FrameSink
   std::uint64_t to_kernel = 0;    // frames passed to the exception port
   std::uint64_t from_kernel = 0;  // frames the kernel sent through the exception port
   std::uint64_t arp_replies = 0;  // answered here (no exception port)
-  std::uint64_t tx_frames = 0;    // frame_tx() frames handed to the port
-  std::uint64_t tx_drops = 0;     // no mbuf, or the TX queue was full
+  std::uint64_t tx_drops = 0;     // ARP replies not sent: no mbuf, or the TX queue was full
   // rte_eth_stats_get, as of the last refresh_stats()
   std::uint64_t ipackets = 0;
   std::uint64_t imissed = 0;
@@ -101,13 +97,6 @@ class DpdkDatagramSource {
   [[nodiscard]] const std::string& port_name() const noexcept { return port_name_; }
   // The exception port's netdev ("" without one).
   [[nodiscard]] const std::string& exception_interface() const noexcept { return exc_ifname_; }
-
-  // Frames for a user-space protocol on this port (see FrameSink). Set after open().
-  void set_frame_sink(const FrameSink& sink) noexcept { sink_ = sink; }
-  // Sends Ethernet frames out of the port (one copy into an mbuf; flush() transmits).
-  [[nodiscard]] FrameTx& frame_tx() noexcept { return tx_; }
-  [[nodiscard]] const MacAddr& mac() const noexcept { return mac_; }
-  [[nodiscard]] std::uint32_t mtu() const noexcept { return mtu_; }
 
   template <class H>
   std::size_t poll(H&& handler) noexcept {
@@ -167,34 +156,20 @@ class DpdkDatagramSource {
     std::uint16_t dst_port;
     std::uint8_t line;
   };
-  class Tx final : public FrameTx {
-   public:
-    explicit Tx(DpdkDatagramSource& s) noexcept : s_(s) {}
-    bool send_frame(std::span<const std::byte> frame) noexcept override {
-      return s_.tx_frame(frame);
-    }
-    void flush() noexcept override { s_.tx_flush(); }
-
-   private:
-    DpdkDatagramSource& s_;
-  };
-
   std::uint32_t rx_burst() noexcept;  // fills frames_ (empty span: chained mbuf)
   void free_burst(std::uint32_t n) noexcept;
-  // Frame i was not delivered: the sink, the exception port or an ARP answer (out of line).
+  // Frame i was not delivered: the exception port or an ARP answer (out of line).
   void divert(std::uint32_t i) noexcept;
   // Passes the diverted frames to the kernel and, when due, the kernel's frames to the port.
   void service_exception() noexcept;
-  bool tx_frame(std::span<const std::byte> frame) noexcept;
-  void tx_flush() noexcept;
+  bool send_frame(std::span<const std::byte> frame) noexcept;
   int open_exception(const DpdkConfig& cfg, unsigned sock);
   int fail(int err, std::string msg);
 
   std::vector<std::span<const std::byte>> frames_;
-  std::vector<void*> mbufs_;    // rte_mbuf*
-  std::vector<void*> to_exc_;   // mbufs for the exception port
-  std::vector<void*> tx_pend_;  // frame_tx() mbufs not yet transmitted
-  std::vector<void*> exc_rx_;   // burst read from the exception port
+  std::vector<void*> mbufs_;   // rte_mbuf*
+  std::vector<void*> to_exc_;  // mbufs for the exception port
+  std::vector<void*> exc_rx_;  // burst read from the exception port
   std::vector<Route> routes_;
   std::vector<std::uint32_t> unicast_;  // unicast subscription addresses (ARP answers)
   std::vector<int> join_fds_;
@@ -203,12 +178,8 @@ class DpdkDatagramSource {
   std::string port_name_;
   std::string exc_ifname_;
   DpdkStats stats_{};
-  FrameSink sink_{};
-  Tx tx_{*this};
-  MacAddr mac_{};
-  std::uint32_t mtu_ = 1500;
+  std::array<std::uint8_t, 6> mac_{};
   std::uint32_t to_exc_n_ = 0;
-  std::uint32_t tx_pend_n_ = 0;
   std::uint64_t exc_interval_cycles_ = 0;
   std::uint64_t exc_next_ = 0;
   std::uint16_t port_ = 0;

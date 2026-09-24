@@ -236,11 +236,7 @@ Line and recovery keys apply to the multicast feed; `rx_backend` selects how it 
 | `hw_clock` | string |  | none \| phc_synced: use the NIC timestamp as recv_ts (only when the PHC is synchronised to CLOCK_REALTIME) (default none) |
 | `order_entry` | string |  | none (every order is rejected) \| sim_ouch (OUCH 5.0 to fastmm-sim-itch) (default none) |
 | `ouch_url` | string |  | sim_ouch: OUCH 5.0 server, "<IPv4 address>:<port>" |
-| `order_transport` | string |  | sim_ouch: kernel (TCP socket) \| user_tcp (experimental user-space TCP over the rx_backend's device: AF_PACKET ring, XDP socket or DPDK port; needs user_tcp_ip) (default kernel) |
-| `user_tcp_ip` | string |  | user_tcp: the connection's own IPv4 address on the interface's subnet, not assigned to any kernel interface (af_xdp, dpdk: or the host's own with user_tcp_port) |
-| `user_tcp_port` | integer |  | user_tcp: fixed local TCP port; 0 = random per connection (default 0) |
-| `user_tcp_interface` | string |  | user_tcp: netdev (default: interface) |
-| `user_tcp_gateway` | string |  | user_tcp: next hop IPv4 address when the OUCH server is not on-link |
+| `order_transport` | string |  | sim_ouch: kernel (TCP socket, TCP_NODELAY; the only value) (default kernel) |
 | `ouch_username` | string |  | sim_ouch: login, at most 6 characters (default fmouch, the simulator's) |
 | `ouch_password` | string |  | sim_ouch: password, at most 10 characters (default ouch) |
 <!-- END config-keys -->

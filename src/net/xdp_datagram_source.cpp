@@ -240,10 +240,7 @@ std::string xdp_kernel_error() {
 
 // ---- XdpFilter ----------------------------------------------------------------------------------
 
-int XdpFilter::create(std::span<const xdp::Key> keys,
-                      std::uint32_t xsk_slots,
-                      std::string& err,
-                      xdp::TcpMatch tcp) {
+int XdpFilter::create(std::span<const xdp::Key> keys, std::uint32_t xsk_slots, std::string& err) {
   close();
   const auto bail = [&](int rc, const char* step) {
     err = std::string(step) + ": " + errno_text(rc);
@@ -266,7 +263,7 @@ int XdpFilter::create(std::span<const xdp::Key> keys,
     if (rc < 0) return bail(rc, "BPF_MAP_UPDATE_ELEM (subscriptions)");
   }
 
-  const xdp::Program prog = xdp::build_program({subs_fd_, xsks_fd_, fallback_fd_}, tcp);
+  const xdp::Program prog = xdp::build_program({subs_fd_, xsks_fd_, fallback_fd_});
   if (!prog.ok) {
     err = "XDP program assembly failed";
     close();
@@ -364,17 +361,11 @@ int XdpDatagramSource::fail(int err, std::string msg) {
 void XdpDatagramSource::close_socket(detail::XskSocket& s) noexcept {
   if (s.rx_map != nullptr) ::munmap(s.rx_map, s.rx_map_len);
   if (s.fill_map != nullptr) ::munmap(s.fill_map, s.fill_map_len);
-  if (s.tx_map != nullptr) ::munmap(s.tx_map, s.tx_map_len);
-  if (s.comp_map != nullptr) ::munmap(s.comp_map, s.comp_map_len);
   s.rx_map = nullptr;
   s.fill_map = nullptr;
-  s.tx_map = nullptr;
-  s.comp_map = nullptr;
   close_fd(s.fd);
   s.fill = {};
   s.rx = {};
-  s.tx = {};
-  s.comp = {};
 }
 
 void XdpDatagramSource::close() noexcept {
@@ -386,10 +377,6 @@ void XdpDatagramSource::close() noexcept {
   }
   for (int& fd : join_fds_) close_fd(fd);
   sockets_.clear();
-  tx_sock_ = nullptr;
-  tx_free_.clear();
-  tx_pending_ = 0;
-  sink_ = FrameSink{};
   routes_.clear();
   fds_.clear();
   filters_.clear();
@@ -419,11 +406,7 @@ int XdpDatagramSource::create_socket(detail::XskSocket& s,
   mr.chunk_size = cfg.frame_size;
   if (::setsockopt(s.fd, SOL_XDP, XDP_UMEM_REG, &mr, sizeof(mr)) != 0) return step("XDP_UMEM_REG");
   const int ring = static_cast<int>(cfg.frame_count);
-  // Required by bind; only the UserTcp socket transmits.
-  const int completion = s.tx_frames != 0 ? static_cast<int>(s.tx_frames) : 64;
-  const int tx_ring = static_cast<int>(s.tx_frames);
-  if (tx_ring != 0 && ::setsockopt(s.fd, SOL_XDP, XDP_TX_RING, &tx_ring, sizeof(tx_ring)) != 0)
-    return step("XDP_TX_RING");
+  const int completion = 64;  // required by bind; nothing transmits
   if (::setsockopt(s.fd, SOL_XDP, XDP_UMEM_FILL_RING, &ring, sizeof(ring)) != 0)
     return step("XDP_UMEM_FILL_RING");
   if (::setsockopt(s.fd, SOL_XDP, XDP_UMEM_COMPLETION_RING, &completion, sizeof(completion)) != 0)
@@ -470,41 +453,6 @@ int XdpDatagramSource::create_socket(detail::XskSocket& s,
   };
   setup(s.fill, s.fill_map, off.fr);
   setup(s.rx, s.rx_map, off.rx);
-  if (s.tx_frames != 0) {
-    s.tx_map_len = off.tx.desc + s.tx_frames * sizeof(detail::XdpDesc);
-    void* tm = ::mmap(nullptr,
-                      s.tx_map_len,
-                      PROT_READ | PROT_WRITE,
-                      MAP_SHARED | MAP_POPULATE,
-                      s.fd,
-                      static_cast<off_t>(XDP_PGOFF_TX_RING));
-    if (tm == MAP_FAILED) return step("mmap(tx ring)");
-    s.tx_map = tm;
-    s.comp_map_len = off.cr.desc + s.tx_frames * sizeof(std::uint64_t);
-    void* cm = ::mmap(nullptr,
-                      s.comp_map_len,
-                      PROT_READ | PROT_WRITE,
-                      MAP_SHARED | MAP_POPULATE,
-                      s.fd,
-                      static_cast<off_t>(XDP_UMEM_PGOFF_COMPLETION_RING));
-    if (cm == MAP_FAILED) return step("mmap(completion ring)");
-    s.comp_map = cm;
-    const auto setup_tx = [&s](detail::XskRing& r, void* base, const detail::XdpRingOffset& o) {
-      auto* b = static_cast<char*>(base);
-      r.producer = reinterpret_cast<std::atomic<std::uint32_t>*>(b + o.producer);
-      r.consumer = reinterpret_cast<std::atomic<std::uint32_t>*>(b + o.consumer);
-      r.flags = reinterpret_cast<std::atomic<std::uint32_t>*>(b + o.flags);
-      r.entries = b + o.desc;
-      r.size = s.tx_frames;
-      r.mask = s.tx_frames - 1;
-    };
-    setup_tx(s.tx, s.tx_map, off.tx);
-    setup_tx(s.comp, s.comp_map, off.cr);
-    s.tx.cached_prod = s.tx.producer->load(std::memory_order_relaxed);
-    s.tx.cached_cons = s.tx.consumer->load(std::memory_order_relaxed) + s.tx.size;
-    s.comp.cached_prod = s.comp.producer->load(std::memory_order_relaxed);
-    s.comp.cached_cons = s.comp.consumer->load(std::memory_order_relaxed);
-  }
   s.fill.cached_prod = s.fill.producer->load(std::memory_order_relaxed);
   s.fill.cached_cons = s.fill.consumer->load(std::memory_order_relaxed) + s.fill.size;
   s.rx.cached_prod = s.rx.producer->load(std::memory_order_relaxed);
@@ -545,11 +493,8 @@ int XdpDatagramSource::open_interface(std::size_t iface,
   const std::uint32_t slots =
       listed.empty() ? kXskMapSlots
                      : std::max(kXskMapSlots, *std::max_element(listed.begin(), listed.end()) + 1);
-  const bool tcp_here = cfg.tcp_ip != 0 && cfg.tcp_interface == st.name;
-  xdp::TcpMatch tcp;
-  if (tcp_here) tcp = {cfg.tcp_ip, cfg.tcp_port, cfg.tcp_arp};
   std::string err;
-  if (const int rc = filter.create(keys, slots, err, tcp); rc < 0)
+  if (const int rc = filter.create(keys, slots, err); rc < 0)
     return fail(rc, "af_xdp " + st.name + ": " + err);
 
   const std::size_t first = sockets_.size();
@@ -616,9 +561,7 @@ int XdpDatagramSource::open_interface(std::size_t iface,
       s.queue = q;
       s.routes_begin = routes_begin;
       s.routes_end = routes_end;
-      // The first socket of the UserTcp interface transmits; its UMEM has the TX frames too.
-      s.tx_frames = tcp_here && sockets_.size() == first ? cfg.tx_frames : 0;
-      s.umem_len = static_cast<std::size_t>(cfg.frame_count + s.tx_frames) * cfg.frame_size;
+      s.umem_len = static_cast<std::size_t>(cfg.frame_count) * cfg.frame_size;
       void* mem = ::mmap(nullptr,
                          s.umem_len,
                          PROT_READ | PROT_WRITE,
@@ -689,12 +632,6 @@ int XdpDatagramSource::open(const XdpConfig& cfg) {
     if (std::find(names.begin(), names.end(), q.interface) == names.end())
       return fail(-EINVAL, "af_xdp: queues for " + q.interface + ", which has no subscription");
   }
-  if (cfg.tcp_ip != 0) {
-    if (std::find(names.begin(), names.end(), cfg.tcp_interface) == names.end())
-      return fail(-EINVAL, "af_xdp: tcp_interface '" + cfg.tcp_interface + "' has no subscription");
-    if (!is_power_of_two(cfg.tx_frames) || cfg.tx_frames < 16 || cfg.tx_frames > 4096)
-      return fail(-EINVAL, "af_xdp: tx_frames must be a power of two in [16, 4096]");
-  }
 
   if (std::string e = xdp_kernel_error(); !e.empty()) return fail(-ENOSYS, std::move(e));
   if (std::string e = xdp_capability_error(); !e.empty()) return fail(-EPERM, std::move(e));
@@ -750,30 +687,6 @@ int XdpDatagramSource::open(const XdpConfig& cfg) {
     opt(SO_BUSY_POLL_BUDGET, cfg.busy_poll_budget, "SO_BUSY_POLL_BUDGET");
   }
 
-  if (cfg.tcp_ip != 0) {
-    for (auto& s : sockets_) {
-      if (s.tx_frames == 0) continue;
-      tx_sock_ = &s;
-      for (const XdpInterfaceStatus& st : interfaces_)
-        if (st.ifindex == s.ifindex) tx_copy_ = st.mode != XdpMode::ZeroCopy;
-      tx_free_.clear();
-      for (std::uint32_t i = 0; i < s.tx_frames; ++i)
-        tx_free_.push_back(static_cast<std::uint64_t>(cfg.frame_count + i) * cfg.frame_size);
-      break;
-    }
-    ifreq ifr{};
-    std::strncpy(ifr.ifr_name, cfg.tcp_interface.c_str(), IFNAMSIZ - 1);
-    const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (fd >= 0) {
-      if (::ioctl(fd, SIOCGIFHWADDR, &ifr) == 0)
-        std::memcpy(mac_.data(), ifr.ifr_hwaddr.sa_data, 6);
-      if (::ioctl(fd, SIOCGIFMTU, &ifr) == 0 && ifr.ifr_mtu > 0)
-        mtu_ = static_cast<std::uint32_t>(ifr.ifr_mtu);
-      ::close(fd);
-    }
-  }
-  frame_size_ = cfg.frame_size;
-
   for (const auto& sub : cfg.subscriptions) {
     if ((ntohl(sub.group) >> 28U) != 0xE) continue;  // unicast: nothing to join
     const auto it = std::find_if(interfaces_.begin(), interfaces_.end(), [&sub](const auto& st) {
@@ -788,56 +701,6 @@ int XdpDatagramSource::open(const XdpConfig& cfg) {
     join_fds_.push_back(fd);
   }
   return 0;
-}
-
-void XdpDatagramSource::tx_reclaim() noexcept {
-  detail::XskSocket& s = *tx_sock_;
-  std::uint32_t idx = 0;
-  const std::uint32_t n = s.comp.peek(s.tx_frames, idx);
-  if (n == 0) return;
-  const auto* addrs = static_cast<const std::uint64_t*>(s.comp.entries);
-  for (std::uint32_t i = 0; i < n; ++i) tx_free_.push_back(addrs[(idx + i) & s.comp.mask]);
-  s.comp.release();
-}
-
-bool XdpDatagramSource::tx_frame(std::span<const std::byte> frame) noexcept {
-  if (FASTMM_UNLIKELY(tx_sock_ == nullptr || frame.size() > frame_size_)) {
-    ++stats_.tx_drops;
-    return false;
-  }
-  detail::XskSocket& s = *tx_sock_;
-  if (tx_free_.empty()) tx_reclaim();
-  std::uint32_t idx = 0;
-  if (FASTMM_UNLIKELY(tx_free_.empty() || s.tx.reserve(1, idx) != 1)) {
-    ++stats_.tx_drops;
-    return false;
-  }
-  const std::uint64_t addr = tx_free_.back();
-  tx_free_.pop_back();
-  std::memcpy(s.umem + addr, frame.data(), frame.size());
-  auto* descs = static_cast<detail::XdpDesc*>(s.tx.entries);
-  detail::XdpDesc& d = descs[idx & s.tx.mask];
-  d.addr = addr;
-  d.len = static_cast<std::uint32_t>(frame.size());
-  d.options = 0;
-  ++tx_pending_;
-  ++stats_.tx_frames;
-  return true;
-}
-
-void XdpDatagramSource::tx_flush() noexcept {
-  if (tx_sock_ == nullptr) return;
-  detail::XskSocket& s = *tx_sock_;
-  if (tx_pending_ != 0) {
-    s.tx.submit();
-    tx_pending_ = 0;
-    // Copy mode transmits only from sendto(); zero-copy when the driver asks for a wake-up.
-    if (tx_copy_ || s.tx.needs_wakeup()) {
-      ::sendto(s.fd, nullptr, 0, MSG_DONTWAIT, nullptr, 0);
-      ++stats_.tx_kicks;
-    }
-  }
-  tx_reclaim();
 }
 
 int XdpDatagramSource::refresh_stats() noexcept {

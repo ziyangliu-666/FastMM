@@ -5,9 +5,7 @@
 # order_entry = "sim_ouch"; every order names the ITCH sequence number that triggered it, and the
 # simulator times it from the sendmmsg of that datagram to the read that returned the order.
 #
-#   scripts/bench-e2e.sh [--backend kernel|af_xdp|dpdk] [--order-transport kernel|user_tcp]
-#                        [--md multicast|unicast] [--dpdk-exception]
-#                        [--user-tcp-ip 10.211.0.3] [--user-tcp-port 0]
+#   scripts/bench-e2e.sh [--backend kernel|af_xdp|dpdk] [--md multicast|unicast] [--dpdk-exception]
 #                        [--duration 30] [--runs 3] [--speed 4]
 #                        [--spin busy|adaptive] [--threading split|single] [--replay]
 #                        [--timer-slack NS]
@@ -26,28 +24,21 @@
 # fmlive's address away and gives it to a net_tap interface (fmx0) behind the DPDK port: the
 # kernel's traffic (ARP, GLIMPSE, re-requests, kernel OUCH) then goes through fastmm-live, as on a
 # NIC bound to vfio-pci. --md unicast sends the ITCH lines to fastmm-live's address instead of
-# multicast groups. --order-transport user_tcp sends OUCH through the user-space TCP (UserTcp)
-# from 10.211.0.3 (--user-tcp-ip; fastmm-live's own 10.211.0.2 needs --user-tcp-port and af_xdp
-# or dpdk) over the backend's device (AF_PACKET ring, XDP socket or DPDK port); the simulator's
-# veth then has TSO/GSO (and, off the kernel backend, checksum offload) off.
+# multicast groups. OUCH runs on kernel TCP.
 # Prints p50 / p99 / p99.9 per run: wire to wire (simulator), kernel to T0 (fastmm-live network
 # thread), the engine's hops and tick-to-trade, and the network thread's tick-to-trade. The JSON
 # inputs stay in the output directory. Two hosts: scripts/bench-2host.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BACKEND=kernel; TRANSPORT=kernel; MD=multicast; EXCEPTION=0; DURATION=30; RUNS=1; SPEED=4; SPIN=busy
+BACKEND=kernel; MD=multicast; EXCEPTION=0; DURATION=30; RUNS=1; SPEED=4; SPIN=busy
 THREADING=split; REPLAY=0; SLACK=0; SIM_CPU=2; ENGINE_CPU=4; NET_CPU=6; BUILD=build/release; OUT=""
-USER_TCP_IP=10.211.0.3; USER_TCP_PORT=0
-usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --backend) BACKEND="$2"; shift 2;;
-    --order-transport) TRANSPORT="$2"; shift 2;;
     --md) MD="$2"; shift 2;;
     --dpdk-exception) EXCEPTION=1; shift;;
-    --user-tcp-ip) USER_TCP_IP="$2"; shift 2;;
-    --user-tcp-port) USER_TCP_PORT="$2"; shift 2;;
     --duration) DURATION="$2"; shift 2;;
     --runs) RUNS="$2"; shift 2;;
     --speed) SPEED="$2"; shift 2;;
@@ -65,7 +56,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 case "$BACKEND" in kernel|af_xdp|dpdk) ;; *) echo "bench-e2e: --backend kernel|af_xdp|dpdk" >&2; exit 2;; esac
-case "$TRANSPORT" in kernel|user_tcp) ;; *) echo "bench-e2e: --order-transport kernel|user_tcp" >&2; exit 2;; esac
 case "$MD" in multicast|unicast) ;; *) echo "bench-e2e: --md multicast|unicast" >&2; exit 2;; esac
 [[ "$BACKEND" != dpdk || "$SPIN" == busy ]] || { echo "bench-e2e: --backend dpdk needs --spin busy" >&2; exit 2; }
 [[ "$EXCEPTION" == 0 || "$BACKEND" == dpdk ]] || { echo "bench-e2e: --dpdk-exception needs --backend dpdk" >&2; exit 2; }
@@ -82,13 +72,12 @@ if [[ -z "${FASTMM_BENCH_E2E_NS:-}" ]]; then
     echo "bench-e2e: --backend af_xdp loads an XDP program and needs root: sudo $0 --backend af_xdp" >&2
     exit 1
   fi
-  [[ -n "$OUT" ]] || OUT="runs/bench-e2e-$(date -u +%Y%m%d-%H%M%S)-$BACKEND-$TRANSPORT-$MD"
+  [[ -n "$OUT" ]] || OUT="runs/bench-e2e-$(date -u +%Y%m%d-%H%M%S)-$BACKEND-$MD"
   mkdir -p "$OUT"
   OUT="$(cd "$OUT" && pwd)"
-  args=(--backend "$BACKEND" --order-transport "$TRANSPORT" --md "$MD" --duration "$DURATION" --runs "$RUNS"
+  args=(--backend "$BACKEND" --md "$MD" --duration "$DURATION" --runs "$RUNS"
         --speed "$SPEED" --spin "$SPIN" --threading "$THREADING" --timer-slack "$SLACK"
-        --sim-cpu "$SIM_CPU" --engine-cpu "$ENGINE_CPU" --net-cpu "$NET_CPU" --build "$BUILD" --out "$OUT"
-        --user-tcp-ip "$USER_TCP_IP" --user-tcp-port "$USER_TCP_PORT")
+        --sim-cpu "$SIM_CPU" --engine-cpu "$ENGINE_CPU" --net-cpu "$NET_CPU" --build "$BUILD" --out "$OUT")
   [[ "$EXCEPTION" == 1 ]] && args+=(--dpdk-exception)
   [[ "$REPLAY" == 1 ]] && args+=(--replay)
   # Root keeps its capabilities in a plain network namespace; everyone else maps to root in a new
@@ -129,10 +118,8 @@ else
   in_live ip route add 224.0.0.0/4 dev fmlive
   for _ in $(seq 50); do in_live ping -c1 -W1 "$SIM_IP" >/dev/null 2>&1 && break; sleep 0.1; done
 fi
-if [[ "$TRANSPORT" == user_tcp || "$EXCEPTION" == 1 ]]; then
-  command -v ethtool >/dev/null || { echo "bench-e2e: user_tcp and --dpdk-exception need ethtool" >&2; exit 77; }
-  # The live side sees the simulator's TCP segments as sent: no TSO/GSO super-segments.
-  [[ "$TRANSPORT" == user_tcp ]] && ethtool -K fmsim tso off gso off >/dev/null
+if [[ "$EXCEPTION" == 1 ]]; then
+  command -v ethtool >/dev/null || { echo "bench-e2e: --dpdk-exception needs ethtool" >&2; exit 77; }
   # XDP and DPDK's af_packet PMD do not report a checksum left to offload (nor pass it on to the
   # exception tap): have it computed.
   [[ "$BACKEND" == kernel ]] || ethtool -K fmsim tx off >/dev/null
@@ -149,10 +136,6 @@ if [[ "$BACKEND" == dpdk ]]; then
   fi
   EXTRA+="dpdk_port = \"net_af_packet0\"\n"
   EXTRA+="dpdk_eal_args = \"--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 $VDEVS\"\n"
-fi
-if [[ "$TRANSPORT" == user_tcp ]]; then
-  EXTRA+="order_transport = \"user_tcp\"\nuser_tcp_ip = \"$USER_TCP_IP\"\nuser_tcp_interface = \"fmlive\"\n"
-  EXTRA+="user_tcp_port = $USER_TCP_PORT\n"
 fi
 
 EXTRA="${EXTRA//\//\\/}"  # a sed replacement below
@@ -174,7 +157,7 @@ SIM_OPTS=(--line-a "$LINE_A" --line-b "$LINE_B"); [[ "$SPIN" == busy ]] && SIM_O
 [[ "$SIM_CPU" == -1 ]] || SIM_OPTS+=(--cpu "$SIM_CPU")
 LIVE_PIN=(); [[ "$ENGINE_CPU" == -1 || "$NET_CPU" == -1 ]] || LIVE_PIN=(taskset -c "$ENGINE_CPU,$NET_CPU")
 
-echo "bench-e2e: backend=$BACKEND order_transport=$TRANSPORT md=$MD exception=$EXCEPTION spin=$SPIN threading=$THREADING duration=${DURATION}s runs=$RUNS speed=$SPEED cpus sim=$SIM_CPU engine=$ENGINE_CPU net=$NET_CPU"
+echo "bench-e2e: backend=$BACKEND md=$MD exception=$EXCEPTION spin=$SPIN threading=$THREADING duration=${DURATION}s runs=$RUNS speed=$SPEED cpus sim=$SIM_CPU engine=$ENGINE_CPU net=$NET_CPU"
 echo "bench-e2e: veth fmsim ($SIM_IP) <-> fmlive ($LIVE_IP), output $OUT"
 for run in $(seq "$RUNS"); do
   d="$OUT/run$run"; mkdir -p "$d"

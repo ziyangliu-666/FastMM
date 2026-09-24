@@ -168,6 +168,7 @@ nav:
           - how-to/operations/query-trading-records.md
           - how-to/operations/monitor-with-fastmm-top.md
           - how-to/operations/multicast-feeds.md
+          - how-to/operations/low-latency-tcp.md
           - how-to/operations/two-host-benchmark.md
           - how-to/operations/troubleshooting.md
   - Reference:

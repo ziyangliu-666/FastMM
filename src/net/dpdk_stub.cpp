@@ -37,11 +37,9 @@ void DpdkDatagramSource::divert(std::uint32_t) noexcept {}
 
 void DpdkDatagramSource::service_exception() noexcept {}
 
-bool DpdkDatagramSource::tx_frame(std::span<const std::byte>) noexcept {
+bool DpdkDatagramSource::send_frame(std::span<const std::byte>) noexcept {
   return false;
 }
-
-void DpdkDatagramSource::tx_flush() noexcept {}
 
 int DpdkDatagramSource::refresh_stats() noexcept {
   return -ENOTSUP;
