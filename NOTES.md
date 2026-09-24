@@ -3,6 +3,17 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-25: the weekly CI matrix
+
+The full matrix (clang, clang-tidy, TSan, ASan, docker) runs only weekly or on dispatch, and had
+drifted across the merges: clang rejected `__builtin_cpu_supports("sha")`, the DPDK stub had unused
+fields, a fixed-point test relied on signed overflow, and clang-tidy had a dozen findings. All fixed.
+Two things it turned up were real. A Binance depth snapshot request that failed synchronously (no
+REST connection, no rate budget) retried from inside itself, and with `min_snapshot_interval_ns = 0`
+recursed until the stack ran out; the retry is now left to the timer. And the market-data recovery
+test read the once-a-second status as proof of a resync. Run the full matrix
+(`gh workflow run ci.yml`) after a batch of merges, not only weekly.
+
 ## 2026-09-24 (later): reusing mature components
 
 A workflow researched where FastMM should adopt mature components (four independent reports, a
