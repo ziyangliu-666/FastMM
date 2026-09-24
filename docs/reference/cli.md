@@ -236,18 +236,25 @@ A local exchange that speaks the Binance Spot API ([Simulated exchange](sim-exch
 
 <!-- BEGIN cli-help fastmm-sim-exchange -->
 ```text
-usage: fastmm-sim-exchange [--config <file.toml>] [options]
-  --config <file>        [[instruments]] + [sim] configuration (default: built-in BTCUSDT)
-  --bind <ip>            listen address (default 127.0.0.1; 0.0.0.0 for containers)
-  --port <n>             plain HTTP/WebSocket port (default 9080, 0 = ephemeral)
-  --tls-port <n>         TLS port (default 9443, 0 = ephemeral)
-  --no-tls               do not open the TLS listener
-  --tls-cert <pem>       certificate chain (default tests/fixtures/tls/cert.pem)
-  --tls-key <pem>        private key (default tests/fixtures/tls/key.pem)
-  --seed <n>             generator seed (overrides [sim] seed)
-  --duration <t>         stop after t (e.g. 60s, 5m, 1500ms; default: until SIGINT/SIGTERM)
-  --stats-interval <t>   print statistics every t (default 5s, 0 = only at exit)
-  --version | --help
+A Binance Spot-compatible simulated exchange.
+
+usage: fastmm-sim-exchange [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --config <file>             [[instruments]] + [sim] configuration (default: built-in
+                              BTCUSDT)
+  --bind <ip>                 listen address (default 127.0.0.1; 0.0.0.0 for containers)
+  --port <n>                  plain HTTP/WebSocket port (default 9080, 0 = ephemeral)
+  --tls-port <n>              TLS port (default 9443, 0 = ephemeral)
+  --no-tls                    do not open the TLS listener
+  --tls-cert <pem>            certificate chain (default tests/fixtures/tls/cert.pem)
+  --tls-key <pem>             private key (default tests/fixtures/tls/key.pem)
+  --seed <n>                  generator seed (overrides [sim] seed)
+  --duration <t>              stop after t (e.g. 60s, 5m, 1500ms; default: until
+                              SIGINT/SIGTERM)
+  --stats-interval <t>        print statistics every t (default 5s, 0 = only at exit)
 
 Endpoints: REST /api/v3/*, market data /stream?streams=... and /ws/<stream>,
 WebSocket API /ws-api/v3. The API key/secret come from [sim.account] or
