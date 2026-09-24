@@ -83,7 +83,7 @@ void print_stats(const char* label, const SimItchServer& server) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   std::string config_path;
   std::string summary_path;
   std::optional<std::string> bind;
@@ -311,4 +311,8 @@ int main(int argc, char** argv) {
   }
   Logger::instance().stop();
   return rc;
+}
+
+int main(int argc, char** argv) {
+  return fastmm::cli::guarded_main("fastmm-sim-itch", [&] { return run(argc, argv); });
 }

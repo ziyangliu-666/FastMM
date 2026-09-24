@@ -210,7 +210,7 @@ class Venue {
   // earlier session booked already. A connector that cannot replay executions ignores it, and the
   // session does not restore a position for it (VenueCapabilities::executions).
   virtual void resume_executions(std::int64_t /*since_venue_ms*/,
-                                 std::vector<std::string> /*known*/) {}
+                                 const std::vector<std::string>& /*known*/) {}
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

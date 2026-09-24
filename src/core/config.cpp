@@ -150,8 +150,7 @@ void get_decimal(const toml::table& t, std::string_view key, std::string& out) {
 // An optional number: absent leaves `out` empty, so "not set" and "set to 0" stay distinct.
 void get_optional(const toml::table& t, std::string_view key, std::optional<double>& out) {
   if (const auto* n = t.get(key)) {
-    const auto v = n->value<double>();
-    if (v) out = *v;
+    if (const auto v = n->value<double>()) out = v;
   }
 }
 
@@ -674,6 +673,8 @@ void insert_typed(toml::table& t, const std::string& key, const std::string& tex
       return;
     }
   } catch (const toml::parse_error&) {  // not a TOML literal: it can only be a string
+    t.insert_or_assign(key, text);
+    return;
   }
   t.insert_or_assign(key, text);
 }

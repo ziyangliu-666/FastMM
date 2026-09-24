@@ -44,6 +44,8 @@ Checks: >
 WarningsAsErrors: 'bugprone-*,performance-*'
 HeaderFilterRegex: '^.*/(include|src|apps)/.*'
 CheckOptions:
+  # SBE exponents are int8_t: numbers, not characters.
+  bugprone-signed-char-misuse.CharTypdefsToIgnore: "std::int8_t;int8_t"
   readability-identifier-naming.ClassCase: CamelCase
   readability-identifier-naming.StructCase: CamelCase
   readability-identifier-naming.EnumCase: CamelCase

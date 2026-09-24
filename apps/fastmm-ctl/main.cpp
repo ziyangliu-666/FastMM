@@ -39,7 +39,7 @@ constexpr int kExitUnreachable = 3;
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   std::string path;
   std::string name;
   std::string dir = "runs";
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
   }
   timeval tv{};
   tv.tv_sec = timeout_ms / 1000;
-  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  tv.tv_usec = static_cast<suseconds_t>(timeout_ms % 1000) * 1000;
   static_cast<void>(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv));
   static_cast<void>(::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv));
   if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) {
@@ -137,4 +137,8 @@ int main(int argc, char** argv) {
   std::fwrite(reply.data(), 1, reply.size(), stdout);
   if (!reply.empty() && reply.back() != '\n') std::fputc('\n', stdout);
   return reply.starts_with("error") ? kExitError : kExitOk;
+}
+
+int main(int argc, char** argv) {
+  return fastmm::cli::guarded_main("fastmm-ctl", [&] { return run(argc, argv); });
 }

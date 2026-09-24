@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <map>
 #include <memory>
 #include <optional>
@@ -61,6 +62,20 @@ inline int usage_error(const CLI::App& app, const std::string& message) {
                app.get_name().c_str(),
                message.c_str());
   return kUsageError;
+}
+
+// A command line's main: runs `body` and reports an exception that escapes it (CLI11 throws while
+// the options are being declared, allocation can fail) as "<program>: <what>" with exit code 1.
+template <class F>
+int guarded_main(const char* program, F&& body) noexcept {
+  try {
+    return body();
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "%s: %s\n", program, e.what());
+  } catch (...) {
+    std::fprintf(stderr, "%s: unknown exception\n", program);
+  }
+  return 1;
 }
 
 // Parses argv. nullopt: carry on; otherwise the process exit code (see the header comment).

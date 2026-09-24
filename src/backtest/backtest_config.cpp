@@ -45,7 +45,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
         throw ConfigError("backtest.markout_horizons_s: '" + item +
                           "' is not a number of seconds in (0, 86400]");
       }
-      out.push_back(Duration{static_cast<std::int64_t>(v * 1e9 + 0.5)});
+      out.push_back(Duration{std::llround(v * 1e9)});
     }
     if (comma == std::string_view::npos) break;
     pos = comma + 1;

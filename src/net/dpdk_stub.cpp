@@ -2,6 +2,10 @@
 // implementation is src/dpdk/dpdk_datagram_source.cpp (FASTMM_WITH_DPDK=ON).
 #ifndef FASTMM_HAS_DPDK
 
+// The fields only the real implementation touches.
+#if defined(__clang__)
+#pragma clang diagnostic ignored "-Wunused-private-field"
+#endif
 #include "fastmm/net/dpdk_datagram_source.hpp"
 
 #include <cerrno>

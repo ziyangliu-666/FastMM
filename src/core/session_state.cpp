@@ -132,7 +132,9 @@ Result<KillState, std::string> KillStateStore::load(const std::string& path) {
       } else if (key == "updated_ns") {
         s.updated_ns = std::stoll(value);
       } else {
-        return fail("kill state file " + path + ": unknown key '" + key + "'");
+        return fail(
+            std::string("kill state file ").append(path).append(": unknown key '").append(key) +
+            "'");
       }
     }
   } catch (const std::exception& e) {

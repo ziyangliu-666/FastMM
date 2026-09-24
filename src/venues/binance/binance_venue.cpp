@@ -1296,10 +1296,10 @@ std::size_t BinanceVenue::exec_slot(InstrumentId id) const noexcept {
   return subscribed_.size();
 }
 
-void BinanceVenue::resume_executions(std::int64_t since_venue_ms, std::vector<std::string> known) {
+void BinanceVenue::resume_executions(std::int64_t since_venue_ms,
+                                     const std::vector<std::string>& known) {
   exec_since_ms_ = since_venue_ms;
-  known_exec_ids_.clear();
-  for (std::string& id : known) known_exec_ids_.insert(std::move(id));
+  known_exec_ids_ = {known.begin(), known.end()};
 }
 
 bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {

@@ -33,7 +33,7 @@ std::string other_build_message(const std::string& path, std::uint32_t version) 
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   std::string name;
   std::string path;
   std::string metrics;
@@ -138,4 +138,8 @@ int main(int argc, char** argv) {
     fastmm::sleep_for(fastmm::milliseconds(interval_ms));
   }
   return 0;
+}
+
+int main(int argc, char** argv) {
+  return fastmm::cli::guarded_main("fastmm-top", [&] { return run(argc, argv); });
 }

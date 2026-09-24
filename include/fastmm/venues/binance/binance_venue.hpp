@@ -118,7 +118,8 @@ class BinanceVenue final : public Venue {
   bool request_executions(std::int64_t since_venue_ms = 0) override;
   // Orders the connector still keeps a shadow for (tests: a lost terminal event leaks one).
   [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
-  void resume_executions(std::int64_t since_venue_ms, std::vector<std::string> known) override;
+  void resume_executions(std::int64_t since_venue_ms,
+                         const std::vector<std::string>& known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 

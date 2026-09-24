@@ -76,7 +76,7 @@ void print_stats(const char* label, const SimServerStats& s) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   std::string config_path;
   std::optional<std::string> bind;
   std::optional<int> port;
@@ -198,4 +198,8 @@ int main(int argc, char** argv) {
   }
   Logger::instance().stop();
   return rc;
+}
+
+int main(int argc, char** argv) {
+  return fastmm::cli::guarded_main("fastmm-sim-exchange", [&] { return run(argc, argv); });
 }

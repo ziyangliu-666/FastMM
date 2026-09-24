@@ -76,7 +76,7 @@ inline std::vector<std::byte> build_frame(const FrameSpec& s) {
     put16(f, 16, s.inner_ethertype);
   }
   // IPv4.
-  f[l3] = static_cast<std::byte>((s.version << 4U) | (s.ihl & 0x0FU));
+  f[l3] = static_cast<std::byte>((static_cast<unsigned>(s.version) << 4U) | (s.ihl & 0x0FU));
   const auto total = static_cast<int>(iph + udp_len) + s.tot_len_delta;
   put16(f, l3 + 2, static_cast<std::uint16_t>(total));
   put16(f, l3 + 4, 0x1234);

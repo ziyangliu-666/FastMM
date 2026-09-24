@@ -74,7 +74,7 @@ struct Fake {
       cleared = true;
       return true;
     };
-    plane.venue = [this](std::string_view name, VenueId& out) {
+    plane.venue = [](std::string_view name, VenueId& out) {
       if (name == "binance") {
         out = VenueId{0};
         return true;

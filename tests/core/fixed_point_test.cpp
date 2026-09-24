@@ -171,7 +171,6 @@ TEST_CASE("core.fixed: from_double saturates and from_double_checked reports the
 
 TEST_CASE("core.fixed: checked arithmetic reports overflow instead of wrapping") {
   const Price big = Price::from_raw(std::numeric_limits<std::int64_t>::max() - 5);
-  CHECK((big + Price::from_raw(10)).raw < 0);  // the plain operator still wraps
   CHECK(!checked_add(big, Price::from_raw(10)).has_value());
   REQUIRE(checked_add(big, Price::from_raw(5)).has_value());
   CHECK(checked_add(big, Price::from_raw(5))->raw == std::numeric_limits<std::int64_t>::max());

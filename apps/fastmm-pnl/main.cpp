@@ -107,7 +107,7 @@ int bad_usage(const std::string& msg) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
   std::string backend = "sqlite";
   std::string store_path;
   std::string engine_dir = "runs";
@@ -224,4 +224,8 @@ int main(int argc, char** argv) {
     print_table(*rows);
   }
   return kOk;
+}
+
+int main(int argc, char** argv) {
+  return fastmm::cli::guarded_main("fastmm-pnl", [&] { return run(argc, argv); });
 }

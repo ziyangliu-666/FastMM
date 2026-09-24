@@ -4,6 +4,7 @@
 #include <cstring>
 
 #if defined(__x86_64__)
+#include <cpuid.h>
 #include <immintrin.h>
 #endif
 
@@ -41,7 +42,7 @@ __attribute__((target("sha,sse4.1"))) void transform_shani(std::uint32_t state[8
   const __m128i abef = state0;
   const __m128i cdgh = state1;
   __m128i w[4];
-  for (int i = 0; i < 16; ++i) {
+  for (std::size_t i = 0; i < 16; ++i) {
     if (i < 4) {
       w[i] = _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(block + 16 * i)),
                               kMask);
@@ -66,7 +67,14 @@ __attribute__((target("sha,sse4.1"))) void transform_shani(std::uint32_t state[8
   _mm_storeu_si128(reinterpret_cast<__m128i*>(&state[4]), state1);
 }
 
-const bool kHasShaNi = __builtin_cpu_supports("sha") && __builtin_cpu_supports("sse4.1");
+bool has_sha_ni() noexcept {
+  unsigned a = 0, b = 0, c = 0, d = 0;
+  if (__get_cpuid(1, &a, &b, &c, &d) == 0 || (c & bit_SSE4_1) == 0) return false;
+  if (__get_cpuid_count(7, 0, &a, &b, &c, &d) == 0) return false;
+  return (b & bit_SHA) != 0;
+}
+
+const bool kHasShaNi = has_sha_ni();
 #endif
 }  // namespace
 

@@ -838,7 +838,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       return kExitConfig;
     }
     const auto ring_bytes =
-        static_cast<std::size_t>(cfg.storage.get_int("ring_bytes", 4 * 1024 * 1024));
+        static_cast<std::size_t>(cfg.storage.get_int("ring_bytes", std::int64_t{4} * 1024 * 1024));
     record_ring = std::make_unique<MsgRing>(ring_size(ring_bytes));
     store_thread = std::make_unique<store::StoreThread>(*record_ring, std::move(backend));
     deps.record_ring = record_ring.get();

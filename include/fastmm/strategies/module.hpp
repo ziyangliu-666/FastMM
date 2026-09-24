@@ -67,7 +67,7 @@ namespace detail {
 // The entry's publisher factory for a strategy whose parameters are a FASTMM_PARAMS struct; null
 // for one whose are not (it cannot be copied and validated generically).
 template <class S>
-constexpr StrategyEntry::PublisherFactory publisher_factory() noexcept {
+constexpr StrategyEntry::PublisherFactory publisher_factory() {
   if constexpr (requires { typename S::params_type; }) {
     return [](ParamSink sink, const ParamMap& params) {
       typename S::params_type p{};
