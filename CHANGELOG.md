@@ -39,6 +39,16 @@ All notable changes are recorded here (Keep a Changelog format).
   tells the OMS to rekey the order without resetting its filled quantity.
 
 ### Changed
+- The command lines of all nine programs (`fastmm::cli::live`, `backtest`, `replay`, `data`, and
+  `fastmm-pnl`, `fastmm-sim-exchange`, `fastmm-sim-itch`, `fastmm-ctl`, `fastmm-top`) are parsed
+  by CLI11 2.7.2, header-only, fetched by CPM and private to the programs. The hand-written argv
+  loops, the `usage()` texts and the three copies of the duration parser are gone. Flag names and
+  exit codes are unchanged; a bad command line still exits with 2 and now prints
+  `<program>: <message>` and a pointer to `--help`. `--help` has CLI11's layout (the regenerated
+  blocks in [Command lines](docs/reference/cli.md)). Numbers are checked where they were not:
+  `fastmm-pnl --session x` and `--limit x` are usage errors instead of 0. `fastmm-data` and
+  `fastmm-pnl` commands are subcommands; their options may still come on either side.
+  `fastmm-ctl` and `fastmm-top` gained `--version`.
 - The io_uring reactor backend runs on liburing 2.15, fetched by CPM and linked statically into
   `fastmm_net`. The hand-written ring setup, mmap, SQ/CQ barriers and SQE encoding are gone, and
   `src/net/io_uring_uapi.hpp` with them. `ReactorBackend::IoUring`, its setup flags, the support
