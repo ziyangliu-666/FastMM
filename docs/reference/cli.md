@@ -194,29 +194,31 @@ Answers the daily questions from the [store](storage.md) a session wrote: what i
 
 <!-- BEGIN cli-help fastmm-pnl -->
 ```text
-usage: fastmm-pnl <command> [options]
+What a deployment traded, read from the store.
 
-commands:
-  sessions            one row per session: when it ran, what it made, how it ended
-  fills               one row per execution
-  orders              one row per order, in its last known state
-  pnl                 realised, fees and net by UTC day and instrument
-  positions           the last position snapshot of each session and instrument
-  recover             what the newest session left behind
+usage: fastmm-pnl [OPTIONS] [SUBCOMMAND]
 
-options:
-  --store <path>      store file (default runs/<engine>.db)
-  --backend <name>    storage backend (default sqlite)
-  --engine <name>     [engine] name to filter on
-  --session <id>      one session id
-  --instrument <sym>  one symbol
-  --since <day>       inclusive UTC day, YYYY-MM-DD, or today|yesterday
-  --until <day>       inclusive UTC day, YYYY-MM-DD, or today|yesterday
-  --day <day>         shorthand for --since <day> --until <day>
-  --limit <n>         at most n rows
-  --csv               comma-separated output instead of an aligned table
-  --version           print the version and exit
-  -h, --help          this text
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --store <path>              store file (default runs/<engine>.db)
+  --backend <name>            storage backend (default sqlite)
+  --engine <name>             [engine] name to filter on
+  --session <id>              one session id
+  --instrument <sym>          one symbol
+  --since <day>               inclusive UTC day, YYYY-MM-DD, or today|yesterday
+  --until <day>               inclusive UTC day, YYYY-MM-DD, or today|yesterday
+  --day <day>                 shorthand for --since <day> --until <day>
+  --limit <n>                 at most n rows
+  --csv                       comma-separated output instead of an aligned table
+
+SUBCOMMANDS:
+  sessions                    one row per session: when it ran, what it made, how it ended
+  fills                       one row per execution
+  orders                      one row per order, in its last known state
+  pnl                         realised, fees and net by UTC day and instrument
+  positions                   the last position snapshot of each session and instrument
+  recover                     what the newest session left behind
 ```
 <!-- END cli-help -->
 

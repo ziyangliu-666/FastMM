@@ -6,20 +6,20 @@
 //
 // The journal answers "what exactly happened, byte for byte" (fastmm-replay); this answers the
 // daily questions. docs/how-to/operations/query-trading-records.md.
+#include "command_line.hpp"
+
 #include "fastmm/core/enums.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/sqlite_store.hpp"
-#include "fastmm/version.hpp"
 
 #include <fmt/format.h>
 
 #include <algorithm>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <ctime>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -30,31 +30,6 @@ using fastmm::store::Rows;
 constexpr int kOk = 0;
 constexpr int kUsage = 2;
 constexpr int kNotFound = 3;
-
-const char* kUsageText =
-    "usage: fastmm-pnl <command> [options]\n"
-    "\n"
-    "commands:\n"
-    "  sessions            one row per session: when it ran, what it made, how it ended\n"
-    "  fills               one row per execution\n"
-    "  orders              one row per order, in its last known state\n"
-    "  pnl                 realised, fees and net by UTC day and instrument\n"
-    "  positions           the last position snapshot of each session and instrument\n"
-    "  recover             what the newest session left behind\n"
-    "\n"
-    "options:\n"
-    "  --store <path>      store file (default runs/<engine>.db)\n"
-    "  --backend <name>    storage backend (default sqlite)\n"
-    "  --engine <name>     [engine] name to filter on\n"
-    "  --session <id>      one session id\n"
-    "  --instrument <sym>  one symbol\n"
-    "  --since <day>       inclusive UTC day, YYYY-MM-DD, or today|yesterday\n"
-    "  --until <day>       inclusive UTC day, YYYY-MM-DD, or today|yesterday\n"
-    "  --day <day>         shorthand for --since <day> --until <day>\n"
-    "  --limit <n>         at most n rows\n"
-    "  --csv               comma-separated output instead of an aligned table\n"
-    "  --version           print the version and exit\n"
-    "  -h, --help          this text\n";
 
 // "today" and "yesterday" resolve against the host's UTC clock.
 std::string resolve_day(std::string_view text) {
@@ -133,64 +108,47 @@ int bad_usage(const std::string& msg) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
-    std::fputs(kUsageText, stderr);
-    return kUsage;
-  }
-  std::string command;
   std::string backend = "sqlite";
   std::string store_path;
   std::string engine_dir = "runs";
+  std::string since;
+  std::string until;
+  std::string day;
   bool csv = false;
   QueryFilter f;
 
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    const auto value = [&](const char* what) -> std::string {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "fastmm-pnl: %s needs a value\n", what);
-        std::exit(kUsage);
-      }
-      return argv[++i];
-    };
-    if (a == "-h" || a == "--help") {
-      std::fputs(kUsageText, stdout);
-      return kOk;
-    }
-    if (a == "--version") {
-      fmt::print("fastmm-pnl {}\n", FASTMM_VERSION_STRING);
-      return kOk;
-    }
-    if (a == "--store") {
-      store_path = value("--store");
-    } else if (a == "--backend") {
-      backend = value("--backend");
-    } else if (a == "--engine") {
-      f.engine = value("--engine");
-    } else if (a == "--session") {
-      f.session_id = std::strtoull(value("--session").c_str(), nullptr, 10);
-    } else if (a == "--instrument") {
-      f.instrument = value("--instrument");
-    } else if (a == "--since") {
-      f.from = resolve_day(value("--since"));
-    } else if (a == "--until") {
-      f.to = resolve_day(value("--until"));
-    } else if (a == "--day") {
-      f.from = resolve_day(value("--day"));
-      f.to = f.from;
-    } else if (a == "--limit") {
-      f.limit = std::strtoul(value("--limit").c_str(), nullptr, 10);
-    } else if (a == "--csv") {
-      csv = true;
-    } else if (!a.empty() && a[0] == '-') {
-      return bad_usage("unknown option " + std::string(a));
-    } else if (command.empty()) {
-      command = a;
-    } else {
-      return bad_usage("unexpected argument " + std::string(a));
-    }
-  }
-  if (command.empty()) return bad_usage("a command is required (see --help)");
+  CLI::App app("What a deployment traded, read from the store.", "fastmm-pnl");
+  fastmm::cli::setup(app);
+  // The options may come before or after the command; `fallthrough` sends them here.
+  const std::pair<const char*, const char*> commands[] = {
+      {"sessions", "one row per session: when it ran, what it made, how it ended"},
+      {"fills", "one row per execution"},
+      {"orders", "one row per order, in its last known state"},
+      {"pnl", "realised, fees and net by UTC day and instrument"},
+      {"positions", "the last position snapshot of each session and instrument"},
+      {"recover", "what the newest session left behind"},
+  };
+  for (const auto& [name, description] : commands)
+    app.add_subcommand(name, description)->fallthrough();
+  app.require_subcommand(0, 1);
+  app.add_option("--store", store_path, "store file (default runs/<engine>.db)")
+      ->option_text("<path>");
+  app.add_option("--backend", backend, "storage backend (default sqlite)")->option_text("<name>");
+  app.add_option("--engine", f.engine, "[engine] name to filter on")->option_text("<name>");
+  app.add_option("--session", f.session_id, "one session id")->option_text("<id>");
+  app.add_option("--instrument", f.instrument, "one symbol")->option_text("<sym>");
+  app.add_option("--since", since, "inclusive UTC day, YYYY-MM-DD, or today|yesterday")
+      ->option_text("<day>");
+  app.add_option("--until", until, "inclusive UTC day, YYYY-MM-DD, or today|yesterday")
+      ->option_text("<day>");
+  app.add_option("--day", day, "shorthand for --since <day> --until <day>")->option_text("<day>");
+  app.add_option("--limit", f.limit, "at most n rows")->option_text("<n>");
+  app.add_flag("--csv", csv, "comma-separated output instead of an aligned table");
+  if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
+  if (app.get_subcommands().empty()) return fastmm::cli::usage_error(app, "a command is required");
+  const std::string command = app.get_subcommands().front()->get_name();
+  f.from = resolve_day(!since.empty() ? since : day);
+  f.to = resolve_day(!until.empty() ? until : day);
 
   fastmm::store::register_builtin_backends();
   auto& registry = fastmm::store::StoreRegistry::instance();
