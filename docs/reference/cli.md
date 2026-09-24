@@ -327,14 +327,18 @@ Sends one command to a running `fastmm-live` session over its control socket
 
 <!-- BEGIN cli-help fastmm-ctl -->
 ```text
+Sends one command to a running fastmm-live session and prints the reply.
+
 usage: fastmm-ctl [--name <engine> | --path <socket> | --config <file.toml>] <command>
 
-  --name <engine>     talk to <dir>/<engine>.ctl ([engine] name in the config)
-  --dir <directory>   where --name looks, default runs ([engine] journal_dir)
-  --path <socket>     talk to this socket (fastmm-live --control <path>)
-  --config <file>     take the engine name and journal_dir from a configuration file
-  --timeout <ms>      how long to wait for the reply, default 2000
-  --help
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --name <engine>             talk to <dir>/<engine>.ctl ([engine] name in the config)
+  --dir <directory>           where --name looks, default runs ([engine] journal_dir)
+  --path <socket>             talk to this socket (fastmm-live --control <path>)
+  --config <file>             take the engine name and journal_dir from a configuration file
+  --timeout <ms>              how long to wait for the reply, default 2000
 
 commands (one per datagram; the reply starts with ok or error)
   pull [--instrument SYM | --venue NAME]   stop quoting: everywhere, or in that scope

@@ -1,6 +1,8 @@
 // fastmm-ctl: the operator's client for a running fastmm-live session. It connects to the
 // session's control socket (fastmm/live/control_socket.hpp), sends one command and prints the
 // reply. Everything it does can also be done with `socat - UNIX-CONNECT:<socket>,socktype=5`.
+#include "command_line.hpp"
+
 #include "fastmm/config/config.hpp"
 #include "fastmm/live/control_socket.hpp"
 
@@ -9,41 +11,26 @@
 #include <unistd.h>
 
 #include <cerrno>
-#include <charconv>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
-void usage(std::FILE* out) {
-  std::fputs(
-      "usage: fastmm-ctl [--name <engine> | --path <socket> | --config <file.toml>] <command>\n"
-      "\n"
-      "  --name <engine>     talk to <dir>/<engine>.ctl ([engine] name in the config)\n"
-      "  --dir <directory>   where --name looks, default runs ([engine] journal_dir)\n"
-      "  --path <socket>     talk to this socket (fastmm-live --control <path>)\n"
-      "  --config <file>     take the engine name and journal_dir from a configuration file\n"
-      "  --timeout <ms>      how long to wait for the reply, default 2000\n"
-      "  --help\n"
-      "\n",
-      out);
-  std::fputs(std::string(fastmm::live::control_usage()).c_str(), out);
-  std::fputs(
-      "\n"
-      "examples:\n"
-      "  fastmm-ctl --name mm status\n"
-      "  fastmm-ctl --name mm pull --instrument BTCUSDT\n"
-      "  fastmm-ctl --name mm param half_spread_bps=8\n"
-      "  fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10\n"
-      "  fastmm-ctl --name mm flatten --max-slippage-bps 15\n"
-      "\n"
-      "Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,\n"
-      "3 no session answered (no socket, or it is not running).\n",
-      out);
-}
+constexpr const char* kExamples =
+    "\n"
+    "examples:\n"
+    "  fastmm-ctl --name mm status\n"
+    "  fastmm-ctl --name mm pull --instrument BTCUSDT\n"
+    "  fastmm-ctl --name mm param half_spread_bps=8\n"
+    "  fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10\n"
+    "  fastmm-ctl --name mm flatten --max-slippage-bps 15\n"
+    "\n"
+    "Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,\n"
+    "3 no session answered (no socket, or it is not running).";
 
 constexpr int kExitOk = 0;
 constexpr int kExitError = 1;
@@ -58,62 +45,38 @@ int main(int argc, char** argv) {
   std::string dir = "runs";
   std::string config;
   int timeout_ms = 2000;
+
+  CLI::App app("Sends one command to a running fastmm-live session and prints the reply.",
+               "fastmm-ctl");
+  fastmm::cli::setup(app);
+  app.usage("fastmm-ctl [--name <engine> | --path <socket> | --config <file.toml>] <command>");
+  app.footer(std::string(fastmm::live::control_usage()) + kExamples);
+  // Everything from the first word that is not an option on is the command, flags included.
+  app.prefix_command(CLI::PrefixCommandMode::PositionalOnly);
+  app.add_option("--name", name, "talk to <dir>/<engine>.ctl ([engine] name in the config)")
+      ->option_text("<engine>");
+  app.add_option("--dir", dir, "where --name looks, default runs ([engine] journal_dir)")
+      ->option_text("<directory>");
+  app.add_option("--path", path, "talk to this socket (fastmm-live --control <path>)")
+      ->option_text("<socket>");
+  app.add_option(
+         "--config", config, "take the engine name and journal_dir from a configuration file")
+      ->option_text("<file>");
+  app.add_option("--timeout", timeout_ms, "how long to wait for the reply, default 2000")
+      ->option_text("<ms>")
+      ->check(CLI::Range(1, 3'600'000));
+  if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
+  // PositionalOnly leaves an unknown option before the command in remaining(); no command starts
+  // with '-'.
+  const std::vector<std::string> words = app.remaining();
+  if (!words.empty() && words.front().starts_with("-"))
+    return fastmm::cli::usage_error(app, "unknown option '" + words.front() + "'");
   std::string command;
-  for (int i = 1; i < argc; ++i) {
-    const std::string_view a = argv[i];
-    const auto value = [&](std::string& out) {
-      if (i + 1 >= argc) {
-        std::fprintf(stderr, "fastmm-ctl: %s needs a value\n", argv[i]);
-        return false;
-      }
-      out = argv[++i];
-      return true;
-    };
-    if (command.empty()) {
-      if (a == "--help" || a == "-h") {
-        usage(stdout);
-        return kExitOk;
-      }
-      if (a == "--path") {
-        if (!value(path)) return kExitUsage;
-        continue;
-      }
-      if (a == "--name") {
-        if (!value(name)) return kExitUsage;
-        continue;
-      }
-      if (a == "--dir") {
-        if (!value(dir)) return kExitUsage;
-        continue;
-      }
-      if (a == "--config") {
-        if (!value(config)) return kExitUsage;
-        continue;
-      }
-      if (a == "--timeout") {
-        std::string v;
-        if (!value(v)) return kExitUsage;
-        const auto r = std::from_chars(v.data(), v.data() + v.size(), timeout_ms);
-        if (r.ec != std::errc{} || timeout_ms <= 0) {
-          std::fprintf(stderr, "fastmm-ctl: --timeout needs milliseconds > 0\n");
-          return kExitUsage;
-        }
-        continue;
-      }
-      if (a.starts_with("--")) {
-        std::fprintf(stderr, "fastmm-ctl: unknown option '%s'\n\n", argv[i]);
-        usage(stderr);
-        return kExitUsage;
-      }
-    }
-    // Everything from the first non-option word on is the command, flags included.
+  for (const std::string& word : words) {
     if (!command.empty()) command += ' ';
-    command += a;
+    command += word;
   }
-  if (command.empty()) {
-    usage(stderr);
-    return kExitUsage;
-  }
+  if (command.empty()) return fastmm::cli::usage_error(app, "a command is required");
   if (!config.empty()) {
     try {
       fastmm::Config::LoadOptions lo;
@@ -127,11 +90,8 @@ int main(int argc, char** argv) {
     }
   }
   if (path.empty()) {
-    if (name.empty()) {
-      std::fprintf(stderr, "fastmm-ctl: one of --name, --path or --config is required\n\n");
-      usage(stderr);
-      return kExitUsage;
-    }
+    if (name.empty())
+      return fastmm::cli::usage_error(app, "one of --name, --path or --config is required");
     path = dir + "/" + name + ".ctl";
   }
 
