@@ -19,7 +19,9 @@ namespace {
 
 std::atomic<bool> g_stop{false};
 
-extern "C" void on_signal(int) { g_stop.store(true); }
+extern "C" void on_signal(int) {
+  g_stop.store(true);
+}
 
 class Echo final : public WsSessionHandler {
  public:

@@ -85,7 +85,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - The WebSocket client and server accepted text messages that are not UTF-8 and close frames with a
   1-byte payload, a code that may not be sent (0-999, 1004-1006, 1015-2999, 5000 and up) or a
   reason that is not UTF-8: 86 of the 301 Autobahn cases failed. `WsMessageAssembler` now answers
-  them with close code 1007 or 1002 (§5.5.1, §7.4, §8.1). Text is validated with
+  them with close code 1007 or 1002 (§5.5.1, §7.4, §8.1). The close-frame check applies on every
+  connection, venue connections included: such a venue close now fails the connection with
+  1002/1007 before the usual reconnect. Text is validated with
   `simdjson::validate_utf8` (`fastmm_net` links simdjson privately), per complete message, under
   `WsClientConfig::validate_utf8` and `WsServerConfig::validate_utf8` (default on).
   `ConnectionConfig::ws` turns it off: every venue handler parses text with simdjson, whose first

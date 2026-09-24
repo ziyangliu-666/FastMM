@@ -61,8 +61,8 @@ std::string run_session(Reactor& reactor,
                         std::chrono::seconds timeout) {
   TcpSocket sock;
   if (sock.connect(addr) == ConnectStatus::Error) {
-    std::fprintf(stderr, "connect to %.*s:%u failed\n", static_cast<int>(host.size()), host.data(),
-                 port);
+    std::fprintf(
+        stderr, "connect to %.*s:%u failed\n", static_cast<int>(host.size()), host.data(), port);
     std::exit(2);
   }
   // Case 9.* sends messages of up to 16 MiB, fragmented into frames as small as 64 bytes; the
@@ -76,7 +76,8 @@ std::string run_session(Reactor& reactor,
   if (echo) {
     testee.send = [c = client.get()](WsOpcode op, std::span<const std::byte> payload) {
       if (op == WsOpcode::Text) {
-        c->send_text(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+        c->send_text(
+            std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
       } else {
         c->send_binary(payload);
       }
@@ -117,11 +118,15 @@ int main(int argc, char** argv) {
   }
   std::fprintf(stderr, "running %d cases as %s\n", count, agent.c_str());
   for (int i = 1; i <= count; ++i) {
-    run_session(reactor, *addr, host, port,
-                "/runCase?case=" + std::to_string(i) + "&agent=" + agent, true,
+    run_session(reactor,
+                *addr,
+                host,
+                port,
+                "/runCase?case=" + std::to_string(i) + "&agent=" + agent,
+                true,
                 std::chrono::seconds(120));
   }
-  run_session(reactor, *addr, host, port, "/updateReports?agent=" + agent, false,
-              std::chrono::seconds(60));
+  run_session(
+      reactor, *addr, host, port, "/updateReports?agent=" + agent, false, std::chrono::seconds(60));
   return 0;
 }
