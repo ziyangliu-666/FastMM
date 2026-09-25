@@ -80,6 +80,9 @@ struct SlowHooks {
   Timestamp first = Timestamp::max();  // the first time to run
 };
 
+// Power of two: SimDriver times 1 in this many market-data steps (SimDriverStats::md_step_ns).
+inline constexpr std::uint64_t kMdStepSampleEvery = 16;
+
 struct SimDriverStats {
   std::uint64_t generator_actions = 0;
   std::uint64_t source_events = 0;
@@ -92,7 +95,8 @@ struct SimDriverStats {
   std::uint64_t slow_runs = 0;      // SlowHooks::run calls
   std::uint64_t engine_steps = 0;
   std::uint64_t journal_drained = 0;
-  LogLinearHistogram md_step_ns;  // wall-clock ns per engine step that consumed market data
+  // Wall-clock ns per engine step that consumed market data, 1 in kMdStepSampleEvery of them.
+  LogLinearHistogram md_step_ns;
 };
 
 class SimDriver {
@@ -228,7 +232,9 @@ class SimDriver {
   }
   void engine_step(bool measure_md) {
     ++stats_.engine_steps;
-    if (measure_ && measure_md) {
+    // Two clock reads per step would cost several percent of a backtest; sampling changes
+    // nothing the run computes.
+    if (measure_ && measure_md && (++md_steps_ & (kMdStepSampleEvery - 1)) == 0) {
       const Timestamp a = steady_now();
       hooks_.step(hooks_.ctx);
       const Timestamp b = steady_now();
@@ -260,6 +266,7 @@ class SimDriver {
   Timestamp slow_next_ = Timestamp::max();
   int seed_levels_ = 20;
   bool measure_ = true;
+  std::uint64_t md_steps_ = 0;
   bool started_ = false;
   bool finished_ = false;
   bool stopped_ = false;
