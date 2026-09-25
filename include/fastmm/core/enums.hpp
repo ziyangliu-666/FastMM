@@ -147,9 +147,12 @@ enum class RejectReason : std::uint8_t {
   NotReconciled = 37,
   InvalidTag = 38,  // a direct order used a user_tag in the QuoteManager's range
   // fastmm-gateway's account guards ([gateway]), refused before the order reached the connector
-  GatewayRateLimit = 48,     // the venue's order rate, shared by every attached strategy
-  GatewayOpenNotional = 49,  // the notional working at the venue, over every attached strategy
-  GatewayNotOwner = 50,      // the instrument belongs to another attachment (or none)
+  GatewayRateLimit = 48,      // the venue's order rate, shared by every attached strategy
+  GatewayOpenNotional = 49,   // the notional working at the venue, over every attached strategy
+  GatewayNotOwner = 50,       // the instrument belongs to another attachment (or none)
+  GatewayAccountKilled = 51,  // [gateway] max_loss tripped the account's kill switch
+  GatewayGrossNotional = 52,  // the account's |position| at the marks, over every instrument
+  GatewayNetNotional = 53,    // the account's signed position at the marks
   // Venue-originated
   VenueReject = 64,
   PostOnlyWouldCross = 65,
@@ -217,6 +220,12 @@ enum class RejectReason : std::uint8_t {
       return "GatewayOpenNotional";
     case RejectReason::GatewayNotOwner:
       return "GatewayNotOwner";
+    case RejectReason::GatewayAccountKilled:
+      return "GatewayAccountKilled";
+    case RejectReason::GatewayGrossNotional:
+      return "GatewayGrossNotional";
+    case RejectReason::GatewayNetNotional:
+      return "GatewayNetNotional";
     case RejectReason::VenueReject:
       return "VenueReject";
     case RejectReason::PostOnlyWouldCross:
@@ -440,6 +449,7 @@ enum class KillReason : std::uint8_t {
   FeedLost = 10,            // a multicast feed cannot rebuild its books (nasdaq_itch)
   OrderIdsExhausted = 11,   // the session's 32-bit client order id sequence is used up
   DeadMansSwitchLost = 12,  // the venue-side countdown could not be refreshed within its window
+  GatewayMaxLoss = 13,      // fastmm-gateway: the account's [gateway] max_loss, over every strategy
 };
 // Kill reasons are kept per venue id for ids 0..kKillVenueSlots-1; higher ids share the last slot,
 // as they share the last kill bit (RiskEngine::venue_bit).
@@ -472,6 +482,8 @@ inline constexpr std::size_t kKillVenueSlots = 31;
       return "OrderIdsExhausted";
     case KillReason::DeadMansSwitchLost:
       return "DeadMansSwitchLost";
+    case KillReason::GatewayMaxLoss:
+      return "GatewayMaxLoss";
   }
   return "?";
 }
