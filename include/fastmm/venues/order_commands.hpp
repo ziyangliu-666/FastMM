@@ -102,4 +102,10 @@ class SentWatermark {
   ClientOrderId high_{};
 };
 
+// The engine asks for a reconciliation (ControlCommand::Reconcile on the outbound ring).
+[[nodiscard]] inline bool is_reconcile_request(const EventHeader& h) noexcept {
+  return h.type == EventType::Control &&
+         msg_cast<ControlMsg>(&h).command == ControlCommand::Reconcile;
+}
+
 }  // namespace fastmm::venues

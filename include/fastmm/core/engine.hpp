@@ -99,6 +99,8 @@ struct EngineStats {
   std::uint64_t unresolved_orders = 0;
   // Executions replayed from the venue that named no order of this session (booked, not errors).
   std::uint64_t replayed_foreign_fills = 0;
+  // Reconciliations the engine asked a venue for (ControlCommand::Reconcile).
+  std::uint64_t reconcile_requests = 0;
   std::uint64_t ack_timeouts = 0;    // PendingNew orders force-cancelled by the ack sweep
   std::uint64_t flattens = 0;        // operator flattens started (ControlCommand::Flatten)
   std::uint64_t flatten_orders = 0;  // reduce-only orders a flatten sent
@@ -858,10 +860,7 @@ class Engine {
     if (u.action == OmsAction::CancelUnknown) {
       cancel_unknown(h, u);
     }
-    if (u.action == OmsAction::ReconcileNeeded) {
-      FASTMM_LOG_WARN("order {} exceeded cancel-reject retries; reconciliation needed",
-                      encode_cl_ord_id(u.order.cl_ord_id));
-    }
+    if (u.action == OmsAction::ReconcileNeeded) request_reconcile(u);
     if (u.known && u.handle.valid() && instruments_.contains(u.order.instrument)) {
       Placer place{this};
       quotes_.on_order_update(u, instruments_.get(u.order.instrument), oms_, now_, place);
@@ -1120,6 +1119,8 @@ class Engine {
       case ControlCommand::FlushStats:
         publish_latency(now());
         break;
+      case ControlCommand::Reconcile:
+        break;  // engine output, see request_reconcile
     }
   }
 
@@ -1681,6 +1682,18 @@ class Engine {
     FASTMM_LOG_WARN("cancelling unknown live order {}", encode_cl_ord_id(m.cl_ord_id));
     queue_out(m.hdr);
     ++stats_.cancels_sent;
+  }
+
+  // The venue keeps refusing to cancel an order the engine thinks is working: ask the connector
+  // for its open orders rather than retrying a cancel that cannot succeed.
+  void request_reconcile(const OmsUpdate& u) noexcept {
+    FASTMM_LOG_WARN("order {} exceeded cancel-reject retries; asking the venue to reconcile",
+                    encode_cl_ord_id(u.order.cl_ord_id));
+    ControlMsg m{};
+    init_header(m, EventType::Control, u.order.instrument, u.order.venue);
+    m.command = ControlCommand::Reconcile;
+    queue_out(m.hdr);
+    ++stats_.reconcile_requests;
   }
 
   void queue_out(const EventHeader& m) noexcept {

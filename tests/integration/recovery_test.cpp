@@ -740,3 +740,29 @@ TEST_CASE("recovery: shadows of orders whose terminal events were lost are swept
     return fx.server.stats().open_orders == 0;
   }));
 }
+
+TEST_CASE("recovery: the engine's reconcile request settles an order whose end was never heard") {
+  ServerFixture fx(quiet_server());
+  ReadyHarness h(fx);
+  OmsMirror m(h.instruments);
+  place_resting(h, m, cid(1), resting_bid(fx, 100), kLot);
+
+  // The order fills while the private stream is muted: the engine still has it working, which is
+  // what a run of refused cancels looks like from its side.
+  fx.server.set_user_stream_muted(true);
+  CHECK(fx.server.fill_open_order(encode_cl_ord_id(cid(1)).view(), kLot) == kLot);
+  REQUIRE(h.pump([&] { return fx.server.stats().user_events_dropped >= 1; }));
+  fx.server.set_user_stream_muted(false);
+  m.drain(h.oc);
+  CHECK(m.oms().open_count() == 1);
+
+  // What Engine::request_reconcile puts on the venue's outbound ring.
+  ControlMsg c{};
+  init_header(c, EventType::Control, InstrumentId{0}, VenueId{0});
+  c.command = ControlCommand::Reconcile;
+  h.send(c.hdr);
+  await_reconcile(h, m);
+  check_orders_agree(fx, m);
+  CHECK(m.oms().open_count() == 0);
+  CHECK(m.position() == fx.server.stats().position);
+}

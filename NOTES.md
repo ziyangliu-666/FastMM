@@ -124,8 +124,9 @@ so user and order channel reconnects are invisible in the status line. `BinanceV
 a slot per order whose terminal event was lost (fixed 2026-09-24: a reconciliation sweeps shadows
 of orders the venue no longer holds that were sent before the snapshot was asked for). Open-orders replies are matched to their sent
 watermark by FIFO on a shared `"oo"` request id, and the REST fallback never enqueues one.
-`OmsAction::ReconcileNeeded` (more than three cancel rejects) is logged and nothing asks for a
-snapshot.
+`OmsAction::ReconcileNeeded` (more than three cancel rejects) was logged and nothing asked for a
+snapshot (fixed 2026-09-25: the engine sends `ControlCommand::Reconcile` on that venue's outbound
+ring and every connector answers with `request_open_orders()`).
 
 ## 2026-09-23
 

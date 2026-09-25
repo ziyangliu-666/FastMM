@@ -379,6 +379,10 @@ enum class ControlCommand : std::uint8_t {
   // New risk limits for RiskEngine::set_limits. The message is a ControlLimitsMsg: a ControlMsg
   // with a RiskLimits payload (core/messages.hpp).
   SetLimits = 10,
+  // Engine -> venue, on the outbound ring (hdr.venue: the venue): the engine and the venue
+  // disagree about an order (a cancel rejected more than three times), so the connector runs the
+  // reconciliation it runs after a reconnect. The engine ignores it as an input.
+  Reconcile = 11,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -404,6 +408,8 @@ enum class ControlCommand : std::uint8_t {
       return "Flatten";
     case ControlCommand::SetLimits:
       return "SetLimits";
+    case ControlCommand::Reconcile:
+      return "Reconcile";
   }
   return "?";
 }

@@ -912,6 +912,8 @@ void NasdaqItchVenue::write_orders(Ring& ring) {
         if (const auto cmd = OrderCommand::from(h)) {
           sent_.note(*cmd);
           send_command(*cmd);
+        } else if (is_reconcile_request(h)) {
+          request_open_orders();
         }
       },
       [this, link] {

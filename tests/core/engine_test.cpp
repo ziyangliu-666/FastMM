@@ -902,6 +902,40 @@ TEST_CASE("core.engine: a reconciliation cum_qty jump is booked as a synthetic f
   f.drain();
 }
 
+// An order whose cancel the venue keeps refusing is one the two sides disagree about: after the
+// fourth refusal the engine asks that venue for a reconciliation instead of only logging it.
+TEST_CASE("core.engine: repeated cancel rejects ask the venue to reconcile") {
+  Fixture f;
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  const ClientOrderId id = f.news()[0].cl_ord_id;
+  for (int i = 0; i < 4; ++i) {
+    ControlMsg pull{};
+    init_header(pull, EventType::Control);
+    pull.command = ControlCommand::PullQuotes;
+    f.push(pull);
+    f.drain();
+    REQUIRE(f.state(id) == OrderState::PendingCancel);
+    CHECK(f.transport.count(EventType::Control) == 0);
+    OrderCancelRejectMsg r{};
+    init_header(r, EventType::OrderCancelReject, InstrumentId{0}, VenueId{0});
+    r.cl_ord_id = id;
+    r.reason = RejectReason::VenueReject;
+    f.push(r);
+    f.drain();
+  }
+  REQUIRE(f.transport.count(EventType::Control) == 1);
+  CHECK(f.engine->stats().reconcile_requests == 1);
+  for (std::size_t i = 0; i < f.transport.out.size(); ++i) {
+    if (f.transport.at<EventHeader>(i).type != EventType::Control) continue;
+    const auto& m = f.transport.at<ControlMsg>(i);
+    CHECK(m.command == ControlCommand::Reconcile);
+    CHECK(m.hdr.venue == VenueId{0});
+  }
+}
+
 // Order::created was never read: a request whose ack was lost held its pool slot, its
 // max_open_orders slot and its open quantity for the rest of the session.
 TEST_CASE("core.engine: an order without an ack is cancelled after ack_timeout") {
