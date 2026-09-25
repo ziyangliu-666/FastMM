@@ -9,7 +9,7 @@
 //   trade    wss://stream-testnet.bybit.com/v5/trade         op auth, then order.create /
 //            order.amend / order.cancel; REST fallback
 //   rest     https://api-testnet.bybit.com                   market/time, order/realtime,
-//            order/cancel-all, REST order entry (RestChannel)
+//            order/cancel-all, execution/list, REST order entry (RestChannel)
 // Every WebSocket channel sends {"op":"ping"} every 20 s (connect page, "How to Send the
 // Heartbeat Packet"). cancel_all() uses an independent BlockingHttp connection (6.7).
 //
@@ -36,6 +36,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::bybit {
@@ -98,6 +99,9 @@ class BybitVenue final : public Venue {
   void on_wake() override;
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
+  bool request_executions(std::int64_t since_venue_ms = 0) override;
+  void resume_executions(std::int64_t since_venue_ms,
+                         const std::vector<std::string>& known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -171,7 +175,16 @@ class BybitVenue final : public Venue {
   // Requests one page of GET /v5/order/realtime; the reply reads the next page or, on the last
   // one, emits the whole snapshot (emit_reconcile). Nothing is emitted unless every page parsed.
   void request_open_orders_page(const std::string& cursor);
+  // Emits the open-order snapshot request itself, once any execution replay before it finished.
+  void send_open_orders();
   void emit_reconcile();
+  // Execution replay (GET /v5/execution/list): one window of at most 7 days at a time, paged
+  // with nextPageCursor; a window's rows are emitted oldest first once its last page is in.
+  void start_execution_window();
+  void request_executions_page(const std::string& cursor);
+  void on_executions_window_done();
+  void emit_executions();
+  void finish_execution_replay(bool ok);
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   void forget_order(ClientOrderId id) noexcept;
@@ -230,6 +243,40 @@ class BybitVenue final : public Venue {
   ClientOrderId reconcile_watermark_{};  // sent watermark when the first page was requested
   std::size_t reconcile_pages_ = 0;
   bool reconcile_in_flight_ = false;
+  bool oo_wanted_ = false;  // a snapshot waits for the execution replay in flight
+
+  // Execution replay. Bybit's history has no ascending id, so the watermark is the venue time of
+  // the newest execution seen (inclusive); the ids seen at exactly that time are skipped on the
+  // next pass. It starts at connect(), or where resume_executions() says.
+  struct ExecRow {
+    InstrumentId inst;
+    std::string exec_id;
+    std::string order_id;
+    std::string order_link_id;
+    std::string price;
+    std::string qty;
+    std::string fee;
+    std::string fee_currency;
+    std::string fee_rate;
+    std::int64_t time_ms = 0;
+    Side side = Side::Buy;
+    bool maker = false;
+  };
+  std::int64_t exec_since_ms_ = 0;
+  std::unordered_set<std::string> exec_edge_ids_;   // ids at exec_since_ms_, already forwarded
+  std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
+  bool exec_resumed_ = false;       // resume_executions(): replay once the private channel is up
+  std::vector<ExecRow> exec_rows_;  // the current window, newest first as received
+  std::int64_t exec_window_start_ = 0;
+  std::int64_t exec_window_end_ = 0;     // 0: open-ended (the last window)
+  std::int64_t exec_window_low_ms_ = 0;  // oldest row seen in the window so far
+  std::size_t exec_window_pages_ = 0;
+  std::size_t exec_requests_ = 0;  // pages asked for by this replay
+  bool exec_replay_active_ = false;
+  bool exec_replay_ok_ = true;
+  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
+  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_retry_ns_ = 0;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;
   ConnState trade_state_ = ConnState::Disconnected;

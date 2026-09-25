@@ -65,10 +65,8 @@ void register_bybit_venue(VenueRegistry& r) {
                                     .replace = true,
                                     .positions = true,
                                     .polls = false,
-                                    // GET /v5/execution/list would serve it (account-wide per
-                                    // category, 7-day window, cursor paging, `execId` and
-                                    // `orderLinkId`); not written yet.
-                                    .executions = false},
+                                    // GET /v5/execution/list
+                                    .executions = true},
                            .make = &make}));
 }
 

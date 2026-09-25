@@ -15,6 +15,9 @@ All notable changes are recorded here (Keep a Changelog format).
   all. The snapshot's `Begin` carries `ReconcileMsg::kExecutionsExact` when the replay was complete;
   without it the engine counts an estimated reconciliation and says so. A failed query is retried
   every 5 s until the venue answers rather than waiting for the next reconnect.
+- Bybit replays executions from `GET /v5/execution/list` (account-wide, 7-day windows, cursor
+  paging, emitted oldest first) and declares `VenueCapabilities::executions`, so its
+  reconciliations can be exact and a restarted session carries its position over.
 - A fill booked from a `cum_qty` jump before any execution named it is corrected, not counted twice,
   when the replay names it: `OmsUpdate::corrected_qty`, `PositionTracker::correct_fill`,
   `EngineStats::corrected_fills`. The quantity is already in the position, so what the execution

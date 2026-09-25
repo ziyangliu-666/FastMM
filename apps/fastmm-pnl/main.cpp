@@ -44,7 +44,7 @@ std::string resolve_day(std::string_view text) {
   const std::time_t now = std::time(nullptr) - static_cast<std::time_t>(back) * 86400;
   std::tm tm{};
   gmtime_r(&now, &tm);
-  char buf[16];
+  char buf[32];  // room for any int year, so gcc can prove it never truncates
   std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
   return buf;
 }

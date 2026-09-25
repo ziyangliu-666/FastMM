@@ -23,6 +23,35 @@ constexpr std::int64_t kClockResyncNs = 30LL * 60 * 1'000'000'000;
 constexpr std::int64_t kDefaultCooldownNs = 10'000'000'000;
 // 50 open orders per page; more than this many pages is a runaway, not a book we can reconcile.
 constexpr std::size_t kMaxReconcilePages = 40;
+constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;  // between retries of a failed replay
+// GET /v5/execution/list: "endTime - startTime <= 7 days", "limit [1, 100]", and two years of
+// history (https://bybit-exchange.github.io/docs/v5/order/execution).
+constexpr std::int64_t kExecWindowMs = 7LL * 24 * 3600 * 1000;
+constexpr std::int64_t kExecHistoryMs = 730LL * 24 * 3600 * 1000;
+constexpr int kExecPageLimit = 100;
+// A window that needs more pages than this is narrowed to end at its oldest row seen; a replay
+// that needs more requests than the budget stops and reports itself incomplete.
+constexpr std::size_t kMaxExecPagesPerWindow = 20;
+constexpr std::size_t kMaxExecRequests = 100;
+
+// Spot fee currency (enum page, "Spot Fee Currency Instruction"): feeCurrency names it when
+// present; otherwise a buy pays in the base coin and a sell in the quote coin, the other way
+// round for a maker with a negative rate. The private parser applies the same rule.
+FeeAsset fee_asset_of(const Instrument& in,
+                      Notional fee,
+                      std::string_view ccy,
+                      std::string_view rate,
+                      Side side,
+                      bool maker) noexcept {
+  if (fee.is_zero()) return FeeAsset::Quote;
+  if (!ccy.empty()) {
+    if (iequals_symbol(in.quote.view(), ccy)) return FeeAsset::Quote;
+    if (iequals_symbol(in.base.view(), ccy)) return FeeAsset::Base;
+    return FeeAsset::Other;
+  }
+  const bool rebate = maker && !rate.empty() && rate.front() == '-';
+  return (side == Side::Buy) != rebate ? FeeAsset::Base : FeeAsset::Quote;
+}
 
 // Replaces the path of a ws(s) URL: wss://host/v5/public/spot -> wss://host/v5/private.
 std::string with_path(const std::string& url, std::string_view path) {
@@ -210,6 +239,9 @@ void BybitVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("BybitVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  // Nobody said where the execution replay should start, so it starts here: this session can only
+  // have missed what happened after it connected.
+  if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
     if (!cfg_.dry_run) {
@@ -370,6 +402,11 @@ void BybitVenue::on_private_state(net::ConnState s) {
     // 6.7: reconcile after a reconnect, not when a quiet channel returns from Stale.
     if (private_was_live_ && prev != ConnState::Stale) request_open_orders();
     private_was_live_ = true;
+    // A restarted session carries a position over: book what happened while nothing ran.
+    if (exec_resumed_) {
+      exec_resumed_ = false;
+      static_cast<void>(request_executions());
+    }
   } else if ((mapped == ConnState::Disconnected || mapped == ConnState::Connecting) &&
              (prev == ConnState::Live || prev == ConnState::Stale)) {
     emit_connection_state(*order_sink_, id_, 1, ConnState::Disconnected);
@@ -943,10 +980,24 @@ void BybitVenue::apply_action(VenueAction action,
 
 // ---- control requests -----------------------------------------------------------------------
 
+// One reconciliation at a time: the account's executions are replayed first (request_executions),
+// then the open-order snapshot is read. A request while the replay runs is served by its end.
+void BybitVenue::request_open_orders() {
+  if (cfg_.dry_run || !connected_ || !signer_.usable() || reconcile_in_flight_) return;
+  oo_wanted_ = true;
+  if (exec_replay_active_) return;
+  // Latched before the replay starts: a query that cannot be issued at all finishes inside
+  // request_executions(), and the snapshot it releases is the one asked for here.
+  if (request_executions()) return;
+  oo_wanted_ = false;
+  exec_snapshot_exact_ = false;
+  send_open_orders();
+}
+
 // Collects one page of the open-order snapshot. Nothing reaches the engine before every page
 // parsed: Oms::reconcile_end() cancels every order the snapshot does not name, so a truncated or
 // unparsed snapshot would cancel orders that are still resting at the venue.
-void BybitVenue::request_open_orders() {
+void BybitVenue::send_open_orders() {
   if (reconcile_in_flight_) return;
   reconcile_records_.clear();
   reconcile_pages_ = 0;
@@ -1038,6 +1089,8 @@ void BybitVenue::emit_reconcile() {
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
   SentWatermark::stamp(begin, reconcile_watermark_);
+  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
+  exec_snapshot_exact_ = false;
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
@@ -1048,6 +1101,228 @@ void BybitVenue::emit_reconcile() {
   static_cast<void>(order_sink_->push(end.hdr));
   FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
   reconcile_records_.clear();
+}
+
+// ---- execution replay -------------------------------------------------------------------------
+//
+// GET /v5/execution/list, account-wide for category=spot, before every open-order snapshot. Each
+// "Trade" row on a subscribed symbol is emitted as an ordinary fill carrying Bybit's execId, so the
+// OMS keeps the ones it never saw and drops the rest; that is what recovers a fill that finished an
+// order, which the snapshot no longer mentions. Other execTypes (Funding, AdlTrade, BustTrade,
+// Settle, Delivery) are derivatives events, not fills of spot orders, and are skipped as the
+// private stream skips them.
+//
+// Rows come newest first and a range may span at most 7 days, so the replay walks 7-day windows
+// from the watermark, pages each one to its last nextPageCursor, and emits the window oldest first.
+// Only then does the watermark move: to the newest row's execTime, or to the window's end when the
+// window was not the last one.
+
+void BybitVenue::resume_executions(std::int64_t since_venue_ms,
+                                   const std::vector<std::string>& known) {
+  exec_since_ms_ = since_venue_ms;
+  exec_edge_ids_.clear();
+  known_exec_ids_ = {known.begin(), known.end()};
+  exec_resumed_ = since_venue_ms > 0;
+}
+
+bool BybitVenue::request_executions(std::int64_t since_venue_ms) {
+  if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
+  if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
+  if (exec_replay_active_) return true;
+  if (since_venue_ms > 0) {
+    exec_since_ms_ = since_venue_ms;
+    exec_edge_ids_.clear();
+  }
+  exec_replay_active_ = true;
+  exec_replay_ok_ = true;
+  exec_requests_ = 0;
+  ++stats_.execution_queries;
+  start_execution_window();
+  return true;
+}
+
+void BybitVenue::start_execution_window() {
+  const std::int64_t now = venue_time_ms();
+  if (exec_since_ms_ <= 0) exec_since_ms_ = now;
+  if (exec_since_ms_ < now - kExecHistoryMs) {
+    FASTMM_LOG_ERROR("{}: executions before {} are beyond Bybit's history; replaying from there",
+                     cfg_.name,
+                     now - kExecHistoryMs);
+    exec_since_ms_ = now - kExecHistoryMs;
+    exec_edge_ids_.clear();
+    exec_replay_ok_ = false;
+  }
+  exec_window_start_ = exec_since_ms_;
+  // The last window leaves its end open, so it reaches whatever the venue holds when it answers.
+  exec_window_end_ =
+      exec_window_start_ + kExecWindowMs < now ? exec_window_start_ + kExecWindowMs : 0;
+  exec_rows_.clear();
+  exec_window_pages_ = 0;
+  exec_window_low_ms_ = 0;
+  request_executions_page({});
+}
+
+void BybitVenue::request_executions_page(const std::string& cursor) {
+  if (++exec_requests_ > kMaxExecRequests) {
+    FASTMM_LOG_WARN("{}: execution replay stopped after {} requests; it continues later",
+                    cfg_.name,
+                    kMaxExecRequests);
+    finish_execution_replay(false);
+    return;
+  }
+  RestRequest rr;
+  if (rest_ == nullptr || !encoder_->encode_rest_executions(
+                              exec_window_start_, exec_window_end_, kExecPageLimit, cursor, rr)) {
+    finish_execution_replay(false);
+    return;
+  }
+  const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
+  std::weak_ptr<int> alive = alive_;
+  const bool queued =
+      rest_->request("GET", rr.target(), headers, {}, [this, alive](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          ++stats_.execution_query_errors;
+          FASTMM_LOG_ERROR(
+              "{}: GET execution/list failed: status={} err={}; this reconciliation cannot book "
+              "the fills the private stream missed",
+              cfg_.name,
+              r.status,
+              net::to_string(r.error));
+          finish_execution_replay(false);
+          return;
+        }
+        std::string next_cursor;
+        const PaddedJson padded(r.body);
+        const ParseStatus st =
+            decoder_->decode_executions(padded.view(), next_cursor, [&](const ExecutionRecord& e) {
+              if (exec_window_low_ms_ == 0 || e.exec_time_ms < exec_window_low_ms_)
+                exec_window_low_ms_ = e.exec_time_ms;
+              if (e.exec_type != "Trade") return;
+              const InstrumentId inst = symbols_->find(id_, e.symbol);
+              if (!inst.valid()) return;  // another symbol on this account: not ours
+              exec_rows_.push_back(ExecRow{inst,
+                                           std::string(e.exec_id),
+                                           std::string(e.order_id),
+                                           std::string(e.order_link_id),
+                                           std::string(e.exec_price),
+                                           std::string(e.exec_qty),
+                                           std::string(e.exec_fee),
+                                           std::string(e.fee_currency),
+                                           std::string(e.fee_rate),
+                                           e.exec_time_ms,
+                                           e.side == "Sell" ? Side::Sell : Side::Buy,
+                                           e.is_maker});
+            });
+        if (st != ParseStatus::Ok) {
+          ++stats_.rest_errors;
+          ++stats_.execution_query_errors;
+          FASTMM_LOG_ERROR("{}: execution/list reply rejected ({}); its executions are not booked",
+                           cfg_.name,
+                           st == ParseStatus::Error ? "retCode != 0" : "malformed");
+          finish_execution_replay(false);
+          return;
+        }
+        if (next_cursor.empty()) {
+          on_executions_window_done();
+          return;
+        }
+        if (++exec_window_pages_ < kMaxExecPagesPerWindow) {
+          request_executions_page(next_cursor);
+          return;
+        }
+        // Too many rows for one window: what was read is its newest part. Read the window again
+        // up to its oldest row seen, so that it can still be emitted oldest first.
+        if (exec_window_low_ms_ <= exec_window_start_) {
+          finish_execution_replay(false);
+          return;
+        }
+        exec_window_end_ = exec_window_low_ms_;
+        exec_rows_.clear();
+        exec_window_pages_ = 0;
+        exec_window_low_ms_ = 0;
+        request_executions_page({});
+      });
+  if (!queued) {
+    ++stats_.execution_query_errors;
+    FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
+    finish_execution_replay(false);
+  }
+}
+
+void BybitVenue::on_executions_window_done() {
+  emit_executions();
+  if (exec_window_end_ > 0) {
+    start_execution_window();
+    return;
+  }
+  finish_execution_replay(true);
+}
+
+void BybitVenue::emit_executions() {
+  // Received newest first; reversed, rows with equal times keep the venue's order.
+  std::reverse(exec_rows_.begin(), exec_rows_.end());
+  std::stable_sort(exec_rows_.begin(), exec_rows_.end(), [](const ExecRow& a, const ExecRow& b) {
+    return a.time_ms < b.time_ms;
+  });
+  std::size_t count = 0;
+  for (const ExecRow& e : exec_rows_) {
+    if (exec_edge_ids_.count(e.exec_id) != 0) continue;   // forwarded by the last pass
+    if (known_exec_ids_.count(e.exec_id) != 0) continue;  // the earlier session booked it
+    const auto px = parse_price(e.price);
+    const auto qty = parse_qty(e.qty);
+    if (!px || !qty) {
+      FASTMM_LOG_WARN("{}: execution {} has an unreadable price or quantity", cfg_.name, e.exec_id);
+      continue;
+    }
+    Notional fee{};
+    if (!e.fee.empty()) {
+      if (const auto f = parse_notional(e.fee)) fee = *f;
+    }
+    const Instrument& in = instruments_->get(e.inst);
+    ClientOrderId cl{};
+    if (const auto id = decode_cl_ord_id(e.order_link_id)) cl = current_id(*id);
+    emit_replayed_fill(*order_sink_,
+                       id_,
+                       e.inst,
+                       cl,
+                       e.order_id,
+                       e.exec_id,
+                       e.side,
+                       *px,
+                       *qty,
+                       fee,
+                       fee_asset_of(in, fee, e.fee_currency, e.fee_rate, e.side, e.maker),
+                       e.maker ? Liquidity::Maker : Liquidity::Taker);
+    ++stats_.order_events;
+    ++stats_.executions_fetched;
+    ++count;
+  }
+  // The watermark moves to the newest row read, or to the end of a window that was not the last.
+  std::int64_t since = exec_since_ms_;
+  if (!exec_rows_.empty()) since = std::max(since, exec_rows_.back().time_ms);
+  if (exec_window_end_ > 0) since = std::max(since, exec_window_end_);
+  if (since != exec_since_ms_) exec_edge_ids_.clear();
+  exec_since_ms_ = since;
+  for (const ExecRow& e : exec_rows_) {
+    if (e.time_ms == since) exec_edge_ids_.insert(e.exec_id);
+  }
+  exec_rows_.clear();
+  if (count > 0) FASTMM_LOG_INFO("{}: replayed {} execution(s)", cfg_.name, count);
+}
+
+void BybitVenue::finish_execution_replay(bool ok) {
+  if (!ok) exec_replay_ok_ = false;
+  exec_replay_active_ = false;
+  exec_rows_.clear();
+  if (!exec_replay_ok_) exec_retry_wanted_ = true;
+  if (!oo_wanted_) return;
+  oo_wanted_ = false;
+  exec_snapshot_exact_ = exec_replay_ok_;
+  send_open_orders();
 }
 
 void BybitVenue::request_server_time() {
@@ -1162,6 +1437,13 @@ void BybitVenue::on_timer(std::int64_t now) {
     if (trade_conn_.is_live()) static_cast<void>(trade_conn_.send_text(ping));
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  // A replay that could not be completed left fills unaccounted for, and the next reconnect may be
+  // hours away. Ask again until the venue answers; the watermark only moved past what was booked.
+  if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
+    exec_retry_ns_ = now;
+    exec_retry_wanted_ = false;
+    static_cast<void>(request_executions());
+  }
   publish_status();
   raw_md_.flush();
   raw_private_.flush();

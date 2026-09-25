@@ -106,8 +106,9 @@ could be wrong. `[engine] restore_position = false` turns it off. Proved by
 session trades and stops, an outside market order moves the account, the next session ends at
 exactly the venue's position. With the restore off the same test ends 0.001 short.
 
-**Bybit, Deribit and Binance USDⓈ-M declare `executions = false`.** Their endpoints are verified and
-written down in `docs/reference/venues.md`; nobody has written the connector side. That is the point
+**Deribit and Binance USDⓈ-M declare `executions = false`** (Bybit replays `/v5/execution/list`
+since 2026-09-25). Their endpoints are verified and written down in `docs/reference/venues.md`;
+nobody has written the connector side. That is the point
 of the capability flag: their reconciliations report themselves as estimates rather than being
 assumed exact.
 

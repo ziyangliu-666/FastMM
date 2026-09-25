@@ -97,6 +97,14 @@ class BybitOrderEncoder {
   bool encode_rest_open_orders(std::string_view symbol,
                                std::string_view cursor,
                                RestRequest& out) const;
+  // GET /v5/execution/list?category=spot&startTime=..[&endTime=..]&limit=..[&cursor=..]: the
+  // account's executions from `start_ms` (inclusive), newest first. `end_ms` <= 0 leaves the end
+  // open (the venue then answers startTime + 7 days).
+  bool encode_rest_executions(std::int64_t start_ms,
+                              std::int64_t end_ms,
+                              int limit,
+                              std::string_view cursor,
+                              RestRequest& out) const;
   // Header block signing exactly out.payload().
   [[nodiscard]] std::string rest_headers(const RestRequest& req, std::int64_t timestamp_ms) const {
     return signer_.rest_headers(timestamp_ms, recv_window_ms_, req.payload(), req.method == "POST");
@@ -164,6 +172,23 @@ struct OpenOrderRecord {
   std::string_view status;
 };
 
+// One row of GET /v5/execution/list (https://bybit-exchange.github.io/docs/v5/order/execution).
+struct ExecutionRecord {
+  std::string_view symbol;
+  std::string_view exec_id;
+  std::string_view exec_type;  // "Trade" is a fill; the rest are derivatives events
+  std::string_view order_id;
+  std::string_view order_link_id;
+  std::string_view side;
+  std::string_view exec_price;
+  std::string_view exec_qty;
+  std::string_view exec_fee;
+  std::string_view fee_currency;  // may be absent
+  std::string_view fee_rate;
+  std::int64_t exec_time_ms = 0;
+  bool is_maker = false;
+};
+
 class BybitResponseDecoder {
  public:
   explicit BybitResponseDecoder(std::size_t capacity = 1U << 20);
@@ -181,6 +206,10 @@ class BybitResponseDecoder {
   ParseStatus decode_open_orders(std::string_view json,
                                  std::string& next_cursor,
                                  const std::function<void(const OpenOrderRecord&)>& fn) noexcept;
+  // GET /v5/execution/list body, same envelope and paging as decode_open_orders.
+  ParseStatus decode_executions(std::string_view json,
+                                std::string& next_cursor,
+                                const std::function<void(const ExecutionRecord&)>& fn) noexcept;
 
  private:
   struct Impl;
