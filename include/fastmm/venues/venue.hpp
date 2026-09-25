@@ -208,10 +208,10 @@ class Venue {
   virtual void request_open_orders() = 0;
   // The account's executions from `since_venue_ms` (the venue's clock, inclusive) onwards, for
   // every subscribed instrument: the venue's trade-history query (myTrades / userTrades /
-  // execution/list / get_user_trades_by_instrument). Each one is emitted into the order sink as an
-  // ordinary OrderFillMsg carrying the venue's execution id and OrderFillMsg::kReplayed, so the OMS
-  // books only the ones it has not seen. Zero means "from wherever this connector last got to",
-  // which is what a reconciliation uses; a caller that knows better - the time of the last
+  // execution/list / get_user_trades_by_currency_and_time). Each one is emitted into the order sink
+  // as an ordinary OrderFillMsg carrying the venue's execution id and OrderFillMsg::kReplayed, so
+  // the OMS books only the ones it has not seen. Zero means "from wherever this connector last got
+  // to", which is what a reconciliation uses; a caller that knows better - the time of the last
   // execution the engine booked, which the store and the journal both hold - passes it.
   //
   // Asynchronous and part of a reconciliation: the connector runs it before the open-order snapshot

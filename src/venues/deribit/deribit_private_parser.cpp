@@ -74,6 +74,18 @@ PrivateDecodeResult malformed(PrivateParserStats& stats, PrivateDecodeResult r) 
   return r;
 }
 
+// Deribit charges the fee in the instrument's settlement currency and names it in fee_currency:
+// the quote coin for linear instruments, the base coin for inverse ones. BTC options are quoted in
+// BTC (base == quote), so their fee is a quote amount; the base-coin fee of an inverse future is
+// neither a quote amount nor a number of contracts, so the engine cannot book it (Other: counted,
+// not converted).
+FeeAsset fee_asset_of(const Instrument& in, Notional fee, std::string_view fee_ccy) noexcept {
+  if (fee_ccy.empty()) fee_ccy = in.inverse() ? in.base.view() : in.quote.view();
+  return fee.is_zero() || iequals_symbol(in.quote.view(), fee_ccy)  ? FeeAsset::Quote
+         : !in.inverse() && iequals_symbol(in.base.view(), fee_ccy) ? FeeAsset::Base
+                                                                    : FeeAsset::Other;
+}
+
 // Output state shared by the per-item decoders.
 struct ItemCtx {
   PrivateParserStats* stats;
@@ -139,18 +151,7 @@ struct ItemIds {
   m->cum_qty = Qty{};
   m->leaves_qty = Qty{};
   m->fee = fee;
-  // Deribit charges the fee in the instrument's settlement currency and names it in
-  // fee_currency: the quote coin for linear instruments, the base coin for inverse ones. BTC
-  // options are quoted in BTC (base == quote), so their fee is a quote amount; the base-coin fee
-  // of an inverse future is neither a quote amount nor a number of contracts, so the engine
-  // cannot book it (Other: counted, not converted).
-  {
-    const Instrument& in = c.instruments->get(ids.inst);
-    if (fee_ccy.empty()) fee_ccy = in.inverse() ? in.base.view() : in.quote.view();
-    m->fee_asset = fee.is_zero() || iequals_symbol(in.quote.view(), fee_ccy)  ? FeeAsset::Quote
-                   : !in.inverse() && iequals_symbol(in.base.view(), fee_ccy) ? FeeAsset::Base
-                                                                              : FeeAsset::Other;
-  }
+  m->fee_asset = fee_asset_of(c.instruments->get(ids.inst), fee, fee_ccy);
   m->side = direction == "sell" ? Side::Sell : Side::Buy;
   m->liquidity = Liquidity::Unknown;
   if (liquidity == "M") m->liquidity = Liquidity::Maker;
@@ -394,6 +395,44 @@ struct ItemIds {
   return true;
 }
 
+// One trade-history row. False if it is malformed; `known` false for an instrument not configured.
+[[gnu::noinline]] bool read_user_trade(od::object& o,
+                                       const SymbolTable& symbols,
+                                       const InstrumentTable& instruments,
+                                       VenueId venue,
+                                       UserTradeRecord& rec,
+                                       bool& known) noexcept {
+  std::string_view instrument_name;
+  std::string_view direction;
+  std::string_view label;
+  std::string_view liquidity;
+  std::string_view fee_ccy;
+  Qty amount{};
+  if (o["trade_id"].get_string().get(rec.trade_id) != sj::SUCCESS ||
+      o["order_id"].get_string().get(rec.order_id) != sj::SUCCESS ||
+      o["instrument_name"].get_string().get(instrument_name) != sj::SUCCESS ||
+      o["direction"].get_string().get(direction) != sj::SUCCESS ||
+      !fixed_of(o["price"], rec.price) || !fixed_of(o["amount"], amount) ||
+      o["timestamp"].get_int64().get(rec.timestamp_ms) != sj::SUCCESS)
+    return false;
+  if (o["label"].get_string().get(label) != sj::SUCCESS) label = {};
+  if (o["liquidity"].get_string().get(liquidity) != sj::SUCCESS) liquidity = {};
+  if (!fixed_of(o["fee"], rec.fee)) rec.fee = Notional{};
+  if (o["fee_currency"].get_string().get(fee_ccy) != sj::SUCCESS) fee_ccy = {};
+  rec.instrument = symbols.find(venue, instrument_name);
+  known = rec.instrument.valid() && instruments.contains(rec.instrument);
+  if (!known) return true;
+  const Instrument& in = instruments.get(rec.instrument);
+  rec.qty = amount_to_contracts(amount, in.contract_multiplier);
+  rec.fee_asset = fee_asset_of(in, rec.fee, fee_ccy);
+  rec.cl_ord_id = decode_cl_ord_id(label).value_or(ClientOrderId{});
+  rec.side = direction == "sell" ? Side::Sell : Side::Buy;
+  rec.liquidity = liquidity == "M"   ? Liquidity::Maker
+                  : liquidity == "T" ? Liquidity::Taker
+                                     : Liquidity::Unknown;
+  return true;
+}
+
 }  // namespace
 
 PrivateDecodeResult DeribitPrivateParser::decode(std::string_view json,
@@ -458,6 +497,47 @@ ParseStatus DeribitPrivateParser::decode_open_orders(
     if (!read_open_order(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
+  return ParseStatus::Ok;
+}
+
+ParseStatus DeribitPrivateParser::decode_user_trades(
+    std::string_view json,
+    UserTradesPage& page,
+    const std::function<void(const UserTradeRecord&)>& fn) noexcept {
+  page = UserTradesPage{};
+  od::document doc;
+  od::object root;
+  if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS ||
+      doc.get_object().get(root) != sj::SUCCESS)
+    return ParseStatus::Malformed;
+  {
+    od::value err;
+    if (root["error"].get(err) == sj::SUCCESS) return ParseStatus::Error;
+  }
+  root.reset();
+  od::object result;
+  if (root["result"].get_object().get(result) != sj::SUCCESS) return ParseStatus::Malformed;
+  od::array list;
+  if (result["trades"].get_array().get(list) != sj::SUCCESS) return ParseStatus::Malformed;
+  for (auto item : list) {
+    od::object o;
+    if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
+    UserTradeRecord rec;
+    bool known = false;
+    if (!read_user_trade(o, symbols_, instruments_, venue_, rec, known))
+      return ParseStatus::Malformed;
+    ++page.rows;
+    page.last_ms = rec.timestamp_ms;
+    if (known) {
+      fn(rec);
+    } else {
+      ++stats_.unknown_symbol;
+    }
+  }
+  result.reset();
+  bool more = false;
+  if (result["has_more"].get_bool().get(more) != sj::SUCCESS) return ParseStatus::Malformed;
+  page.has_more = more;
   return ParseStatus::Ok;
 }
 

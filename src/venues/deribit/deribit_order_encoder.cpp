@@ -185,6 +185,22 @@ std::size_t DeribitOrderEncoder::encode_open_orders(std::int64_t id,
   return end_request(w, access_token);
 }
 
+std::size_t DeribitOrderEncoder::encode_user_trades(std::int64_t id,
+                                                    std::string_view currency,
+                                                    std::int64_t start_ms,
+                                                    std::int64_t end_ms,
+                                                    std::int64_t count,
+                                                    bool historical,
+                                                    std::string_view access_token,
+                                                    std::span<char> out) noexcept {
+  JsonWriter w(out);
+  begin_request(w, id, "private/get_user_trades_by_currency_and_time");
+  w.key("currency").string(currency).key("kind").string("any");
+  w.key("start_timestamp").integer(start_ms).key("end_timestamp").integer(end_ms);
+  w.key("count").integer(count).key("sorting").string("asc").key("historical").boolean(historical);
+  return end_request(w, access_token);
+}
+
 std::size_t DeribitOrderEncoder::encode_cancel_all_by_instrument(std::int64_t id,
                                                                  std::string_view instrument,
                                                                  std::string_view access_token,

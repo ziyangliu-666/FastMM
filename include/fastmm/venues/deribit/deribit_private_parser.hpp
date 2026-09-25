@@ -15,6 +15,8 @@
 //                                  direction, price, amount, contracts?, fee, liquidity M|T,
 //                                  state, timestamp}] -> OrderFillMsg (exec_id = trade_id; cum_qty
 //                                  and leaves_qty 0: DeribitVenue fills them from its shadow)
+// Trade history (private/get_user_trades_by_currency_and_time): result {trades: [...], has_more}
+//   -> UserTradeRecord per row of a known instrument, same field mapping as user.trades.
 // Responses: result.order (private/buy, private/sell, private/edit), result = order
 // (private/cancel), result.access_token/refresh_token/expires_in (public/auth), array results
 // (subscribe) and integer results (cancel_all_*).
@@ -89,6 +91,30 @@ struct OpenOrderRecord {
   Qty filled_amount{};  // venue units
 };
 
+// One row of private/get_user_trades_by_*: the same fields user.trades carries, already mapped
+// (instrument, contracts, fee asset). `direction` is the side of the account's order.
+struct UserTradeRecord {
+  InstrumentId instrument = InstrumentId::invalid();
+  std::string_view trade_id;
+  std::string_view order_id;
+  ClientOrderId cl_ord_id{};  // from `label`; invalid for orders FastMM did not label
+  Side side = Side::Buy;
+  Price price{};
+  Qty qty{};  // contracts
+  Notional fee{};
+  FeeAsset fee_asset = FeeAsset::Quote;
+  Liquidity liquidity = Liquidity::Unknown;
+  std::int64_t timestamp_ms = 0;
+};
+
+// Rows that were read (every one, also those of instruments not configured) and how the page
+// ended; `last_ms` is the timestamp of the last row, `has_more` the venue's flag.
+struct UserTradesPage {
+  std::uint32_t rows = 0;
+  std::int64_t last_ms = 0;
+  bool has_more = false;
+};
+
 class DeribitPrivateParser {
  public:
   DeribitPrivateParser(const SymbolTable& symbols,
@@ -109,6 +135,13 @@ class DeribitPrivateParser {
   // private/get_open_orders_by_currency response (control path). Error for an error response.
   ParseStatus decode_open_orders(std::string_view json,
                                  const std::function<void(const OpenOrderRecord&)>& fn) noexcept;
+
+  // private/get_user_trades_by_currency_and_time response (control path). Error for an error
+  // response, Malformed when a row lacks trade_id, order_id, instrument_name, direction, price,
+  // amount or timestamp.
+  ParseStatus decode_user_trades(std::string_view json,
+                                 UserTradesPage& page,
+                                 const std::function<void(const UserTradeRecord&)>& fn) noexcept;
 
   [[nodiscard]] const PrivateParserStats& stats() const noexcept { return stats_; }
 

@@ -6,7 +6,8 @@
 // public/unsubscribe + public/subscribe -> new snapshot, get_open_orders_by_currency
 // reconciliation, private disconnect -> REST cancel_all_by_instrument + re-authentication +
 // reconciliation, 13009 on an order -> re-authentication, the blocking kill switch, invalid
-// credentials -> fatal, and the local matching-engine credit limit.
+// credentials -> fatal, the local matching-engine credit limit, and the execution replay
+// (get_user_trades_by_currency_and_time) before each open-order snapshot.
 //
 // The fake serves the private connection on its own path so the two sessions are easy to tell
 // apart; the real venue uses one URL for both (DeribitVenueConfig::ws_private_url defaults to
@@ -15,13 +16,20 @@
 
 #include "fake_venue_util.hpp"
 
+#include "fastmm/core/oms.hpp"
+#include "fastmm/core/position.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/net/crypto.hpp"
 #include "fastmm/venues/registry.hpp"
 
 #include <atomic>
 #include <cstdlib>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -55,6 +63,37 @@ std::string id_json(std::string_view t) {
     while (e < t.size() && ((t[e] >= '0' && t[e] <= '9') || t[e] == '-')) ++e;
   }
   return std::string(t.substr(s, e - s));
+}
+
+std::string rpc_error(std::string_view id_json, int code, std::string_view message) {
+  return std::string(R"({"jsonrpc":"2.0","id":)") + std::string(id_json) +
+         R"(,"error":{"message":")" + std::string(message) + R"(","code":)" + std::to_string(code) +
+         R"(},"usIn":1,"usOut":2,"usDiff":1,"testnet":true})";
+}
+
+// One row of private/get_user_trades_by_currency_and_time, for the option order the tests place.
+std::string trade_row(std::string_view trade_id,
+                      std::int64_t ts,
+                      std::string_view price,
+                      std::string_view amount,
+                      std::string_view fee) {
+  return std::string(R"({"trade_seq":1,"trade_id":")") + std::string(trade_id) +
+         R"(","timestamp":)" + std::to_string(ts) +
+         R"(,"tick_direction":0,"state":"filled","price":)" + std::string(price) +
+         R"(,"order_type":"limit","order_id":"42710123456","mark_price":0.0061,"liquidity":"M",)"
+         R"("label":"fm000100000001","instrument_name":"BTC-15SEP26-77000-C",)"
+         R"("index_price":76950.1,"fee_currency":"BTC","fee":)" +
+         std::string(fee) + R"(,"direction":"buy","amount":)" + std::string(amount) +
+         R"(,"contracts":)" + std::string(amount) + "}";
+}
+
+std::string trades_page(const std::vector<std::string>& rows, bool has_more) {
+  std::string out = R"({"trades":[)";
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    if (i > 0) out += ",";
+    out += rows[i];
+  }
+  return out + R"(],"has_more":)" + (has_more ? "true" : "false") + "}";
 }
 
 std::string channels_json(std::string_view t) {
@@ -114,6 +153,27 @@ struct Harness {
   std::atomic<int> buys{0};
   std::atomic<bool> unauthorized_next_buy{false};
   bool option_book_sent = false;  // server thread only
+
+  // get_user_trades_by_currency_and_time: `trades_reply(start_timestamp, historical)` gives the
+  // result object, or an empty string for an error reply; unset, the history is empty.
+  struct TradesQuery {
+    std::int64_t start = 0;
+    std::int64_t end = 0;
+    bool historical = false;
+  };
+  std::mutex mu;
+  std::function<std::string(std::int64_t, bool)> trades_reply;
+  std::vector<TradesQuery> trades_queries;
+  std::string open_orders_reply;  // result array; empty: the open_orders fixture
+
+  void set_trades(std::function<std::string(std::int64_t, bool)> f) {
+    const std::lock_guard lock(mu);
+    trades_reply = std::move(f);
+  }
+  std::vector<TradesQuery> queries() {
+    const std::lock_guard lock(mu);
+    return trades_queries;
+  }
 
   Harness() {
     srv.route("GET", "/api/v2/public/get_time", [this](const net::HttpRequest&) {
@@ -199,7 +259,20 @@ struct Harness {
         s.send_text(orders_cancelled);
       } else if (method == "private/get_open_orders_by_currency") {
         ++open_orders_requests;
-        s.send_text(open_orders);
+        const std::lock_guard lock(mu);
+        s.send_text(open_orders_reply.empty() ? open_orders : rpc_ok(id, open_orders_reply));
+      } else if (method == "private/get_user_trades_by_currency_and_time") {
+        const TradesQuery q{std::stoll(json_int(t, "start_timestamp")),
+                            std::stoll(json_int(t, "end_timestamp")),
+                            t.find(R"("historical":true)") != std::string_view::npos};
+        std::string result = R"({"trades":[],"has_more":false})";
+        {
+          const std::lock_guard lock(mu);
+          trades_queries.push_back(q);
+          if (trades_reply) result = trades_reply(q.start, q.historical);
+        }
+        s.send_text(result.empty() ? rpc_error(id, 10028, "too_many_requests")
+                                   : rpc_ok(id, result));
       }
     });
     srv.start();
@@ -533,4 +606,312 @@ TEST_CASE("deribit.venue: invalid credentials are fatal and the credit limit ref
     reactor.run_once(0);
   }
   h.srv.stop();
+}
+
+namespace {
+
+// The engine's side of the order events, reduced to what the replay tests measure: the OMS and
+// the position of the option (Engine::on_fill and after_oms_update, without synthetic fills).
+struct Mirror {
+  explicit Mirror(const InstrumentTable& i) : instruments(i) {}
+  const InstrumentTable& instruments;
+  Oms oms{1};
+  PositionTracker positions;
+  std::size_t cursor = 0;
+  std::uint64_t exact = 0;
+
+  void drain(const Collected& c) {
+    for (; cursor < c.all.size(); ++cursor) {
+      const auto& raw = c.all[cursor];
+      switch (RecordingSink::type_of(raw)) {
+        case EventType::OrderAck:
+          static_cast<void>(oms.on_ack(RecordingSink::as<OrderAckMsg>(raw)));
+          break;
+        case EventType::OrderFill: {
+          const auto& f = RecordingSink::as<OrderFillMsg>(raw);
+          if (oms.on_fill(f).action != OmsAction::Duplicate)
+            positions.on_fill(
+                kCall, f.side, f.price, f.qty, f.fee, instruments.get(f.hdr.instrument));
+          break;
+        }
+        case EventType::Reconcile: {
+          const auto& m = RecordingSink::as<ReconcileMsg>(raw);
+          if (m.kind == ReconcileMsg::Kind::Begin) {
+            if ((m.flags & ReconcileMsg::kExecutionsExact) != 0) ++exact;
+            oms.reconcile_begin(m.hdr.venue, std::optional<ClientOrderId>(m.sent_watermark));
+          } else if (m.kind == ReconcileMsg::Kind::OpenOrder) {
+            static_cast<void>(oms.reconcile_open_order(m));
+          } else if (m.kind == ReconcileMsg::Kind::End) {
+            oms.reconcile_end([](const OmsUpdate&) {}, m.hdr.venue);
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
+};
+
+// A connected, authenticated DeribitVenue subscribed to the option, against the fake, whose
+// open-order snapshots are empty.
+struct ReplaySession {
+  Harness h;
+  InstrumentTable instruments = make_instruments();
+  RecordingSink md{1U << 20};
+  RecordingSink orders{1U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  SymbolTable symbols;
+  std::unique_ptr<DeribitVenue> venue;
+  Collected oc;
+
+  ReplaySession() {
+    {
+      const std::lock_guard lock(h.mu);
+      h.open_orders_reply = "[]";
+    }
+    DeribitVenueConfig cfg = make_deribit_config(h.section(), false);
+    cfg.ws_private_url = h.srv.ws_base() + kPrivatePath;
+    venue = std::make_unique<DeribitVenue>(kVenue, cfg);
+    REQUIRE(venue->load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {kCall};
+    venue->subscribe(ids);
+    venue->connect(reactor);
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      Collected mdc;
+      mdc.take(md);
+      return venue->authenticated() && count_state(oc, ConnState::Live) >= 1;
+    }));
+  }
+  ~ReplaySession() {
+    venue->disconnect();
+    reactor.run_once(0);
+    h.srv.stop();
+  }
+  ReplaySession(const ReplaySession&) = delete;
+  ReplaySession& operator=(const ReplaySession&) = delete;
+
+  // Buys 1 contract of the option at 0.0065 as fm000100000001 and waits for its ack.
+  OutNewOrderMsg buy(Mirror& m) {
+    OutNewOrderMsg n{};
+    init_header(n, EventType::OutNewOrder, kCall, kVenue);
+    n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+    n.side = Side::Buy;
+    n.type = OrderType::PostOnly;
+    n.price = Price::from_decimal("0.0065").value();
+    n.qty = Qty::from_int(1);
+    NewOrderRequest req;
+    req.instrument = kCall;
+    req.venue = kVenue;
+    req.side = n.side;
+    req.type = n.type;
+    req.post_only = true;
+    req.price = n.price;
+    req.qty = n.qty;
+    REQUIRE(m.oms.submit(req, n.cl_ord_id, wall_now()).has_value());
+    REQUIRE(outbound.try_push(&n, n.hdr.len));
+    venue->on_wake();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderAck) >= 1;
+    }));
+    return n;
+  }
+
+  // Asks for a reconciliation and waits for its End; returns its Begin.
+  const ReconcileMsg* reconcile() {
+    const std::size_t ends = count_kind(ReconcileMsg::Kind::End);
+    venue->request_open_orders();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return count_kind(ReconcileMsg::Kind::End) == ends + 1;
+    }));
+    return oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+  }
+
+  [[nodiscard]] std::size_t count_kind(ReconcileMsg::Kind k) const {
+    std::size_t n = 0;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::Reconcile &&
+          RecordingSink::as<ReconcileMsg>(m).kind == k)
+        ++n;
+    }
+    return n;
+  }
+
+  [[nodiscard]] std::vector<std::string> replayed_ids() const {
+    std::vector<std::string> out;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) != EventType::OrderFill) continue;
+      const auto& f = RecordingSink::as<OrderFillMsg>(m);
+      if ((f.flags & OrderFillMsg::kReplayed) != 0) out.emplace_back(f.exec_id.view());
+    }
+    return out;
+  }
+
+  VenueStatus status() {
+    venue->on_timer(net::Reactor::now_ns());
+    return venue->status();
+  }
+};
+
+}  // namespace
+
+TEST_CASE("deribit.venue: a fill the private stream missed is booked at reconciliation") {
+  ReplaySession s;
+  Mirror m(s.instruments);
+  const OutNewOrderMsg n = s.buy(m);
+  m.drain(s.oc);
+  // The order fills completely at 0.0055 and user.trades never says so; the open-order snapshot
+  // no longer lists it. The trade history does.
+  s.h.set_trades([](std::int64_t start, bool) {
+    return trades_page({trade_row("T1", start + 5, "0.0055", "1.0", "0.0003")}, false);
+  });
+  const ReconcileMsg* begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) != 0);
+  m.drain(s.oc);
+
+  REQUIRE(s.replayed_ids() == std::vector<std::string>{"T1"});
+  const auto* fill = s.oc.last<OrderFillMsg>(EventType::OrderFill);
+  CHECK(fill->cl_ord_id == n.cl_ord_id);
+  CHECK(fill->venue_order_id.view() == "42710123456");
+  CHECK(fill->side == Side::Buy);
+  CHECK(fill->liquidity == Liquidity::Maker);
+  CHECK(fill->fee_asset == FeeAsset::Quote);
+  // Booked with its own price and fee before the snapshot: the order is filled, not unresolved.
+  const Position& p = m.positions.get(kCall);
+  CHECK(p.qty == Qty::from_int(1));
+  CHECK(p.avg_px == Price::from_decimal("0.0055").value());
+  CHECK(p.fees == Notional::from_decimal("0.0003").value());
+  CHECK(m.oms.stats().filled == 1);
+  CHECK(m.oms.stats().reconcile_unresolved == 0);
+  CHECK(m.exact == 1);
+
+  const auto q = s.h.queries();
+  REQUIRE(q.size() == 1);
+  CHECK_FALSE(q[0].historical);
+  const std::string req =
+      find_frame(s.h.srv, kPrivatePath, "private/get_user_trades_by_currency_and_time");
+  CHECK(req.find(R"("currency":"BTC","kind":"any")") != std::string::npos);
+  CHECK(req.find(R"("count":1000,"sorting":"asc","historical":false)") != std::string::npos);
+  const VenueStatus st = s.status();
+  CHECK(st.execution_queries == 1);
+  CHECK(st.executions_fetched == 1);
+  CHECK(st.execution_query_errors == 0);
+
+  // The next reconciliation starts at T1's timestamp and does not replay it again.
+  s.h.set_trades([](std::int64_t start, bool) {
+    return trades_page({trade_row("T1", start, "0.0055", "1.0", "0.0003")}, false);
+  });
+  static_cast<void>(s.reconcile());
+  CHECK(s.replayed_ids().size() == 1);
+  CHECK(s.h.queries().back().start == q[0].start + 5);
+}
+
+TEST_CASE("deribit.venue: the execution replay follows has_more across pages") {
+  ReplaySession s;
+  std::int64_t first = 0;  // server thread only
+  s.h.set_trades([&first](std::int64_t start, bool) {
+    if (first == 0) first = start;
+    if (start == first)
+      return trades_page({trade_row("T1", start + 1, "0.0055", "0.3", "0.0001"),
+                          trade_row("T2", start + 2, "0.0056", "0.3", "0.0001")},
+                         true);
+    // The next page starts at the last row's timestamp, so T2 comes back.
+    return trades_page({trade_row("T2", start, "0.0056", "0.3", "0.0001"),
+                        trade_row("T3", start + 1, "0.0057", "0.4", "0.0001")},
+                       false);
+  });
+  const ReconcileMsg* begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) != 0);
+  CHECK(s.replayed_ids() == std::vector<std::string>{"T1", "T2", "T3"});
+  const auto q = s.h.queries();
+  REQUIRE(q.size() == 2);
+  CHECK(q[1].start == q[0].start + 2);
+  CHECK(q[1].end == q[0].end);
+  // The snapshot was asked for only after the last page.
+  CHECK(s.h.open_orders_requests.load() == 1);
+  CHECK(s.status().executions_fetched == 3);
+}
+
+TEST_CASE(
+    "deribit.venue: kExecutionsExact only after a complete replay and a failed one is retried") {
+  ReplaySession s;
+  int calls = 0;  // server thread only
+  s.h.set_trades([&calls](std::int64_t start, bool) -> std::string {
+    if (++calls == 1) return {};  // too_many_requests
+    return trades_page({trade_row("T1", start + 1, "0.0055", "0.5", "0.0002")}, false);
+  });
+  const ReconcileMsg* begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) == 0);
+  CHECK(s.replayed_ids().empty());
+
+  // Nobody asks again: the housekeeping timer does, and the snapshot is not repeated.
+  REQUIRE(pump_until(
+      s.reactor,
+      [&] {
+        s.oc.take(s.orders);
+        return !s.replayed_ids().empty();
+      },
+      8000));
+  CHECK(s.replayed_ids() == std::vector<std::string>{"T1"});
+  CHECK(s.count_kind(ReconcileMsg::Kind::Begin) == 1);
+  CHECK(s.h.open_orders_requests.load() == 1);
+  const VenueStatus st = s.status();
+  CHECK(st.execution_queries == 2);
+  CHECK(st.execution_query_errors == 1);
+  CHECK(st.executions_fetched == 1);
+
+  begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) != 0);
+
+  // A page that says there is more but cannot move past its start (1000 rows in one millisecond)
+  // leaves the replay incomplete.
+  s.h.set_trades([](std::int64_t start, bool) {
+    return trades_page({trade_row("T9", start, "0.0055", "0.1", "0")}, true);
+  });
+  begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) == 0);
+}
+
+TEST_CASE("deribit.venue: a replay reaching back past 24 h asks the history first") {
+  constexpr std::int64_t kHour = 3'600'000;
+  ReplaySession s;
+  // The fake's clock (get_time fixture) is not ours: the offset moves the venue's time.
+  const std::int64_t venue_now = wall_now().ns / 1'000'000 + s.venue->clock_offset_ms();
+  s.venue->resume_executions(venue_now - 30 * kHour, {"T1"});
+  s.h.set_trades([](std::int64_t start, bool historical) {
+    if (historical)
+      return trades_page({trade_row("T1", start + 1, "0.0055", "0.1", "0"),
+                          trade_row("T2", start + 2, "0.0055", "0.1", "0")},
+                         false);
+    // The last 24 h overlap the history's last hour: T2 is answered twice.
+    return trades_page({trade_row("T2", start, "0.0055", "0.1", "0"),
+                        trade_row("T3", start + 1, "0.0055", "0.1", "0")},
+                       false);
+  });
+  const ReconcileMsg* begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) != 0);
+  const auto q = s.h.queries();
+  REQUIRE(q.size() == 2);
+  CHECK(q[0].historical);
+  CHECK(q[0].start == venue_now - 30 * kHour);
+  CHECK(q[0].end <= venue_now - 22 * kHour);
+  CHECK(q[0].end >= venue_now - 24 * kHour);
+  CHECK_FALSE(q[1].historical);
+  CHECK(q[1].start == q[0].start + 2);
+  // T1 was booked by the session resumed from; T2 once.
+  CHECK(s.replayed_ids() == std::vector<std::string>{"T2", "T3"});
 }
