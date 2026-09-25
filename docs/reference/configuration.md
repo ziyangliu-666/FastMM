@@ -319,7 +319,7 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 
 ## `[gateway]`
 
-Read by `fastmm-gateway` only: account guards on each venue's account, shared by every strategy attached to the gateway and checked before an order reaches the connector ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)). Each strategy keeps its own `[risk]`.
+Read by `fastmm-gateway` only: guards on the account, shared by every strategy attached to the gateway and checked before an order reaches the connector ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)). The rate and `max_open_notional` are per venue; `max_loss`, `max_gross_notional` and `max_net_notional` are over the account's positions on every venue, which the gateway books from the fills that pass through it and marks at the mids of its books. `max_loss` is carried in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`) and latches like `[risk] max_loss`. Each strategy keeps its own `[risk]`.
 
 <!-- BEGIN config-keys gateway -->
 | Key | Type | Required | Meaning |
@@ -327,6 +327,9 @@ Read by `fastmm-gateway` only: account guards on each venue's account, shared by
 | `orders_per_sec` | integer |  | fastmm-gateway: new orders and replaces per second per venue, over every attached strategy (default 0: off) |
 | `burst` | integer |  | fastmm-gateway: token-bucket capacity of orders_per_sec, orders (default orders_per_sec) |
 | `max_open_notional` | any |  | fastmm-gateway: refuse an order that would take the notional working at its venue, over every attached strategy and both sides, past this; settlement currency, decimal |
+| `max_loss` | any |  | fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, carried across restarts in the gateway's kill file, reaches -max_loss; decimal |
+| `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it reduces its instrument's position; decimal |
+| `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it reduces its instrument's position; decimal |
 <!-- END config-keys -->
 
 ## `[logging]`
