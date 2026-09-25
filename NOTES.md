@@ -3,6 +3,35 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## Next direction (chosen 2026-09-25): split the venue gateway from the strategy
+
+**Why.** Stepping back from recovery work: what a firm needs and FastMM lacks is structural. One
+process is one strategy, one account per venue, one risk view. Several strategies cannot share a
+venue session or an account; nothing sees risk across processes; a strategy change drops the venue
+sessions. Multi-strategy, firm-level risk, alerting and a console all hang off a long-lived gateway.
+The other candidates (more venues and correct inverse/multi-currency PnL; calibrating the fill model
+on the real market) are listed in the gap list below and come after, or need the user's data.
+
+**What stays.** The engine, its messages, the journal and replay are untouched: the engine consumes
+the same rings, only they live in shared memory. Backtest and replay never see a gateway.
+
+**Plan, each step verified before the next.**
+
+1. `ShmRing`: the SPSC `MsgRing` protocol with its head, tail and buffer in one `MAP_SHARED`
+   mapping and offsets instead of pointers (today head/tail live in the C++ object and the buffer
+   is a raw pointer, so a `MsgRing` cannot cross a process). Measure a cross-process hop against
+   the in-process ring; the wake-up is the shared futex `Waker` already uses.
+2. `fastmm-gateway`: runs the connectors and their reactors (today's net threads) and publishes
+   per-venue md/order/outbound rings plus a heartbeat. `fastmm-live` gets an attach mode that maps
+   them instead of starting connectors.
+3. Attach/detach: on attach the gateway runs a reconciliation into the strategy's order ring (it
+   already can); when a strategy's heartbeat stops, the gateway cancels that strategy's orders
+   itself, a local dead man's switch that also covers Binance Spot. Proof: `kill -9` the strategy,
+   orders gone within a bound, restart reattaches without the venue connection dropping.
+4. Several strategies per gateway: the client order id carries a strategy slot, the gateway routes
+   order events by it, and account-level limits (position, exposure, loss, order rate) are checked
+   in the gateway before a request leaves.
+
 ## 2026-09-25: an execution was booked twice after a long session
 
 The OMS deduplicated executions by `hash(exec_id) ^ cl_ord_id`. A replayed trade history names only
