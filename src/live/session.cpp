@@ -137,16 +137,26 @@ void on_order_overflow(void* ctx, const venues::EventSink&) noexcept {
   static_cast<VenueSlot*>(ctx)->order_overflows.fetch_add(1, std::memory_order_relaxed);
 }
 
-void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
+// Adaptive spin: events pushed to the engine notify its feed, which wakes the engine only while
+// it is blocked (Engine::block_idle).
+void net_loop(VenueSlot& s, RingFeed& feed, int cpu, std::size_t index, SpinMode spin) {
   const std::string name = "fm-net-" + std::to_string(index);
   set_thread_name(name.c_str());
   pin_to_cpu(cpu);
   Logger::instance().attach_current_thread();
   s.venue->connect(*s.reactor);
-  const int wait_ms = spin == SpinMode::Busy ? 0 : 1;
+  const bool busy = spin == SpinMode::Busy;
+  const int wait_ms = busy ? 0 : 1;
+  std::uint64_t pushed = 0;
   while (!s.stop.load(std::memory_order_relaxed)) {
     s.reactor->run_once(wait_ms);
     s.venue->poll();
+    if (!busy) {
+      if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
+        pushed = p;
+        feed.notify();
+      }
+    }
     if (s.wake.load(std::memory_order_relaxed) && s.wake.exchange(false, std::memory_order_acquire))
       s.venue->on_wake();
   }
@@ -1010,7 +1020,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } else {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-      slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode());
+      slots[i]->thread =
+          std::thread(net_loop, std::ref(*slots[i]), std::ref(feed), cpu, i, cfg.spin_mode());
     }
     engine_thread = std::thread([&] { runner->run(); });
   }
@@ -1164,6 +1175,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   // reproduces them.
   const auto clear_kill = [&] {
     if (!push_control(control_ring, ControlCommand::ResetKill)) return false;
+    feed.notify();
     kill_state.latched = false;
     kill_state.reason = KillReason::None;
     engine_kill = KillReason::None;
@@ -1171,11 +1183,22 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     return true;
   };
   std::unique_ptr<ParamPublisher> publisher;
+  // Pushes onto the control ring and wakes an engine blocked while idle (adaptive spin).
+  struct ControlSinkCtx {
+    MsgRing* ring;
+    RingFeed* feed;
+  } control_sink_ctx{&control_ring, &feed};
+  const ParamSink control_sink{&control_sink_ctx, [](void* c, const ParamUpdateMsg& m) noexcept {
+                                 auto* x = static_cast<ControlSinkCtx*>(c);
+                                 if (!x->ring->try_push(&m.hdr, m.hdr.len)) return false;
+                                 x->feed->notify();
+                                 return true;
+                               }};
   if (custom == nullptr && strategy != nullptr && strategy->publisher != nullptr) {
     // The publisher shares the control ring, so a `param` and the `pull` after it reach the
     // engine in the order the operator typed them. This thread is the ring's only producer.
     try {
-      publisher = strategy->publisher(ParamSink::to_ring(control_ring), cfg.strategy.params);
+      publisher = strategy->publisher(control_sink, cfg.strategy.params);
     } catch (const std::exception& e) {
       FASTMM_LOG_WARN("parameter updates are not available: {}", std::string_view(e.what()));
     }
@@ -1183,7 +1206,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   ControlPlane plane;
   plane.instruments = &instruments;
   plane.limits = cfg.risk_limits();
-  plane.submit = [&](const EventHeader& h) { return control_ring.try_push(&h, h.len); };
+  plane.submit = [&](const EventHeader& h) {
+    if (!control_ring.try_push(&h, h.len)) return false;
+    feed.notify();
+    return true;
+  };
   plane.venue = [&](std::string_view name, VenueId& out) {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       if (slots[i]->venue->name() != name) continue;
@@ -1388,6 +1415,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   if (publisher) publisher->close();
   if (reason != 4 && !push_control(control_ring, ControlCommand::TripKill))
     FASTMM_LOG_ERROR("control ring full: kill switch message dropped");
+  feed.notify();
   bool cancel_ok = true;
   if (!opts.dry_run) {
     for (auto& s : slots) cancel_ok = s->venue->cancel_all() && cancel_ok;

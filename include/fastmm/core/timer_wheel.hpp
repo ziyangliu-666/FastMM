@@ -106,6 +106,24 @@ class TimerWheel {
     });
     return best;
   }
+  // Earliest pending expiry before `limit`, or `limit` if there is none. Scans the wheel slots from
+  // the last poll up to `limit` (one per ms), so it is cheap for a limit a few ms ahead: the live
+  // engine bounds its idle wait with it. Overflow timers lie beyond the wheel and are not scanned.
+  [[nodiscard]] Timestamp next_expiry_before(Timestamp limit) const noexcept {
+    Timestamp best = limit;
+    const std::int64_t span = limit.ns / kSlotNs - cur_ms_;
+    const std::int64_t steps =
+        span < static_cast<std::int64_t>(kSlots) ? span : static_cast<std::int64_t>(kSlots) - 1;
+    for (std::int64_t s = 0; s <= steps; ++s) {
+      const std::size_t slot = static_cast<std::size_t>(cur_ms_ + s) & (kSlots - 1);
+      for (std::uint32_t idx = slots_[slot]; idx != kNullHandle;) {
+        const Timer& t = pool_.get(Handle<Timer>{idx});
+        if (t.active && t.expiry < best) best = t.expiry;
+        idx = t.next;
+      }
+    }
+    return best;
+  }
 
  private:
   static constexpr std::uint32_t kOverflow = 0xFFFF'FFFEU;

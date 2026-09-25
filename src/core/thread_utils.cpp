@@ -1,9 +1,11 @@
 #include "fastmm/core/thread_utils.hpp"
 
+#include <linux/futex.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -35,6 +37,21 @@ int cpu_count() noexcept {
 bool set_timer_slack(Duration slack) noexcept {
   if (slack.ns <= 0) return true;
   return ::prctl(PR_SET_TIMERSLACK, static_cast<unsigned long>(slack.ns), 0, 0, 0) == 0;
+}
+
+void Waker::wait(Duration timeout) noexcept {
+  if (timeout.ns > 0) {
+    timespec ts{};
+    ts.tv_sec = timeout.ns / 1'000'000'000;
+    ts.tv_nsec = timeout.ns % 1'000'000'000;
+    // Returns at once (EAGAIN) when a producer already took the flag.
+    ::syscall(SYS_futex, &flag_.word(), FUTEX_WAIT_PRIVATE, 1, &ts, nullptr, 0);
+  }
+  flag_.clear();
+}
+
+void Waker::wake_one() noexcept {
+  ::syscall(SYS_futex, &flag_.word(), FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
 }
 
 int lock_all_memory() noexcept {

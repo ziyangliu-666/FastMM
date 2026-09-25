@@ -6,6 +6,21 @@
 
 using namespace fastmm;
 
+TEST_CASE("core.timer_wheel: next_expiry_before scans only the slots up to the limit") {
+  const Timestamp now{seconds(1).ns};
+  TimerWheel<64> w(now);
+  CHECK(w.next_expiry_before(now + milliseconds(1)) == now + milliseconds(1));
+  const TimerId a = w.add(now, microseconds(300), false);
+  static_cast<void>(w.add(now, milliseconds(3), true));
+  static_cast<void>(w.add(now, seconds(10), false));  // beyond the wheel: never reported
+  CHECK(w.next_expiry_before(now + milliseconds(1)) == now + microseconds(300));
+  CHECK(w.next_expiry_before(now + microseconds(200)) == now + microseconds(200));
+  REQUIRE(w.cancel(a));
+  CHECK(w.next_expiry_before(now + milliseconds(1)) == now + milliseconds(1));
+  CHECK(w.next_expiry_before(now + milliseconds(5)) == now + milliseconds(3));
+  CHECK(w.next_expiry_before(now + seconds(20)) == now + milliseconds(3));
+}
+
 TEST_CASE("core.timer_wheel: one-shot, repeat, cancel, overflow, order") {
   Timestamp now{seconds(1).ns};
   TimerWheel<64> w(now);

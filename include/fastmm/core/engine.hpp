@@ -231,10 +231,10 @@ class Engine {
     warm_up();
     start();
     while (!stop_.load(std::memory_order_relaxed)) {
-      if (step() == 0) {
-        spin_.idle();
-      } else {
+      if (step() != 0) {
         spin_.active();
+      } else if (!spin_.spin()) {
+        block_idle();
       }
     }
     finish();
@@ -301,7 +301,10 @@ class Engine {
     unlatch_clock();
     in_engine_ = false;
   }
-  void stop() noexcept { stop_.store(true, std::memory_order_release); }
+  void stop() noexcept {
+    stop_.store(true, std::memory_order_release);
+    if constexpr (kFeedWaits) feed_.notify();
+  }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
 
   // ---- strategy-facing API ------------------------------------------------------------------
@@ -514,6 +517,39 @@ class Engine {
   }
 
   // ---- event loop ---------------------------------------------------------------------------
+
+  // The feed can wake a blocked engine (RingFeed): producers notify it after publishing.
+  static constexpr bool kFeedWaits = requires(Feed& f) {
+    { f.waker() } -> std::same_as<Waker&>;
+    { f.pending() } -> std::same_as<bool>;
+    f.notify();
+  };
+  static constexpr Duration kMaxIdleWait = milliseconds(1);
+
+  // Adaptive spin with the spin budget used up: block until a producer notifies the feed, the next
+  // timer or latency publish is due, or kMaxIdleWait passes. Feeds that cannot wake the engine
+  // sleep 50 us.
+  void block_idle() noexcept {
+    if constexpr (kFeedWaits) {
+      const Timestamp now = clock_.now();
+      Timestamp until = now + kMaxIdleWait;
+      if (cfg_.latency_publish_interval.ns > 0) {
+        const Timestamp publish = last_publish_ + cfg_.latency_publish_interval;
+        if (publish < until) until = publish;
+      }
+      until = timers_.next_expiry_before(until);
+      if (until <= now) return;
+      Waker& waker = feed_.waker();
+      waker.prepare_wait();
+      if (feed_.pending() || stop_.load(std::memory_order_acquire)) {
+        waker.cancel_wait();
+        return;
+      }
+      waker.wait(until - now);
+    } else {
+      sleep_for(microseconds(50));
+    }
+  }
 
   void process(const EventHeader* h) noexcept {
     ++stats_.events;

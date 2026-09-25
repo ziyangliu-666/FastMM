@@ -23,7 +23,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `name` | string |  | session name, used in logs, journal file names and the status file (default "fastmm") |
 | `cpu` | integer |  | CPU core of the engine thread; -1 = not pinned (default -1) |
 | `net_cpus` | integer array |  | CPU cores of the network threads, one per venue in order (default []) |
-| `spin_mode` | string |  | busy (spin forever) \| adaptive (back off to short sleeps when idle; use on WSL2 and laptops) (default adaptive) |
+| `spin_mode` | string |  | busy (spin forever) \| adaptive (spin briefly, then block until work arrives; use on WSL2 and laptops) (default adaptive) |
 | `net_backend` | string |  | event loop of fastmm-live and fastmm-sim-exchange: epoll \| io_uring (Linux 5.13 or newer; falls back to epoll with a warning) (default epoll) |
 | `threading` | string |  | fastmm-live: split (engine and network threads, rings between them) \| single (one venue; its network loop, the engine and order sending run on the engine thread, cpu; net_cpus is ignored) (default split) |
 | `journal` | boolean |  | record every consumed event to a .fmj journal (default true) |
@@ -45,7 +45,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `crossed_grace_ms` | integer |  | tolerate a crossed book this long before pulling its quotes, ms (default 100) |
 | `latency_publish_ms` | integer |  | latency histogram publish interval, ms (default 1000) |
 | `tsc_recalibrate_s` | integer |  | fastmm-live: TSC recalibration period, s; 0 = off (default 10) |
-| `timer_slack_ns` | integer |  | fastmm-live: timer slack of its threads, ns; how late a sleep may end (adaptive spin_mode sleeps 50 us when idle); 0 = the kernel's, 50000 (default 0) |
+| `timer_slack_ns` | integer |  | fastmm-live: timer slack of its threads, ns; how late a timed wait may end (adaptive spin_mode: the engine's idle wait, at most 1 ms, and with threading = "single" a 50 us sleep); 0 = the kernel's, 50000 (default 0) |
 | `restore_position` | boolean |  | carry the previous session's positions over from the store and replay the venue's executions since its last recorded fill (venues that can replay executions); default true |
 | `lock_memory` | boolean |  | fastmm-live: mlockall() the process, so no page is swapped out or faulted in on the hot path; needs ulimit -l above the process size, a warning otherwise (default false) |
 | `min_requote_ticks` | integer |  | keep a resting quote whose price is within this many ticks of the desired price (default 1) |
