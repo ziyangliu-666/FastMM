@@ -184,6 +184,13 @@ if(FASTMM_BUILD_NET)
         FASTMM_GATEWAY_EXE="$<TARGET_FILE:fastmm-gateway>")
       add_dependencies(fastmm_integration_tests fastmm-gateway fastmm-live)
     endif()
+    # gateway_ops_test.cpp reads the gateway with fastmm-top and drives it with fastmm-ctl.
+    if(TARGET fastmm_integration_tests AND TARGET fastmm-top AND TARGET fastmm-ctl)
+      target_compile_definitions(fastmm_integration_tests PRIVATE
+        FASTMM_TOP_EXE="$<TARGET_FILE:fastmm-top>"
+        FASTMM_CTL_EXE="$<TARGET_FILE:fastmm-ctl>")
+      add_dependencies(fastmm_integration_tests fastmm-top fastmm-ctl)
+    endif()
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
@@ -343,6 +350,18 @@ foreach(_prog fastmm-live fastmm-backtest fastmm-data fastmm-replay fastmm-pnl f
       EXPECT_REGEX "${_prog}: .*--bogus-flag")
   endif()
 endforeach()
+
+# Where --gateway <name> looks: the gateway's control socket and status file.
+if(TARGET fastmm-ctl)
+  fastmm_cli_test(apps.fastmm-ctl.gateway_path EXPECT_RC 3
+    CMD $<TARGET_FILE:fastmm-ctl> --gateway gw --dir /nonexistent status
+    EXPECT_REGEX "cannot reach /nonexistent/gw.gw.ctl")
+endif()
+if(TARGET fastmm-top)
+  fastmm_cli_test(apps.fastmm-top.gateway_path EXPECT_RC 3
+    CMD $<TARGET_FILE:fastmm-top> --gateway fastmm-no-such-gw --once
+    EXPECT_REGEX "no status segment at /dev/shm/fastmm-fastmm-no-such-gw.gw.status")
+endif()
 
 if(TARGET fastmm-data)
   fastmm_cli_test(apps.fastmm-data.fill_check EXPECT_RC 0
