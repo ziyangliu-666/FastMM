@@ -580,6 +580,28 @@ TEST_CASE("core.engine: serialize latency starts at the decision of the same eve
   CHECK(serialize.percentile(1.0) < 500'000'000ULL);
 }
 
+TEST_CASE("core.engine: sends from a timer carry no T0 and record no tick-to-trade sample") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  f.push_book("100.00", "100.02", 2);  // same prices: no requote, the last event carries a T0
+  f.drain();
+  const auto& t2t = f.engine->latency().histogram(LatencyInterval::TickToTrade);
+  const std::uint64_t samples = t2t.count();
+  const std::size_t before = f.transport.out.size();
+  f.clock.advance(seconds(1));  // the stale timer pulls the quotes
+  f.drain();
+  REQUIRE(f.transport.out.size() > before);
+  for (std::size_t i = before; i < f.transport.out.size(); ++i) {
+    const auto* h = reinterpret_cast<const EventHeader*>(f.transport.out[i].data());
+    CHECK(h->type == EventType::OutCancel);
+    CHECK(h->t0_cycles.v == 0);  // was the quiet book event's T0
+  }
+  CHECK(t2t.count() == samples);  // was a one-second tick-to-trade sample
+}
+
 TEST_CASE(
     "core.engine: commission in the base asset adjusts the position and is valued at the fill") {
   Fixture f(false);
