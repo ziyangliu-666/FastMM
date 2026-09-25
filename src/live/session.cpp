@@ -526,6 +526,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     read_previous();
     GatewayAttachRequest req;
     req.engine = cfg.engine.name;
+    req.blocks = cfg.spin_mode() == SpinMode::Adaptive;
     if (previous && cfg.engine.restore_position) {
       req.exec_since_ms = restore_since_ms(*previous);
       req.resume_executions = req.exec_since_ms > 0;
@@ -609,6 +610,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   TscCalibration last_tsc = clock.calibration();  // main thread's copy of the latest publish
   LiveTransport transport;
   RingFeed feed;
+  // Attached and adaptive: the engine sleeps on a futex in the gateway's wake page, which the
+  // gateway's network threads and this process's producers all notify.
+  if (gateway && cfg.spin_mode() == SpinMode::Adaptive) feed.waker().share(gateway->engine_flag());
   MsgRing control_ring(1U << 16);
   static_cast<void>(feed.add_ring(&control_ring));
   if (custom != nullptr) {
@@ -643,7 +647,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (replace) replace_venues |= std::uint64_t{1} << i;
   }
   if (via_gateway) {
-    // No wake hook: the gateway's network threads poll the outbound rings (live/gateway.hpp).
+    // An adaptive gateway's network threads block in their reactors: wake them after a push.
+    if (gateway->gateway_blocks())
+      transport.set_wake_hook(&GatewayClient::wake_venue, gateway.get());
     for (GatewayVenue& v : gateway->venues()) {
       static_cast<void>(feed.add_ring(v.order.get()));
       static_cast<void>(feed.add_ring(v.md.get()));
@@ -971,7 +977,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } else {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-      slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), &feed, cpu, i, cfg.spin_mode());
+      if (cfg.spin_mode() == SpinMode::Adaptive) slots[i]->consumer = &feed.waker();
+      slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode());
     }
     engine_thread = std::thread([&] { runner->run(); });
   }
