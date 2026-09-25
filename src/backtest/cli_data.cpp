@@ -70,7 +70,9 @@ int data(int argc, char** argv) {
 
   bt::BacktestConfig cfg;
   try {
-    cfg = bt::BacktestConfig::from_config(Config::load(config_path));
+    ConfigLoadOptions lo;
+    lo.substitute_env = false;  // converting data needs no API keys
+    cfg = bt::BacktestConfig::from_config(Config::load(config_path, lo));
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s: config error: %s\n", prog, e.what());
     return kExitConfig;

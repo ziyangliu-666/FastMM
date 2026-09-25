@@ -98,7 +98,9 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   bt::BacktestConfig cfg;
   Config raw;
   try {
-    raw = Config::load(config_path);
+    ConfigLoadOptions lo;
+    lo.substitute_env = false;  // a backtest connects to nothing: a live config's ${API_KEY}s stay
+    raw = Config::load(config_path, lo);
     Logger::instance().set_level(raw.log_level());
     cfg = bt::BacktestConfig::from_config(raw);
   } catch (const std::exception& e) {
