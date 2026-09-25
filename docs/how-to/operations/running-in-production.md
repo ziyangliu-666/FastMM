@@ -59,9 +59,9 @@ On Binance USDⓈ-M, if the countdown cannot be refreshed for a whole window whi
 
 ## 3. Fills you will not book
 
-No connector queries trade history. Every reconcile is an open-orders snapshot; there is no `myTrades`, `userTrades`, `execution/list` or `get_user_trades` call anywhere in `src/` or `include/`.
+Binance Spot and Deribit replay the account's trade history before every open-orders snapshot and book what the private stream missed ([Executions the private stream never delivered](../../reference/venues.md#executions-the-private-stream-never-delivered)). Binance USDⓈ-M and Bybit do not; there a reconcile is an open-orders snapshot only.
 
-While the private stream is down:
+On those, while the private stream is down:
 
 - A partial fill is lost. `Oms::reconcile_open_order` advances `cum_qty` from the snapshot (`include/fastmm/core/oms.hpp`) but never calls `PositionTracker::on_fill`, which is the only place position, PnL and fees are updated (`include/fastmm/core/engine.hpp`). The traded quantity vanishes from the engine's position.
 - A complete fill is worse: the order is missing from the snapshot, so `reconcile_end` terminates it as `Canceled`. The engine believes the order was cancelled when it traded.

@@ -16,6 +16,9 @@
 //   private/cancel_by_label     label, currency (cancels before the order id is known)
 //   private/cancel_all_by_instrument  instrument_name (kill switch, channel loss)
 //   private/get_open_orders_by_currency  currency (reconciliation)
+//   private/get_user_trades_by_currency_and_time  currency, kind any, start_timestamp,
+//                               end_timestamp (ms), count (<= 1000), sorting asc, historical
+//                               (execution replay; checked 2026-09-25)
 //   private/enable_cancel_on_disconnect  scope connection
 //   private/subscribe, public/subscribe, public/set_heartbeat (interval >= 10 s: the testnet
 //   answers -32602 "value must be >= 10"), public/test, public/auth
@@ -146,6 +149,14 @@ class DeribitOrderEncoder {
                                                         std::span<char> out) noexcept;
   static std::size_t encode_open_orders(std::int64_t id,
                                         std::string_view currency,
+                                        std::string_view access_token,
+                                        std::span<char> out) noexcept;
+  static std::size_t encode_user_trades(std::int64_t id,
+                                        std::string_view currency,
+                                        std::int64_t start_ms,
+                                        std::int64_t end_ms,
+                                        std::int64_t count,
+                                        bool historical,
                                         std::string_view access_token,
                                         std::span<char> out) noexcept;
   static std::size_t encode_cancel_all_by_instrument(std::int64_t id,

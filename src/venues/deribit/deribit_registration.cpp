@@ -77,10 +77,8 @@ void register_deribit_venue(VenueRegistry& r) {
                                     .replace = true,
                                     .positions = true,
                                     .polls = false,
-                                    // private/get_user_trades_by_instrument would serve it
-                                    // (`trade_id`, `historical` splits the last 24 h from the
-                                    // rest); not written yet.
-                                    .executions = false},
+                                    // private/get_user_trades_by_currency_and_time
+                                    .executions = true},
                            .make = &make}));
 }
 

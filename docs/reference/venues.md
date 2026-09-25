@@ -68,9 +68,13 @@ What each venue can answer, from their current documentation (2026-09-24):
 | Binance Spot | `GET /api/v3/myTrades` | per symbol (`symbol` required) | `fromId` (ascending, exclusive of neither end) **or** `startTime`/`endTime` no more than 24 h apart; the two cannot be combined | `id` (int64, per symbol); the order only as `orderId` — there is no `clientOrderId`, and `side` is `isBuyer` | yes; weight 20, limit ≤ 1000 |
 | Binance USDⓈ-M | `GET /fapi/v1/userTrades` | per symbol | `fromId` **or** a range up to 7 days, within the last 3 months; neither given returns 7 days | `id` (int64), `orderId`, `side` | no |
 | Bybit v5 | `GET /v5/execution/list` | per account (only `category` is required) | a range up to 7 days, 2 years of history, opaque `nextPageCursor`, newest first | `execId` (string), and `orderLinkId` is the client id | no |
-| Deribit | `private/get_user_trades_by_instrument` | per instrument, or `..._by_currency` per currency | `historical: false` covers the last 24 h only and `true` covers everything older; a single call cannot span both | `trade_id` (string), `order_id`, and `direction` is the **taker's** side | no |
+| Deribit | `private/get_user_trades_by_currency_and_time` (WebSocket) | per currency (`kind` optional), or `..._by_instrument_and_time` per instrument | `start_timestamp`/`end_timestamp` (ms), `count` ≤ 1000, `sorting`, `has_more`; `historical: false` covers the last 24 h only and `true` older records (indexed after a short delay, recent ones excluded); a single call cannot span both | `trade_id` (string, unique per currency), `order_id`, `label` (the client id); `direction` is documented as the taker's, see below | yes; per currency, `kind: any` |
 
-The three that are not implemented declare `executions = false` in the registry, which is what makes their reconciliations report themselves as estimates instead of being assumed exact.
+The two that are not implemented declare `executions = false` in the registry, which is what makes their reconciliations report themselves as estimates instead of being assumed exact.
+
+**Deribit.** Each currency keeps a cursor: the `timestamp` of the last row forwarded (the next `start_timestamp`, inclusive) and the `trade_id`s at that millisecond, skipped when they come back. A page with `has_more` is followed from its last row's timestamp; the replay is exact when every currency ends with `has_more: false`. A cursor older than 23 h is first paged with `historical: true` up to 23 h ago, then with `historical: false` from where that left off; the hour both cover is deduplicated by `trade_id`. After a complete replay the cursor moves to 60 s before the replay started. Over 100 pages per currency, or a full page that cannot move past its start (1000 rows in one millisecond), leaves the replay incomplete.
+
+The schema (checked 2026-09-25) describes a user trade's `direction` as "Trade direction of the taker", the same text as for public trades, while the same row's `liquidity` (M/T) and `fee` are the account's own. The connector takes the side from the order it still holds and otherwise reads `direction` as the account's side, as it does for `user.trades`; neither reading has been checked on testnet.
 
 ## Binance Spot
 
@@ -250,7 +254,7 @@ Deribit speaks JSON-RPC 2.0 over one WebSocket endpoint (`wss://test.deribit.com
 | channel | endpoint | purpose |
 |---|---|---|
 | md | `ws_url`, unauthenticated | `public/set_heartbeat`, `public/subscribe` `book.NAME.100ms`, `ticker.NAME.100ms`, `trades.NAME.100ms` |
-| private | `ws_private_url` (default `ws_url`), a second connection | `public/auth` (client_credentials, refresh_token), `public/set_heartbeat`, `private/enable_cancel_on_disconnect`, `private/subscribe` `user.orders.KIND.CURRENCY.raw` + `user.trades.KIND.CURRENCY.raw`; order entry `private/buy`, `private/sell`, `private/edit`, `private/cancel`, `private/cancel_by_label`; reconciliation `private/get_open_orders_by_currency` |
+| private | `ws_private_url` (default `ws_url`), a second connection | `public/auth` (client_credentials, refresh_token), `public/set_heartbeat`, `private/enable_cancel_on_disconnect`, `private/subscribe` `user.orders.KIND.CURRENCY.raw` + `user.trades.KIND.CURRENCY.raw`; order entry `private/buy`, `private/sell`, `private/edit`, `private/cancel`, `private/cancel_by_label`; reconciliation `private/get_user_trades_by_currency_and_time`, then `private/get_open_orders_by_currency` |
 | rest | `rest_url` | `public/get_time`, `public/get_instruments?currency=C&kind=option|future`; kill switch `private/cancel_all_by_instrument` with `Authorization: Basic base64(client_id:client_secret)` |
 
 ### Messages
@@ -271,7 +275,7 @@ Each option ticker yields a `BookTicker` and an `OptionTicker` (mark, IVs, greek
 
 ### Session
 
-Both connections enable heartbeats (interval >= 10 s; smaller values are refused with -32602) and answer every `test_request` with `public/test`. The access token goes into `params.access_token` of every private request. It is refreshed with `grant_type=refresh_token` at 80 % of `expires_in`, and an order answered with 13009 re-authenticates. After a private reconnect the venue reconciles open orders across all configured currencies (one `ReconcileMsg` Begin/End pair). When the private connection drops it cancels every subscribed instrument over REST (`cancel_on_order_channel_loss`), in addition to the venue-side cancel-on-disconnect.
+Both connections enable heartbeats (interval >= 10 s; smaller values are refused with -32602) and answer every `test_request` with `public/test`. The access token goes into `params.access_token` of every private request. It is refreshed with `grant_type=refresh_token` at 80 % of `expires_in`, and an order answered with 13009 re-authenticates. After a private reconnect the venue replays the executions and then reconciles open orders across all configured currencies (one `ReconcileMsg` Begin/End pair). When the private connection drops it cancels every subscribed instrument over REST (`cancel_on_order_channel_loss`), in addition to the venue-side cancel-on-disconnect.
 
 Cancel-on-disconnect fires "when the TCP connection is properly terminated, when the connection is closed due to 10 minutes of inactivity, or when a heartbeat detects a disconnection", and not after `private/logout`. A host that dies without sending a FIN produces none of the first two quickly, so the heartbeat is what makes this a dead man's switch rather than a ten-minute one: it is why the connector always enables `public/set_heartbeat` (minimum interval 10 s) and answers every `test_request`. Scope is `connection`, so it reaps only that socket's orders.
 

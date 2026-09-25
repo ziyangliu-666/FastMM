@@ -8,7 +8,8 @@
 //            (client_credentials), then public/set_heartbeat, private/enable_cancel_on_disconnect
 //            (optional), private/subscribe user.orders.KIND.CURRENCY.raw and
 //            user.trades.KIND.CURRENCY.raw; order entry (private/buy, sell, edit, cancel,
-//            cancel_by_label) and reconciliation (private/get_open_orders_by_currency) run here too
+//            cancel_by_label) and reconciliation (private/get_user_trades_by_currency_and_time,
+//            then private/get_open_orders_by_currency) run here too
 //   rest     rest_url (https://test.deribit.com/api/v2): public/get_instruments and public/get_time
 //            at startup; private/cancel_all_by_instrument with HTTP Basic credentials for the
 //            kill switch (independent BlockingHttp) and after the private channel drops
@@ -48,6 +49,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::deribit {
@@ -88,7 +90,8 @@ inline constexpr std::int64_t kIdTest = 4;
 inline constexpr std::int64_t kIdCancelOnDisconnect = 5;
 inline constexpr std::int64_t kIdPrivateSubscribe = 6;
 inline constexpr std::int64_t kIdReauth = 7;
-inline constexpr std::int64_t kIdOpenOrdersBase = 100;  // + currency index
+inline constexpr std::int64_t kIdOpenOrdersBase = 100;   // + currency index
+inline constexpr std::int64_t kIdExecutionsBase = 1000;  // + currency index
 
 class DeribitVenue final : public Venue {
  public:
@@ -111,6 +114,9 @@ class DeribitVenue final : public Venue {
   void on_wake() override;
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
+  bool request_executions(std::int64_t since_venue_ms = 0) override;
+  void resume_executions(std::int64_t since_venue_ms,
+                         const std::vector<std::string>& known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -155,6 +161,13 @@ class DeribitVenue final : public Venue {
   void handle_control_response(const PrivateDecodeResult& r);
   void handle_order_response(RequestKind kind, ClientOrderId id, const PrivateDecodeResult& r);
   void handle_open_orders_response(std::size_t currency_index, std::string_view json, bool error);
+  // The open-order snapshot request itself, once any execution replay before it has finished.
+  void send_open_orders();
+  // Execution replay (see deribit_venue.cpp): one query per currency at a time, paged.
+  bool send_executions_query(std::size_t currency_index);
+  void handle_executions_response(std::size_t currency_index, std::string_view json, bool error);
+  void finish_executions_for(std::size_t currency_index, bool ok);
+  [[nodiscard]] std::int64_t venue_now_ms() const noexcept;
   void drain_outbound();
   // Encodes and writes the orders `ring` holds (the outbound MsgRing or an OutboundBatch).
   template <class Ring>
@@ -213,6 +226,30 @@ class DeribitVenue final : public Venue {
   std::size_t reconcile_pending_ = 0;
   bool reconcile_failed_ = false;
   ClientOrderId reconcile_watermark_{};  // sent watermark when the open orders were requested
+  bool oo_wanted_ = false;               // a snapshot waits for the execution replay in flight
+
+  // Execution replay, per currency: the next query starts at since_ms (inclusive, the timestamp
+  // of the last row forwarded) and skips edge_ids, the rows at since_ms already forwarded.
+  struct ExecCursor {
+    std::int64_t since_ms = 0;
+    std::vector<std::string> edge_ids;
+    std::int64_t query_start_ms = 0;  // start_timestamp of the query in flight
+    std::uint32_t pages = 0;          // pages fetched in this replay
+    bool historical = false;          // the query in flight has historical: true
+  };
+  std::vector<ExecCursor> exec_cursors_;  // parallel to cfg_.currencies
+  std::int64_t exec_since_ms_ = 0;        // where a cursor starts: connect() or resume_executions()
+  std::int64_t exec_now_ms_ = 0;          // venue time the replay in flight started at
+  // Trade ids an earlier session booked; a resumed replay skips them (resume_executions).
+  std::unordered_set<std::string> known_exec_ids_;
+  // Trade ids forwarded by the replay in flight: the historical and recent queries overlap.
+  std::unordered_set<std::string> exec_seen_;
+  std::size_t exec_pending_ = 0;  // currencies still being fetched
+  bool exec_replay_ok_ = true;    // every currency so far was fetched in full
+  bool exec_replay_active_ = false;
+  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
+  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_retry_ns_ = 0;
   SentWatermark sent_;
   BatchedOrders batch_;  // orders written into the corked private connection
 
