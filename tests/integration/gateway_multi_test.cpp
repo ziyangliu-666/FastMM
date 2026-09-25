@@ -3,15 +3,19 @@
 // "a" trades the first, strategy "b" the second. The gateway and the strategies are real children.
 #include "gateway_util.hpp"
 
+#include "fastmm/core/session_state.hpp"
 #include "fastmm/live/gateway.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <regex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace fastmm;
@@ -271,6 +275,81 @@ TEST_CASE(
   stop_gateway(g);
   const std::string gw_log = fastmm::test::read_file(g.log);
   CHECK(gw_log.find("epoch " + std::to_string(ea) + ") detached after") != std::string::npos);
+}
+
+TEST_CASE(
+    "gateway: a fill the private stream missed reaches its strategy through another one's attach "
+    "replay") {
+  ServerFixture fx(two_markets());
+  const Configs c = write_configs(fx, "gw-missed");
+  const GatewayProcess g = spawn_gateway(c.gw);
+  wait_gateway_up(fx, g);
+
+  // b trades once and stops, so that its next attach restores from its store and replays.
+  {
+    const pid_t b = spawn_strategy(c.b, g);
+    REQUIRE_MESSAGE(wait_until(
+                        [&] {
+                          if (fills(fx, 1) < 1) return false;
+                          auto st = KillStateStore::load(c.b.kill);
+                          return st && st->fees.is_positive();
+                        },
+                        60000),
+                    "b never traded: " << fastmm::test::read_file(c.b.config + ".log"));
+    stop_strategy(b);
+  }
+
+  const pid_t a = spawn_strategy(c.a, g);
+  const std::uint16_t ea = wait_resting(fx, c.a, {});
+  // One of a's resting orders fills while a's private stream is out: a hears nothing of it.
+  std::string wire;
+  for (const std::string& id : fx.server.open_client_order_ids()) {
+    const auto cl = decode_cl_ord_id(id);
+    if (cl && cl_ord_id_epoch(*cl) == ea) wire = id;
+  }
+  REQUIRE(!wire.empty());
+  fx.server.set_user_stream_muted(true);
+  const Qty filled = fx.server.fill_open_order(wire);
+  REQUIRE(filled.is_positive());
+  fx.server.set_user_stream_muted(false);
+  // b's attach replays the account's executions since its last stored fill, which includes it.
+  const pid_t b = spawn_strategy(c.b, g);
+  wait_resting(fx, c.b, {ea});
+  std::this_thread::sleep_for(std::chrono::seconds(2));  // a's engine takes the fill
+
+  stop_strategy(b);
+  stop_strategy(a);
+  CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
+  const sim::server::SimServerStats ss = fx.server.stats();
+  INFO("venue BTCUSDT " << position(ss, 0).raw);
+  CHECK(store_position(c.a, c.a_name, "BTCUSDT") == position(ss, 0));
+  // a booked it from the execution itself: at its order's price, with the venue's fee.
+  const std::optional<ClientOrderId> want = decode_cl_ord_id(wire);
+  bool booked = false;
+  for (const auto& e : std::filesystem::directory_iterator(c.a.journal_dir)) {
+    if (e.path().extension() != ".fmj") continue;
+    JournalReader r;
+    REQUIRE(r.open(e.path().string()).has_value());
+    Price order_px{};
+    r.for_each([&](const EventHeader* h) {
+      if ((h->flags & EventHeader::kOutbound) != 0) {
+        if (h->type == EventType::OutNewOrder && msg_cast<OutNewOrderMsg>(h).cl_ord_id == *want)
+          order_px = msg_cast<OutNewOrderMsg>(h).price;
+        if (h->type == EventType::OutReplace && msg_cast<OutReplaceMsg>(h).cl_ord_id == *want)
+          order_px = msg_cast<OutReplaceMsg>(h).price;
+        return;
+      }
+      if (h->type != EventType::OrderFill) return;
+      const auto& f = msg_cast<OrderFillMsg>(h);
+      if (f.cl_ord_id != *want || (f.flags & OrderFillMsg::kReplayed) == 0) return;
+      CHECK(f.qty == filled);
+      CHECK(f.price == order_px);
+      CHECK(f.fee.is_positive());
+      booked = true;
+    });
+  }
+  CHECK_MESSAGE(booked, "a never booked the replayed fill of " << wire);
+  stop_gateway(g);
 }
 
 TEST_CASE("gateway: the open-notional limit refuses an order back to the strategy that sent it") {

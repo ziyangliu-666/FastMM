@@ -75,7 +75,6 @@ constexpr std::size_t kOrderTable = 1U << 14;
 constexpr std::uint32_t kOrderSpin = 100'000;
 // A venue's books are resnapshotted for an attachment whose md ring dropped at most this often.
 constexpr std::int64_t kResyncIntervalNs = 1'000'000'000;
-constexpr std::int64_t kReplayWindowNs = 60'000'000'000;
 
 struct Attachment;
 
@@ -127,11 +126,6 @@ struct VenueRouter {
   const InstrumentTable* insts = nullptr;
   StaticVector<Route*, gw::kMaxAttachments> routes;
   std::array<Route*, kMaxInstruments> owner{};
-  // The attachment whose attach started the execution replay now running: replayed fills belong
-  // to it alone until its reconciliation ends (the others booked theirs long ago), or for
-  // kReplayWindowNs when that reconciliation never comes.
-  Route* replaying = nullptr;
-  std::int64_t replaying_since_ns = 0;
 
   std::vector<ClientOrderId> hist = std::vector<ClientOrderId>(kHistory);
   std::uint64_t forwarded = 0;
@@ -327,7 +321,6 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
         if (!r->in_snapshot) continue;
         r->in_snapshot = false;
         push_order(*r, m.hdr);
-        if (v.replaying == r) v.replaying = nullptr;
       }
       // Orders the snapshot no longer holds and that had reached the venue when it was asked.
       if (!v.snap_bounded || v.snap_known) {
@@ -356,18 +349,11 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
       }
     }
   }
+  // Streamed or replayed alike: to the order's epoch, else to the instrument's owner. A replay one
+  // attachment's attach started also names the others' executions; each books only those its
+  // OMS has not (it dedupes by venue execution id, instrument and side), and among them is a fill
+  // its private stream missed.
   Route* r = v.by_epoch(m.cl_ord_id);
-  if (replayed && v.replaying != nullptr) {
-    // The replay an attach started reaches back to that strategy's last stored fill: every other
-    // attachment has booked what it names already, and some of it may be older than its engine's
-    // dedupe window.
-    if (r == v.replaying || (r == nullptr && v.owner_of(m.hdr.instrument) == v.replaying)) {
-      push_order(*v.replaying, m.hdr);
-    } else {
-      v.unrouted.fetch_add(1, std::memory_order_relaxed);
-    }
-    return;
-  }
   if (r == nullptr) r = v.owner_of(m.hdr.instrument);
   if (r != nullptr) {
     push_order(*r, m.hdr);
@@ -664,8 +650,6 @@ std::size_t gateway_hook(void* ctx) noexcept {
   if (moved != 0) v.slot->venue->on_wake();
   std::size_t n = moved;
   n += recover_md(v);
-  if (v.replaying != nullptr && steady_now().ns - v.replaying_since_ns > kReplayWindowNs)
-    v.replaying = nullptr;
   for (Route* r : v.routes) {
     if (!r->dirty) continue;
     r->dirty = false;
@@ -923,7 +907,6 @@ class Gateway {
       for (Route*& o : v.owner) {
         if (o == r) o = nullptr;
       }
-      if (v.replaying == r) v.replaying = nullptr;
       if (opts_.dry_run) return;
       std::vector<ClientOrderId> mine;
       v.orders.for_each_key([&](ClientOrderId id) {
@@ -1163,8 +1146,6 @@ class Gateway {
       s.venue->resync_books();
       v.quiet_md_state = false;
       if (resume && executions(i)) {
-        v.replaying = &r;
-        v.replaying_since_ns = steady_now().ns;
         s.venue->resume_executions(req.exec_since_ms, known);
         static_cast<void>(s.venue->request_executions(req.exec_since_ms));
       }
