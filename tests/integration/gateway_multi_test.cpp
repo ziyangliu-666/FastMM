@@ -352,6 +352,59 @@ TEST_CASE(
   stop_gateway(g);
 }
 
+TEST_CASE(
+    "gateway: another attach's replay reaching back before a strategy's store does not book its "
+    "old fills again") {
+  ServerFixture fx(two_markets());
+  const Configs c = write_configs(fx, "gw-old");
+  const GatewayProcess g = spawn_gateway(c.gw);
+  wait_gateway_up(fx, g);
+  const auto traded = [&](const SessionFiles& f, std::size_t symbol) {
+    if (fills(fx, symbol) < 1) return false;
+    auto st = KillStateStore::load(f.kill);
+    return st && st->fees.is_positive();
+  };
+
+  // b trades and stops: its store ends before anything a does.
+  {
+    const pid_t b = spawn_strategy(c.b, g);
+    REQUIRE_MESSAGE(wait_until([&] { return traded(c.b, 1); }, 60000),
+                    "b never traded: " << fastmm::test::read_file(c.b.config + ".log"));
+    stop_strategy(b);
+  }
+  // a trades for longer than the 10 s its next session's replay reaches back, and stops.
+  {
+    const pid_t a = spawn_strategy(c.a, g);
+    REQUIRE_MESSAGE(wait_until([&] { return traded(c.a, 0); }, 60000),
+                    "a never traded: " << fastmm::test::read_file(c.a.config + ".log"));
+    const std::uint64_t first = fills(fx, 0);
+    std::this_thread::sleep_for(std::chrono::seconds(15));
+    REQUIRE(fills(fx, 0) > first);
+    stop_strategy(a);
+  }
+  const Qty before = position(fx.server.stats(), 0);
+  REQUIRE(store_position(c.a, c.a_name, "BTCUSDT") == before);
+
+  // a's replacement restores from its store; its replay starts 10 s before a's last fill.
+  const pid_t a2 = spawn_strategy(c.a, g);
+  const std::uint16_t ea2 = wait_resting(fx, c.a, {});
+  // b comes back: its replay starts before every fill of a's first session, which name an epoch no
+  // attachment holds and so go to BTCUSDT's owner, a2, whose store has them.
+  const pid_t b2 = spawn_strategy(c.b, g);
+  wait_resting(fx, c.b, {ea2});
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+
+  stop_strategy(b2);
+  stop_strategy(a2);
+  CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
+  const sim::server::SimServerStats ss = fx.server.stats();
+  INFO("venue BTCUSDT " << position(ss, 0).raw << ", before a2 " << before.raw);
+  CHECK(store_position(c.a, c.a_name, "BTCUSDT") == position(ss, 0));
+  CHECK(store_position(c.b, c.b_name, "BTCUSDC") == position(ss, 1));
+  stop_gateway(g);
+  CHECK(fastmm::test::read_file(g.log).find("older than its owner's history") != std::string::npos);
+}
+
 TEST_CASE("gateway: the open-notional limit refuses an order back to the strategy that sent it") {
   ServerFixture fx(two_markets());
   // One quote is 0.0008-0.001 BTC at about 60000 (48-60): two quotes fit, a third does not, so

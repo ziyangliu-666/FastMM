@@ -33,6 +33,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fastmm::live {
@@ -94,6 +95,11 @@ struct Route {
   bool md_gap = false;            // its md ring dropped: nothing more until its Resyncing went out
   std::atomic<std::uint64_t> md_dropped{0};
   std::atomic<bool> overflow{false};  // its order ring stayed full: it has to go
+  // Where its own history starts (venue ms): the replay start it sent, or its attach time when it
+  // restored nothing. An execution naming no live order from before that is its store's (or none
+  // of its business), and the trade ids its store listed in the overlap before it are too.
+  std::int64_t replay_from_ms = 0;
+  const std::unordered_set<std::string>* known = nullptr;
 };
 
 // One order the gateway forwarded (or a reconciliation reported), for the account guards and for
@@ -152,7 +158,8 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_rate{0};
   std::atomic<std::uint64_t> refused_notional{0};
   std::atomic<std::uint64_t> refused_owner{0};
-  std::atomic<std::uint64_t> untracked{0};  // the order table was full
+  std::atomic<std::uint64_t> untracked{0};      // the order table was full
+  std::atomic<std::uint64_t> stale_replays{0};  // replayed fills older than their owner's history
 
   [[nodiscard]] Route* by_epoch(ClientOrderId id) const noexcept {
     const std::uint16_t e = cl_ord_id_epoch(id);
@@ -354,7 +361,25 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
   // OMS has not (it dedupes by venue execution id, instrument and side), and among them is a fill
   // its private stream missed.
   Route* r = v.by_epoch(m.cl_ord_id);
-  if (r == nullptr) r = v.owner_of(m.hdr.instrument);
+  if (r == nullptr) {
+    r = v.owner_of(m.hdr.instrument);
+    // Naming no live order, it goes to the owner only if the owner's store cannot hold it
+    // already: a replay another attach started can reach back before this owner's history began,
+    // and its engine never saw those executions, so it would book them a second time. (A
+    // connector that gives no trade time, exch_ts 0, is not filtered.)
+    if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 &&
+        (m.hdr.exch_ts.ns / 1'000'000 < r->replay_from_ms ||
+         (r->known != nullptr && r->known->contains(std::string(m.exec_id.view()))))) {
+      v.stale_replays.fetch_add(1, std::memory_order_relaxed);
+      FASTMM_LOG_INFO(
+          "gateway: replayed execution {} ({} ms) is older than its owner's history ({} ms) or "
+          "in its store: not routed",
+          m.exec_id.view(),
+          m.hdr.exch_ts.ns / 1'000'000,
+          r->replay_from_ms);
+      return;
+    }
+  }
   if (r != nullptr) {
     push_order(*r, m.hdr);
   } else {
@@ -733,6 +758,8 @@ struct Attachment {
   std::vector<Rings> rings;         // per venue
   std::unique_ptr<Route[]> routes;  // per venue
   std::vector<std::uint64_t> md_dropped_logged;
+  std::unordered_set<std::string> known;  // the trade ids its store listed (Route::known)
+  std::int64_t replay_from_ms = 0;        // Route::replay_from_ms
   // The wake page (live/gateway.hpp) and this process's Waker over the engine's flag in it.
   gw::WakePage* page = nullptr;
   std::unique_ptr<Waker> engine_waker;
@@ -984,14 +1011,15 @@ class Gateway {
       const std::uint64_t notional = v.refused_notional.load(std::memory_order_relaxed);
       const std::uint64_t owner = v.refused_owner.load(std::memory_order_relaxed);
       const std::uint64_t untracked = v.untracked.load(std::memory_order_relaxed);
+      const std::uint64_t stale = v.stale_replays.load(std::memory_order_relaxed);
       Logged& l = logged_[i];
       if (md != l.md || order != l.order || unrouted != l.unrouted || cancels != l.cancels ||
           rate != l.rate || notional != l.notional || owner != l.owner ||
-          untracked != l.untracked) {
+          untracked != l.untracked || stale != l.stale) {
         FASTMM_LOG_INFO(
             "gateway: [{}] discarded with nothing attached: md={} order={}; order events for no "
             "attachment: {}; gateway cancels: {}; refused: rate={} open_notional={} not_owner={}; "
-            "untracked: {}",
+            "untracked: {}; replayed fills older than their owner's history: {}",
             slots_[i]->venue->name(),
             md,
             order,
@@ -1000,8 +1028,9 @@ class Gateway {
             rate,
             notional,
             owner,
-            untracked);
-        l = Logged{md, order, unrouted, cancels, rate, notional, owner, untracked};
+            untracked,
+            stale);
+        l = Logged{md, order, unrouted, cancels, rate, notional, owner, untracked, stale};
       }
       for (const auto& a : atts_) {
         const std::uint64_t d = a->routes[i].md_dropped.load(std::memory_order_relaxed);
@@ -1025,6 +1054,7 @@ class Gateway {
     std::uint64_t notional = 0;
     std::uint64_t owner = 0;
     std::uint64_t untracked = 0;
+    std::uint64_t stale = 0;
   };
 
   // A session epoch no live attachment has, from the gateway's epoch file (fail closed).
@@ -1070,6 +1100,9 @@ class Gateway {
     a.pid = req.pid;
     a.epoch = *epoch;
     a.owned = std::move(owned);
+    a.replay_from_ms =
+        (req.flags & gw::kResumeExecutions) != 0 ? req.exec_since_ms : wall_now().ns / 1'000'000;
+    a.known.insert(known.begin(), known.end());
     // Closed once the reply is sent (or on failure); the mappings keep the page.
     struct Fd {
       int fd;
@@ -1125,6 +1158,8 @@ class Gateway {
       r.order = a.rings[i].order.get();
       r.out = a.rings[i].outbound.get();
       r.waker = strategy_blocks ? a.engine_waker.get() : nullptr;
+      r.replay_from_ms = a.replay_from_ms;
+      r.known = &a.known;
     }
     for (const InstrumentId inst : a.owned) owner_[inst.value] = &a;
     const bool resume = (req.flags & gw::kResumeExecutions) != 0;
