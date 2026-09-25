@@ -89,7 +89,7 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | Field | Type | Meaning |
 |---|---|---|
 | `name` | char[24] | `[venues.<name>]` |
-| `md`, `user`, `order` | u8 | channel states: 0 down, 1 connecting, 2 live, 3 stale |
+| `md`, `user`, `order` | u8 | channel states: 0 down, 1 connecting, 2 live, 3 stale (market data only: a quiet user or order channel is normal and shows as live) |
 | `killed`, `kill_reason` | u8, u8 | this venue's kill switch is engaged, and its `KillReason` |
 | `books_synced`, `books_total` | u32 | books in sync out of subscribed |
 | `md_messages`, `resyncs` | u64 | market-data messages, book resynchronisations |

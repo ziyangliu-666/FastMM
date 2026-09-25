@@ -487,7 +487,7 @@ void DeribitVenue::send_private(std::string_view frame, std::string_view what) {
 void DeribitVenue::on_private_state(net::ConnState s) {
   if (s == net::ConnState::Authenticating) send_auth(kIdAuth);
   const ConnState mapped = map_conn_state(s);
-  stats_.user = channel_state(s);
+  stats_.user = private_channel_state(s);
   stats_.order = stats_.user;
   if (mapped == private_state_) return;
   const ConnState prev = private_state_;

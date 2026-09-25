@@ -604,7 +604,7 @@ void BinanceUsdmVenue::request_snapshot(InstrumentId id) {
 
 void BinanceUsdmVenue::on_user_state(net::ConnState s) {
   const ConnState mapped = map_conn_state(s);
-  stats_.user = channel_state(s);
+  stats_.user = private_channel_state(s);
   if (mapped == user_state_) return;
   const ConnState prev = user_state_;
   user_state_ = mapped;
@@ -752,7 +752,7 @@ void BinanceUsdmVenue::check_positions(std::int64_t now) {
 
 void BinanceUsdmVenue::on_order_state(net::ConnState s) {
   const ConnState mapped = map_conn_state(s);
-  stats_.order = channel_state(s);
+  stats_.order = private_channel_state(s);
   if (mapped == order_state_) return;
   const ConnState prev = order_state_;
   order_state_ = mapped;

@@ -59,6 +59,13 @@ namespace fastmm::venues {
   }
 }
 
+// A user or order channel: quiet is normal there (no orders, no fills), and a dead one is caught
+// by dead_ms and reconnected, so Stale is shown as Live rather than as a fault half the time.
+[[nodiscard]] constexpr ChannelState private_channel_state(net::ConnState s) noexcept {
+  const ChannelState c = channel_state(s);
+  return c == ChannelState::Stale ? ChannelState::Live : c;
+}
+
 // Integer response header; -1 when it is absent or not a number (rate-limit headers use -1 for
 // "the venue did not say").
 [[nodiscard]] inline std::int64_t header_int(const net::HttpResponse& r,

@@ -391,7 +391,7 @@ void BybitVenue::request_resubscribe(InstrumentId id) {
 void BybitVenue::on_private_state(net::ConnState s) {
   if (s == net::ConnState::Authenticating) send_auth(&private_conn_, nullptr);
   const ConnState mapped = map_conn_state(s);
-  stats_.user = channel_state(s);
+  stats_.user = private_channel_state(s);
   if (mapped == private_state_) return;
   const ConnState prev = private_state_;
   private_state_ = mapped;
@@ -555,7 +555,7 @@ void BybitVenue::on_private_text(std::string_view t, std::int64_t ts) {
 void BybitVenue::on_trade_state(net::ConnState s) {
   if (s == net::ConnState::Authenticating) send_auth(nullptr, &trade_conn_);
   const ConnState mapped = map_conn_state(s);
-  stats_.order = channel_state(s);
+  stats_.order = private_channel_state(s);
   if (mapped == trade_state_) return;
   const ConnState prev = trade_state_;
   trade_state_ = mapped;
