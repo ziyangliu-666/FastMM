@@ -63,6 +63,12 @@ struct ControlPlane {
 // except for `status` and `help`, which answer with their text.
 [[nodiscard]] std::string control_command(std::string_view request, ControlPlane& plane);
 
+// Binds an AF_UNIX SOCK_SEQPACKET listener (non-blocking, close-on-exec) at `path` with mode 0600,
+// replacing a socket left behind by a crashed process; a path that is not a socket is never
+// removed. The descriptor, or -1 with the reason in `error`. The gateway's socket is made the same
+// way (live/gateway.hpp).
+[[nodiscard]] int listen_seqpacket(const std::string& path, std::string* error);
+
 // The listener. open() creates the socket, poll() answers whatever has arrived since the last
 // call without ever blocking, and close() removes it.
 class ControlSocket {
