@@ -165,10 +165,9 @@ TEST_CASE(
   const pid_t b = spawn_strategy(c.b, g);
   const std::uint16_t eb = wait_resting(fx, c.b, {ea});
   CHECK(ea != eb);
-  REQUIRE_MESSAGE(
-      wait_until([&] { return fills(fx, 0) >= 3 && fills(fx, 1) >= 3; }, 60000),
-      "not both traded: a: " << fastmm::test::read_file(c.a.config + ".log")
-                             << "\nb: " << fastmm::test::read_file(c.b.config + ".log"));
+  REQUIRE_MESSAGE(wait_until([&] { return fills(fx, 0) >= 3 && fills(fx, 1) >= 3; }, 60000),
+                  "not both traded: a: " << fastmm::test::read_file(c.a.config + ".log") << "\nb: "
+                                         << fastmm::test::read_file(c.b.config + ".log"));
 
   // A third strategy claiming an instrument a live one trades is refused; so is one the gateway
   // does not have. The two keep trading.
