@@ -120,6 +120,7 @@ class ShmRing {
   [[nodiscard]] std::size_t bytes_used_approx() const noexcept {
     return ctl_->tail.load(std::memory_order_acquire) - ctl_->head.load(std::memory_order_acquire);
   }
+  [[nodiscard]] bool empty_approx() const noexcept { return bytes_used_approx() == 0; }
 
  private:
   ShmRing() = default;

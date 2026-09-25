@@ -9,6 +9,7 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/shm_ring.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 
@@ -39,6 +40,30 @@ concept TransportLike =
       { t.supports_replace(v) } noexcept -> std::same_as<bool>;
     };
 
+// A ring the engine reads or writes: in-process (MsgRing) or shared with a gateway process
+// (ShmRing). One of the two pointers is set; the branch is taken the same way every time.
+struct RingRef {
+  MsgRing* local = nullptr;
+  ShmRing* shared = nullptr;
+  [[nodiscard]] bool valid() const noexcept { return local != nullptr || shared != nullptr; }
+  [[nodiscard]] FASTMM_FORCE_INLINE const std::byte* try_peek() noexcept {
+    return FASTMM_LIKELY(local != nullptr) ? local->try_peek() : shared->try_peek();
+  }
+  FASTMM_FORCE_INLINE void release() noexcept {
+    if (FASTMM_LIKELY(local != nullptr)) {
+      local->release();
+    } else {
+      shared->release();
+    }
+  }
+  [[nodiscard]] FASTMM_FORCE_INLINE bool try_push(const void* msg, std::uint32_t len) noexcept {
+    return FASTMM_LIKELY(local != nullptr) ? local->try_push(msg, len) : shared->try_push(msg, len);
+  }
+  [[nodiscard]] bool empty_approx() const noexcept {
+    return local != nullptr ? local->empty_approx() : shared->empty_approx();
+  }
+};
+
 // Polls N inbound MsgRings round-robin, at most kFeedBudgetPerRing messages per ring per
 // visit so a chatty venue cannot starve the others. Consumption order is the canonical
 // order that the journal records.
@@ -52,31 +77,29 @@ class RingFeed {
   RingFeed() noexcept = default;
   RingFeed(const RingFeed&) = delete;
   RingFeed& operator=(const RingFeed&) = delete;
-  bool add_ring(MsgRing* ring) noexcept {
-    if (count_ >= kMaxFeedRings || ring == nullptr) return false;
-    rings_[count_++] = ring;
-    return true;
-  }
+  bool add_ring(MsgRing* ring) noexcept { return add(RingRef{ring, nullptr}); }
+  // A ring a gateway process writes (the engine attached to fastmm-gateway).
+  bool add_ring(ShmRing* ring) noexcept { return add(RingRef{nullptr, ring}); }
   [[nodiscard]] std::size_t ring_count() const noexcept { return count_; }
 
   [[nodiscard]] const EventHeader* next() noexcept {
     if (count_ == 0) return nullptr;
     for (std::size_t visited = 0; visited < count_; ++visited) {
       if (budget_ == 0) advance();
-      const std::byte* p = rings_[cur_]->try_peek();
+      const std::byte* p = rings_[cur_].try_peek();
       if (p != nullptr) return reinterpret_cast<const EventHeader*>(p);
       advance();
     }
     return nullptr;
   }
   void release() noexcept {
-    rings_[cur_]->release();
+    rings_[cur_].release();
     --budget_;
   }
   // Any ring holds a message: the consumer's recheck between Waker::prepare_wait() and wait().
   [[nodiscard]] bool pending() const noexcept {
     for (std::size_t i = 0; i < count_; ++i) {
-      if (!rings_[i]->empty_approx()) return true;
+      if (!rings_[i].empty_approx()) return true;
     }
     return false;
   }
@@ -85,11 +108,16 @@ class RingFeed {
   FASTMM_FORCE_INLINE void notify() noexcept { waker_.notify(); }
 
  private:
+  bool add(RingRef r) noexcept {
+    if (count_ >= kMaxFeedRings || !r.valid()) return false;
+    rings_[count_++] = r;
+    return true;
+  }
   void advance() noexcept {
     cur_ = (cur_ + 1) % count_;
     budget_ = kFeedBudgetPerRing;
   }
-  MsgRing* rings_[kMaxFeedRings] = {};
+  RingRef rings_[kMaxFeedRings] = {};
   std::size_t count_ = 0;
   std::size_t cur_ = 0;
   std::uint32_t budget_ = kFeedBudgetPerRing;
@@ -132,10 +160,11 @@ class LiveTransport {
   LiveTransport() noexcept = default;
 
   bool set_venue(VenueId v, MsgRing* ring, bool supports_replace) noexcept {
-    if (v.value >= kMaxVenues || ring == nullptr) return false;
-    rings_[v.value] = ring;
-    replace_[v.value] = supports_replace;
-    return true;
+    return set(v, RingRef{ring, nullptr}, supports_replace);
+  }
+  // The venue's outbound ring in a gateway process (the engine attached to fastmm-gateway).
+  bool set_venue(VenueId v, ShmRing* ring, bool supports_replace) noexcept {
+    return set(v, RingRef{nullptr, ring}, supports_replace);
   }
   void set_wake_hook(WakeFn fn, void* ctx) noexcept {
     wake_ = fn;
@@ -152,7 +181,7 @@ class LiveTransport {
       const EventHeader* const one = &m;
       return send(std::span<const EventHeader* const>(&one, 1)) == 1;
     }
-    MsgRing* r = ring_for(m.venue);
+    RingRef* r = ring_for(m.venue);
     if (FASTMM_UNLIKELY(r == nullptr)) return false;
     if (FASTMM_UNLIKELY(!r->try_push(&m, m.len))) {
       ++full_;
@@ -174,7 +203,7 @@ class LiveTransport {
     std::size_t ok = 0;
     std::uint32_t touched = 0;
     for (const EventHeader* m : batch) {
-      MsgRing* r = ring_for(m->venue);
+      RingRef* r = ring_for(m->venue);
       if (r == nullptr || !r->try_push(m, m->len)) {
         full_ += batch.size() - ok;
         break;
@@ -197,10 +226,16 @@ class LiveTransport {
   [[nodiscard]] std::uint64_t dropped_full() const noexcept { return full_; }
 
  private:
-  [[nodiscard]] MsgRing* ring_for(VenueId v) const noexcept {
-    return v.value < kMaxVenues ? rings_[v.value] : nullptr;
+  bool set(VenueId v, RingRef r, bool supports_replace) noexcept {
+    if (v.value >= kMaxVenues || !r.valid()) return false;
+    rings_[v.value] = r;
+    replace_[v.value] = supports_replace;
+    return true;
   }
-  MsgRing* rings_[kMaxVenues] = {};
+  [[nodiscard]] RingRef* ring_for(VenueId v) noexcept {
+    return v.value < kMaxVenues && rings_[v.value].valid() ? &rings_[v.value] : nullptr;
+  }
+  RingRef rings_[kMaxVenues] = {};
   bool replace_[kMaxVenues] = {};
   WakeFn wake_ = nullptr;
   void* wake_ctx_ = nullptr;

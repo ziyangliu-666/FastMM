@@ -3,6 +3,7 @@
 #include "test_support.hpp"
 
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/transport.hpp"
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -140,4 +141,45 @@ TEST_CASE("core.shm_ring: a file that is not a ring is refused") {
   const std::byte* m = reader->try_peek();
   REQUIRE(m != nullptr);
   CHECK(seq_of(m) == 5);
+}
+
+// The engine reads a gateway's rings through the same RingFeed and writes through the same
+// LiveTransport as its in-process ones.
+TEST_CASE("core.shm_ring: RingFeed and LiveTransport take shared rings next to local ones") {
+  MsgRing local(1U << 12);
+  auto gw_md = ShmRing::create(ring_path("feed_md.ring"), 1U << 12);
+  auto gw_out = ShmRing::create(ring_path("feed_out.ring"), 1U << 12);
+  REQUIRE(gw_md.has_value());
+  REQUIRE(gw_out.has_value());
+  // The engine's own views, as a second process would open them.
+  auto md_view = ShmRing::open(ring_path("feed_md.ring"));
+  auto out_view = ShmRing::open(ring_path("feed_out.ring"));
+  REQUIRE(md_view.has_value());
+  REQUIRE(out_view.has_value());
+
+  RingFeed feed;
+  REQUIRE(feed.add_ring(&local));
+  REQUIRE(feed.add_ring(&*md_view));
+  const auto a = record(64, 1);
+  const auto b = record(64, 2);
+  REQUIRE(local.try_push(a.data(), 64));
+  REQUIRE(gw_md->try_push(b.data(), 64));
+  CHECK(feed.pending());
+  std::vector<std::uint64_t> seen;
+  while (const EventHeader* h = feed.next()) {
+    seen.push_back(seq_of(reinterpret_cast<const std::byte*>(h)));
+    feed.release();
+  }
+  CHECK(seen == std::vector<std::uint64_t>{1, 2});
+  CHECK_FALSE(feed.pending());
+
+  LiveTransport t;
+  REQUIRE(t.set_venue(VenueId{0}, &*out_view, false));
+  OutCancelMsg c{};
+  init_header(c, EventType::OutCancel, InstrumentId{0}, VenueId{0});
+  c.cl_ord_id = ClientOrderId{7};
+  CHECK(t.send(c.hdr));
+  const std::byte* got = gw_out->try_peek();
+  REQUIRE(got != nullptr);
+  CHECK(reinterpret_cast<const OutCancelMsg*>(got)->cl_ord_id == ClientOrderId{7});
 }
