@@ -113,6 +113,7 @@ struct VenueSlot {
   venues::EventSink md_sink;
   venues::EventSink order_sink;
   std::atomic<bool> wake{false};
+  SleepFlag net_blocked;  // set while an adaptive network thread blocks in the reactor
   std::atomic<bool> stop{false};
   std::atomic<std::uint64_t> order_overflows{0};
   std::thread thread;
@@ -123,22 +124,31 @@ struct Wake {
   bool busy;  // [engine] spin_mode = "busy": the network threads never block
 };
 
-// The flag is published after the messages (release; the network thread acquires it). A busy
-// network thread polls it on every loop iteration, so only an adaptive one needs the eventfd.
+// The flag is published after the messages (release; the network thread acquires it). The network
+// thread polls it on every loop iteration, so the eventfd is written only while an adaptive one is
+// blocked in the reactor.
 void wake_venue(void* ctx, VenueId v) noexcept {
   auto* w = static_cast<Wake*>(ctx);
   if (v.value >= w->slots->size()) return;
   VenueSlot& s = *(*w->slots)[v.value];
   s.wake.store(true, std::memory_order_release);
-  if (!w->busy) s.reactor->wake();
+  if (!w->busy && s.net_blocked.take()) s.reactor->wake();
 }
 
 void on_order_overflow(void* ctx, const venues::EventSink&) noexcept {
   static_cast<VenueSlot*>(ctx)->order_overflows.fetch_add(1, std::memory_order_relaxed);
 }
 
-// Adaptive spin: events pushed to the engine notify its feed, which wakes the engine only while
-// it is blocked (Engine::block_idle).
+// Adaptive spin: after the last activity the network thread keeps polling for this long before it
+// blocks in the reactor (for at most kNetMaxBlockMs, the cadence of Venue::poll()), so the engine's
+// reaction to an event it just delivered finds the thread awake.
+constexpr std::int64_t kNetSpinNs = 200'000;
+constexpr int kNetMaxBlockMs = 1;
+
+// Busy: poll sockets and the engine's wake flag forever. Adaptive: the same while active and for
+// kNetSpinNs after, then block in the reactor until a socket, timer, posted task or the engine
+// (wake_venue) needs the thread. Events pushed to the engine notify its feed, which wakes the
+// engine only while it is blocked (Engine::block_idle).
 void net_loop(VenueSlot& s, RingFeed& feed, int cpu, std::size_t index, SpinMode spin) {
   const std::string name = "fm-net-" + std::to_string(index);
   set_thread_name(name.c_str());
@@ -146,19 +156,42 @@ void net_loop(VenueSlot& s, RingFeed& feed, int cpu, std::size_t index, SpinMode
   Logger::instance().attach_current_thread();
   s.venue->connect(*s.reactor);
   const bool busy = spin == SpinMode::Busy;
-  const int wait_ms = busy ? 0 : 1;
   std::uint64_t pushed = 0;
+  std::int64_t idle_since = 0;  // 0 while active
+  bool block = false;
   while (!s.stop.load(std::memory_order_relaxed)) {
-    s.reactor->run_once(wait_ms);
-    s.venue->poll();
-    if (!busy) {
-      if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
-        pushed = p;
-        feed.notify();
-      }
+    int wait_ms = 0;
+    if (block) {
+      // wake_venue() takes the flag after it set `wake`: either this sees `wake` or it writes the
+      // eventfd.
+      s.net_blocked.set();
+      if (!s.wake.load(std::memory_order_acquire) && !s.stop.load(std::memory_order_acquire))
+        wait_ms = kNetMaxBlockMs;
     }
-    if (s.wake.load(std::memory_order_relaxed) && s.wake.exchange(false, std::memory_order_acquire))
+    bool active = s.reactor->run_once(wait_ms) > 0;
+    if (block) s.net_blocked.clear();
+    s.venue->poll();
+    if (s.wake.load(std::memory_order_relaxed) &&
+        s.wake.exchange(false, std::memory_order_acquire)) {
       s.venue->on_wake();
+      active = true;
+    }
+    if (busy) continue;
+    if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
+      pushed = p;
+      feed.notify();
+      active = true;
+    }
+    block = false;
+    if (active) {
+      idle_since = 0;
+    } else if (idle_since == 0) {
+      idle_since = net::Reactor::now_ns();
+    } else if (net::Reactor::now_ns() - idle_since >= kNetSpinNs) {
+      block = true;
+    } else {
+      _mm_pause();
+    }
   }
   s.venue->on_wake();  // flush cancels the engine queued during shutdown
   for (int i = 0; i < 20; ++i) s.reactor->run_once(5);

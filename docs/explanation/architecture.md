@@ -42,7 +42,7 @@ The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 
 | Thread | Owns | Waits by |
 |---|---|---|
-| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), busy (`spin_mode = busy`) or with a 1 ms timeout (`adaptive`) |
+| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), busy (`spin_mode = busy`); `adaptive` polls while active and for 200 µs after, then waits with a 1 ms timeout, and the engine writes the wake eventfd only while it waits |
 | `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing, its `TscClock` copy | busy-spin; with `spin_mode = adaptive` it spins, then blocks on a futex the network threads signal after they push events (at most until the next timer, 1 ms) |
 | `fm-journal` (when journaling) | `JournalFileWriter`: drains the journal ring into the `.fmj` file | spin, then short sleeps |
 | log sink (`Logger::start`) | formats log records from every thread's ring and writes them | spin, then short sleeps |
