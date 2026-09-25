@@ -19,6 +19,8 @@
 // socket stays open (no FIN, port still bound) until remove() cancels the request. add() of a
 // new socket that reuses the number of a closed but still registered fd cancels the stale
 // registration; this cannot be detected for anonymous-inode descriptors (eventfd, timerfd).
+#include "fastmm/net/inplace_callback.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -26,7 +28,6 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 struct io_uring_sqe;  // NOLINT(readability-identifier-naming): <liburing.h>
@@ -69,7 +70,8 @@ inline constexpr TimerId kInvalidTimer = 0;
 
 class Reactor {
  public:
-  using TimerCallback = std::function<void()>;
+  // Stored inline (no heap): captures up to InplaceCallback::kCapacity bytes.
+  using TimerCallback = InplaceCallback;
   using Task = std::function<void()>;
 
   Reactor() : Reactor(ReactorBackend::Epoll) {}
@@ -96,13 +98,14 @@ class Reactor {
   bool remove(int fd) noexcept;
   bool is_registered(int fd) const noexcept;
 
-  // Timers (reactor thread only). Deadlines are on the now_ns() clock.
+  // Timers (reactor thread only). Deadlines are on the now_ns() clock. Arming a timer allocates
+  // only when more timers are live than ever before (slot and heap growth).
   TimerId add_timer(std::int64_t deadline_ns, TimerCallback cb);
   TimerId add_timer_after(std::int64_t delay_ns, TimerCallback cb) {
     return add_timer(now_ns() + delay_ns, std::move(cb));
   }
   bool cancel_timer(TimerId id) noexcept;
-  std::size_t active_timers() const noexcept { return timers_.size(); }
+  std::size_t active_timers() const noexcept { return active_timers_; }
 
   // Thread-safe: queue a task for the reactor thread and wake it.
   void post(Task task);
@@ -169,9 +172,24 @@ class Reactor {
   bool busy_poll_ = false;
   std::vector<IoHandler*> handlers_;  // indexed by fd; nullptr when not registered
 
-  std::vector<TimerEntry> heap_;                       // min-heap on deadline
-  std::unordered_map<TimerId, TimerCallback> timers_;  // live timers; cancel = erase
-  TimerId next_timer_id_ = 1;
+  // Live timers by slot. A TimerId is (sequence << kTimerSlotBits) | slot, so the id of a cancelled
+  // or fired timer no longer matches its slot once the slot is reused.
+  static constexpr unsigned kTimerSlotBits = 24;
+  static constexpr TimerId kTimerSlotMask = (TimerId{1} << kTimerSlotBits) - 1;
+  struct TimerSlot {
+    TimerId id = kInvalidTimer;
+    TimerCallback cb;
+  };
+  [[nodiscard]] bool timer_live(TimerId id) const noexcept {
+    return timer_slots_[id & kTimerSlotMask].id == id;
+  }
+  void release_timer_slot(std::size_t slot) noexcept;
+
+  std::vector<TimerEntry> heap_;  // min-heap on deadline; cancelled entries are skipped
+  std::vector<TimerSlot> timer_slots_;
+  std::vector<std::uint32_t> free_timer_slots_;
+  std::size_t active_timers_ = 0;
+  TimerId next_timer_seq_ = 1;
 
   std::mutex post_mutex_;
   std::vector<Task> posted_;

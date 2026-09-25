@@ -6,6 +6,12 @@
 //   BM_ReactorEchoThread/<backend>/<busy>  echo server on its own reactor thread; the benchmark
 //                                          thread writes and runs its reactor until the reply
 //                                          arrives (two cross-thread wake-ups per iteration)
+//   BM_ReactorTimerArmCancel               arm a 1 s timer and cancel it (a connection's heartbeat
+//                                          or health timer on every pong or reconnect)
+//   BM_ReactorTimerRearm                   one run_once(0) whose timer fires and re-arms itself
+//                                          (a venue's housekeeping timer); includes epoll_wait
+//
+// The timer callbacks capture a pointer and a std::weak_ptr, as the venues' timers do.
 //
 // Arguments: backend 0 = epoll, 1 = io_uring (skipped when unsupported); busy 0 = blocking waits,
 // 1 = busy polling. Counters p50 / p99 are per-iteration round-trip times in ns.
@@ -26,6 +32,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -195,5 +202,42 @@ void BM_ReactorEchoThread(benchmark::State& state) {
 }
 BENCHMARK(BM_ReactorEchoThread)->ArgsProduct({{0, 1}, {0, 1}})->UseRealTime();
 FASTMM_BENCH_NEEDS_CORES(BM_ReactorEchoThread, 2);
+
+void BM_ReactorTimerArmCancel(benchmark::State& state) {
+  Reactor reactor;
+  const auto alive = std::make_shared<int>(0);
+  std::weak_ptr<int> weak = alive;
+  int fired = 0;
+  for (auto _ : state) {
+    const TimerId id = reactor.add_timer_after(1'000'000'000, [p = &fired, weak] {
+      if (!weak.expired()) ++*p;
+    });
+    benchmark::DoNotOptimize(reactor.cancel_timer(id));
+  }
+  benchmark::DoNotOptimize(fired);
+}
+BENCHMARK(BM_ReactorTimerArmCancel);
+
+struct Rearm {
+  Reactor* r;
+  std::uint64_t* fired;
+  std::weak_ptr<int> alive;
+  void operator()() const {
+    if (alive.expired()) return;
+    ++*fired;
+    static_cast<void>(r->add_timer_after(0, Rearm{r, fired, alive}));
+  }
+};
+
+void BM_ReactorTimerRearm(benchmark::State& state) {
+  Reactor reactor;
+  const auto alive = std::make_shared<int>(0);
+  std::uint64_t fired = 0;
+  static_cast<void>(reactor.add_timer_after(0, Rearm{&reactor, &fired, alive}));
+  for (auto _ : state) reactor.run_once(0);
+  state.counters["fired_per_iter"] =
+      static_cast<double>(fired) / static_cast<double>(state.iterations());
+}
+BENCHMARK(BM_ReactorTimerRearm);
 
 }  // namespace

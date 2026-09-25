@@ -143,6 +143,42 @@ FASTMM_BACKEND_TEST("reactor: timers fire in deadline order and can be cancelled
   CHECK(r.active_timers() == 0);
 }
 
+TEST_CASE("reactor: a stale timer id does not cancel the timer that reuses its slot") {
+  Reactor r;
+  bool first = false;
+  bool second = false;
+  const TimerId a = r.add_timer_after(1'000'000, [&] { first = true; });
+  REQUIRE(r.cancel_timer(a));
+  const TimerId b = r.add_timer_after(1'000'000, [&] { second = true; });
+  CHECK(a != b);
+  CHECK_FALSE(r.cancel_timer(a));
+  CHECK_FALSE(r.cancel_timer(kInvalidTimer));
+  CHECK(r.active_timers() == 1);
+  REQUIRE(run_until(r, [&] { return second; }));
+  CHECK_FALSE(first);
+  CHECK_FALSE(r.cancel_timer(b));  // fired
+  CHECK(r.active_timers() == 0);
+}
+
+TEST_CASE("reactor: cancelling and re-arming long timers keeps deadline order") {
+  Reactor r;
+  std::vector<int> order;
+  const auto now = Reactor::now_ns();
+  TimerId pending = kInvalidTimer;
+  for (int i = 0; i < 1000; ++i) {  // compacts the cancelled entries several times
+    r.cancel_timer(pending);
+    pending = r.add_timer(now + 3'600'000'000'000, [&] { order.push_back(-1); });
+  }
+  r.add_timer(now + 20'000'000, [&] { order.push_back(2); });
+  r.add_timer(now + 10'000'000, [&] { order.push_back(1); });
+  r.add_timer(now + 20'000'000, [&] { order.push_back(3); });  // same deadline: insertion order
+  CHECK(r.active_timers() == 4);
+  REQUIRE(run_until(r, [&] { return order.size() == 3; }));
+  CHECK(order == std::vector<int>{1, 2, 3});
+  CHECK(r.active_timers() == 1);
+  CHECK(r.cancel_timer(pending));
+}
+
 FASTMM_BACKEND_TEST("reactor: timer callback may re-arm itself", test_timer_rearm) {
   Reactor r(backend);
   int ticks = 0;

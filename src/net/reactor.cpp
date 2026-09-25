@@ -245,16 +245,49 @@ bool Reactor::is_registered(int fd) const noexcept {
 }
 
 TimerId Reactor::add_timer(std::int64_t deadline_ns, TimerCallback cb) {
-  const TimerId id = next_timer_id_++;
-  timers_.emplace(id, std::move(cb));
+  std::uint32_t slot = 0;
+  if (!free_timer_slots_.empty()) {
+    slot = free_timer_slots_.back();
+    free_timer_slots_.pop_back();
+  } else {
+    if (timer_slots_.size() > kTimerSlotMask) throw std::length_error("too many reactor timers");
+    slot = static_cast<std::uint32_t>(timer_slots_.size());
+    timer_slots_.emplace_back();
+    // release_timer_slot() then pushes without allocating.
+    if (free_timer_slots_.capacity() < timer_slots_.capacity())
+      free_timer_slots_.reserve(timer_slots_.capacity());
+  }
+  const TimerId id = (next_timer_seq_++ << kTimerSlotBits) | slot;
+  TimerSlot& s = timer_slots_[slot];
+  s.id = id;
+  s.cb = std::move(cb);
+  ++active_timers_;
+  // Cancelled timers leave their heap entries until the deadline passes. Before the heap would
+  // grow, drop them when they are at least half of it, so cancel-and-re-arm does not allocate.
+  if (heap_.size() == heap_.capacity() && heap_.size() >= 2 * active_timers_) {
+    std::erase_if(heap_, [this](const TimerEntry& e) { return !timer_live(e.id); });
+    std::make_heap(heap_.begin(), heap_.end(), std::greater<>{});
+  }
   heap_.push_back(TimerEntry{deadline_ns, id});
   std::push_heap(heap_.begin(), heap_.end(), std::greater<>{});
   return id;
 }
 
 bool Reactor::cancel_timer(TimerId id) noexcept {
+  const auto slot = id & kTimerSlotMask;
+  if (id == kInvalidTimer || slot >= timer_slots_.size() || timer_slots_[slot].id != id)
+    return false;
   // Lazy cancellation: the heap entry stays and is skipped when it surfaces.
-  return timers_.erase(id) > 0;
+  release_timer_slot(slot);
+  return true;
+}
+
+void Reactor::release_timer_slot(std::size_t slot) noexcept {
+  TimerSlot& s = timer_slots_[slot];
+  s.id = kInvalidTimer;
+  s.cb.reset();
+  --active_timers_;
+  free_timer_slots_.push_back(static_cast<std::uint32_t>(slot));
 }
 
 void Reactor::post(Task task) {
@@ -535,10 +568,10 @@ void Reactor::run_expired_timers() {
     std::pop_heap(heap_.begin(), heap_.end(), std::greater<>{});
     const TimerEntry entry = heap_.back();
     heap_.pop_back();
-    auto it = timers_.find(entry.id);
-    if (it == timers_.end()) continue;  // cancelled
-    TimerCallback cb = std::move(it->second);
-    timers_.erase(it);  // erased before the call so the callback may re-arm itself
+    if (!timer_live(entry.id)) continue;  // cancelled (its slot may be in use again)
+    const auto slot = entry.id & kTimerSlotMask;
+    TimerCallback cb = std::move(timer_slots_[slot].cb);
+    release_timer_slot(slot);  // before the call, so the callback may re-arm itself
     cb();
   }
 }
