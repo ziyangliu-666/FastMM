@@ -528,6 +528,16 @@ void BinanceUsdmVenue::on_md_open() {
   md_feed_->on_connected();  // start every syncer -> REST snapshots
 }
 
+// A new consumer (a strategy attached to fastmm-gateway) needs whole books: every syncer asks for
+// a snapshot again, which the engine receives after a Resyncing state. Nothing to do before the
+// channel is live: its first snapshots are on the way.
+void BinanceUsdmVenue::resync_books() {
+  if (md_feed_ == nullptr || md_state_ != ConnState::Live) return;
+  for (InstrumentId id : subscribed_) {
+    if (UsdmDepthSync* sync = md_feed_->sync(id)) sync->resync(SyncReason::Explicit, now_ns());
+  }
+}
+
 // Trades are informational for the engine: their connection state is logged, not reported, so a
 // quiet aggTrade stream never clears the books.
 void BinanceUsdmVenue::on_trades_state(net::ConnState s) {

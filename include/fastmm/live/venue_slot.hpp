@@ -1,7 +1,7 @@
 #pragma once
 // A venue and its network thread, as fastmm-live (src/live/session.cpp) and fastmm-gateway
-// (src/live/gateway.cpp) both run it: the connector, its reactor, the rings its sinks write into and
-// the outbound ring it drains, and net_loop(), the thread body.
+// (src/live/gateway.cpp) both run it: the connector, its reactor, the rings its sinks write into
+// and the outbound ring it drains, and net_loop(), the thread body.
 //
 //   make_venue_slots()   builds the connectors and loads their reference data (main thread)
 //   wire_venue_slot()    reactor, rings, sinks; attaches the venue and subscribes its instruments
