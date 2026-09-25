@@ -1,10 +1,11 @@
 // fastmm-gateway holds the venue connections; strategy processes (fastmm-live --gateway) attach to
 // it, trade through shared-memory rings and go. The simulator runs in this process, the gateway and
 // the strategies are real children: a strategy's death has to be a real one, kill -9 included.
+#include "fastmm/live/gateway.hpp"
+
 #include "process_util.hpp"
 
 #include "fastmm/core/session_state.hpp"
-#include "fastmm/live/gateway.hpp"
 #include "fastmm/live/session.hpp"
 
 #include <algorithm>
@@ -112,14 +113,15 @@ TEST_CASE(
 
   // First strategy: trade, and have quotes resting at the venue when it dies.
   const pid_t first = spawn_strategy(f, g);
-  REQUIRE_MESSAGE(wait_until(
-                      [&] {
-                        if (fx.server.stats().fills < 1) return false;
-                        auto st = KillStateStore::load(f.kill);
-                        return st && st->fees.is_positive();
-                      },
-                      60000),
-                  "the first strategy never traded: " << fastmm::test::read_file(f.config + ".log"));
+  REQUIRE_MESSAGE(
+      wait_until(
+          [&] {
+            if (fx.server.stats().fills < 1) return false;
+            auto st = KillStateStore::load(f.kill);
+            return st && st->fees.is_positive();
+          },
+          60000),
+      "the first strategy never traded: " << fastmm::test::read_file(f.config + ".log"));
   // One strategy at a time: a second attach is refused while the first holds the gateway.
   {
     std::string err;
@@ -149,14 +151,14 @@ TEST_CASE(
   // replays the venue's executions since then into it, and it trades.
   const sim::server::SimServerStats before = fx.server.stats();
   const pid_t second = spawn_strategy(f, g);
-  REQUIRE_MESSAGE(wait_until(
-                      [&] {
-                        const sim::server::SimServerStats s = fx.server.stats();
-                        return s.orders_accepted > before.orders_accepted && s.fills > before.fills;
-                      },
-                      60000),
-                  "the second strategy never traded: "
-                      << fastmm::test::read_file(f.config + ".log"));
+  REQUIRE_MESSAGE(
+      wait_until(
+          [&] {
+            const sim::server::SimServerStats s = fx.server.stats();
+            return s.orders_accepted > before.orders_accepted && s.fills > before.fills;
+          },
+          60000),
+      "the second strategy never traded: " << fastmm::test::read_file(f.config + ".log"));
   REQUIRE(::kill(second, SIGTERM) == 0);
   CHECK(reap(second) == live::kExitOk);
   CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
