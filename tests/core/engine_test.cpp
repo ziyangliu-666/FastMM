@@ -990,6 +990,50 @@ TEST_CASE("core.engine: repeated cancel rejects ask the venue to reconcile") {
   }
 }
 
+// A restart restores the position before any market data arrives. The position limit and, once
+// the first book marks it, the exposure caps count it: a restart is no way around either.
+TEST_CASE("core.engine: a restored position counts against the limits from the first order") {
+  Fixture f(true, [](EngineConfig& cfg) {
+    cfg.risk.max_gross_notional = Notional::from_decimal("150").value();
+  });
+  ReconcileMsg p{};
+  init_header(p, EventType::Reconcile, InstrumentId{0}, VenueId{0});
+  p.kind = ReconcileMsg::Kind::Position;
+  p.position_qty = qt("1");  // max_position 1
+  p.avg_px = px("100");
+  f.push(p);
+  f.drain();
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  CHECK(f.engine->position(InstrumentId{0}).qty == qt("1"));
+  auto& ctx = f.engine->context();
+  NewOrderRequest r{};
+  r.instrument = InstrumentId{0};
+  r.side = Side::Buy;
+  r.price = px("99.50");
+  r.qty = qt("0.1");
+  const auto buy = ctx.send(r);
+  REQUIRE_FALSE(buy.has_value());
+  CHECK(buy.error() == RejectReason::MaxPosition);
+  // The gross cap sees the restored 100 of exposure too: 0.6 more at 99.5 would pass 150.
+  f.engine->risk().set_limits(
+      [&] {
+        RiskLimits l = f.engine->risk().limits();
+        l.max_position = qt("10");
+        return l;
+      }(),
+      Timestamp{seconds(1000).ns});
+  r.qty = qt("0.6");
+  const auto gross = ctx.send(r);
+  REQUIRE_FALSE(gross.has_value());
+  CHECK(gross.error() == RejectReason::MaxGrossNotional);
+  // Reducing it is always allowed.
+  r.side = Side::Sell;
+  r.price = px("100.50");
+  r.qty = qt("0.5");
+  CHECK(ctx.send(r).has_value());
+}
+
 // Order::created was never read: a request whose ack was lost held its pool slot, its
 // max_open_orders slot and its open quantity for the rest of the session.
 TEST_CASE("core.engine: an order without an ack is cancelled after ack_timeout") {
