@@ -666,6 +666,7 @@ void BybitVenue::write_orders(Ring& ring) {
 void BybitVenue::fail_batch() {
   for (const BatchedOrders::Entry& e : batch_.entries()) {
     ++stats_.order_send_failures;
+    unsend(stats_, e.kind);
     ++stats_.order_events;
     if (e.kind == OrderCommandKind::Cancel) {
       emit_cancel_reject(*order_sink_,

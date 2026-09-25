@@ -812,6 +812,7 @@ void BinanceVenue::write_orders(Ring& ring) {
 void BinanceVenue::fail_batch() {
   for (const BatchedOrders::Entry& e : batch_.entries()) {
     ++stats_.order_send_failures;
+    unsend(stats_, e.kind);
     if (e.kind == OrderCommandKind::Cancel) {
       emit_cancel_reject(
           e.instrument, e.cl_ord_id, RejectReason::TransportFull, 0, "order batch not written");

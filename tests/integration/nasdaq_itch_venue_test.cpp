@@ -493,6 +493,9 @@ TEST_CASE("nasdaq_itch venue: sim_ouch orders round trip and are timed wire to w
   // 5. A resting order, then cancel_all from another thread: the simulator cancels on disconnect
   //    and the venue reports the session down with an empty reconciliation.
   o.cl_ord_id = ClientOrderId{104};
+  // Stamped from recent market data: the simulator keeps the send stamps of the last datagrams
+  // only, and under load step 1's has left the ring by now.
+  o.hdr.t0_cycles = h.last_md_t0;
   h.push_outbound(o);
   REQUIRE(h.pump(2000, [&] { return h.has(EventType::OrderAck); }));
   std::thread killer([&] { CHECK(h.venue().cancel_all()); });

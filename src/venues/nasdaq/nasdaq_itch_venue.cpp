@@ -926,6 +926,7 @@ void NasdaqItchVenue::write_orders(Ring& ring) {
 void NasdaqItchVenue::fail_batch() noexcept {
   for (const BatchedOrders::Entry& e : batch_.entries()) {
     ++stats_.order_send_failures;
+    unsend(stats_, e.kind);
     OrderCommand c;
     c.kind = e.kind;
     c.instrument = e.instrument;

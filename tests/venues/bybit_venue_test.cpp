@@ -580,6 +580,9 @@ TEST_CASE("bybit.venue: a batch whose write fails rejects its orders") {
         ++batch_rejects;
     }
     CHECK(batch_rejects == 2);
+    // ...and taken back out of orders_sent: only the batches that were written count.
+    l.venue->disconnect();
+    CHECK(l.venue->status().orders_sent == (id - 0x100) - batch_rejects);
   }
   h.srv.stop();
 }

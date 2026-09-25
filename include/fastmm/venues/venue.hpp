@@ -140,6 +140,22 @@ struct VenueStatus {
   VenueFeedStatus feed;                 // multicast venues only
 };
 
+// An order counted as sent whose batch was then never written (the connection failed at
+// uncork()): the connector rejects it, so it is taken back out of the sent counters.
+inline void unsend(VenueStatus& s, OrderCommandKind k) noexcept {
+  switch (k) {
+    case OrderCommandKind::New:
+      --s.orders_sent;
+      break;
+    case OrderCommandKind::Cancel:
+      --s.cancels_sent;
+      break;
+    case OrderCommandKind::Replace:
+      --s.replaces_sent;
+      break;
+  }
+}
+
 class Venue {
  public:
   virtual ~Venue() = default;

@@ -114,8 +114,9 @@ assumed exact.
 **The soak's other two findings.** (2) An order sent right after an order-channel reconnect can be
 counted as sent and never reach the venue. The reconciliation now settles it *honestly* - the
 execution replay proves it never traded, so `reconcile_end` cancelling it is a fact rather than a
-guess - but `VenueStatus::orders_sent` still counts a WebSocket write that the socket discarded, and
-that is worth fixing at the source. (3) `cancel_all()` now retries a rate-limited refusal (418/429)
+guess - and `VenueStatus::orders_sent` no longer counts the orders of a batch whose write failed
+(`unsend()`, 2026-09-25). A frame the kernel took and the peer never read still counts: only the
+reconciliation can tell those apart. (3) `cancel_all()` now retries a rate-limited refusal (418/429)
 three times before reporting failure, because the kill switch has no other remedy; a genuine
 multi-minute IP ban still ends in `false`, and the caller still treats that as final.
 
