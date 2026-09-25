@@ -48,9 +48,16 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    gateway_test.cpp`: kill -9 of the strategy leaves no open order at the simulator 5-10 ms later,
    md/api sessions opened stay the same, the next strategy restores, trades, and its stored
    position equals the venue's.
-4. Several strategies per gateway: the client order id carries a strategy slot, the gateway routes
-   order events by it, and account-level limits (position, exposure, loss, order rate) are checked
-   in the gateway before a request leaves.
+4. Several strategies per gateway. Design:
+   * The gateway hands out the session epoch on attach (it owns the epoch file), so epochs are
+     unique across strategies. Every client order id already carries its epoch in the high bits,
+     so the gateway routes each order event to the attachment that owns that epoch; a snapshot row
+     of an epoch no one owns is a dead session's order and the gateway cancels it itself.
+   * An instrument is owned by at most one attached strategy (attach names the instruments it
+     trades; a clash is refused). Market data goes to every attachment. This keeps an account-level
+     position report (USD-M `positionRisk`) attributable; sharing an instrument is a later problem.
+   * Account-level limits (gross/net notional across strategies, the venue's order-rate budget)
+     are checked in the gateway, where every order passes, before it reaches the connector.
 
 ## 2026-09-25: an execution was booked twice after a long session
 
