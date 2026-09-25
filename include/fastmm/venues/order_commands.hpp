@@ -84,13 +84,16 @@ struct OrderCommand {
   }
 };
 
-// Highest client order id (New or Replace) a venue has taken from the outbound ring. The value
+// The last client order id (New or Replace) a venue has taken from the outbound ring. The value
 // at the time a venue requests its open orders is stamped into that snapshot's ReconcileMsg Begin:
-// the engine's orders above it had not been sent, so the snapshot cannot show them.
+// the engine's orders above it had not been sent, so the snapshot cannot show them. One engine
+// allocates its ids in the order it sends them, so the last is also the highest; fastmm-gateway
+// interleaves several engines' ids on one venue and finds the point the snapshot was taken at from
+// the last one (live/gateway.hpp).
 class SentWatermark {
  public:
   void note(const OrderCommand& c) noexcept {
-    if (c.kind != OrderCommandKind::Cancel && c.cl_ord_id.value > high_.value) high_ = c.cl_ord_id;
+    if (c.kind != OrderCommandKind::Cancel) high_ = c.cl_ord_id;
   }
   [[nodiscard]] ClientOrderId value() const noexcept { return high_; }
   static void stamp(ReconcileMsg& begin, ClientOrderId watermark) noexcept {
