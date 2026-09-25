@@ -13,8 +13,10 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/live/control_socket.hpp"
+#include "fastmm/live/gateway.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/thread_affinity.hpp"
+#include "fastmm/live/venue_slot.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/store_thread.hpp"
@@ -97,106 +99,6 @@ std::string cpu_list(const std::vector<int>& cpus) {
     s += std::to_string(c);
   }
   return s;
-}
-
-std::size_t ring_size(std::size_t bytes) {
-  return std::bit_ceil(std::max<std::size_t>(bytes, 1U << 16));
-}
-
-// Per-venue plumbing. Heap allocated so addresses stay stable for the sinks/hooks.
-struct VenueSlot {
-  std::unique_ptr<venues::Venue> venue;
-  std::unique_ptr<net::Reactor> reactor;
-  std::unique_ptr<MsgRing> md_ring;
-  std::unique_ptr<MsgRing> order_ring;
-  std::unique_ptr<MsgRing> outbound;
-  venues::EventSink md_sink;
-  venues::EventSink order_sink;
-  std::atomic<bool> wake{false};
-  SleepFlag net_blocked;  // set while an adaptive network thread blocks in the reactor
-  std::atomic<bool> stop{false};
-  std::atomic<std::uint64_t> order_overflows{0};
-  std::thread thread;
-};
-
-struct Wake {
-  std::vector<std::unique_ptr<VenueSlot>>* slots;
-  bool busy;  // [engine] spin_mode = "busy": the network threads never block
-};
-
-// The flag is published after the messages (release; the network thread acquires it). The network
-// thread polls it on every loop iteration, so the eventfd is written only while an adaptive one is
-// blocked in the reactor.
-void wake_venue(void* ctx, VenueId v) noexcept {
-  auto* w = static_cast<Wake*>(ctx);
-  if (v.value >= w->slots->size()) return;
-  VenueSlot& s = *(*w->slots)[v.value];
-  s.wake.store(true, std::memory_order_release);
-  if (!w->busy && s.net_blocked.take()) s.reactor->wake();
-}
-
-void on_order_overflow(void* ctx, const venues::EventSink&) noexcept {
-  static_cast<VenueSlot*>(ctx)->order_overflows.fetch_add(1, std::memory_order_relaxed);
-}
-
-// Adaptive spin: after the last activity the network thread keeps polling for this long before it
-// blocks in the reactor (for at most kNetMaxBlockMs, the cadence of Venue::poll()), so the engine's
-// reaction to an event it just delivered finds the thread awake.
-constexpr std::int64_t kNetSpinNs = 200'000;
-constexpr int kNetMaxBlockMs = 1;
-
-// Busy: poll sockets and the engine's wake flag forever. Adaptive: the same while active and for
-// kNetSpinNs after, then block in the reactor until a socket, timer, posted task or the engine
-// (wake_venue) needs the thread. Events pushed to the engine notify its feed, which wakes the
-// engine only while it is blocked (Engine::block_idle).
-void net_loop(VenueSlot& s, RingFeed& feed, int cpu, std::size_t index, SpinMode spin) {
-  const std::string name = "fm-net-" + std::to_string(index);
-  set_thread_name(name.c_str());
-  pin_to_cpu(cpu);
-  Logger::instance().attach_current_thread();
-  s.venue->connect(*s.reactor);
-  const bool busy = spin == SpinMode::Busy;
-  std::uint64_t pushed = 0;
-  std::int64_t idle_since = 0;  // 0 while active
-  bool block = false;
-  while (!s.stop.load(std::memory_order_relaxed)) {
-    int wait_ms = 0;
-    if (block) {
-      // wake_venue() takes the flag after it set `wake`: either this sees `wake` or it writes the
-      // eventfd.
-      s.net_blocked.set();
-      if (!s.wake.load(std::memory_order_acquire) && !s.stop.load(std::memory_order_acquire))
-        wait_ms = kNetMaxBlockMs;
-    }
-    bool active = s.reactor->run_once(wait_ms) > 0;
-    if (block) s.net_blocked.clear();
-    s.venue->poll();
-    if (s.wake.load(std::memory_order_relaxed) &&
-        s.wake.exchange(false, std::memory_order_acquire)) {
-      s.venue->on_wake();
-      active = true;
-    }
-    if (busy) continue;
-    if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
-      pushed = p;
-      feed.notify();
-      active = true;
-    }
-    block = false;
-    if (active) {
-      idle_since = 0;
-    } else if (idle_since == 0) {
-      idle_since = net::Reactor::now_ns();
-    } else if (net::Reactor::now_ns() - idle_since >= kNetSpinNs) {
-      block = true;
-    } else {
-      _mm_pause();
-    }
-  }
-  s.venue->on_wake();  // flush cancels the engine queued during shutdown
-  for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
-  s.venue->disconnect();
-  s.reactor->run_once(0);
 }
 
 // Run-to-completion ([engine] threading = "single"): the engine thread runs the venue's network
@@ -293,29 +195,6 @@ void recalibrate_tsc(TscCalibrator& calibrator,
   last = r.calibration;
 }
 
-void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, bool final) {
-  const std::string_view tag = final ? std::string_view("final ") : std::string_view();
-  if (st.wire_tick_to_trade.count != 0) {
-    FASTMM_LOG_INFO(
-        "[{}] {}order latency: wire_t2t p50={}ns p99={}ns n={} encode p50={}ns send p50={}ns n={}",
-        venue,
-        tag,
-        st.wire_tick_to_trade.p50_ns,
-        st.wire_tick_to_trade.p99_ns,
-        st.wire_tick_to_trade.count,
-        st.order_encode.p50_ns,
-        st.order_send.p50_ns,
-        st.order_send.count);
-  } else if (st.order_send.count != 0) {
-    FASTMM_LOG_INFO("[{}] {}order latency: encode p50={}ns send p50={}ns n={}",
-                    venue,
-                    tag,
-                    st.order_encode.p50_ns,
-                    st.order_send.p50_ns,
-                    st.order_send.count);
-  }
-}
-
 // Log lines carry at most kLogMaxStrBytes of a string argument, so a long breakdown is split over
 // several lines with the same prefix, cut between reasons.
 void log_reject_breakdown(std::string_view kind, const RejectCounts& c) {
@@ -364,27 +243,6 @@ void copy_feed_status(const venues::VenueFeedStatus& f, StatusFeed& out) noexcep
   out.xdp_rx_ring_full = f.xdp_rx_ring_full;
   out.xdp_fill_ring_empty = f.xdp_fill_ring_empty;
   out.xdp_fallback = f.xdp_fallback;
-}
-
-void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool final) {
-  if (f.state == venues::FeedState::None) return;
-  FASTMM_LOG_INFO(
-      "[{}] {}feed={} packets={} a={} b={} gaps={} recovered={} lost={} snapshots={} "
-      "overflows={} book_errors={} kernel_to_t0 p50={}ns p99={}ns",
-      venue,
-      final ? std::string_view("final ") : std::string_view(),
-      to_string(f.state),
-      f.packets,
-      f.line_packets[0],
-      f.line_packets[1],
-      f.gaps,
-      f.recovered,
-      f.unrecovered,
-      f.snapshot_recoveries,
-      f.recovery_overflows,
-      f.book_errors,
-      f.kernel_to_t0.p50_ns,
-      f.kernel_to_t0.p99_ns);
 }
 
 std::string host_name() {
@@ -449,6 +307,12 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
   return *rec;
 }
 
+// Where the first execution replay of a restored session starts (venue ms; 0: no replay).
+std::int64_t restore_since_ms(const store::Recovery& prev) {
+  return prev.last_fill_ns > 0 ? (prev.last_fill_ns - store::Recovery::kResumeOverlapNs) / 1'000'000
+                               : 0;
+}
+
 // Carries the previous session's positions over, on venues that can replay what happened while
 // nothing was running. The position enters the engine as a reconciliation on the venue's order
 // ring, so the journal records it and a replay starts from the same place; then the venue's
@@ -456,19 +320,24 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
 // not have - fills of orders that were still resting when the process died, and trades made on the
 // account outside FastMM - with their real prices and fees. A venue that cannot replay executions
 // starts flat, as before: a stored position with nothing to bring it up to date could be wrong.
-template <class Slots>
+//
+// With fastmm-gateway the messages go on the control ring instead (this process does not produce
+// into the gateway's order ring) and the execution replay's start travels in the attach request.
+struct RestoreVenue {
+  std::string_view name;
+  bool can_replay = false;  // VenueCapabilities::executions
+};
+
+template <class Push, class Resume>
 void restore_positions(const store::Recovery& prev,
-                       const Config& cfg,
                        const InstrumentTable& instruments,
-                       Slots& slots) {
+                       std::span<const RestoreVenue> venues,
+                       Push&& push,
+                       Resume&& resume) {
   if (prev.position_state.empty() && prev.last_fill_ns == 0) return;
-  const std::int64_t since_ms =
-      prev.last_fill_ns > 0 ? (prev.last_fill_ns - store::Recovery::kResumeOverlapNs) / 1'000'000
-                            : 0;
-  for (std::size_t i = 0; i < slots.size(); ++i) {
-    auto& s = *slots[i];
-    const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
-    const bool can_replay = entry != nullptr && entry->caps.executions;
+  const std::int64_t since_ms = restore_since_ms(prev);
+  for (std::size_t i = 0; i < venues.size(); ++i) {
+    const bool can_replay = venues[i].can_replay;
     const VenueId vid{static_cast<std::uint8_t>(i)};
     for (const store::Recovery::PositionState& p : prev.position_state) {
       if (p.qty_raw == 0) continue;
@@ -482,7 +351,7 @@ void restore_positions(const store::Recovery& prev,
             "{}: not restoring the previous position {} {} - this venue cannot replay what "
             "happened "
             "while nothing was running, so the session starts flat",
-            s.venue->name(),
+            venues[i].name,
             p.symbol,
             Qty::from_raw(p.qty_raw));
         continue;
@@ -492,29 +361,15 @@ void restore_positions(const store::Recovery& prev,
       m.kind = ReconcileMsg::Kind::Position;
       m.position_qty = Qty::from_raw(p.qty_raw);
       m.avg_px = Price::from_raw(p.avg_px_raw);
-      static_cast<void>(s.order_sink.push(m.hdr));
+      push(i, m);
       FASTMM_LOG_INFO("{}: restored position {} {} @ {} from the previous session",
-                      s.venue->name(),
+                      venues[i].name,
                       p.symbol,
                       m.position_qty,
                       m.avg_px);
     }
-    if (can_replay && since_ms > 0) s.venue->resume_executions(since_ms, prev.recent_exec_ids);
+    if (can_replay && since_ms > 0) resume(i, since_ms, prev.recent_exec_ids);
   }
-}
-
-const char* short_state(venues::ChannelState s) {
-  switch (s) {
-    case venues::ChannelState::Down:
-      return "down";
-    case venues::ChannelState::Connecting:
-      return "conn";
-    case venues::ChannelState::Live:
-      return "live";
-    case venues::ChannelState::Stale:
-      return "stale";
-  }
-  return "?";
 }
 
 }  // namespace
@@ -598,16 +453,21 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   const char* prog = opts.program.c_str();
   const LiveStrategy* const custom = opts.strategy;
   // ---- instruments, venues, reference data (main thread, blocking) ---------------------
+  // Attached to fastmm-gateway: the venues, their reference data and the instrument table are the
+  // gateway's.
+  const bool via_gateway = !opts.gateway_path.empty();
   InstrumentTable instruments;
-  try {
-    instruments = load_instruments(cfg);
-  } catch (const std::exception& e) {
-    std::fprintf(stderr, "%s: %s\n", prog, e.what());
-    return kExitConfig;
-  }
-  if (instruments.size() == 0) {
-    std::fprintf(stderr, "%s: no [[instruments]] configured\n", prog);
-    return kExitConfig;
+  if (!via_gateway) {
+    try {
+      instruments = load_instruments(cfg);
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+      return kExitConfig;
+    }
+    if (instruments.size() == 0) {
+      std::fprintf(stderr, "%s: no [[instruments]] configured\n", prog);
+      return kExitConfig;
+    }
   }
   const StrategyEntry* const strategy =
       custom != nullptr ? nullptr : StrategyRegistry::instance().find(cfg.strategy.name);
@@ -642,26 +502,62 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
 
-  std::vector<std::unique_ptr<VenueSlot>> slots;
+  VenueSlots slots;
+  std::unique_ptr<GatewayClient> gateway;
+  std::vector<std::string> venue_names;
   std::uint64_t replace_venues = 0;  // bit v: venue v trades with cancel-replace (journal header)
-  venues::VenueFactoryOptions vopts;
-  vopts.dry_run = opts.dry_run;
-  vopts.record_raw_dir = opts.record_raw_dir;
-  vopts.busy_poll = cfg.spin_mode() == SpinMode::Busy;
-  if (!vopts.record_raw_dir.empty()) std::filesystem::create_directories(vopts.record_raw_dir);
-  for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
-    auto slot = std::make_unique<VenueSlot>();
-    try {
-      slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vopts);
-    } catch (const std::exception& e) {
-      std::fprintf(stderr, "%s: %s\n", prog, e.what());
+  // What the previous session left behind, read before the venues attach so its positions can be
+  // carried over (restore_positions). Read-only: the store itself is opened further down.
+  std::optional<store::Recovery> previous;
+  const auto read_previous = [&] {
+    if (const std::string b = store::configured_backend(cfg.storage); b != store::kNoBackend) {
+      store::register_builtin_backends();
+      previous = log_previous_session(b, cfg);
+    }
+  };
+  if (via_gateway) {
+    if (cfg.single_threaded()) {
+      std::fprintf(stderr,
+                   "%s: [engine] threading = \"single\" runs the venue in this process; it "
+                   "cannot attach to a gateway\n",
+                   prog);
       return kExitConfig;
     }
-    if (auto r = slot->venue->load_reference_data(instruments); !r) {
-      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
+    read_previous();
+    GatewayAttachRequest req;
+    req.engine = cfg.engine.name;
+    if (previous && cfg.engine.restore_position) {
+      req.exec_since_ms = restore_since_ms(*previous);
+      req.resume_executions = req.exec_since_ms > 0;
+      req.known_exec_ids = previous->recent_exec_ids;
+    }
+    std::string err;
+    gateway = GatewayClient::attach(opts.gateway_path, req, &err);
+    if (gateway == nullptr) {
+      std::fprintf(stderr, "%s: gateway %s: %s\n", prog, opts.gateway_path.c_str(), err.c_str());
       return kExitVenue;
     }
-    slots.push_back(std::move(slot));
+    instruments = gateway->instruments();
+    for (const GatewayVenue& v : gateway->venues()) venue_names.push_back(v.name);
+    FASTMM_LOG_INFO(
+        "gateway: attached to {} (attachment {}): {} venue(s), {} instrument(s) with the "
+        "gateway's reference data",
+        opts.gateway_path,
+        gateway->attach_id(),
+        venue_names.size(),
+        instruments.size());
+    if (instruments.size() == 0) {
+      std::fprintf(stderr, "%s: the gateway has no instruments\n", prog);
+      return kExitConfig;
+    }
+  } else {
+    venues::VenueFactoryOptions vopts;
+    vopts.dry_run = opts.dry_run;
+    vopts.record_raw_dir = opts.record_raw_dir;
+    vopts.busy_poll = cfg.spin_mode() == SpinMode::Busy;
+    if (!vopts.record_raw_dir.empty()) std::filesystem::create_directories(vopts.record_raw_dir);
+    if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots); rc != 0) return rc;
+    for (const auto& s : slots) venue_names.emplace_back(s->venue->name());
   }
   // Every PnL total, and with it [risk] max_loss, is one currency-less Notional. The venues'
   // reference data has been loaded, so kInverse is known here.
@@ -732,48 +628,62 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } waker_guard{custom};
   if (custom != nullptr && custom->set_waker) custom->set_waker([&feed] { feed.notify(); });
   Wake wake_ctx{&slots, cfg.spin_mode() == SpinMode::Busy};
-  net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
-  static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, net_backend));  // validated
-  if (net::Reactor::resolve_backend(net_backend) != net_backend) {
-    FASTMM_LOG_WARN(
-        "[engine] net_backend = \"io_uring\" but io_uring is not available (kernel too "
-        "old, disabled or not permitted); falling back to epoll");
-    net_backend = net::ReactorBackend::Epoll;
-  }
-  // What the previous session left behind, read before the venues attach so its positions can be
-  // carried over (restore_positions). Read-only: the store itself is opened further down.
-  std::optional<store::Recovery> previous;
-  if (const std::string b = store::configured_backend(cfg.storage); b != store::kNoBackend) {
-    store::register_builtin_backends();
-    previous = log_previous_session(b, cfg);
-  }
+  const net::ReactorBackend net_backend =
+      via_gateway ? net::ReactorBackend::Epoll : resolve_net_backend(cfg);
+  if (!via_gateway) read_previous();
   for (std::size_t i = 0; i < slots.size(); ++i) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
-    s.reactor = std::make_unique<net::Reactor>(net_backend);
-    s.md_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
-    s.order_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.order_ring_bytes));
-    s.outbound = std::make_unique<MsgRing>(ring_size(cfg.engine.order_ring_bytes));
-    s.md_sink.attach(s.md_ring.get(), venues::SinkPolicy::Drop);
-    s.order_sink.attach(s.order_ring.get(), venues::SinkPolicy::Spin);
-    s.order_sink.set_overflow_callback(&on_order_overflow, &s);
+    wire_venue_slot(s, vid, cfg, net_backend, symbols, instruments, &tsc_pub);
     // Orders first: order events must not wait behind a burst of market data.
     static_cast<void>(feed.add_ring(s.order_ring.get()));
     static_cast<void>(feed.add_ring(s.md_ring.get()));
     const bool replace = s.venue->caps().supports_replace && cfg.venues[i].supports_replace;
     transport.set_venue(vid, s.outbound.get(), replace);
     if (replace) replace_venues |= std::uint64_t{1} << i;
-    s.venue->attach(symbols, instruments, s.md_sink, s.order_sink, s.outbound.get());
-    s.venue->set_tsc_calibration_source(&tsc_pub);
-    std::vector<InstrumentId> mine;
-    for (const Instrument& inst : instruments) {
-      if (inst.venue == vid) mine.push_back(inst.id);
-    }
-    s.venue->subscribe(mine);
   }
-  if (previous && cfg.engine.restore_position)
-    restore_positions(*previous, cfg, instruments, slots);
-  transport.set_wake_hook(&wake_venue, &wake_ctx);
+  if (via_gateway) {
+    // No wake hook: the gateway's network threads poll the outbound rings (live/gateway.hpp).
+    for (GatewayVenue& v : gateway->venues()) {
+      static_cast<void>(feed.add_ring(v.order.get()));
+      static_cast<void>(feed.add_ring(v.md.get()));
+      transport.set_venue(v.id, v.outbound.get(), v.replace);
+      if (v.replace) replace_venues |= std::uint64_t{1} << v.id.value;
+    }
+    if (previous && cfg.engine.restore_position) {
+      std::vector<RestoreVenue> rv;
+      for (const GatewayVenue& v : gateway->venues()) rv.push_back({v.name, v.executions});
+      restore_positions(
+          *previous,
+          instruments,
+          rv,
+          [&](std::size_t, const ReconcileMsg& m) {
+            if (!control_ring.try_push(&m, m.hdr.len))
+              FASTMM_LOG_ERROR("control ring full: a restored position was dropped");
+          },
+          [](std::size_t, std::int64_t, const std::vector<std::string>&) {});
+    }
+  } else {
+    if (previous && cfg.engine.restore_position) {
+      std::vector<RestoreVenue> rv;
+      for (std::size_t i = 0; i < slots.size(); ++i) {
+        const venues::VenueEntry* entry =
+            venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+        rv.push_back({slots[i]->venue->name(), entry != nullptr && entry->caps.executions});
+      }
+      restore_positions(
+          *previous,
+          instruments,
+          rv,
+          [&](std::size_t i, const ReconcileMsg& m) {
+            static_cast<void>(slots[i]->order_sink.push(m.hdr));
+          },
+          [&](std::size_t i, std::int64_t since_ms, const std::vector<std::string>& known) {
+            slots[i]->venue->resume_executions(since_ms, known);
+          });
+    }
+    transport.set_wake_hook(&wake_venue, &wake_ctx);
+  }
 
   // ---- engine + journal -------------------------------------------------------------------
   RunnerDeps deps;
@@ -1061,8 +971,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } else {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-      slots[i]->thread =
-          std::thread(net_loop, std::ref(*slots[i]), std::ref(feed), cpu, i, cfg.spin_mode());
+      slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), &feed, cpu, i, cfg.spin_mode());
     }
     engine_thread = std::thread([&] { runner->run(); });
   }
@@ -1072,7 +981,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       "threading={}",
       deps.engine.session_id,
       strategy_name,
-      slots.size(),
+      venue_names.size(),
       instruments.size(),
       opts.dry_run,
       deps.engine.session_epoch,
@@ -1099,7 +1008,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   set_status_name(snap.engine_name, cfg.engine.name);
   set_status_name(snap.strategy, strategy_name);
   snap.venue_count =
-      static_cast<std::uint8_t>(std::min<std::size_t>(slots.size(), kStatusMaxVenues));
+      static_cast<std::uint8_t>(std::min<std::size_t>(venue_names.size(), kStatusMaxVenues));
   const auto publish_status = [&](StatusRunState state, const EngineLiveStats& live) {
     snap.state = state;
     snap.updated_ns = wall_now().ns;
@@ -1128,14 +1037,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i)
       snap.latency[i] = to_status_latency(live.latency.interval[i]);
     for (std::size_t i = 0; i < snap.venue_count; ++i) {
-      const venues::Venue* v = slots[i]->venue.get();
-      const venues::VenueStatus st = v->status();
       StatusVenue& sv = snap.venues[i];
       const VenueId vid{static_cast<std::uint8_t>(i)};
-      set_status_name(sv.name, v->name());
+      set_status_name(sv.name, venue_names[i]);
       sv.killed = (live.kill_flags & RiskEngine::venue_bit(vid)) != 0 ? 1 : 0;
       sv.kill_reason =
           static_cast<std::uint8_t>(live.venue_kill_reasons[RiskEngine::venue_slot(vid)]);
+      if (i >= slots.size()) continue;  // the venue runs in the gateway
+      const venues::Venue* v = slots[i]->venue.get();
+      const venues::VenueStatus st = v->status();
       sv.md = static_cast<std::uint8_t>(st.md);
       sv.user = static_cast<std::uint8_t>(st.user);
       sv.order = static_cast<std::uint8_t>(st.order);
@@ -1200,7 +1110,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         last_tsc.has_rate() ? "use the TSC (constant_tsc)" : "use clock_gettime");
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
   // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written,
-  // 8 the control socket's `stop`
+  // 8 the control socket's `stop`, 9 the gateway closed the attachment
   int reason = 0;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
@@ -1253,8 +1163,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     return true;
   };
   plane.venue = [&](std::string_view name, VenueId& out) {
-    for (std::size_t i = 0; i < slots.size(); ++i) {
-      if (slots[i]->venue->name() != name) continue;
+    for (std::size_t i = 0; i < venue_names.size(); ++i) {
+      if (venue_names[i] != name) continue;
       out = VenueId{static_cast<std::uint8_t>(i)};
       return true;
     }
@@ -1331,6 +1241,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
     if (reason == 0 && inline_ctx.unsupported.load()) reason = 6;
+    // The gateway exited or dropped this attachment: nothing reaches the venues any more.
+    if (reason == 0 && gateway && !gateway->connected()) {
+      FASTMM_LOG_ERROR("the gateway closed the attachment: no market data, no orders");
+      reason = 9;
+    }
     // A journal that cannot be written (a full filesystem, an I/O error) means the session is no
     // longer recoverable: stop trading rather than keep going blind.
     if (reason == 0 && journal && journal->failed()) {
@@ -1351,20 +1266,20 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         new_venue_kills != 0) {
       reported_venue_kills |= new_venue_kills;
       std::size_t trading = 0;
-      for (std::size_t i = 0; i < slots.size(); ++i) {
+      for (std::size_t i = 0; i < venue_names.size(); ++i) {
         if ((live.kill_flags & RiskEngine::venue_bit(VenueId{static_cast<std::uint8_t>(i)})) == 0)
           ++trading;
       }
-      for (std::size_t i = 0; i < slots.size(); ++i) {
+      for (std::size_t i = 0; i < venue_names.size(); ++i) {
         const VenueId vid{static_cast<std::uint8_t>(i)};
         if ((new_venue_kills & RiskEngine::venue_bit(vid)) == 0) continue;
         FASTMM_LOG_ERROR(
             "[{}] venue kill switch engaged ({}): its quotes are pulled and new orders to it are "
             "refused; {} of {} venue(s) still trading",
-            slots[i]->venue->name(),
+            venue_names[i],
             live.venue_kill_reasons[RiskEngine::venue_slot(vid)],
             trading,
-            slots.size());
+            venue_names.size());
       }
     }
     if ((live.kill_flags & 1U) != 0 && live.kill_reason != KillReason::Requested) {
@@ -1402,29 +1317,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       for (std::size_t i = 0; i < slots.size(); ++i) {
         venues::Venue* v = slots[i]->venue.get();
         slots[i]->reactor->post([v] { v->on_timer(net::Reactor::now_ns()); });
-        const venues::VenueStatus st = v->status();
-        FASTMM_LOG_INFO(
-            "[{}] md={} user={} order={} books={}/{} md_msgs={} resyncs={} malformed={} dropped={} "
-            "orders={} cancels={} order_events={} rest={}/{}err reconnects={} clock_offset_ms={}",
-            v->name(),
-            short_state(st.md),
-            short_state(st.user),
-            short_state(st.order),
-            st.books_synced,
-            st.books_total,
-            st.md_messages,
-            st.resyncs,
-            st.md_malformed,
-            st.md_dropped,
-            st.orders_sent,
-            st.cancels_sent,
-            st.order_events,
-            st.rest_requests,
-            st.rest_errors,
-            st.reconnects,
-            st.clock_offset_ms);
-        log_wire_latency(v->name(), st, false);
-        log_feed(v->name(), st.feed, false);
+        log_venue_status(*v);
       }
     }
   }
@@ -1442,6 +1335,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } else if (reason == 7) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (the journal cannot be written: {})",
                      to_string(journal->error()));
+  } else if (reason == 9) {
+    FASTMM_LOG_ERROR("fastmm-live: shutting down (the gateway went away)");
   } else {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
                     reason == 1   ? std::string_view("duration elapsed")
@@ -1458,7 +1353,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_ERROR("control ring full: kill switch message dropped");
   feed.notify();
   bool cancel_ok = true;
-  if (!opts.dry_run) {
+  if (gateway) {
+    FASTMM_LOG_WARN(
+        "fastmm-live: no venue cancel_all here: the gateway cancels every open order when this "
+        "attachment closes");
+  } else if (!opts.dry_run) {
     for (auto& s : slots) cancel_ok = s->venue->cancel_all() && cancel_ok;
   }
   // Let queued cancels reach the wire, then stop the engine and the net threads.
@@ -1466,6 +1365,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   runner->stop();
   engine_thread.join();
   if (custom != nullptr && custom->finished) custom->finished(*runner);
+  if (gateway) {
+    gateway->close();  // the detach: the gateway cancels what rests
+    FASTMM_LOG_INFO("gateway: detached");
+  }
   // Single: the engine thread ran the network loop and has flushed it.
   for (auto& s : slots) {
     s->stop.store(true);
@@ -1545,11 +1448,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   persist_kill(final_live);
   // The file stays: monitors show the final numbers and the kill reason.
   publish_status(StatusRunState::Stopped, final_live);
-  const int rc = !cancel_ok                                  ? kExitRuntime
-                 : reason == 4                               ? kExitKilled
-                 : reason == 5                               ? kExitSlowTier
-                 : reason == 3 || reason == 6 || reason == 7 ? kExitRuntime
-                                                             : kExitOk;
+  const int rc = !cancel_ok                                                 ? kExitRuntime
+                 : reason == 4                                              ? kExitKilled
+                 : reason == 5                                              ? kExitSlowTier
+                 : reason == 3 || reason == 6 || reason == 7 || reason == 9 ? kExitRuntime
+                                                                            : kExitOk;
   if (store_thread) {
     store_thread->stop();  // drains and commits everything the ring still holds
     store::SessionClose sc;

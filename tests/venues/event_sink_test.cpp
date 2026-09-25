@@ -2,7 +2,12 @@
 // runs after every commit; on a full ring it runs before giving up, instead of the spin.
 #include "fastmm/venues/event_sink.hpp"
 
+#include "test_support.hpp"
+
 #include <doctest/doctest.h>
+
+#include <filesystem>
+#include <string>
 
 using namespace fastmm;
 using fastmm::venues::EventSink;
@@ -67,4 +72,39 @@ TEST_CASE("venues.event_sink: without on_commit the hook runs only when the ring
   CHECK(sink.overflows() == 1);
   sink.set_drain_hook(nullptr, nullptr, true);
   CHECK(c.calls == 2);
+}
+
+// fastmm-gateway moves a venue's sinks between a strategy's shared ring and a local ring it
+// discards: each attach takes effect at the next push, and the shared ring reads what was pushed.
+TEST_CASE("venues.event_sink: a sink switches between a local ring and a shared ring") {
+  const std::string path = (fastmm::test::tmp_dir() / "event_sink_switch.ring").string();
+  auto shm = ShmRing::create(path, 1U << 12);
+  REQUIRE(shm.has_value());
+  MsgRing local(1U << 12);
+  EventSink sink(&local, SinkPolicy::Spin);
+  const TradeMsg t = trade();
+  REQUIRE(sink.push(t.hdr));
+  sink.attach(&*shm, SinkPolicy::Spin);
+  CHECK(sink.attached());
+  CHECK(sink.ring() == nullptr);
+  CHECK(sink.shm_ring() == &*shm);
+  REQUIRE(sink.push(t.hdr));
+  REQUIRE(sink.push(t.hdr));
+  sink.attach(&local, SinkPolicy::Spin);
+  REQUIRE(sink.push(t.hdr));
+  CHECK(sink.pushed() == 4);
+  std::size_t in_local = 0;
+  while (local.try_peek() != nullptr) {
+    local.release();
+    ++in_local;
+  }
+  std::size_t in_shm = 0;
+  while (const std::byte* p = shm->try_peek()) {
+    CHECK(reinterpret_cast<const EventHeader*>(p)->type == EventType::Trade);
+    shm->release();
+    ++in_shm;
+  }
+  CHECK(in_local == 2);
+  CHECK(in_shm == 2);
+  std::filesystem::remove(path);
 }

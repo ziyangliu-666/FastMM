@@ -5,7 +5,8 @@
 file(GLOB FASTMM_LIVE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 file(GLOB FASTMM_LIVE_HEADERS CONFIGURE_DEPENDS
   ${PROJECT_SOURCE_DIR}/include/fastmm/live/*.hpp
-  ${PROJECT_SOURCE_DIR}/include/fastmm/cli/live.hpp)
+  ${PROJECT_SOURCE_DIR}/include/fastmm/cli/live.hpp
+  ${PROJECT_SOURCE_DIR}/include/fastmm/cli/gateway.hpp)
 add_library(fastmm_live STATIC ${FASTMM_LIVE_SOURCES} ${FASTMM_LIVE_HEADERS})
 add_library(fastmm::live ALIAS fastmm_live)
 set_target_properties(fastmm_live PROPERTIES EXPORT_NAME live)

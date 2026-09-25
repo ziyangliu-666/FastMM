@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from docs_md import ROOT, finish, rel, rewrite_regions  # noqa: E402
 
-PROGRAMS = ("fastmm-live", "fastmm-backtest", "fastmm-data", "fastmm-replay", "fastmm-pnl",
+PROGRAMS = ("fastmm-live", "fastmm-gateway", "fastmm-backtest", "fastmm-data", "fastmm-replay", "fastmm-pnl",
             "fastmm-sim-exchange", "fastmm-sim-itch", "fastmm-top", "fastmm-ctl")
 PAGE = ROOT / "docs" / "reference" / "cli.md"
 

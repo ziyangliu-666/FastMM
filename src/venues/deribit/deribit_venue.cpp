@@ -428,6 +428,16 @@ void DeribitVenue::on_md_open() {
   md_feed_->on_connected();
 }
 
+// A new consumer (a strategy attached to fastmm-gateway) needs whole books: every syncer asks for
+// a snapshot again, which the engine receives after a Resyncing state. Nothing to do before the
+// channel is live: its first snapshots are on the way.
+void DeribitVenue::resync_books() {
+  if (md_feed_ == nullptr || md_state_ != ConnState::Live) return;
+  for (InstrumentId id : subscribed_) {
+    if (DeribitBookSync* sync = md_feed_->sync(id)) sync->resync(SyncReason::Explicit, now_ns());
+  }
+}
+
 void DeribitVenue::on_md_text(std::string_view t, std::int64_t ts) {
   if (raw_md_.enabled()) raw_md_.record(ts, t);
   const std::uint64_t sub_errors = md_feed_->stats().subscribe_errors;

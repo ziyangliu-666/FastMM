@@ -3,7 +3,7 @@
 // left behind cleared rather than abandoned, the loss budget and a latched max-loss trip carried
 // across, and no order placed twice. The simulator stays up in this process; the sessions are real
 // child processes, because a crash has to be a crash.
-#include "integration_util.hpp"
+#include "process_util.hpp"
 
 #include "fastmm/core/session_state.hpp"
 #include "fastmm/live/session.hpp"
@@ -12,9 +12,6 @@
 #include "fastmm/store/registry.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 
-#include <spawn.h>
-#include <sys/wait.h>
-
 #include <algorithm>
 #include <csignal>
 #include <fstream>
@@ -22,96 +19,12 @@
 #include <thread>
 #include <vector>
 
-extern char** environ;
-
 using namespace fastmm;
 using namespace fastmm::integration;
 
 namespace {
 
 #ifdef FASTMM_LIVE_EXE
-
-std::string tmp_path(const std::string& name) {
-  return (fastmm::test::tmp_dir() / name).string();
-}
-
-void remove_all_of(const std::vector<std::string>& paths) {
-  std::error_code ec;
-  for (const std::string& p : paths) std::filesystem::remove_all(p, ec);
-}
-
-// configs/sim-local.toml aimed at the in-process simulator, with the session state under the
-// test's tmp directory and the credentials written out literally.
-struct SessionFiles {
-  std::string config;
-  std::string epoch;
-  std::string kill;
-  std::string journal_dir;
-  std::string status;
-};
-
-SessionFiles write_config(const ServerFixture& fx,
-                          const std::string& stem,
-                          const std::string& on_kill,
-                          const std::string& max_loss) {
-  SessionFiles f;
-  f.config = tmp_path(stem + ".toml");
-  f.epoch = tmp_path(stem + ".epoch");
-  f.kill = tmp_path(stem + ".kill");
-  f.journal_dir = tmp_path(stem + "-runs");
-  f.status = tmp_path(stem + ".status");
-
-  std::string text = fastmm::test::read_file(repo_root() / "configs" / "sim-local.toml");
-  auto replace_all = [&text](std::string_view from, const std::string& to) {
-    for (std::size_t p = text.find(from); p != std::string::npos;
-         p = text.find(from, p + to.size()))
-      text.replace(p, from.size(), to);
-  };
-  replace_all("127.0.0.1:9080", "127.0.0.1:" + std::to_string(fx.server.port()));
-  replace_all(R"(api_key = "${FASTMM_SIM_API_KEY}")",
-              std::string(R"(api_key = ")") + kApiKey + "\"");
-  replace_all(R"(api_secret = "${FASTMM_SIM_API_SECRET}")",
-              std::string(R"(api_secret = ")") + kApiSecret + "\"");
-  replace_all(R"(name = "sim-local")", "name = \"" + stem + "\"");
-  replace_all(R"(journal_dir = "runs")", "journal_dir = \"" + f.journal_dir + "\"");
-  replace_all(R"(epoch_file = "runs/session_epoch")", "epoch_file = \"" + f.epoch + "\"");
-  replace_all(R"(max_loss = "50")", "max_loss = \"" + max_loss + "\"");
-  replace_all("[engine]\n",
-              "[engine]\nkill_file = \"" + f.kill + "\"\non_kill = \"" + on_kill + "\"\n");
-  std::ofstream out(f.config, std::ios::trunc);
-  REQUIRE(out.good());
-  out << text;
-  out.close();
-  return f;
-}
-
-// A child fastmm-live with its log next to the session's other files (read it when a case fails).
-pid_t spawn_live(const SessionFiles& f, int duration_s) {
-  const std::string duration = std::to_string(duration_s) + "s";
-  const std::string log = f.config + ".log";
-  const char* argv[] = {FASTMM_LIVE_EXE,
-                        "--config",
-                        f.config.c_str(),
-                        "--duration",
-                        duration.c_str(),
-                        "--status",
-                        f.status.c_str(),
-                        "--log",
-                        log.c_str(),
-                        nullptr};
-  pid_t pid = 0;
-  const int rc =
-      posix_spawn(&pid, FASTMM_LIVE_EXE, nullptr, nullptr, const_cast<char* const*>(argv), environ);
-  REQUIRE_MESSAGE(rc == 0, "posix_spawn " FASTMM_LIVE_EXE " failed");
-  return pid;
-}
-
-// Waits for the child and returns its exit code (-1 when it was signalled).
-int reap(pid_t pid) {
-  int status = 0;
-  REQUIRE(::waitpid(pid, &status, 0) == pid);
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
 
 KillState load_kill(const std::string& path) {
   auto st = KillStateStore::load(path);

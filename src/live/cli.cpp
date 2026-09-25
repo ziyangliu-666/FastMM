@@ -110,6 +110,11 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
                  "control socket for fastmm-ctl (default <journal_dir>/<engine>.ctl, mode 0600)")
       ->option_text("<path>");
   app.add_flag("--no-control", opts.no_control, "do not open a control socket");
+  app.add_option("--gateway",
+                 opts.gateway_path,
+                 "trade through the fastmm-gateway at this socket instead of connecting to the "
+                 "venues (no API keys here)")
+      ->option_text("<path>");
   app.add_flag("--clear-kill",
                opts.clear_kill,
                "clear a latched kill switch and the cumulative PnL before starting; arms the "
@@ -165,7 +170,9 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
     const std::size_t eq = p.find('=');
     cfg.strategy.params[p.substr(0, eq)] = p.substr(eq + 1);
   }
-  if (!live::resolve_venue_env(cfg, opts.dry_run, prog)) return kExitUsage;
+  // Attached to a gateway, this process holds no venue connection and needs no keys.
+  if (opts.gateway_path.empty() && !live::resolve_venue_env(cfg, opts.dry_run, prog))
+    return kExitUsage;
 
   std::FILE* log_file = nullptr;
   if (!log_path.empty()) {

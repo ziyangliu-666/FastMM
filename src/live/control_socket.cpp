@@ -314,13 +314,13 @@ ControlSocket::~ControlSocket() {
   close();
 }
 
-bool ControlSocket::open(const std::string& path, std::string* error_out) {
+int listen_seqpacket(const std::string& path, std::string* error_out) {
+  int fd = -1;
   const auto fail = [&](const std::string& what) {
     if (error_out != nullptr) *error_out = what;
-    close();
-    return false;
+    if (fd >= 0) ::close(fd);
+    return -1;
   };
-  close();
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   if (path.size() + 1 > sizeof addr.sun_path)
@@ -334,17 +334,24 @@ bool ControlSocket::open(const std::string& path, std::string* error_out) {
     if (!std::filesystem::is_socket(path, ec)) return fail(path + " exists and is not a socket");
     std::filesystem::remove(path, ec);
   }
-  listen_fd_ = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-  if (listen_fd_ < 0) return fail(std::string("socket: ") + std::strerror(errno));
+  fd = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (fd < 0) return fail(std::string("socket: ") + std::strerror(errno));
   // Between bind() and chmod() the socket would be world-writable with a permissive umask.
   const mode_t old_umask = ::umask(0177);
-  const int rc = ::bind(listen_fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof addr);
+  const int rc = ::bind(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr);
   const int bind_errno = errno;
   ::umask(old_umask);
   if (rc != 0) return fail("bind " + path + ": " + std::strerror(bind_errno));
   if (::chmod(path.c_str(), S_IRUSR | S_IWUSR) != 0)
     return fail("chmod " + path + ": " + std::strerror(errno));
-  if (::listen(listen_fd_, 8) != 0) return fail("listen: " + std::string(std::strerror(errno)));
+  if (::listen(fd, 8) != 0) return fail("listen: " + std::string(std::strerror(errno)));
+  return fd;
+}
+
+bool ControlSocket::open(const std::string& path, std::string* error_out) {
+  close();
+  listen_fd_ = listen_seqpacket(path, error_out);
+  if (listen_fd_ < 0) return false;
   path_ = path;
   return true;
 }

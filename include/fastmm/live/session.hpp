@@ -94,7 +94,11 @@ struct LiveOptions {
   std::function<std::string()> watchdog;
   // Before the session starts its threads, set every thread of the process to the CPUs not listed
   // in [engine] cpu and net_cpus (confine_threads, live/thread_affinity.hpp).
-  bool confine_other_threads = false;
+  bool confine_other_threads =
+      false;  // Attach to the fastmm-gateway listening here instead of connecting to the venues
+  // (live/gateway.hpp): its instrument table, its rings, no venue keys in this process, and no
+  // cancel_all on shutdown (the gateway cancels when the attachment closes).
+  std::string gateway_path;
 };
 
 // Process exit codes (listed in fastmm-live --help and docs/how-to/operations/). A failed

@@ -130,6 +130,7 @@ class BinanceUsdmVenue final : public Venue {
   void disconnect() override;
   void subscribe(std::span<const InstrumentId> instruments) override;
   void on_timer(std::int64_t now_ns) override;
+  void resync_books() override;
   void on_wake() override;
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
