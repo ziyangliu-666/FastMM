@@ -630,7 +630,9 @@ class Engine {
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_LIKELY(b.is_valid())) {
       const Price mid = b.mid();
-      risk_.on_book(id, mid, d.hdr.recv_ts.valid() ? d.hdr.recv_ts : now);
+      // The engine clock, which the stale check compares against: recv_ts is the network thread's
+      // wall clock, and a host clock step moves it relative to the engine's TscClock.
+      risk_.on_book(id, mid, now);
       positions_.mark(id, mid, inst);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (b.crossed() && b.crossed_for(now) > cfg_.crossed_grace) {
