@@ -31,6 +31,7 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/result.hpp"
+#include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 
 #include <array>
@@ -380,6 +381,7 @@ class JournalFileWriter {
 
   std::thread thread_;
   std::atomic<bool> stop_{false};
+  Waker wake_;  // stop() wakes the idle writer; the engine never signals it
   bool closed_ = false;
 };
 

@@ -2,6 +2,9 @@
 
 #include "test_support.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -104,6 +107,31 @@ TEST_CASE("core.log: level filter, ordering within a thread, drops when the ring
   lg.stop();
   std::fclose(f);
   lg.set_level(LogLevel::Info);
+}
+
+TEST_CASE("core.log: flush and stop wake an idle sink instead of waiting out its backoff") {
+  std::FILE* f = std::tmpfile();
+  auto& lg = Logger::instance();
+  lg.start(f, LogLevel::Off);
+  // Idle long enough for the sink's timed waits to reach their 10 ms cap.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  std::vector<std::int64_t> us;
+  for (int i = 0; i < 9; ++i) {
+    FASTMM_LOG_WARN("idle flush {}", i);
+    const auto t0 = std::chrono::steady_clock::now();
+    lg.flush();
+    us.push_back(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0)
+            .count());
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  }
+  std::sort(us.begin(), us.end());
+  CHECK(us[us.size() / 2] < 2'000);  // waiting out the wait: 5 ms on average
+  CHECK(count_lines(read_all(f)) == 9);
+  const auto t0 = std::chrono::steady_clock::now();
+  lg.stop();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(8));
+  std::fclose(f);
 }
 
 TEST_CASE("core.log: multiple threads each get their own ring") {
