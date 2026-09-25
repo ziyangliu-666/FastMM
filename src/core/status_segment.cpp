@@ -124,6 +124,11 @@ std::string json_string(std::string_view v) {
   return out;
 }
 
+void append_venues(std::string& out, const StatusSnapshot& s, bool color);
+void json_venues(std::string& out, const StatusSnapshot& s);
+std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, bool color);
+std::string format_gateway_json(const StatusSnapshot& s);
+
 }  // namespace
 
 struct StatusWriter::Segment : SegmentLayout {};
@@ -141,6 +146,10 @@ std::string_view to_string(StatusRunState s) noexcept {
       return "stopped";
   }
   return "?";
+}
+
+std::string_view to_string(StatusKind k) noexcept {
+  return k == StatusKind::Gateway ? "gateway" : "engine";
 }
 
 std::string_view channel_state_name(std::uint8_t s) noexcept {
@@ -209,6 +218,10 @@ std::string format_status_rejects(const StatusRejectCount* entries, std::uint64_
 
 std::string default_status_path(std::string_view engine_name) {
   return fmt::format("/dev/shm/fastmm-{}.status", engine_name);
+}
+
+std::string default_gateway_status_path(std::string_view engine_name) {
+  return fmt::format("/dev/shm/fastmm-{}.gw.status", engine_name);
 }
 
 StatusWriter::~StatusWriter() {
@@ -324,6 +337,7 @@ void StatusReader::close() noexcept {
 }
 
 std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool color) {
+  if (s.kind == StatusKind::Gateway) return format_gateway_status(s, now_ns, color);
   std::string out;
   std::string_view state = to_string(s.state);
   const std::int64_t age_ns = now_ns - s.updated_ns;
@@ -421,6 +435,14 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                    fmt_ns(l.p999_ns),
                    fmt_ns(l.max_ns));
   }
+  append_venues(out, s, color);
+  return out;
+}
+
+namespace {
+
+// The venue table and the multicast feeds, of an engine's snapshot or a gateway's.
+void append_venues(std::string& out, const StatusSnapshot& s, bool color) {
   fmt::format_to(std::back_inserter(out),
                  "\n{:<14} {:<10} {:<10} {:<10} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} "
                  "{:>9} {:>10} {}\n",
@@ -534,14 +556,184 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                      f.xdp_fallback);
     }
   }
+}
+
+std::string qty_text(std::int64_t raw) {
+  char buf[48];
+  const std::size_t n = Qty::from_raw(raw).to_decimal(buf);
+  return std::string(buf, n);
+}
+
+std::string limit_text(std::int64_t raw) {
+  return raw > 0 ? money(raw) : std::string("off");
+}
+
+// "0", or "5 (GatewayRateLimit 3, GatewayOpenNotional 2)".
+std::string refusals_text(const std::uint64_t (&r)[kStatusGatewayRefusals]) {
+  std::uint64_t total = 0;
+  std::string reasons;
+  for (std::size_t i = 0; i < kStatusGatewayRefusals; ++i) {
+    if (r[i] == 0) continue;
+    total += r[i];
+    fmt::format_to(std::back_inserter(reasons),
+                   "{}{} {}",
+                   reasons.empty() ? "" : ", ",
+                   to_string(kStatusGatewayRefusalReasons[i]),
+                   r[i]);
+  }
+  return total == 0 ? std::string("0") : fmt::format("{} ({})", total, reasons);
+}
+
+std::string_view venue_name(const StatusSnapshot& s, std::uint8_t v) {
+  return v < kStatusMaxVenues ? name_of(s.venues[v].name, sizeof s.venues[v].name)
+                              : std::string_view("?");
+}
+
+// "sim:BTCUSDT,sim:ETHUSDT": the instruments an attachment owns.
+std::string owned_instruments(const StatusSnapshot& s, std::uint16_t epoch) {
+  std::string out;
+  const std::size_t n = std::min<std::size_t>(s.gateway.position_count, kStatusMaxPositions);
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusPosition& p = s.gateway.positions[i];
+    if (p.owner_epoch != epoch) continue;
+    fmt::format_to(std::back_inserter(out),
+                   "{}{}:{}",
+                   out.empty() ? "" : ",",
+                   venue_name(s, p.venue),
+                   name_of(p.symbol, sizeof p.symbol));
+  }
   return out;
 }
 
+std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, bool color) {
+  const StatusGateway& g = s.gateway;
+  std::string out;
+  auto it = std::back_inserter(out);
+  std::string_view state = to_string(s.state);
+  const std::int64_t age_ns = now_ns - s.updated_ns;
+  if (s.state == StatusRunState::Running && age_ns > 3'000'000'000) state = "STALE";
+  fmt::format_to(it,
+                 "fastmm-top  gateway={} pid={}{}\n",
+                 name_of(s.engine_name, sizeof s.engine_name),
+                 s.pid,
+                 s.dry_run != 0 ? "  [dry-run]" : "");
+  std::string kill;
+  if (g.kill_active != 0) {
+    kill = fmt::format("  {}ACCOUNT KILLED ({}){}",
+                       color ? "\x1b[31m" : "",
+                       to_string(static_cast<KillReason>(s.kill_reason)),
+                       reset(color));
+  }
+  if (s.kill_latched != 0)
+    kill += fmt::format("  {}LATCHED{}", color ? "\x1b[31m" : "", reset(color));
+  fmt::format_to(it,
+                 "state      {}{}{}{}  uptime={}  updated {:.1f}s ago\n\n",
+                 paint(color, state),
+                 state,
+                 reset(color),
+                 kill,
+                 fmt_duration_s(s.updated_ns - s.started_ns),
+                 static_cast<double>(std::max<std::int64_t>(age_ns, 0)) / 1e9);
+  fmt::format_to(it,
+                 "account    net_pnl={} realized={} unrealized={} fees={} carried={} "
+                 "gross_exposure={} net_exposure={}\n",
+                 money(g.net_pnl_raw),
+                 money(s.realized_pnl_raw),
+                 money(s.unrealized_pnl_raw),
+                 money(s.fees_raw),
+                 money(s.pnl_carry_raw),
+                 money(g.gross_raw),
+                 money(g.net_raw));
+  fmt::format_to(it,
+                 "limits     max_loss={} max_gross_notional={} max_net_notional={} "
+                 "max_open_notional={}\n\n",
+                 limit_text(g.max_loss_raw),
+                 limit_text(g.max_gross_raw),
+                 limit_text(g.max_net_raw),
+                 limit_text(g.max_open_notional_raw));
+
+  const std::size_t na = std::min<std::size_t>(g.attachment_count, kStatusMaxAttachments);
+  fmt::format_to(it,
+                 "{:<10} {:>5} {:<20} {:>8} {:>9} {:>10} {:<24} {}\n",
+                 "attachment",
+                 "epoch",
+                 "engine",
+                 "pid",
+                 "up",
+                 "md_dropped",
+                 "refused",
+                 "instruments");
+  if (na == 0) out += "(none attached)\n";
+  for (std::size_t i = 0; i < na; ++i) {
+    const StatusAttachment& a = g.attachments[i];
+    fmt::format_to(it,
+                   "{:<10} {:>5} {:<20} {:>8} {:>9} {:>10} {:<24} {}\n",
+                   a.id,
+                   a.epoch,
+                   name_of(a.engine, sizeof a.engine),
+                   a.pid,
+                   fmt_duration_s(s.updated_ns - a.attached_ns),
+                   a.md_dropped,
+                   refusals_text(a.refused),
+                   owned_instruments(s, a.epoch));
+  }
+
+  // The instruments with a position or an owner.
+  fmt::format_to(it, "\n{:<14} {:<20} {:>20} {:>6}\n", "position", "instrument", "qty", "owner");
+  const std::size_t np = std::min<std::size_t>(g.position_count, kStatusMaxPositions);
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    if (p.qty_raw == 0 && p.owner_epoch == 0) continue;
+    fmt::format_to(it,
+                   "{:<14} {:<20} {:>20} {:>6}\n",
+                   venue_name(s, p.venue),
+                   name_of(p.symbol, sizeof p.symbol),
+                   qty_text(p.qty_raw),
+                   p.owner_epoch != 0 ? std::to_string(p.owner_epoch) : std::string("-"));
+  }
+
+  append_venues(out, s, color);
+
+  fmt::format_to(it,
+                 "\n{:<14} {:>10} {:>10} {:>9} {:>10} {:>9} {:>7} {:>8} {:>10} {}\n",
+                 "routing",
+                 "md_discard",
+                 "ord_discard",
+                 "unrouted",
+                 "gw_cancels",
+                 "untracked",
+                 "stale",
+                 "skipped",
+                 "books_lost",
+                 "refused");
+  const std::size_t nv = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
+  for (std::size_t i = 0; i < nv; ++i) {
+    const StatusGatewayVenue& v = g.venues[i];
+    fmt::format_to(it,
+                   "{:<14} {:>10} {:>10} {:>9} {:>10} {:>9} {:>7} {:>8} {:>10} {}\n",
+                   name_of(s.venues[i].name, sizeof s.venues[i].name),
+                   v.md_discarded,
+                   v.order_discarded,
+                   v.unrouted,
+                   v.gateway_cancels,
+                   v.untracked,
+                   v.stale_replays,
+                   v.account_skipped,
+                   v.account_md_lost,
+                   refusals_text(v.refused));
+  }
+  return out;
+}
+
+}  // namespace
+
 std::string format_status_json(const StatusSnapshot& s) {
+  if (s.kind == StatusKind::Gateway) return format_gateway_json(s);
   std::string out;
   auto it = std::back_inserter(out);
   fmt::format_to(it,
-                 "{{\"version\": {}, \"pid\": {}, \"session_id\": {}, \"state\": \"{}\", "
+                 "{{\"kind\": \"engine\", \"version\": {}, \"pid\": {}, \"session_id\": {}, "
+                 "\"state\": \"{}\", "
                  "\"engine\": {}, \"strategy\": {}, \"events\": {}, \"book_updates\": {}, "
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
                  "\"risk_rejects\": {}, \"venue_rejects\": {}, \"kill_flags\": {}, "
@@ -573,7 +765,17 @@ std::string format_status_json(const StatusSnapshot& s) {
     if (i != 0) out += ", ";
     json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);
   }
-  out += "}, \"venues\": [";
+  out += "}, ";
+  json_venues(out, s);
+  out += "}\n";
+  return out;
+}
+
+namespace {
+
+void json_venues(std::string& out, const StatusSnapshot& s) {
+  auto it = std::back_inserter(out);
+  out += "\"venues\": [";
   const std::size_t n = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
   for (std::size_t i = 0; i < n; ++i) {
     const StatusVenue& v = s.venues[i];
@@ -639,8 +841,130 @@ std::string format_status_json(const StatusSnapshot& s) {
                    f.xdp_fill_ring_empty,
                    f.xdp_fallback);
   }
-  out += "]}\n";
+  out += "]";
+}
+
+void json_refusals(std::string& out, const std::uint64_t (&r)[kStatusGatewayRefusals]) {
+  out += "{";
+  for (std::size_t i = 0; i < kStatusGatewayRefusals; ++i) {
+    fmt::format_to(std::back_inserter(out),
+                   "{}\"{}\": {}",
+                   i == 0 ? "" : ", ",
+                   to_string(kStatusGatewayRefusalReasons[i]),
+                   r[i]);
+  }
+  out += "}";
+}
+
+std::string format_gateway_json(const StatusSnapshot& s) {
+  const StatusGateway& g = s.gateway;
+  std::string out;
+  auto it = std::back_inserter(out);
+  fmt::format_to(it,
+                 "{{\"kind\": \"gateway\", \"version\": {}, \"pid\": {}, \"state\": \"{}\", "
+                 "\"gateway\": {}, \"dry_run\": {}, \"started_ns\": {}, \"updated_ns\": {}, "
+                 "\"kill_active\": {}, \"kill_reason\": \"{}\", \"kill_latched\": {}, "
+                 "\"account\": {{\"net_pnl\": {}, \"realized\": {}, \"unrealized\": {}, "
+                 "\"fees\": {}, \"carried\": {}, \"gross_exposure\": {}, \"net_exposure\": {}, "
+                 "\"trip_net_pnl\": {}, \"max_loss\": {}, \"max_gross_notional\": {}, "
+                 "\"max_net_notional\": {}, \"max_open_notional\": {}}}, \"attachments\": [",
+                 s.version,
+                 s.pid,
+                 to_string(s.state),
+                 json_string(name_of(s.engine_name, sizeof s.engine_name)),
+                 s.dry_run != 0,
+                 s.started_ns,
+                 s.updated_ns,
+                 g.kill_active != 0,
+                 to_string(static_cast<KillReason>(s.kill_reason)),
+                 s.kill_latched != 0,
+                 money(g.net_pnl_raw),
+                 money(s.realized_pnl_raw),
+                 money(s.unrealized_pnl_raw),
+                 money(s.fees_raw),
+                 money(s.pnl_carry_raw),
+                 money(g.gross_raw),
+                 money(g.net_raw),
+                 money(g.trip_net_raw),
+                 money(g.max_loss_raw),
+                 money(g.max_gross_raw),
+                 money(g.max_net_raw),
+                 money(g.max_open_notional_raw));
+  const std::size_t na = std::min<std::size_t>(g.attachment_count, kStatusMaxAttachments);
+  const std::size_t np = std::min<std::size_t>(g.position_count, kStatusMaxPositions);
+  for (std::size_t i = 0; i < na; ++i) {
+    const StatusAttachment& a = g.attachments[i];
+    fmt::format_to(it,
+                   "{}{{\"id\": {}, \"epoch\": {}, \"engine\": {}, \"pid\": {}, \"blocks\": {}, "
+                   "\"attached_ns\": {}, \"md_dropped\": {}, \"refused\": ",
+                   i == 0 ? "" : ", ",
+                   a.id,
+                   a.epoch,
+                   json_string(name_of(a.engine, sizeof a.engine)),
+                   a.pid,
+                   a.blocks != 0,
+                   a.attached_ns,
+                   a.md_dropped);
+    json_refusals(out, a.refused);
+    out += ", \"instruments\": [";
+    bool first = true;
+    for (std::size_t k = 0; k < np; ++k) {
+      const StatusPosition& p = g.positions[k];
+      if (p.owner_epoch != a.epoch) continue;
+      fmt::format_to(it,
+                     "{}{{\"venue\": {}, \"symbol\": {}}}",
+                     first ? "" : ", ",
+                     json_string(venue_name(s, p.venue)),
+                     json_string(name_of(p.symbol, sizeof p.symbol)));
+      first = false;
+    }
+    out += "]}";
+  }
+  out += "], \"positions\": [";
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    fmt::format_to(it,
+                   "{}{{\"venue\": {}, \"symbol\": {}, \"qty\": {}, \"owner_epoch\": {}}}",
+                   i == 0 ? "" : ", ",
+                   json_string(venue_name(s, p.venue)),
+                   json_string(name_of(p.symbol, sizeof p.symbol)),
+                   qty_text(p.qty_raw),
+                   p.owner_epoch);
+  }
+  out += "], \"routing\": [";
+  const std::size_t nv = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
+  for (std::size_t i = 0; i < nv; ++i) {
+    const StatusGatewayVenue& v = g.venues[i];
+    fmt::format_to(it,
+                   "{}{{\"venue\": {}, \"md_discarded\": {}, \"order_discarded\": {}, "
+                   "\"unrouted\": {}, \"gateway_cancels\": {}, \"untracked\": {}, "
+                   "\"stale_replays\": {}, \"account_skipped\": {}, \"account_md_lost\": {}, "
+                   "\"realized\": {}, \"unrealized\": {}, \"fees\": {}, \"gross_exposure\": {}, "
+                   "\"net_exposure\": {}, \"refused\": ",
+                   i == 0 ? "" : ", ",
+                   json_string(venue_name(s, static_cast<std::uint8_t>(i))),
+                   v.md_discarded,
+                   v.order_discarded,
+                   v.unrouted,
+                   v.gateway_cancels,
+                   v.untracked,
+                   v.stale_replays,
+                   v.account_skipped,
+                   v.account_md_lost,
+                   money(v.realized_raw),
+                   money(v.unrealized_raw),
+                   money(v.fees_raw),
+                   money(v.gross_raw),
+                   money(v.net_raw));
+    json_refusals(out, v.refused);
+    out += "}";
+  }
+  out += "], ";
+  json_venues(out, s);
+  out += "}\n";
   return out;
 }
+
+}  // namespace
 
 }  // namespace fastmm

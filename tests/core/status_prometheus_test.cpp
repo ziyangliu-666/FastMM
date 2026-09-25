@@ -119,3 +119,79 @@ TEST_CASE("core.status_prometheus: a label value is escaped") {
   const std::string text = format_status_prometheus(s, s.updated_ns);
   CHECK(has(text, "engine=\"od\\\"d\\\\name\""));
 }
+
+TEST_CASE("core.status_prometheus: a gateway exports its account, positions and attachments") {
+  StatusSnapshot s;
+  s.kind = StatusKind::Gateway;
+  s.pid = 99;
+  s.updated_ns = 61'000'000'000;
+  s.state = StatusRunState::Running;
+  set_status_name(s.engine_name, "gw");
+  s.realized_pnl_raw = 150'000'000;
+  s.fees_raw = 25'000'000;
+  s.kill_flags = 1;
+  s.kill_reason = static_cast<std::uint8_t>(KillReason::GatewayOperator);
+  s.venue_count = 1;
+  set_status_name(s.venues[0].name, "sim");
+  s.venues[0].md = 2;
+  StatusGateway& g = s.gateway;
+  g.kill_active = 1;
+  g.net_pnl_raw = 125'000'000;
+  g.gross_raw = 12'000'000'000;
+  g.venues[0].refused[3] = 2;  // GatewayGrossNotional
+  g.venues[0].gateway_cancels = 4;
+  g.attachment_count = 1;
+  set_status_name(g.attachments[0].engine, "mm-a");
+  g.attachments[0].pid = 1001;
+  g.attachments[0].id = 1;
+  g.attachments[0].epoch = 7;
+  g.attachments[0].md_dropped = 12;
+  g.attachments[0].refused[3] = 2;
+  g.position_count = 2;
+  set_status_name(g.positions[0].symbol, "BTCUSDT");
+  g.positions[0].owner_epoch = 7;
+  g.positions[0].qty_raw = 400'000;
+  set_status_name(g.positions[1].symbol, "ETHUSDT");
+  g.positions[1].qty_raw = -200'000;
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  INFO(text);
+  CHECK(has(text, "fastmm_info{gateway=\"gw\",pid=\"99\"} 1\n"));
+  CHECK(has(text, "fastmm_kill_active 1\n"));
+  CHECK(has(text, "fastmm_kill_reason 14\n"));
+  CHECK(has(text, "fastmm_account_net_pnl 1.25\n"));
+  CHECK(has(text, "fastmm_account_realized_pnl 1.5\n"));
+  CHECK(has(text, "fastmm_account_fees 0.25\n"));
+  CHECK(has(text, "fastmm_account_gross_exposure 120\n"));
+  CHECK(has(text, "fastmm_account_position{venue=\"sim\",instrument=\"BTCUSDT\"} 0.004\n"));
+  CHECK(has(text, "fastmm_account_position{venue=\"sim\",instrument=\"ETHUSDT\"} -0.002\n"));
+  CHECK(has(text, "fastmm_gateway_instrument_owner{venue=\"sim\",instrument=\"BTCUSDT\"} 7\n"));
+  CHECK_FALSE(has(text, "fastmm_gateway_instrument_owner{venue=\"sim\",instrument=\"ETHUSDT\"}"));
+  CHECK(has(text, "fastmm_gateway_attachments 1\n"));
+  CHECK(has(text,
+            "fastmm_gateway_attachment_info{epoch=\"7\",engine=\"mm-a\",pid=\"1001\","
+            "attachment=\"1\"} 1\n"));
+  CHECK(has(text, "fastmm_gateway_attachment_md_dropped_total{epoch=\"7\",engine=\"mm-a\"} 12\n"));
+  CHECK(has(text,
+            "fastmm_gateway_attachment_refused_total{epoch=\"7\",engine=\"mm-a\","
+            "reason=\"GatewayGrossNotional\"} 2\n"));
+  CHECK(
+      has(text, "fastmm_gateway_refused_total{venue=\"sim\",reason=\"GatewayGrossNotional\"} 2\n"));
+  CHECK(has(text, "fastmm_gateway_cancels_total{venue=\"sim\"} 4\n"));
+  CHECK(has(text, "fastmm_venue_channel_state{venue=\"sim\",channel=\"md\"} 2\n"));
+  // No engine counters, and no gateway families in an engine's export.
+  CHECK_FALSE(has(text, "fastmm_events_total"));
+  CHECK_FALSE(has(text, "fastmm_latency_quantile_seconds"));
+  CHECK_FALSE(has(format_status_prometheus(sample(), 0), "fastmm_account_"));
+  CHECK_FALSE(has(format_status_prometheus(sample(), 0), "fastmm_gateway_"));
+  // Every sample belongs to a declared family.
+  std::set<std::string> declared;
+  for (const std::string& line : lines(text)) {
+    if (line.rfind("# TYPE ", 0) == 0) {
+      declared.insert(line.substr(7, line.find(' ', 7) - 7));
+      continue;
+    }
+    if (line.empty() || line[0] == '#') continue;
+    CAPTURE(line);
+    CHECK(declared.count(line.substr(0, std::min(line.find('{'), line.find(' ')))) == 1);
+  }
+}

@@ -3,7 +3,8 @@
 // published stats and every venue's status into a fixed-layout snapshot a few times a second and
 // writes it into a small memory-mapped file (by default under /dev/shm). Readers map the file
 // read-only and retry while a write is in progress, so a monitor never blocks or slows the engine:
-// the engine thread only ever touches its own Seqlocked publications.
+// the engine thread only ever touches its own Seqlocked publications. fastmm-gateway writes the
+// same layout with `kind` Gateway: its venues, and in `gateway` its attachments and the account.
 //
 // The layout is plain old data with explicit sizes; a magic number and a version guard against
 // reading a file written by an incompatible build. Bump kStatusVersion on every layout change: the
@@ -27,12 +28,17 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 4: p99.9 in every latency, the multicast feed block of each venue.
 // 5: the latched kill state and the PnL carried over from earlier sessions.
 // 6: the operator flatten's state, the instruments it has left and the orders it has sent.
-inline constexpr std::uint32_t kStatusVersion = 7;
+// 7: quoting presence (quoting_elapsed_ns, quoting_two_sided_ns).
+// 8: `kind`, and the gateway block (attachments, the account, its positions, routing counters).
+inline constexpr std::uint32_t kStatusVersion = 8;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
 enum class StatusRunState : std::uint8_t { Starting = 0, Running = 1, Stopping = 2, Stopped = 3 };
 [[nodiscard]] std::string_view to_string(StatusRunState s) noexcept;
+// Who writes the segment: fastmm-live (the engine's fields) or fastmm-gateway (`gateway`).
+enum class StatusKind : std::uint8_t { Engine = 0, Gateway = 1 };
+[[nodiscard]] std::string_view to_string(StatusKind k) noexcept;
 // Venue channel states use venues::ChannelState values: 0 down, 1 connecting, 2 live, 3 stale.
 [[nodiscard]] std::string_view channel_state_name(std::uint8_t s) noexcept;
 
@@ -105,6 +111,85 @@ struct StatusVenue {
   StatusFeed feed;
 };
 
+// ---- fastmm-gateway ---------------------------------------------------------------------------
+
+inline constexpr std::size_t kStatusMaxAttachments = 16;  // gw::kMaxAttachments
+inline constexpr std::size_t kStatusMaxPositions = 256;   // kMaxInstruments
+// The gateway's refusals, counted per attachment and per venue in this order.
+inline constexpr std::size_t kStatusGatewayRefusals = 6;
+inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusals] = {
+    RejectReason::GatewayNotOwner,
+    RejectReason::GatewayAccountKilled,
+    RejectReason::GatewayOpenNotional,
+    RejectReason::GatewayGrossNotional,
+    RejectReason::GatewayNetNotional,
+    RejectReason::GatewayRateLimit};
+
+// One attached strategy. Its instruments are the positions whose owner_epoch is its epoch.
+struct StatusAttachment {
+  char engine[32] = {};  // its [engine] name
+  std::uint32_t pid = 0;
+  std::uint32_t id = 0;  // the gateway's attachment number
+  std::uint16_t epoch = 0;
+  std::uint8_t blocks = 0;  // its engine blocks when idle (spin_mode = "adaptive")
+  std::uint8_t pad_[5] = {};
+  std::int64_t attached_ns = 0;  // wall clock
+  std::uint64_t md_dropped = 0;  // market-data events its rings dropped, every venue
+  std::uint64_t refused[kStatusGatewayRefusals] = {};  // its orders the gateway refused, by reason
+};
+
+// The account's position in one instrument of the gateway's table.
+struct StatusPosition {
+  char symbol[24] = {};
+  std::uint8_t venue = 0;  // index into venues
+  std::uint8_t pad_[1] = {};
+  std::uint16_t owner_epoch = 0;  // the attachment that trades it, 0 for none
+  std::uint32_t pad2_ = 0;
+  std::int64_t qty_raw = 0;  // Qty raw (1e-8), signed
+};
+
+// One venue as the gateway routes it.
+struct StatusGatewayVenue {
+  std::uint64_t md_discarded = 0;     // market data with nothing attached
+  std::uint64_t order_discarded = 0;  // order events with nothing attached
+  std::uint64_t unrouted = 0;         // order events for no attachment
+  std::uint64_t gateway_cancels = 0;  // cancels the gateway sent itself
+  std::uint64_t untracked = 0;        // orders its order table had no room for
+  std::uint64_t stale_replays = 0;    // replayed fills older than their owner's history
+  std::uint64_t account_skipped = 0;  // replayed fills the account's seed holds
+  std::uint64_t account_md_lost = 0;  // times the account's books started over
+  std::uint64_t refused[kStatusGatewayRefusals] = {};
+  // The account on this venue, Notional raw.
+  std::int64_t realized_raw = 0;
+  std::int64_t unrealized_raw = 0;
+  std::int64_t fees_raw = 0;
+  std::int64_t gross_raw = 0;
+  std::int64_t net_raw = 0;
+};
+
+struct StatusGateway {
+  std::uint32_t attachment_count = 0;
+  std::uint32_t position_count = 0;
+  // The account's kill switch is tripped ([gateway] max_loss or an operator's kill); its reason is
+  // the snapshot's kill_reason, kill_latched says the kill file records it.
+  std::uint8_t kill_active = 0;
+  std::uint8_t pad_[7] = {};
+  // The account over every venue, Notional raw: net_pnl = carry + realized + unrealized - fees
+  // (the snapshot's pnl fields).
+  std::int64_t net_pnl_raw = 0;
+  std::int64_t gross_raw = 0;
+  std::int64_t net_raw = 0;
+  std::int64_t trip_net_raw = 0;  // the net PnL at the trip
+  // [gateway] limits, raw; 0 off.
+  std::int64_t max_loss_raw = 0;
+  std::int64_t max_gross_raw = 0;
+  std::int64_t max_net_raw = 0;
+  std::int64_t max_open_notional_raw = 0;
+  StatusGatewayVenue venues[kStatusMaxVenues];
+  StatusAttachment attachments[kStatusMaxAttachments];
+  StatusPosition positions[kStatusMaxPositions];
+};
+
 struct StatusSnapshot {
   std::uint64_t magic = kStatusMagic;
   std::uint32_t version = kStatusVersion;
@@ -122,7 +207,8 @@ struct StatusSnapshot {
   // Operator flatten (fastmm-ctl flatten): FlattenState, how many instruments in its scope still
   // hold a position and how many reduce-only orders it has sent.
   std::uint8_t flatten_state = 0;
-  std::uint8_t pad_[2] = {};
+  StatusKind kind = StatusKind::Engine;
+  std::uint8_t pad_[1] = {};
   std::uint32_t flatten_instruments_left = 0;
   std::uint64_t flatten_orders = 0;
   char engine_name[32] = {};
@@ -154,6 +240,10 @@ struct StatusSnapshot {
   std::int64_t quoting_two_sided_ns = 0;
   StatusLatency latency[static_cast<std::size_t>(LatencyInterval::Count)];
   StatusVenue venues[kStatusMaxVenues];
+  // kind Gateway only, zero in an engine's segment. A gateway fills the header (pid, times, state,
+  // dry_run, engine_name, venue_count, venues), kill_reason, kill_latched, kill_flags (bit 0 while
+  // the account is killed) and the PnL fields with the account's, and leaves the rest zero.
+  StatusGateway gateway;
 };
 static_assert(std::is_trivially_copyable_v<StatusSnapshot>);
 // Every version keeps the magic and the version at these offsets (after the 8-byte sequence).
@@ -178,6 +268,9 @@ void set_status_rejects(StatusRejectCount* dst, const RejectCounts& c);
 
 // "/dev/shm/fastmm-<engine name>.status"
 [[nodiscard]] std::string default_status_path(std::string_view engine_name);
+// "/dev/shm/fastmm-<engine name>.gw.status": fastmm-gateway's, apart from a strategy that runs with
+// the same configuration and so the same name.
+[[nodiscard]] std::string default_gateway_status_path(std::string_view engine_name);
 
 // One writer (fastmm-live's control thread). The file is created or truncated on open and left in
 // place on close, so a monitor can still show the final "stopped" snapshot.
@@ -222,11 +315,14 @@ class StatusReader {
   std::uint32_t refused_version_ = 0;
 };
 
-// The snapshot as one JSON object (fastmm-top --once --json; scripts/bench-e2e.sh reads it).
+// The snapshot as one JSON object (fastmm-top --once --json; scripts/bench-e2e.sh reads it). Every
+// object has "kind"; a gateway's carries its header fields and a "gateway" object instead of the
+// engine's counters.
 [[nodiscard]] std::string format_status_json(const StatusSnapshot& s);
 
-// Human-readable dashboard frame. `now_ns` is the wall clock; a running engine that has not
-// published for over 3 s is shown as stale. `color` adds ANSI colours.
+// Human-readable dashboard frame, an engine's or a gateway's by `kind`. `now_ns` is the wall clock;
+// a running process that has not published for over 3 s is shown as stale. `color` adds ANSI
+// colours.
 [[nodiscard]] std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool color);
 
 }  // namespace fastmm
