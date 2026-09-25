@@ -4,16 +4,19 @@
 #
 #   scripts/bench-gateway.sh [--runs 3] [--duration 60] [--spin busy|adaptive]
 #                            [--build build/release] [--out runs/bench-gateway-<time>]
+#                            [--account-limits]
 #
 # Each run starts a fresh simulator, then trades once in-process and once attached to a gateway.
 # Per run and mode it prints the engine's tick-to-trade (market-data receive on the network thread
 # to the order handed to the transport; through the gateway this crosses the md ring) and the
 # network thread's wire tick-to-trade (receive to the order's send returning; through the gateway
-# both rings and the extra copy). Logs stay in the output directory.
+# both rings and the extra copy). --account-limits sets [gateway] max_loss, max_gross_notional and
+# max_net_notional far out of reach, so every order takes the account checks (the gateway then
+# runs under a name of its own). Logs stay in the output directory.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RUNS=3; DURATION=60; SPIN=busy; BUILD=build/release; OUT=""
+RUNS=3; DURATION=60; SPIN=busy; BUILD=build/release; OUT=""; LIMITS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --runs) RUNS="$2"; shift 2;;
@@ -21,6 +24,7 @@ while [[ $# -gt 0 ]]; do
     --spin) SPIN="$2"; shift 2;;
     --build) BUILD="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
+    --account-limits) LIMITS=1; shift;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "bench-gateway: unknown argument $1" >&2; exit 2;;
   esac
@@ -60,11 +64,17 @@ for ((r = 1; r <= RUNS; r++)); do
     SIM=$!
     sleep 1
     if [[ "$mode" == gateway ]]; then
-      "$BUILD/bin/fastmm-gateway" --config "$d/config.toml" --log "$d/gateway.log" > /dev/null 2>&1 &
+      gw_config="$d/config.toml"; gw_name=sim-local
+      if [[ "$LIMITS" == 1 ]]; then
+        gw_config="$d/gateway.toml"; gw_name=sim-local-gw
+        sed -e 's|name = "sim-local"|name = "sim-local-gw"|' "$d/config.toml" > "$gw_config"
+        printf '\n[gateway]\nmax_loss = "1000000"\nmax_gross_notional = "1000000000"\nmax_net_notional = "1000000000"\n' >> "$gw_config"
+      fi
+      "$BUILD/bin/fastmm-gateway" --config "$gw_config" --log "$d/gateway.log" > /dev/null 2>&1 &
       GW=$!
-      for _ in $(seq 100); do [[ -S "$d/sim-local.gw" ]] && break; sleep 0.1; done
+      for _ in $(seq 100); do [[ -S "$d/$gw_name.gw" ]] && break; sleep 0.1; done
       sleep 1
-      "$BUILD/bin/fastmm-live" --config "$d/config.toml" --gateway "$d/sim-local.gw" \
+      "$BUILD/bin/fastmm-live" --config "$d/config.toml" --gateway "$d/$gw_name.gw" \
         --duration "${DURATION}s" --no-status --no-journal --log "$d/live.log" > /dev/null 2>&1
       kill -TERM "$GW"; wait "$GW" || true; GW=""
       wire="$(wire_t2t "$d/gateway.log")"

@@ -63,16 +63,39 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    orders stay. Single strategy vs the step-3 build, release, 45 s x 2: adaptive engine/wire p50
    36.9/70.3 us both; busy 8.7/43.0 vs 7.9-8.7/43.0-44.9. Left: two strategies on one
    instrument; positions and loss across strategies.
+5. ~~Account risk in the gateway~~ Done (2026-09-26). Each venue's network thread books every
+   execution once into an `AccountBook` (`core/account_book.hpp`: OMS dedupe key, the engine's fee
+   booking, marks at its own L2Books' mids); an instrument's position starts with what its first
+   owner restored (sent in the attach request, protocol v4), replays older than that owner's
+   replay start or in its store's ids are skipped, and the position stays on detach. `[gateway]`
+   `max_gross_notional` / `max_net_notional` refuse increasing orders back to the sender
+   (`GatewayGrossNotional` / `GatewayNetNotional`); `max_loss` over the account's net PnL, carried
+   in the gateway's kill file (KillStateStore), trips: orders refused (`GatewayAccountKilled`),
+   `TripVenueKill(GatewayMaxLoss)` to every attachment, every known order and every row of the
+   next snapshot cancelled, `cancel_all`, attaches refused, latched (start exits 6) until
+   `--clear-kill`. `gateway_account_test.cpp` (BTCUSDT and ETHUSDT: the limits need one settlement
+   currency); each case fails with its piece broken (no booking, no seed, no exposure check, no
+   trip, no latch). Applying the book deltas in the md drain put a bucket on the adaptive engine
+   t2t (36.9 -> 38.9 us), so the drain copies them aside and the hook applies them after the
+   wake-ups. Release, WSL2, one strategy, 45 s x 2, gateway engine/wire p50, base (8802339) vs
+   limits on: adaptive 36.9/70.3 vs 36.9/70.3 us; busy 8.7/43.0-44.9 vs 7.9-8.2/44.9 us.
 
-**Gateway follow-ups (2026-09-26).** Step 4 landed (several strategies, epochs from the gateway,
-instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards). Open:
+**Gateway follow-ups (2026-09-26).** Steps 4 and 5 landed (several strategies, epochs from the
+gateway, instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards, account
+positions, exposure and loss). Open:
 * A restart's replay start is the store's last fill minus 10 s in the engine's clock, which follows
   the host wall clock; the venue compares it with its own. Widening the store's known ids to 20 s
   fixed the double booking this caused on WSL2, but the start belongs in venue time (the fills'
   `exch_ts`, now stamped on replays).
 * The gateway accepts at most 1024 known exec ids per attach (`kMaxKnownExecIds`); a strategy with
   more than ~50 fills/s inside the 20 s window would overflow it.
-* Two strategies on one instrument; positions and loss across strategies in the gateway.
+* Two strategies on one instrument.
+* The account's position of an instrument is seeded once per gateway run, by its first owner's
+  store; the gateway books a strategy's missed fill from the replayed execution, where the engine
+  first books an estimate from cum_qty, so the two can differ until that replay.
+* The gateway has no status file or control socket; the account is in its log. Its kill file
+  refuses a strategy with the gateway's `[engine] name` while `max_loss` is set (one config for
+  both, as in the docs' first example, then needs a second name).
 
 ## 2026-09-25: an execution was booked twice after a long session
 

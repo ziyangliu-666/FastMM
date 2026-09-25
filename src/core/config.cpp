@@ -487,6 +487,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "orders_per_sec", cfg.gateway.orders_per_sec);
     get(*t, "burst", cfg.gateway.burst);
     get_decimal(*t, "max_open_notional", cfg.gateway.max_open_notional);
+    get_decimal(*t, "max_loss", cfg.gateway.max_loss);
+    get_decimal(*t, "max_gross_notional", cfg.gateway.max_gross_notional);
+    get_decimal(*t, "max_net_notional", cfg.gateway.max_net_notional);
   }
 
   // [logging]
@@ -655,11 +658,14 @@ std::string Config::redacted() const {
   kv("orders_per_sec", risk.orders_per_sec);
   kv("burst", risk.burst);
   kv("stp", risk.stp);
-  if (gateway.orders_per_sec != 0 || gateway.burst != 0 || !gateway.max_open_notional.empty()) {
+  if (gateway.any()) {
     out += "\n[gateway]\n";
     kv("orders_per_sec", gateway.orders_per_sec);
     kv("burst", gateway.burst);
     if (!gateway.max_open_notional.empty()) kq("max_open_notional", gateway.max_open_notional);
+    if (!gateway.max_loss.empty()) kq("max_loss", gateway.max_loss);
+    if (!gateway.max_gross_notional.empty()) kq("max_gross_notional", gateway.max_gross_notional);
+    if (!gateway.max_net_notional.empty()) kq("max_net_notional", gateway.max_net_notional);
   }
   out += "\n[logging]\n";
   kq("level", logging.level);
@@ -820,11 +826,14 @@ std::string Config::effective_toml() const {
   root.insert("risk", std::move(r));
 
   // Only when set, so a configuration without it keeps its effective text and hash.
-  if (gateway.orders_per_sec != 0 || gateway.burst != 0 || !gateway.max_open_notional.empty()) {
+  if (gateway.any()) {
     toml::table g;
     g.insert("orders_per_sec", static_cast<std::int64_t>(gateway.orders_per_sec));
     g.insert("burst", static_cast<std::int64_t>(gateway.burst));
     g.insert("max_open_notional", gateway.max_open_notional);
+    g.insert("max_loss", gateway.max_loss);
+    g.insert("max_gross_notional", gateway.max_gross_notional);
+    g.insert("max_net_notional", gateway.max_net_notional);
     root.insert("gateway", std::move(g));
   }
 

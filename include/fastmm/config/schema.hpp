@@ -405,6 +405,24 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "fastmm-gateway: refuse an order that would take the notional working at its venue, over "
      "every attached strategy and both sides, past this; settlement currency, decimal"},
+    {"gateway",
+     "max_loss",
+     KeyType::Any,
+     false,
+     "fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, "
+     "carried across restarts in the gateway's kill file, reaches -max_loss; decimal"},
+    {"gateway",
+     "max_gross_notional",
+     KeyType::Any,
+     false,
+     "fastmm-gateway: refuse an order that would take the sum of the account's |position| at the "
+     "marks past this, unless it reduces its instrument's position; decimal"},
+    {"gateway",
+     "max_net_notional",
+     KeyType::Any,
+     false,
+     "fastmm-gateway: refuse an order that would take the account's net position at the marks "
+     "further past this, unless it reduces its instrument's position; decimal"},
     // [logging]
     {"logging",
      "level",

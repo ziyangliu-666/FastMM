@@ -142,8 +142,11 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   const std::size_t known = std::min<std::size_t>(req.known_exec_ids.size(), gw::kMaxKnownExecIds);
   if (req.instruments.size() > kMaxInstruments) return fail("too many instruments to claim");
   const std::size_t claims = req.instruments.size();
+  if (req.positions.size() > kMaxInstruments) return fail("too many positions to report");
+  const std::size_t positions = req.positions.size();
   std::vector<std::byte> out(sizeof(gw::AttachRequest) + known * sizeof(gw::ExecId) +
-                             claims * sizeof(gw::InstrumentClaim));
+                             claims * sizeof(gw::InstrumentClaim) +
+                             positions * sizeof(gw::PositionSeed));
   gw::AttachRequest r{};
   r.hdr = gw::Header{gw::kMagic,
                      gw::kVersion,
@@ -157,6 +160,7 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   r.exec_since_ms = req.exec_since_ms;
   r.known_count = static_cast<std::uint32_t>(known);
   r.claim_count = static_cast<std::uint32_t>(claims);
+  r.position_count = static_cast<std::uint32_t>(positions);
   std::memcpy(out.data(), &r, sizeof r);
   for (std::size_t i = 0; i < known; ++i) {
     gw::ExecId id{};
@@ -169,6 +173,15 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
     to_field(cl.venue, req.instruments[i].first);
     to_field(cl.symbol, req.instruments[i].second);
     std::memcpy(claim_at + i * sizeof cl, &cl, sizeof cl);
+  }
+  std::byte* position_at = claim_at + claims * sizeof(gw::InstrumentClaim);
+  for (std::size_t i = 0; i < positions; ++i) {
+    gw::PositionSeed ps{};
+    to_field(ps.venue, req.positions[i].venue);
+    to_field(ps.symbol, req.positions[i].symbol);
+    ps.qty = req.positions[i].qty.raw;
+    ps.avg_px = req.positions[i].avg_px.raw;
+    std::memcpy(position_at + i * sizeof ps, &ps, sizeof ps);
   }
   if (::send(c->fd_, out.data(), out.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(out.size()))
     return fail(std::string("send attach request: ") + std::strerror(errno));

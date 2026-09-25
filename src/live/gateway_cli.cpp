@@ -21,18 +21,24 @@ namespace {
 
 constexpr const char* kFooter =
     "Reads the same configuration as fastmm-live: [engine] (name, journal_dir, epoch_file,\n"
-    "spin_mode, net_cpus, ring sizes), [venues.*], [[instruments]] (every instrument of\n"
-    "every strategy) and [gateway]. Strategies attach with fastmm-live --gateway <socket>,\n"
-    "several at once, each trading instruments no other attached strategy trades. When\n"
-    "one exits or dies, the gateway cancels its orders; the others and the venue\n"
-    "connections stay up. SIGINT/SIGTERM cancels all open orders and exits.\n"
+    "kill_file, spin_mode, net_cpus, ring sizes), [venues.*], [[instruments]] (every\n"
+    "instrument of every strategy) and [gateway]. Strategies attach with fastmm-live\n"
+    "--gateway <socket>, several at once, each trading instruments no other attached\n"
+    "strategy trades. When one exits or dies, the gateway cancels its orders; the others\n"
+    "and the venue connections stay up. SIGINT/SIGTERM cancels all open orders and exits.\n"
+    "\n"
+    "[gateway] max_loss is a loss budget for the account, every strategy together,\n"
+    "carried in <journal_dir>/<engine>.kill. When it trips, the gateway kills every\n"
+    "strategy's venues, cancels every open order and refuses attaches; the trip is\n"
+    "latched and every start exits 6 until --clear-kill or the file is removed.\n"
     "\n"
     "Exit codes:\n"
     "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
     "  2  bad command line, or a venue has no API keys\n"
     "  3  bad config, or the socket cannot be created\n"
     "  4  venue reference data failed to load\n"
-    "  5  a cancel_all failed";
+    "  5  a cancel_all failed\n"
+    "  6  the account kill switch is latched in the kill file";
 
 }  // namespace
 
@@ -61,6 +67,10 @@ int gateway(int argc, char** argv) {
       ->option_text("<path>");
   app.add_flag(
       "--allow-inline-secrets", allow_inline, "accept literal API secrets in the config file");
+  app.add_flag("--clear-kill",
+               opts.clear_kill,
+               "clear a latched account kill switch and the account's cumulative PnL before "
+               "starting");
   if (const std::optional<int> rc = parse(app, argc, argv)) return *rc;
   if (config_path.empty()) return usage_error(app, "--config is required");
 

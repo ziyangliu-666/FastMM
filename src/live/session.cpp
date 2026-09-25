@@ -544,6 +544,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       req.exec_since_ms = restore_since_ms(*previous);
       req.resume_executions = req.exec_since_ms > 0;
       req.known_exec_ids = previous->recent_exec_ids;
+      // The gateway's account starts from what this strategy restores (restore_positions below).
+      for (const auto& [venue, symbol] : req.instruments) {
+        for (const store::Recovery::PositionState& p : previous->position_state) {
+          if (p.symbol == symbol && p.qty_raw != 0)
+            req.positions.push_back(
+                {venue, symbol, Qty::from_raw(p.qty_raw), Price::from_raw(p.avg_px_raw)});
+        }
+      }
     }
     std::string err;
     gateway = GatewayClient::attach(opts.gateway_path, req, &err);

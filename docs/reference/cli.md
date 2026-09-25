@@ -82,7 +82,7 @@ Exit codes:
 
 ## fastmm-gateway
 
-Holds the venue connections of a configuration; one `fastmm-live --gateway` process at a time trades through them ([Run a strategy behind a gateway](../how-to/operations/run-behind-a-gateway.md)).
+Holds the venue connections of a configuration; several `fastmm-live --gateway` processes trade through them, and it keeps the account's risk over all of them ([Run a strategy behind a gateway](../how-to/operations/run-behind-a-gateway.md)).
 
 <!-- BEGIN cli-help fastmm-gateway -->
 ```text
@@ -99,13 +99,20 @@ OPTIONS:
   --dry-run                   public market data only: no API keys, no orders
   --log <path>                write the log to a file (warnings are mirrored to stderr)
   --allow-inline-secrets      accept literal API secrets in the config file
+  --clear-kill                clear a latched account kill switch and the account's
+                              cumulative PnL before starting
 
 Reads the same configuration as fastmm-live: [engine] (name, journal_dir, epoch_file,
-spin_mode, net_cpus, ring sizes), [venues.*], [[instruments]] (every instrument of
-every strategy) and [gateway]. Strategies attach with fastmm-live --gateway <socket>,
-several at once, each trading instruments no other attached strategy trades. When
-one exits or dies, the gateway cancels its orders; the others and the venue
-connections stay up. SIGINT/SIGTERM cancels all open orders and exits.
+kill_file, spin_mode, net_cpus, ring sizes), [venues.*], [[instruments]] (every
+instrument of every strategy) and [gateway]. Strategies attach with fastmm-live
+--gateway <socket>, several at once, each trading instruments no other attached
+strategy trades. When one exits or dies, the gateway cancels its orders; the others
+and the venue connections stay up. SIGINT/SIGTERM cancels all open orders and exits.
+
+[gateway] max_loss is a loss budget for the account, every strategy together,
+carried in <journal_dir>/<engine>.kill. When it trips, the gateway kills every
+strategy's venues, cancels every open order and refuses attaches; the trip is
+latched and every start exits 6 until --clear-kill or the file is removed.
 
 Exit codes:
   0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
@@ -113,6 +120,7 @@ Exit codes:
   3  bad config, or the socket cannot be created
   4  venue reference data failed to load
   5  a cancel_all failed
+  6  the account kill switch is latched in the kill file
 ```
 <!-- END cli-help -->
 

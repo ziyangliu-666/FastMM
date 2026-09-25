@@ -170,6 +170,15 @@ struct GatewaySection {
   int orders_per_sec = 0;         // new orders and replaces per venue, 0 = off
   int burst = 0;                  // token-bucket capacity, 0 = orders_per_sec
   std::string max_open_notional;  // notional working at a venue, decimal; empty = off
+  // The account over every attached strategy, decimals in the settlement currency; empty = off.
+  std::string max_loss;            // net PnL, carried in <journal_dir>/<name>.kill
+  std::string max_gross_notional;  // sum of |position| at the marks
+  std::string max_net_notional;    // |signed sum| of the positions at the marks
+
+  [[nodiscard]] bool any() const noexcept {
+    return orders_per_sec != 0 || burst != 0 || !max_open_notional.empty() || !max_loss.empty() ||
+           !max_gross_notional.empty() || !max_net_notional.empty();
+  }
 };
 
 struct LoggingSection {
