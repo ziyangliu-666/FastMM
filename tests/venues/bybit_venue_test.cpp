@@ -772,13 +772,12 @@ TEST_CASE("bybit.venue: a fill the private stream missed is booked from executio
       exec_page({exec_row("ex-9", "fm000100000001", "60010.5", "0.0000004", kT)}, "")};
   {
     Live l(h, h.section(true));
-    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
-    CHECK(h.executions_calls.load() == 0);  // nothing to replay before a reconciliation
-    l.venue->request_open_orders();
+    // The start-up sweep replays the executions, then asks for the snapshot.
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::Reconcile) == 3;
     }));
+    CHECK(h.executions_calls.load() == 1);
     const auto fills = fills_of(l.oc);
     REQUIRE(fills.size() == 1);
     const OrderFillMsg* f = fills[0];
