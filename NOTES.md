@@ -22,8 +22,7 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    between threads (`BM_ShmRing_PingPong_Process`, busy-poll, 3 runs). Moving MsgRing's own
    indices behind a pointer to share one class cost the in-process engine step ~3%, so the
    protocol is written twice and a test drives the same 200k-step sequence through both.
-   Still to do for step 2: the cross-process wake-up (a futex in the mapping) for adaptive spin.
-2. ~~`fastmm-gateway`~~ Done except the wake-up (`include/fastmm/live/gateway.hpp`,
+2. ~~`fastmm-gateway`~~ Done (`include/fastmm/live/gateway.hpp`,
    `docs/how-to/operations/run-behind-a-gateway.md`). The gateway runs the venues through the same
    code as fastmm-live (`live/venue_slot.hpp`); on attach it creates three ShmRings per venue and
    switches the sinks to them in a task posted to the venue's reactor (`EventSink` takes a ShmRing).
@@ -32,14 +31,15 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    table and ring paths in the reply; `fastmm-live --gateway <socket>` runs everything else as
    before and calls no venue cancel_all. A mid-stream attach needs whole books:
    `Venue::resync_books()` (four connectors; nasdaq_itch cannot).
-   **No cross-process wake-up yet, and it matters.** Tick-to-trade against the simulator (release,
-   WSL2, unpinned, 45 s x 3 runs, `scripts/bench-gateway.sh`), engine t2t p50 / wire t2t p50:
-   busy spin in-process 7.2-7.4 / 41.0 us, through the gateway 7.9-8.2 / 41.0-43.0 us (p99 wire
-   61-70 vs 70-74 us): on par. Adaptive in-process 34.8 / 66.4 us, through the gateway 557-590 /
-   1376 us: an idle side sleeps up to 1 ms in each direction because nothing wakes it. Next: pass
-   the gateway reactor's eventfd with `SCM_RIGHTS` plus a sleeping flag in the ring's mapping for
-   engine -> gateway, and a shared futex word the engine's idle wait also watches for gateway ->
-   engine. Until then run both sides busy.
+   Wake-ups (2026-09-26): the attach reply passes a memfd wake page and each reactor's eventfd
+   (`SCM_RIGHTS`). The engine's feed Waker is shared into the page (non-private futex) and the
+   gateway's net thread notifies it after pushing; the net thread's sleeping flag is in the page
+   and the engine's wake hook writes the eventfd only when it was set. Without them an idle side
+   slept up to 1 ms each way (adaptive through the gateway: engine t2t p50 557-590 us, wire 1376
+   us). Now, release, WSL2, unpinned, 45 s x 3 runs, engine t2t p50 / wire t2t p50: adaptive
+   in-process 34.8 / 66.4 us, through the gateway 36.9 / 70.3 us (wire p99 105-113 vs 113-117 us);
+   busy in-process 7.2-7.7 / 41.0 us, through the gateway 7.9-9.2 / 43.0 us (unchanged).
+   `integration.gateway.wake:` tests both directions across a fork.
 3. ~~Attach/detach~~ Done for one strategy. On attach the gateway resyncs the books, replays the
    executions since the strategy's store (the strategy owns the store, so it restores its own
    position, onto its control ring, and sends the replay start and the known trade ids in the
