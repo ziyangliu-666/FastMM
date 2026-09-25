@@ -14,11 +14,13 @@
 //                          orders (RestChannel on the reactor)
 // cancel_all() uses an independent BlockingHttp connection (DELETE /fapi/v1/allOpenOrders).
 //
-// Reconciliation: on every user-stream connect and order-channel reconnect, GET /fapi/v1/openOrders
-// and GET /fapi/v3/positionRisk become one ReconcileMsg Begin / OpenOrder* / Position* / End.
-// Positions: the engine books fills; ACCOUNT_UPDATE positions are compared with the connector's
-// own sum of forwarded fills once no fill or position event has arrived for position_settle_ms, and
-// a PositionUpdateMsg corrects the engine only when they differ (liquidation, ADL, trades by other
+// Reconciliation: on every user-stream connect and order-channel reconnect, GET /fapi/v1/userTrades
+// per symbol replays the executions since the last one forwarded (Venue::request_executions), then
+// GET /fapi/v1/openOrders and GET /fapi/v3/positionRisk become one ReconcileMsg Begin / OpenOrder*
+// / Position* / End, with kExecutionsExact on the Begin when the replay was complete. Positions:
+// the engine books fills; ACCOUNT_UPDATE positions are compared with the connector's own sum of
+// forwarded fills once no fill or position event has arrived for position_settle_ms, and a
+// PositionUpdateMsg corrects the engine only when they differ (liquidation, ADL, trades by other
 // software). ACCOUNT_UPDATE and ORDER_TRADE_UPDATE are not ordered against each other, so
 // forwarding every position event would double count fills.
 //
@@ -30,7 +32,8 @@
 // (binance/binance_params.hpp), the market-data feed machinery
 // (binance/binance_md_feed_base.hpp), the depth syncer (binance/binance_depth_sync.hpp, with
 // futures `pu` chaining instead of Spot's U/u), the credentials and Ed25519 key loading
-// (binance/binance_auth.hpp), the WS API response decoder and the REST error decoder. Its own,
+// (binance/binance_auth.hpp), the WS API response decoder, the REST error decoder and the
+// trade-history parser and replayed fill (binance/binance_trade_history.hpp). Its own,
 // because the protocols differ:
 //   * endpoints and weights: /fapi/v1 and /fapi/v3 against /api/v3, a different depth-weight
 //     table, exchangeInfo with contractType and no symbol filter;
@@ -66,6 +69,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::binance_usdm {
@@ -128,6 +132,9 @@ class BinanceUsdmVenue final : public Venue {
   void on_wake() override;
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
+  bool request_executions(std::int64_t since_venue_ms = 0) override;
+  void resume_executions(std::int64_t since_venue_ms,
+                         const std::vector<std::string>& known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -238,7 +245,16 @@ class BinanceUsdmVenue final : public Venue {
   void cancel_all_async();
   // Arms or refreshes countdownCancelAll on every subscribed symbol. `countdown_ms` 0 stops it.
   void send_countdown_cancel_all(std::int64_t countdown_ms);
+  // GET /fapi/v1/openOrders + positionRisk, once any execution replay before it has finished.
+  void send_open_orders();
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
+  // GET /fapi/v1/userTrades for one subscribed instrument; `emit_executions` turns the reply into
+  // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
+  bool request_executions_for(InstrumentId id);
+  void emit_executions(InstrumentId id, std::string_view json, std::int64_t window_end_ms);
+  void finish_execution_replay(bool ok);
+  [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
+  void remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept;
   void emit_reconcile();
   void on_account_position(const PositionUpdateMsg& m);
   void check_positions(std::int64_t now);
@@ -297,6 +313,24 @@ class BinanceUsdmVenue final : public Venue {
   std::array<PositionCheck, kMaxInstruments> positions_{};
   ReconcileState reconcile_;
   std::int64_t reconcile_retry_ns_ = 0;
+  bool oo_wanted_ = false;  // a snapshot is waiting for the execution replay
+  // Execution replay (GET /fapi/v1/userTrades), parallel to subscribed_: the trade id to ask from
+  // next (0 before this connector has forwarded one), else the venue time to ask from.
+  // exec_since_ms_ seeds exec_start_ms_ and starts at connect() or resume_executions().
+  std::vector<std::int64_t> exec_from_id_;
+  std::vector<std::int64_t> exec_start_ms_;
+  std::int64_t exec_since_ms_ = 0;
+  // Venue order id -> the engine id it was acknowledged for: userTrades names the order by orderId
+  // only. A restarted session's orders are not in it and reach the position as unknown fills.
+  OpenHashMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
+  std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
+  std::uint64_t exec_generation_ = 0;               // replies of an abandoned replay are ignored
+  std::size_t exec_pending_ = 0;                    // userTrades replies still outstanding
+  bool exec_replay_ok_ = true;
+  bool exec_replay_active_ = false;
+  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
+  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_retry_ns_ = 0;
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::int64_t listen_key_retry_ns_ = 0;

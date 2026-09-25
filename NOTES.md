@@ -106,11 +106,15 @@ could be wrong. `[engine] restore_position = false` turns it off. Proved by
 session trades and stops, an outside market order moves the account, the next session ends at
 exactly the venue's position. With the restore off the same test ends 0.001 short.
 
-**Deribit and Binance USDⓈ-M declare `executions = false`** (Bybit replays `/v5/execution/list`
-since 2026-09-25). Their endpoints are verified and written down in `docs/reference/venues.md`;
-nobody has written the connector side. That is the point
-of the capability flag: their reconciliations report themselves as estimates rather than being
-assumed exact.
+**Every connector with order entry replays executions now** (2026-09-25): Binance USDⓈ-M
+(`GET /fapi/v1/userTrades`, sharing the trade parser and fill mapping with Spot in
+`binance/binance_trade_history.hpp`), Bybit (`/v5/execution/list`, one account-wide query) and
+Deribit (`private/get_user_trades_by_currency_and_time`, history first when the window reaches past
+24 h). Each is proved by venue tests that fail without it: a fill the private stream missed is
+booked with its price and fee before the snapshot, `kExecutionsExact` only after a complete replay,
+a failed query retried from the housekeeping timer. Untested against the real venues: whether
+Bybit's `endTime` and Deribit's `end_timestamp` are inclusive, and Deribit's user-trade `direction`
+(documented as the taker's).
 
 **The soak's other two findings.** (2) An order sent right after an order-channel reconnect can be
 counted as sent and never reach the venue. The reconciliation now settles it *honestly* - the

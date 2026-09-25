@@ -233,7 +233,8 @@ struct WsApiResponse {
   RateLimitInfo rate;
 };
 
-// One execution as returned by GET /api/v3/myTrades. Binance Spot identifies a trade by `id`,
+// One execution as returned by GET /api/v3/myTrades (or USDⓈ-M GET /fapi/v1/userTrades, where
+// `is_buyer` comes from `buyer`). Binance Spot identifies a trade by `id`,
 // unique per symbol, and names the order only by `orderId`: there is no clientOrderId, so a
 // connector maps it back through the order ids its own acks carried. `side` is not reported either
 // - `isBuyer` carries it.
@@ -282,8 +283,15 @@ class BinanceWsApiDecoder {
   // into `json`.
   ParseStatus decode_my_trades(std::string_view json,
                                const std::function<void(const MyTradeRecord&)>& fn) noexcept;
+  // The same for GET /fapi/v1/userTrades (Binance USDⓈ-M): `buyer`/`maker` instead of
+  // `isBuyer`/`isMaker`, otherwise the fields MyTradeRecord keeps are the same.
+  ParseStatus decode_user_trades(std::string_view json,
+                                 const std::function<void(const MyTradeRecord&)>& fn) noexcept;
 
  private:
+  ParseStatus decode_trades(std::string_view json,
+                            bool futures,
+                            const std::function<void(const MyTradeRecord&)>& fn) noexcept;
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

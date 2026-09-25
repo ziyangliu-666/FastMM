@@ -2,7 +2,7 @@
 // + private listenKey stream + WS API): reference data and account checks, depth sync with a pu
 // gap, order.place / order.modify / order.cancel with the venue client id kept across the modify,
 // reconciliation with positions, the ACCOUNT_UPDATE position check, listenKey expiry, order-channel
-// loss and the blocking kill-switch cancel_all.
+// loss, the execution replay (GET /fapi/v1/userTrades) and the blocking kill-switch cancel_all.
 #include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 
 #include "fake_venue_util.hpp"
@@ -12,6 +12,7 @@
 #include "fastmm/venues/registry.hpp"
 
 #include <atomic>
+#include <mutex>
 #include <string>
 
 using namespace fastmm;
@@ -99,6 +100,15 @@ struct Harness {
   std::atomic<int> countdowns{0};       // POST /fapi/v1/countdownCancelAll with a window
   std::atomic<int> countdown_stops{0};  // ...with countdownTime=0
   std::atomic<bool> countdown_fails{false};
+  std::atomic<int> user_trades_queries{0};
+  std::atomic<int> user_trades_failures{0};  // the next N userTrades queries answer 503
+  std::mutex trades_mu;
+  std::string user_trades = "[]";  // GET /fapi/v1/userTrades answer (trades_mu)
+
+  void set_user_trades(std::string body) {
+    const std::lock_guard<std::mutex> lock(trades_mu);
+    user_trades = std::move(body);
+  }
 
   explicit Harness(bool hedge = false) : hedge_mode(hedge) {
     srv.route("GET", "/fapi/v1/exchangeInfo", [this](const net::HttpRequest&) {
@@ -134,6 +144,17 @@ struct Harness {
         "/fapi/v3/balance",
         R"([{"accountAlias":"x","asset":"USDT","balance":"5000","availableBalance":"5000"}])");
     signed_route("GET", "/fapi/v1/openOrders", "[]");
+    srv.route("GET", "/fapi/v1/userTrades", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("userTrades", std::string(r.query));
+      ++user_trades_queries;
+      if (user_trades_failures.load() > 0) {
+        --user_trades_failures;
+        return net::HttpServerResponse::text(503, "Service Unavailable");
+      }
+      const std::lock_guard<std::mutex> lock(trades_mu);
+      return net::HttpServerResponse::json(200, user_trades);
+    });
     srv.route("GET", "/fapi/v3/positionRisk", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
       ++reconcile_requests;
@@ -767,4 +788,153 @@ TEST_CASE("binance_usdm.venue: dead_mans_switch_ms = 0 leaves the venue timer al
   idle(f.reactor, 2500);
   CHECK(f.h.countdowns.load() == 0);
   CHECK(f.h.countdown_stops.load() == 0);
+}
+
+// ---- execution replay (GET /fapi/v1/userTrades) ------------------------------------------------
+namespace {
+
+std::string user_trade(long id, const char* price, const char* qty, const char* commission) {
+  return R"({"buyer":true,"commission":")" + std::string(commission) +
+         R"(","commissionAsset":"USDT","id":)" + std::to_string(id) +
+         R"(,"maker":true,"orderId":4293153,"price":")" + price + R"(","qty":")" + qty +
+         R"(","quoteQty":"70.0","realizedPnl":"0","side":"BUY","positionSide":"BOTH","symbol":"BTCUSDT","time":)" +
+         std::to_string(wall_now().ns / 1'000'000) + "}";
+}
+
+// The n-th (from 0) snapshot Begin in `c`, and its position in c.all.
+std::size_t index_of_begin(const Collected& c, std::size_t n) {
+  for (std::size_t i = 0; i < c.all.size(); ++i) {
+    if (RecordingSink::type_of(c.all[i]) != EventType::Reconcile) continue;
+    if (RecordingSink::as<ReconcileMsg>(c.all[i]).kind == ReconcileMsg::Kind::Begin && n-- == 0)
+      return i;
+  }
+  return SIZE_MAX;
+}
+
+bool begin_exact(const Collected& c, std::size_t n) {
+  const std::size_t i = index_of_begin(c, n);
+  REQUIRE(i != SIZE_MAX);
+  return (RecordingSink::as<ReconcileMsg>(c.all[i]).flags & ReconcileMsg::kExecutionsExact) != 0;
+}
+
+// Position in c.all of the first replayed fill with `exec_id`; SIZE_MAX if absent.
+std::size_t index_of_fill(const Collected& c, std::string_view exec_id) {
+  for (std::size_t i = 0; i < c.all.size(); ++i) {
+    if (RecordingSink::type_of(c.all[i]) != EventType::OrderFill) continue;
+    const auto& f = RecordingSink::as<OrderFillMsg>(c.all[i]);
+    if ((f.flags & OrderFillMsg::kReplayed) != 0 && f.exec_id.view() == exec_id) return i;
+  }
+  return SIZE_MAX;
+}
+
+void place_order(DmsFixture& f, const char* id) {
+  OutNewOrderMsg n{};
+  init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  n.cl_ord_id = cid(id);
+  n.side = Side::Buy;
+  n.type = OrderType::PostOnly;
+  n.price = Price::from_decimal("70000").value();
+  n.qty = Qty::from_decimal("0.001").value();
+  REQUIRE(f.outbound.try_push(&n, n.hdr.len));
+  f.venue->on_wake();
+  REQUIRE(f.pump([&] { return f.oc.count(EventType::OrderAck) >= 1; }));
+}
+
+}  // namespace
+
+TEST_CASE("binance_usdm.venue: a fill the user stream missed is booked from userTrades") {
+  // The order fills completely while the private stream is down: the stream never reports it and
+  // the open-order snapshot no longer names the order, so only the trade history can.
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  const auto first = f.h.srv.frames("userTrades");
+  REQUIRE(first.size() == 1);
+  CHECK(first[0].find("symbol=BTCUSDT") != std::string::npos);
+  CHECK(first[0].find("startTime=") != std::string::npos);  // from connect(), not 7 days back
+  CHECK(first[0].find("fromId=") == std::string::npos);
+  place_order(f, "fm000100000001");
+
+  f.h.set_user_trades("[" + user_trade(901, "69999.90", "0.001", "0.02800000") + "]");
+  f.h.srv.close_sessions(kPrivatePath);
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  const std::size_t at = index_of_fill(f.oc, "901");
+  REQUIRE(at != SIZE_MAX);
+  CHECK(at < index_of_begin(f.oc, 1));  // booked before the snapshot is read
+  const auto& fill = RecordingSink::as<OrderFillMsg>(f.oc.all[at]);
+  CHECK(fill.cl_ord_id == cid("fm000100000001"));  // mapped back from orderId
+  CHECK(fill.venue_order_id.view() == "4293153");
+  CHECK(fill.side == Side::Buy);
+  CHECK(fill.price == Price::from_decimal("69999.9").value());
+  CHECK(fill.qty == Qty::from_decimal("0.001").value());
+  CHECK(fill.fee == Notional::from_decimal("0.028").value());
+  CHECK(fill.fee_asset == FeeAsset::Quote);
+  CHECK(fill.liquidity == Liquidity::Maker);
+  CHECK(begin_exact(f.oc, 1));
+
+  // The next replay carries on after the trade it forwarded.
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 3; }));
+  const auto later = f.h.srv.frames("userTrades");
+  REQUIRE(later.size() >= 3);
+  CHECK(later.back().find("fromId=902") != std::string::npos);
+  CHECK(later.back().find("startTime=") == std::string::npos);
+  CHECK(f.h.unsigned_requests.load() == 0);
+}
+
+TEST_CASE("binance_usdm.venue: a snapshot is marked exact only after a complete replay") {
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  CHECK(begin_exact(f.oc, 0));
+
+  // A query that fails: the snapshot still goes out, but does not pass for exact.
+  f.h.user_trades_failures.store(1);
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  CHECK_FALSE(begin_exact(f.oc, 1));
+
+  // A full page (limit 1000) is not proof that nothing is behind it.
+  std::string page = "[";
+  for (int i = 0; i < 1000; ++i) {
+    if (i > 0) page += ",";
+    page += user_trade(2000 + i, "70000.00", "0.001", "0.028");
+  }
+  page += "]";
+  f.h.set_user_trades(page);
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 3; }));
+  CHECK(index_of_fill(f.oc, "2999") < index_of_begin(f.oc, 2));
+  CHECK_FALSE(begin_exact(f.oc, 2));
+
+  // Complete again: exact again.
+  f.h.set_user_trades("[]");
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 4; }));
+  CHECK(begin_exact(f.oc, 3));
+}
+
+TEST_CASE("binance_usdm.venue: a failed userTrades query is retried from the housekeeping timer") {
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  place_order(f, "fm000100000001");
+  f.h.set_user_trades("[" + user_trade(905, "70000.00", "0.0004", "0.0112") + "]");
+  f.h.user_trades_failures.store(1);
+  const int queries = f.h.user_trades_queries.load();
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  CHECK_FALSE(begin_exact(f.oc, 1));
+  CHECK(index_of_fill(f.oc, "905") == SIZE_MAX);
+
+  // No reconnect and no new reconciliation: the housekeeping timer asks again on its own.
+  REQUIRE(f.pump([&] { return index_of_fill(f.oc, "905") != SIZE_MAX; }, 8000));
+  CHECK(f.h.user_trades_queries.load() == queries + 2);
+  CHECK(reconcile_ends(f.oc) == 2);  // only the executions are asked again, not the snapshot
+  const auto& fill = RecordingSink::as<OrderFillMsg>(f.oc.all[index_of_fill(f.oc, "905")]);
+  CHECK(fill.cl_ord_id == cid("fm000100000001"));
+  CHECK(fill.fee == Notional::from_decimal("0.0112").value());
+  // Published from the housekeeping tick.
+  REQUIRE(f.pump([&] { return f.venue->status().executions_fetched >= 1; }));
+  const VenueStatus st = f.venue->status();
+  CHECK(st.execution_queries >= 3);
+  CHECK(st.execution_query_errors == 1);
+  CHECK(st.executions_fetched >= 1);
 }

@@ -66,11 +66,11 @@ What each venue can answer, from their current documentation (2026-09-24):
 | venue | query | scope | window | identity | implemented |
 |---|---|---|---|---|---|
 | Binance Spot | `GET /api/v3/myTrades` | per symbol (`symbol` required) | `fromId` (ascending, exclusive of neither end) **or** `startTime`/`endTime` no more than 24 h apart; the two cannot be combined | `id` (int64, per symbol); the order only as `orderId` — there is no `clientOrderId`, and `side` is `isBuyer` | yes; weight 20, limit ≤ 1000 |
-| Binance USDⓈ-M | `GET /fapi/v1/userTrades` | per symbol | `fromId` **or** a range up to 7 days, within the last 3 months; neither given returns 7 days | `id` (int64), `orderId`, `side` | no |
+| Binance USDⓈ-M | `GET /fapi/v1/userTrades` | per symbol | `fromId` **or** a range up to 7 days, within the last 3 months; neither given returns 7 days | `id` (int64, per symbol, the user stream's `t`); the order only as `orderId`, and `side` | yes; weight 5, limit ≤ 1000 |
 | Bybit v5 | `GET /v5/execution/list` | per account (only `category` is required) | a range up to 7 days, 2 years of history, opaque `nextPageCursor`, newest first | `execId` (string), and `orderLinkId` is the client id | yes; one account-wide query, limit 100 |
 | Deribit | `private/get_user_trades_by_currency_and_time` (WebSocket) | per currency (`kind` optional), or `..._by_instrument_and_time` per instrument | `start_timestamp`/`end_timestamp` (ms), `count` ≤ 1000, `sorting`, `has_more`; `historical: false` covers the last 24 h only and `true` older records (indexed after a short delay, recent ones excluded); a single call cannot span both | `trade_id` (string, unique per currency), `order_id`, `label` (the client id); `direction` is documented as the taker's, see below | yes; per currency, `kind: any` |
 
-The one that is not implemented declares `executions = false` in the registry, which is what makes its reconciliations report themselves as estimates instead of being assumed exact.
+A connector that declares `executions = false` reports its reconciliations as estimates instead of passing them for exact.
 
 **Deribit.** Each currency keeps a cursor: the `timestamp` of the last row forwarded (the next `start_timestamp`, inclusive) and the `trade_id`s at that millisecond, skipped when they come back. A page with `has_more` is followed from its last row's timestamp; the replay is exact when every currency ends with `has_more: false`. A cursor older than 23 h is first paged with `historical: true` up to 23 h ago, then with `historical: false` from where that left off; the hour both cover is deduplicated by `trade_id`. After a complete replay the cursor moves to 60 s before the replay started. Over 100 pages per currency, or a full page that cannot move past its start (1000 rows in one millisecond), leaves the replay incomplete.
 
@@ -193,7 +193,7 @@ Perpetual contracts in one-way position mode, with HMAC or Ed25519 keys. Sources
 | trades | `<ws_url>/market/stream?streams=<sym>@aggTrade` | aggregate trades |
 | user | `<ws_private_url>/ws/<listenKey>`, default `<ws_url>/private` | `ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `listenKeyExpired` |
 | order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.modify` | order entry; REST fallback `POST` / `DELETE` / `PUT /fapi/v1/order` |
-| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `listenKey`, `openOrders`, `positionRisk`, account checks, kill-switch `DELETE /fapi/v1/allOpenOrders`, dead man's switch `POST /fapi/v1/countdownCancelAll` |
+| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `listenKey`, `userTrades`, `openOrders`, `positionRisk`, account checks, kill-switch `DELETE /fapi/v1/allOpenOrders`, dead man's switch `POST /fapi/v1/countdownCancelAll` |
 
 The `/public`, `/market` and `/private` paths come from the 2026-03-05 URL split; the unrouted `/ws` and `/stream` URLs were decommissioned on 2026-04-23 ("Important WebSocket Change Notice"). Demo Trading hosts: REST `https://demo-fapi.binance.com`, streams `wss://demo-fstream.binance.com`, WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`.
 
@@ -221,7 +221,8 @@ The refresh clock only advances when the venue answers. A refused refresh is log
 
 ### Positions and reconciliation
 
-* On every user-stream connect and order-channel reconnect, `GET /fapi/v1/openOrders` (weight 40) and `GET /fapi/v3/positionRisk` (weight 5) become one `ReconcileMsg` sequence: Begin, one `OpenOrder` per order, one `Position` per configured instrument (flat when absent), End.
+* On every user-stream connect and order-channel reconnect, `GET /fapi/v1/userTrades` per symbol replays the executions since the last one forwarded ([above](#executions-the-private-stream-never-delivered)), then `GET /fapi/v1/openOrders` (weight 40) and `GET /fapi/v3/positionRisk` (weight 5) become one `ReconcileMsg` sequence: Begin, one `OpenOrder` per order, one `Position` per configured instrument (flat when absent), End.
+* `userTrades` names the order by `orderId` only; the connector maps it back through the order ids its acks and snapshots carried (to the engine id a modify moved it to). The replay asks `fromId` = the last trade id + 1 once it has one, else `startTime` = connect time or the restored watermark. A start older than 7 days is walked forward a week per query (bounded by `endTime`) and older than 3 months is clamped; either way that replay is not exact.
 * The engine books every fill, including liquidations and ADL (`autoclose-*` client ids). The connector compares each `ACCOUNT_UPDATE` position with the fills it forwarded once no fill has arrived for 1 s, and sends a `PositionUpdate` only when they differ (`position_from_account_update`). The two event types are not ordered against each other, so forwarding every position would count fills twice.
 * `load_reference_data()` refuses an account in hedge mode and logs the position mode, the leverage and margin type of each symbol and the margin balance. It changes no account setting.
 * Funding payments are not booked: they arrive as balance-only `ACCOUNT_UPDATE` events, which the connector ignores.
