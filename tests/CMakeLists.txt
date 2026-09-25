@@ -178,6 +178,12 @@ if(FASTMM_BUILD_NET)
       target_compile_definitions(fastmm_integration_tests PRIVATE
         FASTMM_LIVE_EXE="$<TARGET_FILE:fastmm-live>")
     endif()
+    # gateway_test.cpp runs fastmm-gateway and fastmm-live --gateway as child processes.
+    if(TARGET fastmm_integration_tests AND TARGET fastmm-gateway)
+      target_compile_definitions(fastmm_integration_tests PRIVATE
+        FASTMM_GATEWAY_EXE="$<TARGET_FILE:fastmm-gateway>")
+      add_dependencies(fastmm_integration_tests fastmm-gateway fastmm-live)
+    endif()
     fastmm_test(live        LABELS "live"        LIBS fastmm::venues fastmm::backtest)
   endif()
 endif()
@@ -329,7 +335,7 @@ endfunction()
 
 # Every program: --help exits 0 and prints a usage line, an unknown flag exits 2 and names it.
 foreach(_prog fastmm-live fastmm-backtest fastmm-data fastmm-replay fastmm-pnl fastmm-sim-exchange
-              fastmm-sim-itch fastmm-top fastmm-ctl)
+              fastmm-sim-itch fastmm-top fastmm-ctl fastmm-gateway)
   if(TARGET ${_prog})
     fastmm_cli_test(apps.${_prog}.help EXPECT_RC 0 CMD $<TARGET_FILE:${_prog}> --help
       EXPECT_REGEX "usage: ${_prog} ")
