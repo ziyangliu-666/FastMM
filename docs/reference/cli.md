@@ -100,11 +100,12 @@ OPTIONS:
   --log <path>                write the log to a file (warnings are mirrored to stderr)
   --allow-inline-secrets      accept literal API secrets in the config file
 
-Reads the same configuration as fastmm-live: [engine] (name, journal_dir, spin_mode,
-net_cpus, ring sizes), [venues.*] and [[instruments]]. A strategy attaches with
-fastmm-live --gateway <socket>. When its process exits or dies, the gateway cancels
-every open order on every venue and waits for the next one; the venue connections
-stay up. SIGINT/SIGTERM cancels all open orders and exits.
+Reads the same configuration as fastmm-live: [engine] (name, journal_dir, epoch_file,
+spin_mode, net_cpus, ring sizes), [venues.*], [[instruments]] (every instrument of
+every strategy) and [gateway]. Strategies attach with fastmm-live --gateway <socket>,
+several at once, each trading instruments no other attached strategy trades. When
+one exits or dies, the gateway cancels its orders; the others and the venue
+connections stay up. SIGINT/SIGTERM cancels all open orders and exits.
 
 Exit codes:
   0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
