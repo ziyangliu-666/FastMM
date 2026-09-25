@@ -83,6 +83,9 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 48 | `GatewayRateLimit` | `[gateway] orders_per_sec`, `burst`: the venue's order rate, shared by every attached strategy |
 | 49 | `GatewayOpenNotional` | `[gateway] max_open_notional`: the notional working at the venue, over every attached strategy |
 | 50 | `GatewayNotOwner` | the order's instrument is not one this strategy claimed when it attached |
+| 51 | `GatewayAccountKilled` | `[gateway] max_loss` tripped the account's kill switch |
+| 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus this order; an order that reduces its instrument's position passes |
+| 53 | `GatewayNetNotional` | `[gateway] max_net_notional`: the same for the signed sum |
 
 ### Venue-originated
 

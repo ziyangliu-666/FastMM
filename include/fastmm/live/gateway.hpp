@@ -30,8 +30,16 @@
 //     rows only, under a Begin whose sent watermark is its own last order the venue had taken. A
 //     row of an epoch no attachment holds is a dead session's order, which the gateway cancels.
 // Outbound, the network thread moves each attachment's orders into the venue's own ring after the
-// account guards ([gateway]: the order rate per venue, the notional working at the venue, the
-// instrument belongs to the sender); a refused order goes back to its sender as an OrderReject.
+// account guards ([gateway]: the instrument belongs to the sender, the account's kill switch, the
+// notional working at the venue, the account's gross and net exposure, the order rate per venue);
+// a refused order goes back to its sender as an OrderReject.
+//
+// The account (core/account_book.hpp): each network thread books every execution of its venue once
+// and marks the positions at the mids of its own books; an instrument's position starts with what
+// its first owner restored from its store (gw::PositionSeed) and outlives its detach. [gateway]
+// max_loss over the net PnL of every venue, carried in the gateway's kill file, trips the account:
+// orders refused, TripVenueKill to every attachment, every order at every venue cancelled, attaches
+// refused, the trip latched until --clear-kill.
 //
 // Detach is the connection closing, which the kernel does when the strategy process dies, kill -9
 // included: no heartbeat, no timeout. The gateway takes the attachment out of the routers, cancels
@@ -55,6 +63,7 @@
 // A reply carries the request's version; a version or size the gateway does not know is refused
 // with an error reply.
 #include "fastmm/config/config.hpp"
+#include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/shm_ring.hpp"
 #include "fastmm/core/strong_id.hpp"
@@ -78,7 +87,7 @@ namespace gw {
 static_assert(std::endian::native == std::endian::little);
 
 inline constexpr std::uint32_t kMagic = 0x57474d46;  // "FMGW"
-inline constexpr std::uint16_t kVersion = 3;
+inline constexpr std::uint16_t kVersion = 4;
 
 enum class MsgType : std::uint16_t {
   AttachRequest = 1,
@@ -106,6 +115,16 @@ struct InstrumentClaim {
 };
 static_assert(sizeof(InstrumentClaim) == 64);
 
+// A position the strategy restored from its store, for the gateway's account: it seeds the
+// account's position of an instrument the first time a strategy that owns it attaches.
+struct PositionSeed {
+  char venue[32];
+  char symbol[32];
+  std::int64_t qty;     // raw Qty, signed
+  std::int64_t avg_px;  // raw Price
+};
+static_assert(sizeof(PositionSeed) == 80);
+
 // The strategy restores a position from its store: the venues' execution replay starts at
 // exec_since_ms and skips the `known_count` ExecIds that follow the request.
 inline constexpr std::uint32_t kResumeExecutions = 1U << 0;
@@ -113,7 +132,7 @@ inline constexpr std::uint32_t kResumeExecutions = 1U << 0;
 inline constexpr std::uint32_t kStrategyBlocks = 1U << 1;
 inline constexpr std::uint32_t kMaxKnownExecIds = 1024;
 
-// Followed by known_count ExecId, then claim_count InstrumentClaim.
+// Followed by known_count ExecId, claim_count InstrumentClaim, then position_count PositionSeed.
 struct AttachRequest {
   Header hdr;
   char engine[64];  // [engine] name of the strategy, for the gateway's log
@@ -122,8 +141,10 @@ struct AttachRequest {
   std::int64_t exec_since_ms;  // venue time
   std::uint32_t known_count;
   std::uint32_t claim_count;
+  std::uint32_t position_count;
+  std::uint32_t reserved;
 };
-static_assert(sizeof(AttachRequest) == 104);
+static_assert(sizeof(AttachRequest) == 112);
 
 inline constexpr std::uint8_t kVenueReplace = 1U << 0;     // trades with cancel-replace
 inline constexpr std::uint8_t kVenueExecutions = 1U << 1;  // can replay executions
@@ -156,9 +177,9 @@ struct AttachReply {
   std::uint32_t flags;
   std::uint16_t session_epoch;  // the epoch of this attachment's client order ids
   std::uint16_t reserved;
-  char error[224];
+  char error[480];
 };
-static_assert(sizeof(AttachReply) == 272);
+static_assert(sizeof(AttachReply) == 528);
 
 // Sleeping flags in a memfd page both processes map, each flag on its own cache line. Each
 // attachment has a page for its engine's flag, which goes away with it; the gateway has one page
@@ -192,9 +213,9 @@ ssize_t recv_with_fds(
 
 inline constexpr std::size_t kMaxDatagram =
     sizeof(AttachReply) + 8 * sizeof(VenueInfo) + kMaxInstruments * sizeof(Instrument);
-inline constexpr std::size_t kMaxRequest = sizeof(AttachRequest) +
-                                           kMaxKnownExecIds * sizeof(ExecId) +
-                                           kMaxInstruments * sizeof(InstrumentClaim);
+inline constexpr std::size_t kMaxRequest =
+    sizeof(AttachRequest) + kMaxKnownExecIds * sizeof(ExecId) +
+    kMaxInstruments * sizeof(InstrumentClaim) + kMaxInstruments * sizeof(PositionSeed);
 // Strategies attached to one gateway at once.
 inline constexpr std::size_t kMaxAttachments = 16;
 
@@ -206,6 +227,7 @@ struct GatewayOptions {
   std::string socket_path;       // empty: <journal_dir>/<engine name>.gw
   std::int64_t duration_ns = 0;  // 0: until SIGINT/SIGTERM
   bool dry_run = false;
+  bool clear_kill = false;  // remove the account's kill file before starting
   std::string program = "fastmm-gateway";
 };
 
@@ -237,6 +259,15 @@ struct GatewayAttachRequest {
   bool resume_executions = false;
   std::int64_t exec_since_ms = 0;
   std::vector<std::string> known_exec_ids;
+  // The positions it restored from its store, (venue name, symbol, qty, avg price): the gateway
+  // seeds its account with them (gw::PositionSeed).
+  struct Position {
+    std::string venue;
+    std::string symbol;
+    Qty qty;
+    Price avg_px;
+  };
+  std::vector<Position> positions;
 };
 
 // One attachment. The connection stays open for as long as this object lives; closing it (the
