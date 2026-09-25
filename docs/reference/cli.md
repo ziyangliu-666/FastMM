@@ -33,6 +33,8 @@ OPTIONS:
   --control <path>            control socket for fastmm-ctl (default
                               <journal_dir>/<engine>.ctl, mode 0600)
   --no-control                do not open a control socket
+  --gateway <path>            trade through the fastmm-gateway at this socket instead of
+                              connecting to the venues (no API keys here)
   --clear-kill                clear a latched kill switch and the cumulative PnL before
                               starting; arms the whole [risk] max_loss budget again
   --log <path>                write the log to a file (warnings are mirrored to stderr)
@@ -69,14 +71,49 @@ Exit codes:
 | 0 | stopped by `--duration` or SIGINT/SIGTERM with `cancel_all ok`, also after a kill with `[engine] on_kill = "stay"`; `--help`, `--version` and `--list-strategies` |
 | 2 | bad command line, including a `--log` file that cannot be opened; a `${VAR}` in `[venues.*]` that is not set, except `api_key` and `api_secret` with `--dry-run` |
 | 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code, a `[storage] backend` that is not registered or cannot be opened ([Storage](storage.md)) |
-| 4 | a venue's reference data failed to load |
-| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; an uncaught error |
+| 4 | a venue's reference data failed to load; with `--gateway`, the gateway cannot be reached or refused the attach |
+| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; the gateway closed the attachment (`--gateway`); an uncaught error |
 | 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | 7 | a Python strategy's slow tier failed, and `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` does not return it) |
 
 - The journal records the configuration after `--strategy` and `--param`.
 - `python -m fastmm run` and `fastmm.run_live` run the same session for a Python strategy with these exit codes ([Live sessions](python-api.md#live-sessions)).
 - `fastmm::cli::live` installs process-wide SIGINT and SIGTERM handlers. The first signal starts the shutdown ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
+
+## fastmm-gateway
+
+Holds the venue connections of a configuration; one `fastmm-live --gateway` process at a time trades through them ([Run a strategy behind a gateway](../how-to/operations/run-behind-a-gateway.md)).
+
+<!-- BEGIN cli-help fastmm-gateway -->
+```text
+Holds the venue connections that strategy processes attach to.
+
+usage: fastmm-gateway [OPTIONS]
+
+OPTIONS:
+  -h, --help                  print this help and exit
+  --version                   print the version and exit
+  --config <file>             engine / venue configuration (required)
+  --socket <path>             attach socket (default <journal_dir>/<engine>.gw, mode 0600)
+  --duration <t>              stop after t (e.g. 60s, 5m; default: until SIGINT)
+  --dry-run                   public market data only: no API keys, no orders
+  --log <path>                write the log to a file (warnings are mirrored to stderr)
+  --allow-inline-secrets      accept literal API secrets in the config file
+
+Reads the same configuration as fastmm-live: [engine] (name, journal_dir, spin_mode,
+net_cpus, ring sizes), [venues.*] and [[instruments]]. A strategy attaches with
+fastmm-live --gateway <socket>. When its process exits or dies, the gateway cancels
+every open order on every venue and waits for the next one; the venue connections
+stay up. SIGINT/SIGTERM cancels all open orders and exits.
+
+Exit codes:
+  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
+  2  bad command line, or a venue has no API keys
+  3  bad config, or the socket cannot be created
+  4  venue reference data failed to load
+  5  a cancel_all failed
+```
+<!-- END cli-help -->
 
 ## fastmm-backtest
 
