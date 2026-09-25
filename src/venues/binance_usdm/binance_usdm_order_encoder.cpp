@@ -245,6 +245,30 @@ bool BinanceUsdmOrderEncoder::encode_rest_position_risk(std::string_view symbol,
       signer_, recv_window_ms_, "/fapi/v3/positionRisk", symbol, timestamp_ms, 5, out);
 }
 
+bool BinanceUsdmOrderEncoder::encode_rest_user_trades(std::string_view symbol,
+                                                      std::int64_t from_id,
+                                                      std::int64_t start_ms,
+                                                      std::int64_t end_ms,
+                                                      int limit,
+                                                      std::int64_t timestamp_ms,
+                                                      RestRequest& out) {
+  if (symbol.empty()) return false;  // "Account Trade List": symbol is mandatory
+  ParamList p;                       // sorted by name, as the signature payload requires
+  const bool by_time = from_id <= 0 && start_ms > 0;
+  if (by_time && end_ms > 0) p.add_int("endTime", end_ms);
+  if (from_id > 0) p.add_int("fromId", from_id);
+  p.add_int("limit", limit);
+  p.add_int("recvWindow", recv_window_ms_);
+  if (by_time) p.add_int("startTime", start_ms);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/fapi/v1/userTrades";
+  out.weight = 5;
+  out.is_order = false;
+  return finish_rest(p, signer_, out);
+}
+
 bool BinanceUsdmOrderEncoder::encode_rest_signed_get(const Signer& signer,
                                                      int recv_window_ms,
                                                      std::string_view path,

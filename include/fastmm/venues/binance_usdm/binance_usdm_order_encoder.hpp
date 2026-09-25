@@ -106,6 +106,17 @@ class BinanceUsdmOrderEncoder {
                                  std::int64_t timestamp_ms,
                                  RestRequest& out);
 
+  // GET /fapi/v1/userTrades (weight 5): the account's executions on `symbol`. `from_id` > 0 asks
+  // from that trade id on; otherwise `start_ms` (and `end_ms` when > 0) bound the window, which the
+  // venue caps at 7 days and 3 months back. fromId cannot be sent with a time range, so it wins.
+  bool encode_rest_user_trades(std::string_view symbol,
+                               std::int64_t from_id,
+                               std::int64_t start_ms,
+                               std::int64_t end_ms,
+                               int limit,
+                               std::int64_t timestamp_ms,
+                               RestRequest& out);
+
   // Any signed GET with an optional symbol, for the control path before attach().
   static bool encode_rest_signed_get(const Signer& signer,
                                      int recv_window_ms,

@@ -1,6 +1,7 @@
 #include "fastmm/venues/binance/binance_venue.hpp"
 
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
+#include "fastmm/venues/binance/binance_trade_history.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
@@ -1392,42 +1393,16 @@ void BinanceVenue::emit_executions(InstrumentId id, std::string_view json) {
   std::size_t count = 0;
   const ParseStatus st =
       ws_api_decoder_->decode_my_trades(padded.view(), [&](const MyTradeRecord& t) {
-        const auto px = parse_price(t.price);
-        const auto qty = parse_qty(t.qty);
-        if (!px || !qty) return;
-        const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
-        // The commission is an amount of commissionAsset: quote units are a Notional, base units a
-        // Qty the engine converts at the fill price, anything else it cannot value.
-        Notional fee{};
-        FeeAsset fee_asset = FeeAsset::Quote;
-        if (const auto f = parse_qty(t.commission)) fee = Notional::from_raw(f->raw);
-        if (!fee.is_zero() && !t.commission_asset.empty()) {
-          if (iequals_symbol(inst.quote.view(), t.commission_asset)) {
-            fee_asset = FeeAsset::Quote;
-          } else if (iequals_symbol(inst.base.view(), t.commission_asset)) {
-            fee_asset = FeeAsset::Base;
-          } else {
-            fee_asset = FeeAsset::Other;
-          }
-        }
         if (!known_exec_ids_.empty() &&
             known_exec_ids_.count(std::string(IdText(t.id).view())) != 0) {
           if (t.id > high_id) high_id = t.id;
           if (t.time_ms > high_ms) high_ms = t.time_ms;
           return;  // the earlier session booked it
         }
-        emit_replayed_fill(*order_sink_,
-                           id_,
-                           id,
-                           mapped != nullptr ? *mapped : ClientOrderId{},
-                           IdText(t.order_id).view(),
-                           IdText(t.id).view(),
-                           t.is_buyer ? Side::Buy : Side::Sell,
-                           *px,
-                           *qty,
-                           fee,
-                           fee_asset,
-                           t.is_maker ? Liquidity::Maker : Liquidity::Taker);
+        const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
+        if (!emit_trade_history_fill(
+                *order_sink_, id_, inst, id, mapped != nullptr ? *mapped : ClientOrderId{}, t))
+          return;
         ++stats_.order_events;
         ++stats_.executions_fetched;
         ++count;

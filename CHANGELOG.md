@@ -19,6 +19,9 @@ All notable changes are recorded here (Keep a Changelog format).
   when the replay names it: `OmsUpdate::corrected_qty`, `PositionTracker::correct_fill`,
   `EngineStats::corrected_fills`. The quantity is already in the position, so what the execution
   replaces is the estimate's price and its missing fee.
+- Binance USDⓈ-M replays executions with `GET /fapi/v1/userTrades` (`fromId`, or a start time
+  walked forward a week at a time) and declares `executions = true`, so its reconciliations are
+  exact and a restart restores its position.
 - The simulated exchange serves `GET /api/v3/myTrades` from a trade log that outlives the orders, so
   the executions of an order the venue has forgotten are still reportable.
 - Venue-side dead man's switch, the only thing that clears resting quotes after a SIGKILL, an OOM

@@ -106,7 +106,13 @@ could be wrong. `[engine] restore_position = false` turns it off. Proved by
 session trades and stops, an outside market order moves the account, the next session ends at
 exactly the venue's position. With the restore off the same test ends 0.001 short.
 
-**Bybit, Deribit and Binance USDⓈ-M declare `executions = false`.** Their endpoints are verified and
+**Binance USDⓈ-M replays executions too** (`GET /fapi/v1/userTrades`, weight 5), sharing the
+trade parser and the fill mapping with Spot (`binance/binance_trade_history.hpp`). Proved by the
+three `binance_usdm.venue` userTrades cases: a fill missed by the user stream booked with its price
+and fee before the snapshot, `kExecutionsExact` only after a complete replay, and a failed query
+retried from the housekeeping timer.
+
+**Bybit and Deribit declare `executions = false`.** Their endpoints are verified and
 written down in `docs/reference/venues.md`; nobody has written the connector side. That is the point
 of the capability flag: their reconciliations report themselves as estimates rather than being
 assumed exact.

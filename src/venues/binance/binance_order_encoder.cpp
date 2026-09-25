@@ -504,8 +504,9 @@ namespace {
   }
 }
 
-// False if the trade is malformed.
-[[gnu::noinline]] bool read_my_trade(od::object& o, MyTradeRecord& rec) noexcept {
+// False if the trade is malformed. Spot (myTrades) says `isBuyer`/`isMaker`; USDⓈ-M
+// (userTrades) says `buyer`/`maker` and also `side`, and has no symbol-less variant either.
+[[gnu::noinline]] bool read_my_trade(od::object& o, MyTradeRecord& rec, bool futures) noexcept {
   if (o["symbol"].get_string().get(rec.symbol) != sj::SUCCESS) return false;
   if (o["id"].get_int64().get(rec.id) != sj::SUCCESS) return false;
   if (o["orderId"].get_int64().get(rec.order_id) != sj::SUCCESS) return false;
@@ -515,8 +516,9 @@ namespace {
   if (o["commissionAsset"].get_string().get(rec.commission_asset) != sj::SUCCESS)
     rec.commission_asset = {};
   if (o["time"].get_int64().get(rec.time_ms) != sj::SUCCESS) return false;
-  if (o["isBuyer"].get_bool().get(rec.is_buyer) != sj::SUCCESS) return false;
-  if (o["isMaker"].get_bool().get(rec.is_maker) != sj::SUCCESS) rec.is_maker = false;
+  if (o[futures ? "buyer" : "isBuyer"].get_bool().get(rec.is_buyer) != sj::SUCCESS) return false;
+  if (o[futures ? "maker" : "isMaker"].get_bool().get(rec.is_maker) != sj::SUCCESS)
+    rec.is_maker = false;
   return true;
 }
 
@@ -598,6 +600,18 @@ ParseStatus BinanceWsApiDecoder::decode_open_orders(
 
 ParseStatus BinanceWsApiDecoder::decode_my_trades(
     std::string_view json, const std::function<void(const MyTradeRecord&)>& fn) noexcept {
+  return decode_trades(json, /*futures=*/false, fn);
+}
+
+ParseStatus BinanceWsApiDecoder::decode_user_trades(
+    std::string_view json, const std::function<void(const MyTradeRecord&)>& fn) noexcept {
+  return decode_trades(json, /*futures=*/true, fn);
+}
+
+ParseStatus BinanceWsApiDecoder::decode_trades(
+    std::string_view json,
+    bool futures,
+    const std::function<void(const MyTradeRecord&)>& fn) noexcept {
   od::document doc;
   if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS) return ParseStatus::Malformed;
   od::array arr;
@@ -606,7 +620,7 @@ ParseStatus BinanceWsApiDecoder::decode_my_trades(
     od::object o;
     if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
     MyTradeRecord rec;
-    if (!read_my_trade(o, rec)) return ParseStatus::Malformed;
+    if (!read_my_trade(o, rec, futures)) return ParseStatus::Malformed;
     fn(rec);
   }
   return ParseStatus::Ok;

@@ -1,6 +1,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
+#include "fastmm/venues/binance/binance_trade_history.hpp"
 #include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_rest_decoder.hpp"
 #include "fastmm/venues/blocking_http.hpp"
@@ -27,6 +28,15 @@ constexpr std::int64_t kClockResyncNs = 30LL * 60 * kSecNs;
 constexpr std::int64_t kHousekeepingNs = kSecNs;
 constexpr std::int64_t kDefaultCooldownNs = 10 * kSecNs;
 constexpr std::int64_t kReconcileRetryNs = 5 * kSecNs;
+constexpr std::int64_t kExecutionRetryNs = 5 * kSecNs;  // between retries of a failed replay
+// "Account Trade List" (GET /fapi/v1/userTrades): limit max 1000; a time range of at most 7 days,
+// and nothing older than 3 months.
+constexpr int kUserTradesLimit = 1000;
+constexpr std::int64_t kUserTradesWindowMs = 7LL * 24 * 3600 * 1000;
+constexpr std::int64_t kUserTradesHistoryMs = 90LL * 24 * 3600 * 1000;
+// A startTime this close to the 7-day limit gets an explicit endTime: the venue's clock is not
+// ours.
+constexpr std::int64_t kUserTradesWindowSlackMs = 60'000;
 constexpr std::int64_t kLogonRetryNs = 2 * kSecNs;
 constexpr std::string_view kLogonId = "logon";
 // The futures servers ping every 3 minutes ("Websocket Market Streams" / "WebSocket API General
@@ -361,6 +371,9 @@ void BinanceUsdmVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("BinanceUsdmVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  // Where the execution replay starts unless resume_executions() said otherwise: this session can
+  // only have missed what happened after it connected.
+  if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
     raw_trades_.open(cfg_.record_raw_dir, cfg_.name, "trades");
@@ -405,8 +418,12 @@ void BinanceUsdmVenue::disconnect() {
   trades_conn_.close();
   user_conn_.close();
   order_conn_.close();
+  // Replies to requests aborted by the reset are ignored: a later connect() starts afresh.
+  ++exec_generation_;
+  exec_replay_active_ = false;
+  exec_pending_ = 0;
+  oo_wanted_ = false;
   if (rest_) rest_->reset();
-  // Replies to requests aborted by the reset never arrive: a later connect() starts afresh.
   reconcile_.in_flight = false;
   ++reconcile_.generation;
   listen_key_pending_ = false;
@@ -829,6 +846,7 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
   switch (kind) {
     case RequestKind::New:
       if (!r.is_error) {
+        remember_order_id(r.order_id, id);
         if (cfg_.emit_ack_from_response) {
           emit_order_ack(*order_sink_, id_, inst, id, order_id.view());
           ++stats_.order_events;
@@ -897,6 +915,7 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
         if (copy.link_id.valid() && copy.link_id != id) aliases_.assign(copy.link_id, id);
       }
       if (orig.valid() && orig != id) shadows_.erase(orig);
+      remember_order_id(r.order_id, id);
       emit_order_ack(*order_sink_, id_, inst, id, order_id.view());
       ++stats_.order_events;
       return;
@@ -1228,6 +1247,19 @@ void BinanceUsdmVenue::request_open_orders() {
     reconcile_.again = true;
     return;
   }
+  // The executions first (request_executions), then the snapshot. Latched before the replay
+  // starts: a replay whose queries cannot be issued at all finishes inside request_executions(),
+  // and the snapshot it releases must already be asked for. A request during a replay is served by
+  // the snapshot that replay releases.
+  oo_wanted_ = true;
+  if (exec_replay_active_ || request_executions()) return;
+  oo_wanted_ = false;
+  exec_snapshot_exact_ = false;
+  send_open_orders();
+}
+
+void BinanceUsdmVenue::send_open_orders() {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return;
   RestRequest oo;
   RestRequest pr;
   if (!encoder_->encode_rest_open_orders({}, venue_time_ms(), oo) ||
@@ -1330,6 +1362,7 @@ void BinanceUsdmVenue::emit_reconcile() {
         if (const auto link = decode_cl_ord_id(o.client_order_id)) {
           m.cl_ord_id = current_id(*link);
           if (const OrderShadow* s = shadows_.find(m.cl_ord_id)) base = s->base_cum;
+          remember_order_id(o.order_id, m.cl_ord_id);
         }
         m.venue_order_id.assign(IdText(o.order_id).view());
         if (const auto p = parse_price(o.price)) m.price = *p;
@@ -1348,6 +1381,8 @@ void BinanceUsdmVenue::emit_reconcile() {
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
   SentWatermark::stamp(begin, reconcile_.watermark);
+  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
+  exec_snapshot_exact_ = false;
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
@@ -1390,6 +1425,201 @@ void BinanceUsdmVenue::emit_reconcile() {
   static_cast<void>(order_sink_->push(end.hdr));
   stats_.order_events += count + subscribed_.size() + 2;
   FASTMM_LOG_INFO("{}: reconciled {} open orders, positions{}", cfg_.name, count, summary);
+}
+
+// ---- execution replay -------------------------------------------------------------------------
+//
+// GET /fapi/v1/userTrades per subscribed symbol, before every open-order snapshot, as Binance Spot
+// does with myTrades: each execution is emitted as an ordinary fill carrying the venue's trade id
+// (the `t` the user stream reports for the same execution), so the OMS keeps the ones it never saw
+// and drops the rest. A fill that finished an order during a user-stream outage is recoverable only
+// this way: the snapshot no longer names the order.
+//
+// Where the replay starts: the trade id after the last one forwarded for that symbol (`fromId`,
+// which the venue will not take with a time range), otherwise the venue time the connector
+// connected at or was resumed from (`startTime`). The venue answers 7 days per query and nothing
+// older than 3 months: an older start is walked forward a week per replay, and a replay that could
+// not cover everything since its start carries no kExecutionsExact.
+
+std::size_t BinanceUsdmVenue::exec_slot(InstrumentId id) const noexcept {
+  for (std::size_t i = 0; i < subscribed_.size(); ++i)
+    if (subscribed_[i] == id) return i;
+  return subscribed_.size();
+}
+
+void BinanceUsdmVenue::remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept {
+  if (order_id <= 0 || !id.valid()) return;
+  if (order_ids_.assign(static_cast<std::uint64_t>(order_id), id) != nullptr) return;
+  // Full: the oldest pairings are the ones least likely to be named by a replay.
+  order_ids_.clear();
+  static_cast<void>(order_ids_.assign(static_cast<std::uint64_t>(order_id), id));
+}
+
+void BinanceUsdmVenue::resume_executions(std::int64_t since_venue_ms,
+                                         const std::vector<std::string>& known) {
+  exec_since_ms_ = since_venue_ms;
+  exec_from_id_.clear();
+  exec_start_ms_.clear();
+  known_exec_ids_ = {known.begin(), known.end()};
+}
+
+bool BinanceUsdmVenue::request_executions(std::int64_t since_venue_ms) {
+  if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
+  if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
+  if (exec_replay_active_) return true;
+  // An explicit start overrides the per-symbol watermarks: the caller knows of executions this
+  // connector never heard about.
+  if (since_venue_ms > 0) {
+    exec_since_ms_ = since_venue_ms;
+    exec_from_id_.clear();
+    exec_start_ms_.clear();
+  }
+  exec_from_id_.resize(subscribed_.size(), 0);
+  exec_start_ms_.resize(subscribed_.size(), exec_since_ms_);
+  exec_replay_active_ = true;
+  exec_replay_ok_ = true;
+  ++stats_.execution_queries;
+  // Held by the loop itself, so a reply that lands inside it cannot finish the replay early.
+  exec_pending_ = 1;
+  for (const InstrumentId id : subscribed_) {
+    if (!request_executions_for(id)) exec_replay_ok_ = false;
+  }
+  finish_execution_replay(true);
+  return true;
+}
+
+bool BinanceUsdmVenue::request_executions_for(InstrumentId id) {
+  const std::string_view symbol =
+      symbols_ == nullptr ? std::string_view{} : symbols_->venue_symbol(id);
+  const std::size_t slot = exec_slot(id);
+  if (symbol.empty() || slot >= exec_from_id_.size()) return false;
+  const std::int64_t from_id = exec_from_id_[slot];
+  std::int64_t start_ms = exec_start_ms_[slot];
+  std::int64_t end_ms = 0;
+  bool complete = true;
+  if (from_id <= 0) {
+    const std::int64_t now_ms = venue_time_ms();
+    const std::int64_t floor_ms = now_ms - kUserTradesHistoryMs;
+    if (start_ms < floor_ms) {
+      complete = start_ms <= 0;  // never told where to start: nothing earlier to miss
+      start_ms = floor_ms;
+    }
+    if (now_ms - start_ms > kUserTradesWindowMs - kUserTradesWindowSlackMs) {
+      end_ms = start_ms + kUserTradesWindowMs - 1;
+      complete = false;
+    }
+  }
+  RestRequest rr;
+  if (!encoder_->encode_rest_user_trades(
+          symbol, from_id, start_ms, end_ms, kUserTradesLimit, venue_time_ms(), rr))
+    return false;
+  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  std::weak_ptr<int> alive = alive_;
+  const std::uint64_t gen = exec_generation_;
+  ++exec_pending_;
+  const bool queued = rest_->request(
+      "GET",
+      target,
+      api_headers(),
+      {},
+      [this, alive, gen, id, complete, end_ms](const net::HttpResponse& r) {
+        if (alive.expired() || gen != exec_generation_) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          ++stats_.execution_query_errors;
+          int code = 0;
+          std::string msg;
+          if (r.error == net::NetError::None && binance::decode_rest_error(r.body, code, msg)) {
+            const ErrorMapping m = map_error(code, msg);
+            if (m.action != VenueAction::Reconcile) apply_action(m.action, code, msg, -1);
+          }
+          FASTMM_LOG_ERROR(
+              "{}: GET userTrades failed: status={} err={} {}; this reconciliation cannot book "
+              "the fills the user stream missed",
+              cfg_.name,
+              r.status,
+              net::to_string(r.error),
+              r.body.substr(0, 120));
+          finish_execution_replay(false);
+          return;
+        }
+        emit_executions(id, r.body, end_ms);
+        finish_execution_replay(complete);
+      });
+  if (!queued) {
+    --exec_pending_;
+    ++stats_.execution_query_errors;
+    FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
+    return false;
+  }
+  rate_.on_sent(rr.weight, now_ns());
+  return true;
+}
+
+void BinanceUsdmVenue::emit_executions(InstrumentId id,
+                                       std::string_view json,
+                                       std::int64_t window_end_ms) {
+  if (instruments_ == nullptr || !instruments_->contains(id)) return;
+  const Instrument& inst = instruments_->get(id);
+  const std::size_t slot = exec_slot(id);
+  const PaddedJson padded(json);
+  std::int64_t high_id = 0;
+  std::size_t rows = 0;
+  std::size_t count = 0;
+  const ParseStatus st =
+      ws_api_decoder_->decode_user_trades(padded.view(), [&](const binance::MyTradeRecord& t) {
+        ++rows;
+        if (t.id > high_id) high_id = t.id;
+        if (!known_exec_ids_.empty() &&
+            known_exec_ids_.count(std::string(IdText(t.id).view())) != 0)
+          return;  // the earlier session booked it
+        const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
+        const ClientOrderId cl = mapped != nullptr ? current_id(*mapped) : ClientOrderId{};
+        if (!binance::emit_trade_history_fill(*order_sink_, id_, inst, id, cl, t)) return;
+        ++stats_.order_events;
+        ++stats_.executions_fetched;
+        ++count;
+      });
+  if (st != ParseStatus::Ok) {
+    ++stats_.execution_query_errors;
+    FASTMM_LOG_ERROR("{}: userTrades reply could not be parsed; its executions are lost",
+                     cfg_.name);
+    exec_replay_ok_ = false;
+    return;
+  }
+  if (slot < exec_from_id_.size()) {
+    if (high_id > 0) {
+      exec_from_id_[slot] = high_id + 1;
+    } else if (window_end_ms > 0) {
+      exec_start_ms_[slot] = window_end_ms + 1;  // an empty week: the next replay asks the next
+    }
+  }
+  if (rows >= static_cast<std::size_t>(kUserTradesLimit)) {
+    // A full page is not proof there is nothing behind it. The next replay carries on from where
+    // this one stopped, but this snapshot cannot claim to be exact.
+    exec_replay_ok_ = false;
+    FASTMM_LOG_WARN(
+        "{}: userTrades returned a full page ({}); more executions are waiting", cfg_.name, rows);
+  }
+  if (count > 0) FASTMM_LOG_INFO("{}: replayed {} execution(s)", cfg_.name, count);
+}
+
+void BinanceUsdmVenue::finish_execution_replay(bool ok) {
+  if (!ok) exec_replay_ok_ = false;
+  if (exec_pending_ > 0) --exec_pending_;
+  if (exec_pending_ > 0) return;
+  exec_replay_active_ = false;
+  exec_snapshot_exact_ = exec_replay_ok_;
+  if (!exec_replay_ok_) exec_retry_wanted_ = true;
+  if (!oo_wanted_) return;
+  oo_wanted_ = false;
+  if (reconcile_.in_flight) {
+    reconcile_.again = true;
+    return;
+  }
+  send_open_orders();
 }
 
 // ---- control requests -----------------------------------------------------------------------
@@ -1614,6 +1844,14 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
     if (reconcile_retry_ns_ != 0 && now >= reconcile_retry_ns_) {
       reconcile_retry_ns_ = 0;
       request_open_orders();
+    }
+    // A replay that could not be completed left fills unaccounted for, and the next reconnect may
+    // be hours away. Ask again until the venue answers, keeping the watermark where it was; the
+    // snapshot is not repeated, only the executions.
+    if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
+      exec_retry_ns_ = now;
+      exec_retry_wanted_ = false;
+      static_cast<void>(request_executions());
     }
     // Venue-side dead man's switch. Refreshed from the housekeeping timer, which is the same
     // thread that would stop running if this process died, so there is nothing to keep the
