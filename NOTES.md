@@ -3,6 +3,16 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-25: restart carry-over checked against Binance Spot Demo
+
+Session A (`configs/binance-demo.toml` at 0.5 bps, 150 s) made 10 fills and stopped at BTCUSDT
+−0.0003012. A market buy of 0.0001 placed outside FastMM filled with a 0.0000001 BTC fee. Session B
+restored −0.0003012 from the store, replayed exactly one execution (trade 309380872, at its own
+price, A's ten skipped by id) and stopped at −0.0002013, which is what the account holds. The
+USDⓈ-M check could not run: the Demo futures wallet is unfunded (every order −1109, "no available
+USDT margin balance"), Demo has no transfer API, and funding it is a click on demo.binance.com.
+Bybit and Deribit have no testnet keys here, so their replays are verified against mocks only.
+
 ## 2026-09-25: latency work recovered from 2026-09-15
 
 A latency branch from 2026-09-15 had never been merged. What main lacked was ported against current
