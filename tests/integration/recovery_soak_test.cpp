@@ -78,11 +78,16 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
   };
 
   const Price tick = Price::from_decimal("0.01").value();
+  // Prices hang off the book as it was at the start: with no market flow the simulator's book
+  // drains, and a price taken from its best bid went negative after a few dozen rounds.
+  const Price ref = fx.server.stats().best_bid.price;
+  REQUIRE(ref.is_positive());
   std::mt19937_64 rng(20260924);
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(soak_seconds());
   std::uint64_t next_id = 1;
   std::uint64_t rounds = 0;
   std::uint64_t faults = 0;
+  std::uint64_t rate_limited = 0;  // placements the connector's rate limiter refused
 
   // Evaluated only when an assertion fails (doctest captures by reference).
   INFO("round " << rounds << ": fatal=" << h.venue->fatal()
@@ -101,8 +106,8 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
     const std::size_t rejects_before = h.oc.count(EventType::OrderReject);
     for (int i = 0; i < 2; ++i) {
       const ClientOrderId id{next_id++};
-      const Price px = Price::from_raw(fx.server.stats().best_bid.price.raw -
-                                       tick.raw * (100 + 20 * i + static_cast<int>(rounds % 5)));
+      const Price px =
+          Price::from_raw(ref.raw - tick.raw * (100 + 20 * i + static_cast<int>(rounds % 5)));
       const OutNewOrderMsg o =
           new_order(id, Side::Buy, OrderType::PostOnly, TimeInForce::Gtc, px, kLot);
       m.submit(o);
@@ -119,6 +124,22 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
           3000));
     }
 
+    // Faults cost request weight (every reconciliation replays executions and asks for a
+    // snapshot), and back to back they outrun the venue's budget. The connector's limiter then
+    // refuses orders, as it should; an operator waits, so does the soak, without counting a round.
+    const auto* rejected = h.oc.last<OrderRejectMsg>(EventType::OrderReject);
+    if (h.oc.count(EventType::OrderReject) > rejects_before && rejected != nullptr &&
+        rejected->reason == RejectReason::VenueRateLimit) {
+      --rounds;
+      ++rate_limited;
+      static_cast<void>(h.pump(
+          [&] {
+            m.drain(h.oc);
+            return false;
+          },
+          1000));
+      continue;
+    }
     const std::vector<std::string> open = fx.server.open_client_order_ids();
     const int fault = static_cast<int>(rng() % 5);
     MESSAGE("round " << rounds << " fault " << fault);
@@ -197,10 +218,13 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
     m.drain(h.oc);
   }
 
-  MESSAGE("soak: " << rounds << " rounds, " << faults << " faults, " << m.synthetic_fills()
-                   << " synthetic fill(s), " << m.replayed_fills() << " replayed, position "
-                   << m.position().raw);
+  MESSAGE("soak: " << rounds << " rounds, " << faults << " faults, " << rate_limited
+                   << " rate-limited waits, " << m.synthetic_fills() << " synthetic fill(s), "
+                   << m.replayed_fills() << " replayed, position " << m.position().raw);
   CHECK(rounds >= 1);
+  // Every round put orders on the book. Without order flow the faults run back to back against an
+  // idle session, which is not what this test is for.
+  CHECK(fx.server.stats().orders_accepted >= rounds);
   CHECK_FALSE(h.venue->fatal());
   // The venue is empty by the last round's cleanup; the engine's cancel acks may still be in the
   // sink. The invariant is that the two sides converge, so wait for it rather than sample it.
