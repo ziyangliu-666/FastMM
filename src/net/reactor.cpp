@@ -294,6 +294,7 @@ void Reactor::post(Task task) {
   {
     std::lock_guard lock(post_mutex_);
     posted_.push_back(std::move(task));
+    posted_pending_.store(true, std::memory_order_release);
   }
   wake();
 }
@@ -552,8 +553,11 @@ bool Reactor::uring_queue_remove(int fd, std::uint32_t gen) noexcept {
 }
 
 void Reactor::run_posted() {
+  // A post() whose flag is not visible yet also wrote the wake eventfd: a later iteration runs it.
+  if (!posted_pending_.load(std::memory_order_acquire)) return;
   {
     std::lock_guard lock(post_mutex_);
+    posted_pending_.store(false, std::memory_order_relaxed);
     if (posted_.empty()) return;
     running_.swap(posted_);
   }

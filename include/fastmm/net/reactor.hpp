@@ -192,6 +192,7 @@ class Reactor {
   TimerId next_timer_seq_ = 1;
 
   std::mutex post_mutex_;
+  std::atomic<bool> posted_pending_{false};  // posted_ is not empty; lets run_posted skip the lock
   std::vector<Task> posted_;
   std::vector<Task> running_;  // swapped in under the lock, executed unlocked
 

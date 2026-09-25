@@ -10,6 +10,8 @@
 //                                          or health timer on every pong or reconnect)
 //   BM_ReactorTimerRearm                   one run_once(0) whose timer fires and re-arms itself
 //                                          (a venue's housekeeping timer); includes epoll_wait
+//   BM_ReactorIdlePoll/<backend>           one busy-polled run_once with nothing to do (a network
+//                                          thread's idle spin)
 //
 // The timer callbacks capture a pointer and a std::weak_ptr, as the venues' timers do.
 //
@@ -239,5 +241,14 @@ void BM_ReactorTimerRearm(benchmark::State& state) {
       static_cast<double>(fired) / static_cast<double>(state.iterations());
 }
 BENCHMARK(BM_ReactorTimerRearm);
+
+void BM_ReactorIdlePoll(benchmark::State& state) {
+  ReactorBackend backend{};
+  if (!select_backend(state, backend)) return;
+  Reactor reactor(backend);
+  reactor.set_busy_poll(true);
+  for (auto _ : state) benchmark::DoNotOptimize(reactor.run_once(0));
+}
+BENCHMARK(BM_ReactorIdlePoll)->ArgsProduct({{0, 1}, {1}});
 
 }  // namespace
