@@ -83,6 +83,40 @@ df = fastmm.sweep_frame(points)           # one row per grid point
 
 Points run on a C++ thread pool (GIL released), every worker with its own cursor over `data`; results come back in grid order with the first parameter varying slowest.
 
+### Walk-forward
+
+The best point of a sweep is the luckiest one on that data. `fastmm.walk_forward` checks whether it holds on data it was not chosen on:
+
+```python
+cfg = fastmm.BacktestConfig.from_toml("configs/backtest-example.toml")  # fill_model l2_queue
+cfg.duration_s = 240
+cfg.maker_fee_bps = 0.0
+grid = {"half_spread_bps": [0.005, 0.01, 0.02, 0.04], "skew_bps_per_unit": [0.0, 0.01]}
+rep = fastmm.walk_forward(cfg, grid, folds=4, data="synthetic", metric="net_pnl")
+print(rep["table"])
+```
+
+The event-time range of `data` is cut into `folds` equal consecutive slices and the whole grid runs on each slice, every run a fresh backtest from a flat engine. A slice starts on the book the full stream had at its first instant (earlier events are read to build it, not traded) and ends at the next slice. For fold i ≥ 1, the best point of fold i−1 by `metric` (`net_pnl`, `realized_pnl`, `sharpe_bar` or `spread_captured_bps`; ties go to the earlier grid point) is the choice, scored on fold i. The choice uses fold i−1 alone rather than every earlier fold: the grid already ran there, the rule works for metrics that do not add up across folds (a Sharpe ratio), and it is what re-running the sweep on the latest data before trading does.
+
+```text
+walk-forward: 4 folds, 8 points, metric net_pnl, chosen on the previous fold
+fold               time_s  chosen     in_sample  out_of_sample    best     hindsight
+   0         0.000-60.000       -             -              -      #1      0.016073
+   1       60.000-120.000      #1      0.016073       0.139701      #2      0.184945
+   2      120.000-180.000      #2      0.184945       0.163094      #2      0.163094
+   3      180.000-240.000      #2      0.163094      0.0297004      #2     0.0297004
+  #1  half_spread_bps=0.005 skew_bps_per_unit=0.01
+  #2  half_spread_bps=0.01 skew_bps_per_unit=0.0
+mean in-sample best   0.121371
+mean out-of-sample    0.110832
+mean hindsight best   0.125913
+choice changes        1 of 2
+```
+
+`chosen` and `best` are grid points (`#n` in grid order, listed under the table): the point carried over from the previous fold and the one that scores best on this fold in hindsight. `in_sample` is the chosen point's score on the fold it was chosen on, `out_of_sample` its score on this fold, `hindsight` the best score on this fold. The summary averages folds 1 to K−1 and counts how often the choice changed between consecutive folds. The winner generalizes when the out-of-sample mean stays close to the hindsight mean and the choice rarely changes. An out-of-sample mean well below both, or a choice that changes on every fold, means the ranking is fitting noise.
+
+`folds=1` runs exactly `fastmm.sweep`. The result does not depend on `threads`. The synthetic market needs `fill_model = "l2_queue"` for more than one fold: the coupled matching market has no stream to cut. The dict also holds every fold's `points` and `scores`; the C++ entry point is `bt::walk_forward` in `backtest/sweep.hpp`.
+
 ## Plain hooks
 
 Subclass `fastmm.Strategy`, define the hooks you need and pass the class as `strategy=`. The class runs in backtests only ([What runs where](#what-runs-where)):

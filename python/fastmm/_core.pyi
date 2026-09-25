@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -1324,5 +1324,9 @@ def strategies() -> dict:
 def sweep(config: BacktestConfig, grid: dict, data: typing.Any = None, strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> list:
     """
     Cartesian parameter sweep on a thread pool (GIL released). grid: {param: [values]}. Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. Every worker opens its own cursor over `data` (same forms as run_backtest). threads <= 0 uses every hardware thread.
+    """
+def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt | typing.SupportsIndex, data: typing.Any = None, metric: str = 'net_pnl', strategy: str | None = None, threads: typing.SupportsInt | typing.SupportsIndex = 0) -> dict:
+    """
+    Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1.
     """
 __version__: str = '0.2.0'

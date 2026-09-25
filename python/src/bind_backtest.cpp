@@ -392,6 +392,79 @@ std::string resolve_strategy(const BacktestConfig& cfg, const std::optional<std:
   return name;
 }
 
+// A sweep grid as strings, plus the caller's original values per (key, string form) so the
+// returned dicts keep the types the caller used (floats stay floats).
+struct PyGrid {
+  bt::ParamGrid grid;
+  std::vector<std::map<std::string, py::object>> originals;
+};
+
+PyGrid parse_grid(const py::dict& grid) {
+  PyGrid out;
+  for (const auto& [k, values] : grid) {
+    const std::string key = py::str(k).cast<std::string>();
+    if (py::isinstance<py::str>(values) || !py::isinstance<py::iterable>(values)) {
+      throw py::type_error("grid['" + key + "'] must be a list of values");
+    }
+    std::vector<std::string> strs;
+    std::map<std::string, py::object> orig;
+    for (const auto& v : values) {
+      std::string s = param_value_string(v);
+      orig.emplace(s, py::reinterpret_borrow<py::object>(v));
+      strs.push_back(std::move(s));
+    }
+    if (strs.empty()) throw py::value_error("grid['" + key + "'] is empty");
+    out.grid.emplace_back(key, std::move(strs));
+    out.originals.push_back(std::move(orig));
+  }
+  return out;
+}
+
+py::dict grid_params(const PyGrid& g, const ParamMap& p) {
+  py::dict params;
+  for (std::size_t i = 0; i < g.grid.size(); ++i) {
+    const auto it = p.find(g.grid[i].first);
+    if (it == p.end()) continue;
+    params[py::str(g.grid[i].first)] = g.originals[i].at(it->second);
+  }
+  return params;
+}
+
+py::list sweep_points(const PyGrid& g, std::vector<bt::SweepPoint>& points) {
+  py::list out;
+  for (bt::SweepPoint& p : points) {
+    out.append(py::make_tuple(grid_params(g, p.params),
+                              std::make_shared<BacktestResult>(std::move(p.result))));
+  }
+  return out;
+}
+
+// Calls body(factory) with the GIL released; the factory opens `spec` once per sweep worker
+// (empty for the synthetic market).
+template <class Body>
+void with_source_factory(const DataSpec& spec, const BacktestConfig& cfg, Body&& body) {
+  py::gil_scoped_release release;
+  // Open once up front: unreadable files raise here, before any worker starts (a throwing
+  // factory would otherwise take down a worker thread).
+  const bool has_source = open_spec(spec, cfg) != nullptr;
+  std::mutex mu;
+  std::exception_ptr factory_error;
+  bt::SourceFactory factory;
+  if (has_source) {
+    factory = [&]() -> std::unique_ptr<bt::MdSource> {
+      try {
+        return open_spec(spec, cfg);
+      } catch (...) {
+        const std::lock_guard<std::mutex> lock(mu);
+        if (!factory_error) factory_error = std::current_exception();
+        return nullptr;
+      }
+    };
+  }
+  body(factory);
+  if (factory_error) std::rethrow_exception(factory_error);
+}
+
 }  // namespace
 
 std::unique_ptr<sim::MdSource> open_md_source(const py::object& data,
@@ -627,65 +700,15 @@ void bind_backtest(py::module_& m) {
          const py::object& data,
          const std::optional<std::string>& strategy,
          int threads) {
-        bt::ParamGrid g;
-        // Original Python values per (key, string form), so the returned dicts keep the types
-        // the caller used (floats stay floats).
-        std::vector<std::map<std::string, py::object>> originals;
-        for (const auto& [k, values] : grid) {
-          const std::string key = py::str(k).cast<std::string>();
-          if (py::isinstance<py::str>(values) || !py::isinstance<py::iterable>(values)) {
-            throw py::type_error("grid['" + key + "'] must be a list of values");
-          }
-          std::vector<std::string> strs;
-          std::map<std::string, py::object> orig;
-          for (const auto& v : values) {
-            std::string s = param_value_string(v);
-            orig.emplace(s, py::reinterpret_borrow<py::object>(v));
-            strs.push_back(std::move(s));
-          }
-          if (strs.empty()) throw py::value_error("grid['" + key + "'] is empty");
-          g.emplace_back(key, std::move(strs));
-          originals.push_back(std::move(orig));
-        }
+        const PyGrid g = parse_grid(grid);
         DataSpec spec = parse_data(data);
         const BacktestConfig cfg = config;
         const std::string name = resolve_strategy(cfg, strategy);
-
         std::vector<bt::SweepPoint> points;
-        {
-          py::gil_scoped_release release;
-          // Open once up front: unreadable files raise here, before any worker starts (a
-          // throwing factory would otherwise take down a worker thread).
-          const bool has_source = open_spec(spec, cfg) != nullptr;
-          std::mutex mu;
-          std::exception_ptr factory_error;
-          bt::SourceFactory factory;
-          if (has_source) {
-            factory = [&]() -> std::unique_ptr<bt::MdSource> {
-              try {
-                return open_spec(spec, cfg);
-              } catch (...) {
-                const std::lock_guard<std::mutex> lock(mu);
-                if (!factory_error) factory_error = std::current_exception();
-                return nullptr;
-              }
-            };
-          }
-          points = bt::sweep_by_name(cfg, name, g, factory, threads);
-          if (factory_error) std::rethrow_exception(factory_error);
-        }
-
-        py::list out;
-        for (bt::SweepPoint& p : points) {
-          py::dict params;
-          for (std::size_t i = 0; i < g.size(); ++i) {
-            const auto it = p.params.find(g[i].first);
-            if (it == p.params.end()) continue;
-            params[py::str(g[i].first)] = originals[i].at(it->second);
-          }
-          out.append(py::make_tuple(params, std::make_shared<BacktestResult>(std::move(p.result))));
-        }
-        return out;
+        with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
+          points = bt::sweep_by_name(cfg, name, g.grid, factory, threads);
+        });
+        return sweep_points(g, points);
       },
       py::arg("config"),
       py::arg("grid"),
@@ -696,6 +719,66 @@ void bind_backtest(py::module_& m) {
       "Returns [(params, BacktestResult)] in grid order, first parameter varying slowest. "
       "Every worker opens its own cursor over `data` (same forms as run_backtest). "
       "threads <= 0 uses every hardware thread.");
+
+  m.def(
+      "walk_forward",
+      [](const BacktestConfig& config,
+         const py::dict& grid,
+         int folds,
+         const py::object& data,
+         const std::string& metric,
+         const std::optional<std::string>& strategy,
+         int threads) {
+        const PyGrid g = parse_grid(grid);
+        DataSpec spec = parse_data(data);
+        const BacktestConfig cfg = config;
+        const std::string name = resolve_strategy(cfg, strategy);
+        bt::WalkForwardReport rep;
+        with_source_factory(spec, cfg, [&](const bt::SourceFactory& factory) {
+          rep = bt::walk_forward_by_name(cfg, name, g.grid, factory, folds, metric, threads);
+        });
+        py::list out_folds;
+        for (std::size_t i = 0; i < rep.folds.size(); ++i) {
+          bt::WalkForwardFold& f = rep.folds[i];
+          py::dict d;
+          d["start_ts"] = f.start_ts;
+          d["end_ts"] = f.end_ts;
+          d["best"] = f.points.empty() ? py::object(py::none())
+                                       : py::object(grid_params(g, f.points[f.best].params));
+          d["chosen"] = i == 0 || f.points.empty()
+                            ? py::object(py::none())
+                            : py::object(grid_params(g, f.points[f.chosen].params));
+          d["in_sample"] = f.in_sample;
+          d["out_of_sample"] = f.out_of_sample;
+          d["hindsight"] = f.scores.empty() ? f.hindsight : f.scores[f.best];
+          d["scores"] = f.scores;
+          d["points"] = sweep_points(g, f.points);
+          out_folds.append(d);
+        }
+        py::dict out;
+        out["metric"] = rep.metric;
+        out["folds"] = out_folds;
+        out["mean_in_sample"] = rep.mean_in_sample;
+        out["mean_out_of_sample"] = rep.mean_out_of_sample;
+        out["mean_hindsight"] = rep.mean_hindsight;
+        out["choice_changes"] = rep.choice_changes;
+        out["table"] = rep.table();
+        return out;
+      },
+      py::arg("config"),
+      py::arg("grid"),
+      py::arg("folds"),
+      py::arg("data") = py::none(),
+      py::arg("metric") = "net_pnl",
+      py::arg("strategy") = py::none(),
+      py::arg("threads") = 0,
+      "Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the "
+      "best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, "
+      "spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, "
+      "end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), "
+      "mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the "
+      "printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs "
+      "fill_model='l2_queue' for folds > 1.");
 
   m.def(
       "inspect_journal",

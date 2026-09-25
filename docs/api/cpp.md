@@ -94,7 +94,7 @@ A strategy is a class template parameter, not a base class with virtual function
 | <a href="structfastmm_1_1bt_1_1BacktestResult.html">`bt::BacktestResult`</a> | fills, equity curve, orders, metrics |
 | <a href="structfastmm_1_1bt_1_1Metrics.html">`bt::Metrics`</a> | PnL, Sharpe, drawdown, fill ratio |
 | <a href="backtest_2replay_8hpp.html">`backtest/replay.hpp`</a> | replays a journal, and <a href="structfastmm_1_1bt_1_1ReplayResult.html">`bt::ReplayResult`</a> |
-| <a href="sweep_8hpp.html">`backtest/sweep.hpp`</a> | parameter sweeps, and <a href="structfastmm_1_1bt_1_1SweepPoint.html">`bt::SweepPoint`</a> |
+| <a href="sweep_8hpp.html">`backtest/sweep.hpp`</a> | parameter sweeps and walk-forward folds, and <a href="structfastmm_1_1bt_1_1SweepPoint.html">`bt::SweepPoint`</a> |
 | <a href="conceptfastmm_1_1bt_1_1DataSourceLike.html">`bt::DataSourceLike`</a> | what a data source must provide |
 | <a href="classfastmm_1_1bt_1_1CsvSource.html">`bt::CsvSource`</a> | CSV input |
 | <a href="classfastmm_1_1bt_1_1JournalSource.html">`bt::JournalSource`</a> | a recorded session as input |
