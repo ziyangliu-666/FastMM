@@ -3,6 +3,18 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-25: an execution was booked twice after a long session
+
+The OMS deduplicated executions by `hash(exec_id) ^ cl_ord_id`. A replayed trade history names only
+the venue order id, which the Binance connectors map back through a table that silently stopped
+accepting entries after 8192 orders; past that, a reconnect replayed streamed fills under no order,
+as new keys, and booked them twice. And the replay's watermark only moved when a replay ran, so a
+reconnect after hours of quoting replayed more fills than the 4096-entry dedupe window holds. Fixed
+at the root: an execution is keyed by its venue id, instrument and side; the order-id tables evict
+the oldest pairing (`RecentMap`); every connector replays once a minute, which also books a fill the
+stream dropped without disconnecting. The fault soak could not see it: its simulator has no market
+flow, so no fill ever arrived both streamed and replayed.
+
 ## 2026-09-25: the fill model cannot be calibrated on Demo
 
 `fastmm-data fill-check <session.fmj>` replays the orders a live session actually had resting
@@ -235,7 +247,8 @@ an engine-owned flatten, the feature/forward-markout extractor, portfolio exposu
 position carry-over, execution replay on every venue, automatic restart after a crash. Open:
 
 1. The fill model is uncalibrated against the real market (Demo cannot do it, see above).
-2. A sweep is a cartesian grid on one dataset with no out-of-sample structure.
+2. ~~A sweep is a cartesian grid on one dataset with no out-of-sample structure.~~ `fastmm.walk_forward`
+   / `bt::walk_forward` (2026-09-25): K time folds, each chosen on the previous one.
 3. `Engine<Strategy>` binds one strategy per process; a strategy change drops the venue sessions
    (the gateway split below is the end state).
 4. Bybit and Deribit replays are verified against mocks only (no testnet keys here); the USDⓈ-M
