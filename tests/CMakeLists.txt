@@ -338,6 +338,18 @@ foreach(_prog fastmm-live fastmm-backtest fastmm-data fastmm-replay fastmm-pnl f
   endif()
 endforeach()
 
+if(TARGET fastmm-data)
+  fastmm_cli_test(apps.fastmm-data.fill_check EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-data> fill-check ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/sample_1000.fmj
+    EXPECT_REGEX "0 sent, 0 resting after the ack.*market   962 book and trade messages.*1.00 ")
+  fastmm_cli_test(apps.fastmm-data.fill_check_missing EXPECT_RC 4
+    CMD $<TARGET_FILE:fastmm-data> fill-check /nonexistent/session.fmj
+    EXPECT_REGEX "fastmm-data: cannot open /nonexistent/session.fmj")
+  fastmm_cli_test(apps.fastmm-data.fill_check_bad_conservatism EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-data> fill-check x.fmj --conservatism 0,2
+    EXPECT_REGEX "fastmm-data: .*--conservatism")
+endif()
+
 set(_json_builtin ".name.: .options_mm., .transports.: \\[.sim., .replay., .live.\\]")
 if(TARGET fastmm-backtest)
   fastmm_cli_test(apps.fastmm-backtest.list_strategies_json EXPECT_RC 0
