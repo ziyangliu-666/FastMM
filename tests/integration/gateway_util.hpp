@@ -7,10 +7,13 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/live/session.hpp"
 
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #if defined(FASTMM_LIVE_EXE) && defined(FASTMM_GATEWAY_EXE)
@@ -152,6 +155,128 @@ inline std::vector<JournalEpochs> read_journals(const SessionFiles& f) {
     if (e.path().extension() == ".fmj") out.push_back(read_journal_epochs(e.path().string()));
   }
   return out;
+}
+
+// ---- two strategies on one simulator: BTCUSDT and BTCUSDC, same filters ----------------------
+
+// The simulator's second market, which strategy "b" trades: BTCUSDC by default; ETHUSDT (same
+// filters and prices) where the account's limits need one settlement currency.
+struct Market {
+  std::string_view symbol;
+  std::string_view base;
+  std::string_view quote;
+};
+inline constexpr Market kBtcUsdc{"BTCUSDC", "BTC", "USDC"};
+inline constexpr Market kEthUsdt{"ETHUSDT", "ETH", "USDT"};
+
+inline sim::server::SimServerConfig two_markets(const Market& second = kBtcUsdc) {
+  sim::server::SimServerConfig c = test_server_config();
+  sim::server::SimSymbolConfig s = c.symbols.front();
+  s.symbol = second.symbol;
+  s.base_asset = second.base;
+  s.quote_asset = second.quote;
+  c.symbols.push_back(s);
+  return c;
+}
+
+inline std::string second_instrument(const Market& m) {
+  return "\n[[instruments]]\nvenue = \"sim\"\nsymbol = \"" + std::string(m.symbol) +
+         "\"\nbase = \"" + std::string(m.base) + "\"\nquote = \"" + std::string(m.quote) +
+         "\"\nasset_class = \"spot\"\ntick = \"0.01\"\nlot = \"0.00001\"\nmin_qty = "
+         "\"0.00001\"\nmax_qty = \"100\"\nmin_notional = \"5\"\nenabled = true\n";
+}
+
+template <class Edit>
+inline void rewrite(const std::string& path, Edit&& edit) {
+  std::string text = fastmm::test::read_file(path);
+  edit(text);
+  std::ofstream out(path, std::ios::trunc);
+  REQUIRE(out.good());
+  out << text;
+}
+
+inline void replace_first(std::string& text, std::string_view from, std::string_view to) {
+  const std::size_t p = text.find(from);
+  REQUIRE(p != std::string::npos);
+  text.replace(p, from.size(), to);
+}
+
+// The gateway's configuration lists both markets (and `gateway_extra`); a's lists BTCUSDT, b's
+// the second market.
+struct Configs {
+  SessionFiles gw;
+  SessionFiles a;
+  SessionFiles b;
+  std::string a_name;
+  std::string b_name;
+};
+
+inline Configs write_configs(const ServerFixture& fx,
+                             const std::string& stem,
+                             const std::string& gateway_extra = {},
+                             const Market& second = kBtcUsdc) {
+  Configs c;
+  c.gw = write_config(fx, stem + "-gw", "exit", "1000");
+  rewrite(c.gw.config, [&](std::string& t) { t += second_instrument(second) + gateway_extra; });
+  c.a_name = stem + "-a";
+  c.b_name = stem + "-b";
+  c.a = write_config(fx, c.a_name, "exit", "1000");
+  c.b = write_config(fx, c.b_name, "exit", "1000");
+  rewrite(c.b.config, [&](std::string& t) {
+    replace_first(t, R"(symbol = "BTCUSDT")", "symbol = \"" + std::string(second.symbol) + "\"");
+    replace_first(t, R"(base = "BTC")", "base = \"" + std::string(second.base) + "\"");
+    replace_first(t, R"(quote = "USDT")", "quote = \"" + std::string(second.quote) + "\"");
+  });
+  for (const SessionFiles* f : {&c.gw, &c.a, &c.b})
+    remove_all_of({f->epoch, f->kill, f->journal_dir, f->config + ".log", f->status});
+  return c;
+}
+
+inline std::uint64_t fills(const ServerFixture& fx, std::size_t symbol) {
+  const sim::server::SimServerStats s = fx.server.stats();
+  return symbol < s.symbol_fills.size() ? s.symbol_fills[symbol] : 0;
+}
+inline Qty position(const sim::server::SimServerStats& s, std::size_t symbol) {
+  return symbol < s.symbol_positions.size() ? s.symbol_positions[symbol] : Qty{};
+}
+
+// The epochs of the orders resting at the simulator, one entry per order.
+inline std::vector<std::uint16_t> open_epochs(const ServerFixture& fx) {
+  std::vector<std::uint16_t> out;
+  for (const std::string& id : fx.server.open_client_order_ids()) {
+    const auto cl = decode_cl_ord_id(id);
+    out.push_back(cl ? cl_ord_id_epoch(*cl) : std::uint16_t{0});
+  }
+  return out;
+}
+inline std::size_t open_of(const ServerFixture& fx, std::uint16_t epoch) {
+  const std::vector<std::uint16_t> e = open_epochs(fx);
+  return static_cast<std::size_t>(std::count(e.begin(), e.end(), epoch));
+}
+
+// Waits until `f`'s strategy has orders resting and returns their epoch (none of `others`).
+inline std::uint16_t wait_resting(const ServerFixture& fx,
+                                  const SessionFiles& f,
+                                  std::vector<std::uint16_t> others) {
+  std::uint16_t epoch = 0;
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        for (const std::uint16_t e : open_epochs(fx)) {
+                          if (std::find(others.begin(), others.end(), e) == others.end()) {
+                            epoch = e;
+                            return true;
+                          }
+                        }
+                        return false;
+                      },
+                      30000),
+                  "no orders resting: " << fastmm::test::read_file(f.config + ".log"));
+  return epoch;
+}
+
+inline void stop_strategy(pid_t pid) {
+  REQUIRE(::kill(pid, SIGTERM) == 0);
+  CHECK(reap(pid) == live::kExitOk);
 }
 
 }  // namespace fastmm::integration
