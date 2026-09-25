@@ -17,10 +17,12 @@ the same rings, only they live in shared memory. Backtest and replay never see a
 
 **Plan, each step verified before the next.**
 
-1. `ShmRing`: the SPSC `MsgRing` protocol with its head, tail and buffer in one `MAP_SHARED`
-   mapping and offsets instead of pointers (today head/tail live in the C++ object and the buffer
-   is a raw pointer, so a `MsgRing` cannot cross a process). Measure a cross-process hop against
-   the in-process ring; the wake-up is the shared futex `Waker` already uses.
+1. ~~`ShmRing`~~ Done (`include/fastmm/core/shm_ring.hpp`): MsgRing's protocol with the indices
+   and buffer in a `MAP_SHARED` file. A 128-byte hop between processes is 73 ns against 65 ns
+   between threads (`BM_ShmRing_PingPong_Process`, busy-poll, 3 runs). Moving MsgRing's own
+   indices behind a pointer to share one class cost the in-process engine step ~3%, so the
+   protocol is written twice and a test drives the same 200k-step sequence through both.
+   Still to do for step 2: the cross-process wake-up (a futex in the mapping) for adaptive spin.
 2. `fastmm-gateway`: runs the connectors and their reactors (today's net threads) and publishes
    per-venue md/order/outbound rings plus a heartbeat. `fastmm-live` gets an attach mode that maps
    them instead of starting connectors.
