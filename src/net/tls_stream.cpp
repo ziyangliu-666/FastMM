@@ -280,6 +280,10 @@ std::size_t TlsEngine::plaintext_pending() const noexcept {
   return static_cast<std::size_t>(SSL_pending(ssl_));
 }
 
+std::size_t TlsEngine::ciphertext_in_pending() const noexcept {
+  return BIO_ctrl_pending(SSL_get_rbio(ssl_));
+}
+
 std::span<const std::byte> TlsEngine::ciphertext_out() noexcept {
   char* ptr = nullptr;
   const int n = BIO_nread0(net_bio_, &ptr);

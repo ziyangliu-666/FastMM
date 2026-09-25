@@ -105,7 +105,11 @@ struct Fixture {
     engine->start();
   }
 
-  void push_book(const char* bid, const char* ask, std::uint64_t seq, bool snapshot = false) {
+  void push_book(const char* bid,
+                 const char* ask,
+                 std::uint64_t seq,
+                 bool snapshot = false,
+                 Duration recv_offset = {}) {
     std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
     REQUIRE(p != nullptr);
     auto* d = reinterpret_cast<BookDeltaMsg*>(p);
@@ -115,7 +119,7 @@ struct Fixture {
                 VenueId{0},
                 BookDeltaMsg::size_for(1, 1));
     if (snapshot) d->hdr.flags |= EventHeader::kSnapshot;
-    d->hdr.recv_ts = clock.now();
+    d->hdr.recv_ts = clock.now() + recv_offset;
     d->hdr.exch_ts = clock.now();
     d->hdr.t0_cycles = clock.cycles();
     d->hdr.t1_delta = 500;
@@ -578,6 +582,56 @@ TEST_CASE("core.engine: serialize latency starts at the decision of the same eve
   // event's T3 and read as the whole second.
   CHECK(serialize.count() > after_book);
   CHECK(serialize.percentile(1.0) < 500'000'000ULL);
+}
+
+TEST_CASE("core.engine: market data age is taken on the engine clock, not the receive stamp") {
+  Fixture f(false, [](EngineConfig& cfg) { cfg.risk.stale_md = milliseconds(100); });
+  auto& ctx = f.engine->context();
+  NewOrderRequest r{};
+  r.instrument = InstrumentId{0};
+  r.side = Side::Buy;
+  r.price = px("99.50");
+  r.qty = qt("0.01");
+  const auto stale = [&] {
+    return f.engine->stats().risk_rejects_by_reason[RejectReason::StaleMarketData];
+  };
+  // recv_ts is the network thread's wall clock. A host clock step back (WSL2 steps 30-760 ms)
+  // must not make a book the engine just consumed stale.
+  f.push_book("100.00", "100.02", 1, true, Duration{} - seconds(30));
+  f.drain();
+  CHECK(stale() == 0);
+  CHECK_FALSE(f.news().empty());  // BasicMM quoted
+  CHECK(ctx.send(r).has_value());
+  // A step forward must not keep a book fresh: it is stale stale_md after it was consumed.
+  f.push_book("100.00", "100.02", 2, false, seconds(30));
+  f.drain();
+  f.clock.advance(milliseconds(150));
+  const auto late = ctx.send(r);
+  REQUIRE_FALSE(late.has_value());
+  CHECK(late.error() == RejectReason::StaleMarketData);
+  CHECK(stale() == 1);
+}
+
+TEST_CASE("core.engine: sends from a timer carry no T0 and record no tick-to-trade sample") {
+  Fixture f(false);
+  f.push_book("100.00", "100.02", 1, true);
+  f.drain();
+  f.ack_all_new();
+  f.drain();
+  f.push_book("100.00", "100.02", 2);  // same prices: no requote, the last event carries a T0
+  f.drain();
+  const auto& t2t = f.engine->latency().histogram(LatencyInterval::TickToTrade);
+  const std::uint64_t samples = t2t.count();
+  const std::size_t before = f.transport.out.size();
+  f.clock.advance(seconds(1));  // the stale timer pulls the quotes
+  f.drain();
+  REQUIRE(f.transport.out.size() > before);
+  for (std::size_t i = before; i < f.transport.out.size(); ++i) {
+    const auto* h = reinterpret_cast<const EventHeader*>(f.transport.out[i].data());
+    CHECK(h->type == EventType::OutCancel);
+    CHECK(h->t0_cycles.v == 0);  // was the quiet book event's T0
+  }
+  CHECK(t2t.count() == samples);  // was a one-second tick-to-trade sample
 }
 
 TEST_CASE(

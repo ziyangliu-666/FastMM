@@ -13,6 +13,7 @@
 #include "fastmm/net/byte_stream.hpp"
 #include "fastmm/net/io_result.hpp"
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -87,7 +88,8 @@ class TlsEngine {
   TlsOp write(std::span<const std::byte> buf, std::size_t& n) noexcept;
   TlsOp shutdown() noexcept;
   bool handshake_done() const noexcept;
-  std::size_t plaintext_pending() const noexcept;  // SSL_pending
+  std::size_t plaintext_pending() const noexcept;      // SSL_pending
+  std::size_t ciphertext_in_pending() const noexcept;  // fed to the BIO pair, not yet read by SSL
 
   // Network side of the BIO pair (zero-copy).
   std::span<const std::byte> ciphertext_out() noexcept;  // BIO_nread0
@@ -236,6 +238,16 @@ class TlsStream {
     }
   }
   bool has_pending_output() noexcept { return !engine_.ciphertext_out().empty(); }
+  // No plaintext or ciphertext is buffered and the transport's last read was short: the next
+  // read() would only get EAGAIN from the socket (see TcpSocket::input_drained()).
+  bool input_drained() const noexcept {
+    if constexpr (kTransportReportsDrained) {
+      return transport_.input_drained() && engine_.plaintext_pending() == 0 &&
+             engine_.ciphertext_in_pending() == 0;
+    } else {
+      return false;
+    }
+  }
 
   // Sends close_notify; ok once the peer's close_notify was seen (or want_* meanwhile).
   IoResult shutdown() noexcept {
@@ -274,6 +286,10 @@ class TlsStream {
       if (r.bytes > 0) {
         engine_.ciphertext_in_commit(r.bytes);
         total += r.bytes;
+        // A short read emptied the socket: the next read would only return EAGAIN.
+        if constexpr (kTransportReportsDrained) {
+          if (transport_.input_drained()) return IoResult::done(total);
+        }
       }
       if (r.closed) {
         // EOF: let SSL consume what we already fed; only report EOF once it is drained.
@@ -284,6 +300,10 @@ class TlsStream {
       if (r.want_read) return IoResult::done(total);
     }
   }
+
+  static constexpr bool kTransportReportsDrained = requires(const Transport& t) {
+    { t.input_drained() } -> std::same_as<bool>;
+  };
 
   Transport transport_;
   detail::TlsEngine engine_;

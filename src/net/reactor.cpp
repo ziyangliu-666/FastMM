@@ -245,22 +245,56 @@ bool Reactor::is_registered(int fd) const noexcept {
 }
 
 TimerId Reactor::add_timer(std::int64_t deadline_ns, TimerCallback cb) {
-  const TimerId id = next_timer_id_++;
-  timers_.emplace(id, std::move(cb));
+  std::uint32_t slot = 0;
+  if (!free_timer_slots_.empty()) {
+    slot = free_timer_slots_.back();
+    free_timer_slots_.pop_back();
+  } else {
+    if (timer_slots_.size() > kTimerSlotMask) throw std::length_error("too many reactor timers");
+    slot = static_cast<std::uint32_t>(timer_slots_.size());
+    timer_slots_.emplace_back();
+    // release_timer_slot() then pushes without allocating.
+    if (free_timer_slots_.capacity() < timer_slots_.capacity())
+      free_timer_slots_.reserve(timer_slots_.capacity());
+  }
+  const TimerId id = (next_timer_seq_++ << kTimerSlotBits) | slot;
+  TimerSlot& s = timer_slots_[slot];
+  s.id = id;
+  s.cb = std::move(cb);
+  ++active_timers_;
+  // Cancelled timers leave their heap entries until the deadline passes. Before the heap would
+  // grow, drop them when they are at least half of it, so cancel-and-re-arm does not allocate.
+  if (heap_.size() == heap_.capacity() && heap_.size() >= 2 * active_timers_) {
+    std::erase_if(heap_, [this](const TimerEntry& e) { return !timer_live(e.id); });
+    std::make_heap(heap_.begin(), heap_.end(), std::greater<>{});
+  }
   heap_.push_back(TimerEntry{deadline_ns, id});
   std::push_heap(heap_.begin(), heap_.end(), std::greater<>{});
   return id;
 }
 
 bool Reactor::cancel_timer(TimerId id) noexcept {
+  const auto slot = id & kTimerSlotMask;
+  if (id == kInvalidTimer || slot >= timer_slots_.size() || timer_slots_[slot].id != id)
+    return false;
   // Lazy cancellation: the heap entry stays and is skipped when it surfaces.
-  return timers_.erase(id) > 0;
+  release_timer_slot(slot);
+  return true;
+}
+
+void Reactor::release_timer_slot(std::size_t slot) noexcept {
+  TimerSlot& s = timer_slots_[slot];
+  s.id = kInvalidTimer;
+  s.cb.reset();
+  --active_timers_;
+  free_timer_slots_.push_back(static_cast<std::uint32_t>(slot));
 }
 
 void Reactor::post(Task task) {
   {
     std::lock_guard lock(post_mutex_);
     posted_.push_back(std::move(task));
+    posted_pending_.store(true, std::memory_order_release);
   }
   wake();
 }
@@ -336,11 +370,13 @@ void Reactor::dispatch_io(int nfds) {
     // Look the handler up per event: an earlier handler in this batch may have removed it.
     IoHandler* h = is_registered(fd) ? handlers_[static_cast<std::size_t>(fd)] : nullptr;
     if (h == nullptr) continue;
+    event_hangup_ = (ev & (EPOLLERR | EPOLLRDHUP | EPOLLHUP)) != 0;
     deliver(fd,
             h,
             (ev & EPOLLERR) != 0,
             (ev & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)) != 0,
             (ev & EPOLLOUT) != 0);
+    event_hangup_ = false;
   }
 }
 
@@ -434,11 +470,13 @@ void Reactor::uring_complete(std::uint64_t user_data, std::int32_t res, std::uin
   if (fd == wake_fd_) {
     drain_wake_fd();
   } else {
+    event_hangup_ = (ev & (POLLERR | POLLRDHUP | POLLHUP)) != 0;
     deliver(fd,
             h,
             (ev & POLLERR) != 0,
             (ev & (POLLIN | POLLRDHUP | POLLHUP)) != 0,
             (ev & POLLOUT) != 0);
+    event_hangup_ = false;
   }
   // A multishot poll ends without IORING_CQE_F_MORE (e.g. the CQ ring overflowed): re-arm it if
   // the registration survived the callbacks.
@@ -519,8 +557,11 @@ bool Reactor::uring_queue_remove(int fd, std::uint32_t gen) noexcept {
 }
 
 void Reactor::run_posted() {
+  // A post() whose flag is not visible yet also wrote the wake eventfd: a later iteration runs it.
+  if (!posted_pending_.load(std::memory_order_acquire)) return;
   {
     std::lock_guard lock(post_mutex_);
+    posted_pending_.store(false, std::memory_order_relaxed);
     if (posted_.empty()) return;
     running_.swap(posted_);
   }
@@ -535,10 +576,10 @@ void Reactor::run_expired_timers() {
     std::pop_heap(heap_.begin(), heap_.end(), std::greater<>{});
     const TimerEntry entry = heap_.back();
     heap_.pop_back();
-    auto it = timers_.find(entry.id);
-    if (it == timers_.end()) continue;  // cancelled
-    TimerCallback cb = std::move(it->second);
-    timers_.erase(it);  // erased before the call so the callback may re-arm itself
+    if (!timer_live(entry.id)) continue;  // cancelled (its slot may be in use again)
+    const auto slot = entry.id & kTimerSlotMask;
+    TimerCallback cb = std::move(timer_slots_[slot].cb);
+    release_timer_slot(slot);  // before the call, so the callback may re-arm itself
     cb();
   }
 }

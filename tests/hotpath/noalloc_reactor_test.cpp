@@ -1,5 +1,6 @@
-// Reactor::run_once / dispatch must not allocate once fds are registered, on both backends.
-// Registration, post() and timers may allocate and stay outside the measured scope.
+// Reactor::run_once / dispatch must not allocate once fds are registered, on both backends, and
+// neither must arming, firing or cancelling timers once the timer table has reached its size.
+// Registration and post() may allocate and stay outside the measured scope.
 #if defined(FASTMM_HOTPATH_NET)
 #include "alloc_counter.hpp"
 #include "test_support.hpp"
@@ -10,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 using namespace fastmm::net;
@@ -98,6 +100,42 @@ std::uint64_t allocations_during_traffic(ReactorBackend backend, bool busy) {
 TEST_CASE("hotpath.noalloc: reactor run_once over epoll") {
   CHECK(allocations_during_traffic(ReactorBackend::Epoll, false) == 0);
   CHECK(allocations_during_traffic(ReactorBackend::Epoll, true) == 0);
+}
+
+// The venues' housekeeping timer re-arms itself with [this, weak_ptr] (24 bytes of captures);
+// connections cancel and re-arm long timers (heartbeat, health) on every reconnect or pong.
+TEST_CASE("hotpath.noalloc: reactor timers re-armed from their callbacks and cancelled") {
+  Reactor r;
+  const auto alive = std::make_shared<int>(0);
+  int fired = 0;
+  struct Rearm {
+    Reactor* r;
+    int* fired;
+    std::weak_ptr<int> alive;
+    void operator()() const {
+      if (alive.expired()) return;
+      ++*fired;
+      static_cast<void>(r->add_timer_after(0, Rearm{r, fired, alive}));
+    }
+  };
+  static_cast<void>(r.add_timer_after(0, Rearm{&r, &fired, alive}));
+  TimerId pending = kInvalidTimer;
+  auto iteration = [&] {
+    r.run_once(0);
+    r.cancel_timer(pending);
+    pending = r.add_timer_after(1'000'000'000, [&fired] { ++fired; });
+  };
+  for (int i = 0; i < 64; ++i) iteration();  // warm up: slots, free list and heap reach their size
+  const int before = fired;
+  std::uint64_t allocations = 0;
+  {
+    fastmm::test::NoAllocScope guard;
+    for (int i = 0; i < 2000; ++i) iteration();
+    allocations = guard.allocations_so_far();
+  }
+  CHECK(allocations == 0);
+  CHECK(fired - before == 2000);
+  CHECK(r.active_timers() == 2);
 }
 
 TEST_CASE("hotpath.noalloc: reactor run_once over io_uring") {

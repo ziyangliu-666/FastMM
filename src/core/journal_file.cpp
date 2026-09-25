@@ -261,22 +261,32 @@ void JournalFileWriter::sync() noexcept {
 }
 
 void JournalFileWriter::run() {
+  constexpr int kIdleSpins = 200;
+  constexpr Duration kMinIdleWait = microseconds(50);
+  constexpr Duration kMaxIdleWait = milliseconds(1);
   int idle = 0;
+  Duration wait{};
   while (!stop_.load(std::memory_order_acquire)) {
     const std::size_t n = drain_once();
     const Timestamp now = steady_now();
     if (block_count_ > 0 && now - last_flush_ >= kSyncInterval) flush_block();
     if (opts_.max_bytes != 0 && file_size_ >= opts_.max_bytes && block_count_ == 0) rotate();
     if (now - last_sync_ >= kSyncInterval) sync();
-    if (n == 0) {
-      if (++idle > 200) {
-        timespec ts{0, 50'000};
-        nanosleep(&ts, nullptr);
-      } else {
-        __builtin_ia32_pause();
-      }
-    } else {
+    if (n != 0) {
       idle = 0;
+      wait = Duration{};
+    } else if (++idle <= kIdleSpins) {
+      __builtin_ia32_pause();
+    } else {
+      // Idle: timed waits growing from 50 us to 1 ms. The engine never waits for this thread and
+      // does not signal it; at 1 ms the default 16 MiB ring holds 16 GiB/s of records.
+      wait = wait.ns == 0 ? kMinIdleWait : std::min(wait * 2, kMaxIdleWait);
+      wake_.prepare_wait();
+      if (!ring_.empty_approx() || stop_.load(std::memory_order_acquire)) {
+        wake_.cancel_wait();
+      } else {
+        wake_.wait(wait);
+      }
     }
   }
   drain_once();
@@ -292,6 +302,7 @@ void JournalFileWriter::start() {
 void JournalFileWriter::stop() {
   if (thread_.joinable()) {
     stop_.store(true, std::memory_order_release);
+    wake_.notify();
     thread_.join();
   } else {
     drain_once();

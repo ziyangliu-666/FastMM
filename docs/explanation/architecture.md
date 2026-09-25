@@ -42,10 +42,10 @@ The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of
 
 | Thread | Owns | Waits by |
 |---|---|---|
-| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), busy (`spin_mode = busy`) or with a 1 ms timeout (`adaptive`) |
-| `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing, its `TscClock` copy | busy-spin, adaptive back-off with `spin_mode = adaptive` |
-| `fm-journal` (when journaling) | `JournalFileWriter`: drains the journal ring into the `.fmj` file | spin, then short sleeps |
-| log sink (`Logger::start`) | formats log records from every thread's ring and writes them | spin, then short sleeps |
+| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), busy (`spin_mode = busy`); `adaptive` polls while active and for 200 µs after, then waits with a 1 ms timeout, and the engine writes the wake eventfd only while it waits |
+| `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing, its `TscClock` copy | busy-spin; with `spin_mode = adaptive` it spins, then blocks on a futex the network threads signal after they push events (at most until the next timer, 1 ms) |
+| `fm-journal` (when journaling) | `JournalFileWriter`: drains the journal ring into the `.fmj` file | spin, then timed waits growing from 50 µs to 1 ms |
+| log sink (`Logger::start`) | formats log records from every thread's ring and writes them | spin, then timed waits growing from 50 µs to 10 ms (`flush()` and `stop()` wake it) |
 | main thread | control: parses the config, loads reference data, starts and stops the other threads, posts `Venue::on_timer` and prints the stats line every second, recalibrates the TSC every `[engine] tsc_recalibrate_s`, handles SIGINT/SIGTERM and `--duration` (kill switch, `cancel_all` on every venue over an independent REST connection) | 50 ms sleeps |
 
 All queues are single-producer/single-consumer (`MsgRing`, byte-oriented, variable-length 64-byte-aligned messages). N producers means N rings; the engine polls them round-robin with a batch cap so one venue cannot starve another. The journal records events in the order the engine consumes them.

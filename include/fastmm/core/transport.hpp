@@ -9,6 +9,7 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 
 #include <concepts>
@@ -41,9 +42,16 @@ concept TransportLike =
 // Polls N inbound MsgRings round-robin, at most kFeedBudgetPerRing messages per ring per
 // visit so a chatty venue cannot starve the others. Consumption order is the canonical
 // order that the journal records.
+//
+// With SpinMode::Adaptive the live engine blocks on waker() once its spin budget is used up.
+// Producers call notify() after publishing into a ring; it costs a system call only while the
+// engine is blocked. A producer that does not notify is picked up when the engine's idle wait times
+// out (at most 1 ms).
 class RingFeed {
  public:
   RingFeed() noexcept = default;
+  RingFeed(const RingFeed&) = delete;
+  RingFeed& operator=(const RingFeed&) = delete;
   bool add_ring(MsgRing* ring) noexcept {
     if (count_ >= kMaxFeedRings || ring == nullptr) return false;
     rings_[count_++] = ring;
@@ -65,6 +73,16 @@ class RingFeed {
     rings_[cur_]->release();
     --budget_;
   }
+  // Any ring holds a message: the consumer's recheck between Waker::prepare_wait() and wait().
+  [[nodiscard]] bool pending() const noexcept {
+    for (std::size_t i = 0; i < count_; ++i) {
+      if (!rings_[i]->empty_approx()) return true;
+    }
+    return false;
+  }
+  [[nodiscard]] Waker& waker() noexcept { return waker_; }
+  // Producer side (any thread): call after publishing into one of the rings.
+  FASTMM_FORCE_INLINE void notify() noexcept { waker_.notify(); }
 
  private:
   void advance() noexcept {
@@ -75,6 +93,7 @@ class RingFeed {
   std::size_t count_ = 0;
   std::size_t cur_ = 0;
   std::uint32_t budget_ = kFeedBudgetPerRing;
+  Waker waker_;
 };
 
 // Single-threaded queue the simulator/backtester pushes events into before calling

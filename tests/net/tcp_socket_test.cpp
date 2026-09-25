@@ -2,6 +2,7 @@
 
 #include "net_test_util.hpp"
 
+#include <array>
 #include <string>
 
 using namespace fastmm::net;
@@ -89,6 +90,26 @@ TEST_CASE("TcpSocket: socketpair read/write semantics") {
     CHECK(a.read(std::span<std::byte>{}).ok());
     CHECK(a.write(std::span<const std::byte>{}).ok());
   }
+}
+
+TEST_CASE("TcpSocket: input_drained reports a short read") {
+  TcpSocket a;
+  TcpSocket b;
+  REQUIRE(TcpSocket::make_pair(a, b));
+  CHECK_FALSE(b.input_drained());
+  const std::string msg(100, 'x');
+  REQUIRE(a.write(bytes(msg)).ok());
+  std::array<std::byte, 60> small{};
+  IoResult r = b.read(small);
+  CHECK(r.bytes == 60);
+  CHECK_FALSE(b.input_drained());  // filled the buffer: more may be queued
+  std::array<std::byte, 256> big{};
+  r = b.read(big);
+  CHECK(r.bytes == 40);
+  CHECK(b.input_drained());  // short read: the queue was empty after it
+  r = b.read(big);
+  CHECK(r.want_read);
+  CHECK_FALSE(b.input_drained());
 }
 
 TEST_CASE("TcpSocket: listen on an ephemeral port and accept") {

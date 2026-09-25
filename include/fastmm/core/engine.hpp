@@ -231,10 +231,10 @@ class Engine {
     warm_up();
     start();
     while (!stop_.load(std::memory_order_relaxed)) {
-      if (step() == 0) {
-        spin_.idle();
-      } else {
+      if (step() != 0) {
         spin_.active();
+      } else if (!spin_.spin()) {
+        block_idle();
       }
     }
     finish();
@@ -264,6 +264,7 @@ class Engine {
     started_ = true;
     in_engine_ = true;
     latch_clock();
+    set_event_origin(Cycles{}, Cycles{});
     // The rate limiter refills from the start time, not from construction (replay constructs the
     // engine at a different time).
     risk_.bucket().rebase(now_);
@@ -284,6 +285,7 @@ class Engine {
     finished_ = true;
     in_engine_ = true;
     latch_clock();
+    set_event_origin(Cycles{}, Cycles{});
     if (journal_.enabled() && !journal_.record_clock(EngineTimeMsg::Kind::Finish, now_))
       ++stats_.journal_overflows;
     if constexpr (has_hook(Hook::Stop)) strategy_.on_stop(ctx_);
@@ -299,7 +301,10 @@ class Engine {
     unlatch_clock();
     in_engine_ = false;
   }
-  void stop() noexcept { stop_.store(true, std::memory_order_release); }
+  void stop() noexcept {
+    stop_.store(true, std::memory_order_release);
+    if constexpr (kFeedWaits) feed_.notify();
+  }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
 
   // ---- strategy-facing API ------------------------------------------------------------------
@@ -513,6 +518,39 @@ class Engine {
 
   // ---- event loop ---------------------------------------------------------------------------
 
+  // The feed can wake a blocked engine (RingFeed): producers notify it after publishing.
+  static constexpr bool kFeedWaits = requires(Feed& f) {
+    { f.waker() } -> std::same_as<Waker&>;
+    { f.pending() } -> std::same_as<bool>;
+    f.notify();
+  };
+  static constexpr Duration kMaxIdleWait = milliseconds(1);
+
+  // Adaptive spin with the spin budget used up: block until a producer notifies the feed, the next
+  // timer or latency publish is due, or kMaxIdleWait passes. Feeds that cannot wake the engine
+  // sleep 50 us.
+  void block_idle() noexcept {
+    if constexpr (kFeedWaits) {
+      const Timestamp now = clock_.now();
+      Timestamp until = now + kMaxIdleWait;
+      if (cfg_.latency_publish_interval.ns > 0) {
+        const Timestamp publish = last_publish_ + cfg_.latency_publish_interval;
+        if (publish < until) until = publish;
+      }
+      until = timers_.next_expiry_before(until);
+      if (until <= now) return;
+      Waker& waker = feed_.waker();
+      waker.prepare_wait();
+      if (feed_.pending() || stop_.load(std::memory_order_acquire)) {
+        waker.cancel_wait();
+        return;
+      }
+      waker.wait(until - now);
+    } else {
+      sleep_for(microseconds(50));
+    }
+  }
+
   void process(const EventHeader* h) noexcept {
     ++stats_.events;
     latch_clock();
@@ -523,11 +561,7 @@ class Engine {
         on_journal_overflow();
       }
     }
-    event_t0_ = h->t0_cycles;
-    event_t1_ = Cycles{h->t0_cycles.v + h->t1_delta};
-    // T3 belongs to this event only (see mark_decision()).
-    strategy_t3_ = Cycles{};
-    sent_in_event_ = false;
+    set_event_origin(h->t0_cycles, Cycles{h->t0_cycles.v + h->t1_delta});
     // The ParamUpdate that renews the parameters does not first expire them.
     const bool renews_params = h->type == EventType::ParamUpdate;
     if constexpr (has_hook(Hook::Quoting)) {
@@ -632,7 +666,9 @@ class Engine {
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_LIKELY(b.is_valid())) {
       const Price mid = b.mid();
-      risk_.on_book(id, mid, d.hdr.recv_ts.valid() ? d.hdr.recv_ts : now);
+      // The engine clock, which the stale check compares against: recv_ts is the network thread's
+      // wall clock, and a host clock step moves it relative to the engine's TscClock.
+      risk_.on_book(id, mid, now);
       positions_.mark(id, mid, inst);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (b.crossed() && b.crossed_for(now) > cfg_.crossed_grace) {
@@ -1430,6 +1466,7 @@ class Engine {
 
   void on_timer_fired(TimerId id, std::uint64_t user_data) noexcept {
     latch_clock();
+    set_event_origin(Cycles{}, Cycles{});  // no inbound message: sends carry no T0
     [[maybe_unused]] const bool quoting_before = quoting_enabled();
     fire_timer(id, user_data);
     if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
@@ -1752,6 +1789,14 @@ class Engine {
     latched_ = true;
   }
   FASTMM_FORCE_INLINE void unlatch_clock() noexcept { latched_ = false; }
+  // T0 (network receive) and T1 (decode end) of the inbound message being handled; zero for timers,
+  // start and finish. T3 and the tick-to-trade sample belong to that message only.
+  FASTMM_FORCE_INLINE void set_event_origin(Cycles t0, Cycles t1) noexcept {
+    event_t0_ = t0;
+    event_t1_ = t1;
+    strategy_t3_ = Cycles{};
+    sent_in_event_ = false;
+  }
   // Engine API called outside an event, timer, start or finish (tests, tools): take the clock now,
   // so the internal paths can read now_ unconditionally.
   void enter_api() noexcept {

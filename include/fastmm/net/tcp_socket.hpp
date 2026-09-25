@@ -81,6 +81,10 @@ class TcpSocket {
 
   IoResult read(std::span<std::byte> buf) noexcept;
   IoResult write(std::span<const std::byte> buf) noexcept;
+  // The last read() returned fewer bytes than asked: the receive queue was empty after it. With
+  // edge-triggered readiness the caller may skip the read that would only return EAGAIN, unless
+  // the event also reported a hang-up (Reactor::event_hangup()).
+  bool input_drained() const noexcept { return input_drained_; }
 
   bool set_nodelay(bool on) noexcept;
   bool set_keepalive(bool on) noexcept;
@@ -106,6 +110,7 @@ class TcpSocket {
 
   int fd_ = -1;
   bool connecting_ = false;
+  bool input_drained_ = false;
   int err_ = 0;
 };
 

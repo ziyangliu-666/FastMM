@@ -1,4 +1,5 @@
 #include "fastmm/core/log.hpp"
+#include "fastmm/core/thread_utils.hpp"
 
 #include <fmt/args.h>
 #include <fmt/format.h>
@@ -7,6 +8,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -31,6 +33,7 @@ struct Logger::Impl {
   std::atomic<bool> stop_requested{false};
   std::atomic<std::uint64_t> flush_req{0};
   std::atomic<std::uint64_t> flush_done{0};
+  Waker wake;  // flush() and stop() wake the idle sink; logging threads never signal it
   std::string scratch;
 };
 
@@ -220,8 +223,12 @@ std::size_t Logger::drain_all() {
 }
 
 void Logger::sink_loop() {
+  constexpr int kIdleSpins = 100;
+  constexpr Duration kMinIdleWait = microseconds(50);
+  constexpr Duration kMaxIdleWait = milliseconds(10);
   Impl& im = *impl_;
   int idle = 0;
+  Duration wait{};
   while (!im.stop_requested.load(std::memory_order_acquire)) {
     // Read the flush request *before* draining so every record published before the
     // request is guaranteed to be on disk when flush_done catches up.
@@ -231,15 +238,23 @@ void Logger::sink_loop() {
       std::fflush(im.out);
       im.flush_done.store(req, std::memory_order_release);
     }
-    if (n == 0) {
-      if (++idle > 100) {
-        timespec ts{0, 50'000};
-        nanosleep(&ts, nullptr);
-      } else {
-        __builtin_ia32_pause();
-      }
-    } else {
+    if (n != 0) {
       idle = 0;
+      wait = Duration{};
+    } else if (++idle <= kIdleSpins) {
+      __builtin_ia32_pause();
+    } else {
+      // Idle: timed waits growing from 50 us to 10 ms (a thread's kLogRingSize-record ring then
+      // holds bursts of 800k records/s). Logging never waits for the sink and does not signal it.
+      wait = wait.ns == 0 ? kMinIdleWait : std::min(wait * 2, kMaxIdleWait);
+      im.wake.prepare_wait();
+      if (im.stop_requested.load(std::memory_order_acquire) ||
+          im.flush_req.load(std::memory_order_acquire) !=
+              im.flush_done.load(std::memory_order_acquire)) {
+        im.wake.cancel_wait();
+      } else {
+        im.wake.wait(wait);
+      }
     }
   }
   drain_all();
@@ -260,6 +275,7 @@ void Logger::stop() {
   if (!running()) return;
   Impl& im = *impl_;
   im.stop_requested.store(true, std::memory_order_release);
+  im.wake.notify();
   im.sink.join();
   running_.store(false, std::memory_order_release);
 }
@@ -272,6 +288,7 @@ void Logger::flush() {
     return;
   }
   const std::uint64_t req = im.flush_req.fetch_add(1, std::memory_order_acq_rel) + 1;
+  im.wake.notify();
   while (im.flush_done.load(std::memory_order_acquire) < req) {
     timespec ts{0, 20'000};
     nanosleep(&ts, nullptr);

@@ -47,8 +47,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      "spin_mode",
      KeyType::String,
      false,
-     "busy (spin forever) | adaptive (back off to short sleeps when idle; use on WSL2 and laptops) "
-     "(default adaptive)"},
+     "busy (spin forever) | adaptive (spin briefly, then block until work arrives; use on WSL2 "
+     "and laptops) (default adaptive)"},
     {"engine",
      "net_backend",
      KeyType::String,
@@ -165,8 +165,9 @@ inline constexpr KeySpec kConfigSchema[] = {
      "timer_slack_ns",
      KeyType::Int,
      false,
-     "fastmm-live: timer slack of its threads, ns; how late a sleep may end (adaptive spin_mode "
-     "sleeps 50 us when idle); 0 = the kernel's, 50000 (default 0)"},
+     "fastmm-live: timer slack of its threads, ns; how late a timed wait may end (adaptive "
+     "spin_mode: the engine's idle wait, at most 1 ms, and with threading = \"single\" a 50 us "
+     "sleep); 0 = the kernel's, 50000 (default 0)"},
     {"engine",
      "restore_position",
      KeyType::Bool,

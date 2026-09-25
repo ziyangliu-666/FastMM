@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -388,6 +389,44 @@ TEST_CASE("core.oms: transition table and races") {
     int n = 0;
     oms.for_each_open_order(inst, [&](Handle<Order>, const Order&) { ++n; });
     CHECK(n == 2);
+  }
+}
+
+TEST_CASE("core.oms: best own price stays the best open price through random terminations") {
+  Oms oms;
+  std::mt19937_64 rng(5);
+  std::vector<ClientOrderId> ids;
+  const auto check_best = [&] {
+    for (std::uint32_t inst = 0; inst < 3; ++inst) {
+      for (const Side side : {Side::Buy, Side::Sell}) {
+        Price best{};
+        oms.for_each_open_order([&](Handle<Order>, const Order& o) {
+          if (o.instrument.value != inst || o.side != side) return;
+          if (best.is_zero() || better(side, o.price, best)) best = o.price;
+        });
+        REQUIRE(oms.best_own_px(InstrumentId{inst}, side) == best);
+      }
+    }
+  };
+  for (int step = 0; step < 20'000; ++step) {
+    if (ids.empty() || (rng() % 3 != 0 && oms.open_count() < 300)) {
+      const ClientOrderId id = oms.next_cl_ord_id();
+      const auto h = oms.submit(req(rng() % 2 == 0 ? Side::Buy : Side::Sell,
+                                    static_cast<std::int64_t>(90 + rng() % 20),
+                                    1,
+                                    InstrumentId{static_cast<std::uint32_t>(rng() % 3)}),
+                                id,
+                                Timestamp{1});
+      REQUIRE(h);
+      ids.push_back(id);
+    } else {
+      const std::size_t k = rng() % ids.size();
+      const ClientOrderId id = ids[k];
+      ids[k] = ids.back();
+      ids.pop_back();
+      static_cast<void>(oms.on_reject(reject(id)));
+    }
+    check_best();
   }
 }
 
