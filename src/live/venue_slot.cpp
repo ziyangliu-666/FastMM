@@ -1,7 +1,6 @@
 #include "fastmm/live/venue_slot.hpp"
 
 #include "fastmm/core/log.hpp"
-#include "fastmm/core/transport.hpp"
 #include "fastmm/live/session.hpp"
 
 #include <x86intrin.h>
@@ -116,7 +115,7 @@ void wake_venue(void* ctx, VenueId v) noexcept {
 
 // Events pushed to the engine notify its feed, which wakes the engine only while it is blocked
 // (Engine::block_idle).
-void net_loop(VenueSlot& s, RingFeed* feed, int cpu, std::size_t index, SpinMode spin) {
+void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
   const std::string name = "fm-net-" + std::to_string(index);
   set_thread_name(name.c_str());
   pin_to_cpu(cpu);
@@ -128,15 +127,19 @@ void net_loop(VenueSlot& s, RingFeed* feed, int cpu, std::size_t index, SpinMode
   bool block = false;
   while (!s.stop.load(std::memory_order_relaxed)) {
     int wait_ms = 0;
+    // A posted task may switch s.blocked during run_once(): clear the flag that was set.
+    SleepFlag* const blocked = s.blocked;
     if (block) {
-      // wake_venue() takes the flag after it set `wake`: either this sees `wake` or it writes the
-      // eventfd.
-      s.net_blocked.set();
-      if (!s.wake.load(std::memory_order_acquire) && !s.stop.load(std::memory_order_acquire))
+      // The engine takes the flag after it published (wake_venue, GatewayClient::wake_venue):
+      // either this recheck sees the work or the engine writes the eventfd.
+      blocked->set();
+      if (!s.wake.load(std::memory_order_acquire) &&
+          (s.pending == nullptr || !s.pending(s.hook_ctx)) &&
+          !s.stop.load(std::memory_order_acquire))
         wait_ms = kNetMaxBlockMs;
     }
     bool active = s.reactor->run_once(wait_ms) > 0;
-    if (block) s.net_blocked.clear();
+    if (block) blocked->clear();
     s.venue->poll();
     if (s.wake.load(std::memory_order_relaxed) &&
         s.wake.exchange(false, std::memory_order_acquire)) {
@@ -144,12 +147,14 @@ void net_loop(VenueSlot& s, RingFeed* feed, int cpu, std::size_t index, SpinMode
       active = true;
     }
     if (s.hook != nullptr && s.hook(s.hook_ctx) != 0) active = true;
-    if (busy) continue;
+    Waker* const consumer = s.consumer;
+    if (busy && consumer == nullptr) continue;
     if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
       pushed = p;
-      if (feed != nullptr) feed->notify();
+      if (consumer != nullptr) consumer->notify();
       active = true;
     }
+    if (busy) continue;
     block = false;
     if (active) {
       idle_since = 0;

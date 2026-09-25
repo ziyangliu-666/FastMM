@@ -20,10 +20,15 @@
 // (and counts), cancels every open order on every venue (Venue::cancel_all), removes the rings and
 // waits for the next strategy. The venue connections stay up throughout. One strategy at a time.
 //
-// Wake-ups: none cross the process boundary yet. The gateway's network threads look at the
-// outbound ring on every loop iteration; an adaptive one that has been idle for 200 us blocks in
-// the reactor for up to 1 ms first. The engine picks market data up in its spin, or when its
-// adaptive idle wait times out (up to 1 ms). With spin_mode = "busy" on both sides neither waits.
+// Wake-ups cross the process boundary the way they cross threads in fastmm-live. The attach reply
+// carries descriptors (SCM_RIGHTS): a memfd page (gw::WakePage) and each venue's reactor eventfd.
+//   gateway -> engine: the engine's feed Waker lives in the page (a shared futex). A network thread
+//     notifies it after its sinks pushed, which costs a futex wake-up only while the engine sleeps.
+//     Only when the strategy said it blocks (kStrategyBlocks).
+//   engine -> gateway: an adaptive network thread sets its flag in the page before it blocks in
+//     the reactor and rechecks the outbound ring; the engine takes the flag after it pushed and
+//     writes the eventfd only if it was set. Only when the gateway said it blocks (kGatewayBlocks).
+// With spin_mode = "busy" on both sides neither side touches the page.
 //
 // Wire format: little-endian structs of fixed size, one per datagram, each starting with a Header.
 // A reply carries the request's version; a version or size the gateway does not know is refused
@@ -32,10 +37,15 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/shm_ring.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/core/thread_utils.hpp"
+
+#include <sys/types.h>
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -46,7 +56,7 @@ namespace gw {
 static_assert(std::endian::native == std::endian::little);
 
 inline constexpr std::uint32_t kMagic = 0x57474d46;  // "FMGW"
-inline constexpr std::uint16_t kVersion = 1;
+inline constexpr std::uint16_t kVersion = 2;
 
 enum class MsgType : std::uint16_t {
   AttachRequest = 1,
@@ -70,6 +80,8 @@ struct ExecId {
 // The strategy restores a position from its store: the venues' execution replay starts at
 // exec_since_ms and skips the `known_count` ExecIds that follow the request.
 inline constexpr std::uint32_t kResumeExecutions = 1U << 0;
+// The strategy's engine blocks when idle (spin_mode = "adaptive"): the gateway wakes it.
+inline constexpr std::uint32_t kStrategyBlocks = 1U << 1;
 inline constexpr std::uint32_t kMaxKnownExecIds = 1024;
 
 struct AttachRequest {
@@ -97,7 +109,12 @@ struct VenueInfo {
 };
 static_assert(sizeof(VenueInfo) == 424);
 
+// The gateway's network threads block when idle (spin_mode = "adaptive"): the engine wakes them.
+inline constexpr std::uint32_t kGatewayBlocks = 1U << 0;
+
 // Followed by venue_count VenueInfo, then instrument_count Instrument (instrument_bytes each).
+// An attached reply carries 1 + venue_count descriptors: the WakePage memfd, then the reactor
+// eventfd of each venue in id order.
 struct AttachReply {
   Header hdr;
   std::int32_t status;  // 0: attached; otherwise `error` says why
@@ -106,9 +123,39 @@ struct AttachReply {
   std::uint32_t instrument_count;
   std::uint32_t instrument_bytes;  // sizeof(Instrument) of the gateway's build
   std::uint32_t gateway_pid;
-  char error[232];
+  std::uint32_t flags;
+  char error[228];
 };
 static_assert(sizeof(AttachReply) == 272);
+
+// The sleeping flags of one attachment, in a memfd page both processes map, each flag on its own
+// cache line. The page goes away with the attachment.
+struct WakePage {
+  struct alignas(64) Line {
+    SleepFlag flag;
+  };
+  Line engine;  // the strategy's feed Waker (a shared futex)
+  Line net[8];  // venue i's network thread is blocked in its reactor
+};
+inline constexpr std::size_t kWakePageBytes = 4096;
+static_assert(sizeof(WakePage) <= kWakePageBytes);
+
+// A zeroed WakePage in a new memfd (close-on-exec): the descriptor, or -1 with errno set.
+[[nodiscard]] int create_wake_page() noexcept;
+// Maps the page behind `fd` (MAP_SHARED); nullptr on failure. unmap_wake_page() undoes it.
+[[nodiscard]] WakePage* map_wake_page(int fd) noexcept;
+void unmap_wake_page(WakePage* page) noexcept;
+
+// The producer's side of a blocked reactor: after publishing, take the consumer's flag and, if it
+// was set, write 1 to its eventfd.
+void wake_if_blocked(SleepFlag& flag, int eventfd) noexcept;
+
+// One datagram with descriptors attached (SCM_RIGHTS). The bytes sent, or -1 with errno set.
+ssize_t send_with_fds(int sock, const void* data, std::size_t len, std::span<const int> fds);
+// One datagram and up to `max_fds` descriptors (close-on-exec); `*nfds` receives their count.
+// The kernel closes descriptors beyond max_fds (MSG_CTRUNC).
+ssize_t recv_with_fds(
+    int sock, void* data, std::size_t len, int* fds, std::size_t max_fds, std::size_t* nfds);
 
 inline constexpr std::size_t kMaxDatagram =
     sizeof(AttachReply) + 8 * sizeof(VenueInfo) + kMaxInstruments * sizeof(Instrument);
@@ -145,6 +192,7 @@ struct GatewayVenue {
 
 struct GatewayAttachRequest {
   std::string engine;
+  bool blocks = false;  // the engine runs with spin_mode = "adaptive"
   bool resume_executions = false;
   std::int64_t exec_since_ms = 0;
   std::vector<std::string> known_exec_ids;
@@ -168,12 +216,26 @@ class GatewayClient {
   // False once the gateway closed the connection (it exited or dropped this attachment). Never
   // blocks.
   [[nodiscard]] bool connected() noexcept;
+  // Closes the connection (the detach). The wake page and the eventfds stay until the destructor,
+  // so the engine's feed Waker and the wake hook remain valid.
   void close() noexcept;
+
+  // The engine's feed Waker lives here: Waker::share(engine_flag()) before the engine starts.
+  [[nodiscard]] SleepFlag* engine_flag() noexcept { return &page_->engine.flag; }
+  // The gateway's network threads block when idle: install wake_venue as LiveTransport's hook.
+  [[nodiscard]] bool gateway_blocks() const noexcept { return gateway_blocks_; }
+  // LiveTransport::WakeFn (ctx: this client): after the engine pushed into venue v's outbound
+  // ring, writes the venue's eventfd if its network thread is blocked.
+  static void wake_venue(void* ctx, VenueId v) noexcept;
 
  private:
   GatewayClient() = default;
   int fd_ = -1;
   std::uint32_t attach_id_ = 0;
+  gw::WakePage* page_ = nullptr;
+  int wake_fds_[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+  std::size_t wake_count_ = 0;
+  bool gateway_blocks_ = false;
   InstrumentTable instruments_;
   std::vector<GatewayVenue> venues_;
 };

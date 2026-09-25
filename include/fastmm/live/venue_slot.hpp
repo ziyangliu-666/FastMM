@@ -8,7 +8,10 @@
 //   net_loop()           fm-net-<i>: the reactor loop (connect, poll, drain on wake, disconnect)
 //
 // A VenueSlot's hook, when set, runs on the network thread after every reactor iteration; the
-// gateway moves the engine's orders from a shared ring into the venue there.
+// gateway moves the engine's orders from a shared ring into the venue there. `pending` tells an
+// adaptive thread about to block that the hook has work; `blocked` and `consumer` are where the
+// sleeping flag and the engine's wake-up live, which the gateway moves into the attached strategy's
+// wake page (live/gateway.hpp).
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
@@ -30,10 +33,6 @@
 #include <thread>
 #include <vector>
 
-namespace fastmm {
-class RingFeed;
-}
-
 namespace fastmm::live {
 
 // Ring sizes are powers of two of at least 64 KiB.
@@ -44,6 +43,8 @@ struct VenueSlot {
   // Runs on the network thread after each reactor iteration; returns how much work it did (0: none,
   // which lets an adaptive thread go idle).
   using Hook = std::size_t (*)(void* ctx) noexcept;
+  // With hook_ctx: true when the hook would find work (the recheck before the thread blocks).
+  using Pending = bool (*)(void* ctx) noexcept;
 
   std::unique_ptr<venues::Venue> venue;
   std::unique_ptr<net::Reactor> reactor;
@@ -54,9 +55,16 @@ struct VenueSlot {
   venues::EventSink order_sink;
   std::atomic<bool> wake{false};
   SleepFlag net_blocked;  // set while an adaptive network thread blocks in the reactor
+  // The flag the network thread sets before it blocks: net_blocked, or the one in the attached
+  // strategy's wake page. Read and switched on the network thread only (set before it starts).
+  SleepFlag* blocked = &net_blocked;
+  // Notified after the sinks pushed events: the engine's feed waker, or nullptr when the engine
+  // never blocks. Network thread only, like `blocked`.
+  Waker* consumer = nullptr;
   std::atomic<bool> stop{false};
   std::atomic<std::uint64_t> order_overflows{0};
   Hook hook = nullptr;  // set before the thread starts
+  Pending pending = nullptr;
   void* hook_ctx = nullptr;
   std::thread thread;
 };
@@ -96,9 +104,9 @@ void wake_venue(void* ctx, VenueId v) noexcept;
 
 // The network thread (fm-net-<index>). Busy: poll sockets and the engine's wake flag forever.
 // Adaptive: the same while active and for a short spin after, then block in the reactor until a
-// socket, timer, posted task or the engine (wake_venue) needs the thread. `feed`, when set, is
-// notified after the sinks pushed events (it wakes an engine blocked while idle).
-void net_loop(VenueSlot& s, RingFeed* feed, int cpu, std::size_t index, SpinMode spin);
+// socket, timer, posted task or the engine (wake_venue) needs the thread. s.consumer, when set, is
+// notified after the sinks pushed events (it wakes an engine blocked while idle), in busy mode too.
+void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin);
 
 // The once-a-second status line of a venue, and its latency and feed lines.
 void log_venue_status(const venues::Venue& v);

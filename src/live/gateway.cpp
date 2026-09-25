@@ -111,6 +111,13 @@ std::size_t gateway_hook(void* ctx) noexcept {
   return n;
 }
 
+// VenueSlot::Pending: the recheck of an adaptive network thread about to block. The engine takes
+// the thread's flag in the wake page after it pushed an order (GatewayClient::wake_venue).
+bool gateway_pending(void* ctx) noexcept {
+  const auto& g = *static_cast<const GatewayVenueState*>(ctx);
+  return g.out != nullptr && !g.out->empty_approx();
+}
+
 // Runs fn(i) on every venue's network thread and waits until all have run. The tasks reference
 // the caller's frame, so this waits for as long as it takes (a wedged thread is logged).
 void on_net_threads(VenueSlots& slots, const std::function<void(std::size_t)>& fn) {
@@ -168,6 +175,9 @@ struct Attachment {
   };
   std::vector<Rings> rings;  // per venue
   std::vector<std::uint64_t> overflows_at_attach;
+  // The wake page (live/gateway.hpp) and this process's Waker over the engine's flag in it.
+  gw::WakePage* page = nullptr;
+  std::unique_ptr<Waker> engine_waker;
 };
 
 class Gateway {
@@ -177,6 +187,7 @@ class Gateway {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       state_[i].slot = slots[i].get();
       slots[i]->hook = &gateway_hook;
+      slots[i]->pending = &gateway_pending;
       slots[i]->hook_ctx = &state_[i];
     }
   }
@@ -252,7 +263,12 @@ class Gateway {
       state_[i].out = nullptr;
       s.md_sink.attach(s.md_ring.get(), venues::SinkPolicy::Drop);
       s.order_sink.attach(s.order_ring.get(), venues::SinkPolicy::Spin);
+      s.consumer = nullptr;
+      s.blocked = &s.net_blocked;
     });
+    gw::unmap_wake_page(att_.page);
+    att_.page = nullptr;
+    att_.engine_waker.reset();
     bool cancel_ok = true;
     if (!opts_.dry_run) {
       for (auto& s : slots_) cancel_ok = s->venue->cancel_all() && cancel_ok;
@@ -328,6 +344,25 @@ class Gateway {
     a.id = id;
     a.engine = engine;
     a.pid = req.pid;
+    // Closed once the reply is sent (or on failure); the mappings keep the page.
+    struct Fd {
+      int fd;
+      ~Fd() {
+        if (fd >= 0) ::close(fd);
+      }
+    } page_fd{gw::create_wake_page()};
+    if (page_fd.fd >= 0) a.page = gw::map_wake_page(page_fd.fd);
+    if (a.page == nullptr) {
+      const std::string why = std::strerror(errno);
+      FASTMM_LOG_ERROR(
+          "gateway: cannot create the wake page of attachment {}: {}", id, std::string_view(why));
+      send_error(fd, "cannot create the wake page: " + why);
+      ::close(fd);
+      return;
+    }
+    a.engine_waker = std::make_unique<Waker>();
+    a.engine_waker->share(&a.page->engine.flag);
+    const bool strategy_blocks = (req.flags & gw::kStrategyBlocks) != 0;
     const std::string stem = "/dev/shm/fastmm-gw-" + cfg_.engine.name + "-" +
                              std::to_string(::getpid()) + "-" + std::to_string(id) + "-";
     for (std::size_t i = 0; i < slots_.size(); ++i) {
@@ -347,6 +382,7 @@ class Gateway {
         for (const Attachment::Rings& made : a.rings)
           for (const std::string& p : made.paths) std::filesystem::remove(p, ec);
         for (const std::string& p : r.paths) std::filesystem::remove(p, ec);
+        gw::unmap_wake_page(a.page);
         return;
       }
       r.md = std::make_unique<ShmRing>(std::move(*md));
@@ -363,6 +399,8 @@ class Gateway {
       s.md_sink.attach(a.rings[i].md.get(), venues::SinkPolicy::Drop);
       s.order_sink.attach(a.rings[i].order.get(), venues::SinkPolicy::Spin);
       state_[i].out = a.rings[i].outbound.get();
+      s.blocked = &a.page->net[i].flag;
+      s.consumer = strategy_blocks ? a.engine_waker.get() : nullptr;
       s.venue->resync_books();
       if (resume && executions(i)) {
         s.venue->resume_executions(req.exec_since_ms, known);
@@ -389,6 +427,7 @@ class Gateway {
     rep.instrument_count = static_cast<std::uint32_t>(instruments_.size());
     rep.instrument_bytes = sizeof(Instrument);
     rep.gateway_pid = static_cast<std::uint32_t>(::getpid());
+    if (cfg_.spin_mode() == SpinMode::Adaptive) rep.flags |= gw::kGatewayBlocks;
     std::memcpy(out.data(), &rep, sizeof rep);
     std::byte* p = out.data() + sizeof rep;
     for (std::size_t i = 0; i < slots_.size(); ++i, p += sizeof(gw::VenueInfo)) {
@@ -411,7 +450,9 @@ class Gateway {
     a.since_ns = steady_now().ns;
     att_ = std::move(a);
     log_discards();
-    if (::send(fd, out.data(), out.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(out.size())) {
+    std::vector<int> fds{page_fd.fd};
+    for (const auto& s : slots_) fds.push_back(s->reactor->wake_fd());
+    if (gw::send_with_fds(fd, out.data(), out.size(), fds) != static_cast<ssize_t>(out.size())) {
       FASTMM_LOG_ERROR("gateway: cannot answer {} (pid {}): {}",
                        std::string_view(engine),
                        req.pid,
@@ -502,7 +543,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   const GatewaySignals signals;
   for (std::size_t i = 0; i < slots.size(); ++i) {
     const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-    slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), nullptr, cpu, i, cfg.spin_mode());
+    slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode());
   }
   FASTMM_LOG_INFO(
       "fastmm-gateway: {} venue(s), {} instrument(s), dry_run={}, net={}; attach with "

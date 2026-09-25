@@ -111,6 +111,9 @@ class Reactor {
   void post(Task task);
   // Thread-safe: interrupt a blocking wait in run_once().
   void wake() noexcept;
+  // The eventfd wake() writes. Another process that holds a duplicate (the gateway passes it to
+  // the strategy with SCM_RIGHTS) wakes this reactor by writing 1 to it.
+  [[nodiscard]] int wake_fd() const noexcept { return wake_fd_; }
 
   // One iteration: wait for I/O at most min(next timer, max_wait_ms), dispatch I/O, posted
   // tasks, expired timers. max_wait_ms < 0 blocks until something happens. Returns the number

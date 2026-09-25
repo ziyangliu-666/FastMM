@@ -2,6 +2,7 @@
 #include "fastmm/live/gateway.hpp"
 
 #include <poll.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <new>
 #include <vector>
 
 namespace fastmm::live {
@@ -31,6 +33,94 @@ void to_field(char (&f)[N], std::string_view s) {
 }
 
 }  // namespace
+
+namespace gw {
+
+int create_wake_page() noexcept {
+  const int fd = ::memfd_create("fastmm-gw-wake", MFD_CLOEXEC);
+  if (fd < 0) return -1;
+  if (::ftruncate(fd, static_cast<off_t>(kWakePageBytes)) != 0) {
+    const int e = errno;
+    ::close(fd);
+    errno = e;
+    return -1;
+  }
+  WakePage* page = map_wake_page(fd);
+  if (page == nullptr) {
+    const int e = errno;
+    ::close(fd);
+    errno = e;
+    return -1;
+  }
+  new (page) WakePage{};
+  unmap_wake_page(page);
+  return fd;
+}
+
+WakePage* map_wake_page(int fd) noexcept {
+  void* p = ::mmap(nullptr, kWakePageBytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  return p == MAP_FAILED ? nullptr : static_cast<WakePage*>(p);
+}
+
+void unmap_wake_page(WakePage* page) noexcept {
+  if (page != nullptr) ::munmap(page, kWakePageBytes);
+}
+
+void wake_if_blocked(SleepFlag& flag, int eventfd) noexcept {
+  if (!flag.take()) return;
+  const std::uint64_t one = 1;
+  // EAGAIN means the counter is saturated, which still wakes the reactor.
+  [[maybe_unused]] const ssize_t n = ::write(eventfd, &one, sizeof one);
+}
+
+ssize_t send_with_fds(int sock, const void* data, std::size_t len, std::span<const int> fds) {
+  iovec iov{const_cast<void*>(data), len};
+  msghdr msg{};
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  std::vector<std::byte> ctl;
+  if (!fds.empty()) {
+    ctl.resize(CMSG_SPACE(fds.size() * sizeof(int)));
+    msg.msg_control = ctl.data();
+    msg.msg_controllen = ctl.size();
+    cmsghdr* c = CMSG_FIRSTHDR(&msg);
+    c->cmsg_level = SOL_SOCKET;
+    c->cmsg_type = SCM_RIGHTS;
+    c->cmsg_len = CMSG_LEN(fds.size() * sizeof(int));
+    std::memcpy(CMSG_DATA(c), fds.data(), fds.size() * sizeof(int));
+  }
+  return ::sendmsg(sock, &msg, MSG_NOSIGNAL);
+}
+
+ssize_t recv_with_fds(
+    int sock, void* data, std::size_t len, int* fds, std::size_t max_fds, std::size_t* nfds) {
+  *nfds = 0;
+  iovec iov{data, len};
+  msghdr msg{};
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+  std::vector<std::byte> ctl(CMSG_SPACE(std::max<std::size_t>(max_fds, 1) * sizeof(int)));
+  msg.msg_control = ctl.data();
+  msg.msg_controllen = ctl.size();
+  const ssize_t n = ::recvmsg(sock, &msg, MSG_CMSG_CLOEXEC);
+  if (n < 0) return n;
+  for (cmsghdr* c = CMSG_FIRSTHDR(&msg); c != nullptr; c = CMSG_NXTHDR(&msg, c)) {
+    if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS) continue;
+    const std::size_t k = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+    for (std::size_t i = 0; i < k; ++i) {
+      int fd = -1;
+      std::memcpy(&fd, CMSG_DATA(c) + i * sizeof(int), sizeof fd);
+      if (*nfds < max_fds) {
+        fds[(*nfds)++] = fd;
+      } else {
+        ::close(fd);
+      }
+    }
+  }
+  return n;
+}
+
+}  // namespace gw
 
 std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
                                                      const GatewayAttachRequest& req,
@@ -59,7 +149,8 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
                      0};
   to_field(r.engine, req.engine);
   r.pid = static_cast<std::uint32_t>(::getpid());
-  r.flags = req.resume_executions ? gw::kResumeExecutions : 0U;
+  r.flags = (req.resume_executions ? gw::kResumeExecutions : 0U) |
+            (req.blocks ? gw::kStrategyBlocks : 0U);
   r.exec_since_ms = req.exec_since_ms;
   r.known_count = static_cast<std::uint32_t>(known);
   std::memcpy(out.data(), &r, sizeof r);
@@ -76,7 +167,19 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   if (pr == 0) return fail("the gateway did not answer the attach request");
   if (pr < 0) return fail(std::string("poll: ") + std::strerror(errno));
   std::vector<std::byte> in(gw::kMaxDatagram);
-  const ssize_t n = ::recv(c->fd_, in.data(), in.size(), 0);
+  int fds[9];
+  std::size_t nfds = 0;
+  const ssize_t n = gw::recv_with_fds(c->fd_, in.data(), in.size(), fds, 9, &nfds);
+  // Owned by the client from here on, so every failure below closes them.
+  if (nfds > 0) {
+    c->page_ = gw::map_wake_page(fds[0]);
+    ::close(fds[0]);
+    if (c->page_ == nullptr) {
+      for (std::size_t i = 1; i < nfds; ++i) ::close(fds[i]);
+      return fail(std::string("cannot map the gateway's wake page: ") + std::strerror(errno));
+    }
+    for (std::size_t i = 1; i < nfds; ++i) c->wake_fds_[c->wake_count_++] = fds[i];
+  }
   if (n <= 0) return fail("the gateway closed the connection without answering");
   if (static_cast<std::size_t>(n) < sizeof(gw::AttachReply)) return fail("short attach reply");
   gw::AttachReply rep{};
@@ -98,7 +201,11 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
                 std::to_string(need));
   if (rep.venue_count > 8 || rep.instrument_count > kMaxInstruments)
     return fail("attach reply names too many venues or instruments");
+  if (c->page_ == nullptr || c->wake_count_ != rep.venue_count)
+    return fail("the attach reply carries " + std::to_string(nfds) + " descriptor(s), expected " +
+                std::to_string(rep.venue_count + 1));
   c->attach_id_ = rep.attach_id;
+  c->gateway_blocks_ = (rep.flags & gw::kGatewayBlocks) != 0;
   const std::byte* p = in.data() + sizeof rep;
   for (std::uint32_t i = 0; i < rep.venue_count; ++i, p += sizeof(gw::VenueInfo)) {
     gw::VenueInfo vi{};
@@ -134,6 +241,17 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
 
 GatewayClient::~GatewayClient() {
   close();
+  for (std::size_t i = 0; i < wake_count_; ++i) ::close(wake_fds_[i]);
+  gw::unmap_wake_page(page_);
+}
+
+// The engine published into the outbound ring first (a release store); take() is a locked
+// exchange, so either the network thread's recheck after setting its flag sees the message or this
+// sees the flag (the protocol of wake_venue in live/venue_slot.cpp).
+void GatewayClient::wake_venue(void* ctx, VenueId v) noexcept {
+  auto* c = static_cast<GatewayClient*>(ctx);
+  if (v.value < c->wake_count_)
+    gw::wake_if_blocked(c->page_->net[v.value].flag, c->wake_fds_[v.value]);
 }
 
 bool GatewayClient::connected() noexcept {

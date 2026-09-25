@@ -45,13 +45,15 @@ void Waker::wait(Duration timeout) noexcept {
     ts.tv_sec = timeout.ns / 1'000'000'000;
     ts.tv_nsec = timeout.ns % 1'000'000'000;
     // Returns at once (EAGAIN) when a producer already took the flag.
-    ::syscall(SYS_futex, &flag_.word(), FUTEX_WAIT_PRIVATE, 1, &ts, nullptr, 0);
+    ::syscall(
+        SYS_futex, &flag_->word(), shared_ ? FUTEX_WAIT : FUTEX_WAIT_PRIVATE, 1, &ts, nullptr, 0);
   }
-  flag_.clear();
+  flag_->clear();
 }
 
 void Waker::wake_one() noexcept {
-  ::syscall(SYS_futex, &flag_.word(), FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
+  ::syscall(
+      SYS_futex, &flag_->word(), shared_ ? FUTEX_WAKE : FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
 }
 
 int lock_all_memory() noexcept {

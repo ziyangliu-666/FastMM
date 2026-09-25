@@ -17,7 +17,7 @@ The socket is `<journal_dir>/<engine name>.gw`, `AF_UNIX` `SOCK_SEQPACKET`, mode
 2. points the venue's market data and order events at them,
 3. asks every book for a fresh snapshot (nasdaq_itch cannot, so its books wait for the next resync),
 4. reconciles: the account's executions since the strategy's last stored fill, then the open orders,
-5. answers with the instrument table and the ring paths.
+5. answers with the instrument table, the ring paths and, as descriptors, a wake page and its reactors' eventfds (see [Latency](#latency)).
 
 The strategy restores its previous position from its own store, as `fastmm-live` does on a restart ([What survives a restart](running-in-production.md#1-what-survives-a-restart)); the execution replay in step 4 books what happened since. One strategy at a time: a second attach is refused while one is attached.
 
@@ -29,7 +29,14 @@ A strategy that stops cleanly cancels its own quotes through the gateway first a
 
 ## Latency
 
-No wake-up crosses the process boundary yet. The gateway's network threads look at the strategy's order ring on every loop iteration, and the engine polls the market-data ring. With `spin_mode = "adaptive"` either side can be blocked when a message arrives and picks it up within 1 ms; use `spin_mode = "busy"` in both processes where latency matters. Each order is copied once more, from the shared ring into the venue's own ring.
+With `spin_mode = "adaptive"` an idle side blocks, and the other wakes it as threads wake each other inside `fastmm-live`: the engine sleeps on a futex in a page it shares with the gateway, and the gateway's network threads sleep in their reactors, whose eventfds the strategy receives on attach. A wake-up costs a system call only while the other side sleeps. Each order is copied once more, from the shared ring into the venue's own ring.
+
+Tick-to-trade against the simulator (`scripts/bench-gateway.sh`, 45 s x 3 runs, WSL2, unpinned), p50 in µs:
+
+| `spin_mode` | engine, in-process | engine, gateway | wire, in-process | wire, gateway |
+| --- | --- | --- | --- | --- |
+| `adaptive` | 34.8 | 36.9 | 66.4 | 70.3 |
+| `busy` | 7.2-7.7 | 7.9-9.2 | 41.0 | 43.0 |
 
 ## Not yet
 
