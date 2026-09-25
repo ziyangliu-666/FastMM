@@ -15,22 +15,6 @@ FixedString<40> decimal_id(std::uint64_t v) noexcept {
   return s;
 }
 
-// qty resting at `px` in a sorted L2Book side (worst..best order), 0 if absent.
-Qty level_qty(const L2Book<256>& book, Side side, Price px) noexcept {
-  const auto& v = book.raw(side);
-  std::size_t lo = 0;
-  std::size_t hi = v.size();
-  while (lo < hi) {
-    const std::size_t mid = lo + (hi - lo) / 2;
-    if (better(side, px, v[mid].price)) {
-      lo = mid + 1;
-    } else {
-      hi = mid;
-    }
-  }
-  return (lo < v.size() && v[lo].price == px) ? v[lo].qty : Qty{};
-}
-
 Timestamp venue_time(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
@@ -388,28 +372,8 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
 }
 
 void SimTransport::queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept {
-  const InstrumentId id = d.hdr.instrument;
-  L2Book<256>& book = mirror_[id.value];
-  if (d.is_snapshot()) {
-    book.apply_delta(d);
-    // No per-level history across a snapshot: clamp the queue ahead of us to what is shown.
-    queue_.for_each([&](QueuePositionModel::Handle32 h, const QueuedOrder& o) {
-      if (o.instrument != id) return;
-      const Qty shown = level_qty(book, o.side, o.price);
-      if (shown < o.ahead) queue_.get(h).ahead = shown;
-    });
-    static_cast<void>(now);
-    return;
-  }
-  for (Side s : {Side::Buy, Side::Sell}) {
-    for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
-      const Qty old = level_qty(book, s, l.price);
-      book.apply_level(s, l.price, l.qty);
-      queue_.on_level_change(id, s, l.price, old, l.qty);
-    }
-  }
-  book.set_seq(d.last_update_id);
-  book.set_last_update(now);
+  QueuePositionModel* const models[] = {&queue_};
+  queue_apply_book(mirror_[d.hdr.instrument.value], d, now, models);
 }
 
 void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {

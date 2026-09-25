@@ -11,6 +11,11 @@
 //   trade through (better than our price for the aggressor) fills us completely
 //
 // Orders live in a Pool; iteration is in handle order for determinism.
+//
+// queue_apply_book() is how SimTransport (fill_model = "l2_queue") applies a book message to its
+// mirror of the historical levels and to the model; the fill check (backtest/fill_check.hpp) calls
+// the same function, so both see a journal's book the same way.
+#include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
@@ -21,6 +26,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace fastmm::sim {
 
@@ -165,5 +171,51 @@ class QueuePositionModel {
   Pool<QueuedOrder, kMaxQueuedOrders> pool_;
   OpenHashMap<ClientOrderId, Handle32, kMaxQueuedOrders * 2> by_id_;
 };
+
+// qty resting at `px` in a sorted L2Book side (worst..best order), 0 if absent.
+[[nodiscard]] inline Qty level_qty(const L2Book<256>& book, Side side, Price px) noexcept {
+  const auto& v = book.raw(side);
+  std::size_t lo = 0;
+  std::size_t hi = v.size();
+  while (lo < hi) {
+    const std::size_t mid = lo + (hi - lo) / 2;
+    if (better(side, px, v[mid].price)) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return (lo < v.size() && v[lo].price == px) ? v[lo].qty : Qty{};
+}
+
+// Applies a book message to `book` and moves the queue position of every order of `models` on
+// that instrument. A delta shrinks `ahead` level by level (on_level_change); a snapshot carries
+// no per-level history, so it only clamps `ahead` to what the new book shows.
+inline void queue_apply_book(L2Book<256>& book,
+                             const BookDeltaMsg& d,
+                             Timestamp now,
+                             std::span<QueuePositionModel* const> models) noexcept {
+  const InstrumentId id = d.hdr.instrument;
+  if (d.is_snapshot()) {
+    book.apply_delta(d);
+    for (QueuePositionModel* q : models) {
+      q->for_each([&](QueuePositionModel::Handle32 h, const QueuedOrder& o) {
+        if (o.instrument != id) return;
+        const Qty shown = level_qty(book, o.side, o.price);
+        if (shown < o.ahead) q->get(h).ahead = shown;
+      });
+    }
+    return;
+  }
+  for (Side s : {Side::Buy, Side::Sell}) {
+    for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
+      const Qty old = level_qty(book, s, l.price);
+      book.apply_level(s, l.price, l.qty);
+      for (QueuePositionModel* q : models) q->on_level_change(id, s, l.price, old, l.qty);
+    }
+  }
+  book.set_seq(d.last_update_id);
+  book.set_last_update(now);
+}
 
 }  // namespace fastmm::sim
