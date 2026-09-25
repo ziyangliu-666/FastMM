@@ -150,6 +150,22 @@ TEST_CASE("slow.publish: updates reach the ring numbered, and none after close")
   CHECK_FALSE(ch.publish(inst, fields, values));
 }
 
+TEST_CASE("slow.publish: the notify function runs after each update the sink accepted") {
+  SlowChannel ch(small(4, 8));
+  int notified = 0;
+  ch.set_notify([&] { ++notified; });
+  CHECK(ch.publish(instrument(0), {}, {}));
+  CHECK(notified == 1);
+  ch.set_param_sink(
+      ParamSink{nullptr, [](void*, const ParamUpdateMsg&) noexcept { return false; }});
+  CHECK_FALSE(ch.publish(instrument(0), {}, {}));
+  CHECK(notified == 1);  // refused: nothing to wake the engine for
+  ch.set_notify({});
+  ch.set_param_sink(ParamSink::to_ring(ch.param_ring()));
+  CHECK(ch.publish(instrument(0), {}, {}));
+  CHECK(notified == 1);
+}
+
 TEST_CASE("slow.fills_capacity: from the order rate limit and the longest undrained time") {
   CHECK(slow_fills_capacity(0, seconds(10)) == 65'536);  // 4 * 1000 * 11
   CHECK(slow_fills_capacity(5, seconds(1)) == 4'096);

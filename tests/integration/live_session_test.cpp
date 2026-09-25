@@ -29,6 +29,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -86,6 +87,8 @@ struct HotSession {
   live::LiveStrategy strategy;
   HotStrategy* hot = nullptr;
   std::uint64_t param_updates = 0;
+  std::vector<bool> wakers;             // set_waker calls: true = a function, false = cleared
+  std::atomic<std::uint64_t> wakes{0};  // publishes that woke the engine
   bool failed = false;
   HotError error{};
 
@@ -109,6 +112,18 @@ struct HotSession {
     strategy.params = &table.schema();
     strategy.meta = "class=tests:HotSession\n";
     strategy.inputs.push_back(slow ? &slow->param_ring() : &ring);
+    strategy.set_waker = [this](std::function<void()> wake) {
+      wakers.push_back(static_cast<bool>(wake));
+      if (!slow) return;
+      if (!wake) {
+        slow->set_notify({});
+        return;
+      }
+      slow->set_notify([this, wake = std::move(wake)] {
+        wakes.fetch_add(1, std::memory_order_relaxed);
+        wake();
+      });
+    };
     strategy.make = [this](RunnerDeps& deps) {
       std::unique_ptr<IEngineRunner> runner =
           live::make_live_runner<HotStrategy>(TransportKind::Live, deps);
@@ -299,6 +314,9 @@ TEST_CASE("live session: the engine feeds a slow channel and a call past its tim
   CHECK(s.slow->failure() == SlowFailure::Timeout);
   CHECK(s.slow->published() == 100);
   CHECK(s.param_updates == 100);
+  // Every publish woke the engine, and the session took the waker back before it returned.
+  CHECK(s.wakes.load() == 100);
+  CHECK(s.wakers == std::vector<bool>{true, false});
   CHECK(stopped_after < std::chrono::seconds(10));
   CHECK(live::slow_failure_cause(SlowFailure::Timeout) ==
         "slow tier failed (Timeout): a slow method ran past its timeout");

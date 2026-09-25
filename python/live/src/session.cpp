@@ -230,6 +230,7 @@ py::tuple run(const std::string& path,
       ls.params = &table->schema();
       ls.meta = meta;
       ls.inputs.push_back(&ch->param_ring());
+      ls.set_waker = [ch](std::function<void()> wake) { ch->set_notify(std::move(wake)); };
       ls.make = [&](RunnerDeps& deps) {
         std::unique_ptr<IEngineRunner> runner =
             live::make_live_runner<HotStrategy>(TransportKind::Live, deps);

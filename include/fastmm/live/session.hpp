@@ -54,6 +54,10 @@ struct LiveStrategy {
   std::string meta;                     // the journal's strategy metadata (`key=value` lines)
   // Rings the engine polls besides the venues' (parameter updates); the caller keeps them alive.
   std::vector<MsgRing*> inputs;
+  // Called with a function that wakes the engine, before the session's threads start, and with an
+  // empty one before the session returns. With spin_mode = "adaptive" an idle engine blocks; a
+  // producer on `inputs` calls the function after each push, or its message waits up to 1 ms.
+  std::function<void(std::function<void()> wake)> set_waker;
   // Builds the runner on `deps` (deps.backend is a LiveBackend) on the calling thread, after the
   // venues' reference data has loaded and before any session thread starts. An exception or
   // nullptr gives kExitConfig.

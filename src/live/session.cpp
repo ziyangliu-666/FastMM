@@ -723,6 +723,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
   }
+  // Destroyed before `feed`, on every return: the caller's producers stop waking it first.
+  struct WakerGuard {
+    const live::LiveStrategy* s;
+    ~WakerGuard() {
+      if (s != nullptr && s->set_waker) s->set_waker({});
+    }
+  } waker_guard{custom};
+  if (custom != nullptr && custom->set_waker) custom->set_waker([&feed] { feed.notify(); });
   Wake wake_ctx{&slots, cfg.spin_mode() == SpinMode::Busy};
   net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
   static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, net_backend));  // validated

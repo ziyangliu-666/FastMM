@@ -13,8 +13,8 @@ lock-free posted-task check; no EAGAIN read after a short WebSocket read (TLS to
 scan over live orders only; an idle adaptive engine blocks on a futex (tick-to-trade p99 ~155 → ~75
 µs); adaptive network threads spin 200 µs after activity (wire-to-wire p50 ~72 → ~56 µs); idle
 journal and log sinks back off (≈8000 → ≈100-900 wake-ups/s). Not ported: epoll once per µs (saves
-CPU, adds latency). Open: feed producers outside the session don't signal an adaptive engine, so
-after a quiet spell their messages can wait up to 1 ms.
+CPU, adds latency). Producers on a caller's input rings (the Python slow tier)
+wake it too, through `LiveStrategy::set_waker`.
 
 ## 2026-09-25: the weekly CI matrix
 

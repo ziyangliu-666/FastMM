@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -41,6 +42,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace fastmm {
 
@@ -189,6 +191,11 @@ class SlowChannel {
     const std::lock_guard<std::mutex> lock(mutex_);
     sink_ = sink;
   }
+  // Called after each update the sink accepted (live::LiveStrategy::set_waker); empty: none.
+  void set_notify(std::function<void()> notify) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    notify_ = std::move(notify);
+  }
 
   // Sends one validated update: `fields` and `values` are schema indices and raw values, `inst` one
   // instrument or ParamUpdateMsg::kAllInstruments. Throws std::invalid_argument when the sizes
@@ -217,6 +224,7 @@ class SlowChannel {
       return false;
     }
     ++seq_;
+    if (notify_) notify_();
     return true;
   }
   // Later publishes return false (the session has stopped).
@@ -460,6 +468,7 @@ class SlowChannel {
   std::uint64_t seq_ = 0;
   std::uint64_t refused_ = 0;
   bool closed_ = false;
+  std::function<void()> notify_;
 };
 
 }  // namespace fastmm
