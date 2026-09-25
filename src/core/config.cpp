@@ -250,6 +250,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                                         "instruments",
                                                         "strategy",
                                                         "risk",
+                                                        "gateway",
                                                         "logging",
                                                         "sim",
                                                         "backtest",
@@ -480,6 +481,14 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "stp", r.stp);
   }
 
+  // [gateway]
+  if (const auto* t = doc["gateway"].as_table()) {
+    validate_table(*t, "gateway", cfg.warnings);
+    get(*t, "orders_per_sec", cfg.gateway.orders_per_sec);
+    get(*t, "burst", cfg.gateway.burst);
+    get_decimal(*t, "max_open_notional", cfg.gateway.max_open_notional);
+  }
+
   // [logging]
   if (const auto* t = doc["logging"].as_table()) {
     validate_table(*t, "logging", cfg.warnings);
@@ -646,6 +655,12 @@ std::string Config::redacted() const {
   kv("orders_per_sec", risk.orders_per_sec);
   kv("burst", risk.burst);
   kv("stp", risk.stp);
+  if (gateway.orders_per_sec != 0 || gateway.burst != 0 || !gateway.max_open_notional.empty()) {
+    out += "\n[gateway]\n";
+    kv("orders_per_sec", gateway.orders_per_sec);
+    kv("burst", gateway.burst);
+    if (!gateway.max_open_notional.empty()) kq("max_open_notional", gateway.max_open_notional);
+  }
   out += "\n[logging]\n";
   kq("level", logging.level);
   if (!logging.file.empty()) kq("file", logging.file);
@@ -803,6 +818,15 @@ std::string Config::effective_toml() const {
   r.insert("burst", static_cast<std::int64_t>(risk.burst));
   r.insert("stp", risk.stp);
   root.insert("risk", std::move(r));
+
+  // Only when set, so a configuration without it keeps its effective text and hash.
+  if (gateway.orders_per_sec != 0 || gateway.burst != 0 || !gateway.max_open_notional.empty()) {
+    toml::table g;
+    g.insert("orders_per_sec", static_cast<std::int64_t>(gateway.orders_per_sec));
+    g.insert("burst", static_cast<std::int64_t>(gateway.burst));
+    g.insert("max_open_notional", gateway.max_open_notional);
+    root.insert("gateway", std::move(g));
+  }
 
   toml::table lg;
   lg.insert("level", logging.level);

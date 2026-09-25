@@ -45,7 +45,8 @@ inline bool emit_trade_history_fill(EventSink& sink,
                      *qty,
                      fee,
                      fee_asset,
-                     t.is_maker ? Liquidity::Maker : Liquidity::Taker);
+                     t.is_maker ? Liquidity::Maker : Liquidity::Taker,
+                     t.time_ms);
   return true;
 }
 

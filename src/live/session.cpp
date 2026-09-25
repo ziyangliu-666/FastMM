@@ -504,6 +504,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
 
   VenueSlots slots;
   std::unique_ptr<GatewayClient> gateway;
+  std::vector<InstrumentId> not_mine;  // attached: the instruments other strategies trade
   std::vector<std::string> venue_names;
   std::uint64_t replace_venues = 0;  // bit v: venue v trades with cancel-replace (journal header)
   // What the previous session left behind, read before the venues attach so its positions can be
@@ -527,6 +528,18 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     GatewayAttachRequest req;
     req.engine = cfg.engine.name;
     req.blocks = cfg.spin_mode() == SpinMode::Adaptive;
+    // What this strategy trades: its own [[instruments]]. The gateway's table holds every
+    // instrument of the account; the others stay disabled here.
+    for (const InstrumentSection& in : cfg.instruments) {
+      if (in.enabled) req.instruments.emplace_back(in.venue, in.symbol);
+    }
+    if (req.instruments.empty()) {
+      std::fprintf(stderr,
+                   "%s: no enabled [[instruments]]: a strategy attached to a gateway names the "
+                   "instruments it trades there\n",
+                   prog);
+      return kExitConfig;
+    }
     if (previous && cfg.engine.restore_position) {
       req.exec_since_ms = restore_since_ms(*previous);
       req.resume_executions = req.exec_since_ms > 0;
@@ -540,12 +553,30 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     instruments = gateway->instruments();
     for (const GatewayVenue& v : gateway->venues()) venue_names.push_back(v.name);
+    // Another strategy's instruments: their market data arrives here, their quotes are pulled
+    // below and risk refuses any order on them (InstrumentDisabled), as the gateway would.
+    std::size_t mine = 0;
+    for (std::uint32_t k = 0; k < instruments.size(); ++k) {
+      Instrument& inst = instruments.get(InstrumentId{k});
+      const std::string_view venue = venue_names[inst.venue.value];
+      bool claimed = false;
+      for (const auto& [v, sym] : req.instruments)
+        claimed = claimed || (v == venue && sym == inst.symbol.view());
+      if (claimed) {
+        ++mine;
+      } else {
+        inst.flags = static_cast<std::uint8_t>(inst.flags & ~Instrument::kEnabled);
+        not_mine.push_back(inst.id);
+      }
+    }
     FASTMM_LOG_INFO(
-        "gateway: attached to {} (attachment {}): {} venue(s), {} instrument(s) with the "
-        "gateway's reference data",
+        "gateway: attached to {} (attachment {}, session epoch {}): {} venue(s), {} of {} "
+        "instrument(s) traded here, with the gateway's reference data",
         opts.gateway_path,
         gateway->attach_id(),
+        gateway->session_epoch(),
         venue_names.size(),
+        mine,
         instruments.size());
     if (instruments.size() == 0) {
       std::fprintf(stderr, "%s: the gateway has no instruments\n", prog);
@@ -669,6 +700,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
           },
           [](std::size_t, std::int64_t, const std::vector<std::string>&) {});
     }
+    // The strategy is not asked to quote what another attachment trades (a scoped pull, as
+    // `fastmm-ctl pull --instrument` sends it; journaled like any control message).
+    for (const InstrumentId id : not_mine) {
+      ControlMsg m{};
+      init_header(m, EventType::Control, id, instruments.get(id).venue);
+      m.command = ControlCommand::PullQuotes;
+      if (!control_ring.try_push(&m, m.hdr.len))
+        FASTMM_LOG_ERROR("control ring full: an instrument of another strategy stays quotable");
+    }
   } else {
     if (previous && cfg.engine.restore_position) {
       std::vector<RestoreVenue> rv;
@@ -695,8 +735,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   RunnerDeps deps;
   deps.engine.session_id = static_cast<std::uint64_t>(wall_now().ns);
   deps.engine.rng_seed = cfg.engine.rng_seed;
-  // Best effort: SessionEpochStore reports its own error if the file cannot be written.
-  if (const std::filesystem::path epoch(cfg.engine.epoch_file); epoch.has_parent_path()) {
+  // Attached: the gateway gave this session its epoch, unique among the strategies trading on its
+  // venues. Otherwise the epoch file's next. Best effort: SessionEpochStore reports its own error
+  // if the file cannot be written.
+  if (const std::filesystem::path epoch(cfg.engine.epoch_file);
+      !gateway && epoch.has_parent_path()) {
     std::error_code ec;
     std::filesystem::create_directories(epoch.parent_path(), ec);
     if (ec) {
@@ -708,7 +751,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   bool epoch_wrapped = false;
-  const auto epoch = SessionEpochStore::next_epoch(cfg.engine.epoch_file, &epoch_wrapped);
+  const auto epoch = gateway ? Result<std::uint16_t, std::string>(gateway->session_epoch())
+                             : SessionEpochStore::next_epoch(cfg.engine.epoch_file, &epoch_wrapped);
   if (!epoch) {
     // Fail closed: without a fresh epoch this session would reuse another one's client order ids.
     std::fprintf(stderr, "%s: %s\n", prog, epoch.error().c_str());

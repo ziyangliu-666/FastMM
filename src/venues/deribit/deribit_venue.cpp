@@ -1273,7 +1273,8 @@ void DeribitVenue::handle_executions_response(std::size_t i, std::string_view js
                            t.qty,
                            t.fee,
                            t.fee_asset,
-                           t.liquidity);
+                           t.liquidity,
+                           t.timestamp_ms);
         ++stats_.order_events;
         ++stats_.executions_fetched;
         ++count;

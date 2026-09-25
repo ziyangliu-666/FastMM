@@ -165,6 +165,13 @@ struct RiskSection {
   bool stp = true;
 };
 
+// fastmm-gateway's account guards: one venue's account, shared by every attached strategy.
+struct GatewaySection {
+  int orders_per_sec = 0;         // new orders and replaces per venue, 0 = off
+  int burst = 0;                  // token-bucket capacity, 0 = orders_per_sec
+  std::string max_open_notional;  // notional working at a venue, decimal; empty = off
+};
+
 struct LoggingSection {
   std::string level = "info";
   std::string file;
@@ -201,6 +208,7 @@ class Config {
   std::vector<InstrumentSection> instruments;
   StrategySection strategy;
   RiskSection risk;
+  GatewaySection gateway;
   LoggingSection logging;
   GenericSection sim;
   GenericSection backtest;

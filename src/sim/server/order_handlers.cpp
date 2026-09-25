@@ -370,6 +370,12 @@ void Impl::apply_fill(const SimOrder& o, Price px, Qty qty, bool maker, std::uin
   ++stats_.fills;
   ++stats_.fills_since_mark;
   stats_.fees += fee;
+  if (stats_.symbol_positions.size() < symbols_.size()) {
+    stats_.symbol_positions.resize(symbols_.size());
+    stats_.symbol_fills.resize(symbols_.size());
+  }
+  stats_.symbol_positions[r->symbol] += r->side == Side::Buy ? qty : -qty;
+  ++stats_.symbol_fills[r->symbol];
   if (r->symbol == 0) {
     stats_.cash_flow += r->side == Side::Buy ? -(notional + fee) : notional - fee;
     stats_.position += r->side == Side::Buy ? qty : -qty;

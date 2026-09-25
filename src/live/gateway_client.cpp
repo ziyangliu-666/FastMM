@@ -140,7 +140,10 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
     return fail("connect " + path + ": " + std::strerror(errno));
 
   const std::size_t known = std::min<std::size_t>(req.known_exec_ids.size(), gw::kMaxKnownExecIds);
-  std::vector<std::byte> out(sizeof(gw::AttachRequest) + known * sizeof(gw::ExecId));
+  if (req.instruments.size() > kMaxInstruments) return fail("too many instruments to claim");
+  const std::size_t claims = req.instruments.size();
+  std::vector<std::byte> out(sizeof(gw::AttachRequest) + known * sizeof(gw::ExecId) +
+                             claims * sizeof(gw::InstrumentClaim));
   gw::AttachRequest r{};
   r.hdr = gw::Header{gw::kMagic,
                      gw::kVersion,
@@ -153,11 +156,19 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
             (req.blocks ? gw::kStrategyBlocks : 0U);
   r.exec_since_ms = req.exec_since_ms;
   r.known_count = static_cast<std::uint32_t>(known);
+  r.claim_count = static_cast<std::uint32_t>(claims);
   std::memcpy(out.data(), &r, sizeof r);
   for (std::size_t i = 0; i < known; ++i) {
     gw::ExecId id{};
     to_field(id.id, req.known_exec_ids[i]);
     std::memcpy(out.data() + sizeof r + i * sizeof id, &id, sizeof id);
+  }
+  std::byte* claim_at = out.data() + sizeof r + known * sizeof(gw::ExecId);
+  for (std::size_t i = 0; i < claims; ++i) {
+    gw::InstrumentClaim cl{};
+    to_field(cl.venue, req.instruments[i].first);
+    to_field(cl.symbol, req.instruments[i].second);
+    std::memcpy(claim_at + i * sizeof cl, &cl, sizeof cl);
   }
   if (::send(c->fd_, out.data(), out.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(out.size()))
     return fail(std::string("send attach request: ") + std::strerror(errno));
@@ -167,18 +178,22 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   if (pr == 0) return fail("the gateway did not answer the attach request");
   if (pr < 0) return fail(std::string("poll: ") + std::strerror(errno));
   std::vector<std::byte> in(gw::kMaxDatagram);
-  int fds[9];
+  int fds[10];
   std::size_t nfds = 0;
-  const ssize_t n = gw::recv_with_fds(c->fd_, in.data(), in.size(), fds, 9, &nfds);
+  const ssize_t n = gw::recv_with_fds(c->fd_, in.data(), in.size(), fds, 10, &nfds);
   // Owned by the client from here on, so every failure below closes them.
-  if (nfds > 0) {
+  if (nfds >= 2) {
     c->page_ = gw::map_wake_page(fds[0]);
+    c->net_page_ = gw::map_wake_page(fds[1]);
     ::close(fds[0]);
-    if (c->page_ == nullptr) {
-      for (std::size_t i = 1; i < nfds; ++i) ::close(fds[i]);
-      return fail(std::string("cannot map the gateway's wake page: ") + std::strerror(errno));
+    ::close(fds[1]);
+    if (c->page_ == nullptr || c->net_page_ == nullptr) {
+      for (std::size_t i = 2; i < nfds; ++i) ::close(fds[i]);
+      return fail(std::string("cannot map the gateway's wake pages: ") + std::strerror(errno));
     }
-    for (std::size_t i = 1; i < nfds; ++i) c->wake_fds_[c->wake_count_++] = fds[i];
+    for (std::size_t i = 2; i < nfds; ++i) c->wake_fds_[c->wake_count_++] = fds[i];
+  } else {
+    for (std::size_t i = 0; i < nfds; ++i) ::close(fds[i]);
   }
   if (n <= 0) return fail("the gateway closed the connection without answering");
   if (static_cast<std::size_t>(n) < sizeof(gw::AttachReply)) return fail("short attach reply");
@@ -203,8 +218,10 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
     return fail("attach reply names too many venues or instruments");
   if (c->page_ == nullptr || c->wake_count_ != rep.venue_count)
     return fail("the attach reply carries " + std::to_string(nfds) + " descriptor(s), expected " +
-                std::to_string(rep.venue_count + 1));
+                std::to_string(rep.venue_count + 2));
+  if (rep.session_epoch == 0) return fail("the gateway gave no session epoch");
   c->attach_id_ = rep.attach_id;
+  c->epoch_ = rep.session_epoch;
   c->gateway_blocks_ = (rep.flags & gw::kGatewayBlocks) != 0;
   const std::byte* p = in.data() + sizeof rep;
   for (std::uint32_t i = 0; i < rep.venue_count; ++i, p += sizeof(gw::VenueInfo)) {
@@ -243,6 +260,7 @@ GatewayClient::~GatewayClient() {
   close();
   for (std::size_t i = 0; i < wake_count_; ++i) ::close(wake_fds_[i]);
   gw::unmap_wake_page(page_);
+  gw::unmap_wake_page(net_page_);
 }
 
 // The engine published into the outbound ring first (a release store); take() is a locked
@@ -251,7 +269,7 @@ GatewayClient::~GatewayClient() {
 void GatewayClient::wake_venue(void* ctx, VenueId v) noexcept {
   auto* c = static_cast<GatewayClient*>(ctx);
   if (v.value < c->wake_count_)
-    gw::wake_if_blocked(c->page_->net[v.value].flag, c->wake_fds_[v.value]);
+    gw::wake_if_blocked(c->net_page_->net[v.value].flag, c->wake_fds_[v.value]);
 }
 
 bool GatewayClient::connected() noexcept {

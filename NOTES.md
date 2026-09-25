@@ -48,16 +48,21 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    gateway_test.cpp`: kill -9 of the strategy leaves no open order at the simulator 5-10 ms later,
    md/api sessions opened stay the same, the next strategy restores, trades, and its stored
    position equals the venue's.
-4. Several strategies per gateway. Design:
-   * The gateway hands out the session epoch on attach (it owns the epoch file), so epochs are
-     unique across strategies. Every client order id already carries its epoch in the high bits,
-     so the gateway routes each order event to the attachment that owns that epoch; a snapshot row
-     of an epoch no one owns is a dead session's order and the gateway cancels it itself.
-   * An instrument is owned by at most one attached strategy (attach names the instruments it
-     trades; a clash is refused). Market data goes to every attachment. This keeps an account-level
-     position report (USD-M `positionRisk`) attributable; sharing an instrument is a later problem.
-   * Account-level limits (gross/net notional across strategies, the venue's order-rate budget)
-     are checked in the gateway, where every order passes, before it reaches the connector.
+4. ~~Several strategies per gateway~~ Done (2026-09-26, up to 16). The gateway hands out epochs
+   from its epoch file; attach names the instruments, a clash is refused. The sinks write into
+   local rings drained on every commit: md to every attachment (a full ring drops for that one
+   only; it then gets its own Resyncing), order events by the epoch in the id, dead-epoch fills and
+   Position records to the instrument's owner, a snapshot to whoever asked with its own rows and
+   its own watermark (`SentWatermark` now keeps the last id taken, the same as the highest for one
+   engine, which locates the snapshot in the gateway's forwarding history). Dead rows and late
+   dead acks are cancelled by the gateway; detach cancels its epoch one order at a time
+   (connectors only have venue-wide cancel_all) and sweeps. `[gateway]` guards the order rate and
+   open-order notional per venue, not positions (the gateway does not know the account's).
+   `gateway_multi_test.cpp` (BTCUSDT and BTCUSDC on the simulator): stores agree per symbol, no
+   journal holds another epoch's event, kill -9 clears one strategy in 5 ms and the other's
+   orders stay. Single strategy vs the step-3 build, release, 45 s x 2: adaptive engine/wire p50
+   36.9/70.3 us both; busy 8.7/43.0 vs 7.9-8.7/43.0-44.9. Left: two strategies on one
+   instrument; positions and loss across strategies.
 
 ## 2026-09-25: an execution was booked twice after a long session
 

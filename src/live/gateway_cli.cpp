@@ -1,4 +1,4 @@
-// fastmm::cli::gateway: runs the venues of a configuration and lets one strategy process at a time
+// fastmm::cli::gateway: runs the venues of a configuration and lets strategy processes attach and
 // trade through them (fastmm-live --gateway <socket>).
 #include "command_line.hpp"
 
@@ -20,11 +20,12 @@ namespace fastmm::cli {
 namespace {
 
 constexpr const char* kFooter =
-    "Reads the same configuration as fastmm-live: [engine] (name, journal_dir, spin_mode,\n"
-    "net_cpus, ring sizes), [venues.*] and [[instruments]]. A strategy attaches with\n"
-    "fastmm-live --gateway <socket>. When its process exits or dies, the gateway cancels\n"
-    "every open order on every venue and waits for the next one; the venue connections\n"
-    "stay up. SIGINT/SIGTERM cancels all open orders and exits.\n"
+    "Reads the same configuration as fastmm-live: [engine] (name, journal_dir, epoch_file,\n"
+    "spin_mode, net_cpus, ring sizes), [venues.*], [[instruments]] (every instrument of\n"
+    "every strategy) and [gateway]. Strategies attach with fastmm-live --gateway <socket>,\n"
+    "several at once, each trading instruments no other attached strategy trades. When\n"
+    "one exits or dies, the gateway cancels its orders; the others and the venue\n"
+    "connections stay up. SIGINT/SIGTERM cancels all open orders and exits.\n"
     "\n"
     "Exit codes:\n"
     "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"

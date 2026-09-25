@@ -792,6 +792,7 @@ TEST_CASE("bybit.venue: a fill the private stream missed is booked from executio
     CHECK(f->fee == Notional::from_decimal("0.0000004").value());
     CHECK(f->fee_asset == FeeAsset::Base);
     CHECK(f->liquidity == Liquidity::Maker);
+    CHECK(f->hdr.exch_ts == Timestamp{kT * 1'000'000});  // the execution's own time
     // The fill is in before the snapshot that no longer names its order.
     std::size_t fill_at = 0;
     std::size_t begin_at = 0;

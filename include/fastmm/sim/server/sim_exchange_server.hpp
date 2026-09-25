@@ -74,6 +74,10 @@ struct SimServerStats {
   Qty max_order_qty{};
   Qty position{};          // net filled base quantity on the first symbol
   Qty max_abs_position{};  // largest |position| seen
+  // Per symbol, in SimServerConfig::symbols order (empty before the first fill): net filled base
+  // quantity and fills.
+  std::vector<Qty> symbol_positions;
+  std::vector<std::uint64_t> symbol_fills;
   Notional fees{};
   Notional cash_flow{};  // quote received minus paid (fees included), first symbol
   Notional pnl{};        // cash_flow + position marked at the first symbol's mid

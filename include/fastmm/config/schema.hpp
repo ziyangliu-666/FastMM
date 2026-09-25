@@ -387,6 +387,24 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Bool,
      false,
      "self-trade prevention against our own resting orders (default true)"},
+    // [gateway]
+    {"gateway",
+     "orders_per_sec",
+     KeyType::Int,
+     false,
+     "fastmm-gateway: new orders and replaces per second per venue, over every attached strategy "
+     "(default 0: off)"},
+    {"gateway",
+     "burst",
+     KeyType::Int,
+     false,
+     "fastmm-gateway: token-bucket capacity of orders_per_sec, orders (default orders_per_sec)"},
+    {"gateway",
+     "max_open_notional",
+     KeyType::Any,
+     false,
+     "fastmm-gateway: refuse an order that would take the notional working at its venue, over "
+     "every attached strategy and both sides, past this; settlement currency, decimal"},
     // [logging]
     {"logging",
      "level",

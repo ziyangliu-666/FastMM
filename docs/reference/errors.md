@@ -74,6 +74,16 @@ Cancels skip every check, including the kill switch, so the engine can always re
 | 37 | `NotReconciled` | never produced by the current code |
 | 38 | `InvalidTag` | `ctx.send` used a `user_tag` inside the quote manager's reserved range |
 
+### Gateway
+
+A strategy attached to `fastmm-gateway` gets these back from the gateway's account guards ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)); the order never reached the connector.
+
+| Value | Name | Cause |
+|---:|---|---|
+| 48 | `GatewayRateLimit` | `[gateway] orders_per_sec`, `burst`: the venue's order rate, shared by every attached strategy |
+| 49 | `GatewayOpenNotional` | `[gateway] max_open_notional`: the notional working at the venue, over every attached strategy |
+| 50 | `GatewayNotOwner` | the order's instrument is not one this strategy claimed when it attached |
+
 ### Venue-originated
 
 The connectors map each venue's error codes onto these (`*_error_map.hpp` per venue; the code tables are on [Venue connectors](venues.md)).

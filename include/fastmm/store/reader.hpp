@@ -62,11 +62,15 @@ struct Recovery {
   };
   std::vector<PositionState> position_state;
   // Local time of the session's last recorded fill (0: it recorded none), and the venue trade ids
-  // of its fills in the kResumeOverlapNs before it: an execution replay that starts a little early
-  // to absorb clock differences skips these rather than booking them twice.
+  // of its fills in the kRecentIdsNs before it: an execution replay that starts kResumeOverlapNs
+  // early to absorb clock differences skips these rather than booking them twice. The ids reach
+  // further back than the replay does, because the replay start is local time and the venue
+  // compares it with its own: an engine clock behind the venue's (a WSL2 host clock step) moves
+  // the start earlier in venue terms, and fills just after it would be booked again.
   std::int64_t last_fill_ns = 0;
   std::vector<std::string> recent_exec_ids;
   static constexpr std::int64_t kResumeOverlapNs = 10'000'000'000;  // 10 s
+  static constexpr std::int64_t kRecentIdsNs = 2 * kResumeOverlapNs;
 };
 
 class Reader {
