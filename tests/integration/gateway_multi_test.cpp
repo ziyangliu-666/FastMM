@@ -13,7 +13,6 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
-#include <regex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -419,13 +418,21 @@ TEST_CASE("gateway: the open-notional limit refuses an order back to the strateg
   const pid_t b = spawn_strategy(c.b, g);
   // The gateway's once-a-second counters (no assertion inside the predicate: doctest does not
   // nest them).
-  const std::regex counted("refused: rate=0 open_notional=[1-9]");
+  // "refused: rate=0 open_notional=<n>" with n > 0.
+  const auto counted = [](const std::string& text) {
+    const std::string key = "refused: rate=0 open_notional=";
+    for (std::size_t at = text.find(key); at != std::string::npos; at = text.find(key, at + 1)) {
+      const std::size_t d = at + key.size();
+      if (d < text.size() && text[d] >= '1' && text[d] <= '9') return true;
+    }
+    return false;
+  };
   const bool refused = wait_until(
       [&] {
         std::ifstream in(g.log);
         const std::string text((std::istreambuf_iterator<char>(in)),
                                std::istreambuf_iterator<char>());
-        return std::regex_search(text, counted);
+        return counted(text);
       },
       30000);
   CHECK_MESSAGE(refused, "no order refused: " << fastmm::test::read_file(g.log));

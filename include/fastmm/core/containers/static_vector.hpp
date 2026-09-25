@@ -4,6 +4,7 @@
 // near-end edits in the L2 book cost a handful of cycles.
 #include "fastmm/core/config_macros.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -84,7 +85,8 @@ class StaticVector {
     FASTMM_ASSERT(i < size_);
     if (FASTMM_UNLIKELY(i >= size_)) return;
     if (size_ > N) FASTMM_UNREACHABLE();
-    if (i + 1 < size_) std::memmove(data_ + i, data_ + i + 1, (size_ - i - 1) * sizeof(T));
+    // Shifting down: std::copy is defined for this overlap and is a memmove for trivial types.
+    std::copy(data_ + i + 1, data_ + size_, data_ + i);
     --size_;
   }
   // Removes the first element (shifts everything down) - O(n); used when the book is full.

@@ -17,6 +17,8 @@
 #include "fastmm/venues/registry.hpp"
 #include "fastmm/venues/symbology.hpp"
 
+#include <fmt/format.h>
+
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -899,13 +901,13 @@ class Gateway {
       const VenueId vid = cfg_.venue_id(venue);
       const Instrument* inst = vid.valid() ? instruments_.find(vid, symbol) : nullptr;
       if (inst == nullptr) {
-        refuse_attach("instrument " + symbol + " on venue '" + venue +
-                      "' is not in the gateway's configuration");
+        refuse_attach(fmt::format(
+            "instrument {} on venue '{}' is not in the gateway's configuration", symbol, venue));
         return;
       }
       if (const Attachment* other = owner_[inst->id.value]) {
-        refuse_attach("instrument " + symbol + " on venue '" + venue + "' is traded by " +
-                      other->who());
+        refuse_attach(fmt::format(
+            "instrument {} on venue '{}' is traded by {}", symbol, venue, other->who()));
         return;
       }
       if (std::find(owned.begin(), owned.end(), inst->id) == owned.end()) owned.push_back(inst->id);
