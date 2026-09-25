@@ -84,23 +84,43 @@ class SleepFlag {
   std::atomic<std::uint32_t> word_{0};
 };
 
+// A SleepFlag in shared memory is used by two processes at once.
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+
 // SleepFlag with a futex: one consumer blocks in wait(), any number of producers call notify().
 // notify() costs a locked exchange while the consumer is awake and a futex wake-up only while it
 // is blocked.
+//
+// Across processes: share() moves the flag into a MAP_SHARED mapping both processes hold (the
+// gateway's wake page, live/gateway.hpp) and switches to shared futex operations. Each process
+// then has its own Waker over the same word; any of them may notify, one of them waits.
 class Waker {
  public:
-  FASTMM_FORCE_INLINE void prepare_wait() noexcept { flag_.set(); }
-  FASTMM_FORCE_INLINE void cancel_wait() noexcept { flag_.clear(); }
+  Waker() noexcept = default;
+  Waker(const Waker&) = delete;
+  Waker& operator=(const Waker&) = delete;
+
+  // Before any thread uses this Waker. `flag` is a SleepFlag in shared memory that outlives it.
+  void share(SleepFlag* flag) noexcept {
+    flag_ = flag;
+    shared_ = true;
+  }
+  [[nodiscard]] bool shared() const noexcept { return shared_; }
+
+  FASTMM_FORCE_INLINE void prepare_wait() noexcept { flag_->set(); }
+  FASTMM_FORCE_INLINE void cancel_wait() noexcept { flag_->clear(); }
   // After prepare_wait() and a recheck that found no work: blocks until notify() or `timeout`.
   void wait(Duration timeout) noexcept;
   FASTMM_FORCE_INLINE void notify() noexcept {
-    if (flag_.take()) wake_one();
+    if (flag_->take()) wake_one();
   }
-  [[nodiscard]] bool waiting() const noexcept { return flag_.is_set(); }
+  [[nodiscard]] bool waiting() const noexcept { return flag_->is_set(); }
 
  private:
   void wake_one() noexcept;
-  SleepFlag flag_;
+  SleepFlag own_;
+  SleepFlag* flag_ = &own_;
+  bool shared_ = false;
 };
 
 }  // namespace fastmm
