@@ -15,6 +15,7 @@
 #include "fastmm/live/control_socket.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/thread_affinity.hpp"
+#include "fastmm/live/venue_slot.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/store/registry.hpp"
 #include "fastmm/store/store_thread.hpp"
@@ -97,106 +98,6 @@ std::string cpu_list(const std::vector<int>& cpus) {
     s += std::to_string(c);
   }
   return s;
-}
-
-std::size_t ring_size(std::size_t bytes) {
-  return std::bit_ceil(std::max<std::size_t>(bytes, 1U << 16));
-}
-
-// Per-venue plumbing. Heap allocated so addresses stay stable for the sinks/hooks.
-struct VenueSlot {
-  std::unique_ptr<venues::Venue> venue;
-  std::unique_ptr<net::Reactor> reactor;
-  std::unique_ptr<MsgRing> md_ring;
-  std::unique_ptr<MsgRing> order_ring;
-  std::unique_ptr<MsgRing> outbound;
-  venues::EventSink md_sink;
-  venues::EventSink order_sink;
-  std::atomic<bool> wake{false};
-  SleepFlag net_blocked;  // set while an adaptive network thread blocks in the reactor
-  std::atomic<bool> stop{false};
-  std::atomic<std::uint64_t> order_overflows{0};
-  std::thread thread;
-};
-
-struct Wake {
-  std::vector<std::unique_ptr<VenueSlot>>* slots;
-  bool busy;  // [engine] spin_mode = "busy": the network threads never block
-};
-
-// The flag is published after the messages (release; the network thread acquires it). The network
-// thread polls it on every loop iteration, so the eventfd is written only while an adaptive one is
-// blocked in the reactor.
-void wake_venue(void* ctx, VenueId v) noexcept {
-  auto* w = static_cast<Wake*>(ctx);
-  if (v.value >= w->slots->size()) return;
-  VenueSlot& s = *(*w->slots)[v.value];
-  s.wake.store(true, std::memory_order_release);
-  if (!w->busy && s.net_blocked.take()) s.reactor->wake();
-}
-
-void on_order_overflow(void* ctx, const venues::EventSink&) noexcept {
-  static_cast<VenueSlot*>(ctx)->order_overflows.fetch_add(1, std::memory_order_relaxed);
-}
-
-// Adaptive spin: after the last activity the network thread keeps polling for this long before it
-// blocks in the reactor (for at most kNetMaxBlockMs, the cadence of Venue::poll()), so the engine's
-// reaction to an event it just delivered finds the thread awake.
-constexpr std::int64_t kNetSpinNs = 200'000;
-constexpr int kNetMaxBlockMs = 1;
-
-// Busy: poll sockets and the engine's wake flag forever. Adaptive: the same while active and for
-// kNetSpinNs after, then block in the reactor until a socket, timer, posted task or the engine
-// (wake_venue) needs the thread. Events pushed to the engine notify its feed, which wakes the
-// engine only while it is blocked (Engine::block_idle).
-void net_loop(VenueSlot& s, RingFeed& feed, int cpu, std::size_t index, SpinMode spin) {
-  const std::string name = "fm-net-" + std::to_string(index);
-  set_thread_name(name.c_str());
-  pin_to_cpu(cpu);
-  Logger::instance().attach_current_thread();
-  s.venue->connect(*s.reactor);
-  const bool busy = spin == SpinMode::Busy;
-  std::uint64_t pushed = 0;
-  std::int64_t idle_since = 0;  // 0 while active
-  bool block = false;
-  while (!s.stop.load(std::memory_order_relaxed)) {
-    int wait_ms = 0;
-    if (block) {
-      // wake_venue() takes the flag after it set `wake`: either this sees `wake` or it writes the
-      // eventfd.
-      s.net_blocked.set();
-      if (!s.wake.load(std::memory_order_acquire) && !s.stop.load(std::memory_order_acquire))
-        wait_ms = kNetMaxBlockMs;
-    }
-    bool active = s.reactor->run_once(wait_ms) > 0;
-    if (block) s.net_blocked.clear();
-    s.venue->poll();
-    if (s.wake.load(std::memory_order_relaxed) &&
-        s.wake.exchange(false, std::memory_order_acquire)) {
-      s.venue->on_wake();
-      active = true;
-    }
-    if (busy) continue;
-    if (const std::uint64_t p = s.md_sink.pushed() + s.order_sink.pushed(); p != pushed) {
-      pushed = p;
-      feed.notify();
-      active = true;
-    }
-    block = false;
-    if (active) {
-      idle_since = 0;
-    } else if (idle_since == 0) {
-      idle_since = net::Reactor::now_ns();
-    } else if (net::Reactor::now_ns() - idle_since >= kNetSpinNs) {
-      block = true;
-    } else {
-      _mm_pause();
-    }
-  }
-  s.venue->on_wake();  // flush cancels the engine queued during shutdown
-  for (int i = 0; i < 20; ++i) s.reactor->run_once(5);
-  s.venue->disconnect();
-  s.reactor->run_once(0);
 }
 
 // Run-to-completion ([engine] threading = "single"): the engine thread runs the venue's network
@@ -293,29 +194,6 @@ void recalibrate_tsc(TscCalibrator& calibrator,
   last = r.calibration;
 }
 
-void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, bool final) {
-  const std::string_view tag = final ? std::string_view("final ") : std::string_view();
-  if (st.wire_tick_to_trade.count != 0) {
-    FASTMM_LOG_INFO(
-        "[{}] {}order latency: wire_t2t p50={}ns p99={}ns n={} encode p50={}ns send p50={}ns n={}",
-        venue,
-        tag,
-        st.wire_tick_to_trade.p50_ns,
-        st.wire_tick_to_trade.p99_ns,
-        st.wire_tick_to_trade.count,
-        st.order_encode.p50_ns,
-        st.order_send.p50_ns,
-        st.order_send.count);
-  } else if (st.order_send.count != 0) {
-    FASTMM_LOG_INFO("[{}] {}order latency: encode p50={}ns send p50={}ns n={}",
-                    venue,
-                    tag,
-                    st.order_encode.p50_ns,
-                    st.order_send.p50_ns,
-                    st.order_send.count);
-  }
-}
-
 // Log lines carry at most kLogMaxStrBytes of a string argument, so a long breakdown is split over
 // several lines with the same prefix, cut between reasons.
 void log_reject_breakdown(std::string_view kind, const RejectCounts& c) {
@@ -364,27 +242,6 @@ void copy_feed_status(const venues::VenueFeedStatus& f, StatusFeed& out) noexcep
   out.xdp_rx_ring_full = f.xdp_rx_ring_full;
   out.xdp_fill_ring_empty = f.xdp_fill_ring_empty;
   out.xdp_fallback = f.xdp_fallback;
-}
-
-void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool final) {
-  if (f.state == venues::FeedState::None) return;
-  FASTMM_LOG_INFO(
-      "[{}] {}feed={} packets={} a={} b={} gaps={} recovered={} lost={} snapshots={} "
-      "overflows={} book_errors={} kernel_to_t0 p50={}ns p99={}ns",
-      venue,
-      final ? std::string_view("final ") : std::string_view(),
-      to_string(f.state),
-      f.packets,
-      f.line_packets[0],
-      f.line_packets[1],
-      f.gaps,
-      f.recovered,
-      f.unrecovered,
-      f.snapshot_recoveries,
-      f.recovery_overflows,
-      f.book_errors,
-      f.kernel_to_t0.p50_ns,
-      f.kernel_to_t0.p99_ns);
 }
 
 std::string host_name() {
@@ -501,20 +358,6 @@ void restore_positions(const store::Recovery& prev,
     }
     if (can_replay && since_ms > 0) s.venue->resume_executions(since_ms, prev.recent_exec_ids);
   }
-}
-
-const char* short_state(venues::ChannelState s) {
-  switch (s) {
-    case venues::ChannelState::Down:
-      return "down";
-    case venues::ChannelState::Connecting:
-      return "conn";
-    case venues::ChannelState::Live:
-      return "live";
-    case venues::ChannelState::Stale:
-      return "stale";
-  }
-  return "?";
 }
 
 }  // namespace
@@ -642,27 +485,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
 
-  std::vector<std::unique_ptr<VenueSlot>> slots;
+  VenueSlots slots;
   std::uint64_t replace_venues = 0;  // bit v: venue v trades with cancel-replace (journal header)
   venues::VenueFactoryOptions vopts;
   vopts.dry_run = opts.dry_run;
   vopts.record_raw_dir = opts.record_raw_dir;
   vopts.busy_poll = cfg.spin_mode() == SpinMode::Busy;
   if (!vopts.record_raw_dir.empty()) std::filesystem::create_directories(vopts.record_raw_dir);
-  for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
-    auto slot = std::make_unique<VenueSlot>();
-    try {
-      slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vopts);
-    } catch (const std::exception& e) {
-      std::fprintf(stderr, "%s: %s\n", prog, e.what());
-      return kExitConfig;
-    }
-    if (auto r = slot->venue->load_reference_data(instruments); !r) {
-      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
-      return kExitVenue;
-    }
-    slots.push_back(std::move(slot));
-  }
+  if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots); rc != 0) return rc;
   // Every PnL total, and with it [risk] max_loss, is one currency-less Notional. The venues'
   // reference data has been loaded, so kInverse is known here.
   if (const SettlementMix mix = instruments.settlement_mix(); mix.mixed()) {
@@ -732,14 +562,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } waker_guard{custom};
   if (custom != nullptr && custom->set_waker) custom->set_waker([&feed] { feed.notify(); });
   Wake wake_ctx{&slots, cfg.spin_mode() == SpinMode::Busy};
-  net::ReactorBackend net_backend = net::ReactorBackend::Epoll;
-  static_cast<void>(net::parse_reactor_backend(cfg.engine.net_backend, net_backend));  // validated
-  if (net::Reactor::resolve_backend(net_backend) != net_backend) {
-    FASTMM_LOG_WARN(
-        "[engine] net_backend = \"io_uring\" but io_uring is not available (kernel too "
-        "old, disabled or not permitted); falling back to epoll");
-    net_backend = net::ReactorBackend::Epoll;
-  }
+  const net::ReactorBackend net_backend = resolve_net_backend(cfg);
   // What the previous session left behind, read before the venues attach so its positions can be
   // carried over (restore_positions). Read-only: the store itself is opened further down.
   std::optional<store::Recovery> previous;
@@ -750,26 +573,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   for (std::size_t i = 0; i < slots.size(); ++i) {
     VenueSlot& s = *slots[i];
     const VenueId vid{static_cast<std::uint8_t>(i)};
-    s.reactor = std::make_unique<net::Reactor>(net_backend);
-    s.md_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
-    s.order_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.order_ring_bytes));
-    s.outbound = std::make_unique<MsgRing>(ring_size(cfg.engine.order_ring_bytes));
-    s.md_sink.attach(s.md_ring.get(), venues::SinkPolicy::Drop);
-    s.order_sink.attach(s.order_ring.get(), venues::SinkPolicy::Spin);
-    s.order_sink.set_overflow_callback(&on_order_overflow, &s);
+    wire_venue_slot(s, vid, cfg, net_backend, symbols, instruments, &tsc_pub);
     // Orders first: order events must not wait behind a burst of market data.
     static_cast<void>(feed.add_ring(s.order_ring.get()));
     static_cast<void>(feed.add_ring(s.md_ring.get()));
     const bool replace = s.venue->caps().supports_replace && cfg.venues[i].supports_replace;
     transport.set_venue(vid, s.outbound.get(), replace);
     if (replace) replace_venues |= std::uint64_t{1} << i;
-    s.venue->attach(symbols, instruments, s.md_sink, s.order_sink, s.outbound.get());
-    s.venue->set_tsc_calibration_source(&tsc_pub);
-    std::vector<InstrumentId> mine;
-    for (const Instrument& inst : instruments) {
-      if (inst.venue == vid) mine.push_back(inst.id);
-    }
-    s.venue->subscribe(mine);
   }
   if (previous && cfg.engine.restore_position)
     restore_positions(*previous, cfg, instruments, slots);
@@ -1061,8 +871,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   } else {
     for (std::size_t i = 0; i < slots.size(); ++i) {
       const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-      slots[i]->thread =
-          std::thread(net_loop, std::ref(*slots[i]), std::ref(feed), cpu, i, cfg.spin_mode());
+      slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), &feed, cpu, i, cfg.spin_mode());
     }
     engine_thread = std::thread([&] { runner->run(); });
   }
@@ -1402,29 +1211,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       for (std::size_t i = 0; i < slots.size(); ++i) {
         venues::Venue* v = slots[i]->venue.get();
         slots[i]->reactor->post([v] { v->on_timer(net::Reactor::now_ns()); });
-        const venues::VenueStatus st = v->status();
-        FASTMM_LOG_INFO(
-            "[{}] md={} user={} order={} books={}/{} md_msgs={} resyncs={} malformed={} dropped={} "
-            "orders={} cancels={} order_events={} rest={}/{}err reconnects={} clock_offset_ms={}",
-            v->name(),
-            short_state(st.md),
-            short_state(st.user),
-            short_state(st.order),
-            st.books_synced,
-            st.books_total,
-            st.md_messages,
-            st.resyncs,
-            st.md_malformed,
-            st.md_dropped,
-            st.orders_sent,
-            st.cancels_sent,
-            st.order_events,
-            st.rest_requests,
-            st.rest_errors,
-            st.reconnects,
-            st.clock_offset_ms);
-        log_wire_latency(v->name(), st, false);
-        log_feed(v->name(), st.feed, false);
+        log_venue_status(*v);
       }
     }
   }
