@@ -223,7 +223,7 @@ class SqliteReader final : public Reader {
       collect2(ids,
                "SELECT exec_id FROM fills WHERE session_id = ? AND ts_ns >= ? AND exec_id <> ''",
                rec.session_id,
-               rec.last_fill_ns - Recovery::kResumeOverlapNs,
+               rec.last_fill_ns - Recovery::kRecentIdsNs,
                [](sqlite3_stmt* s) { return text(s, 0); });
       rec.recent_exec_ids = std::move(ids);
     }
