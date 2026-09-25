@@ -64,6 +64,16 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    36.9/70.3 us both; busy 8.7/43.0 vs 7.9-8.7/43.0-44.9. Left: two strategies on one
    instrument; positions and loss across strategies.
 
+**Gateway follow-ups (2026-09-26).** Step 4 landed (several strategies, epochs from the gateway,
+instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards). Open:
+* A restart's replay start is the store's last fill minus 10 s in the engine's clock, which follows
+  the host wall clock; the venue compares it with its own. Widening the store's known ids to 20 s
+  fixed the double booking this caused on WSL2, but the start belongs in venue time (the fills'
+  `exch_ts`, now stamped on replays).
+* The gateway accepts at most 1024 known exec ids per attach (`kMaxKnownExecIds`); a strategy with
+  more than ~50 fills/s inside the 20 s window would overflow it.
+* Two strategies on one instrument; positions and loss across strategies in the gateway.
+
 ## 2026-09-25: an execution was booked twice after a long session
 
 The OMS deduplicated executions by `hash(exec_id) ^ cl_ord_id`. A replayed trade history names only
