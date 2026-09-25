@@ -47,6 +47,7 @@ from ._core import (
     inspect_journal,
     strategies,
     sweep,
+    walk_forward,
 )
 from ._hot.decl import HotCompileError, State, hot
 from ._slow.decl import every
@@ -122,6 +123,7 @@ __all__ = [
     "strategies",
     "sweep",
     "sweep_frame",
+    "walk_forward",
     "markout_frame",
     "to_pandas",
     "write_report",

@@ -174,6 +174,33 @@ class ChainSource final : public MdSource {
   std::size_t at_ = 0;
 };
 
+// The events of `inner` in [t0, t1) of event time (exch_ts, recv_ts when unset), for walk-forward
+// folds. The part before t0 is read but not yielded: it only rebuilds the book of every
+// (venue, instrument) and keeps the last message of every other kind except trades, and those
+// states come out first, stamped t0 (one BookSnapshot per book, then the rest in key order).
+// A fold therefore starts on the book the full run would have had at t0. Ends at the first
+// event at or after t1. `inner` is borrowed; reset() rewinds it.
+class TimeSliceSource final : public MdSource {
+ public:
+  TimeSliceSource(MdSource& inner, Timestamp t0, Timestamp t1);
+  ~TimeSliceSource() override;
+  TimeSliceSource(const TimeSliceSource&) = delete;
+  TimeSliceSource& operator=(const TimeSliceSource&) = delete;
+  const EventHeader* next() override;
+  void reset() override;
+  [[nodiscard]] Timestamp start_ts() const override { return t0_; }
+
+ private:
+  struct Primer;
+  MdSource& inner_;
+  Timestamp t0_;
+  Timestamp t1_;
+  std::unique_ptr<Primer> primer_;      // the state before t0 while it is being emitted
+  const EventHeader* first_ = nullptr;  // first event at or after t0, held back by the primer
+  bool started_ = false;
+  bool done_ = false;
+};
+
 // k-way merge of several sources by event time (stable: lower source index first on ties).
 class MergedSource final : public MdSource {
  public:

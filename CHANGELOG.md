@@ -5,6 +5,11 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Walk-forward sweeps: `fastmm.walk_forward(cfg, grid, folds=K, data=...)` and
+  `bt::walk_forward` cut the data into K consecutive time slices, run the grid on each and score
+  the best point of fold i-1 on fold i, next to the hindsight best there. `folds=1` is the plain
+  sweep. `bt::TimeSliceSource` yields one slice of any source, starting on the book as of its
+  first instant.
 - Execution-history recovery: a reconciliation asks the venue what the account executed before it
   asks what is open. `Venue::request_executions(since_venue_ms)` and
   `VenueCapabilities::executions` are the interface; Binance Spot implements it with

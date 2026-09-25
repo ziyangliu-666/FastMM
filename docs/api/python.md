@@ -40,6 +40,8 @@ An `@every` method runs on a second thread and publishes parameters to the hot h
 
 ::: fastmm.sweep
 
+::: fastmm.walk_forward
+
 ## What a hook is given
 
 ::: fastmm._core.Context

@@ -85,6 +85,9 @@ class BacktestRunner {
   BacktestConfig cfg_;
 };
 
+// The SyntheticSource a run with `source == nullptr` replays under the L2 queue fill model.
+[[nodiscard]] SyntheticSourceConfig synthetic_source_config(const BacktestConfig& cfg);
+
 // Resolves `--data` through the data-source registry (data_registry.hpp): "<name>:<args>",
 // or a bare *.fmj / *.csv path. "synthetic" (and "") open to nullptr, which selects the market
 // generator. `instruments` lets a source map its symbols onto instrument ids; it may be null.

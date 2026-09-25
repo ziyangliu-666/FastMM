@@ -158,6 +158,18 @@ struct BacktestSession::Impl final : sim::SimObserver {
   std::unique_ptr<JournalFileWriter> journal_file;
 };
 
+SyntheticSourceConfig synthetic_source_config(const BacktestConfig& cfg) {
+  SyntheticSourceConfig sc;
+  sc.generator = cfg.generator;
+  sc.md = cfg.transport.md;
+  sc.seed = cfg.seed;
+  sc.venue = cfg.transport.venue;
+  sc.start = cfg.start;
+  sc.duration = cfg.duration;
+  sc.seed_levels = cfg.generator_seed_levels;
+  return sc;
+}
+
 BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                  MdSource* source,
                                  const ParamSchema* schema,
@@ -170,15 +182,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       generator_ = std::make_unique<sim::MarketGenerator>(
           cfg_.generator, cfg_.seed, InstrumentId{0}, cfg_.start, cfg_.start + cfg_.duration);
     } else {
-      SyntheticSourceConfig sc;
-      sc.generator = cfg_.generator;
-      sc.md = cfg_.transport.md;
-      sc.seed = cfg_.seed;
-      sc.venue = cfg_.transport.venue;
-      sc.start = cfg_.start;
-      sc.duration = cfg_.duration;
-      sc.seed_levels = cfg_.generator_seed_levels;
-      synthetic_ = std::make_unique<SyntheticSource>(sc);
+      synthetic_ = std::make_unique<SyntheticSource>(synthetic_source_config(cfg_));
       source_ = synthetic_.get();
     }
   }

@@ -243,6 +243,37 @@ def test_sweep_errors(example_config):
         fastmm.sweep(_short(example_config, 1), {"half_spread_bps": [-1]}, data="synthetic")
 
 
+def test_walk_forward(example_config, synthetic_csv):
+    grid = {"half_spread_bps": [0.01, 0.03]}
+    rep = fastmm.walk_forward(example_config, grid, folds=3, data=str(synthetic_csv), threads=2)
+    assert rep["metric"] == "net_pnl"
+    folds = rep["folds"]
+    assert len(folds) == 3
+    assert folds[0]["chosen"] is None
+    for prev, fold in zip(folds, folds[1:]):
+        assert fold["start_ts"] == prev["end_ts"]
+        assert fold["chosen"] == prev["best"]
+        assert fold["in_sample"] == max(prev["scores"])
+        assert [p["half_spread_bps"] for p, _ in fold["points"]] == [0.01, 0.03]
+        assert fold["out_of_sample"] <= fold["hindsight"] == max(fold["scores"])
+    assert rep["table"].startswith("walk-forward: 3 folds, 2 points, metric net_pnl")
+    again = fastmm.walk_forward(example_config, grid, folds=3, data=str(synthetic_csv), threads=1)
+    assert again["table"] == rep["table"]
+
+    one = fastmm.walk_forward(example_config, grid, folds=1, data=str(synthetic_csv))
+    plain = fastmm.sweep(example_config, grid, data=str(synthetic_csv))
+    assert [r.outbound_sha256 for _, r in one["folds"][0]["points"]] == [
+        r.outbound_sha256 for _, r in plain
+    ]
+    synthetic = _short(example_config, 6)
+    assert len(fastmm.walk_forward(synthetic, grid, folds=2, data="synthetic")["folds"]) == 2
+    synthetic.fill_model = "matching"  # the coupled market cannot be cut in time
+    with pytest.raises(ValueError, match="l2_queue"):
+        fastmm.walk_forward(synthetic, grid, folds=2, data="synthetic")
+    with pytest.raises(ValueError, match="metric"):
+        fastmm.walk_forward(example_config, grid, folds=2, data=str(synthetic_csv), metric="x")
+
+
 def test_transport_reject_breakdown_sums_to_total():
     from pathlib import Path
 
