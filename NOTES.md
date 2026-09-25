@@ -3,6 +3,19 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-25: latency work recovered from 2026-09-15
+
+A latency branch from 2026-09-15 had never been merged. What main lacked was ported against current
+code, each piece on a failing test or a benchmark (numbers in the commit messages): timer and
+start/finish sends carry no T0; market-data age judged on the engine clock (a WSL2 clock step
+made fresh books stale); reactor timers without allocation (6005 allocations per 2000 re-arms → 0);
+lock-free posted-task check; no EAGAIN read after a short WebSocket read (TLS too); Oms best-price
+scan over live orders only; an idle adaptive engine blocks on a futex (tick-to-trade p99 ~155 → ~75
+µs); adaptive network threads spin 200 µs after activity (wire-to-wire p50 ~72 → ~56 µs); idle
+journal and log sinks back off (≈8000 → ≈100-900 wake-ups/s). Not ported: epoll once per µs (saves
+CPU, adds latency). Open: feed producers outside the session don't signal an adaptive engine, so
+after a quiet spell their messages can wait up to 1 ms.
+
 ## 2026-09-25: the weekly CI matrix
 
 The full matrix (clang, clang-tidy, TSan, ASan, docker) runs only weekly or on dispatch, and had
