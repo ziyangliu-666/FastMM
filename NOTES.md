@@ -3,6 +3,16 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-25: the fill model cannot be calibrated on Demo
+
+`fastmm-data fill-check <session.fmj>` replays the orders a live session actually had resting
+through the `l2_queue` model (no strategy re-run) and reports which filled live, which the model
+fills, and the gap, per `queue_conservatism`. On backtest journals it agrees (374 of 378). On
+Binance Spot Demo it predicts none of today's 9 fills and 13-14% of the fill quantity of the
+2026-09-14 hour: Demo fills resting orders ahead of the displayed queue (an order acked behind
+1.65 BTC filled after 0.009 BTC traded at its price). Calibrating needs a session on the real
+market, which is outside this mandate; the tool is ready for whoever runs one.
+
 ## 2026-09-25: a crash comes back into service by itself
 
 `deploy/fastmm-live.service` restarted nothing (`Restart=no`), on the grounds that positions and
@@ -166,7 +176,9 @@ multi-minute IP ban still ends in `false`, and the caller still treats that as f
 so user and order channel reconnects are invisible in the status line. `BinanceVenue::shadows_` leaked
 a slot per order whose terminal event was lost (fixed 2026-09-24: a reconciliation sweeps shadows
 of orders the venue no longer holds that were sent before the snapshot was asked for). Open-orders replies are matched to their sent
-watermark by FIFO on a shared `"oo"` request id, and the REST fallback never enqueues one.
+watermark by FIFO on a shared `"oo"` request id; the REST fallback captures its own watermark in
+the reply callback and the FIFO is cleared with its connection, so the two cannot drift (checked
+2026-09-25).
 `OmsAction::ReconcileNeeded` (more than three cancel rejects) was logged and nothing asked for a
 snapshot (fixed 2026-09-25: the engine sends `ControlCommand::Reconcile` on that venue's outbound
 ring and every connector answers with `request_open_orders()`).
@@ -218,19 +230,16 @@ they are fixed, each reproducible by putting the fault back:
    retries a rate-limited refusal three times before reporting it. A ban that outlasts that still
    ends in `false`, and a caller that treats it as final still leaves the book on.
 
-**Known gaps, in the order I intend to close them.**
+**Known gaps (rewritten 2026-09-25).** Landed since this list was written: the control socket and
+an engine-owned flatten, the feature/forward-markout extractor, portfolio exposure caps, restart
+position carry-over, execution replay on every venue, automatic restart after a crash. Open:
 
-1. ~~Recovery is asserted, not demonstrated.~~ Done; see 2026-09-24, and the fill that finishes an
-   order in the dark is closed too. What is left of it is a restart's position.
-2. No flatten and no runtime control. A kill pulls quotes and cancels; inventory stays on. Being
-   built now: an `AF_UNIX` control socket routed through the control ring so operator actions are
-   journaled and replayable, plus an engine-owned flatten.
-3. No way to evaluate a signal without running a strategy. `microprice()` and `imbalance()` exist and
-   no shipped strategy calls them. A feature/forward-markout extractor over `MdSource` would say
-   whether a quote at the touch is adversely selected, before any strategy is written.
-4. A sweep is a cartesian grid on one dataset with no out-of-sample structure; the best row is the
-   luckiest row.
-5. `Engine<Strategy>` binds one strategy; portfolio risk is per instrument plus one `max_loss`.
+1. The fill model is uncalibrated against the real market (Demo cannot do it, see above).
+2. A sweep is a cartesian grid on one dataset with no out-of-sample structure.
+3. `Engine<Strategy>` binds one strategy per process; a strategy change drops the venue sessions
+   (the gateway split below is the end state).
+4. Bybit and Deribit replays are verified against mocks only (no testnet keys here); the USDⓈ-M
+   Demo wallet needs funding on demo.binance.com before its restart check can run.
 
 **Flaky.** `integration.store restart: ...` failed once under load average ~40 and passed on rerun.
 Watch it; if it recurs, it is a timing assumption, not a store bug.
