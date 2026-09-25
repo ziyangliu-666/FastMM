@@ -317,6 +317,18 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
 <!-- END config-keys -->
 
+## `[gateway]`
+
+Read by `fastmm-gateway` only: account guards on each venue's account, shared by every strategy attached to the gateway and checked before an order reaches the connector ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)). Each strategy keeps its own `[risk]`.
+
+<!-- BEGIN config-keys gateway -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `orders_per_sec` | integer |  | fastmm-gateway: new orders and replaces per second per venue, over every attached strategy (default 0: off) |
+| `burst` | integer |  | fastmm-gateway: token-bucket capacity of orders_per_sec, orders (default orders_per_sec) |
+| `max_open_notional` | any |  | fastmm-gateway: refuse an order that would take the notional working at its venue, over every attached strategy and both sides, past this; settlement currency, decimal |
+<!-- END config-keys -->
+
 ## `[logging]`
 
 <!-- BEGIN config-keys logging -->
