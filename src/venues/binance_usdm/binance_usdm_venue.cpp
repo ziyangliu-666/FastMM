@@ -29,6 +29,7 @@ constexpr std::int64_t kHousekeepingNs = kSecNs;
 constexpr std::int64_t kDefaultCooldownNs = 10 * kSecNs;
 constexpr std::int64_t kReconcileRetryNs = 5 * kSecNs;
 constexpr std::int64_t kExecutionRetryNs = 5 * kSecNs;  // between retries of a failed replay
+constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
 // "Account Trade List" (GET /fapi/v1/userTrades): limit max 1000; a time range of at most 7 days,
 // and nothing older than 3 months.
 constexpr int kUserTradesLimit = 1000;
@@ -1474,6 +1475,7 @@ bool BinanceUsdmVenue::request_executions(std::int64_t since_venue_ms) {
   }
   exec_from_id_.resize(subscribed_.size(), 0);
   exec_start_ms_.resize(subscribed_.size(), exec_since_ms_);
+  exec_last_ns_ = net::Reactor::now_ns();
   exec_replay_active_ = true;
   exec_replay_ok_ = true;
   ++stats_.execution_queries;
@@ -1849,6 +1851,13 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
     if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
       exec_retry_ns_ = now;
       exec_retry_wanted_ = false;
+      static_cast<void>(request_executions());
+    }
+    // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers
+    // a bounded number of executions, so a reconnect after hours of streaming would replay more
+    // than it can recognise. A replay a minute keeps that short, and books a fill the private
+    // stream dropped without disconnecting.
+    if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs) {
       static_cast<void>(request_executions());
     }
     // Venue-side dead man's switch. Refreshed from the housekeeping timer, which is the same

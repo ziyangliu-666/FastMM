@@ -331,6 +331,7 @@ class BinanceUsdmVenue final : public Venue {
   bool exec_replay_active_ = false;
   bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
   bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_last_ns_ = 0;     // when the last replay started (the periodic one)
   std::int64_t exec_retry_ns_ = 0;
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;

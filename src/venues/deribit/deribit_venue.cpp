@@ -23,8 +23,9 @@ constexpr std::int64_t kNsPerMs = 1'000'000;
 constexpr std::int64_t kNsPerSec = 1'000'000'000;
 constexpr std::int64_t kHousekeepingNs = kNsPerSec;
 constexpr std::int64_t kExecutionRetryNs = 5 * kNsPerSec;  // between retries of a failed replay
-constexpr std::int64_t kUserTradesCount = 1000;            // the method's maximum page
-constexpr std::uint32_t kMaxExecutionPages = 100;          // per currency and replay
+constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
+constexpr std::int64_t kUserTradesCount = 1000;                   // the method's maximum page
+constexpr std::uint32_t kMaxExecutionPages = 100;                 // per currency and replay
 // historical: false answers the last 24 h. Older than 23 h ago is also asked with historical:
 // true; the hour of overlap is answered twice and deduplicated by trade id.
 constexpr std::int64_t kRecentWindowMs = 23LL * 3600 * 1000;
@@ -1181,6 +1182,7 @@ bool DeribitVenue::request_executions(std::int64_t since_venue_ms) {
       if (c.since_ms <= 0) c.since_ms = exec_since_ms_;
     }
   }
+  exec_last_ns_ = net::Reactor::now_ns();
   exec_replay_active_ = true;
   exec_replay_ok_ = true;
   exec_now_ms_ = venue_now_ms();
@@ -1397,6 +1399,14 @@ void DeribitVenue::on_timer(std::int64_t now) {
       private_conn_.is_live() && !access_token_.empty()) {
     exec_retry_ns_ = now;
     exec_retry_wanted_ = false;
+    static_cast<void>(request_executions());
+  }
+  // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers a
+  // bounded number of executions, so a reconnect after hours of streaming would replay more than
+  // it can recognise. A replay a minute keeps that short, and books a fill the private stream
+  // dropped without disconnecting.
+  if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs &&
+      private_conn_.is_live() && !access_token_.empty()) {
     static_cast<void>(request_executions());
   }
   publish_status();

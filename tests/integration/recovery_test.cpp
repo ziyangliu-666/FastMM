@@ -766,3 +766,29 @@ TEST_CASE("recovery: the engine's reconcile request settles an order whose end w
   CHECK(m.oms().open_count() == 0);
   CHECK(m.position() == fx.server.stats().position);
 }
+
+TEST_CASE(
+    "recovery: a fill the private stream dropped without disconnecting is booked a minute on") {
+  ServerFixture fx(quiet_server());
+  ReadyHarness h(fx);
+  OmsMirror m(h.instruments);
+  place_resting(h, m, cid(1), resting_bid(fx, 100), kLot);
+
+  // The stream stays connected and simply never says: no reconnect, so no reconciliation.
+  fx.server.set_user_stream_muted(true);
+  CHECK(fx.server.fill_open_order(encode_cl_ord_id(cid(1)).view(), kLot) == kLot);
+  REQUIRE(h.pump([&] { return fx.server.stats().user_events_dropped >= 1; }));
+  fx.server.set_user_stream_muted(false);
+  static_cast<void>(h.pump([] { return false; }, 200));
+  m.drain(h.oc);
+  CHECK(m.position() == Qty{});
+
+  // The housekeeping timer a minute later replays the executions while nothing looks wrong.
+  h.venue->on_timer(net::Reactor::now_ns() + 61'000'000'000LL);
+  REQUIRE(h.pump([&] {
+    m.drain(h.oc);
+    return m.position() == fx.server.stats().position;
+  }));
+  CHECK(m.position() == kLot);
+  CHECK(m.replayed_fills() == 1);
+}

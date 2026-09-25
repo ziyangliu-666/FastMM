@@ -32,6 +32,7 @@ constexpr std::int64_t kLogonRetryNs = 2'000'000'000;
 // is at most 24 hours. A replay that would need more than that cannot be complete.
 constexpr int kMyTradesLimit = 1000;
 constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;  // between retries of a failed replay
+constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
 // cancel_all() is the kill switch's only remedy, so a rate-limited refusal is retried rather than
 // reported: bounded, because the caller is blocked on it.
 constexpr int kCancelAllRateLimitRetries = 3;
@@ -1318,6 +1319,7 @@ bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {
     exec_from_id_.assign(subscribed_.size(), 0);
   }
   exec_from_id_.resize(subscribed_.size(), 0);
+  exec_last_ns_ = net::Reactor::now_ns();
   exec_replay_active_ = true;
   exec_replay_ok_ = true;
   ++stats_.execution_queries;
@@ -1645,6 +1647,13 @@ void BinanceVenue::on_timer(std::int64_t now) {
   if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
     exec_retry_ns_ = now;
     exec_retry_wanted_ = false;
+    static_cast<void>(request_executions());
+  }
+  // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers a
+  // bounded number of executions, so a reconnect after hours of streaming would replay more than
+  // it can recognise. A replay a minute keeps that short, and books a fill the private stream
+  // dropped without disconnecting.
+  if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs) {
     static_cast<void>(request_executions());
   }
   publish_status();

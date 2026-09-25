@@ -24,6 +24,7 @@ constexpr std::int64_t kDefaultCooldownNs = 10'000'000'000;
 // 50 open orders per page; more than this many pages is a runaway, not a book we can reconcile.
 constexpr std::size_t kMaxReconcilePages = 40;
 constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;  // between retries of a failed replay
+constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
 // GET /v5/execution/list: "endTime - startTime <= 7 days", "limit [1, 100]", and two years of
 // history (https://bybit-exchange.github.io/docs/v5/order/execution).
 constexpr std::int64_t kExecWindowMs = 7LL * 24 * 3600 * 1000;
@@ -1138,6 +1139,7 @@ bool BybitVenue::request_executions(std::int64_t since_venue_ms) {
     exec_since_ms_ = since_venue_ms;
     exec_edge_ids_.clear();
   }
+  exec_last_ns_ = net::Reactor::now_ns();
   exec_replay_active_ = true;
   exec_replay_ok_ = true;
   exec_requests_ = 0;
@@ -1447,6 +1449,13 @@ void BybitVenue::on_timer(std::int64_t now) {
   if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
     exec_retry_ns_ = now;
     exec_retry_wanted_ = false;
+    static_cast<void>(request_executions());
+  }
+  // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers a
+  // bounded number of executions, so a reconnect after hours of streaming would replay more than
+  // it can recognise. A replay a minute keeps that short, and books a fill the private stream
+  // dropped without disconnecting.
+  if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs) {
     static_cast<void>(request_executions());
   }
   publish_status();
