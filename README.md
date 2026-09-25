@@ -77,6 +77,6 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 - Exchanges: Binance Spot, Binance USDⓈ-M perpetuals, Bybit spot, Deribit, and Nasdaq ITCH market data.
 - Linux on x86-64 only.
 - The shipped strategies are reference implementations, not an edge: the example backtest is profitable only because it is configured with a maker rebate ([Economics](docs/explanation/economics.md)).
-- No state survives a restart, monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint) with no alerting of its own, and venue-side cancel-on-disconnect is armed only on Deribit ([Running this in production](docs/how-to/operations/running-in-production.md)).
+- One process runs one strategy with one account per venue. Monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint) with no alerting of its own. A restart restores the position and cancels what the previous process left, but a venue-side dead man's switch exists only on Deribit, Binance USDⓈ-M and Bybit (where the account has it) ([Running this in production](docs/how-to/operations/running-in-production.md)).
 
 [Documentation](https://ziy.bio/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)
