@@ -40,7 +40,8 @@ InstrumentTable make_table() {
   return t;
 }
 
-OrderFillMsg fill(InstrumentId id, Side side, const char* price, const char* qty, const char* exec) {
+OrderFillMsg fill(
+    InstrumentId id, Side side, const char* price, const char* qty, const char* exec) {
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, id, VenueId{0});
   m.side = side;
@@ -88,7 +89,8 @@ TEST_CASE("core.account_book: every execution is booked once, keyed by id, instr
   CHECK(b.positions().total_fees() == nt("0.3"));
 }
 
-TEST_CASE("core.account_book: fees in the base asset change the position, as the engine books them") {
+TEST_CASE(
+    "core.account_book: fees in the base asset change the position, as the engine books them") {
   const InstrumentTable t = make_table();
   AccountBook b(t, VenueId{0});
   OrderFillMsg m = fill(kBtc, Side::Buy, "100", "1", "t1");

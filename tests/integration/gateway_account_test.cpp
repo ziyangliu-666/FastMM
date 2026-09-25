@@ -10,8 +10,8 @@
 #include <cmath>
 #include <csignal>
 #include <map>
-#include <set>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -25,15 +25,18 @@ using namespace fastmm::integration;
 
 namespace {
 
-// The words of the last line of `text` that contains `key`, split at spaces.
+// The words of the last complete line of `text` that contains `key`, split at spaces (a log being
+// written can end in half a line).
 std::vector<std::string> last_line_words(const std::string& text, std::string_view key) {
-  const std::size_t at = text.rfind(key);
+  const std::size_t complete = text.rfind('\n');
+  if (complete == std::string::npos) return {};
+  const std::size_t at = text.rfind(key, complete);
   if (at == std::string::npos) return {};
   const std::size_t begin = text.rfind('\n', at);
   const std::size_t end = text.find('\n', at);
-  std::istringstream in(text.substr(begin == std::string::npos ? 0 : begin + 1,
-                                    end == std::string::npos ? std::string::npos
-                                                             : end - (begin + 1)));
+  std::istringstream in(
+      text.substr(begin == std::string::npos ? 0 : begin + 1,
+                  end == std::string::npos ? std::string::npos : end - (begin + 1)));
   std::vector<std::string> out;
   for (std::string w; in >> w;) out.push_back(w);
   return out;
@@ -60,7 +63,8 @@ struct AccountLine {
   std::string line;  // its last account line
   // The last "gateway: account position <key> <qty>" (flat when there is none).
   [[nodiscard]] Qty position(const std::string& key) const {
-    const std::vector<std::string> w = last_line_words(text, "gateway: account position " + key + " ");
+    const std::vector<std::string> w =
+        last_line_words(text, "gateway: account position " + key + " ");
     if (w.empty()) return Qty{};
     return Qty::from_decimal(w.back()).value_or(Qty::from_raw(-1));
   }
@@ -172,14 +176,14 @@ TEST_CASE(
     const std::uint16_t ea = wait_resting(fx, c.a, {});
     const pid_t b = spawn_strategy(c.b, g);
     wait_resting(fx, c.b, {ea});
-    REQUIRE_MESSAGE(wait_until([&] { return fills(fx, 0) >= 3 && fills(fx, 1) >= 3; }, 90000),
-                    "not both traded: a: " << fastmm::test::read_file(c.a.config + ".log")
-                                           << "\nb: "
-                                           << fastmm::test::read_file(c.b.config + ".log"));
+    REQUIRE_MESSAGE(
+        wait_until([&] { return fills(fx, 0) >= 3 && fills(fx, 1) >= 3; }, 90000),
+        "not both traded: a: " << fastmm::test::read_file(c.a.config + ".log")
+                               << "\nb: " << fastmm::test::read_file(c.b.config + ".log"));
     stop_strategy(a);
     stop_strategy(b);
     CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2500));  // two account lines later
+    stop_gateway(g);  // its last account lines are in the log
     const sim::server::SimServerStats ss = fx.server.stats();
     const AccountLine acct = account_line(g);
     INFO("gateway: " << acct.line);
@@ -199,19 +203,16 @@ TEST_CASE(
                         << " fees " << pb.at("fees"));
     CHECK(pa.at("fees") > 0);
     CHECK(pb.at("fees") > 0);
-    CHECK(std::abs(acct.n.at("realized") - (pa.at("realized_pnl") + pb.at("realized_pnl"))) <
-          1e-7);
+    CHECK(std::abs(acct.n.at("realized") - (pa.at("realized_pnl") + pb.at("realized_pnl"))) < 1e-7);
     CHECK(std::abs(acct.n.at("fees") - (pa.at("fees") + pb.at("fees"))) < 1e-7);
-    const double strategies_net = pa.at("realized_pnl") + pa.at("unrealized_pnl") -
-                                  pa.at("fees") + pb.at("realized_pnl") +
-                                  pb.at("unrealized_pnl") - pb.at("fees");
+    const double strategies_net = pa.at("realized_pnl") + pa.at("unrealized_pnl") - pa.at("fees") +
+                                  pb.at("realized_pnl") + pb.at("unrealized_pnl") - pb.at("fees");
     // 20 bps of the positions' notional for the marks' moves.
     const double drift =
         (std::abs(position(ss, 0).to_double()) + std::abs(position(ss, 1).to_double())) * 60000 *
             0.002 +
         1e-6;
     CHECK(std::abs(acct.n.at("net_pnl") - strategies_net) <= drift);
-    stop_gateway(g);
   }
 
   // A new gateway knows nothing of the account; the strategies' stores do. Its positions start
@@ -224,8 +225,7 @@ TEST_CASE(
     const std::uint16_t ea = wait_resting(fx, c.a, {});
     const pid_t b = spawn_strategy(c.b, g);
     wait_resting(fx, c.b, {ea});
-    CHECK_MESSAGE(log_has(g.log,
-                          "account position of BTCUSDT starts at " + dec(before_a)),
+    CHECK_MESSAGE(log_has(g.log, "account position of BTCUSDT starts at " + dec(before_a)),
                   fastmm::test::read_file(g.log));
     const std::uint64_t fa = fills(fx, 0);
     const std::uint64_t fb = fills(fx, 1);
@@ -233,13 +233,17 @@ TEST_CASE(
     stop_strategy(a);
     stop_strategy(b);
     CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
-    std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+    stop_gateway(g);
     const sim::server::SimServerStats ss = fx.server.stats();
     const AccountLine acct = account_line(g);
     INFO("gateway: " << acct.line);
+    INFO("BTCUSDT: venue " << dec(position(ss, 0)) << ", account "
+                           << dec(acct.position("sim:BTCUSDT")) << ", a's store "
+                           << dec(store_position(c.a, c.a_name, "BTCUSDT")));
     CHECK(acct.position("sim:BTCUSDT") == position(ss, 0));
     CHECK(acct.position("sim:ETHUSDT") == position(ss, 1));
-    stop_gateway(g);
+    CHECK(store_position(c.a, c.a_name, "BTCUSDT") == position(ss, 0));
+    CHECK(store_position(c.b, c.b_name, "ETHUSDT") == position(ss, 1));
   }
 }
 
@@ -250,23 +254,16 @@ TEST_CASE(
   // a quotes 0.001 BTC (about 60), b 0.0002 (about 12). Once a holds a position, its orders on
   // that side would take the account past 100 and are refused; its other side reduces and goes.
   // b always has room for a side: flat it adds 12 to a's 60, and otherwise one side reduces.
-  const Configs c = write_configs(fx, "gw-gross", "\n[gateway]\nmax_gross_notional = \"100\"\n", kEthUsdt);
-  rewrite(c.b.config, [](std::string& t) { replace_first(t, "quote_qty = 0.001", "quote_qty = 0.0002"); });
+  const Configs c =
+      write_configs(fx, "gw-gross", "\n[gateway]\nmax_gross_notional = \"100\"\n", kEthUsdt);
+  rewrite(c.b.config,
+          [](std::string& t) { replace_first(t, "quote_qty = 0.001", "quote_qty = 0.0002"); });
   const GatewayProcess g = spawn_gateway_with(c.gw, {"--duration", "300s"});
   wait_gateway_up(fx, g);
   const pid_t a = spawn_strategy(c.a, g);
   const std::uint16_t ea = wait_resting(fx, c.a, {});
   const pid_t b = spawn_strategy(c.b, g);
   const std::uint16_t eb = wait_resting(fx, c.b, {ea});
-  REQUIRE(wait_until([&] { return open_of(fx, ea) >= 2; }, 20000));
-  // a trades one of its quotes: it holds 0.001 BTC.
-  std::string wire;
-  for (const std::string& id : fx.server.open_client_order_ids()) {
-    const auto cl = decode_cl_ord_id(id);
-    if (cl && cl_ord_id_epoch(*cl) == ea) wire = id;
-  }
-  REQUIRE(!wire.empty());
-  REQUIRE(fx.server.fill_open_order(wire).is_positive());
   const std::uint64_t fb = fills(fx, 1);
   // The gateway's once-a-second counters: "refused: ... gross_notional=<n>".
   const auto refusals = [&] {
@@ -275,12 +272,27 @@ TEST_CASE(
     const auto it = n.find("gross_notional");
     return it == n.end() ? 0.0 : it->second;
   };
-  CHECK_MESSAGE(wait_until([&] { return refusals() > 0; }, 30000),
-                "no order refused: " << fastmm::test::read_file(g.log));
+  // a trades one of its quotes, and again while nothing is refused: once it holds 0.001 BTC (a
+  // fill that flattens it only makes the next one count), its orders on that side are.
+  bool refused = false;
+  for (int i = 0; i < 10 && !refused; ++i) {
+    for (const std::string& id : fx.server.open_client_order_ids()) {
+      const auto cl = decode_cl_ord_id(id);
+      if (cl && cl_ord_id_epoch(*cl) == ea) {
+        static_cast<void>(fx.server.fill_open_order(id));
+        break;
+      }
+    }
+    refused = wait_until([&] { return refusals() > 0; }, 5000);
+  }
+  CHECK_MESSAGE(refused, "no order refused: " << fastmm::test::read_file(g.log));
+  // a requotes (the mid moves a tick every few hundred ms): its reducing side goes out and is
+  // acknowledged, its other side keeps being refused.
+  std::this_thread::sleep_for(std::chrono::seconds(10));
   // b trades on.
   CHECK_MESSAGE(wait_until([&] { return fills(fx, 1) >= fb + 2; }, 90000),
                 "b stopped trading: " << fastmm::test::read_file(c.b.config + ".log"));
-  CHECK(open_of(fx, eb) > 0);
+  CHECK(wait_until([&] { return open_of(fx, eb) > 0; }, 5000));
 
   stop_strategy(a);
   stop_strategy(b);
@@ -378,8 +390,9 @@ TEST_CASE(
     const pid_t a = spawn_strategy(c.a, g);
     const std::uint16_t ea = wait_resting(fx, c.a, {});
     fill_one(ea);  // one fill, about 0.6 of the 3 armed again
-    REQUIRE_MESSAGE(wait_until([&] { return fills(fx, 0) > fa; }, 10000),
-                    "a never traded after the clear: " << fastmm::test::read_file(c.a.config + ".log"));
+    REQUIRE_MESSAGE(
+        wait_until([&] { return fills(fx, 0) > fa; }, 10000),
+        "a never traded after the clear: " << fastmm::test::read_file(c.a.config + ".log"));
     // The account line after the fill: its fee is booked, nothing carried, the budget armed.
     AccountLine acct;
     wait_until(
