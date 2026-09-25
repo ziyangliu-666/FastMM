@@ -212,6 +212,26 @@ bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol,
   return true;
 }
 
+bool BybitOrderEncoder::encode_rest_executions(std::int64_t start_ms,
+                                               std::int64_t end_ms,
+                                               int limit,
+                                               std::string_view cursor,
+                                               RestRequest& out) const {
+  if (start_ms <= 0) return false;
+  out.method = "GET";
+  out.path = "/v5/execution/list";
+  out.body.clear();
+  out.query = "category=spot&startTime=" + std::to_string(start_ms);
+  if (end_ms > 0) out.query += "&endTime=" + std::to_string(end_ms);
+  out.query += "&limit=" + std::to_string(limit);
+  if (!cursor.empty()) {
+    out.query += "&cursor=";
+    out.query += cursor;
+  }
+  out.is_order = false;
+  return true;
+}
+
 // ---- decoder -------------------------------------------------------------------------------
 
 struct BybitResponseDecoder::Impl {
@@ -283,6 +303,34 @@ namespace {
   if (o["orderStatus"].get_string().get(rec.status) != sj::SUCCESS) return false;
   o.reset();
   if (o["cumExecQty"].get_string().get(rec.cum_exec_qty) != sj::SUCCESS) rec.cum_exec_qty = {};
+  return true;
+}
+
+// False if the row is malformed. Optional fields are left empty.
+[[gnu::noinline]] bool read_execution(od::object& o, ExecutionRecord& rec) noexcept {
+  auto req = [&](const char* key, std::string_view& out) {
+    o.reset();
+    return o[key].get_string().get(out) == sj::SUCCESS;
+  };
+  auto opt = [&](const char* key, std::string_view& out) {
+    o.reset();
+    if (o[key].get_string().get(out) != sj::SUCCESS) out = {};
+  };
+  if (!req("symbol", rec.symbol) || !req("execId", rec.exec_id) ||
+      !req("execType", rec.exec_type) || !req("orderId", rec.order_id) || !req("side", rec.side) ||
+      !req("execPrice", rec.exec_price) || !req("execQty", rec.exec_qty))
+    return false;
+  opt("orderLinkId", rec.order_link_id);
+  opt("execFee", rec.exec_fee);
+  opt("feeCurrency", rec.fee_currency);
+  opt("feeRate", rec.fee_rate);
+  std::string_view t;
+  if (!req("execTime", t)) return false;
+  const auto ms = parse_int64(t);
+  if (!ms) return false;
+  rec.exec_time_ms = *ms;
+  o.reset();
+  if (o["isMaker"].get_bool().get(rec.is_maker) != sj::SUCCESS) rec.is_maker = false;
   return true;
 }
 
@@ -380,6 +428,35 @@ ParseStatus BybitResponseDecoder::decode_open_orders(
     if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
     OpenOrderRecord rec;
     if (!read_open_order(o, rec)) return ParseStatus::Malformed;
+    fn(rec);
+  }
+  result.reset();
+  std::string_view cursor;
+  if (result["nextPageCursor"].get_string().get(cursor) == sj::SUCCESS) next_cursor = cursor;
+  return ParseStatus::Ok;
+}
+
+ParseStatus BybitResponseDecoder::decode_executions(
+    std::string_view json,
+    std::string& next_cursor,
+    const std::function<void(const ExecutionRecord&)>& fn) noexcept {
+  next_cursor.clear();
+  od::document doc;
+  od::object root;
+  if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS ||
+      doc.get_object().get(root) != sj::SUCCESS)
+    return ParseStatus::Malformed;
+  std::int64_t code = 0;
+  if (root["retCode"].get_int64().get(code) != sj::SUCCESS || code != 0) return ParseStatus::Error;
+  od::object result;
+  if (root["result"].get_object().get(result) != sj::SUCCESS) return ParseStatus::Malformed;
+  od::array list;
+  if (result["list"].get_array().get(list) != sj::SUCCESS) return ParseStatus::Malformed;
+  for (auto item : list) {
+    od::object o;
+    if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
+    ExecutionRecord rec;
+    if (!read_execution(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
   result.reset();

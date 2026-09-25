@@ -2,7 +2,7 @@
 // WebSockets): reference data, subscribe + snapshot/delta sync, u == 1 resubscribe, auth
 // signatures on both private channels, order.create -> ack + order New, order.amend with the
 // orderLinkId alias, execution fill, order.cancel -> Cancelled, open-order reconciliation
-// and the blocking kill-switch cancel_all.
+// the blocking kill-switch cancel_all and the execution replay (GET /v5/execution/list).
 #include "fastmm/venues/bybit/bybit_venue.hpp"
 
 #include "fake_venue_util.hpp"
@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -63,6 +65,31 @@ std::string private_order(const char* link, const char* status, const char* cum)
          R"(","cumExecValue":"0","avgPrice":"","cumExecFee":"0","createdTime":"1789299700444","updatedTime":"1789299700457","rejectReason":"EC_NoError"}]})";
 }
 
+// One row of GET /v5/execution/list (a spot maker buy of 0.0004 BTC, fee in BTC).
+std::string exec_row(const char* id,
+                     const char* link,
+                     const char* price,
+                     const char* fee,
+                     long long time_ms,
+                     const char* type = "Trade",
+                     const char* symbol = "BTCUSDT") {
+  return std::string(R"({"symbol":")") + symbol +
+         R"(","orderId":"2012345678901234567","orderLinkId":")" + link +
+         R"(","side":"Buy","orderPrice":"60000.1","orderQty":"0.001","leavesQty":"0",)"
+         R"("orderType":"Limit","stopOrderType":"","execFee":")" +
+         fee + R"(","feeCurrency":"BTC","execId":")" + id + R"(","execPrice":")" + price +
+         R"(","execQty":"0.0004","execType":")" + type + R"(","execValue":"24","execTime":")" +
+         std::to_string(time_ms) +
+         R"(","isMaker":true,"feeRate":"0.001","markPrice":"","closedSize":"","seq":1})";
+}
+
+std::string exec_page(const std::vector<std::string>& rows, const char* cursor) {
+  std::string list;
+  for (const std::string& r : rows) list += (list.empty() ? "" : ",") + r;
+  return R"({"retCode":0,"retMsg":"OK","result":{"nextPageCursor":")" + std::string(cursor) +
+         R"(","category":"spot","list":[)" + list + R"(]},"retExtInfo":{},"time":1789299704000})";
+}
+
 struct Harness {
   FakeVenueServer srv;
   std::string instruments_info = fastmm::test::fixture("bybit/instruments_info.json");
@@ -81,6 +108,14 @@ struct Harness {
   std::atomic<int> open_orders_calls{0};
   std::atomic<int> rest_cancels{0};
   std::atomic<int> dcp_ok{0};
+  // GET /v5/execution/list: one entry per answered request, in order; the last one repeats. The
+  // next `executions_failing` requests are answered with retCode 10006 instead.
+  std::mutex exec_mu;
+  std::vector<std::string> execution_pages{exec_page({}, "")};
+  std::size_t execution_served = 0;
+  std::atomic<int> executions_failing{0};
+  std::atomic<int> executions_calls{0};
+  std::atomic<int> executions_ok{0};
   std::atomic<bool> dcp_refused{false};       // "DCP feature is only available for Ins clients"
   net::WsSession* private_session = nullptr;  // server thread only
 
@@ -99,6 +134,20 @@ struct Harness {
       const std::size_t i = static_cast<std::size_t>(open_orders_calls++);
       return net::HttpServerResponse::json(
           200, open_orders_pages[std::min(i, open_orders_pages.size() - 1)]);
+    });
+    srv.route("GET", "/v5/execution/list", [this](const net::HttpRequest& r) {
+      if (rest_signed(r, r.query)) ++executions_ok;
+      srv.record("executions", std::string(r.query));
+      ++executions_calls;
+      if (executions_failing.load() > 0) {
+        --executions_failing;
+        return net::HttpServerResponse::json(
+            200,
+            R"({"retCode":10006,"retMsg":"Too many visits!","result":{},"retExtInfo":{},"time":1789299704000})");
+      }
+      const std::lock_guard lock(exec_mu);
+      const std::size_t i = std::min(execution_served++, execution_pages.size() - 1);
+      return net::HttpServerResponse::json(200, execution_pages[i]);
     });
     srv.route("POST", "/v5/order/cancel", [this](const net::HttpRequest&) {
       ++rest_cancels;
@@ -443,7 +492,9 @@ struct Live {
   std::unique_ptr<BybitVenue> venue;
   Collected oc;
 
-  Live(Harness& h, const VenueSection& section) {
+  Live(Harness& h,
+       const VenueSection& section,
+       const std::function<void(BybitVenue&)>& before_connect = {}) {
     REQUIRE(instruments.add(make_instrument("BTCUSDT", 1, "BTC", "USDT")));
     BybitVenueConfig cfg = make_bybit_config(section, false);
     cfg.ws_private_url = h.srv.ws_base() + "/v5/private";
@@ -453,6 +504,7 @@ struct Live {
     venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
     const InstrumentId ids[] = {kBtc};
     venue->subscribe(ids);
+    if (before_connect) before_connect(*venue);
     venue->connect(reactor);
   }
   ~Live() {
@@ -657,4 +709,256 @@ TEST_CASE("bybit.venue: the dcp window is clamped to what the venue accepts") {
   CHECK(window("1") == kMinDcpWindowS);
   CHECK(window("10") == 10);
   CHECK(window("9000") == kMaxDcpWindowS);
+}
+
+namespace {
+
+constexpr long long kT = 1789299703000;  // execTime of the rows below, ms
+
+std::vector<const OrderFillMsg*> fills_of(const Collected& oc) {
+  std::vector<const OrderFillMsg*> out;
+  for (const auto& m : oc.all) {
+    if (RecordingSink::type_of(m) == EventType::OrderFill)
+      out.push_back(&RecordingSink::as<OrderFillMsg>(m));
+  }
+  return out;
+}
+
+// The Begin of every snapshot, in order.
+std::vector<const ReconcileMsg*> begins_of(const Collected& oc) {
+  std::vector<const ReconcileMsg*> out;
+  for (const auto& m : oc.all) {
+    if (RecordingSink::type_of(m) == EventType::Reconcile &&
+        RecordingSink::as<ReconcileMsg>(m).kind == ReconcileMsg::Kind::Begin)
+      out.push_back(&RecordingSink::as<ReconcileMsg>(m));
+  }
+  return out;
+}
+
+bool exact(const ReconcileMsg* begin) {
+  return (begin->flags & ReconcileMsg::kExecutionsExact) != 0;
+}
+
+std::string param(const std::string& query, const std::string& key) {
+  const std::size_t p = query.find(key + "=");
+  if (p == std::string::npos) return {};
+  const std::size_t v = p + key.size() + 1;
+  return query.substr(v, query.find('&', v) - v);
+}
+
+}  // namespace
+
+TEST_CASE("bybit.venue: a fill the private stream missed is booked from execution/list first") {
+  Harness h;
+  h.execution_pages = {
+      exec_page({exec_row("ex-9", "fm000100000001", "60010.5", "0.0000004", kT)}, "")};
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    CHECK(h.executions_calls.load() == 0);  // nothing to replay before a reconciliation
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 3;
+    }));
+    const auto fills = fills_of(l.oc);
+    REQUIRE(fills.size() == 1);
+    const OrderFillMsg* f = fills[0];
+    CHECK((f->flags & OrderFillMsg::kReplayed) != 0);
+    CHECK(f->exec_id.view() == "ex-9");
+    CHECK(f->cl_ord_id == decode_cl_ord_id("fm000100000001").value());
+    CHECK(f->venue_order_id.view() == "2012345678901234567");
+    CHECK(f->side == Side::Buy);
+    CHECK(f->price == Price::from_decimal("60010.5").value());
+    CHECK(f->qty == Qty::from_decimal("0.0004").value());
+    CHECK(f->fee == Notional::from_decimal("0.0000004").value());
+    CHECK(f->fee_asset == FeeAsset::Base);
+    CHECK(f->liquidity == Liquidity::Maker);
+    // The fill is in before the snapshot that no longer names its order.
+    std::size_t fill_at = 0;
+    std::size_t begin_at = 0;
+    for (std::size_t i = 0; i < l.oc.all.size(); ++i) {
+      const auto t = RecordingSink::type_of(l.oc.all[i]);
+      if (t == EventType::OrderFill) fill_at = i;
+      if (t == EventType::Reconcile && begin_at == 0) begin_at = i;
+    }
+    CHECK(fill_at < begin_at);
+    const auto begins = begins_of(l.oc);
+    REQUIRE(begins.size() == 1);
+    CHECK(exact(begins[0]));
+    const auto queries = h.srv.frames("executions");
+    REQUIRE(queries.size() == 1);
+    CHECK(queries[0].rfind("category=spot&startTime=", 0) == 0);
+    CHECK(queries[0].find("&limit=100") != std::string::npos);
+    CHECK(queries[0].find("endTime") == std::string::npos);  // the last window is open-ended
+    CHECK(h.executions_ok.load() == 1);                      // signed
+    l.venue->on_timer(net::Reactor::now_ns());
+    const VenueStatus st = l.venue->status();
+    CHECK(st.execution_queries == 1);
+    CHECK(st.executions_fetched == 1);
+    CHECK(st.execution_query_errors == 0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: execution/list pages are followed and emitted oldest first") {
+  Harness h;
+  h.execution_pages = {
+      // Newest first, as Bybit sends them; a funding row and another symbol are not our fills.
+      exec_page({exec_row("ex-3", "fm000100000001", "60003", "0", kT + 3),
+                 exec_row("fund-1", "", "60002", "0", kT + 2, "Funding"),
+                 exec_row("eth-1", "", "3000", "0", kT + 2, "Trade", "ETHUSDT"),
+                 exec_row("ex-2", "fm000100000001", "60002", "0", kT + 2)},
+                "cur-2"),
+      exec_page({exec_row("ex-1", "fm000100000001", "60001", "0", kT + 1)}, ""),
+      // The next replay starts at the newest execTime seen: ex-3 comes back and is not repeated.
+      exec_page({exec_row("ex-4", "fm000100000001", "60004", "0", kT + 4),
+                 exec_row("ex-3", "fm000100000001", "60003", "0", kT + 3)},
+                "")};
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 3;
+    }));
+    auto fills = fills_of(l.oc);
+    REQUIRE(fills.size() == 3);
+    CHECK(fills[0]->exec_id.view() == "ex-1");
+    CHECK(fills[1]->exec_id.view() == "ex-2");
+    CHECK(fills[2]->exec_id.view() == "ex-3");
+    CHECK(fills[0]->price == Price::from_decimal("60001").value());
+    CHECK(exact(begins_of(l.oc)[0]));
+    auto queries = h.srv.frames("executions");
+    REQUIRE(queries.size() == 2);
+    CHECK(queries[0].find("cursor=") == std::string::npos);
+    CHECK(param(queries[1], "cursor") == "cur-2");
+    CHECK(param(queries[1], "startTime") == param(queries[0], "startTime"));
+    CHECK(h.executions_ok.load() == 2);
+
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 6;
+    }));
+    fills = fills_of(l.oc);
+    REQUIRE(fills.size() == 4);
+    CHECK(fills[3]->exec_id.view() == "ex-4");
+    queries = h.srv.frames("executions");
+    REQUIRE(queries.size() == 3);
+    CHECK(param(queries[2], "startTime") == std::to_string(kT + 3));
+    CHECK(queries[2].find("cursor=") == std::string::npos);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: the snapshot is exact only when the execution replay completed") {
+  Harness h;
+  h.executions_failing = 1;  // retCode 10006 on the first query
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 3;
+    }));
+    // The snapshot still comes, but says it is an estimate.
+    auto begins = begins_of(l.oc);
+    REQUIRE(begins.size() == 1);
+    CHECK_FALSE(exact(begins[0]));
+    CHECK(h.executions_calls.load() == 1);
+
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 6;
+    }));
+    begins = begins_of(l.oc);
+    REQUIRE(begins.size() == 2);
+    CHECK(exact(begins[1]));
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a failed execution query is retried from the housekeeping timer") {
+  Harness h;
+  h.executions_failing = 1;
+  h.execution_pages = {
+      exec_page({exec_row("ex-7", "fm000100000001", "60007", "0.0000004", kT)}, "")};
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 3;
+    }));
+    CHECK(l.oc.count(EventType::OrderFill) == 0);
+    // No reconnect and no new reconciliation: the timer asks again and books the fill.
+    l.venue->on_timer(net::Reactor::now_ns());
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderFill) == 1;
+    }));
+    CHECK(fills_of(l.oc)[0]->exec_id.view() == "ex-7");
+    CHECK(h.executions_calls.load() == 2);
+    CHECK(l.oc.count(EventType::Reconcile) == 3);  // the snapshot is not repeated
+    l.venue->on_timer(net::Reactor::now_ns());
+    const VenueStatus st = l.venue->status();
+    CHECK(st.execution_queries == 2);
+    CHECK(st.execution_query_errors == 1);
+    CHECK(st.executions_fetched == 1);
+    CHECK(h.executions_calls.load() == 2);  // succeeded: nothing more to retry
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a resumed session replays from the store and skips what it booked") {
+  Harness h;
+  h.execution_pages = {exec_page({exec_row("ex-new", "fm000100000001", "60005", "0", kT + 5),
+                                  exec_row("ex-known", "fm000100000001", "60004", "0", kT + 4)},
+                                 "")};
+  std::int64_t since = 0;  // the venue clock follows the fixture's server time
+  {
+    Live l(h, h.section(true), [&](BybitVenue& v) {
+      since = v.venue_time_ms() - 3'600'000;
+      v.resume_executions(since, {"ex-known"});
+    });
+    // No reconciliation asked for: the replay runs once the private channel is up.
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderFill) == 1;
+    }));
+    CHECK(fills_of(l.oc)[0]->exec_id.view() == "ex-new");
+    const auto queries = h.srv.frames("executions");
+    REQUIRE(queries.size() == 1);
+    CHECK(param(queries[0], "startTime") == std::to_string(since));
+    l.spin(20);
+    CHECK(l.oc.count(EventType::Reconcile) == 0);
+    CHECK(l.oc.count(EventType::OrderFill) == 1);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a replay longer than 7 days walks 7-day windows") {
+  Harness h;
+  const std::int64_t week = 7LL * 24 * 3600 * 1000;
+  std::int64_t since = 0;
+  {
+    Live l(h, h.section(true), [&](BybitVenue& v) {
+      since = v.venue_time_ms() - 10LL * 24 * 3600 * 1000;
+      v.resume_executions(since, {});
+    });
+    REQUIRE(pump_until(l.reactor, [&] { return h.executions_calls.load() == 2; }));
+    l.spin(10);
+    const auto queries = h.srv.frames("executions");
+    REQUIRE(queries.size() == 2);
+    CHECK(param(queries[0], "startTime") == std::to_string(since));
+    CHECK(param(queries[0], "endTime") == std::to_string(since + week));
+    CHECK(param(queries[1], "startTime") == std::to_string(since + week));
+    CHECK(queries[1].find("endTime") == std::string::npos);
+  }
+  h.srv.stop();
 }
