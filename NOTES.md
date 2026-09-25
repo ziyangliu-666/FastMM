@@ -23,9 +23,17 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    indices behind a pointer to share one class cost the in-process engine step ~3%, so the
    protocol is written twice and a test drives the same 200k-step sequence through both.
    Still to do for step 2: the cross-process wake-up (a futex in the mapping) for adaptive spin.
-2. `fastmm-gateway`: runs the connectors and their reactors (today's net threads) and publishes
-   per-venue md/order/outbound rings plus a heartbeat. `fastmm-live` gets an attach mode that maps
-   them instead of starting connectors.
+2. `fastmm-gateway`: runs the connectors and their reactors (today's net threads). Design:
+   * Attach is a connection to the gateway's `AF_UNIX` socket (like the control socket). The
+     gateway answers with its instrument table (it loaded the reference data; the engine does not
+     guess tick and lot), the paths of three ShmRings per venue (md, order events, outbound) and,
+     with `SCM_RIGHTS`, an eventfd per direction to wake the other side in adaptive spin.
+   * Process death is the socket closing: no heartbeat, no timeout. The gateway cancels that
+     strategy's orders at once (step 3).
+   * Engine side: `RingFeed` and `LiveTransport` also take a `ShmRing`; the engine, the journal and
+     replay are unchanged. Sim/backtest use `InlineFeed`/`SimTransport` and never see it.
+   * Gateway side: connector sinks push into the ShmRings; the connectors' outbound drain is
+     already a template over the ring type.
 3. Attach/detach: on attach the gateway runs a reconciliation into the strategy's order ring (it
    already can); when a strategy's heartbeat stops, the gateway cancels that strategy's orders
    itself, a local dead man's switch that also covers Binance Spot. Proof: `kill -9` the strategy,
