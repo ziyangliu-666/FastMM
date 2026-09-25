@@ -196,6 +196,10 @@ struct VenueRouter {
   // trade ids its store listed) is in that seed already.
   Account* acct = nullptr;
   std::unique_ptr<AccountBook> book;
+  // The book events for the account's marks, copied out in the md drain and applied by the hook
+  // after the engines have been woken: the books are not on the way to a strategy.
+  std::unique_ptr<MsgRing> acct_md;
+  bool acct_md_lost = false;  // it was full: the books start over from a resync
   std::array<std::int64_t, kMaxInstruments> seed_from_ms{};
   std::array<std::shared_ptr<const std::unordered_set<std::string>>, kMaxInstruments> seed_known{};
   bool killed = false;  // it acted on the account's trip
@@ -211,6 +215,7 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_gross{0};
   std::atomic<std::uint64_t> refused_net{0};
   std::atomic<std::uint64_t> account_skipped{0};  // replayed fills its account seed holds
+  std::atomic<std::uint64_t> account_md_lost{0};  // times acct_md was full
   std::atomic<std::uint64_t> untracked{0};        // the order table was full
   std::atomic<std::uint64_t> stale_replays{0};    // replayed fills older than their owner's history
 
@@ -276,6 +281,36 @@ void account_fill(VenueRouter& v, const OrderFillMsg& m) {
   publish_account(v);
 }
 
+// The account's marks: the book events the md drain set aside. A set-aside ring that overflowed
+// loses deltas, so the account's books start over from the snapshots of a resync.
+std::size_t mark_account(VenueRouter& v) noexcept {
+  std::size_t n = 0;
+  bool marked = false;
+  MsgRing& ring = *v.acct_md;
+  while (const std::byte* p = ring.try_peek()) {
+    const auto& h = *reinterpret_cast<const EventHeader*>(p);
+    if (h.type == EventType::ConnectionState) {
+      v.book->on_connection_state(msg_cast<ConnectionStateMsg>(&h));
+    } else {
+      marked = v.book->on_book(msg_cast<BookDeltaMsg>(&h)) || marked;
+    }
+    ring.release();
+    ++n;
+  }
+  if (FASTMM_UNLIKELY(v.acct_md_lost)) {
+    v.acct_md_lost = false;
+    v.account_md_lost.fetch_add(1, std::memory_order_relaxed);
+    ConnectionStateMsg m{};
+    init_header(m, EventType::ConnectionState, InstrumentId::invalid(), v.vid);
+    m.state = ConnState::Resyncing;
+    m.channel = 0;
+    v.book->on_connection_state(m);
+    v.want_resync = true;
+  }
+  if (marked) publish_account(v);
+  return n;
+}
+
 // The account's exposure limits for one order on this venue: its own positions and the totals
 // the other venues published.
 RejectReason check_account(const VenueRouter& v, InstrumentId inst, Side side, Notional notional) {
@@ -336,11 +371,9 @@ void drain_md(void* ctx) noexcept {
     } else if (h.type != EventType::ConnectionState || !v.quiet_md_state) {
       for (Route* r : v.routes) push_md(*r, h);
     }
-    // The account's marks, after the attachments have the event.
-    if (h.type == EventType::BookDelta || h.type == EventType::BookSnapshot) {
-      if (v.book->on_book(msg_cast<BookDeltaMsg>(&h))) publish_account(v);
-    } else if (h.type == EventType::ConnectionState) {
-      v.book->on_connection_state(msg_cast<ConnectionStateMsg>(&h));
+    if (h.type == EventType::BookDelta || h.type == EventType::BookSnapshot ||
+        h.type == EventType::ConnectionState) {
+      if (!v.acct_md_lost && !v.acct_md->try_push(&h, h.len)) v.acct_md_lost = true;
     }
     ring.release();
   }
@@ -878,6 +911,7 @@ std::size_t gateway_hook(void* ctx) noexcept {
     if (r->waker != nullptr) r->waker->notify();
     ++n;
   }
+  n += mark_account(v);
   return n;
 }
 
@@ -886,7 +920,7 @@ std::size_t gateway_hook(void* ctx) noexcept {
 // (GatewayClient::wake_venue).
 bool gateway_pending(void* ctx) noexcept {
   const auto& v = *static_cast<const VenueRouter*>(ctx);
-  if (!v.cancels.empty()) return true;
+  if (!v.cancels.empty() || !v.acct_md->empty_approx()) return true;
   for (const Route* r : v.routes) {
     if (!r->out->empty_approx()) return true;
   }
@@ -1027,6 +1061,7 @@ class Gateway {
       v->dry_run = opts.dry_run;
       v->acct = &acct;
       v->book = std::make_unique<AccountBook>(insts, v->vid);
+      v->acct_md = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
       // Before any strategy seeded an instrument, a replayed execution from before the gateway
       // started is none of the account's business: the positions start with the strategies'.
       v->seed_from_ms.fill(start_ms);
@@ -1286,18 +1321,19 @@ class Gateway {
       const std::uint64_t gross = v.refused_gross.load(std::memory_order_relaxed);
       const std::uint64_t net = v.refused_net.load(std::memory_order_relaxed);
       const std::uint64_t skipped = v.account_skipped.load(std::memory_order_relaxed);
+      const std::uint64_t md_lost = v.account_md_lost.load(std::memory_order_relaxed);
       const std::uint64_t untracked = v.untracked.load(std::memory_order_relaxed);
       const std::uint64_t stale = v.stale_replays.load(std::memory_order_relaxed);
       Logged& l = logged_[i];
       if (md != l.md || order != l.order || unrouted != l.unrouted || cancels != l.cancels ||
           rate != l.rate || notional != l.notional || owner != l.owner || killed != l.killed ||
           gross != l.gross || net != l.net || untracked != l.untracked || stale != l.stale ||
-          skipped != l.skipped) {
+          skipped != l.skipped || md_lost != l.md_lost) {
         FASTMM_LOG_INFO(
             "gateway: [{}] discarded with nothing attached: md={} order={}; order events for no "
             "attachment: {}; gateway cancels: {}; refused: rate={} open_notional={} not_owner={} "
             "account_killed={} gross_notional={} net_notional={}; untracked: {}; replayed fills "
-            "older than their owner's history: {}, than the account's: {}",
+            "older than their owner's history: {}, than the account's: {}; account books lost: {}",
             slots_[i]->venue->name(),
             md,
             order,
@@ -1311,7 +1347,8 @@ class Gateway {
             net,
             untracked,
             stale,
-            skipped);
+            skipped,
+            md_lost);
         l = Logged{md,
                    order,
                    unrouted,
@@ -1324,7 +1361,8 @@ class Gateway {
                    net,
                    untracked,
                    stale,
-                   skipped};
+                   skipped,
+                   md_lost};
       }
       for (const auto& a : atts_) {
         const std::uint64_t d = a->routes[i].md_dropped.load(std::memory_order_relaxed);
@@ -1454,6 +1492,7 @@ class Gateway {
     std::uint64_t untracked = 0;
     std::uint64_t stale = 0;
     std::uint64_t skipped = 0;
+    std::uint64_t md_lost = 0;
   };
 
   // A session epoch no live attachment has, from the gateway's epoch file (fail closed).
@@ -1907,6 +1946,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
       off_if_empty(cfg.gateway.max_net_notional),
       path);
 
+  gateway.log_account(/*force=*/true);
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
   std::vector<pollfd> fds;
@@ -1941,6 +1981,8 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
       gateway.log_counters();
       gateway.log_account();
       gateway.persist_kill();
+      // The once-a-second lines are the gateway's status: on disk now, not when a buffer fills.
+      Logger::instance().flush();
     }
   }
   FASTMM_LOG_WARN("fastmm-gateway: shutting down ({})",
