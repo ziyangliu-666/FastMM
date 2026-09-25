@@ -20,7 +20,7 @@ The last two columns are what an operator has to decide. "Orders cancelled" is t
 | 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok` | yes | no: find the kill reason in the log |
 | 7 | a Python strategy's slow tier failed, `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` never returns it) | yes | no: fix the slow method |
 
-The engine keeps no state across a restart, so a restart after any of these is a fresh trading decision ([Running this in production](../how-to/operations/running-in-production.md#1-nothing-survives-a-restart)).
+A restart after 5, 6 or 7 is a decision for a person; the systemd unit does not make it ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restarted session carries over: [Running this in production](../how-to/operations/running-in-production.md#1-what-survives-a-restart).
 
 ### The other programs
 

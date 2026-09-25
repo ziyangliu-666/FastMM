@@ -63,7 +63,7 @@ The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fa
 | Reason | Diagnosis | Action |
 |---|---|---|
 | `Requested` | a signal, `--duration` or a slow-tier failure; the session was shutting down anyway | read the `shutting down (<reason>)` line above it |
-| `MaxLoss` | net PnL reached `-max_loss` for this process | stop. Reconcile the account, find out what the position did, decide whether to restart. A restart gets a fresh full budget ([per process](running-in-production.md#the-loss-budget-is-per-process)) |
+| `MaxLoss` | net PnL, carried across sessions, reached `-max_loss` | stop. The trip is latched: every start exits 6 until `--clear-kill`, which arms the whole budget again. Reconcile the account and find out what the position did first ([What survives a restart](running-in-production.md#1-what-survives-a-restart)) |
 | `TransportFull` | the outbound ring to a venue filled; messages were dropped, so the journal no longer matches what was sent | check the venue for orders the engine does not know. Raise `[engine] order_ring_bytes`; check the network thread's core |
 | `JournalOverflow` | the journal ring filled; events were lost and the session is no longer replayable | raise `[engine] journal_ring_bytes`; check disk write throughput and whether `fm-journal` is starved |
 | `AllVenuesKilled` | every venue with instruments was killed individually | read each venue's own reason first |

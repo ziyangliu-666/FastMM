@@ -50,7 +50,7 @@ What the unit sets, and when to change it:
 
 | Directive | Why |
 |---|---|
-| `Restart=no` | the kill switch latches in `<journal_dir>/<name>.kill` and the `max_loss` budget carries across restarts, but positions and open orders do not. Exit codes 5, 6 and 7 need a human ([Errors and exit codes](../../reference/errors.md)); a restarted session is a new trading decision ([Running this in production](running-in-production.md#1-nothing-survives-a-restart)) |
+| `Restart=on-failure`, `RestartPreventExitStatus=2 3 5 6 7` | a crash (any signal, `kill -9` included) or exit 4 restarts after 2 s: the new session restores the position from the store and the venue's executions and cancels the orders the dead one left ([Running this in production](running-in-production.md#1-what-survives-a-restart)). 2 and 3 need a config fix, and 5, 6 and 7 a human ([Errors and exit codes](../../reference/errors.md)); a latched kill switch exits 6 at every start. `StartLimitBurst=5` in ten minutes ends a crash loop |
 | `TimeoutStopSec=90` | SIGTERM pulls the quotes and cancels every order over REST before the process exits ([Kill switch and shutdown](kill-switch-and-shutdown.md)) |
 | `LimitMEMLOCK=infinity` | `[engine] lock_memory = true` calls `mlockall()`; without the limit the call fails and logs a warning. Drop the line when `lock_memory` is off |
 | `CPUAffinity=2 3` | the cores the process may use, a superset of `[engine] cpu` and `net_cpus` and disjoint from everything else on the host. Pair it with `isolcpus`, `nohz_full` and `rcu_nocbs` (`scripts/host-setup.sh tune`), and delete the line on a shared host, where `cpu = -1` ([Go-live checklist](go-live-checklist.md)) |

@@ -459,17 +459,34 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     CHECK(h.unsubscribes.load() == 1);
     CHECK(count_state(mdc, ConnState::Resyncing) == 1);
 
+    // The start-up sweep ran when the private channel came up, with an empty watermark: it says
+    // nothing about orders of this session.
+    const auto is_begin = [](const ReconcileMsg& m) { return m.kind == ReconcileMsg::Kind::Begin; };
+    const auto* sweep = oc.first_if<ReconcileMsg>(EventType::Reconcile, is_begin);
+    REQUIRE(sweep != nullptr);
+    CHECK(sweep->sent_watermark == ClientOrderId{});
+    const auto open_orders_reported = [&] {
+      std::size_t count = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::Reconcile &&
+            RecordingSink::as<ReconcileMsg>(m).kind == ReconcileMsg::Kind::OpenOrder)
+          ++count;
+      }
+      return count;
+    };
+    // What a session that died left resting is reported before this session asks for anything.
+    CHECK(open_orders_reported() == 2);
+    const std::size_t before = oc.count(EventType::Reconcile);
     venue.request_open_orders();
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
-      return oc.count(EventType::Reconcile) == 4;  // Begin, option order, perpetual order, End
+      // Begin, option order, perpetual order, End
+      return oc.count(EventType::Reconcile) == before + 4;
     }));
     const auto* rec = oc.last<ReconcileMsg>(EventType::Reconcile);
     CHECK(rec->kind == ReconcileMsg::Kind::End);
     // Begin carries the last order id the venue sent before it asked for the snapshot.
-    const auto* begin = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
-      return m.kind == ReconcileMsg::Kind::Begin;
-    });
+    const auto* begin = oc.last_if<ReconcileMsg>(EventType::Reconcile, is_begin);
     REQUIRE(begin != nullptr);
     CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
     CHECK(begin->sent_watermark == rp.cl_ord_id);
@@ -477,13 +494,14 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     // Private channel drop: REST cancel_all_by_instrument per instrument, reconnect, auth again,
     // reconcile again.
     const int auths_before = h.auths.load();
+    const std::size_t reconciles_before = oc.count(EventType::Reconcile);
     h.srv.close_sessions(kPrivatePath);
     REQUIRE(pump_until(
         reactor,
         [&] {
           oc.take(orders);
           return h.cancel_all_ok.load() >= 2 && h.auths.load() > auths_before &&
-                 oc.count(EventType::Reconcile) == 8 &&
+                 oc.count(EventType::Reconcile) == reconciles_before + 4 &&
                  count_state(oc, ConnState::Disconnected) >= 1;
         },
         15'000));
@@ -686,6 +704,16 @@ struct ReplaySession {
       mdc.take(md);
       return venue->authenticated() && count_state(oc, ConnState::Live) >= 1;
     }));
+    // The start-up sweep (an empty book here) finishes before a test asks for its own snapshot;
+    // the tests count what comes after it.
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return count_kind(ReconcileMsg::Kind::End) >= 1;
+    }));
+    oc.all.clear();
+    h.open_orders_requests = 0;
+    const std::lock_guard lock(h.mu);
+    h.trades_queries.clear();
   }
   ~ReplaySession() {
     venue->disconnect();
@@ -802,7 +830,7 @@ TEST_CASE("deribit.venue: a fill the private stream missed is booked at reconcil
   CHECK(req.find(R"("currency":"BTC","kind":"any")") != std::string::npos);
   CHECK(req.find(R"("count":1000,"sorting":"asc","historical":false)") != std::string::npos);
   const VenueStatus st = s.status();
-  CHECK(st.execution_queries == 1);
+  CHECK(st.execution_queries == 2);  // the start-up sweep's and this one
   CHECK(st.executions_fetched == 1);
   CHECK(st.execution_query_errors == 0);
 
@@ -867,7 +895,7 @@ TEST_CASE(
   CHECK(s.count_kind(ReconcileMsg::Kind::Begin) == 1);
   CHECK(s.h.open_orders_requests.load() == 1);
   const VenueStatus st = s.status();
-  CHECK(st.execution_queries == 2);
+  CHECK(st.execution_queries == 3);  // the start-up sweep's, the failed one, the retry
   CHECK(st.execution_query_errors == 1);
   CHECK(st.executions_fetched == 1);
 

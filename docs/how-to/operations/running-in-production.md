@@ -4,34 +4,22 @@ This page lists what an operator will hit, in the order it is likely to cost you
 
 Every shipped config points at a testnet, Demo Mode or a local simulator. There is no main-net config in the repository; you write it.
 
-## 1. Nothing survives a restart
+## 1. What survives a restart
 
-The engine keeps every piece of trading state in memory (`include/fastmm/core/engine.hpp`). A restart starts from zero:
+| State | After a restart |
+|---|---|
+| Position | restored from the store (`[engine] restore_position`, default on), then brought up to date by the venue's trade history since the last stored fill: fills of orders that were resting when the process died, trades made on the account outside FastMM |
+| Orders the dead process left | the first connect sweeps the venue's open orders; their ids belong to an earlier session epoch, so the engine cancels them (`cancelling unknown live order <id>`) |
+| Kill switch, `[risk] max_loss` budget | carried in `<journal_dir>/<name>.kill`: a latched kill exits 6 at every start until cleared, and the loss budget is for the deployment, not the process |
+| Client order id sequence | continues: `[engine] epoch_file` (default `runs/session_epoch`) keeps ids unique; keep the file |
+| Realised PnL of the session | starts at zero; the previous session's is logged at start and kept in the store |
+| A running flatten | abandoned ([Operating a running session](operate-a-running-session.md#a-restart-during-a-flatten)) |
 
-| State | After a restart | Consequence |
-|---|---|---|
-| Position | zero on every venue except Binance USDⓈ-M, which resyncs it from `positionRisk` | the engine quotes as if flat while you are not |
-| Realised PnL, unrealised PnL, fees | zero | the session summary and `fastmm-top` under-report your real loss |
-| `[risk] max_loss` budget | zero consumed | see below |
-| Kill switch and its reason | cleared | a process that killed itself for `MaxLoss` will trade again on restart |
-| OMS order table | empty | orders left on the venue are invisible; see [2](#2-orders-the-engine-cannot-see) |
-| Client order id sequence | continues | `[engine] epoch_file` (default `runs/session_epoch`) keeps ids unique; keep the file |
-
-Mitigation: treat a restart as a new trading decision. Before restarting, read the account's position and open orders on the venue, flatten or accept the inherited position deliberately, and size `[risk] max_position` and `max_loss` for the restarted session. A flatten is session state too: a restart during one abandons it and leaves the position ([Operating a running session](operate-a-running-session.md#a-restart-during-a-flatten)).
-
-### The loss budget is per process
-
-`[risk] max_loss` is compared against the cumulative net PnL of the running process (`RiskEngine::on_pnl`, `include/fastmm/core/risk.hpp`). There is no daily counter, no UTC roll-over and no persisted total; grep the tree for `daily` and nothing comes back. A process that trips `MaxLoss`, exits with code 6 and is restarted by a supervisor gets a fresh full budget every time.
-
-Mitigation: do not put `fastmm-live` behind `Restart=always`. Exit codes 5, 6 and 7 mean a human has to look. Use `Restart=no` and alert on those codes ([Errors and exit codes](../../reference/errors.md)).
+The shipped systemd unit restarts after a crash for this reason ([Deploy](deploy.md#run-under-systemd)). Demonstrated against `fastmm-sim-exchange`: `kill -9` while quoting, restart after 2 s, one order that filled in between booked from the executions, the other cancelled as unknown, and engine and venue ended at the same position with no open orders.
 
 ## 2. Orders the engine cannot see
 
-There is no reconciliation at startup on Binance Spot, Bybit or Deribit. Their reconcile paths are gated on a "was previously live" latch that is false on a first connect (`binance_venue.hpp`, `bybit_venue.hpp`, `deribit_venue.hpp`); only Binance USDⓈ-M queries open orders before it starts. There is no cancel-all-on-start and no config key for one.
-
-Orders a previous run left resting therefore stay on the venue, unknown to the OMS, until the order channel drops and reconnects. At that point they are cancelled with `cancelling unknown live order <id>`. Until then they can fill, and a fill on an unknown order is booked to the position but leaves the OMS without an order to match it to.
-
-Mitigation: cancel all orders on the venue's own interface before every start, and verify it. The [Go-live checklist](go-live-checklist.md#stopping) says the same for stopping.
+A process that is gone cancels nothing. Its orders rest until the next session's start-up sweep, or until the venue's own switch clears them.
 
 ### Binance Spot has no dead man's switch, and Bybit's is not self-serve
 

@@ -2,6 +2,9 @@
 # Install and edit the paths: docs/how-to/operations/deploy.md#run-under-systemd
 [Unit]
 Description=FastMM live trading engine
+# A crash loop stops after five starts in ten minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 Documentation=https://ziy.bio/FastMM/how-to/operations/deploy/
 After=network-online.target time-sync.target
 Wants=network-online.target
@@ -16,10 +19,13 @@ WorkingDirectory=/var/lib/fastmm
 EnvironmentFile=/etc/fastmm/fastmm-live.env
 ExecStart=/opt/fastmm/bin/fastmm-live --config ${FASTMM_CONFIG}
 
-# The kill switch latches in <journal_dir>/<name>.kill and the max-loss budget carries across
-# restarts, but positions, open orders and the OMS table do not: a restart is a trading decision.
-# Exit codes 5, 6 and 7 need a human (docs/reference/errors.md).
-Restart=no
+# A crash or a transient failure (a signal, exit 4) comes back into service: the position is
+# restored from the store plus the venue's executions, orders the dead process left are swept and
+# cancelled, and the kill switch and the max-loss budget carry over. 2 and 3 need a config fix;
+# 5, 6 and 7 need a human (docs/reference/errors.md), and a latched kill exits 6 at every start.
+Restart=on-failure
+RestartPreventExitStatus=2 3 5 6 7
+RestartSec=2
 # SIGTERM cancels every order over REST before the process exits; give it room.
 KillSignal=SIGTERM
 TimeoutStopSec=90

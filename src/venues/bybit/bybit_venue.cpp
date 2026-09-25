@@ -399,14 +399,17 @@ void BybitVenue::on_private_state(net::ConnState s) {
     // Stale is not reported for these channels, so neither is the return from it.
     if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
     FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
-    // 6.7: reconcile after a reconnect, not when a quiet channel returns from Stale.
-    if (private_was_live_ && prev != ConnState::Stale) request_open_orders();
-    private_was_live_ = true;
-    // A restarted session carries a position over: book what happened while nothing ran.
-    if (exec_resumed_) {
-      exec_resumed_ = false;
-      static_cast<void>(request_executions());
+    // 6.7: reconcile after a reconnect, not when a quiet channel returns from Stale. On the first
+    // connect, sweep for orders a session that died left resting (Bybit's disconnect-cancel-all
+    // is off unless the account has it): their ids belong to an earlier epoch, so the engine
+    // cancels them. The replay before the snapshot also books what happened while nothing ran.
+    if (private_was_live_ && prev != ConnState::Stale) {
+      request_open_orders();
+    } else if (!private_was_live_) {
+      sweep_next_ = true;
+      request_open_orders();
     }
+    private_was_live_ = true;
   } else if ((mapped == ConnState::Disconnected || mapped == ConnState::Connecting) &&
              (prev == ConnState::Live || prev == ConnState::Stale)) {
     emit_connection_state(*order_sink_, id_, 1, ConnState::Disconnected);
@@ -1001,7 +1004,10 @@ void BybitVenue::send_open_orders() {
   if (reconcile_in_flight_) return;
   reconcile_records_.clear();
   reconcile_pages_ = 0;
-  reconcile_watermark_ = sent_.value();
+  // The start-up sweep says nothing about our own orders: one sent before the snapshot was asked
+  // for can still be in flight.
+  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value();
+  sweep_next_ = false;
   request_open_orders_page({});
 }
 
@@ -1122,7 +1128,6 @@ void BybitVenue::resume_executions(std::int64_t since_venue_ms,
   exec_since_ms_ = since_venue_ms;
   exec_edge_ids_.clear();
   known_exec_ids_ = {known.begin(), known.end()};
-  exec_resumed_ = since_venue_ms > 0;
 }
 
 bool BybitVenue::request_executions(std::int64_t since_venue_ms) {

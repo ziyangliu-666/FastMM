@@ -3,6 +3,20 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-25: a crash comes back into service by itself
+
+`deploy/fastmm-live.service` restarted nothing (`Restart=no`), on the grounds that positions and
+open orders did not survive a restart. They do now, so the unit restarts after a crash or exit 4
+(`Restart=on-failure`, `RestartPreventExitStatus=2 3 5 6 7`, five starts in ten minutes). Shown
+with a user unit against `fastmm-sim-exchange`: `kill -9` mid-quoting, systemd restarted it after
+2 s, the new session booked the one resting order that filled in between from the executions and
+cancelled the other as unknown, and venue and engine both ended at 0.00044 with no open orders
+(120 fills at the venue = 50 + 70 in the two sessions' stores). Exit 4 retried five times and
+stopped. Bybit and Deribit did not reconcile on their first connect, so a dead session's orders
+rested unmanaged until some later reconnect; both now sweep on first connect with an empty
+watermark, like Spot. The production guide's "Nothing survives a restart" section is rewritten
+from the code.
+
 ## 2026-09-25: restart carry-over checked against Binance Spot Demo
 
 Session A (`configs/binance-demo.toml` at 0.5 bps, 150 s) made 10 fills and stopped at BTCUSDT

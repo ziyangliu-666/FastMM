@@ -96,4 +96,4 @@ Widening the quote does not solve it, because the fill rate falls faster than th
 - Run the backtest with your venue's real `maker_bps` and `taker_bps`, not the shipped rebate.
 - Compare realised PnL against fees: if `realized` is smaller than `fees`, the strategy is paying the venue to trade.
 - Run the practice session in [Run on a testnet or Binance Demo](../how-to/operations/run-on-testnet.md), then reconcile it against the account ([Check PnL](../how-to/operations/journals-replay-pnl.md#check-pnl)). A testnet's thin book will not reproduce the fill rate; Demo Mode follows the real market and charges the real commission.
-- Set `[risk] max_loss` to what you accept losing in one process lifetime. It is not a daily budget and does not survive a restart ([Running this in production](../how-to/operations/running-in-production.md#the-loss-budget-is-per-process)).
+- Set `[risk] max_loss` to what you accept losing across restarts: the budget is carried in `<journal_dir>/<name>.kill` until you clear it ([Running this in production](../how-to/operations/running-in-production.md#1-what-survives-a-restart)). It is not a daily budget.

@@ -417,19 +417,37 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
       CHECK(st.order_send.p50_ns < 1'000'000'000);
     }
 
+    // The start-up sweep ran when the private channel came up, with an empty watermark: it says
+    // nothing about orders of this session.
+    const auto is_begin = [](const ReconcileMsg& m) { return m.kind == ReconcileMsg::Kind::Begin; };
+    const auto* sweep = oc.first_if<ReconcileMsg>(EventType::Reconcile, is_begin);
+    REQUIRE(sweep != nullptr);
+    CHECK((sweep->flags & ReconcileMsg::kSentWatermark) != 0);
+    CHECK(sweep->sent_watermark == ClientOrderId{});
+    const auto open_orders_reported = [&] {
+      std::size_t count = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::Reconcile &&
+            RecordingSink::as<ReconcileMsg>(m).kind == ReconcileMsg::Kind::OpenOrder)
+          ++count;
+      }
+      return count;
+    };
+    // What a session that died left resting is reported before this session asks for anything.
+    CHECK(open_orders_reported() == 1);
+    const std::size_t before = oc.count(EventType::Reconcile);
     venue.request_open_orders();
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
-      return oc.count(EventType::Reconcile) == 3;  // Begin, BTCUSDT order, End (ETHUSDT skipped)
+      // Begin, BTCUSDT order, End (ETHUSDT skipped)
+      return oc.count(EventType::Reconcile) == before + 3;
     }));
     // Begin carries the last order id the venue sent before it asked for the snapshot.
-    const auto* begin = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
-      return m.kind == ReconcileMsg::Kind::Begin;
-    });
+    const auto* begin = oc.last_if<ReconcileMsg>(EventType::Reconcile, is_begin);
     REQUIRE(begin != nullptr);
     CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
     CHECK(begin->sent_watermark == rp.cl_ord_id);
-    CHECK(h.open_orders_ok.load() == 1);
+    CHECK(h.open_orders_ok.load() == 2);  // the start-up sweep and this one
 
     CHECK(venue.cancel_all());
     CHECK(h.cancel_all_ok.load() == 1);
@@ -926,7 +944,7 @@ TEST_CASE("bybit.venue: a resumed session replays from the store and skips what 
       since = v.venue_time_ms() - 3'600'000;
       v.resume_executions(since, {"ex-known"});
     });
-    // No reconciliation asked for: the replay runs once the private channel is up.
+    // No reconciliation asked for: the start-up sweep replays once the private channel is up.
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::OrderFill) == 1;
@@ -936,7 +954,12 @@ TEST_CASE("bybit.venue: a resumed session replays from the store and skips what 
     REQUIRE(queries.size() == 1);
     CHECK(param(queries[0], "startTime") == std::to_string(since));
     l.spin(20);
-    CHECK(l.oc.count(EventType::Reconcile) == 0);
+    // ...then its snapshot, which follows the replay (Begin carries kExecutionsExact).
+    const auto* begin = l.oc.first_if<ReconcileMsg>(
+        EventType::Reconcile,
+        [](const ReconcileMsg& m) { return m.kind == ReconcileMsg::Kind::Begin; });
+    REQUIRE(begin != nullptr);
+    CHECK((begin->flags & ReconcileMsg::kExecutionsExact) != 0);
     CHECK(l.oc.count(EventType::OrderFill) == 1);
   }
   h.srv.stop();

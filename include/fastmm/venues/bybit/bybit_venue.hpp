@@ -241,6 +241,7 @@ class BybitVenue final : public Venue {
   // Open-order snapshot, collected across pages before anything reaches the engine.
   std::vector<ReconcileMsg> reconcile_records_;
   ClientOrderId reconcile_watermark_{};  // sent watermark when the first page was requested
+  bool sweep_next_ = false;  // the next snapshot is the start-up sweep: an empty watermark
   std::size_t reconcile_pages_ = 0;
   bool reconcile_in_flight_ = false;
   bool oo_wanted_ = false;  // a snapshot waits for the execution replay in flight
@@ -265,8 +266,7 @@ class BybitVenue final : public Venue {
   std::int64_t exec_since_ms_ = 0;
   std::unordered_set<std::string> exec_edge_ids_;   // ids at exec_since_ms_, already forwarded
   std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
-  bool exec_resumed_ = false;       // resume_executions(): replay once the private channel is up
-  std::vector<ExecRow> exec_rows_;  // the current window, newest first as received
+  std::vector<ExecRow> exec_rows_;                  // the current window, newest first as received
   std::int64_t exec_window_start_ = 0;
   std::int64_t exec_window_end_ = 0;     // 0: open-ended (the last window)
   std::int64_t exec_window_low_ms_ = 0;  // oldest row seen in the window so far

@@ -494,13 +494,21 @@ void DeribitVenue::on_private_state(net::ConnState s) {
   private_state_ = mapped;
   if (mapped == ConnState::Live) {
     const bool reconnected = private_was_live_ && prev != ConnState::Stale;
+    const bool first_connect = !private_was_live_;
     private_was_live_ = true;
     // Stale is not reported for this channel, so neither is the return from it.
     if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
     FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
     drain_outbound();
-    // 6.7: reconcile after a reconnect (orders may have been cancelled meanwhile).
-    if (reconnected) request_open_orders();
+    // 6.7: reconcile after a reconnect (orders may have been cancelled meanwhile). On the first
+    // connect, sweep for orders a session that died left resting (cancel-on-disconnect only
+    // covers a connection that closed): the engine does not know their ids and cancels them.
+    if (reconnected) {
+      request_open_orders();
+    } else if (first_connect) {
+      sweep_next_ = true;
+      request_open_orders();
+    }
     return;
   }
   if (mapped == ConnState::Stale) return;
@@ -1041,7 +1049,9 @@ void DeribitVenue::apply_action(VenueAction action, int code, std::string_view m
 void DeribitVenue::request_open_orders() {
   if (cfg_.dry_run || !connected_ || !private_conn_.is_live() || access_token_.empty()) return;
   if (reconcile_pending_ > 0) return;  // one reconciliation at a time
-  reconcile_watermark_ = sent_.value();
+  // The start-up sweep says nothing about our own orders: one sent before it can be in flight.
+  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value();
+  sweep_next_ = false;
   // A request while the executions are being fetched is served once they are in, so its snapshot
   // is exact too. Latched before the replay starts: a replay that cannot send anything finishes
   // inside request_executions() and releases the snapshot there.

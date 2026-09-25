@@ -226,7 +226,8 @@ class DeribitVenue final : public Venue {
   std::size_t reconcile_pending_ = 0;
   bool reconcile_failed_ = false;
   ClientOrderId reconcile_watermark_{};  // sent watermark when the open orders were requested
-  bool oo_wanted_ = false;               // a snapshot waits for the execution replay in flight
+  bool sweep_next_ = false;  // the next snapshot is the start-up sweep: an empty watermark
+  bool oo_wanted_ = false;   // a snapshot waits for the execution replay in flight
 
   // Execution replay, per currency: the next query starts at since_ms (inclusive, the timestamp
   // of the last row forwarded) and skips edge_ids, the rows at since_ms already forwarded.
