@@ -1313,7 +1313,8 @@ void BybitVenue::emit_executions() {
                        *qty,
                        fee,
                        fee_asset_of(in, fee, e.fee_currency, e.fee_rate, e.side, e.maker),
-                       e.maker ? Liquidity::Maker : Liquidity::Taker);
+                       e.maker ? Liquidity::Maker : Liquidity::Taker,
+                       e.time_ms);
     ++stats_.order_events;
     ++stats_.executions_fetched;
     ++count;

@@ -90,7 +90,9 @@ inline void emit_cancel_ack(EventSink& sink,
 // booked, and no cumulative quantity: the venue's trade history does not report one, so the OMS
 // works out how much of the execution is new. `cl_ord_id` may be empty when the connector cannot
 // map the venue's order id back to one of its own (a restarted session): the fill still reaches the
-// position, as an unknown fill.
+// position, as an unknown fill. `trade_time_ms` is the venue's time of the trade (Unix ms), stamped
+// as hdr.exch_ts: fastmm-gateway tells from it whether an execution naming no live order is older
+// than what a strategy's store holds.
 inline void emit_replayed_fill(EventSink& sink,
                                VenueId venue,
                                InstrumentId inst,
@@ -102,9 +104,11 @@ inline void emit_replayed_fill(EventSink& sink,
                                Qty qty,
                                Notional fee,
                                FeeAsset fee_asset,
-                               Liquidity liquidity) noexcept {
+                               Liquidity liquidity,
+                               std::int64_t trade_time_ms) noexcept {
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, inst, venue);
+  m.hdr.exch_ts = Timestamp{trade_time_ms * 1'000'000};  // the venue's time of the trade
   m.cl_ord_id = id;
   m.venue_order_id.assign(venue_order_id);
   m.exec_id.assign(exec_id);

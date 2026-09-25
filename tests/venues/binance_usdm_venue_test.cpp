@@ -12,6 +12,7 @@
 #include "fastmm/venues/registry.hpp"
 
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 
@@ -869,6 +870,7 @@ TEST_CASE("binance_usdm.venue: a fill the user stream missed is booked from user
   CHECK(fill.fee == Notional::from_decimal("0.028").value());
   CHECK(fill.fee_asset == FeeAsset::Quote);
   CHECK(fill.liquidity == Liquidity::Maker);
+  CHECK(std::abs(fill.hdr.exch_ts.ns - wall_now().ns) < 60'000'000'000);  // the trade's "time"
   CHECK(begin_exact(f.oc, 1));
 
   // The next replay carries on after the trade it forwarded.
