@@ -706,3 +706,32 @@ TEST_CASE("core.oms: reconcile spares orders sent after the request and other ve
   oms.on_cancel_ack(cancel_ack(f));
   CHECK(oms.on_ack(ack(f)).action == OmsAction::Ignored);
 }
+
+// The private stream names the order an execution filled; a trade history replayed later may not
+// (the connector no longer maps that venue order id). The same execution must not count twice.
+TEST_CASE("core.oms: an execution is deduplicated whether or not it names the order") {
+  Oms oms;
+  const ClientOrderId id = oms.next_cl_ord_id();
+  REQUIRE(oms.submit(req(Side::Buy, 100, 10), id, Timestamp{1}));
+  static_cast<void>(oms.on_ack(ack(id)));
+  OrderFillMsg streamed = fill(id, 100, 4, 4, "t1");
+  CHECK(oms.on_fill(streamed).fill_qty == qt(4));
+  OrderFillMsg replayed = fill(ClientOrderId{}, 100, 4, 0, "t1");
+  replayed.flags = OrderFillMsg::kReplayed;
+  const OmsUpdate u = oms.on_fill(replayed);
+  CHECK(u.action == OmsAction::Duplicate);
+  CHECK(oms.stats().duplicates == 1);
+  // The two halves of a self-trade share the venue's id and are both ours.
+  const ClientOrderId sell = oms.next_cl_ord_id();
+  REQUIRE(oms.submit(req(Side::Sell, 100, 1), sell, Timestamp{2}));
+  static_cast<void>(oms.on_ack(ack(sell)));
+  OrderFillMsg buy_half = fill(id, 100, 1, 5, "t2");
+  OrderFillMsg sell_half = fill(sell, 100, 1, 1, "t2");
+  sell_half.side = Side::Sell;
+  CHECK(oms.on_fill(buy_half).action != OmsAction::Duplicate);
+  CHECK(oms.on_fill(sell_half).action != OmsAction::Duplicate);
+  // The same id on another instrument is another execution.
+  OrderFillMsg other = fill(ClientOrderId{}, 100, 1, 0, "t1");
+  other.hdr.instrument = InstrumentId{1};
+  CHECK(oms.on_fill(other).action == OmsAction::UnknownFill);
+}

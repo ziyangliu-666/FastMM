@@ -22,6 +22,7 @@
 // responses carry `rateLimits[]` and REST responses X-MBX-USED-WEIGHT-1M /
 // X-MBX-ORDER-COUNT-10S; 429 -> Retry-After cooldown; 418 -> REST hard stop.
 #include "fastmm/core/containers/open_hash_map.hpp"
+#include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/net/connection.hpp"
@@ -278,7 +279,7 @@ class BinanceVenue final : public Venue {
   // reports (which names only orderId) reaches the order it belongs to. A restarted session starts
   // empty: those executions arrive with no client order id and reach the position as unknown fills,
   // which is what a restart needs from them.
-  OpenHashMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
+  RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
   std::int64_t exec_since_ms_ = 0;
   // Trade ids an earlier session booked; a resumed replay skips them (resume_executions).
   std::unordered_set<std::string> known_exec_ids_;

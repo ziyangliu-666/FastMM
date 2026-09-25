@@ -29,6 +29,7 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
+#include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/containers/ring_buffer.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/enums.hpp"
@@ -759,18 +760,15 @@ class Oms {
     best_own_[inst.value][static_cast<std::size_t>(side)] = best;
   }
 
-  // exec_id dedupe: hash(exec_id, cl_ord_id) kept in a map with ring eviction.
+  // An execution is what the venue says it is: its id on that instrument and side (the two halves
+  // of a self-trade share an id). Not the order it names: the private stream names it and a
+  // replayed trade history may not (a venue order id the connector no longer maps), and keying on
+  // the order booked such an execution twice.
   bool remember_exec(const OrderFillMsg& m) noexcept {
-    const std::uint64_t key = m.exec_id.hash() ^ (m.cl_ord_id.value * 0x9E3779B97F4A7C15ULL);
-    if (exec_seen_.contains(key)) return false;
-    if (exec_ring_.full()) {
-      std::uint64_t old = 0;
-      exec_ring_.pop(old);
-      exec_seen_.erase(old);
-    }
-    exec_ring_.push(key);
-    exec_seen_.insert(key, 1);
-    return true;
+    const std::uint64_t key = m.exec_id.hash() ^
+                              (static_cast<std::uint64_t>(m.hdr.instrument.value) << 1U) ^
+                              (static_cast<std::uint64_t>(m.side) * 0x9E3779B97F4A7C15ULL);
+    return exec_seen_.assign(key, 1);
   }
 
   std::uint16_t epoch_;
@@ -785,8 +783,7 @@ class Oms {
   std::uint32_t live_pos_[kMaxOpenOrders] = {};
   OpenHashMap<ClientOrderId, Handle<Order>, kMaxOpenOrders * 4> by_id_;  // ids + pending ids
   RingBuffer<TerminalRecord, kRecentlyTerminal> recently_terminal_;
-  OpenHashMap<std::uint64_t, std::uint8_t, kRecentlyTerminal * 2> exec_seen_;
-  RingBuffer<std::uint64_t, kRecentlyTerminal> exec_ring_;
+  RecentMap<std::uint64_t, std::uint8_t, kRecentlyTerminal> exec_seen_;
   Price best_own_[kMaxInstruments][2];
   Qty open_qty_[kMaxInstruments][2];
   std::uint32_t open_per_inst_[kMaxInstruments] = {};

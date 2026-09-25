@@ -1123,7 +1123,8 @@ void BinanceVenue::emit_ack(InstrumentId inst,
                             std::int64_t order_id,
                             bool amended_in_place) {
   // GET /api/v3/myTrades names the order by orderId only, so the pairing has to be kept here.
-  if (order_id > 0) order_ids_.insert(static_cast<std::uint64_t>(order_id), id);
+  // An amend in place keeps the orderId under a new client id: the latest pairing wins.
+  if (order_id > 0) static_cast<void>(order_ids_.assign(static_cast<std::uint64_t>(order_id), id));
   emit_order_ack(*order_sink_,
                  id_,
                  inst,
@@ -1161,7 +1162,7 @@ void BinanceVenue::emit_reconcile(std::string_view json,
         m.state = o.status == "PARTIALLY_FILLED" ? OrderState::PartiallyFilled : OrderState::Live;
         if (const auto id = decode_cl_ord_id(o.client_order_id)) m.cl_ord_id = *id;
         if (o.order_id > 0 && m.cl_ord_id.valid())
-          order_ids_.insert(static_cast<std::uint64_t>(o.order_id), m.cl_ord_id);
+          static_cast<void>(order_ids_.assign(static_cast<std::uint64_t>(o.order_id), m.cl_ord_id));
         m.venue_order_id.assign(IdText(o.order_id).view());
         if (const auto p = parse_price(o.price)) m.price = *p;
         if (const auto q = parse_qty(o.orig_qty)) m.orig_qty = *q;

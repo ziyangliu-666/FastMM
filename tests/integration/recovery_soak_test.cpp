@@ -84,6 +84,10 @@ TEST_CASE("recovery_soak: repeated faults with order flow leave no drift") {
   std::uint64_t rounds = 0;
   std::uint64_t faults = 0;
 
+  // Evaluated only when an assertion fails (doctest captures by reference).
+  INFO("round " << rounds << ": fatal=" << h.venue->fatal()
+                << " synced=" << h.venue->md_feed()->synced_count() << " "
+                << describe(h.venue->status(), fx.server.stats()));
   while (std::chrono::steady_clock::now() < deadline) {
     ++rounds;
     // The previous round's fault may still be healing: quote only once the book is synced again.

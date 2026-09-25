@@ -4,6 +4,7 @@
 #include "fastmm/core/containers/flat_map.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/pool.hpp"
+#include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/containers/ring_buffer.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/fixed_string.hpp"
@@ -230,4 +231,19 @@ TEST_CASE("core.ring_buffer: overwrite and fifo") {
   r.clear();
   CHECK(r.empty());
   CHECK_FALSE(r.pop(v));
+}
+
+TEST_CASE("core.recent_map: a full map evicts the oldest key, never refuses") {
+  RecentMap<std::uint64_t, int, 4> m;
+  for (std::uint64_t k = 1; k <= 4; ++k) CHECK(m.assign(k, static_cast<int>(k)));
+  CHECK_FALSE(m.assign(2, 20));  // an overwrite is not a new key and moves nothing
+  CHECK(*m.find(2) == 20);
+  CHECK(m.assign(5, 5));  // evicts 1, the oldest
+  CHECK_FALSE(m.contains(1));
+  CHECK(m.contains(2));
+  CHECK(m.size() == 4);
+  for (std::uint64_t k = 6; k < 10'000; ++k) CHECK(m.assign(k, 0));
+  CHECK(m.size() == 4);
+  CHECK(m.contains(9'999));
+  CHECK_FALSE(m.contains(9'995));
 }

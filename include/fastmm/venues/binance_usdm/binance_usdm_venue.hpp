@@ -46,6 +46,7 @@
 //   * cancel_all(): Spot treats the -2011 "no open orders" reply as success, this one does not.
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
+#include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/net/connection.hpp"
@@ -322,7 +323,7 @@ class BinanceUsdmVenue final : public Venue {
   std::int64_t exec_since_ms_ = 0;
   // Venue order id -> the engine id it was acknowledged for: userTrades names the order by orderId
   // only. A restarted session's orders are not in it and reach the position as unknown fills.
-  OpenHashMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
+  RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
   std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
   std::uint64_t exec_generation_ = 0;               // replies of an abandoned replay are ignored
   std::size_t exec_pending_ = 0;                    // userTrades replies still outstanding

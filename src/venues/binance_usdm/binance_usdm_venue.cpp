@@ -1449,9 +1449,7 @@ std::size_t BinanceUsdmVenue::exec_slot(InstrumentId id) const noexcept {
 
 void BinanceUsdmVenue::remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept {
   if (order_id <= 0 || !id.valid()) return;
-  if (order_ids_.assign(static_cast<std::uint64_t>(order_id), id) != nullptr) return;
-  // Full: the oldest pairings are the ones least likely to be named by a replay.
-  order_ids_.clear();
+  // Full: the oldest pairing makes room, being the one least likely to be named by a replay.
   static_cast<void>(order_ids_.assign(static_cast<std::uint64_t>(order_id), id));
 }
 
