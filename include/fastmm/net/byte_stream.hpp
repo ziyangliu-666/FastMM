@@ -50,6 +50,7 @@ class PlainStream {
     return IoResult::wants_write();
   }
   IoResult read(std::span<std::byte> buf) noexcept { return sock_.read(buf); }
+  bool input_drained() const noexcept { return sock_.input_drained(); }
   IoResult write(std::span<const std::byte> buf) noexcept { return sock_.write(buf); }
   int fd() const noexcept { return sock_.fd(); }
   void close() noexcept { sock_.close(); }

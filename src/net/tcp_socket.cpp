@@ -157,10 +157,14 @@ TcpSocket TcpSocket::accept(SockAddr* peer) noexcept {
 }
 
 IoResult TcpSocket::read(std::span<std::byte> buf) noexcept {
+  input_drained_ = false;
   if (buf.empty()) return IoResult::done(0);
   for (;;) {
     const ssize_t n = ::recv(fd_, buf.data(), buf.size(), 0);
-    if (n > 0) return IoResult::done(static_cast<std::size_t>(n));
+    if (n > 0) {
+      input_drained_ = static_cast<std::size_t>(n) < buf.size();
+      return IoResult::done(static_cast<std::size_t>(n));
+    }
     if (n == 0) return IoResult::eof();
     if (errno == EINTR) continue;
     if (errno == EAGAIN) return IoResult::wants_read();  // == EWOULDBLOCK on Linux

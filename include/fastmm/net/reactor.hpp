@@ -126,6 +126,12 @@ class Reactor {
   void set_busy_poll(bool enabled) noexcept { busy_poll_ = enabled; }
   bool busy_poll() const noexcept { return busy_poll_; }
 
+  // True while a handler runs for an event that also reported a hang-up or an error
+  // (RDHUP/HUP/ERR). Only when it is false may a handler take a short read as "socket drained"
+  // and skip the read that would return EAGAIN: edge-triggered readiness reports data that
+  // arrives later with a new event, but an end of stream already reported has no second event.
+  bool event_hangup() const noexcept { return event_hangup_; }
+
   static std::int64_t now_ns() noexcept;  // CLOCK_MONOTONIC
   // The epoll descriptor, or -1 with the io_uring backend.
   int epoll_fd() const noexcept { return epoll_fd_; }
@@ -170,6 +176,7 @@ class Reactor {
   int epoll_fd_ = -1;
   int wake_fd_ = -1;
   bool busy_poll_ = false;
+  bool event_hangup_ = false;
   std::vector<IoHandler*> handlers_;  // indexed by fd; nullptr when not registered
 
   // Live timers by slot. A TimerId is (sequence << kTimerSlotBits) | slot, so the id of a cancelled

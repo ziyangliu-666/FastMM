@@ -199,6 +199,16 @@ void echo_scenario(Reactor& reactor,
     CHECK(ev.error == NetError::Closed);
     CHECK_FALSE(ev.closed);
   }
+  SUBCASE("a message and the end of stream in one readable event: both are seen") {
+    // One event reports the data and the hang-up; the client must not take its short read as
+    // "drained" and wait for an event that never comes.
+    REQUIRE(handler.session->send_text("last"));
+    handler.session->close_abrupt();
+    REQUIRE(run_until(reactor, [&] { return ev.errored; }));
+    CHECK(ev.error == NetError::Closed);
+    REQUIRE(ev.texts.size() == 1);
+    CHECK(ev.texts[0] == "last");
+  }
   SUBCASE("protocol violation from the server closes with 1002") {
     // A continuation frame without a preceding fragment start.
     handler.session->send_raw(WsOpcode::Continuation, true, bytes("x"));

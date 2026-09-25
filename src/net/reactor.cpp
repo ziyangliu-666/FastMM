@@ -370,11 +370,13 @@ void Reactor::dispatch_io(int nfds) {
     // Look the handler up per event: an earlier handler in this batch may have removed it.
     IoHandler* h = is_registered(fd) ? handlers_[static_cast<std::size_t>(fd)] : nullptr;
     if (h == nullptr) continue;
+    event_hangup_ = (ev & (EPOLLERR | EPOLLRDHUP | EPOLLHUP)) != 0;
     deliver(fd,
             h,
             (ev & EPOLLERR) != 0,
             (ev & (EPOLLIN | EPOLLRDHUP | EPOLLHUP)) != 0,
             (ev & EPOLLOUT) != 0);
+    event_hangup_ = false;
   }
 }
 
@@ -468,11 +470,13 @@ void Reactor::uring_complete(std::uint64_t user_data, std::int32_t res, std::uin
   if (fd == wake_fd_) {
     drain_wake_fd();
   } else {
+    event_hangup_ = (ev & (POLLERR | POLLRDHUP | POLLHUP)) != 0;
     deliver(fd,
             h,
             (ev & POLLERR) != 0,
             (ev & (POLLIN | POLLRDHUP | POLLHUP)) != 0,
             (ev & POLLOUT) != 0);
+    event_hangup_ = false;
   }
   // A multishot poll ends without IORING_CQE_F_MORE (e.g. the CQ ring overflowed): re-arm it if
   // the registration survived the callbacks.

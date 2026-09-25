@@ -19,6 +19,7 @@
 #include "fastmm/net/ws_frame.hpp"
 
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -353,6 +354,7 @@ class WsClient final : public IoHandler {
         rx_ts_ = Reactor::now_ns();
         if (!process_frames()) return;
         if (state_ == WsState::Closed) return;
+        if (input_drained()) return;  // skip the read that would return EAGAIN
       }
       if (r.closed) {
         fail(NetError::Closed, "eof");
@@ -363,6 +365,18 @@ class WsClient final : public IoHandler {
         return;
       }
       if (r.would_block()) return;
+    }
+  }
+
+  // The socket had nothing more after the last read and the event reported no hang-up: data that
+  // arrives later comes with a new readable event (edge-triggered contract).
+  bool input_drained() const noexcept {
+    if constexpr (requires(const Stream& s) {
+                    { s.input_drained() } -> std::same_as<bool>;
+                  }) {
+      return !reactor_.event_hangup() && stream_.input_drained();
+    } else {
+      return false;
     }
   }
 

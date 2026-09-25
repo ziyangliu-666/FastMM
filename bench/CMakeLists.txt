@@ -51,3 +51,9 @@ foreach(src ${_benches})
                                                         FAIL_REGULAR_EXPRESSION "ERROR OCCURRED")
   endif()
 endforeach()
+
+# The TLS round of BM_WsClientReceive uses the test suite's self-signed certificate.
+if(TARGET bench_ws)
+  target_compile_definitions(bench_ws
+                             PRIVATE FASTMM_TLS_FIXTURES_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/tls")
+endif()
