@@ -16,6 +16,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/seqlock.hpp"
+#include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
@@ -112,5 +113,8 @@ void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin);
 void log_venue_status(const venues::Venue& v);
 void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, bool final);
 void log_feed(std::string_view venue, const venues::VenueFeedStatus& f, bool final);
+
+// A venue's status in a status segment's venue entry (all but its name and kill state).
+void fill_status_venue(const venues::VenueStatus& st, StatusVenue& sv) noexcept;
 
 }  // namespace fastmm::live

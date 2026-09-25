@@ -84,6 +84,9 @@ class ControlSocket {
   // Accepts what is waiting, answers every complete request and drops connections that went quiet.
   // Bounded work per call; never blocks.
   void poll(ControlPlane& plane);
+  // The same with another command set (fastmm-gateway's): `handle` turns a request into its reply.
+  using Handler = std::function<std::string(std::string_view request)>;
+  void poll(const Handler& handle);
   void close() noexcept;
   [[nodiscard]] bool is_open() const noexcept { return listen_fd_ >= 0; }
   [[nodiscard]] const std::string& path() const noexcept { return path_; }

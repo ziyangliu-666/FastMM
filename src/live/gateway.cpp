@@ -10,6 +10,7 @@
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/session_state.hpp"
+#include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/live/control_socket.hpp"
@@ -28,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -89,11 +91,13 @@ struct Account {
   std::int64_t max_loss = 0;  // raw Notional; 0: off
   std::int64_t max_gross = 0;
   std::int64_t max_net = 0;
-  std::int64_t carry = 0;  // realized - fees of the earlier runs, from the kill file
+  // realized - fees of the earlier runs, from the kill file (minus this run's, after a clear-kill)
+  std::atomic<std::int64_t> carry{0};
   std::size_t venue_count = 0;
   std::array<VenueSlot*, 8> slots{};  // their reactors are woken by a trip
   std::atomic<bool> tripped{false};
-  std::atomic<std::int64_t> trip_net{0};  // the net PnL that tripped it
+  std::atomic<std::int64_t> trip_net{0};                  // the net PnL that tripped it
+  std::atomic<KillReason> trip_reason{KillReason::None};  // GatewayMaxLoss, GatewayOperator
   struct alignas(kCacheLine) Totals {
     std::atomic<std::int64_t> realized{0};
     std::atomic<std::int64_t> unrealized{0};
@@ -107,7 +111,7 @@ struct Account {
   [[nodiscard]] bool exposure_limits() const noexcept { return max_gross > 0 || max_net > 0; }
   // Net PnL of the account: the carry and every venue's realized + unrealized - fees.
   [[nodiscard]] std::int64_t net_pnl() const noexcept {
-    std::int64_t n = carry;
+    std::int64_t n = carry.load(std::memory_order_relaxed);
     for (std::size_t i = 0; i < venue_count; ++i) {
       const Totals& t = venues[i];
       n += t.realized.load(std::memory_order_relaxed) +
@@ -132,6 +136,8 @@ struct Route {
   bool in_snapshot = false;       // it receives the reconciliation being routed
   bool md_gap = false;            // its md ring dropped: nothing more until its Resyncing went out
   std::atomic<std::uint64_t> md_dropped{0};
+  // Its orders the gateway refused, in the order of kStatusGatewayRefusalReasons.
+  std::array<std::atomic<std::uint64_t>, kStatusGatewayRefusals> refused{};
   std::atomic<bool> overflow{false};  // its order ring stayed full: it has to go
   // Where its own history starts (venue ms): the replay start it sent, or its attach time when it
   // restored nothing. An execution naming no live order from before that is its store's (or none
@@ -235,10 +241,15 @@ struct VenueRouter {
 // ---- network thread: the account --------------------------------------------------------------
 
 // A trip: every network thread refuses orders from here on and acts on it in its next hook.
-void trip_account(Account& a, std::int64_t net) noexcept {
-  if (a.tripped.exchange(true, std::memory_order_acq_rel)) return;
+// False when the account was tripped already.
+bool trip_account(Account& a, std::int64_t net, KillReason why) noexcept {
+  // The reason first: a thread that sees the trip reads it.
+  KillReason none = KillReason::None;
+  if (!a.trip_reason.compare_exchange_strong(none, why, std::memory_order_acq_rel)) return false;
   a.trip_net.store(net, std::memory_order_relaxed);
+  a.tripped.store(true, std::memory_order_release);
   for (std::size_t i = 0; i < a.venue_count; ++i) a.slots[i]->reactor->wake();
+  return true;
 }
 
 // Publishes this venue's totals and checks the account's loss.
@@ -253,7 +264,7 @@ void publish_account(VenueRouter& v) noexcept {
   t.net.store(p.net_exposure().raw, std::memory_order_relaxed);
   if (a.max_loss > 0 && !a.tripped.load(std::memory_order_relaxed)) {
     const std::int64_t net = a.net_pnl();
-    if (net <= -a.max_loss) trip_account(a, net);
+    if (net <= -a.max_loss) static_cast<void>(trip_account(a, net, KillReason::GatewayMaxLoss));
   }
 }
 
@@ -670,6 +681,11 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
   m.hdr.recv_ts = wall_now();
   m.hdr.t0_cycles = rdtscp();
   push_order(r, m.hdr);
+  std::size_t slot = 0;  // GatewayNotOwner, which also counts any other reason
+  for (std::size_t i = 0; i < kStatusGatewayRefusals; ++i) {
+    if (kStatusGatewayRefusalReasons[i] == why) slot = i;
+  }
+  r.refused[slot].fetch_add(1, std::memory_order_relaxed);
   switch (why) {
     case RejectReason::GatewayRateLimit:
       v.refused_rate.fetch_add(1, std::memory_order_relaxed);
@@ -879,7 +895,7 @@ void kill_venue(VenueRouter& v) {
   ControlMsg m{};
   init_header(m, EventType::Control, InstrumentId::invalid(), v.vid);
   m.command = ControlCommand::TripVenueKill;
-  m.arg = static_cast<std::uint64_t>(KillReason::GatewayMaxLoss);
+  m.arg = static_cast<std::uint64_t>(v.acct->trip_reason.load(std::memory_order_acquire));
   m.hdr.recv_ts = wall_now();
   m.hdr.t0_cycles = rdtscp();
   for (Route* r : v.routes) push_order(*r, m.hdr);
@@ -985,6 +1001,8 @@ struct Attachment {
   std::string engine;
   std::uint32_t pid = 0;
   std::int64_t since_ns = 0;
+  std::int64_t since_wall_ns = 0;
+  bool blocks = false;  // its engine blocks when idle
   std::uint16_t epoch = 0;
   std::vector<InstrumentId> owned;
   struct Rings {
@@ -1383,13 +1401,23 @@ class Gateway {
     if (trip_handled_ || !acct_.tripped.load(std::memory_order_acquire)) return;
     trip_handled_ = true;
     persist_kill();
-    FASTMM_LOG_ERROR(
-        "gateway: account kill switch tripped: net PnL {} <= -[gateway] max_loss {} over every "
-        "strategy; orders refused, every strategy's venues killed, every open order cancelled; "
-        "latched in {}",
-        Notional::from_raw(acct_.trip_net.load(std::memory_order_relaxed)),
-        Notional::from_raw(acct_.max_loss),
-        std::string_view(kill_path_));
+    const std::string latch =
+        acct_.max_loss > 0 ? "latched in " + kill_path_ : std::string("latched until clear-kill");
+    if (acct_.trip_reason.load(std::memory_order_acquire) == KillReason::GatewayOperator) {
+      FASTMM_LOG_ERROR(
+          "gateway: account kill switch tripped by the operator (net PnL {}); orders refused, "
+          "every strategy's venues killed, every open order cancelled; {}",
+          Notional::from_raw(acct_.trip_net.load(std::memory_order_relaxed)),
+          std::string_view(latch));
+    } else {
+      FASTMM_LOG_ERROR(
+          "gateway: account kill switch tripped: net PnL {} <= -[gateway] max_loss {} over every "
+          "strategy; orders refused, every strategy's venues killed, every open order cancelled; "
+          "{}",
+          Notional::from_raw(acct_.trip_net.load(std::memory_order_relaxed)),
+          Notional::from_raw(acct_.max_loss),
+          std::string_view(latch));
+    }
     if (opts_.dry_run) return;
     for (auto& s : slots_) {
       if (!s->venue->cancel_all())
@@ -1408,7 +1436,7 @@ class Gateway {
     }
     if (acct_.tripped.load(std::memory_order_acquire)) {
       st.latched = true;
-      st.reason = KillReason::GatewayMaxLoss;
+      st.reason = acct_.trip_reason.load(std::memory_order_acquire);
     }
     if (kill_written_ && st.realized == kill_last_.realized && st.fees == kill_last_.fees &&
         st.latched == kill_last_.latched)
@@ -1446,11 +1474,12 @@ class Gateway {
       FASTMM_LOG_INFO(
           "gateway: account net_pnl={} realized={} unrealized={} fees={} carried={} "
           "gross_exposure={} net_exposure={} kill={} max_loss={}",
-          Notional::from_raw(acct_.carry + now[0] + now[1] - now[2]),
+          Notional::from_raw(acct_.carry.load(std::memory_order_relaxed) + now[0] + now[1] -
+                             now[2]),
           Notional::from_raw(now[0]),
           Notional::from_raw(now[1]),
           Notional::from_raw(now[2]),
-          Notional::from_raw(acct_.carry),
+          Notional::from_raw(acct_.carry.load(std::memory_order_relaxed)),
           Notional::from_raw(now[3]),
           Notional::from_raw(now[4]),
           kill,
@@ -1470,14 +1499,317 @@ class Gateway {
   }
 
   [[nodiscard]] std::string latched_message() const {
+    const bool operator_kill =
+        acct_.trip_reason.load(std::memory_order_acquire) == KillReason::GatewayOperator;
     return fmt::format(
-        "the account kill switch is latched ([gateway] max_loss, net PnL {}) in {}. Check the "
-        "positions, then restart the gateway with fastmm-gateway --clear-kill or remove the file",
+        "the account kill switch is latched ({}, net PnL {}){}. Check the positions, then clear "
+        "it with fastmm-ctl --gateway {} clear-kill, or restart the gateway with "
+        "fastmm-gateway --clear-kill",
+        operator_kill ? "an operator's kill" : "[gateway] max_loss",
         dec(Notional::from_raw(acct_.trip_net.load(std::memory_order_relaxed))),
-        kill_path_);
+        acct_.max_loss > 0 ? " in " + kill_path_ : std::string(),
+        cfg_.engine.name);
+  }
+
+  // ---- status segment (fastmm-top) and control socket (fastmm-ctl), main thread ---------------
+
+  [[nodiscard]] bool open_status(const std::string& path, std::string* error) {
+    started_ns_ = wall_now().ns;
+    return status_.open(path, error);
+  }
+
+  // The snapshot, from what the network threads publish (their atomics) and what this thread
+  // owns (the attachments, the owners): no network thread is asked for anything.
+  [[nodiscard]] StatusSnapshot snapshot(StatusRunState state) const {
+    StatusSnapshot s;
+    s.kind = StatusKind::Gateway;
+    s.state = state;
+    s.pid = static_cast<std::uint32_t>(::getpid());
+    s.started_ns = started_ns_;
+    s.updated_ns = wall_now().ns;
+    s.dry_run = opts_.dry_run ? 1 : 0;
+    set_status_name(s.engine_name, cfg_.engine.name);
+    set_status_name(s.strategy, "fastmm-gateway");
+    StatusGateway& g = s.gateway;
+    const bool tripped = acct_.tripped.load(std::memory_order_acquire);
+    const KillReason why = acct_.trip_reason.load(std::memory_order_acquire);
+    if (tripped) {
+      g.kill_active = 1;
+      s.kill_flags = 1;
+      s.kill_reason = static_cast<std::uint8_t>(why);
+      g.trip_net_raw = acct_.trip_net.load(std::memory_order_relaxed);
+    }
+    s.kill_latched = tripped && acct_.max_loss > 0 ? 1 : 0;
+    s.pnl_carry_raw = acct_.carry.load(std::memory_order_relaxed);
+    g.max_loss_raw = acct_.max_loss;
+    g.max_gross_raw = acct_.max_gross;
+    g.max_net_raw = acct_.max_net;
+    g.max_open_notional_raw = routers_.empty() ? 0 : routers_[0]->max_open_notional;
+    s.venue_count = static_cast<std::uint8_t>(std::min(slots_.size(), kStatusMaxVenues));
+    for (std::size_t i = 0; i < s.venue_count; ++i) {
+      StatusVenue& sv = s.venues[i];
+      set_status_name(sv.name, slots_[i]->venue->name());
+      fill_status_venue(slots_[i]->venue->status(), sv);
+      sv.killed = tripped ? 1 : 0;
+      sv.kill_reason = tripped ? static_cast<std::uint8_t>(why) : 0;
+      const VenueRouter& v = *routers_[i];
+      StatusGatewayVenue& gv = g.venues[i];
+      gv.md_discarded = v.md_discarded.load(std::memory_order_relaxed);
+      gv.order_discarded = v.order_discarded.load(std::memory_order_relaxed);
+      gv.unrouted = v.unrouted.load(std::memory_order_relaxed);
+      gv.gateway_cancels = v.gateway_cancels.load(std::memory_order_relaxed);
+      gv.untracked = v.untracked.load(std::memory_order_relaxed);
+      gv.stale_replays = v.stale_replays.load(std::memory_order_relaxed);
+      gv.account_skipped = v.account_skipped.load(std::memory_order_relaxed);
+      gv.account_md_lost = v.account_md_lost.load(std::memory_order_relaxed);
+      // kStatusGatewayRefusalReasons order.
+      gv.refused[0] = v.refused_owner.load(std::memory_order_relaxed);
+      gv.refused[1] = v.refused_killed.load(std::memory_order_relaxed);
+      gv.refused[2] = v.refused_notional.load(std::memory_order_relaxed);
+      gv.refused[3] = v.refused_gross.load(std::memory_order_relaxed);
+      gv.refused[4] = v.refused_net.load(std::memory_order_relaxed);
+      gv.refused[5] = v.refused_rate.load(std::memory_order_relaxed);
+      const Account::Totals& t = acct_.venues[i];
+      gv.realized_raw = t.realized.load(std::memory_order_relaxed);
+      gv.unrealized_raw = t.unrealized.load(std::memory_order_relaxed);
+      gv.fees_raw = t.fees.load(std::memory_order_relaxed);
+      gv.gross_raw = t.gross.load(std::memory_order_relaxed);
+      gv.net_raw = t.net.load(std::memory_order_relaxed);
+      s.realized_pnl_raw += gv.realized_raw;
+      s.unrealized_pnl_raw += gv.unrealized_raw;
+      s.fees_raw += gv.fees_raw;
+      g.gross_raw += gv.gross_raw;
+      g.net_raw += gv.net_raw;
+    }
+    g.net_pnl_raw = s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw;
+    g.attachment_count = static_cast<std::uint32_t>(std::min(atts_.size(), kStatusMaxAttachments));
+    for (std::size_t k = 0; k < g.attachment_count; ++k) {
+      const Attachment& a = *atts_[k];
+      StatusAttachment& sa = g.attachments[k];
+      set_status_name(sa.engine, a.engine);
+      sa.pid = a.pid;
+      sa.id = a.id;
+      sa.epoch = a.epoch;
+      sa.blocks = a.blocks ? 1 : 0;
+      sa.attached_ns = a.since_wall_ns;
+      for (std::size_t i = 0; i < slots_.size(); ++i) {
+        const Route& r = a.routes[i];
+        sa.md_dropped += r.md_dropped.load(std::memory_order_relaxed);
+        for (std::size_t n = 0; n < kStatusGatewayRefusals; ++n)
+          sa.refused[n] += r.refused[n].load(std::memory_order_relaxed);
+      }
+    }
+    for (const Instrument& inst : instruments_) {
+      if (g.position_count == kStatusMaxPositions) break;
+      StatusPosition& p = g.positions[g.position_count++];
+      set_status_name(p.symbol, inst.symbol.view());
+      p.venue = inst.venue.value;
+      p.qty_raw = acct_.qty[inst.id.value].load(std::memory_order_relaxed);
+      if (const Attachment* o = owner_[inst.id.value]) p.owner_epoch = o->epoch;
+    }
+    return s;
+  }
+
+  void publish_status(StatusRunState state) {
+    if (status_.is_open()) status_.publish(snapshot(state));
+  }
+
+  // One request on the control socket, its reply.
+  [[nodiscard]] std::string command(std::string_view request) {
+    std::vector<std::string_view> words;
+    for (std::size_t i = 0; i < request.size();) {
+      while (i < request.size() && std::isspace(static_cast<unsigned char>(request[i])) != 0) ++i;
+      const std::size_t start = i;
+      while (i < request.size() && std::isspace(static_cast<unsigned char>(request[i])) == 0) ++i;
+      if (i > start) words.push_back(request.substr(start, i - start));
+    }
+    if (words.empty()) return "error empty command; `help` lists them\n";
+    const std::string_view verb = words[0];
+    if (verb == "help") return std::string(gateway_control_usage());
+    if (verb == "status") {
+      if (words.size() > 1) return "error status takes no arguments\n";
+      return format_status(snapshot(StatusRunState::Running), wall_now().ns, /*color=*/false);
+    }
+    if (verb == "attachments") {
+      if (words.size() > 1) return "error attachments takes no arguments\n";
+      return attachments_text();
+    }
+    if (verb == "pull" || verb == "resume") return pull_or_resume(request);
+    if (verb == "kill") {
+      if (words.size() > 1) return "error kill takes no arguments\n";
+      return operator_kill();
+    }
+    if (verb == "clear-kill") {
+      if (words.size() > 1) return "error clear-kill takes no arguments\n";
+      return clear_kill();
+    }
+    return "error unknown command '" + std::string(verb) + "'; `help` lists them\n";
   }
 
  private:
+  // One line per attachment: id, epoch, engine, pid, what it trades, its drops and refusals.
+  [[nodiscard]] std::string attachments_text() const {
+    if (atts_.empty()) return "ok no strategy attached\n";
+    std::string out;
+    for (const auto& ap : atts_) {
+      const Attachment& a = *ap;
+      std::string symbols;
+      for (const InstrumentId inst : a.owned) {
+        const Instrument& i = instruments_.get(inst);
+        symbols += fmt::format("{}{}:{}",
+                               symbols.empty() ? "" : ",",
+                               slots_[i.venue.value]->venue->name(),
+                               i.symbol.view());
+      }
+      std::uint64_t dropped = 0;
+      std::uint64_t refused = 0;
+      for (std::size_t i = 0; i < slots_.size(); ++i) {
+        dropped += a.routes[i].md_dropped.load(std::memory_order_relaxed);
+        for (const auto& n : a.routes[i].refused) refused += n.load(std::memory_order_relaxed);
+      }
+      fmt::format_to(std::back_inserter(out),
+                     "attachment={} epoch={} engine={} pid={} up={:.0f}s instruments={} "
+                     "md_dropped={} refused={}\n",
+                     a.id,
+                     a.epoch,
+                     a.engine,
+                     a.pid,
+                     static_cast<double>(steady_now().ns - a.since_ns) / 1e9,
+                     symbols,
+                     dropped,
+                     refused);
+    }
+    return out;
+  }
+
+  // `pull` / `resume` with the engine's scope flags, parsed by control_command() into the engine's
+  // ControlMsg, which goes to the strategies the scope reaches: an instrument's owner, every
+  // attachment for a venue or for everything.
+  [[nodiscard]] std::string pull_or_resume(std::string_view request) {
+    std::size_t sent = 0;
+    std::string refusal;
+    ControlPlane plane;
+    plane.instruments = &instruments_;
+    plane.venue = [&](std::string_view name, VenueId& out) {
+      for (std::size_t i = 0; i < slots_.size(); ++i) {
+        if (slots_[i]->venue->name() != name) continue;
+        out = VenueId{static_cast<std::uint8_t>(i)};
+        return true;
+      }
+      return false;
+    };
+    plane.submit = [&](const EventHeader& h) {
+      ControlMsg m = msg_cast<ControlMsg>(&h);
+      m.hdr.t0_cycles = rdtscp();
+      if (h.instrument.valid() && owner_[h.instrument.value] == nullptr) {
+        refusal =
+            fmt::format("no strategy trades {}", instruments_.get(h.instrument).symbol.view());
+        return true;
+      }
+      if (atts_.empty()) {
+        refusal = "no strategy attached";
+        return true;
+      }
+      sent = send_control(m);
+      return true;
+    };
+    std::string reply = control_command(request, plane);
+    if (!refusal.empty()) return "error " + refusal + "\n";
+    if (!reply.starts_with("ok")) return reply;
+    FASTMM_LOG_WARN("gateway: control socket: {} sent to {} strategies",
+                    std::string_view(reply).substr(0, reply.size() - 1),
+                    sent);
+    return reply.substr(0, reply.size() - 1) + fmt::format(", sent to {} strategies\n", sent);
+  }
+
+  // Puts `m` on the order rings of the attachments its scope reaches, on the network threads that
+  // own those rings. An instrument goes to its owner on its venue; a venue to every attachment on
+  // that venue; everything to every attachment once, on the first venue. Returns how many.
+  std::size_t send_control(const ControlMsg& m) {
+    std::atomic<std::size_t> sent{0};
+    VenueId target = m.hdr.venue;
+    if (m.hdr.instrument.valid()) target = instruments_.get(m.hdr.instrument).venue;
+    if (!target.valid()) target = VenueId{0};
+    on_net_threads(slots_, [&](std::size_t i) {
+      if (i != target.value) return;
+      VenueRouter& v = *routers_[i];
+      if (m.hdr.instrument.valid()) {
+        if (Route* r = v.owner_of(m.hdr.instrument)) {
+          push_order(*r, m.hdr);
+          sent.fetch_add(1, std::memory_order_relaxed);
+        }
+        return;
+      }
+      for (Route* r : v.routes) {
+        push_order(*r, m.hdr);
+        sent.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+    return sent.load(std::memory_order_relaxed);
+  }
+
+  // `kill`: the account's kill switch, as a max_loss trip does it (KillReason::GatewayOperator).
+  [[nodiscard]] std::string operator_kill() {
+    if (!trip_account(acct_, acct_.net_pnl(), KillReason::GatewayOperator))
+      return "error the account kill switch is tripped already (" +
+             std::string(to_string(acct_.trip_reason.load(std::memory_order_acquire))) + ")\n";
+    FASTMM_LOG_WARN("gateway: control socket: kill");
+    check_trip();
+    return fmt::format(
+        "ok account kill switch tripped (GatewayOperator): orders refused, every strategy's venues "
+        "killed, every open order cancelled, attaches refused until clear-kill ({} strategies "
+        "attached)\n",
+        atts_.size());
+  }
+
+  // `clear-kill`: the account's kill switch cleared and its loss budget armed again, as
+  // fastmm-gateway --clear-kill does on a restart. Refused while a strategy is attached: every one
+  // attached at the trip was killed by it and stays killed in its own engine, so it has to go
+  // first (the next attach starts clean).
+  [[nodiscard]] std::string clear_kill() {
+    if (!acct_.tripped.load(std::memory_order_acquire)) return "error the account is not killed\n";
+    if (!atts_.empty()) {
+      std::string who;
+      for (const auto& a : atts_) who += (who.empty() ? "" : ", ") + a->who();
+      return fmt::format(
+          "error {} strategies are still attached, killed by the trip: stop them first ({})\n",
+          atts_.size(),
+          who);
+    }
+    check_trip();
+    // The budget starts again from here: this run's realized PnL and fees so far are carried as
+    // their negative, so the account's net PnL is its unrealized PnL.
+    std::int64_t realized = 0;
+    std::int64_t fees = 0;
+    for (std::size_t i = 0; i < acct_.venue_count; ++i) {
+      realized += acct_.venues[i].realized.load(std::memory_order_relaxed);
+      fees += acct_.venues[i].fees.load(std::memory_order_relaxed);
+    }
+    KillState fresh;
+    fresh.sessions = kill_.sessions;
+    fresh.realized = Notional::from_raw(-realized);
+    fresh.fees = Notional::from_raw(-fees);
+    kill_ = fresh;
+    acct_.carry.store(kill_.carry().raw, std::memory_order_relaxed);
+    if (acct_.max_loss > 0) {
+      if (auto r = KillStateStore::clear(kill_path_); !r)
+        return "error cannot clear the kill file: " + r.error() + "\n";
+    }
+    kill_written_ = false;
+    // Orders flow again once `tripped` is false; the reason is cleared after it, so a network
+    // thread that trips in between finds the reason set and trips on its next check instead.
+    acct_.tripped.store(false, std::memory_order_release);
+    acct_.trip_net.store(0, std::memory_order_relaxed);
+    acct_.trip_reason.store(KillReason::None, std::memory_order_release);
+    on_net_threads(slots_, [&](std::size_t i) { routers_[i]->killed = false; });
+    trip_handled_ = false;
+    persist_kill();
+    FASTMM_LOG_WARN(
+        "gateway: control socket: clear-kill: the account kill switch is cleared and the whole "
+        "[gateway] max_loss budget is armed again; strategies may attach");
+    return "ok account kill switch cleared, the loss budget armed again; strategies may attach\n";
+  }
+
   struct Logged {
     std::uint64_t md = 0;
     std::uint64_t order = 0;
@@ -1687,6 +2019,8 @@ class Gateway {
     }
     a.fd = fd;
     a.since_ns = steady_now().ns;
+    a.since_wall_ns = wall_now().ns;
+    a.blocks = strategy_blocks;
     atts_.push_back(std::move(ap));
     std::vector<int> fds{page_fd.fd, net_page_fd_};
     for (const auto& s : slots_) fds.push_back(s->reactor->wake_fd());
@@ -1757,6 +2091,8 @@ class Gateway {
   bool kill_written_ = false;
   bool kill_write_failed_ = false;
   bool trip_handled_ = false;
+  StatusWriter status_;
+  std::int64_t started_ns_ = 0;
   std::array<std::int64_t, 5> account_logged_{};
   bool account_logged_tripped_ = false;
   std::array<std::int64_t, kMaxInstruments> qty_logged_{};
@@ -1772,6 +2108,21 @@ std::string_view off_if_empty(const std::string& s) {
 
 std::string default_gateway_path(const Config& cfg) {
   return cfg.engine.journal_dir + "/" + cfg.engine.name + ".gw";
+}
+
+std::string_view gateway_control_usage() noexcept {
+  return "gateway commands (one per datagram; the reply starts with ok or error)\n"
+         "  pull [--instrument SYM | --venue NAME]   the strategies in that scope stop quoting\n"
+         "                                           (the owner of SYM, every strategy on NAME,\n"
+         "                                           or every strategy)\n"
+         "  resume [--instrument SYM | --venue NAME] they quote again\n"
+         "  kill                                     trip the account kill switch, as max_loss\n"
+         "                                           does (GatewayOperator)\n"
+         "  clear-kill                               clear it and arm the loss budget again;\n"
+         "                                           refused while a strategy is attached\n"
+         "  attachments                              one line per attached strategy\n"
+         "  status                                   the fastmm-top frame\n"
+         "  help                                     this text\n";
 }
 
 int run_gateway(const Config& cfg, const GatewayOptions& opts) {
@@ -1856,7 +2207,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
       return kExitKilled;
     }
     ++kill_state.sessions;
-    acct->carry = kill_state.carry().raw;
+    acct->carry.store(kill_state.carry().raw, std::memory_order_relaxed);
   }
   VenueSlots slots;
   venues::VenueFactoryOptions vopts;
@@ -1925,6 +2276,31 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   Gateway gateway(
       cfg, opts, slots, instruments, net_page, net_page_fd, *acct, kill_path, kill_state);
   gateway.persist_kill();
+  // fastmm-top reads the status segment; fastmm-ctl --gateway talks to the control socket.
+  if (!opts.no_status) {
+    const std::string status_path =
+        opts.status_path.empty() ? default_gateway_status_path(cfg.engine.name) : opts.status_path;
+    std::string status_error;
+    if (gateway.open_status(status_path, &status_error)) {
+      FASTMM_LOG_INFO("status: {} (watch with fastmm-top --path {})", status_path, status_path);
+    } else {
+      FASTMM_LOG_WARN("status file {} unavailable: {}", status_path, status_error);
+    }
+  }
+  gateway.publish_status(StatusRunState::Starting);
+  ControlSocket control;
+  if (!opts.no_control) {
+    const std::string ctl_path = opts.control_path.empty() ? path + ".ctl" : opts.control_path;
+    std::string ctl_error;
+    if (control.open(ctl_path, &ctl_error)) {
+      FASTMM_LOG_INFO("control socket: {} (fastmm-ctl --path {} status)", ctl_path, ctl_path);
+    } else {
+      FASTMM_LOG_WARN("control socket {} unavailable: {}", ctl_path, ctl_error);
+    }
+  }
+  const ControlSocket::Handler on_command = [&gateway](std::string_view request) {
+    return gateway.command(request);
+  };
   const GatewaySignals signals;
   for (std::size_t i = 0; i < slots.size(); ++i) {
     const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
@@ -1941,14 +2317,16 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
       cfg.gateway.orders_per_sec,
       off_if_empty(cfg.gateway.max_open_notional),
       off_if_empty(cfg.gateway.max_loss),
-      Notional::from_raw(acct->carry),
+      Notional::from_raw(acct->carry.load(std::memory_order_relaxed)),
       off_if_empty(cfg.gateway.max_gross_notional),
       off_if_empty(cfg.gateway.max_net_notional),
       path);
 
   gateway.log_account(/*force=*/true);
+  gateway.publish_status(StatusRunState::Running);
   const std::int64_t start = steady_now().ns;
   std::int64_t next_tick = start + 1'000'000'000;
+  std::int64_t next_status = start + 250'000'000;
   std::vector<pollfd> fds;
   while (g_gw_signal == 0) {
     const std::int64_t now = steady_now().ns;
@@ -1971,6 +2349,11 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     }
     gateway.check_overflows();
     gateway.check_trip();
+    control.poll(on_command);
+    if (steady_now().ns >= next_status) {
+      next_status = steady_now().ns + 250'000'000;
+      gateway.publish_status(StatusRunState::Running);
+    }
     if (steady_now().ns >= next_tick) {
       next_tick += 1'000'000'000;
       for (auto& s : slots) {
@@ -1992,6 +2375,8 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
   }
+  control.close();
+  gateway.publish_status(StatusRunState::Stopping);
   gateway.detach_all("the gateway is shutting down");
   bool cancel_ok = true;
   if (!opts.dry_run) {
@@ -2008,6 +2393,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   gateway.check_trip();
   gateway.log_account(/*force=*/true);
   gateway.persist_kill();
+  gateway.publish_status(StatusRunState::Stopped);
   for (auto& s : slots) {
     const venues::VenueStatus st = s->venue->status();
     FASTMM_LOG_INFO("[{}] final: md_msgs={} orders={} cancels={} order_events={} reconnects={}",

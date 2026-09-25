@@ -32,6 +32,10 @@ constexpr const char* kFooter =
     "strategy's venues, cancels every open order and refuses attaches; the trip is\n"
     "latched and every start exits 6 until --clear-kill or the file is removed.\n"
     "\n"
+    "fastmm-top --gateway <engine> shows the attachments, the account and the venues;\n"
+    "fastmm-ctl --gateway <engine> pulls and resumes the strategies' quotes, kills the\n"
+    "account and clears the kill without a restart (fastmm-ctl --gateway <engine> help).\n"
+    "\n"
     "Exit codes:\n"
     "  0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok\n"
     "  2  bad command line, or a venue has no API keys\n"
@@ -60,6 +64,16 @@ int gateway(int argc, char** argv) {
                  opts.socket_path,
                  "attach socket (default <journal_dir>/<engine>.gw, mode 0600)")
       ->option_text("<path>");
+  app.add_option("--status",
+                 opts.status_path,
+                 "status file for fastmm-top (default /dev/shm/fastmm-<engine>.gw.status)")
+      ->option_text("<path>");
+  app.add_flag("--no-status", opts.no_status, "do not publish live status");
+  app.add_option("--control",
+                 opts.control_path,
+                 "control socket for fastmm-ctl (default <attach socket>.ctl, mode 0600)")
+      ->option_text("<path>");
+  app.add_flag("--no-control", opts.no_control, "do not open a control socket");
   add_duration(
       app, "--duration", opts.duration_ns, "stop after t (e.g. 60s, 5m; default: until SIGINT)");
   app.add_flag("--dry-run", opts.dry_run, "public market data only: no API keys, no orders");

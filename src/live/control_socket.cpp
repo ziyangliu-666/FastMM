@@ -362,6 +362,10 @@ void ControlSocket::drop(std::size_t i) noexcept {
 }
 
 void ControlSocket::poll(ControlPlane& plane) {
+  poll(Handler([&plane](std::string_view request) { return control_command(request, plane); }));
+}
+
+void ControlSocket::poll(const Handler& handle) {
   if (listen_fd_ < 0) return;
   const std::int64_t now = steady_now().ns;
   for (std::size_t i = 0; i < kMaxConnections; ++i) {
@@ -387,8 +391,7 @@ void ControlSocket::poll(ControlPlane& plane) {
       continue;
     }
     ++requests_;
-    const std::string reply =
-        control_command(std::string_view(buf, static_cast<std::size_t>(n)), plane);
+    const std::string reply = handle(std::string_view(buf, static_cast<std::size_t>(n)));
     FASTMM_LOG_INFO("control socket: {} -> {}",
                     std::string_view(buf, static_cast<std::size_t>(n)),
                     std::string_view(reply).substr(0, reply.find('\n')));
