@@ -103,6 +103,12 @@ had no live venue yet, the account test read the log before it was written); the
 Release, WSL2, adaptive, one strategy, 45 s x 2, gateway engine/wire p50, base (421c0d5) vs this:
 36.9/70.3 vs 36.9/70.3 us (one noisy run 38.9/74.3, rerun 36.9/70.3; in-process 34.8/66.4).
 
+**Gateway books (fixed 2026-09-26).** An attaching or lagging strategy now starts from a snapshot
+of the gateway's own 1024-level book copy, so no attach pauses anyone else (tests failed on the old
+gateway with 1.3–2.0 s gaps in the other strategy's updates). Open: a lagging strategy with a small
+md ring and many deep books may never fit the snapshots it needs and keep resyncing; size each
+attachment's ring for the snapshots of the instruments it receives.
+
 **Gateway follow-ups (2026-09-26).** Steps 4 and 5 landed (several strategies, epochs from the
 gateway, instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards, account
 positions, exposure and loss). Open:
