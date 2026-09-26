@@ -823,7 +823,10 @@ class Engine {
     r.liquidity = msg != nullptr ? msg->liquidity : Liquidity::Unknown;
     r.fee_asset = fee_asset;
     r.venue_order_id = msg != nullptr ? msg->venue_order_id : u.order.venue_order_id;
-    if (msg != nullptr) r.exec_id = msg->exec_id;
+    if (msg != nullptr) {
+      r.exec_id = msg->exec_id;
+      r.hdr.exch_ts = msg->hdr.exch_ts;
+    }
     account_record(records_.put(r.hdr));
     emit_position(id);
   }

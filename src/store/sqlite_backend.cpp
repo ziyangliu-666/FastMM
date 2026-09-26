@@ -155,6 +155,13 @@ class SqliteBackend final : public Backend {
       if (sqlite3_step(ins_journal_.get()) != SQLITE_DONE)
         return fail(error_of(db_, "insert journal"));
     }
+    for (std::size_t v = 0; v < s.venues.size(); ++v) {
+      Bind n(ins_venue_.get());
+      n.u(s.session_id);
+      n.i(static_cast<std::int64_t>(v));
+      n.t(s.venues[v]);
+      if (sqlite3_step(ins_venue_.get()) != SQLITE_DONE) return fail(error_of(db_, "insert venue"));
+    }
     return {};
   }
 
@@ -240,6 +247,7 @@ class SqliteBackend final : public Backend {
     b.i(r.position_fees.raw);
     b.b((r.hdr.flags & RecordHeader::kSynthetic) != 0);
     b.b((r.hdr.flags & RecordHeader::kLate) != 0);
+    b.i(r.hdr.exch_ts.ns);
     step(ins_fill_.get(), "insert fill");
   }
 
@@ -462,7 +470,8 @@ class SqliteBackend final : public Backend {
         {&ins_instrument_, "INSERT OR REPLACE INTO instruments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_fill_,
          "INSERT OR IGNORE INTO fills VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-         "?,?,?,?,?,?)"},
+         "?,?,?,?,?,?,?)"},
+        {&ins_venue_, "INSERT OR REPLACE INTO session_venues VALUES (?,?,?)"},
         {&ins_order_,
          "INSERT INTO orders (session_id, cl_ord_id, instrument_id, venue_id, symbol,"
          " venue_order_id, side, type, tif, price_raw, qty_raw, cum_qty_raw, state, reject_reason,"
@@ -512,6 +521,7 @@ class SqliteBackend final : public Backend {
   Stmt ins_journal_;
   Stmt ins_instrument_;
   Stmt ins_fill_;
+  Stmt ins_venue_;
   Stmt ins_order_;
   Stmt upd_replaced_;
   Stmt ins_position_;

@@ -74,11 +74,15 @@ struct RecordHeader {
   Timestamp engine_ts;       // the engine clock the record was made at  (24)
   Timestamp wall_ts;         // wall clock at the same point             (32)
   std::uint64_t session_id;  //                                       (40)
-  std::uint8_t pad_[16];     //                                       -> 64
+  // The venue's time of the event behind the record (a fill: the trade time the venue reported),
+  // 0 when there is none. A restart resumes the venue's execution replay from it
+  // (store/reader.hpp).
+  Timestamp exch_ts;     //                                       (48)
+  std::uint8_t pad_[8];  //                                       -> 64
 };
 static_assert(sizeof(RecordHeader) == 64 && std::is_trivially_copyable_v<RecordHeader>);
 static_assert(offsetof(RecordHeader, len) == 0 && offsetof(RecordHeader, type) == 4 &&
-              offsetof(RecordHeader, seq) == 16);
+              offsetof(RecordHeader, seq) == 16 && offsetof(RecordHeader, exch_ts) == 48);
 
 // One execution. `fee` is the engine's booked fee in the instrument's settlement currency;
 // `fee_amount` is what the venue reported, in units of `fee_asset` (a commission in a third asset

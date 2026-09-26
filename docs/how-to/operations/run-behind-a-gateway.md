@@ -16,7 +16,7 @@ The socket is `<journal_dir>/<engine name>.gw` of the gateway's configuration, `
 1. gives the strategy a session epoch from the gateway's `epoch_file` (the high 16 bits of every client order id, so ids are unique across strategies and across gateway restarts; the strategy's own `epoch_file` is not used),
 2. creates three rings per venue under `/dev/shm` (`fastmm-gw-<name>-<pid>-<attachment>-<venue>.md`, `.ord`, `.out`) and adds them to the venue's routing,
 3. puts a snapshot of every book in its market-data ring, taken from the gateway's own copy ([Books](#books)),
-4. reconciles: the account's executions since the strategy's last stored fill, then the open orders,
+4. reconciles: the account's executions since the strategy's last stored fill on each venue (in the venue's clock, [Recovery at start-up](../../reference/storage.md#recovery-at-start-up)), then the open orders,
 5. answers with the epoch, the instrument table, the ring paths and, as descriptors, the wake pages and its reactors' eventfds (see [Latency](#latency)).
 
 The strategy restores its previous position from its own store, as `fastmm-live` does on a restart ([What survives a restart](running-in-production.md#1-what-survives-a-restart)); the execution replay in step 4 books what happened since. The attach request carries the positions it restored, which start the gateway's account. Instruments of other strategies stay in its table, disabled: their market data arrives, their quotes are pulled.

@@ -122,6 +122,8 @@ class BinanceVenue final : public Venue {
   [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
   void resume_executions(std::int64_t since_venue_ms,
                          const std::vector<std::string>& known) override;
+  void resume_trade_ids(
+      const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -284,6 +286,9 @@ class BinanceVenue final : public Venue {
   std::int64_t exec_since_ms_ = 0;
   // Trade ids an earlier session booked; a resumed replay skips them (resume_executions).
   std::unordered_set<std::string> known_exec_ids_;
+  // The first trade id per instrument an earlier session left off at (resume_trade_ids): moved
+  // into exec_from_id_ by the next replay, once subscribed_ gives the instruments their slots.
+  std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;
   std::size_t exec_pending_ = 0;  // myTrades replies still outstanding
   bool exec_replay_ok_ = true;    // every reply so far covered its instrument in full
   bool exec_replay_active_ = false;

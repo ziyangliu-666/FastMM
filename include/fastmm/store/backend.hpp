@@ -60,7 +60,8 @@ struct SessionOpen {
   std::string host;
   std::uint32_t pid = 0;
   bool dry_run = false;
-  std::int64_t pnl_carry_raw = 0;  // net PnL carried in from earlier sessions
+  std::int64_t pnl_carry_raw = 0;   // net PnL carried in from earlier sessions
+  std::vector<std::string> venues;  // [venues.<name>] by VenueId, so a restart finds its own again
 };
 
 // Written once, after the last record.

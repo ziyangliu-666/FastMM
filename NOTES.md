@@ -103,6 +103,26 @@ had no live venue yet, the account test read the log before it was written); the
 Release, WSL2, adaptive, one strategy, 45 s x 2, gateway engine/wire p50, base (421c0d5) vs this:
 36.9/70.3 vs 36.9/70.3 us (one noisy run 38.9/74.3, rerun 36.9/70.3; in-process 34.8/66.4).
 
+**Resume point in venue time (fixed 2026-09-26).** A restart's execution replay started at the
+store's last fill minus 10 s in the engine's clock (the host's), which the venue compared with its
+own; the 20 s of known ids only hid it. Now the store keeps each fill's `exch_ts` (schema 3:
+`fills.exch_ns`, `session_venues`) and `Recovery::venue_resume` gives, per venue by name, the venue
+time of its last stored fill minus 1 s (delivery reordering across symbols is ms) and the ids stored
+from there. Binance Spot and USD-M resume each symbol at the stored max trade id + 1
+(`Venue::resume_trade_ids`), in-process; Bybit, Deribit and every venue behind a gateway use the
+time path. The gateway's attach carries it per venue (protocol 5), and a fresh attach's history
+starts at the venue's time rather than the host's. At most 128 ids a venue (1024 over 8 per
+attach): more in the overlap moves the start later by whole ms, logged, instead of dropping ids.
+Stores from before schema 3 fall back to the old 10 s/20 s engine-clock start. The 20 s widening
+is gone from the new path. Evidence: `recovery_restart_test` and `gateway_test` restart with the
+simulator's clock 15 s ahead and behind, 65 outside trades in the last 26 s before the stop and one
+while down: pass; with the HEAD binaries (f8ed1c4) all four fail (68-70 executions stored by both
+sessions ahead, the down-time trade missed behind), and in-process with only the start reverted to
+the engine clock both fail too. `store/resume_test.cpp` covers the round trip, the shrink and a v2
+store. Left: Binance's exact start does not recover a fill the stream missed before the last
+stored one (the time path covers 1 s of that); the gateway's pre-seed filter (`seed_from_ms` at
+gateway start) still uses the host clock.
+
 **Gateway books (fixed 2026-09-26).** An attaching or lagging strategy now starts from a snapshot
 of the gateway's own 1024-level book copy, so no attach pauses anyone else (tests failed on the old
 gateway with 1.3–2.0 s gaps in the other strategy's updates). Open: a lagging strategy with a small
@@ -112,12 +132,8 @@ attachment's ring for the snapshots of the instruments it receives.
 **Gateway follow-ups (2026-09-26).** Steps 4 and 5 landed (several strategies, epochs from the
 gateway, instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards, account
 positions, exposure and loss). Open:
-* A restart's replay start is the store's last fill minus 10 s in the engine's clock, which follows
-  the host wall clock; the venue compares it with its own. Widening the store's known ids to 20 s
-  fixed the double booking this caused on WSL2, but the start belongs in venue time (the fills'
-  `exch_ts`, now stamped on replays).
-* The gateway accepts at most 1024 known exec ids per attach (`kMaxKnownExecIds`); a strategy with
-  more than ~50 fills/s inside the 20 s window would overflow it.
+* ~~The replay start in the engine's clock~~ Fixed: see "Resume point in venue time" below.
+* ~~1024 known ids per attach could overflow~~ Fixed there too.
 * Two strategies on one instrument.
 * The account's position of an instrument is seeded once per gateway run, by its first owner's
   store; the gateway books a strategy's missed fill from the replayed execution, where the engine

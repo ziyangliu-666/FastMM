@@ -13,6 +13,7 @@
 #include "fastmm/venues/blocking_http.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <csignal>
 #include <fstream>
 #include <string>
@@ -188,18 +189,7 @@ TEST_CASE(
   REQUIRE_FALSE(after_first.is_zero());
 
   // A trade nobody running made: a market order over signed REST.
-  {
-    const std::string query =
-        "symbol=BTCUSDT&side=BUY&type=MARKET&quantity=0.002&recvWindow=5000&timestamp=" +
-        std::to_string(fx.server.server_time_ms());
-    venues::BlockingHttp http(fx.http());
-    const venues::HttpReply r = http.request(
-        "POST",
-        "/api/v3/order?" + query +
-            "&signature=" + std::string(net::hmac_sha256_hex(kApiSecret, query).view()),
-        std::string("X-MBX-APIKEY: ") + kApiKey + "\r\n");
-    REQUIRE_MESSAGE(r.status == 200, r.body);
-  }
+  outside_trade(fx, "BUY", "0.002");
   const Qty before_second = fx.server.stats().position;
   REQUIRE(before_second != after_first);
 
@@ -239,6 +229,69 @@ TEST_CASE(
                 << before_second.raw);
   CHECK(engine_view == fx.server.stats().position);
   CHECK(fx.server.stats().duplicate_client_order_ids == 0);
+}
+
+namespace {
+
+// A restart while the venue's clock is `venue_ahead_ms` off the engine's (the host's). The first
+// session books executions right up to its stop - its own and a stream of trades made on the
+// account outside it - and one more trade is made while nothing runs. The second session's
+// execution replay must book that one and none of the first session's: its position ends equal to
+// the venue's and no execution id is stored by both sessions.
+void restart_across_clock_skew(std::int64_t venue_ahead_ms, const std::string& stem) {
+  sim::server::SimServerConfig sc = test_server_config();
+  sc.clock_offset_ms = venue_ahead_ms;
+  ServerFixture fx(std::move(sc));
+  const SessionFiles f = write_config(fx, stem, "exit", "1000");
+  remove_all_of({f.epoch, f.kill, f.journal_dir, f.config + ".log"});
+
+  const pid_t first = spawn_live(f, 120);
+  REQUIRE_MESSAGE(wait_until([&] { return fx.server.stats().orders_accepted > 0; }, 45000),
+                  "the first session never quoted: " << fastmm::test::read_file(f.config + ".log"));
+  // Executions every 400 ms for 26 s, up to the stop: more than the old engine-clock start (10 s
+  // before the last fill) and its ids (20 s) could tell apart once the clocks are 15 s apart.
+  for (int i = 0; i < 65; ++i) {
+    outside_trade(fx, i % 2 == 0 ? "BUY" : "SELL");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  }
+  REQUIRE(::kill(first, SIGTERM) == 0);
+  CHECK(reap(first) == 0);
+  const std::size_t first_fills = stored_fills(f, stem);
+  CHECK(first_fills >= 65);
+  // While nothing runs.
+  outside_trade(fx, "BUY", "0.002");
+
+  const pid_t second = spawn_live(f, 60);
+  const std::string log = f.config + ".log";
+  REQUIRE(wait_until(
+      [&] {
+        return fastmm::test::read_file(log).find("restored position BTCUSDT") != std::string::npos;
+      },
+      30000));
+  const std::uint64_t accepted = fx.server.stats().orders_accepted;
+  REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > accepted; }, 30000));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  REQUIRE(::kill(second, SIGTERM) == 0);
+  CHECK(reap(second) == 0);
+
+  const std::vector<std::string> twice = booked_twice(f, stem);
+  INFO("venue " << fx.server.stats().position.raw << ", engine " << store_position(f, stem).raw
+                << ", fills stored by the first session " << first_fills << ", booked twice "
+                << twice.size()
+                << (twice.empty() ? std::string() : " (" + twice.front() + " ...)"));
+  CHECK(twice.empty());
+  CHECK(store_position(f, stem) == fx.server.stats().position);
+  CHECK(fx.server.stats().duplicate_client_order_ids == 0);
+}
+
+}  // namespace
+
+TEST_CASE("recovery: a restart with the venue's clock 15 s ahead books nothing twice") {
+  restart_across_clock_skew(15'000, "recovery-skew-ahead");
+}
+
+TEST_CASE("recovery: a restart with the venue's clock 15 s behind misses nothing") {
+  restart_across_clock_skew(-15'000, "recovery-skew-behind");
 }
 
 #endif  // FASTMM_LIVE_EXE

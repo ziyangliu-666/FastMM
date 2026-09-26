@@ -137,6 +137,8 @@ class BinanceUsdmVenue final : public Venue {
   bool request_executions(std::int64_t since_venue_ms = 0) override;
   void resume_executions(std::int64_t since_venue_ms,
                          const std::vector<std::string>& known) override;
+  void resume_trade_ids(
+      const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -326,8 +328,11 @@ class BinanceUsdmVenue final : public Venue {
   // only. A restarted session's orders are not in it and reach the position as unknown fills.
   RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
   std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
-  std::uint64_t exec_generation_ = 0;               // replies of an abandoned replay are ignored
-  std::size_t exec_pending_ = 0;                    // userTrades replies still outstanding
+  // The first trade id per instrument an earlier session left off at (resume_trade_ids): moved
+  // into exec_from_id_ by the next replay, once subscribed_ gives the instruments their slots.
+  std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;
+  std::uint64_t exec_generation_ = 0;  // replies of an abandoned replay are ignored
+  std::size_t exec_pending_ = 0;       // userTrades replies still outstanding
   bool exec_replay_ok_ = true;
   bool exec_replay_active_ = false;
   bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin

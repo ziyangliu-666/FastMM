@@ -88,7 +88,7 @@ namespace gw {
 static_assert(std::endian::native == std::endian::little);
 
 inline constexpr std::uint32_t kMagic = 0x57474d46;  // "FMGW"
-inline constexpr std::uint16_t kVersion = 4;
+inline constexpr std::uint16_t kVersion = 5;
 
 enum class MsgType : std::uint16_t {
   AttachRequest = 1,
@@ -126,20 +126,36 @@ struct PositionSeed {
 };
 static_assert(sizeof(PositionSeed) == 80);
 
-// The strategy restores a position from its store: the venues' execution replay starts at
-// exec_since_ms and skips the `known_count` ExecIds that follow the request.
+// Where one venue's execution replay starts for the strategy: the venue's time of its last stored
+// fill less the overlap (store::Recovery::venue_resume), and the trade ids its store holds from
+// there on, `known_count` of the request's ExecIds from index `first_known`.
+struct VenueResume {
+  char venue[32];
+  std::int64_t since_ms;  // venue time, inclusive
+  std::uint32_t first_known;
+  std::uint32_t known_count;
+  std::uint8_t reserved[16];
+};
+static_assert(sizeof(VenueResume) == 64);
+
+// The strategy restores a position from its store: the VenueResume entries say where each venue's
+// execution replay starts. A venue without one starts at the attach, in the venue's time.
 inline constexpr std::uint32_t kResumeExecutions = 1U << 0;
 // The strategy's engine blocks when idle (spin_mode = "adaptive"): the gateway wakes it.
 inline constexpr std::uint32_t kStrategyBlocks = 1U << 1;
+// Over all venues: store::Recovery::kMaxKnownExecIds for each of kMaxVenues, so a strategy's store
+// always fits (gateway_client.cpp checks). A request carrying more is refused, never truncated.
 inline constexpr std::uint32_t kMaxKnownExecIds = 1024;
 
-// Followed by known_count ExecId, claim_count InstrumentClaim, then position_count PositionSeed.
+// Followed by known_count ExecId, claim_count InstrumentClaim, position_count PositionSeed, then
+// resume_count VenueResume.
 struct AttachRequest {
   Header hdr;
   char engine[64];  // [engine] name of the strategy, for the gateway's log
   std::uint32_t pid;
   std::uint32_t flags;
-  std::int64_t exec_since_ms;  // venue time
+  std::uint32_t resume_count;
+  std::uint32_t reserved0;
   std::uint32_t known_count;
   std::uint32_t claim_count;
   std::uint32_t position_count;
@@ -216,7 +232,8 @@ inline constexpr std::size_t kMaxDatagram =
     sizeof(AttachReply) + 8 * sizeof(VenueInfo) + kMaxInstruments * sizeof(Instrument);
 inline constexpr std::size_t kMaxRequest =
     sizeof(AttachRequest) + kMaxKnownExecIds * sizeof(ExecId) +
-    kMaxInstruments * sizeof(InstrumentClaim) + kMaxInstruments * sizeof(PositionSeed);
+    kMaxInstruments * sizeof(InstrumentClaim) + kMaxInstruments * sizeof(PositionSeed) +
+    kMaxVenuesConfig * sizeof(VenueResume);
 // Strategies attached to one gateway at once.
 inline constexpr std::size_t kMaxAttachments = 16;
 
@@ -269,9 +286,14 @@ struct GatewayAttachRequest {
   // position records here and refuses the attach when another attachment owns one of them.
   std::vector<std::pair<std::string, std::string>> instruments;
   bool blocks = false;  // the engine runs with spin_mode = "adaptive"
-  bool resume_executions = false;
-  std::int64_t exec_since_ms = 0;
-  std::vector<std::string> known_exec_ids;
+  // Where each venue's execution replay starts, for a strategy that restores a position: the
+  // venue's time and the trade ids its store holds from there on (store::Recovery::venue_resume).
+  struct Resume {
+    std::string venue;
+    std::int64_t since_ms = 0;
+    std::vector<std::string> known_exec_ids;
+  };
+  std::vector<Resume> resume;
   // The positions it restored from its store, (venue name, symbol, qty, avg price): the gateway
   // seeds its account with them (gw::PositionSeed).
   struct Position {

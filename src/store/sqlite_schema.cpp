@@ -259,7 +259,24 @@ SELECT d.session_id, d.day, d.instrument_id, d.symbol,
 FROM delta d;
 )SQL";
 
-constexpr std::array<Migration, 2> kMigrations{Migration{1, kV1}, Migration{2, kV2}};
+// Version 3: the venue's time of each fill and the names of a session's venues, so a restart can
+// resume the venue's execution replay in the venue's clock (Recovery::venue_resume). Rows written
+// before it have exch_ns = 0 and their sessions no venue names; a restart then falls back to the
+// engine clock, as version 2 did.
+constexpr std::string_view kV3 = R"SQL(
+ALTER TABLE fills ADD COLUMN exch_ns INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX fills_venue_time ON fills(session_id, venue_id, exch_ns);
+
+CREATE TABLE session_venues (
+  session_id INTEGER NOT NULL,
+  venue_id   INTEGER NOT NULL,
+  name       TEXT    NOT NULL,
+  PRIMARY KEY (session_id, venue_id)
+);
+)SQL";
+
+constexpr std::array<Migration, 3> kMigrations{
+    Migration{1, kV1}, Migration{2, kV2}, Migration{3, kV3}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {
