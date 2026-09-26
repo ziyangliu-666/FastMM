@@ -541,6 +541,17 @@ TEST_CASE("bybit_linear.venue: the position topic corrects the engine only when 
     l.venue->on_timer(net::Reactor::now_ns() + 2'000'000'000);
     l.oc.take(l.orders);
     CHECK(l.oc.count(EventType::PositionUpdate) == before);
+    // A fill the engine books moves both sides alike: -0.015 - 0.005 on each, nothing to correct.
+    h.srv.send_to("/v5/private", private_execution("ex-p1", "0.005", "0.01"));
+    h.srv.send_to("/v5/private", position_frame("Sell", "0.02"));
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderFill) == 1;
+    }));
+    for (int i = 0; i < 20; ++i) l.reactor.run_once(5);
+    l.venue->on_timer(net::Reactor::now_ns() + 2'000'000'000);
+    l.oc.take(l.orders);
+    CHECK(l.oc.count(EventType::PositionUpdate) == before);
     // A liquidation or another client moved the position: the engine takes the venue's.
     h.srv.send_to("/v5/private", position_frame("Buy", "0.004"));
     for (int i = 0; i < 20; ++i) l.reactor.run_once(5);

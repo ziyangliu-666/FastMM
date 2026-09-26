@@ -32,9 +32,9 @@ constexpr VenueKeySpec kBybitKeys[] = {
     {"dead_mans_switch_s",
      KeyType::Int,
      false,
-     "Bybit disconnect-cancel-all window in seconds, 3 to 300; the venue cancels every order of "
-     "the category (product SPOT, or DERIVATIVES for linear) once no private connection is left. "
-     "0 disables it (default 0: Bybit only grants DCP to institutional accounts)"},
+     "Bybit disconnect-cancel-all window in seconds, 3 to 300; the venue cancels every spot "
+     "order (every derivatives order with category = linear) once no private connection is "
+     "left. 0 disables it (default 0: Bybit only grants DCP to institutional accounts)"},
     {"cancel_on_order_channel_loss",
      KeyType::Bool,
      false,
