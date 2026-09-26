@@ -278,7 +278,7 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_gross{0};
   std::atomic<std::uint64_t> refused_net{0};
   std::atomic<std::uint64_t> refused_fx{0};
-  std::atomic<std::uint64_t> account_skipped{0};  // replayed fills its account seed holds
+  std::atomic<std::uint64_t> account_skipped{0};  // replayed fills / funding its seed holds
   std::atomic<std::uint64_t> account_md_lost{0};  // times acct_md was full
   std::atomic<std::uint64_t> untracked{0};        // the order table was full
   std::atomic<std::uint64_t> stale_replays{0};    // replayed fills older than their owner's history
@@ -358,6 +358,37 @@ void account_fill(VenueRouter& v, const OrderFillMsg& m) {
   if (!v.book->first_time(m)) return;
   v.book->book(m);
   v.acct->qty[id.value].store(v.book->positions().get(id).qty.raw, std::memory_order_relaxed);
+  publish_account(v);
+}
+
+// A funding payment's id as the known-id lists (a store's resume, the account's seed) hold it.
+std::string known_funding_id(const FundingMsg& m) {
+  std::string id(kFundingIdPrefix);
+  id += m.funding_id.view();
+  return id;
+}
+
+// Every funding payment once, as account_fill books executions: one from the venue's history that
+// the account's seed holds already (older than it, or listed by the seeding store) is skipped.
+void account_funding(VenueRouter& v, const FundingMsg& m) {
+  const InstrumentId id = m.hdr.instrument;
+  if (!v.insts->contains(id)) return;
+  if ((m.flags & FundingMsg::kReplayed) != 0 && m.hdr.exch_ts.ns > 0) {
+    const auto& known = v.seed_known[id.value];
+    if (m.hdr.exch_ts.ns / 1'000'000 < v.seed_from_ms[id.value] ||
+        (known != nullptr && known->contains(known_funding_id(m)))) {
+      v.account_skipped.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+  }
+  if (!v.book->first_time(m)) return;
+  if (!v.book->book(m)) {
+    FASTMM_LOG_ERROR("gateway: funding {} in {} on instrument {} is not in its settlement currency",
+                     m.funding_id.view(),
+                     m.asset.view(),
+                     id.value);
+    return;
+  }
   publish_account(v);
 }
 
@@ -663,6 +694,25 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
   }
 }
 
+// A funding payment goes to the instrument's owner, which books it (its engine dedupes by id). One
+// from the venue's history that is older than the owner's history or in its store is not routed,
+// as with a replayed execution naming no live order.
+void route_funding(VenueRouter& v, const FundingMsg& m) {
+  account_funding(v, m);
+  Route* r = v.owner_of(m.hdr.instrument);
+  if (r == nullptr) {
+    v.unrouted.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  if ((m.flags & FundingMsg::kReplayed) != 0 && m.hdr.exch_ts.ns > 0 &&
+      (m.hdr.exch_ts.ns / 1'000'000 < r->replay_from_ms ||
+       (r->known != nullptr && r->known->contains(known_funding_id(m))))) {
+    v.stale_replays.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  push_order(*r, m.hdr);
+}
+
 // An event about one order goes to the attachment its epoch names; a dead session's is dropped.
 template <class M>
 void route_by_id(VenueRouter& v, const M& m) {
@@ -728,6 +778,9 @@ void route_order(VenueRouter& v, const EventHeader& h) {
     }
     case EventType::OrderFill:
       route_fill(v, msg_cast<OrderFillMsg>(&h));
+      return;
+    case EventType::Funding:
+      route_funding(v, msg_cast<FundingMsg>(&h));
       return;
     case EventType::PositionUpdate: {
       const auto& m = msg_cast<PositionUpdateMsg>(&h);

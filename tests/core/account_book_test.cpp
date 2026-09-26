@@ -182,3 +182,47 @@ TEST_CASE("core.account_book: with [accounting] the account keeps its totals per
   CHECK(p.native(1).gross == nt("0.1"));  // 2 ETH at 0.05 BTC
   CHECK(p.native(0).gross == nt("100"));  // BTCUSDT at its fill price
 }
+
+TEST_CASE("core.account_book: a funding payment is booked once into realized, in its currency") {
+  InstrumentTable t;
+  Instrument i{};
+  i.symbol = "BTCUSDT";
+  i.base = "BTC";
+  i.quote = "USDT";
+  i.venue = VenueId{0};
+  i.flags = Instrument::kEnabled;
+  i.tick = px("0.01");
+  i.lot = qt("0.001");
+  REQUIRE(t.add(i));
+  i.symbol = "ETHUSDT";
+  i.base = "ETH";
+  REQUIRE(t.add(i));
+  AccountBook b(t, VenueId{0});
+  const auto pay = [](InstrumentId id, const char* amount, const char* asset, const char* fid) {
+    FundingMsg m{};
+    init_header(m, EventType::Funding, id, VenueId{0});
+    m.amount = nt(amount);
+    m.asset.assign(asset);
+    m.funding_id.assign(fid);
+    return m;
+  };
+  const FundingMsg f1 = pay(kBtc, "-0.5", "USDT", "77");
+  REQUIRE(b.first_time(f1));
+  CHECK(b.book(f1));
+  CHECK_FALSE(b.first_time(f1));  // the stream and the venue's history: once
+  // The same id on another instrument is another payment; an execution with that id is not one.
+  const FundingMsg f2 = pay(kEth, "0.25", "usdt", "77");
+  REQUIRE(b.first_time(f2));
+  CHECK(b.book(f2));
+  CHECK(b.first_time(fill(kBtc, Side::Buy, "100", "1", "77")));
+  CHECK(b.positions().get(kBtc).realized == nt("-0.5"));
+  CHECK(b.positions().get(kBtc).fees.is_zero());
+  CHECK(b.positions().get(kEth).realized == nt("0.25"));
+  CHECK(b.positions().total_realized() == nt("-0.25"));
+  CHECK(b.positions().total_funding() == nt("-0.25"));
+  // In an asset the instrument does not settle in: not booked.
+  const FundingMsg f3 = pay(kBtc, "-1", "BNB", "78");
+  REQUIRE(b.first_time(f3));
+  CHECK_FALSE(b.book(f3));
+  CHECK(b.positions().total_realized() == nt("-0.25"));
+}
