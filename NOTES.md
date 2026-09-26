@@ -14,7 +14,15 @@ perpetuals, and today one session or gateway with instruments in two settlement 
   `max_loss` and the exposure caps are converted at the current rate.
 * A rate that is unknown or stale is unknown: an order that increases exposure in that currency is
   refused. Same accounting in the engine and the gateway; backtest and replay share it.
-Later steps: Bybit linear perpetuals and OKX; alerting.
+Step 2, Bybit linear perpetuals: done 2026-09-26 (mock and docs only, no testnet keys).
+Step 3, funding: neither perpetuals connector books funding (Binance USDⓈ-M ignores the
+balance-only `ACCOUNT_UPDATE`, Bybit linear skips `execType = Funding`), so perpetual PnL and the
+`max_loss` budget leave it out. Design: a `Funding` account event (venue, instrument, amount,
+settlement currency, venue time, venue id) on the order-event ring, so it is journaled and replays;
+the engine books it into realized PnL like a fee; the store records it; the gateway's account books
+it; missed funding is replayed from the venue's income history (Binance
+`/fapi/v1/income?incomeType=FUNDING_FEE`, Bybit's Funding executions), deduplicated by id.
+Later: OKX; alerting.
 
 **Step 1 done (2026-09-26): `[accounting]`.** `reporting_currency` and `[accounting.fx] BTC =
 "venue:symbol"` (an instrument of `[[instruments]]`, `enabled = false` if untraded; a USDTBTC-style
