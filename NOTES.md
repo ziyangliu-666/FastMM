@@ -80,13 +80,28 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    wake-ups. Release, WSL2, one strategy, 45 s x 2, gateway engine/wire p50, base (8802339) vs
    limits on: adaptive 36.9/70.3 vs 36.9/70.3 us; busy 8.7/43.0-44.9 vs 7.9-8.2/44.9 us.
 
-**Gateway: an attach freezes the others' books (found 2026-09-26).** On attach, and when one
-attachment falls behind on market data, the gateway calls `resync_books()` on the venue. The depth
-sync then forwards no deltas until a new snapshot, and the snapshot request waits out
-`min_snapshot_interval_ns` (2 s by default), so every other attached strategy quotes on a frozen
-book for up to ~2 s (seen as `books=0/1` for whole 2 s attachments in the gateway tests' logs). The
-gateway already keeps its own copy of every book (for marking the account); an attaching or lagging
-strategy should get a snapshot built from that copy instead, with no venue resync at all.
+**Gateway: an attach froze the others' books (found and fixed 2026-09-26).** On attach, and when
+one attachment fell behind on market data, the gateway called `resync_books()` on the venue; the
+depth sync then forwarded no deltas until a new snapshot, which waited out the connector's 2 s
+interval, so every other strategy quoted on a frozen book. Now the attaching (or lagging, after its
+own `Resyncing`) attachment gets a `BookSnapshot` of the gateway's copy of each book
+(`write_book_snapshot`, `core/book/book_snapshot.hpp`) in its md ring alone. Ordering: all on the
+venue's network thread, and the md drain routes each event to every ring and to `acct_md` in one
+step, so applying `acct_md` first makes the copy the book after exactly the events routed so far.
+Depth: the copy is now 1024 levels a side (`kMaxBookLevelsPerMsg`, as deep as any snapshot
+message); with 256 an engine book from it differs from one built from the venue's snapshot
+(`truncated`, then levels). `resync_books()` stays only for `acct_md` overflow. A book the gateway
+does not hold gets no snapshot (the venue's next one reaches everyone). Evidence:
+`book_snapshot_test.cpp` (gateway snapshot + 6000 deltas == venue snapshot + same deltas, attach at
+6 points; fails with a 256-level copy); `gateway_books_test.cpp` (a second strategy attaching twice
+within 2 s, and one SIGSTOPped until its 64 KiB ring drops: no depth snapshot at the simulator,
+gateway `books` N/N throughout, a has one snapshot per book and <= ~100 ms between BTCUSDT updates,
+b's books equal a's delta by delta and the simulator's top at sampled update ids). On the old
+gateway: 2-4 extra depth snapshots, `books` below N in ~200 status samples, 3 snapshots per book
+in a, gaps of 1.3-2.0 s. Two tests assumed attaches took that long (the ops test's first status
+had no live venue yet, the account test read the log before it was written); they wait now.
+Release, WSL2, adaptive, one strategy, 45 s x 2, gateway engine/wire p50, base (421c0d5) vs this:
+36.9/70.3 vs 36.9/70.3 us (one noisy run 38.9/74.3, rerun 36.9/70.3; in-process 34.8/66.4).
 
 **Gateway follow-ups (2026-09-26).** Steps 4 and 5 landed (several strategies, epochs from the
 gateway, instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards, account
