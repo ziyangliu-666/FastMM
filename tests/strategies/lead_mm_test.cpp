@@ -273,9 +273,13 @@ struct LeadCtx {
   const FakeBook& book(InstrumentId id) const { return books[id.value]; }
   Timestamp now() const { return t; }
   FakePosition position(InstrumentId) const { return {pos}; }
-  Order own_bid{};  // our working bid when own_bid.qty is positive
+  Order own_bid{};          // our working bid when own_bid.qty is positive
+  bool own_in_feed = true;  // the feed shows own_bid (a live venue)
   const Order* working_quote(InstrumentId, Side s) const {
     return s == Side::Buy && own_bid.qty.is_positive() ? &own_bid : nullptr;
+  }
+  Qty own_qty(InstrumentId, Side s, Price p, Timestamp) const {
+    return own_in_feed && s == Side::Buy && p == own_bid.price ? own_bid.qty : Qty{};
   }
   TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) {
@@ -539,7 +543,8 @@ TEST_CASE("strategies.lead_mm: the target's imbalance shifts fair and gates a si
     CHECK(f.ctx.last.asks.size() == 1);
   }
   SUBCASE("unless the feed does not show our orders (a backtest)") {
-    ImbFixture f({{"imb_bps", "5"}, {"own_in_feed", "false"}});
+    ImbFixture f({{"imb_bps", "5"}});
+    f.ctx.own_in_feed = false;
     f.ctx.own_bid.price = px("150.10");
     f.ctx.own_bid.qty = qt("2");
     f.requote();

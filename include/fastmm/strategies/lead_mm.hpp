@@ -23,9 +23,9 @@
 // Imbalance (imb_bps, 0 = off): the fair value used for the target is
 //   fair * (1 + imb_bps / 1e4 * imb),  imb = (bid - ask) / (bid + ask)
 // over the target's top imb_levels levels per side, from the top picked above (the ticker's sizes
-// for level 1 when it is the newer, deeper levels from the depth book). With own_in_feed (a live
-// feed shows our orders) our working quote's leaves are taken out of its level first; a side left
-// empty makes imb +-1 toward the other side, both empty 0.
+// for level 1 when it is the newer, deeper levels from the depth book). Our own quantity in the
+// feed (ctx.own_qty at the ticker's or the book's venue time; zero in the simulator) is taken out
+// of each level first; a side left empty makes imb +-1 toward the other side, both empty 0.
 //
 // Hysteresis: a resting quote whose price is still the one the rule picks keeps its side while its
 // edge is at least the threshold minus hysteresis_bps. The strategy never improves on its own
@@ -97,12 +97,6 @@ struct LeadMMParams {
                    100_bps,
                    "fair shift per unit of target book imbalance, bps (0 = off)")
   FASTMM_PARAM(int, imb_levels, 1, 1, 8, "target levels per side in the imbalance")
-  FASTMM_PARAM(bool,
-               own_in_feed,
-               true,
-               false,
-               true,
-               "the feed shows our orders (live): take them out of the imbalance")
 
   [[nodiscard]] std::optional<std::string> validate() const {
     if (leader == target || fx == target || fx == leader)
@@ -352,8 +346,7 @@ class LeadMM : public StrategyBase<LeadMMParams> {
   }
 
   // The target's imbalance over imb_levels levels: level 1 from `top` (ticker or depth book),
-  // further levels from the depth book beyond it; our working quote's leaves taken out of its
-  // level.
+  // further levels from the depth book beyond it; our own quantity in the feed taken out of each.
   template <class Ctx>
   [[nodiscard]] Ratio target_imbalance(Ctx& ctx, const Top& top) const noexcept {
     const LeadMMParams& p = params();
@@ -361,27 +354,19 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     Qty sums[2];
     for (const Side side : {Side::Buy, Side::Sell}) {
       const bool buy = side == Side::Buy;
-      Price own_px{};
-      Qty own_qty{};
-      if (p.own_in_feed) {
-        if (const Order* o = ctx.working_quote(target_, side)) {
-          own_px = o->price;
-          own_qty = o->leaves_qty();
-        }
-      }
       Qty& sum = sums[buy ? 0 : 1];
-      const auto add = [&](Price px, Qty q) {
-        if (px == own_px) q = own_qty >= q ? Qty{} : q - own_qty;
-        sum += q;
+      const auto add = [&](Price px, Qty q, Timestamp at) {
+        const Qty own = ctx.own_qty(target_, side, px, at);
+        sum += own >= q ? Qty{} : q - own;
       };
       const Price first = buy ? top.bid : top.ask;
-      add(first, buy ? top.bid_qty : top.ask_qty);
+      add(first, buy ? top.bid_qty : top.ask_qty, top.ts);
       int n = 1;
       const std::size_t depth = b.depth(side);
       for (std::size_t i = 0; i < depth && n < p.imb_levels; ++i) {
         const Level l = b.level(side, i);
         if (buy ? l.price >= first : l.price <= first) continue;  // at or better than level 1
-        add(l.price, l.qty);
+        add(l.price, l.qty, b.last_update());
         ++n;
       }
     }
