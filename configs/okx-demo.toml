@@ -1,0 +1,97 @@
+# FastMM: BasicMM on OKX demo trading, BTC-USDT-SWAP (USDT-margined perpetual swap).
+#   ./build/release/bin/fastmm-live --config configs/okx-demo.toml --dry-run --duration 60s
+# Keys from OKX demo trading (Trade > Demo trading > Personal center > Demo trading API): the
+# key, its secret and the passphrase chosen with it. The account must be in net position mode and
+# not in spot mode (the connector refuses both and fastmm-live exits 3), with USDT to margin:
+#   export FASTMM_OKX_API_KEY=... FASTMM_OKX_API_SECRET=... FASTMM_OKX_API_PASSPHRASE=...
+#   ./build/release/bin/fastmm-live --config configs/okx-demo.toml
+# Endpoints (https://www.okx.com/docs-v5/en/#overview-demo-trading-services): REST
+#   https://www.okx.com with "x-simulated-trading: 1" (testnet = true), public
+#   wss://wspap.okx.com:8443/ws/v5/public, private .../ws/v5/private (derived from ws_url; the
+#   order connection uses it too).
+# Quantities are contracts: one BTC-USDT-SWAP contract is 0.01 BTC (ctVal), so 0.1 contracts are
+# 0.001 BTC. Leverage and margin are account settings; the connector reads and changes neither.
+[engine]
+name = "okx-demo"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 2
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.okx]
+kind = "okx"
+ws_url = "wss://wspap.okx.com:8443/ws/v5/public"
+rest_url = "https://www.okx.com"
+api_key = "${FASTMM_OKX_API_KEY}"
+api_secret = "${FASTMM_OKX_API_SECRET}"
+api_passphrase = "${FASTMM_OKX_API_PASSPHRASE}"
+testnet = true               # demo trading: x-simulated-trading: 1
+# Amend is implemented (the orders channel reports its result); cancel + new until it has been
+# seen on the demo.
+supports_replace = false
+td_mode = "cross"
+depth_channel = "books"      # books50-l2-tbt / books-l2-tbt need VIP4
+stale_ms = 10000
+dead_mans_switch_s = 60      # cancel-all-after, refreshed every 20 s
+
+[venues.okx.fees]
+maker_bps = 2.0              # OKX's base-tier USDT-margined swap rates: 0.02 % maker, 0.05 % taker
+taker_bps = 5.0
+
+# Tick, lot, minimum size, the contract multiplier (ctVal) and the settlement currency (quote)
+# are overwritten from GET /api/v5/public/instruments at startup; on demo the tick is 0.01.
+[[instruments]]
+venue = "okx"
+symbol = "BTC-USDT-SWAP"
+base = "BTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.01"
+lot = "0.01"
+min_qty = "0.01"
+contract_multiplier = "0.01"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 2.0
+skew_bps_per_unit = 5.0
+quote_qty = 0.1
+max_inventory = 0.3
+requote_threshold_ticks = 300
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.2"
+max_order_notional = "300"
+max_position = "0.3"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

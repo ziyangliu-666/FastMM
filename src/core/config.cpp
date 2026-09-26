@@ -155,9 +155,11 @@ void get_optional(const toml::table& t, std::string_view key, std::optional<doub
 }
 
 bool looks_like_inline_secret(std::string_view key, std::string_view value) noexcept {
-  const bool secret_key =
-      key.find("secret") != std::string_view::npos || key.find("key") != std::string_view::npos ||
-      key.find("token") != std::string_view::npos || key.find("password") != std::string_view::npos;
+  const bool secret_key = key.find("secret") != std::string_view::npos ||
+                          key.find("key") != std::string_view::npos ||
+                          key.find("token") != std::string_view::npos ||
+                          key.find("password") != std::string_view::npos ||
+                          key.find("passphrase") != std::string_view::npos;
   return secret_key && value.size() > 32 && !has_env_reference(value);
 }
 
@@ -389,6 +391,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       str("rest_url", v.rest_url);
       str("api_key", v.api_key);
       str("api_secret", v.api_secret);
+      str("api_passphrase", v.api_passphrase);
       str("ca_file", v.ca_file);
       get(*t, "testnet", v.testnet);
       get(*t, "supports_replace", v.supports_replace);
@@ -685,6 +688,7 @@ std::string Config::redacted() const {
     if (!v.rest_url.empty()) kq("rest_url", v.rest_url);
     if (!v.api_key.empty()) kq("api_key", "***");
     if (!v.api_secret.empty()) kq("api_secret", "***");
+    if (!v.api_passphrase.empty()) kq("api_passphrase", "***");
     kv("testnet", v.testnet);
     kv("supports_replace", v.supports_replace);
     kv("insecure_tls", v.insecure_tls);

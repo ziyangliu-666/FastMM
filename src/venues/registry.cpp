@@ -14,6 +14,7 @@ void register_binance_usdm_venue(VenueRegistry& r);
 void register_bybit_venue(VenueRegistry& r);
 void register_deribit_venue(VenueRegistry& r);
 void register_nasdaq_itch_venue(VenueRegistry& r);
+void register_okx_venue(VenueRegistry& r);
 
 namespace {
 
@@ -177,6 +178,7 @@ void register_builtin_venues(VenueRegistry& r) {
   register_bybit_venue(r);
   register_deribit_venue(r);
   register_nasdaq_itch_venue(r);
+  register_okx_venue(r);
 }
 
 void validate_venues(const Config& cfg,

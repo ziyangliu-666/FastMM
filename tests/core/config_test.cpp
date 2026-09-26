@@ -136,6 +136,24 @@ TEST_CASE("core.config: inline secret guard and redaction") {
   CHECK(short_ok.venues[0].api_key == "short");
 }
 
+TEST_CASE("core.config: api_passphrase is a credential: substituted, masked, not journaled") {
+  setenv("FASTMM_T_PASS", "pass-phrase-1", 1);
+  const Config cfg = Config::parse(
+      "[venues.o]\nkind = \"okx\"\napi_key = \"k\"\napi_passphrase = \"${FASTMM_T_PASS}\"\n");
+  REQUIRE(cfg.venues.size() == 1);
+  CHECK(cfg.venues[0].api_passphrase == "pass-phrase-1");
+  CHECK(cfg.venues[0].extra.count("api_passphrase") == 0);  // generic, not the connector's
+  const std::string dump = cfg.redacted();
+  CHECK(dump.find("pass-phrase-1") == std::string::npos);
+  CHECK(dump.find("api_passphrase = \"***\"") != std::string::npos);
+  CHECK(cfg.effective_toml().find("pass-phrase-1") == std::string::npos);
+  CHECK(cfg.effective_toml().find("api_passphrase") == std::string::npos);
+  CHECK_THROWS_WITH_AS(Config::parse("[venues.o]\nkind = \"okx\"\napi_passphrase = "
+                                     "\"0123456789abcdef0123456789abcdef0123\"\n"),
+                       doctest::Contains("inline secret"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: validation errors carry line numbers, unknown keys warn") {
   auto line_of = [](const char* toml) {
     try {
@@ -229,6 +247,7 @@ TEST_CASE("core.config: shipped venue configs load without warnings") {
   for (const char* name : {"binance-testnet.toml",
                            "bybit-testnet.toml",
                            "deribit-testnet.toml",
+                           "okx-demo.toml",
                            "sim-local.toml",
                            "sim-local-tls.toml"}) {
     const Config cfg = Config::load((configs_dir() / name).string(), opts);

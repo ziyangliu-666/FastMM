@@ -109,6 +109,7 @@ struct VenueSection {
   std::string rest_url;
   std::string api_key;
   std::string api_secret;
+  std::string api_passphrase;  // OKX: the passphrase chosen with the API key
   bool testnet = true;
   bool supports_replace = false;
   bool insecure_tls = false;
@@ -248,13 +249,13 @@ class Config {
   [[nodiscard]] SpinMode spin_mode() const;
   [[nodiscard]] bool single_threaded() const noexcept { return engine.threading == "single"; }
 
-  // Dump with api_key/api_secret masked; safe to log.
+  // Dump with api_key/api_secret/api_passphrase masked; safe to log.
   [[nodiscard]] std::string redacted() const;
 
   // The configuration as parsed (after any changes made to this object, e.g. command-line
-  // overrides) as complete TOML without api_key / api_secret. Deterministic: equal
-  // configurations give equal text, and parsing the text gives an equal configuration. Journals
-  // embed it, and its hash is the journal header's config_hash.
+  // overrides) as complete TOML without api_key / api_secret / api_passphrase. Deterministic:
+  // equal configurations give equal text, and parsing the text gives an equal configuration.
+  // Journals embed it, and its hash is the journal header's config_hash.
   [[nodiscard]] std::string effective_toml() const;
   [[nodiscard]] std::uint64_t effective_hash() const { return text_hash(effective_toml()); }
   [[nodiscard]] static std::uint64_t text_hash(std::string_view text) noexcept;  // FNV-1a

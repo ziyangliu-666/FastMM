@@ -3,6 +3,28 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Step 4 done (2026-09-26): OKX v5 USDT-margined swaps (`kind = "okx"`).** Modelled on Bybit
+linear. OKX docs and changelog read 2026-09-26; three recent changes the connector follows: the
+book `checksum` is deprecated (0 since 2026-06-23; the seqId chain is the check, a non-zero checksum
+is still verified against a shadow of the level texts), WebSocket order operations take
+`instIdCode` and ignore `instId` (2026-03/04), and a crossing post-only order is accepted, then
+pushed `canceled` with cancelSource 31 (booked as expired). Quantities are contracts
+(`contract_multiplier` = ctVal x ctMult; notional and PnL linear in USDT). Net mode only: long/short
+or spot account mode exits 3. Amend is acked from the orders push (`amendResult` under `reqId`, the
+new client id), not from the reply. Funding from `account/bills` type 8. Dead man's switch
+`cancel-all-after` (60 s, refresh 20 s), stopped on disconnect over a blocking connection. New
+generic key `api_passphrase`. Evidence: 33 test cases (unit, fake exchange, no-allocation, exit 3 at
+the process level); 32 mutations of the covered code each make their test fail. The public stream
+ran against the demo and production hosts (book synced, 0 resyncs, checksum 0 on both; demo
+instIdCode and tickSz differ from production). Untested against the venue (no keys): login, every
+private payload and reply, account/fills/bills REST, cancel-all-after on demo.
+
+**Flaky under load, found on the way (2026-09-26).** `integration.recovery: shadows of orders ...`
+placed an order before the user stream was back after a drop (3 of 16 under load); it now waits for
+both connections (16 of 16). `binance_usdm.venue: countdownCancelAll ... stopped on shutdown` failed
+once in a full run: `disconnect()` queued the stop on the REST channel and reset it, which drops a
+queued request. It now sends the stop over a blocking connection, as OKX does (35 of 35, 5 runs).
+
 **Performance: code alignment on by default (2026-09-26).** `FASTMM_ALIGN_CODE` (ON, gcc): the
 fastmm targets get `-falign-functions=64 -falign-loops=32 -falign-jumps=32` (`.text` +4 %).
 Test: base, an identical copy and four edits that execute nothing in the benchmark (nops in
@@ -43,6 +65,28 @@ alignment, `scripts/build-pgo.sh`), measured, before layout drift accumulates.
 `bench/ci_budget.toml` are not re-measured. (The gateway tests failing in a deep worktree were the 107-byte AF_UNIX path limit, which the
 gateway already refuses at startup with exit 3 and the path in the message.)
 
+## Next direction (chosen 2026-09-27): quote on one venue, hedge on another
+
+**Why.** The common crypto market-making setup is to quote on the venue that pays or charges less
+for making and hedge each fill at once with a taker order on the deepest venue. The live engine can
+already trade two venues from one strategy (split threading, gateway included), but nothing prices
+from another venue's book, nothing hedges, the backtester models a single venue with one latency,
+and risk cannot net BTC on one venue against BTC on another except by summing all notional.
+
+**Plan.**
+1. Backtest across venues: the sim runs several venues in one run, each with its own latency,
+   fees, replace and STP settings; recorded feeds from two venues merge by timestamp.
+2. A built-in `xmm` strategy: fair value is the hedge venue's book plus a tracked basis; maker
+   quotes on the quote venue are that fair value minus/plus the edge and the hedge cost. The hedge
+   target is derived from positions (quote position plus hedge position in base units, contract
+   multipliers applied), not from a count of fills, so a restart, a dropped fill or an uncertain
+   hedge outcome converges to the same place. One hedge IOC in flight; a stale or down hedge venue
+   pulls the quotes; `max_unhedged` pulls the side that would grow the gap.
+3. Risk per underlying: `[risk.underlying.BTC] max_net = ...` in base units, across venues, in the
+   engine and the gateway's account book.
+4. Evidence: backtest on recorded Binance USD-M + Bybit public data; kill -9 and venue drops in the
+   middle of hedging against fake venues (no lost hedge, no double hedge, limits hold).
+
 ## Next direction (chosen 2026-09-26): a crypto desk can run on this
 
 The gateway's first version is complete. Next, what a crypto market-making desk would hit first. Step 1
@@ -59,8 +103,8 @@ Step 3, funding: done 2026-09-26 (below).
 Step 3 funding: done 2026-09-26 (USDⓈ-M, Bybit linear; Deribit has aggregates only). Alerting:
 done 2026-09-26 as shipped Prometheus rules (`deploy/prometheus/fastmm-alerts.yml`, checked against
 the exporter by a test), plus systemd units for the gateway and its strategies (a gateway crash
-brings the strategies back via WantedBy; tested). Step 4: an OKX connector (swap, USDT-margined),
-modelled on Bybit linear.
+brings the strategies back via WantedBy; tested). Step 4, OKX swaps: done 2026-09-26 (above;
+public data against the venue, private side mock only).
 
 **Step 3 done (2026-09-26): perpetual funding is booked.** `EventType::Funding` (27) /
 `FundingMsg` (128 B: signed amount in the settlement asset, venue id, venue time, kReplayed) on the

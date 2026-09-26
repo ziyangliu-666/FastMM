@@ -407,9 +407,9 @@ void BinanceUsdmVenue::disconnect() {
   if (!connected_) return;
   // A requested shutdown cancels its own orders (Session::stop runs cancel_all()), so the
   // countdown has nothing left to protect: stop it, rather than leave a timer running against an
-  // account nobody is quoting. Best effort — this goes out before the REST channel is reset
-  // below, and if it does not make it the venue only cancels orders that are already gone.
-  if (dms_.enabled() && !cfg_.dry_run) send_countdown_cancel_all(0);
+  // account nobody is quoting. On its own blocking connection, as cancel_all() does: queued on the
+  // REST channel it could be dropped by the reset below.
+  if (dms_.enabled() && !cfg_.dry_run) stop_countdown_blocking();
   dms_.disarm();
   connected_ = false;
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
@@ -1869,6 +1869,34 @@ void BinanceUsdmVenue::keepalive_listen_key() {
         request_listen_key();
       });
   if (queued) rate_.on_sent(1, now_ns());
+}
+
+// countdownCancelAll with countdownTime=0 for every subscribed symbol, synchronously.
+void BinanceUsdmVenue::stop_countdown_blocking() {
+  if (!signer_.usable() || subscribed_.empty() || symbols_ == nullptr) return;
+  BlockingHttpOptions opts;
+  opts.ca_file = cfg_.ca_file;
+  opts.insecure_tls = cfg_.insecure_tls;
+  opts.timeout_ms = cfg_.http_timeout_ms;
+  try {
+    BlockingHttp http(cfg_.rest_url, opts);
+    for (InstrumentId id : subscribed_) {
+      const std::string_view symbol = symbols_->venue_symbol(id);
+      if (symbol.empty()) continue;
+      RestRequest rr;
+      if (!encoder_->encode_rest_countdown_cancel_all(symbol, 0, venue_time_ms(), rr)) continue;
+      const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+      const HttpReply r = http.request(rr.method, target, api_headers());
+      if (!r.ok())
+        FASTMM_LOG_WARN("{}: stopping countdownCancelAll for {} failed: status={} {}",
+                        cfg_.name,
+                        symbol,
+                        r.status,
+                        r.body.substr(0, 160));
+    }
+  } catch (const std::exception& e) {
+    FASTMM_LOG_WARN("{}: stopping countdownCancelAll: {}", cfg_.name, e.what());
+  }
 }
 
 // POST /fapi/v1/countdownCancelAll, one request per subscribed symbol: the countdown is per

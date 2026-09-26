@@ -10,9 +10,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 - Unknown keys are ignored with a warning that names the key and its line.
 - A key with the wrong type is an error, reported with its line and column.
 - Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are parsed as decimal text into fixed point, not through a `double`.
-- `fastmm-live` and `fastmm-gateway` replace `${NAME}` tokens in `[venues.<name>]` values: `ws_url`, `ws_api_url`, `rest_url`, `ca_file`, `api_key`, `api_secret` and every connector key. A variable that is not set is an error, except that `--dry-run` clears an unset `api_key` or `api_secret`.
-- A literal `api_key` or `api_secret` longer than 32 characters is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`; `--allow-inline-secrets` accepts it.
-- Logs and journals contain the configuration with `api_key` and `api_secret` masked.
+- `fastmm-live` and `fastmm-gateway` replace `${NAME}` tokens in `[venues.<name>]` values: `ws_url`, `ws_api_url`, `rest_url`, `ca_file`, `api_key`, `api_secret`, `api_passphrase` and every connector key. A variable that is not set is an error, except that `--dry-run` clears an unset `api_key`, `api_secret` or `api_passphrase`.
+- A literal `api_key`, `api_secret` or `api_passphrase` longer than 32 characters is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`; `--allow-inline-secrets` accepts it.
+- Logs and journals contain the configuration with `api_key`, `api_secret` and `api_passphrase` masked.
 - Types: `decimal` values are marked in the meaning; `any` keys accept a string or a number.
 
 ## `[engine]`
@@ -74,6 +74,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `rest_url` | string |  | REST base URL |
 | `api_key` | string |  | API key, written as "${VARIABLE}" |
 | `api_secret` | string |  | API secret, written as "${VARIABLE}" |
+| `api_passphrase` | string |  | API key passphrase where the venue has one (OKX), written as "${VARIABLE}" |
 | `testnet` | boolean |  | the endpoints are a testnet or demo environment (default true) |
 | `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
@@ -106,6 +107,7 @@ knows only the generic keys above. A project can register its own connector and 
 | `bybit` | `bybit_spot` | Bybit v5 spot and linear perpetuals (testnet) | yes | yes | yes | yes |
 | `deribit` |  | Deribit options and futures (testnet) | yes | yes | yes | yes |
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
+| `okx` |  | OKX v5 USDT-margined perpetual swaps (demo trading) | yes | yes | yes | yes |
 <!-- END config-keys -->
 
 `Replace` and `Order entry` are what the connector can do; a session may not, depending on its
@@ -196,6 +198,30 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `cancel_on_disconnect` | boolean |  | cancel-on-disconnect on the order connection (default true) |
 | `matching_engine_rate` | integer |  | order requests per second of the account tier (default 5) |
 | `matching_engine_burst` | integer |  | order request burst of the account tier (default 20) |
+<!-- END config-keys -->
+
+#### `okx`
+
+USDT-margined swaps; quantities are contracts. The third credential is the generic
+`api_passphrase`, and `testnet = true` (the default) selects demo trading
+([Venue connectors](venues.md#okx-v5-usdt-margined-swaps)).
+
+<!-- BEGIN config-keys venue:okx -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `ws_private_url` | string |  | private WebSocket URL (login, orders, positions); empty = ws_url's host + /ws/v5/private |
+| `td_mode` | string |  | margin mode of every order: cross (default) \| isolated |
+| `depth_channel` | string |  | order book channel: books (default; 400 levels, 100 ms) \| books50-l2-tbt \| books-l2-tbt (10 ms; VIP4 and a login) |
+| `order_api` | string |  | order entry: ws (default) \| rest |
+| `dead_mans_switch_s` | integer |  | cancel-all-after countdown, seconds, 10 to 120, refreshed every third of it; the venue cancels every pending order of the account when it runs out. 0 disables it (default 60) |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least twice ping_interval_ms plus 5000 |
+| `ping_interval_ms` | integer |  | "ping" interval on every connection, ms, 1000 to 25000 (default 20000; OKX closes a connection idle for 30 s) |
+| `orders_per_second` | integer |  | client-side cap on new orders and amends, per second (default 25; OKX allows 60 per 2 s per instrument) |
+| `position_from_stream` | boolean |  | correct the engine position from the positions channel when it differs from the fills (default true) |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `emit_ack_from_response` | boolean |  | acknowledge new orders from the request response, not the orders channel (default true) |
 <!-- END config-keys -->
 
 #### `nasdaq_itch`

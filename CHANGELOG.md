@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- OKX v5 connector (`kind = "okx"`) for USDT-margined perpetual swaps (instType SWAP), net position
+  mode: `books` (or the tbt depth channels) with the seqId chain, `bbo-tbt` and `trades`; order
+  entry over the private WebSocket by `instIdCode`, REST fallback; `orders`, `positions` and
+  `balance_and_position`; reconciliation with the fill replay (`trade/fills`, `fills-history`),
+  `orders-pending` and `account/positions`; funding from `account/bills` type 8;
+  `cancel-all-after` refreshed every window/3 (default 60 s); long/short or spot account mode
+  refused with exit 3. Quantities are contracts (`contract_multiplier` = `ctVal` x `ctMult`).
+  `configs/okx-demo.toml` for demo trading (`testnet = true` sends `x-simulated-trading: 1`). The
+  public stream was run against OKX; the private side only against a scripted fake exchange.
+- `api_passphrase`, a generic `[venues.<name>]` credential (OKX's third one): `${VAR}` only,
+  cleared in a dry run, masked in logs and left out of journals.
+- `SyncReason::ChecksumMismatch`: a venue book checksum that disagrees resyncs the book.
 - Venue state for strategies. `ctx.fees(id)` returns the maker/taker rates of an instrument
   (`FeeRates`, the table a backtest charges; `sim::FeeModel` is now `FeeTable`, core/fees.hpp).
   `ctx.risk_headroom(id)` returns what each `[risk]` limit still admits (`RiskHeadroom`: rate
