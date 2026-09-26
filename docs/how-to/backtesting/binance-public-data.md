@@ -1,6 +1,6 @@
 # Backtest on real BTCUSDT data
 
-Five commands from an empty checkout to a backtest of a shipped strategy on a real day of Binance BTCUSDT perpetual data, at the venue's real fees.
+Backtest a shipped strategy on a real day of Binance BTCUSDT perpetual data, at the venue's fees.
 
 ## 1. Build
 
@@ -15,7 +15,7 @@ cmake --preset release && cmake --build build/release -j
 python3 python/fastmm/data/__main__.py fetch --symbol BTCUSDT --date 2024-03-27
 ```
 
-Nothing but the Python standard library is needed, so this runs before the bindings are built. With the wheel installed it is `python3 -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27`.
+It needs only the Python standard library, so it runs before the bindings are built. With the wheel installed it is `python3 -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27`.
 
 It downloads `bookTicker` and `aggTrades` from [data.binance.vision](https://data.binance.vision), checks each file against the SHA-256 the archive publishes next to it, and unpacks them into `$FASTMM_DATA_HOME` (default `~/.cache/fastmm/data`). A partial download resumes. One day of BTCUSDT is 207 MB of ZIP and 1.5 GB unpacked; `python3 -m fastmm.data ls` shows what the cache holds.
 
@@ -28,11 +28,11 @@ Pick a date between 2023-05-16 and 2024-03-30. The archive published futures `bo
     --data binance:BTCUSDT,2024-03-27
 ```
 
-Five seconds for 18 million market-data events. To try an hour first, add `,start=12:00,end=13:00`.
+The day is 18 million market-data events. To try an hour first, add `,start=12:00,end=13:00`.
 
 `configs/backtest-binance.toml` runs `basic_mm` quoting one level at the touch, with BTCUSDT perpetual's real tick (0.10 USDT), step (0.001 BTC) and minimum notional (100 USDT), and Binance USDⓈ-M VIP 0 fees: 0.0200 % maker and 0.0500 % taker, which is 2 bps and 5 bps.
 
-## 4. Pack it, if you will run it again
+## 4. Pack it for repeated runs
 
 ```bash
 ./build/release/bin/fastmm-data convert --config configs/backtest-binance.toml \
@@ -41,7 +41,7 @@ Five seconds for 18 million market-data events. To try an hour first, add `,star
     --data ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
 ```
 
-The journal holds the same events already decoded, which is about twelve times faster to replay and gives byte-identical results ([Journal format](../../reference/journal-format.md)).
+The journal holds the same events already decoded. It gives byte-identical results and runs several times faster: 3 s against 14 s for this day on a WSL2 desktop ([Journal format](../../reference/journal-format.md)).
 
 ## From Python
 
@@ -81,17 +81,17 @@ markout per fill (bps of notional)
   1m        -149.0135    -0.8488     5.6225     0.0320     0.8808    12529
 ```
 
-The strategy loses 499 USDT on 1.76 M USDT traded, and the decomposition says where: it captured 0.032 bps of spread and paid 2 bps of maker fee. Nothing it could have done with its queue position would have closed that gap — BTCUSDT perpetual's spread is one tick, 0.1 USDT on a 70,000 USDT mid, which is 0.014 bps, so the whole spread is a fourteenth of the fee.
+The strategy loses 499 USDT on 1.76 M USDT traded, and the decomposition says where: it captured 0.032 bps of spread and paid 2 bps of maker fee. No queue position closes that gap: BTCUSDT perpetual's spread is one tick, 0.1 USDT on a 70,000 USDT mid, which is 0.014 bps, a fourteenth of the fee.
 
 The markouts say the fills were not worth having either: the mid moved 0.66 bps against each one within a second and 0.85 bps within ten. Buys and sells lose about equally, so this is adverse selection on both sides, not a directional bet gone wrong. A strategy that quoted for free would still lose 0.85 bps per fill.
 
 Quote uptime is 36.9 % and 5,796 of 70,301 orders are rejected, nearly all of them `PostOnlyWouldCross`. That is the spread again: with a one-tick market and a 5 ms round trip, the touch has usually moved by the time an order arrives, and a post-only order that would take liquidity is rejected rather than filled. Raise `latency_fixed_us` and it gets worse; that number is a property of the venue and the link, not of the simulator.
 
-That is the point of running on real data. The synthetic market cannot produce this number: its flow is a coin flip, so its markouts measure the queue and the latency and nothing else ([Backtesting](../../explanation/backtesting.md#what-the-simulator-cannot-tell-you)). Here the flow is real, and it costs 0.85 bps a fill.
+The synthetic market cannot produce this number: its flow is a coin flip, so its markouts measure the queue and the latency and nothing else ([Backtesting](../../explanation/backtesting.md#what-the-simulator-cannot-tell-you)). Here the flow is real, and it costs 0.85 bps a fill.
 
 ## What this does not tell you
 
-Read [Backtesting](../../explanation/backtesting.md) for the simulator's assumptions — no market impact, and a queue model instead of counterparties. Three more limits belong to this data specifically.
+[Backtesting](../../explanation/backtesting.md) lists the simulator's assumptions: no market impact, and a queue model instead of counterparties. The limits below belong to this data.
 
 **The feed is the top of book, and nothing deeper.** `bookTicker` publishes the best bid and ask; the archive has no depth file that can be replayed. The queue model sets an order's position from the displayed quantity at its price, and at any price except the touch that quantity is zero as far as this feed is concerned. So an order resting behind the touch is modelled as alone at its price and fills the moment a trade reaches it. In the run above 12 % of the fills are behind the touch, and those are the optimistic ones. `configs/backtest-binance.toml` quotes one level at the touch for exactly this reason; a multi-level version of the same strategy measured on this data would be fiction.
 
@@ -114,4 +114,4 @@ That is a different day, so it is not a controlled comparison, but it says the s
 
 ## Licence
 
-The datasets are [CC BY-NC-SA 4.0](https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf). Their terms allow "algorithmic historical backtesting for purely personal non-production research" and forbid "live proprietary trading execution"; a redistributed derivative must keep the same licence and credit Binance Vision. No sample is committed to this repository for that reason — fetch your own ([Market-data sources](../../reference/data-sources.md#binance)).
+The datasets are [CC BY-NC-SA 4.0](https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf). Their terms allow "algorithmic historical backtesting for purely personal non-production research" and forbid "live proprietary trading execution"; a redistributed derivative must keep the same licence and credit Binance Vision. No sample is committed to this repository for that reason; fetch your own ([Market-data sources](../../reference/data-sources.md#binance)).
