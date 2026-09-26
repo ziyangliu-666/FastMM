@@ -147,6 +147,7 @@ class Engine {
         rng_(cfg.rng_seed),
         spin_(cfg.spin_mode),
         reject_log_(cfg.reject_log_interval),
+        fx_on_(cfg.fx.active()),
         quoting_enabled_(cfg.quoting_enabled),
         params_stale_(cfg.max_param_age.ns > 0) {
     // Every hook the strategy declares must match the engine's call (strategies/hooks.hpp).
@@ -157,6 +158,8 @@ class Engine {
       if (!transport_.supports_replace(inst.venue)) qp.supports_replace = false;
     }
     quotes_.set_params(qp);
+    positions_.set_accounting(cfg.fx);
+    risk_.set_fx(cfg.fx);
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -670,10 +673,15 @@ class Engine {
       // wall clock, and a host clock step moves it relative to the engine's TscClock.
       risk_.on_book(id, mid, now);
       positions_.mark(id, mid, inst);
+      if (FASTMM_UNLIKELY(fx_on_) && cfg_.fx.prices[id.value] != 0) on_fx_mid(id, mid);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
-    } else if (b.crossed() && b.crossed_for(now) > cfg_.crossed_grace) {
-      ++stats_.crossed_pulls;
-      pull_quotes(id);
+    } else {
+      if (FASTMM_UNLIKELY(fx_on_) && cfg_.fx.prices[id.value] != 0)
+        risk_.on_fx_book(cfg_.fx.prices[id.value] - 1U, false);
+      if (b.crossed() && b.crossed_for(now) > cfg_.crossed_grace) {
+        ++stats_.crossed_pulls;
+        pull_quotes(id);
+      }
     }
     if constexpr (has_hook(Hook::Book)) {
       const Book& view = b;
@@ -681,6 +689,15 @@ class Engine {
       record_strategy_hop(t2);
     }
     flush_out();
+  }
+
+  // An FX source's mid ([accounting]): its currency's rate, for the PnL totals from now on and for
+  // the orders it prices. A book that stops being valid leaves the totals at the last rate (a loss
+  // already booked stays measured) and refuses new exposure in that currency until it is back.
+  FASTMM_NOINLINE void on_fx_mid(InstrumentId id, Price mid) noexcept {
+    const std::size_t c = cfg_.fx.prices[id.value] - 1U;
+    positions_.set_rate(c, FxRate::from_mid(mid, cfg_.fx.sources[c].invert));
+    risk_.on_fx_book(c, true);
   }
 
   void on_trade(const TradeMsg& t) noexcept {
@@ -1168,7 +1185,11 @@ class Engine {
     if (m.state != ConnState::Live) {
       for (const Instrument& inst : instruments_) {
         if (inst.venue != venue) continue;
-        if (m.channel == 0) books_[inst.id.value].clear();
+        if (m.channel == 0) {
+          books_[inst.id.value].clear();
+          if (FASTMM_UNLIKELY(cfg_.fx.prices[inst.id.value] != 0))
+            risk_.on_fx_book(cfg_.fx.prices[inst.id.value] - 1U, false);
+        }
         pull_quotes(inst.id);
       }
     }
@@ -1930,6 +1951,7 @@ class Engine {
   Cycles event_t1_{};
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
+  bool fx_on_;  // cfg_.fx converts ([accounting])
   bool latched_ = false;
   bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;

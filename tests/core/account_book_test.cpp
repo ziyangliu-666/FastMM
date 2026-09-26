@@ -3,6 +3,7 @@
 
 #include "test_support.hpp"
 
+#include <string>
 #include <vector>
 
 using namespace fastmm;
@@ -151,4 +152,33 @@ TEST_CASE("core.account_book: the exposure check lets an order that reduces its 
         RejectReason::None);
   CHECK(check_exposure(flat, Side::Buy, n, nt("0"), nt("0"), Notional{}, Notional{}) ==
         RejectReason::None);
+}
+
+TEST_CASE("core.account_book: with [accounting] the account keeps its totals per currency") {
+  InstrumentTable t = make_table();
+  // ETHUSDT becomes ETHBTC: it settles in BTC, and BTCUSDT prices BTC.
+  Instrument& eth = t.get(kEth);
+  eth.symbol = "ETHBTC";
+  eth.base = "ETH";
+  eth.quote = "BTC";
+  t.get(kBtc).base = "BTC";
+  t.get(kBtc).quote = "USDT";
+  t.get(kSol).base = "SOL";
+  t.get(kSol).quote = "USDT";
+  AccountingSpec spec;
+  spec.reporting_currency = "USDT";
+  spec.fx["BTC"] = "a:BTCUSDT";
+  const std::vector<std::string> venues{"a", "b"};
+  const auto plan = build_fx_plan(t, spec, venues, /*all_instruments=*/true);
+  REQUIRE(plan.has_value());
+  AccountBook b(t, VenueId{0}, *plan);
+  take(b, fill(kBtc, Side::Buy, "100", "1", "t1"));   // 0.1 USDT fee
+  take(b, fill(kEth, Side::Buy, "0.05", "2", "t2"));  // 0.1 BTC fee
+  snapshot(b, kEth, "0.049", "0.051");
+  const PositionTracker& p = b.positions();
+  REQUIRE(p.converting());
+  CHECK(p.native(0).fees == nt("0.1"));
+  CHECK(p.native(1).fees == nt("0.1"));
+  CHECK(p.native(1).gross == nt("0.1"));  // 2 ETH at 0.05 BTC
+  CHECK(p.native(0).gross == nt("100"));  // BTCUSDT at its fill price
 }

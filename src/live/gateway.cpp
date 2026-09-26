@@ -99,6 +99,7 @@ struct Account {
   std::atomic<bool> tripped{false};
   std::atomic<std::int64_t> trip_net{0};                  // the net PnL that tripped it
   std::atomic<KillReason> trip_reason{KillReason::None};  // GatewayMaxLoss, GatewayOperator
+  // A venue's totals in one currency, as its network thread publishes them.
   struct alignas(kCacheLine) Totals {
     std::atomic<std::int64_t> realized{0};
     std::atomic<std::int64_t> unrealized{0};
@@ -106,17 +107,69 @@ struct Account {
     std::atomic<std::int64_t> gross{0};
     std::atomic<std::int64_t> net{0};
   };
-  std::array<Totals, 8> venues;
+  // Raw Notionals: a venue's totals in the reporting currency, or its one currency without
+  // [accounting].
+  struct Sum {
+    std::int64_t realized = 0;
+    std::int64_t unrealized = 0;
+    std::int64_t fees = 0;
+    std::int64_t gross = 0;
+    std::int64_t net = 0;
+  };
+  // [accounting]: each currency's rate is the mid of its FX source, published by the network thread
+  // of the source's venue. `valid`: that book is valid now; `at_ns`: steady time of its last mark.
+  // The mid stays when the book goes: PnL keeps the last rate, new exposure needs a current one.
+  struct alignas(kCacheLine) Rate {
+    std::atomic<std::int64_t> mid{0};  // raw Price; 0: never known
+    std::atomic<std::int64_t> at_ns{0};
+    std::atomic<bool> valid{false};
+  };
+  FxPlan fx;                  // set before the network threads start
+  std::int64_t stale_ns = 0;  // [risk] stale_md_ms: a rate older than this is not current; 0: off
+  std::array<Rate, kMaxCurrencies> rates;
+  std::array<std::array<Totals, kMaxCurrencies>, 8> venues;      // per venue, per currency
   std::array<std::atomic<std::int64_t>, kMaxInstruments> qty{};  // raw Qty per instrument
 
   [[nodiscard]] bool exposure_limits() const noexcept { return max_gross > 0 || max_net > 0; }
+  [[nodiscard]] std::size_t currencies() const noexcept { return fx.active() ? fx.count : 1; }
+  // The rate PnL is converted at: the last one known.
+  [[nodiscard]] FxRate rate(std::size_t c) const noexcept {
+    if (c == 0) return FxRate::identity();
+    return FxRate::from_mid(Price::from_raw(rates[c].mid.load(std::memory_order_relaxed)),
+                            fx.sources[c].invert);
+  }
+  // The rate new exposure is measured at: unknown while the source's book is not valid, or its
+  // last mark is older than stale_ns.
+  [[nodiscard]] FxRate current_rate(std::size_t c, std::int64_t now_ns) const noexcept {
+    if (c == 0) return FxRate::identity();
+    const Rate& r = rates[c];
+    if (!r.valid.load(std::memory_order_acquire)) return {};
+    if (stale_ns > 0 && now_ns - r.at_ns.load(std::memory_order_relaxed) > stale_ns) return {};
+    return rate(c);
+  }
+  // Venue `i`'s totals, converted.
+  [[nodiscard]] Sum venue_sum(std::size_t i) const noexcept {
+    Sum s;
+    for (std::size_t c = 0; c < currencies(); ++c) {
+      const Totals& t = venues[i][c];
+      const FxRate r = rate(c);
+      const auto conv = [&](const std::atomic<std::int64_t>& a) {
+        return convert(Notional::from_raw(a.load(std::memory_order_relaxed)), r).raw;
+      };
+      s.realized += conv(t.realized);
+      s.unrealized += conv(t.unrealized);
+      s.fees += conv(t.fees);
+      s.gross += conv(t.gross);
+      s.net += conv(t.net);
+    }
+    return s;
+  }
   // Net PnL of the account: the carry and every venue's realized + unrealized - fees.
   [[nodiscard]] std::int64_t net_pnl() const noexcept {
     std::int64_t n = carry.load(std::memory_order_relaxed);
     for (std::size_t i = 0; i < venue_count; ++i) {
-      const Totals& t = venues[i];
-      n += t.realized.load(std::memory_order_relaxed) +
-           t.unrealized.load(std::memory_order_relaxed) - t.fees.load(std::memory_order_relaxed);
+      const Sum t = venue_sum(i);
+      n += t.realized + t.unrealized - t.fees;
     }
     return n;
   }
@@ -224,6 +277,7 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_killed{0};
   std::atomic<std::uint64_t> refused_gross{0};
   std::atomic<std::uint64_t> refused_net{0};
+  std::atomic<std::uint64_t> refused_fx{0};
   std::atomic<std::uint64_t> account_skipped{0};  // replayed fills its account seed holds
   std::atomic<std::uint64_t> account_md_lost{0};  // times acct_md was full
   std::atomic<std::uint64_t> untracked{0};        // the order table was full
@@ -256,16 +310,27 @@ bool trip_account(Account& a, std::int64_t net, KillReason why) noexcept {
   return true;
 }
 
-// Publishes this venue's totals and checks the account's loss.
+// Publishes this venue's totals, per currency with [accounting], and checks the account's loss.
 void publish_account(VenueRouter& v) noexcept {
   Account& a = *v.acct;
   const PositionTracker& p = v.book->positions();
-  Account::Totals& t = a.venues[v.vid.value];
-  t.realized.store(p.total_realized().raw, std::memory_order_relaxed);
-  t.unrealized.store(p.total_unrealized().raw, std::memory_order_relaxed);
-  t.fees.store(p.total_fees().raw, std::memory_order_relaxed);
-  t.gross.store(p.gross_exposure().raw, std::memory_order_relaxed);
-  t.net.store(p.net_exposure().raw, std::memory_order_relaxed);
+  const auto store = [](Account::Totals& t, const PositionTracker::Totals& n) {
+    t.realized.store(n.realized.raw, std::memory_order_relaxed);
+    t.unrealized.store(n.unrealized.raw, std::memory_order_relaxed);
+    t.fees.store(n.fees.raw, std::memory_order_relaxed);
+    t.gross.store(n.gross.raw, std::memory_order_relaxed);
+    t.net.store(n.net.raw, std::memory_order_relaxed);
+  };
+  if (p.converting()) {
+    for (std::size_t c = 0; c < a.currencies(); ++c) store(a.venues[v.vid.value][c], p.native(c));
+  } else {
+    store(a.venues[v.vid.value][0],
+          PositionTracker::Totals{p.total_realized(),
+                                  p.total_unrealized(),
+                                  p.total_fees(),
+                                  p.gross_exposure(),
+                                  p.net_exposure()});
+  }
   if (a.max_loss > 0 && !a.tripped.load(std::memory_order_relaxed)) {
     const std::int64_t net = a.net_pnl();
     if (net <= -a.max_loss) static_cast<void>(trip_account(a, net, KillReason::GatewayMaxLoss));
@@ -296,18 +361,40 @@ void account_fill(VenueRouter& v, const OrderFillMsg& m) {
   publish_account(v);
 }
 
+// [accounting]: the FX sources of this venue whose books are gone are not current any more.
+void publish_rates(VenueRouter& v) noexcept {
+  Account& a = *v.acct;
+  for (std::size_t c = 1; c < a.fx.count; ++c) {
+    const InstrumentId id = a.fx.sources[c].instrument;
+    if (!id.valid() || !v.insts->contains(id) || v.insts->get(id).venue != v.vid) continue;
+    const AccountBook::Book* b = v.book->book(id);
+    if (b == nullptr || !b->is_valid()) a.rates[c].valid.store(false, std::memory_order_release);
+  }
+}
+
 // The account's marks: the book events the md drain set aside. A set-aside ring that overflowed
 // loses deltas, so the account's books start over from the snapshots of a resync.
 std::size_t mark_account(VenueRouter& v) noexcept {
   std::size_t n = 0;
   bool marked = false;
   MsgRing& ring = *v.acct_md;
+  Account& a = *v.acct;
   while (const std::byte* p = ring.try_peek()) {
     const auto& h = *reinterpret_cast<const EventHeader*>(p);
     if (h.type == EventType::ConnectionState) {
       v.book->on_connection_state(msg_cast<ConnectionStateMsg>(&h));
+      if (a.fx.active()) publish_rates(v);
     } else {
-      marked = v.book->on_book(msg_cast<BookDeltaMsg>(&h)) || marked;
+      const bool valid = v.book->on_book(msg_cast<BookDeltaMsg>(&h));
+      marked = valid || marked;
+      if (const int c = a.fx.priced_by(h.instrument); FASTMM_UNLIKELY(c > 0)) {
+        Account::Rate& r = a.rates[static_cast<std::size_t>(c)];
+        if (valid) {
+          r.mid.store(v.book->book(h.instrument)->mid().raw, std::memory_order_relaxed);
+          r.at_ns.store(steady_now().ns, std::memory_order_relaxed);
+        }
+        r.valid.store(valid, std::memory_order_release);
+      }
     }
     ring.release();
     ++n;
@@ -320,23 +407,24 @@ std::size_t mark_account(VenueRouter& v) noexcept {
     m.state = ConnState::Resyncing;
     m.channel = 0;
     v.book->on_connection_state(m);
+    if (a.fx.active()) publish_rates(v);
     v.want_resync = true;
   }
   if (marked) publish_account(v);
   return n;
 }
 
-// The account's exposure limits for one order on this venue: its own positions and the totals
-// the other venues published.
+// The account's exposure limits for one order on this venue, `notional` in the reporting currency:
+// the totals every venue published (this one's are its positions: it publishes every change).
 RejectReason check_account(const VenueRouter& v, InstrumentId inst, Side side, Notional notional) {
   const Account& a = *v.acct;
   const PositionTracker& p = v.book->positions();
-  Notional gross = p.gross_exposure();
-  Notional net = p.net_exposure();
+  Notional gross{};
+  Notional net{};
   for (std::size_t i = 0; i < a.venue_count; ++i) {
-    if (i == v.vid.value) continue;
-    gross += Notional::from_raw(a.venues[i].gross.load(std::memory_order_relaxed));
-    net += Notional::from_raw(a.venues[i].net.load(std::memory_order_relaxed));
+    const Account::Sum t = a.venue_sum(i);
+    gross += Notional::from_raw(t.gross);
+    net += Notional::from_raw(t.net);
   }
   return check_exposure(p.get(inst),
                         side,
@@ -706,6 +794,9 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
     case RejectReason::GatewayNetNotional:
       v.refused_net.fetch_add(1, std::memory_order_relaxed);
       break;
+    case RejectReason::GatewayFxRateUnknown:
+      v.refused_fx.fetch_add(1, std::memory_order_relaxed);
+      break;
     default:
       v.refused_owner.fetch_add(1, std::memory_order_relaxed);
       break;
@@ -713,8 +804,9 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
 }
 
 // The account guards: the sender owns the instrument, the account's kill switch, the notional
-// working at the venue, the account's exposure (when the side is known), the venue's order rate.
-// `replaced` is the working notional of the order a replace takes over.
+// working at the venue, a current rate for the order's currency ([accounting], when it adds to
+// exposure; an unknown side counts as adding), the account's exposure (when the side is known),
+// the venue's order rate. `replaced` is the working notional of the order a replace takes over.
 RejectReason check_order(VenueRouter& v,
                          const Route& r,
                          InstrumentId inst,
@@ -730,8 +822,20 @@ RejectReason check_order(VenueRouter& v,
   *notional = n.raw;
   if (v.max_open_notional > 0 && v.open_notional - replaced + *notional > v.max_open_notional)
     return RejectReason::GatewayOpenNotional;
-  if (v.acct->exposure_limits() && side != nullptr) {
-    if (const RejectReason why = check_account(v, inst, *side, n); why != RejectReason::None)
+  const Account& a = *v.acct;
+  Notional exposure = n;
+  if (FASTMM_UNLIKELY(a.fx.active()) && (a.max_loss > 0 || a.exposure_limits())) {
+    const std::uint8_t c = a.fx.ccy[inst.value];
+    const std::int64_t q = v.book->positions().get(inst).qty.raw;
+    const bool adds = side == nullptr || q == 0 || (q > 0) == (*side == Side::Buy);
+    if (c != 0 && adds) {
+      const FxRate rate = a.current_rate(c, steady_now().ns);
+      if (!rate.known()) return RejectReason::GatewayFxRateUnknown;
+      exposure = convert(n, rate);
+    }
+  }
+  if (a.exposure_limits() && side != nullptr) {
+    if (const RejectReason why = check_account(v, inst, *side, exposure); why != RejectReason::None)
       return why;
   }
   if (!v.rate.try_take(steady_now())) return RejectReason::GatewayRateLimit;
@@ -1109,7 +1213,7 @@ class Gateway {
       v->max_open_notional = max_notional;
       v->dry_run = opts.dry_run;
       v->acct = &acct;
-      v->book = std::make_unique<AccountBook>(insts, v->vid);
+      v->book = std::make_unique<AccountBook>(insts, v->vid, acct.fx);
       v->acct_md = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
       // Before any strategy seeded an instrument, a replayed execution from before the gateway
       // started is none of the account's business: the positions start with the strategies'.
@@ -1395,6 +1499,7 @@ class Gateway {
       const std::uint64_t killed = v.refused_killed.load(std::memory_order_relaxed);
       const std::uint64_t gross = v.refused_gross.load(std::memory_order_relaxed);
       const std::uint64_t net = v.refused_net.load(std::memory_order_relaxed);
+      const std::uint64_t fx = v.refused_fx.load(std::memory_order_relaxed);
       const std::uint64_t skipped = v.account_skipped.load(std::memory_order_relaxed);
       const std::uint64_t md_lost = v.account_md_lost.load(std::memory_order_relaxed);
       const std::uint64_t untracked = v.untracked.load(std::memory_order_relaxed);
@@ -1402,12 +1507,13 @@ class Gateway {
       Logged& l = logged_[i];
       if (md != l.md || order != l.order || unrouted != l.unrouted || cancels != l.cancels ||
           rate != l.rate || notional != l.notional || owner != l.owner || killed != l.killed ||
-          gross != l.gross || net != l.net || untracked != l.untracked || stale != l.stale ||
-          skipped != l.skipped || md_lost != l.md_lost) {
+          gross != l.gross || net != l.net || fx != l.fx || untracked != l.untracked ||
+          stale != l.stale || skipped != l.skipped || md_lost != l.md_lost) {
         FASTMM_LOG_INFO(
             "gateway: [{}] discarded with nothing attached: md={} order={}; order events for no "
             "attachment: {}; gateway cancels: {}; refused: rate={} open_notional={} not_owner={} "
-            "account_killed={} gross_notional={} net_notional={}; untracked: {}; replayed fills "
+            "account_killed={} gross_notional={} net_notional={} fx_rate={}; untracked: {}; "
+            "replayed fills "
             "older than their owner's history: {}, than the account's: {}; account books lost: {}",
             slots_[i]->venue->name(),
             md,
@@ -1420,6 +1526,7 @@ class Gateway {
             killed,
             gross,
             net,
+            fx,
             untracked,
             stale,
             skipped,
@@ -1434,6 +1541,7 @@ class Gateway {
                    killed,
                    gross,
                    net,
+                   fx,
                    untracked,
                    stale,
                    skipped,
@@ -1488,8 +1596,9 @@ class Gateway {
     if (acct_.max_loss <= 0) return;
     KillState st = kill_;
     for (std::size_t i = 0; i < acct_.venue_count; ++i) {
-      st.realized += Notional::from_raw(acct_.venues[i].realized.load(std::memory_order_relaxed));
-      st.fees += Notional::from_raw(acct_.venues[i].fees.load(std::memory_order_relaxed));
+      const Account::Sum t = acct_.venue_sum(i);
+      st.realized += Notional::from_raw(t.realized);
+      st.fees += Notional::from_raw(t.fees);
     }
     if (acct_.tripped.load(std::memory_order_acquire)) {
       st.latched = true;
@@ -1513,12 +1622,12 @@ class Gateway {
   void log_account(bool force = false) {
     std::array<std::int64_t, 5> now{};  // realized, unrealized, fees, gross, net
     for (std::size_t i = 0; i < acct_.venue_count; ++i) {
-      const Account::Totals& t = acct_.venues[i];
-      now[0] += t.realized.load(std::memory_order_relaxed);
-      now[1] += t.unrealized.load(std::memory_order_relaxed);
-      now[2] += t.fees.load(std::memory_order_relaxed);
-      now[3] += t.gross.load(std::memory_order_relaxed);
-      now[4] += t.net.load(std::memory_order_relaxed);
+      const Account::Sum t = acct_.venue_sum(i);
+      now[0] += t.realized;
+      now[1] += t.unrealized;
+      now[2] += t.fees;
+      now[3] += t.gross;
+      now[4] += t.net;
     }
     const bool tripped = acct_.tripped.load(std::memory_order_acquire);
     if (force || now != account_logged_ || tripped != account_logged_tripped_) {
@@ -1530,7 +1639,7 @@ class Gateway {
       }
       FASTMM_LOG_INFO(
           "gateway: account net_pnl={} realized={} unrealized={} fees={} carried={} "
-          "gross_exposure={} net_exposure={} kill={} max_loss={}",
+          "gross_exposure={} net_exposure={} kill={} max_loss={}{}",
           Notional::from_raw(acct_.carry.load(std::memory_order_relaxed) + now[0] + now[1] -
                              now[2]),
           Notional::from_raw(now[0]),
@@ -1540,7 +1649,8 @@ class Gateway {
           Notional::from_raw(now[3]),
           Notional::from_raw(now[4]),
           kill,
-          Notional::from_raw(acct_.max_loss));
+          Notional::from_raw(acct_.max_loss),
+          acct_.fx.active() ? fmt::format(" in={}", acct_.fx.reporting()) : std::string());
       account_logged_ = now;
       account_logged_tripped_ = tripped;
     }
@@ -1626,12 +1736,13 @@ class Gateway {
       gv.refused[3] = v.refused_gross.load(std::memory_order_relaxed);
       gv.refused[4] = v.refused_net.load(std::memory_order_relaxed);
       gv.refused[5] = v.refused_rate.load(std::memory_order_relaxed);
-      const Account::Totals& t = acct_.venues[i];
-      gv.realized_raw = t.realized.load(std::memory_order_relaxed);
-      gv.unrealized_raw = t.unrealized.load(std::memory_order_relaxed);
-      gv.fees_raw = t.fees.load(std::memory_order_relaxed);
-      gv.gross_raw = t.gross.load(std::memory_order_relaxed);
-      gv.net_raw = t.net.load(std::memory_order_relaxed);
+      gv.refused[6] = v.refused_fx.load(std::memory_order_relaxed);
+      const Account::Sum t = acct_.venue_sum(i);
+      gv.realized_raw = t.realized;
+      gv.unrealized_raw = t.unrealized;
+      gv.fees_raw = t.fees;
+      gv.gross_raw = t.gross;
+      gv.net_raw = t.net;
       s.realized_pnl_raw += gv.realized_raw;
       s.unrealized_pnl_raw += gv.unrealized_raw;
       s.fees_raw += gv.fees_raw;
@@ -1839,8 +1950,9 @@ class Gateway {
     std::int64_t realized = 0;
     std::int64_t fees = 0;
     for (std::size_t i = 0; i < acct_.venue_count; ++i) {
-      realized += acct_.venues[i].realized.load(std::memory_order_relaxed);
-      fees += acct_.venues[i].fees.load(std::memory_order_relaxed);
+      const Account::Sum t = acct_.venue_sum(i);
+      realized += t.realized;
+      fees += t.fees;
     }
     KillState fresh;
     fresh.sessions = kill_.sessions;
@@ -1878,6 +1990,7 @@ class Gateway {
     std::uint64_t killed = 0;
     std::uint64_t gross = 0;
     std::uint64_t net = 0;
+    std::uint64_t fx = 0;
     std::uint64_t untracked = 0;
     std::uint64_t stale = 0;
     std::uint64_t skipped = 0;
@@ -2274,14 +2387,45 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   vopts.dry_run = opts.dry_run;
   vopts.busy_poll = cfg.spin_mode() == SpinMode::Busy;
   if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots); rc != 0) return rc;
-  // The account's PnL and exposure are one currency-less Notional, as the engine's are (the venues'
-  // reference data is loaded: kInverse is known).
-  if (acct->max_loss > 0 || acct->exposure_limits()) {
+  // [accounting] converts the account's PnL and exposure to one reporting currency, as the engine
+  // does; without it they are one currency-less Notional. The venues' reference data is loaded:
+  // kInverse is known. The account holds every instrument, so every one must be covered.
+  const bool guarded = acct->max_loss > 0 || acct->exposure_limits();
+  std::vector<std::string> venue_names;
+  for (const auto& s : slots) venue_names.emplace_back(s->venue->name());
+  if (cfg.accounting.configured()) {
+    std::string warning;
+    auto plan = session_fx_plan(
+        instruments, cfg.accounting, venue_names, /*all_instruments=*/true, guarded, &warning);
+    if (!plan) {
+      std::fprintf(stderr,
+                   "%s: [accounting]: %s. The [gateway] account limits are in %s.\n",
+                   prog,
+                   plan.error().c_str(),
+                   cfg.accounting.reporting_currency.c_str());
+      return kExitConfig;
+    }
+    if (!warning.empty()) FASTMM_LOG_WARN("gateway: [accounting]: {}", warning);
+    acct->fx = *plan;
+    acct->stale_ns = milliseconds(cfg.risk.stale_md_ms).ns;
+  }
+  if (acct->fx.active()) {
+    for (std::size_t c = 1; c < acct->fx.count; ++c) {
+      const Instrument& si = instruments.get(acct->fx.sources[c].instrument);
+      FASTMM_LOG_INFO("gateway: accounting: {} converts to {} at the mid of {}:{}{}",
+                      acct->fx.names[c],
+                      acct->fx.reporting(),
+                      venue_names[si.venue.value],
+                      si.symbol,
+                      acct->fx.sources[c].invert ? " (inverted)" : "");
+    }
+  } else if (guarded) {
     if (const SettlementMix mix = instruments.settlement_mix(); mix.mixed()) {
       std::fprintf(stderr,
                    "%s: instruments settle in different currencies (%s in %s, %s in %s) and the "
-                   "[gateway] account limits are one number in one currency. Run one gateway per "
-                   "settlement currency, or unset max_loss, max_gross_notional and "
+                   "[gateway] account limits are one number in one currency. Set [accounting] "
+                   "reporting_currency and an [accounting.fx] source per other currency, run one "
+                   "gateway per settlement currency, or unset max_loss, max_gross_notional and "
                    "max_net_notional.\n",
                    prog,
                    std::string(mix.first->symbol.view()).c_str(),

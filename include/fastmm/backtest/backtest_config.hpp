@@ -41,6 +41,10 @@ struct BacktestConfig {
   Duration duration = seconds(60);             // synthetic horizon
   Duration equity_bar = seconds(1);
   double initial_capital = 0.0;  // reporting only (drawdown %)
+  // [accounting] and the venue names its sources name (Config::venues order). from_config() builds
+  // engine.fx from them for `instruments`; replay builds it again for the journal's table.
+  AccountingSpec accounting;
+  std::vector<std::string> venue_names;
   // from_config: Config::warnings plus unknown [backtest] keys, each naming the key and its line.
   std::vector<std::string> warnings;
   int generator_seed_levels = 20;
@@ -64,6 +68,10 @@ struct BacktestConfig {
   [[nodiscard]] static BacktestConfig single_instrument(std::string_view symbol,
                                                         Price tick,
                                                         Qty lot);
+
+  // The FX plan for `table` under `accounting` (throws ConfigError when a limit reads the totals
+  // and the table is not covered; otherwise a warning goes to `warnings` and nothing converts).
+  [[nodiscard]] FxPlan fx_plan(const InstrumentTable& table);
 
   // "key=value" strategy parameter override (CLI --param).
   void set_param(const std::string& key, const std::string& value) { params[key] = value; }

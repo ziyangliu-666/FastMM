@@ -5,6 +5,14 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `[accounting]`: instruments in several settlement currencies in one session or gateway. The PnL
+  totals, `max_loss` and the exposure caps (engine and gateway) are in `reporting_currency`, each
+  other currency converted at the mid of its `[accounting.fx]` source instrument; positions, PnL
+  and fees stay in their own currencies. A rate is unknown until its source's book is valid and
+  stale with `stale_md_ms`; without a current one, an order adding exposure in that currency is
+  refused (`FxRateUnknown`, `GatewayFxRateUnknown`), a reducing one passes, and booked PnL stays at
+  the last rate. Backtest and replay convert the same way. Status segment version 9 (a seventh
+  gateway refusal counter).
 - Walk-forward sweeps: `fastmm.walk_forward(cfg, grid, folds=K, data=...)` and
   `bt::walk_forward` cut the data into K consecutive time slices, run the grid on each and score
   the best point of fold i-1 on fold i, next to the hindsight best there. `folds=1` is the plain

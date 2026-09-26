@@ -309,9 +309,9 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `price_collar_bps` | integer |  | refuse limit prices further than this from the mid, bps |
 | `fat_finger_bps` | integer |  | refuse limit prices further than this from the last trade, bps |
 | `stale_md_ms` | integer |  | refuse orders when the instrument's book is older than this, ms |
-| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, settlement currency, decimal; latched across restarts in kill_file |
-| `max_gross_notional` | any |  | refuse an order that would take the portfolio's summed \|position\| at the last marks past this, settlement currency, decimal |
-| `max_net_notional` | any |  | refuse an order that would take the portfolio's signed position sum further past this, settlement currency, decimal |
+| `max_loss` | any |  | trip the kill switch when net PnL falls to -max_loss, settlement currency (the [accounting] reporting_currency when set), decimal; latched across restarts in kill_file |
+| `max_gross_notional` | any |  | refuse an order that would take the portfolio's summed \|position\| at the last marks past this, settlement currency (or reporting_currency), decimal |
+| `max_net_notional` | any |  | refuse an order that would take the portfolio's signed position sum further past this, settlement currency (or reporting_currency), decimal |
 | `orders_per_sec` | integer |  | token-bucket order rate, orders/s |
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
@@ -327,9 +327,35 @@ Read by `fastmm-gateway` only: guards on the account, shared by every strategy a
 | `orders_per_sec` | integer |  | fastmm-gateway: new orders and replaces per second per venue, over every attached strategy (default 0: off) |
 | `burst` | integer |  | fastmm-gateway: token-bucket capacity of orders_per_sec, orders (default orders_per_sec) |
 | `max_open_notional` | any |  | fastmm-gateway: refuse an order that would take the notional working at its venue, over every attached strategy and both sides, past this; settlement currency, decimal |
-| `max_loss` | any |  | fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, carried across restarts in the gateway's kill file, reaches -max_loss; decimal |
+| `max_loss` | any |  | fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, carried across restarts in the gateway's kill file, reaches -max_loss; decimal, in [accounting] reporting_currency when set |
 | `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it reduces its instrument's position; decimal |
 | `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it reduces its instrument's position; decimal |
+<!-- END config-keys -->
+
+## `[accounting]`
+
+Instruments that settle in different currencies (an inverse contract in its base coin, a linear one in its quote currency) can share a session or a gateway when their totals are converted to one reporting currency. `fastmm-live`, `fastmm-gateway`, the backtester and replay read this section.
+
+```toml
+[accounting]
+reporting_currency = "USDT"
+
+[accounting.fx]
+BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
+```
+
+- Positions, PnL and fees stay in each instrument's settlement currency. The PnL totals, `[risk] max_loss`, `max_gross_notional` and `max_net_notional` (and the `[gateway]` ones) are in `reporting_currency`, converted at the mid of each currency's source.
+- A source is `"venue:symbol"`, an instrument listed in `[[instruments]]` (`enabled = false` if it is not traded): its book is where the rate comes from, so the session must subscribe to it. It prices the currency in `reporting_currency` either way round: `BTCUSDT` gives BTC in USDT, `USDTBTC` is inverted.
+- Once the venues' reference data has loaded, every settlement currency of an enabled instrument (of every instrument, in `fastmm-gateway`) must be `reporting_currency` or have a source. Otherwise `fastmm-live` and `fastmm-gateway` exit with code 3 while `max_loss` or an exposure cap is set, and warn and convert nothing when none is.
+- A rate is unknown until its source's book is valid, and not current while that book is invalid or older than `[risk] stale_md_ms`. With no current rate, an order that adds to exposure in that currency is refused (`FxRateUnknown`, `GatewayFxRateUnknown` in the gateway) while `max_loss` or an exposure cap is set; one that reduces a position passes. PnL already booked stays measured at the last rate; a currency whose rate was never known counts as zero, and nothing can be traded in it until it is.
+- Fees are booked in the settlement currency (a commission in the base asset is valued at the fill price); a commission in another asset is not booked, so it needs no source.
+- Without this section nothing is converted: a session whose instruments share one settlement currency needs none.
+
+<!-- BEGIN config-keys accounting -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `reporting_currency` | string |  | currency the PnL totals, [risk] max_loss and the exposure caps (and fastmm-gateway's) are in when instruments settle in more than one; every other settlement currency needs a source in [accounting.fx] (default unset: no conversion) |
+| `fx` | table |  | [accounting.fx] table: one entry per other settlement currency, the instrument whose mid prices it in reporting_currency (BTC = "binance:BTCUSDT"; a pair quoted the other way round, USDTBTC, is inverted) |
 <!-- END config-keys -->
 
 ## `[logging]`

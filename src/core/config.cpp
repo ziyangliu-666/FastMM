@@ -251,6 +251,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
                                                         "strategy",
                                                         "risk",
                                                         "gateway",
+                                                        "accounting",
                                                         "logging",
                                                         "sim",
                                                         "backtest",
@@ -492,6 +493,69 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get_decimal(*t, "max_net_notional", cfg.gateway.max_net_notional);
   }
 
+  // [accounting]: after [[instruments]], whose entries the FX sources must name.
+  if (const auto* t = doc["accounting"].as_table()) {
+    validate_table(*t, "accounting", cfg.warnings);
+    AccountingSpec& a = cfg.accounting;
+    get(*t, "reporting_currency", a.reporting_currency);
+    const auto valid_ccy = [](std::string_view c) {
+      if (c.empty() || c.size() > Currency::kCapacity) return false;
+      for (const char ch : c) {
+        if (ch == ':' || ch == ' ' || ch == '"') return false;
+      }
+      return true;
+    };
+    if (const auto* n = t->get("reporting_currency");
+        n != nullptr && !valid_ccy(a.reporting_currency))
+      fail_at(*n,
+              fmt::format("accounting.reporting_currency must be 1 to {} characters",
+                          Currency::kCapacity));
+    if (const auto* fx = t->get_as<toml::table>("fx")) {
+      if (a.reporting_currency.empty())
+        fail_at(*fx, "[accounting.fx] needs [accounting] reporting_currency");
+      for (const auto& [k, v] : *fx) {
+        const std::string ccy(k.str());
+        if (!v.is_string())
+          fail_at(v, fmt::format("accounting.fx.{} must be a string, \"venue:symbol\"", ccy));
+        if (!valid_ccy(ccy))
+          fail_at(v,
+                  fmt::format("accounting.fx: currency '{}' must be 1 to {} characters",
+                              ccy,
+                              Currency::kCapacity));
+        if (ccy == a.reporting_currency)
+          fail_at(v, fmt::format("accounting.fx.{}: the reporting currency needs no source", ccy));
+        const std::string where = v.value_or(std::string{});
+        const std::size_t colon = where.find(':');
+        const std::string venue =
+            colon == std::string::npos ? std::string{} : where.substr(0, colon);
+        const std::string symbol =
+            colon == std::string::npos ? std::string{} : where.substr(colon + 1);
+        if (venue.empty() || symbol.empty())
+          fail_at(v,
+                  fmt::format("accounting.fx.{} = \"{}\": expected \"venue:symbol\"", ccy, where));
+        if (cfg.venue(venue) == nullptr)
+          fail_at(v,
+                  fmt::format("accounting.fx.{} = \"{}\": unknown venue '{}'", ccy, where, venue));
+        bool listed = false;
+        for (const InstrumentSection& i : cfg.instruments)
+          listed = listed || (i.venue == venue && i.symbol == symbol);
+        if (!listed)
+          fail_at(v,
+                  fmt::format("accounting.fx.{} = \"{}\": {} is not in [[instruments]]; the "
+                              "source must be an instrument the session subscribes to (enabled "
+                              "= false if it is not traded)",
+                              ccy,
+                              where,
+                              symbol));
+        a.fx[ccy] = where;
+      }
+    }
+    if (a.fx.size() >= kMaxCurrencies)
+      fail_at(*t, fmt::format("[accounting.fx]: at most {} sources", kMaxCurrencies - 1));
+  } else if (doc.contains("accounting")) {
+    fail_at(*doc.get("accounting"), "[accounting] must be a table");
+  }
+
   // [logging]
   if (const auto* t = doc["logging"].as_table()) {
     validate_table(*t, "logging", cfg.warnings);
@@ -667,6 +731,14 @@ std::string Config::redacted() const {
     if (!gateway.max_gross_notional.empty()) kq("max_gross_notional", gateway.max_gross_notional);
     if (!gateway.max_net_notional.empty()) kq("max_net_notional", gateway.max_net_notional);
   }
+  if (accounting.configured()) {
+    out += "\n[accounting]\n";
+    kq("reporting_currency", accounting.reporting_currency);
+    if (!accounting.fx.empty()) {
+      out += "\n[accounting.fx]\n";
+      for (const auto& [k, v] : accounting.fx) kq(k, v);
+    }
+  }
   out += "\n[logging]\n";
   kq("level", logging.level);
   if (!logging.file.empty()) kq("file", logging.file);
@@ -835,6 +907,16 @@ std::string Config::effective_toml() const {
     g.insert("max_gross_notional", gateway.max_gross_notional);
     g.insert("max_net_notional", gateway.max_net_notional);
     root.insert("gateway", std::move(g));
+  }
+
+  // Only when set, like [gateway]: a replay converts as the recorded session did.
+  if (accounting.configured()) {
+    toml::table a;
+    a.insert("reporting_currency", accounting.reporting_currency);
+    toml::table fx;
+    for (const auto& [k, v] : accounting.fx) fx.insert(k, v);
+    a.insert("fx", std::move(fx));
+    root.insert("accounting", std::move(a));
   }
 
   toml::table lg;

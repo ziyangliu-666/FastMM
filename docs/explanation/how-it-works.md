@@ -51,7 +51,7 @@ The venue's acknowledgement or fill comes back on the order-event ring and re-en
 |---|---|
 | Everything survives a restart | the position carries over from the store and the kill switch and `max_loss` budget from `<engine>.kill`; the order book of the session does not, and is rebuilt from the venue's snapshot |
 | Fills that arrive while the private stream is down are booked exactly | every connector replays the trade history before reconciling; a replay that fails is retried every 5 s, and until then the reconciliation is counted as an estimate |
-| PnL adds up across settlement currencies | inverse contracts are valued in their base coin, linear ones in their quote currency, and nothing converts between them: a session or gateway whose instruments settle in more than one currency refuses to start with `max_loss` set, and without it its PnL totals add unrelated numbers |
+| PnL adds up across settlement currencies | only with `[accounting]`: inverse contracts are valued in their base coin, linear ones in their quote currency, and the totals, `max_loss` and the exposure caps are converted to one reporting currency at the mid of an FX source instrument; with no current rate, new exposure in that currency is refused. Without it a session or gateway whose instruments settle in more than one currency refuses to start with `max_loss` set, and its PnL totals add unrelated numbers |
 | Monitoring beyond a pull | a status file, `fastmm-top` and its Prometheus endpoint, all published every 250 ms; the engine pushes nothing and alerts on nothing |
 | Portfolio-level risk | limits are per instrument, except `max_loss` |
 | The venue's margin, balance or position limits | those are enforced by the venue, and a rejection is a reject like any other |

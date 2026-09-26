@@ -104,6 +104,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.quotes = cfg.quote_params();
   b.instruments = load_instruments(cfg);
   if (b.instruments.size() == 0) throw ConfigError("backtest: no [[instruments]] configured");
+  b.accounting = cfg.accounting;
+  for (const VenueSection& v : cfg.venues) b.venue_names.push_back(v.name);
   b.strategy = cfg.strategy.name;
   b.params = cfg.strategy.params;
   b.config_toml = cfg.effective_toml();
@@ -112,6 +114,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   const GenericSection& sm = cfg.sim;
   b.warnings = cfg.warnings;
   warn_unknown_backtest_keys(bt, b.warnings);
+  b.engine.fx = b.fx_plan(b.instruments);
   b.set_seed(static_cast<std::uint64_t>(bt.get_int("seed", sm.get_int("seed", 1))));
   b.source = bt.get_string("source", "");
   b.path = bt.get_string("path", "");
@@ -183,6 +186,15 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   if (!(g.offset_p > 0.0 && g.offset_p <= 1.0)) throw ConfigError("sim.offset_p must be in (0, 1]");
   if (g.base_spread_ticks < 1) throw ConfigError("sim.base_spread_ticks must be >= 1");
   return b;
+}
+
+FxPlan BacktestConfig::fx_plan(const InstrumentTable& table) {
+  std::string warning;
+  auto plan =
+      session_fx_plan(table, accounting, venue_names, false, engine.risk.reads_totals(), &warning);
+  if (!plan) throw ConfigError(plan.error());
+  if (!warning.empty()) warnings.push_back(warning);
+  return *plan;
 }
 
 BacktestConfig BacktestConfig::single_instrument(std::string_view symbol, Price tick, Qty lot) {
