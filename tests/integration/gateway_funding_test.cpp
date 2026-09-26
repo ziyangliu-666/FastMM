@@ -63,6 +63,12 @@ struct FakeBybit {
            R"(","op":"pong"})";
   }
 
+  // The server thread answers from the strings below: stop it before they go (members are
+  // destroyed after this body, srv last).
+  ~FakeBybit() { srv.stop(); }
+  FakeBybit(const FakeBybit&) = delete;
+  FakeBybit& operator=(const FakeBybit&) = delete;
+
   FakeBybit() {
     const auto json = [](const std::string& body) {
       return [body](const net::HttpRequest&) { return net::HttpServerResponse::json(200, body); };
