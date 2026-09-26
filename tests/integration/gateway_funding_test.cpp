@@ -64,7 +64,7 @@ struct FakeBybit {
   }
 
   FakeBybit() {
-    const auto json = [this](const std::string& body) {
+    const auto json = [](const std::string& body) {
       return [body](const net::HttpRequest&) { return net::HttpServerResponse::json(200, body); };
     };
     srv.route("GET", "/v5/market/time", json(time));
