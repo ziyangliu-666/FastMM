@@ -80,6 +80,14 @@ the same rings, only they live in shared memory. Backtest and replay never see a
    wake-ups. Release, WSL2, one strategy, 45 s x 2, gateway engine/wire p50, base (8802339) vs
    limits on: adaptive 36.9/70.3 vs 36.9/70.3 us; busy 8.7/43.0-44.9 vs 7.9-8.2/44.9 us.
 
+**Gateway: an attach freezes the others' books (found 2026-09-26).** On attach, and when one
+attachment falls behind on market data, the gateway calls `resync_books()` on the venue. The depth
+sync then forwards no deltas until a new snapshot, and the snapshot request waits out
+`min_snapshot_interval_ns` (2 s by default), so every other attached strategy quotes on a frozen
+book for up to ~2 s (seen as `books=0/1` for whole 2 s attachments in the gateway tests' logs). The
+gateway already keeps its own copy of every book (for marking the account); an attaching or lagging
+strategy should get a snapshot built from that copy instead, with no venue resync at all.
+
 **Gateway follow-ups (2026-09-26).** Steps 4 and 5 landed (several strategies, epochs from the
 gateway, instrument ownership, per-epoch detach, `[gateway]` rate and open-notional guards, account
 positions, exposure and loss). Open:
