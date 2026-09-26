@@ -2,11 +2,9 @@
 
 !!! note "Not in the default build"
 
-    No connector speaks FIX yet, so `fastmm::codecs` leaves this codec out unless you configure
-    with `-DFASTMM_CODEC_FIX=ON`; its tests and `bench/bench_codecs_fix.cpp` follow the same
-    option. It is here because FIX is what most equity and futures brokers, and the crypto
-    venues' institutional gateways, offer for order entry: a `Venue` over it needs a transport
-    and a symbology, not a codec. The headers stay in the tree either way.
+    No connector speaks FIX yet. `fastmm::codecs` builds this codec only with
+    `-DFASTMM_CODEC_FIX=ON`; its tests and `bench/bench_codecs_fix.cpp` follow the same option.
+    A `Venue` over it needs a transport and a symbology.
 
 A tag=value FIX 4.4 codec: framing, session layer for initiators and acceptors, and a decoder and encoder between FIX messages and the engine's normalised messages. There is no XML dictionary: the tags and enumerations the codec uses are constants in `include/fastmm/codecs/fix/fix_tags.hpp`.
 
@@ -73,7 +71,7 @@ OrderCommand ─► FixEncoder.encode ─► FixSession.send_app ─► MessageS
 Inbound MsgSeqNum(34):
 
 * equal to the expected number: processed;
-* higher: ResendRequest, state `Recovering`, the message is discarded (EndSeqNo=0 covers it). Recovery ends when the expected number passes the highest number seen. If, while recovering, a newer message arrives after the resend has already advanced the expected number, a new gap opened (a message lost mid-recovery) and the session asks again from there;
+* higher: ResendRequest, state `Recovering`, the message is discarded (EndSeqNo=0 covers it). Recovery ends when the expected number passes the highest number seen. A newer message arriving while recovering, after the resend has already advanced the expected number, means a message was lost mid-recovery; the session asks again from there;
 * lower with PossDupFlag(43)=Y: duplicate, ignored;
 * lower without it: Logout with `MsgSeqNum too low, expecting N but received M`, disconnect.
 

@@ -1,6 +1,6 @@
 # fastmm-sim-exchange
 
-`fastmm-sim-exchange` is a Binance Spot-compatible simulated exchange ([ADR-0008](../adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector (`fastmm::venues::binance::BinanceVenue`, see [venues.md](venues.md)) and `fastmm-live` run against it on localhost: TCP or TLS, REST, market-data WebSockets, the WebSocket API, depth sequence sync, HMAC authentication, order flow with fills, and fault injection.
+`fastmm-sim-exchange` is a Binance Spot-compatible simulated exchange ([ADR-0008](../adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector (`fastmm::venues::binance::BinanceVenue`, see [venues.md](venues.md)) and `fastmm-live` run against it on localhost over TCP or TLS: REST, market-data WebSockets, the WebSocket API, depth sequence sync, HMAC and Ed25519 authentication, order flow with fills, and fault injection.
 
 ```
 fastmm-sim-exchange ── one net::Reactor thread
@@ -26,16 +26,18 @@ docker compose up --build                                                   # co
 
 Flags and exit codes: [Command lines](cli.md#fastmm-sim-exchange). Every `--stats-interval` the simulator prints a line with connections, orders, rejects, cancels, replaces, fills, open orders, public trades, depth diffs, tickers, snapshots, REST and WS API requests, rate-limited requests, authentication errors, the account position and the touch.
 
-`scripts/run-sim.sh` takes `--duration`, `--preset`, `--build-dir`, `--config` (the engine's, default `configs/sim-local.toml`), `--sim-config` (the simulator's, default `configs/sim.toml`), `--tls`, `--port` and `--tls-port`; `--help` prints them. It starts the simulator and waits until port 9080 accepts connections; `--port` and `--tls-port` (or `FASTMM_SIM_PORT` and `FASTMM_SIM_TLS_PORT`) choose other ports and run the engine with a copy of its configuration that uses them. It then runs `fastmm-live --duration <t> --journal runs/<ts>/session.fmj --log runs/<ts>/engine.log`, prints the engine, venue and simulator summaries, and stops the simulator. The key and secret come from `FASTMM_SIM_API_KEY` / `FASTMM_SIM_API_SECRET` (default `sim-key` / `sim-secret`). Engine configs and the simulator both read them; in the simulator they override `[sim.account]`.
+`scripts/run-sim.sh` takes `--duration`, `--preset`, `--build-dir`, `--config` (the engine's, default `configs/sim-local.toml`), `--sim-config` (the simulator's, default `configs/sim.toml`), `--tls`, `--port` and `--tls-port`. It starts the simulator, waits until its port accepts connections, runs `fastmm-live --duration <t> --journal runs/<ts>/session.fmj --log runs/<ts>/engine.log`, prints the engine, venue and simulator summaries, and stops the simulator. `--port` and `--tls-port` (or `FASTMM_SIM_PORT` and `FASTMM_SIM_TLS_PORT`) move the simulator; the engine then runs with a copy of its configuration that uses them. The key and secret come from `FASTMM_SIM_API_KEY` / `FASTMM_SIM_API_SECRET` (default `sim-key` / `sim-secret`); the engine configs read them, and in the simulator they override `[sim.account]`.
 
 ## Configuration (`configs/sim.toml`)
 
-The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, max_qty, min_notional) and `[sim]`. It declares `[venues.sim] kind = "sim"` only so that the instruments validate.
+The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, max_qty, min_notional; disabled ones are skipped), `[sim]` and `[engine] net_backend`. `configs/sim.toml` declares `[venues.sim] kind = "sim"` (an alias of `binance_spot`) only so that the instruments validate.
 
 | key | default | meaning |
 |---|---|---|
 | `seed` | 7 | generator seed |
+| `venue` | all | simulate only the instruments of this venue |
 | `start_mid`, `symbols.<SYM>.start_mid` | 60000 | initial latent mid |
+| `symbols.<SYM>.max_notional` | none | NOTIONAL filter maximum |
 | `bind`, `port`, `tls_port`, `tls_cert`, `tls_key` | 127.0.0.1, 9080, 9443, fixture | listeners |
 | `depth_update_ms` | 100 | depthUpdate aggregation window |
 | `depth_snapshot` | `live` | `GET /api/v3/depth` from the live book, or `flushed` (book as of the last published batch) |
@@ -54,11 +56,11 @@ The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, 
 | `generator.*` | see file | `MarketGeneratorParams` + `enabled`, `seed_levels` |
 | `faults.*` | off | see Fault injection |
 
-The default generator places its touch 2990 ticks (29.90 USDT) from a slowly moving latent mid. `BasicMM`'s 5 bps quotes (30 USDT at 60000) therefore rest just behind the best generator levels and are filled by the larger market orders. The book is not realistic.
+The default generator places its touch 2990 ticks (29.90 USDT) from a slowly moving latent mid, so `BasicMM`'s 5 bps quotes (30 USDT at 60000) rest just behind the best generator levels and are filled by the larger market orders. The book is not realistic.
 
 ## What is implemented
 
-Request and response formats are those `BinanceVenue` uses ([What a Binance-compatible simulator must implement](venues.md#what-a-binance-compatible-simulator-must-implement)); this section lists what the simulator serves beyond them and how it behaves.
+Request and response formats are those `BinanceVenue` uses ([What a Binance-compatible simulator must implement](venues.md#what-a-binance-compatible-simulator-must-implement)).
 
 ### REST
 
@@ -99,7 +101,7 @@ Events go to WS API connections with a user-data subscription as `{"subscription
 
 ### Trading model
 
-LIMIT / LIMIT_MAKER orders lock quote notional (buys) or base quantity (sells). A fill releases the lock and moves balances, with commission in the quote asset. The simulator validates filters (`-1013 Filter failure: PRICE_FILTER / LOT_SIZE / NOTIONAL / MAX_NUM_ORDERS`), duplicate client ids (`-2010 Duplicate order sent.`) and insufficient balance (`-2010`). A crossing LIMIT_MAKER answers `-2010 Order would immediately match and take.`.
+LIMIT / LIMIT_MAKER orders lock quote notional (buys) or base quantity (sells). A fill releases the lock and moves balances, with commission in the quote asset. Rejections: `-1013 Filter failure: PRICE_FILTER / LOT_SIZE / NOTIONAL`; `-2010` for a duplicate client id (`Duplicate order sent.`), more than 200 open orders on the symbol (`Filter failure: MAX_NUM_ORDERS`), insufficient balance, and a crossing LIMIT_MAKER (`Order would immediately match and take.`).
 
 ### Authentication and limits
 
@@ -119,7 +121,7 @@ The server also sends WebSocket pings every `ping_interval_ms` and closes connec
 
 ## Fault injection
 
-The `[sim.faults]` settings are one-shot and count from the moment the listeners open. The programmatic API is thread-safe (`SimExchangeServer`).
+The timed `[sim.faults]` settings (`*_after_s`) are one-shot, in seconds after the listeners open, 0 = off. The `SimExchangeServer` methods may be called from any thread.
 
 | config key | API | what it exercises |
 |---|---|---|
@@ -143,13 +145,13 @@ The `[sim.faults]` settings are one-shot and count from the moment the listeners
 
 `open_client_order_ids()` lists what the account holds open, for comparing the two sides' views.
 
-`stats()` returns counters for all of the above, plus watermarks since `mark()`: minimum open orders, cancels, cancel-alls, open-order queries and reconnects. `duplicate_client_order_ids` counts ids the account has had accepted twice across the whole run, long after the first order was forgotten — a restarted engine that reused a session epoch shows up there.
+`stats()` returns counters for all of the above, plus counts since `mark()`: minimum open orders, orders, cancels, fills, cancel-alls, open-order and `myTrades` queries, and sessions opened. `duplicate_client_order_ids` counts ids accepted twice in the run, after the first order ended; a restarted engine that reused a session epoch shows up there.
 
 `tests/integration/recovery_test.cpp` drives all of them.
 
 ## Determinism
 
-The generator, order ids and trade ids depend only on the configuration and seed and on the order of requests (tested). Event times inside the matching engine come from the reactor clock. Published timestamps (`E`, `T`, `transactTime`, `serverTime`) and recvWindow checks follow the host wall clock plus `clock_offset_ms`; on WSL2 the wall clock steps by more than a second. With `start_time_ms` set, published times are `start_time + elapsed` and reproducible, but clients then rely on their measured clock offset.
+The generator, order ids and trade ids depend only on the configuration, the seed and the order of requests. Event times inside the matching engine come from the reactor clock. Published timestamps (`E`, `T`, `transactTime`, `serverTime`) and recvWindow checks follow the host wall clock plus `clock_offset_ms`; on WSL2 the wall clock steps by more than a second. With `start_time_ms` set, published times are `start_time + elapsed` and reproducible, but clients then rely on their measured clock offset.
 
 ## Differences from real Binance
 
@@ -164,7 +166,7 @@ Not implemented:
 * Rate limits are not per IP: one weight window for the whole server and one order-count window for the account. A 418 ban only happens when a test asks for one (`ban_next_requests`), and there is no connection weight and no `X-MBX-ORDER-COUNT-*` on the WS API (counts are in `rateLimits`).
 * The legacy listenKey stream is kept ([venues.md](venues.md#binance-spot)).
 * The ack delay applies to WS API responses only. REST answers are synchronous.
-* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`. Their *executions* are not: `myTrades` answers from a trade log that lives for the whole run, which is what makes it a recovery path rather than another view of the open orders.
+* Order ids start at 1 for every run. Cancelled and filled orders are forgotten, so querying them answers `-2013`. Their executions are kept: `myTrades` answers from a trade log that lives for the whole run.
 * `myTrades` charges IP weight 20 (5 with `orderId`, which the connector does not send), `commissionAsset` is always the quote asset, and trade ids are the matching engine's, so they are shared with the public trade stream and skip over the generator's own matches.
 
 ## Integration tests

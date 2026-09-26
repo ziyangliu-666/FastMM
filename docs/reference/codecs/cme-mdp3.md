@@ -2,15 +2,13 @@
 
 !!! note "Not in the default build"
 
-    No connector subscribes to a CME feed yet, so `fastmm::codecs` leaves this codec out unless
-    you configure with `-DFASTMM_CODEC_MDP3=ON`; its tests and `bench/bench_codecs_mdp3.cpp`
-    follow the same option. It is here because a CME venue is the next multicast feed after
-    Nasdaq ITCH ([ADR-0015](../../adr/0015-multicast-market-data.md)) and it reuses the same
-    receive path: what is missing is the `Venue` on top, not the decoding. The headers and the
-    generated flyweights stay in the tree, and CI keeps checking that
-    `include/fastmm/codecs/mdp3/generated/mdp3_schema.hpp` still matches the committed schema.
+    No connector subscribes to a CME feed yet. `fastmm::codecs` builds this codec only with
+    `-DFASTMM_CODEC_MDP3=ON`; its tests and `bench/bench_codecs_mdp3.cpp` follow the same
+    option. A CME venue would reuse the multicast receive path of Nasdaq ITCH
+    ([ADR-0015](../../adr/0015-multicast-market-data.md)). CI checks that
+    `include/fastmm/codecs/mdp3/generated/mdp3_schema.hpp` matches the committed schema.
 
-FastMM decodes CME Group's MDP 3.0 market data (Simple Binary Encoding over UDP) into the same normalised events as the crypto venues: `BookDeltaMsg` / `BookSnapshotMsg`, `TradeMsg` and `ConnectionStateMsg`. The codec is allocation-free and `noexcept` on the hot path.
+The codec decodes CME Group's MDP 3.0 market data (Simple Binary Encoding over UDP) into the engine's normalised events: `BookDeltaMsg` / `BookSnapshotMsg`, `TradeMsg` and `ConnectionStateMsg`. It is allocation-free and `noexcept` on the hot path.
 
 | Piece | Where |
 |---|---|
