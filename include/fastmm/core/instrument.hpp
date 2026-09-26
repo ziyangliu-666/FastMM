@@ -27,8 +27,14 @@ using Symbol = FixedString<20>;
 struct alignas(kCacheLine) Instrument {
   enum Flags : std::uint8_t {
     kEnabled = 1U << 0,
-    kInverse = 1U << 1,  // inverse contract (PnL in base currency)
+    // Priced in one currency and settled in another (Deribit's BTC perpetual: USD against BTC):
+    // notional is qty * multiplier / price and PnL moves with 1 / price, in the base coin.
+    kInverse = 1U << 1,
     kReduceOnlySupported = 1U << 2,
+    // An option whose premium is in its underlying coin (Deribit's BTC options, 0.0065 BTC): its
+    // model value is the USD price divided by the forward. Valued linearly in that premium; not
+    // kInverse.
+    kCoinQuoted = 1U << 3,
   };
 
   // ---- hot line (64 bytes) -------------------------------------------------------------
@@ -55,6 +61,7 @@ struct alignas(kCacheLine) Instrument {
 
   [[nodiscard]] constexpr bool enabled() const noexcept { return (flags & kEnabled) != 0; }
   [[nodiscard]] constexpr bool inverse() const noexcept { return (flags & kInverse) != 0; }
+  [[nodiscard]] constexpr bool coin_quoted() const noexcept { return (flags & kCoinQuoted) != 0; }
 
   // Passive rounding: bids down, asks up.
   [[nodiscard]] constexpr Price round_price(Price p, Side side) const noexcept {

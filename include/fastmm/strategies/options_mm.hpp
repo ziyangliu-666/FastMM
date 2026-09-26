@@ -278,7 +278,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
         inst.option_type == OptionType::Put ? options::CallPut::Put : options::CallPut::Call;
     const options::Greeks g =
         options::black76(cp, s.forward, inst.strike.to_double(), p.t_years, p.sigma, s.rate);
-    const bool coin = inst.inverse();
+    const bool coin = inst.coin_quoted();
     const double scale = coin ? 1.0 / s.forward : 1.0;
     p.theo = g.price * scale;
     p.vega_px = g.vega / 100.0 * scale;
@@ -343,7 +343,7 @@ class OptionsMM : public StrategyBase<OptionsMMParams> {
     if (!(s.forward > 0.0) || !mid.is_positive() || !inst.strike.is_positive()) return;
     const double t = options::year_fraction(inst.expiry_ns, now.ns);
     if (!(t > 0.0)) return;
-    const double value = inst.inverse() ? mid.to_double() * s.forward : mid.to_double();
+    const double value = inst.coin_quoted() ? mid.to_double() * s.forward : mid.to_double();
     const options::CallPut cp =
         inst.option_type == OptionType::Put ? options::CallPut::Put : options::CallPut::Call;
     const options::IvResult iv =

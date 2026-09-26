@@ -13,13 +13,14 @@ An option is an `Instrument` with `asset_class = Option`, `option_type` (call or
 | `contract_size` | `contract_multiplier` (1 BTC for BTC options, 10 USD for BTC-PERPETUAL) |
 | `min_trade_amount / contract_size` | `lot` and `min_qty` (quantities are contracts) |
 | `tick_size`, `tick_size_steps` | `tick`; the step grid is applied by the order encoder |
-| `instrument_type` reversed | `kInverse` |
+| `instrument_type` reversed, priced in USD (perpetual, futures) | `kInverse` |
+| `instrument_type` reversed, option priced in BTC | `kCoinQuoted` |
 
-Deribit BTC options are inverse. They are quoted in BTC per 1 BTC of underlying (a mark of `0.0069` is 0.0069 BTC), sized in BTC, and above a price of 0.005 their tick grows from 0.0001 to 0.0005.
+Deribit BTC options are coin-quoted: priced in BTC per 1 BTC of underlying (a mark of `0.0069` is 0.0069 BTC), sized in BTC, and above a price of 0.005 their tick grows from 0.0001 to 0.0005.
 
 The Deribit connector sends `contracts` rather than `amount`, and converts book, trade and fill amounts back to contracts.
 
-Position PnL and notional follow the `kInverse` flag, which Deribit sets on its BTC options. The engine therefore books them with the inverse-contract formulas (`PositionTracker`, `Instrument::notional`): PnL `qty × multiplier × (1/avg − 1/price)` and notional `qty × multiplier / price`, which do not describe a coin-quoted option. PnL totals, `max_loss` and the notional limits are not meaningful for these options.
+A coin-quoted option is valued linearly in its premium, in BTC: notional `qty × multiplier × price`, PnL `qty × multiplier × (price − avg)`. `kInverse` (notional `qty × multiplier / price`, PnL on `1/price`) is for the perpetual and futures only.
 
 ## OptionTicker event
 
@@ -27,7 +28,7 @@ Position PnL and notional follow the `kInverse` flag, which Deribit sets on its 
 
 | field | unit |
 |---|---|
-| `mark_price` | instrument price unit (BTC for Deribit inverse options) |
+| `mark_price` | instrument price unit (BTC for Deribit coin-quoted options) |
 | `underlying_price` | quote currency: the forward the venue prices the option on |
 | `index_price` | quote currency |
 | `mark_iv`, `bid_iv`, `ask_iv` | annualised decimal (0.312 = 31.2 %); NaN if absent |
@@ -55,7 +56,7 @@ Tests use Haug's Black-76 example (F = K = 19, T = 0.75, r = 10 %, σ = 28 % →
 ```
 F      = ticker underlying_price,  r = ticker interest_rate,  T = (expiry − now) / 365 d
 sigma  = venue mark_iv, or the own EWMA of book-mid implied vols (half-life iv_halflife_s)
-theo   = Black-76 price, / F for inverse (coin-quoted) options
+theo   = Black-76 price, / F for coin-quoted options
 vega_px= Black-76 vega / 100 in the same price unit
 half   = max(half_spread_vol × vega_px, min_half_spread_ticks × tick)
          × (1 + vega_widen × min(1, |portfolio vega| / max_vega))
@@ -66,7 +67,7 @@ bid    = r_px − half  (rounded down),  ask = r_px + half  (rounded up), kept i
 
 Portfolio greeks are summed over every instrument's position:
 
-* options: `qty × contract_multiplier × delta` (for inverse options, delta minus the coin premium when `premium_adjusted_delta`), and `qty × contract_multiplier × vega / 100` in USD per vol point;
+* options: `qty × contract_multiplier × delta` (for coin-quoted options, delta minus the coin premium when `premium_adjusted_delta`), and `qty × contract_multiplier × vega / 100` in USD per vol point;
 * futures, perpetuals and spot: `qty × contract_multiplier`, divided by the book mid for inverse contracts (a 10 USD inverse contract holds 10 / F BTC).
 
 A side is not quoted when a fill of `quote_qty` would push |portfolio delta| above `max_delta`,
@@ -94,7 +95,7 @@ An option is quoted only while its book is two-sided, because the stale-market-d
 | `vega_widen` | 1.0 | extra half spread (fraction) at `max_vega` |
 | `min_expiry_s` | 3600 | no quotes for options expiring sooner |
 | `requote_threshold_ticks` | 1 | ignore theo moves smaller than this |
-| `premium_adjusted_delta` | true | inverse options: delta minus the coin premium |
+| `premium_adjusted_delta` | true | coin-quoted options: delta minus the coin premium |
 | `pull_on_stale_ms` | 5000 | pull an option's quotes when its ticker is older (0 = never) |
 
 `configs/deribit-testnet.toml` runs OptionsMM on three BTC options and BTC-PERPETUAL with testnet-sized limits. Option names embed their expiry, so replace the `[[instruments]]` once they expire: `load_reference_data` refuses an expired symbol.

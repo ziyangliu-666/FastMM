@@ -53,6 +53,11 @@ struct InstrumentInfo {
   // quoted in USD and settled in BTC. A BTC option is `reversed` too but priced in the coin it
   // settles in (quote_currency BTC): its PnL is linear in the premium, and treating it as inverse
   // valued a 0.0065 BTC option at qty / 0.0065 BTC of notional.
+  // A `reversed` option priced in the coin it settles in (quote_currency BTC).
+  [[nodiscard]] bool coin_quoted() const noexcept {
+    return instrument_type == "reversed" && kind == "option" && !quote_currency.empty() &&
+           quote_currency == settlement_currency;
+  }
   [[nodiscard]] bool inverse() const noexcept {
     if (instrument_type != "reversed") return false;
     return quote_currency.empty() || settlement_currency.empty() ||

@@ -306,6 +306,7 @@ TEST_CASE("deribit.rest: get_instruments decoding and the reference data mapping
   CHECK(inst.min_qty == qt("0.1"));
   CHECK(inst.contract_multiplier == qt("1"));
   CHECK_FALSE(inst.inverse());
+  CHECK(inst.coin_quoted());  // the model value is the USD price over the forward
   // Linear in the premium, in BTC: one contract at 0.0065 is 0.0065 BTC, and 0.0065 -> 0.0075 on
   // two contracts gains 0.002 BTC.
   CHECK(inst.settlement_ccy() == "BTC");
@@ -336,6 +337,7 @@ TEST_CASE("deribit.rest: get_instruments decoding and the reference data mapping
   CHECK(pi.contract_multiplier == qt("10"));
   CHECK(pi.lot == qt("1"));  // min_trade_amount 10 USD / 10 USD contracts
   CHECK(pi.inverse());
+  CHECK_FALSE(pi.coin_quoted());
   CHECK(pi.quote.view() == "USD");
   CHECK(pt.steps.empty());
 
