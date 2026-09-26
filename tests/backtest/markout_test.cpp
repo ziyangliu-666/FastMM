@@ -152,15 +152,28 @@ TEST_CASE("backtest.markout: the PnL decomposition adds up to the reported net P
   CHECK(d.residual == doctest::Approx(0.0));
 }
 
+TEST_CASE("backtest.markout: a fill better than the touch is inside it, a worse one behind") {
+  Fixture f;
+  // buy at 98 under a 99 bid and sell at 103 over a 102 ask: both behind the touch.
+  f.add(seconds(4).ns, 0, "1", "98", "100", "99", "101", "0", {"", ""}, 4, "0");
+  f.add(seconds(5).ns, 1, "1", "103", "100", "99", "102", "0", {"", ""}, 5, "0");
+  const FillQuality q = compute_metrics(f.equity, f.fills, f.orders, f.in).fill_quality;
+  CHECK(q.at_touch_share == doctest::Approx(1.0 / 5.0));      // buy 99, bid 99
+  CHECK(q.inside_touch_share == doctest::Approx(1.0 / 5.0));  // sell 101, ask 102
+  CHECK(q.behind_touch_share == doctest::Approx(2.0 / 5.0));
+  CHECK(q.through_touch_share == doctest::Approx(1.0 / 5.0));  // buy 100, ask 100
+}
+
 TEST_CASE("backtest.markout: fill-quality diagnostics from the same fixture") {
   const Fixture f;
   const FillQuality q = compute_metrics(f.equity, f.fills, f.orders, f.in).fill_quality;
   CHECK(q.realized_spread_quote == doctest::Approx(3.0));
   CHECK(q.realized_spread_bps == doctest::Approx(3.0 / 399.0 * 1e4));
-  // buy at 99 with the bid at 99 is at the touch; sell at 101 with the ask at 102 is behind it;
+  // buy at 99 with the bid at 99 is at the touch; sell at 101 with the ask at 102 improved it;
   // buy at 100 with the ask at 100 crossed the spread.
   CHECK(q.at_touch_share == doctest::Approx(1.0 / 3.0));
-  CHECK(q.behind_touch_share == doctest::Approx(1.0 / 3.0));
+  CHECK(q.inside_touch_share == doctest::Approx(1.0 / 3.0));
+  CHECK(q.behind_touch_share == doctest::Approx(0.0));
   CHECK(q.through_touch_share == doctest::Approx(1.0 / 3.0));
   CHECK(q.quotes_placed == 3);
   CHECK(q.quotes_filled == 3);

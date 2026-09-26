@@ -65,7 +65,7 @@ The run above, `basic_mm` on BTCUSDT perpetual, 2024-03-27, `l2_queue` fills wit
   realized / unrealized / fees   -148.8768 / 0.9549 / 351.1302
   fills (maker / taker)          12529 (12529 / 0)
   spread captured (bps)          0.032
-  fills at touch / behind / through 70.9% / 12.0% / 17.1%
+  fills at / inside / behind / through 70.9% / 3.7% / 8.2% / 17.1%
   volume base / quote            24.99800 / 1755650.99
 
 where the PnL came from (quote currency, 1755650.99 traded notional)
@@ -93,7 +93,7 @@ That is the point of running on real data. The synthetic market cannot produce t
 
 Read [Backtesting](../../explanation/backtesting.md) for the simulator's assumptions — no market impact, and a queue model instead of counterparties. Three more limits belong to this data specifically.
 
-**The feed is the top of book, and nothing deeper.** `bookTicker` publishes the best bid and ask; the archive has no depth file that can be replayed. The queue model sets an order's position from the displayed quantity at its price, and at any price except the touch that quantity is zero as far as this feed is concerned. So an order resting behind the touch is modelled as alone at its price and fills the moment a trade reaches it. In the run above 12 % of the fills are behind the touch, and those are the optimistic ones. `configs/backtest-binance.toml` quotes one level at the touch for exactly this reason; a multi-level version of the same strategy measured on this data would be fiction.
+**The feed is the top of book, and nothing deeper.** `bookTicker` publishes the best bid and ask; the archive has no depth file that can be replayed. The queue model sets an order's position from the displayed quantity at its price, and at any price except the touch that quantity is zero as far as this feed is concerned. So an order resting behind the touch is modelled as alone at its price and fills the moment a trade reaches it. In the run above 8 % of the fills are behind the touch, and those are the optimistic ones (the 4 % inside it improved the best price, where the order really was alone). `configs/backtest-binance.toml` quotes one level at the touch for exactly this reason; a multi-level version of the same strategy measured on this data would be fiction.
 
 For depth, use [`tardis`](../../reference/data-sources.md#tardis), whose `incremental_book_L2` is the whole book:
 

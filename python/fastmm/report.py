@@ -732,12 +732,12 @@ _CSS = """
 :root{color-scheme:light dark;
 --plane:#f4f4f1;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
 --rule:rgba(11,11,11,.11);--grid:#e1e0d9;--axis:#c3c2b7;
---s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--neg:#d03b3b;--wash:rgba(42,120,214,.10);
+--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#8a5cd1;--neg:#d03b3b;--wash:rgba(42,120,214,.10);
 --negwash:rgba(208,59,59,.10)}
 @media (prefers-color-scheme:dark){:root{
 --plane:#0d0d0d;--surface:#1a1a19;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;
 --rule:rgba(255,255,255,.12);--grid:#2c2c2a;--axis:#383835;
---s1:#3987e5;--s2:#d95926;--s3:#199e70;--neg:#e66767;--wash:rgba(57,135,229,.14);
+--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#9b72e0;--neg:#e66767;--wash:rgba(57,135,229,.14);
 --negwash:rgba(230,103,103,.14)}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -826,6 +826,7 @@ font-weight:600}
 .tone1{background:var(--s1)}
 .tone2{background:var(--s2)}
 .tone3{background:var(--s3)}
+.tone4{background:var(--s4)}
 .legend{display:flex;flex-wrap:wrap;gap:.25rem 1.1rem;font-size:.78rem;color:var(--ink2)}
 .key{display:inline-flex;align-items:center;gap:.4rem}
 .swatch{width:9px;height:9px;border-radius:2px;display:inline-block}
@@ -1068,12 +1069,13 @@ def _fill_quality_section(run: Run) -> str:
     if run.get("time_to_fill_p50_ns") is None and run.get("at_touch_share") is None:
         return ""
     at_touch = run.get("at_touch_share") or 0.0
+    inside = run.get("inside_touch_share") or 0.0
     behind = run.get("behind_touch_share") or 0.0
     through = run.get("through_touch_share") or 0.0
     left = [
         '<p class="chart-title">where the quote was when it filled</p>',
-        _stacked_bar([("at the touch", at_touch, "tone1"), ("behind it", behind, "tone2"),
-                      ("through it", through, "tone3")]),
+        _stacked_bar([("at the touch", at_touch, "tone1"), ("inside it", inside, "tone4"),
+                      ("behind it", behind, "tone2"), ("through it", through, "tone3")]),
         '<p class="chart-title">time from quote to fill</p>',
         _bar_rows([("p50", float(run.get("time_to_fill_p50_ns") or 0),
                     _fmt_ns(run.get("time_to_fill_p50_ns"))),

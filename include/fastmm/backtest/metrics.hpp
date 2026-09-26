@@ -47,6 +47,7 @@ struct FillQuality {
   double realized_spread_bps = 0.0;
   double realized_spread_quote = 0.0;
   double at_touch_share = 0.0;       // fills at the venue's best price on our side
+  double inside_touch_share = 0.0;   // fills at a better price than the touch (it improved it)
   double behind_touch_share = 0.0;   // fills at a worse price than the touch
   double through_touch_share = 0.0;  // fills at or beyond the opposite touch (aggressive)
   // Venue arrival of a new order to its first fill. Only orders that filled are counted.

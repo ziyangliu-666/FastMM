@@ -181,6 +181,7 @@ py::dict metrics_dict(const bt::Metrics& x) {
   d["realized_spread_bps"] = x.fill_quality.realized_spread_bps;
   d["realized_spread_quote"] = x.fill_quality.realized_spread_quote;
   d["at_touch_share"] = x.fill_quality.at_touch_share;
+  d["inside_touch_share"] = x.fill_quality.inside_touch_share;
   d["behind_touch_share"] = x.fill_quality.behind_touch_share;
   d["through_touch_share"] = x.fill_quality.through_touch_share;
   d["time_to_fill_p50_ns"] = x.fill_quality.time_to_fill_p50_ns;

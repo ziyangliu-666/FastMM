@@ -112,9 +112,10 @@ std::string BacktestResult::summary_table() const {
   row("spread captured (bps)", fmt::format("{:.3f}", m.spread_captured_bps));
   row("realized spread (bps of notional)",
       fmt::format("{:.3f}", m.fill_quality.realized_spread_bps));
-  row("fills at touch / behind / through",
-      fmt::format("{:.1f}% / {:.1f}% / {:.1f}%",
+  row("fills at / inside / behind / through",
+      fmt::format("{:.1f}% / {:.1f}% / {:.1f}% / {:.1f}%",
                   m.fill_quality.at_touch_share * 100.0,
+                  m.fill_quality.inside_touch_share * 100.0,
                   m.fill_quality.behind_touch_share * 100.0,
                   m.fill_quality.through_touch_share * 100.0));
   row("quotes filled / placed",
@@ -300,6 +301,7 @@ std::string BacktestResult::summary_json() const {
   num("realized_spread_bps", m.fill_quality.realized_spread_bps);
   num("realized_spread_quote", m.fill_quality.realized_spread_quote);
   num("at_touch_share", m.fill_quality.at_touch_share);
+  num("inside_touch_share", m.fill_quality.inside_touch_share);
   num("behind_touch_share", m.fill_quality.behind_touch_share);
   num("through_touch_share", m.fill_quality.through_touch_share);
   u64("time_to_fill_p50_ns", m.fill_quality.time_to_fill_p50_ns);

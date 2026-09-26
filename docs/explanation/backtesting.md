@@ -45,7 +45,7 @@ Markouts are reported per instrument, per side, per liquidity flag and in total,
 | Metric | Meaning |
 |---|---|
 | realised spread | `signed qty * (mid at fill − price)` over the traded notional, in bps: the same quantity the markout starts from |
-| fills at touch / behind / through | Where the fill price sat relative to the venue's best quote on that side at the fill |
+| fills at / inside / behind / through | Where the fill price sat relative to the venue's best quote on that side at the fill: equal, better (the order improved it), worse, or at or beyond the opposite quote |
 | quotes filled / placed | Share of new orders that got at least one fill, which is not the same as `fill ratio` (fills per order) |
 | time to fill | Venue arrival of a new order to its first fill, p50 / p90 / p99 |
 | queue ahead at fill | Displayed quantity still ahead of the order when it filled. `fill_model = "l2_queue"` only; the matching engine fills from the front of the queue, so it has no such number |
@@ -81,7 +81,7 @@ net = gross spread capture + mid drift after the fills − fees paid + rebates r
   fills (maker / taker)          112 (112 / 0)
   spread captured (bps)          0.008
   realized spread (bps of notional) 0.008
-  fills at touch / behind / through 8.0% / 91.1% / 0.9%
+  fills at / inside / behind / through 8.0% / 27.7% / 63.4% / 0.9%
   quotes filled / placed         101 / 366 (27.6%)
   time to fill p50/p90/p99       44.1 / 271.9 / 1100.2 ms
   queue ahead at fill p50/p90    0.00000 / 0.00621
@@ -108,7 +108,7 @@ markout per fill (mid at fill + horizon vs the fill price; bps of notional)
   net pnl                        -27.0083
   fills (maker / taker)          467 (467 / 0)
   realized spread (bps of notional) 0.002
-  fills at touch / behind / through 78.4% / 0.0% / 0.0%
+  fills at / inside / behind / through 78.4% / 0.0% / 0.0% / 0.0%
   quotes filled / placed         456 / 762 (59.8%)
   queue ahead at fill p50/p90    n/a (the matching fill model has no queue position)
 

@@ -148,6 +148,7 @@ Metrics compute_metrics(const EquityRows& equity,
   std::int64_t fees_paid_raw = 0;
   std::int64_t rebates_raw = 0;
   std::uint64_t at_touch = 0;
+  std::uint64_t inside_touch = 0;
   std::uint64_t behind_touch = 0;
   std::uint64_t through_touch = 0;
   std::vector<std::int64_t> queue_ahead;
@@ -189,6 +190,8 @@ Metrics compute_metrics(const EquityRows& equity,
         ++through_touch;
       } else if (own > 0 && fills.price[i] == own) {
         ++at_touch;
+      } else if (own > 0 && (buy ? fills.price[i] > own : fills.price[i] < own)) {
+        ++inside_touch;  // better than the best quote: the order improved it
       } else if (own > 0) {
         ++behind_touch;
       }
@@ -259,6 +262,7 @@ Metrics compute_metrics(const EquityRows& equity,
   if (m.fills > 0) {
     const auto dn = static_cast<double>(m.fills);
     fq.at_touch_share = static_cast<double>(at_touch) / dn;
+    fq.inside_touch_share = static_cast<double>(inside_touch) / dn;
     fq.behind_touch_share = static_cast<double>(behind_touch) / dn;
     fq.through_touch_share = static_cast<double>(through_touch) / dn;
   }
