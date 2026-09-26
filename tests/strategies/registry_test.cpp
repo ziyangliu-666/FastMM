@@ -71,10 +71,10 @@ TEST_CASE("strategies.registry: the built-in module registers every strategy for
   StrategyRegistry reg;
   register_builtin_strategies(reg);
   const std::size_t n = reg.entries().size();
-  CHECK(n == 3);
+  CHECK(n == 4);
   register_builtin_strategies(reg);  // idempotent
   CHECK(reg.entries().size() == n);
-  for (const char* name : {"basic_mm", "avellaneda_stoikov", "options_mm"}) {
+  for (const char* name : {"basic_mm", "avellaneda_stoikov", "options_mm", "lead_mm"}) {
     const StrategyEntry* e = reg.find(name);
     REQUIRE_MESSAGE(e != nullptr, name);
     CHECK(e->supports(TransportKind::Sim));

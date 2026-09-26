@@ -24,6 +24,12 @@ std::unique_ptr<IEngineRunner> make_engine_runner(RunnerDeps& deps,
   auto strategy = std::make_unique<S>();
   if (auto err = strategy->configure(deps.params))
     throw std::invalid_argument(std::string(S::name()) + ": " + *err);
+  // Optional: `std::optional<std::string> check_instruments(const InstrumentTable&) const`, for
+  // parameters that name instruments.
+  if constexpr (requires(const S& s) { s.check_instruments(*deps.instruments); }) {
+    if (auto err = strategy->check_instruments(*deps.instruments))
+      throw std::invalid_argument(std::string(S::name()) + ": " + *err);
+  }
   auto engine = std::make_unique<E>(deps.engine,
                                     *deps.instruments,
                                     clock,

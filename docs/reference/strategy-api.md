@@ -297,6 +297,7 @@ struct AllHooksParams {
 - The arguments are the field name, default, minimum, maximum and a description; `FASTMM_PARAMS(Self)` comes first. At most 32 parameters.
 - `decimal`, `bps` and `ms` values are parsed as decimal text, never through a double; exponents are accepted ([Fixed point](fixed-point.md#parsing-and-formatting)).
 - Ranges are checked on the typed value: `parameter 'quote_qty': value 1000.5 outside [0, 1000]`.
+- A strategy whose parameters name instruments can declare `std::optional<std::string> check_instruments(const InstrumentTable&) const`; it runs after `configure()`, before the engine is built, and an error stops the session the way a bad parameter does. `lead_mm` uses it for its `target`, `leader` and `fx` indices.
 - The schema drives configuration checks, `--list-strategies`, `--param key=value` and `fastmm.strategies()` in Python.
 
 ## Parameter updates

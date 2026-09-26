@@ -1,6 +1,6 @@
 # Economics of the shipped strategies
 
-`basic_mm`, `avellaneda_stoikov` and `options_mm` are reference implementations of published quoting rules. They show how to use the engine's API. None of them has been shown to make money at a fee schedule you can get, and the shipped example backtest is profitable only because it is configured with a maker rebate.
+`basic_mm`, `avellaneda_stoikov` and `options_mm` are reference implementations of published quoting rules. They show how to use the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge. None of them has been shown to make money at a fee schedule you can get, and the shipped example backtest is profitable only because it is configured with a maker rebate.
 
 Read this before you size a live session. [Running this in production](../how-to/operations/running-in-production.md) covers the operational side.
 
