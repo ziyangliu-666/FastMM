@@ -3,6 +3,49 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## 2026-09-26: live Binance Spot sessions from AWS Tokyo, and what strategies can now see
+
+**Sessions.** `lead_mm` on BTCU (0 maker fee for the account), priced off BTCUSDT / UUSDT, from
+c7i.large in ap-northeast-1a (apne1-az4; TCP connect 0.53 ms to ws-api/stream vs 1.7 / 2.3 ms from
+1d / 1c; api.binance.com is CloudFront, 1.7 ms). SBE market data, ws-api orders, Ed25519.
+Session A (3 h, improve one tick): 2088 orders, 234 fills, net -0.149 U. Session B (3 h, join the
+touch): 1726 orders, 161 fills, net -0.037 U. `cancel_all` ok, exit 0, 0 reconnects, both.
+Journals and scripts: `~/fastmm-aws/research/` on the dev host.
+
+**Latency (session A).** Send to venue transactTime 0.41 ms p50; first ack 1.39 / 2.48 / 41 ms
+p50/p90/p99; cancel ack 1.17 / 1.58 / 32 ms. The execution report arrives before the ws-api reply
+in 79 % of orders, and 0.06-6.8 ms before the public trade that filled us. SBE vs JSON, same trades,
+both recorded by fastmm-live: SBE first in 80 %, 0.65 ms earlier at the median (a Python JSON
+recorder had shown 1.3-3.3 ms: its own overhead). Engine tick-to-trade p50 5.9 us.
+
+**Congestion.** Excess feed lag (recv_ts - exch_ts over its baseline) explains log ack latency
+with R^2 0.41 (t 18.9); realised volatility adds nothing (R^2 0.03 alone). Around slow acks the
+lag goes 0.2 -> 36 ms within 100 ms of a price burst and is gone in ~300 ms. Fills while lag > 5 ms:
+1 s markout -0.31 bps vs -0.005 (95 % CI of the difference [-0.59, -0.06]). The arrival-based
+`stale_md_ms` never fires then: messages keep arriving, each tens of ms old. -> `max_feed_lag_ms`.
+
+**Backtest vs live.** `fill-check` bounded orders by receive time and matched 0 of 13 live fills
+(the public trade arrives after our execution report); on venue time it matches 233/233 (session
+A, 6 false of 1847). Session B, orders behind others: 109 of 135 before the BookTicker queue cap,
+133 of 135 after (2 false). Strategy re-run on session A's own journal with our orders stripped:
+229 fills vs 234 live, realized -0.113 vs -0.118 U.
+
+**Fixed on the way.** fill-check on venue time; `journal:...,strip_own=1`; pnl_report and
+`fastmm report` booked replayed execution reports twice; inside-the-touch fills were counted as
+behind; `latency_ack_us`; the reconcile watermark counted an unanswered order as sent (13:10:59:
+an order cancelled as unknown; Binance Spot, USD-M, Bybit, Deribit, OKX); bounded shutdown (a
+stop exits within 60 s, a second signal after 5 s at once, exit 5).
+
+**Added for strategies.** `own_qty` / `best_ex_self` (the feed includes our orders live, not in the
+sim), `queue_ahead` (the l2_queue model, capped by a newer BookTicker), `order_times`, `fees`
+(`fetch_fees` on Binance Spot), `risk_headroom`, `venue_health`; `[risk] max_feed_lag_ms`;
+`[backtest] md_arrival = "recorded"`. Not done: spot balances (a new event type per venue), a book
+quality flag (`is_valid`, `last_update` and `on_connection` cover it). Hot hooks do not see them.
+
+**For the quote/hedge plan below.** `xmm` can take the hedge cost from `ctx.fees`, the hedge
+venue from `venue_health`, and the quote leg's queue from `queue_ahead`; a multi-venue backtest
+should keep per-venue `md_arrival` and the ack latency split.
+
 **Step 4 done (2026-09-26): OKX v5 USDT-margined swaps (`kind = "okx"`).** Modelled on Bybit
 linear. OKX docs and changelog read 2026-09-26; three recent changes the connector follows: the
 book `checksum` is deprecated (0 since 2026-06-23; the seqId chain is the check, a non-zero checksum
