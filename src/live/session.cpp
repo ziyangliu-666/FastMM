@@ -626,9 +626,48 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots); rc != 0) return rc;
     for (const auto& s : slots) venue_names.emplace_back(s->venue->name());
   }
-  // Every PnL total, and with it [risk] max_loss, is one currency-less Notional. The venues'
-  // reference data has been loaded, so kInverse is known here.
-  if (const SettlementMix mix = instruments.settlement_mix(); mix.mixed()) {
+  // [accounting] converts the PnL totals, [risk] max_loss and the exposure caps to one reporting
+  // currency. Without it every total is one currency-less Notional. The venues' reference data has
+  // been loaded, so kInverse (and with it each instrument's settlement currency) is known here.
+  FxPlan fx_plan;
+  if (cfg.accounting.configured()) {
+    std::string warning;
+    auto plan = session_fx_plan(instruments,
+                                cfg.accounting,
+                                venue_names,
+                                /*all_instruments=*/false,
+                                cfg.risk_limits().reads_totals(),
+                                &warning);
+    if (!plan) {
+      std::fprintf(stderr,
+                   "%s: [accounting]: %s. [risk] max_loss, max_gross_notional and "
+                   "max_net_notional are in %s.\n",
+                   prog,
+                   plan.error().c_str(),
+                   cfg.accounting.reporting_currency.c_str());
+      return kExitConfig;
+    }
+    if (!warning.empty()) FASTMM_LOG_WARN("[accounting]: {}", warning);
+    fx_plan = *plan;
+  }
+  if (fx_plan.active()) {
+    for (std::size_t c = 1; c < fx_plan.count; ++c) {
+      const FxSource& src = fx_plan.sources[c];
+      if (!src.instrument.valid()) {
+        FASTMM_LOG_WARN("accounting: {} has no source; its PnL is not in the {} totals",
+                        fx_plan.names[c],
+                        fx_plan.reporting());
+        continue;
+      }
+      const Instrument& si = instruments.get(src.instrument);
+      FASTMM_LOG_INFO("accounting: {} converts to {} at the mid of {}:{}{}",
+                      fx_plan.names[c],
+                      fx_plan.reporting(),
+                      venue_names[si.venue.value],
+                      si.symbol,
+                      src.invert ? " (inverted)" : "");
+    }
+  } else if (const SettlementMix mix = instruments.settlement_mix(); mix.mixed()) {
     const std::string a(mix.first->settlement_ccy());
     const std::string b(mix.other->settlement_ccy());
     const std::string sa(mix.first->symbol.view());
@@ -636,8 +675,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (cfg.risk_limits().max_loss.is_positive()) {
       std::fprintf(stderr,
                    "%s: instruments settle in different currencies (%s in %s, %s in %s) and "
-                   "[risk] max_loss is one number in one currency. Split them into one session "
-                   "per settlement currency, or unset max_loss.\n",
+                   "[risk] max_loss is one number in one currency. Set [accounting] "
+                   "reporting_currency and an [accounting.fx] source per other currency, split "
+                   "them into one session per settlement currency, or unset max_loss.\n",
                    prog,
                    sa.c_str(),
                    a.empty() ? "?" : a.c_str(),
@@ -647,7 +687,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
     FASTMM_LOG_WARN(
         "instruments settle in different currencies ({} in {}, {} in {}): the PnL totals in the "
-        "logs and the status file add unrelated numbers",
+        "logs and the status file add unrelated numbers ([accounting] converts them)",
         mix.first->symbol,
         a.empty() ? std::string_view("?") : std::string_view(a),
         mix.other->symbol,
@@ -811,6 +851,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.spin_mode = cfg.spin_mode();
   deps.engine.risk = cfg.risk_limits();
   deps.engine.quotes = cfg.quote_params();
+  deps.engine.fx = fx_plan;
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
@@ -1480,6 +1521,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       Notional::from_raw(rs.fees_raw),
       rs.tick_to_trade_p50_ns,
       rs.tick_to_trade_p99_ns);
+  if (fx_plan.active())
+    FASTMM_LOG_INFO("fastmm-live: the PnL totals are in {} ([accounting])", fx_plan.reporting());
   for (auto& s : slots) {
     const venues::VenueStatus st = s->venue->status();
     FASTMM_LOG_INFO(

@@ -8,6 +8,7 @@
 #include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/position.hpp"
@@ -28,11 +29,14 @@ class AccountBook {
   // Executions remembered for the dedupe, per venue.
   static constexpr std::size_t kExecWindow = std::size_t{1} << 16;
 
-  AccountBook(const InstrumentTable& insts, VenueId venue)
+  // With an active FxPlan the positions also keep their totals per currency
+  // (PositionTracker::native), which the gateway converts at its rates.
+  AccountBook(const InstrumentTable& insts, VenueId venue, const FxPlan& fx = {})
       : insts_(&insts), seen_(std::make_unique<Seen>()), books_(kMaxInstruments) {
     for (const Instrument& i : insts) {
       if (i.venue == venue) books_[i.id.value] = std::make_unique<Book>();
     }
+    pos_.set_accounting(fx);
   }
 
   [[nodiscard]] const PositionTracker& positions() const noexcept { return pos_; }

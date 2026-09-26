@@ -30,7 +30,7 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 6: the operator flatten's state, the instruments it has left and the orders it has sent.
 // 7: quoting presence (quoting_elapsed_ns, quoting_two_sided_ns).
 // 8: `kind`, and the gateway block (attachments, the account, its positions, routing counters).
-inline constexpr std::uint32_t kStatusVersion = 8;
+inline constexpr std::uint32_t kStatusVersion = 9;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -116,14 +116,15 @@ struct StatusVenue {
 inline constexpr std::size_t kStatusMaxAttachments = 16;  // gw::kMaxAttachments
 inline constexpr std::size_t kStatusMaxPositions = 256;   // kMaxInstruments
 // The gateway's refusals, counted per attachment and per venue in this order.
-inline constexpr std::size_t kStatusGatewayRefusals = 6;
+inline constexpr std::size_t kStatusGatewayRefusals = 7;
 inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusals] = {
     RejectReason::GatewayNotOwner,
     RejectReason::GatewayAccountKilled,
     RejectReason::GatewayOpenNotional,
     RejectReason::GatewayGrossNotional,
     RejectReason::GatewayNetNotional,
-    RejectReason::GatewayRateLimit};
+    RejectReason::GatewayRateLimit,
+    RejectReason::GatewayFxRateUnknown};
 
 // One attached strategy. Its instruments are the positions whose owner_epoch is its epoch.
 struct StatusAttachment {

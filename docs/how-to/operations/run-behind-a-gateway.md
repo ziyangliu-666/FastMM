@@ -44,7 +44,7 @@ Every order passes the gateway's network thread on its way to the connector. Bef
 - `max_gross_notional` and `max_net_notional`: the account's positions at the marks, over every venue, plus this order, as `[risk]` checks one strategy's; an order that reduces its instrument's position always passes, and so does one that brings a net already over the cap towards zero,
 - `orders_per_sec` and `burst`: new orders and replaces of every strategy together, per venue (cancels always go).
 
-A refused order goes back to the strategy that sent it as an `OrderReject` with `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional` or `GatewayRateLimit` ([Reject reasons](../../reference/errors.md#gateway)); its quote manager backs that side off as after any venue reject. An exposure refusal is per order; the other strategies trade on. Each strategy's own `[risk]` still applies to it.
+A refused order goes back to the strategy that sent it as an `OrderReject` with `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional`, `GatewayFxRateUnknown` or `GatewayRateLimit` ([Reject reasons](../../reference/errors.md#gateway)); its quote manager backs that side off as after any venue reject. An exposure refusal is per order; the other strategies trade on. Each strategy's own `[risk]` still applies to it.
 
 ## Account risk
 
@@ -62,7 +62,9 @@ gateway: account net_pnl=-0.42600010 realized=0 unrealized=0.17352000 fees=0.599
 gateway: account position sim:BTCUSDT 0.004
 ```
 
-The limits are one number, so a gateway with any of them set refuses a table whose instruments settle in different currencies, as `fastmm-live` does for `[risk] max_loss`.
+The limits are one number in one currency. When the instruments settle in more than one, set `[accounting]` in the gateway's configuration ([Configuration](../../reference/configuration.md#accounting)): every instrument of the gateway must settle in `reporting_currency` or have a source, an instrument of the gateway's table, whose mid gives the rate. The account's positions stay in their own currencies; its PnL, exposure, kill file and log line (`in=USDT`) are in the reporting one, converted at the current rates when they are read. An order that adds exposure in a currency whose source's book is not valid, or older than `[risk] stale_md_ms`, goes back as `GatewayFxRateUnknown`. Without `[accounting]` a gateway with any limit set refuses such a table (exit 3), as `fastmm-live` does for `[risk] max_loss`. `max_open_notional` stays per venue in the settlement currencies, unconverted.
+
+A strategy's own `[risk]` limits convert with its own `[accounting]`; its source may be another strategy's instrument, whose market data every attachment receives, but it must be listed in its `[[instruments]]` with `enabled = false`.
 
 ## Monitor
 
@@ -81,7 +83,7 @@ The frame has the account (net PnL, realized, unrealized, fees, carried, gross a
 |---|---|---|
 | `fastmm_info{gateway,pid}` | gauge | constant 1 |
 | `fastmm_kill_active`, `fastmm_kill_latched`, `fastmm_kill_reason` | gauge | the account's kill switch, whether the kill file latches it, the `KillReason` |
-| `fastmm_account_net_pnl`, `_realized_pnl`, `_unrealized_pnl`, `_fees`, `_pnl_carry` | gauge | the account, quote currency |
+| `fastmm_account_net_pnl`, `_realized_pnl`, `_unrealized_pnl`, `_fees`, `_pnl_carry` | gauge | the account, quote currency (`[accounting] reporting_currency` when set) |
 | `fastmm_account_gross_exposure`, `_net_exposure` | gauge | at the marks |
 | `fastmm_account_max_loss`, `_max_gross_notional`, `_max_net_notional` | gauge | `[gateway]`, 0 when off |
 | `fastmm_account_position{venue,instrument}` | gauge | base units |
