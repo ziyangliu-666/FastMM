@@ -8,10 +8,11 @@
 # Builds the preset (DPDK comes from pkg-config's libdpdk, or scripts/build-dpdk.sh builds it
 # into build/<preset>/_deps/dpdk the first time) and writes dist/fastmm-<version>-x86_64.tar.gz
 # with dist/fastmm-<version>-x86_64.tar.gz.sha256 beside it:
-#   bin/      fastmm-live fastmm-sim-itch fastmm-top fastmm-replay
+#   bin/      fastmm-live fastmm-gateway fastmm-ctl fastmm-top fastmm-pnl fastmm-replay fastmm-sim-itch
 #   tests/    fastmm_xdp_tests fastmm_dpdk_tests (scripts/xdp-test.sh --build .)
 #   configs/  scripts/  (bench-2host.sh, bench-e2e.sh, host-setup.sh, xdp-test.sh, bench-table.py)
-#   deploy/   fastmm-live.service
+#   deploy/   fastmm-live.service, fastmm-gateway.service, fastmm-live@.service,
+#             prometheus/fastmm-alerts.yml
 #   LICENSE   README.md
 # On the target: tar xzf fastmm-*.tar.gz -C /opt && ln -sfn /opt/fastmm-<version> /opt/fastmm
 set -euo pipefail
@@ -27,8 +28,8 @@ while [[ $# -gt 0 ]]; do
 done
 export CPM_SOURCE_CACHE="${CPM_SOURCE_CACHE:-$HOME/.cache/CPM}"
 [[ -f "build/$PRESET/CMakeCache.txt" ]] || cmake --preset "$PRESET"
-cmake --build --preset "$PRESET" -j"$(nproc)" --target fastmm-live fastmm-sim-itch fastmm-top \
-  fastmm-replay fastmm_xdp_tests
+cmake --build --preset "$PRESET" -j"$(nproc)" --target fastmm-live fastmm-gateway fastmm-ctl \
+  fastmm-top fastmm-pnl fastmm-replay fastmm-sim-itch fastmm_xdp_tests
 B="build/$PRESET"
 grep -q '^FASTMM_NATIVE_ARCH:BOOL=ON' "$B/CMakeCache.txt" &&
   { echo "package-release: $B is built with -march=native: not portable" >&2; exit 1; }
@@ -40,7 +41,9 @@ NAME="fastmm-${VERSION:-dev}-x86_64"
 STAGE="$OUT/$NAME"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin" "$STAGE/tests" "$STAGE/scripts" "$STAGE/configs"
-cp "$B"/bin/fastmm-live "$B"/bin/fastmm-sim-itch "$B"/bin/fastmm-top "$B"/bin/fastmm-replay "$STAGE/bin/"
+for tool in fastmm-live fastmm-gateway fastmm-ctl fastmm-top fastmm-pnl fastmm-replay fastmm-sim-itch; do
+  cp "$B/bin/$tool" "$STAGE/bin/"
+done
 cp "$B/tests/fastmm_xdp_tests" "$STAGE/tests/"
 [[ -x "$B/tests/fastmm_dpdk_tests" ]] && cp "$B/tests/fastmm_dpdk_tests" "$STAGE/tests/"
 strip --strip-debug "$STAGE"/bin/* "$STAGE"/tests/*
@@ -48,7 +51,9 @@ cp scripts/bench-2host.sh scripts/bench-e2e.sh scripts/bench-table.py scripts/ho
   scripts/xdp-test.sh "$STAGE/scripts/"
 cp configs/nasdaq-itch-sim.toml configs/sim-itch.toml "$STAGE/configs/"
 mkdir -p "$STAGE/deploy"
-cp deploy/fastmm-live.service "$STAGE/deploy/"
+cp deploy/fastmm-live.service deploy/fastmm-gateway.service deploy/fastmm-live@.service "$STAGE/deploy/"
+mkdir -p "$STAGE/deploy/prometheus"
+cp deploy/prometheus/fastmm-alerts.yml "$STAGE/deploy/prometheus/"
 cp LICENSE "$STAGE/"
 cat > "$STAGE/README.md" <<EOF
 # FastMM ${VERSION:-dev} (x86_64)
@@ -78,7 +83,8 @@ unshare -Urn sh -c 'ip link set lo up multicast on && ip route add 224.0.0.0/4 d
 \`bin/fastmm-top --name nasdaq-itch-sim\` watches a running session from the same namespace.
 
 \`deploy/fastmm-live.service\` is the systemd unit; copy it to \`/etc/systemd/system/\` and edit the
-paths. Read the deployment guide before pointing this at a venue:
+paths. \`deploy/prometheus/fastmm-alerts.yml\` holds Prometheus alerting rules for the metrics
+\`fastmm-top --metrics\` serves. Read the deployment guide before pointing this at a venue:
 <https://ziy.bio/FastMM/how-to/operations/deploy/> and
 <https://ziy.bio/FastMM/how-to/operations/go-live-checklist/>.
 

@@ -16,12 +16,12 @@ A backtest with the same inputs sends the same orders, and replaying a journal s
 |---|---|---|---|
 | clock | `TscClock` (CPU counter calibrated against wall time) | `SimClock`, driven by event times | `SimClock`, set to the recorded engine clock |
 | events | `RingFeed` from the network threads | `InlineFeed` from the data source or generator | `JournalFeed` in recorded order |
-| orders | `LiveTransport` to the venue | `SimTransport`: matching engine with a seeded latency model | `ReplayTransport`: recorded acks and refusals |
+| orders | `LiveTransport` to the venue | `SimTransport`: matching engine with a seeded latency model | `ReplayTransport`: hashes and verifies what is sent, refuses what the recording refused; acks come from the journal |
 | randomness | `ctx.rng()` seeded from `[engine] rng_seed` | the same | the seed from the journal header |
 
 The rest is deterministic because it uses one engine thread, no reads of the system clock, integer arithmetic for money, fixed-capacity containers iterated in a defined order, and timers that fire in engine time.
 
-What an operator does to a running session is an input like any other. The control socket's commands ([Operating a running session](../how-to/operations/operate-a-running-session.md)) reach the engine as `Control` and `ParamUpdate` records on a ring the journal records, and the engine's own flatten works on a journaled timer, so a replay of an incident reproduces the pull, the new limits and every reduce-only order the flatten sent. Nothing in the control plane reaches into the engine behind the journal's back; `tests/integration/control_replay_test.cpp` replays such a session to the recorded hash.
+Operator actions are inputs too. The control socket's commands ([Operating a running session](../how-to/operations/operate-a-running-session.md)) reach the engine as `Control` and `ParamUpdate` records on a ring the journal records, and the engine's own flatten works on a journaled timer, so a replay of an incident reproduces the pull, the new limits and every reduce-only order the flatten sent. `tests/integration/control_replay_test.cpp` replays such a session to the recorded hash.
 
 A live session is not repeatable (network timing decides which event comes first), but its journal is. Journal format version 2 ([Journal format](../reference/journal-format.md)) records, for every consumed event and fired timer, the engine clock at which it was processed, and in the header the session epoch, whether quoting was enabled, each venue's cancel-replace setting and the effective configuration. Replay restores all of them. Parameter updates are journaled inputs like market data; version 3 adds the strategy's parameter table, so replay matches their fields by name.
 

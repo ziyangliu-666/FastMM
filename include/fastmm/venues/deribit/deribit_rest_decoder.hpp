@@ -49,7 +49,20 @@ struct InstrumentInfo {
   std::int64_t expiration_ms = 0;
   double maker_commission = 0.0;
   double taker_commission = 0.0;
-  [[nodiscard]] bool inverse() const noexcept { return instrument_type == "reversed"; }
+  // Inverse means priced in one currency and settled in another: the perpetual and the futures,
+  // quoted in USD and settled in BTC. A BTC option is `reversed` too but priced in the coin it
+  // settles in (quote_currency BTC): its PnL is linear in the premium, and treating it as inverse
+  // valued a 0.0065 BTC option at qty / 0.0065 BTC of notional.
+  // A `reversed` option priced in the coin it settles in (quote_currency BTC).
+  [[nodiscard]] bool coin_quoted() const noexcept {
+    return instrument_type == "reversed" && kind == "option" && !quote_currency.empty() &&
+           quote_currency == settlement_currency;
+  }
+  [[nodiscard]] bool inverse() const noexcept {
+    if (instrument_type != "reversed") return false;
+    return quote_currency.empty() || settlement_currency.empty() ||
+           quote_currency != settlement_currency;
+  }
 };
 
 struct RpcEnvelope {

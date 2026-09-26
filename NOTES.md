@@ -3,6 +3,33 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Performance: code alignment on by default (2026-09-26).** `FASTMM_ALIGN_CODE` (ON, gcc): the
+fastmm targets get `-falign-functions=64 -falign-loops=32 -falign-jumps=32` (`.text` +4 %).
+Test: base, an identical copy and four edits that execute nothing in the benchmark (nops in
+`on_funding`, `calibrate_tsc`, `on_kill`; two `EngineConfig` members swapped), built per setting,
+`bench_tick_to_order` interleaved and pinned, 8 to 18 processes per binary. Median of the six
+variants, ns, and their spread (max - min) / min:
+
+| setting | EngineStep_Sim | TickToOrder_Sim | TickToOrder_SimHash |
+|---|---:|---:|---:|
+| `release` today | 2390, 3.8 % | 161, 7.4 % | 330, 5.4 % |
+| functions 64 | 2317, 1.3 % | 159, 4.9 % | 335, 3.9 % |
+| functions 64, loops 64 | 2346, 2.3 % | 157, 8.5 % | 329, 5.0 % |
+| functions 64, loops and jumps 32 | 2337, 3.0 % | 156, 1.2 % | 334, 2.3 % |
+| clang 18 | 3448, 1.3 % | 178, 4.2 % | 342, 1.9 % |
+| `release-native` | 1791, 6.3 % | 120, 1.8 % | 302, 3.9 % |
+| PGO, native | 1685, 5.0 % | 105, 6.8 % | 282, 2.4 % |
+| second set of edits, busier machine: OFF | 2730, 7.8 % | 188, 5.6 % | 393, 3.6 % |
+| same, `FASTMM_ALIGN_CODE=ON` | 2610, 2.1 % | 182, 4.7 % | 393, 2.9 % |
+
+The engine step no longer moves with layout and the engine benchmarks got faster. Elsewhere
+(`release-native`, on against off): L2 book -5 to -22 %, `BM_Json_BybitExecution` +10 %, L3 +4 to
++5 %, the rest within 3 %. What remains on the tick is the size of the process-to-process
+difference of one identical binary (2 to 5 %), so a 3 % change needs several interleaved
+processes per side to mean anything; the funding measurement below had one. PGO is the fastest but not stable (the identical copy re-profiled: +7 % on the tick) and
+needs instrumented builds plus training in CI, the tarball and the wheels: not adopted.
+`-fno-semantic-interposition` and LTO were already on. Details: bench/README.md, "Code alignment".
+
 **Performance: the hot path is sensitive to code layout (2026-09-26).** Booking funding cost
 BM_EngineStep_Sim +3.5% (2263 → 2338 ns) and BM_TickToOrder_Sim +3–5% with no new work on the
 benchmarked path: moving the funding state off the hot data did not recover it, and an edit that
@@ -10,6 +37,11 @@ executes nothing in the benchmark (naming padding in a store record) reproduced 
 rebuilt at the same path length stayed at 2258 ns, so it is not build noise. Accepted, because funding
 is a correctness fix. Next performance item: make the build insensitive to layout (function
 alignment, `scripts/build-pgo.sh`), measured, before layout drift accumulates.
+
+**Open after the alignment change (2026-09-26).** `BM_Json_BybitExecution` +10% with
+`FASTMM_ALIGN_CODE` on (venue decode, off the engine path; not investigated); the budgets in
+`bench/ci_budget.toml` are not re-measured. (The gateway tests failing in a deep worktree were the 107-byte AF_UNIX path limit, which the
+gateway already refuses at startup with exit 3 and the path in the message.)
 
 ## Next direction (chosen 2026-09-26): a crypto desk can run on this
 
@@ -24,7 +56,11 @@ perpetuals, and today one session or gateway with instruments in two settlement 
   refused. Same accounting in the engine and the gateway; backtest and replay share it.
 Step 2, Bybit linear perpetuals: done 2026-09-26 (mock and docs only, no testnet keys).
 Step 3, funding: done 2026-09-26 (below).
-Later: OKX; alerting.
+Step 3 funding: done 2026-09-26 (USDⓈ-M, Bybit linear; Deribit has aggregates only). Alerting:
+done 2026-09-26 as shipped Prometheus rules (`deploy/prometheus/fastmm-alerts.yml`, checked against
+the exporter by a test), plus systemd units for the gateway and its strategies (a gateway crash
+brings the strategies back via WantedBy; tested). Step 4: an OKX connector (swap, USDT-margined),
+modelled on Bybit linear.
 
 **Step 3 done (2026-09-26): perpetual funding is booked.** `EventType::Funding` (27) /
 `FundingMsg` (128 B: signed amount in the settlement asset, venue id, venue time, kReplayed) on the

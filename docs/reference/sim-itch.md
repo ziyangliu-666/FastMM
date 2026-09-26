@@ -1,6 +1,6 @@
 # fastmm-sim-itch
 
-`fastmm-sim-itch` is a Nasdaq-style simulated exchange for the multicast market-data path ([ADR-0015](../adr/0015-multicast-market-data.md), section 6). It publishes TotalView-ITCH 5.0 over MoldUDP64 to two multicast lines, answers MoldUDP64 re-requests, serves GLIMPSE 5.0 snapshots and accepts OUCH 5.0 orders, all over the protocol codecs in [Nasdaq ITCH and OUCH](codecs/nasdaq.md). It also measures wire to wire: from the `sendmmsg` of the datagram that carried a market-data message to the arrival of the order that names it.
+`fastmm-sim-itch` is a Nasdaq-style simulated exchange for the multicast market-data path ([ADR-0015](../adr/0015-multicast-market-data.md), section 6). It publishes TotalView-ITCH 5.0 over MoldUDP64 to two multicast lines, answers MoldUDP64 re-requests, serves GLIMPSE 5.0 snapshots and accepts OUCH 5.0 orders, all over the protocol codecs in [Nasdaq ITCH and OUCH](codecs/nasdaq.md). It measures wire to wire: from the `sendmmsg` of the datagram that carried a market-data message to the arrival of the order that names it.
 
 ```
 fastmm-sim-itch ── one thread, one net::Reactor
@@ -31,11 +31,12 @@ Flags and exit codes: [Command lines](cli.md#fastmm-sim-itch). Every `--stats-in
 
 ## Configuration (`configs/sim-itch.toml`)
 
-The simulator reads `[[instruments]]` (symbol, tick, lot; 1 to 8 characters, whole-share lots, ticks that are multiples of 0.0001) and `[sim]`. Without `--config` it runs FMAA and FMBB at $100. Command-line flags override the file.
+The simulator reads `[[instruments]]` (symbol, tick, lot; 1 to 8 characters, whole-share lots, ticks that are multiples of 0.0001; disabled ones are skipped) and `[sim]`. Without `--config` it runs FMAA and FMBB at $100. Command-line flags override the file.
 
 | key | default | meaning |
 |---|---|---|
 | `seed` | 7 | generator seed |
+| `venue` | all | simulate only the instruments of this venue |
 | `start_mid`, `symbols.<SYM>.start_mid` | 100 | initial latent mid |
 | `symbols.<SYM>.locate` | position + 1 | ITCH Stock Locate |
 | `speed` | 1.0 | generator time per wall-clock time |
@@ -82,7 +83,7 @@ Messages go into a `moldudp::Transmitter` whose history is a ring (`TransmitterC
 
 ## GLIMPSE 5.0
 
-After a SoupBinTCP login the connection receives, as Sequenced Data: Stock Directory for every symbol, Stock Trading Action `T` for every symbol, Add Order for every resting order (bids then asks per symbol, best level first, queue order within a level, under the order's ITCH reference), and End of Snapshot `G` with the sequence number to continue from. The snapshot is built between two engine calls, so it equals the ITCH stream up to that sequence number minus one, whether or not those messages were sent yet. A client logs out after the snapshot; the requested sequence number is ignored.
+After a SoupBinTCP login the connection receives, as Sequenced Data: Stock Directory for every symbol, Stock Trading Action `T` for every symbol, Add Order for every resting order (bids then asks per symbol, best level first, queue order within a level, under the order's ITCH reference), and End of Snapshot `G` with the sequence number to continue from. The snapshot is built between two engine calls, so it equals the ITCH stream up to that sequence number minus one, whether or not those messages were sent yet. The client logs out after the snapshot; the requested sequence number is ignored.
 
 The client side is `codecs::itch::glimpse::GlimpseClient` ([Nasdaq ITCH and OUCH](codecs/nasdaq.md#glimpse-50)).
 

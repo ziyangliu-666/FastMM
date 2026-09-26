@@ -1,6 +1,6 @@
 # Python
 
-The `fastmm` package runs strategies written in Python inside the C++ engine: in backtests, in replays of their journals and, with `fastmm-engine-live`, against venues. It also backtests the C++ strategies. Install: [Python](getting-started/install.md#python).
+The `fastmm` package runs strategies written in Python inside the C++ engine: in backtests, in replays of their journals and, with `fastmm-engine-live`, against venues. It also backtests the C++ strategies. Install: `pip install "fastmm-engine[hot]"`, plus the `live` extra for venues ([Install](getting-started/install.md#python)).
 
 ## What runs where
 
@@ -47,7 +47,7 @@ r.stats()["net_pnl"], r.outbound_sha256
 frames = r.to_pandas()                  # {"fills", "equity", "orders", "markouts"} DataFrames
 ```
 
-`from_toml` issues a `UserWarning` for each unknown key or section, with its line, and lists them in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `markout_horizons_s`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
+`from_toml` issues a `UserWarning` for each unknown key or section, with its line, and lists them in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `markout_horizons_s`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `max_param_age_ms`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
 
 ### Data
 
@@ -85,7 +85,7 @@ Points run on a C++ thread pool (GIL released), every worker with its own cursor
 
 ### Walk-forward
 
-The best point of a sweep is the luckiest one on that data. `fastmm.walk_forward` checks whether it holds on data it was not chosen on:
+The best point of a sweep is the luckiest one on that data. `fastmm.walk_forward` scores it on data it was not chosen on:
 
 ```python
 cfg = fastmm.BacktestConfig.from_toml("configs/backtest-example.toml")  # fill_model l2_queue
@@ -113,7 +113,7 @@ mean hindsight best   0.125913
 choice changes        1 of 2
 ```
 
-`chosen` and `best` are grid points (`#n` in grid order, listed under the table): the point carried over from the previous fold and the one that scores best on this fold in hindsight. `in_sample` is the chosen point's score on the fold it was chosen on, `out_of_sample` its score on this fold, `hindsight` the best score on this fold. The summary averages folds 1 to K−1 and counts how often the choice changed between consecutive folds. The winner generalizes when the out-of-sample mean stays close to the hindsight mean and the choice rarely changes. An out-of-sample mean well below both, or a choice that changes on every fold, means the ranking is fitting noise.
+`chosen` and `best` are grid points (`#n` in grid order, listed under the table): the point carried over from the previous fold and the one that scores best on this fold in hindsight. `in_sample` is the chosen point's score on the fold it was chosen on, `out_of_sample` its score on this fold, `hindsight` the best score on this fold. The summary averages folds 1 to K−1 and counts how often the choice changed between consecutive folds. The choice generalizes when the out-of-sample mean stays close to the hindsight mean and the choice rarely changes; an out-of-sample mean well below both, or a choice that changes on every fold, means the ranking fits noise.
 
 `folds=1` runs exactly `fastmm.sweep`. The result does not depend on `threads`. The synthetic market needs `fill_model = "l2_queue"` for more than one fold: the coupled matching market has no stream to cut. The dict also holds every fold's `points` and `scores`; the C++ entry point is `bt::walk_forward` in `backtest/sweep.hpp`.
 

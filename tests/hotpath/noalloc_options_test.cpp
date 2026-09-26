@@ -52,7 +52,7 @@ TEST_CASE("hotpath.noalloc: Black-76, implied vol and OptionsMM requotes") {
   call.option_type = OptionType::Call;
   call.strike = Price::from_int(77000);
   call.expiry_ns = 1'789'344'931'096LL * 1'000'000 + 30LL * 86'400 * 1'000'000'000;
-  call.flags = Instrument::kEnabled | Instrument::kInverse;
+  call.flags = Instrument::kEnabled | Instrument::kCoinQuoted;
   call.tick = Price::from_decimal("0.0001").value();
   call.lot = Qty::from_decimal("0.1").value();
   REQUIRE(table->add(call));

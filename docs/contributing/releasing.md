@@ -1,6 +1,6 @@
 # Cutting a release
 
-A release is a `v<version>` tag. Pushing the tag builds and publishes everything; nothing is published from a branch.
+A release is a `v<version>` tag. Pushing the tag builds and publishes everything.
 
 ## 1. Set the version
 
@@ -10,7 +10,7 @@ What a version number promises: [Versions and compatibility](../reference/compat
 
 ## 2. Write the CHANGELOG section
 
-Rename `## [Unreleased]` to `## [<x.y.z>] - <YYYY-MM-DD>` and group it into one `### Added`, `### Changed`, `### Removed`, `### Fixed` and `### Documentation`. Every entry that changes a configuration key, a file format or a call form starts with what it breaks; `release.yml` copies the section into the GitHub Release notes verbatim, so it is what a reader upgrading will see.
+Rename `## [Unreleased]` to `## [<x.y.z>] - <YYYY-MM-DD>` and group it into one `### Added`, `### Changed`, `### Removed`, `### Fixed` and `### Documentation`. Every entry that changes a configuration key, a file format or a call form starts with what it breaks; `release.yml` copies the section into the GitHub Release notes verbatim.
 
 ## 3. Check it locally
 

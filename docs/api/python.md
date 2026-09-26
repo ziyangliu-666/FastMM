@@ -80,6 +80,8 @@ An `@every` method runs on a second thread and publishes parameters to the hot h
 
 ::: fastmm.sweep_frame
 
+::: fastmm.markout_frame
+
 ::: fastmm.load_csv
 
 ::: fastmm.data_sources
@@ -95,6 +97,7 @@ An `@every` method runs on a second thread and publishes parameters to the hot h
 ::: fastmm.inspect_journal
 
 ::: fastmm.write_report
+
 ## Trading records
 
 ::: fastmm.open_store

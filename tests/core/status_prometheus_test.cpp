@@ -4,6 +4,7 @@
 
 #include "fastmm/core/enums.hpp"
 
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -82,6 +83,12 @@ TEST_CASE("core.status_prometheus: the snapshot becomes metrics in base units") 
   CHECK(has(text, "fastmm_venue_channel_state{venue=\"binance\",channel=\"md\"} 2\n"));
   CHECK(has(text, "fastmm_venue_md_messages_total{venue=\"binance\"} 963\n"));
   CHECK_FALSE(has(text, "fastmm_feed_"));  // no multicast venue in this snapshot
+}
+
+TEST_CASE("core.status_prometheus: an engine exports the max_loss it applies") {
+  StatusSnapshot s = sample();
+  s.max_loss_raw = 25'000'000'000;  // 250
+  CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_max_loss 250\n"));
 }
 
 TEST_CASE("core.status_prometheus: every sample belongs to a declared family") {
@@ -193,5 +200,40 @@ TEST_CASE("core.status_prometheus: a gateway exports its account, positions and 
     if (line.empty() || line[0] == '#') continue;
     CAPTURE(line);
     CHECK(declared.count(line.substr(0, std::min(line.find('{'), line.find(' ')))) == 1);
+  }
+}
+
+// deploy/prometheus/fastmm-alerts.yml is only useful while every metric it names is exported: a
+// renamed or removed family would leave a rule that never fires.
+TEST_CASE("core.status_prometheus: every metric the shipped alert rules use is exported") {
+  const std::string rules = fastmm::test::read_file(std::string(FASTMM_FIXTURES_DIR) +
+                                                    "/../../deploy/prometheus/fastmm-alerts.yml");
+  REQUIRE_FALSE(rules.empty());
+  StatusSnapshot gw;
+  gw.kind = StatusKind::Gateway;
+  gw.updated_ns = 1;
+  gw.venue_count = 1;
+  set_status_name(gw.venues[0].name, "sim");
+  gw.gateway.attachment_count = 1;
+  set_status_name(gw.gateway.attachments[0].engine, "mm");
+  const std::string exported =
+      format_status_prometheus(sample(), 61'500'000'000) + format_status_prometheus(gw, 1);
+  std::set<std::string> names;
+  for (std::size_t at = rules.find("fastmm_"); at != std::string::npos;
+       at = rules.find("fastmm_", at + 1)) {
+    if (at > 0 && (std::isalnum(static_cast<unsigned char>(rules[at - 1])) ||
+                   rules[at - 1] == '_' || rules[at - 1] == '/' || rules[at - 1] == '-'))
+      continue;  // part of a file name or another word
+    std::size_t end = at;
+    while (end < rules.size() &&
+           (std::islower(static_cast<unsigned char>(rules[end])) || rules[end] == '_' ||
+            std::isdigit(static_cast<unsigned char>(rules[end]))))
+      ++end;
+    names.insert(rules.substr(at, end - at));
+  }
+  CHECK(names.size() >= 10);
+  for (const std::string& n : names) {
+    INFO(n);
+    CHECK(has(exported, "# TYPE " + n + " "));
   }
 }

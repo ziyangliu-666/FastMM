@@ -85,7 +85,11 @@ class FakeVenueServer final : public net::WsSessionHandler {
   }
   void close_sessions(const std::string& path) {
     run_on_server([this, path] {
-      for (net::WsSession* s : sessions_[path]) s->close_abrupt();
+      // close_abrupt() calls no handler (HttpServer reaps the session on its next loop), so the
+      // sessions are forgotten here first; a later send_to() would reach a freed one otherwise.
+      std::vector<net::WsSession*> closing;
+      closing.swap(sessions_[path]);
+      for (net::WsSession* s : closing) s->close_abrupt();
     });
   }
 

@@ -2,7 +2,7 @@
 
 `fastmm report` turns what a run left behind into one HTML file: equity and inventory over time, where the PnL came from, markouts, fill quality, the counts, and the configuration that produced them. Code: `python/fastmm/report.py`.
 
-The file is self-contained — inline CSS, charts as inline SVG and CSS bars, no JavaScript and no network at all — so it opens from a `file://` URL, keeps working when it is copied somewhere else, follows the system dark mode and prints.
+The file is self-contained: inline CSS, charts as inline SVG and CSS bars, no JavaScript, no network access. It opens from a `file://` URL, follows the system dark mode and prints.
 
 ## Write one
 
@@ -38,13 +38,13 @@ The report names the instrument's assets and lists the strategy parameters when 
 | quotes, rejects and fills | orders, cancels, replaces, rejects, outbound messages, market-data events, tick-to-order latency, and when the fills arrived |
 | configuration | the strategy parameters, the run settings (seed, window, markout horizons, outbound hash) and the effective configuration |
 
-Every number is one the run itself reported; the report computes nothing a backtest already measured. A missing input removes its panel rather than filling it with a substitute.
+Every number is one the run reported. A missing input removes its panel.
 
 ## A session report is smaller
 
-A live session journal records the fills, not the venue's book at each fill, so a session report has no markouts, no spread capture and no fill quality; it says so instead of guessing. It marks inventory at the last book ticker the venue published (or the last trade print), and splits the PnL into realized, unrealized and fees only.
+A live session journal records the fills, not the venue's book at each fill, so a session report has no markouts, no spread capture and no fill quality, and says so. It marks inventory at the last book ticker the venue published (or the last trade print), and splits the PnL into realized, unrealized and fees only.
 
-For the full set of panels, backtest the journal — `fastmm-backtest --data session.fmj --out runs/replayed` — and report on that. Those numbers are a simulation over the session's market data, not the session ([Backtesting](../explanation/backtesting.md)).
+For the full set of panels, backtest the journal (`fastmm-backtest --data session.fmj --out runs/replayed`) and report on that. Those numbers are a simulation over the session's market data, not the session ([Backtesting](../explanation/backtesting.md)).
 
 ## From Python
 

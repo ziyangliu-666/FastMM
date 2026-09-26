@@ -1,8 +1,8 @@
 # Query what you traded
 
-Answer the daily questions from the store a session wrote, without replaying its journal. The store is `runs/<engine name>.db` unless `[storage] path` says otherwise; the schema and what it guarantees are in [Storage](../../reference/storage.md).
+Read what a deployment traded from the store its sessions wrote, without replaying a journal. The store is `runs/<engine name>.db` unless `[storage] path` says otherwise; the schema and what it guarantees are in [Storage](../../reference/storage.md).
 
-Turn it on in the configuration (it is on by default):
+It is on by default:
 
 ```toml
 [storage]
@@ -13,7 +13,7 @@ path = "runs/mm1.db"
 ## What did I trade yesterday
 
 ```bash
-build/release/bin/fastmm-pnl pnl --since yesterday --until yesterday
+build/release/bin/fastmm-pnl pnl --day yesterday
 ```
 
 ```text
@@ -23,9 +23,9 @@ day         symbol   settlement_ccy  realized  funding  fees      net       gros
 2 row(s)
 ```
 
-`--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. `funding` is the part of `realized` that perpetual funding paid or received. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
+`--day`, `--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. `funding` is the part of `realized` that perpetual funding paid or received. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
 
-Add `--instrument BTCUSDT` for one symbol, `--engine mm1` for one deployment, `--csv` to pipe it somewhere.
+`--instrument BTCUSDT` selects one symbol, `--engine mm1` one deployment; `--csv` prints comma-separated values.
 
 ## What is my PnL by day and instrument
 
@@ -33,7 +33,7 @@ Add `--instrument BTCUSDT` for one symbol, `--engine mm1` for one deployment, `-
 build/release/bin/fastmm-pnl pnl --since 2024-03-01
 ```
 
-Instruments that settle in different currencies must not be added: the `settlement_ccy` column separates them, and [the risk model](../../explanation/risk-model.md) explains why. For a total per currency, use the `pnl_by_currency` view:
+Do not add instruments that settle in different currencies; the `settlement_ccy` column separates them ([Risk model](../../explanation/risk-model.md)). For a total per currency, use the `pnl_by_currency` view:
 
 ```bash
 sqlite3 -header -column runs/mm1.db \
@@ -80,7 +80,7 @@ session 1709510400123456789 (basic_mm)
   open      0003000000000a1c BTCUSDT Sell 0.002 (filled 0) @ 61260.5 Live
 ```
 
-`fastmm-live` logs the same summary when it starts, so an operator sees it without running anything. The open orders are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since, and nothing that happened while the process was down is in here. [Storage](../../reference/storage.md) lists the gaps.
+`fastmm-live` logs the same summary when it starts. The open orders are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since, and nothing that happened while the process was down is in here. The next `fastmm-live` start restores the position from the store, books what the venue executed in between and cancels the orders left open ([Recovery at start-up](../../reference/storage.md#recovery-at-start-up)).
 
 ## From Python
 
@@ -101,9 +101,9 @@ Raw fixed-point columns come back as floats without the `_raw` suffix (`fee_raw`
 
 - `fastmm-pnl sessions` has a `records_dropped` column. A non-zero value means the engine-to-store ring filled and that many records never reached the store, so its rows are incomplete by that many. Raise `[storage] ring_bytes`.
 - `clean_shutdown = 0` means the process was killed: the last batch of records and the session's closing row are missing. The journal of that session is the authority.
-- `journal_complete = 0` means the journal was not closed either; `fastmm-replay` refuses it without `--allow-incomplete`.
-- A store the engine cannot open stops the session at start-up with exit code 3. Set `[storage] backend = "none"` to run without one.
+- `journal_complete` is 0 when a session stopped without closing its journal, and NULL after a kill (the row was never closed). Either way `fastmm-replay` refuses that journal without `--allow-incomplete`.
+- A store the engine cannot open stops the session at start-up with exit code 3. `[storage] backend = "none"` runs without one.
 
 ## Rebuilding from a journal
 
-The store can be lost and the journal cannot: the journal is the byte-exact stream and replays exactly ([Journals, replay and PnL](journals-replay-pnl.md)). `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL straight from a journal, which is what to reach for when a store is missing or a session's records were dropped.
+The journal is the byte-exact record and replays exactly ([Journals, replay and PnL](journals-replay-pnl.md)); the store is derived from the same events. When a store is missing or a session dropped records, `python3 tools/pnl_report.py <file.fmj>` computes fills, fees and PnL from the journal.

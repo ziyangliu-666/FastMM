@@ -1,0 +1,51 @@
+# FastMM venue gateway: holds the venue connections that strategy processes attach to
+# (fastmm-live --gateway). Install and edit the paths: docs/how-to/operations/run-behind-a-gateway.md
+# Strategy units attach with deploy/fastmm-live@.service, which is PartOf this unit: when systemd
+# restarts the gateway, it restarts them too.
+[Unit]
+Description=FastMM venue gateway
+Documentation=https://ziy.bio/FastMM/how-to/operations/run-behind-a-gateway/
+After=network-online.target time-sync.target
+Wants=network-online.target
+# A crash loop stops after five starts in ten minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=fastmm
+Group=fastmm
+WorkingDirectory=/var/lib/fastmm
+# FASTMM_CONFIG and the API keys the config reads as ${VAR}. Root-owned, mode 0600.
+EnvironmentFile=/etc/fastmm/fastmm-gateway.env
+ExecStart=/opt/fastmm/bin/fastmm-gateway --config ${FASTMM_CONFIG}
+
+# A crash or a transient failure (a signal, exit 4) comes back into service: the gateway
+# reconnects, sweeps the orders of sessions nobody holds and cancels them, and the account's kill
+# switch and loss budget carry over. 2 and 3 need a config fix; 5 and 6 need a human
+# (docs/reference/errors.md), and a latched account kill exits 6 at every start.
+Restart=on-failure
+RestartPreventExitStatus=2 3 5 6
+RestartSec=2
+# SIGTERM cancels every order it knows of before the process exits; give it room.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+LimitNOFILE=65536
+MemorySwapMax=0
+OOMPolicy=stop
+OOMScoreAdjust=-500
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fastmm-gateway
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# The attach socket, the kill file and the epoch file live under the journal directory.
+ReadWritePaths=/var/lib/fastmm
+ReadOnlyPaths=/etc/fastmm
+
+[Install]
+WantedBy=multi-user.target

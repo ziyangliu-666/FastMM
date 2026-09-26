@@ -40,7 +40,8 @@ constexpr VenueKeySpec kNasdaqItchKeys[] = {
     {"queues",
      KeyType::Any,
      false,
-     "af_xdp: RX queues to bind on every line interface, [0, 1] or \"0,1\" (default 0)"},
+     "af_xdp: RX queues to bind on every line interface, [0, 1] or \"0,1\" (default: every RX "
+     "queue the interface has)"},
     {"dpdk_eal_args",
      KeyType::String,
      false,

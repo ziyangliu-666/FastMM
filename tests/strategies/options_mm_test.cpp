@@ -52,7 +52,7 @@ struct Ctx {
 
   explicit Ctx(std::int64_t expiry_ns = kNow + 30 * kDay) {
     auto option =
-        [&](const char* sym, OptionType type, const char* strike, bool inverse, const char* mult) {
+        [&](const char* sym, OptionType type, const char* strike, bool coin, const char* mult) {
           Instrument i{};
           i.symbol = sym;
           i.venue = VenueId{0};
@@ -61,8 +61,8 @@ struct Ctx {
           i.strike = px(strike);
           i.expiry_ns = expiry_ns;
           i.flags = static_cast<std::uint8_t>(Instrument::kEnabled |
-                                              (inverse ? Instrument::kInverse : 0));
-          i.tick = inverse ? px("0.0001") : px("0.01");
+                                              (coin ? Instrument::kCoinQuoted : 0));
+          i.tick = coin ? px("0.0001") : px("0.01");
           i.lot = qt("0.1");
           i.contract_multiplier = qt(mult);
           REQUIRE(table.add(i));

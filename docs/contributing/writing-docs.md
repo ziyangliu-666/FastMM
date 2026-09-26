@@ -1,6 +1,6 @@
 # Writing docs
 
-The Markdown under `docs/` is the source of both the site at <https://ziyangliu-666.github.io/FastMM/>
+The Markdown under `docs/` is the source of both the site at <https://ziy.bio/FastMM/>
 (MkDocs + Material, `mkdocs.yml`) and the pages GitHub renders, so relative links have to work in
 both. Preview the site:
 
@@ -8,8 +8,7 @@ both. Preview the site:
 ./scripts/docs-serve.sh          # http://127.0.0.1:8000, reloads on edit; --api adds the API reference
 ```
 
-The script builds `build/docs-venv` from [`docs/requirements.txt`](../requirements.txt) the first
-time and touches nothing else on the machine.
+The script creates `build/docs-venv` from [`docs/requirements.txt`](../requirements.txt) on first use.
 
 ## Where a page goes
 
@@ -66,9 +65,9 @@ Code that the docs show should be compiled or run by a test: the examples and th
 | Page | Generated from | Tool |
 |---|---|---|
 | `docs/reference/cli.md` | each program's `--help` | `python3 tools/docs_cli_help.py --bin build/release/bin` |
-| `docs/reference/configuration.md` | the key tables in `include/fastmm/config/schema.hpp` | `python3 tools/docs_config_ref.py` |
+| `docs/reference/configuration.md` | the key tables in `include/fastmm/config/schema.hpp` and each connector's `src/venues/<venue>/*_registration.cpp` | `python3 tools/docs_config_ref.py` |
 
-Only the regions between `<!-- BEGIN ... -->` and `<!-- END ... -->` are generated; edit the rest of the page by hand. Change a flag or a configuration key in the code (usage text or schema doc string), then run the tool.
+Only the regions between `<!-- BEGIN ... -->` and `<!-- END ... -->` are generated; edit the rest of the page by hand. Change a flag or a configuration key in the code (usage text or doc string), then run the tool.
 
 ## The API reference
 
@@ -82,8 +81,6 @@ Two pages are built from the code by the site, not committed:
 The headers document themselves with `//` comments; `tools/doxygen_filter.py` presents them to Doxygen as `///` and `///<` documentation, so a header needs no Doxygen markup. Adding a header to the manifest adds it to the reference. [`docs/api/cpp.md`](../api/cpp.md) is the hand-written index in front of the Doxygen output, grouped by subsystem; its links are checked against the generated pages on every build.
 
 ## Checks
-
-CI runs these checks:
 
 | Check | Command | CI job |
 |---|---|---|

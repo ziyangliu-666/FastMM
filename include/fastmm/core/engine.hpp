@@ -1987,6 +1987,7 @@ class Engine {
     const QuotePresenceStats presence = presence_.total();
     live.quoting_elapsed_ns = presence.elapsed_ns;
     live.quoting_two_sided_ns = presence.two_sided_ns;
+    live.max_loss_raw = risk_.limits().max_loss.raw;
     live.latency = latency;
     live_pub_.store(live);
   }

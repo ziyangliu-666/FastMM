@@ -1,0 +1,100 @@
+# Alerting rules for the metrics `fastmm-top --metrics` serves (one scrape target per engine or
+# gateway). Load them in Prometheus (`rule_files:`) and route them with Alertmanager.
+# severity: critical = act now (trading is stopped or unwatched); warning = look soon.
+# tests/core/status_prometheus_test.cpp checks that every metric named here is exported.
+groups:
+  - name: fastmm
+    rules:
+      - alert: FastMMStatusStale
+        expr: fastmm_status_age_seconds > 5
+        for: 15s
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }}: status not updated for {{ $value | humanizeDuration }}: the process is hung or dead"
+
+      - alert: FastMMKillSwitch
+        expr: fastmm_kill_active == 1
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }}: kill switch engaged (fastmm_kill_reason has the reason code): quotes pulled, new orders refused"
+
+      - alert: FastMMKillLatched
+        expr: fastmm_kill_latched == 1
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: a max_loss trip is latched; the next start refuses to trade until it is cleared"
+
+      - alert: FastMMVenueKilled
+        expr: fastmm_venue_killed == 1
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.instance }}: venue {{ $labels.venue }} is killed: its quotes are pulled"
+
+      - alert: FastMMVenueChannelDown
+        expr: fastmm_venue_channel_state == 0
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.venue }} {{ $labels.channel }} channel down for over a minute"
+
+      - alert: FastMMMarketDataStale
+        expr: fastmm_venue_channel_state{channel="md"} == 3
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.venue }} market data stale for over 30 s: its quotes are pulled"
+
+      - alert: FastMMBooksNotSynced
+        expr: fastmm_venue_books_synced < fastmm_venue_books_total
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.venue }} has books out of sync for over a minute"
+
+      - alert: FastMMVenueReconnecting
+        expr: increase(fastmm_venue_reconnects_total[10m]) > 5
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.venue }} reconnected {{ $value }} times in 10 minutes"
+
+      - alert: FastMMRestErrors
+        expr: increase(fastmm_venue_rest_errors_total[5m]) > 10
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: {{ $labels.venue }} answered {{ $value }} REST errors in 5 minutes"
+
+      - alert: FastMMClockOffset
+        expr: abs(fastmm_venue_clock_offset_seconds) > 1
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: clock {{ $value }} s off {{ $labels.venue }}'s: signed requests risk the recvWindow"
+
+      - alert: FastMMLossNearLimit
+        expr: >
+          fastmm_max_loss > 0 and
+          -(fastmm_realized_pnl + fastmm_unrealized_pnl - fastmm_fees + fastmm_pnl_carry)
+          > 0.8 * fastmm_max_loss
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: net loss past 80% of [risk] max_loss"
+
+      # A gateway (fastmm-gateway --status; fastmm-top --gateway <name> --metrics).
+      - alert: FastMMAccountLossNearLimit
+        expr: fastmm_account_max_loss > 0 and -fastmm_account_net_pnl > 0.8 * fastmm_account_max_loss
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: account loss past 80% of [gateway] max_loss"
+
+      - alert: FastMMGatewayIdle
+        expr: fastmm_gateway_attachments == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: the gateway holds its venue sessions but no strategy is attached"
+
+      - alert: FastMMGatewayMarketDataDropped
+        expr: increase(fastmm_gateway_attachment_md_dropped_total[5m]) > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: strategy {{ $labels.engine }} (epoch {{ $labels.epoch }}) falls behind on market data"

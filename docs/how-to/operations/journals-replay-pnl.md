@@ -8,11 +8,11 @@ A journal holds the session header, the instrument table, the effective configur
 
 Size: one-symbol Binance Demo sessions wrote 23 MB to 32 MB per hour. `[engine] journal_max_bytes` rolls the file over into numbered parts and `[engine] journal_retention_days` deletes old ones at start-up; `[engine] journal_sync` chooses how far a write is pushed before the writer moves on, and a journal that cannot be written trips the kill switch ([Journal format](../../reference/journal-format.md#durability)).
 
-Next to the journal, `[storage]` writes the same session as rows: fills, orders, positions, PnL by day and kill events, queryable without a replay ([Query what you traded](query-trading-records.md)). The journal stays the authority; the store is the convenient view.
+Next to the journal, `[storage]` writes the same session as rows: fills, orders, positions, PnL by day and kill events, queryable without a replay ([Query what you traded](query-trading-records.md)). Where the two disagree, the journal is right.
 
 ### The session epoch
 
-`[engine] epoch_file` (default `runs/session_epoch`) stores a counter that goes up by one for every session. Client order ids are the epoch in the upper 32 bits and a sequence number in the lower 32 bits, so ids stay unique across restarts. Keep the file between sessions that trade on the same account; the startup log shows the value (`epoch=22`).
+`[engine] epoch_file` (default `runs/session_epoch`) stores a counter that goes up by one for every session. Client order ids are the epoch in the upper 32 bits and a sequence number in the lower 32 bits, so ids stay unique across restarts. Keep the file between sessions that trade on the same account. The startup log shows the value (`epoch=22`).
 
 ## Read a journal
 
@@ -31,7 +31,7 @@ It prints the header, the instrument table, the first matching events and a coun
 
 - `fee` is in units of `fee_asset`: `quote` (for example USDT), `base` (for example BTC) or `other` (for example BNB, which the engine cannot value and leaves out of fees and positions).
 - `liq` is `Maker`, `Taker` or `Unknown`.
-- `trailer MISSING` at the end means the process did not shut down cleanly; the events before the damaged block are still readable.
+- `trailer MISSING` at the end means the process did not shut down cleanly. The events before the damaged block are readable; `fastmm-replay` refuses such a journal unless given `--allow-incomplete`, and then its outbound comparison proves nothing.
 - `--no-crc` skips checksum verification, which is slow in pure Python on large journals.
 
 ## Replay
@@ -56,7 +56,7 @@ replayed outbound 320 msgs sha256 a9463030a4344f26d386ee4bf5ec1f53060895e9b925f6
 replay MATCH
 ```
 
-`--config <file>` replays with that file instead. Its effective configuration (secrets and formatting do not count) is hashed and compared with the journal's config hash; if they differ, the run is a what-if replay and prints the warning below. `--strategy <name>` is a what-if run too.
+`--config <file>` replays with that file instead. Its effective configuration (secrets and formatting do not count) is hashed and compared with the journal's; if they differ, the run is a what-if replay and prints the warning below. `--strategy <name>` is a what-if run too.
 
 A mismatch prints the first differing message as recorded and as replayed. The same session with `half_spread_bps = 6.0` instead of `5.0`:
 
@@ -69,9 +69,9 @@ first mismatching outbound message: #0
 replay MISMATCH
 ```
 
-Only the first mismatch means anything: replay feeds the recorded acknowledgements whatever it sent, so everything after it diverges too.
+Only the first mismatch is meaningful: replay feeds the recorded acknowledgements whatever it sent, so everything after it diverges.
 
-Journals written before format version 2 carry no configuration, session settings or engine clock. Replay them with `--config <the config the session ran with>`; a live one of those does not replay to a match. A journal without outbound copies (market data only, such as `tests/fixtures/journals/sample_1000.fmj`) is backtested first, with `configs/backtest-example.toml` unless `--config` is given, and with `--verify` the run's outbound hash must match the `<journal>.sha256` sidecar or `--expect <sha256>`:
+Journals written before format version 2 carry no configuration, session settings or engine clock. Replay them with `--config <the config the session ran with>`; a live session of that age does not replay to a match. A journal without outbound copies (market data only, such as `tests/fixtures/journals/sample_1000.fmj`) is backtested first, with `configs/backtest-example.toml` unless `--config` is given, and with `--verify` the run's outbound hash must match the `<journal>.sha256` sidecar or `--expect <sha256>`:
 
 ```bash
 ./build/release/bin/fastmm-replay --journal tests/fixtures/journals/sample_1000.fmj --verify
@@ -79,7 +79,7 @@ Journals written before format version 2 carry no configuration, session setting
 
 Exit codes: [Command lines](../../reference/cli.md#fastmm-replay).
 
-A mismatch with the embedded configuration and the same binary is a determinism bug, and the journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary may not match.
+A mismatch with the embedded configuration and the same binary is a determinism bug, and the journal reproduces it ([Determinism](../../explanation/determinism.md)). A different binary need not match.
 
 ## Check the fill model against live fills
 
@@ -113,7 +113,7 @@ Times are venue times (`exch_ts`): a venue sends its execution report before the
 
 A session's PnL has four views:
 
-1. The engine's, from the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u> fees=<f> ...` (also the final `fastmm-top` frame). Net PnL is `r + u - f`, marked at the engine's last mid.
+1. The engine's, from the summary line `fastmm-live: realized_pnl=<r> unrealized_pnl=<u> fees=<f> ...` (also the final `fastmm-top` frame). Net PnL is `r + u - f`, marked at the engine's last mid. On perpetuals, `r` includes funding.
 2. The journal's, computed from the fills by `tools/pnl_report.py`.
 3. The store's, from `fastmm-pnl` or `fastmm.open_store()`: the same fills, indexed by day and instrument across sessions ([Query what you traded](query-trading-records.md)).
 4. The account's, from balance snapshots taken before and after the session.
@@ -125,7 +125,7 @@ python3 tools/pnl_report.py runs/demo-1/session.fmj --engine-log runs/demo-1/eng
   --start runs/demo-1/equity_start.json --end runs/demo-1/equity_end.json
 ```
 
-The snapshots are JSON objects that you produce from the venue's account and ticker endpoints right before and right after the session (FastMM ships no tool for this). The balances are the free plus locked amounts:
+The snapshots are JSON objects you produce from the venue's account and ticker endpoints right before and after the session; FastMM ships no tool for this. Balances are free plus locked:
 
 ```json
 {"utc": "2026-09-14T03:25:21Z", "btc": 0.004995, "usdt": 4614.81995, "mid": 77762.685, "open_orders": 0}
@@ -133,7 +133,7 @@ The snapshots are JSON objects that you produce from the venue's account and tic
 
 The balance keys are `base` and `quote`, or the lower-case asset names given by `--base-asset` and `--quote-asset` (default `BTC` and `USDT`). `equity` (or `equity_usdt`) is optional and computed as `quote + base * mid` when missing. Each execution is booked once, keyed like the engine's OMS (venue execution id, instrument, side): a reconnect replays executions the stream already delivered, and the journal records both. `python3 tools/pnl_report.py --self-test` checks the tool on a synthetic journal.
 
-The markout table marks each fill against the mid `--markout-horizons` seconds later (default `1,10,60`), taken from the journal's `BookTicker` events; a journal without top-of-book updates has no mid to mark against and the report says so. A fill whose horizon falls after the last quote in the journal is excluded, not marked at the last known mid. The spread capture next to it is over the same fills, so the difference is the adverse selection ([Backtesting](../../explanation/backtesting.md#markouts)).
+The markout table marks each fill against the mid `--markout-horizons` seconds later (default `1,10,60`), taken from the journal's `BookTicker` events; a journal without top-of-book updates has no mid to mark against and the report says so. A fill whose horizon falls after the last quote in the journal is excluded, not marked at the last known mid. The spread capture beside it covers the same fills, so the difference is the adverse selection ([Backtesting](../../explanation/backtesting.md#markouts)).
 
 ```text
 equity change = starting base balance * (end mid - start mid) + trading
@@ -145,7 +145,7 @@ The session reconciles when:
 - the journal's trading PnL equals the account's trading PnL to within rounding;
 - the engine's net PnL differs from the account's trading PnL only by the engine's inventory marked at its last mid instead of the end snapshot's mid.
 
-Commission charged in the base asset is already inside the inventory: a buy receives `qty - fee` and a sell delivers `qty + fee`. Do not subtract it from the PnL a second time.
+Commission charged in the base asset is already inside the inventory: a buy receives `qty - fee` and a sell delivers `qty + fee`. Do not subtract it again.
 
 ## Example: Binance Demo
 

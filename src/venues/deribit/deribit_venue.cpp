@@ -102,11 +102,10 @@ std::string apply_instrument_info(const InstrumentInfo& f, Instrument& inst, Tic
   inst.max_qty = Qty{};
   inst.min_notional = Notional{};
   inst.max_notional = Notional{};
-  if (f.inverse()) {
-    inst.flags = static_cast<std::uint8_t>(inst.flags | Instrument::kInverse);
-  } else {
-    inst.flags = static_cast<std::uint8_t>(inst.flags & ~Instrument::kInverse);
-  }
+  inst.flags =
+      static_cast<std::uint8_t>(inst.flags & ~(Instrument::kInverse | Instrument::kCoinQuoted));
+  if (f.inverse()) inst.flags = static_cast<std::uint8_t>(inst.flags | Instrument::kInverse);
+  if (f.coin_quoted()) inst.flags = static_cast<std::uint8_t>(inst.flags | Instrument::kCoinQuoted);
   if (!f.is_active || (!f.state.empty() && f.state != "open"))
     inst.flags = static_cast<std::uint8_t>(inst.flags & ~Instrument::kEnabled);
   if (!f.base_currency.empty()) static_cast<void>(inst.base.assign(f.base_currency));

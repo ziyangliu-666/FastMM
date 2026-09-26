@@ -1161,6 +1161,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.state = state;
     snap.updated_ns = wall_now().ns;
     snap.events = live.stats.events;
+    snap.max_loss_raw = live.max_loss_raw;
     snap.book_updates = live.stats.book_updates;
     snap.orders_sent = live.stats.orders_sent;
     snap.cancels_sent = live.stats.cancels_sent;

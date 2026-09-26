@@ -5,22 +5,22 @@
 ## Location and lifetime
 
 - The path is `/dev/shm/fastmm-<engine name>.status`, where the name is `[engine] name`; `fastmm-live --status <path>` chooses another path and `--no-status` turns it off. A gateway's is `/dev/shm/fastmm-<engine name>.gw.status`, with the same flags.
-- The control thread creates or truncates the file at startup and rewrites the snapshot every 250 ms. It leaves the file in place at exit, so the last snapshot shows `stopped` and the final numbers.
-- The engine refreshes the counters it hands to the control thread once a second (`[engine] latency_publish_ms` for latency).
+- The writer (`fastmm-live`'s control thread, the gateway's main thread) creates or truncates the file at startup and rewrites the snapshot every 250 ms. The file stays after exit; the last snapshot shows `stopped` and the final numbers.
+- The engine refreshes the counters and latencies it hands to the control thread every `[engine] latency_publish_ms` (default 1 s).
 
 ## Reading it safely
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 9) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
-- Use `fastmm-top` from the same build as `fastmm-live`; the layout is internal ([Public API](public-api.md)).
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 10) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
 
 | Field | Type | Meaning |
 |---|---|---|
 | `magic`, `version` | u64, u32 | see above |
-| `pid` | u32 | process id of `fastmm-live` |
+| `pid` | u32 | process id of the writer |
 | `session_id` | u64 | the journal's session id |
 | `started_ns`, `updated_ns` | i64 | wall-clock start and last publish, ns since the epoch |
 | `state` | u8 | 0 starting, 1 running, 2 stopping, 3 stopped |
@@ -40,7 +40,9 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `flatten_orders` | u64 | reduce-only orders the flatten has sent |
 | `kind` | u8 | 0 `fastmm-live`, 1 `fastmm-gateway` |
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | settlement currency, or `[accounting] reporting_currency` when it is set; raw fixed point (divide by 1e8) |
-| `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides; a market-maker programme measures its rebate this way |
+| `pnl_carry_raw` | i64 | net PnL of earlier sessions that `[risk] max_loss` is measured against, from `[engine] kill_file` |
+| `max_loss_raw` | i64 | `[risk] max_loss` as the engine applies it now (`fastmm-ctl limits` changes it), 0 when off; a gateway's is `gateway.max_loss_raw` |
+| `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
@@ -56,25 +58,7 @@ A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is mo
 
 ### Kill reasons
 
-`KillReason` (`core/enums.hpp`), the first reason each flag was set for; `fastmm-top` shows it as `KILLED (<reason>)` next to the state and in each venue's `kill` column.
-
-| Value | Name | Meaning |
-|---:|---|---|
-| 0 | `None` | not killed |
-| 1 | `Requested` | shutdown or operator (`ControlCommand::TripKill`) |
-| 2 | `MaxLoss` | `[risk] max_loss` reached |
-| 3 | `TransportFull` | the outbound ring to a venue was full |
-| 4 | `JournalOverflow` | the journal ring was full |
-| 5 | `AllVenuesKilled` | every venue with instruments has its own kill bit set |
-| 6 | `VenueFatal` | venue error map: bad key, signature or permission, failed authentication |
-| 7 | `VenueHardStop` | venue error map: REST stopped (IP ban) |
-| 8 | `OrderRingOverflow` | a venue's order-event ring overflowed |
-| 9 | `StrategyError` | a strategy hook reported an error; `fastmm-top` shows `StrategyError` |
-| 10 | `FeedLost` | a multicast venue cannot rebuild its books ([Venue connectors](venues.md#startup-and-recovery)) |
-| 11 | `OrderIdsExhausted` | the session's client order id sequence ran out |
-| 12 | `DeadMansSwitchLost` | a venue-side countdown could not be refreshed within its window |
-| 13 | `GatewayMaxLoss` | the gateway's `[gateway] max_loss` over every strategy |
-| 14 | `GatewayOperator` | an operator's `kill` on the gateway's control socket |
+`kill_reason` and each venue's `kill_reason` hold a `KillReason`, the first reason the flag was set for; the values are listed in [Errors and exit codes](errors.md#kill-reasons). `fastmm-top` shows it as `KILLED (<reason>)` next to the state and in each venue's `kill` column.
 
 ### Latency intervals
 
@@ -126,7 +110,7 @@ The `feed` entry of a `nasdaq_itch` venue ([Venue connectors](venues.md#nasdaq-t
 
 ## Gateway block
 
-A gateway (`kind` 1) fills the header (`pid`, times, `state`, `dry_run`, `engine_name`, `venue_count`, `venues`), `kill_flags` (bit 0 while the account is killed), `kill_reason`, `kill_latched` (the kill file records the trip, which needs `[gateway] max_loss`), and `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`, `pnl_carry_raw` with the account's. The engine counters and latencies stay zero. Everything in it comes from totals the network threads keep anyway; publishing asks them nothing.
+A gateway (`kind` 1) fills the header (`pid`, times, `state`, `dry_run`, `engine_name`, `venue_count`, `venues`), `kill_flags` (bit 0 while the account is killed), `kill_reason`, `kill_latched` (the kill file records the trip, which needs `[gateway] max_loss`), and `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw`, `pnl_carry_raw` with the account's. The engine counters and latencies stay zero.
 
 | Field | Type | Meaning |
 |---|---|---|

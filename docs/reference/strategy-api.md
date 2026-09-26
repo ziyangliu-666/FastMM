@@ -73,7 +73,7 @@ void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
 
 Rules:
 
-- Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the same. `noexcept` is recommended; hooks run inside `noexcept` engine code.
+- Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the same. Hooks run inside `noexcept` engine code; declare them `noexcept`.
 - Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_fill`) fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in them.
 - `on_fill` fires for every execution on an instrument in the table, including late fills (the order was already terminal) and fills for ids the OMS does not know. Fills on other instruments are counted in `EngineStats::unknown_instrument_fills`.
 - Hooks must not block, allocate on every event or read anything that is not an engine input (the system clock, `std::random_device`, files); see [Determinism](../explanation/determinism.md).
@@ -151,8 +151,8 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `now()` | the engine clock of the current event; virtual time in backtests and replay |
 | `instrument(id)`, `instruments()`, `contains(id)` | the instrument table; iterate `instruments()` for all instruments |
 | `book(id)` | the L2 book of an instrument ([Book](#book)) |
-| `position(id)` | `qty` (signed, base units), average price, realised PnL and fees of one instrument |
-| `portfolio()` | `realized`, `unrealized`, `fees` and `net` (realised + unrealised - fees) over all instruments, quote currency; a loop, not for every event |
+| `position(id)` | `qty` (signed, base units), average price, realised PnL (funding included) and fees of one instrument, in its settlement currency |
+| `portfolio()` | `realized`, `unrealized`, `fees` and `net` (realised + unrealised - fees) over all instruments, in the `[accounting]` reporting currency when one is set; a loop, not for every event |
 | `set_quotes(id, q)` | the desired ladder; the quote manager sends the difference to the working orders. Returns false when the quotes were ignored: quoting disabled or instrument not in the table |
 | `pull_quotes(id)`, `pull_all_quotes()` | cancel the quotes of one or every instrument |
 | `working_quote(id, side, level)` | the open order in a quote slot (level 0 is closest to the mid), or `nullptr` |
@@ -222,7 +222,7 @@ static_assert(std::same_as<decltype(Fill::msg), const OrderFillMsg*>);
 | `instrument`, `side` | the order's, else the fill message's |
 | `price`, `qty` | this execution |
 | `position_delta` | signed change of the position; differs from `qty` when the commission is charged in the base asset |
-| `fee`, `fee_converted` | fee in the quote currency as booked; `fee_converted` is false when the commission was in a third asset (for example BNB) and not booked |
+| `fee`, `fee_converted` | fee in the settlement currency as booked; `fee_converted` is false when the commission was in a third asset (for example BNB) and not booked |
 | `liquidity` | `Maker`, `Taker` or `Unknown` |
 | `known` | the id matched an order; `update->order` holds its snapshot (for an order that was already terminal: id, instrument, side, state and filled quantity) |
 | `late` | the order was already terminal when the fill arrived |

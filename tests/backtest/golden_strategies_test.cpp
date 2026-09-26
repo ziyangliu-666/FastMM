@@ -50,7 +50,7 @@ InstrumentTable option_table() {
     i.option_type = type;
     i.strike = px("77000");
     i.expiry_ns = kStartNs + 30 * kDayNs;
-    i.flags = Instrument::kEnabled | Instrument::kInverse;
+    i.flags = Instrument::kEnabled | Instrument::kCoinQuoted;
     i.tick = px("0.0001");
     i.lot = qt("0.1");
     i.min_qty = qt("0.1");

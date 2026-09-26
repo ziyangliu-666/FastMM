@@ -31,7 +31,7 @@ ring_bytes = 4194304      # engine-to-store ring, a power of two (default 419430
 | `ring_bytes` | all | bytes of the ring the engine writes records into, a power of two (default 4194304) |
 | `path` | sqlite | store file (default `<journal_dir>/<engine name>.db`) |
 
-`backend = "none"` allocates no ring and starts no thread, and the engine's `RecordWriter` is disabled: a session pays nothing for it. A backend that cannot be opened stops the session before it trades, with exit code 3.
+`backend = "none"` allocates no ring and starts no thread, and the engine's `RecordWriter` is disabled. A backend that cannot be opened stops the session before it trades, with exit code 3.
 
 ## How a record reaches the store
 
@@ -39,13 +39,14 @@ ring_bytes = 4194304      # engine-to-store ring, a power of two (default 419430
 engine thread --RecordWriter--> MsgRing --fm-store thread--> Backend --> rows
 ```
 
-The engine builds a trivially copyable record and copies it into an SPSC ring, the same way it writes the journal: no allocation, no syscall, no wait. `StoreThread` drains the ring, batches up to 512 records into one backend transaction, and sleeps 2 ms when the ring is empty. Records are `include/fastmm/core/record_stream.hpp`:
+The engine copies a trivially copyable record into an SPSC ring, as it writes the journal: no allocation, no syscall, no wait. `StoreThread` drains the ring, batches up to 512 records into one backend transaction, and sleeps 2 ms when the ring is empty. Records are `include/fastmm/core/record_stream.hpp`:
 
 | Record | Written when | Carries |
 |---|---|---|
 | `FillRecord` (256 B) | every execution, and every quantity the engine books from a `cum_qty` jump | price, quantity, booked quantity, fee and fee asset, liquidity, venue order id, exec id, the venue's time of the trade (`RecordHeader::exch_ts`), and the position it left behind |
 | `OrderRecord` (192 B) | every OMS state change | the whole `Order`: state, previous state, price, quantity, filled quantity, reject reason |
 | `PositionRecord` (192 B) | after every fill, after a venue position snapshot, and once per instrument at `finish()` | the instrument's position and the portfolio totals |
+| `FundingRecord` (192 B) | every funding payment the engine books | amount, asset, venue funding id, the venue's time, and the instrument's position, realized PnL and funding after it |
 | `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
 
 Session metadata (`session_open`, `session_close`, the instrument table) is written by the control thread, not through the ring.
@@ -69,7 +70,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 - A **committed batch survives the process dying** (a crash, `SIGKILL`, an `abort()`): the write-ahead log is in the page cache and the next open replays it.
 - A batch the process died **inside of** is rolled back whole: no partial batch is ever visible.
-- **Power loss** can cost the batches written since the last checkpoint. `synchronous=FULL` would fsync the log on every commit; at up to several commits a second on a thread that shares the host with the engine, that is disk latency bought for a reporting record the journal already holds. The store is not the risk path, so `NORMAL` is the trade this makes.
+- **Power loss** can cost the batches written since the last checkpoint. `synchronous=FULL` would fsync the log on every commit; the journal already holds every record, so the store does not pay for it.
 - A **reader never blocks the writer** and never sees a half-written batch: `fastmm-pnl` and a notebook can query a store while the session writes it.
 
 ## Schema
@@ -153,7 +154,7 @@ One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw
 
 ### kill_events
 
-One row per trip, keyed `(session_id, seq)`: `scope` (`global` or `venue`), `venue_id` (-1 for a global trip), `reason` ([`KillReason`](../how-to/operations/kill-switch-and-shutdown.md)), `kill_flags` and the PnL at the time.
+One row per trip, keyed `(session_id, seq)`: `scope` (`global` or `venue`), `venue_id` (-1 for a global trip), `reason` ([`KillReason`](errors.md#kill-reasons)), `kill_flags` and the PnL at the time.
 
 ### pnl_daily
 
@@ -183,11 +184,11 @@ A backend implements `fastmm::store::Backend` (`include/fastmm/store/backend.hpp
 fastmm::store::StoreRegistry::instance().add("clickhouse", &make_ch_backend, &make_ch_reader);
 ```
 
-Nothing registers itself, for the reason the strategy registry does not: a static library's self-registering object is dropped by the linker. `fastmm::store::register_builtin_backends()` adds the ones FastMM ships; an out-of-tree backend calls `add()` from its own `main` before `run_live`. The name `none` is reserved.
+Nothing registers itself: the linker drops a static library's self-registering object. `fastmm::store::register_builtin_backends()` adds the ones FastMM ships; an out-of-tree backend calls `add()` from its own `main` before `run_live`. The name `none` is reserved.
 
 `Backend::open` receives a `BackendOptions` holding the `[storage]` section verbatim, `[engine] name` and `[engine] journal_dir`: a backend parses its own keys from `GenericSection` and nothing is added to the central schema. Everything the interface calls runs off the engine thread and may allocate.
 
-The call order is `open`, `session_open`, `instruments`, then `begin` / records / `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the same store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; every query takes the same `QueryFilter` and returns string rows, because the store is read by people and tools, never on a hot path.
+The call order is `open`, `session_open`, `instruments`, then `begin` / records / `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the same store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; every query takes the same `QueryFilter` and returns string rows.
 
 ## Recovery at start-up
 
@@ -195,7 +196,7 @@ The call order is `open`, `session_open`, `instruments`, then `begin` / records 
 
 With `[engine] restore_position` the session also carries the last position per instrument over and books what happened while it was down from the venue's trade history ([What survives a restart](../how-to/operations/running-in-production.md#1-what-survives-a-restart)). Where each venue's replay starts (`Recovery::venue_resume`, passed to `Venue::resume_executions`, and in the attach request behind a gateway):
 
-- **In the venue's clock.** From `exch_ns` of the venue's last stored fill or funding payment, less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The second covers the order in which a venue publishes executions against their trade times (other symbols, a batch), which is milliseconds.
+- **In the venue's clock.** From `exch_ns` of the venue's last stored fill or funding payment, less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The 1 s covers a venue publishing executions out of trade-time order (other symbols, a batch), which is milliseconds.
 - **At most 128 ids a venue.** When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
 - **Binance Spot and USDⓈ-M** resume each symbol at the trade id after the highest one stored (`fromId`), with no overlap and no ids (`Venue::resume_trade_ids`). In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
 - **A store from before version 3**, or a venue whose fills carry no venue time, starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.

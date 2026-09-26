@@ -23,6 +23,14 @@ endif()
 # Frame pointers for perf/flamegraphs are near-free on x86-64; direct calls via -fno-plt.
 target_compile_options(fastmm_lowlatency INTERFACE
   -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fno-plt -fno-semantic-interposition)
+# Code alignment. With gcc's defaults (16 B), edits to code the benchmark never runs moved
+# BM_EngineStep_Sim by up to 8 %; with these, by 2 %, and the engine benchmarks got faster
+# (bench/README.md, "Code alignment"). About 4 % more .text. gcc only: clang warns that it
+# ignores -falign-jumps, and it was not measured with clang.
+if(FASTMM_ALIGN_CODE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_compile_options(fastmm_lowlatency INTERFACE
+    -falign-functions=64 -falign-loops=32 -falign-jumps=32)
+endif()
 if(FASTMM_NATIVE_ARCH)
   target_compile_options(fastmm_lowlatency INTERFACE -march=native)
 else()

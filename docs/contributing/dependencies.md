@@ -11,6 +11,7 @@
 | doctest | 2.5.3 | tests | unit/property tests |
 | Google Benchmark | 1.9.5 | bench | micro-benchmarks |
 | Autobahn\|Testsuite | 25.10.1 (`crossbario/autobahn-testsuite` image, by digest) | tests (label `autobahn`, CI job `autobahn`) | RFC 6455 conformance of the WebSocket client and server |
+| DPDK | 25.11.3, built by `scripts/build-dpdk.sh` when pkg-config finds none | net, `FASTMM_WITH_DPDK=ON` (private) | the DPDK receive path |
 | pybind11 | 3.1.0 | python | bindings |
 | OpenSSL | >= 3.0 (system); 3.5.8 linked statically in `fastmm-engine-live` wheels | net | TLS, HMAC, SHA |
 | certifi | any | `fastmm-engine-live` (Python) | last CA bundle before OpenSSL's built-in paths |

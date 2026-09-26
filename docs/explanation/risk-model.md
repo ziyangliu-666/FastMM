@@ -37,7 +37,7 @@ The first failing check decides the reason.
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
-- Because `MaxPosition` counts same-side open orders, a quote ladder cannot exceed `max_position` even if it fills entirely.
+- `MaxPosition` counts same-side open orders, so a quote ladder cannot exceed `max_position` even if it fills entirely.
 - Market orders skip the price checks (4, 8, 9, 17).
 - The notional of checks 6 and 11 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
 - Checks 14 and 15 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)): the order's notional at its currency's rate, on top of the converted totals.
@@ -75,19 +75,21 @@ The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, 
 The global switch trips when:
 
 - the session shuts down: Ctrl-C, SIGTERM, `--duration` or an order ring overflow (the control thread requests it, then cancels all orders on every venue over a separate REST connection);
-- `[risk] max_loss` is reached: net PnL (realised plus unrealised, marked at the mid, minus fees) plus the PnL carried over from earlier sessions is re-evaluated on every book update, fill and position snapshot;
+- `[risk] max_loss` is reached: net PnL (realised plus unrealised, marked at the mid, minus fees) plus the PnL carried over from earlier sessions is re-evaluated on every book update, fill, funding payment and position snapshot;
 - the outbound ring to a venue or the journal ring is full, because the engine can no longer guarantee that what it sends is what it records;
-- every venue with instruments has been killed.
+- every venue with instruments has been killed;
+- a strategy hook reports an error (`StrategyError`, Python hot hooks);
+- the session's 32-bit client order id sequence is used up.
 
-A venue's switch trips when its connector reports an error that makes the venue unusable: a bad key, signature or permission, failed authentication, or a Binance IP ban. The command travels through the venue's order ring, so it is journaled and a replay trips it at the same point.
+A venue's switch trips when its connector reports an error that makes the venue unusable (a bad key, signature or permission, failed authentication, a Binance IP ban), when the venue-side dead man's switch could not be refreshed in time, or when a multicast feed cannot rebuild its books. Behind `fastmm-gateway`, the gateway's `max_loss` or an operator's `kill` trips every venue of every attached strategy (`GatewayMaxLoss`, `GatewayOperator`). The command travels through the venue's order ring, so it is journaled and a replay trips it at the same point.
 
 A `max_loss` trip is latched on disk (`[engine] kill_file`) together with the cumulative realized PnL and fees of every session since the file was last cleared. The next start reads that carry into the budget and refuses to trade while the trip is latched. Unrealized PnL is not carried; the position is remeasured from the venue's view after the restart.
 
-Nothing resets a kill switch automatically. After a kill the engine tripped itself (the last three causes), `[engine] on_kill` decides whether `fastmm-live` shuts down. The default, `exit`, cancels all orders and exits with code 6, so a supervisor can alert instead of an unattended process staying up with quoting off. [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) has the behaviour, the log lines and the shutdown sequence.
+Nothing resets a kill switch automatically. After a kill the engine tripped itself (every cause but the shutdown), `[engine] on_kill` decides whether `fastmm-live` shuts down. The default, `exit`, cancels all orders and exits with code 6. [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md) has the behaviour, the log lines and the shutdown sequence.
 
 ## What the layer does not do
 
 - It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second, independent limit that holds even when the strategy has a bug. Set the risk limit above the strategy's.
-- Position limits are per instrument. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, all in one currency: they are only meaningful when every instrument settles in the same one, and `fastmm-live` refuses a mixed table while `max_loss` is set.
-- It knows no venue rules beyond reference data and its own order rate limit (check 15). Margin and account balances are enforced by the venue. The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
+- Position limits are per instrument. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, over one session; with instruments in more than one settlement currency they need `[accounting]` ([Currencies](#currencies)). Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
+- It knows no venue rules beyond reference data and its own order rate limit (check 18). Margin and account balances are enforced by the venue. The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
 - It does not protect against a venue that stops answering. Order-channel loss triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
