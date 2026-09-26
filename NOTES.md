@@ -38,6 +38,12 @@ rebuilt at the same path length stayed at 2258 ns, so it is not build noise. Acc
 is a correctness fix. Next performance item: make the build insensitive to layout (function
 alignment, `scripts/build-pgo.sh`), measured, before layout drift accumulates.
 
+**Open after the alignment change (2026-09-26).** `BM_Json_BybitExecution` +10% with
+`FASTMM_ALIGN_CODE` on (venue decode, off the engine path; not investigated); the budgets in
+`bench/ci_budget.toml` are not re-measured. The gateway's AF_UNIX socket path is
+`<journal_dir>/<name>.gw` and must fit 107 bytes: a long `journal_dir` fails to attach (seen in a
+deep worktree path); refuse it at startup with a clear message, or put the socket elsewhere.
+
 ## Next direction (chosen 2026-09-26): a crypto desk can run on this
 
 The gateway's first version is complete. Next, what a crypto market-making desk would hit first. Step 1
