@@ -5,18 +5,18 @@
 
 Documentation: <https://ziy.bio/FastMM/>
 
-FastMM is a fast market-making engine in C++20.
+FastMM is a market-making engine in C++20.
 
 - Backtests, replay and live trading run the same strategy code.
 - Strategies are written in C++ or Python. Python quoting hooks are compiled with Numba and called on the trading thread; model code runs as ordinary Python on another thread.
 - Every session is recorded, and replaying a recording sends the same orders again.
 - Orders pass pre-trade risk limits before they are sent, and reaching the loss limit cancels all orders.
-- The trading thread does not allocate memory or wait on network I/O; in simulation a market-data update becomes an order in about 120 nanoseconds (p50 on one core of a desktop; [bench/README.md](bench/README.md) says what that measurement contains and what it leaves out).
+- The trading thread does not allocate memory or wait on network I/O. In simulation a market-data update becomes an order in about 120 ns (p50, one core of a desktop; [bench/README.md](bench/README.md) says what the measurement includes).
 
 ## Quick start
 
 ```bash
-pip install "fastmm-engine[hot]"                         # Linux x86-64, CPython 3.9+
+pip install "fastmm-engine[hot]"                         # Linux x86-64, CPython 3.10+
 fastmm init my-mm && cd my-mm && python backtest.py      # a strategy, a config and a backtest
 ```
 
@@ -77,6 +77,7 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 - Exchanges: Binance Spot, Binance USDⓈ-M perpetuals, Bybit spot and linear perpetuals, Deribit, and Nasdaq ITCH market data.
 - Linux on x86-64 only.
 - The shipped strategies are reference implementations, not an edge: the example backtest is profitable only because it is configured with a maker rebate ([Economics](docs/explanation/economics.md)).
-- One process runs one strategy with one account per venue. Monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint) with no alerting of its own. A restart restores the position and cancels what the previous process left, but a venue-side dead man's switch exists only on Deribit, Binance USDⓈ-M and Bybit (where the account has it) ([Running this in production](docs/how-to/operations/running-in-production.md)).
+- One account per venue. Several strategies share it through `fastmm-gateway`, each on its own instruments ([Run behind a gateway](docs/how-to/operations/run-behind-a-gateway.md)).
+- Monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint), with no alerting. A venue-side dead man's switch exists only on Deribit, Binance USDⓈ-M and Bybit, where the account has it ([Running this in production](docs/how-to/operations/running-in-production.md)).
 
 [Documentation](https://ziy.bio/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)

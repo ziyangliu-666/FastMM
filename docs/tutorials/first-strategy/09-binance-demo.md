@@ -9,7 +9,7 @@ Binance Spot Demo Mode is a Binance environment with demo balances and its own A
 "$BIN"/tutorial-live --config configs/tutorial-binance-demo.toml --dry-run --duration 60s
 ```
 
-`--dry-run` connects to public market data only, reads no keys and sends no orders; `first_mm` logs `started, quoting disabled (dry run)`. The per-second status line should show `md=live` and `books=1/1`. Exit messages: [Troubleshooting](../../how-to/operations/troubleshooting.md).
+`--dry-run` connects to public market data only, reads no keys and sends no orders; `first_mm` logs `started, quoting disabled (dry run)`. The status line shows `md=live` and `books=1/1`. Exit messages: [Troubleshooting](../../how-to/operations/troubleshooting.md).
 
 ## 2. Keys
 
@@ -38,9 +38,8 @@ The Demo account charges 10 bps per fill and `first_mm` quotes 5 bps from the mi
 
 ## 4. A five-minute session
 
-> **Warning.** This command places orders with the keys you exported. Use Demo Trading keys only,
-> never keys of a real account, and read
-> [Kill switch and shutdown](../../how-to/operations/kill-switch-and-shutdown.md) first.
+> **Warning.** This command places orders with the keys you exported. Use Demo Trading keys, not
+> the keys of a real account ([Kill switch and shutdown](../../how-to/operations/kill-switch-and-shutdown.md)).
 
 <!-- snippet: scripts/docs/tutorial.sh#demo-run -->
 ```bash
@@ -65,7 +64,7 @@ fastmm-live: shutdown took <n> ms (cancel_all ok)
 fastmm-live: exit code 0
 ```
 
-Ctrl-C tripped the kill switch. `cancel_all ok` means the venue's cancel-all request succeeded; confirm in the Demo Trading web interface that no order is open ([Go-live checklist](../../how-to/operations/go-live-checklist.md#stopping)). If the line says `cancel_all FAILED`, cancel by hand and follow [When cancel_all failed](../../how-to/operations/kill-switch-and-shutdown.md#when-cancel_all-failed).
+Ctrl-C tripped the kill switch. `cancel_all ok` means the venue's cancel-all request succeeded; confirm in the Demo Trading web interface that no order is open ([Go-live checklist](../../how-to/operations/go-live-checklist.md#stopping)). If the line says `cancel_all FAILED`, cancel by hand and follow [When cancel_all failed](../../how-to/operations/kill-switch-and-shutdown.md#when-cancel_all-failed); the next session also cancels, when it connects, the orders an earlier one left open.
 
 ## 6. Check the PnL
 
@@ -74,6 +73,6 @@ Ctrl-C tripped the kill switch. `cancel_all ok` means the venue's cancel-all req
 python3 tools/pnl_report.py runs/tutorial/demo.fmj --engine-log runs/tutorial/demo.log
 ```
 
-The report lists fills, maker share, volume, fees and inventory, and compares the journal's PnL with the engine's final summary; the two agree to within rounding. To reconcile against the account's balances, take balance snapshots before and after the session ([Journals, replay and PnL](../../how-to/operations/journals-replay-pnl.md#check-pnl)).
+The report lists fills, maker share, volume, fees and inventory, and compares the journal's PnL with the engine's final summary; they agree to within rounding. To reconcile against the account's balances, take balance snapshots before and after the session ([Journals, replay and PnL](../../how-to/operations/journals-replay-pnl.md#check-pnl)).
 
-Next: [Go-live checklist](../../how-to/operations/go-live-checklist.md) before a longer session; [Run on a testnet or Binance Demo](../../how-to/operations/run-on-testnet.md) for Bybit, Deribit and the Binance testnet.
+Next: [Go-live checklist](../../how-to/operations/go-live-checklist.md) before a longer session; [Run on a testnet or Binance Demo](../../how-to/operations/run-on-testnet.md) for the other practice environments (Binance USDⓈ-M Demo Trading, the Binance Spot testnet, Bybit and Deribit).
