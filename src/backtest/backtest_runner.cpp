@@ -193,6 +193,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                ? static_cast<std::size_t>(cfg_.duration.ns / cfg_.equity_bar.ns) + 4
                                : kReserveBars;
   impl_ = std::make_unique<Impl>(cfg_.instruments, bars, cfg_.markout_horizons);
+  impl_->ledger.set_accounting(cfg_.engine.fx);
   backend_->transport.set_observer(impl_.get());
   if (!cfg_.journal_out.empty()) {
     impl_->journal_ring = std::make_unique<MsgRing>(16U << 20);

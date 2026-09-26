@@ -205,6 +205,11 @@ ReplayResult replay_impl(const std::string& path,
 
   RunnerDeps deps;
   deps.engine = cfg.engine;
+  // The recording converted with the table it ran on (a live session's comes from the venues).
+  if (cfg.accounting.configured()) {
+    BacktestConfig c = cfg;
+    deps.engine.fx = c.fx_plan(instruments);
+  }
   if (session) {
     deps.engine.session_epoch = header.session_epoch;
     deps.engine.quoting_enabled = header.quoting_enabled != 0;
