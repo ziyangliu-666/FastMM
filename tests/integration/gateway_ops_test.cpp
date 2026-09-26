@@ -376,7 +376,9 @@ TEST_CASE(
   CHECK(scoped.out.find("sent to 1 strategies") != std::string::npos);
   CHECK(wait_until([&] { return open_of(fx, eb) == 0; }, 5000));
   std::this_thread::sleep_for(std::chrono::seconds(1));
-  CHECK(open_of(fx, ea) > 0);
+  // a quotes on: it may be between a cancel and its replacement at any one instant, but a pulled
+  // strategy stays at none.
+  CHECK(wait_until([&] { return open_of(fx, ea) > 0; }, 5000));
   CHECK(open_of(fx, eb) == 0);
   CHECK(ctl(g, {"resume", "--instrument", "ETHUSDT"}).rc == 0);
   CHECK(wait_until([&] { return open_of(fx, eb) > 0; }, 10000));
