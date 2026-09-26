@@ -799,8 +799,6 @@ class Oms {
   std::uint64_t seq_ = 0;  // 64-bit so the comparison with max_seq_ cannot itself wrap
   OmsStats stats_{};
   Pool<Order, kMaxOpenOrders> pool_;
-  // OrderTimes by pool slot, apart from Order so the order record keeps its 128-byte layout.
-  std::unique_ptr<TimesSlot[]> times_ = std::make_unique<TimesSlot[]>(kMaxOpenOrders);
   // Pool slots of the live orders in no particular order, and each live slot's position in it.
   // Only order-independent scans use it (recompute_best_own); iteration that produces messages
   // keeps the pool's slot order.
@@ -814,6 +812,8 @@ class Oms {
   std::uint32_t open_per_inst_[kMaxInstruments] = {};
   ReconcileScope recon_scope_[std::numeric_limits<VenueId::rep_type>::max() + 1U] = {};
   StaticVector<SyntheticFill, kMaxSyntheticFills> synthetic_;
+  // OrderTimes by pool slot, apart from Order so the order record keeps its 128-byte layout.
+  std::unique_ptr<TimesSlot[]> times_ = std::make_unique<TimesSlot[]>(kMaxOpenOrders);
 };
 
 }  // namespace fastmm

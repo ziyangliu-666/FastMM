@@ -158,7 +158,6 @@ class Engine {
         ctx_(this),
         books_(new Book[kMaxInstruments]),
         oms_(cfg.session_epoch),
-        queue_(cfg.queue_conservatism_bps),
         risk_(cfg.risk, clock.now()),
         quotes_(cfg.quotes),
         timers_(clock.now()),
@@ -739,9 +738,7 @@ class Engine {
     Book& b = books_[id.value];
     b.apply_delta(d);
     ++stats_.book_updates;
-    if (queue_.any(id)) {
-      queue_.on_book(d, b, [&](Side s, Price px) { return own_qty(id, s, px, b.last_update()); });
-    }
+    if (queue_.any(id)) queue_on_book(d, b);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     const Timestamp now = now_;
@@ -785,7 +782,7 @@ class Engine {
     const bool known_instrument = instruments_.contains(id);
     if (known_instrument) {
       risk_.on_trade(id, t.price);
-      if (queue_.any(id)) queue_.on_trade(t, oms_);
+      if (queue_.any(id)) queue_on_trade(t);
     }
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
@@ -799,11 +796,7 @@ class Engine {
   }
 
   void on_book_ticker(const BookTickerMsg& m) noexcept {
-    if (queue_.enabled() && instruments_.contains(m.hdr.instrument)) {
-      const InstrumentId id = m.hdr.instrument;
-      queue_.on_ticker(
-          m, books_[id.value], [&](Side s, Price p, Timestamp t) { return own_qty(id, s, p, t); });
-    }
+    if (queue_.enabled()) queue_on_ticker(m);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
@@ -1013,6 +1006,18 @@ class Engine {
   void own_outbound(const EventHeader& h) noexcept {
     if (own_ != nullptr && own_venue(h.venue)) [[unlikely]]
       own_->on_outbound(h);
+  }
+  // Queue position updates, out of line: the market-data handlers keep only the check.
+  FASTMM_NOINLINE void queue_on_book(const BookDeltaMsg& d, const Book& b) noexcept {
+    const InstrumentId id = d.hdr.instrument;
+    queue_.on_book(d, b, [&](Side s, Price px) { return own_qty(id, s, px, b.last_update()); });
+  }
+  FASTMM_NOINLINE void queue_on_trade(const TradeMsg& t) noexcept { queue_.on_trade(t, oms_); }
+  FASTMM_NOINLINE void queue_on_ticker(const BookTickerMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (!instruments_.contains(id)) return;
+    queue_.on_ticker(
+        m, books_[id.value], [&](Side s, Price p, Timestamp t) { return own_qty(id, s, p, t); });
   }
   // What the queue model places an order behind: the displayed quantity at its price less our
   // own, capped by a BookTicker newer than the depth book.
@@ -2144,7 +2149,6 @@ class Engine {
   Context ctx_;
   std::unique_ptr<Book[]> books_;
   Oms oms_;
-  QueueTracker queue_;
   RiskEngine risk_;
   QuoteManager quotes_;
   QuotePresence presence_;
@@ -2210,6 +2214,7 @@ class Engine {
   // Venues whose feed shows our orders (bit v), and our quantity there; null when there are none.
   std::uint32_t own_venues_ = 0;
   std::unique_ptr<OwnQuantity> own_;
+  QueueTracker queue_{cfg_.queue_conservatism_bps};
 };
 
 }  // namespace fastmm
