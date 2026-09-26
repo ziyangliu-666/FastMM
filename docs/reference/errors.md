@@ -14,7 +14,7 @@ The last two columns are what an operator has to decide. "Orders cancelled" is t
 |---:|---|---|---|
 | 0 | stopped by `--duration`, SIGINT or SIGTERM with `cancel_all ok`; also after a kill with `on_kill = "stay"`; `--help`, `--version`, `--list-strategies` | yes | yes |
 | 2 | bad command line; an unset `${VAR}` in `[venues.*]` | nothing started | no: fix the invocation |
-| 3 | the configuration, strategy or a parameter does not load, or a `[storage]` backend is unknown or cannot be opened | nothing started | no: fix the config |
+| 3 | the configuration, strategy or a parameter does not load, a `[storage]` backend is unknown or cannot be opened, or a venue refuses a setting of the account (Bybit linear in hedge mode) | nothing started | no: fix the config or the account |
 | 4 | a venue's reference data failed to load | nothing started | retry once; a repeat means the venue or the network |
 | 5 | `cancel_all FAILED`, the journal cannot be opened or written (a full filesystem trips the kill switch), an order-event ring overflowed, or an uncaught error | not certain | no: check the venue for open orders first |
 | 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok` | yes | no: find the kill reason in the log |

@@ -1,0 +1,97 @@
+# FastMM: BasicMM on the Bybit v5 testnet, BTCUSDT linear (USDT-margined) perpetual.
+#   ./build/release/bin/fastmm-live --config configs/bybit-linear-testnet.toml --dry-run --duration 60s
+# Keys from the Bybit testnet (unified trading account); the symbol must be in one-way position
+# mode (the connector refuses hedge mode and fastmm-live exits 3) and the account needs USDT:
+#   export FASTMM_BYBIT_API_KEY=... FASTMM_BYBIT_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/bybit-linear-testnet.toml
+# Endpoints (https://bybit-exchange.github.io/docs/v5/ws/connect): REST https://api-testnet.bybit.com,
+#   public wss://stream-testnet.bybit.com/v5/public/linear, private .../v5/private (derived from
+#   ws_url), trade wss://stream-testnet.bybit.com/v5/trade.
+# Leverage and margin mode are account settings; the connector reads and changes neither.
+[engine]
+name = "bybit-linear-testnet"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 2
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.bybit_linear]
+kind = "bybit"
+category = "linear"
+ws_url = "wss://stream-testnet.bybit.com/v5/public/linear"
+ws_api_url = "wss://stream-testnet.bybit.com/v5/trade"
+rest_url = "https://api-testnet.bybit.com"
+api_key = "${FASTMM_BYBIT_API_KEY}"
+api_secret = "${FASTMM_BYBIT_API_SECRET}"
+testnet = true
+# Amend is implemented; whether its qty includes the filled quantity is not confirmed, so quotes
+# are replaced with cancel + new.
+supports_replace = false
+recv_window_ms = 5000
+stale_ms = 10000
+# Disconnect-Cancel-All (product DERIVATIVES, topic dcp.future) is off: Bybit grants it to
+# institutional accounts only. Set it (3 to 300 s) once yours has it.
+# dead_mans_switch_s = 10
+
+[venues.bybit_linear.fees]
+maker_bps = 2.0              # Bybit's base-tier perpetual rates: 0.02 % maker, 0.055 % taker
+taker_bps = 5.5
+
+# Tick/lot/min_notional and the settlement coin (quote) are overwritten from
+# GET /v5/market/instruments-info?category=linear at startup.
+[[instruments]]
+venue = "bybit_linear"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.10"
+lot = "0.001"
+min_qty = "0.001"
+max_qty = "100"
+min_notional = "5"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 2.0
+skew_bps_per_unit = 0.5
+quote_qty = 0.001
+max_inventory = 0.003
+requote_threshold_ticks = 30
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.002"
+max_order_notional = "300"
+max_position = "0.003"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"
