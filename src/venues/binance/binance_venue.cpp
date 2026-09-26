@@ -533,6 +533,7 @@ void BinanceVenue::on_user_text(std::string_view t, std::int64_t ts) {
         default:
           break;
       }
+      sent_.answered(*h);
       static_cast<void>(order_sink_->push(*h));
       ++stats_.order_events;
     }
@@ -555,6 +556,9 @@ void BinanceVenue::on_order_state(net::ConnState s) {
   if (mapped == order_state_) return;
   const ConnState prev = order_state_;
   order_state_ = mapped;
+  // Requests in flight on a connection that is gone are never answered on it: they no longer
+  // hold the snapshot watermark back (the reconnect's snapshot settles them).
+  if (mapped != ConnState::Live && mapped != ConnState::Stale) sent_.connection_lost();
   if (mapped == ConnState::Live) {
     // 6.7: after the order channel comes back the OMS view may be stale (orders were cancelled
     // over REST while it was down). Not when a quiet channel merely returns from Stale, which
@@ -654,7 +658,8 @@ void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_vi
     return;
   }
   if (r.id == "oo") {
-    const ClientOrderId watermark = oo_watermarks_.empty() ? sent_.value() : oo_watermarks_.front();
+    const ClientOrderId watermark =
+        oo_watermarks_.empty() ? sent_.value(now_ns()) : oo_watermarks_.front();
     if (!oo_watermarks_.empty()) oo_watermarks_.erase(oo_watermarks_.begin());
     if (r.is_error) {
       FASTMM_LOG_WARN("{}: openOrders.status failed: {} {}", cfg_.name, r.code, r.msg);
@@ -705,6 +710,8 @@ void BinanceVenue::schedule_logon_retry(Channel ch) {
 void BinanceVenue::handle_order_response(RequestKind kind,
                                          ClientOrderId id,
                                          const WsApiResponse& r) {
+  // The venue answered a placement: the order no longer holds the snapshot watermark back.
+  if (kind != RequestKind::Cancel) sent_.answered(id);
   const OrderShadow* shadow = shadows_.find(id);
   InstrumentId inst = shadow != nullptr ? shadow->instrument : instrument_of(r.symbol);
   if (r.status == 429 || r.status == 418) {
@@ -808,7 +815,7 @@ void BinanceVenue::write_orders(Ring& ring) {
       },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
-          sent_.note(*cmd);
+          sent_.note(*cmd, now_ns());
           send_command(*cmd);
         } else if (is_reconcile_request(h)) {
           request_open_orders();
@@ -1119,6 +1126,7 @@ void BinanceVenue::emit_connection_state(Channel ch, ConnState state, std::int32
 
 void BinanceVenue::emit_reject(
     InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text) {
+  sent_.answered(id);
   emit_order_reject(*order_sink_, id_, inst, id, reason, code, text);
   ++stats_.order_events;
 }
@@ -1232,7 +1240,7 @@ void BinanceVenue::sweep_shadows(ClientOrderId sent_watermark) {
 // ---- control requests -----------------------------------------------------------------------
 
 void BinanceVenue::request_open_orders() {
-  request_open_orders(sent_.value());
+  request_open_orders(sent_.value(now_ns()));
 }
 
 // `watermark` bounds what the snapshot may conclude: the engine's orders above it had not been

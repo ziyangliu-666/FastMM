@@ -4,6 +4,7 @@
 // three message types. Built from the ring pointer with no copy.
 #include "fastmm/core/messages.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -84,24 +85,102 @@ struct OrderCommand {
   }
 };
 
-// The last client order id (New or Replace) a venue has taken from the outbound ring. The value
-// at the time a venue requests its open orders is stamped into that snapshot's ReconcileMsg Begin:
-// the engine's orders above it had not been sent, so the snapshot cannot show them. One engine
-// allocates its ids in the order it sends them, so the last is also the highest; fastmm-gateway
-// interleaves several engines' ids on one venue and finds the point the snapshot was taken at from
-// the last one (live/gateway.hpp).
+// The watermark stamped into an open-order snapshot's ReconcileMsg Begin: the engine's orders at
+// or below it can be judged by the snapshot, the ones above it cannot. It is the last client order
+// id (New or Replace) the venue sent before the first one the venue has not answered yet (ack,
+// reject, fill or cancel), in send order: an order still in flight when the snapshot is asked for
+// may reach the matching engine, or the venue's open-order view, after the snapshot is taken
+// (Binance Spot, 2026-09-26: an order sent 1 ms before openOrders.status and accepted by the
+// matching engine was missing from the reply, and the engine cancelled it as gone). An order with
+// no answer after kUnansweredNs no longer holds the watermark back.
+//
+// One engine allocates its ids in the order it sends them; fastmm-gateway interleaves several
+// engines' ids on one venue and finds the point the snapshot was taken at from the id itself
+// (live/gateway.hpp), which is why the watermark is always an id that was sent.
 class SentWatermark {
  public:
-  void note(const OrderCommand& c) noexcept {
-    if (c.kind != OrderCommandKind::Cancel) high_ = c.cl_ord_id;
+  static constexpr std::int64_t kUnansweredNs = 10'000'000'000;
+  static constexpr std::size_t kMaxInFlight = 256;
+
+  void note(const OrderCommand& c, std::int64_t now_ns) noexcept {
+    if (c.kind == OrderCommandKind::Cancel) return;
+    prune(now_ns);
+    if (n_ == kMaxInFlight) pop();  // treat the oldest as answered: never blocks new orders
+    in_flight_[(head_ + n_) % kMaxInFlight] = InFlight{c.cl_ord_id, high_, now_ns, false};
+    ++n_;
+    high_ = c.cl_ord_id;
   }
-  [[nodiscard]] ClientOrderId value() const noexcept { return high_; }
+  // The venue said something about order `id`.
+  void answered(ClientOrderId id) noexcept {
+    for (std::size_t k = 0; k < n_; ++k) {
+      InFlight& f = in_flight_[(head_ + k) % kMaxInFlight];
+      if (f.id == id) {
+        f.answered = true;
+        break;
+      }
+    }
+  }
+  // answered() for the order an event from the venue is about.
+  void answered(const EventHeader& h) noexcept {
+    switch (h.type) {
+      case EventType::OrderAck:
+        answered(msg_cast<OrderAckMsg>(&h).cl_ord_id);
+        break;
+      case EventType::OrderReject:
+        answered(msg_cast<OrderRejectMsg>(&h).cl_ord_id);
+        break;
+      case EventType::OrderFill:
+        answered(msg_cast<OrderFillMsg>(&h).cl_ord_id);
+        break;
+      case EventType::OrderCancelAck:
+        answered(msg_cast<OrderCancelAckMsg>(&h).cl_ord_id);
+        break;
+      case EventType::OrderExpired:
+        answered(msg_cast<OrderExpiredMsg>(&h).cl_ord_id);
+        break;
+      default:
+        break;
+    }
+  }
+  // The connection the requests went out on is gone: none of them will be answered on it.
+  void connection_lost() noexcept {
+    head_ = 0;
+    n_ = 0;
+  }
+  // The watermark for a snapshot requested now.
+  [[nodiscard]] ClientOrderId value(std::int64_t now_ns) noexcept {
+    prune(now_ns);
+    return n_ == 0 ? high_ : in_flight_[head_].prev;
+  }
+  // The last id sent, answered or not.
+  [[nodiscard]] ClientOrderId last_sent() const noexcept { return high_; }
   static void stamp(ReconcileMsg& begin, ClientOrderId watermark) noexcept {
     begin.sent_watermark = watermark;
     begin.flags |= ReconcileMsg::kSentWatermark;
   }
 
  private:
+  struct InFlight {
+    ClientOrderId id;
+    ClientOrderId prev;  // the id sent just before it
+    std::int64_t sent_ns;
+    bool answered;
+  };
+  void pop() noexcept {
+    head_ = (head_ + 1) % kMaxInFlight;
+    --n_;
+  }
+  void prune(std::int64_t now_ns) noexcept {
+    while (n_ > 0) {
+      const InFlight& f = in_flight_[head_];
+      if (!f.answered && now_ns - f.sent_ns < kUnansweredNs) break;
+      pop();
+    }
+  }
+
+  InFlight in_flight_[kMaxInFlight] = {};
+  std::size_t head_ = 0;
+  std::size_t n_ = 0;
   ClientOrderId high_{};
 };
 

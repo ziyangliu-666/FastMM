@@ -873,7 +873,7 @@ void NasdaqItchVenue::emit_empty_reconcile() noexcept {
   ReconcileMsg begin{};
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
   begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, sent_.value());
+  SentWatermark::stamp(begin, sent_.value(now_ns()));
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   ReconcileMsg end{};
@@ -910,7 +910,7 @@ void NasdaqItchVenue::write_orders(Ring& ring) {
       },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
-          sent_.note(*cmd);
+          sent_.note(*cmd, now_ns());
           send_command(*cmd);
         } else if (is_reconcile_request(h)) {
           request_open_orders();

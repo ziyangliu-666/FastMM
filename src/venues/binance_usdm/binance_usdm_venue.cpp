@@ -724,6 +724,7 @@ void BinanceUsdmVenue::on_user_text(std::string_view t, std::int64_t ts) {
       default:
         break;
     }
+    sent_.answered(*h);
     static_cast<void>(order_sink_->push(*h));
     ++stats_.order_events;
   }
@@ -773,6 +774,9 @@ void BinanceUsdmVenue::on_order_state(net::ConnState s) {
   if (mapped == order_state_) return;
   const ConnState prev = order_state_;
   order_state_ = mapped;
+  // Requests in flight on a connection that is gone are never answered on it: they no longer
+  // hold the snapshot watermark back (the reconnect's snapshot settles them).
+  if (mapped != ConnState::Live && mapped != ConnState::Stale) sent_.connection_lost();
   if (mapped == ConnState::Live) {
     const bool reconnected = order_was_live_ && prev != ConnState::Stale;
     order_was_live_ = true;
@@ -849,6 +853,8 @@ void BinanceUsdmVenue::handle_ws_api_response(const binance::WsApiResponse& r) {
 void BinanceUsdmVenue::handle_order_response(RequestKind kind,
                                              ClientOrderId id,
                                              const binance::WsApiResponse& r) {
+  // The venue answered a placement: the order no longer holds the snapshot watermark back.
+  if (kind != RequestKind::Cancel) sent_.answered(id);
   const OrderShadow* shadow = shadows_.find(id);
   const InstrumentId inst = shadow != nullptr ? shadow->instrument : instrument_of(r.symbol);
   if (r.status == 429 || r.status == 418) {
@@ -963,7 +969,7 @@ void BinanceUsdmVenue::write_orders(Ring& ring) {
       },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
-          sent_.note(*cmd);
+          sent_.note(*cmd, now_ns());
           send_command(*cmd);
         } else if (is_reconcile_request(h)) {
           request_open_orders();
@@ -1287,7 +1293,7 @@ void BinanceUsdmVenue::send_open_orders() {
   reconcile_.again = false;
   reconcile_.replies = 0;
   reconcile_.failed = false;
-  reconcile_.watermark = sent_.value();
+  reconcile_.watermark = sent_.value(now_ns());
   reconcile_.orders_body.clear();
   reconcile_.positions_body.clear();
   std::weak_ptr<int> alive = alive_;

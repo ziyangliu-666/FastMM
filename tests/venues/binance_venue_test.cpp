@@ -54,6 +54,7 @@ struct Harness {
   std::atomic<int> depth_requests{0};
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
+  std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
   net::WsSession* user_session = nullptr;  // server thread only
 
   Harness() {
@@ -88,6 +89,10 @@ struct Harness {
         user_session = &s;
         s.send_text(R"({"id":")" + id + R"(","status":200,"result":{"subscriptionId":0}})");
       } else if (method == "order.place") {
+        if (hold_place.load()) {
+          srv.record("held", json_str(t, "newClientOrderId"));
+          return;
+        }
         s.send_text(
             R"({"id":")" + id +
             R"(","status":200,"result":{"symbol":"BTCUSDT","orderId":4293153,"orderListId":-1,"clientOrderId":")" +
@@ -299,6 +304,82 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
     CHECK(h.cancel_all_ok.load() == 1);
     CHECK(h.cancel_all_bad.load() == 0);
     CHECK_FALSE(venue.fatal());
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: an order still in flight is above the snapshot's watermark") {
+  // Session A, 12:05:28 UTC: an order was sent, a cancel reject asked for the open orders, and
+  // the venue's reply did not list the order (sent 1 ms before, not answered yet). With the last
+  // *sent* id as the watermark the engine cancelled it as gone and the connector dropped its
+  // shadow; the watermark is now the last id sent before the first one still unanswered.
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenue venue(VenueId{0}, h.config(false));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    auto live_channels = [&] {
+      std::size_t n = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::ConnectionState &&
+            RecordingSink::as<ConnectionStateMsg>(m).state == ConnState::Live)
+          ++n;
+      }
+      return n;
+    };
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return live_channels() >= 2 && oc.count(EventType::Reconcile) >= 2;  // start-up sweep
+    }));
+    const auto place = [&](const char* id) {
+      OutNewOrderMsg n{};
+      init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+      n.cl_ord_id = decode_cl_ord_id(id).value();
+      n.side = Side::Buy;
+      n.type = OrderType::PostOnly;
+      n.price = Price::from_decimal("70000").value();
+      n.qty = Qty::from_decimal("0.001").value();
+      REQUIRE(outbound.try_push(&n, n.hdr.len));
+      venue.on_wake();
+      return n.cl_ord_id;
+    };
+    const ClientOrderId answered = place("fm000100000001");
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderAck) >= 1;
+    }));
+    h.hold_place = true;
+    place("fm000100000002");
+    REQUIRE(pump_until(reactor, [&] { return h.srv.frames("held").size() == 1; }));
+    CHECK(venue.shadow_count() == 2);
+
+    const std::size_t reconciles = oc.count(EventType::Reconcile);
+    venue.request_open_orders();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) == reconciles + 2;
+    }));
+    const auto* begin = oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+    REQUIRE(begin != nullptr);
+    CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
+    CHECK(begin->sent_watermark == answered);  // not the order in flight
+    CHECK(venue.shadow_count() == 1);          // the in-flight order keeps its shadow
     venue.disconnect();
     reactor.run_once(0);
   }

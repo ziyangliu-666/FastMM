@@ -670,6 +670,7 @@ void BybitVenue::on_private_text(std::string_view t, std::int64_t ts) {
         default:
           break;
       }
+      sent_.answered(*h);
       static_cast<void>(order_sink_->push(*h));
       ++stats_.order_events;
     }
@@ -712,6 +713,9 @@ void BybitVenue::on_trade_state(net::ConnState s) {
   if (mapped == trade_state_) return;
   const ConnState prev = trade_state_;
   trade_state_ = mapped;
+  // Requests in flight on a connection that is gone are never answered on it: they no longer
+  // hold the snapshot watermark back (the reconnect's snapshot settles them).
+  if (mapped != ConnState::Live && mapped != ConnState::Stale) sent_.connection_lost();
   if (mapped == ConnState::Live) {
     // 6.7: orders were cancelled over REST while the trade channel was down; reconcile on a real
     // reconnect (not the first connect, not a return from Stale).
@@ -768,6 +772,8 @@ void BybitVenue::on_trade_text(std::string_view t, std::int64_t ts) {
 }
 
 void BybitVenue::handle_order_response(RequestKind kind, ClientOrderId id, const TradeResponse& r) {
+  // The venue answered a placement: the order no longer holds the snapshot watermark back.
+  if (kind != RequestKind::Cancel) sent_.answered(id);
   rate_.on_remaining(r.limit, r.limit_status, now_ns());
   const OrderShadow* shadow = shadows_.find(id);
   const InstrumentId inst = shadow != nullptr ? shadow->instrument : InstrumentId::invalid();
@@ -840,7 +846,7 @@ void BybitVenue::write_orders(Ring& ring) {
       },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
-          sent_.note(*cmd);
+          sent_.note(*cmd, now_ns());
           send_command(*cmd);
         } else if (is_reconcile_request(h)) {
           request_open_orders();
@@ -1156,7 +1162,7 @@ void BybitVenue::send_open_orders() {
   reconcile_pages_ = 0;
   // The start-up sweep says nothing about our own orders: one sent before the snapshot was asked
   // for can still be in flight.
-  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value();
+  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value(now_ns());
   sweep_next_ = false;
   reconcile_coin_ = 0;
   reconcile_positions_.clear();

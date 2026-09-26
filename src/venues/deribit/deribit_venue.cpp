@@ -503,6 +503,9 @@ void DeribitVenue::on_private_state(net::ConnState s) {
   if (mapped == private_state_) return;
   const ConnState prev = private_state_;
   private_state_ = mapped;
+  // Requests in flight on a connection that is gone are never answered on it: they no longer
+  // hold the snapshot watermark back (the reconnect's snapshot settles them).
+  if (mapped != ConnState::Live && mapped != ConnState::Stale) sent_.connection_lost();
   if (mapped == ConnState::Live) {
     const bool reconnected = private_was_live_ && prev != ConnState::Stale;
     const bool first_connect = !private_was_live_;
@@ -622,6 +625,7 @@ void DeribitVenue::on_private_text(std::string_view t, std::int64_t ts) {
         default:
           break;
       }
+      sent_.answered(*h);
       static_cast<void>(order_sink_->push(*h));
       ++stats_.order_events;
     }
@@ -757,6 +761,8 @@ void DeribitVenue::handle_control_response(const PrivateDecodeResult& r) {
 void DeribitVenue::handle_order_response(RequestKind kind,
                                          ClientOrderId id,
                                          const PrivateDecodeResult& r) {
+  // The venue answered a placement: the order no longer holds the snapshot watermark back.
+  if (kind != RequestKind::Cancel) sent_.answered(id);
   OrderShadow* shadow = shadows_.find(id);
   const InstrumentId inst = shadow != nullptr ? shadow->instrument : InstrumentId::invalid();
   const int code = static_cast<int>(r.rpc.error_code);
@@ -848,7 +854,7 @@ void DeribitVenue::write_orders(Ring& ring) {
       },
       [this](const EventHeader& h) {
         if (const auto cmd = OrderCommand::from(h)) {
-          sent_.note(*cmd);
+          sent_.note(*cmd, now_ns());
           send_command(*cmd);
         } else if (is_reconcile_request(h)) {
           request_open_orders();
@@ -1061,7 +1067,7 @@ void DeribitVenue::request_open_orders() {
   if (cfg_.dry_run || !connected_ || !private_conn_.is_live() || access_token_.empty()) return;
   if (reconcile_pending_ > 0) return;  // one reconciliation at a time
   // The start-up sweep says nothing about our own orders: one sent before it can be in flight.
-  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value();
+  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value(now_ns());
   sweep_next_ = false;
   // A request while the executions are being fetched is served once they are in, so its snapshot
   // is exact too. Latched before the replay starts: a replay that cannot send anything finishes
