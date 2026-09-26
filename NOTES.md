@@ -15,14 +15,46 @@ perpetuals, and today one session or gateway with instruments in two settlement 
 * A rate that is unknown or stale is unknown: an order that increases exposure in that currency is
   refused. Same accounting in the engine and the gateway; backtest and replay share it.
 Step 2, Bybit linear perpetuals: done 2026-09-26 (mock and docs only, no testnet keys).
-Step 3, funding: neither perpetuals connector books funding (Binance USDⓈ-M ignores the
-balance-only `ACCOUNT_UPDATE`, Bybit linear skips `execType = Funding`), so perpetual PnL and the
-`max_loss` budget leave it out. Design: a `Funding` account event (venue, instrument, amount,
-settlement currency, venue time, venue id) on the order-event ring, so it is journaled and replays;
-the engine books it into realized PnL like a fee; the store records it; the gateway's account books
-it; missed funding is replayed from the venue's income history (Binance
-`/fapi/v1/income?incomeType=FUNDING_FEE`, Bybit's Funding executions), deduplicated by id.
+Step 3, funding: done 2026-09-26 (below).
 Later: OKX; alerting.
+
+**Step 3 done (2026-09-26): perpetual funding is booked.** `EventType::Funding` (27) /
+`FundingMsg` (128 B: signed amount in the settlement asset, venue id, venue time, kReplayed) on the
+order-event ring, so it is journaled and replays; journal format unchanged (v3: records are
+self-describing, an older reader skips the type), old fixtures replay byte-exact. Engine: realized PnL
+of the instrument (not a fee: carry of holding the position, paid by a position that never trades;
+fees stay the trading cost), `PositionTracker::on_funding` with per-instrument/total/per-currency
+funding (part of realized), converted by `[accounting]`, `max_loss` checked at once; booked once per
+(venue id, instrument), 4096-entry window; an asset other than the settlement currency or an unknown
+instrument is counted (`unbooked_funding`), not booked. No strategy hook (realized PnL is readable).
+Store schema 4: `funding` table, `funding_raw` in positions/pnl_daily/views/sessions;
+`fastmm-pnl funding`, funding column in `pnl`/`positions`/`recover`; Python `store.funding()`.
+A restart's resume point counts stored funding as venue events, known as `funding:<id>`.
+Gateway: routed to the instrument's owner (same replay/known filter as fills), booked once by
+`AccountBook`. Binance USD-M: `/fapi/v1/income?incomeType=FUNDING_FEE` is the source (tranId); the
+`ACCOUNT_UPDATE` FUNDING_FEE (symbol in `a.S` since 2026-08-07, no id) only triggers a query 1 s
+later; the query also runs with every execution replay (own watermark, edge ids, 7-day windows,
+retry). Bybit linear: `execType Funding` rows from the topic and `execution/list`, amount =
+-execFee (sign inferred from the transaction-log page; the execution pages say nothing). Deribit:
+not booked (continuous accrual, no per-payment event). Docs read 2026-09-26.
+Evidence: `core/funding_test.cpp`, `account_book_test.cpp`, `store/funding_store_test.cpp`,
+USD-M/Bybit venue and parser tests, `integration/funding_replay_test.cpp` (live sim session with
+funding tripping max_loss replays to the identical outbound hash), `integration/gateway_funding_test.cpp`
+(gateway + strategy processes on a fake Bybit linear: owner and account book one payment delivered
+twice, store holds one row). Each fails with its piece broken (26 mutations: dispatch, dedupe,
+max_loss check, asset check, conversion, record, store rows/day roll-up/resume/v3 reader, account
+dedupe, gateway routing/account/owner, USD-M stream flag/replay query/edge ids/known ids/retry,
+Bybit stream/sign/replay/known ids/order-field relaxation).
+Release, WSL2, interleaved x6 (base, base rebuilt at a path of the same length, this): t2o
+153.6 / 150.7 / 158.5 ns median, t2o+hash 324.3 / 323.8 / 328.4, engine step 2263 / 2258 / 2338.
+Bisected with the headers copied onto base one at a time: the step's +3.5% and most of t2o's
++5 ns come and go with edits that change no executed code in the bench (two named fields in place
+of `PositionRecord::pad_`, which the bench never writes, reproduces step 2370 vs 2252), so it is
+code layout, not work; funding state lives off the hot lines anyway (heap `FundingBox` in the
+tracker, `FundingStats` and the dedupe window behind one pointer at the end of the engine).
+Left: no testnet run (Binance income row shape for FUNDING_FEE and Bybit Funding on the WS topic
+are undocumented); stream-missed funding is booked up to a minute late; Deribit funding; the status
+file shows funding only inside realized; pnl_report counts it as cash.
 
 **Step 1 done (2026-09-26): `[accounting]`.** `reporting_currency` and `[accounting.fx] BTC =
 "venue:symbol"` (an instrument of `[[instruments]]`, `enabled = false` if untraded; a USDTBTC-style
