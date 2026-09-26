@@ -42,9 +42,10 @@ Every order passes the gateway's network thread on its way to the connector, whe
 - the account's kill switch ([Account risk](#account-risk)),
 - `max_open_notional`: the notional of every order working at the venue, both sides, every strategy, including this one (a replace counts the difference),
 - `max_gross_notional` and `max_net_notional`: the account's positions at the marks, over every venue, plus this order, as `[risk]` checks one strategy's; an order that reduces its instrument's position always passes, and so does one that brings a net already over the cap towards zero,
+- `[gateway.underlying.<BASE>] max_net`: the account's net position in the order's base asset over every venue and strategy, in base units, plus the orders working at the venues on the order's side and this order, as `[risk.underlying]` checks one strategy's ([Risk model](../../explanation/risk-model.md#net-position-per-underlying)); an order that brings the net towards zero passes. An inverse contract counts at the mid of the gateway's own book; while one with a position or working orders has none (or none newer than `[risk] stale_md_ms`), orders on that underlying are refused,
 - `orders_per_sec` and `burst`: new orders and replaces of every strategy together, per venue (cancels always go).
 
-A refused order goes back to the strategy that sent it as an `OrderReject` with `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional`, `GatewayFxRateUnknown` or `GatewayRateLimit` ([Reject reasons](../../reference/errors.md#gateway)); its quote manager backs that side off as after any venue reject. An exposure refusal is per order; the other strategies trade on. Each strategy's own `[risk]` still applies to it.
+A refused order goes back to the strategy that sent it as an `OrderReject` with `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional`, `GatewayFxRateUnknown`, `GatewayUnderlyingNet`, `GatewayUnderlyingMarkUnknown` or `GatewayRateLimit` ([Reject reasons](../../reference/errors.md#gateway)); its quote manager backs that side off as after any venue reject. An exposure refusal is per order; the other strategies trade on. Each strategy's own `[risk]` still applies to it.
 
 ## Account risk
 
@@ -60,6 +61,7 @@ Once a second the gateway logs the account when it changed, and each position th
 ```text
 gateway: account net_pnl=-0.42600010 realized=0 unrealized=0.17352000 fees=0.59952010 carried=0 gross_exposure=240.00008000 net_exposure=240.00008000 kill=armed max_loss=3
 gateway: account position sim:BTCUSDT 0.004
+gateway: account underlying BTC net=0.004
 ```
 
 The limits are one number in one currency. When the instruments settle in more than one, set `[accounting]` in the gateway's configuration ([Configuration](../../reference/configuration.md#accounting)): every instrument of the gateway must settle in `reporting_currency` or have a source, an instrument of the gateway's table, whose mid gives the rate. The account's positions stay in their own currencies; its PnL, exposure, kill file and log line (`in=USDT`) are in the reporting one, converted at the current rates when they are read. An order that adds exposure in a currency whose source's book is not valid, or older than `[risk] stale_md_ms`, goes back as `GatewayFxRateUnknown`. Without `[accounting]` a gateway with any limit set refuses such a table (exit 3), as `fastmm-live` does for `[risk] max_loss`. `max_open_notional` stays per venue in the settlement currencies, unconverted.
@@ -87,6 +89,7 @@ The frame has the account (net PnL, realized, unrealized, fees, carried, gross a
 | `fastmm_account_gross_exposure`, `_net_exposure` | gauge | at the marks |
 | `fastmm_account_max_loss`, `_max_gross_notional`, `_max_net_notional` | gauge | `[gateway]`, 0 when off |
 | `fastmm_account_position{venue,instrument}` | gauge | base units |
+| `fastmm_account_underlying_net{underlying}`, `_underlying_max_net{underlying}` | gauge | `[gateway.underlying]`, base units; the net is absent while an inverse contract has no mark |
 | `fastmm_gateway_instrument_owner{venue,instrument}` | gauge | the owner's epoch; absent while nobody trades it |
 | `fastmm_gateway_attachments` | gauge | strategies attached |
 | `fastmm_gateway_attachment_info{epoch,engine,pid,attachment}` | gauge | constant 1 per attachment |

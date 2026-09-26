@@ -32,14 +32,16 @@ The first failing check decides the reason.
 | 14 | `FxRateUnknown` | the order adds to exposure in a settlement currency whose rate is unknown or stale, while a limit reads the totals | `[accounting]` |
 | 15 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks would pass the cap, and this order adds to it | `max_gross_notional` |
 | 16 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap | `max_net_notional` |
-| 17 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
-| 18 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
-| 19 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 17 | `UnderlyingMarkUnknown` | an inverse contract of the order's underlying has a position or open orders, or is the order's instrument, and no current mark | `[risk.underlying]` |
+| 18 | `MaxUnderlyingNet` | the net position in the order's underlying, with the open orders on the order's side and this order, would move further past the limit | `[risk.underlying.<BASE>] max_net` |
+| 19 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
+| 20 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
+| 21 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
 - `MaxPosition` counts same-side open orders, so a quote ladder cannot exceed `max_position` even if it fills entirely.
-- Market orders skip the price checks (4, 9, 10, 18).
+- Market orders skip the price checks (4, 9, 10, 20).
 - The notional of checks 6 and 12 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
 - Checks 15 and 16 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)): the order's notional at its currency's rate, on top of the converted totals.
 
@@ -65,6 +67,18 @@ With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) 
 - A rate is unknown until its source's book is valid. While it is invalid, or older than `stale_md_ms`, an order that adds to exposure in that currency is refused (`FxRateUnknown`); one that reduces a position passes, and so does a flatten.
 - PnL already booked stays converted at the last valid rate: a stale source does not hide a loss that was already measured, and `max_loss` keeps being evaluated on it. A currency whose rate was never known counts as zero; nothing can be traded in it before it is known, so only a restored or reconciled position can sit there.
 - With neither `max_loss` nor an exposure cap set, the rate refuses nothing: the conversion only feeds the reports.
+
+## Net position per underlying
+
+`[risk.underlying.<BASE>] max_net` limits the net position in one base asset over every instrument of the session that has that `base`, on every venue ([Configuration](../reference/configuration.md#riskunderlying)). Long 0.3 BTC on Binance USD-M and short 0.3 BTC on Bybit is 0 BTC. The unit is the base asset, so the limit needs no price and no `[accounting]`.
+
+- **Base units.** A linear contract (or spot) counts `qty * contract_multiplier`: 30 OKX `BTC-USDT-SWAP` contracts of 0.01 BTC are 0.3 BTC. An inverse contract counts `qty * multiplier / mark`, its value in the base coin at the current mark: 150 contracts of 100 USD at 50000 are 0.3 BTC, and the same position is 0.375 BTC at 40000.
+- **The check** is the underlying's version of `max_position`: the position now, plus the open orders on the order's side over every instrument of the underlying, plus the order (a replace excludes the order it replaces). The order is refused when the absolute value of that would pass `max_net` and be further from zero than the position is now; an order that brings the underlying towards zero always passes, also while it is over the limit.
+- **Marks.** The mark is the instrument's last valid mid, not older than `stale_md_ms` when that is set. An inverse contract with a position or open orders and no such mark makes the whole underlying unmeasurable: every order on it is refused (`UnderlyingMarkUnknown`) until the book is back. A flatten is not checked.
+- **Options do not count.** Their exposure in the underlying is a delta, which needs a pricing model the engine does not have; an option neither adds to the net nor is checked. A `[risk.underlying]` section whose base asset only options have is a configuration error.
+- **What is not counted:** balances and margin in the base coin (the collateral of an inverse contract is BTC too), and positions held outside the session. Behind `fastmm-gateway`, `[gateway.underlying]` holds the account's net over every strategy ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)).
+
+Without the section the check costs a branch per order. With it, each order sums the underlying's instruments (a few array reads per instrument); `fastmm-ctl limits underlying.BTC.max_net=...` changes a limit at run time, for an underlying the configuration names (`max_net = 0` names one without a limit).
 
 ## Inverse contracts
 
@@ -102,6 +116,6 @@ Nothing resets a kill switch automatically. After a kill the engine tripped itse
 ## What the layer does not do
 
 - It does not replace the strategy's own limits. `first_mm` stops quoting a side at `max_position`; `[risk] max_position` is a second, independent limit that holds even when the strategy has a bug. Set the risk limit above the strategy's.
-- Position limits are per instrument. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, over one session; with instruments in more than one settlement currency they need `[accounting]` ([Currencies](#currencies)). Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
-- It knows no venue rules beyond reference data and its own order rate limit (check 18). Margin and account balances are enforced by the venue. The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
+- Position limits are per instrument, and per base asset with `[risk.underlying]`. The portfolio-wide limits are `max_gross_notional`, `max_net_notional` and `max_loss`, over one session; with instruments in more than one settlement currency they need `[accounting]` ([Currencies](#currencies)). Across strategies only `fastmm-gateway`'s `[gateway]` limits see the account.
+- It knows no venue rules beyond reference data and its own order rate limit (check 21). Margin and account balances are enforced by the venue. The connectors back off on the venue's rate-limit responses ([Venue connectors](../reference/venues.md)), and the engine pauses a side after venue rejects (`[engine] reject_backoff_ms`).
 - It does not protect against a venue that stops answering. Order-channel loss triggers a REST cancel-all in the connector; beyond that, see [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).

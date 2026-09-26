@@ -3,6 +3,35 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Quote/hedge step 3 done (2026-09-27): net position per underlying.** `[risk.underlying.BTC]
+max_net = 0.5` (base units) in the engine, `[gateway.underlying.BTC]` in the gateway's account
+(every strategy and venue). An instrument counts towards the underlying its `base` names
+(case-insensitive): `qty * contract_multiplier`, inverse `qty * multiplier / mark` (mark = last
+valid mid, stale with `stale_md_ms`); options excluded (a delta needs a model). Worst case as
+`max_position`: net + every same-side open order over the underlying's instruments + the order
+(a replace excludes its leaves); refused only when |worst| > max_net and > |net now|. An inverse
+contract with a position or open orders and no mark refuses every order on the underlying
+(`UnderlyingMarkUnknown`; gateway `GatewayUnderlyingMarkUnknown`); a flatten is not checked.
+`UnderlyingPlan` (core/underlying.hpp) is built after reference data loads: fixed tables indexed
+by instrument, at most 8 underlyings; a base no instrument has exits 3. Runtime: `fastmm-ctl
+limits underlying.BTC.max_net=...` → `ControlCommand::SetUnderlyingLimit` (journaled, replays;
+only for an underlying the config names, `max_net = 0` tracks one without a limit). The gateway
+publishes per instrument the leaves working per side and the mark (atomics, like `qty`); `GwOrder`
+now tracks leaves, and a reconciled order gets its real side (it was Buy). Status version 11
+(net per underlying, engine and gateway; 9 gateway refusal counters), metrics
+`fastmm_underlying_net`/`_max_net`, `fastmm_account_underlying_*`. Evidence:
+`core/underlying_test.cpp` (plan, conversions, RiskEngine incl. replace/stale mark, engine across
+four venues incl. OKX contracts and an inverse contract, reducing orders, runtime limit),
+`config_test.cpp` (round trip, errors), `integration/gateway_underlying_test.cpp` (two strategies:
+b refused while a's orders work, b's netting side passes after a's fill), control socket, status,
+Prometheus, no-allocation engine step with a limit. Bench (`release` + werror, WSL2, pinned,
+interleaved x6, quiet machine; base, an identical base build, this built at the same path length):
+t2o 155.3 / 159.2 / 161.4 ns, t2o+hash 334.9 / 332.9 / 334.4, engine step 2303 / 2403 / 2331;
+new `BM_TickToOrder_SimUnderlying` (a limit set, the check runs on every order) 161.0, the same as
+without. Within the identical-copy spread. A variant passing the inputs by pointer (RiskInputs 16
+bytes smaller) measured worse (179 / 350): layout, not work. Not done: balances/collateral in the
+base coin are not counted; options' delta; the gateway limit is not adjustable at run time.
+
 **Quote/hedge step 2 done (2026-09-27): built-in `xmm`.** Quotes one instrument, hedges on another
 with IOCs; the hedge comes from the two positions in base units, one at a time, never from a count
 of fills. Guards: stale or invalid books and a hedge venue down pull the quotes, `max_unhedged`,
@@ -143,7 +172,7 @@ and risk cannot net BTC on one venue against BTC on another except by summing al
    hedge outcome converges to the same place. One hedge IOC in flight; a stale or down hedge venue
    pulls the quotes; `max_unhedged` pulls the side that would grow the gap.
 3. Risk per underlying: `[risk.underlying.BTC] max_net = ...` in base units, across venues, in the
-   engine and the gateway's account book.
+   engine and the gateway's account book. Done 2026-09-27 (top).
 4. Evidence: backtest on recorded Binance USD-M + Bybit public data; kill -9 and venue drops in the
    middle of hedging against fake venues (no lost hedge, no double hedge, limits hold).
 

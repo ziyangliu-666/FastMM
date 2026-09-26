@@ -52,6 +52,7 @@ scrape_configs:
 | `fastmm_uptime_seconds`, `fastmm_dry_run` | gauge | session wall clock, dry-run flag |
 | `fastmm_kill_active`, `fastmm_kill_latched`, `fastmm_kill_reason` | gauge | the global kill switch, the latched `max_loss` trip, and the `KillReason` |
 | `fastmm_realized_pnl`, `fastmm_unrealized_pnl`, `fastmm_fees`, `fastmm_pnl_carry`, `fastmm_max_loss` | gauge | quote currency, or `[accounting] reporting_currency`; `fastmm_max_loss` is the limit the engine applies now, 0 when off |
+| `fastmm_underlying_net{underlying}`, `fastmm_underlying_max_net{underlying}` | gauge | `[risk.underlying]`: the net position in base units over every instrument of the base asset (absent while an inverse contract with a position has no mark), and the limit applied now, 0 when off; only with the section |
 | `fastmm_events_total`, `fastmm_book_updates_total`, `fastmm_orders_sent_total`, `fastmm_cancels_sent_total`, `fastmm_replaces_sent_total`, `fastmm_fills_total` | counter | engine counters |
 | `fastmm_risk_rejects_total`, `fastmm_venue_rejects_total`, `fastmm_rejects_by_reason_total{kind,reason}` | counter | rejects, and the most frequent reasons the snapshot carries |
 | `fastmm_kills_total`, `fastmm_venue_kills_total` | counter | kill switch trips |

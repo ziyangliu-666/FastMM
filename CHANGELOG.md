@@ -5,6 +5,16 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `[risk.underlying.<BASE>] max_net` and `[gateway.underlying.<BASE>] max_net`: a limit on the net
+  position in one base asset, in base units, over every instrument and venue (the gateway's over
+  every strategy too). Contracts count `qty * contract_multiplier`, inverse contracts
+  `qty * multiplier / mark`; options do not count. Worst case with the open orders on the order's
+  side, as `max_position`; an order that brings the net towards zero passes. An inverse contract
+  with a position and no current mark refuses orders on its underlying (`UnderlyingMarkUnknown`,
+  `GatewayUnderlyingMarkUnknown`); over the limit: `MaxUnderlyingNet`, `GatewayUnderlyingNet`.
+  `fastmm-ctl limits underlying.BTC.max_net=...` (`ControlCommand::SetUnderlyingLimit`, journaled).
+  Status segment version 11 (the net per underlying; nine gateway refusal counters); metrics
+  `fastmm_underlying_net`, `fastmm_account_underlying_net` and their `_max_net`.
 - `xmm`, a built-in strategy that quotes one instrument and hedges on another venue with IOC
   orders. Fair value is the hedge book plus an EWMA basis; the hedge is derived from the two
   positions in base units (contract multipliers applied), one hedge at a time, so replayed,
