@@ -1,6 +1,6 @@
 # Run strategies behind a gateway
 
-`fastmm-gateway` holds the venue connections. Strategy processes, `fastmm-live --gateway`, attach to it, several at once, each trading instruments no other attached strategy trades. A strategy can be stopped, crash or be replaced without the venue sessions dropping and without touching the others. When a strategy process goes away for any reason, `kill -9` included, the gateway cancels that strategy's orders at once.
+`fastmm-gateway` holds the venue connections. Strategy processes, `fastmm-live --gateway`, attach to it, several at once, each trading instruments no other attached strategy trades. A strategy can stop, crash or be replaced without the venue sessions dropping or the others noticing. When a strategy process goes away, `kill -9` included, the gateway cancels its orders at once.
 
 ```console
 $ fastmm-gateway --config configs/sim-local.toml
@@ -17,7 +17,7 @@ The socket is `<journal_dir>/<engine name>.gw` of the gateway's configuration, `
 2. creates three rings per venue under `/dev/shm` (`fastmm-gw-<name>-<pid>-<attachment>-<venue>.md`, `.ord`, `.out`) and adds them to the venue's routing,
 3. puts a snapshot of every book in its market-data ring, taken from the gateway's own copy ([Books](#books)),
 4. reconciles: the account's executions since the strategy's last stored fill on each venue (in the venue's clock, [Recovery at start-up](../../reference/storage.md#recovery-at-start-up)), then the open orders,
-5. answers with the epoch, the instrument table, the ring paths and, as descriptors, the wake pages and its reactors' eventfds (see [Latency](#latency)).
+5. answers with the epoch, the instrument table, the ring paths and, as descriptors, the wake pages and its reactors' eventfds ([Latency](#latency)).
 
 The strategy restores its previous position from its own store, as `fastmm-live` does on a restart ([What survives a restart](running-in-production.md#1-what-survives-a-restart)); the execution replay in step 4 books what happened since. The attach request carries the positions it restored, which start the gateway's account. Instruments of other strategies stay in its table, disabled: their market data arrives, their quotes are pulled.
 
@@ -32,11 +32,11 @@ On each venue's network thread:
 
 ## Books
 
-The gateway keeps its own copy of every book, up to 1024 levels a side (the most a snapshot message carries, so as deep as any connector's snapshot). A strategy that attaches, or whose ring dropped, gets a `BookSnapshot` of each copy in its market-data ring, followed by the events the gateway routes after it, so its engine's book (256 levels) is the one the venue's own snapshot and the same deltas would build. The venue is not asked for anything and the other strategies' books do not pause. A book the gateway does not hold at that moment (the venue is resyncing it, or its channel is down) gets no snapshot there; the venue's next one reaches every strategy. Only when the gateway's copy itself lost events (logged as `account books lost`) does it ask the venue to resync its books, at most once a second.
+The gateway keeps its own copy of every book, up to 1024 levels a side (the most a snapshot message carries, so as deep as any connector's snapshot). A strategy that attaches, or whose ring dropped, gets a `BookSnapshot` of each copy in its market-data ring, followed by the events the gateway routes after it, so its engine's book (256 levels) is the one the venue's own snapshot and the same deltas would build. The venue is not asked for anything; the other strategies' books do not pause. A book the gateway does not hold at that moment (the venue is resyncing it, or its channel is down) gets no snapshot there; the venue's next one reaches every strategy. Only when the gateway's copy itself lost events (logged as `account books lost`) does it ask the venue to resync its books, at most once a second.
 
 ## Account guards
 
-Every order passes the gateway's network thread on its way to the connector. Before it goes on, `[gateway]` ([Configuration](../../reference/configuration.md#gateway)) checks, in this order:
+Every order passes the gateway's network thread on its way to the connector, where `[gateway]` ([Configuration](../../reference/configuration.md#gateway)) checks, in this order:
 
 - the instrument is one the sending strategy claimed,
 - the account's kill switch ([Account risk](#account-risk)),
@@ -50,7 +50,7 @@ A refused order goes back to the strategy that sent it as an `OrderReject` with 
 
 The gateway keeps the account's positions: every execution that passes through it, streamed or replayed, whichever strategy it goes to (or none), booked once (by venue execution id, instrument and side, as a strategy's OMS books it; a base-asset commission changes the quantity as it does there), marked at the mid of the gateway's own copy of each book (applied after the strategies have been woken, so it is not on their way). Each venue's network thread books its own instruments; the totals are shared between the threads.
 
-- **Where it starts.** A fresh gateway knows nothing of the account. The first strategy that attaches owning an instrument sends the position it restored from its store, and the account's position of that instrument starts there (flat when it restored nothing, or its venue cannot replay executions and the strategy starts flat too). A replayed execution older than that strategy's replay start, or among the trade ids its store listed, is in the position already and is not booked. From then on the account books everything itself.
+- **Where it starts.** A fresh gateway knows no positions. The first strategy that attaches owning an instrument sends the position it restored from its store, and the account's position of that instrument starts there (flat when it restored nothing, or its venue cannot replay executions and the strategy starts flat too). A replayed execution older than that strategy's replay start, or among the trade ids its store listed, is in the position already and is not booked. From then on the account books everything itself.
 - **Detach.** The position is the account's, not the process's: it stays when its strategy detaches, fills of its orders still in flight are booked into it, and the next strategy that owns the instrument finds it (the gateway logs what that strategy's store said).
 - **`max_loss`.** The account's net PnL (realized plus unrealized minus fees, over every strategy, plus what earlier runs carried) at or below `-max_loss` trips the account's kill switch. The realized PnL and fees are carried in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`, the format of [a strategy's](kill-switch-and-shutdown.md#the-latched-loss-budget)); unrealized PnL is measured again from the positions the strategies bring. Give the gateway an `[engine] name` of its own: with `max_loss` set it refuses a strategy with its name, whose kill file would be the same.
 - **The trip.** Every network thread refuses new orders and replaces (`GatewayAccountKilled`), sends each attached strategy `TripVenueKill` (`GatewayMaxLoss`) for its venue, so its engine pulls its quotes, cancels its orders and, with every venue killed, trips its own kill switch (`on_kill`); the gateway cancels every order it knows, asks each venue for its open orders and cancels every row, cancels an acknowledgement that arrives later, and calls each venue's `cancel_all`. It then refuses every attach. The trip is latched in the kill file: a restart exits 6 until `fastmm-gateway --clear-kill` or the file is removed, which arms the whole budget again; `fastmm-ctl --gateway <name> clear-kill` does the same without a restart ([Control](#control)).
@@ -123,13 +123,13 @@ A strategy that attaches after a `pull` quotes: the pull reached the strategies 
 
 ## Detach
 
-Closing the connection is the detach, and the kernel closes it when the process dies. The gateway takes the strategy out of the routing, cancels every order of its epoch it knows to be working (one cancel each; the connectors' only other primitive is a venue-wide cancel-all, which would take every other strategy's quotes too), asks the venue for its open orders so that one it did not know is cancelled as a dead session's row, frees the instruments and removes the rings. An acknowledgement that arrives later for an order of the dead epoch is cancelled too. The other strategies keep trading.
+Closing the connection is the detach; the kernel closes it when the process dies. The gateway takes the strategy out of the routing, cancels every order of its epoch it knows to be working (one cancel each; the connectors' only other primitive is a venue-wide cancel-all, which would take every other strategy's quotes too), asks the venue for its open orders so that one it did not know is cancelled as a dead session's row, frees the instruments and removes the rings. An acknowledgement that arrives later for an order of the dead epoch is cancelled too. The other strategies keep trading.
 
 A strategy that stops cleanly cancels its own quotes through the gateway first and logs `no venue cancel_all here`. A strategy whose gateway goes away stops with exit code 5. The gateway itself, on SIGINT or SIGTERM, detaches everyone and cancels all open orders on every venue.
 
 ## Latency
 
-With `spin_mode = "adaptive"` an idle side blocks, and the other wakes it as threads wake each other inside `fastmm-live`: the engine sleeps on a futex in a page it shares with the gateway, and the gateway's network threads sleep in their reactors, whose flags (in a second page, shared by every attachment) and eventfds the strategy receives on attach. A wake-up costs a system call only while the other side sleeps. Each event and each order is copied once more: the connector's events from its own ring into each attachment's, the orders from the attachment's ring into the venue's.
+With `spin_mode = "adaptive"` an idle side blocks, and the other wakes it as threads wake each other inside `fastmm-live`: the engine sleeps on a futex in a page it shares with the gateway, and the gateway's network threads sleep in their reactors, whose flags (in a second page, shared by every attachment) and eventfds the strategy receives on attach. A wake-up costs a system call only while the other side sleeps. Each event and order is copied once more than in-process: the connector's events from its own ring into each attachment's, the orders from the attachment's ring into the venue's.
 
 Tick-to-trade against the simulator with one strategy attached (`scripts/bench-gateway.sh`, 45 s x 3 runs, WSL2, unpinned; the routing for several strategies and the account's checks and marks, `--account-limits`, and the 1024-level book copies left it unchanged), p50 in µs:
 
