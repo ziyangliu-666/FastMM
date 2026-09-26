@@ -15,9 +15,11 @@
 //   expired          any open -> Expired; Filled when the venue's cum_qty covers the order
 // A cum_qty a venue reports that no fill message covered (a cancel ack, an expiry or a
 // reconciliation snapshot) becomes OmsUpdate::missed_qty for the engine to book. That booking is an
-// estimate - the order's own price, no fee - so it is remembered here until an execution from the
-// venue's trade history (OrderFillMsg::kReplayed) names it: the execution then corrects the price
-// and the fee (OmsUpdate::corrected_qty) instead of the quantity being counted twice.
+// estimate - the order's own price, no fee - so it is remembered here until an execution names it:
+// one from the venue's trade history (OrderFillMsg::kReplayed), or a live one that arrives after
+// the cum_qty covering it (its cum_qty - qty lies below the booked cum_qty; order and execution
+// topics are not ordered on every venue). The execution then corrects the price and the fee
+// (OmsUpdate::corrected_qty) instead of the quantity being counted twice.
 // Races: fill after cancel ack -> LateFill (position still updated from the terminal record's
 // instrument and side); cancel-reject after fill -> ignored; ack for unknown id -> CancelUnknown
 // (never leave an unknown live order); ack for an order reconciliation marked cancelled ->
@@ -392,9 +394,26 @@ class Oms {
     // A replayed execution may be one the venue already counted into a cum_qty the engine booked as
     // a synthetic fill. Taking that quantity out of the pool here is what keeps it from being
     // booked twice, whether the order is still open, recently terminal or gone.
-    if (FASTMM_UNLIKELY((m.flags & OrderFillMsg::kReplayed) != 0))
-      take_synthetic(m.cl_ord_id, m.qty, u);
+    const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
+    if (FASTMM_UNLIKELY(replayed)) take_synthetic(m.cl_ord_id, m.qty, u);
     Handle<Order> h = lookup(m.cl_ord_id, u);
+    // A live execution can also arrive after the cum_qty that covers it: venues that publish order
+    // states and executions on separate topics (Bybit's `order` and `execution`) may end an order
+    // with its cumulative quantity first. The quantity was booked then as a synthetic fill; the
+    // part of this execution at or below that cum_qty (this execution spans cum_qty - qty to
+    // cum_qty on the venue's count) is the estimate being named, not new quantity.
+    // Without a cum_qty (Deribit's trades) only an order that has ended can tell: the venue's
+    // final cum_qty was all it will ever fill, so the execution is within the estimate.
+    if (FASTMM_UNLIKELY(!replayed && !synthetic_.empty()) && u.known) {
+      if (m.cum_qty.is_positive()) {
+        const Qty booked = h.valid() ? pool_.get(h).cum_qty : u.order.cum_qty;
+        Qty covered = booked - (m.cum_qty - m.qty);
+        if (covered > m.qty) covered = m.qty;
+        if (covered.is_positive()) take_synthetic(m.cl_ord_id, covered, u);
+      } else if (!h.valid()) {
+        take_synthetic(m.cl_ord_id, m.qty, u);
+      }
+    }
     ++stats_.fills;
     if (!h.valid()) {
       if (u.known) {

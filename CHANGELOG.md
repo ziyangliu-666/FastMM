@@ -120,6 +120,11 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- An order a venue reported ended with its cumulative quantity before the execution arrived
+  (Bybit's `order` and `execution` topics are not ordered; OKX pushes out of order) was booked
+  twice: once from the cum_qty as a synthetic fill, again from the live execution. A live execution
+  whose quantity lies under the booked cum_qty, or that has no cum_qty and arrives after the order
+  ended, now corrects the estimate's price and fee instead.
 - The WebSocket client and server accepted text messages that are not UTF-8 and close frames with a
   1-byte payload, a code that may not be sent (0-999, 1004-1006, 1015-2999, 5000 and up) or a
   reason that is not UTF-8: 86 of the 301 Autobahn cases failed. `WsMessageAssembler` now answers

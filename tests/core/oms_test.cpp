@@ -735,3 +735,81 @@ TEST_CASE("core.oms: an execution is deduplicated whether or not it names the or
   other.hdr.instrument = InstrumentId{1};
   CHECK(oms.on_fill(other).action == OmsAction::UnknownFill);
 }
+
+// Bybit publishes order states and executions on separate topics: an IOC can arrive as ended, its
+// cumExecQty covering fills whose executions come after. The end books the quantity at once; the
+// executions then name it instead of adding it again.
+TEST_CASE("core.oms: executions that arrive after the cum_qty covering them are not new quantity") {
+  SUBCASE("partial IOC: cancel ack with cum 3, then executions of 2 and 1") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Sell, 100, 5), id, Timestamp{1}));
+    static_cast<void>(oms.on_ack(ack(id)));
+    const OmsUpdate end = oms.on_cancel_ack(cancel_ack(id, 3));
+    CHECK(end.terminal);
+    CHECK(end.missed_qty == qt(3));
+    const OmsUpdate a = oms.on_fill(fill(id, 99, 2, 2, "e1"));
+    CHECK(a.action == OmsAction::LateFill);
+    CHECK(a.corrected_qty == qt(2));
+    CHECK(a.synthetic_px == px(100));
+    const OmsUpdate b = oms.on_fill(fill(id, 98, 1, 3, "e2"));
+    CHECK(b.corrected_qty == qt(1));
+    CHECK(oms.stats().corrected_fills == 2);
+  }
+  SUBCASE("an execution beyond the reported cum_qty is new quantity") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Buy, 100, 5), id, Timestamp{1}));
+    static_cast<void>(oms.on_ack(ack(id)));
+    oms.reconcile_begin();
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.cl_ord_id = id;
+    m.cum_qty = qt(2);
+    CHECK(oms.reconcile_open_order(m).missed_qty == qt(2));
+    // Executions 0 -> 2 (named late) and 2 -> 4 (new): only the first is the estimate.
+    CHECK(oms.on_fill(fill(id, 100, 2, 2, "e1")).corrected_qty == qt(2));
+    const OmsUpdate n = oms.on_fill(fill(id, 100, 2, 4, "e2"));
+    CHECK(n.corrected_qty == Qty{});
+    CHECK(n.order.cum_qty == qt(4));
+    // One execution straddling the estimate: 3 -> 5 against a booked 4 covers 1.
+    const ClientOrderId s = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Buy, 100, 5), s, Timestamp{2}));
+    static_cast<void>(oms.on_ack(ack(s)));
+    CHECK(oms.on_fill(fill(s, 100, 3, 3, "s1")).corrected_qty == Qty{});
+    OrderExpiredMsg x = expired(s);
+    x.cum_qty = qt(4);
+    CHECK(oms.on_expired(x).missed_qty == qt(1));
+    CHECK(oms.on_fill(fill(s, 100, 2, 5, "s2")).corrected_qty == qt(1));
+  }
+  SUBCASE("an execution without a cum_qty after the order ended (Deribit's trades)") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Sell, 100, 5), id, Timestamp{1}));
+    static_cast<void>(oms.on_ack(ack(id)));
+    CHECK(oms.on_cancel_ack(cancel_ack(id, 2)).missed_qty == qt(2));
+    CHECK(oms.on_fill(fill(id, 99, 2, 0, "d1")).corrected_qty == qt(2));
+    // On an order still open it cannot tell, and books the execution as new.
+    const ClientOrderId o = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Sell, 100, 5), o, Timestamp{2}));
+    static_cast<void>(oms.on_ack(ack(o)));
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile);
+    m.kind = ReconcileMsg::Kind::OpenOrder;
+    m.cl_ord_id = o;
+    m.cum_qty = qt(1);
+    oms.reconcile_begin();
+    CHECK(oms.reconcile_open_order(m).missed_qty == qt(1));
+    CHECK(oms.on_fill(fill(o, 99, 1, 0, "d2")).corrected_qty == Qty{});
+  }
+  SUBCASE("in stream order nothing is corrected") {
+    Oms oms;
+    const ClientOrderId id = oms.next_cl_ord_id();
+    REQUIRE(oms.submit(req(Side::Sell, 100, 5), id, Timestamp{1}));
+    static_cast<void>(oms.on_ack(ack(id)));
+    CHECK(oms.on_fill(fill(id, 99, 3, 3, "e1")).corrected_qty == Qty{});
+    CHECK(oms.on_cancel_ack(cancel_ack(id, 3)).missed_qty == Qty{});
+    CHECK(oms.stats().corrected_fills == 0);
+  }
+}
