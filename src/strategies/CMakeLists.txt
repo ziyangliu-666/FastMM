@@ -58,4 +58,5 @@ fastmm_generate_strategy_module(fastmm_strategies
   STRATEGIES
     fastmm::BasicMM           fastmm/strategies/basic_mm.hpp
     fastmm::AvellanedaStoikov fastmm/strategies/avellaneda_stoikov.hpp
-    fastmm::OptionsMM         fastmm/strategies/options_mm.hpp)
+    fastmm::OptionsMM         fastmm/strategies/options_mm.hpp
+    fastmm::Xmm               fastmm/strategies/xmm.hpp)

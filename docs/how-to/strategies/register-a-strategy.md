@@ -6,7 +6,7 @@ A strategy runs in backtests, replay and live trading once a registration functi
 
 - A strategy library exports one function, `void register_strategies(fastmm::StrategyRegistry& r)`, which calls `fastmm::register_strategy<S>(r)` once per strategy.
 - The file that defines the function includes `fastmm/strategies/factories.hpp`, so it compiles the strategy's engine for the simulator, replay and live trading.
-- Apps pass the function to `fastmm::cli::live`, `fastmm::cli::backtest` or `fastmm::cli::replay`. The built-in strategies (`basic_mm`, `avellaneda_stoikov`, `options_mm`) are always registered first.
+- Apps pass the function to `fastmm::cli::live`, `fastmm::cli::backtest` or `fastmm::cli::replay`. The built-in strategies (`basic_mm`, `avellaneda_stoikov`, `options_mm`, `xmm`) are always registered first.
 - Nothing registers itself: the app must call the function. There are no static initialisers and no whole-archive flags ([ADR-0012](../../adr/0012-strategy-developer-experience.md)).
 - A factory that is registered but never compiled is a link error, for example `undefined reference to fastmm::live_factory<mm::MicropriceMM>(...)`.
 - Registering the same strategy again does nothing. A name that different code already registered throws `fastmm::StrategyConflict`; the command lines print the message and exit with code 3.
