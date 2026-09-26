@@ -74,7 +74,7 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 152 | 100 | `reserved` | zero |
 | 252 | 4 | `crc32c` | CRC32C of bytes 0 to 251 |
 
-The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key` and `api_secret`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
+The configuration is `Config::effective_toml()`: the configuration after command-line overrides (`--strategy`, `--param`) as deterministic TOML, without `api_key`, `api_secret` and `api_passphrase`, zero-padded to a multiple of 64 bytes. The instrument records are `fastmm::Instrument` (128 bytes).
 
 The parameter table lists the strategy's parameters in schema order. Each entry is the type (`uint8`: 0 `int`, 1 `double`, 2 `bool`, 3 `decimal`, 4 `bps`, 5 `ms`), the name length (`uint8`) and the name; the table is zero-padded to a multiple of 64 bytes.
 

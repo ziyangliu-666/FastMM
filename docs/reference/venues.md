@@ -360,7 +360,7 @@ The venue fills the feed block of its status entry ([Status file](status-file.md
 
 ## Configuration keys
 
-Generic, parsed by FastMM for every venue: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` ([secrets](configuration.md#general-rules)), `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`.
+Generic, parsed by FastMM for every venue: `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret`, `api_passphrase` ([secrets](configuration.md#general-rules)), `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`.
 
 Everything else in a `[venues.<name>]` section belongs to its connector, which declares, validates and documents it: the tables under [Connectors](configuration.md#connectors) are generated from those declarations, one per `kind`. A key the connector does not own is a warning naming its line; a key of the wrong type stops the session.
 

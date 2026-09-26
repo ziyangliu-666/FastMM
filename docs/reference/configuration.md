@@ -10,9 +10,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 - Unknown keys are ignored with a warning that names the key and its line.
 - A key with the wrong type is an error, reported with its line and column.
 - Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are parsed as decimal text into fixed point, not through a `double`.
-- `fastmm-live` and `fastmm-gateway` replace `${NAME}` tokens in `[venues.<name>]` values: `ws_url`, `ws_api_url`, `rest_url`, `ca_file`, `api_key`, `api_secret` and every connector key. A variable that is not set is an error, except that `--dry-run` clears an unset `api_key` or `api_secret`.
-- A literal `api_key` or `api_secret` longer than 32 characters is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`; `--allow-inline-secrets` accepts it.
-- Logs and journals contain the configuration with `api_key` and `api_secret` masked.
+- `fastmm-live` and `fastmm-gateway` replace `${NAME}` tokens in `[venues.<name>]` values: `ws_url`, `ws_api_url`, `rest_url`, `ca_file`, `api_key`, `api_secret`, `api_passphrase` and every connector key. A variable that is not set is an error, except that `--dry-run` clears an unset `api_key`, `api_secret` or `api_passphrase`.
+- A literal `api_key`, `api_secret` or `api_passphrase` longer than 32 characters is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`; `--allow-inline-secrets` accepts it.
+- Logs and journals contain the configuration with `api_key`, `api_secret` and `api_passphrase` masked.
 - Types: `decimal` values are marked in the meaning; `any` keys accept a string or a number.
 
 ## `[engine]`
@@ -73,6 +73,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `rest_url` | string |  | REST base URL |
 | `api_key` | string |  | API key, written as "${VARIABLE}" |
 | `api_secret` | string |  | API secret, written as "${VARIABLE}" |
+| `api_passphrase` | string |  | API key passphrase where the venue has one (OKX), written as "${VARIABLE}" |
 | `testnet` | boolean |  | the endpoints are a testnet or demo environment (default true) |
 | `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
