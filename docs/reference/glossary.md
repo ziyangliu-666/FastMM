@@ -3,11 +3,11 @@
 | Term | Meaning |
 |---|---|
 | **ack** | a venue's confirmation that it accepted an order (`OrderAckMsg`); an order is working only after it |
-| **adverse selection** | the cost of a maker fill that happened because the price was about to move against the quote; it is the gap between the quoted half spread and the PnL actually realised ([Economics](../explanation/economics.md)) |
+| **adverse selection** | the cost of a maker fill that happened because the price was about to move against the quote; the gap between the quoted half spread and the PnL realised ([Economics](../explanation/economics.md)) |
 | **basis point (bp, bps)** | 0.01 % = 0.0001. `5_bps` is a `Ratio` of 0.0005; 5 bps of 60,000 USDT is 30 USDT |
 | **book** | the price levels of one instrument: an L2 book aggregates quantity per price, an L3 book keeps each order |
 | **book ticker** | a top-of-book update (best bid and ask with quantities) without depth |
-| **cancel-all** | a request that cancels every open order of an instrument or account; `fastmm-live` sends one per venue over REST at shutdown |
+| **cancel-all** | a request that cancels every open order of an instrument or account; `fastmm-live` sends one per venue over REST at shutdown (behind a gateway, the gateway cancels the strategy's orders instead) |
 | **cancel-replace** | amending a working order's price or quantity in one request; FastMM uses it when the venue and `supports_replace` allow, else cancel then new |
 | **channel** | one connection of a venue: 0 is market data, 1 is order entry and the user stream (`ConnectionStateMsg::channel`) |
 | **client order id** | FastMM's id of an order: the session epoch in the upper 32 bits and a sequence number in the lower 32 |
@@ -17,8 +17,10 @@
 | **engine clock** | the time the engine uses for all decisions, read once per event; recorded in the journal |
 | **epoch** | see *session epoch* |
 | **fill** | an execution of one of our orders; `on_fill` receives a `Fill` |
+| **funding** | a perpetual's periodic payment between longs and shorts; booked as realized PnL of the instrument, not as a fee (`EventType::Funding`) |
 | **fill ratio** | fills divided by new orders sent, reported by `fastmm-backtest` |
 | **fixed point** | integers with an implied scale: `Price`, `Qty` and `Notional` count units of 1e-8 ([Fixed point](fixed-point.md)) |
+| **gateway** | `fastmm-gateway`, a process that holds the venue sessions and the account's risk for up to 16 strategies attached over shared memory ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md)) |
 | **harness** | `StrategyHarness<S>`, a real engine with a simulated venue for unit tests |
 | **hook** | a strategy member function the engine calls on an event (`on_book`, `on_fill`, ...) |
 | **hot hook** | a Python strategy method marked `@fastmm.hot`, compiled by Numba and called by the engine thread without the GIL ([Hot hooks](python-api.md#hot-hooks)) |
@@ -42,13 +44,13 @@
 | **Ratio** | a dimensionless fixed-point factor; 1.0 is raw 100,000,000 and 1 bp is raw 10,000 |
 | **raw** | the integer inside a fixed-point value (`.raw`); `1.5_px` has raw 150,000,000 |
 | **rebate** | a negative fee: the venue pays the maker. `[venues.<name>.fees] maker_bps` below zero |
-| **reconciliation** | after a reconnect, the venue's open orders are compared with the OMS: Begin, open orders, End |
+| **reconciliation** | on every connect, and when the engine asks (`ControlCommand::Reconcile`), the venue's executions since the last known one are replayed and its open orders compared with the OMS: Begin, open orders, End |
 | **registry** | the table of strategies by name with their Sim, Replay and Live factories |
 | **replay** | running a journal back through the engine and strategy; `--verify` compares the order stream |
-| **session epoch** | a counter stored in `[engine] epoch_file` that makes client order ids unique across restarts |
+| **session epoch** | a counter stored in `[engine] epoch_file` (behind a gateway, the gateway's) that makes client order ids unique across restarts |
 | **sim exchange** | `fastmm-sim-exchange`, a local exchange that speaks the Binance Spot API ([Simulated exchange](sim-exchange.md)) |
 | **spread** | best ask minus best bid; a quoted spread is our ask minus our bid |
-| **stale** | a feed with no traffic for `stale_ms`; the engine pulls the venue's quotes |
+| **stale** | a feed with no traffic for `[venues.<name>] stale_ms`, which pulls the venue's quotes; a book older than `[risk] stale_md_ms` refuses new orders |
 | **STP** | self-trade prevention: an order that would trade against our own resting order is refused |
 | **strategy module** | a strategy library's registration function (`StrategyModule`) |
 | **testnet, Demo Mode** | practice environments of a venue with their own keys: Binance Demo Mode market data follows the real market, testnets have their own thin books |

@@ -22,7 +22,7 @@ Regenerate the type stub after changing the bindings:
 
 ## Building and publishing wheels
 
-`.github/workflows/wheels.yml` builds manylinux_2_28 x86_64 wheels of `fastmm-engine` for CPython 3.9-3.14 and of `fastmm-engine-live` for CPython 3.10-3.14 (each one tested with its test suite) and the `fastmm-engine` sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts; publishing is manual. `fastmm-engine-live` has no sdist.
+`.github/workflows/wheels.yml` builds manylinux_2_28 x86_64 wheels of `fastmm-engine` for CPython 3.9-3.14 and of `fastmm-engine-live` for CPython 3.10-3.14 (each one tested with its test suite) and the `fastmm-engine` sdist, for a `v*` tag or when run by hand, and keeps them as workflow artifacts. `fastmm-engine-live` has no sdist.
 
 `fastmm-engine-live` links OpenSSL statically, built by `scripts/wheels/build-openssl.sh` from a pinned, checksum-verified release; every OpenSSL security release needs a new `fastmm-engine-live` release. To build it locally:
 
@@ -34,6 +34,6 @@ OPENSSL_ROOT_DIR="$HOME/.cache/fastmm-openssl" .venv/bin/pip wheel ./python/live
 
 `FASTMM_OPENSSL_STATIC=OFF` links the system's shared OpenSSL instead; the check script then fails.
 
-Publishing to PyPI makes the package and its source public. It happens on a `v*` tag, after the three build jobs pass, with the repository secret `PYPI_API_TOKEN` in the `pypi` environment; a run without a tag publishes only when started by hand with **publish** checked. The whole procedure is [Cutting a release](releasing.md).
+Publishing to PyPI happens on a `v*` tag, after the three build jobs pass, with the repository secret `PYPI_API_TOKEN` in the `pypi` environment; a run without a tag publishes only when started by hand with **publish** checked. See [Cutting a release](releasing.md).
 
 Locally, `python -m build --sdist && python -m twine check dist/*` checks the sdist metadata.

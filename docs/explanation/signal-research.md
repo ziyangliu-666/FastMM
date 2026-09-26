@@ -29,14 +29,14 @@ Per horizon, over the rows that have a forward mid:
 - a table of the forward mid move by signal bucket, in basis points of the mid, with equal row counts per bucket (ten of them is a decile table);
 - the conditional touch markout.
 
-The touch markout is the one that decides whether a passive quote is viable. For a row with mid `m`, best bid `b`, best ask `a` and forward mid `f`:
+The touch markout decides whether a passive quote is viable. For a row with mid `m`, best bid `b`, best ask `a` and forward mid `f`:
 
 ```text
 buy_bps  = (f - b) / m * 1e4      a resting bid that filled at b, marked at f
 sell_bps = (a - f) / m * 1e4      a resting ask that filled at a, marked at f
 ```
 
-Both split into the half spread `(m - b) / m` plus or minus the move `(f - m) / m`, so the two sides of one quote average to the half spread whatever the signal says. Conditioning is what makes the split informative: inside a bucket, only one of the two sides is the one a trade comes to. The numbers are gross of fees; subtract the venue's maker rate per side to compare.
+Both split into the half spread `(m - b) / m` plus or minus the move `(f - m) / m`, so the two sides of one quote average to the half spread whatever the signal says. Conditioning makes the split informative: inside a bucket, a trade mostly comes to one side. The numbers are gross of fees; subtract the venue's maker rate per side to compare.
 
 `evaluate_signal(table, values)` takes either the name of a built-in feature (`imbalance`, `microprice_edge_bps`, `spread_bps`) or a float64 array with one value per row, so an out-of-tree predictor is measured the same way.
 
@@ -101,7 +101,7 @@ Restricted to the 2 253 431 timestamps where a trade printed, which is where a f
 
 The fills `basic_mm` got are worth -0.663 bps at 1 s, -0.854 bps at 10 s and -0.849 bps at 1 minute. The adverse selection is therefore not a property of the touch; it is a property of which fills a quote gets.
 
-Conditioning on imbalance says exactly that. Imbalance deciles over trade rows, 225 343 rows each, 1 s horizon:
+Conditioning on imbalance shows it. Imbalance deciles over trade rows, 225 343 rows each, 1 s horizon:
 
 | decile | mean imbalance | resting bid | resting ask |
 |---|---|---|---|
@@ -118,7 +118,7 @@ Conditioning on imbalance says exactly that. Imbalance deciles over trade rows, 
 
 In the most ask-heavy decile the trade comes to the bid, and that bid is worth -0.915 bps. In the most bid-heavy decile the trade lifts the ask, and that ask is worth -0.755 bps. A symmetric quoter takes the negative number in every bucket, which is why the realised -0.663 bps sits inside this range and not near the +0.03 bps average.
 
-Conditioning identifies the bad side. Whether it produces a usable one is a different question, and it is the edge of what this measurement answers: the touch markout is what a fill is worth given the state, not the chance of getting that fill. The best bucket of either signal, on the side the flow is moving away from, is:
+Conditioning identifies the bad side. Whether it produces a usable one is beyond this measurement: the touch markout is what a fill is worth given the state, not the chance of getting that fill. The best bucket of either signal, on the side the flow is moving away from, is:
 
 | horizon | imbalance | microprice edge |
 |---|---|---|
@@ -138,9 +138,9 @@ The Binance USD-M VIP-0 maker rate is 2 bps per fill. At 1 s and 10 s, the horiz
 
 The capture is 0.032 bps because that is what the touch is worth. The mean half spread at a trade is 0.046 bps, and the strategy's `half_spread_bps = 0.007` puts its quote at the touch (70.9% of fills are at the venue's best price on its side). There is no configuration of a touch quote that captures more than a few hundredths of a basis point on this instrument.
 
-The markout is -0.66 bps at 1 s because the fills are drawn from the buckets where the quote is on the wrong side of the imbalance, not from the day's average state. Both halves are visible in the extractor without running the strategy.
+The markout is -0.66 bps at 1 s because the fills are drawn from the buckets where the quote is on the wrong side of the imbalance, not from the day's average state. Both are visible in the extractor without running the strategy.
 
-The gap is therefore not a tuning problem, and the third route out in [Economics of the shipped strategies](economics.md#the-arithmetic-you-have-to-beat) does not close it at this holding period: three hundredths of a basis point of gross capture cannot pay two basis points of fee, and at 1 s and 10 s the best conditional fill in the day is worth less than the fee even before the question of whether it is obtainable.
+The gap is not a tuning problem, and the third route out in [Economics of the shipped strategies](economics.md#the-arithmetic-you-have-to-beat) does not close it at this holding period: three hundredths of a basis point of gross capture cannot pay two basis points of fee, and at 1 s and 10 s the best conditional fill in the day is worth less than the fee even before the question of whether it is obtainable.
 
 Whether a fair-value offset helps at a longer horizon is not something this measurement settles. The conditional markout prices a fill given the state; a strategy that skews its quote changes which fills it gets, and that is a fill-model question. On a top-of-book feed the `l2_queue` model's fill counts are a guess ([Backtesting](backtesting.md)), so a backtest of a skewed variant on this day would produce a number that could not be defended. The measurement that would settle it needs a feed with depth.
 

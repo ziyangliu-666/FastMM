@@ -10,9 +10,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 - Unknown keys are ignored with a warning that names the key and its line.
 - A key with the wrong type is an error, reported with its line and column.
 - Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are parsed as decimal text into fixed point, not through a `double`.
-- Inside `[venues.<name>]`, the string keys `kind`, `ws_url`, `ws_api_url`, `rest_url`, `api_key`, `api_secret` and `ca_file` support `${NAME}` substitution. Only exact `${NAME}` tokens are replaced, and a variable that is not set is an error. `fastmm-live --dry-run` drops unset `api_key` and `api_secret` variables instead.
-- Under `[venues.<name>]`, a literal value longer than 32 characters under a key whose name contains `key`, `secret`, `token` or `password` is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`. `fastmm-live --allow-inline-secrets` turns this check off.
-- Logs and journals contain the configuration without `api_key` and `api_secret`.
+- `fastmm-live` and `fastmm-gateway` replace `${NAME}` tokens in `[venues.<name>]` values: `ws_url`, `ws_api_url`, `rest_url`, `ca_file`, `api_key`, `api_secret` and every connector key. A variable that is not set is an error, except that `--dry-run` clears an unset `api_key` or `api_secret`.
+- A literal `api_key` or `api_secret` longer than 32 characters is refused with `venues.<name>.<key> looks like an inline secret; use ${ENV_VAR} or --allow-inline-secrets`; `--allow-inline-secrets` accepts it.
+- Logs and journals contain the configuration with `api_key` and `api_secret` masked.
 - Types: `decimal` values are marked in the meaning; `any` keys accept a string or a number.
 
 ## `[engine]`
@@ -92,11 +92,10 @@ One table per venue; `<name>` is how instruments refer to it.
 
 ### Connectors
 
-The connector `kind` names owns the rest of the section. It declares its keys, validates them and
-reports an unknown one with its line, so the central schema
-(`include/fastmm/config/schema.hpp`) knows only the generic keys above. A project can register
-its own connector and its own keys without touching FastMM
-([Add a venue](../how-to/venues/add-a-venue.md)); these ship with it.
+The connector `kind` names owns the rest of the section: it declares its keys, validates them and
+reports an unknown one with its line. The central schema (`include/fastmm/config/schema.hpp`)
+knows only the generic keys above. A project can register its own connector and keys
+([Add a venue](../how-to/venues/add-a-venue.md)). The built-in connectors:
 
 <!-- BEGIN config-keys connectors -->
 | `kind` | Aliases | Connector | API keys | Order entry | Replace | Positions |
@@ -108,8 +107,8 @@ its own connector and its own keys without touching FastMM
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
 <!-- END config-keys -->
 
-`Replace` and `Order entry` are what the connector can do; whether a given session does depends on
-its configuration (a dry run, `order_entry = "none"`, missing credentials).
+`Replace` and `Order entry` are what the connector can do; a session may not, depending on its
+configuration (a dry run, `order_entry = "none"`, missing credentials).
 
 #### `binance_spot`
 
@@ -321,7 +320,7 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 
 ## `[gateway]`
 
-Read by `fastmm-gateway` only: guards on the account, shared by every strategy attached to the gateway and checked before an order reaches the connector ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)). The rate and `max_open_notional` are per venue; `max_loss`, `max_gross_notional` and `max_net_notional` are over the account's positions on every venue, which the gateway books from the fills that pass through it and marks at the mids of its books. `max_loss` is carried in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`) and latches like `[risk] max_loss`. Each strategy keeps its own `[risk]`.
+Read by `fastmm-gateway` only: account guards over every attached strategy, checked before an order reaches the connector ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)). The rate and `max_open_notional` are per venue; `max_loss`, `max_gross_notional` and `max_net_notional` are over the account's positions on every venue, which the gateway books from the fills that pass through it and marks at the mids of its books. `max_loss` is carried in the gateway's kill file (`[engine] kill_file`, default `<journal_dir>/<name>.kill`) and latches like `[risk] max_loss`. Each strategy keeps its own `[risk]`.
 
 <!-- BEGIN config-keys gateway -->
 | Key | Type | Required | Meaning |
@@ -336,7 +335,7 @@ Read by `fastmm-gateway` only: guards on the account, shared by every strategy a
 
 ## `[accounting]`
 
-Instruments that settle in different currencies (an inverse contract in its base coin, a linear one in its quote currency) can share a session or a gateway when their totals are converted to one reporting currency. `fastmm-live`, `fastmm-gateway`, the backtester and replay read this section.
+Converts totals to one reporting currency, so instruments that settle in different currencies (an inverse contract in its base coin, a linear one in its quote currency) can share a session or a gateway. `fastmm-live`, `fastmm-gateway`, the backtester and replay read this section.
 
 ```toml
 [accounting]
@@ -351,7 +350,7 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 - Once the venues' reference data has loaded, every settlement currency of an enabled instrument (of every instrument, in `fastmm-gateway`) must be `reporting_currency` or have a source. Otherwise `fastmm-live` and `fastmm-gateway` exit with code 3 while `max_loss` or an exposure cap is set, and warn and convert nothing when none is.
 - A rate is unknown until its source's book is valid, and not current while that book is invalid or older than `[risk] stale_md_ms`. With no current rate, an order that adds to exposure in that currency is refused (`FxRateUnknown`, `GatewayFxRateUnknown` in the gateway) while `max_loss` or an exposure cap is set; one that reduces a position passes. PnL already booked stays measured at the last rate; a currency whose rate was never known counts as zero, and nothing can be traded in it until it is.
 - Fees are booked in the settlement currency (a commission in the base asset is valued at the fill price); a commission in another asset is not booked, so it needs no source.
-- Without this section nothing is converted: a session whose instruments share one settlement currency needs none.
+- Without this section nothing is converted.
 
 <!-- BEGIN config-keys accounting -->
 | Key | Type | Required | Meaning |
@@ -380,7 +379,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `path` | string | `""` | Data file, the positional argument of a bare `source` name. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
 | `seed` | int | `[sim] seed`, else `1` | Seed for the synthetic market and the simulated venue; the engine's random generator uses `[engine] rng_seed` |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
-| `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Treat its results as optimistic |
+| `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Its results are optimistic |
 | `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do. `fastmm-data fill-check` compares values against a live session ([Check the fill model](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)) |
 | `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue and acknowledgements back, µs |
 | `latency_jitter_us` | int | `50` | Random jitter added to that latency, µs, seeded |
@@ -397,7 +396,7 @@ Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=va
 
 ## `[sim]`
 
-Parameters of the synthetic market used when the data source is synthetic; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` and `fastmm-sim-itch` read their own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml), [fastmm-sim-itch](sim-itch.md#configuration-configssim-itchtoml)).
+The synthetic market; free-form in the schema. Prices and sizes use the first instrument's `tick` and `lot`. `fastmm-sim-exchange` and `fastmm-sim-itch` read their own keys from `[sim]` too ([Simulated exchange](sim-exchange.md#configuration-configssimtoml), [fastmm-sim-itch](sim-itch.md#configuration-configssim-itchtoml)).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
