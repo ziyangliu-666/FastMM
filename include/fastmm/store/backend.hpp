@@ -99,6 +99,9 @@ class Backend {
   virtual void order(const OrderRecord& r) = 0;
   virtual void position(const PositionRecord& r) = 0;
   virtual void kill(const KillRecord& r) = 0;
+  // A funding payment. The default drops it: a backend written before funding was booked keeps
+  // building (its positions still carry funding inside realized).
+  virtual void funding(const FundingRecord& /*r*/) {}
   virtual void commit() = 0;
 
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;

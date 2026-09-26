@@ -70,10 +70,18 @@ class SqliteReader final : public Reader {
     return {};
   }
 
+  // A column schema 4 added, or zero in an older store.
+  [[nodiscard]] std::string v4(std::string_view column, std::string_view as = {}) const {
+    const std::string name(as.empty() ? column : as);
+    return version_ >= 4 ? std::string(column) + " AS " + name : "0 AS " + name;
+  }
+
   [[nodiscard]] Result<Rows, std::string> sessions(const QueryFilter& f) override {
     std::string sql =
         "SELECT session_id, engine, strategy, started_ns, stopped_ns, dry_run, fills,"
-        " realized_raw, unrealized_raw, fees_raw, clean_shutdown, exit_code, kill_reason,"
+        " realized_raw, " +
+        v4("funding_raw") +
+        ", unrealized_raw, fees_raw, clean_shutdown, exit_code, kill_reason,"
         " records_dropped FROM sessions";
     Where w;
     w.engine(f);
@@ -106,10 +114,12 @@ class SqliteReader final : public Reader {
     return query(sql + w.text() + " ORDER BY updated_ns" + limit(f), w);
   }
 
+  // Realized includes funding: `funding` says how much of it.
   [[nodiscard]] Result<Rows, std::string> pnl(const QueryFilter& f) override {
     std::string sql =
-        "SELECT day, symbol, settlement_ccy, SUM(realized_raw) AS realized_raw,"
-        " SUM(fees_raw) AS fees_raw, SUM(realized_raw) - SUM(fees_raw) AS net_raw,"
+        "SELECT day, symbol, settlement_ccy, SUM(realized_raw) AS realized_raw, " +
+        v4("SUM(funding_raw)", "funding_raw") +
+        ", SUM(fees_raw) AS fees_raw, SUM(realized_raw) - SUM(fees_raw) AS net_raw,"
         " SUM(gross_traded_raw) AS gross_traded_raw, SUM(fills) AS fills FROM pnl_daily";
     Where w;
     w.session(f);
@@ -121,10 +131,24 @@ class SqliteReader final : public Reader {
         w);
   }
 
+  [[nodiscard]] Result<Rows, std::string> funding(const QueryFilter& f) override {
+    if (version_ < 4) return Rows{};
+    std::string sql =
+        "SELECT ts_ns, symbol, amount_raw, asset, funding_id, position_qty_raw,"
+        " position_funding_raw, replayed, session_id FROM funding";
+    Where w;
+    w.session(f);
+    w.symbol(f);
+    w.day_range(f);
+    w.engine_join(f, "funding");
+    return query(sql + w.text() + " ORDER BY ts_ns" + limit(f), w);
+  }
+
   [[nodiscard]] Result<Rows, std::string> positions(const QueryFilter& f) override {
     std::string sql =
-        "SELECT p.ts_ns, p.symbol, p.qty_raw, p.avg_px_raw, p.realized_raw, p.unrealized_raw,"
-        " p.fees_raw, p.fills, p.session_id FROM positions p JOIN"
+        "SELECT p.ts_ns, p.symbol, p.qty_raw, p.avg_px_raw, p.realized_raw, " +
+        v4("p.funding_raw", "funding_raw") +
+        ", p.unrealized_raw, p.fees_raw, p.fills, p.session_id FROM positions p JOIN"
         " (SELECT session_id, instrument_id, MAX(seq) AS seq FROM positions GROUP BY session_id,"
         " instrument_id) l ON p.session_id = l.session_id AND p.seq = l.seq";
     Where w;
@@ -139,7 +163,8 @@ class SqliteReader final : public Reader {
     std::string sql =
         "SELECT session_id, started_ns, stopped_ns, strategy, kill_reason, kill_latched,"
         " clean_shutdown, exit_code, realized_raw, unrealized_raw, fees_raw, fills,"
-        " records_dropped, journal_complete FROM sessions";
+        " records_dropped, journal_complete, " +
+        v4("funding_raw") + " FROM sessions";
     Where w;
     w.engine(f);
     w.session(f);
@@ -175,15 +200,17 @@ class SqliteReader final : public Reader {
     rec.records_dropped = static_cast<std::uint64_t>(sqlite3_column_int64(st, 12));
     rec.journal_complete =
         sqlite3_column_type(st, 13) == SQLITE_NULL || sqlite3_column_int(st, 13) != 0;
+    rec.funding = decimal(sqlite3_column_int64(st, 14));
     sqlite3_finalize(st);
 
     QueryFilter one;
     one.session_id = rec.session_id;
     if (auto r = positions(one); r) {
       for (const auto& row : r->rows) {
-        if (row.size() < 8) continue;
+        if (row.size() < 9) continue;
         rec.positions.push_back(row[1] + " " + row[2] + " @ " + row[3] + " realized=" + row[4] +
-                                " unrealized=" + row[5] + " fees=" + row[6] + " fills=" + row[7]);
+                                " (funding " + row[5] + ") unrealized=" + row[6] +
+                                " fees=" + row[7] + " fills=" + row[8]);
       }
     }
     collect(rec.open_orders,
@@ -279,10 +306,16 @@ class SqliteReader final : public Reader {
         std::int64_t venue = 0;
         std::int64_t ms = 0;
       };
+      // Schema 4: funding payments are venue events too, and their ids are known like trade ids.
+      const bool funding = version_ >= 4;
       std::vector<Last> lasts;
       collect(lasts,
-              "SELECT venue_id, MAX(exch_ns) / 1000000 FROM fills WHERE session_id = ?"
-              " AND exch_ns > 0 GROUP BY venue_id ORDER BY venue_id",
+              funding ? "SELECT venue_id, MAX(ns) / 1000000 FROM (SELECT venue_id, exch_ns AS ns"
+                        " FROM fills WHERE session_id = ?1 AND exch_ns > 0 UNION ALL SELECT"
+                        " venue_id, exch_ns FROM funding WHERE session_id = ?1 AND exch_ns > 0)"
+                        " GROUP BY venue_id ORDER BY venue_id"
+                      : "SELECT venue_id, MAX(exch_ns) / 1000000 FROM fills WHERE session_id = ?"
+                        " AND exch_ns > 0 GROUP BY venue_id ORDER BY venue_id",
               session,
               [](sqlite3_stmt* s) {
                 return Last{sqlite3_column_int64(s, 0), sqlite3_column_int64(s, 1)};
@@ -293,14 +326,19 @@ class SqliteReader final : public Reader {
         v.venue = name_of(l.venue);
         v.last_fill_ms = l.ms;
         const std::int64_t want = l.ms - Recovery::kResumeOverlapMs;
-        std::vector<Stamped> rows = newest(
-            "SELECT exch_ns / 1000000, exec_id FROM fills WHERE session_id = ?1"
-            " AND venue_id = ?3 AND exch_ns >= ?2 * 1000000 AND exec_id <> ''"
-            " ORDER BY exch_ns DESC" +
-                limit,
-            session,
-            want,
-            static_cast<int>(l.venue));
+        const std::string fills_sql =
+            "SELECT exch_ns AS ns, exec_id AS id FROM fills WHERE session_id = ?1"
+            " AND venue_id = ?3 AND exch_ns >= ?2 * 1000000 AND exec_id <> ''";
+        const std::string funding_sql =
+            " UNION ALL SELECT exch_ns, '" + std::string(kFundingIdPrefix) +
+            "' || funding_id FROM funding WHERE session_id = ?1 AND venue_id = ?3"
+            " AND exch_ns >= ?2 * 1000000 AND funding_id <> ''";
+        std::string sql = "SELECT ns / 1000000, id FROM (";
+        sql += fills_sql;
+        if (funding) sql += funding_sql;
+        sql += ") ORDER BY ns DESC";
+        sql += limit;
+        std::vector<Stamped> rows = newest(sql, session, want, static_cast<int>(l.venue));
         v.since_ms = fit(rows, want, v.known_exec_ids);
         v.shrunk = v.since_ms != want;
         rec.venue_resume.push_back(std::move(v));

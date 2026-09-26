@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 FIXED_SCALE = 1e-8
 """Scale of the raw int64 fixed-point columns (`price_raw`, `qty_raw`, `realized_raw`, ...)."""
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """Schema version this module reads; a newer store is refused."""
 
 _NS_COLUMNS = frozenset(
@@ -199,7 +199,7 @@ class Store:
         instrument: Optional[str] = None,
         by: str = "instrument",
     ) -> "pd.DataFrame":
-        """Realised, fees and net by UTC day.
+        """Realised (with the funding in it, schema 4), fees and net by UTC day.
 
         `by` is "instrument" (a row per day and symbol) or "currency" (a row per day and
         settlement currency). Unrealised PnL is not summed across days: it is a mark, not a flow.
@@ -221,6 +221,41 @@ class Store:
         view = "pnl_by_day" if by == "instrument" else "pnl_by_currency"
         order = "day, symbol" if by == "instrument" else "day, settlement_ccy"
         return self.query(f"SELECT * FROM {view}" + _where(clauses) + f" ORDER BY {order}", params)
+
+    def funding(
+        self,
+        session: Optional[int] = None,
+        instrument: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> "pd.DataFrame":
+        """Every perpetual funding payment booked: `amount` in `asset`, negative paid.
+
+        Funding is realized PnL; `pnl()` and `positions()` carry it inside `realized` and say how
+        much of it in `funding`. A store from before schema 4 has none.
+        """
+        if self.schema_version < 4:
+            return self.query("SELECT 1 AS none WHERE 0")
+        clauses, params = [], []
+        if session:
+            clauses.append("session_id = ?")
+            params.append(session)
+        if instrument:
+            clauses.append("symbol = ?")
+            params.append(instrument)
+        if since:
+            clauses.append("day >= ?")
+            params.append(since)
+        if until:
+            clauses.append("day <= ?")
+            params.append(until)
+        return self.query(
+            "SELECT session_id, ts_ns, exch_ns, symbol, amount_raw, asset, funding_id,"
+            " position_qty_raw, position_funding_raw, replayed FROM funding"
+            + _where(clauses)
+            + " ORDER BY ts_ns",
+            params,
+        )
 
     def kill_events(self, session: Optional[int] = None) -> "pd.DataFrame":
         """Every kill switch trip, global or per venue, with the reason and the PnL at the time."""

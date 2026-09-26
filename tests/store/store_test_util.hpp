@@ -145,6 +145,34 @@ inline OrderRecord store_replaced(std::uint64_t session,
   return r;
 }
 
+// A funding payment of `amount_raw` on instrument 0, paid at venue time `exch_ns`.
+inline FundingRecord store_funding(std::uint64_t session,
+                                   std::uint64_t seq,
+                                   std::int64_t ts_ns,
+                                   std::int64_t exch_ns,
+                                   std::int64_t amount_raw,
+                                   std::int64_t position_funding_raw,
+                                   const std::string& funding_id) {
+  FundingRecord r{};
+  r.hdr.len = sizeof(FundingRecord);
+  r.hdr.type = RecordType::Funding;
+  r.hdr.version = kRecordVersion;
+  r.hdr.instrument = InstrumentId{0};
+  r.hdr.venue = VenueId{0};
+  r.hdr.seq = seq;
+  r.hdr.session_id = session;
+  r.hdr.engine_ts = Timestamp{ts_ns};
+  r.hdr.exch_ts = Timestamp{exch_ns};
+  r.amount = Notional::from_raw(amount_raw);
+  r.position_qty = Qty::from_decimal("2").value();
+  r.position_realized = Notional::from_raw(position_funding_raw);
+  r.position_funding = Notional::from_raw(position_funding_raw);
+  r.total_funding = Notional::from_raw(position_funding_raw);
+  r.funding_id.assign(funding_id);
+  r.asset.assign("USDT");
+  return r;
+}
+
 inline KillRecord store_kill(std::uint64_t session,
                              std::uint64_t seq,
                              std::int64_t ts_ns,

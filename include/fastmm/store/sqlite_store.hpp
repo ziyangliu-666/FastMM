@@ -16,7 +16,7 @@
 namespace fastmm::store {
 
 // Bumped whenever the schema changes; sqlite_schema.cpp holds one migration step per version.
-inline constexpr int kSqliteSchemaVersion = 3;
+inline constexpr int kSqliteSchemaVersion = 4;
 
 [[nodiscard]] std::unique_ptr<Backend> make_sqlite_backend();
 [[nodiscard]] std::unique_ptr<Reader> make_sqlite_reader();

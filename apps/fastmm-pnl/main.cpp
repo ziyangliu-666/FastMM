@@ -124,7 +124,8 @@ static int run(int argc, char** argv) {
       {"sessions", "one row per session: when it ran, what it made, how it ended"},
       {"fills", "one row per execution"},
       {"orders", "one row per order, in its last known state"},
-      {"pnl", "realised, fees and net by UTC day and instrument"},
+      {"pnl", "realised (and the funding in it), fees and net by UTC day and instrument"},
+      {"funding", "one row per perpetual funding payment"},
       {"positions", "the last position snapshot of each session and instrument"},
       {"recover", "what the newest session left behind"},
   };
@@ -183,8 +184,9 @@ static int run(int argc, char** argv) {
                s.exit_code,
                s.kill_reason.empty() ? "None" : s.kill_reason,
                s.kill_latched ? ", latched" : "");
-    fmt::print("  pnl       realized {} unrealized {} fees {} net {}\n",
+    fmt::print("  pnl       realized {} (funding {}) unrealized {} fees {} net {}\n",
                s.realized,
+               s.funding,
                s.unrealized,
                s.fees,
                s.net);
@@ -212,6 +214,8 @@ static int run(int argc, char** argv) {
     rows = reader->orders(f);
   } else if (command == "pnl") {
     rows = reader->pnl(f);
+  } else if (command == "funding") {
+    rows = reader->funding(f);
   } else if (command == "positions") {
     rows = reader->positions(f);
   } else {

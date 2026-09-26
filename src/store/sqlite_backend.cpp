@@ -310,8 +310,32 @@ class SqliteBackend final : public Backend {
     b.i(r.total_unrealized.raw);
     b.i(r.total_fees.raw);
     b.i(r.pnl_carry.raw);
+    b.i(r.funding.raw);
+    b.i(r.total_funding.raw);
     step(ins_position_.get(), "insert position");
     roll_up(r);
+  }
+
+  void funding(const FundingRecord& r) override {
+    if (db_ == nullptr) return;
+    const std::uint32_t id = r.hdr.instrument.value;
+    Bind b(ins_funding_.get());
+    b.u(r.hdr.session_id);
+    b.u(r.hdr.seq);
+    b.i(r.hdr.engine_ts.ns);
+    b.t(utc_day(r.hdr.engine_ts.ns));
+    b.i(r.hdr.exch_ts.ns);
+    b.i(id);
+    b.i(r.hdr.venue.value);
+    b.t(symbol(id));
+    b.t(to_str(r.funding_id));
+    b.t(r.asset.view());
+    b.i(r.amount.raw);
+    b.i(r.position_qty.raw);
+    b.i(r.position_realized.raw);
+    b.i(r.position_funding.raw);
+    b.b((r.hdr.flags & RecordHeader::kReplayed) != 0);
+    step(ins_funding_.get(), "insert funding");
   }
 
   void kill(const KillRecord& r) override {
@@ -355,6 +379,7 @@ class SqliteBackend final : public Backend {
     b.i(s.stats.realized_pnl_raw);
     b.i(s.stats.unrealized_pnl_raw);
     b.i(s.stats.fees_raw);
+    b.i(s.stats.funding_raw);
     b.u(s.session_id);
     if (sqlite3_step(upd_session_.get()) != SQLITE_DONE)
       return fail(error_of(db_, "update session"));
@@ -379,6 +404,7 @@ class SqliteBackend final : public Backend {
     upd_replaced_.reset();
     ins_position_.reset();
     ins_kill_.reset();
+    ins_funding_.reset();
     ins_pnl_.reset();
     if (db_ != nullptr) {
       static_cast<void>(sqlite3_close_v2(db_));
@@ -398,6 +424,7 @@ class SqliteBackend final : public Backend {
     std::int64_t fees = 0;
     std::int64_t gross = 0;
     std::int64_t fills = 0;
+    std::int64_t funding = 0;
   };
 
   [[nodiscard]] std::string_view symbol(std::uint32_t id) const noexcept {
@@ -434,7 +461,12 @@ class SqliteBackend final : public Backend {
     const std::int64_t d_fees = p.fees.raw - prev.fees;
     const std::int64_t d_gross = p.gross_traded.raw - prev.gross;
     const std::int64_t d_fills = static_cast<std::int64_t>(p.fills) - prev.fills;
-    prev = Prev{p.realized.raw, p.fees.raw, p.gross_traded.raw, static_cast<std::int64_t>(p.fills)};
+    const std::int64_t d_funding = r.funding.raw - prev.funding;
+    prev = Prev{p.realized.raw,
+                p.fees.raw,
+                p.gross_traded.raw,
+                static_cast<std::int64_t>(p.fills),
+                r.funding.raw};
     Bind b(ins_pnl_.get());
     b.u(r.hdr.session_id);
     b.t(utc_day(r.hdr.engine_ts.ns));
@@ -448,6 +480,7 @@ class SqliteBackend final : public Backend {
     b.i(d_gross);
     b.i(d_fills);
     b.i(r.hdr.engine_ts.ns);
+    b.i(d_funding);
     step(ins_pnl_.get(), "upsert pnl_daily");
   }
 
@@ -465,7 +498,8 @@ class SqliteBackend final : public Backend {
          "UPDATE sessions SET stopped_ns=?, clean_shutdown=?, exit_code=?, kill_reason=?,"
          " kill_latched=?, journal_complete=?, journal_bytes=?, events=?, orders_sent=?,"
          " cancels_sent=?, replaces_sent=?, fills=?, risk_rejects=?, venue_rejects=?,"
-         " records_dropped=?, realized_raw=?, unrealized_raw=?, fees_raw=? WHERE session_id=?"},
+         " records_dropped=?, realized_raw=?, unrealized_raw=?, fees_raw=?, funding_raw=?"
+         " WHERE session_id=?"},
         {&ins_journal_, "INSERT OR REPLACE INTO session_journals VALUES (?,?,?)"},
         {&ins_instrument_, "INSERT OR REPLACE INTO instruments VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_fill_,
@@ -487,17 +521,19 @@ class SqliteBackend final : public Backend {
          " updates=orders.updates+1 WHERE session_id=? AND cl_ord_id=?"},
         {&ins_position_,
          "INSERT OR IGNORE INTO positions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-         "?)"},
+         "?,?,?)"},
         {&ins_kill_, "INSERT OR IGNORE INTO kill_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"},
+        {&ins_funding_, "INSERT OR IGNORE INTO funding VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"},
         {&ins_pnl_,
          "INSERT INTO pnl_daily (session_id, day, instrument_id, symbol, settlement_ccy,"
-         " realized_raw, fees_raw, unrealized_raw, qty_raw, gross_traded_raw, fills, last_ns)"
-         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+         " realized_raw, fees_raw, unrealized_raw, qty_raw, gross_traded_raw, fills, last_ns,"
+         " funding_raw) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
          " ON CONFLICT(session_id, day, instrument_id) DO UPDATE SET"
          " realized_raw=pnl_daily.realized_raw+excluded.realized_raw,"
          " fees_raw=pnl_daily.fees_raw+excluded.fees_raw,"
          " gross_traded_raw=pnl_daily.gross_traded_raw+excluded.gross_traded_raw,"
          " fills=pnl_daily.fills+excluded.fills,"
+         " funding_raw=pnl_daily.funding_raw+excluded.funding_raw,"
          " unrealized_raw=excluded.unrealized_raw, qty_raw=excluded.qty_raw,"
          " last_ns=excluded.last_ns"},
     };
@@ -526,6 +562,7 @@ class SqliteBackend final : public Backend {
   Stmt upd_replaced_;
   Stmt ins_position_;
   Stmt ins_kill_;
+  Stmt ins_funding_;
   Stmt ins_pnl_;
 };
 

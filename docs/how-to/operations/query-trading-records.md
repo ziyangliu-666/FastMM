@@ -17,13 +17,13 @@ build/release/bin/fastmm-pnl pnl --since yesterday --until yesterday
 ```
 
 ```text
-day         symbol   settlement_ccy  realized  fees      net       gross_traded  fills
-2024-03-04  BTCUSDT  USDT            12.4      0.31      12.09     4.2           186
-2024-03-04  ETHUSDT  USDT            -3.1      0.09      -3.19     11.5          204
+day         symbol   settlement_ccy  realized  funding  fees      net       gross_traded  fills
+2024-03-04  BTCUSDT  USDT            12.4      -0.6     0.31      12.09     4.2           186
+2024-03-04  ETHUSDT  USDT            -3.1      0        0.09      -3.19     11.5          204
 2 row(s)
 ```
 
-`--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
+`--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. `funding` is the part of `realized` that perpetual funding paid or received. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
 
 Add `--instrument BTCUSDT` for one symbol, `--engine mm1` for one deployment, `--csv` to pipe it somewhere.
 
@@ -39,6 +39,14 @@ Instruments that settle in different currencies must not be added: the `settleme
 sqlite3 -header -column runs/mm1.db \
   "SELECT day, settlement_ccy, net_raw / 1e8 AS net FROM pnl_by_currency ORDER BY day"
 ```
+
+## What did funding cost
+
+```bash
+build/release/bin/fastmm-pnl funding --since 2024-03-01 --instrument BTCUSDT
+```
+
+One row per payment: `amount` in `asset` (negative paid), the venue's `funding_id`, the position it was paid on, and `replayed` = 1 for one booked from the venue's history rather than its stream.
 
 ## Show me the fills of session X
 
@@ -65,10 +73,10 @@ session 1709510400123456789 (basic_mm)
   started   2024-03-04 09:00:01
   stopped   never recorded: the process did not shut down cleanly
   exit      0 (kill None)
-  pnl       realized 12.4 unrealized -0.8 fees 0.31 net 11.29
+  pnl       realized 12.4 (funding -0.6) unrealized -0.8 fees 0.31 net 11.29
   fills     186
   journal   runs/mm1-1709510400123456789.fmj
-  position  BTCUSDT 0.002 @ 61250.1 realized=12.4 unrealized=-0.8 fees=0.31 fills=186
+  position  BTCUSDT 0.002 @ 61250.1 realized=12.4 (funding -0.6) unrealized=-0.8 fees=0.31 fills=186
   open      0003000000000a1c BTCUSDT Sell 0.002 (filled 0) @ 61260.5 Live
 ```
 
@@ -80,7 +88,8 @@ session 1709510400123456789 (basic_mm)
 import fastmm
 
 with fastmm.open_store("runs/mm1.db") as store:
-    daily = store.pnl(since="2024-03-01")            # DataFrame: day, symbol, realized, fees, net
+    daily = store.pnl(since="2024-03-01")            # DataFrame: day, symbol, realized, funding, fees, net
+    funding = store.funding(instrument="BTCUSDT")
     fills = store.fills(instrument="BTCUSDT")
     open_orders = store.orders(open_only=True)
     store.query("SELECT day, SUM(fills) FROM pnl_daily GROUP BY day")

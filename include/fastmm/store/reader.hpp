@@ -41,6 +41,7 @@ struct Recovery {
   bool clean_shutdown = false;
   int exit_code = 0;
   std::string realized;  // decimal, settlement currency
+  std::string funding;   // the part of realized that is funding (schema 4; "0" before)
   std::string unrealized;
   std::string fees;
   std::string net;
@@ -62,9 +63,11 @@ struct Recovery {
   };
   std::vector<PositionState> position_state;
   // Where each venue's execution replay resumes (Venue::resume_executions): from the venue time of
-  // the last fill the store holds for it, minus kResumeOverlapMs, skipping the trade ids the store
-  // holds from there on. Both ends are the venue's clock, so the engine's clock (which follows the
-  // host's and may be seconds off, a WSL2 clock step) does not enter.
+  // the last fill or funding payment the store holds for it, minus kResumeOverlapMs, skipping the
+  // trade ids and funding ids (kFundingIdPrefix + id) the store holds from there on. The funding
+  // replay starts there too, so a payment made while no session ran is booked by the next one. Both
+  // ends are the venue's clock, so the engine's clock (which follows the host's and may be seconds
+  // off, a WSL2 clock step) does not enter.
   //
   // The overlap covers one thing: the order in which a venue publishes executions against their
   // trade times. Executions of different symbols (and a Bybit batch, a Deribit per-instrument
@@ -80,9 +83,9 @@ struct Recovery {
   struct VenueResume {
     std::uint8_t venue_id = 0;      // the session's VenueId
     std::string venue;              // its [venues.<name>]; empty when the store predates schema 3
-    std::int64_t last_fill_ms = 0;  // venue time of the last stored fill
+    std::int64_t last_fill_ms = 0;  // venue time of the last stored fill or funding payment
     std::int64_t since_ms = 0;      // the replay's start, venue time, inclusive
-    std::vector<std::string> known_exec_ids;  // stored fills at or after since_ms
+    std::vector<std::string> known_exec_ids;  // stored fills and funding at or after since_ms
     bool shrunk = false;  // since_ms moved later than last_fill_ms - kResumeOverlapMs
   };
   // One entry per venue that recorded a fill with a venue time.
@@ -125,6 +128,10 @@ class Reader {
   [[nodiscard]] virtual Result<Rows, std::string> orders(const QueryFilter& f) = 0;
   // One row per UTC day and instrument: realised, fees, unrealised, position, settlement currency.
   [[nodiscard]] virtual Result<Rows, std::string> pnl(const QueryFilter& f) = 0;
+  // One row per funding payment. The default has none (a backend without the table).
+  [[nodiscard]] virtual Result<Rows, std::string> funding(const QueryFilter& /*f*/) {
+    return Rows{};
+  }
   // The last position snapshot per session and instrument.
   [[nodiscard]] virtual Result<Rows, std::string> positions(const QueryFilter& f) = 0;
   // The newest session of `f.engine`, summarised.

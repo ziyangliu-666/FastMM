@@ -275,8 +275,64 @@ CREATE TABLE session_venues (
 );
 )SQL";
 
-constexpr std::array<Migration, 3> kMigrations{
-    Migration{1, kV1}, Migration{2, kV2}, Migration{3, kV3}};
+// Version 4: funding payments on perpetuals. One row per payment the engine booked; funding is
+// part of realized PnL, and the positions, the day roll-up, its views and the session totals say
+// how much of it. Rows written before it have funding 0 (nothing was booked).
+constexpr std::string_view kV4 = R"SQL(
+CREATE TABLE funding (
+  session_id            INTEGER NOT NULL,
+  seq                   INTEGER NOT NULL,
+  ts_ns                 INTEGER NOT NULL,
+  day                   TEXT    NOT NULL,
+  exch_ns               INTEGER NOT NULL,
+  instrument_id         INTEGER NOT NULL,
+  venue_id              INTEGER NOT NULL,
+  symbol                TEXT    NOT NULL,
+  funding_id            TEXT    NOT NULL,
+  asset                 TEXT    NOT NULL,
+  amount_raw            INTEGER NOT NULL,
+  position_qty_raw      INTEGER NOT NULL,
+  position_realized_raw INTEGER NOT NULL,
+  position_funding_raw  INTEGER NOT NULL,
+  replayed              INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+CREATE INDEX funding_day ON funding(day, symbol);
+CREATE INDEX funding_venue_time ON funding(session_id, venue_id, exch_ns);
+CREATE UNIQUE INDEX funding_venue_id ON funding(session_id, instrument_id, funding_id)
+  WHERE funding_id <> '';
+
+ALTER TABLE positions ADD COLUMN funding_raw INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE positions ADD COLUMN total_funding_raw INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE pnl_daily ADD COLUMN funding_raw INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN funding_raw INTEGER;
+
+DROP VIEW pnl_by_day;
+CREATE VIEW pnl_by_day AS
+  SELECT day, symbol, settlement_ccy,
+         SUM(realized_raw)     AS realized_raw,
+         SUM(funding_raw)      AS funding_raw,
+         SUM(fees_raw)         AS fees_raw,
+         SUM(realized_raw) - SUM(fees_raw) AS net_raw,
+         SUM(gross_traded_raw) AS gross_traded_raw,
+         SUM(fills)            AS fills
+  FROM pnl_daily
+  GROUP BY day, symbol, settlement_ccy;
+
+DROP VIEW pnl_by_currency;
+CREATE VIEW pnl_by_currency AS
+  SELECT day, settlement_ccy,
+         SUM(realized_raw) AS realized_raw,
+         SUM(funding_raw)  AS funding_raw,
+         SUM(fees_raw)     AS fees_raw,
+         SUM(realized_raw) - SUM(fees_raw) AS net_raw,
+         SUM(fills)        AS fills
+  FROM pnl_daily
+  GROUP BY day, settlement_ccy;
+)SQL";
+
+constexpr std::array<Migration, 4> kMigrations{
+    Migration{1, kV1}, Migration{2, kV2}, Migration{3, kV3}, Migration{4, kV4}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {
