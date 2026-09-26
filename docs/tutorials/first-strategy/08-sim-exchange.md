@@ -46,18 +46,19 @@ grep -E "first_mm: |fastmm-live: (events|realized_pnl|shutdown took)" runs/tutor
 INFO  first_mm: started, quoting enabled
 INFO  first_mm: venue 0 channel 0 is live
 INFO  first_mm: venue 0 channel 1 is live
-INFO  first_mm: fills=10 late_fills=0 disconnects=0 net_pnl=0.10924483
-INFO  first_mm: fills=15 late_fills=0 disconnects=0 net_pnl=0.20807468
+INFO  first_mm: venue 0 channel 1 is live
+INFO  first_mm: fills=10 late_fills=0 disconnects=0 net_pnl=0.10923483
+INFO  first_mm: fills=15 late_fills=0 disconnects=0 net_pnl=0.1995342
 WARN  first_mm: venue 0 channel 0 is Disconnected; quotes pulled
+INFO  first_mm: fills=22 late_fills=0 disconnects=1 net_pnl=0.30134376
 INFO  first_mm: venue 0 channel 0 is live
-INFO  first_mm: fills=32 late_fills=0 disconnects=1 net_pnl=0.40847872
 ...
-INFO  fastmm-live: events=4693 book_updates=402 orders=69 cancels=5 replaces=638 fills=64 risk_rejects=0 venue_rejects=0
-INFO  fastmm-live: realized_pnl=1.24543742 unrealized_pnl=0.0472925 fees=0.3839993 tick_to_trade p50=94207 ns p99=172031 ns
-INFO  fastmm-live: shutdown took 320 ms (cancel_all ok)
+INFO  fastmm-live: events=4587 book_updates=402 orders=64 cancels=4 replaces=600 fills=61 risk_rejects=0 venue_rejects=0
+INFO  fastmm-live: realized_pnl=1.14957979 unrealized_pnl=0.08635009 fees=0.36000765 tick_to_trade p50=98303 ns p99=221183 ns
+INFO  fastmm-live: shutdown took 301 ms (cancel_all ok)
 ```
 
-(Timestamps and thread ids removed.) Channel 0 is market data, channel 1 order entry. After the disconnect the connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book` requoted. PnL and fees are in USDT.
+(Timestamps and thread ids removed.) Channel 0 is market data; channel 1 is order entry and the user-data stream, which report separately. After the disconnect the connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book` requoted. PnL and fees are in USDT.
 
 On WSL2 and in virtual machines the terminal may also show `TSC recalibration stepped the engine clock` warnings: the host's wall clock jumped ([Troubleshooting](../../how-to/operations/troubleshooting.md)).
 
@@ -71,15 +72,15 @@ The session journal also renders as a page: `python3 tools/report.py runs/tutori
 ```
 
 ```text
-journal  runs/tutorial/sim.fmj: format v3, 5458 messages (1926 market data, 712 outbound), rng_seed 42, strategy 'first_mm'
+journal  runs/tutorial/sim.fmj: format v3, 5308 messages (1980 market data, 668 outbound), rng_seed 42, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0x1, engine clock recorded
-config   embedded in the journal (hash 543d5a2b3f8d5c29)
-replay   strategy=first_mm events=4701
-recorded outbound 712 msgs sha256 1116a9bdbd8604cfe3881af988501b44624a2ca9989c88dbcf009d2b11a08485
-replayed outbound 712 msgs sha256 1116a9bdbd8604cfe3881af988501b44624a2ca9989c88dbcf009d2b11a08485
+config   embedded in the journal (hash cfc79bc62a2c22cb)
+replay   strategy=first_mm events=4595
+recorded outbound 668 msgs sha256 dee5a4e6d1c7ed4982f31905397f7b78fb5d76751fce221c6d062d325f02fed4
+replayed outbound 668 msgs sha256 dee5a4e6d1c7ed4982f31905397f7b78fb5d76751fce221c6d062d325f02fed4
 replay MATCH
 ```
 
-The journal stores the order in which the engine consumed events and its clock at each one, so the replay reproduces the live session, disconnect included ([Determinism](../../explanation/determinism.md)).
+The journal stores the order in which the engine consumed events and its clock at each one, so the replay reproduces the live session, disconnect included ([Determinism](../../explanation/determinism.md)). A live session's counts and hashes differ from run to run.
 
 Next: [9. Trade on Binance Demo](09-binance-demo.md)
