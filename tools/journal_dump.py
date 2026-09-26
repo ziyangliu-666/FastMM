@@ -35,7 +35,7 @@ EVENT_TYPES = [
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
-    "EngineTime", "ParamUpdate",
+    "EngineTime", "ParamUpdate", "Funding",
 ]
 PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
@@ -213,6 +213,10 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
     if type_name == "OutReplace":
         return (f"cl_ord_id={cl_ord_id(u64(0))} orig={cl_ord_id(u64(8))} "
                 f"venue_order_id={fixed_string(body[16:57], 40)} px={dec(q(64))} qty={dec(q(72))}")
+    if type_name == "Funding":
+        replayed = " replayed" if body[58] & 1 else ""
+        return (f"amount={dec(q(0))} asset={fixed_string(body[49:58], 8)} "
+                f"funding_id={fixed_string(body[8:49], 40)}{replayed}")
     if type_name == "PositionUpdate":
         return f"qty={dec(q(0))} avg_px={dec(q(8))} realized={dec(q(16))} unrealized={dec(q(24))} fees={dec(q(32))}"
     return f"({len(body)} body bytes)"

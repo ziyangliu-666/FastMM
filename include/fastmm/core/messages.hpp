@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string_view>
 #include <type_traits>
 
 namespace fastmm {
@@ -260,6 +261,28 @@ struct PositionUpdateMsg {
 };
 static_assert(sizeof(PositionUpdateMsg) == 128);
 
+// A perpetual funding payment the venue booked on the account's position in hdr.instrument
+// (EventType::Funding). `amount` is signed, in `asset` (the settlement currency): negative paid,
+// positive received. hdr.exch_ts is the venue's time of the payment. `funding_id` is the venue's
+// id of it (Binance tranId, Bybit execId); the engine and the gateway book one id per instrument
+// once, so the private stream and a replay from the venue's history may both deliver it.
+struct FundingMsg {
+  // From the venue's history (Venue::request_executions), not the private stream.
+  static constexpr std::uint8_t kReplayed = 1U << 0;
+  EventHeader hdr;
+  Notional amount;       // 64
+  ExecId funding_id;     // 72 -> 113
+  FixedString<8> asset;  // 113 -> 122
+  std::uint8_t flags;    // 122 kReplayed
+  std::uint8_t pad_[5];  // -> 128
+};
+static_assert(sizeof(FundingMsg) == 128 && offsetof(FundingMsg, funding_id) == 72 &&
+              offsetof(FundingMsg, flags) == 122);
+// A funding id in the list of venue ids a restarted session's store already holds
+// (store::Recovery::VenueResume::known_exec_ids, next to the trade ids): the prefix keeps the two
+// id spaces apart.
+inline constexpr std::string_view kFundingIdPrefix = "funding:";
+
 // ---- engine-internal -------------------------------------------------------------------
 
 struct TimerMsg {
@@ -493,13 +516,13 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<OptionTickerMsg> && FixedSizeMessage<OrderAckMsg> &&
               FixedSizeMessage<OrderRejectMsg> && FixedSizeMessage<OrderCancelAckMsg> &&
               FixedSizeMessage<OrderCancelRejectMsg> && FixedSizeMessage<OrderExpiredMsg> &&
-              FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<TimerMsg> &&
-              FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
-              FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
-              FixedSizeMessage<EngineTimeMsg> && FixedSizeMessage<OutNewOrderMsg> &&
-              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
-              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
-              FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<FundingMsg> &&
+              FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
+              FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
+              FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<EngineTimeMsg> &&
+              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
+              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
+              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

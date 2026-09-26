@@ -122,7 +122,7 @@ const EventHeader* front(MsgRing& ring) {
 
 TEST_CASE("core.params: ParamUpdate message, event type and kill reason") {
   CHECK(static_cast<int>(EventType::ParamUpdate) == 26);
-  CHECK(static_cast<int>(EventType::Count) == 27);
+  CHECK(static_cast<int>(EventType::Count) == 28);
   CHECK(to_string(EventType::ParamUpdate) == "ParamUpdate");
   CHECK(static_cast<int>(KillReason::StrategyError) == 9);
   CHECK(to_string(KillReason::StrategyError) == "StrategyError");

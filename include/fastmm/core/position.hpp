@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace fastmm {
 
@@ -134,6 +135,25 @@ class PositionTracker {
     book(id, &Totals::fees, fee);
   }
 
+  // A funding payment on the instrument's position, in its settlement currency (negative paid,
+  // positive received). It is realized PnL, not a fee: it is not a cost of trading but the carry of
+  // holding the position, and a position that is never traded pays it all the same. funding() and
+  // total_funding() report the part of realized that it is.
+  void on_funding(InstrumentId id, Notional amount) noexcept {
+    Position& p = pos_[id.value];
+    p.realized += amount;
+    realized_total_ += amount;
+    book(id, &Totals::realized, amount);
+    fund_->per[id.value] += amount;
+    fund_->total += amount;
+    if (FASTMM_UNLIKELY(converting())) fund_->native[ccy_[id.value]] += amount;
+  }
+  // Funding booked on one instrument, in its settlement currency (part of its realized PnL).
+  [[nodiscard]] Notional funding(InstrumentId id) const noexcept {
+    FASTMM_ASSERT(id.value < kMaxInstruments);
+    return fund_->per[id.value];
+  }
+
   // Mark-to-market the open position, in the instrument's settlement currency.
   void mark(InstrumentId id, Price mid, const Instrument& inst) noexcept {
     Position& p = pos_[id.value];
@@ -158,6 +178,9 @@ class PositionTracker {
     book(id, &Totals::realized, Notional{} - p.realized);
     fees_total_ -= p.fees;
     book(id, &Totals::fees, Notional{} - p.fees);
+    fund_->total -= fund_->per[id.value];
+    if (converting()) fund_->native[ccy_[id.value]] -= fund_->per[id.value];
+    fund_->per[id.value] = Notional{};
     set_unrealized(id, p, Notional{});
     set_exposure(id, Notional{});
     p = Position{};
@@ -175,7 +198,9 @@ class PositionTracker {
     for (auto& t : native_) t = Totals{};
     for (auto& t : conv_) t = Totals{};
     conv_total_ = Totals{};
+    fund_->native = {};
     if (!converting()) return;
+    for (std::size_t i = 0; i < kMaxInstruments; ++i) fund_->native[ccy_[i]] += fund_->per[i];
     // What is booked already (a tracker configured after fills) moves into its currencies.
     for (std::size_t i = 0; i < kMaxInstruments; ++i) {
       const Position& p = pos_[i];
@@ -231,6 +256,17 @@ class PositionTracker {
   }
   [[nodiscard]] Notional total_fees() const noexcept {
     return FASTMM_UNLIKELY(converting()) ? conv_total_.fees : fees_total_;
+  }
+  // Funding over every instrument; part of total_realized().
+  [[nodiscard]] Notional total_funding() const noexcept {
+    if (!converting()) return fund_->total;
+    Notional t{};
+    for (std::size_t c = 0; c < ccy_count_; ++c) t += convert(fund_->native[c], rate_[c]);
+    return t;
+  }
+  // Funding of one currency, in that currency (converting() only).
+  [[nodiscard]] Notional native_funding(std::size_t c) const noexcept {
+    return c < kMaxCurrencies ? fund_->native[c] : Notional{};
   }
   [[nodiscard]] Notional net_pnl() const noexcept {
     return total_realized() + total_unrealized() - total_fees();
@@ -331,6 +367,27 @@ class PositionTracker {
   std::array<Totals, kMaxCurrencies> native_{};
   std::array<Totals, kMaxCurrencies> conv_{};  // native_ at rate_
   Totals conv_total_{};
+  // Funding (on_funding), on the heap: it is rare, and the tracker's own layout, which the mark
+  // path reads, stays as it was. Copied with the tracker.
+  struct Funding {
+    Notional total{};
+    std::array<Notional, kMaxInstruments> per{};
+    std::array<Notional, kMaxCurrencies> native{};  // converting() only
+  };
+  struct FundingBox {
+    std::unique_ptr<Funding> p = std::make_unique<Funding>();
+    FundingBox() = default;
+    FundingBox(const FundingBox& o) : p(std::make_unique<Funding>(*o.p)) {}
+    FundingBox(FundingBox&&) noexcept = default;
+    FundingBox& operator=(const FundingBox& o) {
+      if (this != &o) *p = *o.p;
+      return *this;
+    }
+    FundingBox& operator=(FundingBox&&) noexcept = default;
+    ~FundingBox() = default;
+    Funding* operator->() const noexcept { return p.get(); }
+  };
+  FundingBox fund_;
 };
 
 }  // namespace fastmm

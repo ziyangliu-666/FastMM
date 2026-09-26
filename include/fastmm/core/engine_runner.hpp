@@ -34,6 +34,7 @@ struct RunnerStats {
   std::uint64_t venue_rejects = 0;       // order rejects reported by the venues
   RejectCounts risk_rejects_by_reason;   // sums to risk_rejects
   RejectCounts venue_rejects_by_reason;  // sums to venue_rejects
+  std::int64_t funding_raw = 0;          // part of realized_pnl_raw
 };
 
 // What a running engine publishes for other threads (monitors, fastmm-live's control loop): the

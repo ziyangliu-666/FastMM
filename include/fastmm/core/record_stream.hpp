@@ -39,6 +39,7 @@ enum class RecordType : std::uint8_t {
   Order = 2,
   Position = 3,
   Kill = 4,
+  Funding = 5,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -50,6 +51,8 @@ enum class RecordType : std::uint8_t {
       return "Position";
     case RecordType::Kill:
       return "Kill";
+    case RecordType::Funding:
+      return "Funding";
   }
   return "?";
 }
@@ -61,6 +64,7 @@ struct RecordHeader {
     kUnknown = 1U << 2,    // fill for an order id the OMS does not know
     kTerminal = 1U << 3,   // the order reached a terminal state with this record
     kVenue = 1U << 4,      // kill record: one venue's switch, not the global one
+    kReplayed = 1U << 5,   // funding record: from the venue's history, not its private stream
   };
 
   std::uint32_t len;         // total bytes, a multiple of 64            (offset 0)
@@ -130,9 +134,27 @@ struct PositionRecord {
   Notional total_unrealized;  // 136
   Notional total_fees;        // 144
   Notional pnl_carry;         // 152 carried in from earlier sessions (EngineConfig::pnl_carry)
-  std::uint8_t pad_[32];      // -> 192
+  Notional funding;           // 160 this instrument's funding so far, part of pos.realized
+  Notional total_funding;     // 168 over every instrument, part of total_realized
+  std::uint8_t pad_[16];      // -> 192
 };
 static_assert(sizeof(PositionRecord) == 192 && std::is_trivially_copyable_v<PositionRecord>);
+
+// A funding payment the engine booked (FundingMsg): `amount` in the instrument's settlement
+// currency, negative paid. hdr.exch_ts is the venue's time of it; hdr.flags kReplayed when it came
+// from the venue's history. A position record follows it.
+struct FundingRecord {
+  RecordHeader hdr;
+  Notional amount;             // 64
+  Qty position_qty;            // 72  the position it was paid on
+  Notional position_realized;  // 80  the instrument's realized after it
+  Notional position_funding;   // 88  the instrument's funding after it
+  Notional total_funding;      // 96  over every instrument
+  ExecId funding_id;           // 104 -> 145
+  FixedString<8> asset;        // 145 -> 154
+  std::uint8_t pad_[38];       // -> 192
+};
+static_assert(sizeof(FundingRecord) == 192 && std::is_trivially_copyable_v<FundingRecord>);
 
 // A kill switch trip. hdr.flags & kVenue marks a per-venue trip (hdr.venue names it).
 struct KillRecord {
