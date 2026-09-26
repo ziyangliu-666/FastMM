@@ -209,6 +209,22 @@ TEST_CASE("core.engine.control: SetLimits replaces the risk limits") {
   CHECK(r.engine->stats().risk_rejects > 0);
 }
 
+// The status file and fastmm_max_loss carry the limit the engine applies now, not the config's.
+TEST_CASE("core.engine.control: the published max_loss follows SetLimits") {
+  Rig r;
+  ControlLimitsMsg m{};
+  init_header(m, EventType::Control);
+  m.command = ControlCommand::SetLimits;
+  m.limits = r.engine->risk().limits();
+  m.limits.max_loss = Notional::from_decimal("250").value();
+  r.push(m);
+  ControlMsg flush{};
+  init_header(flush, EventType::Control);
+  flush.command = ControlCommand::FlushStats;
+  r.push(flush);
+  CHECK(r.engine->live_stats().max_loss_raw == Notional::from_decimal("250").value().raw);
+}
+
 TEST_CASE("core.engine.control: flatten sells a long position through the touch, reduce-only") {
   Rig r;
   r.book(kA, "100.00", "100.02");

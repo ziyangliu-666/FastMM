@@ -106,6 +106,6 @@ When the session does not restart by itself:
 | Artefact | Versioned by | Rule |
 |---|---|---|
 | Journal (`.fmj`) | a format version in the header, currently 3 | the tools read 1, 2 and 3; pre-v2 journals carry no config or engine clock and only replay as what-if runs |
-| Status file | a magic number and a version field, currently 9 | `fastmm-top` refuses a file from another version; use the binary from the same build |
+| Status file | a magic number and a version field, currently 10 | `fastmm-top` refuses a file from another version; use the binary from the same build |
 | Configuration | none | an unknown key is a warning, a wrong type is an error |
 | Public API | version 0.2; breaking changes are listed in the CHANGELOG until 1.0 | [Public API and header tiers](../../reference/public-api.md) |

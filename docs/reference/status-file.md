@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 9) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 10) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
@@ -41,6 +41,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `kind` | u8 | 0 `fastmm-live`, 1 `fastmm-gateway` |
 | `realized_pnl_raw`, `unrealized_pnl_raw`, `fees_raw` | i64 | settlement currency, or `[accounting] reporting_currency` when it is set; raw fixed point (divide by 1e8) |
 | `pnl_carry_raw` | i64 | net PnL of earlier sessions that `[risk] max_loss` is measured against, from `[engine] kill_file` |
+| `max_loss_raw` | i64 | `[risk] max_loss` as the engine applies it now (`fastmm-ctl limits` changes it), 0 when off; a gateway's is `gateway.max_loss_raw` |
 | `quoting_elapsed_ns`, `quoting_two_sided_ns` | i64 | time since the first order rested, and how much of it had a live order on both sides |
 | `latency` | 7 x {count, p50_ns, p99_ns, p999_ns, max_ns} | engine latency intervals, below |
 | `venues` | 8 x venue entry | below |

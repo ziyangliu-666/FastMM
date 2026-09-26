@@ -51,7 +51,7 @@ scrape_configs:
 | `fastmm_status_age_seconds` | gauge | age of the snapshot; alert above a few seconds, as `fastmm-top` does with `STALE` |
 | `fastmm_uptime_seconds`, `fastmm_dry_run` | gauge | session wall clock, dry-run flag |
 | `fastmm_kill_active`, `fastmm_kill_latched`, `fastmm_kill_reason` | gauge | the global kill switch, the latched `max_loss` trip, and the `KillReason` |
-| `fastmm_realized_pnl`, `fastmm_unrealized_pnl`, `fastmm_fees`, `fastmm_pnl_carry` | gauge | quote currency, or `[accounting] reporting_currency` |
+| `fastmm_realized_pnl`, `fastmm_unrealized_pnl`, `fastmm_fees`, `fastmm_pnl_carry`, `fastmm_max_loss` | gauge | quote currency, or `[accounting] reporting_currency`; `fastmm_max_loss` is the limit the engine applies now, 0 when off |
 | `fastmm_events_total`, `fastmm_book_updates_total`, `fastmm_orders_sent_total`, `fastmm_cancels_sent_total`, `fastmm_replaces_sent_total`, `fastmm_fills_total` | counter | engine counters |
 | `fastmm_risk_rejects_total`, `fastmm_venue_rejects_total`, `fastmm_rejects_by_reason_total{kind,reason}` | counter | rejects, and the most frequent reasons the snapshot carries |
 | `fastmm_kills_total`, `fastmm_venue_kills_total` | counter | kill switch trips |
@@ -64,7 +64,7 @@ The quantiles are the engine's (p50, p99, p99.9), not a histogram: they cannot b
 
 ## Alerts
 
-`deploy/prometheus/fastmm-alerts.yml` (also in the release tarball) holds alerting rules for these metrics; add it to `rule_files` and route the alerts with Alertmanager. `critical` means act now: the process is hung or dead (`fastmm_status_age_seconds`), the kill switch is engaged, or a venue is killed. `warning` means look soon: a latched `max_loss`, a channel down or stale market data, books out of sync, reconnect or REST-error bursts, a clock offset past a second, and for a gateway an account loss past 80% of its `max_loss`, no strategy attached, or a strategy falling behind on market data.
+`deploy/prometheus/fastmm-alerts.yml` (also in the release tarball) holds alerting rules for these metrics; add it to `rule_files` and route the alerts with Alertmanager. `critical` means act now: the process is hung or dead (`fastmm_status_age_seconds`), the kill switch is engaged, or a venue is killed. `warning` means look soon: a net loss past 80% of `max_loss` or a latched `max_loss` trip, a channel down or stale market data, books out of sync, reconnect or REST-error bursts, a clock offset past a second, and for a gateway an account loss past 80% of its `max_loss`, no strategy attached, or a strategy falling behind on market data.
 
 ```yaml
 # prometheus.yml

@@ -57,6 +57,8 @@ struct EngineLiveStats {
   // Time-weighted quoting presence for the session: what a market-maker programme measures.
   std::int64_t quoting_elapsed_ns = 0;
   std::int64_t quoting_two_sided_ns = 0;
+  // [risk] max_loss as the engine applies it now (fastmm-ctl limits changes it); zero when off.
+  std::int64_t max_loss_raw = 0;
   LatencySnapshot latency;
 };
 

@@ -70,6 +70,15 @@ groups:
         annotations:
           summary: "{{ $labels.instance }}: clock {{ $value }} s off {{ $labels.venue }}'s: signed requests risk the recvWindow"
 
+      - alert: FastMMLossNearLimit
+        expr: >
+          fastmm_max_loss > 0 and
+          -(fastmm_realized_pnl + fastmm_unrealized_pnl - fastmm_fees + fastmm_pnl_carry)
+          > 0.8 * fastmm_max_loss
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.instance }}: net loss past 80% of [risk] max_loss"
+
       # A gateway (fastmm-gateway --status; fastmm-top --gateway <name> --metrics).
       - alert: FastMMAccountLossNearLimit
         expr: fastmm_account_max_loss > 0 and -fastmm_account_net_pnl > 0.8 * fastmm_account_max_loss

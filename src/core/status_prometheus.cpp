@@ -147,6 +147,9 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
           static_cast<double>(s.unrealized_pnl_raw) * kRawToQuote);
   e.gauge(
       "fastmm_fees", "fees paid, quote currency", static_cast<double>(s.fees_raw) * kRawToQuote);
+  e.gauge("fastmm_max_loss",
+          "[risk] max_loss as the engine applies it now, 0 when off; quote currency",
+          static_cast<double>(s.max_loss_raw) * kRawToQuote);
   e.gauge("fastmm_pnl_carry",
           "net PnL of earlier sessions that max_loss is measured against as well, quote currency",
           static_cast<double>(s.pnl_carry_raw) * kRawToQuote);

@@ -10,7 +10,7 @@ Versions are `0.MINOR.PATCH`. A minor release may change any surface in the tabl
 |---|---|---|
 | Configuration keys | keys are added, renamed and removed. An unknown key is a warning with its line number, not an error, so a renamed key leaves the new one at its default ([Configuration](configuration.md)) | no schema version |
 | `.fmj` journal | the format version rises when the layout changes. A reader opens every version from 1 up to its own; a newer journal is refused ([Journal format](journal-format.md)) | 3, readers open 1 to 3 |
-| Status file | the version rises with every layout change, with no compatibility in either direction: `fastmm-top` refuses a file of another version (`--once` exits 3), so `fastmm-top`, `fastmm-live` and `fastmm-gateway` come from the same build ([Status file](status-file.md)) | 9 |
+| Status file | the version rises with every layout change, with no compatibility in either direction: `fastmm-top` refuses a file of another version (`--once` exits 3), so `fastmm-top`, `fastmm-live` and `fastmm-gateway` come from the same build ([Status file](status-file.md)) | 10 |
 | Store | each schema change is a migration; an older store is migrated when opened, a newer one is refused ([Storage](storage.md)) | 4 |
 | Gateway protocol | `fastmm-live --gateway` and `fastmm-gateway` must have the same version; an attach of another version is refused | 5 |
 | Hot-hook ABI | `FASTMM_HOT_ABI_VERSION` (`include/fastmm/strategies/hot_abi.h`) rises when the structs a hot hook sees change. `fastmm._hot.abi` checks the layouts at import and raises `ImportError` on a mismatch | 1 |

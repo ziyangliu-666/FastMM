@@ -85,6 +85,12 @@ TEST_CASE("core.status_prometheus: the snapshot becomes metrics in base units") 
   CHECK_FALSE(has(text, "fastmm_feed_"));  // no multicast venue in this snapshot
 }
 
+TEST_CASE("core.status_prometheus: an engine exports the max_loss it applies") {
+  StatusSnapshot s = sample();
+  s.max_loss_raw = 25'000'000'000;  // 250
+  CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_max_loss 250\n"));
+}
+
 TEST_CASE("core.status_prometheus: every sample belongs to a declared family") {
   StatusSnapshot s = sample();
   s.venue_count = 2;

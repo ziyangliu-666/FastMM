@@ -30,7 +30,7 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 6: the operator flatten's state, the instruments it has left and the orders it has sent.
 // 7: quoting presence (quoting_elapsed_ns, quoting_two_sided_ns).
 // 8: `kind`, and the gateway block (attachments, the account, its positions, routing counters).
-inline constexpr std::uint32_t kStatusVersion = 9;
+inline constexpr std::uint32_t kStatusVersion = 10;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 
@@ -230,6 +230,9 @@ struct StatusSnapshot {
   std::int64_t fees_raw = 0;
   // Net PnL of earlier sessions that [risk] max_loss is measured against on top of this one's.
   std::int64_t pnl_carry_raw = 0;
+  // [risk] max_loss as the engine applies it now; zero when off (and for a gateway, whose limit is
+  // gateway.max_loss_raw).
+  std::int64_t max_loss_raw = 0;
   std::uint64_t venue_rejects = 0;
   // The most frequent reasons, most frequent first; the totals above include reasons that did not
   // fit (set_status_rejects).
