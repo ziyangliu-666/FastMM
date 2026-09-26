@@ -29,7 +29,8 @@ enum class SyncReason : std::uint8_t {
   BufferOverflow = 2,
   SnapshotTooOld = 3,  // buffered deltas start after the snapshot; need a newer one
   Explicit = 4,
-  SnapshotMarker = 5,  // venue signalled a reset (Bybit u == 1)
+  SnapshotMarker = 5,    // venue signalled a reset (Bybit u == 1)
+  ChecksumMismatch = 6,  // the venue's book checksum disagrees with ours (OKX)
 };
 [[nodiscard]] constexpr const char* to_string(SyncState s) noexcept {
   switch (s) {

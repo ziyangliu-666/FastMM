@@ -433,7 +433,8 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
     };
     if (!resolve("ws_url", v.ws_url, false) || !resolve("ws_api_url", v.ws_api_url, false) ||
         !resolve("rest_url", v.rest_url, false) || !resolve("ca_file", v.ca_file, false) ||
-        !resolve("api_key", v.api_key, true) || !resolve("api_secret", v.api_secret, true))
+        !resolve("api_key", v.api_key, true) || !resolve("api_secret", v.api_secret, true) ||
+        !resolve("api_passphrase", v.api_passphrase, true))
       return false;
     for (auto& [k, val] : v.extra) {
       if (!resolve(k.c_str(), val, false)) return false;
@@ -453,6 +454,7 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
     if (dry_run) {
       if (!sbe_md) v.api_key.clear();
       v.api_secret.clear();
+      v.api_passphrase.clear();
     } else if (needs_keys && (v.api_key.empty() || (v.api_secret.empty() && !ed25519))) {
       std::fprintf(stderr,
                    "%s: venue '%s' has no api_key/api_secret. Set them via ${ENV} references, or "

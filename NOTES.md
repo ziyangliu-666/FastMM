@@ -3,6 +3,28 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Step 4 done (2026-09-26): OKX v5 USDT-margined swaps (`kind = "okx"`).** Modelled on Bybit
+linear. OKX docs and changelog read 2026-09-26; three recent changes the connector follows: the
+book `checksum` is deprecated (0 since 2026-06-23; the seqId chain is the check, a non-zero checksum
+is still verified against a shadow of the level texts), WebSocket order operations take
+`instIdCode` and ignore `instId` (2026-03/04), and a crossing post-only order is accepted, then
+pushed `canceled` with cancelSource 31 (booked as expired). Quantities are contracts
+(`contract_multiplier` = ctVal x ctMult; notional and PnL linear in USDT). Net mode only: long/short
+or spot account mode exits 3. Amend is acked from the orders push (`amendResult` under `reqId`, the
+new client id), not from the reply. Funding from `account/bills` type 8. Dead man's switch
+`cancel-all-after` (60 s, refresh 20 s), stopped on disconnect over a blocking connection. New
+generic key `api_passphrase`. Evidence: 33 test cases (unit, fake exchange, no-allocation, exit 3 at
+the process level); 32 mutations of the covered code each make their test fail. The public stream
+ran against the demo and production hosts (book synced, 0 resyncs, checksum 0 on both; demo
+instIdCode and tickSz differ from production). Untested against the venue (no keys): login, every
+private payload and reply, account/fills/bills REST, cancel-all-after on demo.
+
+**Flaky under load, found on the way (2026-09-26).** `integration.recovery: shadows of orders ...`
+placed an order before the user stream was back after a drop (3 of 16 under load); it now waits for
+both connections (16 of 16). `binance_usdm.venue: countdownCancelAll ... stopped on shutdown` failed
+once in a full run: `disconnect()` queues the stop on the REST channel and resets it, which drops a
+queued request. Not changed; OKX sends its stop on a blocking connection instead.
+
 **Performance: code alignment on by default (2026-09-26).** `FASTMM_ALIGN_CODE` (ON, gcc): the
 fastmm targets get `-falign-functions=64 -falign-loops=32 -falign-jumps=32` (`.text` +4 %).
 Test: base, an identical copy and four edits that execute nothing in the benchmark (nops in
@@ -59,8 +81,8 @@ Step 3, funding: done 2026-09-26 (below).
 Step 3 funding: done 2026-09-26 (USDⓈ-M, Bybit linear; Deribit has aggregates only). Alerting:
 done 2026-09-26 as shipped Prometheus rules (`deploy/prometheus/fastmm-alerts.yml`, checked against
 the exporter by a test), plus systemd units for the gateway and its strategies (a gateway crash
-brings the strategies back via WantedBy; tested). Step 4: an OKX connector (swap, USDT-margined),
-modelled on Bybit linear.
+brings the strategies back via WantedBy; tested). Step 4, OKX swaps: done 2026-09-26 (above;
+public data against the venue, private side mock only).
 
 **Step 3 done (2026-09-26): perpetual funding is booked.** `EventType::Funding` (27) /
 `FundingMsg` (128 B: signed amount in the settlement asset, venue id, venue time, kReplayed) on the

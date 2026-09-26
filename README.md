@@ -74,10 +74,10 @@ Next: [tutorial](docs/tutorials/first-strategy/README.md), or [a strategy in Pyt
 
 ## Limitations
 
-- Exchanges: Binance Spot, Binance USDⓈ-M perpetuals, Bybit spot and linear perpetuals, Deribit, and Nasdaq ITCH market data.
+- Exchanges: Binance Spot, Binance USDⓈ-M perpetuals, Bybit spot and linear perpetuals, OKX USDT-margined swaps, Deribit, and Nasdaq ITCH market data.
 - Linux on x86-64 only.
 - The shipped strategies are reference implementations, not an edge: the example backtest is profitable only because it is configured with a maker rebate ([Economics](docs/explanation/economics.md)).
 - One account per venue. Several strategies share it through `fastmm-gateway`, each on its own instruments ([Run behind a gateway](docs/how-to/operations/run-behind-a-gateway.md)).
-- Monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint), with no alerting. A venue-side dead man's switch exists only on Deribit, Binance USDⓈ-M and Bybit, where the account has it ([Running this in production](docs/how-to/operations/running-in-production.md)).
+- Monitoring is a status file to pull from (`fastmm-top`, or its Prometheus endpoint), with no alerting. A venue-side dead man's switch exists only on Deribit, Binance USDⓈ-M, OKX and Bybit, where the account has it ([Running this in production](docs/how-to/operations/running-in-production.md)).
 
 [Documentation](https://ziy.bio/FastMM/) · [Performance](bench/README.md) · [Architecture](docs/explanation/architecture.md) · [MIT license](LICENSE)

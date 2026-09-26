@@ -19,7 +19,7 @@ TEST_CASE("venues.external: an out-of-tree venue registers next to the built-in 
   register_builtin_venues(r);
   echo::register_echo_venue(r);
   REQUIRE(r.find("echo") != nullptr);
-  CHECK(r.entries().size() == 6);
+  CHECK(r.entries().size() == 7);
   CHECK(r.find("bybit") != nullptr);  // the built-ins are untouched
   CHECK(r.kinds().find("echo") != std::string::npos);
   // It declares what it can do; the session asks the registry instead of testing `kind`.

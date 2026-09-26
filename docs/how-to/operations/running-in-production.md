@@ -114,7 +114,7 @@ Mitigation: run chrony or systemd-timesyncd set to slew rather than step, and wa
 
 ## 9. Keys
 
-Keys come from the environment through `${VAR}` in `[venues.*]`; a literal secret in the config is refused unless `--allow-inline-secrets` is given. A `${VAR}` that is not set is an error, not an empty string (`include/fastmm/config/env_subst.hpp`), except that `--dry-run` clears a missing `api_key` and `api_secret`. Secrets are printed as `***`, and the configuration embedded in the journal has them redacted.
+Keys come from the environment through `${VAR}` in `[venues.*]`; a literal secret in the config is refused unless `--allow-inline-secrets` is given. A `${VAR}` that is not set is an error, not an empty string (`include/fastmm/config/env_subst.hpp`), except that `--dry-run` clears a missing `api_key`, `api_secret` and `api_passphrase`. Secrets are printed as `***`, and the configuration embedded in the journal has them redacted.
 
 Nothing checks the key's permissions. A wrong permission surfaces only when the venue refuses a request and the connector trips that venue's kill switch with `VenueFatal`.
 
