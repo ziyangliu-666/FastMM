@@ -151,6 +151,7 @@ nav:
           - how-to/backtesting/binance-public-data.md
       - Strategies:
           - how-to/strategies/register-a-strategy.md
+          - how-to/strategies/xmm.md
           - how-to/strategies/python-hot-hooks.md
           - how-to/strategies/python-slow-methods.md
           - how-to/strategies/python-live.md

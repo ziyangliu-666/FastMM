@@ -5,6 +5,13 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `xmm`, a built-in strategy that quotes one instrument and hedges on another venue with IOC
+  orders. Fair value is the hedge book plus an EWMA basis; the hedge is derived from the two
+  positions in base units (contract multipliers applied), one hedge at a time, so replayed,
+  duplicated and late fills never double-hedge. Stale books or a hedge venue that is down pull the
+  quotes; `max_unhedged` drops the side that would grow the gap; repeated failed hedges halt it.
+  `configs/xmm-demo.toml` (Binance USDⓈ-M demo quotes, Bybit testnet hedges),
+  `docs/how-to/strategies/xmm.md`.
 - OKX v5 connector (`kind = "okx"`) for USDT-margined perpetual swaps (instType SWAP), net position
   mode: `books` (or the tbt depth channels) with the seqId chain, `bbo-tbt` and `trades`; order
   entry over the private WebSocket by `instIdCode`, REST fallback; `orders`, `positions` and
@@ -143,6 +150,11 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- An order a venue reported ended with its cumulative quantity before the execution arrived
+  (Bybit's `order` and `execution` topics are not ordered; OKX pushes out of order) was booked
+  twice: once from the cum_qty as a synthetic fill, again from the live execution. A live execution
+  whose quantity lies under the booked cum_qty, or that has no cum_qty and arrives after the order
+  ended, now corrects the estimate's price and fee instead.
 - The WebSocket client and server accepted text messages that are not UTF-8 and close frames with a
   1-byte payload, a code that may not be sent (0-999, 1004-1006, 1015-2999, 5000 and up) or a
   reason that is not UTF-8: 86 of the 301 Autobahn cases failed. `WsMessageAssembler` now answers

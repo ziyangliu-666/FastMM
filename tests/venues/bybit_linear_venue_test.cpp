@@ -112,6 +112,9 @@ struct Harness {
   std::atomic<int> dcp_ok{0};
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> auth_failures{0};
+  // order.create answers as an IOC that took 0.005 and ended, its order state on the `order`
+  // topic before the execution on the `execution` topic.
+  std::atomic<bool> ioc_end_first{false};
   net::WsSession* private_session = nullptr;  // server thread only
 
   void count_signature(const net::HttpRequest& r, std::string_view payload) {
@@ -195,7 +198,11 @@ struct Harness {
           R"({"reqId":")" + req + R"(","retCode":0,"retMsg":"OK","op":")" + op +
           R"(","data":{"orderId":"9aac161b-8ed6-450d-9cab-c5cc67c21784","orderLinkId":"fm000100000001"},"retExtInfo":{},"header":{"X-Bapi-Limit":"10","X-Bapi-Limit-Status":"9","X-Bapi-Limit-Reset-Timestamp":"1789299700208"},"connId":"t1"})");
       if (private_session == nullptr) return;
-      if (op == "order.create") {
+      if (op == "order.create" && ioc_end_first.load()) {
+        private_session->send_text(
+            private_order("fm000100000001", "PartiallyFilledCanceled", "0.005"));
+        private_session->send_text(private_execution("ex-l1", "0.005", "0.01"));
+      } else if (op == "order.create") {
         private_session->send_text(private_order("fm000100000001", "New", "0"));
         private_session->send_text(private_execution("ex-l1", "0.005", "0.01"));
       } else if (op == "order.cancel") {
@@ -488,6 +495,51 @@ TEST_CASE("bybit_linear.venue: order round trip with positionIdx, reduceOnly and
     REQUIRE(ca.size() == 1);
     CHECK(ca[0] == R"({"category":"linear","symbol":"BTCUSDT"})");
     CHECK_FALSE(l.venue->fatal());
+  }
+  h.srv.stop();
+}
+
+// The `order` and `execution` topics are not ordered against each other: an IOC can be reported as
+// ended, with its cumExecQty, before the execution that filled it. The end books the quantity; the
+// execution names it and is not booked again (an xmm hedge sized from the position would otherwise
+// see twice the fill).
+TEST_CASE("bybit_linear.venue: an IOC that ends before its execution arrives is booked once") {
+  Harness h;
+  h.ioc_end_first = true;
+  {
+    Live l(h, h.section());
+    l.wait_for_sweep();
+    BookedPosition book;
+    l.oc.all.clear();
+    OutNewOrderMsg n{};
+    init_header(n, EventType::OutNewOrder, kBtc, kVenue);
+    n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+    n.side = Side::Sell;
+    n.type = OrderType::Limit;
+    n.tif = TimeInForce::Ioc;
+    n.price = Price::from_decimal("60000.1").value();
+    n.qty = Qty::from_decimal("0.015").value();
+    book.submit(n.cl_ord_id, kBtc, kVenue, n.side, n.price, n.qty);
+    REQUIRE(l.outbound.try_push(&n, n.hdr.len));
+    l.venue->on_wake();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderCancelAck) == 1 && l.oc.count(EventType::OrderFill) == 1;
+    }));
+    std::size_t end_at = 0;
+    std::size_t fill_at = 0;
+    for (std::size_t i = 0; i < l.oc.all.size(); ++i) {
+      const auto t = RecordingSink::type_of(l.oc.all[i]);
+      if (t == EventType::OrderCancelAck) end_at = i;
+      if (t == EventType::OrderFill) fill_at = i;
+    }
+    CHECK(end_at < fill_at);
+    CHECK(l.oc.last<OrderCancelAckMsg>(EventType::OrderCancelAck)->cum_qty ==
+          Qty::from_decimal("0.005").value());
+    book.drain(l.oc);
+    CHECK(book.position == -Qty::from_decimal("0.005").value());
+    CHECK(book.oms.stats().corrected_fills == 1);
+    CHECK(book.oms.open_count() == 0);
   }
   h.srv.stop();
 }

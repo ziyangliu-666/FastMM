@@ -1,6 +1,6 @@
 # Economics of the shipped strategies
 
-`basic_mm`, `avellaneda_stoikov` and `options_mm` are reference implementations of published quoting rules, written to show the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge. None has been shown to make money at a fee schedule you can get. [Running this in production](../how-to/operations/running-in-production.md) covers the operational side.
+`basic_mm`, `avellaneda_stoikov`, `options_mm` and `xmm` are reference implementations of published quoting rules, written to show the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge. None has been shown to make money at a fee schedule you can get. [Running this in production](../how-to/operations/running-in-production.md) covers the operational side.
 
 ## The example backtest and the fee table
 

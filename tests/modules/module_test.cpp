@@ -34,7 +34,7 @@ TEST_CASE("modules: a strategy library in a static archive registers all three t
   CHECK(reg.entries().size() == 1);
   // Built-ins and a module side by side.
   register_builtin_strategies(reg);
-  CHECK(reg.entries().size() == 5);
+  CHECK(reg.entries().size() == 6);
 }
 
 TEST_CASE("modules: a name taken by different code is a conflict and changes nothing") {

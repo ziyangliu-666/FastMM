@@ -1,5 +1,5 @@
 #pragma once
-// The built-in strategies (basic_mm, avellaneda_stoikov, options_mm, lead_mm) as a strategy
+// The built-in strategies (basic_mm, avellaneda_stoikov, options_mm, lead_mm, xmm) as a strategy
 // module, in the fastmm::strategies library. fastmm::cli::live, backtest and replay always
 // register them first; run_backtest(cfg, name), replay_journal and sweep do so through
 // bt::register_builtin_strategies().

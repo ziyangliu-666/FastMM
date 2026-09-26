@@ -3,6 +3,23 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Quote/hedge step 2 done (2026-09-27): built-in `xmm`.** Quotes one instrument, hedges on another
+with IOCs; the hedge comes from the two positions in base units, one at a time, never from a count
+of fills. Guards: stale or invalid books and a hedge venue down pull the quotes, `max_unhedged`,
+failed hedges back off and N of them halt (cleared by a new `restart` value), an unreported outcome
+holds hedging `uncertain_hold_ms`. Found on the way, in the OMS: Bybit's `order` topic can end an
+IOC with its cumExecQty before the `execution` topic delivers the fill. The end booked the
+quantity as a synthetic fill and the live execution was booked again (only replayed executions
+corrected the estimate), so the position counted it twice and xmm would have hedged the phantom.
+A live execution whose quantity lies under the booked cum_qty (or, without a cum_qty, arrives
+after the order ended) now names the estimate. OKX carries fills on the orders push itself, so it
+is hit only when pushes arrive out of order; the same rule covers it. Evidence: OMS unit cases,
+Bybit and OKX fake-exchange cases (end first, then executions: booked once; each fails without the
+change), xmm unit and engine-harness cases, and a live session against two simulators with a hedge
+lost in a hedge-venue drop (one hedge per maker fill, venues net to zero). Not verified: any of it
+on real venues; profitability, basis behaviour and hedge delay need the multi-venue backtester.
+Configs: `configs/xmm-demo.toml`; docs: `docs/how-to/strategies/xmm.md`.
+
 ## 2026-09-26: live Binance Spot sessions from AWS Tokyo, and what strategies can now see
 
 **Sessions.** `lead_mm` on BTCU (0 maker fee for the account), priced off BTCUSDT / UUSDT, from

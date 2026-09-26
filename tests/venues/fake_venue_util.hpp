@@ -8,6 +8,7 @@
 // thread talks to sessions only via post() and reads recorded data under the mutex.
 #include "venue_test_util.hpp"
 
+#include "fastmm/core/oms.hpp"
 #include "fastmm/net/http_server.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/net/ws_server.hpp"
@@ -210,6 +211,62 @@ struct Collected {
       if (RecordingSink::type_of(m) == t) out = &RecordingSink::as<M>(m);
     }
     return out;
+  }
+};
+
+// The quantity the engine would book from the order events a connector emitted, in their order:
+// the real Oms, a cum_qty jump no fill covered booked at once (Engine::book_missed_fill), and an
+// execution booked less the part that names such an estimate (Engine::on_fill). Signed: buys add.
+struct BookedPosition {
+  Oms oms;
+  Qty position{};
+  std::size_t cursor = 0;
+
+  void submit(ClientOrderId id, InstrumentId inst, VenueId venue, Side side, Price px, Qty qty) {
+    NewOrderRequest r;
+    r.instrument = inst;
+    r.venue = venue;
+    r.side = side;
+    r.tif = TimeInForce::Ioc;
+    r.price = px;
+    r.qty = qty;
+    REQUIRE(oms.submit(r, id, Timestamp{1}).has_value());
+  }
+  void drain(const Collected& c) {
+    for (; cursor < c.all.size(); ++cursor) apply(c.all[cursor]);
+  }
+
+ private:
+  static Qty signed_qty(Side s, Qty q) { return s == Side::Buy ? q : -q; }
+  void after(const OmsUpdate& u) {
+    if (u.missed_qty.is_positive()) position += signed_qty(u.order.side, u.missed_qty);
+  }
+  void apply(const std::vector<std::byte>& raw) {
+    switch (RecordingSink::type_of(raw)) {
+      case EventType::OrderAck:
+        after(oms.on_ack(RecordingSink::as<OrderAckMsg>(raw)));
+        break;
+      case EventType::OrderReject:
+        after(oms.on_reject(RecordingSink::as<OrderRejectMsg>(raw)));
+        break;
+      case EventType::OrderCancelAck:
+        after(oms.on_cancel_ack(RecordingSink::as<OrderCancelAckMsg>(raw)));
+        break;
+      case EventType::OrderExpired:
+        after(oms.on_expired(RecordingSink::as<OrderExpiredMsg>(raw)));
+        break;
+      case EventType::OrderFill: {
+        const auto& f = RecordingSink::as<OrderFillMsg>(raw);
+        const OmsUpdate u = oms.on_fill(f);
+        if (u.action == OmsAction::Duplicate) break;
+        const Side side = u.order.instrument.valid() ? u.order.side : f.side;
+        position += signed_qty(side, f.qty - u.corrected_qty);
+        after(u);
+        break;
+      }
+      default:
+        break;
+    }
   }
 };
 

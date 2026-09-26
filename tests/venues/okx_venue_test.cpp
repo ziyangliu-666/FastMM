@@ -108,6 +108,9 @@ struct Harness {
   std::atomic<int> signed_ok{0};
   std::atomic<int> signed_bad{0};
   std::atomic<int> login_failures{0};
+  // "order" answers as an IOC of 3 that took 2 in two trades and ended, the push that ends it
+  // (accFillSz 2) ahead of the two that carry the fills.
+  std::atomic<bool> ioc_end_first{false};
   net::WsSession* private_session = nullptr;  // server thread only
   // Answer the private login only once an order has arrived on the order connection, so that
   // the start-up sweep is asked for after an order went out (server thread only).
@@ -239,7 +242,14 @@ struct Harness {
           R"(","data":[{"clOrdId":"fm000100000001","ordId":"312","tag":"","reqId":")" + req +
           R"(","ts":"1789299700444","sCode":"0","sMsg":""}],"code":"0","msg":"","inTime":"1","outTime":"2"})");
       if (private_session == nullptr) return;
-      if (op == "order") {
+      if (op == "order" && ioc_end_first.load()) {
+        private_session->send_text(
+            order_push("fm000100000001", "canceled", "2", "0", "", "", "", "14"));
+        private_session->send_text(
+            order_push("fm000100000001", "partially_filled", "1", "1", "4463701411"));
+        private_session->send_text(
+            order_push("fm000100000001", "partially_filled", "2", "1", "4463701412"));
+      } else if (op == "order") {
         private_session->send_text(order_push("fm000100000001", "live", "0", "0", ""));
         private_session->send_text(
             order_push("fm000100000001", "partially_filled", "1", "1", "4463701411"));
@@ -618,6 +628,33 @@ TEST_CASE("okx.venue: order round trip over the WebSocket, then the blocking can
     CHECK(cb[0] == R"([{"instId":"BTC-USDT-SWAP","ordId":"312"}])");
     CHECK(h.signed_bad.load() == 0);
     CHECK_FALSE(l.venue->fatal());
+  }
+}
+
+// An orders push that ends an IOC (cancelSource 14) with an accFillSz ahead of the pushes that
+// carry its fills: the end books the quantity, the fills name it and are not booked again.
+TEST_CASE("okx.venue: an IOC reported ended before its fills is booked once") {
+  Harness h;
+  h.ioc_end_first = true;
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.oc.all.clear();
+    BookedPosition book;
+    OutNewOrderMsg n = new_order();
+    n.type = OrderType::Limit;
+    n.tif = TimeInForce::Ioc;
+    book.submit(n.cl_ord_id, kBtc, kVenue, n.side, n.price, n.qty);
+    l.push(n.hdr);
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderExpired) == 1 && l.oc.count(EventType::OrderFill) == 2;
+    }));
+    CHECK(l.oc.last<OrderExpiredMsg>(EventType::OrderExpired)->cum_qty == Qty::from_int(2));
+    book.drain(l.oc);
+    CHECK(book.position == -Qty::from_int(2));
+    CHECK(book.oms.stats().corrected_fills == 2);
+    CHECK(book.oms.open_count() == 0);
   }
 }
 
