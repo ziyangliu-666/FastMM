@@ -41,7 +41,9 @@ using live::kExitUsage;
 constexpr const char* kFooter =
     "API keys come from the environment through ${VAR} references in [venues.*],\n"
     "e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.\n"
-    "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.\n"
+    "SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits. A second\n"
+    "SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after\n"
+    "the stop, exits at once with code 5 without waiting for cancel_all.\n"
     "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
     "fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,\n"
     "kill, unkill, stop and status.\n"
@@ -55,7 +57,7 @@ constexpr const char* kFooter =
     "  2  bad command line, or a venue has no API keys\n"
     "  3  bad config, strategy or parameters\n"
     "  4  venue reference data failed to load\n"
-    "  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error\n"
+    "  5  runtime failure: cancel_all failed, journal, ring overflow, forced exit, uncaught error\n"
     "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
     "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok";
 

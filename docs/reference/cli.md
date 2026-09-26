@@ -44,7 +44,9 @@ OPTIONS:
 
 API keys come from the environment through ${VAR} references in [venues.*],
 e.g. FASTMM_BINANCE_API_KEY / FASTMM_BINANCE_API_SECRET.
-SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits.
+SIGINT/SIGTERM trips the kill switch, cancels all open orders and exits. A second
+SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after
+the stop, exits at once with code 5 without waiting for cancel_all.
 SIGHUP clears the kill switch and resumes quoting (on_kill = "stay").
 fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,
 kill, unkill, stop and status.
@@ -58,7 +60,7 @@ Exit codes:
   2  bad command line, or a venue has no API keys
   3  bad config, strategy or parameters
   4  venue reference data failed to load
-  5  runtime failure: cancel_all failed, journal, ring overflow, uncaught error
+  5  runtime failure: cancel_all failed, journal, ring overflow, forced exit, uncaught error
   6  kill switch tripped by the engine (on_kill = "exit"), or a latched max_loss trip
   7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok
 ```
@@ -72,7 +74,7 @@ Exit codes:
 | 2 | bad command line, including a `--log` file that cannot be opened; a `${VAR}` in `[venues.*]` that is not set, except `api_key` and `api_secret` with `--dry-run` |
 | 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code, a `[storage] backend` that is not registered or cannot be opened ([Storage](storage.md)) |
 | 4 | a venue's reference data failed to load; with `--gateway`, the gateway cannot be reached or refused the attach |
-| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; the gateway closed the attachment (`--gateway`); an uncaught error |
+| 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; the gateway closed the attachment (`--gateway`); an uncaught error; a forced exit during shutdown: a second SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after the stop (`include/fastmm/live/shutdown_guard.hpp`), which does not wait for cancel_all |
 | 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | 7 | a Python strategy's slow tier failed, and `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` does not return it) |
 

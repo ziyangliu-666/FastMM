@@ -15,6 +15,7 @@
 #include "fastmm/live/control_socket.hpp"
 #include "fastmm/live/gateway.hpp"
 #include "fastmm/live/live_backend.hpp"
+#include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/thread_affinity.hpp"
 #include "fastmm/live/venue_slot.hpp"
 #include "fastmm/net/reactor.hpp"
@@ -55,12 +56,21 @@ namespace {
 
 volatile std::sig_atomic_t g_signal = 0;
 volatile std::sig_atomic_t g_hup = 0;  // SIGHUP: clear the kill switch and resume quoting
+std::atomic<std::int64_t> g_first_signal_ns{0};
+std::atomic<ShutdownWatchdog*> g_watchdog{nullptr};
+static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 extern "C" void on_signal(int sig) {
   if (sig == SIGHUP) {
     g_hup = 1;
-  } else {
-    g_signal = sig;
+    return;
   }
+  const std::int64_t now = monotonic_ns();
+  const std::int64_t first = g_first_signal_ns.load(std::memory_order_relaxed);
+  if (g_signal != 0 && second_signal_forces_exit(first, now))
+    force_exit("second stop signal while shutting down: exiting without waiting for cancel_all");
+  if (first == 0) g_first_signal_ns.store(now, std::memory_order_relaxed);
+  if (ShutdownWatchdog* w = g_watchdog.load(std::memory_order_acquire)) w->stop_requested(now);
+  g_signal = sig;
 }
 
 struct sigaction g_old_int {};
@@ -72,6 +82,7 @@ void install_signal_handlers() {
   // Each session starts without a pending stop: a process can run several sessions (tests).
   g_signal = 0;
   g_hup = 0;
+  g_first_signal_ns.store(0);
   struct sigaction sa {};
   sa.sa_handler = &on_signal;
   sigemptyset(&sa.sa_mask);
@@ -1061,6 +1072,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const SignalGuard signals;
+  // A stop that does not finish in time ends the process anyway (shutdown_guard.hpp).
+  ShutdownWatchdog shutdown_watchdog;
+  struct WatchdogRegistration {
+    explicit WatchdogRegistration(ShutdownWatchdog* w) { g_watchdog.store(w); }
+    ~WatchdogRegistration() { g_watchdog.store(nullptr); }
+    WatchdogRegistration(const WatchdogRegistration&) = delete;
+    WatchdogRegistration& operator=(const WatchdogRegistration&) = delete;
+  } const watchdog_registration(&shutdown_watchdog);
   if (store_thread) {
     store::SessionOpen so;
     so.session_id = deps.engine.session_id;
@@ -1432,7 +1451,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       }
     }
   }
-  control_socket.close();  // no command can reach a session that is shutting down
+  shutdown_watchdog.stop_requested();  // --duration, a kill switch, fastmm-ctl stop, ...
+  control_socket.close();              // no command can reach a session that is shutting down
   const std::int64_t shutdown_start = steady_now().ns;
   persist_kill(runner->live_stats());
   publish_status(StatusRunState::Stopping, runner->live_stats());
@@ -1597,6 +1617,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       FASTMM_LOG_ERROR("store: last error: {}", std::string_view(store_backend.last_error()));
     store_backend.close();
   }
+  shutdown_watchdog.done();
   FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);
   return rc;
 }
