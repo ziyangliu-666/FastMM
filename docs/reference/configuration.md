@@ -34,6 +34,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
 | `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
 | `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |
+| `queue_conservatism` | number |  | the queue position estimate ctx.queue_ahead, from 0 to 1: at 0 a level's shrink is shared between cancels ahead of and behind our order, at 1 cancels never move it up (default 1.0; a backtest uses [backtest] queue_conservatism when set) |
 | `flatten_interval_ms` | integer |  | how often an operator flatten looks at the position left and sends the next reduce-only slice, ms (default 500) |
 | `flatten_timeout_ms` | integer |  | how long an operator flatten keeps trying before it gives up and leaves the position, ms; 0 = until it is flat or an operator stops it (default 60000) |
 | `flatten_slippage_bps` | integer |  | how far through the touch a flatten prices its orders when the command gives no --max-slippage-bps, basis points (default 25) |
@@ -380,7 +381,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `seed` | int | `[sim] seed`, else `1` | Seed for the synthetic market and the simulated venue; the engine's random generator uses `[engine] rng_seed` |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
 | `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Its results are optimistic |
-| `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do. `fastmm-data fill-check` compares values against a live session ([Check the fill model](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)) |
+| `queue_conservatism` | number | `[engine] queue_conservatism`, else `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do. The strategy's `ctx.queue_ahead` uses the same value in a backtest. `fastmm-data fill-check` compares values against a live session ([Check the fill model](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)) |
 | `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue, and for acknowledgements back unless `latency_ack_us` is set, µs |
 | `latency_jitter_us` | int | `50` | Random jitter added to that latency, µs, seeded |
 | `latency_ack_us` | int | `latency_fixed_us` | Fixed latency for acknowledgements and fills back from the venue, µs |

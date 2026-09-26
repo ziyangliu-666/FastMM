@@ -17,6 +17,7 @@
 #include "fastmm/core/time.hpp"
 
 #include <cstdint>
+#include <optional>
 
 namespace fastmm {
 
@@ -41,6 +42,23 @@ class StrategyContext {
   // ---- market data --------------------------------------------------------------------------
 
   [[nodiscard]] const Book& book(InstrumentId id) const noexcept { return e_->book(id); }
+
+  // Our resting quantity that the venue's feed shows at (id, side, px): the book and the tickers of
+  // a live venue include our own orders. As of the book's last update, or of venue time `at` (a
+  // BookTicker's exch_ts). An order counts from its ack's venue time to its end's, less its fills,
+  // so a depth update stamped before our cancel still includes it. Zero in the simulator, whose
+  // feed does not contain our orders.
+  [[nodiscard]] Qty own_qty(InstrumentId id, Side side, Price px) const noexcept {
+    return e_->own_qty(id, side, px);
+  }
+  [[nodiscard]] Qty own_qty(InstrumentId id, Side side, Price px, Timestamp at) const noexcept {
+    return e_->own_qty(id, side, px, at);
+  }
+  // The book's best level on one side with own_qty taken out; a level that was only ours is
+  // skipped. Level{} when none is left.
+  [[nodiscard]] Level best_ex_self(InstrumentId id, Side side) const noexcept {
+    return e_->best_ex_self(id, side);
+  }
 
   // ---- portfolio ----------------------------------------------------------------------------
 
@@ -99,6 +117,21 @@ class StrategyContext {
     const Oms& oms = e_->oms();
     const Handle<Order> h = oms.find(id);
     return h.valid() ? &oms.get(h) : nullptr;
+  }
+  // Estimated quantity resting ahead of an open order at its price: the l2_queue fill model's
+  // queue model on the market data the strategy sees, with [engine] queue_conservatism, from the
+  // order's ack. nullopt while it is not acknowledged or once it is terminal. The engine tracks
+  // queues from the first call on (call it in on_start to cover every order from its ack); an
+  // order already resting at the first call starts at the back of its level as the book shows it.
+  [[nodiscard]] std::optional<Qty> queue_ahead(ClientOrderId id) const noexcept {
+    return e_->queue_ahead(id);
+  }
+  // Send and ack times of an open order, or nullptr (OmsUpdate::times has them in on_order_update
+  // and, through Fill::update, in on_fill).
+  [[nodiscard]] const OrderTimes* order_times(ClientOrderId id) const noexcept {
+    const Oms& oms = e_->oms();
+    const Handle<Order> h = oms.find(id);
+    return h.valid() ? &oms.times(h) : nullptr;
   }
   // Unfilled quantity of our open orders (quotes included) on one side.
   [[nodiscard]] Qty open_qty(InstrumentId id, Side side) const noexcept {

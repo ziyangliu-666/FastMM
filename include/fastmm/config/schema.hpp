@@ -104,6 +104,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0)"},
     {"engine",
+     "queue_conservatism",
+     KeyType::Float,
+     false,
+     "the queue position estimate ctx.queue_ahead, from 0 to 1: at 0 a level's shrink is shared "
+     "between cancels ahead of and behind our order, at 1 cancels never move it up (default 1.0; "
+     "a backtest uses [backtest] queue_conservatism when set)"},
+    {"engine",
      "flatten_interval_ms",
      KeyType::Int,
      false,

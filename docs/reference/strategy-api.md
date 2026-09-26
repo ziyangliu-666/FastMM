@@ -112,6 +112,12 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().instruments()), const Instrume
 static_assert(std::same_as<decltype(lvalue<Ctx>().contains(InstrumentId{})), bool>);
 // market data
 static_assert(std::same_as<decltype(lvalue<Ctx>().book(InstrumentId{})), const Book&>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().own_qty(InstrumentId{}, Side::Buy, Price{})), Qty>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().own_qty(InstrumentId{}, Side::Buy, Price{}, Timestamp{})),
+                 Qty>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().best_ex_self(InstrumentId{}, Side::Buy)), Level>);
 // portfolio
 static_assert(std::same_as<decltype(lvalue<Ctx>().position(InstrumentId{})), const Position&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().portfolio()), Portfolio>);
@@ -132,6 +138,10 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().replace(ClientOrderId{}, Price
 static_assert(std::same_as<decltype(lvalue<Ctx>().order(ClientOrderId{})), const Order*>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().open_qty(InstrumentId{}, Side::Buy)), Qty>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().oms()), const Oms&>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().queue_ahead(ClientOrderId{})), std::optional<Qty>>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().order_times(ClientOrderId{})), const OrderTimes*>);
 // timers
 static_assert(std::same_as<decltype(lvalue<Ctx>().every(Duration{}, std::uint64_t{})), TimerId>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().once(Duration{}, std::uint64_t{})), TimerId>);
@@ -167,6 +177,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 | `request_stop()` | sets the engine's stop flag: a backtest ends after the current engine step; replay always drains the journal |
 | `trip_kill(reason)` | trips the global kill switch with a `KillReason`: quoting stops, quotes are pulled and every working order is cancelled |
 | `rng()` | a `Xoshiro256ss` seeded from `[engine] rng_seed`, identical in replay |
+| `own_qty(id, side, px)`, `own_qty(id, side, px, at)`, `best_ex_self(id, side)`, `queue_ahead(order_id)`, `order_times(order_id)` | our own orders as the market sees them ([Execution view](#execution-view)) |
 
 `set_quotes` applies hysteresis (`[engine] min_requote_ticks`, `min_requote_interval_ms`), skips orders awaiting a venue response and uses replace where the venue supports it. A direct order returns a `Result`:
 
@@ -174,6 +185,30 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 auto id = ctx.send(NewOrderRequest::limit(inst.id, Side::Buy, px, qty).post_only());
 if (!id) return FASTMM_LOG_WARN("order refused: {}", id.error());  // e.g. RejectReason::MaxPosition
 ```
+
+## Execution view
+
+The engine derives these from the order events and the market data it journals, so a replay reproduces them.
+
+| Method | Returns |
+|---|---|
+| `own_qty(id, side, px)`, `own_qty(id, side, px, at)` | our resting quantity that the venue's feed shows at `px`, as of the book's last update or of venue time `at` (a `BookTicker`'s `hdr.exch_ts`). An order counts from its ack's venue time to its end's (cancel ack, last fill, expiry, a reconciliation that no longer lists it; with whole-millisecond venue times to the end of that millisecond), less its fills, so a depth update stamped before our cancel still includes it. 0 in the simulator |
+| `best_ex_self(id, side)` | the book's best `Level` on one side with `own_qty` taken out; a level that was only ours is skipped; `Level{}` when none is left |
+| `queue_ahead(order_id)` | `std::optional<Qty>`: the estimated quantity resting ahead of an open order at its price; `nullopt` before its ack and once it is terminal |
+| `order_times(order_id)` | `const OrderTimes*` of an open order, `nullptr` once terminal: `sent` (engine clock), `venue_ack` (the ack's `exch_ts`, whole ms on Binance; 0 when the venue gives none), `local_ack` (the ack's `recv_ts`). After a replace they describe the replacement from its ack on. `OmsUpdate::times` carries them in `on_order_update`, the terminal update included, and through `Fill::update` in `on_fill` |
+
+Whether a venue's feed shows our orders is a transport property (`own_in_feed(venue)`): yes for `LiveTransport` and for the replay of a live journal (one with a TSC calibration), no for `SimTransport`.
+
+`queue_ahead` runs the `l2_queue` fill model's queue model ([`core/queue_model.hpp`](../../include/fastmm/core/queue_model.hpp)) on the market data the strategy sees, with `[engine] queue_conservatism` (`[backtest] queue_conservatism` in a backtest):
+
+| Event | Quantity ahead |
+|---|---|
+| ack | the displayed quantity at the price less `own_qty` |
+| depth delta at the price | a shrink from `old` to `new` takes `(old - new) * ahead / old * (1 - conservatism)`; a level that goes away leaves 0; a snapshot caps it at the level |
+| trade at the price | consumed first; a trade through the price leaves 0 |
+| replace ack | kept at the same price and no more than the leaves; otherwise as for an ack |
+
+The engine tracks queues from the strategy's first `queue_ahead` call, so a strategy that never calls it pays one load per book update and trade; an order already resting at that call starts at the back of its level as the book then shows it. Call it in `on_start` to cover every order from its ack. With `fill_model = "l2_queue"` and no latency the value equals the fill model's ([`tests/sim/exec_view_test.cpp`](../../tests/sim/exec_view_test.cpp)); with latency the simulated venue sees the market before the strategy does. A replay handles events in arrival order, `fastmm-data fill-check` in venue-time order: on a 3 h Binance Spot session the replayed estimate at the ack equals fill-check's for 2077 of 2079 orders, on a session that joined existing levels for 1667 of 1726.
 
 ## Book
 
@@ -194,7 +229,7 @@ static_assert(std::same_as<decltype(lvalue<const Book>().is_valid()), bool>);
 | `level(side, i)`, `depth(side)`, `top<N>(side)` | levels from the touch outwards |
 | `qty_at_or_better(side, px)`, `price_for_qty(side, qty)` | depth queries |
 | `is_valid()` | both sides present and not crossed |
-| `seq()`, `last_update()` | the venue sequence number and receive time of the last update |
+| `seq()`, `last_update()` | the venue sequence number and venue time (`exch_ts`, else receive time) of the last update |
 
 ## Fill
 

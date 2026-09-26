@@ -35,6 +35,10 @@ struct EngineConfig {
   Duration flatten_interval = milliseconds(500);
   Duration flatten_timeout = seconds(60);
   std::int64_t flatten_slippage_bps = 25;
+  // [engine] queue_conservatism (a backtest: [backtest] queue_conservatism), in bps of 1: how much
+  // of a level's shrink ahead of our order the queue estimate (StrategyContext::queue_ahead)
+  // credits to cancels ahead of it. 10000: none.
+  std::int64_t queue_conservatism_bps = 10'000;
   // Net PnL carried over from earlier sessions ([risk] max_loss is a budget for the deployment,
   // not per process); fastmm-live reads it from the durable kill state (core/session_state.hpp).
   Notional pnl_carry{};

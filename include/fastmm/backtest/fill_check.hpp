@@ -6,7 +6,7 @@
 // that no longer lists it; collect_own_orders, own_orders.hpp), and the journal's book and trade
 // messages are applied to a mirror book and to one QueuePositionModel per conservatism value in
 // venue time order (exch_ts), exactly as SimTransport does under fill_model = "l2_queue"
-// (sim::queue_apply_book, QueuePositionModel:: on_trade). Venue time matters: a venue's execution
+// (queue_apply_book, QueuePositionModel::on_trade). Venue time matters: a venue's execution
 // report reaches the session before the public trade that filled the order, so by receive time the
 // trade falls after the order's end. An event without a venue time uses its receive time (counted).
 // A replace follows the new id; like the simulator, the same price at no more than the leaves keeps

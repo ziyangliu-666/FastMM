@@ -217,6 +217,8 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       throw std::runtime_error("backtest: cannot create journal " + cfg_.journal_out);
   }
   deps_.engine = cfg_.engine;
+  // The strategy's queue estimate uses the fill model's conservatism.
+  deps_.engine.queue_conservatism_bps = cfg_.transport.queue_conservatism_bps;
   deps_.instruments = &cfg_.instruments;
   deps_.params = cfg_.params;
   deps_.journal_ring = impl_->journal_ring.get();

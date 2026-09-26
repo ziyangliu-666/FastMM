@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
@@ -856,6 +857,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.flatten_interval = milliseconds(cfg.engine.flatten_interval_ms);
   deps.engine.flatten_timeout = milliseconds(cfg.engine.flatten_timeout_ms);
   deps.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
+  deps.engine.queue_conservatism_bps = std::llround(cfg.engine.queue_conservatism * 10'000.0);
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
   deps.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   deps.engine.cpu = cfg.engine.cpu;

@@ -26,16 +26,6 @@ std::string_view to_string(OrderEnd e) noexcept {
   return "?";
 }
 
-void VenueTime::offer(const EventHeader& h) noexcept {
-  if (h.exch_ts.valid() && (from_recv || !ts.valid())) {
-    ts = h.exch_ts;
-    from_recv = false;
-  } else if (!ts.valid()) {
-    ts = h.recv_ts;
-    from_recv = true;
-  }
-}
-
 const OwnOrder* OwnOrderLog::find(ClientOrderId id) const noexcept {
   const auto it = index.find(id.value);
   return it == index.end() ? nullptr : &orders[it->second];
@@ -56,13 +46,6 @@ Timestamp OwnOrderLog::gone(const OwnOrder& o) const noexcept {
 namespace {
 
 constexpr std::int64_t kMs = 1'000'000;
-
-std::uint64_t numeric_exec_id(const ExecId& id) noexcept {
-  const std::string_view v = id.view();
-  std::uint64_t n = 0;
-  const auto [ptr, ec] = std::from_chars(v.data(), v.data() + v.size(), n);
-  return ec == std::errc{} && ptr == v.data() + v.size() ? n : 0;
-}
 
 class Collector {
  public:
@@ -268,66 +251,20 @@ OwnOrderLog collect_own_orders(JournalReader& reader) {
   return c.finish();
 }
 
-std::size_t OwnOrderStripper::KeyHash::operator()(const Key& k) const noexcept {
-  std::uint64_t x = static_cast<std::uint64_t>(k.px) * 0x9E37'79B9'7F4A'7C15ULL;
-  x ^= (static_cast<std::uint64_t>(k.inst) << 1U | k.side) + 0x632B'E59B'D9B4'E019ULL + (x << 6U);
-  return x ^ (x >> 29U);
-}
-
-OwnOrderStripper::OwnOrderStripper(const OwnOrderLog& log) {
-  constexpr std::int64_t kForever = std::numeric_limits<std::int64_t>::max();
-  for (const OwnOrder& o : log.orders) {
-    if (!o.acked || o.rejected || !o.resting_type()) continue;
-    const std::int64_t start = o.ack.ts.ns;
-    const Timestamp gone = log.gone(o);
-    const std::int64_t end = gone.valid() ? gone.ns + 1 : kForever;  // gone is inclusive
-    if (end <= start) continue;
-    Slot& lvl = levels_[Key{o.instrument.value, static_cast<std::uint8_t>(o.side), o.price.raw}];
-    // Leaves step down at each live fill.
-    std::int64_t from = start;
-    Qty leaves = o.qty;
-    for (const OwnFill& f : o.fills) {
-      const std::int64_t at = std::clamp(f.at.ts.ns, start, end);
-      if (at > from && leaves.is_positive()) lvl.segs.push_back(Segment{from, at, leaves});
-      from = std::max(from, at);
-      leaves = less(leaves, f.qty);
+OwnOrderStripper::OwnOrderStripper(JournalReader& reader) {
+  reader.for_each([&](const EventHeader* h) {
+    if ((h->flags & EventHeader::kOutbound) != 0) {
+      if ((h->flags & EventHeader::kDropped) == 0) own_.on_outbound(*h);
+    } else {
+      own_.on_inbound(*h);
     }
-    if (end > from && leaves.is_positive()) lvl.segs.push_back(Segment{from, end, leaves});
-  }
-  for (auto& [k, lvl] : levels_) {
-    std::sort(lvl.segs.begin(), lvl.segs.end(), [](const Segment& a, const Segment& b) {
-      return a.start < b.start;
-    });
-    lvl.ends.resize(lvl.segs.size());
-    std::int64_t m = std::numeric_limits<std::int64_t>::min();
-    for (std::size_t i = 0; i < lvl.segs.size(); ++i) {
-      m = std::max(m, lvl.segs[i].end);
-      lvl.ends[i] = m;
-    }
-  }
-}
-
-Qty OwnOrderStripper::own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept {
-  const auto it = levels_.find(Key{inst.value, static_cast<std::uint8_t>(side), px.raw});
-  if (it == levels_.end()) return Qty{};
-  const Slot& lvl = it->second;
-  // Segments starting at or before t, walked back while one of them may still cover t.
-  auto i = static_cast<std::size_t>(
-      std::upper_bound(lvl.segs.begin(),
-                       lvl.segs.end(),
-                       t.ns,
-                       [](std::int64_t v, const Segment& s) { return v < s.start; }) -
-      lvl.segs.begin());
-  Qty q;
-  while (i > 0 && lvl.ends[i - 1] > t.ns) {
-    --i;
-    if (lvl.segs[i].end > t.ns) q += lvl.segs[i].qty;
-  }
-  return q;
+  });
+  reader.reset();
+  own_.index();
 }
 
 const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& buf) noexcept {
-  if (levels_.empty()) return &h;
+  if (own_.empty()) return &h;
   const Timestamp t = venue_ts(h);
   switch (h.type) {
     case EventType::BookDelta:

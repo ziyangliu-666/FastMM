@@ -38,7 +38,7 @@
 | **OMS** | the order management system: the state machine of every order from send to a terminal state |
 | **outbound hash** | the SHA-256 over every order message a run sent; equal hashes mean identical order streams |
 | **post-only** | an order the venue rejects (or reprices) if it would trade on arrival, so it is always a maker order |
-| **queue position** | the displayed quantity resting ahead of our order at its price; it decides whether a trade at that price reaches us. Simulated by `queue_conservatism` under `[backtest] fill_model = "l2_queue"` |
+| **queue position** | the displayed quantity resting ahead of our order at its price; it decides whether a trade at that price reaches us. Simulated by `queue_conservatism` under `[backtest] fill_model = "l2_queue"`; estimated live by `ctx.queue_ahead` |
 | **quote** | a resting bid or ask a market maker keeps in the book; FastMM's quote manager owns quote orders |
 | **quote manager** | the engine component that turns desired quotes into new, cancel and replace orders |
 | **Ratio** | a dimensionless fixed-point factor; 1.0 is raw 100,000,000 and 1 bp is raw 10,000 |

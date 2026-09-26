@@ -11,11 +11,14 @@
 // session: the venue's feed shows our orders, a backtest over that feed would otherwise see them as
 // someone else's liquidity. Each level is stripped of what we had resting at that price at the
 // message's venue time, so a throttled depth update that still shows an order we have since
-// cancelled keeps the quantity it had when we stripped it (none of ours).
+// cancelled keeps the quantity it had when we stripped it (none of ours). The quantities come from
+// OwnQuantity (core/own_quantity.hpp), the object the engine answers StrategyContext::own_qty
+// with, fed the whole journal first.
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/messages.hpp"
+#include "fastmm/core/own_quantity.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/sim/md_source.hpp"
@@ -44,14 +47,6 @@ enum class OrderEnd : std::uint8_t {
 [[nodiscard]] inline Timestamp venue_ts(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
-
-// A time of an order event: the venue's (exch_ts), or the receive time when the venue gave none.
-struct VenueTime {
-  Timestamp ts;
-  bool from_recv = true;
-  // Takes `h`'s time if there is none yet, or if the one held is only a receive time.
-  void offer(const EventHeader& h) noexcept;
-};
 
 struct OwnFill {
   VenueTime at;
@@ -118,10 +113,13 @@ class OwnOrderStripper {
     std::uint64_t tickers_dropped = 0;  // a side of the ticker was only ours
   };
 
-  explicit OwnOrderStripper(const OwnOrderLog& log);
+  // Reads the whole journal (in recorded order) and resets it.
+  explicit OwnOrderStripper(JournalReader& reader);
 
   // Our resting quantity at (instrument, side, price) at venue time t.
-  [[nodiscard]] Qty own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept;
+  [[nodiscard]] Qty own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept {
+    return own_.own_at(inst, side, px, t);
+  }
 
   // `h` with our quantity taken out: `h` itself when nothing changes, a copy in `buf`, or nullptr
   // for a BookTicker whose best bid or ask was only ours (the ticker alone cannot tell the next
@@ -131,25 +129,7 @@ class OwnOrderStripper {
   [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
  private:
-  struct Segment {
-    std::int64_t start;  // [start, end) in venue ns
-    std::int64_t end;
-    Qty qty;
-  };
-  struct Key {
-    std::uint32_t inst;
-    std::uint8_t side;
-    std::int64_t px;
-    bool operator==(const Key&) const noexcept = default;
-  };
-  struct KeyHash {
-    std::size_t operator()(const Key& k) const noexcept;
-  };
-  struct Slot {
-    std::vector<Segment> segs;       // by start
-    std::vector<std::int64_t> ends;  // running max of segs[0..i].end
-  };
-  std::unordered_map<Key, Slot, KeyHash> levels_;
+  OwnQuantity own_{/*keep_all=*/true};
   Stats stats_;
 };
 

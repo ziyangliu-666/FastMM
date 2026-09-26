@@ -413,3 +413,45 @@ def test_fill_view_mirrors_the_cpp_fill(example_config):
     assert f[4] == f[3] and s.position_after == f[4]  # position already updated
     assert f[5] and f[6] and f[7] == fastmm.TAKER
     assert f[8] is True and f[9] is False and f[11] == s.order_id == f[12]
+
+
+def test_execution_view(example_config):
+    """own_qty, best_ex_self, queue_ahead and order times (the simulator's feed has none of ours)."""
+
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            self.first = ctx.queue_ahead(0)  # starts the tracking; no such order
+
+        def on_book(self, ctx, inst, book):
+            if hasattr(self, "order_id") or not book.valid:
+                return
+            self.pending = None
+            bid = book.best_bid
+            self.own = (ctx.own_qty(inst, BUY, bid[0]), ctx.own_qty_raw(inst, BUY, book.best_bid_raw[0]),
+                        ctx.own_qty(inst, BUY, bid[0], at_ns=ctx.now_ns))
+            self.ex_self = (ctx.best_ex_self(inst, BUY) == bid,
+                            ctx.best_ex_self_raw(inst, SELL) == book.best_ask_raw)
+            self.order_id = ctx.send(inst, BUY, bid[0], 0.001, post_only=True)
+            self.sent_at = ctx.now_ns
+            self.pending = (ctx.queue_ahead(self.order_id), ctx.order(self.order_id).sent_ns,
+                            ctx.order(self.order_id).venue_ack_ns)
+            self.level_raw = book.best_bid_raw[1]
+
+        def on_order_update(self, ctx, u):
+            if u.order_id != getattr(self, "order_id", None) or hasattr(self, "live"):
+                return
+            if u.state == "Live":
+                o = ctx.order(u.order_id)
+                self.live = (ctx.queue_ahead(u.order_id), ctx.queue_ahead_raw(u.order_id),
+                             u.sent_ns, u.venue_ack_ns > 0, u.local_ack_ns >= u.venue_ack_ns,
+                             o.venue_ack_ns == u.venue_ack_ns, o.local_ack_ns == u.local_ack_ns)
+
+    s = Probe()
+    fastmm.run_backtest(_cfg(example_config), data=FIXTURE_FMJ, strategy=s)
+    assert s.first is None
+    assert s.own == (0.0, 0, 0.0)
+    assert s.ex_self == (True, True)
+    assert s.pending == (None, s.sent_at, 0)
+    ahead, ahead_raw, sent, venue_ack, ordered, same_venue, same_local = s.live
+    assert ahead_raw >= 0 and ahead == ahead_raw / 1e8 and ahead_raw <= s.level_raw
+    assert sent == s.sent_at and venue_ack and ordered and same_venue and same_local

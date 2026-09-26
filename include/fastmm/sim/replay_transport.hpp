@@ -38,6 +38,9 @@ class ReplayTransport {
   void set_supports_replace(VenueId v, bool on) noexcept {
     if (v.value < kMaxVenues) replace_[v.value] = on;
   }
+  // The recorded venues' public feed shows our orders (a live session): the engine follows its
+  // own quantity in it as the live engine did.
+  void set_own_in_feed(bool on) noexcept { own_in_feed_ = on; }
   static std::vector<Bytes> load_outbound(JournalReader& reader) {
     std::vector<Bytes> out;
     reader.for_each([&](const EventHeader* h) {
@@ -82,6 +85,9 @@ class ReplayTransport {
   [[nodiscard]] bool supports_replace(VenueId v) const noexcept {
     return v.value < kMaxVenues && replace_[v.value];
   }
+  [[nodiscard]] bool own_in_feed(VenueId v) const noexcept {
+    return own_in_feed_ && v.value < kMaxVenues;
+  }
 
   // ---- results ------------------------------------------------------------------------------
   [[nodiscard]] std::string hash_hex() const { return hasher_.hex(); }
@@ -116,6 +122,7 @@ class ReplayTransport {
   std::int64_t first_mismatch_ = -1;
   Bytes mismatch_actual_;
   bool replace_[kMaxVenues] = {};
+  bool own_in_feed_ = false;
 };
 
 static_assert(TransportLike<ReplayTransport>);
