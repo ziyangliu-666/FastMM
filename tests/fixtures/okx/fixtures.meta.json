@@ -1,0 +1,13 @@
+{
+ "_source": "mixed",
+ "_recorded_from": "https://www.okx.com/api/v5/public/{instruments?instType=SWAP&instId=BTC-USDT-SWAP,instruments?instType=SWAP&instId=BTC-USD-SWAP,time} (the demo instrument with header x-simulated-trading: 1) and wss://ws.okx.com:8443/ws/v5/public (fastmm-live --dry-run --record-raw with configs/okx-demo.toml pointed at production: books, bbo-tbt and trades on BTC-USDT-SWAP)",
+ "_recorded_at": "2026-09-26T16:20Z",
+ "files": {
+  "instruments_btc_usdt_swap.json": "recorded (production: instIdCode 10459, tickSz 0.1)",
+  "instruments_btc_usdt_swap_demo.json": "recorded with x-simulated-trading: 1 (demo: instIdCode 2021032601102993, tickSz 0.01)",
+  "instruments_btc_usd_swap.json": "recorded (an inverse swap, which the connector refuses)",
+  "server_time.json": "recorded",
+  "raw_md_stream.jsonl": "recorded, one frame per line: the subscribe acks, the 400-level books snapshot and 24 updates (checksum 0: deprecated 2026-06-23), bbo-tbt and trades",
+  "private payloads (tests/venues/okx_*_test.cpp)": "docs-example (https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel, #trading-account-websocket-positions-channel, #trading-account-websocket-balance-and-position-channel, #order-book-trading-trade-ws-place-order, read 2026-09-26) with FastMM clOrdIds; not recorded (no keys)"
+ }
+}

@@ -1,5 +1,5 @@
 // Venue connector hot paths do not allocate after warm-up: the market-data parser, the private
-// (user stream) parser and the order encoder of Binance, Bybit and Deribit, on the recorded
+// (user stream) parser and the order encoder of Binance, Bybit, OKX and Deribit, on the recorded
 // fixtures in tests/fixtures/<venue>/. The first pass over the frames is the warm-up (parser
 // buffers reach their working size); the measured rounds must then decode and encode everything
 // without a single allocation.
@@ -23,6 +23,10 @@
 #include "fastmm/venues/deribit/deribit_md_parser.hpp"
 #include "fastmm/venues/deribit/deribit_order_encoder.hpp"
 #include "fastmm/venues/deribit/deribit_private_parser.hpp"
+#include "fastmm/venues/okx/okx_md_feed.hpp"
+#include "fastmm/venues/okx/okx_md_parser.hpp"
+#include "fastmm/venues/okx/okx_order_encoder.hpp"
+#include "fastmm/venues/okx/okx_private_parser.hpp"
 #include "fastmm/venues/order_commands.hpp"
 
 #include <array>
@@ -300,6 +304,94 @@ TEST_CASE("hotpath.noalloc: Bybit market-data parser, private parser and order e
                                   {}};
   check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
     return enc.encode_ws(c, &shadow, 1789299700000, out);
+  });
+}
+
+TEST_CASE("hotpath.noalloc: OKX market-data parser and feed, private parser and order encoder") {
+  InstrumentTable instruments;
+  Instrument swap = make_instrument("BTC-USDT-SWAP", 1, "BTC", "USDT");
+  swap.contract_multiplier = qt("0.01");
+  REQUIRE(instruments.add(swap));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  // The data frames of the recorded production session (books snapshot and updates, bbo-tbt,
+  // trades), in order.
+  std::vector<PaddedJson> md_frames;
+  {
+    const std::string raw = fastmm::test::fixture("okx/raw_md_stream.jsonl");
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+      std::size_t end = raw.find('\n', pos);
+      if (end == std::string::npos) end = raw.size();
+      const std::string line = raw.substr(pos, end - pos);
+      pos = end + 1;
+      const std::size_t tab = line.find('\t');
+      if (tab != std::string::npos && line.find("\"data\"") != std::string::npos)
+        md_frames.emplace_back(line.substr(tab + 1));
+    }
+  }
+  REQUIRE(md_frames.size() > 100);
+  {
+    okx::OkxMdParser md(symbols, VenueId{1});
+    check_decoder_noalloc(md, md_frames);
+  }
+  {
+    // The feed, with the checksum shadow in use: a book whose snapshot carried a checksum keeps
+    // every level's text. A snapshot and an update that removes and adds levels, over and over.
+    fastmm::venues::test::RecordingSink sink(8U << 20);
+    okx::OkxMdFeed feed(symbols, VenueId{1}, sink.sink, okx::ResubscribeRequester{});
+    REQUIRE(feed.add_instrument(InstrumentId{0}));
+    feed.on_connected();
+    const PaddedJson snap(
+        R"({"arg":{"channel":"books","instId":"BTC-USDT-SWAP"},"action":"snapshot","data":[{"asks":[["8476.98","415","0","13"],["8477","7","0","2"]],"bids":[["8476.97","256","0","12"],["8475.55","101","0","1"]],"ts":"1597026383085","checksum":2123921068,"prevSeqId":-1,"seqId":10}]})");
+    const PaddedJson update(
+        R"({"arg":{"channel":"books","instId":"BTC-USDT-SWAP"},"action":"update","data":[{"asks":[["8477","0","0","0"]],"bids":[],"ts":"1597026383085","checksum":214565906,"prevSeqId":10,"seqId":11}]})");
+    int failed = 0;
+    for (int warm = 0; warm < 2; ++warm) {
+      REQUIRE(feed.on_message(snap.view(), 1) == ParseStatus::Ok);
+      REQUIRE(feed.on_message(update.view(), 1) == ParseStatus::Ok);
+      static_cast<void>(sink.drain());
+    }
+    {
+      NoAllocScope guard;
+      for (int round = 0; round < kRounds; ++round) {
+        if (feed.on_message(snap.view(), 1) != ParseStatus::Ok) ++failed;
+        if (feed.on_message(update.view(), 1) != ParseStatus::Ok) ++failed;
+        while (sink.ring.try_peek() != nullptr) sink.ring.release();
+      }
+    }
+    CHECK(failed == 0);
+    CHECK(feed.stats().checksum_errors == 0);
+    CHECK(feed.stats().checksums_checked >= 2U * kRounds);
+  }
+  {
+    okx::OkxPrivateParser priv(symbols, instruments, VenueId{1});
+    const std::string order =
+        R"({"arg":{"channel":"orders","instType":"SWAP","uid":"77"},"data":[{"instId":"BTC-USDT-SWAP","ordId":"312","clOrdId":"fm000100000001","px":"60000.1","sz":"3","side":"sell","accFillSz":"1","state":"partially_filled","fillPx":"60000.1","tradeId":"4463701411","fillSz":"1","fillTime":"1789299703453","fillFee":"-0.018","fillFeeCcy":"USDT","execType":"T","uTime":"1789299703470","reqId":"","amendResult":"","cancelSource":"","code":"0","msg":""}]})";
+    std::string live = order;
+    live.replace(live.find("partially_filled"), 16, "live");
+    live.replace(live.find(R"("fillSz":"1")"), 12, R"("fillSz":"0")");
+    std::string cancel = order;
+    cancel.replace(cancel.find("partially_filled"), 16, "canceled");
+    std::vector<PaddedJson> private_frames;
+    private_frames.emplace_back(live);
+    private_frames.emplace_back(order);
+    private_frames.emplace_back(cancel);
+    private_frames.emplace_back(
+        R"({"arg":{"channel":"positions","instType":"SWAP","uid":"77"},"eventType":"event_update","data":[{"instId":"BTC-USDT-SWAP","posSide":"net","pos":"-3.5","avgPx":"60123.4","uTime":"1"}]})");
+    check_decoder_noalloc(priv, private_frames);
+  }
+  okx::OkxOrderEncoder enc(symbols);
+  enc.set_inst_id_code(InstrumentId{0}, 10459);
+  const Commands cmds(InstrumentId{0}, VenueId{1}, "60000.1", "2");
+  const okx::OrderShadow shadow{InstrumentId{0},
+                                Side::Buy,
+                                OrderType::PostOnly,
+                                TimeInForce::Gtc,
+                                cmds.new_order.cl_ord_id,
+                                {}};
+  check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
+    return enc.encode_ws(c, &shadow, out);
   });
 }
 
