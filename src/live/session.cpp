@@ -274,10 +274,58 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
   return *rec;
 }
 
-// Where the first execution replay of a restored session starts (venue ms; 0: no replay).
-std::int64_t restore_since_ms(const store::Recovery& prev) {
-  return prev.last_fill_ns > 0 ? (prev.last_fill_ns - store::Recovery::kResumeOverlapNs) / 1'000'000
-                               : 0;
+// Where one venue's first execution replay of a restored session starts: the store's resume point
+// for it, found by the venue's name (by its id in a store that predates the names), else the
+// engine-clock fallback. `instruments` is null before a gateway attach, which takes no trade ids.
+struct ResumePlan {
+  std::int64_t since_ms = 0;  // venue time, inclusive; 0: no replay
+  std::vector<std::string> known;
+  std::vector<std::pair<InstrumentId, std::int64_t>> next_ids;  // Venue::resume_trade_ids
+};
+
+ResumePlan resume_plan(const store::Recovery& prev,
+                       std::string_view venue,
+                       VenueId vid,
+                       const InstrumentTable* instruments) {
+  const auto same = [&](const std::string& name, std::uint8_t id) {
+    return name.empty() ? id == vid.value : name == venue;
+  };
+  ResumePlan p;
+  const store::Recovery::VenueResume* r = nullptr;
+  for (const store::Recovery::VenueResume& v : prev.venue_resume) {
+    if (same(v.venue, v.venue_id)) r = &v;
+  }
+  if (r != nullptr) {
+    p.since_ms = r->since_ms;
+    p.known = r->known_exec_ids;
+    if (r->shrunk)
+      FASTMM_LOG_WARN(
+          "{}: more than {} stored executions in the {} ms before the previous session's last "
+          "fill; its execution replay starts {} ms after that fill rather than {} ms before",
+          venue,
+          store::Recovery::kMaxKnownExecIds,
+          store::Recovery::kResumeOverlapMs,
+          r->since_ms - r->last_fill_ms,
+          store::Recovery::kResumeOverlapMs);
+  } else {
+    p.since_ms = prev.fallback_since_ms;
+    p.known = prev.fallback_exec_ids;
+    if (p.since_ms > 0)
+      FASTMM_LOG_INFO(
+          "{}: no stored fill of this venue carries the venue's time; its execution replay starts "
+          "from the engine clock",
+          venue);
+  }
+  if (instruments != nullptr) {
+    for (const store::Recovery::TradeIdMark& m : prev.last_trade_ids) {
+      if (!same(m.venue, m.venue_id)) continue;
+      for (const Instrument& in : *instruments) {
+        if (in.venue == vid && in.symbol.view() == m.symbol)
+          p.next_ids.emplace_back(in.id, m.last_id + 1);
+      }
+    }
+  }
+  return p;
 }
 
 // Carries the previous session's positions over, on venues that can replay what happened while
@@ -302,7 +350,6 @@ void restore_positions(const store::Recovery& prev,
                        Push&& push,
                        Resume&& resume) {
   if (prev.position_state.empty() && prev.last_fill_ns == 0) return;
-  const std::int64_t since_ms = restore_since_ms(prev);
   for (std::size_t i = 0; i < venues.size(); ++i) {
     const bool can_replay = venues[i].can_replay;
     const VenueId vid{static_cast<std::uint8_t>(i)};
@@ -335,7 +382,9 @@ void restore_positions(const store::Recovery& prev,
                       m.position_qty,
                       m.avg_px);
     }
-    if (can_replay && since_ms > 0) resume(i, since_ms, prev.recent_exec_ids);
+    if (!can_replay) continue;
+    if (ResumePlan plan = resume_plan(prev, venues[i].name, vid, &instruments); plan.since_ms > 0)
+      resume(i, plan);
   }
 }
 
@@ -508,9 +557,20 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       return kExitConfig;
     }
     if (previous && cfg.engine.restore_position) {
-      req.exec_since_ms = restore_since_ms(*previous);
-      req.resume_executions = req.exec_since_ms > 0;
-      req.known_exec_ids = previous->recent_exec_ids;
+      // Each venue's execution replay starts where the store's record of it ends, in its own
+      // clock. The trade-id start (Venue::resume_trade_ids) stays in-process: the gateway's venue
+      // is shared, and it filters another attachment's replay for this one by time and ids.
+      if (previous->last_fill_ns > 0 || !previous->position_state.empty()) {
+        for (const auto& [venue, symbol] : req.instruments) {
+          bool listed = false;
+          for (const GatewayAttachRequest::Resume& r : req.resume)
+            listed = listed || r.venue == venue;
+          if (listed) continue;
+          ResumePlan plan = resume_plan(*previous, venue, VenueId{}, nullptr);
+          if (plan.since_ms > 0)
+            req.resume.push_back({venue, plan.since_ms, std::move(plan.known)});
+        }
+      }
       // The gateway's account starts from what this strategy restores (restore_positions below).
       for (const auto& [venue, symbol] : req.instruments) {
         for (const store::Recovery::PositionState& p : previous->position_state) {
@@ -673,7 +733,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
             if (!control_ring.try_push(&m, m.hdr.len))
               FASTMM_LOG_ERROR("control ring full: a restored position was dropped");
           },
-          [](std::size_t, std::int64_t, const std::vector<std::string>&) {});
+          [](std::size_t, const ResumePlan&) {});
     }
     // The strategy is not asked to quote what another attachment trades (a scoped pull, as
     // `fastmm-ctl pull --instrument` sends it; journaled like any control message).
@@ -699,8 +759,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
           [&](std::size_t i, const ReconcileMsg& m) {
             static_cast<void>(slots[i]->order_sink.push(m.hdr));
           },
-          [&](std::size_t i, std::int64_t since_ms, const std::vector<std::string>& known) {
-            slots[i]->venue->resume_executions(since_ms, known);
+          [&](std::size_t i, const ResumePlan& plan) {
+            slots[i]->venue->resume_executions(plan.since_ms, plan.known);
+            if (!plan.next_ids.empty()) slots[i]->venue->resume_trade_ids(plan.next_ids);
           });
     }
     transport.set_wake_hook(&wake_venue, &wake_ctx);
@@ -975,6 +1036,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     so.pid = static_cast<std::uint32_t>(::getpid());
     so.dry_run = opts.dry_run;
     so.pnl_carry_raw = deps.engine.pnl_carry.raw;
+    so.venues = venue_names;
     store::Backend& store_backend = store_thread->backend();
     if (auto r = store_backend.session_open(so); !r) {
       std::fprintf(stderr, "%s: [storage] %s\n", prog, r.error().c_str());

@@ -61,16 +61,52 @@ struct Recovery {
     std::int64_t avg_px_raw = 0;
   };
   std::vector<PositionState> position_state;
-  // Local time of the session's last recorded fill (0: it recorded none), and the venue trade ids
-  // of its fills in the kRecentIdsNs before it: an execution replay that starts kResumeOverlapNs
-  // early to absorb clock differences skips these rather than booking them twice. The ids reach
-  // further back than the replay does, because the replay start is local time and the venue
-  // compares it with its own: an engine clock behind the venue's (a WSL2 host clock step) moves
-  // the start earlier in venue terms, and fills just after it would be booked again.
-  std::int64_t last_fill_ns = 0;
-  std::vector<std::string> recent_exec_ids;
-  static constexpr std::int64_t kResumeOverlapNs = 10'000'000'000;  // 10 s
-  static constexpr std::int64_t kRecentIdsNs = 2 * kResumeOverlapNs;
+  // Where each venue's execution replay resumes (Venue::resume_executions): from the venue time of
+  // the last fill the store holds for it, minus kResumeOverlapMs, skipping the trade ids the store
+  // holds from there on. Both ends are the venue's clock, so the engine's clock (which follows the
+  // host's and may be seconds off, a WSL2 clock step) does not enter.
+  //
+  // The overlap covers one thing: the order in which a venue publishes executions against their
+  // trade times. Executions of different symbols (and a Bybit batch, a Deribit per-instrument
+  // channel) can reach the store out of trade-time order; a restart must not skip one that traded
+  // just before the last stored fill but had not arrived when the process stopped. That spread is
+  // milliseconds to a few hundred; 1 s covers it with margin.
+  static constexpr std::int64_t kResumeOverlapMs = 1000;
+  // The most trade ids a venue's resume carries (the gateway's attach request holds
+  // gw::kMaxKnownExecIds over all its venues). A venue with more stored fills inside the overlap
+  // has its start moved later, past the oldest millisecond that does not fit whole, and
+  // VenueResume::shrunk says so: dropping an id instead would book that execution twice.
+  static constexpr std::size_t kMaxKnownExecIds = 128;
+  struct VenueResume {
+    std::uint8_t venue_id = 0;      // the session's VenueId
+    std::string venue;              // its [venues.<name>]; empty when the store predates schema 3
+    std::int64_t last_fill_ms = 0;  // venue time of the last stored fill
+    std::int64_t since_ms = 0;      // the replay's start, venue time, inclusive
+    std::vector<std::string> known_exec_ids;  // stored fills at or after since_ms
+    bool shrunk = false;  // since_ms moved later than last_fill_ms - kResumeOverlapMs
+  };
+  // One entry per venue that recorded a fill with a venue time.
+  std::vector<VenueResume> venue_resume;
+  // The highest numeric trade id the store holds per (venue, symbol). Binance trade ids increase
+  // per symbol, so its replay can resume at the next one exactly (Venue::resume_trade_ids).
+  struct TradeIdMark {
+    std::uint8_t venue_id = 0;
+    std::string venue;  // empty when the store predates schema 3
+    std::string symbol;
+    std::int64_t last_id = 0;
+  };
+  std::vector<TradeIdMark> last_trade_ids;
+
+  // The fallback for a venue with no entry above (a store from before schema 3, or a venue whose
+  // fills carry no venue time): the engine clock, as before. The replay starts kFallbackOverlapNs
+  // before the session's last fill, and the ids reach kFallbackIdsNs back, further than the start,
+  // because the start is local time and the venue compares it with its own. At most
+  // kMaxKnownExecIds, with the start moved later when more fall inside.
+  static constexpr std::int64_t kFallbackOverlapNs = 10'000'000'000;  // 10 s
+  static constexpr std::int64_t kFallbackIdsNs = 2 * kFallbackOverlapNs;
+  std::int64_t last_fill_ns = 0;       // engine time of the session's last fill (0: none)
+  std::int64_t fallback_since_ms = 0;  // 0: no replay
+  std::vector<std::string> fallback_exec_ids;
 };
 
 class Reader {

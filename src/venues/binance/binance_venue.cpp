@@ -1318,6 +1318,11 @@ void BinanceVenue::resume_executions(std::int64_t since_venue_ms,
   known_exec_ids_ = {known.begin(), known.end()};
 }
 
+void BinanceVenue::resume_trade_ids(
+    const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) {
+  resume_from_ids_ = next_ids;
+}
+
 bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {
   if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
   if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
@@ -1329,6 +1334,12 @@ bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {
     exec_from_id_.assign(subscribed_.size(), 0);
   }
   exec_from_id_.resize(subscribed_.size(), 0);
+  // A restart's exact start: the trade after the last one the earlier session booked.
+  for (const auto& [id, next] : resume_from_ids_) {
+    if (const std::size_t slot = exec_slot(id); slot < exec_from_id_.size() && next > 0)
+      exec_from_id_[slot] = next;
+  }
+  resume_from_ids_.clear();
   exec_last_ns_ = net::Reactor::now_ns();
   exec_replay_active_ = true;
   exec_replay_ok_ = true;

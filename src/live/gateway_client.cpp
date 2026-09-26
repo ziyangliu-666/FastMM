@@ -1,5 +1,6 @@
 // The strategy's side of a gateway attachment (live/gateway.hpp).
 #include "fastmm/live/gateway.hpp"
+#include "fastmm/store/reader.hpp"
 
 #include <poll.h>
 #include <sys/mman.h>
@@ -20,6 +21,9 @@ namespace {
 // How long the gateway may take to answer: it switches every venue's sinks on their network
 // threads and starts the reconciliations before it replies.
 constexpr int kReplyTimeoutMs = 10'000;
+
+// Every venue's resume fits in one attach, so none is ever cut short.
+static_assert(gw::kMaxKnownExecIds >= kMaxVenuesConfig * store::Recovery::kMaxKnownExecIds);
 
 template <std::size_t N>
 std::string from_field(const char (&f)[N]) {
@@ -139,14 +143,23 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   if (::connect(c->fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0)
     return fail("connect " + path + ": " + std::strerror(errno));
 
-  const std::size_t known = std::min<std::size_t>(req.known_exec_ids.size(), gw::kMaxKnownExecIds);
+  // The ids are never cut short: one the gateway did not hear of would be booked twice. The store
+  // keeps each venue's to what fits (Recovery::kMaxKnownExecIds, moving the start later).
+  if (req.resume.size() > kMaxVenuesConfig) return fail("too many venues to resume");
+  std::size_t known = 0;
+  for (const GatewayAttachRequest::Resume& v : req.resume) known += v.known_exec_ids.size();
+  if (known > gw::kMaxKnownExecIds)
+    return fail("the store lists " + std::to_string(known) + " trade ids to skip, more than the " +
+                std::to_string(gw::kMaxKnownExecIds) + " an attach carries");
   if (req.instruments.size() > kMaxInstruments) return fail("too many instruments to claim");
   const std::size_t claims = req.instruments.size();
   if (req.positions.size() > kMaxInstruments) return fail("too many positions to report");
   const std::size_t positions = req.positions.size();
+  const std::size_t resumes = req.resume.size();
   std::vector<std::byte> out(sizeof(gw::AttachRequest) + known * sizeof(gw::ExecId) +
                              claims * sizeof(gw::InstrumentClaim) +
-                             positions * sizeof(gw::PositionSeed));
+                             positions * sizeof(gw::PositionSeed) +
+                             resumes * sizeof(gw::VenueResume));
   gw::AttachRequest r{};
   r.hdr = gw::Header{gw::kMagic,
                      gw::kVersion,
@@ -155,17 +168,19 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
                      0};
   to_field(r.engine, req.engine);
   r.pid = static_cast<std::uint32_t>(::getpid());
-  r.flags = (req.resume_executions ? gw::kResumeExecutions : 0U) |
-            (req.blocks ? gw::kStrategyBlocks : 0U);
-  r.exec_since_ms = req.exec_since_ms;
+  r.flags = (resumes > 0 ? gw::kResumeExecutions : 0U) | (req.blocks ? gw::kStrategyBlocks : 0U);
+  r.resume_count = static_cast<std::uint32_t>(resumes);
   r.known_count = static_cast<std::uint32_t>(known);
   r.claim_count = static_cast<std::uint32_t>(claims);
   r.position_count = static_cast<std::uint32_t>(positions);
   std::memcpy(out.data(), &r, sizeof r);
-  for (std::size_t i = 0; i < known; ++i) {
-    gw::ExecId id{};
-    to_field(id.id, req.known_exec_ids[i]);
-    std::memcpy(out.data() + sizeof r + i * sizeof id, &id, sizeof id);
+  std::size_t next_id = 0;
+  for (const GatewayAttachRequest::Resume& v : req.resume) {
+    for (const std::string& s : v.known_exec_ids) {
+      gw::ExecId id{};
+      to_field(id.id, s);
+      std::memcpy(out.data() + sizeof r + next_id++ * sizeof id, &id, sizeof id);
+    }
   }
   std::byte* claim_at = out.data() + sizeof r + known * sizeof(gw::ExecId);
   for (std::size_t i = 0; i < claims; ++i) {
@@ -182,6 +197,17 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
     ps.qty = req.positions[i].qty.raw;
     ps.avg_px = req.positions[i].avg_px.raw;
     std::memcpy(position_at + i * sizeof ps, &ps, sizeof ps);
+  }
+  std::byte* resume_at = position_at + positions * sizeof(gw::PositionSeed);
+  std::size_t first = 0;
+  for (std::size_t i = 0; i < resumes; ++i) {
+    gw::VenueResume vr{};
+    to_field(vr.venue, req.resume[i].venue);
+    vr.since_ms = req.resume[i].since_ms;
+    vr.first_known = static_cast<std::uint32_t>(first);
+    vr.known_count = static_cast<std::uint32_t>(req.resume[i].known_exec_ids.size());
+    first += vr.known_count;
+    std::memcpy(resume_at + i * sizeof vr, &vr, sizeof vr);
   }
   if (::send(c->fd_, out.data(), out.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(out.size()))
     return fail(std::string("send attach request: ") + std::strerror(errno));

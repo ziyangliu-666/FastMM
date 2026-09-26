@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 FIXED_SCALE = 1e-8
 """Scale of the raw int64 fixed-point columns (`price_raw`, `qty_raw`, `realized_raw`, ...)."""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Schema version this module reads; a newer store is refused."""
 
 _NS_COLUMNS = frozenset(

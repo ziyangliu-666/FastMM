@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fastmm::venues {
@@ -233,6 +234,12 @@ class Venue {
   // session does not restore a position for it (VenueCapabilities::executions).
   virtual void resume_executions(std::int64_t /*since_venue_ms*/,
                                  const std::vector<std::string>& /*known*/) {}
+  // An exact start where the venue's trade ids increase per instrument (Binance): the first trade
+  // id to ask for, per instrument - one past the last the earlier session booked. Called after
+  // resume_executions(); an instrument listed here replays from its id and ignores the time and
+  // the known ids, the others go on from `since_venue_ms`. Connectors without such ids ignore it.
+  virtual void resume_trade_ids(
+      const std::vector<std::pair<InstrumentId, std::int64_t>>& /*next_ids*/) {}
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

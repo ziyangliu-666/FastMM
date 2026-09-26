@@ -6,6 +6,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -212,25 +213,138 @@ class SqliteReader final : public Reader {
                   text(s, 0), sqlite3_column_int64(s, 1), sqlite3_column_int64(s, 2)};
             });
     rec.position_state = std::move(state);
-    std::vector<std::int64_t> last;
-    collect(last,
-            "SELECT COALESCE(MAX(ts_ns), 0) FROM fills WHERE session_id = ?",
-            rec.session_id,
-            [](sqlite3_stmt* s) { return sqlite3_column_int64(s, 0); });
-    rec.last_fill_ns = last.empty() ? 0 : last.front();
-    if (rec.last_fill_ns > 0) {
-      std::vector<std::string> ids;
-      collect2(ids,
-               "SELECT exec_id FROM fills WHERE session_id = ? AND ts_ns >= ? AND exec_id <> ''",
-               rec.session_id,
-               rec.last_fill_ns - Recovery::kRecentIdsNs,
-               [](sqlite3_stmt* s) { return text(s, 0); });
-      rec.recent_exec_ids = std::move(ids);
-    }
+    resume_points(rec);
     return rec;
   }
 
  private:
+  // A stored fill: its time (venue ms, or engine ns for the fallback) and trade id.
+  struct Stamped {
+    std::int64_t t = 0;
+    std::string id;
+  };
+
+  // The rows of `sql`, bound to the session, `from` and (when not negative) `venue`, newest first.
+  // The statement asks for one row more than Recovery::kMaxKnownExecIds, so fit() sees an overflow.
+  std::vector<Stamped> newest(const std::string& sql,
+                              std::uint64_t session,
+                              std::int64_t from,
+                              int venue) {
+    std::vector<Stamped> out;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) return out;
+    sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session));
+    sqlite3_bind_int64(st, 2, from);
+    if (venue >= 0) sqlite3_bind_int(st, 3, venue);
+    while (sqlite3_step(st) == SQLITE_ROW)
+      out.push_back(Stamped{sqlite3_column_int64(st, 0), text(st, 1)});
+    sqlite3_finalize(st);
+    return out;
+  }
+
+  // Keeps at most Recovery::kMaxKnownExecIds of `rows` (newest first, all at or after `since`) in
+  // `ids` and returns the start they cover: `since`, or later when some did not fit. The rows that
+  // share the time of the first one left out go with it, so every stored fill at or after the
+  // returned start is in `ids`.
+  static std::int64_t fit(std::vector<Stamped>& rows,
+                          std::int64_t since,
+                          std::vector<std::string>& ids) {
+    if (rows.size() > Recovery::kMaxKnownExecIds) {
+      const std::int64_t cut = rows[Recovery::kMaxKnownExecIds].t;
+      since = cut + 1;
+      while (!rows.empty() && rows.back().t <= cut) rows.pop_back();
+    }
+    for (Stamped& r : rows) ids.push_back(std::move(r.id));
+    return since;
+  }
+
+  // Recovery::venue_resume, last_trade_ids and the engine-clock fallback of `rec`'s session.
+  void resume_points(Recovery& rec) {
+    const std::uint64_t session = rec.session_id;
+    const std::string limit = " LIMIT " + std::to_string(Recovery::kMaxKnownExecIds + 1);
+    std::vector<std::string> names;
+    if (version_ >= 3) {
+      collect(names,
+              "SELECT name FROM session_venues WHERE session_id = ? ORDER BY venue_id",
+              session,
+              [](sqlite3_stmt* s) { return text(s, 0); });
+    }
+    const auto name_of = [&](std::int64_t v) {
+      return v >= 0 && static_cast<std::size_t>(v) < names.size()
+                 ? names[static_cast<std::size_t>(v)]
+                 : std::string();
+    };
+    if (version_ >= 3) {
+      struct Last {
+        std::int64_t venue = 0;
+        std::int64_t ms = 0;
+      };
+      std::vector<Last> lasts;
+      collect(lasts,
+              "SELECT venue_id, MAX(exch_ns) / 1000000 FROM fills WHERE session_id = ?"
+              " AND exch_ns > 0 GROUP BY venue_id ORDER BY venue_id",
+              session,
+              [](sqlite3_stmt* s) {
+                return Last{sqlite3_column_int64(s, 0), sqlite3_column_int64(s, 1)};
+              });
+      for (const Last& l : lasts) {
+        Recovery::VenueResume v;
+        v.venue_id = static_cast<std::uint8_t>(l.venue);
+        v.venue = name_of(l.venue);
+        v.last_fill_ms = l.ms;
+        const std::int64_t want = l.ms - Recovery::kResumeOverlapMs;
+        std::vector<Stamped> rows = newest(
+            "SELECT exch_ns / 1000000, exec_id FROM fills WHERE session_id = ?1"
+            " AND venue_id = ?3 AND exch_ns >= ?2 * 1000000 AND exec_id <> ''"
+            " ORDER BY exch_ns DESC" +
+                limit,
+            session,
+            want,
+            static_cast<int>(l.venue));
+        v.since_ms = fit(rows, want, v.known_exec_ids);
+        v.shrunk = v.since_ms != want;
+        rec.venue_resume.push_back(std::move(v));
+      }
+    }
+    struct Mark {
+      std::int64_t venue = 0;
+      std::string symbol;
+      std::int64_t id = 0;
+    };
+    std::vector<Mark> marks;
+    collect(marks,
+            "SELECT venue_id, symbol, MAX(CAST(exec_id AS INTEGER)) FROM fills WHERE"
+            " session_id = ? AND exec_id <> '' AND exec_id NOT GLOB '*[^0-9]*'"
+            " GROUP BY venue_id, symbol ORDER BY venue_id, symbol",
+            session,
+            [](sqlite3_stmt* s) {
+              return Mark{sqlite3_column_int64(s, 0), text(s, 1), sqlite3_column_int64(s, 2)};
+            });
+    for (Mark& m : marks) {
+      rec.last_trade_ids.push_back(Recovery::TradeIdMark{
+          static_cast<std::uint8_t>(m.venue), name_of(m.venue), std::move(m.symbol), m.id});
+    }
+
+    std::vector<std::int64_t> last;
+    collect(last,
+            "SELECT COALESCE(MAX(ts_ns), 0) FROM fills WHERE session_id = ?",
+            session,
+            [](sqlite3_stmt* s) { return sqlite3_column_int64(s, 0); });
+    rec.last_fill_ns = last.empty() ? 0 : last.front();
+    if (rec.last_fill_ns > 0) {
+      std::vector<Stamped> rows = newest(
+          "SELECT ts_ns, exec_id FROM fills WHERE session_id = ?1 AND ts_ns >= ?2"
+          " AND exec_id <> '' ORDER BY ts_ns DESC" +
+              limit,
+          session,
+          rec.last_fill_ns - Recovery::kFallbackIdsNs,
+          -1);
+      // The ids reach further back than the start; only a cut inside the start's window moves it.
+      const std::int64_t want = rec.last_fill_ns - Recovery::kFallbackOverlapNs;
+      rec.fallback_since_ms = std::max(want, fit(rows, want, rec.fallback_exec_ids)) / 1'000'000;
+    }
+  }
+
   // Builds a WHERE clause and remembers the values to bind, in order.
   class Where {
    public:
@@ -360,17 +474,6 @@ class SqliteReader final : public Reader {
     while (sqlite3_step(st) == SQLITE_ROW) out.push_back(fmt(st));
     sqlite3_finalize(st);
   }
-  template <class T, class F>
-  void collect2(
-      std::vector<T>& out, const char* sql, std::uint64_t session, std::int64_t arg, F&& fmt) {
-    sqlite3_stmt* st = nullptr;
-    if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) return;
-    sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session));
-    sqlite3_bind_int64(st, 2, arg);
-    while (sqlite3_step(st) == SQLITE_ROW) out.push_back(fmt(st));
-    sqlite3_finalize(st);
-  }
-
   sqlite3* db_ = nullptr;
   std::string path_;
   int version_ = 0;

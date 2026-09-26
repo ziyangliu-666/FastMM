@@ -140,9 +140,10 @@ struct Route {
   // Its orders the gateway refused, in the order of kStatusGatewayRefusalReasons.
   std::array<std::atomic<std::uint64_t>, kStatusGatewayRefusals> refused{};
   std::atomic<bool> overflow{false};  // its order ring stayed full: it has to go
-  // Where its own history starts (venue ms): the replay start it sent, or its attach time when it
-  // restored nothing. An execution naming no live order from before that is its store's (or none
-  // of its business), and the trade ids its store listed in the overlap before it are too.
+  // Where its own history starts on this venue (venue ms): the replay start it sent, or the venue's
+  // time at its attach when it restored nothing. An execution naming no live order from before
+  // that is its store's (or none of its business), and the trade ids its store listed in the
+  // overlap before it are too.
   std::int64_t replay_from_ms = 0;
   const std::unordered_set<std::string>* known = nullptr;
 };
@@ -1039,10 +1040,9 @@ struct Attachment {
   std::vector<Rings> rings;         // per venue
   std::unique_ptr<Route[]> routes;  // per venue
   std::vector<std::uint64_t> md_dropped_logged;
-  // The trade ids its store listed (Route::known; an account position it seeds keeps them).
-  std::shared_ptr<std::unordered_set<std::string>> known =
-      std::make_shared<std::unordered_set<std::string>>();
-  std::int64_t replay_from_ms = 0;  // Route::replay_from_ms
+  // Per venue, the trade ids its store listed (Route::known; an account position it seeds keeps
+  // them).
+  std::vector<std::shared_ptr<const std::unordered_set<std::string>>> known;
   // The wake page (live/gateway.hpp) and this process's Waker over the engine's flag in it.
   gw::WakePage* page = nullptr;
   std::unique_ptr<Waker> engine_waker;
@@ -1067,6 +1067,12 @@ class Gateway {
     InstrumentId inst;
     Qty qty;
     Price avg_px;
+  };
+  // Where one venue's execution replay starts for a strategy (gw::VenueResume).
+  struct Resume {
+    bool set = false;
+    std::int64_t since_ms = 0;  // venue time
+    std::vector<std::string> known;
   };
 
   Gateway(const Config& cfg,
@@ -1170,10 +1176,11 @@ class Gateway {
       return;
     }
     if (req.known_count > gw::kMaxKnownExecIds || req.claim_count > kMaxInstruments ||
-        req.position_count > kMaxInstruments ||
+        req.position_count > kMaxInstruments || req.resume_count > kMaxVenuesConfig ||
         static_cast<std::size_t>(n) != sizeof req + req.known_count * sizeof(gw::ExecId) +
                                            req.claim_count * sizeof(gw::InstrumentClaim) +
-                                           req.position_count * sizeof(gw::PositionSeed)) {
+                                           req.position_count * sizeof(gw::PositionSeed) +
+                                           req.resume_count * sizeof(gw::VenueResume)) {
       send_error(fd, "malformed attach request");
       ::close(fd);
       return;
@@ -1254,7 +1261,32 @@ class Gateway {
       }
       seeds.push_back(Seed{inst->id, Qty::from_raw(ps.qty), Price::from_raw(ps.avg_px)});
     }
-    attach(fd, req, engine, known, std::move(owned), seeds);
+    // Where each venue's execution replay starts for it, and the trade ids its store holds there.
+    std::vector<Resume> resumes(slots_.size());
+    const std::byte* resume_at = positions + req.position_count * sizeof(gw::PositionSeed);
+    for (std::uint32_t i = 0; i < req.resume_count; ++i) {
+      gw::VenueResume vr{};
+      std::memcpy(&vr, resume_at + i * sizeof vr, sizeof vr);
+      const std::string venue = from_field(vr.venue);
+      const VenueId vid = cfg_.venue_id(venue);
+      if (vr.first_known > req.known_count || vr.known_count > req.known_count - vr.first_known) {
+        refuse_attach("malformed attach request: the trade ids of venue '" + venue +
+                      "' are out of range");
+        return;
+      }
+      if (!vid.valid() || vid.value >= resumes.size()) {
+        FASTMM_LOG_WARN("gateway: {} resumes executions on '{}', which is not a venue here",
+                        std::string_view(engine),
+                        std::string_view(venue));
+        continue;
+      }
+      Resume& r = resumes[vid.value];
+      r.set = vr.since_ms > 0;
+      r.since_ms = vr.since_ms;
+      r.known.assign(known.begin() + vr.first_known,
+                     known.begin() + vr.first_known + vr.known_count);
+    }
+    attach(fd, req, engine, resumes, std::move(owned), seeds);
   }
 
   // The attachment's connection closed (or misbehaved): the strategy is gone.
@@ -1876,7 +1908,7 @@ class Gateway {
   void attach(int fd,
               const gw::AttachRequest& req,
               const std::string& engine,
-              const std::vector<std::string>& known,
+              const std::vector<Resume>& resumes,
               std::vector<InstrumentId> owned,
               const std::vector<Seed>& seeds) {
     const auto epoch = next_epoch();
@@ -1896,9 +1928,9 @@ class Gateway {
     a.pid = req.pid;
     a.epoch = *epoch;
     a.owned = std::move(owned);
-    a.replay_from_ms =
-        (req.flags & gw::kResumeExecutions) != 0 ? req.exec_since_ms : wall_now().ns / 1'000'000;
-    a.known->insert(known.begin(), known.end());
+    for (const Resume& r : resumes)
+      a.known.push_back(
+          std::make_shared<const std::unordered_set<std::string>>(r.known.begin(), r.known.end()));
     // Closed once the reply is sent (or on failure); the mappings keep the page.
     struct Fd {
       int fd;
@@ -1954,11 +1986,9 @@ class Gateway {
       r.order = a.rings[i].order.get();
       r.out = a.rings[i].outbound.get();
       r.waker = strategy_blocks ? a.engine_waker.get() : nullptr;
-      r.replay_from_ms = a.replay_from_ms;
-      r.known = a.known.get();
+      r.known = a.known[i].get();
     }
     for (const InstrumentId inst : a.owned) owner_[inst.value] = &a;
-    const bool resume = (req.flags & gw::kResumeExecutions) != 0;
     // The account's position of an instrument starts with what its first owner restored from its
     // store (flat when it restored nothing, or its venue cannot replay executions and so the
     // strategy starts flat). From then on the account books every execution itself; a later owner
@@ -1974,6 +2004,12 @@ class Gateway {
       VenueRouter& v = *routers_[i];
       VenueSlot& s = *slots_[i];
       Route& r = a.routes[i];
+      // Where its history starts on this venue, in the venue's clock: the replay start its store
+      // gave, else now (the venue's time: the host clock plus the connector's measured offset).
+      const Resume& res = resumes[i];
+      const bool resume = res.set && executions(i);
+      r.replay_from_ms =
+          resume ? res.since_ms : wall_now().ns / 1'000'000 + s.venue->status().clock_offset_ms;
       static_cast<void>(v.routes.push_back(&r));
       for (const InstrumentId inst : a.owned) {
         if (instruments_.get(inst).venue == v.vid) v.owner[inst.value] = &r;
@@ -1991,16 +2027,16 @@ class Gateway {
           }
         }
         set_account_position(v, inst, q, px);
-        v.seed_from_ms[inst.value] = a.replay_from_ms;
-        v.seed_known[inst.value] = a.known;
+        v.seed_from_ms[inst.value] = r.replay_from_ms;
+        v.seed_known[inst.value] = a.known[i];
       }
       r.snapshot_pending = true;
       // Its books start from the gateway's copies and go on with the events routed after them;
       // the venue is asked for nothing, so no other attachment's books pause.
       r.md_gap = !push_books(v, r);
-      if (resume && executions(i)) {
-        s.venue->resume_executions(req.exec_since_ms, known);
-        static_cast<void>(s.venue->request_executions(req.exec_since_ms));
+      if (resume) {
+        s.venue->resume_executions(res.since_ms, res.known);
+        static_cast<void>(s.venue->request_executions(res.since_ms));
       }
       s.venue->request_open_orders();
     });
@@ -2088,7 +2124,8 @@ class Gateway {
         slots_.size(),
         std::string_view(symbols),
         atts_.size(),
-        resume ? std::string_view(" from its store's last fill") : std::string_view());
+        (req.flags & gw::kResumeExecutions) != 0 ? std::string_view(" from its store's last fill")
+                                                 : std::string_view());
   }
 
   [[nodiscard]] bool executions(std::size_t i) const {
