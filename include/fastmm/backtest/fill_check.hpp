@@ -3,23 +3,25 @@
 //
 // The strategy is not re-run. Each order the session had resting enters the models at its venue
 // ack time and leaves them at its venue end time (cancel ack, last fill, expiry; a reconciliation
-// that no longer lists it), and the journal's book and trade messages are applied to a mirror book
-// and to one QueuePositionModel per conservatism value in venue time order (exch_ts), exactly as
-// SimTransport does under fill_model = "l2_queue" (sim::queue_apply_book, QueuePositionModel::
-// on_trade). Venue time matters: a venue's execution report reaches the session before the public
-// trade that filled the order, so by receive time the trade falls after the order's end. An event
-// without a venue time uses its receive time (counted). A replace follows the new id; like the
-// simulator, the same price at no more than the leaves keeps the queue position.
+// that no longer lists it; collect_own_orders, own_orders.hpp), and the journal's book and trade
+// messages are applied to a mirror book and to one QueuePositionModel per conservatism value in
+// venue time order (exch_ts), exactly as SimTransport does under fill_model = "l2_queue"
+// (sim::queue_apply_book, QueuePositionModel:: on_trade). Venue time matters: a venue's execution
+// report reaches the session before the public trade that filled the order, so by receive time the
+// trade falls after the order's end. An event without a venue time uses its receive time (counted).
+// A replace follows the new id; like the simulator, the same price at no more than the leaves keeps
+// the queue position.
 //
 // Millisecond order times (Binance transactTime, execution report T): a trade in the ack's or the
 // end's millisecond counts for the order (ack_ties, end_ties), except a trade after the last live
 // fill's trade id. The queue ahead is the book as of the ack's venue time, before the order was in
 // it; in a live session (the journal has a TSC calibration) the depth feed also shows our own
-// orders, and their live leaves are taken out of their level.
+// orders, and OwnOrderStripper takes them out first.
 //
 // Orders that cannot rest (market, IOC, FOK) and orders whose price crossed the mirrored book at
 // the ack are left out and counted. A model fill is timed by the trade that caused it, a live
 // fill by the OrderFill, both in venue time.
+#include "fastmm/backtest/own_orders.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/journal.hpp"
@@ -34,16 +36,7 @@
 
 namespace fastmm::bt {
 
-// How the live order left the book.
-enum class FillCheckEnd : std::uint8_t {
-  Open = 0,      // still resting when the journal ends
-  Canceled = 1,  // cancel ack
-  Filled = 2,    // last fill
-  Expired = 3,
-  Replaced = 4,   // cancel ack of a replaced order; the new id is its own row
-  Reconciled = 5  // missing from a reconciliation snapshot
-};
-[[nodiscard]] std::string_view to_string(FillCheckEnd e) noexcept;
+using FillCheckEnd = OrderEnd;  // how the live order left the book
 
 struct FillCheckOrder {
   ClientOrderId cl_ord_id;

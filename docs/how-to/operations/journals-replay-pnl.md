@@ -98,16 +98,16 @@ times    venue (order times in ms); from receive time: 0 order events, 1 market 
 live     1509 filled, qty 0.4074
 
 conservatism  filled   both live only model only neither model/live    model qty  |dt| p50
-0.00             542    538       971          4     834      0.390   0.15892528     0.0ms
-0.50             522    519       990          3     835      0.376        0.153     0.0ms
-1.00             518    515       994          3     835      0.373       0.1518     0.0ms
+0.00             546    542       967          4     834      0.393    0.1602879     0.0ms
+0.50             526    523       986          3     835      0.379      0.15439     0.0ms
+1.00             522    519       990          3     835      0.376      0.15319     0.0ms
 ```
 
 Each row is one `queue_conservatism` value (`--conservatism 0,0.25,0.5` to choose others). `both`, `live only`, `model only` and `neither` count orders by whether they filled live and whether the model filled them. `model/live` is the ratio of filled quantities. `|dt| p50` is the median gap between the first model fill and the first live fill, for orders that filled both ways. Pick the conservatism whose `model/live` is closest to 1 and whose `live only` and `model only` are smallest.
 
-The model predicted 37-39% of the quantity this session filled, whatever the conservatism. Binance Demo fills passive orders ahead of the quantity it displays: the session's first buy, 0.0003 BTC at 77762.68, acked behind 1.65 BTC, filled after 0.009 BTC had traded at that price, with 1.43 BTC still displayed there. A Demo session cannot calibrate the model; use a session on the real market.
+The model predicted 38-39% of the quantity this session filled, whatever the conservatism. Binance Demo fills passive orders ahead of the quantity it displays: the session's first buy, 0.0003 BTC at 77762.68, acked behind 1.65 BTC, filled after 0.009 BTC had traded at that price, with 1.43 BTC still displayed there. A Demo session cannot calibrate the model; use a session on the real market.
 
-Times are venue times (`exch_ts`): a venue sends its execution report before the public trade that filled the order, so by receive time the trade would fall after the order's end. An event without a venue time uses its receive time; the `times` line counts them. Binance order times are whole milliseconds, so a trade in the ack's or the end's millisecond counts for the order (a tie, counted), except a trade after the last fill's trade id. In a live session the depth feed shows our own orders: their live quantity, and that of our orders that ended since the level's last depth update, is not counted as ahead of us. `--csv` writes one row per order: price, size, the quantity ahead at the ack, resting time, how it ended, and the live and model fills with their times.
+Times are venue times (`exch_ts`): a venue sends its execution report before the public trade that filled the order, so by receive time the trade would fall after the order's end. An event without a venue time uses its receive time; the `times` line counts them. Binance order times are whole milliseconds, so a trade in the ack's or the end's millisecond counts for the order (a tie, counted), except a trade after the last fill's trade id. In a live session the depth feed shows our own orders; each level is stripped of what we had resting at its price at the update's venue time before the model sees it (the same stripping as `journal:<file>,strip_own=1`, [Market-data sources](../../reference/data-sources.md#journal)). `--csv` writes one row per order: price, size, the quantity ahead at the ack, resting time, how it ended, and the live and model fills with their times.
 
 ## Check PnL
 

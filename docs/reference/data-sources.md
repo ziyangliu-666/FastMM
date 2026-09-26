@@ -36,6 +36,17 @@ An unknown option is an error naming the ones the source takes, so a typo fails 
 
 Depth is the part that decides what a run can conclude. The queue model sets an order's queue position from the displayed quantity at its price, so a source without depth tells the simulator nothing about any price except the touch: an order resting one tick behind the best quote is modelled as alone at its price and fills the instant a trade reaches it. Quote at the touch on such a source, or read the fill counts knowing that the "behind touch" ones are optimistic ([Backtesting](../explanation/backtesting.md#what-the-simulator-cannot-tell-you)).
 
+## `journal`
+
+The market data of an `.fmj` journal: book deltas and snapshots, trades and tickers, as recorded, in recorded order. `fastmm-data convert` writes one from any source.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `path` (1st positional) | — | The journal |
+| `strip_own` | `false` | Take the recording session's own resting orders out of the depth and tickers |
+
+A live session's journal holds the venue's feed, which shows the session's own orders. A backtest over it sees them as someone else's liquidity: a strategy that improves the best bid improves on its own live bid. `strip_own=1` subtracts from each book level what the session had resting at that price at the message's venue time, from the journal's own order events (ack to cancel ack or last fill, venue time); a level left with nothing is deleted. A throttled depth update that still shows an order already cancelled is stripped as of its own time, so the leftover does not come back. A ticker whose best bid or ask was only ours is dropped: the ticker cannot tell the next level, and the depth book carries the top. Public trades are kept, our own fills included: the aggressor existed either way and, without our order, would have traded with the next order at that price. The run's report ends with a line counting the levels and tickers changed. The option refuses a journal without a TSC calibration (a backtest's; its simulated feed never showed its orders).
+
 ## `binance`
 
 Daily dumps from [data.binance.vision](https://data.binance.vision): `bookTicker` (best bid and ask after every change) and `aggTrades` (every trade, aggregated per aggressing order and price). Fetch them with `python3 -m fastmm.data fetch` ([How-to](../how-to/backtesting/binance-public-data.md)).

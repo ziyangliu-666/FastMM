@@ -172,6 +172,9 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
   if (rc != 0) return rc;
 
   std::fputs(result.summary_table().c_str(), stdout);
+  if (source) {
+    if (const std::string note = source->note(); !note.empty()) std::printf("%s\n", note.c_str());
+  }
   if (!cfg.output_dir.empty()) {
     if (!result.write_all(cfg.output_dir)) {
       std::fprintf(stderr, "%s: cannot write results to %s\n", prog, cfg.output_dir.c_str());

@@ -4,11 +4,20 @@
 
 namespace fastmm::bt {
 
-JournalSource::JournalSource(const std::string& path) {
+JournalSource::JournalSource(const std::string& path, bool strip_own) {
   auto r = reader_.open(path);
   if (!r) {
     throw std::runtime_error("JournalSource: cannot open " + path + ": " +
                              std::string(to_string(r.error())));
+  }
+  if (strip_own) {
+    const OwnOrderLog log = collect_own_orders(reader_);
+    if (!log.live) {
+      throw std::runtime_error("JournalSource: strip_own: " + path +
+                               " was not recorded by a live session (its feed has no own orders)");
+    }
+    orders_ = log.orders.size();
+    stripper_ = std::make_unique<OwnOrderStripper>(log);
   }
   reader_.for_each([&](const EventHeader* h) {
     if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) return;
@@ -22,8 +31,19 @@ const EventHeader* JournalSource::next() {
   for (;;) {
     const EventHeader* h = reader_.next();
     if (h == nullptr) return nullptr;
-    if (is_market_data(h->type) && (h->flags & EventHeader::kOutbound) == 0) return h;
+    if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) continue;
+    if (!stripper_) return h;
+    if (const EventHeader* s = stripper_->strip(*h, buf_)) return s;
   }
+}
+
+std::string JournalSource::note() const {
+  if (!stripper_) return {};
+  const OwnOrderStripper::Stats& s = stripper_->stats();
+  return "journal: own orders stripped (" + std::to_string(orders_) +
+         " orders): " + std::to_string(s.levels_adjusted) + " levels reduced, " +
+         std::to_string(s.levels_removed) + " removed; " + std::to_string(s.tickers_adjusted) +
+         " tickers reduced, " + std::to_string(s.tickers_dropped) + " dropped";
 }
 
 void JournalSource::reset() {

@@ -1,0 +1,112 @@
+# FastMM: the live BTCU lead_mm session (fastmm-aws live/btcu-live.toml) as a backtest over its own
+# journal: same instruments in the same order, same strategy parameters and risk, venue simulated.
+#
+#   ./build/release/bin/fastmm-backtest --config configs/research/lead-mm-btcu-live-bt.toml \
+#       --data journal:<session>.fmj,strip_own=1
+#
+# strip_own takes the live session's own resting orders out of the recorded depth and tickers;
+# without it the backtest sees its live twin as liquidity (lead_mm with improve = true improves on
+# its own live bid). Latencies: AWS Tokyo to Binance Spot, transactTime ~0.4 ms after the send and
+# the ack ~1.1 ms after that; the market data is replayed at its venue time plus 0.
+
+[engine]
+name = "btcu-mm-bt"
+spin_mode = "busy"
+journal = false
+max_events_per_step = 256
+crossed_grace_ms = 100
+min_requote_ticks = 1
+min_requote_interval_ms = 50
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.binance]
+kind = "sim"
+supports_replace = false
+
+[venues.binance.fees]
+maker_bps = 0.0
+taker_bps = 10.0
+
+[[instruments]]
+venue = "binance"
+symbol = "BTCU"
+base = "BTC"
+quote = "U"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+min_notional = "5"
+enabled = true
+
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+min_notional = "5"
+enabled = false
+
+[[instruments]]
+venue = "binance"
+symbol = "UUSDT"
+base = "U"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.0001"
+lot = "1"
+min_qty = "1"
+min_notional = "5"
+enabled = false
+
+[strategy]
+name = "lead_mm"
+
+[strategy.params]
+target = 0          # BTCU
+leader = 1          # BTCUSDT
+fx = 2              # UUSDT: fair = BTCUSDT mid / UUSDT mid, U per BTC
+fx_invert = false
+edge_min_bps = 1.2
+hysteresis_bps = 0.1
+skew_bps_per_unit = 0.3
+quote_qty = 0.0001
+max_inventory = 0.0004
+max_leader_age_ms = 500
+fx_max_age_ms = 60000
+improve = true
+
+[risk]
+max_order_qty = "0.0002"
+max_order_notional = "30"
+max_position = "0.0006"
+max_open_orders = 4
+price_collar_bps = 200
+fat_finger_bps = 1000
+stale_md_ms = 0
+max_loss = "5"
+orders_per_sec = 4
+burst = 8
+stp = true
+
+[logging]
+level = "warn"
+
+[backtest]
+fill_model = "l2_queue"
+queue_conservatism = 1.0
+latency_fixed_us = 400
+latency_jitter_us = 100
+latency_ack_us = 1100
+latency_ack_jitter_us = 300
+latency_md_us = 0
+equity_bar_s = 60
+initial_capital = 1000
+markout_horizons_s = "1,5,10,60"
+output_dir = "runs/lead-mm-btcu-live-bt"

@@ -8,6 +8,7 @@
 #include "fastmm/core/time.hpp"
 
 #include <cstddef>
+#include <string>
 
 namespace fastmm::sim {
 
@@ -40,6 +41,8 @@ class MdSource {
   // Time of the first event if known (invalid Timestamp otherwise); lets the driver start
   // the virtual clock at the data.
   [[nodiscard]] virtual Timestamp start_ts() const { return Timestamp{}; }
+  // One line about what the source did to the data, for the run's report (empty: nothing).
+  [[nodiscard]] virtual std::string note() const { return {}; }
 };
 
 }  // namespace fastmm::sim
