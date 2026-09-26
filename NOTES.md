@@ -22,8 +22,8 @@ private payload and reply, account/fills/bills REST, cancel-all-after on demo.
 **Flaky under load, found on the way (2026-09-26).** `integration.recovery: shadows of orders ...`
 placed an order before the user stream was back after a drop (3 of 16 under load); it now waits for
 both connections (16 of 16). `binance_usdm.venue: countdownCancelAll ... stopped on shutdown` failed
-once in a full run: `disconnect()` queues the stop on the REST channel and resets it, which drops a
-queued request. Not changed; OKX sends its stop on a blocking connection instead.
+once in a full run: `disconnect()` queued the stop on the REST channel and reset it, which drops a
+queued request. It now sends the stop over a blocking connection, as OKX does (35 of 35, 5 runs).
 
 **Performance: code alignment on by default (2026-09-26).** `FASTMM_ALIGN_CODE` (ON, gcc): the
 fastmm targets get `-falign-functions=64 -falign-loops=32 -falign-jumps=32` (`.text` +4 %).
@@ -64,6 +64,28 @@ alignment, `scripts/build-pgo.sh`), measured, before layout drift accumulates.
 `FASTMM_ALIGN_CODE` on (venue decode, off the engine path; not investigated); the budgets in
 `bench/ci_budget.toml` are not re-measured. (The gateway tests failing in a deep worktree were the 107-byte AF_UNIX path limit, which the
 gateway already refuses at startup with exit 3 and the path in the message.)
+
+## Next direction (chosen 2026-09-27): quote on one venue, hedge on another
+
+**Why.** The common crypto market-making setup is to quote on the venue that pays or charges less
+for making and hedge each fill at once with a taker order on the deepest venue. The live engine can
+already trade two venues from one strategy (split threading, gateway included), but nothing prices
+from another venue's book, nothing hedges, the backtester models a single venue with one latency,
+and risk cannot net BTC on one venue against BTC on another except by summing all notional.
+
+**Plan.**
+1. Backtest across venues: the sim runs several venues in one run, each with its own latency,
+   fees, replace and STP settings; recorded feeds from two venues merge by timestamp.
+2. A built-in `xmm` strategy: fair value is the hedge venue's book plus a tracked basis; maker
+   quotes on the quote venue are that fair value minus/plus the edge and the hedge cost. The hedge
+   target is derived from positions (quote position plus hedge position in base units, contract
+   multipliers applied), not from a count of fills, so a restart, a dropped fill or an uncertain
+   hedge outcome converges to the same place. One hedge IOC in flight; a stale or down hedge venue
+   pulls the quotes; `max_unhedged` pulls the side that would grow the gap.
+3. Risk per underlying: `[risk.underlying.BTC] max_net = ...` in base units, across venues, in the
+   engine and the gateway's account book.
+4. Evidence: backtest on recorded Binance USD-M + Bybit public data; kill -9 and venue drops in the
+   middle of hedging against fake venues (no lost hedge, no double hedge, limits hold).
 
 ## Next direction (chosen 2026-09-26): a crypto desk can run on this
 
