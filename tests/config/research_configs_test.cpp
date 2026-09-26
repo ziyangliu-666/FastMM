@@ -105,6 +105,8 @@ TEST_CASE("config.research: lead_mm backtests a three-instrument journal with on
   CHECK(r.fills.side[0] == 0);
   CHECK(r.fills.price[0] == bid_px.raw);
   CHECK(r.fills.fee[0] == 0);  // 0 bps maker
+  // The outbound stream as it was before imb_bps existed: imb_bps = 0 changes nothing.
+  CHECK(r.outbound_sha256 == "0de24e821579bad9c6b8dfeff4541931a44a589fff4505437ac6556998e2b909");
 }
 
 TEST_CASE("config.research: recorded BookTicker events reach lead_mm in a journal backtest") {
@@ -129,4 +131,5 @@ TEST_CASE("config.research: recorded BookTicker events reach lead_mm in a journa
   }
   CHECK(cancelled);
   CHECK(replaced);
+  CHECK(r.outbound_sha256 == "42c3e4709a9a8522572beb7ded880da79eb02b36b6a79a52e2ee793fc65dc437");
 }

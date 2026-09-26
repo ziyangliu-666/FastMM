@@ -7,6 +7,7 @@
 #include <array>
 #include <random>
 #include <string>
+#include <vector>
 
 using namespace fastmm;
 
@@ -234,12 +235,24 @@ struct FakeBook {
   Timestamp updated{};
   std::uint64_t id = 0;
   bool valid = true;
+  Qty bid_qty = qt("1");
+  Qty ask_qty = qt("1");
+  std::vector<Level> deeper_bids{};  // levels 2.. (best first)
+  std::vector<Level> deeper_asks{};
   std::uint64_t seq() const { return id; }
   bool is_valid() const { return valid; }
   Price mid() const { return Price::from_raw((bid.raw + ask.raw) / 2); }
-  Level best_bid() const { return Level{bid, qt("1")}; }
-  Level best_ask() const { return Level{ask, qt("1")}; }
+  Level best_bid() const { return Level{bid, bid_qty}; }
+  Level best_ask() const { return Level{ask, ask_qty}; }
   Timestamp last_update() const { return updated; }
+  std::size_t depth(Side s) const {
+    return 1 + (s == Side::Buy ? deeper_bids : deeper_asks).size();
+  }
+  Level level(Side s, std::size_t i) const {
+    if (i == 0) return s == Side::Buy ? best_bid() : best_ask();
+    const auto& v = s == Side::Buy ? deeper_bids : deeper_asks;
+    return i - 1 < v.size() ? v[i - 1] : Level{};
+  }
 };
 struct FakePosition {
   Qty qty{};
@@ -260,7 +273,10 @@ struct LeadCtx {
   const FakeBook& book(InstrumentId id) const { return books[id.value]; }
   Timestamp now() const { return t; }
   FakePosition position(InstrumentId) const { return {pos}; }
-  const Order* working_quote(InstrumentId, Side) const { return nullptr; }
+  Order own_bid{};  // our working bid when own_bid.qty is positive
+  const Order* working_quote(InstrumentId, Side s) const {
+    return s == Side::Buy && own_bid.qty.is_positive() ? &own_bid : nullptr;
+  }
   TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) {
     CHECK(id == InstrumentId{0});
@@ -468,5 +484,88 @@ TEST_CASE("strategies.lead_mm: a ticker older than the depth book, crossed or em
     CHECK(f.ctx.set_calls == 2);
     f.s.on_timer(f.ctx, TimerId{1}, LeadMM::kStaleTimer);
     CHECK(f.ctx.pulls == 0);
+  }
+}
+
+TEST_CASE("strategies.lead_mm: imbalance and the fair shift") {
+  CHECK(LeadMM::imbalance(qt("3"), qt("1")) == Ratio::from_raw(kFixedScale / 2));
+  CHECK(LeadMM::imbalance(qt("1"), qt("3")) == Ratio::from_raw(-kFixedScale / 2));
+  CHECK(LeadMM::imbalance(Qty{}, qt("3")) == Ratio::from_raw(-kFixedScale));
+  CHECK(LeadMM::imbalance(qt("3"), Qty{}) == Ratio::from_raw(kFixedScale));
+  CHECK(LeadMM::imbalance(Qty{}, Qty{}) == Ratio{});
+  const LeadMM s = make({{"imb_bps", "2"}});
+  // 150 * (1 + 2e-4 * 0.5) = 150.015
+  CHECK(s.shift_fair(px("150"), LeadMM::imbalance(qt("3"), qt("1"))) == px("150.015"));
+  CHECK(s.shift_fair(px("150"), Ratio{}) == px("150"));
+}
+
+namespace {
+// Target 150.10 (3) / 150.20 (1), fair 150.1451: bid edge 3.0 bps, ask 3.65 bps; the minimum
+// 3.3 bps passes only the ask until the imbalance moves fair.
+struct ImbFixture {
+  LeadMM s;
+  LeadCtx ctx;
+  explicit ImbFixture(ParamMap params) {
+    params["edge_min_bps"] = "3.3";
+    s = make(params);
+    s.on_start(ctx);
+    ctx.touch_all();
+    ctx.books[0].bid_qty = qt("3");
+  }
+  void requote() { s.on_book(ctx, InstrumentId{0}, ctx.books[0]); }
+};
+}  // namespace
+
+TEST_CASE("strategies.lead_mm: the target's imbalance shifts fair and gates a side") {
+  SUBCASE("off") {
+    ImbFixture f({});
+    f.requote();
+    CHECK(f.ctx.last.bids.empty());
+    CHECK(f.ctx.last.asks.size() == 1);
+  }
+  SUBCASE("imb 0.5, 5 bps per unit: fair +2.5 bps, the bid passes and the ask does not") {
+    ImbFixture f({{"imb_bps", "5"}});
+    f.requote();
+    REQUIRE(f.ctx.last.bids.size() == 1);
+    CHECK(f.ctx.last.bids[0].price == px("150.10"));
+    CHECK(f.ctx.last.asks.empty());
+  }
+  SUBCASE("our own working bid is not part of the imbalance") {
+    ImbFixture f({{"imb_bps", "5"}});
+    f.ctx.own_bid.price = px("150.10");
+    f.ctx.own_bid.qty = qt("2");  // 3 shown at 150.10, 2 of them ours: 1 vs 1
+    f.requote();
+    CHECK(f.ctx.last.bids.empty());
+    CHECK(f.ctx.last.asks.size() == 1);
+  }
+  SUBCASE("unless the feed does not show our orders (a backtest)") {
+    ImbFixture f({{"imb_bps", "5"}, {"own_in_feed", "false"}});
+    f.ctx.own_bid.price = px("150.10");
+    f.ctx.own_bid.qty = qt("2");
+    f.requote();
+    CHECK(f.ctx.last.bids.size() == 1);
+  }
+  SUBCASE("deeper levels count with imb_levels") {
+    ImbFixture f({{"imb_bps", "5"}, {"imb_levels", "2"}});
+    f.ctx.books[0].deeper_asks = {Level{px("150.21"), qt("3")}};  // 3 vs 1 + 3: imb -1/7
+    f.requote();
+    CHECK(f.ctx.last.bids.empty());
+    CHECK(f.ctx.last.asks.size() == 1);
+  }
+  SUBCASE("a newer ticker's sizes count for level 1") {
+    ImbFixture f({{"imb_bps", "5"}});
+    f.ctx.books[0].id = 100;
+    // The ticker shows 1 vs 3 at the same prices: imb -0.5, fair -2.5 bps; the ask passes.
+    BookTickerMsg m{};
+    m.hdr.instrument = InstrumentId{0};
+    m.hdr.venue_seq = 101;
+    m.hdr.recv_ts = f.ctx.t;
+    m.bid_px = px("150.10");
+    m.ask_px = px("150.20");
+    m.bid_qty = qt("1");
+    m.ask_qty = qt("3");
+    f.s.on_book_ticker(f.ctx, InstrumentId{0}, m);
+    CHECK(f.ctx.last.bids.empty());
+    CHECK(f.ctx.last.asks.size() == 1);
   }
 }

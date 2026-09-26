@@ -20,6 +20,13 @@
 // and the fx top at most fx_max_age_ms old; otherwise every target quote is pulled. The target is
 // not age-checked: a thin pair can be quiet for minutes, and the edge test is against the leader.
 //
+// Imbalance (imb_bps, 0 = off): the fair value used for the target is
+//   fair * (1 + imb_bps / 1e4 * imb),  imb = (bid - ask) / (bid + ask)
+// over the target's top imb_levels levels per side, from the top picked above (the ticker's sizes
+// for level 1 when it is the newer, deeper levels from the depth book). With own_in_feed (a live
+// feed shows our orders) our working quote's leaves are taken out of its level first; a side left
+// empty makes imb +-1 toward the other side, both empty 0.
+//
 // Hysteresis: a resting quote whose price is still the one the rule picks keeps its side while its
 // edge is at least the threshold minus hysteresis_bps. The strategy never improves on its own
 // resting order (live books include it), and never quotes a bid at or above the best ask or an ask
@@ -84,6 +91,18 @@ struct LeadMMParams {
                "ticker vs depth: newer by venue update id (Binance) instead of by timestamp")
   FASTMM_PARAM(
       bool, improve, false, false, true, "quote one tick inside a spread wider than 1 tick")
+  FASTMM_PARAM_BPS(imb_bps,
+                   0_bps,
+                   -100_bps,
+                   100_bps,
+                   "fair shift per unit of target book imbalance, bps (0 = off)")
+  FASTMM_PARAM(int, imb_levels, 1, 1, 8, "target levels per side in the imbalance")
+  FASTMM_PARAM(bool,
+               own_in_feed,
+               true,
+               false,
+               true,
+               "the feed shows our orders (live): take them out of the imbalance")
 
   [[nodiscard]] std::optional<std::string> validate() const {
     if (leader == target || fx == target || fx == leader)
@@ -138,6 +157,9 @@ class LeadMM : public StrategyBase<LeadMMParams> {
                      m.ask_px,
                      m.hdr.venue_seq,
                      m.hdr.exch_ts.valid() ? m.hdr.exch_ts : m.hdr.recv_ts,
+                     true,
+                     m.bid_qty,
+                     m.ask_qty,
                      true};
     if (r != kFx) requote(ctx);
   }
@@ -230,6 +252,18 @@ class LeadMM : public StrategyBase<LeadMMParams> {
                                                                    : r));
   }
 
+  // (bid - ask) / (bid + ask); a side with nothing is -1 or +1 toward the other, both empty 0.
+  [[nodiscard]] static Ratio imbalance(Qty bid, Qty ask) noexcept {
+    if (!bid.is_positive() && !ask.is_positive()) return Ratio{};
+    if (!bid.is_positive()) return Ratio::from_raw(-kFixedScale);
+    if (!ask.is_positive()) return Ratio::from_raw(kFixedScale);
+    return ratio(bid - ask, bid + ask);
+  }
+  // fair * (1 + imb_bps / 1e4 * imb), truncated toward zero.
+  [[nodiscard]] Price shift_fair(Price fair, Ratio imb) const noexcept {
+    return fair + fair * (params().imb_bps * imb);
+  }
+
   // The edge of a quote at `px` on `side`: (fair - px) / px for a bid, (px - fair) / px for an ask.
   [[nodiscard]] static Ratio edge(Side side, Price fair, Price px) noexcept {
     return side == Side::Buy ? ratio(fair - px, px) : ratio(px - fair, px);
@@ -243,6 +277,9 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     std::uint64_t id = 0;  // venue update id, 0 = none
     Timestamp ts{};
     bool valid = false;
+    Qty bid_qty{};
+    Qty ask_qty{};
+    bool ticker = false;  // from the BookTicker, not the depth book
     [[nodiscard]] Price mid() const noexcept { return fastmm::mid(bid, ask); }
   };
 
@@ -258,7 +295,9 @@ class LeadMM : public StrategyBase<LeadMMParams> {
   template <class Ctx>
   [[nodiscard]] Top top(Ctx& ctx, InstrumentId id, int r) const noexcept {
     const auto& b = ctx.book(id);
-    const Top book{b.best_bid().price, b.best_ask().price, b.seq(), b.last_update(), b.is_valid()};
+    const Level bb = b.best_bid();
+    const Level ba = b.best_ask();
+    const Top book{bb.price, ba.price, b.seq(), b.last_update(), b.is_valid(), bb.qty, ba.qty};
     const Top& t = ticker_[r];
     if (!t.valid) return book;
     if (!book.valid) return t;
@@ -312,6 +351,43 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     return f;
   }
 
+  // The target's imbalance over imb_levels levels: level 1 from `top` (ticker or depth book),
+  // further levels from the depth book beyond it; our working quote's leaves taken out of its
+  // level.
+  template <class Ctx>
+  [[nodiscard]] Ratio target_imbalance(Ctx& ctx, const Top& top) const noexcept {
+    const LeadMMParams& p = params();
+    const auto& b = ctx.book(target_);
+    Qty sums[2];
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      const bool buy = side == Side::Buy;
+      Price own_px{};
+      Qty own_qty{};
+      if (p.own_in_feed) {
+        if (const Order* o = ctx.working_quote(target_, side)) {
+          own_px = o->price;
+          own_qty = o->leaves_qty();
+        }
+      }
+      Qty& sum = sums[buy ? 0 : 1];
+      const auto add = [&](Price px, Qty q) {
+        if (px == own_px) q = own_qty >= q ? Qty{} : q - own_qty;
+        sum += q;
+      };
+      const Price first = buy ? top.bid : top.ask;
+      add(first, buy ? top.bid_qty : top.ask_qty);
+      int n = 1;
+      const std::size_t depth = b.depth(side);
+      for (std::size_t i = 0; i < depth && n < p.imb_levels; ++i) {
+        const Level l = b.level(side, i);
+        if (buy ? l.price >= first : l.price <= first) continue;  // at or better than level 1
+        add(l.price, l.qty);
+        ++n;
+      }
+    }
+    return imbalance(sums[0], sums[1]);
+  }
+
   template <class Ctx>
   void pull(Ctx& ctx) noexcept {
     ctx.pull_quotes(target_);
@@ -330,7 +406,9 @@ class LeadMM : public StrategyBase<LeadMMParams> {
       const Order* o = ctx.working_quote(target_, s);
       return o != nullptr ? o->price : Price{};
     };
-    const DesiredQuotes q = compute_quotes(*f,
+    Price used = *f;
+    if (params().imb_bps.raw != 0) used = shift_fair(used, target_imbalance(ctx, book));
+    const DesiredQuotes q = compute_quotes(used,
                                            book.bid,
                                            book.ask,
                                            own(Side::Buy),
