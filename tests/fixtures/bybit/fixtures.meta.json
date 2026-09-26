@@ -18,6 +18,10 @@
   "public_trade_unknown_symbol.json": "synthesised from public_trade.json with the symbol replaced",
   "private_order_*.json, private_execution.json, private_wallet.json, private_auth_ok.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/order, .../execution, .../wallet, .../ws/connect) rewritten for category=spot with FastMM orderLinkIds",
   "auth_ok.json, auth_error.json, trade_create_ok.json, trade_create_reject.json, trade_cancel_unknown.json, trade_rate_limited.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/trade/guideline) with spot symbols, FastMM reqIds and retCodes from https://bybit-exchange.github.io/docs/v5/error",
-  "rest_open_orders.json, rest_error.json": "docs-example (https://bybit-exchange.github.io/docs/v5/order/open-order, .../error) with FastMM orderLinkIds"
+  "rest_open_orders.json, rest_error.json": "docs-example (https://bybit-exchange.github.io/docs/v5/order/open-order, .../error) with FastMM orderLinkIds",
+  "linear_instruments_info.json": "docs-example (https://bybit-exchange.github.io/docs/v5/market/instrument, linear BTCUSDT response, read 2026-09-26)",
+  "linear_position_list.json, linear_position_list_hedge.json": "docs-example (https://bybit-exchange.github.io/docs/v5/position, read 2026-09-26) rewritten for linear BTCUSDT: a one-way short, and the two empty rows (positionIdx 1 and 2) of a symbol in hedge mode",
+  "linear_private_position.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/position, read 2026-09-26) with a one-way long, plus an inverse row the linear parser skips",
+  "linear_private_execution.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/execution, read 2026-09-26) with FastMM orderLinkIds, plus a maker rebate row (negative execFee, no feeCurrency) and a spot row the linear parser skips"
  }
 }

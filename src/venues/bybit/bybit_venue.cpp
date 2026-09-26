@@ -34,17 +34,24 @@ constexpr int kExecPageLimit = 100;
 // that needs more requests than the budget stops and reports itself incomplete.
 constexpr std::size_t kMaxExecPagesPerWindow = 20;
 constexpr std::size_t kMaxExecRequests = 100;
+// Linear: a position-topic value is compared with the fills once neither changed for this long.
+constexpr std::int64_t kPositionSettleNs = 1'000'000'000;
+// GET /v5/position/list by settle coin, 200 rows a page (the documented maximum).
+constexpr std::size_t kMaxPositionPages = 20;
 
 // Spot fee currency (enum page, "Spot Fee Currency Instruction"): feeCurrency names it when
 // present; otherwise a buy pays in the base coin and a sell in the quote coin, the other way
-// round for a maker with a negative rate. The private parser applies the same rule.
+// round for a maker with a negative rate. A linear fee is in the settlement coin, the
+// instrument's quote. The private parser applies the same rules.
 FeeAsset fee_asset_of(const Instrument& in,
                       Notional fee,
                       std::string_view ccy,
                       std::string_view rate,
                       Side side,
-                      bool maker) noexcept {
+                      bool maker,
+                      bool linear) noexcept {
   if (fee.is_zero()) return FeeAsset::Quote;
+  if (ccy.empty() && linear) ccy = in.quote.view();
   if (!ccy.empty()) {
     if (iequals_symbol(in.quote.view(), ccy)) return FeeAsset::Quote;
     if (iequals_symbol(in.base.view(), ccy)) return FeeAsset::Base;
@@ -134,10 +141,13 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
         clock_sync_ns_ = now_ns();
       }
     }
+    const bool linear = cfg_.category == BybitCategory::Linear;
     for (Instrument* inst : mine) {
-      // GET /v5/market/instruments-info?category=spot&symbol=SYM (market/instrument page).
-      const HttpReply reply = http.get("/v5/market/instruments-info?category=spot&symbol=" +
-                                       std::string(inst->symbol.view()));
+      // GET /v5/market/instruments-info?category=..&symbol=SYM (market/instrument page).
+      const HttpReply reply =
+          http.get(fmt::format("/v5/market/instruments-info?category={}&symbol={}",
+                               to_string(cfg_.category),
+                               inst->symbol.view()));
       if (!reply.ok()) {
         const std::string why =
             reply.error.empty() ? fmt::format("HTTP {} {}", reply.status, reply.body.substr(0, 200))
@@ -161,6 +171,11 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
       if (!f->tick.is_positive() || !f->base_precision.is_positive())
         return fail(fmt::format(
             "{}: {} has invalid tickSize/basePrecision", cfg_.name, inst->symbol.view()));
+      if (linear && f->contract_type != "LinearPerpetual")
+        return fail(fmt::format("{}: {} is a {} contract; only LinearPerpetual is supported",
+                                cfg_.name,
+                                inst->symbol.view(),
+                                f->contract_type.empty() ? "?" : f->contract_type));
       if (inst->tick != f->tick || inst->lot != f->base_precision) {
         FASTMM_LOG_WARN(
             "{}: {} tick/lot from instruments-info override config ({} / {} -> {} / {})",
@@ -177,6 +192,34 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
       inst->max_qty = f->max_qty;
       inst->min_notional = f->min_amount;
       inst->max_notional = f->max_amount;
+      if (linear) {
+        // qty is in the base coin and priced in the settle coin: notional = price * qty.
+        inst->contract_multiplier = Qty::from_int(1);
+        inst->expiry_ns = 0;
+        inst->flags = static_cast<std::uint8_t>((inst->flags | Instrument::kReduceOnlySupported) &
+                                                ~Instrument::kInverse);
+        if (inst->asset_class != AssetClass::Perpetual) {
+          FASTMM_LOG_WARN("{}: {} is a perpetual; asset_class set to perpetual",
+                          cfg_.name,
+                          inst->symbol.view());
+          inst->asset_class = AssetClass::Perpetual;
+        }
+        // [accounting] settles a linear instrument in its quote: that has to be the settle coin
+        // (USDT for BTCUSDT, USDC for BTCPERP).
+        const std::string& settle = f->settle_coin.empty() ? f->quote_coin : f->settle_coin;
+        if (settle.empty())
+          return fail(fmt::format("{}: {} has no settleCoin", cfg_.name, inst->symbol.view()));
+        if (!inst->quote.empty() && !iequals_symbol(inst->quote.view(), settle))
+          FASTMM_LOG_WARN("{}: {} settles in {}, not the configured quote {}; using {}",
+                          cfg_.name,
+                          inst->symbol.view(),
+                          settle,
+                          inst->quote.view(),
+                          settle);
+        if (!inst->quote.assign(settle) ||
+            (!f->base_coin.empty() && !inst->base.assign(f->base_coin)))
+          return fail(fmt::format("{}: {} coin names too long", cfg_.name, inst->symbol.view()));
+      }
       if (f->status != "Trading") {
         FASTMM_LOG_ERROR("{}: {} status is {} (not Trading): disabled",
                          cfg_.name,
@@ -194,7 +237,69 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
   stats_.clock_offset_ms = off;
   if (off > 1000 || off < -1000)
     FASTMM_LOG_WARN("{}: clock offset to venue is {} ms", cfg_.name, off);
-  FASTMM_LOG_INFO("{}: reference data loaded for {} symbols", cfg_.name, mine.size());
+  FASTMM_LOG_INFO("{}: reference data loaded for {} symbols ({})",
+                  cfg_.name,
+                  mine.size(),
+                  to_string(cfg_.category));
+  if (cfg_.category == BybitCategory::Linear && !cfg_.dry_run && signer_.usable()) {
+    if (std::string err = check_position_mode(mine); !err.empty()) {
+      refused_account_settings_ = true;
+      return fail(std::move(err));
+    }
+  }
+  return {};
+}
+
+// Bybit has no "get position mode": the mode is per symbol (symbol > coin > default, "Switch
+// Position Mode"), and GET /v5/position/list?symbol= answers "regardless of having position or
+// not", one row in one-way mode (positionIdx 0) and one per side in hedge mode (1 and 2). A mode
+// that cannot be read is refused too: orders sent with positionIdx 0 to a hedge-mode symbol are
+// rejected, and a position the connector cannot represent is worse.
+std::string BybitVenue::check_position_mode(const std::vector<Instrument*>& mine) {
+  BlockingHttpOptions opts;
+  opts.ca_file = cfg_.ca_file;
+  opts.insecure_tls = cfg_.insecure_tls;
+  opts.timeout_ms = cfg_.http_timeout_ms;
+  try {
+    BlockingHttp http(cfg_.rest_url, opts);
+    for (const Instrument* inst : mine) {
+      RestRequest rr;
+      if (!BybitOrderEncoder::encode_rest_positions(cfg_.category, inst->symbol.view(), {}, {}, rr))
+        return fmt::format("{}: cannot encode position/list", cfg_.name);
+      const std::string headers =
+          signer_.rest_headers(venue_time_ms(), cfg_.recv_window_ms, rr.payload(), false);
+      const HttpReply reply = http.request("GET", rr.target(), headers);
+      if (!reply.ok())
+        return fmt::format("{}: position mode of {} unknown: {}",
+                           cfg_.name,
+                           inst->symbol.view(),
+                           reply.error.empty()
+                               ? fmt::format("HTTP {} {}", reply.status, reply.body.substr(0, 200))
+                               : reply.error);
+      std::vector<PositionRecord> rows;
+      std::string cursor;
+      if (const std::string err = decode_positions(reply.body, rows, cursor); !err.empty())
+        return fmt::format(
+            "{}: position mode of {} unknown: {}", cfg_.name, inst->symbol.view(), err);
+      for (const PositionRecord& p : rows) {
+        if (!iequals_symbol(p.symbol, inst->symbol.view())) continue;
+        if (p.position_idx != 0)
+          return fmt::format(
+              "{}: {} is in hedge mode (positionIdx {}); the bybit connector trades one-way "
+              "mode only: switch the symbol with POST /v5/position/switch-mode (mode 0)",
+              cfg_.name,
+              inst->symbol.view(),
+              p.position_idx);
+        FASTMM_LOG_INFO("{}: {} position mode one-way, position {} @ {}",
+                        cfg_.name,
+                        inst->symbol.view(),
+                        p.qty,
+                        p.avg_px);
+      }
+    }
+  } catch (const std::exception& e) {
+    return fmt::format("{}: position mode check failed: {}", cfg_.name, std::string_view(e.what()));
+  }
   return {};
 }
 
@@ -216,8 +321,10 @@ void BybitVenue::attach(const SymbolTable& symbols,
                                     md_sink,
                                     ResubscribeRequester{&BybitVenue::resubscribe_requester, this},
                                     cfg_.depth);
-  private_parser_ = std::make_unique<BybitPrivateParser>(symbols, instruments, id_);
-  encoder_ = std::make_unique<BybitOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
+  private_parser_ =
+      std::make_unique<BybitPrivateParser>(symbols, instruments, id_, 1U << 20, cfg_.category);
+  encoder_ =
+      std::make_unique<BybitOrderEncoder>(signer_, symbols, cfg_.recv_window_ms, cfg_.category);
   decoder_ = std::make_unique<BybitResponseDecoder>();
 }
 
@@ -227,6 +334,12 @@ void BybitVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (std::find(subscribed_.begin(), subscribed_.end(), id) != subscribed_.end()) continue;
     subscribed_.push_back(id);
     if (md_feed_) md_feed_->add_instrument(id);
+    if (cfg_.category == BybitCategory::Linear && instruments_ != nullptr) {
+      const std::string coin(instruments_->get(id).quote.view());
+      if (!coin.empty() &&
+          std::find(settle_coins_.begin(), settle_coins_.end(), coin) == settle_coins_.end())
+        settle_coins_.push_back(coin);
+    }
   }
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
   if (connected_ && md_conn_.opened()) {
@@ -432,11 +545,14 @@ void BybitVenue::on_private_open() {
   // DCP only fires for connections that subscribed a `dcp.*` topic: "for those private
   // connections subscribing 'dcp' topic are all dead, then DCP will be triggered". Without the
   // subscription the account setting exists and does nothing.
-  constexpr std::string_view kTopics[] = {"order", "execution", "wallet"};
-  constexpr std::string_view kTopicsDcp[] = {"order", "execution", "wallet", "dcp.spot"};
+  // Spot keeps the wallet (position_from_wallet); linear takes the position topic instead.
   const bool dcp = cfg_.dead_mans_switch_s > 0;
+  std::string_view topics[4] = {"order", "execution", "wallet", {}};
+  if (cfg_.category == BybitCategory::Linear) topics[2] = "position";
+  std::size_t count = 3;
+  if (dcp) topics[count++] = dcp_topic(cfg_.category);
   const std::size_t n = BybitOrderEncoder::encode_subscribe(
-      "private", dcp ? std::span<const std::string_view>(kTopicsDcp) : kTopics, request_buf_);
+      "private", std::span<const std::string_view>(topics, count), request_buf_);
   if (n == 0 || !private_conn_.send_text(std::string_view(request_buf_, n)))
     FASTMM_LOG_ERROR("{}: could not subscribe the private topics", cfg_.name);
   if (dcp) set_dcp();
@@ -450,7 +566,8 @@ void BybitVenue::on_private_open() {
 void BybitVenue::set_dcp() {
   if (rest_ == nullptr || !signer_.usable() || cfg_.dry_run) return;
   RestRequest rr;
-  if (!encoder_->encode_rest_set_dcp("SPOT", cfg_.dead_mans_switch_s, rr)) return;
+  if (!encoder_->encode_rest_set_dcp(dcp_product(cfg_.category), cfg_.dead_mans_switch_s, rr))
+    return;
   const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
   std::weak_ptr<int> alive = alive_;
   static_cast<void>(rest_->request(
@@ -461,9 +578,10 @@ void BybitVenue::set_dcp() {
         int code = -1;
         std::string msg;
         if (r.ok() && decode_envelope(r.body, code, msg) && code == 0) {
-          FASTMM_LOG_INFO("{}: disconnect-cancel-all armed, window {} s (spot)",
+          FASTMM_LOG_INFO("{}: disconnect-cancel-all armed, window {} s ({})",
                           cfg_.name,
-                          cfg_.dead_mans_switch_s);
+                          cfg_.dead_mans_switch_s,
+                          dcp_product(cfg_.category));
           return;
         }
         ++stats_.rest_errors;
@@ -502,6 +620,21 @@ void BybitVenue::on_private_text(std::string_view t, std::int64_t ts) {
       h->t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
       switch (h->type) {
         case EventType::PositionUpdate:
+          if (cfg_.category == BybitCategory::Linear) {
+            // Compared with the fills in check_positions(), not forwarded as is: the position and
+            // execution topics are not ordered against each other.
+            const auto& p = *reinterpret_cast<const PositionUpdateMsg*>(h);
+            if (cfg_.position_from_stream && p.hdr.instrument.value < kMaxInstruments) {
+              PositionCheck& pc = positions_[p.hdr.instrument.value];
+              // Bybit publishes the position on every order create/amend/cancel "regardless if
+              // there's any actual change": only a change restarts the settle clock.
+              if (!pc.pending || pc.venue != p.qty) pc.last_event_ns = now_ns();
+              pc.venue = p.qty;
+              pc.venue_avg = p.avg_px;
+              pc.pending = true;
+            }
+            continue;
+          }
           if (!cfg_.position_from_wallet) continue;
           break;
         case EventType::OrderAck: {
@@ -531,6 +664,7 @@ void BybitVenue::on_private_text(std::string_view t, std::int64_t ts) {
           auto* m = reinterpret_cast<OrderFillMsg*>(h);
           m->cl_ord_id = current_id(m->cl_ord_id);
           if (m->leaves_qty.raw <= 0) forget_order(m->cl_ord_id);
+          note_fill(*m);
           break;
         }
         default:
@@ -560,6 +694,11 @@ void BybitVenue::on_private_text(std::string_view t, std::int64_t ts) {
       return;
     default:
       break;
+  }
+  if (private_parser_->stats().hedge_positions != 0 && !fatal_) {
+    // Someone switched a symbol to hedge mode while the session ran.
+    FASTMM_LOG_ERROR("{}: the position topic reports a hedge-mode position", cfg_.name);
+    apply_action(VenueAction::Fatal, 0, "hedge-mode position", 0);
   }
   if (r.status == ParseStatus::Malformed) FASTMM_LOG_WARN("{}: malformed private frame", cfg_.name);
 }
@@ -1019,6 +1158,8 @@ void BybitVenue::send_open_orders() {
   // for can still be in flight.
   reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value();
   sweep_next_ = false;
+  reconcile_coin_ = 0;
+  reconcile_positions_.clear();
   request_open_orders_page({});
 }
 
@@ -1027,8 +1168,14 @@ void BybitVenue::request_open_orders_page(const std::string& cursor) {
     reconcile_in_flight_ = false;
     return;
   }
+  const bool linear = cfg_.category == BybitCategory::Linear;
+  if (linear && reconcile_coin_ >= settle_coins_.size()) {
+    reconcile_in_flight_ = false;
+    return;
+  }
   RestRequest rr;
-  if (!encoder_->encode_rest_open_orders({}, cursor, rr)) {
+  if (!encoder_->encode_rest_open_orders(
+          {}, linear ? std::string_view(settle_coins_[reconcile_coin_]) : "", cursor, rr)) {
     reconcile_in_flight_ = false;
     return;
   }
@@ -1093,12 +1240,79 @@ void BybitVenue::request_open_orders_page(const std::string& cursor) {
           reconcile_records_.clear();
           return;
         }
+        if (cfg_.category == BybitCategory::Linear) {
+          // The next settle coin's orders, then the positions of every settle coin.
+          reconcile_pages_ = 0;
+          if (++reconcile_coin_ < settle_coins_.size()) {
+            request_open_orders_page({});
+          } else {
+            reconcile_coin_ = 0;
+            request_positions_page({});
+          }
+          return;
+        }
         emit_reconcile();
       });
   if (!queued) {
     reconcile_in_flight_ = false;
     reconcile_records_.clear();
   }
+}
+
+void BybitVenue::request_positions_page(const std::string& cursor) {
+  const auto abandon = [this] {
+    reconcile_in_flight_ = false;
+    reconcile_records_.clear();
+    reconcile_positions_.clear();
+  };
+  if (cfg_.dry_run || !connected_ || rest_ == nullptr || rest_hard_stopped_ ||
+      reconcile_coin_ >= settle_coins_.size())
+    return abandon();
+  RestRequest rr;
+  if (!BybitOrderEncoder::encode_rest_positions(
+          cfg_.category, {}, settle_coins_[reconcile_coin_], cursor, rr))
+    return abandon();
+  const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
+  std::weak_ptr<int> alive = alive_;
+  reconcile_in_flight_ = true;
+  const bool queued = rest_->request(
+      "GET", rr.target(), headers, {}, [this, alive, abandon](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        reconcile_in_flight_ = false;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        std::string next_cursor;
+        std::string err;
+        if (!r.ok()) {
+          err = fmt::format("status={} err={}", r.status, net::to_string(r.error));
+        } else {
+          err = decode_positions(r.body, reconcile_positions_, next_cursor);
+        }
+        if (!err.empty()) {
+          // Positions are part of the snapshot: without them nothing is emitted.
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN(
+              "{}: GET position/list failed ({}); reconciliation skipped", cfg_.name, err);
+          return abandon();
+        }
+        if (!next_cursor.empty()) {
+          if (++reconcile_pages_ >= kMaxPositionPages) {
+            FASTMM_LOG_WARN("{}: more than {} pages of positions; reconciliation skipped",
+                            cfg_.name,
+                            kMaxPositionPages);
+            return abandon();
+          }
+          request_positions_page(next_cursor);
+          return;
+        }
+        reconcile_pages_ = 0;
+        if (++reconcile_coin_ < settle_coins_.size()) {
+          request_positions_page({});
+          return;
+        }
+        emit_reconcile();
+      });
+  if (!queued) abandon();
 }
 
 void BybitVenue::emit_reconcile() {
@@ -1111,6 +1325,38 @@ void BybitVenue::emit_reconcile() {
   begin.hdr.recv_ts = wall_now();
   static_cast<void>(order_sink_->push(begin.hdr));
   for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
+  if (cfg_.category == BybitCategory::Linear) {
+    // Listed by settle coin, the venue returns only the non-zero positions: absent means flat.
+    bool hedge = false;
+    for (InstrumentId id : subscribed_) {
+      const std::string_view sym = symbols_->venue_symbol(id);
+      ReconcileMsg m{};
+      init_header(m, EventType::Reconcile, id, id_);
+      m.kind = ReconcileMsg::Kind::Position;
+      for (const PositionRecord& p : reconcile_positions_) {
+        if (!iequals_symbol(p.symbol, sym)) continue;
+        if (p.position_idx != 0) {
+          hedge = hedge || !p.qty.is_zero();
+          continue;
+        }
+        m.position_qty = p.qty;
+        m.avg_px = p.avg_px;
+      }
+      m.hdr.recv_ts = wall_now();
+      static_cast<void>(order_sink_->push(m.hdr));
+      PositionCheck& pc = positions_[id.value];
+      pc.tracked = m.position_qty;
+      pc.venue = m.position_qty;
+      pc.venue_avg = m.avg_px;
+      pc.pending = false;
+      FASTMM_LOG_INFO("{}: {} position {} @ {}", cfg_.name, sym, m.position_qty, m.avg_px);
+    }
+    reconcile_positions_.clear();
+    if (hedge) {
+      FASTMM_LOG_ERROR("{}: position/list reports a hedge-mode position", cfg_.name);
+      apply_action(VenueAction::Fatal, 0, "hedge-mode position", 0);
+    }
+  }
   ReconcileMsg end{};
   init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
   end.kind = ReconcileMsg::Kind::End;
@@ -1312,12 +1558,21 @@ void BybitVenue::emit_executions() {
                        *px,
                        *qty,
                        fee,
-                       fee_asset_of(in, fee, e.fee_currency, e.fee_rate, e.side, e.maker),
+                       fee_asset_of(in,
+                                    fee,
+                                    e.fee_currency,
+                                    e.fee_rate,
+                                    e.side,
+                                    e.maker,
+                                    cfg_.category == BybitCategory::Linear),
                        e.maker ? Liquidity::Maker : Liquidity::Taker,
                        e.time_ms);
     ++stats_.order_events;
     ++stats_.executions_fetched;
     ++count;
+    // Not added to positions_[].tracked: most replayed rows are fills the stream already
+    // delivered, which the OMS drops. A reconciliation resets `tracked` to the venue's position,
+    // and a periodic replay that booked a missed fill ends in one correction to the same value.
   }
   // The watermark moves to the newest row read, or to the end of a window that was not the last.
   std::int64_t since = exec_since_ms_;
@@ -1469,6 +1724,7 @@ void BybitVenue::on_timer(std::int64_t now) {
   if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs) {
     static_cast<void>(request_executions());
   }
+  if (cfg_.category == BybitCategory::Linear) check_positions(now);
   publish_status();
   raw_md_.flush();
   raw_private_.flush();
@@ -1480,6 +1736,39 @@ void BybitVenue::on_timer(std::int64_t now) {
       housekeeping_timer_ = net::kInvalidTimer;
       on_timer(now_ns());
     });
+  }
+}
+
+void BybitVenue::note_fill(const OrderFillMsg& f) noexcept {
+  if (cfg_.category != BybitCategory::Linear || f.hdr.instrument.value >= kMaxInstruments) return;
+  PositionCheck& p = positions_[f.hdr.instrument.value];
+  p.tracked = f.side == Side::Buy ? p.tracked + f.qty : p.tracked - f.qty;
+  p.last_event_ns = now_ns();
+}
+
+void BybitVenue::check_positions(std::int64_t now) {
+  if (order_sink_ == nullptr || reconcile_in_flight_ || exec_replay_active_) return;
+  for (InstrumentId id : subscribed_) {
+    PositionCheck& p = positions_[id.value];
+    if (!p.pending || now - p.last_event_ns < kPositionSettleNs) continue;
+    p.pending = false;
+    if (p.venue == p.tracked) continue;
+    FASTMM_LOG_WARN(
+        "{}: {} position {} from the position topic differs from the fills ({}); correcting the "
+        "engine",
+        cfg_.name,
+        symbols_->venue_symbol(id),
+        p.venue,
+        p.tracked);
+    PositionUpdateMsg m{};
+    init_header(m, EventType::PositionUpdate, id, id_);
+    m.qty = p.venue;
+    m.avg_px = p.venue_avg;
+    m.hdr.recv_ts = wall_now();
+    m.hdr.t0_cycles = rdtscp();
+    static_cast<void>(order_sink_->push(m.hdr));
+    ++stats_.order_events;
+    p.tracked = p.venue;
   }
 }
 
@@ -1515,6 +1804,13 @@ BybitVenueConfig make_bybit_config(const VenueSection& v, bool dry_run) {
   c.credentials.secret.value = v.api_secret;
   const VenueExtras x(v.extra);
   auto extra = [&](const char* key) { return x.get(key); };
+  const auto category = parse_category(extra("category"));
+  if (!category)
+    throw std::invalid_argument(
+        fmt::format("[venues.{}] category = \"{}\": expected \"spot\" or \"linear\"",
+                    v.name,
+                    extra("category")));
+  c.category = *category;
   auto extra_bool = [&](const char* key, bool def) { return x.flag(key, def); };
   auto extra_int = [&](const char* key, std::int64_t def) { return x.integer(key, def); };
   c.ws_private_url = extra("ws_private_url");
@@ -1531,6 +1827,7 @@ BybitVenueConfig make_bybit_config(const VenueSection& v, bool dry_run) {
   c.orders_per_second = static_cast<std::uint32_t>(
       std::max<std::int64_t>(0, extra_int("orders_per_second", c.orders_per_second)));
   c.position_from_wallet = extra_bool("position_from_wallet", false);
+  c.position_from_stream = extra_bool("position_from_stream", true);
   c.allow_offline_reference_data = extra_bool("allow_offline_reference_data", false);
   c.cancel_on_order_channel_loss = extra_bool("cancel_on_order_channel_loss", true);
   // 0 = off; anything else is clamped to the [3, 300] s the venue accepts.

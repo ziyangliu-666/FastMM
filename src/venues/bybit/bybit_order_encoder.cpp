@@ -20,7 +20,8 @@ std::size_t BybitOrderEncoder::write_args(const OrderCommand& cmd,
   const std::string_view symbol = symbols_.venue_symbol(cmd.instrument);
   if (symbol.empty()) return 0;
   JsonWriter w(out);
-  w.begin_object().key("category").string("spot").key("symbol").string(symbol);
+  const bool linear = category_ == BybitCategory::Linear;
+  w.begin_object().key("category").string(to_string(category_)).key("symbol").string(symbol);
   const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
   switch (cmd.kind) {
     case OrderCommandKind::New: {
@@ -30,14 +31,20 @@ std::size_t BybitOrderEncoder::write_args(const OrderCommand& cmd,
       w.key("qty").string(qty.view());
       if (cmd.type == OrderType::Market) {
         // Spot market buys default to a quote-coin quantity (create-order "marketUnit");
-        // FastMM quantities are always base units.
-        w.key("marketUnit").string("baseCoin");
+        // FastMM quantities are always base units. Perps "always order by qty".
+        if (!linear) w.key("marketUnit").string("baseCoin");
       } else {
         DecimalText px(cmd.price);
         w.key("price").string(px.view());
         w.key("timeInForce").string(tif_text(cmd.type, cmd.tif));
       }
       w.key("orderLinkId").string(encode_cl_ord_id(cmd.cl_ord_id).view());
+      if (linear) {
+        // positionIdx 0: one-way mode (the connector refuses to start in hedge mode). reduceOnly
+        // is "Valid for linear, inverse & option" and ignored here on spot as before.
+        w.key("positionIdx").integer(0);
+        if (cmd.reduce_only) w.key("reduceOnly").boolean(true);
+      }
       break;
     }
     case OrderCommandKind::Cancel: {
@@ -164,7 +171,7 @@ bool BybitOrderEncoder::encode_rest(const OrderCommand& cmd,
 bool BybitOrderEncoder::encode_rest_cancel_all(std::string_view symbol, RestRequest& out) const {
   char buf[128];
   JsonWriter w(buf);
-  w.begin_object().key("category").string("spot");
+  w.begin_object().key("category").string(to_string(category_));
   if (!symbol.empty()) w.key("symbol").string(symbol);
   w.end_object();
   if (!w.ok()) return false;
@@ -193,17 +200,53 @@ bool BybitOrderEncoder::encode_rest_set_dcp(std::string_view product,
 }
 
 bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol,
+                                                std::string_view settle_coin,
                                                 std::string_view cursor,
                                                 RestRequest& out) const {
   out.method = "GET";
   out.path = "/v5/order/realtime";
   out.body.clear();
-  out.query = "category=spot";
+  out.query = "category=";
+  out.query += to_string(category_);
   if (!symbol.empty()) {
     out.query += "&symbol=";
     out.query += symbol;
+  } else if (!settle_coin.empty()) {
+    out.query += "&settleCoin=";
+    out.query += settle_coin;
+  } else if (category_ == BybitCategory::Linear) {
+    return false;  // "For linear, either symbol, baseCoin, settleCoin is required"
   }
   out.query += "&limit=50";
+  if (!cursor.empty()) {
+    out.query += "&cursor=";
+    out.query += cursor;
+  }
+  out.is_order = false;
+  return true;
+}
+
+bool BybitOrderEncoder::encode_rest_positions(BybitCategory category,
+                                              std::string_view symbol,
+                                              std::string_view settle_coin,
+                                              std::string_view cursor,
+                                              RestRequest& out) {
+  if (category == BybitCategory::Spot) return false;  // spot has no positions
+  out.method = "GET";
+  out.path = "/v5/position/list";
+  out.body.clear();
+  out.query = "category=";
+  out.query += to_string(category);
+  if (!symbol.empty()) {
+    out.query += "&symbol=";
+    out.query += symbol;
+  } else if (!settle_coin.empty()) {
+    out.query += "&settleCoin=";
+    out.query += settle_coin;
+  } else {
+    return false;  // "linear: either symbol or settleCoin is required"
+  }
+  out.query += "&limit=200";
   if (!cursor.empty()) {
     out.query += "&cursor=";
     out.query += cursor;
@@ -221,7 +264,9 @@ bool BybitOrderEncoder::encode_rest_executions(std::int64_t start_ms,
   out.method = "GET";
   out.path = "/v5/execution/list";
   out.body.clear();
-  out.query = "category=spot&startTime=" + std::to_string(start_ms);
+  out.query = "category=";
+  out.query += to_string(category_);
+  out.query += "&startTime=" + std::to_string(start_ms);
   if (end_ms > 0) out.query += "&endTime=" + std::to_string(end_ms);
   out.query += "&limit=" + std::to_string(limit);
   if (!cursor.empty()) {

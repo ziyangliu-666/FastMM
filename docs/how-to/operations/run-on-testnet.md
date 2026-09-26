@@ -1,6 +1,6 @@
 # Run on a testnet or Binance Demo
 
-FastMM ships configs for five practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 spot testnet and the Deribit testnet. The two Binance Demo environments share one set of keys; every other environment has its own, and none of them are live-exchange keys.
+FastMM ships configs for six practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet for spot and for linear perpetuals, and the Deribit testnet. The two Binance Demo environments share one set of keys; every other environment has its own, and none of them are live-exchange keys.
 
 Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
 
@@ -28,6 +28,7 @@ set -a && . ./.env && set +a
 | Binance USDⓈ-M Demo Trading | `configs/binance-usdm-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
 | Binance testnet | `configs/binance-testnet.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
 | Bybit testnet | `configs/bybit-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
+| Bybit testnet, linear perpetuals | `configs/bybit-linear-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
 | Deribit testnet | `configs/deribit-testnet.toml` | `FASTMM_DERIBIT_CLIENT_ID`, `FASTMM_DERIBIT_CLIENT_SECRET` |
 
 The Binance configs use the same variable names, so only one set of keys can be loaded at a time. Demo Trading keys work for both Spot Demo Mode and USDⓈ-M Demo Trading.
@@ -71,6 +72,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Keys: create a system-generated (HMAC) API key on the Bybit testnet site (testnet.bybit.com, API Management) with spot trading permission.
 - Endpoints (from `configs/bybit-testnet.toml`): public `wss://stream-testnet.bybit.com/v5/public/spot`, trade `wss://stream-testnet.bybit.com/v5/trade`, private `wss://stream-testnet.bybit.com/v5/private` (derived from `ws_url` when `ws_private_url` is not set), REST `https://api-testnet.bybit.com`.
 - Config: `supports_replace = false`, so quotes are replaced with cancel and new (Bybit does not document whether amend `qty` includes the filled quantity). `recv_window_ms = 5000` and `stale_ms = 10000`.
+- Linear perpetuals: `configs/bybit-linear-testnet.toml` sets `category = "linear"` and the public stream `wss://stream-testnet.bybit.com/v5/public/linear`; the same key needs contract trading permission and USDT in the unified account. The symbol has to be in one-way position mode: in hedge mode `fastmm-live` refuses to start and exits 3. Not yet run against the testnet ([Venue connectors](../../reference/venues.md#linear-perpetuals)).
 
 ### Deribit testnet
 

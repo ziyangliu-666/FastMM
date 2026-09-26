@@ -48,6 +48,28 @@ Left: `[gateway] max_open_notional` stays per venue in settlement currency (unco
 status file does not name the reporting currency; the rate is the source's mid, not the venue's
 conversion.
 
+**Step 2 done (2026-09-26): Bybit linear perpetuals**, `[venues.x] category = "linear"` on the
+Bybit connector (default spot, unchanged). Built from the v5 docs read 2026-09-26
+(instruments-info, create/amend/cancel, open-order, cancel-all, execution, position, switch
+position mode, DCP, private order/execution/position/dcp, rate-limit, ws/connect); no testnet key,
+so mock and docs only. Reference data: LinearPerpetual only, perpetual, multiplier 1, reduce-only,
+quote = settleCoin (what `[accounting]` settles in). Orders: positionIdx 0, reduceOnly. Hedge mode:
+Bybit has no mode getter; `position/list?symbol=` returns positionIdx 1/2 rows in hedge mode, so
+start-up refuses it (or an unreadable mode); `Venue::refused_account_settings()` makes fastmm-live
+and the gateway exit 3, not 4 (Binance USD-M's hedge refusal still exits 4). A hedge row later is
+venue-fatal. Reconciliation: replay, then open orders and positions per settle coin (absent =
+flat) into Begin/OpenOrder*/Position*/End, the start-up sweep included. Position topic compared
+with the forwarded fills after 1 s settle, as USD-M does (`position_from_stream`). Linear fee =
+settle coin (Quote), rebates negative. DCP: product DERIVATIVES + `dcp.future`. Evidence:
+`tests/venues/bybit_linear_test.cpp`, `bybit_linear_venue_test.cpp`,
+`integration/bybit_linear_startup_test.cpp`; each of 30 mutations (category, positionIdx,
+reduceOnly, settleCoin, fee rule, signs, hedge detection, exit code, Position records, DCP
+product/topic, position check, fill tracking, ...) fails at least one of them. Spot tests untouched.
+`integration.gateway books` failed its 1 s pause bound (1.05-1.09 s) in 2 of 7 runs here, unrelated
+(no Bybit in it), not checked against the base.
+Left: no testnet run; tickers (mark, funding) not subscribed, funding not booked; LinearFutures and
+inverse refused; leverage/margin mode not read.
+
 ## Next direction (chosen 2026-09-25): split the venue gateway from the strategy
 
 **Why.** Stepping back from recovery work: what a firm needs and FastMM lacks is structural. One

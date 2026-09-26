@@ -60,7 +60,7 @@ int make_venue_slots(const Config& cfg,
     }
     if (auto r = slot->venue->load_reference_data(instruments); !r) {
       std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
-      return kExitVenue;
+      return slot->venue->refused_account_settings() ? kExitConfig : kExitVenue;
     }
     slots.push_back(std::move(slot));
   }
