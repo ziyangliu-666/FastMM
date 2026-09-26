@@ -56,7 +56,11 @@ perpetuals, and today one session or gateway with instruments in two settlement 
   refused. Same accounting in the engine and the gateway; backtest and replay share it.
 Step 2, Bybit linear perpetuals: done 2026-09-26 (mock and docs only, no testnet keys).
 Step 3, funding: done 2026-09-26 (below).
-Later: OKX; alerting.
+Step 3 funding: done 2026-09-26 (USDⓈ-M, Bybit linear; Deribit has aggregates only). Alerting:
+done 2026-09-26 as shipped Prometheus rules (`deploy/prometheus/fastmm-alerts.yml`, checked against
+the exporter by a test), plus systemd units for the gateway and its strategies (a gateway crash
+brings the strategies back via WantedBy; tested). Step 4: an OKX connector (swap, USDT-margined),
+modelled on Bybit linear.
 
 **Step 3 done (2026-09-26): perpetual funding is booked.** `EventType::Funding` (27) /
 `FundingMsg` (128 B: signed amount in the settlement asset, venue id, venue time, kReplayed) on the
