@@ -194,6 +194,8 @@ ReplayResult replay_impl(const std::string& path,
   const Timestamp start{header.start_ts_ns};
   sim::ReplayBackend backend(reader, start);
   backend.transport.set_supports_replace(cfg.transport.supports_replace);
+  for (const sim::SimVenueConfig& v : cfg.transport.venues)
+    backend.transport.set_supports_replace(v.venue, v.supports_replace);
   if (session) {
     // The recording's effective cancel-replace per venue (live: venue capability && config).
     for (std::uint8_t v = 0; v < kMaxVenues; ++v)

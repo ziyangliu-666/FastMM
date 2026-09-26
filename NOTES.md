@@ -3,6 +3,21 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Quote/hedge step 1 done (2026-09-27): backtests across venues.** Every venue an instrument names
+is simulated with its own latency model (order, ack and md paths), wires, `md_arrival`, replace and
+STP (`[backtest.venues.<name>]`, `SimTransportConfig::venues`); books, matching engine and queue
+model stay shared (every queued order belongs to one instrument, so venues never touch each
+other's queues). The first venue
+keeps `seed`, so single-venue runs are unchanged: every golden and replay hash is byte-identical.
+Feeds merge by event time with `;` (`--data "a; b"`, Python lists). Equity per instrument
+(`equity.csv` `pnl_<id>` ..., `result.equity_by_instrument`). Evidence: a two-venue test checks every
+order, ack, fill and md event against its venue's latency; merge order; determinism; config errors;
+a two-venue no-allocation run. `BM_TickToOrder_Sim` 150.8 -> 156.0 ns (+3.5 %, 10 interleaved
+processes; first version with heap-allocated venues was +17 %, now inline), `BM_EngineStep_Sim` and
+the matching benchmarks within 2 %. Open: the engine's quote manager replaces only when every
+traded venue supports it (global `QuoteParams`), so a per-venue `supports_replace = false` turns
+replace off for all; the synthetic generator drives instrument 0 only.
+
 **Quote/hedge step 2 done (2026-09-27): built-in `xmm`.** Quotes one instrument, hedges on another
 with IOCs; the hedge comes from the two positions in base units, one at a time, never from a count
 of fills. Guards: stale or invalid books and a hedge venue down pull the quotes, `max_unhedged`,

@@ -151,8 +151,9 @@ OPTIONS:
   --version                   print the version and exit
   --config <file.toml>        engine / strategy / backtest configuration (required)
   --data <spec>               market data: 'synthetic', a *.fmj / *.csv path, or
-                              <source>:<args> (default: [backtest] source/path).
-                              `fastmm-data list` prints the sources
+                              <source>:<args>; several separated by ';' merge by time
+                              (default: [backtest] source/path). `fastmm-data list` prints
+                              the sources
   --strategy <name>           registered strategy (default: [strategy] name)
   --param <key=value>         strategy parameter override (repeatable)
   --out <dir>                 write equity.csv fills.csv orders.csv summary.json (default:

@@ -350,6 +350,11 @@ class BacktestResult:
         Equity bar columns (zero-copy numpy views).
         """
     @property
+    def equity_by_instrument(self) -> list:
+        """
+        Per instrument id, its equity bar columns: pnl (realized + unrealized - fees, its settlement currency), position, mid, quoted.
+        """
+    @property
     def fills(self) -> dict:
         """
         Fill columns (zero-copy numpy views).
@@ -1483,7 +1488,7 @@ def run_backtest(config: BacktestConfig, data: typing.Any = None, strategy: str 
     """
     Run one backtest with the GIL released.
     
-    data: None (config.source), a source spec ('synthetic', 'binance:BTCUSDT,2024-03-27'; fastmm.data_sources() lists them), a .fmj or .csv path, or a dict of numpy arrays {ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw 1e-8) | float64, qty: int64 | float64, seq: uint64 (optional)} used without copying.
+    data: None (config.source), a source spec ('synthetic', 'binance:BTCUSDT,2024-03-27'; fastmm.data_sources() lists them), a .fmj or .csv path, a list of specs or paths merged by event time (one per venue), or a dict of numpy arrays {ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw 1e-8) | float64, qty: int64 | float64, seq: uint64 (optional)} used without copying.
     strategy: registry name; defaults to config.strategy.
     """
 def strategies() -> dict:

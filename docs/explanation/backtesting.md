@@ -58,6 +58,14 @@ Each instrument pays its own venue's `[venues.<name>.fees]`, and `[[instruments]
 
 Check a maker rebate against the venue's published schedule. Binance spot pays no maker rebate at VIP 0; a configured `maker_bps = -0.5` adds 0.5 bps to every passive fill, more than any strategy in this repository captures gross.
 
+## Several venues
+
+A run can hold instruments on several venues: quote one on venue A and hedge another on venue B. Each venue gets its own latency model (the first keeps `[backtest] seed`, the others derive theirs from it and the venue id), its own order and market-data connection, and its own replace and STP settings ([`[backtest.venues.<name>]`](../reference/configuration.md#backtestvenues)). The matching engine, the queue model and the books are shared, since an instrument lives on one venue.
+
+Recorded feeds of the venues are merged by event time: `--data "binance:BTCUSDT,2024-03-27,venue=0; csv:other.csv,venue=1"`, or a list in Python (`data=[...]`). Each source's `venue=` must be the venue of its instruments in `[venues]` order. The venues' clocks are taken as they are: a feed stamped with local receive time and one stamped with venue time interleave wrongly by the difference.
+
+`equity.csv` gains `pnl_<id>`, `position_<id>`, `mid_<id>` and `quoted_<id>` per instrument when there is more than one (`result.equity_by_instrument` in Python); `pnl` is in the instrument's settlement currency. The `position` and `mid` columns stay the sum over instruments and instrument 0's mid. The synthetic market drives instrument 0 only.
+
 ## Reading the summary
 
 The decomposition is exact:

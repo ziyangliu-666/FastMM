@@ -26,6 +26,7 @@ struct BacktestSession::Impl final : sim::SimObserver {
       : ledger(instruments) {
     orders.reserve(kReserveOrders);
     fills.reserve(kReserveFills);
+    equity.by_instrument.resize(instruments.size());
     equity.reserve(bars);
     for (Duration h : horizons) {
       if (h.ns > 0) fills.markout_horizon_ns.push_back(h.ns);
@@ -109,10 +110,20 @@ struct BacktestSession::Impl final : sim::SimObserver {
     equity.fees.push_back(ledger.fees().raw);
     equity.position.push_back(ledger.net_position().raw);
     equity.mid.push_back(transport.venue_mid(first).raw);
-    const auto bid = transport.strategy_exposure(first, Side::Buy);
-    const auto ask = transport.strategy_exposure(first, Side::Sell);
-    equity.quoted.push_back(
-        static_cast<std::uint8_t>((bid.orders > 0 ? 1U : 0U) | (ask.orders > 0 ? 2U : 0U)));
+    equity.quoted.push_back(quoted(transport, first));
+    for (const Instrument& i : instruments) {
+      InstrumentEquityRows& r = equity.by_instrument[i.id.value];
+      const Position& p = ledger.position(i.id);
+      r.pnl.push_back(p.net_pnl().raw);
+      r.position.push_back(p.qty.raw);
+      r.mid.push_back(transport.venue_mid(i.id).raw);
+      r.quoted.push_back(quoted(transport, i.id));
+    }
+  }
+  [[nodiscard]] static std::uint8_t quoted(const sim::SimTransport& transport, InstrumentId id) {
+    const auto bid = transport.strategy_exposure(id, Side::Buy);
+    const auto ask = transport.strategy_exposure(id, Side::Sell);
+    return static_cast<std::uint8_t>((bid.orders > 0 ? 1U : 0U) | (ask.orders > 0 ? 2U : 0U));
   }
 
   // ---- markouts -----------------------------------------------------------------------------
@@ -206,7 +217,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     info.has_session = true;
     info.session_epoch = cfg_.engine.session_epoch;
     info.quoting_enabled = cfg_.engine.quoting_enabled;
-    info.replace_venues = cfg_.transport.supports_replace ? ~std::uint64_t{0} : 0;
+    info.replace_venues = cfg_.transport.replace_mask();
     info.config_toml = cfg_.config_toml;
     info.params = schema;
     info.strategy_meta = strategy_meta;
@@ -328,9 +339,41 @@ namespace {
 bool ends_with(std::string_view s, std::string_view suffix) noexcept {
   return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
 }
+
+std::string_view trim(std::string_view s) noexcept {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
+  return s;
+}
+
+std::unique_ptr<MdSource> open_one(std::string_view spec, const InstrumentTable* instruments);
 }  // namespace
 
 std::unique_ptr<MdSource> open_data(std::string_view spec, const InstrumentTable* instruments) {
+  spec = trim(spec);
+  if (spec.find(';') != std::string_view::npos) {
+    // Several sources (one per venue, typically), merged by event time.
+    std::vector<std::unique_ptr<MdSource>> parts;
+    std::size_t pos = 0;
+    for (;;) {
+      const std::size_t semi = spec.find(';', pos);
+      const std::string_view one = trim(
+          spec.substr(pos, semi == std::string_view::npos ? std::string_view::npos : semi - pos));
+      if (one.empty() || one == "synthetic") {
+        throw std::runtime_error("backtest: '" + std::string(spec) +
+                                 "': every ';'-separated part must name a data source");
+      }
+      parts.push_back(open_one(one, instruments));
+      if (semi == std::string_view::npos) break;
+      pos = semi + 1;
+    }
+    return std::make_unique<OwnedMergedSource>(std::move(parts));
+  }
+  return open_one(spec, instruments);
+}
+
+namespace {
+std::unique_ptr<MdSource> open_one(std::string_view spec, const InstrumentTable* instruments) {
   if (spec.empty() || spec == "synthetic") return nullptr;
   register_builtin_data_sources();
   const std::string_view head = spec.substr(0, spec.find(':'));
@@ -350,8 +393,14 @@ std::unique_ptr<MdSource> open_data(std::string_view spec, const InstrumentTable
   throw std::runtime_error("backtest: '" + path +
                            "' is neither *.fmj, *.csv nor <source>:<args> (" + known + ")");
 }
+}  // namespace
 
 std::unique_ptr<MdSource> open_source(const BacktestConfig& cfg) {
+  if (cfg.source.starts_with('[')) {
+    throw std::runtime_error(
+        "backtest.source: a list is not accepted; write the sources as one string separated by "
+        "';' (\"binance:BTCUSDT,2024-03-27,venue=0; csv:other.csv,venue=1\")");
+  }
   if (cfg.source.empty()) return open_data(cfg.path, &cfg.instruments);
   // [backtest] source holds a whole spec; the older `source` + `path` pair is the same thing
   // with the path as the source's one positional argument.

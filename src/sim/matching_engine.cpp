@@ -10,15 +10,23 @@ NullSink g_null_sink;
 MatchingEngine::MatchingEngine(std::size_t instrument_count, MatchingSink* sink)
     : instrument_count_(instrument_count == 0 ? 1 : instrument_count),
       sink_(sink == nullptr ? &g_null_sink : sink),
-      books_(new SimBook[instrument_count_]) {
+      books_(new SimBook[instrument_count_]),
+      stp_(new StpMode[instrument_count_ * kMaxAccounts]()) {
   pool_.warm_up();
 }
 
 void MatchingEngine::set_stp(AccountId account, StpMode mode) noexcept {
-  if (account < kMaxAccounts) stp_[account] = mode;
+  if (account >= kMaxAccounts) return;
+  for (std::size_t i = 0; i < instrument_count_; ++i) stp_[i * kMaxAccounts + account] = mode;
 }
-StpMode MatchingEngine::stp(AccountId account) const noexcept {
-  return account < kMaxAccounts ? stp_[account] : StpMode::None;
+void MatchingEngine::set_stp(AccountId account, InstrumentId id, StpMode mode) noexcept {
+  if (account < kMaxAccounts && id.value < instrument_count_)
+    stp_[id.value * kMaxAccounts + account] = mode;
+}
+StpMode MatchingEngine::stp(AccountId account, InstrumentId id) const noexcept {
+  return account < kMaxAccounts && id.value < instrument_count_
+             ? stp_[id.value * kMaxAccounts + account]
+             : StpMode::None;
 }
 
 const SimOrder* MatchingEngine::find(AccountId account, ClientOrderId id) const noexcept {
@@ -162,7 +170,7 @@ bool MatchingEngine::match(Handle32 th, SimOrder& taker, Timestamp now, Qty& fil
   SimBook& book = books_[taker.instrument.value];
   const Side maker_side = opposite(taker.side);
   const bool market = taker.type == OrderType::Market;
-  const StpMode stp_mode = stp(taker.account);
+  const StpMode stp_mode = stp(taker.account, taker.instrument);
   while (taker.leaves().is_positive()) {
     PriceLevel* level = book.best(maker_side);
     if (level == nullptr) break;

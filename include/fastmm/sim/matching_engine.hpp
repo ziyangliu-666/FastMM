@@ -110,8 +110,10 @@ class MatchingEngine {
   MatchingEngine& operator=(const MatchingEngine&) = delete;
 
   void set_sink(MatchingSink* s) noexcept { sink_ = s; }
+  // Self-trade prevention of one account, on every instrument or on one (a venue's).
   void set_stp(AccountId account, StpMode mode) noexcept;
-  [[nodiscard]] StpMode stp(AccountId account) const noexcept;
+  void set_stp(AccountId account, InstrumentId id, StpMode mode) noexcept;
+  [[nodiscard]] StpMode stp(AccountId account, InstrumentId id) const noexcept;
 
   // ---- order entry ------------------------------------------------------------------------
   SubmitResult submit(const NewOrder& o, Timestamp now) noexcept;
@@ -217,7 +219,7 @@ class MatchingEngine {
   std::unique_ptr<SimBook[]> books_;
   OrderPool pool_;
   OpenHashMap<std::uint64_t, Handle32, kMaxSimOrders * 2> by_key_;
-  StpMode stp_[kMaxAccounts] = {};
+  std::unique_ptr<StpMode[]> stp_;  // [instrument * kMaxAccounts + account]
   AccountLedger ledgers_[kMaxAccounts] = {};
   MatchingStats stats_{};
   std::uint64_t next_order_id_ = 1;
