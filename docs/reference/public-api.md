@@ -10,7 +10,7 @@ Which headers and CMake targets a project outside FastMM may use, and what may c
 | 2 | Extending FastMM: configuration (`config/*`), venue connectors (`venues/*.hpp` outside the venue subdirectories), `core/book/book_syncer.hpp`, storage backends (`core/record_stream.hpp`, `store/*.hpp`), signal research (`research/*.hpp`), networking (`net/{reactor,connection,crypto,backoff,url,ws_client,http_client,udp_socket,datagram_source,kernel_datagram_source}.hpp`) and `codecs/codec.hpp` | Documented; may change in any release before 1.0 |
 | internal | Everything else: engine internals (`core/engine.hpp`, rings, containers, the journal writer, timers, latency, the status segment), the simulator (`sim/*`), the connectors (`venues/<venue>/`), protocol-specific codec headers and the built-in strategies | No promise; may change in any release |
 
-- Use the built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`, `options_mm.hpp`) by name through the registry; their parameters and behaviour may change.
+- Use the built-in strategies (`strategies/basic_mm.hpp`, `avellaneda_stoikov.hpp`, `options_mm.hpp`, `xmm.hpp`) by name through the registry; their parameters and behaviour may change.
 - A tier 1 header may include internal headers; only the names the reference pages document are public. `Engine<...>` is internal even though `StrategyHarness::engine()` returns it; use it for inspection in tests.
 - Everything is in `namespace fastmm` (backtests in `fastmm::bt`, the harness in `fastmm::sim`, command lines in `fastmm::cli`); `detail` namespaces are internal.
 

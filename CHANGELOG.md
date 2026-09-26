@@ -5,6 +5,13 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `xmm`, a built-in strategy that quotes one instrument and hedges on another venue with IOC
+  orders. Fair value is the hedge book plus an EWMA basis; the hedge is derived from the two
+  positions in base units (contract multipliers applied), one hedge at a time, so replayed,
+  duplicated and late fills never double-hedge. Stale books or a hedge venue that is down pull the
+  quotes; `max_unhedged` drops the side that would grow the gap; repeated failed hedges halt it.
+  `configs/xmm-demo.toml` (Binance USDⓈ-M demo quotes, Bybit testnet hedges),
+  `docs/how-to/strategies/xmm.md`.
 - OKX v5 connector (`kind = "okx"`) for USDT-margined perpetual swaps (instType SWAP), net position
   mode: `books` (or the tbt depth channels) with the seqId chain, `bbo-tbt` and `trades`; order
   entry over the private WebSocket by `instIdCode`, REST fallback; `orders`, `positions` and

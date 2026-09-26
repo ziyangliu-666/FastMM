@@ -1,0 +1,136 @@
+# FastMM: xmm, quoting BTCUSDT on Binance USDⓈ-M Demo Trading and hedging on the Bybit testnet
+# (BTCUSDT linear perpetual). See docs/how-to/strategies/xmm.md.
+#   ./build/release/bin/fastmm-live --config configs/xmm-demo.toml --dry-run --duration 60s
+# Keys: Binance Demo Trading (USDⓈ-M wallet with USDT, one-way position mode, HMAC keys) and the
+# Bybit testnet (unified account with USDT, one-way mode on BTCUSDT):
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   export FASTMM_BYBIT_API_KEY=... FASTMM_BYBIT_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/xmm-demo.toml
+# Both instruments trade in BTC (contract_multiplier 1), so the [risk] quantities mean the same
+# on both. Demo and testnet books are thin and their prices drift apart; the basis EWMA absorbs a
+# steady gap, not a jumpy one.
+[engine]
+name = "xmm-demo"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 10
+min_requote_interval_ms = 500
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+ack_timeout_ms = 0           # keep off: an order the venue never acknowledged holds hedging (uncertain_hold_ms)
+
+# Quote venue (maker).
+[venues.binance_usdm]
+kind = "binance_usdm"
+ws_url = "wss://demo-fstream.binance.com"
+ws_api_url = "wss://testnet.binancefuture.com/ws-fapi/v1"
+rest_url = "https://demo-fapi.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = false
+recv_window_ms = 3000
+stale_ms = 10000
+dead_mans_switch_ms = 60000
+
+[venues.binance_usdm.fees]
+maker_bps = 2.0
+taker_bps = 4.0
+
+# Hedge venue (taker).
+[venues.bybit_linear]
+kind = "bybit"
+category = "linear"
+ws_url = "wss://stream-testnet.bybit.com/v5/public/linear"
+ws_api_url = "wss://stream-testnet.bybit.com/v5/trade"
+rest_url = "https://api-testnet.bybit.com"
+api_key = "${FASTMM_BYBIT_API_KEY}"
+api_secret = "${FASTMM_BYBIT_API_SECRET}"
+testnet = true
+supports_replace = false
+recv_window_ms = 5000
+stale_ms = 10000
+
+[venues.bybit_linear.fees]
+maker_bps = 2.0
+taker_bps = 5.5
+
+# Index 0: the quote instrument. Tick/lot/min_notional are overwritten from exchangeInfo.
+[[instruments]]
+venue = "binance_usdm"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.10"
+lot = "0.001"
+min_qty = "0.001"
+max_qty = "1000"
+min_notional = "50"
+enabled = true
+
+# Index 1: the hedge instrument. Overwritten from instruments-info.
+[[instruments]]
+venue = "bybit_linear"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.10"
+lot = "0.001"
+min_qty = "0.001"
+max_qty = "100"
+min_notional = "5"
+enabled = true
+
+[strategy]
+name = "xmm"
+
+[strategy.params]
+quote_instrument = 0
+hedge_instrument = 1
+quote_qty = 0.001            # BTC per side; above the 50 USDT minimum notional
+edge_bps = 2.0
+quote_fee_bps = 2.0          # Binance maker
+hedge_fee_bps = 5.5          # Bybit taker
+slippage_bps = 1.0
+hedge_tolerance_bps = 10.0   # IOC limit this far through the Bybit touch
+basis_halflife_s = 60
+use_microprice = false
+max_unhedged = 0.003
+requote_threshold_ticks = 20
+stale_ms = 2000
+hedge_retry_ms = 500
+max_hedge_failures = 5
+failure_window_ms = 60000
+uncertain_hold_ms = 5000
+
+[risk]
+max_order_qty = "0.003"
+max_order_notional = "300"
+max_position = "0.003"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

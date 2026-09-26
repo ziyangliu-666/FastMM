@@ -438,7 +438,7 @@ if(TARGET fastmm-live)
   set(_live_offline $<TARGET_FILE:fastmm-live> --config ${_unreachable} --dry-run --no-journal --no-status --duration 1s)
   fastmm_cli_test(apps.fastmm-live.unknown_strategy EXPECT_RC 3
     CMD ${_live_offline} --strategy nope
-    EXPECT_REGEX "fastmm-live: unknown strategy 'nope' \\(available: basic_mm avellaneda_stoikov options_mm\\)")
+    EXPECT_REGEX "fastmm-live: unknown strategy 'nope' \\(available: basic_mm avellaneda_stoikov options_mm xmm\\)")
   fastmm_cli_test(apps.fastmm-live.unknown_param EXPECT_RC 3
     CMD ${_live_offline} --param no_such_param=1
     EXPECT_REGEX "fastmm-live: basic_mm: unknown parameter 'no_such_param'")
