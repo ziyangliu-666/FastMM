@@ -1,20 +1,18 @@
 # Run a Python strategy live
 
-A class with hot hooks runs against venues inside the Python process, through `python -m fastmm run` or `fastmm.run_live`. Reference: [Live sessions](../../reference/python-api.md#live-sessions). Before a keyed session, work through the [Go-live checklist](../operations/go-live-checklist.md).
+A class with hot hooks runs against venues inside the Python process, through `fastmm run` (the same as `python -m fastmm run`) or `fastmm.run_live`. The session opens its own venue connections; it cannot attach to `fastmm-gateway`. Reference: [Live sessions](../../reference/python-api.md#live-sessions). Before a keyed session, work through the [Go-live checklist](../operations/go-live-checklist.md).
 
 ## Install
 
-Install numba and the live runtime (CPython 3.10 or later):
-
 ```bash
-pip install "fastmm-engine[hot,live]"
+pip install "fastmm-engine[hot,live]"     # numba and the live runtime, CPython 3.10 or later
 ```
 
-FastMM is not published on PyPI yet; from a checkout, follow [Install from source](../../getting-started/install.md#install-from-source).
+To build both packages from a checkout instead: [Install from source](../../getting-started/install.md#install-from-source).
 
 ## Run against the simulated exchange
 
-Start the simulated exchange:
+Start the simulated exchange (a C++ program: a build or a [release](../operations/deploy.md)):
 
 ```bash
 ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml
@@ -26,7 +24,7 @@ Copy `configs/sim-local.toml` to `sim-py.toml` and set `name = "py:BasicMMHot"` 
 FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret PYTHONPATH=examples/python/strategies python -m fastmm run basic_mm_hot:BasicMMHot --config sim-py.toml --duration 60s
 ```
 
-The hooks compile and run once on scratch data before the session connects; then the log is the one `fastmm-live` writes. Ctrl-C stops the session early: the kill switch trips, open orders are cancelled, and the process exits with code 0 after `fastmm-live: shutdown took <n> ms (cancel_all ok)` ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)).
+The hooks compile and run once on scratch data before the session connects; the log is then the one `fastmm-live` writes. Ctrl-C stops the session: the kill switch trips, open orders are cancelled and the process exits with code 0 after `fastmm-live: shutdown took <n> ms (cancel_all ok)` ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)).
 
 From a script, `run_live` returns the exit code:
 
@@ -38,7 +36,7 @@ raise SystemExit(fastmm.run_live(BasicMMHot, "sim-py.toml", duration="60s"))
 
 ## Run slow methods live
 
-A class with slow methods ([Run slow methods beside hot hooks](python-slow-methods.md)) runs the same way. `on_start` runs before the session connects, and the session does not quote before the first publish:
+A class with slow methods ([Run slow methods beside hot hooks](python-slow-methods.md)) runs the same way. `on_start` runs before the session connects; the session does not quote before the first publish:
 
 ```bash
 FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret PYTHONPATH=examples/python/strategies python -m fastmm run hot_slow_mm:HotSlowMM --config configs/sim-local.toml --duration 60s

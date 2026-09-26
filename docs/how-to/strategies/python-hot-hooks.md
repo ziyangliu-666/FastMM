@@ -4,13 +4,11 @@ Hot hooks are strategy methods that Numba compiles and the engine thread calls w
 
 ## Install
 
-Install numba with the `hot` extra (CPython 3.10 or later):
-
 ```bash
-pip install "fastmm-engine[hot]"
+pip install "fastmm-engine[hot]"     # numba, CPython 3.10 or later
 ```
 
-FastMM is not published on PyPI yet; from a checkout, follow [Install from source](../../getting-started/install.md#install-from-source).
+To build the package from a checkout instead: [Install from source](../../getting-started/install.md#install-from-source).
 
 ## Declare the strategy
 
