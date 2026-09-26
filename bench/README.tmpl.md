@@ -180,6 +180,50 @@ the OUCH encoders). PGO gains another 4 to 17 % on the micro-benchmarks and noth
 to end, where the OUCH `write` system call dominates; BOLT adds nothing on top (the hot code fits
 the instruction cache). `scripts/build-pgo.sh [--bolt]` builds both.
 
+## Code alignment, 2026-09-26
+
+Edits that execute nothing in a benchmark moved `BM_EngineStep_Sim` and `BM_TickToOrder_Sim` by 3
+to 5 %. The test: base, an identical copy, and four edits off the benchmarked path (8 or 40 bytes of
+`nop` in `Engine::on_funding`, 24 in `calibrate_tsc`, two `EngineConfig` members swapped), each
+built with every setting; `bench_tick_to_order` pinned to one core, the binaries interleaved, 8
+processes of 3 repetitions each. A variant's figure is the median over its processes of the
+process's median; the table gives the median of the six variants in ns and their spread,
+(max - min) / min. All gcc 13 portable `release` (`x86-64-v2`, LTO) unless noted; the alignment
+rows set the flags on every target (`CMAKE_CXX_FLAGS`).
+
+| setting | `BM_EngineStep_Sim` | `BM_TickToOrder_Sim` | `BM_TickToOrder_SimHash` | `.text` |
+|---|---:|---:|---:|---:|
+| `release` (gcc defaults, 16 B) | 2390, 3.8 % | 161, 7.4 % | 330, 5.4 % | 410 KB |
+| `-falign-functions=64` | 2317, 1.3 % | 159, 4.9 % | 335, 3.9 % | 422 KB |
+| functions 64, loops 64 | 2346, 2.3 % | 157, 8.5 % | 329, 5.0 % | 433 KB |
+| functions 64, loops and jumps 32 | 2337, 3.0 % | 156, 1.2 % | 334, 2.3 % | 446 KB |
+| clang 18 | 3448, 1.3 % | 178, 4.2 % | 342, 1.9 % | 413 KB |
+| `release-native` | 1791, 6.3 % | 120, 1.8 % | 302, 3.9 % | 402 KB |
+| PGO (`scripts/build-pgo.sh`, native) | 1685, 5.0 % | 105, 6.8 % | 282, 2.4 % | 361 KB |
+
+The identical copy alone differed from base by up to 5 %: the process matters as much as the code,
+so one run of each side says nothing about a 3 % change. PGO is the fastest and not stable: the
+identical copy, profiled again, came out 7 % slower on the tick; it also needs an instrumented
+build and a training run in every build that ships (CI, the release tarball, the wheels).
+
+`FASTMM_ALIGN_CODE` (default ON, gcc) puts functions 64 and loops and jump targets 32 on the
+fastmm targets only. Confirmed on four new edits (16 and 56 bytes in `on_funding`, 64 in
+`calibrate_tsc`, 32 in `on_kill`), 18 processes per variant, a busier machine than above:
+
+| setting | `BM_EngineStep_Sim` | `BM_TickToOrder_Sim` | `BM_TickToOrder_SimHash` |
+|---|---:|---:|---:|
+| `-DFASTMM_ALIGN_CODE=OFF` | 2730, 7.8 % | 188, 5.6 % | 393, 3.6 % |
+| `FASTMM_ALIGN_CODE=ON` | 2610, 2.1 % | 182, 4.7 % | 393, 2.9 % |
+
+The engine step no longer moves with layout and both tick benchmarks got faster or stayed. The
+tick's remaining spread is the size of the process-to-process difference of one binary (2 to 3 %
+here), so it cannot be attributed to layout; compare such changes over several interleaved
+processes, not one run each.
+
+The other benchmarks, `release-native` on against off, 8 interleaved processes: within 3 % except
+`BM_L2_PriceForQty` -22 %, `BM_L2_ApplyDelta/20` -13 %, `BM_L2_ApplyDelta/100` -5 %, and
+`BM_Json_BybitExecution` +10 %, `BM_L3_OverflowAddCancel` +5 %, `BM_L3_AddCancelExecMix` +4 %.
+
 ## End to end: fastmm-sim-itch to fastmm-live over veth
 
 Measured by `scripts/bench-e2e.sh` on 2026-09-23: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 275 to 358 samples per run, so their p99.9 is the largest sample. In runs 1 and 3 a few orders had T0 to T5 near 3 ms while every engine hop stayed below 1.2 ms at p99.9 (as in run 3 of the 2026-09-22 measurement); they set the upper end of the T0 to T5 and OUCH p99 columns.
