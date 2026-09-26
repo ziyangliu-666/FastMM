@@ -255,6 +255,7 @@ class BinanceUsdmVenue final : public Venue {
   void cancel_all_async();
   // Arms or refreshes countdownCancelAll on every subscribed symbol. `countdown_ms` 0 stops it.
   void send_countdown_cancel_all(std::int64_t countdown_ms);
+  void stop_countdown_blocking();
   // GET /fapi/v1/openOrders + positionRisk, once any execution replay before it has finished.
   void send_open_orders();
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
