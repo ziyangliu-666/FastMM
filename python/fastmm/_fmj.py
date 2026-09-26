@@ -98,9 +98,12 @@ def read_session(path: str, mark_interval_ns: int = 1_000_000_000) -> Dict[str, 
     marks: List[Tuple[int, float]] = []  # (ts_ns, mid) of instrument 0
     rejects: Dict[int, int] = {}
     counts = {"orders": 0, "cancels": 0, "replaces": 0, "dropped": 0, "events": 0,
-              "rejects": 0, "cancel_rejects": 0}
+              "rejects": 0, "cancel_rejects": 0, "duplicate_fills": 0}
     latency: Dict[int, Tuple[int, int, int]] = {}  # interval -> (count, p50, p99)
     mid: Optional[float] = None
+    # Each execution is counted once, keyed like the engine's OMS (venue exec id, instrument,
+    # side): a reconnect replays executions the stream already delivered.
+    booked = set()
     last_mark = 0
     first_ts = last_ts = 0
 
@@ -123,6 +126,12 @@ def read_session(path: str, mark_interval_ns: int = 1_000_000_000) -> Dict[str, 
         elif etype == TRADE and inst == 0 and mid is None:
             mid = struct.unpack_from("<q", body, 0)[0] / SCALE
         elif etype == ORDER_FILL:
+            exec_id = bytes(body[49:49 + min(body[89], 40)])
+            key = (exec_id, inst, body[136])
+            if exec_id and key in booked:
+                counts["duplicate_fills"] += 1
+                continue
+            booked.add(key)
             px, qty, _cum, _leaves, fee = struct.unpack_from("<qqqqq", body, 96)
             fills.append({
                 "ts": ts,

@@ -72,6 +72,7 @@ class InstrumentBook:
         self.symbol = symbol
         self.multiplier = multiplier
         self.fills = 0
+        self.duplicates = 0    # executions already booked (a replayed execution report)
         self.maker = 0
         self.inventory = 0.0   # base units, commission in base already removed
         self.cash = 0.0        # quote units, commission in quote already removed
@@ -164,6 +165,9 @@ def read_fills(path: str, verify_crc: bool):
     mids = {}  # instrument -> ([ts], [mid])
     stats = jd.BlockStats()
     events = 0
+    # Each execution is booked once, keyed like the engine's OMS (venue exec id, instrument, side):
+    # a reconnect replays executions the stream already delivered (cum 0, seconds later).
+    booked = set()
     for ev, body in jd.iter_events(data, hdr, verify_crc=verify_crc, stats=stats):
         events += 1
         ts = ev["recv_ts"] if ev["recv_ts"] > 0 else ev["exch_ts"]
@@ -187,7 +191,13 @@ def read_fills(path: str, verify_crc: bool):
         if ev["type"] == "Funding":
             book.on_funding(struct.unpack_from("<q", body, 0)[0] / SCALE)
         else:
-            book.on_fill(ts, hdr["start_ts"], jd.fill_fields(body))
+            f = jd.fill_fields(body)
+            key = (f["exec_id"], ev["instrument"], f["side"])
+            if f["exec_id"] and key in booked:
+                book.duplicates += 1
+                continue
+            booked.add(key)
+            book.on_fill(ts, hdr["start_ts"], f)
     return hdr, instruments, books, stats, events, mids
 
 
@@ -298,7 +308,8 @@ def report(args, out=sys.stdout) -> int:
                 p(f"funding {b.funding:+.4f} {quote_a} in {b.funding_events} payment(s)")
             continue
         p(f"{b.symbol} (instrument {iid}): {b.fills} fills from {fmt_hours(hdr['start_ts'], b.first_ts)} "
-          f"to {fmt_hours(hdr['start_ts'], b.last_ts)} after the session start")
+          f"to {fmt_hours(hdr['start_ts'], b.last_ts)} after the session start"
+          + (f" ({b.duplicates} replayed execution reports not booked again)" if b.duplicates else ""))
         p(f"{'hour':>4} {'fills':>6} {'maker':>7} {'bought':>12} {'sold':>12} {'notional':>12} "
           f"{'fees':>10} {'inventory':>12}")
         for h, x in b.hours.items():
@@ -452,6 +463,8 @@ def write_synthetic_journal(path: str) -> None:
         _event(ticker, 8, 0, start + NS_PER_HOUR + sec + 9, _ticker_body("100", "102")),  # mid 101
         # funding paid on the position: 0.25 quote
         _event(funding, 9, 0, start + 2 * NS_PER_HOUR, _funding_body(-25_000_000, b"f-1")),
+        # the first buy again, replayed after a reconnect (cum 0): booked once
+        _event(fill, 10, 0, start + 2 * NS_PER_HOUR + 5, _fill_body("100", "0.5", "0.0005", 1, 0, 1, 1)),
     ]
     payload = b"".join(events)
     inst = bytearray(128)
@@ -461,8 +474,8 @@ def write_synthetic_journal(path: str) -> None:
     header = bytearray(jd.HEADER.pack(b"FMJ1", 1, 256 + 128, 1, 42, start, 0, 0, 0, 0, 1, 1, 1 << 20,
                                       b"basic_mm", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b"", 0))
     struct.pack_into("<I", header, 252, jd.crc32c(bytes(header[:252])))
-    block = jd.BLOCK.pack(b"FMJB", len(payload), 1, 9, len(events), jd.crc32c(payload), 0, b"")
-    trailer = jd.BLOCK.pack(b"FMJB", 0, 10, 9, 0, jd.crc32c(b""), 1, b"")
+    block = jd.BLOCK.pack(b"FMJB", len(payload), 1, 10, len(events), jd.crc32c(payload), 0, b"")
+    trailer = jd.BLOCK.pack(b"FMJB", 0, 11, 10, 0, jd.crc32c(b""), 1, b"")
     with open(path, "wb") as f:
         f.write(bytes(header) + bytes(inst) + block + payload + trailer)
 
@@ -472,11 +485,11 @@ def self_test() -> int:
         fmj = os.path.join(d, "t.fmj")
         write_synthetic_journal(fmj)
         hdr, instruments, books, stats, events, mids = read_fills(fmj, verify_crc=True)
-        assert stats.bad_blocks == 0 and stats.trailer and events == 9, (stats.__dict__, events)
+        assert stats.bad_blocks == 0 and stats.trailer and events == 10, (stats.__dict__, events)
         assert instruments[0]["symbol"] == "TESTUSD"
         b = books[0]
         close = lambda a, x: math.isclose(a, x, rel_tol=0, abs_tol=1e-9)  # noqa: E731
-        assert b.fills == 3 and b.maker == 2
+        assert b.fills == 3 and b.maker == 2 and b.duplicates == 1, (b.fills, b.duplicates)
         assert list(b.hours) == [0, 1] and b.hours[1]["fills"] == 2
         assert close(b.inventory, 0.4995 - 0.3 - 0.1), b.inventory
         assert close(b.cash, -50.0 + 30.6 - 0.0306 + 10.1 - 0.25), b.cash
@@ -548,6 +561,7 @@ def self_test() -> int:
         assert report(A, out=buf) == 0
         text = buf.getvalue()
         assert "difference to the account +0.0000" in text, text
+        assert "(1 replayed execution reports not booked again)" in text, text
         assert "funding -0.2500 USDT in 1 payment(s)" in text, text
         assert "engine risk_rejects 17 (MaxPosition 12, RateLimit 4, PriceCollar 1)" in text, text
         assert "engine venue_rejects 3 (PostOnlyWouldCross 3)" in text, text

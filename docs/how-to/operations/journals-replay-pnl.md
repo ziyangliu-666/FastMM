@@ -131,7 +131,7 @@ The snapshots are JSON objects that you produce from the venue's account and tic
 {"utc": "2026-09-14T03:25:21Z", "btc": 0.004995, "usdt": 4614.81995, "mid": 77762.685, "open_orders": 0}
 ```
 
-The balance keys are `base` and `quote`, or the lower-case asset names given by `--base-asset` and `--quote-asset` (default `BTC` and `USDT`). `equity` (or `equity_usdt`) is optional and computed as `quote + base * mid` when missing. `python3 tools/pnl_report.py --self-test` checks the tool on a synthetic journal.
+The balance keys are `base` and `quote`, or the lower-case asset names given by `--base-asset` and `--quote-asset` (default `BTC` and `USDT`). `equity` (or `equity_usdt`) is optional and computed as `quote + base * mid` when missing. Each execution is booked once, keyed like the engine's OMS (venue execution id, instrument, side): a reconnect replays executions the stream already delivered, and the journal records both. `python3 tools/pnl_report.py --self-test` checks the tool on a synthetic journal.
 
 The markout table marks each fill against the mid `--markout-horizons` seconds later (default `1,10,60`), taken from the journal's `BookTicker` events; a journal without top-of-book updates has no mid to mark against and the report says so. A fill whose horizon falls after the last quote in the journal is excluded, not marked at the last known mid. The spread capture next to it is over the same fills, so the difference is the adverse selection ([Backtesting](../../explanation/backtesting.md#markouts)).
 
