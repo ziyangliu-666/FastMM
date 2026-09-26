@@ -247,6 +247,7 @@ TEST_CASE("core.config: shipped venue configs load without warnings") {
   for (const char* name : {"binance-testnet.toml",
                            "bybit-testnet.toml",
                            "deribit-testnet.toml",
+                           "okx-demo.toml",
                            "sim-local.toml",
                            "sim-local-tls.toml"}) {
     const Config cfg = Config::load((configs_dir() / name).string(), opts);
