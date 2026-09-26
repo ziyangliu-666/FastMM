@@ -1,18 +1,25 @@
 #pragma once
 // Fill check: how well the l2_queue fill model predicts the passive fills of a live session.
 //
-// The strategy is not re-run. The journal is walked once in recorded order; its market data is
-// applied to a mirror book and to one QueuePositionModel per conservatism value exactly as
+// The strategy is not re-run. Each order the session had resting enters the models at its venue
+// ack time and leaves them at its venue end time (cancel ack, last fill, expiry; a reconciliation
+// that no longer lists it), and the journal's book and trade messages are applied to a mirror book
+// and to one QueuePositionModel per conservatism value in venue time order (exch_ts), exactly as
 // SimTransport does under fill_model = "l2_queue" (sim::queue_apply_book, QueuePositionModel::
-// on_trade). Each order the session had resting enters the models when the venue acknowledged it
-// (OrderAck), behind the displayed quantity at its price at that moment, and leaves them when the
-// live order ended: cancel ack, last fill, expiry, or a reconciliation that no longer lists it.
-// A replace follows the new id; like the simulator, the same price at no more than the leaves
-// keeps the queue position.
+// on_trade). Venue time matters: a venue's execution report reaches the session before the public
+// trade that filled the order, so by receive time the trade falls after the order's end. An event
+// without a venue time uses its receive time (counted). A replace follows the new id; like the
+// simulator, the same price at no more than the leaves keeps the queue position.
+//
+// Millisecond order times (Binance transactTime, execution report T): a trade in the ack's or the
+// end's millisecond counts for the order (ack_ties, end_ties), except a trade after the last live
+// fill's trade id. The queue ahead is the book as of the ack's venue time, before the order was in
+// it; in a live session (the journal has a TSC calibration) the depth feed also shows our own
+// orders, and their live leaves are taken out of their level.
 //
 // Orders that cannot rest (market, IOC, FOK) and orders whose price crossed the mirrored book at
-// the ack are left out and counted. Times are the journal's receive times (recv_ts): a model fill
-// is timed by the trade that caused it, a live fill by the OrderFill.
+// the ack are left out and counted. A model fill is timed by the trade that caused it, a live
+// fill by the OrderFill, both in venue time.
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/journal.hpp"
@@ -44,9 +51,9 @@ struct FillCheckOrder {
   Side side = Side::Buy;
   Price price;
   Qty qty;
-  Qty queue_ahead;  // displayed quantity at the price when the ack arrived
-  Timestamp ack_ts;
-  Timestamp end_ts;  // live end, or the last event of the journal when still open
+  Qty queue_ahead;   // displayed quantity at the price at the ack's venue time (own excluded)
+  Timestamp ack_ts;  // venue time
+  Timestamp end_ts;  // live end in venue time, or the last event of the journal when still open
   FillCheckEnd end = FillCheckEnd::Open;
   Qty live_filled;
   Timestamp live_first_fill_ts;  // 0: no live fill
@@ -76,16 +83,22 @@ struct FillCheckSummary {
 
 struct FillCheckResult {
   std::vector<double> conservatism;
-  std::vector<FillCheckOrder> orders;  // the orders placed in the models, in ack order
+  std::vector<FillCheckOrder> orders;  // the orders placed in the models, in venue ack order
   std::uint64_t md_events = 0;         // book and trade messages applied
   std::uint64_t orders_sent = 0;       // OutNewOrder + OutReplace (not dropped)
   std::uint64_t rejected = 0;          // OrderReject before any ack
   std::uint64_t not_acked = 0;         // neither acknowledged nor rejected (lost, still pending)
-  std::uint64_t ended_before_ack = 0;  // filled or cancelled before the ack arrived
+  std::uint64_t ended_before_ack = 0;  // ended at an earlier venue time than its ack
   std::uint64_t not_resting = 0;       // acked market / IOC / FOK orders
-  std::uint64_t crossed_at_ack = 0;    // price crossed the mirrored book when the ack arrived
+  std::uint64_t crossed_at_ack = 0;    // price crossed the mirrored book at the ack
   std::uint64_t unknown_acks = 0;      // acks of orders the journal has no outbound copy of
   std::uint64_t model_full = 0;        // the queue model's table was full
+  std::uint64_t order_recv_times = 0;  // order times taken from recv_ts (no venue time)
+  std::uint64_t md_recv_times = 0;     // book and trade messages without a venue time
+  std::uint64_t ack_ties = 0;          // model fills by a trade in the ack's millisecond
+  std::uint64_t end_ties = 0;          // model fills by a trade in the end's millisecond
+  bool ms_order_times = false;         // every venue order time is a whole millisecond
+  bool own_in_depth = false;           // the depth feed includes our orders (live session)
   [[nodiscard]] FillCheckSummary summary(std::size_t k) const;
 };
 
