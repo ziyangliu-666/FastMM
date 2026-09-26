@@ -13,15 +13,16 @@
 // gateway refuses it when a live attachment owns one of them. Otherwise it gives it a session
 // epoch from its own epoch file (the high 16 bits of every client order id, so epochs are unique
 // across attachments and across gateway restarts), creates three ShmRings per venue under
-// /dev/shm, adds the attachment to every venue's router on the venue's network thread, asks every
-// book for a fresh snapshot, starts a reconciliation (executions, then open orders) and answers
+// /dev/shm, adds the attachment to every venue's router on the venue's network thread, puts a
+// snapshot of each book it holds (its own copy, the account's marks) in the attachment's md ring,
+// starts a reconciliation (executions, then open orders) and answers
 // with an AttachReply: the epoch, the instrument table (the reference data it loaded) and, per
 // venue, the id, the name, whether it trades with cancel-replace and the three ring paths.
 //
 // Routing, on each venue's network thread. The connector's sinks write into local rings whose
 // drain hook runs on every commit and copies each event out:
 //   * market data to every attachment. A full md ring drops for that attachment only (counted);
-//     it then gets a Resyncing state of its own and the venue's books are snapshotted again.
+//     it then gets a Resyncing state of its own and snapshots of the gateway's books again.
 //   * an order event to the attachment whose epoch its client order id carries. A fill of an
 //     epoch no attachment holds (a dead session's, or an execution naming no order) goes to the
 //     owner of the instrument, and so does an account-level Position record.

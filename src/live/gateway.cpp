@@ -3,6 +3,7 @@
 #include "fastmm/live/gateway.hpp"
 
 #include "fastmm/core/account_book.hpp"
+#include "fastmm/core/book/book_snapshot.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/log.hpp"
@@ -79,7 +80,7 @@ constexpr std::size_t kOrderTable = 1U << 14;
 // Pauses before an attachment's full order ring counts as an overflow (a few ms): the network
 // thread serves every attachment, so it cannot wait on one for long.
 constexpr std::uint32_t kOrderSpin = 100'000;
-// A venue's books are resnapshotted for an attachment whose md ring dropped at most this often.
+// The venue is asked for fresh books (the account's copies were lost) at most this often.
 constexpr std::int64_t kResyncIntervalNs = 1'000'000'000;
 
 struct Attachment;
@@ -134,7 +135,7 @@ struct Route {
   bool dirty = false;             // events routed here since the last notify
   bool snapshot_pending = false;  // it asked for a reconciliation that has not begun
   bool in_snapshot = false;       // it receives the reconciliation being routed
-  bool md_gap = false;            // its md ring dropped: nothing more until its Resyncing went out
+  bool md_gap = false;  // its md ring dropped: nothing more until its Resyncing and books went out
   std::atomic<std::uint64_t> md_dropped{0};
   // Its orders the gateway refused, in the order of kStatusGatewayRefusalReasons.
   std::array<std::atomic<std::uint64_t>, kStatusGatewayRefusals> refused{};
@@ -192,7 +193,7 @@ struct VenueRouter {
   std::uint32_t gen = 0;
   bool sweep_pending = false;   // the gateway asked for one (a detach): nobody receives it
   bool quiet_md_state = false;  // inside a resync_books() the gateway called
-  bool want_resync = false;
+  bool want_resync = false;     // the account's books were lost: the venue resnapshots them
   std::int64_t last_resync_ns = 0;
   std::vector<CancelReq> cancels;  // the gateway's own, sent by the hook
   bool dry_run = false;
@@ -203,7 +204,9 @@ struct VenueRouter {
   Account* acct = nullptr;
   std::unique_ptr<AccountBook> book;
   // The book events for the account's marks, copied out in the md drain and applied by the hook
-  // after the engines have been woken: the books are not on the way to a strategy.
+  // after the engines have been woken: the books are not on the way to a strategy. Brought up to
+  // date, they are what an attachment that received every md event so far holds, which is what
+  // an attaching or lagging one is given (push_books).
   std::unique_ptr<MsgRing> acct_md;
   bool acct_md_lost = false;  // it was full: the books start over from a resync
   std::array<std::int64_t, kMaxInstruments> seed_from_ms{};
@@ -855,8 +858,31 @@ std::size_t send_cancels(VenueRouter& v) {
   return sent;
 }
 
+// The gateway's copy of each book of this venue into one attachment's md ring, as the connectors'
+// BookSnapshot. Everything runs on the venue's network thread, and the md drain routes each event
+// to every attachment and to acct_md in one step: once acct_md is applied, the copies are the
+// books after exactly the events routed so far, and the drain routes the ones after them. A book
+// the gateway does not hold now (the venue is resyncing it, or its channel is down) gets none:
+// the venue's next snapshot reaches every attachment. False when the ring had no room.
+bool push_books(VenueRouter& v, Route& r) noexcept {
+  mark_account(v);
+  const Timestamp now = wall_now();
+  for (const Instrument& inst : *v.insts) {
+    if (inst.venue != v.vid) continue;
+    const AccountBook::Book* b = v.book->book(inst.id);
+    if (b == nullptr || !b->has_snapshot()) continue;
+    std::byte* p = r.md->try_reserve(book_snapshot_size(*b));
+    if (p == nullptr) return false;
+    write_book_snapshot(*b, inst.id, v.vid, now, p);
+    r.md->commit();
+    r.dirty = true;
+  }
+  return true;
+}
+
 // An attachment whose md ring dropped gets a Resyncing state of its own once its ring has room
-// (its engine clears the venue's books and pulls their quotes), then the books are snapshotted.
+// (its engine clears the venue's books and pulls their quotes), then the gateway's books. The
+// venue and the other attachments see nothing of it.
 std::size_t recover_md(VenueRouter& v) {
   std::size_t n = 0;
   for (Route* r : v.routes) {
@@ -867,9 +893,8 @@ std::size_t recover_md(VenueRouter& v) {
     m.channel = 0;
     m.hdr.recv_ts = wall_now();
     if (!r->md->try_push(&m, m.hdr.len)) continue;
-    r->md_gap = false;
     r->dirty = true;
-    v.want_resync = true;
+    r->md_gap = !push_books(v, *r);  // else again from a Resyncing
     ++n;
   }
   if (v.want_resync) {
@@ -877,7 +902,7 @@ std::size_t recover_md(VenueRouter& v) {
     if (now - v.last_resync_ns >= kResyncIntervalNs) {
       v.want_resync = false;
       v.last_resync_ns = now;
-      // The states it emits are not routed: only the attachments that lost data resync.
+      // The states it emits are not routed: the attachments' books are whole.
       v.quiet_md_state = true;
       v.slot->venue->resync_books();
       v.quiet_md_state = false;
@@ -1943,8 +1968,8 @@ class Gateway {
       if (!seeded_[inst.value]) to_seed.push_back(inst);
     }
     // On each network thread, between two of its callbacks: from here on the venue's events reach
-    // the strategy's rings, starting with fresh books and the account's truth (executions, then
-    // the open orders), so the strategy's OMS starts from what the venue holds.
+    // the strategy's rings, starting with the gateway's books and the account's truth (executions,
+    // then the open orders), so the strategy's OMS starts from what the venue holds.
     on_net_threads(slots_, [&](std::size_t i) {
       VenueRouter& v = *routers_[i];
       VenueSlot& s = *slots_[i];
@@ -1970,11 +1995,9 @@ class Gateway {
         v.seed_known[inst.value] = a.known;
       }
       r.snapshot_pending = true;
-      // Its books start empty and fill from these snapshots; the others' books are replaced by
-      // the same, so the Resyncing states the venue emits here reach nobody.
-      v.quiet_md_state = true;
-      s.venue->resync_books();
-      v.quiet_md_state = false;
+      // Its books start from the gateway's copies and go on with the events routed after them;
+      // the venue is asked for nothing, so no other attachment's books pause.
+      r.md_gap = !push_books(v, r);
       if (resume && executions(i)) {
         s.venue->resume_executions(req.exec_since_ms, known);
         static_cast<void>(s.venue->request_executions(req.exec_since_ms));
