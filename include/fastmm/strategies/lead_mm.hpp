@@ -12,9 +12,13 @@
 // enabled = false. The indices are checked against the table before the session starts and read
 // once in on_start; updating them on a running engine has no effect.
 //
-// The fair value is valid only while the leader's (and fx's) book is valid and its last update is
-// at most max_leader_age_ms old; otherwise every target quote is pulled. The target book is not
-// age-checked: a thin pair can be quiet for minutes, and the edge test is against the leader.
+// Top of book per role: the depth book or the latest BookTicker (@bookTicker / @bestBidAsk are
+// real time, depth is throttled to 100 ms), whichever is newer. A ticker that is crossed or has a
+// zero size is ignored. Leader and target tickers requote at once; fx tickers are only stored.
+//
+// The fair value is valid only while the leader's top is valid and at most max_leader_age_ms old,
+// and the fx top at most fx_max_age_ms old; otherwise every target quote is pulled. The target is
+// not age-checked: a thin pair can be quiet for minutes, and the edge test is against the leader.
 //
 // Hysteresis: a resting quote whose price is still the one the rule picks keeps its side while its
 // edge is at least the threshold minus hysteresis_bps. The strategy never improves on its own
@@ -66,7 +70,18 @@ struct LeadMMParams {
                   milliseconds(500),
                   milliseconds(1),
                   milliseconds(3600000),
-                  "pull quotes when the leader or fx book is older than this")
+                  "pull quotes when the leader's top of book is older than this")
+  FASTMM_PARAM_MS(fx_max_age_ms,
+                  milliseconds(60000),
+                  milliseconds(1),
+                  milliseconds(3600000),
+                  "pull quotes when the fx top of book is older than this")
+  FASTMM_PARAM(bool,
+               bbo_by_update_id,
+               true,
+               false,
+               true,
+               "ticker vs depth: newer by venue update id (Binance) instead of by timestamp")
   FASTMM_PARAM(
       bool, improve, false, false, true, "quote one tick inside a spread wider than 1 tick")
 
@@ -104,12 +119,27 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     has_fx_ = p.fx >= 0;
     fx_ = InstrumentId{static_cast<std::uint32_t>(has_fx_ ? p.fx : 0)};
     pulled_ = false;
+    for (Top& t : ticker_) t = Top{};
     stale_timer_ = ctx.every(milliseconds(100), kStaleTimer);
   }
 
   template <class Ctx, class Book>
   void on_book(Ctx& ctx, InstrumentId id, const Book&) noexcept {
     if (id == target_ || id == leader_ || (has_fx_ && id == fx_)) requote(ctx);
+  }
+
+  template <class Ctx>
+  void on_book_ticker(Ctx& ctx, InstrumentId id, const BookTickerMsg& m) noexcept {
+    const int r = role(id);
+    if (r < 0 || !m.bid_qty.is_positive() || !m.ask_qty.is_positive() || !m.bid_px.is_positive() ||
+        m.ask_px <= m.bid_px)
+      return;
+    ticker_[r] = Top{m.bid_px,
+                     m.ask_px,
+                     m.hdr.venue_seq,
+                     m.hdr.exch_ts.valid() ? m.hdr.exch_ts : m.hdr.recv_ts,
+                     true};
+    if (r != kFx) requote(ctx);
   }
 
   template <class Ctx>
@@ -125,8 +155,13 @@ class LeadMM : public StrategyBase<LeadMMParams> {
 
   // The engine pulls a venue's quotes when a connection drops; requote at once when it is Live
   // again (a quiet target book could otherwise leave the strategy unquoted).
+  // Any change forgets that venue's tickers: after a gap the depth book (resynced) is the truth.
   template <class Ctx>
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
+    const InstrumentId ids[kRoles] = {target_, leader_, fx_};
+    for (int r = 0; r < kRoles; ++r) {
+      if (ctx.instrument(ids[r]).venue == m.hdr.venue) ticker_[r] = Top{};
+    }
     if (m.state == ConnState::Live && ctx.instrument(target_).venue == m.hdr.venue) requote(ctx);
   }
 
@@ -201,6 +236,37 @@ class LeadMM : public StrategyBase<LeadMMParams> {
   }
 
  private:
+  enum : int { kTarget = 0, kLeader = 1, kFx = 2, kRoles = 3 };
+  struct Top {
+    Price bid{};
+    Price ask{};
+    std::uint64_t id = 0;  // venue update id, 0 = none
+    Timestamp ts{};
+    bool valid = false;
+    [[nodiscard]] Price mid() const noexcept { return fastmm::mid(bid, ask); }
+  };
+
+  [[nodiscard]] int role(InstrumentId id) const noexcept {
+    if (id == target_) return kTarget;
+    if (id == leader_) return kLeader;
+    if (has_fx_ && id == fx_) return kFx;
+    return -1;
+  }
+
+  // The newer of the depth book's top and the role's ticker. Update ids when both have one and
+  // bbo_by_update_id (Binance puts the same order book updateId on both), else timestamps.
+  template <class Ctx>
+  [[nodiscard]] Top top(Ctx& ctx, InstrumentId id, int r) const noexcept {
+    const auto& b = ctx.book(id);
+    const Top book{b.best_bid().price, b.best_ask().price, b.seq(), b.last_update(), b.is_valid()};
+    const Top& t = ticker_[r];
+    if (!t.valid) return book;
+    if (!book.valid) return t;
+    const bool by_id = params().bbo_by_update_id && t.id != 0 && book.id != 0;
+    const bool ticker_newer = by_id ? t.id > book.id : t.ts > book.ts;
+    return ticker_newer ? t : book;
+  }
+
   // The price for one side, or zero. Candidates in order: one tick inside the touch (improve, a
   // spread wider than a tick, and the touch is not our own order), then the touch. A candidate
   // equal to the resting quote only needs min - hysteresis.
@@ -226,20 +292,19 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     return passes(touch) ? touch : Price{};
   }
 
-  // The fair value, or nothing while a leader or fx book is invalid or too old.
+  // The fair value, or nothing while the leader's or fx's top is invalid or too old.
   template <class Ctx>
   [[nodiscard]] std::optional<Price> fair(Ctx& ctx) const noexcept {
     const Timestamp now = ctx.now();
-    const Duration max_age = params().max_leader_age_ms;
-    const auto fresh = [&](const auto& b) {
-      return b.is_valid() && b.last_update().valid() && now - b.last_update() <= max_age;
+    const auto fresh = [&](const Top& t, Duration max_age) {
+      return t.valid && t.ts.valid() && now - t.ts <= max_age;
     };
-    const auto& leader = ctx.book(leader_);
-    if (!fresh(leader)) return std::nullopt;
+    const Top leader = top(ctx, leader_, kLeader);
+    if (!fresh(leader, params().max_leader_age_ms)) return std::nullopt;
     Price fx_mid{};
     if (has_fx_) {
-      const auto& fx = ctx.book(fx_);
-      if (!fresh(fx)) return std::nullopt;
+      const Top fx = top(ctx, fx_, kFx);
+      if (!fresh(fx, params().fx_max_age_ms)) return std::nullopt;
       fx_mid = fx.mid();
     }
     const Price f = fair_value(leader.mid(), fx_mid);
@@ -255,9 +320,9 @@ class LeadMM : public StrategyBase<LeadMMParams> {
 
   template <class Ctx>
   void requote(Ctx& ctx) noexcept {
-    const auto& book = ctx.book(target_);
+    const Top book = top(ctx, target_, kTarget);
     const std::optional<Price> f = fair(ctx);
-    if (!book.is_valid() || !f) {
+    if (!book.valid || !f) {
       if (!pulled_) pull(ctx);
       return;
     }
@@ -266,8 +331,8 @@ class LeadMM : public StrategyBase<LeadMMParams> {
       return o != nullptr ? o->price : Price{};
     };
     const DesiredQuotes q = compute_quotes(*f,
-                                           book.best_bid().price,
-                                           book.best_ask().price,
+                                           book.bid,
+                                           book.ask,
                                            own(Side::Buy),
                                            own(Side::Sell),
                                            ctx.position(target_).qty,
@@ -281,6 +346,7 @@ class LeadMM : public StrategyBase<LeadMMParams> {
   InstrumentId fx_{};
   bool has_fx_ = false;
   bool pulled_ = false;
+  Top ticker_[kRoles] = {};
   TimerId stale_timer_{};
 };
 

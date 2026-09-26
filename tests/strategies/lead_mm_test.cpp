@@ -232,7 +232,9 @@ namespace {
 struct FakeBook {
   Price bid, ask;
   Timestamp updated{};
+  std::uint64_t id = 0;
   bool valid = true;
+  std::uint64_t seq() const { return id; }
   bool is_valid() const { return valid; }
   Price mid() const { return Price::from_raw((bid.raw + ask.raw) / 2); }
   Level best_bid() const { return Level{bid, qt("1")}; }
@@ -277,7 +279,7 @@ struct LeadCtx {
 }  // namespace
 
 TEST_CASE("strategies.lead_mm: a stale or invalid leader or fx book pulls the target's quotes") {
-  LeadMM s = make({{"max_leader_age_ms", "500"}});
+  LeadMM s = make({{"max_leader_age_ms", "500"}, {"fx_max_age_ms", "60000"}});
   LeadCtx ctx;
   s.on_start(ctx);
   ctx.touch_all();
@@ -308,12 +310,17 @@ TEST_CASE("strategies.lead_mm: a stale or invalid leader or fx book pulls the ta
     CHECK(ctx.set_calls == 2);
     CHECK(ctx.last.bids.size() == 1);
   }
-  SUBCASE("a stale fx book pulls too") {
-    ctx.t = ctx.t + milliseconds(600);
+  SUBCASE("the fx book ages against fx_max_age_ms, not the leader's limit") {
+    ctx.t = ctx.t + milliseconds(60000);
+    ctx.books[1].updated = ctx.t;
+    s.on_book(ctx, InstrumentId{1}, ctx.books[1]);
+    CHECK(ctx.pulls == 0);  // 60 s old fx: still fresh
+    CHECK(ctx.set_calls == 2);
+    ctx.t = ctx.t + milliseconds(1);
     ctx.books[1].updated = ctx.t;
     s.on_book(ctx, InstrumentId{1}, ctx.books[1]);
     CHECK(ctx.pulls == 1);
-    CHECK(ctx.set_calls == 1);
+    CHECK(ctx.set_calls == 2);
   }
   SUBCASE("an invalid leader book pulls at once") {
     ctx.books[1].valid = false;
@@ -365,4 +372,101 @@ TEST_CASE("strategies.lead_mm: roles are checked against the instrument table") 
   CHECK_FALSE(s.check_instruments(t));
   REQUIRE_FALSE(s.configure({{"target", "1"}, {"leader", "0"}}));
   CHECK(s.check_instruments(t).value().find("disabled") != std::string::npos);
+}
+
+namespace {
+BookTickerMsg ticker(std::uint32_t id,
+                     const char* bid,
+                     const char* ask,
+                     std::uint64_t update_id,
+                     Timestamp ts,
+                     const char* qty = "1") {
+  BookTickerMsg m{};
+  m.hdr.instrument = InstrumentId{id};
+  m.hdr.venue_seq = update_id;
+  m.hdr.recv_ts = ts;  // JSON @bookTicker has no event time
+  m.bid_px = px(bid);
+  m.ask_px = px(ask);
+  m.bid_qty = qt(qty);
+  m.ask_qty = qt(qty);
+  return m;
+}
+
+// Started and quoting both sides off the depth books: fair 150.1451, target 150.10 / 150.20.
+struct TickerFixture {
+  LeadMM s;
+  LeadCtx ctx;
+  explicit TickerFixture(const ParamMap& params = {}) : s(make(params)) {
+    s.on_start(ctx);
+    ctx.touch_all();
+    ctx.books[0].id = 100;
+    ctx.books[1].id = 100;
+    ctx.books[2].id = 100;
+    s.on_book(ctx, InstrumentId{1}, ctx.books[1]);
+    REQUIRE(ctx.set_calls == 1);
+    REQUIRE(ctx.last.bids.size() == 1);
+    REQUIRE(ctx.last.asks.size() == 1);
+  }
+};
+}  // namespace
+
+TEST_CASE("strategies.lead_mm: a leader ticker move requotes before any depth update") {
+  TickerFixture f;
+  // SOLUSDT ticks down to 149.95 / 149.97: fair 150.0901, below the target's 150.10 bid.
+  f.s.on_book_ticker(f.ctx, InstrumentId{1}, ticker(1, "149.95", "149.97", 101, f.ctx.t));
+  CHECK(f.ctx.set_calls == 2);
+  CHECK(f.ctx.last.bids.empty());
+  CHECK(f.ctx.last.asks.size() == 1);
+  // The depth update that follows (older id) does not bring the old fair back.
+  f.s.on_book(f.ctx, InstrumentId{1}, f.ctx.books[1]);
+  CHECK(f.ctx.last.bids.empty());
+}
+
+TEST_CASE("strategies.lead_mm: a target ticker moves the join price") {
+  TickerFixture f;
+  f.s.on_book_ticker(f.ctx, InstrumentId{0}, ticker(0, "150.11", "150.19", 101, f.ctx.t));
+  CHECK(f.ctx.set_calls == 2);
+  REQUIRE(f.ctx.last.bids.size() == 1);
+  REQUIRE(f.ctx.last.asks.size() == 1);
+  CHECK(f.ctx.last.bids[0].price == px("150.11"));
+  CHECK(f.ctx.last.asks[0].price == px("150.19"));
+  // An fx ticker is stored, not a trigger.
+  f.s.on_book_ticker(f.ctx, InstrumentId{2}, ticker(2, "0.9990", "0.9992", 101, f.ctx.t));
+  CHECK(f.ctx.set_calls == 2);
+}
+
+TEST_CASE("strategies.lead_mm: a ticker older than the depth book, crossed or empty is ignored") {
+  SUBCASE("older update id") {
+    TickerFixture f;
+    f.s.on_book_ticker(f.ctx, InstrumentId{0}, ticker(0, "150.11", "150.19", 99, f.ctx.t));
+    CHECK(f.ctx.last.bids[0].price == px("150.10"));
+  }
+  SUBCASE("by timestamp when update ids are not compared") {
+    TickerFixture f({{"bbo_by_update_id", "false"}});
+    const Timestamp before = f.ctx.t - milliseconds(1);
+    f.s.on_book_ticker(f.ctx, InstrumentId{0}, ticker(0, "150.11", "150.19", 101, before));
+    CHECK(f.ctx.last.bids[0].price == px("150.10"));
+    f.s.on_book_ticker(
+        f.ctx, InstrumentId{0}, ticker(0, "150.11", "150.19", 99, f.ctx.t + milliseconds(1)));
+    CHECK(f.ctx.last.bids[0].price == px("150.11"));
+  }
+  SUBCASE("crossed or zero size") {
+    TickerFixture f;
+    f.s.on_book_ticker(f.ctx, InstrumentId{0}, ticker(0, "150.19", "150.11", 101, f.ctx.t));
+    f.s.on_book_ticker(f.ctx, InstrumentId{0}, ticker(0, "150.11", "150.19", 101, f.ctx.t, "0"));
+    CHECK(f.ctx.set_calls == 1);
+    // A leader ticker then requotes against the depth top of the target.
+    f.s.on_book_ticker(f.ctx, InstrumentId{1}, ticker(1, "150.00", "150.02", 101, f.ctx.t));
+    REQUIRE(f.ctx.last.bids.size() == 1);
+    CHECK(f.ctx.last.bids[0].price == px("150.10"));
+  }
+  SUBCASE("a fresh leader ticker keeps a quiet leader book from going stale") {
+    TickerFixture f;
+    f.ctx.t = f.ctx.t + milliseconds(800);
+    f.s.on_book_ticker(f.ctx, InstrumentId{1}, ticker(1, "150.00", "150.02", 101, f.ctx.t));
+    CHECK(f.ctx.pulls == 0);
+    CHECK(f.ctx.set_calls == 2);
+    f.s.on_timer(f.ctx, TimerId{1}, LeadMM::kStaleTimer);
+    CHECK(f.ctx.pulls == 0);
+  }
 }
