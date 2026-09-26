@@ -62,6 +62,12 @@ constexpr VenueKeySpec kBinanceKeys[] = {
      "SBE stream URL; empty = ws_url with stream. -> stream-sbe."},
     {"user_stream", KeyType::String, false, "ws_api (default) | listen_key | none"},
     {"position_from_balance", KeyType::Bool, false, "derive positions from account balances"},
+    {"fetch_fees",
+     KeyType::Bool,
+     false,
+     "fastmm-live: fetch the account's maker and taker rates per symbol at start-up (GET "
+     "/api/v3/account/commission) and use them instead of the configured fees; start-up fails "
+     "when the request does (default false)"},
 };
 
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {

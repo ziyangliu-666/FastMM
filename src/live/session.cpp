@@ -637,6 +637,51 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (const int rc = make_venue_slots(cfg, vopts, instruments, prog, slots); rc != 0) return rc;
     for (const auto& s : slots) venue_names.emplace_back(s->venue->name());
   }
+  // ---- fee rates ---------------------------------------------------------------------------
+  // [[instruments]] maker_bps / taker_bps, else [venues.<x>.fees]; a connector with fetch_fees
+  // replaces them with the account's own. Those are written into the configuration the journal and
+  // the store embed (`recorded`), so a replay reports and charges the rates this session used.
+  FeeTable fees = fee_table(cfg, &instruments, &venue_names);
+  std::optional<Config> fetched_fees;
+  for (const auto& s : slots) {
+    auto r = s->venue->account_fees(instruments);
+    if (!r) {
+      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
+      return kExitVenue;
+    }
+    for (const venues::VenueFee& f : *r) {
+      const Instrument& inst = instruments.get(f.instrument);
+      const std::string_view venue = venue_names[inst.venue.value];
+      const FeeRates configured = fees.schedule(f.instrument);
+      if (configured == f.rates) {
+        FASTMM_LOG_INFO("{}: {} account fees maker {} bps, taker {} bps, as configured",
+                        venue,
+                        inst.symbol.view(),
+                        f.rates.maker_bps(),
+                        f.rates.taker_bps());
+      } else {
+        FASTMM_LOG_WARN(
+            "{}: {} account fees maker {} bps, taker {} bps; configured {} / {} bps: using the "
+            "account's",
+            venue,
+            inst.symbol.view(),
+            f.rates.maker_bps(),
+            f.rates.taker_bps(),
+            configured.maker_bps(),
+            configured.taker_bps());
+      }
+      fees.set_instrument(f.instrument, f.rates);
+      if (!fetched_fees) fetched_fees = cfg;
+      for (InstrumentSection& is : fetched_fees->instruments) {
+        if (is.venue == venue && is.symbol == inst.symbol.view()) {
+          is.maker_bps = f.rates.maker_bps();
+          is.taker_bps = f.rates.taker_bps();
+        }
+      }
+    }
+  }
+  const Config& recorded = fetched_fees ? *fetched_fees : cfg;
+
   // [accounting] converts the PnL totals, [risk] max_loss and the exposure caps to one reporting
   // currency. Without it every total is one currency-less Notional. The venues' reference data has
   // been loaded, so kInverse (and with it each instrument's settlement currency) is known here.
@@ -863,6 +908,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.risk = cfg.risk_limits();
   deps.engine.quotes = cfg.quote_params();
   deps.engine.fx = fx_plan;
+  deps.engine.fees = fees;
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
@@ -971,7 +1017,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     journal_ring = std::make_unique<MsgRing>(ring_size(cfg.engine.journal_ring_bytes));
     // Everything a replay needs besides the events: the effective configuration (secrets
     // omitted) and the session settings that do not come from it.
-    const std::string effective = cfg.effective_toml();
+    const std::string effective = recorded.effective_toml();
     JournalSessionInfo info;
     info.session_id = deps.engine.session_id;
     info.start_ts = wall_now();
@@ -1089,8 +1135,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     so.strategy = std::string(strategy_name);
     so.version = FASTMM_VERSION_STRING;
     so.build_info = build_info();
-    so.config_hash = cfg.effective_hash();
-    so.config_toml = cfg.effective_toml();
+    so.config_hash = recorded.effective_hash();
+    so.config_toml = recorded.effective_toml();
     so.journal_path = journal_path;
     so.host = host_name();
     so.pid = static_cast<std::uint32_t>(::getpid());

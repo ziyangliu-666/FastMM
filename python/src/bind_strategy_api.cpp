@@ -28,7 +28,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -111,6 +113,16 @@ struct OrderInfo {
 };
 struct PortfolioInfo {
   Portfolio p;
+};
+// Venue state (ctx.fees, ctx.risk_headroom, ctx.venue_health): copies.
+struct FeesInfo {
+  FeeRates f;
+};
+struct HeadroomInfo {
+  RiskHeadroom h;
+};
+struct VenueHealthInfo {
+  VenueHealthView v;
 };
 
 double to_f(std::int64_t raw) noexcept {
@@ -1158,6 +1170,111 @@ void bind_strategy_api(py::module_& m) {
           py::arg("lo"),
           py::arg("hi"),
           "Integer in [lo, hi] inclusive from the engine's seeded RNG.");
+
+  // ---- venue state: fees, risk headroom, venue health ------------------------------------------
+  py::class_<FeesInfo> fees_cls(
+      m, "Fees", "Maker and taker rates of one instrument (a copy).", py::is_final());
+  fees_cls.def_property_readonly("maker_bps", [](const FeesInfo& v) { return v.f.maker_bps(); })
+      .def_property_readonly("taker_bps", [](const FeesInfo& v) { return v.f.taker_bps(); })
+      .def_property_readonly("maker_cbps", [](const FeesInfo& v) { return v.f.maker_cbps; })
+      .def_property_readonly("taker_cbps", [](const FeesInfo& v) { return v.f.taker_cbps; })
+      .def("__repr__", [](const FeesInfo& v) {
+        return "<Fees maker " + std::to_string(v.f.maker_bps()) + " bps, taker " +
+               std::to_string(v.f.taker_bps()) + " bps>";
+      });
+  // An unlimited room is None; the others are floats (and _raw ints, 1e-8 scale).
+  const auto room = [](std::int64_t raw) -> std::optional<double> {
+    if (raw == std::numeric_limits<std::int64_t>::max()) return std::nullopt;
+    return to_f(raw);
+  };
+  const auto room_raw = [](std::int64_t raw) -> std::optional<std::int64_t> {
+    if (raw == std::numeric_limits<std::int64_t>::max()) return std::nullopt;
+    return raw;
+  };
+  py::class_<HeadroomInfo> headroom_cls(
+      m,
+      "RiskHeadroom",
+      "What each [risk] limit still admits on one instrument (a copy). None where the limit is "
+      "off.",
+      py::is_final());
+  headroom_cls
+      .def_property_readonly(
+          "order_tokens", [room_raw](const HeadroomInfo& v) { return room_raw(v.h.order_tokens); })
+      .def_property_readonly(
+          "open_orders", [room_raw](const HeadroomInfo& v) { return room_raw(v.h.open_orders); });
+  const auto fixed_room = [&](const char* name, auto get) {
+    headroom_cls.def_property_readonly(
+        name, [room, get](const HeadroomInfo& v) { return room(get(v.h).raw); });
+    headroom_cls.def_property_readonly(
+        (std::string(name) + "_raw").c_str(),
+        [room_raw, get](const HeadroomInfo& v) { return room_raw(get(v.h).raw); });
+  };
+  fixed_room("max_order_qty", [](const RiskHeadroom& h) { return h.max_order_qty; });
+  fixed_room("max_order_notional", [](const RiskHeadroom& h) { return h.max_order_notional; });
+  fixed_room("buy_qty", [](const RiskHeadroom& h) { return h.buy_qty; });
+  fixed_room("sell_qty", [](const RiskHeadroom& h) { return h.sell_qty; });
+  fixed_room("gross_notional", [](const RiskHeadroom& h) { return h.gross_notional; });
+  fixed_room("net_buy_notional", [](const RiskHeadroom& h) { return h.net_buy_notional; });
+  fixed_room("net_sell_notional", [](const RiskHeadroom& h) { return h.net_sell_notional; });
+  fixed_room("loss_budget", [](const RiskHeadroom& h) { return h.loss_budget; });
+  py::class_<VenueHealthInfo> health_cls(
+      m,
+      "VenueHealth",
+      "Feed lag and order round trip of one venue (a copy); durations in ns, 0 before the first "
+      "sample.",
+      py::is_final());
+  health_cls
+      .def_property_readonly("feed_lag_ns",
+                             [](const VenueHealthInfo& x) { return x.v.feed_lag.ns; })
+      .def_property_readonly("feed_lag_base_ns",
+                             [](const VenueHealthInfo& x) { return x.v.feed_lag_base.ns; })
+      .def_property_readonly("feed_lag_excess_ns",
+                             [](const VenueHealthInfo& x) { return x.v.feed_lag_excess.ns; })
+      .def_property_readonly("ack_rtt_ns", [](const VenueHealthInfo& x) { return x.v.ack_rtt.ns; })
+      .def_property_readonly("ack_rtt_smoothed_ns",
+                             [](const VenueHealthInfo& x) { return x.v.ack_rtt_smoothed.ns; })
+      .def_property_readonly("md_updated_ns",
+                             [](const VenueHealthInfo& x) { return x.v.md_updated.ns; })
+      .def_property_readonly("ack_updated_ns",
+                             [](const VenueHealthInfo& x) { return x.v.ack_updated.ns; })
+      .def_property_readonly("md_samples", [](const VenueHealthInfo& x) { return x.v.md_samples; })
+      .def_property_readonly("ack_samples",
+                             [](const VenueHealthInfo& x) { return x.v.ack_samples; })
+      .def_property_readonly("gate_engagements",
+                             [](const VenueHealthInfo& x) { return x.v.gate_engagements; })
+      .def_property_readonly("gated", [](const VenueHealthInfo& x) { return x.v.gated; })
+      .def("__repr__", [](const VenueHealthInfo& x) {
+        return "<VenueHealth feed_lag_excess " + std::to_string(x.v.feed_lag_excess.ns) +
+               " ns, ack_rtt_smoothed " + std::to_string(x.v.ack_rtt_smoothed.ns) + " ns" +
+               (x.v.gated ? ", gated>" : ">");
+      });
+  ctx.def(
+         "fees",
+         [](const ContextHandle& c, py::handle inst) {
+           PySimEngine& e = c.engine();
+           return FeesInfo{e.context().fees(c.run->resolve(inst))};
+         },
+         py::arg("inst"),
+         "Maker and taker rates of the instrument: the ones the simulated venue charges.")
+      .def(
+          "risk_headroom",
+          [](const ContextHandle& c, py::handle inst) {
+            PySimEngine& e = c.engine();
+            return HeadroomInfo{e.context().risk_headroom(c.run->resolve(inst))};
+          },
+          py::arg("inst"),
+          "What each [risk] limit still admits on the instrument now; an order of exactly a room "
+          "passes that limit.")
+      .def(
+          "venue_health",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            PySimEngine& e = c.engine();
+            if (venue >= kMaxVenues) throw py::value_error("fastmm: venue id out of range");
+            return VenueHealthInfo{
+                e.context().venue_health(VenueId{static_cast<std::uint8_t>(venue)})};
+          },
+          py::arg("venue") = 0,
+          "Feed lag, order round trip and the feed-lag gate of a venue.");
 }
 
 #undef FASTMM_PY_FIXED

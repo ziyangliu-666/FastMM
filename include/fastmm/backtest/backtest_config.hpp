@@ -13,6 +13,7 @@
 //   latency_fixed_us, latency_jitter_us,          market_qty_median_lots, regimes,
 //   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
+//   md_arrival = "venue" | "recorded"
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
 //   output_dir = "runs/backtest", journal_out = ""

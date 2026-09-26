@@ -4,6 +4,8 @@
 
 #include <simdjson.h>
 
+#include <algorithm>
+
 namespace fastmm::venues::binance {
 
 namespace sj = simdjson;
@@ -93,6 +95,47 @@ std::string decode_exchange_info(std::string_view json, ExchangeInfo& out) {
       return "exchangeInfo: " + f.symbol + " lacks PRICE_FILTER/LOT_SIZE";
     out.symbols.push_back(std::move(f));
   }
+  return {};
+}
+
+std::string decode_commission(std::string_view json, CommissionRates& out) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "account/commission: invalid JSON";
+  std::string_view s;
+  if (root["symbol"].get(s) != sj::SUCCESS) return "account/commission: missing symbol";
+  out.symbol = std::string(s);
+  // Rates are fractions of the notional; in the 1e-8 fixed point 1 cbps (1e-6) is 100 raw.
+  std::int64_t maker = 0;
+  std::int64_t taker = 0;
+  std::int64_t side = 0;
+  out.side_dependent = false;
+  for (const char* group : {"standardCommission", "specialCommission", "taxCommission"}) {
+    dom::element g;
+    if (root[group].get(g) != sj::SUCCESS) {
+      if (std::string_view(group) == "standardCommission")
+        return "account/commission: missing standardCommission";
+      continue;  // not every venue build sends special / tax
+    }
+    Price m{};
+    Price t{};
+    Price b{};
+    Price sl{};
+    if (!fixed_field(g, "maker", m) || !fixed_field(g, "taker", t))
+      return std::string("account/commission: bad ") + group;
+    static_cast<void>(fixed_field(g, "buyer", b));
+    static_cast<void>(fixed_field(g, "seller", sl));
+    maker += m.raw;
+    taker += t.raw;
+    side += std::max(b.raw, sl.raw);
+    if (b.raw != sl.raw) out.side_dependent = true;
+  }
+  const auto cbps = [](std::int64_t raw) {
+    return static_cast<std::int32_t>((raw + (raw < 0 ? -50 : 50)) / 100);
+  };
+  out.rates.maker_cbps = cbps(maker + side);
+  out.rates.taker_cbps = cbps(taker + side);
   return {};
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 // EngineConfig: the per-session settings an Engine is constructed with. Separate from engine.hpp so
 // the strategy registry and registration files do not parse the Engine template.
+#include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
@@ -45,6 +46,9 @@ struct EngineConfig {
   QuoteParams quotes;
   // [accounting]: the settlement currencies and their FX sources (inactive: nothing converted).
   FxPlan fx;
+  // Maker/taker rates per instrument (fee_table, config/config.hpp), what StrategyContext::fees
+  // reports. The simulated venue charges fills with the same table; a live venue reports its own.
+  FeeTable fees;
 };
 
 }  // namespace fastmm

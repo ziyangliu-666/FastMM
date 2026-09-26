@@ -186,6 +186,7 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
   auto* h = reinterpret_cast<EventHeader*>(p);
   h->exch_ts = now;
   Timestamp arrival = now + lat_.md_in();
+  if (cfg_.md_recorded_arrival && md.recv_ts > now) arrival = arrival + (md.recv_ts - now);
   if (arrival < last_md_arrival_) arrival = last_md_arrival_;
   last_md_arrival_ = arrival;
   h->recv_ts = arrival;

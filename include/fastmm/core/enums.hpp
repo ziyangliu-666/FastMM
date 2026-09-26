@@ -141,6 +141,9 @@ enum class RejectReason : std::uint8_t {
   // [accounting]: the rate of the order's settlement currency is unknown or stale, and the order
   // would add to its exposure while max_loss or an exposure cap is set.
   FxRateUnknown = 19,
+  // [risk] max_feed_lag_ms: the venue's market data is late (core/venue_health.hpp) and the order
+  // could rest there without reducing the position.
+  FeedLag = 20,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -206,6 +209,8 @@ enum class RejectReason : std::uint8_t {
       return "MaxNetNotional";
     case RejectReason::FxRateUnknown:
       return "FxRateUnknown";
+    case RejectReason::FeedLag:
+      return "FeedLag";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:

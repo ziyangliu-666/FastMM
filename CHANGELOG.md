@@ -5,6 +5,22 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Venue state for strategies. `ctx.fees(id)` returns the maker/taker rates of an instrument
+  (`FeeRates`, the table a backtest charges; `sim::FeeModel` is now `FeeTable`, core/fees.hpp).
+  `ctx.risk_headroom(id)` returns what each `[risk]` limit still admits (`RiskHeadroom`: rate
+  limiter tokens, open orders, position room per side, gross and net exposure room, loss budget),
+  from the inputs the next check uses. `ctx.venue_health(v)` returns the venue's feed lag
+  (`recv_ts - exch_ts` against its minimum over 8 s) and the ack round trip of our orders. Python:
+  `ctx.fees`, `ctx.risk_headroom`, `ctx.venue_health`.
+- `[risk] max_feed_lag_ms`: while a venue's market data arrives later than its baseline by more
+  than the limit, its quotes are pulled and orders that could rest there without reducing the
+  position are refused (`RejectReason::FeedLag` = 20); quoting resumes 100 ms after the last late
+  message. `fastmm-ctl limits max_feed_lag_ms=N`. `[backtest] md_arrival = "recorded"` replays
+  market data at its recorded receive time, so a backtest over a live journal sees its feed lag.
+- Binance Spot `fetch_fees = true`: `fastmm-live` reads the account's rates per symbol
+  (`GET /api/v3/account/commission`) at start-up, uses them instead of the configured fees and
+  writes them into the journal's embedded configuration. `fastmm-sim-exchange` answers the
+  endpoint with its fees.
 - `[accounting]`: instruments in several settlement currencies in one session or gateway. The PnL
   totals, `max_loss` and the exposure caps (engine and gateway) are in `reporting_currency`, each
   other currency converted at the mid of its `[accounting.fx]` source instrument; positions, PnL

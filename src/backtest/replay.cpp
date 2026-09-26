@@ -205,6 +205,7 @@ ReplayResult replay_impl(const std::string& path,
 
   RunnerDeps deps;
   deps.engine = cfg.engine;
+  deps.engine.fees = cfg.transport.fees;
   // The recording converted with the table it ran on (a live session's comes from the venues).
   if (cfg.accounting.configured()) {
     BacktestConfig c = cfg;

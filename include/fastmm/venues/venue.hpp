@@ -10,6 +10,7 @@
 //     reactor thread (the backend posts them there).
 //   * cancel_all() must be callable from ANY thread, including when the reactor thread is
 //     wedged: implementations use an independent blocking REST connection (6.7 kill switch).
+#include "fastmm/core/fees.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/result.hpp"
@@ -142,6 +143,12 @@ struct VenueStatus {
   VenueFeedStatus feed;                 // multicast venues only
 };
 
+// The account's own fee rates on one instrument (Venue::account_fees).
+struct VenueFee {
+  InstrumentId instrument;
+  FeeRates rates;
+};
+
 // An order counted as sent whose batch was then never written (the connection failed at
 // uncork()): the connector rejects it, so it is taken back out of the sent counters.
 inline void unsend(VenueStatus& s, OrderCommandKind k) noexcept {
@@ -171,6 +178,14 @@ class Venue {
   // are a fallback when the venue is unreachable and `allow_offline` is set). Fatal on
   // mismatch of a required symbol.
   virtual Result<void, std::string> load_reference_data(InstrumentTable& instruments) = 0;
+  // The account's fee rates on this venue's instruments in `instruments`, fetched from the venue
+  // (Binance Spot with fetch_fees = true: GET /api/v3/account/commission per symbol). Main thread,
+  // after load_reference_data(), blocking REST allowed. Empty when the connector does not fetch
+  // them; an error when it was asked to and could not.
+  virtual Result<std::vector<VenueFee>, std::string> account_fees(
+      const InstrumentTable& /*instruments*/) {
+    return std::vector<VenueFee>{};
+  }
   // After load_reference_data() failed: true when it refused a setting of the account (a position
   // mode the connector does not trade in), which a retry does not fix. fastmm-live then exits 3,
   // like a configuration error, instead of 4.

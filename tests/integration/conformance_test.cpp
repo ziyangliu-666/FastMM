@@ -628,3 +628,48 @@ TEST_CASE("sim_exchange: resolve_venue_env takes Ed25519 keys without a secret")
   hc.venues.push_back(h);
   CHECK_FALSE(live::resolve_venue_env(hc, false, "test"));
 }
+
+TEST_CASE("sim_exchange: fetch_fees reads the account's rates with an HMAC and an Ed25519 key") {
+  for (const bool ed25519 : {false, true}) {
+    CAPTURE(ed25519);
+    sim::server::SimServerConfig cfg = test_server_config();
+    cfg.maker_bps = -0.25;
+    cfg.taker_bps = 7.5;
+    if (ed25519)
+      cfg.ed25519_public_key_pem = fastmm::test::fixture("binance/ed25519-test-public.pem");
+    ServerFixture fx(std::move(cfg));
+    BinanceVenueConfig vc = venue_config(fx);
+    if (ed25519) {
+      vc.credentials.secret.value.clear();
+      vc.credentials.type = binance::KeyType::Ed25519;
+      vc.credentials.private_key_pem.value =
+          fastmm::test::fixture("binance/ed25519-test-private.pem");
+    }
+    {
+      VenueHarness off(vc);
+      REQUIRE(off.venue->load_reference_data(off.instruments));
+      const auto none = off.venue->account_fees(off.instruments);
+      REQUIRE(none);
+      CHECK(none->empty());  // fetch_fees is off: nothing asked
+    }
+    vc.fetch_fees = true;
+    VenueHarness h(std::move(vc));
+    REQUIRE(h.venue->load_reference_data(h.instruments));
+    const auto fees = h.venue->account_fees(h.instruments);
+    REQUIRE_MESSAGE(fees, (fees ? std::string() : fees.error()));
+    REQUIRE(fees->size() == 1);
+    CHECK((*fees)[0].instrument == InstrumentId{0});
+    CHECK((*fees)[0].rates.maker_cbps == -25);
+    CHECK((*fees)[0].rates.taker_cbps == 750);
+    CHECK(fx.server.stats().signature_errors == 0);
+  }
+  // A key the venue refuses: the start-up fails with the venue's answer.
+  ServerFixture fx;
+  BinanceVenueConfig bad = venue_config(fx, "wrong-secret");
+  bad.fetch_fees = true;
+  VenueHarness h(std::move(bad));
+  REQUIRE(h.venue->load_reference_data(h.instruments));
+  const auto refused = h.venue->account_fees(h.instruments);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error().find("account/commission for BTCUSDT failed") != std::string::npos);
+}

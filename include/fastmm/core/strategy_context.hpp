@@ -5,6 +5,7 @@
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/fees.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/oms.hpp"
@@ -12,9 +13,11 @@
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/result.hpp"
+#include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/rng.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/venue_health.hpp"
 
 #include <cstdint>
 
@@ -126,6 +129,24 @@ class StrategyContext {
   // Trips the global kill switch: quoting stops, quotes are pulled and every working order is
   // cancelled. The adapter for Python hot hooks uses KillReason::StrategyError.
   void trip_kill(KillReason reason) noexcept { e_->trip_kill(reason); }
+
+  // ---- venue state: fees, risk headroom, venue health -------------------------------------------
+
+  // Maker and taker rates of the instrument, in cbps of the notional (positive: a fee). The
+  // configuration's ([[instruments]] maker_bps / taker_bps, else [venues.<x>.fees]), or the
+  // account's own where the connector fetched them (fetch_fees). A backtest charges these.
+  [[nodiscard]] const FeeRates& fees(InstrumentId id) const noexcept { return e_->fees(id); }
+  // What each [risk] limit still admits on the instrument now: the next check uses the same
+  // inputs, so an order of exactly a room passes that limit. RiskHeadroom::kUnlimited (or the
+  // type's max()) where the limit is off.
+  [[nodiscard]] RiskHeadroom risk_headroom(InstrumentId id) const noexcept {
+    return e_->risk_headroom(id);
+  }
+  // Feed lag and order round trip of a venue (core/venue_health.hpp), and whether the feed-lag
+  // gate ([risk] max_feed_lag_ms) holds it now.
+  [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
+    return e_->venue_health(v);
+  }
 
   // ---- randomness: seeded from EngineConfig::rng_seed, replay-deterministic --------------------
 

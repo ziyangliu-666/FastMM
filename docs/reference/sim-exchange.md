@@ -78,6 +78,7 @@ Query string or form body; the signature covers query + body.
 | `POST /api/v3/order/cancelReplace` | STOP_ON_FAILURE and ALLOW_FAILURE, -2021/-2022 with `data` |
 | `PUT /api/v3/order/amend/keepPriority` | quantity decrease, keeps queue priority |
 | `GET /api/v3/openOrders[?symbol]`, `DELETE /api/v3/openOrders?symbol` | -2011 when nothing is open |
+| `GET /api/v3/account/commission?symbol` | `fees.maker_bps` and `fees.taker_bps` as `standardCommission`; special and tax commission zero |
 | `GET /api/v3/myTrades?symbol[&fromId / &startTime&endTime][&limit]` | the account's executions, oldest id first; `fromId` with a time range is -1128, a window over 24 h is -1127, limit caps at 1000 |
 | `POST/PUT/DELETE /api/v3/userDataStream` | legacy listenKey (`/ws/<listenKey>`) |
 

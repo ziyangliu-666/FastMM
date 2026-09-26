@@ -58,7 +58,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 18> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 19> kBacktestKeys = {"markout_horizons_s",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -75,7 +75,8 @@ constexpr std::array<std::string_view, 18> kBacktestKeys = {"markout_horizons_s"
                                                             "latency_ack_us",
                                                             "latency_ack_jitter_us",
                                                             "latency_md_us",
-                                                            "latency_md_jitter_us"};
+                                                            "latency_md_jitter_us",
+                                                            "md_arrival"};
 
 void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
   for (const auto& [key, value] : bt.values) {
@@ -150,25 +151,21 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.md_in = sim::LatencyParams{microseconds(non_negative(bt, "latency_md_us", 0)),
                                microseconds(non_negative(bt, "latency_md_jitter_us", 0)),
                                0.0};
+  if (const std::string a = bt.get_string("md_arrival", "venue"); a == "recorded") {
+    t.md_recorded_arrival = true;
+  } else if (a != "venue") {
+    throw ConfigError("backtest.md_arrival: '" + a + "' is not venue or recorded");
+  }
   t.supports_replace = cfg.engine.supports_replace;
   t.stp = cfg.risk.stp ? sim::StpMode::CancelTaker : sim::StpMode::None;
   t.md.interval = milliseconds(positive(sm, "depth_update_ms", 100));
   t.md.book_ticker = sm.get_bool("book_ticker", true);
   t.venue = VenueId{0};
   // Each instrument pays its own venue's schedule; [[instruments]] maker_bps / taker_bps
-  // override one instrument. The default covers instruments added outside the config.
-  if (!cfg.venues.empty()) {
-    t.fees.set_default(
-        sim::FeeSchedule::from_bps(cfg.venues[0].fees.maker_bps, cfg.venues[0].fees.taker_bps));
-  }
-  for (std::size_t k = 0; k < cfg.instruments.size(); ++k) {
-    const InstrumentSection& is = cfg.instruments[k];
-    const VenueSection* v = cfg.venue(is.venue);
-    const FeesSection vf = v != nullptr ? v->fees : FeesSection{};
-    t.fees.set_instrument(InstrumentId{static_cast<std::uint32_t>(k)},
-                          sim::FeeSchedule::from_bps(is.maker_bps.value_or(vf.maker_bps),
-                                                     is.taker_bps.value_or(vf.taker_bps)));
-  }
+  // override one instrument. The default covers instruments added outside the config. The engine
+  // reports the same table to the strategy (the runner copies transport.fees at the start).
+  t.fees = fee_table(cfg);
+  b.engine.fees = t.fees;
 
   sim::MarketGeneratorParams& g = b.generator;
   const Instrument& inst = b.instruments.get(InstrumentId{0});

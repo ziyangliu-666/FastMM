@@ -112,6 +112,7 @@ enum class RestEndpoint : std::uint8_t {
   Amend,
   OpenOrders,
   MyTrades,
+  Commission,
   CancelAll,
   ListenKeyCreate,
   ListenKeyKeepalive,
@@ -329,6 +330,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   OpResult op_query_order(Account& a, const ParamList& p);
   OpResult op_open_orders(Account& a, const ParamList& p);
   OpResult op_my_trades(Account& a, const ParamList& p);
+  OpResult op_commission(const ParamList& p);
   OpResult op_cancel_all(Account& a, const ParamList& p);
   OpResult op_account(Account& a);
   OpResult op_exchange_info(const ParamList& p);

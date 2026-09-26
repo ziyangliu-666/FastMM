@@ -47,6 +47,7 @@
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/timer_wheel.hpp"
 #include "fastmm/core/transport.hpp"
+#include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/hooks.hpp"
 
 #include <array>
@@ -373,7 +374,7 @@ class Engine {
     if (!quoting_enabled() || !instruments_.contains(id)) return false;
     const Instrument& inst = instruments_.get(id);
     return !inst_pulled_[id.value] && !venue_is_pulled(inst.venue) &&
-           !risk_.venue_killed(inst.venue);
+           !risk_.venue_killed(inst.venue) && !health_.gated(inst.venue, now());
   }
   // Where the operator's flatten stands, and how many orders it has sent.
   [[nodiscard]] FlattenState flatten_state() const noexcept { return flatten_state_; }
@@ -388,6 +389,33 @@ class Engine {
     return venue_kill_reasons_[RiskEngine::venue_slot(v)];
   }
   [[nodiscard]] const EngineConfig& config() const noexcept { return cfg_; }
+
+  // ---- venue state: fees, risk headroom, venue health ------------------------------------------
+
+  // The maker/taker rates of an instrument (EngineConfig::fees): the configuration's, or the
+  // account's own where the connector fetched them ([venues.<x>] fetch_fees).
+  [[nodiscard]] const FeeRates& fees(InstrumentId id) const noexcept {
+    return cfg_.fees.schedule(id);
+  }
+  // What each risk limit admits on `id` now (RiskEngine::headroom), with the inputs the next
+  // check_new would use.
+  [[nodiscard]] RiskHeadroom risk_headroom(InstrumentId id) const noexcept {
+    if (!instruments_.contains(id)) return {};
+    const Timestamp now = this->now();
+    RiskInputs buy{now,
+                   &positions_.get(id),
+                   positions_.gross_exposure(),
+                   positions_.net_exposure(),
+                   oms_.open_qty(id, Side::Buy),
+                   oms_.open_count(id),
+                   Price{}};
+    RiskInputs sell = buy;
+    sell.open_same_side = oms_.open_qty(id, Side::Sell);
+    return risk_.headroom(instruments_.get(id), buy, sell, net_pnl());
+  }
+  [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
+    return health_.view(v, now());
+  }
 
   [[nodiscard]] RunnerStats runner_stats() const noexcept {
     RunnerStats r;
@@ -446,13 +474,14 @@ class Engine {
     return r;
   }
   // False when the quotes are ignored: quoting is disabled for the session or for this instrument
-  // or its venue (an operator pull, a flatten), the instrument is not in the table or its venue's
-  // kill switch is engaged (its quotes were pulled when it tripped).
+  // or its venue (an operator pull, a flatten), the instrument is not in the table, its venue's
+  // kill switch is engaged (its quotes were pulled when it tripped) or the feed-lag gate holds it.
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) noexcept {
     if (!quoting_enabled() || FASTMM_UNLIKELY(!instruments_.contains(id))) return false;
     if (FASTMM_UNLIKELY(inst_pulled_[id.value])) return false;
     const Instrument& inst = instruments_.get(id);
-    if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue) || venue_is_pulled(inst.venue)))
+    if (FASTMM_UNLIKELY(risk_.venue_killed(inst.venue) || venue_is_pulled(inst.venue) ||
+                        health_.gated(inst.venue, now())))
       return false;
     enter_api();
     Placer place{this};
@@ -679,6 +708,7 @@ class Engine {
     Book& b = books_[id.value];
     b.apply_delta(d);
     ++stats_.book_updates;
+    track_feed_lag(d.hdr);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     const Timestamp now = now_;
@@ -707,6 +737,35 @@ class Engine {
     flush_out();
   }
 
+  // ---- venue health (core/venue_health.hpp) ---------------------------------------------------
+  // A market-data message with a venue time: its feed lag, and the gate when it engages. Snapshots
+  // (REST, resync) carry no live venue time.
+  FASTMM_FORCE_INLINE void track_feed_lag(const EventHeader& h) noexcept {
+    if (FASTMM_UNLIKELY(!h.exch_ts.valid() || (h.flags & EventHeader::kSnapshot) != 0)) return;
+    if (FASTMM_UNLIKELY(health_.on_md(h.venue, (h.recv_ts - h.exch_ts).ns, now_, feed_lag_limit_)))
+      on_feed_lag_gate(h.venue, feed_lag_limit_);
+  }
+  // The gate engaged on venue `v`: its quotes go now; set_quotes ignores it and risk refuses
+  // orders that could rest there (FeedLag) until VenueHealth::kGateHold passes without a message
+  // over the limit. The strategy's next set_quotes after that places them again.
+  FASTMM_NOINLINE void on_feed_lag_gate(VenueId v, Duration limit) noexcept {
+    if (health_.view(v, now_).gate_engagements == 1) {
+      FASTMM_LOG_WARN(
+          "venue {} market data {} us late (max_feed_lag_ms {}): quotes pulled until it is back "
+          "under for {} ms (first of this session; ctx.venue_health counts them)",
+          v.value,
+          health_.view(v, now_).feed_lag_excess.micros(),
+          limit.millis(),
+          VenueHealth::kGateHold.millis());
+    }
+    enter_api();
+    Placer place{this};
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue == v) quotes_.pull_quotes(inst, oms_, place);
+    }
+    flush_out();
+  }
+
   // An FX source's mid ([accounting]): its currency's rate, for the PnL totals from now on and for
   // the orders it prices. A book that stops being valid leaves the totals at the last rate (a loss
   // already booked stays measured) and refuses new exposure in that currency until it is back.
@@ -721,6 +780,7 @@ class Engine {
     const InstrumentId id = t.hdr.instrument;
     const bool known_instrument = instruments_.contains(id);
     if (known_instrument) risk_.on_trade(id, t.price);
+    track_feed_lag(t.hdr);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::Trade)) {
@@ -733,6 +793,7 @@ class Engine {
   }
 
   void on_book_ticker(const BookTickerMsg& m) noexcept {
+    track_feed_lag(m.hdr);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
@@ -746,6 +807,7 @@ class Engine {
   }
 
   void on_option_ticker(const OptionTickerMsg& m) noexcept {
+    track_feed_lag(m.hdr);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::OptionTicker)) {
@@ -968,7 +1030,12 @@ class Engine {
     flush_out();
   }
 
-  void on_order_ack(const OrderAckMsg& m) noexcept { after_oms_update(oms_.on_ack(m), m.hdr); }
+  void on_order_ack(const OrderAckMsg& m) noexcept {
+    const OmsUpdate u = oms_.on_ack(m);
+    if (u.changed && u.prev == OrderState::PendingNew && u.order.created.valid())
+      health_.on_ack(u.order.venue, now_ - u.order.created, now_);
+    after_oms_update(u, m.hdr);
+  }
   void on_order_reject(const OrderRejectMsg& m) noexcept {
     const OmsUpdate u = oms_.on_reject(m);
     if (u.changed) {
@@ -1210,6 +1277,7 @@ class Engine {
         if (c.hdr.len >= sizeof(ControlLimitsMsg)) {
           const auto& m = msg_cast<ControlLimitsMsg>(&c.hdr);
           risk_.set_limits(m.limits, now_);
+          feed_lag_limit_ = milliseconds(m.limits.max_feed_lag_ms);
           FASTMM_LOG_WARN(
               "risk limits replaced by the operator: max_position={} max_order_qty={} "
               "price_collar_bps={} orders_per_sec={}",
@@ -1673,14 +1741,15 @@ class Engine {
       return fail(RejectReason::InstrumentDisabled);
     const Instrument& inst = instruments_.get(req.instrument);
     const Timestamp now = now_;
-    OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty};
+    OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty, req.tif};
     RiskInputs in{now,
                   flatten ? nullptr : &positions_.get(req.instrument),
                   positions_.gross_exposure(),
                   positions_.net_exposure(),
                   oms_.open_qty(req.instrument, req.side),
                   oms_.open_count(req.instrument),
-                  flatten ? Price{} : oms_.best_own_px(req.instrument, opposite(req.side))};
+                  flatten ? Price{} : oms_.best_own_px(req.instrument, opposite(req.side)),
+                  health_.gated(inst.venue, now)};
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -1730,14 +1799,15 @@ class Engine {
     if (!transport_.supports_replace(o.venue)) return fail(RejectReason::VenueReject);
     const Instrument& inst = instruments_.get(o.instrument);
     const Timestamp now = now_;
-    OrderIntent oi{o.instrument, o.venue, o.side, o.type, px, qty};
+    OrderIntent oi{o.instrument, o.venue, o.side, o.type, px, qty, o.tif};
     RiskInputs in{now,
                   &positions_.get(o.instrument),
                   positions_.gross_exposure(),
                   positions_.net_exposure(),
                   oms_.open_qty(o.instrument, o.side),
                   oms_.open_count(o.instrument),
-                  oms_.best_own_px(o.instrument, opposite(o.side))};
+                  oms_.best_own_px(o.instrument, opposite(o.side)),
+                  health_.gated(o.venue, now)};
     const RejectReason rr = risk_.check_replace(oi, o, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -2004,6 +2074,8 @@ class Engine {
   std::unique_ptr<Book[]> books_;
   Oms oms_;
   RiskEngine risk_;
+  VenueHealth health_;  // feed lag and ack RTT per venue, and the feed-lag gate
+  Duration feed_lag_limit_ = milliseconds(cfg_.risk.max_feed_lag_ms);  // [risk] max_feed_lag_ms
   QuoteManager quotes_;
   QuotePresence presence_;
   TimerWheel<> timers_;

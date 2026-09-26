@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'StaleViewError', 'TradeView', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'RiskHeadroom', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -533,6 +533,10 @@ class Context:
         """
         Repeating timer; on_timer(ctx, timer_id, tag) fires every period_ns. Returns the id.
         """
+    def fees(self, inst: typing.Any) -> Fees:
+        """
+        Maker and taker rates of the instrument: the ones the simulated venue charges.
+        """
     def instrument(self, inst: typing.Any) -> typing.Any:
         ...
     def once(self, delay_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
@@ -575,6 +579,10 @@ class Context:
         """
         End the backtest after the current event.
         """
+    def risk_headroom(self, inst: typing.Any) -> RiskHeadroom:
+        """
+        What each [risk] limit still admits on the instrument now; an order of exactly a room passes that limit.
+        """
     def send(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any, qty: typing.Any, *, post_only: bool = False, reduce_only: bool = False, ioc: bool = False, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         """
         Send a limit order (risk-checked, journaled); returns its client order id. The price is rounded passively to the tick and the quantity down to the lot. Raises OrderRejected.
@@ -588,6 +596,10 @@ class Context:
     def set_quotes_raw(self, inst: typing.Any, bids: typing.Any = None, asks: typing.Any = None) -> bool:
         """
         Like set_quotes with raw int prices and quantities (1e-8 scale), used as given.
+        """
+    def venue_health(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> VenueHealth:
+        """
+        Feed lag, order round trip and the feed-lag gate of a venue.
         """
     def working_quote(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, level: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
         """
@@ -660,6 +672,24 @@ class FeatureTable:
         ...
     @property
     def start_ts(self) -> int:
+        ...
+class Fees:
+    """
+    Maker and taker rates of one instrument (a copy).
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def maker_bps(self) -> float:
+        ...
+    @property
+    def maker_cbps(self) -> int:
+        ...
+    @property
+    def taker_bps(self) -> float:
+        ...
+    @property
+    def taker_cbps(self) -> int:
         ...
 class FillView:
     """
@@ -1121,6 +1151,64 @@ class PositionView:
     @property
     def unrealized_raw(self) -> int:
         ...
+class RiskHeadroom:
+    """
+    What each [risk] limit still admits on one instrument (a copy). None where the limit is off.
+    """
+    @property
+    def buy_qty(self) -> float | None:
+        ...
+    @property
+    def buy_qty_raw(self) -> int | None:
+        ...
+    @property
+    def gross_notional(self) -> float | None:
+        ...
+    @property
+    def gross_notional_raw(self) -> int | None:
+        ...
+    @property
+    def loss_budget(self) -> float | None:
+        ...
+    @property
+    def loss_budget_raw(self) -> int | None:
+        ...
+    @property
+    def max_order_notional(self) -> float | None:
+        ...
+    @property
+    def max_order_notional_raw(self) -> int | None:
+        ...
+    @property
+    def max_order_qty(self) -> float | None:
+        ...
+    @property
+    def max_order_qty_raw(self) -> int | None:
+        ...
+    @property
+    def net_buy_notional(self) -> float | None:
+        ...
+    @property
+    def net_buy_notional_raw(self) -> int | None:
+        ...
+    @property
+    def net_sell_notional(self) -> float | None:
+        ...
+    @property
+    def net_sell_notional_raw(self) -> int | None:
+        ...
+    @property
+    def open_orders(self) -> int | None:
+        ...
+    @property
+    def order_tokens(self) -> int | None:
+        ...
+    @property
+    def sell_qty(self) -> float | None:
+        ...
+    @property
+    def sell_qty_raw(self) -> int | None:
+        ...
 class StaleViewError(RuntimeError):
     """
     A view (book, fill, trade, ...) was read outside the hook that received it.
@@ -1155,6 +1243,45 @@ class TradeView:
         ...
     @property
     def trade_id(self) -> int:
+        ...
+class VenueHealth:
+    """
+    Feed lag and order round trip of one venue (a copy); durations in ns, 0 before the first sample.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def ack_rtt_ns(self) -> int:
+        ...
+    @property
+    def ack_rtt_smoothed_ns(self) -> int:
+        ...
+    @property
+    def ack_samples(self) -> int:
+        ...
+    @property
+    def ack_updated_ns(self) -> int:
+        ...
+    @property
+    def feed_lag_base_ns(self) -> int:
+        ...
+    @property
+    def feed_lag_excess_ns(self) -> int:
+        ...
+    @property
+    def feed_lag_ns(self) -> int:
+        ...
+    @property
+    def gate_engagements(self) -> int:
+        ...
+    @property
+    def gated(self) -> bool:
+        ...
+    @property
+    def md_samples(self) -> int:
+        ...
+    @property
+    def md_updated_ns(self) -> int:
         ...
 class _SlowChannel:
     """

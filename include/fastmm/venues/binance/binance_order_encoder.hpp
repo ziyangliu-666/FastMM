@@ -149,6 +149,9 @@ class BinanceOrderEncoder {
                              std::int64_t timestamp_ms,
                              RestRequest& out);
 
+  // GET /api/v3/account/commission: the account's fee rates on `symbol`. Weight 20.
+  bool encode_rest_commission(std::string_view symbol, std::int64_t timestamp_ms, RestRequest& out);
+
   // Sorted parameter list for one request; builds both the signature payload and the JSON.
   // Public so the .cpp helpers can build lists; not part of the stable API.
   using ParamList = BinanceParams<20>;  // cancelReplace is the widest request

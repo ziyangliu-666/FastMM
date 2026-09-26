@@ -54,6 +54,7 @@ constexpr RouteDef kRoutes[] = {
     {"PUT", "/api/v3/order/amend/keepPriority", RestEndpoint::Amend},
     {"GET", "/api/v3/openOrders", RestEndpoint::OpenOrders},
     {"GET", "/api/v3/myTrades", RestEndpoint::MyTrades},
+    {"GET", "/api/v3/account/commission", RestEndpoint::Commission},
     {"DELETE", "/api/v3/openOrders", RestEndpoint::CancelAll},
     {"POST", "/api/v3/userDataStream", RestEndpoint::ListenKeyCreate},
     {"PUT", "/api/v3/userDataStream", RestEndpoint::ListenKeyKeepalive},
@@ -98,6 +99,7 @@ std::uint32_t Impl::rest_weight(RestEndpoint ep, const ParamList& p) const {
   switch (ep) {
     case RestEndpoint::ExchangeInfo:
     case RestEndpoint::AccountInfo:
+    case RestEndpoint::Commission:
       return 20;
     case RestEndpoint::Depth:
       return depth_weight(p);
@@ -250,6 +252,8 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
       return op_open_orders(*acct, params);
     case RestEndpoint::MyTrades:
       return op_my_trades(*acct, params);
+    case RestEndpoint::Commission:
+      return op_commission(params);
     case RestEndpoint::CancelAll:
       return op_cancel_all(*acct, params);
     default:

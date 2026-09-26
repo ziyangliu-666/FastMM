@@ -355,6 +355,19 @@ bool BinanceOrderEncoder::encode_rest_my_trades(std::string_view symbol,
   return finish_rest(p, out);
 }
 
+bool BinanceOrderEncoder::encode_rest_commission(std::string_view symbol,
+                                                 std::int64_t timestamp_ms,
+                                                 RestRequest& out) {
+  if (symbol.empty()) return false;
+  ParamList p;  // the endpoint lists symbol only; timestamp as every signed request
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/api/v3/account/commission";
+  out.weight = 20;  // rest-api.md "Query Commission Rates"
+  return finish_rest(p, out);
+}
+
 // ---- response decoder ----------------------------------------------------------------------
 
 struct BinanceWsApiDecoder::Impl {

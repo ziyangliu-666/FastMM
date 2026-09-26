@@ -1049,6 +1049,36 @@ OpResult Impl::op_my_trades(Account& a, const ParamList& p) {
   return OpResult::ok(std::move(body));
 }
 
+// GET /api/v3/account/commission (rest-api.md "Query Commission Rates"): the server's maker and
+// taker fee as standardCommission, rates as fractions of the notional; special and tax commission
+// are zero and no BNB discount applies.
+OpResult Impl::op_commission(const ParamList& p) {
+  const std::string_view symbol = p.get("symbol");
+  if (symbol.empty()) return OpResult::error(400, -1102, mandatory("symbol"));
+  const auto idx = find_symbol(symbol);
+  if (!idx) return OpResult::error(400, -1121, "Invalid symbol.");
+  // 1 cbps == 1e-6 of the notional == 100 raw units of the 1e-8 fixed point.
+  const auto rates = [](std::string& out, std::int64_t maker_cbps, std::int64_t taker_cbps) {
+    out += "{\"maker\":\"";
+    append_decimal_raw(out, maker_cbps * 100);
+    out += "\",\"taker\":\"";
+    append_decimal_raw(out, taker_cbps * 100);
+    out += "\",\"buyer\":\"0.00000000\",\"seller\":\"0.00000000\"}";
+  };
+  std::string body = "{\"symbol\":";
+  append_json_string(body, symbols_[*idx].cfg.symbol);
+  body += ",\"standardCommission\":";
+  rates(body, fees_.maker_cbps(), fees_.taker_cbps());
+  body += ",\"specialCommission\":";
+  rates(body, 0, 0);
+  body += ",\"taxCommission\":";
+  rates(body, 0, 0);
+  body +=
+      ",\"discount\":{\"enabledForAccount\":false,\"enabledForSymbol\":false,"
+      "\"discountAsset\":\"BNB\",\"discount\":\"0.00000000\"}}";
+  return OpResult::ok(std::move(body));
+}
+
 OpResult Impl::op_cancel_all(Account& a, const ParamList& p) {
   const std::string_view symbol = p.get("symbol");
   if (symbol.empty()) return OpResult::error(400, -1102, mandatory("symbol"));

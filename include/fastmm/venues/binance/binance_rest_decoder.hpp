@@ -3,8 +3,11 @@
 //   GET /api/v3/exchangeInfo  -> per-symbol filters (rest-api.md "Exchange information",
 //                                filters.md PRICE_FILTER / LOT_SIZE / NOTIONAL / MIN_NOTIONAL)
 //   GET /api/v3/time          -> serverTime
+//   GET /api/v3/account/commission -> the account's fee rates on one symbol (rest-api.md
+//                                "Query Commission Rates", faqs/commission_faq.md)
 //   {"code":..,"msg":..}      -> error envelope (errors.md)
 //   POST /api/v3/userDataStream -> listenKey (legacy; the sim exchange)
+#include "fastmm/core/fees.hpp"
 #include "fastmm/core/fixed_point.hpp"
 
 #include <cstdint>
@@ -49,8 +52,20 @@ struct ExchangeInfo {
   std::vector<SymbolFilters> symbols;
 };
 
+// The rates a fill on the symbol pays: standard, special and tax commission added up
+// (commission_faq.md "How is the commission calculated?"), maker and taker each plus the larger of
+// the buyer and seller rates. `side_dependent` when buyer and seller differ, which one maker/taker
+// pair cannot express. The BNB discount is left out: a commission paid in BNB is not booked
+// (FeeAsset::Other). 1 cbps = 1e-6: finer rates are rounded to the nearest cbps.
+struct CommissionRates {
+  std::string symbol;
+  FeeRates rates;
+  bool side_dependent = false;
+};
+
 // Returns an error description or empty on success.
 std::string decode_exchange_info(std::string_view json, ExchangeInfo& out);
+std::string decode_commission(std::string_view json, CommissionRates& out);
 std::string decode_server_time(std::string_view json, std::int64_t& server_time_ms);
 // True when the body is a {"code":..,"msg":..} error envelope.
 bool decode_rest_error(std::string_view json, int& code, std::string& msg);

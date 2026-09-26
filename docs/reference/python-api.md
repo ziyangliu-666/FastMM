@@ -91,9 +91,12 @@ An unbounded side prints as `-inf` or `inf`. Override `validate(self) -> Optiona
 | Direct orders | `send(inst, side, price, qty, *, post_only=False, reduce_only=False, ioc=False, tag=0) -> int`, `send_raw(...)`, `cancel(order_id) -> bool`, `replace(order_id, price, qty)`, `replace_raw(...)`, `order(order_id) -> Order or None`, `open_qty(inst, side)`, `open_qty_raw(inst, side)` |
 | Timers | `every(period_ns, tag=0) -> int`, `once(delay_ns, tag=0) -> int`, `cancel_timer(timer_id) -> bool` |
 | Control | `quoting_enabled`, `killed`, `request_stop()` (the run ends after the current event) |
+| Venue state | `fees(inst)` -> `Fees` (`maker_bps`, `taker_bps`, `maker_cbps`, `taker_cbps`), `risk_headroom(inst)` -> `RiskHeadroom`, `venue_health(venue=0)` -> `VenueHealth` ([Strategy API](strategy-api.md#fees-risk-headroom-and-venue-health)) |
 | Randomness | `random()` in [0, 1), `randint(lo, hi)` inclusive, from the engine's seeded RNG |
 
 `set_quotes` takes sequences of `(price, qty)` pairs, level 0 first, at most 8 per side (`None` is an empty side). It returns `False`, and the quotes are ignored, while quoting is disabled. More than 8 levels, a non-finite price or quantity, or a negative quantity raise `ValueError` before the engine is touched; a non-positive price or a zero quantity drops the level, as `DesiredQuotes::bid/ask` do in C++.
+
+`RiskHeadroom` has `order_tokens`, `open_orders` (int), `max_order_qty`, `max_order_notional`, `buy_qty`, `sell_qty`, `gross_notional`, `net_buy_notional`, `net_sell_notional`, `loss_budget` (float, each with a `_raw` int); a limit that is off is `None`. `VenueHealth` has `feed_lag_ns`, `feed_lag_base_ns`, `feed_lag_excess_ns`, `ack_rtt_ns`, `ack_rtt_smoothed_ns`, `md_updated_ns`, `ack_updated_ns`, `md_samples`, `ack_samples`, `gate_engagements` and `gated`. Hot hooks (`@fastmm.hot`) do not see these.
 
 `send` and `replace` raise `fastmm.OrderRejected` with `.reason`, the `RejectReason` name (`"InvalidTag"` for a tag in the quote manager's range, `"UnknownOrder"`, risk reasons such as `"MaxPosition"`). `cancel` returns `False` for an unknown or terminal order.
 

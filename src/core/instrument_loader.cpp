@@ -101,4 +101,42 @@ InstrumentTable load_instruments(const Config& cfg) {
   return table;
 }
 
+FeeTable fee_table(const Config& cfg,
+                   const InstrumentTable* table,
+                   const std::vector<std::string>* venue_names) {
+  FeeTable t;
+  if (!cfg.venues.empty())
+    t.set_default(FeeRates::from_bps(cfg.venues[0].fees.maker_bps, cfg.venues[0].fees.taker_bps));
+  const auto rates = [&](const InstrumentSection& is) {
+    const VenueSection* v = cfg.venue(is.venue);
+    const FeesSection vf = v != nullptr ? v->fees : FeesSection{};
+    return FeeRates::from_bps(is.maker_bps.value_or(vf.maker_bps),
+                              is.taker_bps.value_or(vf.taker_bps));
+  };
+  if (table == nullptr) {
+    for (std::size_t k = 0; k < cfg.instruments.size() && k < kMaxInstruments; ++k)
+      t.set_instrument(InstrumentId{static_cast<std::uint32_t>(k)}, rates(cfg.instruments[k]));
+    return t;
+  }
+  for (const Instrument& inst : *table) {
+    std::string_view venue;
+    if (venue_names != nullptr && inst.venue.value < venue_names->size()) {
+      venue = (*venue_names)[inst.venue.value];
+    } else if (inst.venue.value < cfg.venues.size()) {
+      venue = cfg.venues[inst.venue.value].name;
+    }
+    for (const InstrumentSection& is : cfg.instruments) {
+      if (is.venue == venue && is.symbol == inst.symbol.view()) {
+        t.set_instrument(inst.id, rates(is));
+        break;
+      }
+    }
+    if (!t.has_override(inst.id)) {
+      if (const VenueSection* v = cfg.venue(venue))
+        t.set_instrument(inst.id, FeeRates::from_bps(v->fees.maker_bps, v->fees.taker_bps));
+    }
+  }
+  return t;
+}
+
 }  // namespace fastmm

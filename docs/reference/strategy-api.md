@@ -175,6 +175,23 @@ auto id = ctx.send(NewOrderRequest::limit(inst.id, Side::Buy, px, qty).post_only
 if (!id) return FASTMM_LOG_WARN("order refused: {}", id.error());  // e.g. RejectReason::MaxPosition
 ```
 
+### Fees, risk headroom and venue health
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#venue_state -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<Ctx>().fees(InstrumentId{})), const FeeRates&>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{})), RiskHeadroom>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
+```
+
+| Method | Returns |
+|---|---|
+| `fees(id)` | `FeeRates`: `maker_cbps`, `taker_cbps` (1 cbps = 0.01 bps; positive is a fee, negative a rebate), `maker_bps()`, `taker_bps()`, `fee(notional, liquidity)`. The instrument's `maker_bps` / `taker_bps`, else its venue's `[venues.<x>.fees]`; with `fetch_fees` the account's own rates ([Binance Spot](venues.md#fee-rates)). A backtest charges these rates; a live venue reports the commission of each fill itself |
+| `risk_headroom(id)` | `RiskHeadroom`: what each `[risk]` limit still admits on the instrument now, computed from the inputs the next check uses; an order of exactly a room passes that check and one lot more is refused. `order_tokens` (rate limiter), `open_orders`, `max_order_qty`, `max_order_notional`, `buy_qty` / `sell_qty` (`max_position`, open orders on that side counted, rounded down to the lot), `gross_notional`, `net_buy_notional` / `net_sell_notional` (exposure an order that does not reduce its position may add), `loss_budget` (`max_loss` plus net PnL; the kill switch trips at 0). A limit that is off reads `RiskHeadroom::kUnlimited` or the type's `max()`. Notionals are in the reporting currency with `[accounting]`. `fastmm-gateway`'s account guards are not included |
+| `venue_health(venue)` | `VenueHealthView`: `feed_lag` (`recv_ts - exch_ts` of the venue's latest market-data message with a venue time), `feed_lag_base` (its minimum over the last 8 s), `feed_lag_excess`, `ack_rtt` and `ack_rtt_smoothed` (engine time from sending a new order to consuming its first ack; smoothed as `srtt += (rtt - srtt) / 8`), `md_updated`, `ack_updated`, sample counts, `gate_engagements` and `gated` ([Feed-lag gate](../explanation/risk-model.md#feed-lag-gate)). Zero before the first sample |
+
+The three are computed from journaled inputs, so replay returns the same values. `venue_health` costs one lookup; `risk_headroom` does the work of a risk check. While the feed-lag gate holds a venue, `set_quotes` on its instruments returns false.
+
 ## Book
 
 `on_book` receives the engine's `L2Book`; any type modelling `BookView` has the same read API:

@@ -387,6 +387,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Bool,
      false,
      "self-trade prevention against our own resting orders (default true)"},
+    {"risk",
+     "max_feed_lag_ms",
+     KeyType::Int,
+     false,
+     "pull a venue's quotes and refuse orders that could rest there without reducing the "
+     "position while its market data arrives this much later than its baseline, ms; resumes "
+     "100 ms after the last message over it (default 0: off)"},
     // [gateway]
     {"gateway",
      "orders_per_sec",

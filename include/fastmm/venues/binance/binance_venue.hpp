@@ -72,6 +72,7 @@ struct BinanceVenueConfig {
   bool ws_order_api = true;  // false: REST order entry only
   bool emit_ack_from_response = true;
   bool position_from_balance = false;  // forward outboundAccountPosition as PositionUpdate
+  bool fetch_fees = false;             // account_fees(): GET /api/v3/account/commission per symbol
   bool cancel_on_order_channel_loss = true;
   bool allow_offline_reference_data = false;  // keep config tick/lot if exchangeInfo fails
   bool supports_replace = true;               // cancelReplace
@@ -103,6 +104,8 @@ class BinanceVenue final : public Venue {
   [[nodiscard]] std::string_view name() const noexcept override { return cfg_.name; }
   [[nodiscard]] VenueCaps caps() const noexcept override;
   Result<void, std::string> load_reference_data(InstrumentTable& instruments) override;
+  Result<std::vector<VenueFee>, std::string> account_fees(
+      const InstrumentTable& instruments) override;
   void attach(const SymbolTable& symbols,
               const InstrumentTable& instruments,
               EventSink& md_sink,

@@ -11,6 +11,7 @@
 // inline secret (> 32 chars, no ${) is rejected unless allow_inline_secrets; redacted()
 // prints the config with secrets masked; validation errors carry line:col.
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/quote_manager.hpp"
@@ -165,6 +166,7 @@ struct RiskSection {
   int orders_per_sec = 0;
   int burst = 0;
   bool stp = true;
+  int max_feed_lag_ms = 0;  // 0 = off
 };
 
 // fastmm-gateway's account guards: one venue's account, shared by every attached strategy.
@@ -259,5 +261,14 @@ class Config {
 
 // Builds the dense instrument table (src/core/instrument_loader.cpp). Throws ConfigError.
 InstrumentTable load_instruments(const Config& cfg);
+
+// The fee rates of each instrument: its [[instruments]] maker_bps / taker_bps, else its venue's
+// [venues.<x>.fees]; the first venue's are the default for ids outside the configuration. Without
+// `table`, instrument k of the configuration is InstrumentId k (load_instruments); with it, each
+// instrument of `table` takes the entry with its venue and symbol, `venue_names` naming its venue
+// ids (a table from fastmm-gateway, whose order is not the configuration's).
+FeeTable fee_table(const Config& cfg,
+                   const InstrumentTable* table = nullptr,
+                   const std::vector<std::string>* venue_names = nullptr);
 
 }  // namespace fastmm

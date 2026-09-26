@@ -15,10 +15,12 @@
 #include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 namespace fastmm {
@@ -55,6 +57,18 @@ class TokenBucket {
     tokens_ -= kScale;
     return true;
   }
+  // Whole tokens try_take(now) would find, without taking one or refilling (RiskHeadroom).
+  // Unlimited (rate 0): INT64_MAX.
+  [[nodiscard]] std::int64_t available(Timestamp now) const noexcept {
+    if (rate_ == 0) return std::numeric_limits<std::int64_t>::max();
+    std::int64_t t = tokens_;
+    if (now > last_) {
+      t += static_cast<std::int64_t>(static_cast<Int128>((now - last_).ns) * rate_ * kScale /
+                                     1'000'000'000);
+      if (t > capacity_) t = capacity_;
+    }
+    return t / kScale;
+  }
   // Moves the refill reference to `now` without adding tokens (the engine's start time).
   void rebase(Timestamp now) noexcept { last_ = now; }
   [[nodiscard]] std::int64_t tokens() const noexcept { return tokens_ / kScale; }
@@ -74,6 +88,7 @@ struct OrderIntent {
   OrderType type = OrderType::Limit;
   Price price;
   Qty qty;
+  TimeInForce tif = TimeInForce::Gtc;  // Ioc / Fok never rest (the feed-lag gate lets them pass)
 };
 
 // Dynamic inputs the engine gathers for one check.
@@ -86,6 +101,7 @@ struct RiskInputs {
   Qty open_same_side{};           // leaves of our open orders on the same side
   std::uint32_t open_orders = 0;  // open orders on the instrument
   Price best_own_opposite{};      // best price of our own resting orders on the other side
+  bool feed_lagged = false;       // the venue's feed-lag gate holds (VenueHealth::gated)
 };
 
 struct RiskStats {
@@ -210,6 +226,54 @@ class RiskEngine {
     return false;
   }
 
+  // ---- headroom (read-only) ------------------------------------------------------------------
+  // `buy` and `sell` are the inputs a buy and a sell on `inst` would be checked with; `net_pnl` is
+  // what on_pnl is given. The exposure rooms are those of the reporting currency (the engine's
+  // totals); an order in another settlement currency adds its notional at that currency's rate.
+  [[nodiscard]] RiskHeadroom headroom(const Instrument& inst,
+                                      const RiskInputs& buy,
+                                      const RiskInputs& sell,
+                                      Notional net_pnl) const noexcept {
+    RiskHeadroom h;
+    h.order_tokens = bucket_.available(buy.now);
+    if (limits_.max_open_orders > 0) {
+      const std::int64_t left = static_cast<std::int64_t>(limits_.max_open_orders) -
+                                static_cast<std::int64_t>(buy.open_orders);
+      h.open_orders = left > 0 ? left : 0;
+    }
+    if (limits_.max_order_qty.is_positive()) h.max_order_qty = limits_.max_order_qty;
+    if (limits_.max_order_notional.is_positive()) h.max_order_notional = limits_.max_order_notional;
+    if (limits_.max_position.is_positive() && buy.position != nullptr) {
+      const std::int64_t m = limits_.max_position.raw;
+      const std::int64_t q = buy.position->qty.raw;
+      // Buy: predicted = q + open + x passes while <= m, or while |predicted| <= |q| (q < 0).
+      std::int64_t b = m - q - buy.open_same_side.raw;
+      if (q < 0) b = std::max(b, -2 * q - buy.open_same_side.raw);
+      std::int64_t s = m + q - sell.open_same_side.raw;
+      if (q > 0) s = std::max(s, 2 * q - sell.open_same_side.raw);
+      h.buy_qty = lot_floor(inst, b);
+      h.sell_qty = lot_floor(inst, s);
+    }
+    if (limits_.max_gross_notional.is_positive()) {
+      const std::int64_t g = limits_.max_gross_notional.raw - buy.gross_exposure.raw;
+      h.gross_notional = Notional::from_raw(g > 0 ? g : 0);
+    }
+    if (limits_.max_net_notional.is_positive()) {
+      // net + x passes while |net + x| <= max, or while it does not grow |net|.
+      const std::int64_t m = limits_.max_net_notional.raw;
+      const std::int64_t n = buy.net_exposure.raw;
+      std::int64_t b = m - n;
+      if (n < 0) b = std::max(b, -2 * n);
+      std::int64_t s = m + n;
+      if (n > 0) s = std::max(s, 2 * n);
+      h.net_buy_notional = Notional::from_raw(b > 0 ? b : 0);
+      h.net_sell_notional = Notional::from_raw(s > 0 ? s : 0);
+    }
+    if (limits_.max_loss.is_positive())
+      h.loss_budget = Notional::from_raw(limits_.max_loss.raw + net_pnl.raw);
+    return h;
+  }
+
   // ---- checks ---------------------------------------------------------------------------
   // Order of evaluation is the RejectReason enum order 1..15.
   [[nodiscard]] RejectReason check_new(const OrderIntent& o,
@@ -273,6 +337,8 @@ class RiskEngine {
         (!md.book_ts.valid() || in.now - md.book_ts > limits_.stale_md)) {
       return RejectReason::StaleMarketData;
     }
+    if (FASTMM_UNLIKELY(in.feed_lagged) && may_rest(o) && !reduces_position(o, in))
+      return RejectReason::FeedLag;
     if (o.type != OrderType::Market && md.collar_hi.is_positive() &&
         (o.price < md.collar_lo || o.price > md.collar_hi)) {
       return RejectReason::PriceCollar;
@@ -338,6 +404,17 @@ class RiskEngine {
     if (!bucket_.try_take(in.now)) return RejectReason::RateLimit;
     return RejectReason::None;
   }
+  // A limit order that is neither IOC nor FOK can rest at the venue.
+  static constexpr bool may_rest(const OrderIntent& o) noexcept {
+    return o.type != OrderType::Market && o.tif != TimeInForce::Ioc && o.tif != TimeInForce::Fok;
+  }
+  // The order, with our open orders on its side, only takes the position towards zero.
+  static constexpr bool reduces_position(const OrderIntent& o, const RiskInputs& in) noexcept {
+    if (in.position == nullptr) return false;
+    const std::int64_t q = in.position->qty.raw;
+    if (q == 0 || (q > 0) == (o.side == Side::Buy)) return false;
+    return in.open_same_side.raw + o.qty.raw <= (q < 0 ? -q : q);
+  }
   void update_flags() noexcept {
     fx_gate_ = fx_on_ && limits_.reads_totals();
     portfolio_ = fx_gate_ || limits_.max_gross_notional.is_positive() ||
@@ -346,6 +423,12 @@ class RiskEngine {
   // Would a `side` order at `px` trade against our own resting order at `own_opposite`?
   static constexpr bool at_or_better_cross(Side side, Price px, Price own_opposite) noexcept {
     return side == Side::Buy ? px >= own_opposite : px <= own_opposite;
+  }
+
+  static Qty lot_floor(const Instrument& inst, std::int64_t raw) noexcept {
+    if (raw <= 0) return Qty{};
+    if (!inst.lot.is_positive()) return Qty::from_raw(raw);
+    return Qty::from_raw(raw - raw % inst.lot.raw);
   }
 
   RiskLimits limits_{};

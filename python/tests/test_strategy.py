@@ -389,6 +389,58 @@ def test_context_api(example_config):
     assert t.random == s.random  # the engine RNG is seeded
 
 
+
+def test_fees_risk_headroom_and_venue_health(example_config):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            f = ctx.fees(0)
+            self.fees = (f.maker_bps, f.taker_bps, f.maker_cbps, f.taker_cbps)
+            self.start_health = ctx.venue_health()
+
+        def on_book(self, ctx, inst, book):
+            if hasattr(self, "order_id") or not book.valid:
+                return
+            before = ctx.risk_headroom(inst)
+            self.order_id = ctx.send(inst, BUY, book.best_bid[0] - 5.0, 0.002, post_only=True)
+            after = ctx.risk_headroom(inst)
+            self.rooms = (before.buy_qty, after.buy_qty, after.buy_qty_raw, after.sell_qty,
+                          before.open_orders, after.open_orders, after.order_tokens,
+                          after.max_order_qty, after.max_order_notional, after.loss_budget,
+                          after.gross_notional, after.net_buy_notional)
+
+        def on_order_update(self, ctx, u):
+            if u.order_id == getattr(self, "order_id", None) and u.state == "Live":
+                h = ctx.venue_health(0)
+                self.health = (h.ack_samples, h.ack_rtt_ns, h.ack_rtt_smoothed_ns, h.md_samples,
+                               h.gated, h.gate_engagements, h.feed_lag_ns >= h.feed_lag_base_ns,
+                               h.ack_updated_ns == ctx.now_ns)
+
+    cfg = _cfg(example_config)
+    cfg.set_instrument_fees(0, maker_bps=-0.5, taker_bps=3.0)
+    s = Probe()
+    fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=s)
+    assert s.fees == (-0.5, 3.0, -50, 300)
+    assert s.start_health.md_samples == 0 and s.start_health.ack_rtt_ns == 0
+    before_buy, after_buy, after_buy_raw, sell = s.rooms[:4]
+    assert before_buy == pytest.approx(0.05) and after_buy == pytest.approx(0.048)
+    assert after_buy_raw == 4_800_000 and sell == pytest.approx(0.05)
+    assert s.rooms[4:6] == (8, 7)
+    assert s.rooms[6] is None  # orders_per_sec is not set
+    assert s.rooms[7] == pytest.approx(0.01) and s.rooms[8] == pytest.approx(2000.0)
+    assert s.rooms[9] == pytest.approx(100.0, abs=1.0)
+    assert s.rooms[10] is None and s.rooms[11] is None
+    acks, rtt, srtt, md, gated, engagements, lag_ok, stamped = s.health
+    assert acks == 1 and rtt > 0 and srtt == rtt and md > 0
+    assert (gated, engagements, lag_ok, stamped) == (False, 0, True, True)
+    with pytest.raises(fastmm.StrategyError, match="venue id out of range"):
+        fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=_VenueOutOfRange())
+
+
+class _VenueOutOfRange(Strategy):
+    def on_start(self, ctx):
+        ctx.venue_health(99)
+
+
 def test_fill_view_mirrors_the_cpp_fill(example_config):
     class Taker(Strategy):
         def on_book(self, ctx, inst, book):

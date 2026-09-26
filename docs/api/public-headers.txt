@@ -39,6 +39,9 @@ tier1 fastmm/core/session_state.hpp
 tier1 fastmm/core/position.hpp
 tier1 fastmm/core/quote_manager.hpp
 tier1 fastmm/core/engine_config.hpp
+tier1 fastmm/core/fees.hpp
+tier1 fastmm/core/risk_limits.hpp
+tier1 fastmm/core/venue_health.hpp
 tier1 fastmm/core/log.hpp
 tier1 fastmm/core/book/book_view.hpp
 tier1 fastmm/core/book/l2_book.hpp

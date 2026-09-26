@@ -131,6 +131,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `sbe_ws_url` | string |  | SBE stream URL; empty = ws_url with stream. -> stream-sbe. |
 | `user_stream` | string |  | ws_api (default) \| listen_key \| none |
 | `position_from_balance` | boolean |  | derive positions from account balances |
+| `fetch_fees` | boolean |  | fastmm-live: fetch the account's maker and taker rates per symbol at start-up (GET /api/v3/account/commission) and use them instead of the configured fees; start-up fails when the request does (default false) |
 <!-- END config-keys -->
 
 #### `binance_usdm`
@@ -316,6 +317,7 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `orders_per_sec` | integer |  | token-bucket order rate, orders/s |
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
+| `max_feed_lag_ms` | integer |  | pull a venue's quotes and refuse orders that could rest there without reducing the position while its market data arrives this much later than its baseline, ms; resumes 100 ms after the last message over it (default 0: off) |
 <!-- END config-keys -->
 
 ## `[gateway]`
@@ -387,6 +389,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `latency_ack_jitter_us` | int | `latency_jitter_us` | Random jitter added to that latency, µs, seeded |
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
+| `md_arrival` | string | `"venue"` | When recorded market data reaches the strategy: `venue` at its venue time plus `latency_md_us`, `recorded` at the `recv_ts` it was recorded with plus `latency_md_us`, which replays the feed lag of a live journal (`[risk] max_feed_lag_ms` reads it); a message keeps its place behind the one before it |
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
 | `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
 | `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |

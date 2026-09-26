@@ -48,6 +48,10 @@ struct SimTransportConfig {
   LatencyParams order_out{microseconds(200), microseconds(50)};
   LatencyParams ack_in{microseconds(200), microseconds(50)};
   LatencyParams md_in{};
+  // Historical market data arrives at its recorded recv_ts (plus md_in) instead of its venue time
+  // (plus md_in), so the feed lag of the recording, and the staleness it brought, are replayed.
+  // Messages keep their order: one that was recorded earlier than its predecessor waits for it.
+  bool md_recorded_arrival = false;
   std::uint64_t seed = 1;
   FillModel fill_model = FillModel::Matching;
   std::int64_t queue_conservatism_bps = 10'000;

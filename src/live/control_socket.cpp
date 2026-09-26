@@ -192,6 +192,7 @@ std::string parse_limit(RiskLimits& l, std::string_view key, std::string_view va
   if (key == "fat_finger_bps") return integer(l.fat_finger_bps);
   if (key == "orders_per_sec") return integer(l.orders_per_sec);
   if (key == "burst") return integer(l.burst);
+  if (key == "max_feed_lag_ms") return integer(l.max_feed_lag_ms);
   if (key == "stale_md_ms") {
     std::int64_t ms = 0;
     const auto r = std::from_chars(value.data(), value.data() + value.size(), ms);
@@ -212,7 +213,7 @@ std::string parse_limit(RiskLimits& l, std::string_view key, std::string_view va
   }
   return "unknown limit '" + std::string(key) +
          "' (max_order_qty, max_order_notional, max_position, max_open_orders, price_collar_bps, "
-         "fat_finger_bps, stale_md_ms, max_loss, orders_per_sec, burst, stp)";
+         "fat_finger_bps, stale_md_ms, max_loss, orders_per_sec, burst, stp, max_feed_lag_ms)";
 }
 
 }  // namespace

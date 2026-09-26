@@ -204,6 +204,54 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
   return {};
 }
 
+// GET /api/v3/account/commission for every instrument of this venue (weight 20 each), signed like
+// every account request (HMAC or Ed25519). Fails when the connector has no credentials to sign
+// with: the operator asked for the account's rates and would otherwise quote on the config's.
+Result<std::vector<VenueFee>, std::string> BinanceVenue::account_fees(
+    const InstrumentTable& instruments) {
+  std::vector<VenueFee> out;
+  if (!cfg_.fetch_fees) return out;
+  if (!signer_.usable())
+    return fail(fmt::format(
+        "{}: fetch_fees needs api_key and a secret or Ed25519 key to sign the request", cfg_.name));
+  SymbolTable symbols;
+  BlockingHttpOptions opts;
+  opts.ca_file = cfg_.ca_file;
+  opts.insecure_tls = cfg_.insecure_tls;
+  opts.timeout_ms = cfg_.http_timeout_ms;
+  try {
+    BlockingHttp http(cfg_.rest_url, opts);
+    BinanceOrderEncoder enc(signer_, symbols, cfg_.recv_window_ms);
+    for (const Instrument& inst : instruments) {
+      if (inst.venue != id_) continue;
+      RestRequest rr;
+      if (!enc.encode_rest_commission(inst.symbol.view(), venue_time_ms(), rr))
+        return fail(fmt::format(
+            "{}: cannot sign account/commission for {}", cfg_.name, inst.symbol.view()));
+      const HttpReply reply = http.request(
+          "GET", std::string(rr.path) + "?" + std::string(rr.query.view()), api_headers());
+      if (!reply.ok())
+        return fail(fmt::format(
+            "{}: account/commission for {} failed: {}",
+            cfg_.name,
+            inst.symbol.view(),
+            reply.error.empty() ? fmt::format("HTTP {} {}", reply.status, reply.body.substr(0, 200))
+                                : reply.error));
+      CommissionRates c;
+      if (const std::string err = decode_commission(reply.body, c); !err.empty())
+        return fail(fmt::format("{}: {}: {}", cfg_.name, inst.symbol.view(), err));
+      if (c.side_dependent)
+        FASTMM_LOG_WARN("{}: {} charges buyers and sellers differently; the larger rate is used",
+                        cfg_.name,
+                        inst.symbol.view());
+      out.push_back({inst.id, c.rates});
+    }
+  } catch (const std::exception& e) {
+    return fail(fmt::format("{}: account/commission: {}", cfg_.name, std::string_view(e.what())));
+  }
+  return out;
+}
+
 // ---- wiring ---------------------------------------------------------------------------------
 
 void BinanceVenue::attach(const SymbolTable& symbols,
@@ -1815,6 +1863,7 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
   c.stale_ms = static_cast<std::uint32_t>(x.integer("stale_ms", c.stale_ms));
   c.dead_ms = static_cast<std::uint32_t>(x.integer("dead_ms", c.dead_ms));
   c.position_from_balance = x.flag("position_from_balance", false);
+  c.fetch_fees = x.flag("fetch_fees", false);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
   c.amend_keep_priority = x.flag("amend_keep_priority", true);

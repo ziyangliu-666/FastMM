@@ -23,24 +23,36 @@ The first failing check decides the reason.
 | 5 | `InvalidLot` | the quantity is not a multiple of the lot or outside `min_qty`/`max_qty` | `lot`, `min_qty`, `max_qty` |
 | 6 | `BelowMinNotional` | the order notional (the mid for market orders) is below the minimum | `min_notional` |
 | 7 | `StaleMarketData` | the instrument's book is older than the limit, or there is none | `stale_md_ms` |
-| 8 | `PriceCollar` | a limit price is further from the mid than the collar | `price_collar_bps` |
-| 9 | `FatFinger` | a limit price is further from the last trade than the band | `fat_finger_bps` |
-| 10 | `MaxOrderQty` | the quantity exceeds the limit | `max_order_qty` |
-| 11 | `MaxOrderNotional` | the order value exceeds the limit | `max_order_notional` |
-| 12 | `MaxPosition` | position plus same-side open orders plus this order would exceed the limit in absolute value and increase exposure | `max_position` |
-| 13 | `FxRateUnknown` | the order adds to exposure in a settlement currency whose rate is unknown or stale, while a limit reads the totals | `[accounting]` |
-| 14 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks would pass the cap, and this order adds to it | `max_gross_notional` |
-| 15 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap | `max_net_notional` |
-| 16 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
-| 17 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
-| 18 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 8 | `FeedLag` | the venue's feed-lag gate holds, the order could rest (not IOC, FOK or market) and it does not only reduce the position ([Feed-lag gate](#feed-lag-gate)) | `max_feed_lag_ms` |
+| 9 | `PriceCollar` | a limit price is further from the mid than the collar | `price_collar_bps` |
+| 10 | `FatFinger` | a limit price is further from the last trade than the band | `fat_finger_bps` |
+| 11 | `MaxOrderQty` | the quantity exceeds the limit | `max_order_qty` |
+| 12 | `MaxOrderNotional` | the order value exceeds the limit | `max_order_notional` |
+| 13 | `MaxPosition` | position plus same-side open orders plus this order would exceed the limit in absolute value and increase exposure | `max_position` |
+| 14 | `FxRateUnknown` | the order adds to exposure in a settlement currency whose rate is unknown or stale, while a limit reads the totals | `[accounting]` |
+| 15 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks would pass the cap, and this order adds to it | `max_gross_notional` |
+| 16 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap | `max_net_notional` |
+| 17 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
+| 18 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
+| 19 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
 - `MaxPosition` counts same-side open orders, so a quote ladder cannot exceed `max_position` even if it fills entirely.
-- Market orders skip the price checks (4, 8, 9, 17).
-- The notional of checks 6 and 11 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
-- Checks 14 and 15 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)): the order's notional at its currency's rate, on top of the converted totals.
+- Market orders skip the price checks (4, 9, 10, 18).
+- The notional of checks 6 and 12 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
+- Checks 15 and 16 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)): the order's notional at its currency's rate, on top of the converted totals.
+
+## Feed-lag gate
+
+The stale-market-data check (7) measures the time since the book last changed. During venue congestion messages keep arriving, each tens of milliseconds old, so it never fires. The feed-lag gate measures the age of each message instead (`include/fastmm/core/venue_health.hpp`):
+
+- Every market-data message with a venue time (book deltas, trades, tickers; snapshots excluded) gives a lag `recv_ts - exch_ts`. The host and venue clocks differ by an unknown constant, so the lag is compared with its baseline, the minimum over the last 8 s (eight 1 s buckets on the engine clock). A host clock step moves every lag by the step: a step down is absorbed at once, a step up after at most 8 s. A congestion episode shorter than 8 s does not raise the baseline.
+- With `[risk] max_feed_lag_ms` set, a message whose lag exceeds the baseline by more than the limit engages the gate for its venue, and every such message holds it for 100 ms more. While it holds, the venue's quotes are pulled, `set_quotes` on its instruments returns false and new orders and replaces that could rest are refused (`FeedLag`, check 8). IOC, FOK and market orders pass, and so does an order that, with our open orders on its side, takes the position towards zero without crossing it. The first message 100 ms after the last late one releases it; the strategy's next `set_quotes` places the quotes again.
+- The inputs are the journaled message headers and the engine clock, so a replay gates at the same events. A backtest over a live journal gates only with `[backtest] md_arrival = "recorded"`, which delivers each message at its recorded `recv_ts`.
+- Venue times of the WebSocket JSON streams are in milliseconds, so the lag has 1 ms steps there; SBE streams carry microseconds.
+
+Binance Spot BTCU (session of 2026-09-26, 3 h, SBE market data): the excess lag of each message rises from 0.2 ms to about 36 ms within 100 ms of a price burst and decays in about 300 ms; the ack latency of our orders regressed on it gives R² 0.41. A 2 ms limit held the gate for 1.4 % of the session, a 5 ms limit for 0.6 %. In backtests of that session (`configs/research/lead-mm-btcu-live-bt.toml`, `md_arrival = "recorded"`), 2 ms took the fills from 235 to 180 and 5 ms to 191, with 11 % and 2 % more orders; the 1 s markout moved from -0.08 bps to -0.05 and -0.04 bps, inside each other's 95 % intervals.
 
 ## Currencies
 

@@ -83,7 +83,7 @@ The schema (checked 2026-09-25) describes a user trade's `direction` as "Trade d
 | md (`md_format = "sbe"`) | `<sbe_ws_url>?streams=<sym>@depth/<sym>@bestBidAsk/<sym>@trade` | binary SBE frames, dispatch by template id |
 | user | `<ws_api_url>` + `userDataStream.subscribe.signature` (HMAC) or `session.logon` + `userDataStream.subscribe` (Ed25519) | `executionReport`, `outboundAccountPosition` |
 | order | `<ws_api_url>`: `order.place` / `order.cancel` / `order.amend.keepPriority` / `order.cancelReplace` / `openOrders.status` / `openOrders.cancelAll` | order entry; REST fallback |
-| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `openOrders`, REST order entry, kill-switch cancel-all |
+| rest | `<rest_url>` | `exchangeInfo`, `depth`, `time`, `openOrders`, `account/commission` (`fetch_fees`), REST order entry, kill-switch cancel-all |
 
 The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`) remains as `user_stream = "listen_key"` for the simulator only; Binance removed it on 2026-02-20.
 
@@ -94,6 +94,12 @@ The listenKey user stream (`POST/PUT /api/v3/userDataStream` + `/ws/<listenKey>`
 * Binance supports `session.logon` with Ed25519 keys only, on production, the Spot testnet (`wss://ws-api.testnet.binance.vision/ws-api/v3`) and Demo Mode (`wss://demo-ws-api.binance.com/ws-api/v3`); RSA keys are not supported by FastMM.
 
 Order encode with HMAC signing: 523 ns (`bench/bench_order_encoders.cpp`, [bench/README.md](../../bench/README.md), release-native, one pinned core, 2026-09-23). `BM_Encode_BinanceOrderPlace_Session` and `_Ed25519` are not in `bench/results/latest`.
+
+### Fee rates
+
+`fetch_fees = true` makes `fastmm-live` ask for the account's rates on each configured symbol at start-up, after `exchangeInfo`: `GET /api/v3/account/commission?symbol=S` (signed, weight 20 per symbol; HMAC and Ed25519 keys). `/sapi/v1/asset/tradeFee`, the bulk query, is not on the Spot testnet or in Demo Mode. The rate of a fill is `standardCommission` + `specialCommission` + `taxCommission`, maker or taker, plus the larger of each group's `buyer` and `seller` rate (a warning when they differ); the BNB `discount` is left out, because a commission paid in BNB is not booked (`FeeAsset::Other`). Rates are rounded to 1 cbps (1e-6).
+
+The fetched rates replace `[venues.<x>.fees]` and `[[instruments]] maker_bps` / `taker_bps` for those symbols: `ctx.fees` returns them, and a line per symbol logs them, as a warning when they differ from the configuration. They are written as `maker_bps` / `taker_bps` into the configuration the journal and the store embed, so a replay and a backtest over the journal use them. A refused request stops the start (exit code 4). Fills are still booked with the commission each `executionReport` carries. `fastmm-gateway` does not fetch them; a strategy attached to it reads its own configuration.
 
 ### SBE market data
 
@@ -125,6 +131,7 @@ Parameters go in the query string. Signed requests carry `timestamp`, `recvWindo
 | `GET /api/v3/exchangeInfo?symbols=["S"]` (percent-encoded) | public | `serverTime`, `rateLimits[]{rateLimitType,interval,intervalNum,limit}`, `symbols[]{symbol,status,baseAsset,quoteAsset,orderTypes[],filters[]}`; filters `PRICE_FILTER.tickSize`, `LOT_SIZE.{stepSize,minQty,maxQty}`, `NOTIONAL.{minNotional,maxNotional}` or `MIN_NOTIONAL.minNotional` |
 | `GET /api/v3/time` | public | `{"serverTime": ms}` |
 | `GET /api/v3/depth?symbol=S&limit=1000` | public | `{"lastUpdateId":L,"bids":[["px","qty"]...],"asks":[...]}` |
+| `GET /api/v3/account/commission?symbol=S` | signed, with `fetch_fees` | `standardCommission`, `specialCommission`, `taxCommission` `{maker,taker,buyer,seller}` |
 | `GET /api/v3/openOrders[?symbol=S]` | signed | array of `{symbol,orderId,clientOrderId,price,origQty,executedQty,status,timeInForce,type,side}` |
 | `DELETE /api/v3/openOrders?symbol=S` | signed | 200 with an array; `400 {"code":-2011,...}` is treated as "nothing open" |
 | `POST /api/v3/order`, `DELETE /api/v3/order`, `POST /api/v3/order/cancelReplace`, `PUT /api/v3/order/amend/keepPriority` | signed; same parameters as the WS API methods below | same bodies as the WS API `result` / `error` objects |

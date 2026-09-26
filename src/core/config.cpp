@@ -480,6 +480,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "orders_per_sec", r.orders_per_sec);
     get(*t, "burst", r.burst);
     get(*t, "stp", r.stp);
+    get(*t, "max_feed_lag_ms", r.max_feed_lag_ms);
+    if (r.max_feed_lag_ms < 0) throw ConfigError("risk.max_feed_lag_ms must be >= 0");
   }
 
   // [gateway]
@@ -612,6 +614,7 @@ RiskLimits Config::risk_limits() const {
   l.orders_per_sec = static_cast<std::uint32_t>(risk.orders_per_sec);
   l.burst = static_cast<std::uint32_t>(risk.burst);
   l.stp = risk.stp;
+  l.max_feed_lag_ms = static_cast<std::uint32_t>(risk.max_feed_lag_ms);
   return l;
 }
 
@@ -722,6 +725,7 @@ std::string Config::redacted() const {
   kv("orders_per_sec", risk.orders_per_sec);
   kv("burst", risk.burst);
   kv("stp", risk.stp);
+  if (risk.max_feed_lag_ms != 0) kv("max_feed_lag_ms", risk.max_feed_lag_ms);
   if (gateway.any()) {
     out += "\n[gateway]\n";
     kv("orders_per_sec", gateway.orders_per_sec);
@@ -895,6 +899,9 @@ std::string Config::effective_toml() const {
   r.insert("orders_per_sec", static_cast<std::int64_t>(risk.orders_per_sec));
   r.insert("burst", static_cast<std::int64_t>(risk.burst));
   r.insert("stp", risk.stp);
+  // Only when set, so a configuration without it keeps its effective text and hash.
+  if (risk.max_feed_lag_ms != 0)
+    r.insert("max_feed_lag_ms", static_cast<std::int64_t>(risk.max_feed_lag_ms));
   root.insert("risk", std::move(r));
 
   // Only when set, so a configuration without it keeps its effective text and hash.

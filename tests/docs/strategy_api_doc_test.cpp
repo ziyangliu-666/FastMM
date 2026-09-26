@@ -158,6 +158,14 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().trip_kill(KillReason::Strategy
 static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 // [end:context]
 
+// ---- venue state: fees, risk headroom, venue health ---------------------------------------------
+
+// [start:venue_state]
+static_assert(std::same_as<decltype(lvalue<Ctx>().fees(InstrumentId{})), const FeeRates&>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{})), RiskHeadroom>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
+// [end:venue_state]
+
 // ---- the book a hook receives -------------------------------------------------------------------
 
 // [start:book]

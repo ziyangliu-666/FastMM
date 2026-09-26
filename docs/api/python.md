@@ -68,6 +68,18 @@ An `@every` method runs on a second thread and publishes parameters to the hot h
     options:
       show_root_full_path: false
 
+::: fastmm._core.Fees
+    options:
+      show_root_full_path: false
+
+::: fastmm._core.RiskHeadroom
+    options:
+      show_root_full_path: false
+
+::: fastmm._core.VenueHealth
+    options:
+      show_root_full_path: false
+
 ## Configuration and results
 
 ::: fastmm.BacktestConfig
