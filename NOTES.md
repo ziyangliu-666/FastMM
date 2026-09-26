@@ -3,6 +3,14 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Performance: the hot path is sensitive to code layout (2026-09-26).** Booking funding cost
+BM_EngineStep_Sim +3.5% (2263 → 2338 ns) and BM_TickToOrder_Sim +3–5% with no new work on the
+benchmarked path: moving the funding state off the hot data did not recover it, and an edit that
+executes nothing in the benchmark (naming padding in a store record) reproduced it (2370 ns). Base
+rebuilt at the same path length stayed at 2258 ns, so it is not build noise. Accepted, because funding
+is a correctness fix. Next performance item: make the build insensitive to layout (function
+alignment, `scripts/build-pgo.sh`), measured, before layout drift accumulates.
+
 ## Next direction (chosen 2026-09-26): a crypto desk can run on this
 
 The gateway's first version is complete. Next, what a crypto market-making desk would hit first. Step 1
