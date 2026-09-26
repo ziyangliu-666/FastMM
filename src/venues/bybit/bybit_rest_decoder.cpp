@@ -44,20 +44,65 @@ std::string decode_instruments(std::string_view json, std::vector<InstrumentInfo
     if (e["baseCoin"].get(s) == sj::SUCCESS) i.base_coin = std::string(s);
     if (e["quoteCoin"].get(s) == sj::SUCCESS) i.quote_coin = std::string(s);
     if (e["status"].get(s) == sj::SUCCESS) i.status = std::string(s);
+    if (e["settleCoin"].get(s) == sj::SUCCESS) i.settle_coin = std::string(s);
+    if (e["contractType"].get(s) == sj::SUCCESS) i.contract_type = std::string(s);
     dom::element lot;
     dom::element price;
     if (e["lotSizeFilter"].get(lot) != sj::SUCCESS || e["priceFilter"].get(price) != sj::SUCCESS)
       return "instruments-info: " + i.symbol + " lacks lotSizeFilter/priceFilter";
     if (!fixed_field(price, "tickSize", i.tick))
       return "instruments-info: bad tickSize for " + i.symbol;
-    if (!fixed_field(lot, "basePrecision", i.base_precision))
-      return "instruments-info: bad basePrecision for " + i.symbol;
+    // Spot states the quantity step as basePrecision, derivatives as qtyStep.
+    if (!fixed_field(lot, "basePrecision", i.base_precision) &&
+        !fixed_field(lot, "qtyStep", i.base_precision))
+      return "instruments-info: bad basePrecision/qtyStep for " + i.symbol;
     static_cast<void>(fixed_field(lot, "minOrderQty", i.min_qty));
     static_cast<void>(fixed_field(lot, "maxOrderQty", i.max_qty));
-    static_cast<void>(fixed_field(lot, "minOrderAmt", i.min_amount));
+    if (!fixed_field(lot, "minOrderAmt", i.min_amount))
+      static_cast<void>(fixed_field(lot, "minNotionalValue", i.min_amount));
     static_cast<void>(fixed_field(lot, "maxOrderAmt", i.max_amount));
     out.push_back(std::move(i));
   }
+  return {};
+}
+
+std::string decode_positions(std::string_view json,
+                             std::vector<PositionRecord>& out,
+                             std::string& next_cursor) {
+  next_cursor.clear();
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "position/list: invalid JSON";
+  std::int64_t code = -1;
+  if (root["retCode"].get(code) != sj::SUCCESS) return "position/list: missing retCode";
+  if (code != 0) {
+    std::string_view msg;
+    if (root["retMsg"].get(msg) != sj::SUCCESS) msg = {};
+    return "position/list: retCode " + std::to_string(code) + " " + std::string(msg);
+  }
+  dom::array list;
+  if (root["result"]["list"].get(list) != sj::SUCCESS) return "position/list: missing result.list";
+  for (dom::element e : list) {
+    PositionRecord p;
+    std::string_view s;
+    if (e["symbol"].get(s) != sj::SUCCESS) return "position/list: entry without symbol";
+    p.symbol = std::string(s);
+    std::int64_t idx = 0;
+    if (e["positionIdx"].get(idx) != sj::SUCCESS)
+      return "position/list: " + p.symbol + " without positionIdx";
+    p.position_idx = static_cast<int>(idx);
+    Qty size{};
+    if (!fixed_field(e, "size", size)) return "position/list: bad size for " + p.symbol;
+    std::string_view side;
+    if (e["side"].get(side) != sj::SUCCESS) side = {};
+    p.qty = side == "Sell" ? -size : size;
+    // avgPrice is "0" (or "") for an empty position.
+    static_cast<void>(fixed_field(e, "avgPrice", p.avg_px));
+    out.push_back(std::move(p));
+  }
+  std::string_view cursor;
+  if (root["result"]["nextPageCursor"].get(cursor) == sj::SUCCESS) next_cursor = cursor;
   return {};
 }
 

@@ -1,5 +1,5 @@
 #pragma once
-// Bybit v5 spot order encoding and response decoding (6.5).
+// Bybit v5 order encoding and response decoding (6.5), spot or linear (bybit_category.hpp).
 //
 // Primary path: WebSocket trade endpoint wss://stream[-testnet].bybit.com/v5/trade
 // (https://bybit-exchange.github.io/docs/v5/websocket/trade/guideline), after `op: auth`:
@@ -8,16 +8,20 @@
 //   response {"reqId","retCode","retMsg","op","data":{"orderId","orderLinkId"},"retExtInfo",
 //             "header":{"X-Bapi-Limit","X-Bapi-Limit-Status","X-Bapi-Limit-Reset-Timestamp",..},
 //             "connId"}
-// Order args (https://bybit-exchange.github.io/docs/v5/order/create-order): category=spot,
+// Order args (https://bybit-exchange.github.io/docs/v5/order/create-order): category,
 // symbol, side Buy|Sell, orderType Limit|Market, qty, price, timeInForce GTC|IOC|FOK|PostOnly,
-// orderLinkId (<= 36 chars; FastMM ids are 14). Amend (.../amend-order): orderId|orderLinkId,
-// qty, price. Cancel (.../cancel-order): orderId|orderLinkId.
+// orderLinkId (<= 36 chars; FastMM ids are 14). Linear adds positionIdx 0 (one-way mode) and
+// reduceOnly when the order asks for it; a spot market order adds marketUnit=baseCoin. Amend
+// (.../amend-order): orderId|orderLinkId, qty, price. Cancel (.../cancel-order):
+// orderId|orderLinkId.
 //
 // REST fallback: POST /v5/order/create|amend|cancel|cancel-all with a JSON body, GET
-// /v5/order/realtime?category=spot[&symbol=] for reconciliation; signed per bybit_auth.hpp
-// over the exact bytes sent.
+// /v5/order/realtime?category=..[&symbol=|&settleCoin=] for reconciliation (linear needs one of
+// symbol, baseCoin, settleCoin), GET /v5/position/list (linear); signed per bybit_auth.hpp over
+// the exact bytes sent.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/venues/bybit/bybit_auth.hpp"
+#include "fastmm/venues/bybit/bybit_category.hpp"
 #include "fastmm/venues/feed.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/request_id.hpp"
@@ -68,8 +72,11 @@ class BybitOrderEncoder {
  public:
   BybitOrderEncoder(const Signer& signer,
                     const SymbolTable& symbols,
-                    int recv_window_ms = kDefaultRecvWindowMs) noexcept
-      : signer_(signer), symbols_(symbols), recv_window_ms_(recv_window_ms) {}
+                    int recv_window_ms = kDefaultRecvWindowMs,
+                    BybitCategory category = BybitCategory::Spot) noexcept
+      : signer_(signer), symbols_(symbols), recv_window_ms_(recv_window_ms), category_(category) {}
+
+  [[nodiscard]] BybitCategory category() const noexcept { return category_; }
 
   // ---- WebSocket trade frames (bytes written; 0 = unsupported / overflow) ---------------
   std::size_t encode_ws(const OrderCommand& cmd,
@@ -96,8 +103,23 @@ class BybitOrderEncoder {
   // `cursor` is result.nextPageCursor of the previous page (empty for the first).
   bool encode_rest_open_orders(std::string_view symbol,
                                std::string_view cursor,
+                               RestRequest& out) const {
+    return encode_rest_open_orders(symbol, {}, cursor, out);
+  }
+  // Linear needs a symbol or a settle coin; `settle_coin` is used when `symbol` is empty.
+  bool encode_rest_open_orders(std::string_view symbol,
+                               std::string_view settle_coin,
+                               std::string_view cursor,
                                RestRequest& out) const;
-  // GET /v5/execution/list?category=spot&startTime=..[&endTime=..]&limit=..[&cursor=..]: the
+  // GET /v5/position/list?category=linear&(symbol=|settleCoin=)&limit=200[&cursor=]: by symbol
+  // the venue answers whether or not there is a position (one row per positionIdx), by settle coin
+  // only the non-zero positions. Static: the start-up position-mode check runs before attach().
+  static bool encode_rest_positions(BybitCategory category,
+                                    std::string_view symbol,
+                                    std::string_view settle_coin,
+                                    std::string_view cursor,
+                                    RestRequest& out);
+  // GET /v5/execution/list?category=..&startTime=..[&endTime=..]&limit=..[&cursor=..]: the
   // account's executions from `start_ms` (inclusive), newest first. `end_ms` <= 0 leaves the end
   // open (the venue then answers startTime + 7 days).
   bool encode_rest_executions(std::int64_t start_ms,
@@ -135,6 +157,7 @@ class BybitOrderEncoder {
   const Signer& signer_;
   const SymbolTable& symbols_;
   int recv_window_ms_;
+  BybitCategory category_;
 };
 
 // ---- responses -----------------------------------------------------------------------------
