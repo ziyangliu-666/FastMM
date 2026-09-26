@@ -382,8 +382,10 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
 | `fill_model` | string | `"matching"` | `matching` matches our orders against the simulated order flow. `l2_queue` estimates queue position on recorded L2 data, which has no counterparties; it checks post-only orders against the same book the strategy saw, so it never produces the post-only rejects that stale market data causes under `matching`. Treat its results as optimistic |
 | `queue_conservatism` | number | `1.0` | For `l2_queue`, from 0 to 1: at `0` cancellations ahead of us always move our order up the queue, at `1` they never do. `fastmm-data fill-check` compares values against a live session ([Check the fill model](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)) |
-| `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue and acknowledgements back, µs |
+| `latency_fixed_us` | int | `200` | Fixed latency for orders to the venue, and for acknowledgements back unless `latency_ack_us` is set, µs |
 | `latency_jitter_us` | int | `50` | Random jitter added to that latency, µs, seeded |
+| `latency_ack_us` | int | `latency_fixed_us` | Fixed latency for acknowledgements and fills back from the venue, µs |
+| `latency_ack_jitter_us` | int | `latency_jitter_us` | Random jitter added to that latency, µs, seeded |
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |

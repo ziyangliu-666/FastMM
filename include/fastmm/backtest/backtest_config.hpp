@@ -11,6 +11,7 @@
 //   fill_model = "matching" | "l2_queue"          cancel_rate_per_order_s, offset_p,
 //   queue_conservatism = 0..1                     base_spread_ticks, limit_qty_median_lots,
 //   latency_fixed_us, latency_jitter_us,          market_qty_median_lots, regimes,
+//   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"

@@ -58,7 +58,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 16> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 18> kBacktestKeys = {"markout_horizons_s",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -72,6 +72,8 @@ constexpr std::array<std::string_view, 16> kBacktestKeys = {"markout_horizons_s"
                                                             "p_drop",
                                                             "latency_fixed_us",
                                                             "latency_jitter_us",
+                                                            "latency_ack_us",
+                                                            "latency_ack_jitter_us",
                                                             "latency_md_us",
                                                             "latency_md_jitter_us"};
 
@@ -139,7 +141,12 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   const Duration fixed = microseconds(non_negative(bt, "latency_fixed_us", 200));
   const Duration jitter = microseconds(non_negative(bt, "latency_jitter_us", 50));
   t.order_out = sim::LatencyParams{fixed, jitter, p_drop};
-  t.ack_in = sim::LatencyParams{fixed, jitter, 0.0};
+  // Venue -> engine defaults to the order path; a real venue's replies are often slower than its
+  // intake (Binance Spot from AWS Tokyo: ~0.4 ms to transactTime, ~1.1 ms more to the ack).
+  t.ack_in =
+      sim::LatencyParams{microseconds(non_negative(bt, "latency_ack_us", fixed.ns / 1000)),
+                         microseconds(non_negative(bt, "latency_ack_jitter_us", jitter.ns / 1000)),
+                         0.0};
   t.md_in = sim::LatencyParams{microseconds(non_negative(bt, "latency_md_us", 0)),
                                microseconds(non_negative(bt, "latency_md_jitter_us", 0)),
                                0.0};

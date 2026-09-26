@@ -159,6 +159,8 @@ initial_capital = 1000
   CHECK(b.transport.queue_conservatism_bps == 2500);
   CHECK(b.transport.order_out.fixed == microseconds(150));
   CHECK(b.transport.order_out.jitter.ns == 0);
+  CHECK(b.transport.ack_in.fixed == microseconds(150));  // replies default to the order path
+  CHECK(b.transport.ack_in.jitter.ns == 0);
   CHECK(b.transport.fees.maker_cbps() == -100);
   CHECK(b.transport.fees.taker_cbps() == 250);
   CHECK(b.transport.fees.schedule(InstrumentId{0}).maker_cbps == -100);
@@ -178,6 +180,14 @@ initial_capital = 1000
                                      "kind = \"sim\"\n") +
                          extra);
   };
+  const BacktestConfig asym = BacktestConfig::from_config(
+      with("[backtest]\nlatency_fixed_us = 400\nlatency_jitter_us = 100\n"
+           "latency_ack_us = 1100\nlatency_ack_jitter_us = 300\n"));
+  CHECK(asym.transport.order_out.fixed == microseconds(400));
+  CHECK(asym.transport.order_out.jitter == microseconds(100));
+  CHECK(asym.transport.ack_in.fixed == microseconds(1100));
+  CHECK(asym.transport.ack_in.jitter == microseconds(300));
+  CHECK(asym.warnings.empty());
   CHECK_THROWS_AS(
       static_cast<void>(BacktestConfig::from_config(with("[backtest]\nfill_model = \"magic\"\n"))),
       ConfigError);
