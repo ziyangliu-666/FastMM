@@ -138,6 +138,9 @@ enum class RejectReason : std::uint8_t {
   MaxLoss = 16,
   MaxGrossNotional = 17,  // portfolio |position| at the last marks, over every instrument
   MaxNetNotional = 18,
+  // [accounting]: the rate of the order's settlement currency is unknown or stale, and the order
+  // would add to its exposure while max_loss or an exposure cap is set.
+  FxRateUnknown = 19,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -153,6 +156,7 @@ enum class RejectReason : std::uint8_t {
   GatewayAccountKilled = 51,  // [gateway] max_loss tripped the account's kill switch
   GatewayGrossNotional = 52,  // the account's |position| at the marks, over every instrument
   GatewayNetNotional = 53,    // the account's signed position at the marks
+  GatewayFxRateUnknown = 54,  // [accounting]: the order's currency has no current rate
   // Venue-originated
   VenueReject = 64,
   PostOnlyWouldCross = 65,
@@ -200,6 +204,8 @@ enum class RejectReason : std::uint8_t {
       return "MaxGrossNotional";
     case RejectReason::MaxNetNotional:
       return "MaxNetNotional";
+    case RejectReason::FxRateUnknown:
+      return "FxRateUnknown";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:
@@ -226,6 +232,8 @@ enum class RejectReason : std::uint8_t {
       return "GatewayGrossNotional";
     case RejectReason::GatewayNetNotional:
       return "GatewayNetNotional";
+    case RejectReason::GatewayFxRateUnknown:
+      return "GatewayFxRateUnknown";
     case RejectReason::VenueReject:
       return "VenueReject";
     case RejectReason::PostOnlyWouldCross:

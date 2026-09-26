@@ -3,13 +3,15 @@
 // private dependency of fastmm_core); this header exposes only plain structs.
 //
 // Sections: [engine] [venues.<x>] [venues.<x>.fees] [[instruments]] [strategy]
-//           [strategy.params] [risk] [logging] [sim] [backtest] [storage]
+//           [strategy.params] [risk] [gateway] [accounting] [accounting.fx] [logging] [sim]
+//           [backtest] [storage]
 // A [venues.<x>] key the generic parser does not read is kept verbatim in VenueSection::extra:
 // the connector `kind` names owns it (include/fastmm/venues/registry.hpp).
 // Rules: ${VAR} is substituted only inside [venues.*] strings; a value that looks like an
 // inline secret (> 32 chars, no ${) is rejected unless allow_inline_secrets; redacted()
 // prints the config with secrets masked; validation errors carry line:col.
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
@@ -218,6 +220,9 @@ class Config {
   StrategySection strategy;
   RiskSection risk;
   GatewaySection gateway;
+  // [accounting]: the reporting currency and the FX source of each other settlement currency,
+  // read by fastmm-live, fastmm-gateway, the backtester and replay (build_fx_plan, core/fx.hpp).
+  AccountingSpec accounting;
   LoggingSection logging;
   GenericSection sim;
   GenericSection backtest;

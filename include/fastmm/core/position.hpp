@@ -4,9 +4,11 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/strong_id.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -29,7 +31,8 @@ struct alignas(kCacheLine) Position {
 };
 static_assert(sizeof(Position) == 64 && std::is_trivially_copyable_v<Position>);
 
-// PnL totals over every instrument (StrategyContext::portfolio()).
+// PnL totals over every instrument (StrategyContext::portfolio()), in the reporting currency when
+// the tracker converts (PositionTracker::set_accounting).
 struct Portfolio {
   Notional realized{};
   Notional unrealized{};
@@ -61,6 +64,7 @@ class PositionTracker {
     const bool inv = inst.inverse();
     p.fees += fee;
     fees_total_ += fee;
+    book(id, &Totals::fees, fee);
     p.gross_traded += qty;
     ++p.fills;
     if (cur == 0 || (cur > 0) == (f > 0)) {
@@ -84,6 +88,7 @@ class PositionTracker {
       }
       p.realized += r;
       realized_total_ += r;
+      book(id, &Totals::realized, r);
       const std::int64_t remaining = abs_f - closed;
       if (remaining > 0) {  // flipped through zero: the remainder opens at px
         p.qty = Qty::from_raw(f > 0 ? remaining : -remaining);
@@ -123,15 +128,17 @@ class PositionTracker {
     const Notional adj = side == Side::Buy ? Notional{} - diff : diff;
     p.realized += adj;
     realized_total_ += adj;
+    book(id, &Totals::realized, adj);
     p.fees += fee;
     fees_total_ += fee;
+    book(id, &Totals::fees, fee);
   }
 
   // Mark-to-market the open position, in the instrument's settlement currency.
   void mark(InstrumentId id, Price mid, const Instrument& inst) noexcept {
     Position& p = pos_[id.value];
     p.last_mark = mid;
-    set_unrealized(p, revalue(p, mid, inst));
+    set_unrealized(id, p, revalue(p, mid, inst));
     set_exposure(id, signed_notional(p, mid, inst));
   }
 
@@ -142,38 +149,97 @@ class PositionTracker {
     Position& p = pos_[id.value];
     p.qty = qty;
     p.avg_px = qty.is_zero() ? Price{} : avg_px;
-    set_unrealized(p, revalue(p, p.last_mark, inst));
+    set_unrealized(id, p, revalue(p, p.last_mark, inst));
     set_exposure(id, signed_notional(p, p.last_mark, inst));
   }
   void reset(InstrumentId id) noexcept {
     Position& p = pos_[id.value];
     realized_total_ -= p.realized;
-    unrealized_total_ -= p.unrealized;
+    book(id, &Totals::realized, Notional{} - p.realized);
     fees_total_ -= p.fees;
+    book(id, &Totals::fees, Notional{} - p.fees);
+    set_unrealized(id, p, Notional{});
     set_exposure(id, Notional{});
     p = Position{};
   }
 
+  // Accounting across settlement currencies. With a plan of two or more currencies the tracker also
+  // keeps the totals per currency and converts them at the rate last set for each (set_rate), and
+  // the totals below are in the reporting currency. A currency whose rate was never set counts as
+  // zero. Without one (the default) nothing is converted and every Notional is added as it is.
+  void set_accounting(const FxPlan& plan) noexcept {
+    ccy_count_ = plan.count;
+    for (std::size_t i = 0; i < kMaxInstruments; ++i) ccy_[i] = plan.ccy[i];
+    for (auto& r : rate_) r = FxRate{};
+    rate_[0] = FxRate::identity();
+    for (auto& t : native_) t = Totals{};
+    for (auto& t : conv_) t = Totals{};
+    conv_total_ = Totals{};
+    if (!converting()) return;
+    // What is booked already (a tracker configured after fills) moves into its currencies.
+    for (std::size_t i = 0; i < kMaxInstruments; ++i) {
+      const Position& p = pos_[i];
+      Totals& t = native_[ccy_[i]];
+      t.realized += p.realized;
+      t.unrealized += p.unrealized;
+      t.fees += p.fees;
+      t.gross += exposure_[i].abs();
+      t.net += exposure_[i];
+    }
+    reconvert(0);
+  }
+  // The rate of currency `c` (an index of the plan): the totals in it are converted again.
+  void set_rate(std::size_t c, FxRate r) noexcept {
+    if (c == 0 || c >= kMaxCurrencies) return;
+    rate_[c] = r;
+    reconvert(c);
+  }
+  [[nodiscard]] bool converting() const noexcept { return ccy_count_ > 1; }
+  [[nodiscard]] std::size_t currency_count() const noexcept { return ccy_count_; }
+  [[nodiscard]] FxRate rate(std::size_t c) const noexcept {
+    return c < kMaxCurrencies ? rate_[c] : FxRate{};
+  }
+  // Totals of one currency, in that currency (converting() only).
+  struct Totals {
+    Notional realized{};
+    Notional unrealized{};
+    Notional fees{};
+    Notional gross{};  // sum of |position| at the last marks
+    Notional net{};    // signed sum
+    [[nodiscard]] Notional net_pnl() const noexcept { return realized + unrealized - fees; }
+  };
+  [[nodiscard]] const Totals& native(std::size_t c) const noexcept { return native_[c]; }
+
   // Totals over every instrument, kept up to date by the updates above (the engine checks
   // net_pnl() on every market-data event; summing kMaxInstruments positions there cost more
-  // than the rest of the event). Notional carries no currency, so these are only meaningful when
-  // every instrument settles in the same one: InstrumentTable::settlement_mix() finds a table
-  // that mixes them and fastmm-live refuses to start on one while [risk] max_loss is set.
-  // Portfolio exposure at the last marks: the sum of |position| and the signed sum. Like the PnL
-  // totals, they are only meaningful when every instrument settles in the same currency.
-  [[nodiscard]] Notional gross_exposure() const noexcept { return gross_exposure_; }
-  [[nodiscard]] Notional net_exposure() const noexcept { return net_exposure_; }
-  [[nodiscard]] Notional total_realized() const noexcept { return realized_total_; }
-  [[nodiscard]] Notional total_unrealized() const noexcept { return unrealized_total_; }
-  [[nodiscard]] Notional total_fees() const noexcept { return fees_total_; }
+  // than the rest of the event). Without conversion Notional carries no currency, so they are only
+  // meaningful when every instrument settles in the same one: InstrumentTable::settlement_mix()
+  // finds a table that mixes them, and fastmm-live refuses to start on one while [risk] max_loss
+  // is set and [accounting] does not cover it.
+  // Portfolio exposure at the last marks: the sum of |position| and the signed sum.
+  [[nodiscard]] Notional gross_exposure() const noexcept {
+    return FASTMM_UNLIKELY(converting()) ? conv_total_.gross : gross_exposure_;
+  }
+  [[nodiscard]] Notional net_exposure() const noexcept {
+    return FASTMM_UNLIKELY(converting()) ? conv_total_.net : net_exposure_;
+  }
+  [[nodiscard]] Notional total_realized() const noexcept {
+    return FASTMM_UNLIKELY(converting()) ? conv_total_.realized : realized_total_;
+  }
+  [[nodiscard]] Notional total_unrealized() const noexcept {
+    return FASTMM_UNLIKELY(converting()) ? conv_total_.unrealized : unrealized_total_;
+  }
+  [[nodiscard]] Notional total_fees() const noexcept {
+    return FASTMM_UNLIKELY(converting()) ? conv_total_.fees : fees_total_;
+  }
   [[nodiscard]] Notional net_pnl() const noexcept {
     return total_realized() + total_unrealized() - total_fees();
   }
   [[nodiscard]] Portfolio portfolio() const noexcept {
     Portfolio t;
-    t.realized = realized_total_;
-    t.unrealized = unrealized_total_;
-    t.fees = fees_total_;
+    t.realized = total_realized();
+    t.unrealized = total_unrealized();
+    t.fees = total_fees();
     t.net = t.realized + t.unrealized - t.fees;
     return t;
   }
@@ -217,13 +283,40 @@ class PositionTracker {
   // cannot drift from the positions: one place updates both.
   void set_exposure(InstrumentId id, Notional e) noexcept {
     Notional& cur = exposure_[id.value];
-    gross_exposure_ += e.abs() - cur.abs();
-    net_exposure_ += e - cur;
+    const Notional dg = e.abs() - cur.abs();
+    const Notional dn = e - cur;
+    gross_exposure_ += dg;
+    net_exposure_ += dn;
+    book(id, &Totals::gross, dg);
+    book(id, &Totals::net, dn);
     cur = e;
   }
-  void set_unrealized(Position& p, Notional u) noexcept {
-    unrealized_total_ += u - p.unrealized;
+  void set_unrealized(InstrumentId id, Position& p, Notional u) noexcept {
+    const Notional d = u - p.unrealized;
+    unrealized_total_ += d;
+    book(id, &Totals::unrealized, d);
     p.unrealized = u;
+  }
+  // A change of one total in the instrument's currency, and of its converted value. Out of line:
+  // without [accounting] this is one predictable branch on the mark path.
+  FASTMM_FORCE_INLINE void book(InstrumentId id, Notional Totals::*f, Notional d) noexcept {
+    if (FASTMM_UNLIKELY(converting())) book_converted(id, f, d);
+  }
+  FASTMM_NOINLINE void book_converted(InstrumentId id, Notional Totals::*f, Notional d) noexcept {
+    const std::uint8_t c = ccy_[id.value];
+    Notional& n = native_[c].*f;
+    n += d;
+    const Notional v = convert(n, rate_[c]);
+    conv_total_.*f += v - conv_[c].*f;
+    conv_[c].*f = v;
+  }
+  void reconvert(std::size_t c) noexcept {
+    for (Notional Totals::*f :
+         {&Totals::realized, &Totals::unrealized, &Totals::fees, &Totals::gross, &Totals::net}) {
+      const Notional v = convert(native_[c].*f, rate_[c]);
+      conv_total_.*f += v - conv_[c].*f;
+      conv_[c].*f = v;
+    }
   }
   Position pos_[kMaxInstruments] = {};
   Notional realized_total_{};
@@ -232,6 +325,12 @@ class PositionTracker {
   Notional exposure_[kMaxInstruments]{};
   Notional gross_exposure_{};
   Notional net_exposure_{};
+  std::uint8_t ccy_count_ = 0;
+  std::array<std::uint8_t, kMaxInstruments> ccy_{};
+  std::array<FxRate, kMaxCurrencies> rate_{FxRate::identity()};
+  std::array<Totals, kMaxCurrencies> native_{};
+  std::array<Totals, kMaxCurrencies> conv_{};  // native_ at rate_
+  Totals conv_total_{};
 };
 
 }  // namespace fastmm

@@ -59,6 +59,9 @@ Checked in this numeric order; the first failure decides. A limit of `0` or omit
 | 14 | `SelfTradePrevention` | `[risk] stp` | our resting order on the other side moves or is cancelled |
 | 15 | `RateLimit` | `[risk] orders_per_sec`, `burst` | the token bucket refills |
 | 16 | `MaxLoss` | — | never produced: a max-loss breach arrives as `KillSwitch` with `KillReason::MaxLoss` |
+| 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order reduces its instrument's position |
+| 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
+| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book no older than `stale_md_ms`; an order that reduces its instrument's position is not refused |
 
 Cancels skip every check, including the kill switch, so the engine can always reduce what is in the market.
 
@@ -86,6 +89,7 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 51 | `GatewayAccountKilled` | `[gateway] max_loss` tripped the account's kill switch |
 | 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus this order; an order that reduces its instrument's position passes |
 | 53 | `GatewayNetNotional` | `[gateway] max_net_notional`: the same for the signed sum |
+| 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
 
 ### Venue-originated
 

@@ -293,3 +293,113 @@ kind = "binance"
   CHECK_THROWS_WITH_AS(
       Config::parse(two), doctest::Contains("threading = \"single\" runs one venue"), ConfigError);
 }
+
+namespace {
+// ETHBTC settles in BTC, BTCUSDT in USDT; `accounting` is appended as it is.
+std::string two_currencies(const std::string& accounting, const std::string& risk = "") {
+  return R"([venues.sim]
+kind = "sim"
+[[instruments]]
+venue = "sim"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+tick = "0.01"
+lot = "0.001"
+[[instruments]]
+venue = "sim"
+symbol = "ETHBTC"
+base = "ETH"
+quote = "BTC"
+tick = "0.00001"
+lot = "0.001"
+[strategy]
+name = "basic_mm"
+[risk]
+)" + risk +
+         "\n" + accounting;
+}
+std::string plan_error(const Config& cfg) {
+  std::string warning;
+  const std::vector<std::string> venues{"sim"};
+  const auto p = session_fx_plan(load_instruments(cfg),
+                                 cfg.accounting,
+                                 venues,
+                                 false,
+                                 cfg.risk_limits().reads_totals(),
+                                 &warning);
+  return p ? warning : p.error();
+}
+}  // namespace
+
+TEST_CASE("core.config: [accounting] parses, round-trips and prices each currency") {
+  const Config cfg = Config::parse(two_currencies(
+      "[accounting]\nreporting_currency = \"USDT\"\n[accounting.fx]\nBTC = \"sim:BTCUSDT\"\n"));
+  CHECK(cfg.warnings.empty());
+  CHECK(cfg.accounting.reporting_currency == "USDT");
+  CHECK(cfg.accounting.fx.at("BTC") == "sim:BTCUSDT");
+  const Config again = Config::parse(cfg.effective_toml());
+  CHECK(again.accounting.fx == cfg.accounting.fx);
+  CHECK(again.effective_hash() == cfg.effective_hash());
+  CHECK(cfg.redacted().find("BTC = \"sim:BTCUSDT\"") != std::string::npos);
+  const std::vector<std::string> venues{"sim"};
+  const auto plan = build_fx_plan(load_instruments(cfg), cfg.accounting, venues);
+  REQUIRE(plan.has_value());
+  CHECK(plan->active());
+  CHECK(plan->ccy[1] == 1);  // ETHBTC in BTC
+  CHECK(plan->sources[1].instrument == InstrumentId{0});
+}
+
+TEST_CASE("core.config: a single-currency configuration needs no [accounting] and is unchanged") {
+  const Config cfg = Config::parse(kMinimal);
+  CHECK_FALSE(cfg.accounting.configured());
+  CHECK(cfg.effective_toml().find("accounting") == std::string::npos);
+  CHECK(cfg.redacted().find("accounting") == std::string::npos);
+  const std::vector<std::string> venues{"sim"};
+  const auto plan = build_fx_plan(load_instruments(cfg), cfg.accounting, venues);
+  REQUIRE(plan.has_value());
+  CHECK_FALSE(plan->active());
+}
+
+TEST_CASE("core.config: [accounting] sources are checked at load") {
+  const auto err = [](const std::string& text) -> std::string {
+    try {
+      static_cast<void>(Config::parse(text));
+    } catch (const ConfigError& e) {
+      return e.what();
+    }
+    return "";
+  };
+  CHECK(err(two_currencies("[accounting.fx]\nBTC = \"sim:BTCUSDT\"\n"))
+            .find("needs [accounting] reporting_currency") != std::string::npos);
+  CHECK(
+      err(two_currencies(
+              "[accounting]\nreporting_currency = \"USDT\"\n[accounting.fx]\nBTC = \"sim:XYZ\"\n"))
+          .find("XYZ is not in [[instruments]]") != std::string::npos);
+  CHECK(err(two_currencies("[accounting]\nreporting_currency = \"USDT\"\n[accounting.fx]\nBTC = "
+                           "\"other:BTCUSDT\"\n"))
+            .find("unknown venue 'other'") != std::string::npos);
+  CHECK(
+      err(two_currencies(
+              "[accounting]\nreporting_currency = \"USDT\"\n[accounting.fx]\nBTC = \"BTCUSDT\"\n"))
+          .find("expected \"venue:symbol\"") != std::string::npos);
+  CHECK(err(two_currencies("[accounting]\nreporting_currency = \"USDT\"\n[accounting.fx]\nUSDT = "
+                           "\"sim:BTCUSDT\"\n"))
+            .find("needs no source") != std::string::npos);
+  CHECK(err(two_currencies("[accounting]\nreporting_currency = \"TOOLONGCCY\"\n"))
+            .find("1 to 8 characters") != std::string::npos);
+}
+
+TEST_CASE("core.config: a settlement currency without a source is refused while a limit reads it") {
+  const std::string no_source = "[accounting]\nreporting_currency = \"USDT\"\n";
+  for (const char* limit :
+       {"max_loss = \"100\"", "max_gross_notional = \"100\"", "max_net_notional = \"100\""}) {
+    INFO(limit);
+    const std::string e = plan_error(Config::parse(two_currencies(no_source, limit)));
+    CHECK(e.find("ETHBTC settles in BTC and [accounting.fx] has no source for BTC") !=
+          std::string::npos);
+  }
+  // Without one the totals are only reported: a warning, and nothing converts.
+  CHECK(plan_error(Config::parse(two_currencies(no_source))).find("not converted") !=
+        std::string::npos);
+}

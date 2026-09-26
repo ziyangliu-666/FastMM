@@ -8,12 +8,14 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/order.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -101,6 +103,7 @@ class RiskEngine {
 
   void set_limits(const RiskLimits& l, Timestamp now) noexcept {
     limits_ = l;
+    update_flags();
     bucket_.configure(l.orders_per_sec, l.burst, now);
   }
   [[nodiscard]] const RiskLimits& limits() const noexcept { return limits_; }
@@ -169,6 +172,35 @@ class RiskEngine {
       }
     }
   }
+  // ---- accounting across settlement currencies ([accounting], core/fx.hpp) ------------------
+  // With an active plan an order's notional is converted to the reporting currency for the
+  // exposure caps, at the mid of its currency's FX source. The rate is usable while the source's
+  // book is valid (on_fx_book) and, with stale_md set, no older than stale_md. Without a usable
+  // rate an order that adds to exposure in that currency is refused (FxRateUnknown) while
+  // max_loss or an exposure cap is set; one that reduces it passes.
+  void set_fx(const FxPlan& plan) noexcept {
+    fx_on_ = plan.active();
+    update_flags();
+    for (std::size_t i = 0; i < kMaxInstruments; ++i) fx_ccy_[i] = plan.ccy[i];
+    for (std::size_t c = 0; c < kMaxCurrencies; ++c) {
+      fx_src_[c] = plan.sources[c];
+      fx_valid_[c] = false;
+    }
+  }
+  // The FX source of currency `c` has a valid book now (its mid came through on_book) or not.
+  void on_fx_book(std::size_t c, bool valid) noexcept {
+    if (c < kMaxCurrencies) fx_valid_[c] = valid;
+  }
+  // The rate of currency `c` for an order at `now`; unknown when it is not usable.
+  [[nodiscard]] FxRate fx_rate(std::size_t c, Timestamp now) const noexcept {
+    if (c == 0) return FxRate::identity();
+    if (c >= kMaxCurrencies || !fx_valid_[c] || !fx_src_[c].instrument.valid()) return {};
+    const MdState& md = md_[fx_src_[c].instrument.value];
+    if (limits_.stale_md.ns > 0 && (!md.book_ts.valid() || now - md.book_ts > limits_.stale_md))
+      return {};
+    return FxRate::from_mid(md.mid, fx_src_[c].invert);
+  }
+
   // Returns true if the loss limit tripped the kill switch.
   bool on_pnl(Notional net) noexcept {
     if (limits_.max_loss.is_positive() && net.raw <= -limits_.max_loss.raw && !killed()) {
@@ -267,20 +299,30 @@ class RiskEngine {
         return RejectReason::MaxPosition;
     }
     // Portfolio exposure: what this order would add on top of what is already marked. Like
-    // max_position, an order that reduces exposure is never refused by it.
-    if ((limits_.max_gross_notional.is_positive() || limits_.max_net_notional.is_positive()) &&
-        in.position != nullptr) {
+    // max_position, an order that reduces exposure is never refused by it. One flag covers the
+    // caps and the FX gate, so a session with neither pays one branch.
+    if (FASTMM_UNLIKELY(portfolio_) && in.position != nullptr) {
+      // In another settlement currency than the reporting one, the exposure this order adds is
+      // measured at its currency's rate, and without a usable rate it is not added at all.
+      Notional exposure = notional;
+      const std::uint8_t c = fx_ccy_[o.instrument.value];
+      const std::int64_t q = in.position->qty.raw;
+      if (fx_gate_ && c != 0 && (q == 0 || (q > 0) == (o.side == Side::Buy))) {
+        const FxRate rate = fx_rate(c, in.now);
+        if (!rate.known()) return RejectReason::FxRateUnknown;
+        exposure = convert(notional, rate);
+      }
       const std::int64_t dir = sign(o.side);
       const bool reduces = in.position->qty.raw != 0 && (in.position->qty.raw > 0) != (dir > 0);
       if (!reduces) {
         if (limits_.max_gross_notional.is_positive() &&
-            in.gross_exposure + notional > limits_.max_gross_notional) {
+            in.gross_exposure + exposure > limits_.max_gross_notional) {
           return RejectReason::MaxGrossNotional;
         }
         if (limits_.max_net_notional.is_positive()) {
           // The net can be over the cap already (a mark moved, or a limit was tightened); an order
           // that brings it towards zero is how you get back under it.
-          const Notional net = in.net_exposure + (dir > 0 ? notional : Notional{} - notional);
+          const Notional net = in.net_exposure + (dir > 0 ? exposure : Notional{} - exposure);
           if (net.abs() > limits_.max_net_notional && net.abs() > in.net_exposure.abs())
             return RejectReason::MaxNetNotional;
         }
@@ -296,6 +338,11 @@ class RiskEngine {
     if (!bucket_.try_take(in.now)) return RejectReason::RateLimit;
     return RejectReason::None;
   }
+  void update_flags() noexcept {
+    fx_gate_ = fx_on_ && limits_.reads_totals();
+    portfolio_ = fx_gate_ || limits_.max_gross_notional.is_positive() ||
+                 limits_.max_net_notional.is_positive();
+  }
   // Would a `side` order at `px` trade against our own resting order at `own_opposite`?
   static constexpr bool at_or_better_cross(Side side, Price px, Price own_opposite) noexcept {
     return side == Side::Buy ? px >= own_opposite : px <= own_opposite;
@@ -306,6 +353,13 @@ class RiskEngine {
   RiskStats stats_{};
   alignas(kCacheLine) std::atomic<std::uint32_t> kill_{0};
   MdState md_[kMaxInstruments] = {};
+  // [accounting], after md_: its layout is the hot path's.
+  bool portfolio_ = false;  // an exposure cap or fx_gate_: the portfolio block runs
+  bool fx_gate_ = false;    // fx_on_ and a limit that reads the totals
+  bool fx_on_ = false;
+  std::array<bool, kMaxCurrencies> fx_valid_{};
+  std::array<FxSource, kMaxCurrencies> fx_src_{};
+  std::array<std::uint8_t, kMaxInstruments> fx_ccy_{};
 };
 
 }  // namespace fastmm

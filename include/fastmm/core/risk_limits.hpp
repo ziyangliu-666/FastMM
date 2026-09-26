@@ -26,6 +26,12 @@ struct RiskLimits {
   std::uint32_t orders_per_sec = 0;  // token bucket rate; 0 = unlimited
   std::uint32_t burst = 0;           // bucket capacity (defaults to orders_per_sec)
   bool stp = true;                   // self-trade prevention against our own resting orders
+
+  // A limit that reads the portfolio totals ([accounting] converts them).
+  [[nodiscard]] constexpr bool reads_totals() const noexcept {
+    return max_loss.is_positive() || max_gross_notional.is_positive() ||
+           max_net_notional.is_positive();
+  }
 };
 static_assert(std::is_trivially_copyable_v<RiskLimits> && sizeof(RiskLimits) == 96);
 

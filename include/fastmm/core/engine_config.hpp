@@ -1,6 +1,7 @@
 #pragma once
 // EngineConfig: the per-session settings an Engine is constructed with. Separate from engine.hpp so
 // the strategy registry and registration files do not parse the Engine template.
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
@@ -42,6 +43,8 @@ struct EngineConfig {
   SpinMode spin_mode = SpinMode::Busy;
   RiskLimits risk;
   QuoteParams quotes;
+  // [accounting]: the settlement currencies and their FX sources (inactive: nothing converted).
+  FxPlan fx;
 };
 
 }  // namespace fastmm

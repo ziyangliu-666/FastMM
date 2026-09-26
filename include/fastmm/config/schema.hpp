@@ -362,20 +362,20 @@ inline constexpr KeySpec kConfigSchema[] = {
      "max_loss",
      KeyType::Any,
      false,
-     "trip the kill switch when net PnL falls to -max_loss, settlement currency, decimal; "
-     "latched across restarts in kill_file"},
+     "trip the kill switch when net PnL falls to -max_loss, settlement currency (the "
+     "[accounting] reporting_currency when set), decimal; latched across restarts in kill_file"},
     {"risk",
      "max_gross_notional",
      KeyType::Any,
      false,
      "refuse an order that would take the portfolio's summed |position| at the last marks past "
-     "this, settlement currency, decimal"},
+     "this, settlement currency (or reporting_currency), decimal"},
     {"risk",
      "max_net_notional",
      KeyType::Any,
      false,
      "refuse an order that would take the portfolio's signed position sum further past this, "
-     "settlement currency, decimal"},
+     "settlement currency (or reporting_currency), decimal"},
     {"risk", "orders_per_sec", KeyType::Int, false, "token-bucket order rate, orders/s"},
     {"risk",
      "burst",
@@ -410,7 +410,8 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Any,
      false,
      "fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, "
-     "carried across restarts in the gateway's kill file, reaches -max_loss; decimal"},
+     "carried across restarts in the gateway's kill file, reaches -max_loss; decimal, in "
+     "[accounting] reporting_currency when set"},
     {"gateway",
      "max_gross_notional",
      KeyType::Any,
@@ -423,6 +424,22 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "fastmm-gateway: refuse an order that would take the account's net position at the marks "
      "further past this, unless it reduces its instrument's position; decimal"},
+    // [accounting]
+    {"accounting",
+     "reporting_currency",
+     KeyType::String,
+     false,
+     "currency the PnL totals, [risk] max_loss and the exposure caps (and fastmm-gateway's) are in "
+     "when instruments settle in more than one; every other settlement currency needs a source in "
+     "[accounting.fx] (default unset: no conversion)"},
+    {"accounting",
+     "fx",
+     KeyType::Table,
+     false,
+     "[accounting.fx] table: one entry per other settlement currency, the instrument whose mid "
+     "prices it in reporting_currency (BTC = \"binance:BTCUSDT\"; a pair quoted the other way "
+     "round, USDTBTC, is inverted)"},
+    {"accounting.fx", "*", KeyType::String, false, "FX source of one settlement currency"},
     // [logging]
     {"logging",
      "level",

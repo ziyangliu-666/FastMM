@@ -28,23 +28,31 @@ The first failing check decides the reason.
 | 10 | `MaxOrderQty` | the quantity exceeds the limit | `max_order_qty` |
 | 11 | `MaxOrderNotional` | the order value exceeds the limit | `max_order_notional` |
 | 12 | `MaxPosition` | position plus same-side open orders plus this order would exceed the limit in absolute value and increase exposure | `max_position` |
-| 13 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks would pass the cap, and this order adds to it | `max_gross_notional` |
-| 14 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap | `max_net_notional` |
-| 15 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
-| 16 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
-| 17 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 13 | `FxRateUnknown` | the order adds to exposure in a settlement currency whose rate is unknown or stale, while a limit reads the totals | `[accounting]` |
+| 14 | `MaxGrossNotional` | the portfolio's summed \|position\| at the last marks would pass the cap, and this order adds to it | `max_gross_notional` |
+| 15 | `MaxNetNotional` | the portfolio's signed position sum would move further past the cap | `max_net_notional` |
+| 16 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
+| 17 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
+| 18 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
 - Because `MaxPosition` counts same-side open orders, a quote ladder cannot exceed `max_position` even if it fills entirely.
-- Market orders skip the price checks (4, 8, 9, 14).
+- Market orders skip the price checks (4, 8, 9, 17).
 - The notional of checks 6 and 11 is in the instrument's settlement currency: `price * qty * multiplier` for a linear contract, `qty * multiplier / price` (the base coin) for an inverse one.
+- Checks 14 and 15 compare in the reporting currency when `[accounting]` converts ([Currencies](#currencies)): the order's notional at its currency's rate, on top of the converted totals.
 
 ## Currencies
 
 `Price`, `Qty` and `Notional` carry no currency. PnL, fees, `max_order_notional`, `min_notional` and `max_loss` are all denominated in the instrument's **settlement currency**: the quote currency for a linear contract, the base coin for an inverse (coin-margined) one.
 
-Instruments of one session must settle in the same currency; otherwise the PnL totals add unrelated numbers and `max_loss` compares the sum with one limit. `fastmm-live` checks this after the venues' reference data has loaded (`InstrumentTable::settlement_mix()`): with `max_loss` set it refuses to start, otherwise it warns. Run one session per settlement currency.
+Without `[accounting]`, instruments of one session must settle in the same currency; otherwise the PnL totals add unrelated numbers and `max_loss` compares the sum with one limit. `fastmm-live` checks this after the venues' reference data has loaded (`InstrumentTable::settlement_mix()`): with `max_loss` set it refuses to start, otherwise it warns.
+
+With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) they can mix. Positions, PnL and fees stay in each instrument's currency (`PositionTracker` also keeps them summed per currency); the totals, `max_loss` and the exposure caps are in the reporting currency, each other currency converted at the mid of its FX source's book (`core/fx.hpp`). The conversion runs where the totals change, on a fill, a mark or a new rate, not per order. The rules fail closed:
+
+- A rate is unknown until its source's book is valid. While it is invalid, or older than `stale_md_ms`, an order that adds to exposure in that currency is refused (`FxRateUnknown`); one that reduces a position passes, and so does a flatten.
+- PnL already booked stays converted at the last valid rate: a stale source does not hide a loss that was already measured, and `max_loss` keeps being evaluated on it. A currency whose rate was never known counts as zero; nothing can be traded in it before it is known, so only a restored or reconciled position can sit there.
+- With neither `max_loss` nor an exposure cap set, the rate refuses nothing: the conversion only feeds the reports.
 
 ## Inverse contracts
 
