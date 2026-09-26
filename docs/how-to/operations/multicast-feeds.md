@@ -63,7 +63,7 @@ On Solarflare NICs, run the `kernel` backend under Onload instead:
 onload --profile=latency build/release/bin/fastmm-live --config configs/nasdaq-itch-sim.toml
 ```
 
-The order connection (OUCH over SoupBinTCP, `order_entry = "sim_ouch"`) is a plain non-blocking kernel TCP socket driven by `connect`, `read`, `write` and the reactor, so Onload accelerates it in the same process without changes. Keep `[engine] net_backend = "epoll"` (the default): Onload intercepts epoll, not io_uring. FastMM has no TCPDirect or ef_vi path. Not tested on Solarflare hardware.
+The order connection (OUCH over SoupBinTCP, `order_entry = "sim_ouch"`) is a non-blocking kernel TCP socket, so Onload accelerates it in the same process. Keep `[engine] net_backend = "epoll"` (the default): Onload intercepts epoll, not io_uring. FastMM has no TCPDirect or ef_vi path. Not tested on Solarflare hardware.
 
 ### DPDK
 
@@ -78,7 +78,7 @@ dpdk_eal_args = "--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 --vde
 dpdk_port = "net_af_packet0"
 ```
 
-`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. With `--in-memory` the EAL keeps no runtime files, so its `Error creating '/var/run/dpdk'` in a user namespace does not affect the run.
+`net_af_packet` reads the interface through a `PACKET_MMAP` ring, so the kernel still receives every frame; it tests the code path, not kernel bypass. With `--in-memory` the EAL keeps no runtime files, and its `Error creating '/var/run/dpdk'` in a user namespace is harmless.
 
 On a NIC, bind it to `vfio-pci` (`scripts/host-setup.sh dpdk-bind <iface>`; no-IOMMU mode on a VM), give the EAL hugepages and name the PCI address in `dpdk_port`. The port then has no kernel netdev; an exception port gives the kernel one:
 
@@ -94,7 +94,7 @@ The tap gets the port's MAC. Frames the venue does not take (datagrams of no lin
 
 ## 3. Steer the groups to one RX queue (af_xdp)
 
-The NIC spreads the datagrams over its RX queues by RSS, and an XDP socket reads one queue. Without `queues` the source opens a socket on every RX queue the interface has once the program is attached (virtio_net adds a queue pair per CPU for XDP, and the host delivers on those too). Each socket has its own UMEM (`frame_count` × `frame_size`, 16 MiB by default) and is polled on every loop, so on a NIC with many queues pin each group to a queue and list it in `queues`:
+The NIC spreads the datagrams over its RX queues by RSS, and an XDP socket reads one queue. Without `queues` the source opens a socket on every RX queue the interface has once the program is attached (virtio_net adds a queue pair per CPU for XDP, and the host delivers on those too). Each socket has its own 16 MiB UMEM and is polled on every loop, so on a NIC with many queues pin each group to a queue and list it in `queues`:
 
 ```bash
 sudo ethtool -N eth1 flow-type udp4 dst-ip 233.54.12.111 action 2
