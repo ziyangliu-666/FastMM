@@ -21,7 +21,10 @@ namespace fastmm {
 
 class AccountBook {
  public:
-  using Book = L2Book<256>;  // Engine::Book: the same mids
+  // As deep as a snapshot message (and so any connector's snapshot) can be: the gateway gives an
+  // attaching strategy a snapshot of this book, and an engine book (256 levels) built from it
+  // then holds what one built from the venue's own snapshot would. The mids are the engine's.
+  using Book = L2Book<kMaxBookLevelsPerMsg>;
   // Executions remembered for the dedupe, per venue.
   static constexpr std::size_t kExecWindow = std::size_t{1} << 16;
 
@@ -78,6 +81,10 @@ class AccountBook {
     if (!b.is_valid()) return false;
     pos_.mark(id, b.mid(), insts_->get(id));
     return true;
+  }
+  // The book of an instrument of this venue; nullptr for another venue's.
+  [[nodiscard]] const Book* book(InstrumentId id) const noexcept {
+    return id.value < books_.size() ? books_[id.value].get() : nullptr;
   }
   // A market-data channel that is not live: its books start over, as the engine's do.
   void on_connection_state(const ConnectionStateMsg& m) noexcept {
