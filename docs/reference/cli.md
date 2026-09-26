@@ -68,9 +68,9 @@ Exit codes:
 
 | Exit code | Meaning |
 |---:|---|
-| 0 | stopped by `--duration` or SIGINT/SIGTERM with `cancel_all ok`, also after a kill with `[engine] on_kill = "stay"`; `--help`, `--version` and `--list-strategies` |
+| 0 | stopped by `--duration`, SIGINT/SIGTERM or `fastmm-ctl stop` with `cancel_all ok`, also after a kill with `[engine] on_kill = "stay"`; `--help`, `--version` and `--list-strategies` |
 | 2 | bad command line, including a `--log` file that cannot be opened; a `${VAR}` in `[venues.*]` that is not set, except `api_key` and `api_secret` with `--dry-run` |
-| 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code, a `[storage] backend` that is not registered or cannot be opened ([Storage](storage.md)) |
+| 3 | the configuration does not load (including an invalid `on_kill` or a literal secret), no instruments or duplicate symbols, an unknown venue `kind`, a strategy that is unknown or cannot run live, an unknown parameter or invalid value, a strategy name registered twice by different code; an account setting the connector refuses (Bybit linear in hedge mode); instruments in several settlement currencies with a limit set and no `[accounting]` source for one of them ([Configuration](configuration.md#accounting)); `threading = "single"` with more than one venue or with `--gateway`; the epoch or kill file cannot be read; a `[storage] backend` that is not registered or cannot be opened ([Storage](storage.md)) |
 | 4 | a venue's reference data failed to load; with `--gateway`, the gateway cannot be reached or refused the attach |
 | 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; the gateway closed the attachment (`--gateway`); an uncaught error |
 | 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
@@ -82,7 +82,7 @@ Exit codes:
 
 ## fastmm-gateway
 
-Holds the venue connections of a configuration; several `fastmm-live --gateway` processes trade through them, and it keeps the account's risk over all of them ([Run a strategy behind a gateway](../how-to/operations/run-behind-a-gateway.md)).
+Holds the venue connections of a configuration; several `fastmm-live --gateway` processes trade through them, under account-wide risk limits ([Run a strategy behind a gateway](../how-to/operations/run-behind-a-gateway.md)).
 
 <!-- BEGIN cli-help fastmm-gateway -->
 ```text
@@ -251,7 +251,7 @@ OPTIONS:
 
 ## fastmm-pnl
 
-Answers the daily questions from the [store](storage.md) a session wrote: what it traded, its PnL by day and instrument, and what the last session left behind. It reads the store, never a journal.
+Queries the [store](storage.md) a session wrote: what it traded, PnL and funding by day and instrument, and what the last session left behind. It reads the store, not a journal.
 
 <!-- BEGIN cli-help fastmm-pnl -->
 ```text
@@ -492,4 +492,4 @@ OPTIONS:
 |---:|---|
 | 0 | quit, or `--once` printed a frame |
 | 2 | bad command line |
-| 3 | with `--once`: no status file, or a file written by a different FastMM build |
+| 3 | with `--once`: no status file, or one of another status version |

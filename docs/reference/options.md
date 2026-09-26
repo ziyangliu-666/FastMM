@@ -1,6 +1,6 @@
 # Options
 
-Options use the same engine, OMS, risk checks and QuoteManager as other instruments. Deribit (`kind = "deribit"`, see [venues.md](venues.md)) is the only connector that emits option market data.
+Options use the same engine, OMS, risk checks and QuoteManager as other instruments. Deribit (`kind = "deribit"`, [Venues](venues.md)) is the only connector with options.
 
 ## Instruments
 
@@ -17,7 +17,9 @@ An option is an `Instrument` with `asset_class = Option`, `option_type` (call or
 
 Deribit BTC options are inverse. They are quoted in BTC per 1 BTC of underlying (a mark of `0.0069` is 0.0069 BTC), sized in BTC, and above a price of 0.005 their tick grows from 0.0001 to 0.0005.
 
-The Deribit connector sends `contracts` rather than `amount`, and converts book, trade and fill amounts back to contracts. Position PnL is `(price − avg) × qty × multiplier`, which is the BTC PnL for inverse options. The engine's generic notional risk limits are not inverse-aware, so size `max_order_notional` in the option's price unit.
+The Deribit connector sends `contracts` rather than `amount`, and converts book, trade and fill amounts back to contracts.
+
+Position PnL and notional follow the `kInverse` flag, which Deribit sets on its BTC options. The engine therefore books them with the inverse-contract formulas (`PositionTracker`, `Instrument::notional`): PnL `qty × multiplier × (1/avg − 1/price)` and notional `qty × multiplier / price`, which do not describe a coin-quoted option. PnL totals, `max_loss` and the notional limits are not meaningful for these options.
 
 ## OptionTicker event
 
@@ -32,7 +34,7 @@ The Deribit connector sends `contracts` rather than `amount`, and converts book,
 | `delta`, `gamma`, `vega`, `theta`, `rho` | as the venue reports them |
 | `interest_rate` | annualised decimal |
 
-The engine journals the event and passes it to the optional strategy hook `on_option_ticker(ctx, id, msg)`, for instruments in the table only. `tools/journal_dump.py` prints it. The Deribit connector emits it for every `ticker.{instrument}.{interval}` notification of an option, next to a `BookTicker`.
+The engine journals the event and passes it to the optional strategy hook `on_option_ticker(ctx, id, msg)` for instruments in the table. `tools/journal_dump.py` prints it. The Deribit connector emits it for every `ticker.{instrument}.{interval}` notification of an option, next to a `BookTicker`.
 
 Deribit's greeks were checked against a recorded testnet ticker (`tests/core/black76_test.cpp`). They are Black-76 with r = `interest_rate` (0 on the testnet), in USD: delta per unit of underlying, gamma per USD, vega per vol point (Black-76 vega / 100) and theta per day (/ 365). Rho is the spot-model `K T N(d2) / 100`, not the Black-76 rho.
 
@@ -62,7 +64,7 @@ r_px   = theo − delta_skew_ticks × tick × (portfolio delta / max_delta) × o
 bid    = r_px − half  (rounded down),  ask = r_px + half  (rounded up), kept inside the touch
 ```
 
-Portfolio greeks are summed over the positions of every instrument in the context:
+Portfolio greeks are summed over every instrument's position:
 
 * options: `qty × contract_multiplier × delta` (for inverse options, delta minus the coin premium when `premium_adjusted_delta`), and `qty × contract_multiplier × vega / 100` in USD per vol point;
 * futures, perpetuals and spot: `qty × contract_multiplier`, divided by the book mid for inverse contracts (a 10 USD inverse contract holds 10 / F BTC).
@@ -97,9 +99,9 @@ An option is quoted only while its book is two-sided, because the stale-market-d
 
 `configs/deribit-testnet.toml` runs OptionsMM on three BTC options and BTC-PERPETUAL with testnet-sized limits. Option names embed their expiry, so replace the `[[instruments]]` once they expire: `load_reference_data` refuses an expired symbol.
 
-### Limits and caveats
+### Limits
 
-* The model is Black-76 on the venue's underlying price, with no smile or term-structure model of its own. The venue mark IV (or the smoothed mid IV) is used per strike as given.
+* The model is Black-76 on the venue's underlying price, with no smile or term-structure model. The venue mark IV (or the smoothed mid IV) is used per strike as given.
 * Portfolio greeks use the last pricing of each option. An option whose ticker has not arrived yet contributes no greeks.
 * Delta hedging with futures is not automated. Futures positions only enter the delta used for skews and limits.
 * OptionsMM evaluates its model in `double` and rounds the result onto the tick grid.
