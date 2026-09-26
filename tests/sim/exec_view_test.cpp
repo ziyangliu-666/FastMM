@@ -299,6 +299,23 @@ struct Rig {
     REQUIRE(feed.push(m.hdr));
     step();
   }
+  void ticker(Timestamp t,
+              std::uint64_t id,
+              const char* bid,
+              const char* bq,
+              const char* ask,
+              const char* aq) {
+    BookTickerMsg m{};
+    init_header(m, EventType::BookTicker, kId, VenueId{0});
+    m.hdr.exch_ts = t;
+    m.hdr.recv_ts = t;
+    m.hdr.venue_seq = id;
+    m.bid_px = px(bid);
+    m.bid_qty = qt(bq);
+    m.ask_px = px(ask);
+    m.ask_qty = qt(aq);
+    in(m);
+  }
   void trade(Timestamp t, const char* p, const char* q, Side aggressor) {
     TradeMsg m{};
     init_header(m, EventType::Trade, kId, VenueId{0});
@@ -480,6 +497,30 @@ TEST_CASE("exec_view.engine: a replace keeps its place at the same price and no 
   CHECK(*r.ahead(moved) == qt("7"));
 }
 
+TEST_CASE("exec_view.engine: a BookTicker newer than the depth book caps the queue") {
+  Rig r(true, true, 10'000);
+  r.book(
+      at(0), {{px("100.00"), qt("10")}, {px("99.99"), qt("7")}}, {{px("100.02"), qt("3")}}, true);
+  const ClientOrderId a = r.buy("100.00", "1");
+  const ClientOrderId b = r.buy("99.99", "1");
+  // The ticker (update id 0: by venue time) is newer than the depth: 4 at the touch, less ours.
+  r.ticker(at(1), 0, "100.00", "4", "100.02", "3");
+  r.in(ack(a.value, at(2)));
+  r.in(ack(b.value, at(2)));
+  CHECK(*r.ahead(a) == qt("4"));
+  r.ticker(at(3), 0, "100.00", "5", "100.02", "3");  // our 1 is in it now
+  CHECK(*r.ahead(a) == qt("4"));
+  CHECK(*r.ahead(b) == qt("7"));  // behind the touch: the depth's estimate
+  // An older ticker is not used.
+  r.book(at(5), {{px("99.99"), qt("7")}}, {});
+  r.ticker(at(4), 0, "100.00", "2", "100.02", "3");
+  CHECK(*r.ahead(a) == qt("4"));
+  // The touch moved below our bid: nothing is ahead of it any more.
+  r.ticker(at(6), 0, "99.99", "8", "100.02", "3");
+  CHECK(r.ahead(a)->is_zero());
+  CHECK(*r.ahead(b) == qt("7"));  // at the touch: 8 shown, 1 of them ours
+}
+
 TEST_CASE("exec_view.engine: tracking starts at the first queue_ahead call") {
   Rig r(false, /*track=*/false, 10'000);
   r.book(at(0), {{px("100.00"), qt("10")}}, {{px("100.02"), qt("3")}}, true);
@@ -597,6 +638,22 @@ void delta(ListSource& src,
   for (const Level& l : asks) d->levels()[k++] = l;
   src.add(d->hdr);
 }
+void top(ListSource& src,
+         std::int64_t ms,
+         const char* bid,
+         const char* bq,
+         const char* ask,
+         const char* aq) {
+  BookTickerMsg m{};
+  init_header(m, EventType::BookTicker, kId, VenueId{0});
+  m.hdr.exch_ts = at(ms);
+  m.hdr.recv_ts = at(ms);
+  m.bid_px = px(bid);
+  m.bid_qty = qt(bq);
+  m.ask_px = px(ask);
+  m.ask_qty = qt(aq);
+  src.add(m.hdr);
+}
 void print(ListSource& src, std::int64_t ms, const char* p, const char* q, Side aggressor) {
   TradeMsg m{};
   init_header(m, EventType::Trade, kId, VenueId{0});
@@ -642,6 +699,7 @@ TEST_CASE("exec_view.sim: the strategy's queue estimate equals the l2_queue fill
     std::int64_t ms = 2;
     // Levels shrink, grow and go; trades consume and go through.
     delta(src, ms++, {{px("100.00"), qt("3")}}, {});
+    top(src, ms++, "100.00", "2.5", "100.02", "4");  // newer than the depth: caps 100.00
     delta(src, ms++, {{px("99.99"), qt("11")}}, {{px("100.03"), qt("2")}});
     print(src, ms++, "100.00", "1", Side::Sell);
     delta(src, ms++, {{px("100.00"), qt("2")}, {px("99.99"), qt("5")}}, {});
@@ -649,6 +707,7 @@ TEST_CASE("exec_view.sim: the strategy's queue estimate equals the l2_queue fill
     delta(src, ms++, {{px("99.98"), Qty{}}}, {{px("100.03"), qt("1")}});
     delta(src, ms++, {{px("99.98"), qt("4")}}, {});
     print(src, ms++, "99.99", "2", Side::Sell);
+    top(src, ms++, "99.99", "1", "100.03", "1");  // the touch below the 100.00 bid
     delta(src,
           ms++,
           {{px("100.00"), qt("2")}, {px("99.99"), qt("2")}, {px("99.98"), qt("3")}},

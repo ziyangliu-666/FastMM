@@ -9,6 +9,9 @@
 //                a level that disappears entirely sets ahead = 0
 //   trade at px  consumes `ahead` first, the surplus fills us: min(trade - ahead, leaves)
 //   trade through (better than our price for the aggressor) fills us completely
+//   touch        a BookTicker newer than the depth book (venue update id when both carry one,
+//                else venue time): an order priced better than the ticker's touch on its side has
+//                nothing ahead, one at the touch at most the touch's quantity; at placement too
 //
 // Orders live in a Pool; iteration is in handle order for determinism. queue_after_level_change()
 // and queue_after_trade() are the two steps for one order; the engine's live estimate
@@ -68,6 +71,50 @@ inline constexpr std::size_t kMaxQueuedOrders = 4096;
   }
   ahead -= qty;
   return Qty{};
+}
+
+// A BookTicker's touch, without our own quantity: the freshest top of book when the depth stream
+// is throttled.
+struct QueueTouch {
+  Price bid_px;
+  Qty bid_qty;
+  Price ask_px;
+  Qty ask_qty;
+  std::uint64_t id = 0;  // venue book update id, 0 = none
+  Timestamp ts;          // venue time
+  [[nodiscard]] bool valid() const noexcept { return ts.valid() || id != 0; }
+  [[nodiscard]] Price px(Side s) const noexcept { return s == Side::Buy ? bid_px : ask_px; }
+  [[nodiscard]] Qty qty(Side s) const noexcept { return s == Side::Buy ? bid_qty : ask_qty; }
+  // Newer than a depth book whose last update had `seq` and venue time `book_ts`.
+  [[nodiscard]] bool newer_than(std::uint64_t seq, Timestamp book_ts) const noexcept {
+    if (id != 0 && seq != 0) return id > seq;
+    return ts > book_ts;
+  }
+};
+
+// A BookTicker as a QueueTouch; `own(side, px)` is our quantity in it.
+template <class Own>
+[[nodiscard]] QueueTouch queue_touch(const BookTickerMsg& m, Own&& own) noexcept {
+  QueueTouch t;
+  t.bid_px = m.bid_px;
+  t.ask_px = m.ask_px;
+  const Qty ob = own(Side::Buy, m.bid_px);
+  const Qty oa = own(Side::Sell, m.ask_px);
+  t.bid_qty = ob >= m.bid_qty ? Qty{} : m.bid_qty - ob;
+  t.ask_qty = oa >= m.ask_qty ? Qty{} : m.ask_qty - oa;
+  t.id = m.hdr.venue_seq;
+  t.ts = m.hdr.exch_ts.valid() ? m.hdr.exch_ts : m.hdr.recv_ts;
+  return t;
+}
+
+// The quantity ahead of an order after the touch on its side showed `touch` with `shown` of
+// others' quantity: nothing when the order is priced better, at most `shown` at the touch.
+[[nodiscard]] constexpr Qty queue_after_touch(
+    Qty ahead, Side side, Price price, Price touch, Qty shown) noexcept {
+  if (!touch.is_positive()) return ahead;
+  if (better(side, price, touch)) return Qty{};
+  if (price == touch && shown < ahead) return shown;
+  return ahead;
 }
 
 struct QueuedOrder {
@@ -158,6 +205,14 @@ class QueuePositionModel {
     });
   }
 
+  // A touch newer than the depth book (QueueTouch).
+  void on_touch(InstrumentId inst, const QueueTouch& t) noexcept {
+    pool_.for_each([&](Handle32, QueuedOrder& o) {
+      if (o.instrument != inst) return;
+      o.ahead = queue_after_touch(o.ahead, o.side, o.price, t.px(o.side), t.qty(o.side));
+    });
+  }
+
   // A trade printed at px with the given aggressor side. F(Handle32, QueuedOrder&, Qty fill,
   // Qty ahead_before) is called for every order that executes; the order's cum_qty is already
   // advanced and `ahead_before` is the displayed quantity that was still ahead of it (its queue
@@ -232,6 +287,25 @@ inline void queue_apply_book(L2Book<256>& book,
   }
   book.set_seq(d.last_update_id);
   book.set_last_update(now);
+}
+
+// The quantity ahead of an order at placement: `depth_ahead` from the depth book, capped by the
+// latest touch when that is newer than the book.
+[[nodiscard]] inline Qty queue_at_placement(
+    Qty depth_ahead, Side side, Price px, const L2Book<256>& book, const QueueTouch& t) noexcept {
+  if (!t.valid() || !t.newer_than(book.seq(), book.last_update())) return depth_ahead;
+  return queue_after_touch(depth_ahead, side, px, t.px(side), t.qty(side));
+}
+
+// A touch newer than `book` moves the queue of every order of `models` on instrument `id`. Returns
+// false when the depth book is as new or newer (the touch is not used).
+inline bool queue_apply_touch(const L2Book<256>& book,
+                              InstrumentId id,
+                              const QueueTouch& t,
+                              std::span<QueuePositionModel* const> models) noexcept {
+  if (!t.newer_than(book.seq(), book.last_update())) return false;
+  for (QueuePositionModel* q : models) q->on_touch(id, t);
+  return true;
 }
 
 }  // namespace fastmm

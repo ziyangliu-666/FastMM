@@ -62,6 +62,10 @@ class Walker {
 
   void on_event(const EventHeader& h) {
     if ((h.flags & EventHeader::kOutbound) != 0) return;
+    if (h.type == EventType::BookTicker) {
+      items_.push_back(Item{venue_ts(h).ns, Step::Depth, next_seq_++, &h});
+      return;
+    }
     if (h.type != EventType::BookDelta && h.type != EventType::BookSnapshot &&
         h.type != EventType::Trade)
       return;
@@ -125,6 +129,22 @@ class Walker {
     if (!books_[id.value]) books_[id.value] = std::make_unique<Book>();
     return *books_[id.value];
   }
+  QueueTouch& touch(InstrumentId id) {
+    if (id.value >= touches_.size()) touches_.resize(id.value + 1);
+    return touches_[id.value];
+  }
+
+  // The freshest top of book: without our own quantity at its venue time, it moves the queues
+  // when it is newer than the mirrored depth.
+  void on_ticker(const BookTickerMsg& m) {
+    ++res_.tickers;
+    const InstrumentId id = m.hdr.instrument;
+    const Timestamp t = venue_ts(m.hdr);
+    QueueTouch& tt = touch(id);
+    tt = queue_touch(
+        m, [&](Side s, Price p) { return stripper_ ? stripper_->own_at(id, s, p, t) : Qty{}; });
+    if (queue_apply_touch(book(id), id, tt, model_ptrs_)) ++res_.tickers_used;
+  }
   FillCheckOrder* row(const OwnOrder& s) {
     const Placed& p = placed_[index_of(s)];
     return p.row < 0 ? nullptr : &res_.orders[static_cast<std::size_t>(p.row)];
@@ -133,6 +153,10 @@ class Walker {
   void replay(const Item& it) {
     switch (it.step) {
       case Step::Depth: {
+        if (it.md->type == EventType::BookTicker) {
+          on_ticker(msg_cast<BookTickerMsg>(it.md));
+          break;
+        }
         ++res_.md_events;
         const EventHeader* h = stripper_ ? stripper_->strip(*it.md, buf_) : it.md;
         if (h != nullptr)
@@ -171,7 +195,8 @@ class Walker {
     o.qty = s.qty;
     // The book as of the ack's venue time (stripped of our own orders in a live session): depth
     // at that time or later is applied after the order entered.
-    o.queue_ahead = level_qty(b, s.side, s.price);
+    o.queue_ahead =
+        queue_at_placement(level_qty(b, s.side, s.price), s.side, s.price, b, touch(s.instrument));
     o.ack_ts = s.ack.ts;
     o.end = s.ended ? s.why : FillCheckEnd::Open;
     o.end_ts = s.ended ? s.end.ts : Timestamp{};
@@ -256,6 +281,7 @@ class Walker {
   }
 
   std::vector<std::unique_ptr<Book>> books_;
+  std::vector<QueueTouch> touches_;
   std::vector<std::unique_ptr<QueuePositionModel>> models_;
   std::vector<QueuePositionModel*> model_ptrs_;
   const OwnOrderLog& log_;
@@ -350,7 +376,11 @@ std::string format_fill_check(const FillCheckResult& r) {
                    r.unknown_acks,
                    r.model_full);
   }
-  fmt::format_to(it, "market   {} book and trade messages\n", r.md_events);
+  fmt::format_to(it,
+                 "market   {} book and trade messages, {} tickers ({} newer than the depth)\n",
+                 r.md_events,
+                 r.tickers,
+                 r.tickers_used);
   fmt::format_to(it,
                  "times    venue ({}); from receive time: {} order events, {} market messages; "
                  "ties in the ack / end millisecond: {} / {}; own orders in depth: {}\n",

@@ -6,9 +6,10 @@
 // that no longer lists it; collect_own_orders, own_orders.hpp), and the journal's book and trade
 // messages are applied to a mirror book and to one QueuePositionModel per conservatism value in
 // venue time order (exch_ts), exactly as SimTransport does under fill_model = "l2_queue"
-// (queue_apply_book, QueuePositionModel::on_trade). Venue time matters: a venue's execution
-// report reaches the session before the public trade that filled the order, so by receive time the
-// trade falls after the order's end. An event without a venue time uses its receive time (counted).
+// (queue_apply_book, QueuePositionModel::on_trade, and a BookTicker newer than the depth through
+// queue_apply_touch). Venue time matters: a venue's execution report reaches the session before
+// the public trade that filled the order, so by receive time the trade falls after the order's
+// end. An event without a venue time uses its receive time (counted).
 // A replace follows the new id; like the simulator, the same price at no more than the leaves keeps
 // the queue position.
 //
@@ -44,7 +45,9 @@ struct FillCheckOrder {
   Side side = Side::Buy;
   Price price;
   Qty qty;
-  Qty queue_ahead;   // displayed quantity at the price at the ack's venue time (own excluded)
+  // Displayed quantity at the price at the ack's venue time (own excluded), capped by a newer
+  // BookTicker's touch (queue_at_placement).
+  Qty queue_ahead;
   Timestamp ack_ts;  // venue time
   Timestamp end_ts;  // live end in venue time, or the last event of the journal when still open
   FillCheckEnd end = FillCheckEnd::Open;
@@ -78,6 +81,8 @@ struct FillCheckResult {
   std::vector<double> conservatism;
   std::vector<FillCheckOrder> orders;  // the orders placed in the models, in venue ack order
   std::uint64_t md_events = 0;         // book and trade messages applied
+  std::uint64_t tickers = 0;           // BookTicker messages
+  std::uint64_t tickers_used = 0;      // ... newer than the mirrored depth: they moved the queues
   std::uint64_t orders_sent = 0;       // OutNewOrder + OutReplace (not dropped)
   std::uint64_t rejected = 0;          // OrderReject before any ack
   std::uint64_t not_acked = 0;         // neither acknowledged nor rejected (lost, still pending)

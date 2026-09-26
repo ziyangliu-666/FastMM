@@ -32,7 +32,8 @@ SimTransport::SimTransport(const SimClock& clock,
       md_wire_(cfg.md_wire_bytes),
       order_wire_(cfg.order_wire_bytes),
       mirror_(new L2Book<256>[instruments.size() == 0 ? 1 : instruments.size()]),
-      queue_(cfg.queue_conservatism_bps) {
+      queue_(cfg.queue_conservatism_bps),
+      touch_(new QueueTouch[instruments.size() == 0 ? 1 : instruments.size()]) {
   me_.set_stp(kStrategyAccount, cfg.stp);
 }
 
@@ -170,6 +171,9 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
       }
       case EventType::Trade:
         if (cfg_.fill_model == FillModel::L2Queue) queue_on_trade(msg_cast<TradeMsg>(&md), now);
+        break;
+      case EventType::BookTicker:
+        if (cfg_.fill_model == FillModel::L2Queue) queue_on_ticker(msg_cast<BookTickerMsg>(&md));
         break;
       default:
         break;
@@ -320,7 +324,8 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);
     return;
   }
-  const Qty ahead = level_qty(book, n.side, n.price);
+  const Qty ahead =
+      queue_at_placement(level_qty(book, n.side, n.price), n.side, n.price, book, touch_[id.value]);
   const auto h = queue_.place(n.cl_ord_id, order_id, id, n.side, n.price, n.qty, ahead);
   if (!h.valid()) {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);  // queue table full
@@ -374,6 +379,14 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
 void SimTransport::queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept {
   QueuePositionModel* const models[] = {&queue_};
   queue_apply_book(mirror_[d.hdr.instrument.value], d, now, models);
+}
+
+void SimTransport::queue_on_ticker(const BookTickerMsg& m) noexcept {
+  const InstrumentId id = m.hdr.instrument;
+  QueueTouch& t = touch_[id.value];
+  t = queue_touch(m, [](Side, Price) { return Qty{}; });  // the replayed feed has none of ours
+  QueuePositionModel* const models[] = {&queue_};
+  static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, models));
 }
 
 void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {

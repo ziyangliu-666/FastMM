@@ -11,6 +11,8 @@
 //                old and new displayed quantities less our own
 //   snapshot     ahead is capped at what the level now shows
 //   trade        queue_after_trade: consumed ahead first, a trade through our price empties it
+//   ticker       a BookTicker newer than the depth book (update id, else venue time), less our
+//                own quantity at its venue time: queue_after_touch, at the ack as well
 //
 // Off until enable() (the strategy's first queue_ahead). State is a side array by OMS slot and one
 // list per instrument. An instrument with no tracked order costs one load per book update and per
@@ -39,7 +41,8 @@ class QueueTracker {
       : bps_(conservatism_bps < 0        ? 0
              : conservatism_bps > 10'000 ? 10'000
                                          : conservatism_bps),
-        slots_(std::make_unique<Slot[]>(kMaxOpenOrders)) {
+        slots_(std::make_unique<Slot[]>(kMaxOpenOrders)),
+        touch_(std::make_unique<QueueTouch[]>(kMaxInstruments)) {
     head_.fill(kNone);
   }
 
@@ -77,6 +80,37 @@ class QueueTracker {
     if (s.next != kNone) slots_[s.next].prev = s.prev;
     s.on = false;
     s.next = s.prev = kNone;
+  }
+
+  // `depth_ahead` capped by the latest BookTicker when it is newer than the depth book `b`.
+  // own(side, px, t): our quantity in the feed at venue time t.
+  template <class Own>
+  [[nodiscard]] Qty at_placement(Qty depth_ahead,
+                                 const Order& o,
+                                 const L2Book<256>& b,
+                                 Own&& own) const noexcept {
+    const QueueTouch& t = touch_[o.instrument.value];
+    if (!t.valid() || !t.newer_than(b.seq(), b.last_update())) return depth_ahead;
+    const Price touch = t.px(o.side);
+    return queue_after_touch(
+        depth_ahead, o.side, o.price, touch, less(t.qty(o.side), own(o.side, touch, t.ts)));
+  }
+
+  // A BookTicker: kept for placements, and applied to the instrument's orders when it is newer
+  // than the depth book `b`.
+  template <class Own>
+  void on_ticker(const BookTickerMsg& m, const L2Book<256>& b, Own&& own) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    QueueTouch& t = touch_[id.value];
+    t = queue_touch(m, [](Side, Price) { return Qty{}; });
+    if (head_[id.value] == kNone || !t.newer_than(b.seq(), b.last_update())) return;
+    const Qty shown[2] = {less(t.bid_qty, own(Side::Buy, t.bid_px, t.ts)),
+                          less(t.ask_qty, own(Side::Sell, t.ask_px, t.ts))};
+    for (std::uint32_t i = head_[id.value]; i != kNone; i = slots_[i].next) {
+      Slot& s = slots_[i];
+      const bool buy = s.side == Side::Buy;
+      s.ahead = queue_after_touch(s.ahead, s.side, s.px, t.px(s.side), shown[buy ? 0 : 1]);
+    }
   }
 
   // After `b` applied `d`. own(side, px): our quantity in the feed at that price as of the book's
@@ -144,6 +178,7 @@ class QueueTracker {
   bool enabled_ = false;
   std::array<std::uint32_t, kMaxInstruments> head_{};
   std::unique_ptr<Slot[]> slots_;
+  std::unique_ptr<QueueTouch[]> touch_;  // the latest BookTicker per instrument, as published
 };
 
 }  // namespace fastmm

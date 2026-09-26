@@ -799,6 +799,11 @@ class Engine {
   }
 
   void on_book_ticker(const BookTickerMsg& m) noexcept {
+    if (queue_.enabled() && instruments_.contains(m.hdr.instrument)) {
+      const InstrumentId id = m.hdr.instrument;
+      queue_.on_ticker(
+          m, books_[id.value], [&](Side s, Price p, Timestamp t) { return own_qty(id, s, p, t); });
+    }
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
@@ -1010,11 +1015,15 @@ class Engine {
       own_->on_outbound(h);
   }
   // What the queue model places an order behind: the displayed quantity at its price less our
-  // own.
+  // own, capped by a BookTicker newer than the depth book.
   [[nodiscard]] Qty queue_shown(const Order& o) const noexcept {
-    const Qty shown = level_qty(books_[o.instrument.value], o.side, o.price);
+    const Book& b = books_[o.instrument.value];
+    const Qty shown = level_qty(b, o.side, o.price);
     const Qty own = own_qty(o.instrument, o.side, o.price);
-    return own >= shown ? Qty{} : shown - own;
+    return queue_.at_placement(
+        own >= shown ? Qty{} : shown - own, o, b, [&](Side s, Price p, Timestamp t) {
+          return own_qty(o.instrument, s, p, t);
+        });
   }
   // Queue position and own quantity after an OMS update: a resting order enters the queue model,
   // a terminal one leaves it.

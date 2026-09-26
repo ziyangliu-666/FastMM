@@ -203,12 +203,13 @@ Whether a venue's feed shows our orders is a transport property (`own_in_feed(ve
 
 | Event | Quantity ahead |
 |---|---|
-| ack | the displayed quantity at the price less `own_qty` |
+| ack | the displayed quantity at the price less `own_qty`, capped as for a book ticker |
 | depth delta at the price | a shrink from `old` to `new` takes `(old - new) * ahead / old * (1 - conservatism)`; a level that goes away leaves 0; a snapshot caps it at the level |
 | trade at the price | consumed first; a trade through the price leaves 0 |
+| book ticker newer than the depth (venue update id when both carry one, else venue time) | 0 for an order priced better than its touch; at most the touch's quantity less ours for an order at the touch |
 | replace ack | kept at the same price and no more than the leaves; otherwise as for an ack |
 
-The engine tracks queues from the strategy's first `queue_ahead` call, so a strategy that never calls it pays one load per book update and trade; an order already resting at that call starts at the back of its level as the book then shows it. Call it in `on_start` to cover every order from its ack. With `fill_model = "l2_queue"` and no latency the value equals the fill model's ([`tests/sim/exec_view_test.cpp`](../../tests/sim/exec_view_test.cpp)); with latency the simulated venue sees the market before the strategy does. A replay handles events in arrival order, `fastmm-data fill-check` in venue-time order: on a 3 h Binance Spot session the replayed estimate at the ack equals fill-check's for 2077 of 2079 orders, on a session that joined existing levels for 1667 of 1726.
+The engine tracks queues from the strategy's first `queue_ahead` call, so a strategy that never calls it pays one load per book update and trade; an order already resting at that call starts at the back of its level as the book then shows it. Call it in `on_start` to cover every order from its ack. With `fill_model = "l2_queue"` and no latency the value equals the fill model's ([`tests/sim/exec_view_test.cpp`](../../tests/sim/exec_view_test.cpp)); with latency the simulated venue sees the market before the strategy does. A replay handles events in arrival order, `fastmm-data fill-check` in venue-time order: on a 3 h Binance Spot session the replayed estimate at the ack equals fill-check's for 2077 of 2079 orders, on a session that joined existing levels for 1639 of 1726.
 
 ## Book
 
