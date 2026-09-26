@@ -217,9 +217,9 @@ TEST_CASE("store.resume: a version 2 store opens and resumes from the engine clo
   const std::int64_t last_ns = kT0 * kMs;
   {
     sqlite3* db = nullptr;
-    REQUIRE(sqlite3_open_v2(
-                path.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) ==
-            SQLITE_OK);
+    REQUIRE(
+        sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) ==
+        SQLITE_OK);
     REQUIRE(sqlite::migrate(db, 2));
     REQUIRE(sqlite::exec(db,
                          "INSERT INTO sessions (session_id, engine, strategy, session_epoch,"
