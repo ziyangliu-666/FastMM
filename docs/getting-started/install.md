@@ -3,12 +3,12 @@
 ## Without building it
 
 ```bash
-pip install "fastmm-engine[hot]"     # backtests and Python strategies, CPython 3.9 or later
+pip install "fastmm-engine[hot]"     # backtests and Python strategies, CPython 3.10 or later
 fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest to run
 python backtest.py
 ```
 
-`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py` and a README into the directory; the backtest runs on the simulated market with nothing else installed. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
+`fastmm init` writes `config.toml`, `strategy.py`, `backtest.py` and a README; the backtest runs on the simulated market. `pip install "fastmm-engine[live]"` adds the live runtime ([Python](#python)).
 
 The C++ programs come as a tarball or a container image, one per release: [Deploy a release](../how-to/operations/deploy.md). What may change between releases: [Versions and compatibility](../reference/compatibility.md).
 
@@ -93,7 +93,7 @@ This builds one image and starts two containers, `sim-exchange` and `engine`, wh
 
 ## Python
 
-The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9 or later, and `fastmm-engine-live` adds live trading; see [Python](../python.md).
+The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9 or later; `fastmm-engine-live` adds live trading ([Python](../python.md)).
 
 | Extra | Installs | Needs |
 |---|---|---|
