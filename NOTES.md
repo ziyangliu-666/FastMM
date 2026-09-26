@@ -40,9 +40,8 @@ alignment, `scripts/build-pgo.sh`), measured, before layout drift accumulates.
 
 **Open after the alignment change (2026-09-26).** `BM_Json_BybitExecution` +10% with
 `FASTMM_ALIGN_CODE` on (venue decode, off the engine path; not investigated); the budgets in
-`bench/ci_budget.toml` are not re-measured. The gateway's AF_UNIX socket path is
-`<journal_dir>/<name>.gw` and must fit 107 bytes: a long `journal_dir` fails to attach (seen in a
-deep worktree path); refuse it at startup with a clear message, or put the socket elsewhere.
+`bench/ci_budget.toml` are not re-measured. (The gateway tests failing in a deep worktree were the 107-byte AF_UNIX path limit, which the
+gateway already refuses at startup with exit 3 and the path in the message.)
 
 ## Next direction (chosen 2026-09-26): a crypto desk can run on this
 
