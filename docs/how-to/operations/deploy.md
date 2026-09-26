@@ -4,11 +4,11 @@ A release comes in three forms, from <https://github.com/ziyangliu-666/FastMM/re
 
 | Form | What it holds | Use it for |
 |---|---|---|
-| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-sim-itch`, `fastmm-top`, `fastmm-replay`, the configs, the systemd unit | a host that runs C++ strategies |
-| `ghcr.io/ziyangliu-666/fastmm:<version>` | `fastmm-live`, `fastmm-top`, `fastmm-replay`, non-root, no simulator | a container host |
+| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-itch`, the ITCH simulator configs, the systemd units, the Prometheus alert rules | a host that runs C++ strategies |
+| `ghcr.io/ziyangliu-666/fastmm:<version>` | the same programs without the simulator, non-root | a container host |
 | `pip install "fastmm-engine[live]"` | the engine as a Python package, for strategies written in Python | [Python](../../python.md) |
 
-The tarball and the image are built for x86-64-v2 and need glibc of the build host's version or newer; the tarball also needs libssl 3 (`apt install libssl3` on Ubuntu 24.04). Neither holds `fastmm-gateway`, `fastmm-ctl` or `fastmm-pnl`, nor a strategy of your own: a C++ strategy is linked into your own `fastmm-live` build ([Register a strategy](../strategies/register-a-strategy.md)).
+The tarball and the image are built for x86-64-v2 and need glibc of the build host's version or newer; the tarball also needs libssl 3 (`apt install libssl3` on Ubuntu 24.04). Neither holds a strategy of your own: a C++ strategy is linked into your own `fastmm-live` build ([Register a strategy](../strategies/register-a-strategy.md)).
 
 ## Install the tarball
 

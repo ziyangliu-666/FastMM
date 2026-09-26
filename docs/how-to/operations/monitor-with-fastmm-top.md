@@ -60,7 +60,17 @@ scrape_configs:
 | `fastmm_venue_*{venue}` | gauge, counter | channel states, synced books, market-data messages, order traffic, reconnects, REST errors, rate-limit cooldowns, clock offset, wire tick-to-trade quantiles |
 | `fastmm_feed_*{venue}` | gauge, counter | multicast venues only: feed state, packets, gaps, recovered and given-up sequences, per-line duplicates |
 
-The quantiles are the engine's (p50, p99, p99.9), not a histogram: they cannot be aggregated across instances. Alert on `fastmm_up`, `fastmm_status_age_seconds`, `fastmm_kill_active` and the reject counters; chart the rest.
+The quantiles are the engine's (p50, p99, p99.9), not a histogram: they cannot be aggregated across instances.
+
+## Alerts
+
+`deploy/prometheus/fastmm-alerts.yml` (also in the release tarball) holds alerting rules for these metrics; add it to `rule_files` and route the alerts with Alertmanager. `critical` means act now: the process is hung or dead (`fastmm_status_age_seconds`), the kill switch is engaged, or a venue is killed. `warning` means look soon: a latched `max_loss`, a channel down or stale market data, books out of sync, reconnect or REST-error bursts, a clock offset past a second, and for a gateway an account loss past 80% of its `max_loss`, no strategy attached, or a strategy falling behind on market data.
+
+```yaml
+# prometheus.yml
+rule_files:
+  - /opt/fastmm/deploy/prometheus/fastmm-alerts.yml
+```
 
 ## Reject logging
 

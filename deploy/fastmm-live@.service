@@ -1,0 +1,67 @@
+# A strategy attached to fastmm-gateway: one instance per strategy, fastmm-live@<name> runs
+# /etc/fastmm/<name>.toml. Enable each instance (systemctl enable fastmm-live@<name>): it is then
+# WantedBy the gateway, so every start of the gateway, its automatic restarts included, starts it
+# again, and PartOf stops it with the gateway. Checked with kill -9 of the gateway (2026-09-26):
+# the gateway came back, the strategy reattached and restored its position, and the venue and the
+# store agreed on the position and on every fill.
+# Install and edit the paths: docs/how-to/operations/run-behind-a-gateway.md
+[Unit]
+Description=FastMM strategy %i behind the gateway
+# A crash loop stops after five starts in ten minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+Documentation=https://ziy.bio/FastMM/how-to/operations/deploy/
+After=network-online.target time-sync.target fastmm-gateway.service
+Requires=fastmm-gateway.service
+PartOf=fastmm-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=fastmm
+Group=fastmm
+WorkingDirectory=/var/lib/fastmm
+# Optional: variables the strategy's config reads as ${VAR}. The API keys belong to the gateway.
+EnvironmentFile=-/etc/fastmm/%i.env
+ExecStart=/opt/fastmm/bin/fastmm-live --config /etc/fastmm/%i.toml --gateway /var/lib/fastmm/runs/gateway.gw
+
+# A crash comes back: the gateway cancelled this strategy's orders when its socket closed, and the
+# new process restores its position from its store and the venue's executions. It exits 5 when the
+# gateway goes away and is not restarted for that; it restarts with the gateway (PartOf). 2 and 3
+# need a config fix; 6 and 7 need a human (docs/reference/errors.md).
+Restart=on-failure
+RestartPreventExitStatus=2 3 5 6 7
+RestartSec=2
+# SIGTERM pulls the quotes; the gateway cancels the orders when the socket closes.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# [engine] lock_memory = true calls mlockall(); without this the call fails and logs a warning.
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+# Never swap the engine out; kill the unit rather than let the OOM killer pick another process.
+MemorySwapMax=0
+OOMPolicy=stop
+OOMScoreAdjust=-500
+
+# The cores the engine may use: a superset of [engine] cpu and net_cpus, and disjoint from the
+# cores other work runs on. Pair it with isolcpus, nohz_full and rcu_nocbs on the kernel command
+# line (scripts/host-setup.sh tune). Remove the line on a shared host, where [engine] cpu = -1.
+CPUAffinity=2 3
+
+# stderr carries the lines at [logging] mirror_level and above; [logging] file takes the full log
+# and needs your own rotation.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fastmm-live@%i
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# runs/ (journals, epoch file, kill file) and the config directory.
+ReadWritePaths=/var/lib/fastmm
+ReadOnlyPaths=/etc/fastmm
+
+[Install]
+WantedBy=fastmm-gateway.service

@@ -53,7 +53,7 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 4 | `InvalidTick` | `tick` | the strategy rounds prices with `inst.round_price` |
 | 5 | `InvalidLot` | `lot`, `min_qty`, `max_qty` | the strategy rounds quantities with `inst.round_qty` |
 | 6 | `BelowMinNotional` | `min_notional` | the order is larger |
-| 7 | `StaleMarketData` | `[risk] stale_md_ms` | the book updates; also fires when the host clock lags ([Clocks](../how-to/operations/running-in-production.md#8-clocks)) |
+| 7 | `StaleMarketData` | `[risk] stale_md_ms` | the book updates (its age is measured on the engine clock from when the engine applied it) |
 | 8 | `PriceCollar` | `[risk] price_collar_bps` | the mid moves to the price, or the price moves to the mid |
 | 9 | `FatFinger` | `[risk] fat_finger_bps` | a trade prints nearer the price |
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |

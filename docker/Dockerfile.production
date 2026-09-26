@@ -1,4 +1,5 @@
-# Production image: fastmm-live, fastmm-top and fastmm-replay, no simulator, no test certificates,
+# Production image: fastmm-live, fastmm-gateway, fastmm-ctl, fastmm-top, fastmm-pnl and
+# fastmm-replay; no simulator, no test certificates,
 # non-root, tini as PID 1. The demo is docker/Dockerfile with docker-compose.yml.
 #
 #   docker build -f docker/Dockerfile.production -t fastmm:0.2.0 .
@@ -18,8 +19,10 @@ ENV CPM_SOURCE_CACHE=/root/.cache/CPM
 RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++-13 \
       -DFASTMM_BUILD_TESTS=OFF -DFASTMM_BUILD_BENCH=OFF -DFASTMM_BUILD_EXAMPLES=OFF \
       -DFASTMM_INSTALL=OFF && \
-    cmake --build build -j"$(nproc)" --target fastmm-live fastmm-top fastmm-replay && \
-    strip --strip-debug build/bin/fastmm-live build/bin/fastmm-top build/bin/fastmm-replay
+    cmake --build build -j"$(nproc)" --target fastmm-live fastmm-gateway fastmm-ctl fastmm-top \
+      fastmm-pnl fastmm-replay && \
+    strip --strip-debug build/bin/fastmm-live build/bin/fastmm-gateway build/bin/fastmm-ctl \
+      build/bin/fastmm-top build/bin/fastmm-pnl build/bin/fastmm-replay
 
 FROM ubuntu:24.04 AS runtime
 ARG VERSION=dev
@@ -37,7 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd --gid 10001 fastmm && \
     useradd --uid 10001 --gid 10001 --home-dir /var/lib/fastmm --shell /usr/sbin/nologin fastmm && \
     mkdir -p /etc/fastmm /var/lib/fastmm/runs && chown -R 10001:10001 /var/lib/fastmm
-COPY --from=builder /src/build/bin/fastmm-live /src/build/bin/fastmm-top \
+COPY --from=builder /src/build/bin/fastmm-live /src/build/bin/fastmm-gateway \
+     /src/build/bin/fastmm-ctl /src/build/bin/fastmm-top /src/build/bin/fastmm-pnl \
      /src/build/bin/fastmm-replay /usr/local/bin/
 COPY docker/entrypoint.sh /usr/local/bin/fastmm-entrypoint
 COPY LICENSE /usr/share/doc/fastmm/LICENSE

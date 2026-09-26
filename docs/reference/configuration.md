@@ -213,7 +213,7 @@ Line and recovery keys apply to the multicast feed; `rx_backend` selects how it 
 | `line_a_source` | string |  | source address of line A: a source-specific join (default any source) |
 | `line_b_source` | string |  | source address of line B |
 | `depth` | integer |  | price levels per side sent to the engine, 1 to 256 (default 20) |
-| `queues` | any |  | af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default 0) |
+| `queues` | any |  | af_xdp: RX queues to bind on every line interface, [0, 1] or "0,1" (default: every RX queue the interface has) |
 | `dpdk_eal_args` | string |  | dpdk: rte_eal_init arguments, space-separated (e.g. "--no-huge --no-pci --in-memory --vdev=net_af_packet0,iface=eth1") |
 | `dpdk_port` | string |  | dpdk: ethdev name, e.g. net_af_packet0 or a PCI address (default: the first port) |
 | `dpdk_exception_port` | string |  | dpdk: ethdev name of a net_tap vdev that carries the kernel's traffic on the port (ARP, GLIMPSE, re-requests, IGMP, kernel TCP); default none |

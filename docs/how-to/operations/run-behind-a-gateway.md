@@ -127,6 +127,16 @@ Closing the connection is the detach; the kernel closes it when the process dies
 
 A strategy that stops cleanly cancels its own quotes through the gateway first and logs `no venue cancel_all here`. A strategy whose gateway goes away stops with exit code 5. The gateway itself, on SIGINT or SIGTERM, detaches everyone and cancels all open orders on every venue.
 
+## Run under systemd
+
+`deploy/fastmm-gateway.service` runs the gateway and `deploy/fastmm-live@.service` one strategy per instance (`fastmm-live@mm1` runs `/etc/fastmm/mm1.toml` attached to the gateway). Enable each instance: it is then wanted by the gateway, so every start of the gateway, its automatic restart after a crash included, starts the strategies again, and stopping the gateway stops them. A strategy exits 5 when its gateway goes away and is not restarted for that alone.
+
+```bash
+sudo systemctl enable --now fastmm-gateway fastmm-live@mm1 fastmm-live@mm2
+```
+
+After `kill -9` of the gateway (tested with user units against `fastmm-sim-exchange`), systemd restarted it within 2 s, the strategy reattached and restored its position, and the venue and the strategy's store agreed on the position and on all 123 fills.
+
 ## Latency
 
 With `spin_mode = "adaptive"` an idle side blocks, and the other wakes it as threads wake each other inside `fastmm-live`: the engine sleeps on a futex in a page it shares with the gateway, and the gateway's network threads sleep in their reactors, whose flags (in a second page, shared by every attachment) and eventfds the strategy receives on attach. A wake-up costs a system call only while the other side sleeps. Each event and order is copied once more than in-process: the connector's events from its own ring into each attachment's, the orders from the attachment's ring into the venue's.
