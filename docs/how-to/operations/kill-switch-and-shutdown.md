@@ -52,6 +52,8 @@ updated_ns 1758600000000000000
 | The session's 32-bit client order id sequence ran out (4.3 billion orders) | Global | `kill switch engaged (OrderIdsExhausted, ...)` | ERROR | `on_kill`; restart the process, which takes a fresh session epoch |
 | The outbound ring to a venue was full | Global | `outbound transport full: <n> message(s) dropped; tripping kill switch`, then `kill switch engaged (TransportFull, ...)` | ERROR | `on_kill` |
 | The journal ring was full | Global | `kill switch engaged (JournalOverflow, ...)` | ERROR | `on_kill` |
+| The journal file cannot be written (a full filesystem, an I/O error) | Global, requested | `journal write failed (<error>): tripping the kill switch and shutting down`, then `fastmm-live: shutting down (the journal cannot be written: <error>)` | ERROR | Shutdown sequence; exit code 5 |
+| Behind `fastmm-gateway`, the gateway exited or dropped the attachment | Global, requested | `the gateway closed the attachment: no market data, no orders`, then `fastmm-live: shutting down (the gateway went away)` | ERROR | Shutdown sequence; exit code 5 |
 | A fatal venue error (see [below](#venue-kill-switch)) | That venue | `<venue>: asking the engine to kill this venue (VenueFatal)`, `venue <id> kill switch engaged (VenueFatal, flags=0x2); ...`, `[<venue>] venue kill switch engaged (VenueFatal): ...; <n> of <m> venue(s) still trading` | ERROR | Only that venue stops; the others keep trading |
 | A venue-side dead man's switch could not be refreshed for a whole window ([Running in production](running-in-production.md#a-dead-mans-switch-that-lapses-is-a-kill-not-a-retry)) | That venue | `<venue>: countdownCancelAll not refreshed within <n> ms; the venue has cancelled this account's orders`, then `venue <id> kill switch engaged (DeadMansSwitchLost, ...)` | ERROR | Only that venue stops. The venue has already cancelled its orders; it must not requote until someone has looked |
 | A `nasdaq_itch` feed cannot rebuild its books: the recovery buffer overflowed during two snapshots in a row, or a gap without `glimpse_url` ([Venue connectors](../../reference/venues.md#startup-and-recovery)) | That venue | `<venue>: market data lost (<cause>): the venue stops`, then `venue <id> kill switch engaged (FeedLost, ...)` | ERROR | Only that venue stops |
@@ -69,19 +71,19 @@ The exit codes in the table assume `cancel_all ok`; a failed cancel-all makes th
 These events do not trip the kill switch:
 
 - Market-data loss or a stale feed: the engine pulls the quotes on the instruments of that venue and requotes when the book is valid again.
-- Order-channel loss: with `cancel_on_order_channel_loss = true` (the default) the connector cancels everything over REST, reconnects with backoff (without giving up) and reconciles open orders. A connection that keeps failing its authentication ends in a fatal venue error, below.
+- Order-channel loss: with `cancel_on_order_channel_loss = true` (the default) the connector cancels everything over REST, reconnects with backoff without giving up, and reconciles open orders. A connection that keeps failing its authentication ends in a fatal venue error, below.
 - A venue rejecting one order (filters, balance, rate limit): counted per reason ([Troubleshooting](troubleshooting.md#orders-and-reconciliation)).
 
 ## After a kill the engine trips itself
 
-`[engine] on_kill` decides what `fastmm-live` does after a global kill it did not request: every row above except signal, `--duration`, order ring overflow and the slow-tier rows, which shut down in any case.
+`[engine] on_kill` decides what `fastmm-live` does after a global kill it did not request: the rows above whose scope is Global or every venue. The "requested" rows do not go through it.
 
 | `on_kill` | Behaviour |
 |---|---|
 | `"exit"` (default) | Within 50 ms the control thread logs `fastmm-live: shutting down (kill switch: <reason>; [engine] on_kill = "exit")` at ERROR and runs the [shutdown sequence](#shutdown-sequence). Exit code 6, or 5 if a cancel-all failed |
 | `"stay"` | The process keeps running with quoting off and new orders refused. At once and then every 10 s it logs `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off and no new orders are sent; stop the process (SIGINT/SIGTERM) to cancel all and exit` at ERROR. SIGINT or SIGTERM then runs the shutdown sequence: exit code 0, or 5 if a cancel-all failed |
 
-Use `"stay"` only when someone watches the session. Alert on exit codes 5, 6 and 7. After a `max_loss` kill, check the PnL and the market, then clear the [latched budget](#the-latched-loss-budget): a plain restart exits with code 6 again.
+Use `"stay"` only when someone watches the session. Alert on exit codes 5, 6 and 7. After a `max_loss` kill, check the PnL and the market, then clear the [latched budget](#the-latched-loss-budget); until then every start exits 6.
 
 ## Venue kill switch
 
@@ -102,21 +104,22 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
 
 ## Shutdown sequence
 
-From `run_live()` in `src/live/session.cpp`, which also runs Python strategies ([Run a Python strategy live](../strategies/python-live.md)):
+`run_live()` in `src/live/session.cpp`, which also runs Python strategies ([Run a Python strategy live](../strategies/python-live.md)):
 
-1. The control thread notices the signal, a `stop` on the [control socket](operate-a-running-session.md), the elapsed duration, the ring overflow, a slow-tier failure or a kill the engine tripped itself (it checks every 50 ms), publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
+1. The control thread notices the stop cause (it checks every 50 ms): a signal, a `stop` on the [control socket](operate-a-running-session.md), the elapsed duration, a ring overflow, a journal or slow-tier failure, a lost gateway, or a kill the engine tripped itself. It closes and removes the control socket, so no further command reaches the session, writes the kill file, publishes the state `stopping` to the status file and logs `fastmm-live: shutting down (<reason>)`.
 2. Unless the engine tripped the kill switch itself (it has already pulled quotes and cancelled), it posts a kill-switch command to the engine. The engine logs `kill switch requested`, pulls every quote and queues cancels for every working order. If the control ring is full, the log says `control ring full: kill switch message dropped`; step 3 still runs.
-3. Independently of the engine, the control thread calls `cancel_all()` on every venue, one after another, over a new blocking REST connection (so it works even when the venue's network thread is stuck), and waits for each reply. It is skipped in `--dry-run`. Each request has a 5000 ms timeout (`http_timeout_ms`), and there is one request per subscribed instrument:
-   - Binance: `DELETE /api/v3/openOrders` per symbol; error `-2011` (nothing open) counts as success.
-   - Bybit: `/v5/order/cancel-all` per symbol.
-   - Deribit: `private/cancel_all_by_instrument` per instrument.
+3. Independently of the engine, the control thread calls `cancel_all()` on every venue, one after another, over a new blocking REST connection (so it works even when the venue's network thread is stuck), and waits for each reply. It is skipped in `--dry-run`, and behind `fastmm-gateway`, where the gateway cancels the strategy's orders when the attachment closes. Each request has a 5000 ms timeout (`http_timeout_ms`), one per subscribed instrument:
+   - Binance Spot: `DELETE /api/v3/openOrders`; error `-2011` (nothing open) counts as success.
+   - Binance USDⓈ-M: `DELETE /fapi/v1/allOpenOrders`.
+   - Bybit: `/v5/order/cancel-all`.
+   - Deribit: `private/cancel_all_by_instrument`.
 4. It waits 200 ms so that the engine's queued cancels reach the wire, then stops the engine thread.
-5. The control socket is closed and removed, so no further command can reach a session that is shutting down. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and disconnects. The journal is flushed and closed with a trailer block.
-6. The summary lines are logged: engine counters (`fastmm-live: events=... risk_rejects=<n> venue_rejects=<n>`), the rejects per reason for each kind that had any (`fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5`), PnL (`fastmm-live: realized_pnl=... unrealized_pnl=... fees=...`), one `[<venue>] final:` line per venue, the clock statistics, after a kill that was not requested or any venue kill `fastmm-live: kill switch flags=<hex> reason=<reason> kills=<n> venue_kills=<n>` (ERROR), then `fastmm-live: shutdown took <n> ms (cancel_all ok)` or `(cancel_all FAILED)`.
+5. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and disconnects. The journal is flushed and closed with a trailer block.
+6. The summary lines are logged: engine counters (`fastmm-live: events=... risk_rejects=<n> venue_rejects=<n>`), the rejects per reason for each kind that had any (`fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5`), PnL (`fastmm-live: realized_pnl=... unrealized_pnl=... fees=...`, and `funding=` when any was booked), one `[<venue>] final:` line per venue, the clock statistics, after a kill that was not requested or any venue kill `fastmm-live: kill switch flags=<hex> reason=<reason> kills=<n> venue_kills=<n>` (ERROR), then `fastmm-live: shutdown took <n> ms (cancel_all ok)` or `(cancel_all FAILED)`.
 7. The status file is marked `stopped` and left in place.
 8. `fastmm-live: exit code <n>` is logged last.
 
-In two Binance Demo sessions (one venue, one symbol) shutdown took 555 ms and 697 ms. The upper bound is roughly 5 s per REST request that times out, plus 300 ms.
+Two Binance Demo sessions (one venue, one symbol) shut down in 555 ms and 697 ms. The upper bound is about 5 s per REST request that times out, plus 300 ms.
 
 ## Reading the last lines
 
@@ -139,5 +142,5 @@ fastmm-live: exit code 0
    - `<venue>: kill-switch cancel-all failed: <error>` (the REST connection itself failed)
 
    Typical causes are a network outage (status 0 with an error text), a revoked key or a missing permission (`401`, `403`; the venue kill switch has usually tripped earlier with `VenueFatal`), an IP ban (`418` on Binance, `403` on Bybit; `VenueHardStop`) or the venue being down.
-3. Confirm that the venue shows no open orders before you start anything again. On Deribit, `cancel_on_disconnect = true` also makes the venue cancel the orders of the order connection when it closes, and on Binance USDⓈ-M the `dead_mans_switch_ms` countdown does the same once it runs out ([Running in production](running-in-production.md#binance-spot-has-no-dead-mans-switch-and-bybits-is-not-self-serve)).
-4. A restart sweeps what is left: every connector queries open orders on its first connect and the engine cancels the ones it does not know (`cancelling unknown live order <id>`), but only orders the connector recognises as FastMM's. Until the next start they keep resting and can fill; the restarted session books those fills from the venue's trade history ([Running this in production](running-in-production.md#2-orders-the-engine-cannot-see)).
+3. Confirm that the venue shows no open orders before you start anything again. On Deribit (`cancel_on_disconnect = true`), Binance USDⓈ-M (`dead_mans_switch_ms`) and Bybit with DCP armed, the venue also cancels once the connection is gone or the window runs out ([Running in production](running-in-production.md#binance-spot-has-no-dead-mans-switch-and-bybits-is-not-self-serve)).
+4. A restart sweeps what is left: every connector queries open orders on its first connect and the engine cancels the ones it does not know (`cancelling unknown live order <id>`), but only orders the connector recognises as FastMM's. Until then they rest and can fill; the restarted session books those fills from the venue's executions ([Running this in production](running-in-production.md#2-orders-the-engine-cannot-see)).
