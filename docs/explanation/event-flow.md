@@ -22,7 +22,7 @@ A multicast venue (`nasdaq_itch`) has no TLS or JSON. The network thread takes a
 
 ## 2. Hand over (rings)
 
-Messages cross to the engine through single-producer, single-consumer rings, two per venue: market data and order events. A full market-data ring drops the delta and forces a resync; order events are never dropped, and an order ring overflow shuts the session down. The engine polls the rings round-robin, at most `[engine] max_events_per_step` events per ring per iteration.
+Messages cross to the engine through single-producer, single-consumer rings, two per venue (market data and order events) plus the control ring. Behind `fastmm-gateway` the venue rings are `ShmRing`s in shared memory. A full market-data ring drops the delta and forces a resync; order events are never dropped, and an order ring overflow shuts the session down. The engine polls the rings round-robin, at most 64 messages per ring per visit and `[engine] max_events_per_step` (default 64) per step, then runs due timers.
 
 ## 3. Consume (engine thread)
 
@@ -67,6 +67,7 @@ The venue's acknowledgement or fill arrives on the user stream and takes steps 1
 ## 10. Everything else
 
 - **Timers** fire from a timer wheel in engine time, between events; each firing is journaled as a synthetic `Timer` message and calls `on_timer`.
-- **Connection changes**: for any state other than `Live` the engine pulls the venue's quotes and, for market data, clears its books, then calls `on_connection`. After an order-channel reconnect, a reconciliation (Begin, open orders, End) aligns the OMS with the venue; quotes are paused during it and restored at the end.
+- **Connection changes**: for any state other than `Live` the engine pulls the venue's quotes and, for market data, clears its books, then calls `on_connection`. After an order-channel reconnect the connector replays the executions since the last one booked, then sends a reconciliation (Begin, open orders, positions where the venue has them, End) that aligns the OMS with the venue; quotes are paused during it and restored at the end. Every connector with order entry also replays executions once a minute, which books a fill the stream dropped without a disconnect.
+- **Funding** payments of perpetuals arrive on the order ring as `Funding` events and are booked as realized PnL of the instrument, once per venue id; `max_loss` is checked at once. There is no strategy hook.
 - **Quoting changes**: after each event or timer, if `ctx.quoting_enabled()` changed, the engine calls `on_quoting`.
 - **Shutdown**: the control thread requests the kill switch (quotes pulled, orders cancelled through the engine) and independently cancels all orders on each venue over REST, then stops the threads ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
