@@ -110,6 +110,7 @@ struct InstrumentInfo {
 };
 struct OrderInfo {
   Order order;
+  OrderTimes times;
 };
 struct PortfolioInfo {
   Portfolio p;
@@ -609,9 +610,16 @@ std::uint32_t timer_or_raise(TimerId t) {
   return t.value;
 }
 
-py::object order_or_none(const Order* o) {
+py::object order_or_none(PySimEngine& e, const Order* o) {
   if (o == nullptr) return py::none();
-  return py::cast(OrderInfo{*o});
+  const OrderTimes* t = e.context().order_times(o->cl_ord_id);
+  return py::cast(OrderInfo{*o, t != nullptr ? *t : OrderTimes{}});
+}
+
+py::object qty_or_none(std::optional<Qty> q, bool raw) {
+  if (!q) return py::none();
+  if (raw) return py::int_(q->raw);
+  return py::float_(q->to_double());
 }
 
 py::tuple level_f(Level l) {
@@ -751,6 +759,19 @@ void bind_strategy_api(py::module_& m) {
       .def_property_readonly("reduce_only",
                              [](const OrderInfo& v) { return v.order.has(Order::kReduceOnly); })
       .def_property_readonly("created_ns", [](const OrderInfo& v) { return v.order.created.ns; })
+      .def_property_readonly(
+          "sent_ns",
+          [](const OrderInfo& v) { return v.times.sent.ns; },
+          "Engine time the order, or its latest acknowledged replace, was sent (ns).")
+      .def_property_readonly(
+          "venue_ack_ns",
+          [](const OrderInfo& v) { return v.times.venue_ack.ns; },
+          "The venue's accept time from the ack (exch_ts, ns; whole ms on Binance); 0 before the "
+          "ack or when the venue gives none.")
+      .def_property_readonly(
+          "local_ack_ns",
+          [](const OrderInfo& v) { return v.times.local_ack.ns; },
+          "When the ack reached us (recv_ts, ns); 0 before the ack.")
       .def("__repr__", [](const OrderInfo& v) {
         return "<Order " + std::to_string(v.order.cl_ord_id.value) + " " +
                std::string(to_string(v.order.side)) + " " + std::string(to_string(v.order.state)) +
@@ -900,6 +921,9 @@ void bind_strategy_api(py::module_& m) {
   FASTMM_PY_FIELD(upd, OrderUpdateView, "known", x.known);
   FASTMM_PY_FIELD(upd, OrderUpdateView, "changed", x.changed);
   FASTMM_PY_FIELD(upd, OrderUpdateView, "terminal", x.terminal);
+  FASTMM_PY_FIELD(upd, OrderUpdateView, "sent_ns", x.times.sent.ns);
+  FASTMM_PY_FIELD(upd, OrderUpdateView, "venue_ack_ns", x.times.venue_ack.ns);
+  FASTMM_PY_FIELD(upd, OrderUpdateView, "local_ack_ns", x.times.local_ack.ns);
   FASTMM_PY_FIXED(upd, OrderUpdateView, "price", x.order.price);
   FASTMM_PY_FIXED(upd, OrderUpdateView, "qty", x.order.qty);
   FASTMM_PY_FIXED(upd, OrderUpdateView, "filled", x.order.cum_qty);
@@ -1025,7 +1049,7 @@ void bind_strategy_api(py::module_& m) {
           [](const ContextHandle& c, py::handle inst, int side, std::uint32_t level) {
             PySimEngine& e = c.engine();
             return order_or_none(
-                e.context().working_quote(c.run->resolve(inst), side_from(side), level));
+                e, e.context().working_quote(c.run->resolve(inst), side_from(side), level));
           },
           py::arg("inst"),
           py::arg("side"),
@@ -1104,10 +1128,84 @@ void bind_strategy_api(py::module_& m) {
       .def(
           "order",
           [](const ContextHandle& c, std::uint64_t order_id) {
-            return order_or_none(c.engine().context().order(ClientOrderId{order_id}));
+            PySimEngine& e = c.engine();
+            return order_or_none(e, e.context().order(ClientOrderId{order_id}));
           },
           py::arg("order_id"),
           "Snapshot of an open order, or None once it is terminal.")
+      .def(
+          "queue_ahead",
+          [](const ContextHandle& c, std::uint64_t order_id) {
+            return qty_or_none(c.engine().context().queue_ahead(ClientOrderId{order_id}), false);
+          },
+          py::arg("order_id"),
+          "Estimated quantity resting ahead of an open order at its price (the l2_queue model on "
+          "the market data the strategy sees), or None before the ack and once it is terminal. "
+          "Queues are tracked from the first call on; call it in on_start to cover every order "
+          "from its ack.")
+      .def(
+          "queue_ahead_raw",
+          [](const ContextHandle& c, std::uint64_t order_id) {
+            return qty_or_none(c.engine().context().queue_ahead(ClientOrderId{order_id}), true);
+          },
+          py::arg("order_id"))
+      .def(
+          "own_qty",
+          [](const ContextHandle& c, py::handle inst, int side, double price, py::handle at_ns) {
+            PySimEngine& e = c.engine();
+            const InstrumentId id = c.run->resolve(inst);
+            const Price p = Price::from_double(price);
+            const Qty q = at_ns.is_none()
+                              ? e.context().own_qty(id, side_from(side), p)
+                              : e.context().own_qty(
+                                    id, side_from(side), p, Timestamp{at_ns.cast<std::int64_t>()});
+            return q.to_double();
+          },
+          py::arg("inst"),
+          py::arg("side"),
+          py::arg("price"),
+          py::arg("at_ns") = py::none(),
+          "Our resting quantity that the venue's feed shows at this price, as of the book's last "
+          "update or of venue time at_ns. 0.0 where the feed does not show our orders (a "
+          "backtest).")
+      .def(
+          "own_qty_raw",
+          [](const ContextHandle& c,
+             py::handle inst,
+             int side,
+             std::int64_t price,
+             py::handle at_ns) {
+            PySimEngine& e = c.engine();
+            const InstrumentId id = c.run->resolve(inst);
+            const Price p = Price::from_raw(price);
+            const Qty q = at_ns.is_none()
+                              ? e.context().own_qty(id, side_from(side), p)
+                              : e.context().own_qty(
+                                    id, side_from(side), p, Timestamp{at_ns.cast<std::int64_t>()});
+            return q.raw;
+          },
+          py::arg("inst"),
+          py::arg("side"),
+          py::arg("price_raw"),
+          py::arg("at_ns") = py::none())
+      .def(
+          "best_ex_self",
+          [](const ContextHandle& c, py::handle inst, int side) {
+            PySimEngine& e = c.engine();
+            return level_f(e.context().best_ex_self(c.run->resolve(inst), side_from(side)));
+          },
+          py::arg("inst"),
+          py::arg("side"),
+          "(price, qty) of the book's best level on one side after own_qty is taken out; a level "
+          "that was only ours is skipped. (0.0, 0.0) when none is left.")
+      .def(
+          "best_ex_self_raw",
+          [](const ContextHandle& c, py::handle inst, int side) {
+            PySimEngine& e = c.engine();
+            return level_raw(e.context().best_ex_self(c.run->resolve(inst), side_from(side)));
+          },
+          py::arg("inst"),
+          py::arg("side"))
       .def(
           "open_qty",
           [](const ContextHandle& c, py::handle inst, int side) {

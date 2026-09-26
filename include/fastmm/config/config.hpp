@@ -78,6 +78,7 @@ struct EngineSection {
   int flatten_interval_ms = 500;
   int flatten_timeout_ms = 60000;
   int flatten_slippage_bps = 25;
+  double queue_conservatism = 1.0;  // queue position estimate (ctx.queue_ahead), 0..1
   int latency_publish_ms = 1000;
   int tsc_recalibrate_s = 10;       // fastmm-live: TSC recalibration period, 0 = never
   std::int64_t timer_slack_ns = 0;  // fastmm-live: PR_SET_TIMERSLACK of its threads, 0 = kernel's

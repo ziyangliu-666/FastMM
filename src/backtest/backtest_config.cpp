@@ -134,7 +134,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   const auto fm = parse_fill_model(bt.get_string("fill_model", "matching"));
   if (!fm) throw ConfigError("backtest.fill_model must be matching | l2_queue");
   t.fill_model = *fm;
-  const double c = bt.get_double("queue_conservatism", 1.0);
+  // One value for the fill model and the strategy's estimate of it (ctx.queue_ahead).
+  const double c = bt.get_double("queue_conservatism", cfg.engine.queue_conservatism);
   if (!(c >= 0.0 && c <= 1.0)) throw ConfigError("backtest.queue_conservatism must be in [0, 1]");
   t.queue_conservatism_bps = static_cast<std::int64_t>(std::llround(c * 10'000.0));
   const double p_drop = bt.get_double("p_drop", 0.0);

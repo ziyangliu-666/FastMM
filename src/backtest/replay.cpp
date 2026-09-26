@@ -199,6 +199,8 @@ ReplayResult replay_impl(const std::string& path,
     for (std::uint8_t v = 0; v < kMaxVenues; ++v)
       backend.transport.set_supports_replace(VenueId{v}, ((header.replace_venues >> v) & 1U) != 0);
   }
+  // A live session's feed showed its own orders (a journal with a TSC calibration is live).
+  backend.transport.set_own_in_feed(header.tsc0 != 0);
   backend.transport.set_dropped(std::move(dropped));
   const std::size_t expected_count = expected.size();
   if (opt.verify) backend.transport.set_expected(std::move(expected));
@@ -206,6 +208,7 @@ ReplayResult replay_impl(const std::string& path,
   RunnerDeps deps;
   deps.engine = cfg.engine;
   deps.engine.fees = cfg.transport.fees;
+  deps.engine.queue_conservatism_bps = cfg.transport.queue_conservatism_bps;
   // The recording converted with the table it ran on (a live session's comes from the venues).
   if (cfg.accounting.configured()) {
     BacktestConfig c = cfg;

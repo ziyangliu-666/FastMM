@@ -51,6 +51,14 @@ struct Order {
 };
 static_assert(sizeof(Order) == 128 && std::is_trivially_copyable_v<Order>);
 
+// When the order's working leg (the order, or its latest replacement once acknowledged) was sent
+// and accepted. Kept by the OMS next to Order, not in it (Oms::times, OmsUpdate::times).
+struct OrderTimes {
+  Timestamp sent;       // engine clock when the order or replace went out
+  Timestamp venue_ack;  // the ack's exch_ts: the venue's accept time (Binance: whole ms)
+  Timestamp local_ack;  // the ack's recv_ts: when it reached us
+};
+
 struct LimitOrder;
 
 struct NewOrderRequest {

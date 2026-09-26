@@ -1,0 +1,311 @@
+#pragma once
+// QueuePositionModel (8.2): fills for passive orders against HISTORICAL L2 data, where no
+// counter-party orders exist to match against.
+//
+//   place        ahead = displayed qty at our price (we join the back of the queue)
+//   level shrink the reduction r at our price is split between cancels ahead of us and
+//                behind us: ahead -= r * ahead / old_qty * (1 - conservatism)
+//                (conservatism 1 => cancels never help us; 0 => proportional share)
+//                a level that disappears entirely sets ahead = 0
+//   trade at px  consumes `ahead` first, the surplus fills us: min(trade - ahead, leaves)
+//   trade through (better than our price for the aggressor) fills us completely
+//   touch        a BookTicker newer than the depth book (venue update id when both carry one,
+//                else venue time): an order priced better than the ticker's touch on its side has
+//                nothing ahead, one at the touch at most the touch's quantity; at placement too
+//
+// Orders live in a Pool; iteration is in handle order for determinism. queue_after_level_change()
+// and queue_after_trade() are the two steps for one order; the engine's live estimate
+// (core/queue_tracker.hpp) calls the same functions.
+//
+// queue_apply_book() is how SimTransport (fill_model = "l2_queue") applies a book message to its
+// mirror of the historical levels and to the model; the fill check (backtest/fill_check.hpp) calls
+// the same function, so both see a journal's book the same way.
+#include "fastmm/core/book/l2_book.hpp"
+#include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/open_hash_map.hpp"
+#include "fastmm/core/containers/pool.hpp"
+#include "fastmm/core/enums.hpp"
+#include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/strong_id.hpp"
+#include "fastmm/core/time.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <span>
+
+namespace fastmm {
+
+inline constexpr std::size_t kMaxQueuedOrders = 4096;
+
+// The quantity ahead of an order after the displayed quantity at its price went from old_qty to
+// new_qty. conservatism_bps in [0, 10000].
+[[nodiscard]] constexpr Qty queue_after_level_change(Qty ahead,
+                                                     Qty old_qty,
+                                                     Qty new_qty,
+                                                     std::int64_t conservatism_bps) noexcept {
+  if (new_qty >= old_qty || ahead.is_zero()) return ahead;
+  if (new_qty.is_zero()) return Qty{};
+  // share = r * ahead / old * (1 - c)
+  const Qty r = old_qty - new_qty;
+  const Int128 share =
+      static_cast<Int128>(r.raw) * ahead.raw / old_qty.raw * (10'000 - conservatism_bps) / 10'000;
+  const auto cut = Qty::from_raw(static_cast<std::int64_t>(share));
+  return cut >= ahead ? Qty{} : ahead - cut;
+}
+
+// A trade of `qty` at `px` by `aggressor` against our resting order (side, price, leaves): moves
+// `ahead` and returns the quantity that reaches the order.
+[[nodiscard]] constexpr Qty queue_after_trade(
+    Qty& ahead, Side side, Price price, Qty leaves, Price px, Qty qty, Side aggressor) noexcept {
+  if (side != opposite(aggressor) || leaves.is_zero()) return Qty{};
+  if (better(aggressor, px, price)) {
+    // trade-through: price moved past us, our whole level was consumed
+    ahead = Qty{};
+    return leaves;
+  }
+  if (px != price) return Qty{};
+  if (qty > ahead) {
+    const Qty fill = min(qty - ahead, leaves);
+    ahead = Qty{};
+    return fill;
+  }
+  ahead -= qty;
+  return Qty{};
+}
+
+// A BookTicker's touch, without our own quantity: the freshest top of book when the depth stream
+// is throttled.
+struct QueueTouch {
+  Price bid_px;
+  Qty bid_qty;
+  Price ask_px;
+  Qty ask_qty;
+  std::uint64_t id = 0;  // venue book update id, 0 = none
+  Timestamp ts;          // venue time
+  [[nodiscard]] bool valid() const noexcept { return ts.valid() || id != 0; }
+  [[nodiscard]] Price px(Side s) const noexcept { return s == Side::Buy ? bid_px : ask_px; }
+  [[nodiscard]] Qty qty(Side s) const noexcept { return s == Side::Buy ? bid_qty : ask_qty; }
+  // Newer than a depth book whose last update had `seq` and venue time `book_ts`.
+  [[nodiscard]] bool newer_than(std::uint64_t seq, Timestamp book_ts) const noexcept {
+    if (id != 0 && seq != 0) return id > seq;
+    return ts > book_ts;
+  }
+};
+
+// A BookTicker as a QueueTouch; `own(side, px)` is our quantity in it.
+template <class Own>
+[[nodiscard]] QueueTouch queue_touch(const BookTickerMsg& m, Own&& own) noexcept {
+  QueueTouch t;
+  t.bid_px = m.bid_px;
+  t.ask_px = m.ask_px;
+  const Qty ob = own(Side::Buy, m.bid_px);
+  const Qty oa = own(Side::Sell, m.ask_px);
+  t.bid_qty = ob >= m.bid_qty ? Qty{} : m.bid_qty - ob;
+  t.ask_qty = oa >= m.ask_qty ? Qty{} : m.ask_qty - oa;
+  t.id = m.hdr.venue_seq;
+  t.ts = m.hdr.exch_ts.valid() ? m.hdr.exch_ts : m.hdr.recv_ts;
+  return t;
+}
+
+// The quantity ahead of an order after the touch on its side showed `touch` with `shown` of
+// others' quantity: nothing when the order is priced better, at most `shown` at the touch.
+[[nodiscard]] constexpr Qty queue_after_touch(
+    Qty ahead, Side side, Price price, Price touch, Qty shown) noexcept {
+  if (!touch.is_positive()) return ahead;
+  if (better(side, price, touch)) return Qty{};
+  if (price == touch && shown < ahead) return shown;
+  return ahead;
+}
+
+struct QueuedOrder {
+  ClientOrderId cl_ord_id;
+  std::uint64_t order_id;
+  Price price;
+  Qty qty;
+  Qty cum_qty;
+  Qty ahead;  // displayed quantity still ahead of us in the queue
+  InstrumentId instrument;
+  Side side;
+  std::uint8_t pad_[3];
+  [[nodiscard]] constexpr Qty leaves() const noexcept { return qty - cum_qty; }
+};
+static_assert(sizeof(QueuedOrder) == 56 && std::is_trivially_copyable_v<QueuedOrder>);
+
+class QueuePositionModel {
+ public:
+  using Handle32 = Handle<QueuedOrder>;
+
+  // conservatism_bps in [0, 10000]; 10000 == cancels ahead never shorten the queue.
+  explicit QueuePositionModel(std::int64_t conservatism_bps = 10'000) noexcept
+      : conservatism_bps_(conservatism_bps < 0        ? 0
+                          : conservatism_bps > 10'000 ? 10'000
+                                                      : conservatism_bps) {}
+  QueuePositionModel(const QueuePositionModel&) = delete;
+  QueuePositionModel& operator=(const QueuePositionModel&) = delete;
+
+  [[nodiscard]] std::int64_t conservatism_bps() const noexcept { return conservatism_bps_; }
+  [[nodiscard]] std::size_t size() const noexcept { return pool_.size(); }
+
+  // Rests an order behind `level_qty` displayed at its price. Invalid handle when full/dup.
+  Handle32 place(ClientOrderId id,
+                 std::uint64_t order_id,
+                 InstrumentId inst,
+                 Side side,
+                 Price px,
+                 Qty qty,
+                 Qty level_qty) noexcept {
+    if (by_id_.contains(id)) return Handle32{};
+    const Handle32 h = pool_.allocate();
+    if (!h.valid()) return Handle32{};
+    QueuedOrder& o = pool_.get(h);
+    o = QueuedOrder{};
+    o.cl_ord_id = id;
+    o.order_id = order_id;
+    o.price = px;
+    o.qty = qty;
+    o.ahead = level_qty;
+    o.instrument = inst;
+    o.side = side;
+    by_id_.insert(id, h);
+    return h;
+  }
+  [[nodiscard]] Handle32 find(ClientOrderId id) const noexcept {
+    const Handle32* h = by_id_.find(id);
+    return h == nullptr ? Handle32{} : *h;
+  }
+  [[nodiscard]] const QueuedOrder& get(Handle32 h) const noexcept { return pool_.get(h); }
+  [[nodiscard]] QueuedOrder& get(Handle32 h) noexcept { return pool_.get(h); }
+  [[nodiscard]] bool is_live(Handle32 h) const noexcept { return pool_.is_live(h); }
+  void remove(Handle32 h) noexcept {
+    by_id_.erase(pool_.get(h).cl_ord_id);
+    pool_.free(h);
+  }
+  // Same price and qty <= leaves: keep the queue position (ahead unchanged).
+  bool amend_keep_priority(Handle32 h,
+                           ClientOrderId new_id,
+                           std::uint64_t order_id,
+                           Qty qty) noexcept {
+    QueuedOrder& o = pool_.get(h);
+    if (qty.is_zero() || qty > o.leaves() || by_id_.contains(new_id)) return false;
+    by_id_.erase(o.cl_ord_id);
+    o.cl_ord_id = new_id;
+    o.order_id = order_id;
+    o.qty = qty;
+    o.cum_qty = Qty{};
+    by_id_.insert(new_id, h);
+    return true;
+  }
+
+  // Displayed quantity at (inst, side, px) changed old -> new.
+  void on_level_change(InstrumentId inst, Side side, Price px, Qty old_qty, Qty new_qty) noexcept {
+    if (new_qty >= old_qty) return;
+    pool_.for_each([&](Handle32, QueuedOrder& o) {
+      if (o.instrument != inst || o.side != side || o.price != px) return;
+      o.ahead = queue_after_level_change(o.ahead, old_qty, new_qty, conservatism_bps_);
+    });
+  }
+
+  // A touch newer than the depth book (QueueTouch).
+  void on_touch(InstrumentId inst, const QueueTouch& t) noexcept {
+    pool_.for_each([&](Handle32, QueuedOrder& o) {
+      if (o.instrument != inst) return;
+      o.ahead = queue_after_touch(o.ahead, o.side, o.price, t.px(o.side), t.qty(o.side));
+    });
+  }
+
+  // A trade printed at px with the given aggressor side. F(Handle32, QueuedOrder&, Qty fill,
+  // Qty ahead_before) is called for every order that executes; the order's cum_qty is already
+  // advanced and `ahead_before` is the displayed quantity that was still ahead of it (its queue
+  // position at the fill). Fully filled orders must be removed by the caller (after emitting the
+  // fill).
+  template <class F>
+  void on_trade(InstrumentId inst, Price px, Qty qty, Side aggressor, F&& f) noexcept {
+    pool_.for_each([&](Handle32 h, QueuedOrder& o) {
+      if (o.instrument != inst) return;
+      const Qty ahead_before = o.ahead;
+      const Qty fill = queue_after_trade(o.ahead, o.side, o.price, o.leaves(), px, qty, aggressor);
+      if (fill.is_positive()) {
+        o.cum_qty += fill;
+        f(h, o, fill, ahead_before);
+      }
+    });
+  }
+
+  // Ascending handle order. F(Handle32, const QueuedOrder&).
+  template <class F>
+  void for_each(F&& f) const noexcept {
+    pool_.for_each([&](Handle32 h, const QueuedOrder& o) { f(h, o); });
+  }
+
+ private:
+  std::int64_t conservatism_bps_;
+  Pool<QueuedOrder, kMaxQueuedOrders> pool_;
+  OpenHashMap<ClientOrderId, Handle32, kMaxQueuedOrders * 2> by_id_;
+};
+
+// qty resting at `px` in a sorted L2Book side (worst..best order), 0 if absent.
+[[nodiscard]] inline Qty level_qty(const L2Book<256>& book, Side side, Price px) noexcept {
+  const auto& v = book.raw(side);
+  std::size_t lo = 0;
+  std::size_t hi = v.size();
+  while (lo < hi) {
+    const std::size_t mid = lo + (hi - lo) / 2;
+    if (better(side, px, v[mid].price)) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return (lo < v.size() && v[lo].price == px) ? v[lo].qty : Qty{};
+}
+
+// Applies a book message to `book` and moves the queue position of every order of `models` on
+// that instrument. A delta shrinks `ahead` level by level (on_level_change); a snapshot carries
+// no per-level history, so it only clamps `ahead` to what the new book shows.
+inline void queue_apply_book(L2Book<256>& book,
+                             const BookDeltaMsg& d,
+                             Timestamp now,
+                             std::span<QueuePositionModel* const> models) noexcept {
+  const InstrumentId id = d.hdr.instrument;
+  if (d.is_snapshot()) {
+    book.apply_delta(d);
+    for (QueuePositionModel* q : models) {
+      q->for_each([&](QueuePositionModel::Handle32 h, const QueuedOrder& o) {
+        if (o.instrument != id) return;
+        const Qty shown = level_qty(book, o.side, o.price);
+        if (shown < o.ahead) q->get(h).ahead = shown;
+      });
+    }
+    return;
+  }
+  for (Side s : {Side::Buy, Side::Sell}) {
+    for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
+      const Qty old = level_qty(book, s, l.price);
+      book.apply_level(s, l.price, l.qty);
+      for (QueuePositionModel* q : models) q->on_level_change(id, s, l.price, old, l.qty);
+    }
+  }
+  book.set_seq(d.last_update_id);
+  book.set_last_update(now);
+}
+
+// The quantity ahead of an order at placement: `depth_ahead` from the depth book, capped by the
+// latest touch when that is newer than the book.
+[[nodiscard]] inline Qty queue_at_placement(
+    Qty depth_ahead, Side side, Price px, const L2Book<256>& book, const QueueTouch& t) noexcept {
+  if (!t.valid() || !t.newer_than(book.seq(), book.last_update())) return depth_ahead;
+  return queue_after_touch(depth_ahead, side, px, t.px(side), t.qty(side));
+}
+
+// A touch newer than `book` moves the queue of every order of `models` on instrument `id`. Returns
+// false when the depth book is as new or newer (the touch is not used).
+inline bool queue_apply_touch(const L2Book<256>& book,
+                              InstrumentId id,
+                              const QueueTouch& t,
+                              std::span<QueuePositionModel* const> models) noexcept {
+  if (!t.newer_than(book.seq(), book.last_update())) return false;
+  for (QueuePositionModel* q : models) q->on_touch(id, t);
+  return true;
+}
+
+}  // namespace fastmm

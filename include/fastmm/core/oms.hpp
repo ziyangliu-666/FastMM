@@ -40,6 +40,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 
 namespace fastmm {
@@ -92,6 +93,10 @@ struct OmsUpdate {
   // used. See Engine::on_fill and PositionTracker::correct_fill.
   Qty corrected_qty{};
   Price synthetic_px{};
+  // The order's times (Oms::times), and the pool slot it had: set on every update of an open
+  // order, the terminal one included (`handle` is invalid then, the slot already free).
+  OrderTimes times{};
+  Handle<Order> slot{};
 };
 
 struct OmsStats {
@@ -188,6 +193,7 @@ class Oms {
     o.qty = req.qty;
     o.created = now;
     o.user_tag = req.user_tag;
+    times_[h.idx] = TimesSlot{OrderTimes{now, {}, {}}, {}};
     ++stats_.submitted;
     ++stats_.open;
     ++open_per_inst_[o.instrument.value];
@@ -215,11 +221,10 @@ class Oms {
     return {};
   }
 
-  // new_id may equal the current id for venues that amend in place.
-  Result<void, RejectReason> request_replace(Handle<Order> h,
-                                             ClientOrderId new_id,
-                                             Price px,
-                                             Qty qty) noexcept {
+  // new_id may equal the current id for venues that amend in place. `now`: the replace's send
+  // time, which becomes OrderTimes::sent once it is acknowledged.
+  Result<void, RejectReason> request_replace(
+      Handle<Order> h, ClientOrderId new_id, Price px, Qty qty, Timestamp now = {}) noexcept {
     if (!pool_.is_live(h)) return fail(RejectReason::UnknownOrder);
     Order& o = pool_.get(h);
     if (!o.is_working()) return fail(RejectReason::InvalidState);
@@ -231,6 +236,7 @@ class Oms {
     o.pending_price = px;
     o.pending_qty = qty;
     o.state = OrderState::PendingReplace;
+    times_[h.idx].replace_sent = now;
     return {};
   }
 
@@ -260,6 +266,8 @@ class Oms {
         o.venue_order_id = m.venue_order_id;
         ++stats_.acked;
         u.changed = true;
+        times_[h.idx].t.venue_ack = m.hdr.exch_ts;
+        times_[h.idx].t.local_ack = m.hdr.recv_ts;
         break;
       case OrderState::PendingReplace:
         // Only the replacement's ack completes it (the same id for an in-place amend). An ack that
@@ -277,12 +285,17 @@ class Oms {
           if (o.cl_ord_id != old_id) u.replaced_cl_ord_id = old_id;
           o.venue_order_id = m.venue_order_id;
           u.changed = true;
+          TimesSlot& t = times_[h.idx];
+          t.t = OrderTimes{t.replace_sent, m.hdr.exch_ts, m.hdr.recv_ts};
         } else {
           u.action = OmsAction::Ignored;
         }
         break;
       default:
         u.action = OmsAction::Ignored;  // duplicate ack
+        // A venue that answers twice (API response and user stream) may put its time on either.
+        if (m.cl_ord_id == o.cl_ord_id && !times_[h.idx].t.venue_ack.valid())
+          times_[h.idx].t.venue_ack = m.hdr.exch_ts;
         break;
     }
     finish_update(u, h, o);
@@ -548,6 +561,8 @@ class Oms {
   [[nodiscard]] const Order& get(Handle<Order> h) const noexcept { return pool_.get(h); }
   [[nodiscard]] Order& get(Handle<Order> h) noexcept { return pool_.get(h); }
   [[nodiscard]] bool is_live(Handle<Order> h) const noexcept { return pool_.is_live(h); }
+  // Send and ack times of an open order.
+  [[nodiscard]] const OrderTimes& times(Handle<Order> h) const noexcept { return times_[h.idx].t; }
   [[nodiscard]] Handle<Order> find(ClientOrderId id) const noexcept {
     const Handle<Order>* p = by_id_.find(id);
     return p == nullptr ? Handle<Order>{} : *p;
@@ -592,6 +607,10 @@ class Oms {
     ClientOrderId cl_ord_id;
     Qty qty;
     Price price;
+  };
+  struct TimesSlot {
+    OrderTimes t;
+    Timestamp replace_sent;  // a replace in flight: its send time
   };
 
   [[nodiscard]] static bool in_scope(const Order& o, VenueId venue) noexcept {
@@ -676,6 +695,8 @@ class Oms {
   void finish_update(OmsUpdate& u, Handle<Order> h, const Order& o) noexcept {
     u.order = o;
     u.handle = h;
+    u.times = times_[h.idx].t;
+    u.slot = h;
   }
 
   // `rekey`: the replacement carries a new client id. `new_venue_order`: it is a different order
@@ -734,6 +755,8 @@ class Oms {
         TerminalRecord{o.cl_ord_id, o.cum_qty, o.instrument, final_state, o.side, by_reconcile});
     u.order = o;
     u.handle = Handle<Order>{};
+    u.times = times_[h.idx].t;
+    u.slot = h;
     u.changed = true;
     u.terminal = true;
     const InstrumentId inst = o.instrument;
@@ -789,6 +812,8 @@ class Oms {
   std::uint32_t open_per_inst_[kMaxInstruments] = {};
   ReconcileScope recon_scope_[std::numeric_limits<VenueId::rep_type>::max() + 1U] = {};
   StaticVector<SyntheticFill, kMaxSyntheticFills> synthetic_;
+  // OrderTimes by pool slot, apart from Order so the order record keeps its 128-byte layout.
+  std::unique_ptr<TimesSlot[]> times_ = std::make_unique<TimesSlot[]>(kMaxOpenOrders);
 };
 
 }  // namespace fastmm

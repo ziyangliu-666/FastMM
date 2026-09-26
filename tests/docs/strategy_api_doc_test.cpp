@@ -124,6 +124,12 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().instruments()), const Instrume
 static_assert(std::same_as<decltype(lvalue<Ctx>().contains(InstrumentId{})), bool>);
 // market data
 static_assert(std::same_as<decltype(lvalue<Ctx>().book(InstrumentId{})), const Book&>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().own_qty(InstrumentId{}, Side::Buy, Price{})), Qty>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().own_qty(InstrumentId{}, Side::Buy, Price{}, Timestamp{})),
+                 Qty>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().best_ex_self(InstrumentId{}, Side::Buy)), Level>);
 // portfolio
 static_assert(std::same_as<decltype(lvalue<Ctx>().position(InstrumentId{})), const Position&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().portfolio()), Portfolio>);
@@ -144,6 +150,10 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().replace(ClientOrderId{}, Price
 static_assert(std::same_as<decltype(lvalue<Ctx>().order(ClientOrderId{})), const Order*>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().open_qty(InstrumentId{}, Side::Buy)), Qty>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().oms()), const Oms&>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().queue_ahead(ClientOrderId{})), std::optional<Qty>>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().order_times(ClientOrderId{})), const OrderTimes*>);
 // timers
 static_assert(std::same_as<decltype(lvalue<Ctx>().every(Duration{}, std::uint64_t{})), TimerId>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().once(Duration{}, std::uint64_t{})), TimerId>);

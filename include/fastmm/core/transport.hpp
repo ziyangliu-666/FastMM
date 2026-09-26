@@ -5,6 +5,10 @@
 //   FeedLike       - where consumed events come from   (RingFeed / InlineFeed / JournalFeed)
 //   TransportLike  - where outbound messages go        (LiveTransport / SimTransport / Replay)
 //
+// A transport may also answer own_in_feed(VenueId): whether that venue's public market data shows
+// our own resting orders (a live venue does, the simulator's historical feed does not). Without
+// the member the engine takes it as false.
+//
 // ClockLike lives in time.hpp. All three are concepts; no virtual calls in the loop.
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/messages.hpp"
@@ -222,6 +226,8 @@ class LiveTransport {
   [[nodiscard]] bool supports_replace(VenueId v) const noexcept {
     return v.value < kMaxVenues && replace_[v.value];
   }
+  // A live venue's depth and tickers include our resting orders.
+  [[nodiscard]] bool own_in_feed(VenueId v) const noexcept { return v.value < kMaxVenues; }
   [[nodiscard]] std::uint64_t sent() const noexcept { return sent_; }
   [[nodiscard]] std::uint64_t dropped_full() const noexcept { return full_; }
 

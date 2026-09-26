@@ -17,7 +17,7 @@ JournalSource::JournalSource(const std::string& path, bool strip_own) {
                                " was not recorded by a live session (its feed has no own orders)");
     }
     orders_ = log.orders.size();
-    stripper_ = std::make_unique<OwnOrderStripper>(log);
+    stripper_ = std::make_unique<OwnOrderStripper>(reader_);
   }
   reader_.for_each([&](const EventHeader* h) {
     if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) return;

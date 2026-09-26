@@ -83,7 +83,7 @@ A mismatch with the embedded configuration and the same binary is a determinism 
 
 ## Check the fill model against live fills
 
-`fastmm-data fill-check` measures how well `[backtest] fill_model = "l2_queue"` predicts the passive fills of a live session. It does not re-run the strategy. It takes the orders the session had resting, each from its ack until its cancel ack, last fill or expiry in venue time, puts each one behind the quantity displayed at its price at the ack's venue time, and feeds the queue model the journal's book deltas and trades in venue time order, the way a backtest does. A replace follows the new order id. Orders that crossed the book at the ack, market, IOC and FOK orders are left out.
+`fastmm-data fill-check` measures how well `[backtest] fill_model = "l2_queue"` predicts the passive fills of a live session. It does not re-run the strategy. It takes the orders the session had resting, each from its ack until its cancel ack, last fill or expiry in venue time, puts each one behind the quantity displayed at its price at the ack's venue time, and feeds the queue model the journal's book deltas, trades and book tickers in venue time order, the way a backtest does. A book ticker newer than the depth (by the venue's update id when both carry one, else by venue time) caps the queue: an order priced better than its touch has nothing ahead, an order at the touch at most the touch's quantity less ours. A replace follows the new order id. Orders that crossed the book at the ack, market, IOC and FOK orders are left out.
 
 ```bash
 ./build/release/bin/fastmm-data fill-check runs/demo-1/session.fmj --csv runs/demo-1/fill-check.csv
@@ -93,7 +93,7 @@ The one-hour Binance Demo session quoting at the touch ([Example](#example-binan
 
 ```text
 orders   2602 sent, 2347 resting after the ack; left out: 255 rejected, 0 not acked, 0 ended before the ack, 0 market/IOC/FOK, 0 crossing the book at the ack
-market   32598 book and trade messages
+market   32598 book and trade messages, ...
 times    venue (order times in ms); from receive time: 0 order events, 1 market messages; ties in the ack / end millisecond: 2 / 0; own orders in depth: yes
 live     1509 filled, qty 0.4074
 

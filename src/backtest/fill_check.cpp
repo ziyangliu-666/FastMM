@@ -2,7 +2,7 @@
 
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/messages.hpp"
-#include "fastmm/sim/queue_model.hpp"
+#include "fastmm/core/queue_model.hpp"
 
 #include <fmt/format.h>
 
@@ -18,7 +18,6 @@ namespace fastmm::bt {
 
 namespace {
 
-using sim::QueuePositionModel;
 using Book = L2Book<256>;
 
 constexpr std::int64_t kMs = 1'000'000;
@@ -45,8 +44,8 @@ struct Item {
 // fall after the order's end. In a live session the depth is first stripped of our own orders.
 class Walker {
  public:
-  Walker(std::span<const double> conservatism, std::size_t instruments, const OwnOrderLog& log)
-      : books_(instruments), log_(log), placed_(log.orders.size()) {
+  Walker(std::span<const double> conservatism, JournalReader& reader, const OwnOrderLog& log)
+      : books_(reader.instruments().size()), log_(log), placed_(log.orders.size()) {
     for (const double c : conservatism) {
       const auto bps = static_cast<std::int64_t>(std::llround(std::clamp(c, 0.0, 1.0) * 10'000));
       models_.push_back(std::make_unique<QueuePositionModel>(bps));
@@ -58,11 +57,15 @@ class Walker {
     res_.orders_sent = log.orders_sent;
     res_.rejected = log.rejected;
     res_.unknown_acks = log.unknown_acks;
-    if (log.live) stripper_ = std::make_unique<OwnOrderStripper>(log);
+    if (log.live) stripper_ = std::make_unique<OwnOrderStripper>(reader);
   }
 
   void on_event(const EventHeader& h) {
     if ((h.flags & EventHeader::kOutbound) != 0) return;
+    if (h.type == EventType::BookTicker) {
+      items_.push_back(Item{venue_ts(h).ns, Step::Depth, next_seq_++, &h});
+      return;
+    }
     if (h.type != EventType::BookDelta && h.type != EventType::BookSnapshot &&
         h.type != EventType::Trade)
       return;
@@ -126,6 +129,22 @@ class Walker {
     if (!books_[id.value]) books_[id.value] = std::make_unique<Book>();
     return *books_[id.value];
   }
+  QueueTouch& touch(InstrumentId id) {
+    if (id.value >= touches_.size()) touches_.resize(id.value + 1);
+    return touches_[id.value];
+  }
+
+  // The freshest top of book: without our own quantity at its venue time, it moves the queues
+  // when it is newer than the mirrored depth.
+  void on_ticker(const BookTickerMsg& m) {
+    ++res_.tickers;
+    const InstrumentId id = m.hdr.instrument;
+    const Timestamp t = venue_ts(m.hdr);
+    QueueTouch& tt = touch(id);
+    tt = queue_touch(
+        m, [&](Side s, Price p) { return stripper_ ? stripper_->own_at(id, s, p, t) : Qty{}; });
+    if (queue_apply_touch(book(id), id, tt, model_ptrs_)) ++res_.tickers_used;
+  }
   FillCheckOrder* row(const OwnOrder& s) {
     const Placed& p = placed_[index_of(s)];
     return p.row < 0 ? nullptr : &res_.orders[static_cast<std::size_t>(p.row)];
@@ -134,10 +153,14 @@ class Walker {
   void replay(const Item& it) {
     switch (it.step) {
       case Step::Depth: {
+        if (it.md->type == EventType::BookTicker) {
+          on_ticker(msg_cast<BookTickerMsg>(it.md));
+          break;
+        }
         ++res_.md_events;
         const EventHeader* h = stripper_ ? stripper_->strip(*it.md, buf_) : it.md;
         if (h != nullptr)
-          sim::queue_apply_book(
+          queue_apply_book(
               book(h->instrument), msg_cast<BookDeltaMsg>(h), Timestamp{it.ts}, model_ptrs_);
         break;
       }
@@ -172,7 +195,8 @@ class Walker {
     o.qty = s.qty;
     // The book as of the ack's venue time (stripped of our own orders in a live session): depth
     // at that time or later is applied after the order entered.
-    o.queue_ahead = sim::level_qty(b, s.side, s.price);
+    o.queue_ahead =
+        queue_at_placement(level_qty(b, s.side, s.price), s.side, s.price, b, touch(s.instrument));
     o.ack_ts = s.ack.ts;
     o.end = s.ended ? s.why : FillCheckEnd::Open;
     o.end_ts = s.ended ? s.end.ts : Timestamp{};
@@ -187,7 +211,7 @@ class Walker {
       if (orig != nullptr) {
         const auto h = q->find(orig->id);
         if (h.valid()) {
-          const sim::QueuedOrder& old = q->get(h);
+          const QueuedOrder& old = q->get(h);
           if (old.price == s.price && s.qty <= old.leaves() &&
               q->amend_keep_priority(h, s.id, 0, s.qty))
             continue;
@@ -236,7 +260,7 @@ class Walker {
                  t.price,
                  t.qty,
                  t.aggressor,
-                 [&](QueuePositionModel::Handle32 h, sim::QueuedOrder& o, Qty fill, Qty) {
+                 [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty) {
                    if (const OwnOrder* s = log_.find(o.cl_ord_id)) {
                      if (FillCheckOrder* r = row(*s)) {
                        r->model_filled[k] += fill;
@@ -257,6 +281,7 @@ class Walker {
   }
 
   std::vector<std::unique_ptr<Book>> books_;
+  std::vector<QueueTouch> touches_;
   std::vector<std::unique_ptr<QueuePositionModel>> models_;
   std::vector<QueuePositionModel*> model_ptrs_;
   const OwnOrderLog& log_;
@@ -317,7 +342,7 @@ FillCheckSummary FillCheckResult::summary(std::size_t k) const {
 
 FillCheckResult fill_check(JournalReader& reader, std::span<const double> conservatism) {
   const OwnOrderLog log = collect_own_orders(reader);
-  Walker w(conservatism, reader.instruments().size(), log);
+  Walker w(conservatism, reader, log);
   reader.for_each([&](const EventHeader* h) { w.on_event(*h); });
   reader.reset();
   return w.finish();
@@ -351,7 +376,11 @@ std::string format_fill_check(const FillCheckResult& r) {
                    r.unknown_acks,
                    r.model_full);
   }
-  fmt::format_to(it, "market   {} book and trade messages\n", r.md_events);
+  fmt::format_to(it,
+                 "market   {} book and trade messages, {} tickers ({} newer than the depth)\n",
+                 r.md_events,
+                 r.tickers,
+                 r.tickers_used);
   fmt::format_to(it,
                  "times    venue ({}); from receive time: {} order events, {} market messages; "
                  "ties in the ack / end millisecond: {} / {}; own orders in depth: {}\n",

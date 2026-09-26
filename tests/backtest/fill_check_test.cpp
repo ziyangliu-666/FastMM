@@ -325,3 +325,28 @@ TEST_CASE("backtest.fill_check: our cancelled order still in the depth feed is n
   CHECK(order(r, 1).end == FillCheckEnd::Canceled);
   CHECK(order(r, 1).model_filled[0].is_zero());
 }
+
+TEST_CASE("backtest.fill_check: a BookTicker newer than the depth caps the queue at the ack") {
+  const std::string path = tmp_path("fill_check_ticker.fmj");
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"100.00", "5"}, {"99.99", "3"}}, {{"100.01", "4"}});
+    j.now += 1000;
+    j.out_new(1, Side::Buy, "100.00", "1");  // 5 ahead by the depth, 2 by the newer ticker
+    j.out_new(2, Side::Buy, "99.99", "1");   // behind the touch: the depth's 3
+    j.ticker("100.00", "2", "100.01", "4");
+    j.now += 1000;
+    j.ack(1);
+    j.ack(2);
+    j.now += 1000;
+    j.trade("100.00", "2.5", Side::Sell);  // reaches order 1 only through the ticker's 2
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 2);
+  CHECK(r.tickers == 1);
+  CHECK(r.tickers_used == 1);
+  CHECK(order(r, 1).queue_ahead == qt("2"));
+  CHECK(order(r, 2).queue_ahead == qt("3"));
+  for (std::size_t k = 0; k < kC.size(); ++k) CHECK(order(r, 1).model_filled[k] == qt("0.5"));
+}

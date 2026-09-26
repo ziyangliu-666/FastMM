@@ -3,7 +3,8 @@
 //
 //   engine --send(Out*)--> EventScheduler (now + order_out) --> venue side at fire_ts:
 //       FillModel::Matching : MatchingEngine, account 1 (strategy) vs account 0 (flow)
-//       FillModel::L2Queue  : QueuePositionModel against a mirror of the historical book
+//       FillModel::L2Queue  : QueuePositionModel against a mirror of the historical book and the
+//                             latest BookTicker when it is newer than that book
 //   venue --acks/fills--> order wire (arrival = max(prev, t + ack_in)) --> InlineFeed
 //   venue --market data--> md wire   (arrival = max(prev, t + md_in))  --> InlineFeed
 //
@@ -195,6 +196,7 @@ class SimTransport final : public MatchingSink {
   void queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept;
   void queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept;
   void queue_on_trade(const TradeMsg& t, Timestamp now) noexcept;
+  void queue_on_ticker(const BookTickerMsg& m) noexcept;
   // Matching model fed with historical levels (account-0 liquidity mirror)
   void mirror_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept;
   // Moves account-0 liquidity at (id, side, px) towards `target`: the decrease pass only
@@ -239,6 +241,7 @@ class SimTransport final : public MatchingSink {
   MsgRing order_wire_;
   std::unique_ptr<L2Book<256>[]> mirror_;
   QueuePositionModel queue_;
+  std::unique_ptr<QueueTouch[]> touch_;  // L2Queue: the latest BookTicker per instrument
   std::unique_ptr<MdAggregator> agg_;
   SimObserver* observer_ = nullptr;
   OutboundHasher hasher_;

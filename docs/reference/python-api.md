@@ -86,6 +86,7 @@ An unbounded side prints as `-inf` or `inf`. Override `validate(self) -> Optiona
 |---|---|
 | Time, reference data | `now_ns`, `instruments` (tuple, index == id), `instrument(inst)`, `contains(inst)` |
 | Market data | `book(inst)` -> `BookView` |
+| Execution view | `own_qty(inst, side, price, at_ns=None)`, `own_qty_raw(inst, side, price_raw, at_ns=None)`, `best_ex_self(inst, side)` -> `(price, qty)`, `best_ex_self_raw(inst, side)`, `queue_ahead(order_id)` -> float or `None`, `queue_ahead_raw(order_id)` -> int or `None` ([Execution view](strategy-api.md#execution-view)) |
 | Portfolio | `position(inst)` -> `PositionView`, `portfolio()` -> `Portfolio` (`realized`, `unrealized`, `fees`, `net`) |
 | Quoting | `set_quotes(inst, bids, asks) -> bool`, `set_quotes_raw(inst, bids, asks) -> bool`, `pull_quotes(inst)`, `pull_all_quotes()`, `working_quote(inst, side, level=0) -> Order or None` |
 | Direct orders | `send(inst, side, price, qty, *, post_only=False, reduce_only=False, ioc=False, tag=0) -> int`, `send_raw(...)`, `cancel(order_id) -> bool`, `replace(order_id, price, qty)`, `replace_raw(...)`, `order(order_id) -> Order or None`, `open_qty(inst, side)`, `open_qty_raw(inst, side)` |
@@ -113,9 +114,9 @@ Views are reused between hooks. A view is valid only inside the hook that receiv
 | `OptionTickerView` | `instrument`, `mark_price`, `underlying_price`, `index_price`, `mark_iv`, `bid_iv`, `ask_iv`, `delta`, `gamma`, `vega`, `theta`, `rho`, `interest_rate`, `exch_ts_ns`, `recv_ts_ns` |
 | `ConnectionView` | `venue`, `state` (`"Live"`, `"Disconnected"`, ...), `live`, `channel`, `reason_code`, `recv_ts_ns` |
 | `FillView` | `instrument`, `side`, `price`, `qty`, `position_delta`, `fee`, `fee_converted`, `liquidity` (`fastmm.MAKER`, `fastmm.TAKER`), `known`, `late`, `order_done`, `order_id`, `exch_ts_ns`, `update` (`OrderUpdateView` or `None`) |
-| `OrderUpdateView` | `order_id`, `instrument`, `side`, `state`, `prev_state`, `reject_reason`, `user_tag`, `known`, `changed`, `terminal`, `price`, `qty`, `filled`, `leaves`, `fill_price`, `fill_qty` |
+| `OrderUpdateView` | `order_id`, `instrument`, `side`, `state`, `prev_state`, `reject_reason`, `user_tag`, `known`, `changed`, `terminal`, `price`, `qty`, `filled`, `leaves`, `fill_price`, `fill_qty`, `sent_ns`, `venue_ack_ns`, `local_ack_ns` |
 
-`Instrument` (`id`, `symbol`, `venue`, `base`, `quote`, `asset_class`, `tick`, `lot`, `min_qty`, `min_notional`, `contract_multiplier`, `round_price(price, side)`, `round_qty(qty)`), `Order` (`id`, `instrument`, `side`, `state`, `price`, `qty`, `filled`, `leaves`, `user_tag`, `post_only`, `reduce_only`, `created_ns`) and `Portfolio` are copies and can be kept. An `Instrument` compares and hashes like its id and works as a list index.
+`Instrument` (`id`, `symbol`, `venue`, `base`, `quote`, `asset_class`, `tick`, `lot`, `min_qty`, `min_notional`, `contract_multiplier`, `round_price(price, side)`, `round_qty(qty)`), `Order` (`id`, `instrument`, `side`, `state`, `price`, `qty`, `filled`, `leaves`, `user_tag`, `post_only`, `reduce_only`, `created_ns`, `sent_ns`, `venue_ack_ns`, `local_ack_ns`; the three times are `OrderTimes`, 0 when not known) and `Portfolio` are copies and can be kept. An `Instrument` compares and hashes like its id and works as a list index.
 
 ## Numbers
 
@@ -200,6 +201,8 @@ Every hot hook takes `(self, ctx, book)` and runs once per instrument:
 Defining the class raises `TypeError` when it also defines a `fastmm.Strategy` hook other than `on_start` and `on_stop` as a plain method, a hot hook has another name or signature, a name is both a `Param` and a `State`, a name clashes with a float parameter's `_raw` field or with a ctx method, or a hook assigns `self.<parameter>` (a check of the source). Without numba it raises `ImportError` naming the `hot` extra and [Install from source](../getting-started/install.md#install-from-source).
 
 ### ctx
+
+The hot `ctx` has no execution view (`own_qty`, `queue_ahead`, order times); a hot strategy that needs them runs as a plain `Strategy`.
 
 | Field | Meaning |
 |---|---|

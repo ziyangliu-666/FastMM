@@ -80,6 +80,15 @@ All notable changes are recorded here (Keep a Changelog format).
   test presets, skipped without docker; CI job `autobahn` uploads the reports. Both sides: 294 OK,
   4 NON-STRICT (6.4.1-6.4.4: invalid UTF-8 is caught when the message completes, not at the
   fragment), 3 INFORMATIONAL, 0 FAILED.
+- Execution view for strategies ([Strategy API](docs/reference/strategy-api.md#execution-view)):
+  `ctx.own_qty(id, side, px[, at])` and `ctx.best_ex_self(id, side)` give our resting quantity a
+  live venue's feed shows at a price (venue-time aligned, as `strip_own` strips it; 0 in the
+  simulator) and the touch without it; `ctx.queue_ahead(order_id)` runs the `l2_queue` queue model
+  on the market data the strategy sees, with the new `[engine] queue_conservatism`;
+  `ctx.order_times(order_id)` and `OmsUpdate::times` hold the send time and the ack's venue and
+  receive times. Python: `Context.own_qty`, `best_ex_self`, `queue_ahead` (and `_raw`), and
+  `sent_ns`, `venue_ack_ns`, `local_ack_ns` on `Order` and `OrderUpdateView`. Transports answer
+  `own_in_feed(venue)`.
 
 ### Changed
 - The command lines of all nine programs (`fastmm::cli::live`, `backtest`, `replay`, `data`, and
@@ -97,8 +106,13 @@ All notable changes are recorded here (Keep a Changelog format).
   `src/net/io_uring_uapi.hpp` with them. `ReactorBackend::IoUring`, its setup flags, the support
   probe and the epoll default are unchanged. Configuring with `FASTMM_BUILD_NET=ON` now needs
   `make`, which liburing's `configure` calls.
+- `[backtest] fill_model = "l2_queue"` and `fastmm-data fill-check` cap an order's queue with a
+  book ticker newer than the depth book: nothing ahead of an order priced better than its touch,
+  at most the touch's quantity at the touch. `fill-check` reports the tickers it read.
+  `[backtest] queue_conservatism` defaults to `[engine] queue_conservatism`.
 
 ### Removed
+- `lead_mm`'s `own_in_feed` parameter: the imbalance takes our quantity from `ctx.own_qty`.
 - The experimental user-space TCP client (`net::UserTcp`, RFC 9293 subset), the `AF_PACKET` frame
   ring (`net::PacketRing`) and `nasdaq_itch`'s `order_transport = "user_tcp"` with its keys
   `user_tcp_ip`, `user_tcp_port`, `user_tcp_interface` and `user_tcp_gateway`. A config that still

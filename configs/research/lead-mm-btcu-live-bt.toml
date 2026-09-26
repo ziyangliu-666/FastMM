@@ -83,7 +83,6 @@ fx_max_age_ms = 60000
 improve = true
 imb_bps = 0         # fair shift per unit of BTCU top-of-book imbalance (off in session A)
 imb_levels = 1
-own_in_feed = false # the simulated orders are not in the replayed feed (strip_own removes the live ones)
 
 [risk]
 max_order_qty = "0.0002"

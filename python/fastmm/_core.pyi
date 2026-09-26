@@ -517,6 +517,12 @@ class Context:
     """
     What a Python strategy sees (mirrors the C++ StrategyContext). Usable only inside a hook.
     """
+    def best_ex_self(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+        """
+        (price, qty) of the book's best level on one side after own_qty is taken out; a level that was only ours is skipped. (0.0, 0.0) when none is left.
+        """
+    def best_ex_self_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
+        ...
     def book(self, inst: typing.Any) -> typing.Any:
         """
         The instrument's book view (valid until the current hook returns).
@@ -551,6 +557,12 @@ class Context:
         """
         Snapshot of an open order, or None once it is terminal.
         """
+    def own_qty(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.SupportsFloat | typing.SupportsIndex, at_ns: typing.Any = None) -> float:
+        """
+        Our resting quantity that the venue's feed shows at this price, as of the book's last update or of venue time at_ns. 0.0 where the feed does not show our orders (a backtest).
+        """
+    def own_qty_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.SupportsInt | typing.SupportsIndex, at_ns: typing.Any = None) -> int:
+        ...
     def portfolio(self) -> Portfolio:
         """
         PnL totals over every instrument.
@@ -560,6 +572,12 @@ class Context:
     def pull_all_quotes(self) -> None:
         ...
     def pull_quotes(self, inst: typing.Any) -> None:
+        ...
+    def queue_ahead(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
+        """
+        Estimated quantity resting ahead of an open order at its price (the l2_queue model on the market data the strategy sees), or None before the ack and once it is terminal. Queues are tracked from the first call on; call it in on_start to cover every order from its ack.
+        """
+    def queue_ahead_raw(self, order_id: typing.SupportsInt | typing.SupportsIndex) -> typing.Any:
         ...
     def randint(self, lo: typing.SupportsInt | typing.SupportsIndex, hi: typing.SupportsInt | typing.SupportsIndex) -> int:
         """
@@ -909,6 +927,11 @@ class Order:
     def leaves_raw(self) -> int:
         ...
     @property
+    def local_ack_ns(self) -> int:
+        """
+        When the ack reached us (recv_ts, ns); 0 before the ack.
+        """
+    @property
     def post_only(self) -> bool:
         ...
     @property
@@ -927,6 +950,11 @@ class Order:
     def reduce_only(self) -> bool:
         ...
     @property
+    def sent_ns(self) -> int:
+        """
+        Engine time the order, or its latest acknowledged replace, was sent (ns).
+        """
+    @property
     def side(self) -> int:
         ...
     @property
@@ -935,6 +963,11 @@ class Order:
     @property
     def user_tag(self) -> int:
         ...
+    @property
+    def venue_ack_ns(self) -> int:
+        """
+        The venue's accept time from the ack (exch_ts, ns; whole ms on Binance); 0 before the ack or when the venue gives none.
+        """
 class OrderBook:
     """
     Price-aggregated L2 book (up to 256 levels per side) for research. Prices and quantities are floats, stored in 1e-8 fixed point; best-first level order.
@@ -1045,6 +1078,9 @@ class OrderUpdateView:
     def leaves_raw(self) -> int:
         ...
     @property
+    def local_ack_ns(self) -> int:
+        ...
+    @property
     def order_id(self) -> int:
         ...
     @property
@@ -1066,6 +1102,9 @@ class OrderUpdateView:
     def reject_reason(self) -> str:
         ...
     @property
+    def sent_ns(self) -> int:
+        ...
+    @property
     def side(self) -> int:
         ...
     @property
@@ -1076,6 +1115,9 @@ class OrderUpdateView:
         ...
     @property
     def user_tag(self) -> int:
+        ...
+    @property
+    def venue_ack_ns(self) -> int:
         ...
 class Portfolio:
     """

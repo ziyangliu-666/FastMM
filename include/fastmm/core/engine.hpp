@@ -17,6 +17,12 @@
 // and finish, and uses that value for every decision and Out* stamp inside (now()). The journal
 // records it, so a replay on SimClock sees exactly the times the original run saw.
 //
+// Execution view: the engine keeps, from the order events only, the quantity of ours a venue's
+// feed shows (OwnQuantity, for transports whose venues' public feed includes our orders:
+// Transport::own_in_feed), each resting order's estimated queue position (QueueTracker, a load per
+// book update and trade on an instrument without one) and each order's send and ack times
+// (Oms::times). StrategyContext reads them: own_qty, best_ex_self, queue_ahead, order_times.
+//
 // Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
 // (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
 // before the first ParamUpdate and whenever none was applied for that long; the engine checks the
@@ -34,7 +40,9 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
+#include "fastmm/core/own_quantity.hpp"
 #include "fastmm/core/position.hpp"
+#include "fastmm/core/queue_tracker.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/quote_presence.hpp"
 #include "fastmm/core/record_stream.hpp"
@@ -172,6 +180,14 @@ class Engine {
     quotes_.set_params(qp);
     positions_.set_accounting(cfg.fx);
     risk_.set_fx(cfg.fx);
+    // Our quantity in the feed is followed only for venues whose feed shows our orders.
+    for (const Instrument& inst : instruments_) {
+      if (transport_own_in_feed(inst.venue)) own_venues_ |= venue_mask(inst.venue);
+    }
+    if (own_venues_ != 0) {
+      own_ = std::make_unique<OwnQuantity>();
+      own_->prepare(instruments_.size());
+    }
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -416,6 +432,49 @@ class Engine {
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return health_.view(v, now());
   }
+
+  // ---- execution view -------------------------------------------------------------------------
+
+  // Our resting quantity at (id, side, px) that the venue's feed shows as of venue time `at`; zero
+  // where the feed does not show our orders.
+  [[nodiscard]] Qty own_qty(InstrumentId id, Side side, Price px, Timestamp at) const noexcept {
+    if (own_ == nullptr || !instruments_.contains(id) || !own_venue(instruments_.get(id).venue))
+      return Qty{};
+    return own_->own_at(id, side, px, at);
+  }
+  // ... as of the book's last update.
+  [[nodiscard]] Qty own_qty(InstrumentId id, Side side, Price px) const noexcept {
+    if (own_ == nullptr) return Qty{};
+    return own_qty(id, side, px, books_[id.value].last_update());
+  }
+  // The best level on `side` after taking our quantity out; levels that were only ours are
+  // skipped. Level{} when nothing is left.
+  [[nodiscard]] Level best_ex_self(InstrumentId id, Side side) const noexcept {
+    const Book& b = books_[id.value];
+    const std::size_t n = b.depth(side);
+    for (std::size_t i = 0; i < n; ++i) {
+      const Level l = b.level(side, i);
+      const Qty own = own_qty(id, side, l.price);
+      if (own < l.qty) return Level{l.price, l.qty - own};
+    }
+    return Level{};
+  }
+  // Estimated quantity ahead of an open order (QueueTracker). The first call starts the tracking:
+  // orders resting then join the back of their level as it shows now, later ones at their ack.
+  [[nodiscard]] std::optional<Qty> queue_ahead(ClientOrderId id) noexcept {
+    if (!queue_.enabled()) [[unlikely]]
+      start_queue_tracking();
+    return queue_.ahead(oms_.find(id));
+  }
+  FASTMM_NOINLINE void start_queue_tracking() noexcept {
+    queue_.enable();
+    oms_.for_each_open_order([&](Handle<Order> h, const Order& o) {
+      if (resting(o.state) && instruments_.contains(o.instrument))
+        queue_.place(h, o, queue_shown(o));
+    });
+  }
+  [[nodiscard]] const QueueTracker& queue() const noexcept { return queue_; }
+  [[nodiscard]] const OwnQuantity* own_quantity() const noexcept { return own_.get(); }
 
   [[nodiscard]] RunnerStats runner_stats() const noexcept {
     RunnerStats r;
@@ -709,6 +768,7 @@ class Engine {
     b.apply_delta(d);
     ++stats_.book_updates;
     track_feed_lag(d.hdr);
+    if (queue_.any(id)) queue_on_book(d, b);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     const Timestamp now = now_;
@@ -779,7 +839,10 @@ class Engine {
     ++stats_.trades;
     const InstrumentId id = t.hdr.instrument;
     const bool known_instrument = instruments_.contains(id);
-    if (known_instrument) risk_.on_trade(id, t.price);
+    if (known_instrument) {
+      risk_.on_trade(id, t.price);
+      if (queue_.any(id)) queue_on_trade(t);
+    }
     track_feed_lag(t.hdr);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
@@ -794,6 +857,7 @@ class Engine {
 
   void on_book_ticker(const BookTickerMsg& m) noexcept {
     track_feed_lag(m.hdr);
+    if (queue_.enabled()) queue_on_ticker(m);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
@@ -982,6 +1046,66 @@ class Engine {
     if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
+  // ---- execution view: own quantity and queue position ------------------------------------------
+
+  [[nodiscard]] bool transport_own_in_feed(VenueId v) const noexcept {
+    if constexpr (requires {
+                    { transport_.own_in_feed(v) } -> std::same_as<bool>;
+                  }) {
+      return transport_.own_in_feed(v);
+    } else {
+      return false;
+    }
+  }
+  [[nodiscard]] bool own_venue(VenueId v) const noexcept {
+    return (own_venues_ & venue_mask(v)) != 0;
+  }
+  // Order events and our outbound New / Replace, for OwnQuantity (live venues only).
+  void own_inbound(const EventHeader& h) noexcept {
+    if (own_ != nullptr && own_venue(h.venue)) [[unlikely]]
+      own_->on_inbound(h);
+  }
+  void own_outbound(const EventHeader& h) noexcept {
+    if (own_ != nullptr && own_venue(h.venue)) [[unlikely]]
+      own_->on_outbound(h);
+  }
+  // Queue position updates, out of line: the market-data handlers keep only the check.
+  FASTMM_NOINLINE void queue_on_book(const BookDeltaMsg& d, const Book& b) noexcept {
+    const InstrumentId id = d.hdr.instrument;
+    queue_.on_book(d, b, [&](Side s, Price px) { return own_qty(id, s, px, b.last_update()); });
+  }
+  FASTMM_NOINLINE void queue_on_trade(const TradeMsg& t) noexcept { queue_.on_trade(t, oms_); }
+  FASTMM_NOINLINE void queue_on_ticker(const BookTickerMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (!instruments_.contains(id)) return;
+    queue_.on_ticker(
+        m, books_[id.value], [&](Side s, Price p, Timestamp t) { return own_qty(id, s, p, t); });
+  }
+  // What the queue model places an order behind: the displayed quantity at its price less our
+  // own, capped by a BookTicker newer than the depth book.
+  [[nodiscard]] Qty queue_shown(const Order& o) const noexcept {
+    const Book& b = books_[o.instrument.value];
+    const Qty shown = level_qty(b, o.side, o.price);
+    const Qty own = own_qty(o.instrument, o.side, o.price);
+    return queue_.at_placement(
+        own >= shown ? Qty{} : shown - own, o, b, [&](Side s, Price p, Timestamp t) {
+          return own_qty(o.instrument, s, p, t);
+        });
+  }
+  // Queue position and own quantity after an OMS update: a resting order enters the queue model,
+  // a terminal one leaves it.
+  void exec_view_update(const OmsUpdate& u, const EventHeader& h) noexcept {
+    if (u.terminal) {
+      queue_.remove(u.slot);
+      if (own_ != nullptr && own_venue(u.order.venue)) [[unlikely]]
+        own_->on_gone(u.order.cl_ord_id, h.exch_ts.valid() ? h.exch_ts : h.recv_ts);
+      return;
+    }
+    if (queue_.enabled() && u.handle.valid() && resting(u.order.state) &&
+        !queue_.tracked(u.handle) && instruments_.contains(u.order.instrument))
+      queue_.place(u.handle, u.order, queue_shown(u.order));
+  }
+
   // An order rests at the venue from its ack to its terminal state; a cancel or replace in flight
   // does not take it off the book.
   [[nodiscard]] static constexpr bool resting(OrderState st) noexcept {
@@ -1009,6 +1133,7 @@ class Engine {
       const int delta =
           static_cast<int>(resting(u.order.state)) - static_cast<int>(resting(u.prev));
       if (delta != 0) presence_.on_live_change(u.order.instrument, u.order.side, delta, now_);
+      if (u.changed) exec_view_update(u, h);
     }
     book_missed_fill(u);
     report_unresolved(u);
@@ -1031,12 +1156,24 @@ class Engine {
   }
 
   void on_order_ack(const OrderAckMsg& m) noexcept {
+    own_inbound(m.hdr);
+    // A replace keeps its place in the queue at the same price and no more than the leaves (the
+    // simulator's rule); otherwise the order joins the back again at its new price.
+    bool keep = false;
+    if (const Handle<Order> h = queue_.enabled() ? oms_.find(m.cl_ord_id) : Handle<Order>{};
+        queue_.tracked(h)) {
+      const Order& o = oms_.get(h);
+      keep = o.state == OrderState::PendingReplace && m.cl_ord_id == o.pending_cl_ord_id &&
+             o.pending_price == o.price && o.pending_qty <= o.leaves_qty();
+    }
     const OmsUpdate u = oms_.on_ack(m);
     if (u.changed && u.prev == OrderState::PendingNew && u.order.created.valid())
       health_.on_ack(u.order.venue, now_ - u.order.created, now_);
+    if (u.changed && u.prev == OrderState::PendingReplace && !keep) queue_.remove(u.slot);
     after_oms_update(u, m.hdr);
   }
   void on_order_reject(const OrderRejectMsg& m) noexcept {
+    own_inbound(m.hdr);
     const OmsUpdate u = oms_.on_reject(m);
     if (u.changed) {
       ++stats_.venue_rejects;
@@ -1047,16 +1184,19 @@ class Engine {
     after_oms_update(u, m.hdr);
   }
   void on_cancel_ack(const OrderCancelAckMsg& m) noexcept {
+    own_inbound(m.hdr);
     after_oms_update(oms_.on_cancel_ack(m), m.hdr);
   }
   void on_cancel_reject(const OrderCancelRejectMsg& m) noexcept {
     after_oms_update(oms_.on_cancel_reject(m), m.hdr);
   }
   void on_expired(const OrderExpiredMsg& m) noexcept {
+    own_inbound(m.hdr);
     after_oms_update(oms_.on_expired(m), m.hdr);
   }
 
   void on_fill(const OrderFillMsg& f) noexcept {
+    own_inbound(f.hdr);
     const OmsUpdate u = oms_.on_fill(f);
     if (u.action == OmsAction::Duplicate) return;
     ++stats_.fills;
@@ -1341,6 +1481,7 @@ class Engine {
   }
 
   void on_reconcile(const ReconcileMsg& m) noexcept {
+    own_inbound(m.hdr);
     switch (m.kind) {
       case ReconcileMsg::Kind::Begin: {
         reconciling_ = true;
@@ -1773,6 +1914,7 @@ class Engine {
     m.type = req.post_only && req.type == OrderType::Limit ? OrderType::PostOnly : req.type;
     m.tif = req.tif;
     m.reduce_only = req.reduce_only ? 1 : 0;
+    own_outbound(m.hdr);
     queue_out(m.hdr);
     ++stats_.orders_sent;
     return id;
@@ -1817,7 +1959,7 @@ class Engine {
     }
     const ClientOrderId new_id = oms_.next_cl_ord_id();
     if (FASTMM_UNLIKELY(!new_id.valid())) return fail(on_ids_exhausted());
-    auto r = oms_.request_replace(h, new_id, px, qty);
+    auto r = oms_.request_replace(h, new_id, px, qty, now);
     if (!r) return r;
     OutReplaceMsg m{};
     init_header(m, EventType::OutReplace, o.instrument, o.venue);
@@ -1827,6 +1969,7 @@ class Engine {
     m.venue_order_id = o.venue_order_id;
     m.price = px;
     m.qty = qty;
+    own_outbound(m.hdr);
     queue_out(m.hdr);
     ++stats_.replaces_sent;
     return {};
@@ -2137,6 +2280,10 @@ class Engine {
     FundingStats stats;
   };
   std::unique_ptr<FundingState> funding_ = std::make_unique<FundingState>();
+  // Venues whose feed shows our orders (bit v), and our quantity there; null when there are none.
+  std::uint32_t own_venues_ = 0;
+  std::unique_ptr<OwnQuantity> own_;
+  QueueTracker queue_{cfg_.queue_conservatism_bps};
 };
 
 }  // namespace fastmm

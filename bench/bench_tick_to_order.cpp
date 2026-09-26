@@ -17,6 +17,10 @@
 //                            the same settled state. Only the batch's first event can requote: its
 //                            orders are still in flight for the other 31. Counter
 //                            out_msgs_per_step.
+//   BM_TickToOrder_SimQueue, BM_EngineStep_SimQueue
+//                            the same with the engine's queue position estimate on (the strategy
+//                            called ctx.queue_ahead once): both resting quotes are tracked through
+//                            every book update.
 //
 // What the timed region includes: the feed push, the L2 book apply, the strategy, the quote
 // manager, risk, the OMS, message serialisation, and SimTransport::send -- which copies the message
@@ -72,7 +76,7 @@ struct TapeMsg {
 
 class Rig {
  public:
-  explicit Rig(bool hash_outbound) {
+  explicit Rig(bool hash_outbound, bool track_queue = false) {
     Instrument inst{};
     inst.symbol = "BTCUSDT";
     inst.flags = Instrument::kEnabled;
@@ -105,6 +109,7 @@ class Rig {
     engine_ = std::make_unique<SimEngine>(ec, table_, *clock_, *transport_, *feed_, strategy_);
     engine_->warm_up();
     engine_->start();
+    if (track_queue) static_cast<void>(engine_->queue_ahead(ClientOrderId{}));
     build_tape();
     push(snapshot_);
     engine_->step();
@@ -202,8 +207,8 @@ class Rig {
 
 }  // namespace
 
-static void tick_to_order(benchmark::State& state, bool hash_outbound) {
-  auto rig = std::make_unique<Rig>(hash_outbound);
+static void tick_to_order(benchmark::State& state, bool hash_outbound, bool track_queue = false) {
+  auto rig = std::make_unique<Rig>(hash_outbound, track_queue);
   if (!rig->settled()) {
     state.SkipWithError("rig did not settle after the snapshot");
     return;
@@ -251,9 +256,14 @@ static void BM_TickToOrder_SimHash(benchmark::State& state) {
 }
 BENCHMARK(BM_TickToOrder_SimHash)->UseManualTime();
 
-static void BM_EngineStep_Sim(benchmark::State& state) {
+static void BM_TickToOrder_SimQueue(benchmark::State& state) {
+  tick_to_order(state, false, true);
+}
+BENCHMARK(BM_TickToOrder_SimQueue)->UseManualTime();
+
+static void engine_step(benchmark::State& state, bool track_queue) {
   static constexpr std::int64_t kBatch = 32;
-  auto rig = std::make_unique<Rig>(false);
+  auto rig = std::make_unique<Rig>(false, track_queue);
   if (!rig->settled()) {
     state.SkipWithError("rig did not settle after the snapshot");
     return;
@@ -278,4 +288,13 @@ static void BM_EngineStep_Sim(benchmark::State& state) {
           : static_cast<double>(out_msgs) / static_cast<double>(state.iterations());
   if (!settled) state.SkipWithError("venue did not settle between steps");
 }
+
+static void BM_EngineStep_Sim(benchmark::State& state) {
+  engine_step(state, false);
+}
 BENCHMARK(BM_EngineStep_Sim)->UseManualTime();
+
+static void BM_EngineStep_SimQueue(benchmark::State& state) {
+  engine_step(state, true);
+}
+BENCHMARK(BM_EngineStep_SimQueue)->UseManualTime();

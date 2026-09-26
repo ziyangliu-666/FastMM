@@ -316,6 +316,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "flatten_slippage_bps", e.flatten_slippage_bps);
     if (e.flatten_slippage_bps < 0)
       fail_at(*t->get("flatten_slippage_bps"), "flatten_slippage_bps must be >= 0");
+    get(*t, "queue_conservatism", e.queue_conservatism);
+    if (!(e.queue_conservatism >= 0.0 && e.queue_conservatism <= 1.0))
+      fail_at(*t->get("queue_conservatism"), "queue_conservatism must be in [0, 1]");
     get(*t, "latency_publish_ms", e.latency_publish_ms);
     get(*t, "tsc_recalibrate_s", e.tsc_recalibrate_s);
     if (e.tsc_recalibrate_s < 0)
@@ -665,6 +668,7 @@ std::string Config::redacted() const {
   kv("flatten_interval_ms", engine.flatten_interval_ms);
   kv("flatten_timeout_ms", engine.flatten_timeout_ms);
   kv("flatten_slippage_bps", engine.flatten_slippage_bps);
+  kv("queue_conservatism", engine.queue_conservatism);
   kv("min_requote_ticks", engine.min_requote_ticks);
   kv("min_requote_interval_ms", engine.min_requote_interval_ms);
   kv("min_qty_bps", engine.min_qty_bps);
@@ -814,6 +818,7 @@ std::string Config::effective_toml() const {
   e.insert("flatten_interval_ms", static_cast<std::int64_t>(engine.flatten_interval_ms));
   e.insert("flatten_timeout_ms", static_cast<std::int64_t>(engine.flatten_timeout_ms));
   e.insert("flatten_slippage_bps", static_cast<std::int64_t>(engine.flatten_slippage_bps));
+  e.insert("queue_conservatism", engine.queue_conservatism);
   e.insert("latency_publish_ms", static_cast<std::int64_t>(engine.latency_publish_ms));
   e.insert("tsc_recalibrate_s", static_cast<std::int64_t>(engine.tsc_recalibrate_s));
   e.insert("timer_slack_ns", engine.timer_slack_ns);
