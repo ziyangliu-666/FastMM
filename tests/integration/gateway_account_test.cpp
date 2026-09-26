@@ -225,7 +225,13 @@ TEST_CASE(
     const std::uint16_t ea = wait_resting(fx, c.a, {});
     const pid_t b = spawn_strategy(c.b, g);
     wait_resting(fx, c.b, {ea});
-    CHECK_MESSAGE(log_has(g.log, "account position of BTCUSDT starts at " + dec(before_a)),
+    // The log is written behind: the strategies quote within a few hundred ms of the attach.
+    CHECK_MESSAGE(wait_until(
+                      [&] {
+                        return log_has(g.log,
+                                       "account position of BTCUSDT starts at " + dec(before_a));
+                      },
+                      5000),
                   fastmm::test::read_file(g.log));
     const std::uint64_t fa = fills(fx, 0);
     const std::uint64_t fb = fills(fx, 1);
