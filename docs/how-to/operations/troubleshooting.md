@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Messages are quoted as the code writes them; `<...>` stands for a value, and `<venue>` is the `[venues.<name>]` name. Log lines start with a timestamp, the level (`INFO`, `WARN`, `ERROR`), the thread id and the source file. Messages marked *stderr* are printed before the logger starts. Exit codes of `fastmm-live` are listed in [Command lines](../../reference/cli.md#exit-codes).
+Messages are quoted as the code writes them; `<...>` stands for a value, and `<venue>` is the `[venues.<name>]` name. Log lines start with a timestamp, the level (`INFO`, `WARN`, `ERROR`), the thread id and the source file. Messages marked *stderr* are printed before the logger starts. Exit codes are in [Errors and exit codes](../../reference/errors.md#exit-codes).
 
 ## Startup and configuration
 
@@ -18,7 +18,7 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | `fastmm-live: cannot open journal <path>` (stderr) | The journal file cannot be created | Check the directory permissions and free space, or pass `--journal <path>` |
 | `cannot create session epoch directory <dir>: <error>` | The parent directory of `[engine] epoch_file` cannot be created; without the epoch file, client order ids can repeat across restarts | Fix the path |
 | `[engine] net_backend = "io_uring" but io_uring is not available (kernel too old, disabled or not permitted); falling back to epoll` | The kernel refuses io_uring (`kernel.io_uring_disabled`, seccomp, an old kernel); the session runs on epoll | Set `net_backend = "epoll"` |
-| `fastmm-live: fatal: <error>` | An uncaught error in the session; exit code 5 | Check the lines before it |
+| `fastmm-live: fatal: <error>` | An uncaught error in the session; exit code 5 | Read the lines before it |
 
 ## Python strategies
 
@@ -45,12 +45,13 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | `<venue>: <symbol> status is <status> (not TRADING): disabled` (Binance), `(not Trading)` (Bybit), `<venue>: <symbol> is not open for trading (state <state>): disabled` (Deribit) | The symbol is halted, delisted or expired | Choose another symbol |
 | `<venue>: <symbol> not in reference data; keeping the configured values` (Deribit) | The instrument name does not exist, typically an expired option | Replace the `[[instruments]]` with live names ([Run on a testnet](run-on-testnet.md#deribit-testnet)) |
 | `<venue>: <symbol> does not allow LIMIT_MAKER (post-only)` (Binance) | Post-only orders on this symbol are rejected | Choose another symbol, or quote without `post_only` |
+| `<venue>: the account is in hedge mode (dualSidePosition=true); binance_usdm needs one-way mode` (stderr, exit 4), `<venue>: <symbol> is in hedge mode (positionIdx <n>); the bybit connector trades one-way mode only: ...` (stderr, exit 3) | The connectors trade one-way positions only | Switch the account or the symbol to one-way mode on the venue |
 
 ## Clock
 
 | Message | Cause | Action |
 |---|---|---|
-| `<venue>: clock offset to venue is <n> ms`, `... (recvWindow <m> ms)` (Binance), `... (recv_window <m> ms)` (Bybit) | The local clock differs from the venue's by more than 1000 ms; signed requests are rejected once the offset nears `recv_window_ms` | Synchronise the system clock (chrony or systemd-timesyncd; on WSL2 check the Windows host's time). Raising `recv_window_ms` is only a stopgap |
+| `<venue>: clock offset to venue is <n> ms`, `... (recvWindow <m> ms)` (Binance), `... (recv_window <m> ms)` (Bybit) | The local clock differs from the venue's by more than 1000 ms; signed requests are rejected once the offset nears `recv_window_ms` | Synchronise the system clock (chrony or systemd-timesyncd; on WSL2, the Windows host's clock). Raising `recv_window_ms` only postpones the rejects |
 | `host wall clock stepped by <n> ns relative to CLOCK_MONOTONIC_RAW within <t> s; the engine clock follows it` | The system clock was stepped: NTP, or the hypervisor on WSL2 and VMs (several hundred times an hour in WSL2 sessions) | On bare metal, make the time daemon slew instead of step |
 | `TSC recalibration stepped the engine clock by <n> ns (threshold <m> ns)` | The engine clock's offset exceeded the threshold, so it was stepped instead of slewed ([Clock calibration](../../explanation/architecture.md#clock-calibration)) | As above |
 | `TSC recalibration skipped (no TSC mapping or baseline too short)` | The calibrator had no TSC mapping yet or too short a baseline; the previous calibration stays in use | If it repeats at every `[engine] tsc_recalibrate_s`, raise that period |
@@ -82,8 +83,8 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | Message | Cause | Action |
 |---|---|---|
 | `<venue>: rate limited (<code> <msg>); cooling down <n> ms` (Binance, Bybit), `<venue>: rate limited (<code> <msg>)` (Deribit) | The venue signalled a rate limit; the connector sends nothing for the cooldown | Lower `[risk] orders_per_sec`, raise `[engine] min_requote_ticks` and `min_requote_interval_ms` |
-| `<venue>: HTTP 403 (IP rate limit): REST paused for 10 minutes` (Bybit) | Bybit's per-IP limit | Wait; reduce the request rate |
-| `<venue>: HTTP 418 IP ban: REST stopped until restart` (Binance) | Binance banned the IP after ignored 429 responses; no REST request is sent until restart, the venue's kill switch trips (`VenueHardStop`) and its kill-switch cancel-all fails | Cancel orders on the website, stop, wait for the ban to expire, lower the request rate |
+| `<venue>: HTTP 403 (IP rate limit): REST paused for 10 minutes` (Bybit) | Bybit's per-IP limit | Wait, then reduce the request rate |
+| `<venue>: HTTP 418 IP ban: REST stopped until restart` (Binance) | Binance banned the IP after ignored 429 responses; no REST request is sent until restart, the venue's kill switch trips (`VenueHardStop`) and its cancel-all fails | Cancel orders on the website, stop, wait for the ban to expire, lower the request rate |
 | `<venue>: REST hard stop (<code> <msg>)` (Bybit) | Bybit returned an error that stops REST | As for the IP ban |
 
 ## Orders and reconciliation
@@ -91,15 +92,15 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | Message | Cause | Action |
 |---|---|---|
 | `order <id> rejected: <reason> (<code>)` | The venue or a local check rejected a new order; `[engine] reject_backoff_ms` pauses that side after rejects other than post-only crosses. `PostOnlyWouldCross`: the post-only quote would have crossed the book, frequent when quoting at the touch | For other reasons, look up the venue's error code |
-| `risk reject <reason> on new order: <symbol> <side> <qty> @ <price>` (or `on replace order`), optionally `(<n> more suppressed)` | A pre-trade check refused the order; nothing was sent. `<n>`: rejects of that reason not logged since its previous line ([Reject logging](monitor-with-fastmm-top.md#reject-logging)) | Find the limit: `MaxOrderQty` / `MaxOrderNotional` `[risk] max_order_qty` / `max_order_notional`; `MaxPosition` `max_position` (position plus open orders on the same side); `MaxOpenOrders` `max_open_orders`; `PriceCollar` `price_collar_bps` (distance from the mid); `FatFinger` `fat_finger_bps` (distance from the last trade); `StaleMarketData` `stale_md_ms` or a book that stopped updating; `RateLimit` `orders_per_sec` / `burst`; `SelfTradePrevention` `stp`; `InvalidTick` / `InvalidLot` / `BelowMinNotional` the instrument's tick, lot and minimums; `KillSwitch` / `VenueKilled` the kill switch is engaged |
+| `risk reject <reason> on new order: <symbol> <side> <qty> @ <price>` (or `on replace order`), optionally `(<n> more suppressed)` | A pre-trade check refused the order; nothing was sent. `<n>`: rejects of that reason not logged since its previous line ([Reject logging](monitor-with-fastmm-top.md#reject-logging)) | Find the limit: `MaxOrderQty` / `MaxOrderNotional` `[risk] max_order_qty` / `max_order_notional`; `MaxPosition` `max_position` (position plus open orders on the same side); `MaxOpenOrders` `max_open_orders`; `PriceCollar` `price_collar_bps` (distance from the mid); `FatFinger` `fat_finger_bps` (distance from the last trade); `MaxGrossNotional` / `MaxNetNotional` `max_gross_notional` / `max_net_notional`; `StaleMarketData` `stale_md_ms` or a book that stopped updating; `RateLimit` `orders_per_sec` / `burst`; `SelfTradePrevention` `stp`; `InvalidTick` / `InvalidLot` / `BelowMinNotional` the instrument's tick, lot and minimums; `InstrumentDisabled` the instrument is disabled (`enabled = false`, or not trading at the venue); `FxRateUnknown` the `[accounting]` rate of the order's settlement currency is unknown or stale; `KillSwitch` / `VenueKilled` the kill switch is engaged ([all reasons](../../reference/errors.md#reject-reasons)) |
 | `<venue>: venue rejected a filter/precision rule (<code> <msg>); check tick/lot config` (Binance), `... a precision/filter rule ...` (Bybit), `<venue>: venue rejected an instrument rule (<code> <msg>); check the instrument` (Deribit) | Price or quantity is off the venue's grid, or below its minimum notional | Check `quote_qty` against `min_qty` and `min_notional`, and the strategy's price rounding |
-| `order <id> exceeded cancel-reject retries; asking the venue to reconcile` | A cancel was rejected four times | The connector fetches the venue's open orders and settles the order; if it recurs, check the order on the venue |
-| `cancelling unknown live order <id>` | The venue reported a live order the OMS does not know (a previous session, or a lost acknowledgement); it is cancelled | If frequent, check for a second engine on the account |
+| `order <id> exceeded cancel-reject retries; asking the venue to reconcile` | A cancel was rejected four times; the connector fetches the venue's open orders and settles the order | If it recurs, check the order on the venue |
+| `cancelling unknown live order <id>` | The venue reported a live order the OMS does not know: one a previous session left (every connector sweeps the open orders on its first connect), or a lost acknowledgement; it is cancelled | Expected after a restart. Otherwise, if frequent, check for a second engine on the account |
 | `fill for unknown order <id> qty <q> @ <price>` | A fill for an order that is not in the OMS; the position is still booked from the fill | Reconcile the account ([Journals, replay and PnL](journals-replay-pnl.md#check-pnl)) |
-| `order <id> was <symbol> filled while we were not listening: booking <qty> at its own price <px>` | A cancel ack, an expiry or a reconciliation snapshot reported more filled quantity than the fills we received (a private-stream outage). The difference is booked as a synthetic fill at the order's own price; the strategy's `on_fill` does not run for it | Compare the position and the average price with the venue's; a venue that reports positions corrects them at the next snapshot |
+| `order <id> was <symbol> filled while we were not listening: booking <qty> at its own price <px>` | A cancel ack, an expiry or a reconciliation snapshot reported more filled quantity than the fills received (a private-stream outage). The difference is booked as a synthetic fill at the order's own price; the strategy's `on_fill` does not run for it | Compare the position and the average price with the venue's |
 | `order <id> has no ack after <n> ms: cancelling it` | `[engine] ack_timeout_ms` elapsed with the order still `PendingNew`: the request or its ack was lost | If frequent, check the order channel's latency and the venue's rate limits |
 | `fill commission in an asset other than base or quote is not included in fees or positions (first on order <id>)` | Commission paid in a third asset, for example BNB on Binance | Turn off paying fees with BNB, or account for them outside FastMM |
-| `<venue>: open orders reply could not be parsed`, `<venue>: open orders could not be fetched for every currency; reconciliation skipped` (Deribit) | Reconciliation after a reconnect did not complete | Check the open orders on the venue |
+| `<venue>: open orders reply could not be parsed; reconciliation skipped` (Binance Spot), `... reconciliation retried` (Binance USDⓈ-M), `<venue>: open orders reply rejected (<msg>); reconciliation skipped` (Bybit), `<venue>: open orders could not be fetched for every currency; reconciliation skipped` (Deribit) | Reconciliation after a connect did not complete | Check the open orders on the venue |
 | `<venue>: only <n> of <m> user channels subscribed; cancels are acknowledged from request responses` (Deribit) | Some private channels were refused | Check the key's scopes |
 | `<venue>: listenKey user streams are gone (HTTP 410); switching to the WebSocket API user stream` (Binance) | `user_stream = "listen_key"` is no longer offered | Set `user_stream = "ws_api"` (the default) |
 
@@ -108,12 +109,14 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | Message | Cause | Action |
 |---|---|---|
 | `order ring overflow on <venue>: tripping the kill switch` | The engine did not drain order events fast enough; the session shuts down with exit code 5 | Raise `[engine] order_ring_bytes`; check that the engine thread is not starved (`cpu`, `spin_mode`) |
+| `journal write failed (<error>): tripping the kill switch and shutting down` | The journal cannot be written, usually a full filesystem; exit code 5 | Free space in `[engine] journal_dir` |
+| `the gateway closed the attachment: no market data, no orders` | `fastmm-gateway` exited or dropped this strategy (`--gateway`), and cancels its orders; exit code 5 | Read the gateway's log ([Run behind a gateway](run-behind-a-gateway.md)) |
 | `outbound transport full: <n> message(s) dropped; tripping kill switch` | The ring to the venue's network thread was full; the global kill switch trips (`TransportFull`) | Raise `[engine] order_ring_bytes`; check the network thread |
 | `control ring full: kill switch message dropped` | The shutdown command did not reach the engine; the venues' REST cancel-all still runs | Check the venue for open orders ([Go-live checklist](go-live-checklist.md#stopping)) |
-| `kill switch engaged (<reason>, flags=<hex>); pulling quotes and cancelling all` | The engine tripped the global kill switch itself: `MaxLoss` (`[risk] max_loss`), `TransportFull`, `JournalOverflow` or `AllVenuesKilled`; `[engine] on_kill` decides what follows ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)) | Find the cause before restarting: PnL, ring sizes, the venue errors before it |
+| `kill switch engaged (<reason>, flags=<hex>); pulling quotes and cancelling all` | The engine tripped the global kill switch itself, for example `MaxLoss` (`[risk] max_loss`), `TransportFull`, `JournalOverflow` or `AllVenuesKilled` ([Kill reasons](../../reference/errors.md#kill-reasons)); `[engine] on_kill` decides what follows ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)) | Find the cause before restarting: PnL, ring sizes, the venue errors before it |
 | `fastmm-live: shutting down (kill switch: <reason>; [engine] on_kill = "exit")` | The shutdown after that kill | [Read the last lines](kill-switch-and-shutdown.md#reading-the-last-lines) |
-| `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off ...` | Repeated every 10 s while a `stay` session is killed | Inspect it with `fastmm-top`, then stop it with Ctrl-C |
-| `venue <id> kill switch engaged (<reason>, flags=<hex>); pulling its quotes and cancelling its orders, other venues keep trading`, `[<venue>] venue kill switch engaged (<reason>): ...; <n> of <m> venue(s) still trading` | A connector reported a fatal error (`VenueFatal`, `VenueHardStop`); only that venue stopped trading | Read the venue's error line before it; fix and restart |
+| `fastmm-live: kill switch engaged (<reason>, flags=<hex>) and [engine] on_kill = "stay": quoting is off ...` | Repeated every 10 s while a `stay` session is killed | Inspect it with `fastmm-top`, then stop it (Ctrl-C, SIGTERM or `fastmm-ctl stop`) |
+| `venue <id> kill switch engaged (<reason>, flags=<hex>); pulling its quotes and cancelling its orders, other venues keep trading`, `[<venue>] venue kill switch engaged (<reason>): ...; <n> of <m> venue(s) still trading` | A connector reported a fatal error (`VenueFatal`, `VenueHardStop`) or could not refresh its dead man's switch (`DeadMansSwitchLost`); only that venue stopped trading | Read the venue's error line before it; fix and restart |
 | `fastmm-live: shutdown took <n> ms (cancel_all FAILED)` | A venue's REST cancel-all failed | Follow [When cancel_all failed](kill-switch-and-shutdown.md#when-cancel_all-failed) |
 
 ## Monitoring
@@ -121,7 +124,7 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | Message | Cause | Action |
 |---|---|---|
 | `status file <path> unavailable: <error>` | The status file for `fastmm-top` could not be created | Check `/dev/shm` permissions and space, or pass `--status <path>` or `--no-status` |
-| `fastmm-top` marks a running session as stale | The engine has not published for more than 3 s; the process has probably died | Check the process and the end of its log ([Monitoring](monitor-with-fastmm-top.md)) |
+| `fastmm-top` shows `STALE` | The engine has not published for more than 3 s; the process has usually died | Check the process and the end of its log ([Monitoring](monitor-with-fastmm-top.md)) |
 
 ## Symptoms without a message
 
