@@ -726,13 +726,17 @@ TEST_CASE("recovery: shadows of orders whose terminal events were lost are swept
   REQUIRE(h.venue->shadow_count() == 2);  // the leak: nothing told the connector they ended
   fx.server.set_user_stream_muted(false);
   REQUIRE(fx.server.stats().open_orders == 0);
+  const std::size_t live_before = h.live_order_channels();
   fx.server.drop_ws_api_connections(true);
   await_reconcile(h, m);
   check_orders_agree(fx, m);
   CHECK(m.position() == fx.server.stats().position);
   CHECK(h.venue->shadow_count() == 0);  // the snapshot proved them over
 
-  // A new order after the sweep still has its shadow: it can be cancelled.
+  // A new order after the sweep still has its shadow: it can be cancelled. The reconciliation
+  // can finish before the user stream is back, and place_resting() waits for its NEW event:
+  // wait for both connections first.
+  REQUIRE(h.pump([&] { return h.live_order_channels() >= live_before + 2; }));
   place_resting(h, m, cid(43), resting_bid(fx, 120), kLot);
   REQUIRE(h.venue->cancel_all());
   REQUIRE(h.pump([&] {
