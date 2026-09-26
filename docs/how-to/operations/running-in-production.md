@@ -84,16 +84,15 @@ Mitigation: the journal is the byte-exact execution record, and the [store](../.
 
 ## 6. PnL and accounting
 
-`PositionTracker` computes `(px - avg_px) * qty * contract_multiplier` and nothing else (`include/fastmm/core/position.hpp`).
+`PositionTracker` books each fill in the instrument's settlement currency: `(px - avg_px) * qty * contract_multiplier` for a linear contract, `qty * contract_multiplier * (1/avg_px - 1/px)` coins for an inverse one (`include/fastmm/core/position.hpp`, [Risk model](../../explanation/risk-model.md#inverse-contracts)).
 
 | Case | What happens | Where it bites |
 |---|---|---|
-| Inverse contracts | the `kInverse` flag is set by the Deribit connector but `PositionTracker` never reads it; PnL is linear | Deribit BTC-PERPETUAL is a USD-denominated inverse contract, so its PnL and its contribution to `max_loss` are wrong. Coin-quoted inverse options are unaffected: linear is correct for them ([Options](../../reference/options.md)) |
-| Two quote currencies | `Notional` has no currency tag; `realized_total_`, `unrealized_total_` and `fees_total_` add every instrument's number together | a BTC-settled Deribit PnL and a USDT Binance PnL are summed as bare integers, and `max_loss` is evaluated on that sum |
+| Two settlement currencies | with `[accounting]`, the totals, `max_loss` and the exposure caps are converted to `reporting_currency` at the mid of each currency's FX source; an order that adds exposure in a currency without a current rate is refused (`FxRateUnknown`). Without it `fastmm-live` refuses `max_loss` on a mixed table and warns | the rate is the source's mid, not what the venue would convert at, and a stale source keeps PnL at its last rate; a currency whose rate was never known is left out of the totals ([Configuration](../../reference/configuration.md#accounting)) |
 | Commission in a third asset | the fee is set to zero and dropped from fees and positions, with one WARN line per session | BNB-discounted Binance fees make the engine under-report its costs ([Troubleshooting](troubleshooting.md#orders-and-reconciliation)) |
 | Cross-instrument risk | position limits are per instrument; `max_loss` is the only portfolio-wide limit | a hedged pair and two outright positions look the same to the risk layer |
 
-Mitigation: run one engine per quote currency, and do not rely on `max_loss` as a portfolio stop when instruments settle differently. `tools/pnl_report.py` recomputes PnL from the journal's fills and reconciles it against account snapshots; use it, not the engine's number, as the record.
+Mitigation: set `[accounting]` when instruments settle in more than one currency, with a source that trades where the session already subscribes. `tools/pnl_report.py` recomputes PnL from the journal's fills and reconciles it against account snapshots; use it, not the engine's number, as the record.
 
 ## 7. Rate limits and bans
 

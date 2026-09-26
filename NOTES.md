@@ -16,6 +16,38 @@ perpetuals, and today one session or gateway with instruments in two settlement 
   refused. Same accounting in the engine and the gateway; backtest and replay share it.
 Later steps: Bybit linear perpetuals and OKX; alerting.
 
+**Step 1 done (2026-09-26): `[accounting]`.** `reporting_currency` and `[accounting.fx] BTC =
+"venue:symbol"` (an instrument of `[[instruments]]`, `enabled = false` if untraded; a USDTBTC-style
+pair is inverted). `FxPlan` (`core/fx.hpp`) is built after reference data (inverse is only known
+then): each instrument's currency slot, each currency's source. `PositionTracker` keeps totals per
+currency and converted ones (updated where the totals change: fill, mark, new rate; out of line);
+its `total_*`/exposure accessors are in the reporting currency, so max_loss, the caps, the status
+file, the store's session totals and the kill file carry are too. The engine takes a rate from the
+source's book mid; `RiskEngine` converts the order's notional for the caps. Fail closed: a rate is
+unknown until the source's book is valid and not current while it is invalid (disconnect, crossed)
+or older than `stale_md`; then an order adding exposure in that currency is refused
+(`FxRateUnknown`, gateway `GatewayFxRateUnknown`), reducing ones and flattens pass. Booked PnL stays
+at the last valid rate; a currency never priced counts as zero (only a restored position can be
+there). Only while max_loss or a cap is set; with neither the rate refuses nothing. Uncovered
+currency: exit 3 with a limit set, warning and no conversion otherwise; without `[accounting]`
+everything is as before. Gateway: per-venue totals per currency in the Account, rates published by
+the source's venue thread, converted when read (net PnL, caps, kill file, log `in=USDT`); status
+segment v9 (a 7th refusal slot). Backtest ledger converts at the venue mid; replay rebuilds the plan
+from the journal's table (a replay without `[accounting]` of such a journal mismatches, tested).
+Evidence: `core/fx_test.cpp` (plan, orientation, tracker linear+inverse, gate unknown/stale/down,
+max_loss tripping on a BTC loss only after conversion, an engine with BTCUSD inverse + ETHUSDT +
+BTCUSDT source), config tests, `backtest/accounting_test.cpp`, `integration/gateway_fx_test.cpp`
+(sim BTCUSDT + ETHBTC: gateway refusal and start, gross cap in USDT, max_loss on a BTC fee,
+`GatewayFxRateUnknown` at stale_md 1 ms, fastmm-live in-process). Each fails with its piece broken
+(13 mutations: no per-currency booking, no gate, no staleness, no inversion, no engine rate, no
+disconnect, gateway not converting / ignoring the plan / order notional / staleness, ledger, replay,
+session). Release, WSL2, interleaved x6, base 3bfc065 vs this: t2o 152.0 vs 153.5 ns (p50 151 both),
+t2o+hash 326.2 vs 322.7, engine step 2258 vs 2295, risk check 6.52 vs 6.49, OMS 106.5/28.4 vs
+106.6/28.3. Inlining the conversion into `mark` first cost t2o +6%; it is out of line now.
+Left: `[gateway] max_open_notional` stays per venue in settlement currency (unconverted); the
+status file does not name the reporting currency; the rate is the source's mid, not the venue's
+conversion.
+
 ## Next direction (chosen 2026-09-25): split the venue gateway from the strategy
 
 **Why.** Stepping back from recovery work: what a firm needs and FastMM lacks is structural. One
