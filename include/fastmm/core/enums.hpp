@@ -450,6 +450,7 @@ enum class KillReason : std::uint8_t {
   OrderIdsExhausted = 11,   // the session's 32-bit client order id sequence is used up
   DeadMansSwitchLost = 12,  // the venue-side countdown could not be refreshed within its window
   GatewayMaxLoss = 13,      // fastmm-gateway: the account's [gateway] max_loss, over every strategy
+  GatewayOperator = 14,     // fastmm-gateway: an operator's `kill` on the gateway's control socket
 };
 // Kill reasons are kept per venue id for ids 0..kKillVenueSlots-1; higher ids share the last slot,
 // as they share the last kill bit (RiskEngine::venue_bit).
@@ -484,6 +485,8 @@ inline constexpr std::size_t kKillVenueSlots = 31;
       return "DeadMansSwitchLost";
     case KillReason::GatewayMaxLoss:
       return "GatewayMaxLoss";
+    case KillReason::GatewayOperator:
+      return "GatewayOperator";
   }
   return "?";
 }

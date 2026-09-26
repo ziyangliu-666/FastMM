@@ -302,7 +302,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"("version": 7)") != std::string::npos);
+  CHECK(json.find(R"({"kind": "engine", "version": 8,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -313,4 +313,117 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(json.back() == '\n');
   set_status_name(s.engine_name, "a\"b");
   CHECK(format_status_json(s).find(R"("engine": "a\"b")") != std::string::npos);
+}
+
+namespace {
+// fastmm-gateway's snapshot: one venue, two attachments, three instruments (one nobody trades).
+StatusSnapshot gateway_sample() {
+  StatusSnapshot s;
+  s.kind = StatusKind::Gateway;
+  s.pid = 99;
+  s.started_ns = 1'000'000'000;
+  s.updated_ns = 61'000'000'000;
+  s.state = StatusRunState::Running;
+  set_status_name(s.engine_name, "gw");
+  s.realized_pnl_raw = 150'000'000;    // 1.5
+  s.unrealized_pnl_raw = -50'000'000;  // -0.5
+  s.fees_raw = 25'000'000;             // 0.25
+  s.pnl_carry_raw = -100'000'000;      // -1
+  s.venue_count = 1;
+  set_status_name(s.venues[0].name, "sim");
+  s.venues[0].md = 2;
+  s.venues[0].user = 2;
+  s.venues[0].order = 2;
+  StatusGateway& g = s.gateway;
+  g.net_pnl_raw = -25'000'000;  // -1 + 1.5 - 0.5 - 0.25
+  g.gross_raw = 12'000'000'000;
+  g.net_raw = -6'000'000'000;
+  g.max_loss_raw = 300'000'000;
+  g.venues[0].gateway_cancels = 4;
+  g.venues[0].refused[5] = 3;  // GatewayRateLimit
+  g.attachment_count = 2;
+  set_status_name(g.attachments[0].engine, "mm-a");
+  g.attachments[0].pid = 1001;
+  g.attachments[0].id = 1;
+  g.attachments[0].epoch = 7;
+  g.attachments[0].attached_ns = 31'000'000'000;
+  g.attachments[0].refused[5] = 3;
+  set_status_name(g.attachments[1].engine, "mm-b");
+  g.attachments[1].pid = 1002;
+  g.attachments[1].id = 2;
+  g.attachments[1].epoch = 8;
+  g.attachments[1].md_dropped = 12;
+  g.position_count = 3;
+  set_status_name(g.positions[0].symbol, "BTCUSDT");
+  g.positions[0].owner_epoch = 7;
+  g.positions[0].qty_raw = 400'000;  // 0.004
+  set_status_name(g.positions[1].symbol, "ETHUSDT");
+  g.positions[1].owner_epoch = 8;
+  g.positions[1].qty_raw = -200'000;  // -0.002
+  set_status_name(g.positions[2].symbol, "SOLUSDT");
+  return s;
+}
+}  // namespace
+
+TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its attachments") {
+  const std::string path = tmp_path("gateway.status");
+  StatusWriter w;
+  std::string err;
+  REQUIRE_MESSAGE(w.open(path, &err), err);
+  StatusReader r;
+  REQUIRE_MESSAGE(r.open(path, &err), err);
+  w.publish(gateway_sample());
+  StatusSnapshot got;
+  REQUIRE(r.read(got));
+  CHECK(got.kind == StatusKind::Gateway);
+  CHECK(got.gateway.attachment_count == 2);
+  CHECK(got.gateway.attachments[1].epoch == 8);
+  CHECK(got.gateway.positions[1].qty_raw == -200'000);
+  CHECK(got.gateway.venues[0].refused[5] == 3);
+  w.close();
+  std::remove(path.c_str());
+
+  const std::string frame = format_status(got, got.updated_ns, false);
+  INFO(frame);
+  CHECK(frame.find("gateway=gw pid=99") != std::string::npos);
+  CHECK(frame.find("engine=") == std::string::npos);  // not the engine's frame
+  CHECK(frame.find("net_pnl=-0.25 realized=1.5 unrealized=-0.5 fees=0.25 carried=-1 "
+                   "gross_exposure=120 net_exposure=-60") != std::string::npos);
+  CHECK(frame.find("max_loss=3 max_gross_notional=off") != std::string::npos);
+  // Each attachment with its instruments, its uptime and its refusals.
+  CHECK(frame.find("mm-a") != std::string::npos);
+  CHECK(frame.find("sim:BTCUSDT") != std::string::npos);
+  CHECK(frame.find("sim:ETHUSDT") != std::string::npos);
+  CHECK(frame.find("30s") != std::string::npos);
+  CHECK(frame.find("3 (GatewayRateLimit 3)") != std::string::npos);
+  // Positions with an owner or a quantity; SOLUSDT has neither.
+  CHECK(frame.find("0.004") != std::string::npos);
+  CHECK(frame.find("-0.002") != std::string::npos);
+  CHECK(frame.find("SOLUSDT") == std::string::npos);
+  CHECK(frame.find("live") != std::string::npos);  // the venue table
+  CHECK(frame.find("KILLED") == std::string::npos);
+
+  StatusSnapshot killed = got;
+  killed.gateway.kill_active = 1;
+  killed.kill_flags = 1;
+  killed.kill_latched = 1;
+  killed.kill_reason = static_cast<std::uint8_t>(KillReason::GatewayOperator);
+  const std::string k = format_status(killed, killed.updated_ns, false);
+  CHECK(k.find("ACCOUNT KILLED (GatewayOperator)  LATCHED") != std::string::npos);
+
+  const std::string json = format_status_json(got);
+  INFO(json);
+  CHECK(json.find(R"({"kind": "gateway", "version": 8,)") == 0);
+  CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
+  CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
+  CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
+  CHECK(json.find(R"("instruments": [{"venue": "sim", "symbol": "BTCUSDT"}])") !=
+        std::string::npos);
+  CHECK(json.find(R"({"venue": "sim", "symbol": "ETHUSDT", "qty": -0.002, "owner_epoch": 8})") !=
+        std::string::npos);
+  CHECK(json.find(R"("GatewayRateLimit": 3)") != std::string::npos);
+  CHECK(json.find(R"("venues": [{"name": "sim", "md": "live")") != std::string::npos);
+  CHECK(json.find(R"("events")") == std::string::npos);  // no engine counters
+  CHECK(json.back() == '\n');
+  CHECK(default_gateway_status_path("gw") == "/dev/shm/fastmm-gw.gw.status");
 }

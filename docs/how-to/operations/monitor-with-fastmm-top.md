@@ -17,6 +17,8 @@
 - per venue: market-data, user and order channel states, synced books, market-data messages, resyncs, orders, cancels, order events, reconnects, REST errors, clock offset and the network thread's wire tick-to-trade p50, and in the `kill` column the reason a killed venue was tripped for (`-` while it trades);
 - per multicast venue (`nasdaq_itch`), a feed line: state, receive backend, packets per line, A/B skew, gaps, recovered and given-up sequences, snapshots, the reorder high-water mark and the kernel-to-T0 p50 and p99 ([Receive a multicast feed](multicast-feeds.md#7-check-the-feed)).
 
+`fastmm-top --gateway <name>` reads a `fastmm-gateway`'s file instead (`/dev/shm/fastmm-<name>.gw.status`); the file says which it is, so `--path` works for either. Its frame and metrics are the gateway's: attachments, the account, positions ([Run behind a gateway](run-behind-a-gateway.md#monitor)).
+
 The file stays after the session ends, so the last frame shows `stopped` with the final numbers. The layout is versioned (magic number and version field). A `fastmm-top` from another build refuses the file with `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>); use fastmm-top from the same build as fastmm-live` (with `--once`, exit code 3, as for a missing file).
 
 ## Scrape it with Prometheus

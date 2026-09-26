@@ -228,11 +228,23 @@ struct GatewayOptions {
   std::int64_t duration_ns = 0;  // 0: until SIGINT/SIGTERM
   bool dry_run = false;
   bool clear_kill = false;  // remove the account's kill file before starting
+  std::string status_path;  // empty: /dev/shm/fastmm-<engine name>.gw.status
+  bool no_status = false;
+  std::string control_path;  // empty: <attach socket>.ctl
+  bool no_control = false;
   std::string program = "fastmm-gateway";
 };
 
 // <journal_dir>/<engine name>.gw
 [[nodiscard]] std::string default_gateway_path(const Config& cfg);
+
+// The gateway's control socket (fastmm-ctl --gateway <engine name>): commands one datagram each,
+// on the same listener as fastmm-live's (live/control_socket.hpp), answered by the gateway's main
+// thread. `pull` and `resume` send the attached strategies the engine's own ControlMsg
+// (PullQuotes, ResumeQuotes) on their order rings, so their journals record it; `kill` trips the
+// account's kill switch as [gateway] max_loss does (KillReason::GatewayOperator); `clear-kill`
+// clears it and arms the loss budget again once no strategy is attached.
+[[nodiscard]] std::string_view gateway_control_usage() noexcept;
 
 // Runs the gateway until SIGINT/SIGTERM or the duration; returns the exit code (the kExit* codes
 // of live/session.hpp). `cfg` must have its venue secrets resolved (resolve_venue_env).

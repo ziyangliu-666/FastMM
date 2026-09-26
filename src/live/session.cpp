@@ -212,39 +212,6 @@ void log_reject_breakdown(std::string_view kind, const RejectCounts& c) {
   emit();
 }
 
-StatusLatency wire_status_latency(const venues::WireLatencyStats& w) noexcept {
-  return StatusLatency{w.count, w.p50_ns, w.p99_ns, w.p999_ns, w.max_ns};
-}
-
-void copy_feed_status(const venues::VenueFeedStatus& f, StatusFeed& out) noexcept {
-  out.state = static_cast<std::uint8_t>(f.state);
-  out.backend = f.backend;
-  out.xdp_mode = f.xdp_mode;
-  out.packets = f.packets;
-  out.bytes = f.bytes;
-  for (std::size_t l = 0; l < 2; ++l) {
-    out.line_packets[l] = f.line_packets[l];
-    out.line_duplicates[l] = f.line_duplicates[l];
-    out.line_skew_mean_ns[l] = f.line_skew_mean_ns[l];
-    out.line_skew_max_ns[l] = f.line_skew_max_ns[l];
-  }
-  out.gaps = f.gaps;
-  out.recovered = f.recovered;
-  out.unrecovered = f.unrecovered;
-  out.snapshot_recoveries = f.snapshot_recoveries;
-  out.recovery_overflows = f.recovery_overflows;
-  out.reorder_high_water = f.reorder_high_water;
-  out.requests = f.requests;
-  out.malformed = f.malformed;
-  out.book_errors = f.book_errors;
-  out.kernel_to_t0 = wire_status_latency(f.kernel_to_t0);
-  out.xdp_rx_dropped = f.xdp_rx_dropped;
-  out.xdp_rx_invalid_descs = f.xdp_rx_invalid_descs;
-  out.xdp_rx_ring_full = f.xdp_rx_ring_full;
-  out.xdp_fill_ring_empty = f.xdp_fill_ring_empty;
-  out.xdp_fallback = f.xdp_fallback;
-}
-
 std::string host_name() {
   char buf[HOST_NAME_MAX + 1] = {};
   if (::gethostname(buf, sizeof buf - 1) != 0) return {};
@@ -1103,25 +1070,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       sv.kill_reason =
           static_cast<std::uint8_t>(live.venue_kill_reasons[RiskEngine::venue_slot(vid)]);
       if (i >= slots.size()) continue;  // the venue runs in the gateway
-      const venues::Venue* v = slots[i]->venue.get();
-      const venues::VenueStatus st = v->status();
-      sv.md = static_cast<std::uint8_t>(st.md);
-      sv.user = static_cast<std::uint8_t>(st.user);
-      sv.order = static_cast<std::uint8_t>(st.order);
-      sv.books_synced = st.books_synced;
-      sv.books_total = st.books_total;
-      sv.md_messages = st.md_messages;
-      sv.resyncs = st.resyncs;
-      sv.orders_sent = st.orders_sent;
-      sv.cancels_sent = st.cancels_sent;
-      sv.replaces_sent = st.replaces_sent;
-      sv.order_events = st.order_events;
-      sv.reconnects = st.reconnects;
-      sv.rest_errors = st.rest_errors;
-      sv.rate_limit_cooldowns = st.rate_limit_cooldowns;
-      sv.clock_offset_ms = st.clock_offset_ms;
-      sv.wire_tick_to_trade = wire_status_latency(st.wire_tick_to_trade);
-      copy_feed_status(st.feed, sv.feed);
+      fill_status_venue(slots[i]->venue->status(), sv);
     }
     if (status.is_open()) status.publish(snap);
   };

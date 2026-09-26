@@ -35,6 +35,7 @@ std::string other_build_message(const std::string& path, std::uint32_t version) 
 
 static int run(int argc, char** argv) {
   std::string name;
+  std::string gateway;
   std::string path;
   std::string metrics;
   int interval_ms = 500;
@@ -42,13 +43,21 @@ static int run(int argc, char** argv) {
   bool json = false;
   bool no_color = false;
 
-  CLI::App app("Terminal dashboard for a running fastmm-live session.", "fastmm-top");
+  CLI::App app("Terminal dashboard for a running fastmm-live session or fastmm-gateway.",
+               "fastmm-top");
   fastmm::cli::setup(app);
-  app.usage("fastmm-top [--name <engine name> | --path <status file>] [OPTIONS]");
+  app.usage(
+      "fastmm-top [--name <engine name> | --gateway <engine name> | --path <status file>] "
+      "[OPTIONS]");
   app.add_option(
          "--name", name, "read /dev/shm/fastmm-<engine>.status ([engine] name in the config)")
       ->option_text("<engine>");
-  app.add_option("--path", path, "read this status file (fastmm-live --status <file>)")
+  app.add_option("--gateway",
+                 gateway,
+                 "read the fastmm-gateway's /dev/shm/fastmm-<engine>.gw.status ([engine] name in "
+                 "its config)")
+      ->option_text("<engine>");
+  app.add_option("--path", path, "read this status file (fastmm-live or fastmm-gateway --status)")
       ->option_text("<file>");
   app.add_option("--interval", interval_ms, "refresh period, default 500")
       ->option_text("<ms>")
@@ -64,8 +73,12 @@ static int run(int argc, char** argv) {
                  "request.")
       ->option_text("<[host:]port>");
   if (const auto rc = fastmm::cli::parse(app, argc, argv)) return *rc;
+  if (!name.empty() && !gateway.empty())
+    return fastmm::cli::usage_error(app, "give --name or --gateway, not both");
   if (path.empty() && !name.empty()) path = fastmm::default_status_path(name);
-  if (path.empty()) return fastmm::cli::usage_error(app, "one of --name or --path is required");
+  if (path.empty() && !gateway.empty()) path = fastmm::default_gateway_status_path(gateway);
+  if (path.empty())
+    return fastmm::cli::usage_error(app, "one of --name, --gateway or --path is required");
   once = once || json;
   const bool color = !no_color && ::isatty(STDOUT_FILENO) != 0;
   std::signal(SIGINT, on_signal);

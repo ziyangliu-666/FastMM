@@ -88,6 +88,10 @@ void latency_quantiles(Exposition& e,
                static_cast<double>(ns) * kNsToS);
 }
 
+void engine_metrics(Exposition& e, const StatusSnapshot& s);
+void gateway_metrics(Exposition& e, const StatusSnapshot& s);
+void venue_metrics(Exposition& e, const StatusSnapshot& s);
+
 }  // namespace
 
 std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_ns) {
@@ -98,11 +102,13 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
   e.gauge("fastmm_up", "1 while a status snapshot can be read", 1.0);
   e.family("fastmm_info", "gauge", "constant 1, labelled with what is running");
   e.value_of("fastmm_info",
-             fmt::format("engine=\"{}\",strategy=\"{}\",pid=\"{}\",session_id=\"{}\"",
-                         engine,
-                         strategy,
-                         s.pid,
-                         s.session_id),
+             s.kind == StatusKind::Gateway
+                 ? fmt::format("gateway=\"{}\",pid=\"{}\"", engine, s.pid)
+                 : fmt::format("engine=\"{}\",strategy=\"{}\",pid=\"{}\",session_id=\"{}\"",
+                               engine,
+                               strategy,
+                               s.pid,
+                               s.session_id),
              1.0);
   e.gauge("fastmm_state",
           "session state: 0 starting, 1 running, 2 stopping, 3 stopped",
@@ -121,7 +127,18 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
   e.gauge("fastmm_kill_reason",
           "KillReason of the global kill switch, 0 while it is not set",
           static_cast<double>(s.kill_reason));
+  if (s.kind == StatusKind::Gateway) {
+    gateway_metrics(e, s);
+  } else {
+    engine_metrics(e, s);
+  }
+  venue_metrics(e, s);
+  return e.take();
+}
 
+namespace {
+
+void engine_metrics(Exposition& e, const StatusSnapshot& s) {
   e.gauge("fastmm_realized_pnl",
           "realized PnL, quote currency",
           static_cast<double>(s.realized_pnl_raw) * kRawToQuote);
@@ -181,9 +198,11 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
     e.value_of("fastmm_latency_samples_total",
                fmt::format("interval=\"{}\"", to_string(static_cast<LatencyInterval>(i))),
                s.latency[i].count);
+}
 
+void venue_metrics(Exposition& e, const StatusSnapshot& s) {
   const std::size_t venues = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
-  if (venues == 0) return e.take();
+  if (venues == 0) return;
 
   auto per_venue =
       [&](std::string_view name, std::string_view type, std::string_view help, auto&& value) {
@@ -269,7 +288,7 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
 
   const bool multicast = std::any_of(
       s.venues, s.venues + venues, [](const StatusVenue& v) { return v.feed.state != 0; });
-  if (!multicast) return e.take();
+  if (!multicast) return;
 
   auto per_feed =
       [&](std::string_view name, std::string_view type, std::string_view help, auto&& value) {
@@ -321,7 +340,147 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
                  fmt::format("venue=\"{}\",line=\"{}\"", venue, line == 0 ? "a" : "b"),
                  f.line_duplicates[line]);
   }
-  return e.take();
 }
+
+double quote(std::int64_t raw) {
+  return static_cast<double>(raw) * kRawToQuote;
+}
+
+// fastmm-gateway: the account over every strategy, its positions, the attachments and the
+// gateway's own routing counters.
+void gateway_metrics(Exposition& e, const StatusSnapshot& s) {
+  const StatusGateway& g = s.gateway;
+  e.gauge("fastmm_account_net_pnl",
+          "the account's net PnL over every strategy (carried + realized + unrealized - fees), "
+          "quote currency",
+          quote(g.net_pnl_raw));
+  e.gauge("fastmm_account_realized_pnl", "the account's realized PnL", quote(s.realized_pnl_raw));
+  e.gauge(
+      "fastmm_account_unrealized_pnl", "the account's unrealized PnL", quote(s.unrealized_pnl_raw));
+  e.gauge("fastmm_account_fees", "the account's fees", quote(s.fees_raw));
+  e.gauge("fastmm_account_pnl_carry",
+          "net PnL of earlier gateway runs that [gateway] max_loss is measured against as well",
+          quote(s.pnl_carry_raw));
+  e.gauge("fastmm_account_gross_exposure",
+          "the account's gross exposure at the marks, quote currency",
+          quote(g.gross_raw));
+  e.gauge("fastmm_account_net_exposure",
+          "the account's net exposure at the marks, quote currency",
+          quote(g.net_raw));
+  e.gauge("fastmm_account_max_loss", "[gateway] max_loss, 0 when off", quote(g.max_loss_raw));
+  e.gauge("fastmm_account_max_gross_notional",
+          "[gateway] max_gross_notional, 0 when off",
+          quote(g.max_gross_raw));
+  e.gauge("fastmm_account_max_net_notional",
+          "[gateway] max_net_notional, 0 when off",
+          quote(g.max_net_raw));
+
+  e.family("fastmm_account_position", "gauge", "the account's position, base units");
+  const std::size_t np = std::min<std::size_t>(g.position_count, kStatusMaxPositions);
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    const std::uint8_t v = p.venue < kStatusMaxVenues ? p.venue : 0;
+    e.value_of("fastmm_account_position",
+               fmt::format("venue=\"{}\",instrument=\"{}\"",
+                           label(name_of(s.venues[v].name, sizeof s.venues[v].name)),
+                           label(name_of(p.symbol, sizeof p.symbol))),
+               static_cast<double>(p.qty_raw) * kRawToQuote);
+  }
+  e.family("fastmm_gateway_instrument_owner",
+           "gauge",
+           "session epoch of the attachment that trades the instrument; absent when none does");
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    if (p.owner_epoch == 0) continue;
+    const std::uint8_t v = p.venue < kStatusMaxVenues ? p.venue : 0;
+    e.value_of("fastmm_gateway_instrument_owner",
+               fmt::format("venue=\"{}\",instrument=\"{}\"",
+                           label(name_of(s.venues[v].name, sizeof s.venues[v].name)),
+                           label(name_of(p.symbol, sizeof p.symbol))),
+               static_cast<double>(p.owner_epoch));
+  }
+
+  const std::size_t na = std::min<std::size_t>(g.attachment_count, kStatusMaxAttachments);
+  e.gauge("fastmm_gateway_attachments", "strategies attached", static_cast<double>(na));
+  const auto who = [&](const StatusAttachment& a) {
+    return fmt::format(
+        "epoch=\"{}\",engine=\"{}\"", a.epoch, label(name_of(a.engine, sizeof a.engine)));
+  };
+  e.family("fastmm_gateway_attachment_info", "gauge", "constant 1 per attachment");
+  for (std::size_t i = 0; i < na; ++i) {
+    const StatusAttachment& a = g.attachments[i];
+    e.value_of("fastmm_gateway_attachment_info",
+               fmt::format("{},pid=\"{}\",attachment=\"{}\"", who(a), a.pid, a.id),
+               1.0);
+  }
+  e.family("fastmm_gateway_attachment_uptime_seconds", "gauge", "seconds since it attached");
+  for (std::size_t i = 0; i < na; ++i) {
+    const StatusAttachment& a = g.attachments[i];
+    e.value_of("fastmm_gateway_attachment_uptime_seconds",
+               who(a),
+               static_cast<double>(s.updated_ns - a.attached_ns) * kNsToS);
+  }
+  e.family("fastmm_gateway_attachment_md_dropped_total",
+           "counter",
+           "market-data events dropped because its ring was full");
+  for (std::size_t i = 0; i < na; ++i)
+    e.value_of("fastmm_gateway_attachment_md_dropped_total",
+               who(g.attachments[i]),
+               g.attachments[i].md_dropped);
+  e.family("fastmm_gateway_attachment_refused_total",
+           "counter",
+           "its orders the gateway refused, by reason");
+  for (std::size_t i = 0; i < na; ++i) {
+    for (std::size_t k = 0; k < kStatusGatewayRefusals; ++k)
+      e.value_of("fastmm_gateway_attachment_refused_total",
+                 fmt::format("{},reason=\"{}\"",
+                             who(g.attachments[i]),
+                             to_string(kStatusGatewayRefusalReasons[k])),
+                 g.attachments[i].refused[k]);
+  }
+
+  const std::size_t nv = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
+  const auto venue = [&](std::size_t i) {
+    return fmt::format("venue=\"{}\"", label(name_of(s.venues[i].name, sizeof s.venues[i].name)));
+  };
+  e.family("fastmm_gateway_refused_total", "counter", "orders the gateway refused, by reason");
+  for (std::size_t i = 0; i < nv; ++i) {
+    for (std::size_t k = 0; k < kStatusGatewayRefusals; ++k)
+      e.value_of(
+          "fastmm_gateway_refused_total",
+          fmt::format("{},reason=\"{}\"", venue(i), to_string(kStatusGatewayRefusalReasons[k])),
+          g.venues[i].refused[k]);
+  }
+  const auto per_venue = [&](std::string_view name, std::string_view help, auto&& value) {
+    e.family(name, "counter", help);
+    for (std::size_t i = 0; i < nv; ++i) e.value_of(name, venue(i), value(g.venues[i]));
+  };
+  per_venue("fastmm_gateway_md_discarded_total",
+            "market-data events discarded with nothing attached",
+            [](const StatusGatewayVenue& v) { return v.md_discarded; });
+  per_venue("fastmm_gateway_order_discarded_total",
+            "order events that arrived with nothing attached",
+            [](const StatusGatewayVenue& v) { return v.order_discarded; });
+  per_venue("fastmm_gateway_unrouted_total",
+            "order events no attachment was there to take",
+            [](const StatusGatewayVenue& v) { return v.unrouted; });
+  per_venue("fastmm_gateway_cancels_total",
+            "cancels the gateway sent itself (detached and dead sessions' orders, account kill)",
+            [](const StatusGatewayVenue& v) { return v.gateway_cancels; });
+  per_venue("fastmm_gateway_untracked_total",
+            "orders the gateway's order table had no room for",
+            [](const StatusGatewayVenue& v) { return v.untracked; });
+  per_venue("fastmm_gateway_stale_replays_total",
+            "replayed fills older than their owner's history, not routed",
+            [](const StatusGatewayVenue& v) { return v.stale_replays; });
+  per_venue("fastmm_gateway_account_skipped_total",
+            "replayed fills the account's seed position holds already",
+            [](const StatusGatewayVenue& v) { return v.account_skipped; });
+  per_venue("fastmm_gateway_account_books_lost_total",
+            "times the account's books started over (their ring was full)",
+            [](const StatusGatewayVenue& v) { return v.account_md_lost; });
+}
+
+}  // namespace
 
 }  // namespace fastmm

@@ -93,9 +93,25 @@ positions, exposure and loss). Open:
 * The account's position of an instrument is seeded once per gateway run, by its first owner's
   store; the gateway books a strategy's missed fill from the replayed execution, where the engine
   first books an estimate from cum_qty, so the two can differ until that replay.
-* The gateway has no status file or control socket; the account is in its log. Its kill file
-  refuses a strategy with the gateway's `[engine] name` while `max_loss` is set (one config for
-  both, as in the docs' first example, then needs a second name).
+* Its kill file refuses a strategy with the gateway's `[engine] name` while `max_loss` is set (one
+  config for both, as in the docs' first example, then needs a second name).
+
+**Gateway operability (2026-09-26).** The gateway writes the status segment (v8: `kind`, a gateway
+block with attachments, the account, a position per instrument, routing counters) to
+`/dev/shm/fastmm-<name>.gw.status` every 250 ms from its main thread, out of the totals the network
+threads published already; `fastmm-top` picks the frame, JSON and Prometheus families by `kind`
+(`--gateway <name>`). A control socket at `<attach socket>.ctl` (`fastmm-ctl --gateway <name>`,
+the same listener): `pull`/`resume` put the engine's own ControlMsg on the owners' order rings
+from a task on the venue's network thread (journaled by the strategies), `kill` trips the account
+as max_loss does (`KillReason::GatewayOperator`, latched in the kill file when max_loss is set),
+`clear-kill` clears it and re-arms the budget (carry = -(realized - fees) so far), refused while
+any strategy is attached (each was killed by the trip). The `.gw` in both paths keeps them apart
+from a strategy that shares the config. `gateway_ops_test.cpp`; each part fails with its piece
+broken (no publish, pull pushes nothing, kill does not trip, clear-kill leaves it tripped, no
+gateway metrics). Release, WSL2, adaptive, one strategy, 45 s x 2, gateway engine/wire p50, base
+(14ad5d4) vs this: 36.9-38.9/70.3-74.3 vs 36.9/70.3 us (in-process 34.8/66.4 both). Left: per-instrument PnL (only
+qty is published per instrument; the rest is per venue), a `pull` does not reach a strategy that
+attaches later.
 
 ## 2026-09-25: an execution was booked twice after a long session
 
