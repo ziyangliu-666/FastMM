@@ -727,3 +727,94 @@ TEST_CASE("strategies.xmm: engine: the hedge venue dropping pulls the quotes") {
   h.advance(milliseconds(1));
   CHECK(h.working_orders(q).size() == 2);
 }
+
+// Bybit's order and execution topics are not ordered: an IOC hedge can be reported ended, with
+// the venue's cumulative quantity, before its execution. The engine books that quantity when the
+// end arrives, so the positions xmm reads then are right, and the execution that follows names it
+// rather than adding it again.
+TEST_CASE("strategies.xmm: a hedge reported ended before its fill is hedged once") {
+  Xmm s = make();
+  Ctx c("1", "0.001");
+  start(s, c);
+  maker_fill(s, c, Side::Buy, "0.01");
+  REQUIRE(c.sent.size() == 1);
+  // The end: cum 0.004 of 0.01, no fill seen. The engine books the 0.004 before the hook runs.
+  c.pos[1] -= qt("0.004");
+  Ctx::Sent& o = c.sent[0];
+  o.open = false;
+  OmsUpdate u;
+  u.known = true;
+  u.changed = true;
+  u.terminal = true;
+  u.order.cl_ord_id = o.id;
+  u.order.instrument = o.req.instrument;
+  u.order.side = o.req.side;
+  u.order.qty = o.req.qty;
+  u.order.cum_qty = qt("0.004");
+  u.order.state = OrderState::Canceled;
+  u.order.venue_order_id.assign("123");
+  u.missed_qty = qt("0.004");
+  s.on_order_update(c, u);
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.qty == qt("0.006"));
+  CHECK(s.stats().hedge_failures == 0);
+  // The execution arrives: it names the booked estimate, the position does not move.
+  Fill late;
+  late.instrument = InstrumentId{1};
+  late.side = Side::Sell;
+  late.qty = qt("0.004");
+  late.late = true;
+  s.on_fill(c, late);
+  hedge_fill(s, c, 1, "0.006", true);
+  hedge_end(s, c, 1, OrderState::Filled, "0.006");
+  s.on_timer(c, TimerId{1}, Xmm::kTimer);
+  CHECK(c.sent.size() == 2);
+  CHECK(s.unhedged(c).is_zero());
+}
+
+TEST_CASE("strategies.xmm: engine: a hedge end ahead of its execution is not counted twice") {
+  HarnessOptions o = two_venues();
+  o.latency = milliseconds(20);
+  const ParamMap p{{"quote_qty", "0.02"},
+                   {"basis_halflife_s", "0"},
+                   {"max_unhedged", "0.1"},
+                   {"hedge_retry_ms", "60000"}};
+  StrategyHarness<Xmm> h(p, o);
+  const InstrumentId q{0};
+  const InstrumentId hid{1};
+  h.book(px("99990"), px("100010"), Qty::from_int(1), q);
+  h.book(px("100000.0"), px("100000.2"), Qty::from_int(1), hid);
+  h.advance(milliseconds(50));
+  REQUIRE(h.working_orders(q).size() == 2);
+  REQUIRE(h.fill(Side::Buy, Qty{}, q));  // +0.02 BTC: a hedge of 2 contracts goes out
+  REQUIRE(hedge_orders(h) == 1);
+  ClientOrderId hedge{};
+  h.engine().oms().for_each_open_order(
+      hid, [&](Handle<Order>, const Order& ord) { hedge = ord.cl_ord_id; });
+  REQUIRE(hedge.valid());
+
+  // Before the venue answers, its order topic says the IOC ended having filled 1 contract.
+  OrderCancelAckMsg end{};
+  init_header(end, EventType::OrderCancelAck, hid, VenueId{1});
+  end.cl_ord_id = hedge;
+  end.cum_qty = qt("1");
+  h.push(end.hdr);
+  CHECK(h.engine().position(hid).qty == qt("-1"));
+  CHECK(hedge_orders(h) == 2);  // the remainder, sized from the booked position
+
+  // Then the execution topic: the same contract, named.
+  OrderFillMsg f{};
+  init_header(f, EventType::OrderFill, hid, VenueId{1});
+  f.cl_ord_id = hedge;
+  f.exec_id.assign("exec-1");
+  f.side = Side::Sell;
+  f.price = px("99999.0");
+  f.qty = qt("1");
+  f.cum_qty = qt("1");
+  f.leaves_qty = qt("1");
+  h.push(f.hdr);
+  CHECK(h.engine().position(hid).qty == qt("-1"));
+  CHECK(h.engine().oms().stats().corrected_fills == 1);
+  CHECK(hedge_orders(h) == 2);
+  CHECK(h.strategy().unhedged(h.engine().context()) == qt("0.01"));
+}

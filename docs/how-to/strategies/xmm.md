@@ -29,6 +29,7 @@ Quotes never cross the quote venue's touch. A fair value move under `requote_thr
 - When `|unhedged|` rounds down to at least one hedge lot (and the hedge instrument's `min_qty`), one IOC limit goes out on the hedge instrument, `hedge_tolerance_bps` through the touch.
 - While any order is open on the hedge instrument, including one sent but not acknowledged, no other hedge is sent. When it ends, the positions are read again: a partial fill is followed by a hedge for the rest.
 - Fills are never counted. A restart, a replayed or duplicated execution and a fill booked late by reconciliation all lead to the same hedge.
+- A hedge reported ended before its executions arrive (Bybit's `order` and `execution` topics are not ordered) is booked from the venue's cumulative quantity when the end arrives; the executions then correct its price and fee without adding quantity.
 
 ## Guards
 

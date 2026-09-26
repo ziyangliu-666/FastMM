@@ -20,7 +20,10 @@
 // hedge_tolerance_bps through the hedge touch. When it ends the strategy looks at the positions
 // again. A restart, a replayed or duplicated fill and an order whose outcome arrives late all end
 // in the same place, and an order the OMS still holds (sent, not acknowledged, venue down) blocks
-// the next hedge until an ack, a fill or reconciliation ends it.
+// the next hedge until an ack, a fill or reconciliation ends it. A hedge the venue reports ended
+// before its executions arrive (Bybit's order and execution topics are not ordered) is booked by
+// the engine from the reported cumulative quantity before this strategy hears of the end, and the
+// executions that follow name that quantity instead of adding it (Oms::on_fill).
 //
 // Guards: the quotes come off when either book is invalid or older than stale_ms, when the hedge
 // venue's market data or order channel is down, and while the strategy is halted. The side that
