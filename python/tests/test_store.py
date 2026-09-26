@@ -26,12 +26,13 @@ def store_path(tmp_path_factory):
     text = SCHEMA.read_text()
     v1 = _sql_between(text, 'constexpr std::string_view kV1 = R"SQL(', ')SQL";')
     v2 = _sql_between(text, 'constexpr std::string_view kV2 = R"SQL(', ')SQL";')
+    v3 = _sql_between(text, 'constexpr std::string_view kV3 = R"SQL(', ')SQL";')
     path = tmp_path_factory.mktemp("store") / "mm1.db"
     db = sqlite3.connect(path)
     db.executescript(
         "CREATE TABLE schema_version (version INTEGER NOT NULL, applied_ns INTEGER NOT NULL,"
         " fastmm TEXT NOT NULL);"
-        "INSERT INTO schema_version VALUES (2, 0, 'test');"
+        "INSERT INTO schema_version VALUES (3, 0, 'test');"
     )
     db.executescript(v1)
     db.executescript(v2)
@@ -75,6 +76,8 @@ def store_path(tmp_path_factory):
            3000, 0);
         """
     )
+    # Rows written under version 2, then migrated, as a store carried across the upgrade is.
+    db.executescript(v3)
     db.commit()
     db.close()
     return path
@@ -106,7 +109,7 @@ def test_sessions_frame(store_path):
     assert df["realized"][0] == pytest.approx(1.5)
     assert df["fees"][0] == pytest.approx(0.00003)
     assert str(df["started"][0]) == "2024-03-04 00:00:00+00:00"
-    assert store.schema_version == 2
+    assert store.schema_version == 3
 
 
 def test_fills_frame_and_filters(store_path):

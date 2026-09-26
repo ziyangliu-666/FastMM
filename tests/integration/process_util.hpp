@@ -5,14 +5,18 @@
 // because a crash has to be a crash.
 #include "integration_util.hpp"
 
+#include "fastmm/net/crypto.hpp"
 #include "fastmm/store/reader.hpp"
 #include "fastmm/store/registry.hpp"
+#include "fastmm/venues/blocking_http.hpp"
 
 #include <spawn.h>
 #include <sys/wait.h>
 
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -136,6 +140,75 @@ inline Qty store_position(const SessionFiles& f,
     if (p.symbol == symbol) q = Qty::from_raw(p.qty_raw);
   }
   return q;
+}
+
+// A market order on the simulator's account over signed REST: a trade FastMM did not make. A
+// running session gets it on its user stream as an execution of no order of its own; made while
+// nothing runs, only the next session's execution replay can book it.
+inline void outside_trade(const ServerFixture& fx,
+                          std::string_view side,
+                          std::string_view qty = "0.001") {
+  const std::string query =
+      "symbol=BTCUSDT&side=" + std::string(side) + "&type=MARKET&quantity=" + std::string(qty) +
+      "&recvWindow=5000&timestamp=" + std::to_string(fx.server.server_time_ms());
+  venues::BlockingHttp http(fx.http());
+  const venues::HttpReply r =
+      http.request("POST",
+                   "/api/v3/order?" + query +
+                       "&signature=" + std::string(net::hmac_sha256_hex(kApiSecret, query).view()),
+                   std::string("X-MBX-APIKEY: ") + kApiKey + "\r\n");
+  REQUIRE_MESSAGE(r.status == 200, r.body);
+}
+
+// The venue execution ids the store of `engine` holds in more than one session: each is an
+// execution a restart booked a second time.
+inline std::vector<std::string> booked_twice(const SessionFiles& f, const std::string& engine) {
+  store::register_builtin_backends();
+  auto reader = store::StoreRegistry::instance().make_reader("sqlite");
+  REQUIRE(reader != nullptr);
+  store::BackendOptions opts;
+  opts.engine_name = engine;
+  opts.default_dir = f.journal_dir;
+  opts.read_only = true;
+  REQUIRE(reader->open(opts).has_value());
+  store::QueryFilter qf;
+  qf.engine = engine;
+  auto rows = reader->fills(qf);
+  REQUIRE(rows.has_value());
+  std::size_t exec = rows->columns.size();
+  std::size_t session = rows->columns.size();
+  for (std::size_t i = 0; i < rows->columns.size(); ++i) {
+    if (rows->columns[i] == "exec_id") exec = i;
+    if (rows->columns[i] == "session_id") session = i;
+  }
+  REQUIRE(exec < rows->columns.size());
+  REQUIRE(session < rows->columns.size());
+  std::map<std::string, std::set<std::string>> sessions_of;
+  for (const std::vector<std::string>& row : rows->rows) {
+    if (!row[exec].empty()) sessions_of[row[exec]].insert(row[session]);
+  }
+  std::vector<std::string> twice;
+  for (const auto& [id, sessions] : sessions_of) {
+    if (sessions.size() > 1) twice.push_back(id);
+  }
+  return twice;
+}
+
+// The number of fills the store of `engine` holds (every session).
+inline std::size_t stored_fills(const SessionFiles& f, const std::string& engine) {
+  store::register_builtin_backends();
+  auto reader = store::StoreRegistry::instance().make_reader("sqlite");
+  REQUIRE(reader != nullptr);
+  store::BackendOptions opts;
+  opts.engine_name = engine;
+  opts.default_dir = f.journal_dir;
+  opts.read_only = true;
+  REQUIRE(reader->open(opts).has_value());
+  store::QueryFilter qf;
+  qf.engine = engine;
+  auto rows = reader->fills(qf);
+  REQUIRE(rows.has_value());
+  return rows->rows.size();
 }
 
 }  // namespace fastmm::integration
