@@ -14,6 +14,7 @@
 #include "fastmm/core/status_segment.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/underlying.hpp"
 #include "fastmm/live/control_socket.hpp"
 #include "fastmm/live/session.hpp"
 #include "fastmm/live/venue_slot.hpp"
@@ -36,6 +37,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -129,6 +131,14 @@ struct Account {
   std::array<Rate, kMaxCurrencies> rates;
   std::array<std::array<Totals, kMaxCurrencies>, 8> venues;      // per venue, per currency
   std::array<std::atomic<std::int64_t>, kMaxInstruments> qty{};  // raw Qty per instrument
+  // [gateway.underlying]: the net position per base asset over every venue. Each network thread
+  // publishes, for its own instruments of an underlying, the leaves of the orders working at the
+  // venue per side (raw Qty) and the mid of a valid book with its steady time (raw Price; the
+  // mark an inverse contract is converted at). Set before the network threads start.
+  UnderlyingPlan und;
+  std::array<std::array<std::atomic<std::int64_t>, 2>, kMaxInstruments> open{};
+  std::array<std::atomic<std::int64_t>, kMaxInstruments> mark{};
+  std::array<std::atomic<std::int64_t>, kMaxInstruments> mark_ns{};
 
   [[nodiscard]] bool exposure_limits() const noexcept { return max_gross > 0 || max_net > 0; }
   [[nodiscard]] std::size_t currencies() const noexcept { return fx.active() ? fx.count : 1; }
@@ -146,6 +156,46 @@ struct Account {
     if (!r.valid.load(std::memory_order_acquire)) return {};
     if (stale_ns > 0 && now_ns - r.at_ns.load(std::memory_order_relaxed) > stale_ns) return {};
     return rate(c);
+  }
+  // The mark an inverse contract of an underlying is converted at: the last mid of a valid book,
+  // not older than stale_ns; zero when there is none.
+  [[nodiscard]] Price current_mark(InstrumentId id, std::int64_t now_ns) const noexcept {
+    const std::int64_t m = mark[id.value].load(std::memory_order_relaxed);
+    if (m <= 0) return {};
+    if (stale_ns > 0 && now_ns - mark_ns[id.value].load(std::memory_order_relaxed) > stale_ns)
+      return {};
+    return Price::from_raw(m);
+  }
+  // Underlying `u` in base units (raw): its net position and, with `side`, the leaves working on
+  // that side, over every venue. False when an inverse contract with a position (or leaves) has no
+  // current mark.
+  bool underlying_position(std::size_t u,
+                           const InstrumentTable& insts,
+                           const Side* side,
+                           std::int64_t now_ns,
+                           std::int64_t& net,
+                           std::int64_t& working) const noexcept {
+    net = working = 0;
+    bool known = true;
+    for (const InstrumentId j : und.instruments(u)) {
+      const Instrument& inst = insts.get(j);
+      const Price m = current_mark(j, now_ns);
+      std::int64_t b = 0;
+      if (to_base_units(inst, qty[j.value].load(std::memory_order_relaxed), m, b)) {
+        net += b;
+      } else {
+        known = false;
+      }
+      if (side == nullptr) continue;
+      const std::int64_t leaves =
+          open[j.value][static_cast<std::size_t>(*side)].load(std::memory_order_relaxed);
+      if (to_base_units(inst, leaves, m, b)) {
+        working += b;
+      } else {
+        known = false;
+      }
+    }
+    return known;
   }
   // Venue `i`'s totals, converted.
   [[nodiscard]] Sum venue_sum(std::size_t i) const noexcept {
@@ -212,6 +262,8 @@ struct GwOrder {
   Price price{};
   std::int64_t notional = 0;           // raw Notional of the working quantity
   std::int64_t replaced_notional = 0;  // of the order this one replaces, restored on a reject
+  Qty leaves{};                        // working quantity ([gateway.underlying])
+  Qty replaced_leaves{};               // of the order this one replaces, restored on a reject
   std::uint64_t g = 0;                 // 1-based forward index; 1 when learned from a snapshot
   std::uint32_t gen = 0;               // the last reconciliation that reported it
   ClientOrderId replaces{};
@@ -278,6 +330,8 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_gross{0};
   std::atomic<std::uint64_t> refused_net{0};
   std::atomic<std::uint64_t> refused_fx{0};
+  std::atomic<std::uint64_t> refused_underlying{0};
+  std::atomic<std::uint64_t> refused_underlying_mark{0};
   std::atomic<std::uint64_t> account_skipped{0};  // replayed fills / funding its seed holds
   std::atomic<std::uint64_t> account_md_lost{0};  // times acct_md was full
   std::atomic<std::uint64_t> untracked{0};        // the order table was full
@@ -418,6 +472,11 @@ std::size_t mark_account(VenueRouter& v) noexcept {
     } else {
       const bool valid = v.book->on_book(msg_cast<BookDeltaMsg>(&h));
       marked = valid || marked;
+      if (valid && a.und.underlying_of(h.instrument) >= 0) {
+        a.mark[h.instrument.value].store(v.book->book(h.instrument)->mid().raw,
+                                         std::memory_order_relaxed);
+        a.mark_ns[h.instrument.value].store(steady_now().ns, std::memory_order_relaxed);
+      }
       if (const int c = a.fx.priced_by(h.instrument); FASTMM_UNLIKELY(c > 0)) {
         Account::Rate& r = a.rates[static_cast<std::size_t>(c)];
         if (valid) {
@@ -464,6 +523,28 @@ RejectReason check_account(const VenueRouter& v, InstrumentId inst, Side side, N
                         net,
                         Notional::from_raw(a.max_gross),
                         Notional::from_raw(a.max_net));
+}
+
+// [gateway.underlying]: the account's net position in the order's base asset, over every venue,
+// with the leaves working on the order's side and the order itself (the leaves of the order a
+// replace takes over excluded), as RiskEngine checks [risk.underlying] for one strategy.
+RejectReason check_underlying(
+    const VenueRouter& v, InstrumentId inst, Side side, Qty qty, Qty replaced_leaves) {
+  const Account& a = *v.acct;
+  const int u = a.und.underlying_of(inst);
+  if (u < 0 || !a.und.max_net[static_cast<std::size_t>(u)].is_positive()) return RejectReason::None;
+  const std::int64_t now_ns = steady_now().ns;
+  std::int64_t net = 0;
+  std::int64_t working = 0;
+  std::int64_t add = 0;
+  if (!a.underlying_position(static_cast<std::size_t>(u), *v.insts, &side, now_ns, net, working) ||
+      !to_base_units(
+          v.insts->get(inst), qty.raw - replaced_leaves.raw, a.current_mark(inst, now_ns), add))
+    return RejectReason::GatewayUnderlyingMarkUnknown;
+  const std::int64_t worst = net + sign(side) * (working + add);
+  return underlying_exceeds(a.und.max_net[static_cast<std::size_t>(u)].raw, net, worst)
+             ? RejectReason::GatewayUnderlyingNet
+             : RejectReason::None;
 }
 
 // ---- network thread: inbound ------------------------------------------------------------------
@@ -527,9 +608,22 @@ void cancel_once(VenueRouter& v, ClientOrderId id, InstrumentId inst, const Venu
   queue_cancel(v, id, inst, voi);
 }
 
+// [gateway.underlying]: the leaves working at the venue per instrument and side change by `d`.
+void add_leaves(VenueRouter& v, const GwOrder& o, std::int64_t d) noexcept {
+  if (d == 0 || !v.acct->und.active() || v.acct->und.of[o.inst.value] == 0) return;
+  v.acct->open[o.inst.value][static_cast<std::size_t>(o.side)].fetch_add(d,
+                                                                         std::memory_order_relaxed);
+}
+
+void set_leaves(VenueRouter& v, GwOrder& o, Qty leaves) noexcept {
+  add_leaves(v, o, leaves.raw - o.leaves.raw);
+  o.leaves = leaves;
+}
+
 void untrack(VenueRouter& v, ClientOrderId id) noexcept {
   if (const GwOrder* o = v.orders.find(id)) {
     v.open_notional -= o->notional;
+    add_leaves(v, *o, -o->leaves.raw);
     v.orders.erase(id);
   }
 }
@@ -595,6 +689,7 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
           const std::int64_t n = v.insts->get(m.hdr.instrument).notional(m.price, leaves).raw;
           v.open_notional += n - o->notional;
           o->notional = n;
+          set_leaves(v, *o, leaves);
         }
       }
       Route* r = v.by_epoch(m.cl_ord_id);
@@ -603,14 +698,19 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
           GwOrder o;
           o.inst = m.hdr.instrument;
           o.epoch = r->epoch;
+          o.side = m.side;
           o.price = m.price;
           o.notional = leaves.is_positive()
                            ? v.insts->get(m.hdr.instrument).notional(m.price, leaves).raw
                            : 0;
+          o.leaves = leaves.is_positive() ? leaves : Qty{};
           o.g = 1;
           o.gen = v.gen;
           o.venue_order_id = m.venue_order_id;
-          if (v.orders.insert(m.cl_ord_id, o).second) v.open_notional += o.notional;
+          if (v.orders.insert(m.cl_ord_id, o).second) {
+            v.open_notional += o.notional;
+            add_leaves(v, o, o.leaves.raw);
+          }
         }
         if (r->in_snapshot) push_order(*r, m.hdr);
         if (v.killed) cancel_once(v, m.cl_ord_id, m.hdr.instrument, m.venue_order_id);
@@ -660,6 +760,7 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
         const std::int64_t n = v.insts->get(o->inst).notional(o->price, m.leaves_qty).raw;
         v.open_notional += n - o->notional;
         o->notional = n;
+        set_leaves(v, *o, m.leaves_qty);
       }
     }
   }
@@ -751,6 +852,7 @@ void route_order(VenueRouter& v, const EventHeader& h) {
           if (GwOrder* orig = v.orders.find(o->replaces)) {
             orig->notional = o->replaced_notional;
             v.open_notional += o->replaced_notional;
+            set_leaves(v, *orig, o->replaced_leaves);
           }
         }
       }
@@ -850,6 +952,12 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
     case RejectReason::GatewayFxRateUnknown:
       v.refused_fx.fetch_add(1, std::memory_order_relaxed);
       break;
+    case RejectReason::GatewayUnderlyingNet:
+      v.refused_underlying.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case RejectReason::GatewayUnderlyingMarkUnknown:
+      v.refused_underlying_mark.fetch_add(1, std::memory_order_relaxed);
+      break;
     default:
       v.refused_owner.fetch_add(1, std::memory_order_relaxed);
       break;
@@ -859,7 +967,8 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
 // The account guards: the sender owns the instrument, the account's kill switch, the notional
 // working at the venue, a current rate for the order's currency ([accounting], when it adds to
 // exposure; an unknown side counts as adding), the account's exposure (when the side is known),
-// the venue's order rate. `replaced` is the working notional of the order a replace takes over.
+// the venue's order rate. `replaced` is the working notional of the order a replace takes over,
+// `replaced_leaves` its working quantity.
 RejectReason check_order(VenueRouter& v,
                          const Route& r,
                          InstrumentId inst,
@@ -867,6 +976,7 @@ RejectReason check_order(VenueRouter& v,
                          Price px,
                          Qty qty,
                          std::int64_t replaced,
+                         Qty replaced_leaves,
                          std::int64_t* notional) {
   if (v.owner_of(inst) != &r || !v.insts->contains(inst)) return RejectReason::GatewayNotOwner;
   if (FASTMM_UNLIKELY(v.acct->tripped.load(std::memory_order_relaxed)))
@@ -891,6 +1001,15 @@ RejectReason check_order(VenueRouter& v,
     if (const RejectReason why = check_account(v, inst, *side, exposure); why != RejectReason::None)
       return why;
   }
+  if (FASTMM_UNLIKELY(a.und.active())) {
+    // A replace of an order the gateway does not track has no known side: it must pass both ways.
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      if (side != nullptr && s != *side) continue;
+      if (const RejectReason why = check_underlying(v, inst, s, qty, replaced_leaves);
+          why != RejectReason::None)
+        return why;
+    }
+  }
   if (!v.rate.try_take(steady_now())) return RejectReason::GatewayRateLimit;
   return RejectReason::None;
 }
@@ -903,6 +1022,7 @@ void note_forwarded(VenueRouter& v, ClientOrderId id) noexcept {
 void track(VenueRouter& v, ClientOrderId id, const GwOrder& o) noexcept {
   if (v.orders.insert(id, o).second) {
     v.open_notional += o.notional;
+    add_leaves(v, o, o.leaves.raw);
   } else {
     v.untracked.fetch_add(1, std::memory_order_relaxed);
   }
@@ -922,7 +1042,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
         const auto& m = msg_cast<OutNewOrderMsg>(&h);
         std::int64_t notional = 0;
         if (const RejectReason why =
-                check_order(v, r, h.instrument, &m.side, m.price, m.qty, 0, &notional);
+                check_order(v, r, h.instrument, &m.side, m.price, m.qty, 0, Qty{}, &notional);
             why != RejectReason::None) {
           refuse(v, r, h, m.cl_ord_id, why);
           send = false;
@@ -934,6 +1054,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
         o.side = m.side;
         o.price = m.price;
         o.notional = notional;
+        o.leaves = m.qty;
         note_forwarded(v, m.cl_ord_id);
         o.g = v.forwarded;
         track(v, m.cl_ord_id, o);
@@ -943,6 +1064,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
         const auto& m = msg_cast<OutReplaceMsg>(&h);
         GwOrder* orig = v.orders.find(m.orig_cl_ord_id);
         const std::int64_t replaced = orig != nullptr ? orig->notional : 0;
+        const Qty replaced_leaves = orig != nullptr ? orig->leaves : Qty{};
         // A replace keeps its order's side; an order the gateway does not track has none here.
         const Side side = orig != nullptr ? orig->side : Side::Buy;
         std::int64_t notional = 0;
@@ -953,6 +1075,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
                                                  m.price,
                                                  m.qty,
                                                  replaced,
+                                                 replaced_leaves,
                                                  &notional);
             why != RejectReason::None) {
           refuse(v, r, h, m.cl_ord_id, why);
@@ -962,6 +1085,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
         if (orig != nullptr) {
           v.open_notional -= orig->notional;
           orig->notional = 0;
+          set_leaves(v, *orig, Qty{});
         }
         GwOrder o;
         o.inst = h.instrument;
@@ -971,6 +1095,8 @@ std::size_t forward(VenueRouter& v, Route& r) {
         o.notional = notional;
         o.replaces = m.orig_cl_ord_id;
         o.replaced_notional = replaced;
+        o.leaves = m.qty;
+        o.replaced_leaves = replaced_leaves;
         o.venue_order_id = m.venue_order_id;
         note_forwarded(v, m.cl_ord_id);
         o.g = v.forwarded;
@@ -1553,6 +1679,8 @@ class Gateway {
       const std::uint64_t gross = v.refused_gross.load(std::memory_order_relaxed);
       const std::uint64_t net = v.refused_net.load(std::memory_order_relaxed);
       const std::uint64_t fx = v.refused_fx.load(std::memory_order_relaxed);
+      const std::uint64_t und = v.refused_underlying.load(std::memory_order_relaxed) +
+                                v.refused_underlying_mark.load(std::memory_order_relaxed);
       const std::uint64_t skipped = v.account_skipped.load(std::memory_order_relaxed);
       const std::uint64_t md_lost = v.account_md_lost.load(std::memory_order_relaxed);
       const std::uint64_t untracked = v.untracked.load(std::memory_order_relaxed);
@@ -1560,12 +1688,14 @@ class Gateway {
       Logged& l = logged_[i];
       if (md != l.md || order != l.order || unrouted != l.unrouted || cancels != l.cancels ||
           rate != l.rate || notional != l.notional || owner != l.owner || killed != l.killed ||
-          gross != l.gross || net != l.net || fx != l.fx || untracked != l.untracked ||
-          stale != l.stale || skipped != l.skipped || md_lost != l.md_lost) {
+          gross != l.gross || net != l.net || fx != l.fx || und != l.und ||
+          untracked != l.untracked || stale != l.stale || skipped != l.skipped ||
+          md_lost != l.md_lost) {
         FASTMM_LOG_INFO(
             "gateway: [{}] discarded with nothing attached: md={} order={}; order events for no "
             "attachment: {}; gateway cancels: {}; refused: rate={} open_notional={} not_owner={} "
-            "account_killed={} gross_notional={} net_notional={} fx_rate={}; untracked: {}; "
+            "account_killed={} gross_notional={} net_notional={} fx_rate={} underlying={}; "
+            "untracked: {}; "
             "replayed fills "
             "older than their owner's history: {}, than the account's: {}; account books lost: {}",
             slots_[i]->venue->name(),
@@ -1580,6 +1710,7 @@ class Gateway {
             gross,
             net,
             fx,
+            und,
             untracked,
             stale,
             skipped,
@@ -1595,6 +1726,7 @@ class Gateway {
                    gross,
                    net,
                    fx,
+                   und,
                    untracked,
                    stale,
                    skipped,
@@ -1707,6 +1839,19 @@ class Gateway {
       account_logged_ = now;
       account_logged_tripped_ = tripped;
     }
+    for (std::size_t u = 0; u < acct_.und.count; ++u) {
+      std::int64_t net = 0;
+      std::int64_t working = 0;
+      const bool known =
+          acct_.underlying_position(u, instruments_, nullptr, steady_now().ns, net, working);
+      const std::int64_t shown = known ? net : std::numeric_limits<std::int64_t>::min();
+      if (shown == und_logged_[u] && !force) continue;
+      und_logged_[u] = shown;
+      FASTMM_LOG_INFO("gateway: account underlying {} net={}{}",
+                      acct_.und.names[u],
+                      Qty::from_raw(net),
+                      known ? "" : " (an inverse contract has no current mark)");
+    }
     for (const Instrument& inst : instruments_) {
       const std::int64_t q = acct_.qty[inst.id.value].load(std::memory_order_relaxed);
       if (q == qty_logged_[inst.id.value] && (!force || q == 0)) continue;
@@ -1790,6 +1935,8 @@ class Gateway {
       gv.refused[4] = v.refused_net.load(std::memory_order_relaxed);
       gv.refused[5] = v.refused_rate.load(std::memory_order_relaxed);
       gv.refused[6] = v.refused_fx.load(std::memory_order_relaxed);
+      gv.refused[7] = v.refused_underlying.load(std::memory_order_relaxed);
+      gv.refused[8] = v.refused_underlying_mark.load(std::memory_order_relaxed);
       const Account::Sum t = acct_.venue_sum(i);
       gv.realized_raw = t.realized;
       gv.unrealized_raw = t.unrealized;
@@ -1827,6 +1974,16 @@ class Gateway {
       p.venue = inst.venue.value;
       p.qty_raw = acct_.qty[inst.id.value].load(std::memory_order_relaxed);
       if (const Attachment* o = owner_[inst.id.value]) p.owner_epoch = o->epoch;
+    }
+    for (std::size_t u = 0; u < acct_.und.count && u < kStatusMaxUnderlyings; ++u) {
+      StatusUnderlying& su = g.underlyings[u];
+      set_status_name(su.name, acct_.und.names[u].view());
+      std::int64_t working = 0;
+      su.known =
+          acct_.underlying_position(u, instruments_, nullptr, steady_now().ns, su.net_raw, working)
+              ? 1
+              : 0;
+      su.max_net_raw = acct_.und.max_net[u].raw;
     }
     return s;
   }
@@ -2044,6 +2201,7 @@ class Gateway {
     std::uint64_t gross = 0;
     std::uint64_t net = 0;
     std::uint64_t fx = 0;
+    std::uint64_t und = 0;
     std::uint64_t untracked = 0;
     std::uint64_t stale = 0;
     std::uint64_t skipped = 0;
@@ -2320,6 +2478,7 @@ class Gateway {
   StatusWriter status_;
   std::int64_t started_ns_ = 0;
   std::array<std::int64_t, 5> account_logged_{};
+  std::array<std::int64_t, kMaxUnderlyings> und_logged_{};
   bool account_logged_tripped_ = false;
   std::array<std::int64_t, kMaxInstruments> qty_logged_{};
 };
@@ -2395,6 +2554,7 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
       !limit("max_gross_notional", cfg.gateway.max_gross_notional, &acct->max_gross) ||
       !limit("max_net_notional", cfg.gateway.max_net_notional, &acct->max_net))
     return kExitConfig;
+  acct->stale_ns = milliseconds(cfg.risk.stale_md_ms).ns;
   // The account's loss so far and a latched trip, as fastmm-live keeps a strategy's.
   const std::string kill_path =
       cfg.engine.kill_file.empty()
@@ -2486,6 +2646,29 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
                    std::string(mix.other->symbol.view()).c_str(),
                    std::string(mix.other->settlement_ccy()).c_str());
       return kExitConfig;
+    }
+  }
+  // [gateway.underlying]: the account's net position per base asset, over every instrument of the
+  // gateway (multipliers and kInverse come from the venues' reference data, loaded by now).
+  if (cfg.gateway.underlying.configured()) {
+    auto plan = build_underlying_plan(instruments, cfg.gateway.underlying, "gateway");
+    if (!plan) {
+      std::fprintf(stderr, "%s: %s\n", prog, plan.error().c_str());
+      return kExitConfig;
+    }
+    acct->und = *plan;
+    for (std::size_t u = 0; u < acct->und.count; ++u) {
+      std::string members;
+      for (const InstrumentId id : acct->und.instruments(u)) {
+        const Instrument& i = instruments.get(id);
+        if (!members.empty()) members += ", ";
+        members += venue_names[i.venue.value] + ":" + std::string(i.symbol.view());
+        if (i.inverse()) members += " (inverse)";
+      }
+      FASTMM_LOG_INFO("gateway: underlying {} max_net={} over {}",
+                      acct->und.names[u],
+                      acct->und.max_net[u],
+                      members);
     }
   }
   venues::SymbolTable symbols;
