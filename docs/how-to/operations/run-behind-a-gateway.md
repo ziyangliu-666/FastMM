@@ -15,7 +15,7 @@ The socket is `<journal_dir>/<engine name>.gw` of the gateway's configuration, `
 
 1. gives the strategy a session epoch from the gateway's `epoch_file` (the high 16 bits of every client order id, so ids are unique across strategies and across gateway restarts; the strategy's own `epoch_file` is not used),
 2. creates three rings per venue under `/dev/shm` (`fastmm-gw-<name>-<pid>-<attachment>-<venue>.md`, `.ord`, `.out`) and adds them to the venue's routing,
-3. asks every book for a fresh snapshot (nasdaq_itch cannot, so its books wait for the next resync),
+3. puts a snapshot of every book in its market-data ring, taken from the gateway's own copy ([Books](#books)),
 4. reconciles: the account's executions since the strategy's last stored fill, then the open orders,
 5. answers with the epoch, the instrument table, the ring paths and, as descriptors, the wake pages and its reactors' eventfds (see [Latency](#latency)).
 
@@ -25,10 +25,14 @@ The strategy restores its previous position from its own store, as `fastmm-live`
 
 On each venue's network thread:
 
-- Market data goes to every attachment. A strategy that falls behind loses market data alone: its ring drops (the gateway logs the count), and once it has room again it gets a `Resyncing` state (its books clear, its quotes on that venue are pulled) and the books are snapshotted again.
+- Market data goes to every attachment. A strategy that falls behind loses market data alone: its ring drops (the gateway logs the count), and once it has room again it gets a `Resyncing` state (its books clear, its quotes on that venue are pulled) and snapshots of the gateway's books.
 - An order event goes to the strategy whose epoch its client order id carries. A fill of an epoch no attachment holds (a dead session's order, or an execution naming no order) goes to the strategy that trades the instrument, and so does an account-level position record; with none, the gateway logs it.
 - A reconciliation goes to the strategies that asked for it (their attach, their engine's reconcile request), or to all when the connector started it. Each gets its own rows, under a `Begin` whose sent watermark is its own last order the venue had taken. A row of an epoch no attachment holds is a dead session's order, and the gateway cancels it.
 - A replayed fill is routed like a streamed one. The replay one strategy's attach starts names the others' executions too; each books only those its engine has not seen (it deduplicates by execution id), which includes a fill its private stream missed. One naming no live order reaches the instrument's owner only if it is not older than the owner's own replay start and not among the trade ids its store listed: older ones are in its store already (the gateway logs and counts them).
+
+## Books
+
+The gateway keeps its own copy of every book, up to 1024 levels a side (the most a snapshot message carries, so as deep as any connector's snapshot). A strategy that attaches, or whose ring dropped, gets a `BookSnapshot` of each copy in its market-data ring, followed by the events the gateway routes after it, so its engine's book (256 levels) is the one the venue's own snapshot and the same deltas would build. The venue is not asked for anything and the other strategies' books do not pause. A book the gateway does not hold at that moment (the venue is resyncing it, or its channel is down) gets no snapshot there; the venue's next one reaches every strategy. Only when the gateway's copy itself lost events (logged as `account books lost`) does it ask the venue to resync its books, at most once a second.
 
 ## Account guards
 
@@ -125,7 +129,7 @@ A strategy that stops cleanly cancels its own quotes through the gateway first a
 
 With `spin_mode = "adaptive"` an idle side blocks, and the other wakes it as threads wake each other inside `fastmm-live`: the engine sleeps on a futex in a page it shares with the gateway, and the gateway's network threads sleep in their reactors, whose flags (in a second page, shared by every attachment) and eventfds the strategy receives on attach. A wake-up costs a system call only while the other side sleeps. Each event and each order is copied once more: the connector's events from its own ring into each attachment's, the orders from the attachment's ring into the venue's.
 
-Tick-to-trade against the simulator with one strategy attached (`scripts/bench-gateway.sh`, 45 s x 3 runs, WSL2, unpinned; the routing for several strategies and the account's checks and marks, `--account-limits`, left it unchanged), p50 in µs:
+Tick-to-trade against the simulator with one strategy attached (`scripts/bench-gateway.sh`, 45 s x 3 runs, WSL2, unpinned; the routing for several strategies and the account's checks and marks, `--account-limits`, and the 1024-level book copies left it unchanged), p50 in µs:
 
 | `spin_mode` | engine, in-process | engine, gateway | wire, in-process | wire, gateway |
 | --- | --- | --- | --- | --- |

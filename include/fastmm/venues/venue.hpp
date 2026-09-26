@@ -198,9 +198,9 @@ class Venue {
   // registered with the reactor poll them here (nasdaq_itch with [engine] spin_mode = "busy").
   virtual void poll() noexcept {}
   // Every book starts over from a fresh snapshot: a ConnectionState{Resyncing} or Stale on the md
-  // sink, then a snapshot per instrument. fastmm-gateway calls it when a strategy attaches mid-
-  // stream, after it pointed the md sink at that strategy's ring. Reactor thread. The default does
-  // nothing: a venue that cannot resync on demand (nasdaq_itch) leaves the new consumer's books to
+  // sink, then a snapshot per instrument. fastmm-gateway calls it when its own copies of the books
+  // were lost (an attaching strategy gets snapshots of those copies instead). Reactor thread. The
+  // default does nothing: a venue that cannot resync on demand (nasdaq_itch) leaves the books to
   // its next natural resync.
   virtual void resync_books() {}
 

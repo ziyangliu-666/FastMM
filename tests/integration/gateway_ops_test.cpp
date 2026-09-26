@@ -203,16 +203,19 @@ TEST_CASE(
 
   // Both attachments, what each trades, the venue's channels.
   StatusSnapshot s;
-  REQUIRE_MESSAGE(
-      wait_until(
-          [&] {
-            const auto r = read_status(status);
-            if (!r) return false;
-            s = *r;
-            return s.gateway.attachment_count == 2;
-          },
-          10000),
-      "no status with two attachments at " << status << ": " << fastmm::test::read_file(g.log));
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto r = read_status(status);
+                        if (!r) return false;
+                        s = *r;
+                        // The connector publishes its channels on its once-a-second timer, and the
+                        // strategies can be quoting before that.
+                        return s.gateway.attachment_count == 2 && s.venue_count == 1 &&
+                               s.venues[0].md == 2;
+                      },
+                      10000),
+                  "no status with two attachments and the venue live at "
+                      << status << ": " << fastmm::test::read_file(g.log));
   CHECK(s.kind == StatusKind::Gateway);
   CHECK(s.state == StatusRunState::Running);
   CHECK(std::string_view(s.engine_name) == gw_name);
