@@ -95,6 +95,12 @@ OPTIONS:
   --version                   print the version and exit
   --config <file>             engine / venue configuration (required)
   --socket <path>             attach socket (default <journal_dir>/<engine>.gw, mode 0600)
+  --status <path>             status file for fastmm-top (default
+                              /dev/shm/fastmm-<engine>.gw.status)
+  --no-status                 do not publish live status
+  --control <path>            control socket for fastmm-ctl (default <attach socket>.ctl,
+                              mode 0600)
+  --no-control                do not open a control socket
   --duration <t>              stop after t (e.g. 60s, 5m; default: until SIGINT)
   --dry-run                   public market data only: no API keys, no orders
   --log <path>                write the log to a file (warnings are mirrored to stderr)
@@ -113,6 +119,10 @@ and the venue connections stay up. SIGINT/SIGTERM cancels all open orders and ex
 carried in <journal_dir>/<engine>.kill. When it trips, the gateway kills every
 strategy's venues, cancels every open order and refuses attaches; the trip is
 latched and every start exits 6 until --clear-kill or the file is removed.
+
+fastmm-top --gateway <engine> shows the attachments, the account and the venues;
+fastmm-ctl --gateway <engine> pulls and resumes the strategies' quotes, kills the
+account and clears the kill without a restart (fastmm-ctl --gateway <engine> help).
 
 Exit codes:
   0  stopped by --duration or SIGINT/SIGTERM, cancel_all ok
@@ -374,19 +384,24 @@ ITCH sequence number. See docs/reference/sim-itch.md.
 ## fastmm-ctl
 
 Sends one command to a running `fastmm-live` session over its control socket
-([Operating a running session](../how-to/operations/operate-a-running-session.md)).
+([Operating a running session](../how-to/operations/operate-a-running-session.md)), or with
+`--gateway` to a `fastmm-gateway` ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#control)).
 
 <!-- BEGIN cli-help fastmm-ctl -->
 ```text
-Sends one command to a running fastmm-live session and prints the reply.
+Sends one command to a running fastmm-live session or fastmm-gateway and prints
+the reply.
 
-usage: fastmm-ctl [--name <engine> | --path <socket> | --config <file.toml>] <command>
+usage: fastmm-ctl [--name <engine> | --gateway <engine> | --path <socket> | --config <file.toml>] <command>
 
 OPTIONS:
   -h, --help                  print this help and exit
   --version                   print the version and exit
   --name <engine>             talk to <dir>/<engine>.ctl ([engine] name in the config)
-  --dir <directory>           where --name looks, default runs ([engine] journal_dir)
+  --gateway <engine>          talk to the fastmm-gateway of that [engine] name, at
+                              <dir>/<engine>.gw.ctl
+  --dir <directory>           where --name and --gateway look, default runs ([engine]
+                              journal_dir)
   --path <socket>             talk to this socket (fastmm-live --control <path>)
   --config <file>             take the engine name and journal_dir from a configuration file
   --timeout <ms>              how long to wait for the reply, default 2000
@@ -405,12 +420,28 @@ commands (one per datagram; the reply starts with ok or error)
   status                                   one line per topic
   help                                     this text
 
+gateway commands (one per datagram; the reply starts with ok or error)
+  pull [--instrument SYM | --venue NAME]   the strategies in that scope stop quoting
+                                           (the owner of SYM, every strategy on NAME,
+                                           or every strategy)
+  resume [--instrument SYM | --venue NAME] they quote again
+  kill                                     trip the account kill switch, as max_loss
+                                           does (GatewayOperator)
+  clear-kill                               clear it and arm the loss budget again;
+                                           refused while a strategy is attached
+  attachments                              one line per attached strategy
+  status                                   the fastmm-top frame
+  help                                     this text
+
 examples:
   fastmm-ctl --name mm status
   fastmm-ctl --name mm pull --instrument BTCUSDT
   fastmm-ctl --name mm param half_spread_bps=8
   fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
   fastmm-ctl --name mm flatten --max-slippage-bps 15
+  fastmm-ctl --gateway gw attachments
+  fastmm-ctl --gateway gw pull --venue binance
+  fastmm-ctl --gateway gw clear-kill
 
 Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,
 3 no session answered (no socket, or it is not running).
@@ -426,20 +457,22 @@ Exit codes: 0 the session answered ok, 1 it answered error, 2 bad command line,
 
 ## fastmm-top
 
-A terminal dashboard of a running `fastmm-live` session ([Status file](status-file.md)).
+A terminal dashboard of a running `fastmm-live` session or `fastmm-gateway` ([Status file](status-file.md)).
 
 <!-- BEGIN cli-help fastmm-top -->
 ```text
-Terminal dashboard for a running fastmm-live session.
+Terminal dashboard for a running fastmm-live session or fastmm-gateway.
 
-usage: fastmm-top [--name <engine name> | --path <status file>] [OPTIONS]
+usage: fastmm-top [--name <engine name> | --gateway <engine name> | --path <status file>] [OPTIONS]
 
 OPTIONS:
   -h, --help                  print this help and exit
   --version                   print the version and exit
   --name <engine>             read /dev/shm/fastmm-<engine>.status ([engine] name in the
                               config)
-  --path <file>               read this status file (fastmm-live --status <file>)
+  --gateway <engine>          read the fastmm-gateway's /dev/shm/fastmm-<engine>.gw.status
+                              ([engine] name in its config)
+  --path <file>               read this status file (fastmm-live or fastmm-gateway --status)
   --interval <ms>             refresh period, default 500
   --once                      print one frame and exit (exit code 3 if no status is
                               available)

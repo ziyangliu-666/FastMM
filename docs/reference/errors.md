@@ -116,6 +116,10 @@ The connectors map each venue's error codes onto these (`*_error_map.hpp` per ve
 | 8 | `OrderRingOverflow` | global | no, it always shuts down (exit 5) | `[engine] order_ring_bytes`, engine thread pinning |
 | 9 | `StrategyError` | global | yes | a Python hot hook raised, called `ctx.fail` or produced a non-finite value |
 | 10 | `FeedLost` | one venue | when it is the last venue | a `nasdaq_itch` feed that cannot rebuild its books |
+| 11 | `OrderIdsExhausted` | global | yes | the session's 32-bit order id sequence ran out; restart |
+| 12 | `DeadMansSwitchLost` | one venue | when it is the last venue | the venue refused the countdown refresh for a whole window |
+| 13 | `GatewayMaxLoss` | every venue | yes | the gateway's account: `[gateway] max_loss` over every strategy |
+| 14 | `GatewayOperator` | every venue | yes | an operator's `kill` on the gateway's control socket |
 
 Nothing resets a kill switch. `fastmm-live` has no command to clear one; restart the process. What each reason does to quoting and orders: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
 

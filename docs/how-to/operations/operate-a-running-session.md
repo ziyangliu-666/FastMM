@@ -92,6 +92,10 @@ flatten    state=Working instruments_left=1 orders=3
 
 The flatten is session state and is not persisted. A restart does not resume it: the shutdown cancels the slice that was in flight, the new session starts with quoting as `[engine] quoting_enabled` and the configuration say, and the position is still there. After a restart, check the position and issue `flatten` again if you want it worked off. The previous session's journal holds the whole story: `tools/journal_dump.py` prints the `Flatten` command, every sweep and every order it sent.
 
+## Behind a gateway
+
+A strategy attached to `fastmm-gateway` has its own socket and takes every command above. The gateway has one too, `fastmm-ctl --gateway <name>`, whose `pull`, `resume`, `kill` and `clear-kill` act on every attached strategy or the account ([Run behind a gateway](run-behind-a-gateway.md#control)).
+
 ## What an operator cannot do
 
 - Change anything that is not a strategy parameter or a risk limit. Instruments, venues, threads, ring sizes and the strategy itself need a restart; `ControlCommand::Reload` is still not implemented.
