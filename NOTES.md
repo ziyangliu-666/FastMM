@@ -3,6 +3,19 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## Next direction (chosen 2026-09-26): a crypto desk can run on this
+
+The gateway's first version is complete. Next, what a crypto market-making desk would hit first. Step 1
+is accounting across settlement currencies: a desk holds BTC-settled Deribit options next to USDT
+perpetuals, and today one session or gateway with instruments in two settlement currencies refuses
+`max_loss` (fail closed; inverse PnL itself is correct, `Instrument::inverse_pnl`). Design:
+* `reporting_currency` and, per other settlement currency, the instrument whose mid prices it
+  (`BTC = "binance:BTCUSDT"`). Positions, PnL and fees stay in their own currencies; totals,
+  `max_loss` and the exposure caps are converted at the current rate.
+* A rate that is unknown or stale is unknown: an order that increases exposure in that currency is
+  refused. Same accounting in the engine and the gateway; backtest and replay share it.
+Later steps: Bybit linear perpetuals and OKX; alerting.
+
 ## Next direction (chosen 2026-09-25): split the venue gateway from the strategy
 
 **Why.** Stepping back from recovery work: what a firm needs and FastMM lacks is structural. One
