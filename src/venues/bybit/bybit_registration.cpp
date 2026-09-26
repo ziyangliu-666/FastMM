@@ -1,4 +1,5 @@
-// Bybit v5 spot: the registry entry, the keys the connector owns and its factory.
+// Bybit v5 spot and linear perpetuals: the registry entry, the keys the connector owns and its
+// factory.
 #include "fastmm/venues/bybit/bybit_venue.hpp"
 #include "fastmm/venues/registry.hpp"
 
@@ -9,6 +10,11 @@ namespace {
 constexpr std::string_view kBybitAliases[] = {"bybit_spot"};
 
 constexpr VenueKeySpec kBybitKeys[] = {
+    {"category",
+     KeyType::String,
+     false,
+     "product: spot (default) | linear (USDT- and USDC-margined perpetuals, one-way position mode "
+     "only); ws_url must be the matching public stream"},
     {"stale_ms",
      KeyType::Int,
      false,
@@ -26,9 +32,9 @@ constexpr VenueKeySpec kBybitKeys[] = {
     {"dead_mans_switch_s",
      KeyType::Int,
      false,
-     "Bybit disconnect-cancel-all window in seconds, 3 to 300; the venue cancels every spot "
-     "order once no private connection is left. 0 disables it (default 0: Bybit only grants "
-     "DCP to institutional accounts)"},
+     "Bybit disconnect-cancel-all window in seconds, 3 to 300; the venue cancels every order of "
+     "the category (product SPOT, or DERIVATIVES for linear) once no private connection is left. "
+     "0 disables it (default 0: Bybit only grants DCP to institutional accounts)"},
     {"cancel_on_order_channel_loss",
      KeyType::Bool,
      false,
@@ -44,7 +50,12 @@ constexpr VenueKeySpec kBybitKeys[] = {
      "private WebSocket URL; empty = derived from ws_url"},
     {"ping_interval_ms", KeyType::Int, false, "application ping interval, ms, at least 1000"},
     {"orders_per_second", KeyType::Int, false, "client-side order rate cap, orders/s"},
-    {"position_from_wallet", KeyType::Bool, false, "derive positions from the wallet"},
+    {"position_from_wallet", KeyType::Bool, false, "spot: derive positions from the wallet"},
+    {"position_from_stream",
+     KeyType::Bool,
+     false,
+     "linear: correct the engine position from the position topic when it differs from the fills "
+     "(default true)"},
 };
 
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
@@ -57,12 +68,14 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
 
 void register_bybit_venue(VenueRegistry& r) {
   static_cast<void>(r.add({.name = "bybit",
-                           .summary = "Bybit v5 spot (testnet)",
+                           .summary = "Bybit v5 spot and linear perpetuals (testnet)",
                            .aliases = kBybitAliases,
                            .keys = kBybitKeys,
                            .caps = {.credentials = true,
                                     .order_entry = true,
                                     .replace = true,
+                                    // spot: the wallet; linear: position/list and the
+                                    // position topic
                                     .positions = true,
                                     .polls = false,
                                     // GET /v5/execution/list

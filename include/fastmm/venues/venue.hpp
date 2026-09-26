@@ -170,6 +170,10 @@ class Venue {
   // are a fallback when the venue is unreachable and `allow_offline` is set). Fatal on
   // mismatch of a required symbol.
   virtual Result<void, std::string> load_reference_data(InstrumentTable& instruments) = 0;
+  // After load_reference_data() failed: true when it refused a setting of the account (a position
+  // mode the connector does not trade in), which a retry does not fix. fastmm-live then exits 3,
+  // like a configuration error, instead of 4.
+  [[nodiscard]] virtual bool refused_account_settings() const noexcept { return false; }
 
   // Wires the sinks (md: lossy, orders: never dropped) and the outbound ring the engine
   // writes Out*Msg into. Must be called before connect().

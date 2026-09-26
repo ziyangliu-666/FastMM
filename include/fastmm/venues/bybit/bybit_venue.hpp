@@ -1,17 +1,30 @@
 #pragma once
-// BybitVenue: the Bybit v5 spot (testnet) connector (6.5).
+// BybitVenue: the Bybit v5 connector (6.5), for spot or for linear (USDT- and USDC-margined)
+// perpetuals: `category` picks one per instance (bybit_category.hpp).
 //
 // Channels on one reactor thread (URLs: https://bybit-exchange.github.io/docs/v5/ws/connect):
 //   md       wss://stream-testnet.bybit.com/v5/public/spot   orderbook.<depth> / orderbook.1 /
-//            publicTrade (BybitMdFeed)
+//            (.../v5/public/linear)                          publicTrade (BybitMdFeed)
 //   private  wss://stream-testnet.bybit.com/v5/private       op auth, then order / execution /
-//            wallet topics
+//            wallet (spot) or position (linear) topics, and dcp.spot / dcp.future when armed
 //   trade    wss://stream-testnet.bybit.com/v5/trade         op auth, then order.create /
 //            order.amend / order.cancel; REST fallback
 //   rest     https://api-testnet.bybit.com                   market/time, order/realtime,
-//            order/cancel-all, execution/list, REST order entry (RestChannel)
+//            order/cancel-all, execution/list, position/list, REST order entry (RestChannel)
 // Every WebSocket channel sends {"op":"ping"} every 20 s (connect page, "How to Send the
 // Heartbeat Packet"). cancel_all() uses an independent BlockingHttp connection (6.7).
+//
+// Linear. instruments-info must say contractType LinearPerpetual: the instrument becomes a
+// perpetual, multiplier 1 (qty is in the base coin), reduce-only capable, base = baseCoin and
+// quote = settleCoin, which is what [accounting] settles it in. With keys, load_reference_data()
+// reads GET /v5/position/list per symbol and refuses a symbol in hedge mode (a row with positionIdx
+// 1 or 2; refused_account_settings()). Every reconciliation reads the open orders and the positions
+// per settle coin after the execution replay and emits them as one Begin / OpenOrder* / Position* /
+// End, a subscribed symbol absent from the list being flat. Between reconciliations the `position`
+// topic is compared, as Binance USD-M compares ACCOUNT_UPDATE, with the connector's sum of the
+// fills it forwarded once neither has changed for kPositionSettleMs, and a PositionUpdateMsg
+// corrects the engine only when they differ (liquidation, ADL, another client). The ticker topic
+// (mark price, funding) is not subscribed: no engine message carries it, and funding is not booked.
 //
 // Amend (Replace) keeps the venue's orderLinkId: the engine gets an ack for its new client
 // id and later order/execution events for the original orderLinkId are translated to it.
@@ -20,10 +33,12 @@
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/net/connection.hpp"
 #include "fastmm/venues/bybit/bybit_auth.hpp"
+#include "fastmm/venues/bybit/bybit_category.hpp"
 #include "fastmm/venues/bybit/bybit_error_map.hpp"
 #include "fastmm/venues/bybit/bybit_md_feed.hpp"
 #include "fastmm/venues/bybit/bybit_order_encoder.hpp"
 #include "fastmm/venues/bybit/bybit_private_parser.hpp"
+#include "fastmm/venues/bybit/bybit_rest_decoder.hpp"
 #include "fastmm/venues/connection_slot.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
@@ -31,6 +46,7 @@
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -43,6 +59,7 @@ namespace fastmm::venues::bybit {
 
 struct BybitVenueConfig {
   std::string name = "bybit";
+  BybitCategory category = BybitCategory::Spot;
   std::string ws_public_url;   // wss://stream-testnet.bybit.com/v5/public/spot
   std::string ws_private_url;  // wss://stream-testnet.bybit.com/v5/private
   std::string ws_trade_url;    // wss://stream-testnet.bybit.com/v5/trade
@@ -54,14 +71,15 @@ struct BybitVenueConfig {
   bool dry_run = false;
   bool ws_order_api = true;
   bool emit_ack_from_response = true;
-  bool position_from_wallet = false;
+  bool position_from_wallet = false;  // spot
+  bool position_from_stream = true;   // linear: correct the engine from the position topic
   bool cancel_on_order_channel_loss = true;
   // Bybit's Disconnect-Cancel-All window, seconds; 0 disables it. Bybit accepts [3, 300] and
   // defaults the account setting to 10. Off here by default because DCP is not self-serve: the
   // docs say it "is only available for Ins clients" and has to be enabled by an account manager
   // first, so arming it on an ordinary account only produces an error on every connect. Set it
-  // once the account has it and the connector will arm it and subscribe the `dcp.spot` topic
-  // that DCP needs in order to fire at all.
+  // once the account has it and the connector will arm it (product SPOT, or DERIVATIVES for
+  // linear) and subscribe the `dcp.spot` / `dcp.future` topic that DCP needs to fire at all.
   int dead_mans_switch_s = 0;
   bool allow_offline_reference_data = false;
   bool supports_replace = true;
@@ -87,6 +105,9 @@ class BybitVenue final : public Venue {
   [[nodiscard]] std::string_view name() const noexcept override { return cfg_.name; }
   [[nodiscard]] VenueCaps caps() const noexcept override;
   Result<void, std::string> load_reference_data(InstrumentTable& instruments) override;
+  [[nodiscard]] bool refused_account_settings() const noexcept override {
+    return refused_account_settings_;
+  }
   void attach(const SymbolTable& symbols,
               const InstrumentTable& instruments,
               EventSink& md_sink,
@@ -176,6 +197,15 @@ class BybitVenue final : public Venue {
   // Requests one page of GET /v5/order/realtime; the reply reads the next page or, on the last
   // one, emits the whole snapshot (emit_reconcile). Nothing is emitted unless every page parsed.
   void request_open_orders_page(const std::string& cursor);
+  // Linear: one page of GET /v5/position/list for settle_coins_[reconcile_coin_]; the last page of
+  // the last coin emits the snapshot.
+  void request_positions_page(const std::string& cursor);
+  // Linear, start-up: GET /v5/position/list per symbol; an error when a symbol is in hedge mode or
+  // its mode cannot be read.
+  std::string check_position_mode(const std::vector<Instrument*>& mine);
+  // Linear: compares the position topic with the forwarded fills (see the header comment).
+  void check_positions(std::int64_t now);
+  void note_fill(const OrderFillMsg& f) noexcept;
   // Emits the open-order snapshot request itself, once any execution replay before it finished.
   void send_open_orders();
   void emit_reconcile();
@@ -246,6 +276,23 @@ class BybitVenue final : public Venue {
   std::size_t reconcile_pages_ = 0;
   bool reconcile_in_flight_ = false;
   bool oo_wanted_ = false;  // a snapshot waits for the execution replay in flight
+  // Linear: open orders and positions are listed per settle coin (the quotes of the subscribed
+  // instruments); the snapshot walks them in turn.
+  std::vector<std::string> settle_coins_;
+  std::size_t reconcile_coin_ = 0;
+  std::vector<PositionRecord> reconcile_positions_;
+  bool refused_account_settings_ = false;
+
+  // Linear: per instrument, the position the engine holds from the fills forwarded and the last
+  // one the position topic reported.
+  struct PositionCheck {
+    Qty tracked{};
+    Qty venue{};
+    Price venue_avg{};
+    std::int64_t last_event_ns = 0;
+    bool pending = false;  // a position-topic value has not been compared yet
+  };
+  std::array<PositionCheck, kMaxInstruments> positions_{};
 
   // Execution replay. Bybit's history has no ascending id, so the watermark is the venue time of
   // the newest execution seen (inclusive); the ids seen at exactly that time are skipped on the
@@ -290,10 +337,11 @@ class BybitVenue final : public Venue {
   Seqlocked<VenueStatus> published_{};
 };
 
-// [venues.<name>] -> BybitVenueConfig. ws_url = public spot stream, ws_api_url = trade
-// stream; extra keys: ws_private_url, depth, order_api ("ws"|"rest"), stale_ms, dead_ms,
-// ping_interval_ms, position_from_wallet, allow_offline_reference_data,
-// cancel_on_order_channel_loss, emit_ack_from_response, orders_per_second.
+// [venues.<name>] -> BybitVenueConfig. ws_url = public stream of the category, ws_api_url = trade
+// stream; extra keys: category ("spot"|"linear"), ws_private_url, depth, order_api
+// ("ws"|"rest"), stale_ms, dead_ms, ping_interval_ms, position_from_wallet, position_from_stream,
+// allow_offline_reference_data, cancel_on_order_channel_loss, emit_ack_from_response,
+// orders_per_second, dead_mans_switch_s. Throws std::invalid_argument for an unknown category.
 BybitVenueConfig make_bybit_config(const VenueSection& section, bool dry_run);
 
 }  // namespace fastmm::venues::bybit
