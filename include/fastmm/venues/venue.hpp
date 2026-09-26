@@ -132,6 +132,7 @@ struct VenueStatus {
   std::uint64_t executions_fetched = 0;  // trade-history rows replayed into the order sink
   std::uint64_t execution_queries = 0;
   std::uint64_t execution_query_errors = 0;  // a reconciliation that could not be made exact
+  std::uint64_t funding_fetched = 0;         // funding payments replayed from the venue
   std::int64_t last_md_rx_ns = 0;            // reactor clock
   // Network-thread order latency (wire_latency.hpp), cumulative for the session. The ns
   // percentiles need a calibration source (Venue::set_tsc_calibration_source); counts do not.

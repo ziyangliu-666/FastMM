@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Session PnL report from a FastMM journal (.fmj), with optional account reconciliation.
 
-Reads the OrderFill events of a journal and prints, per instrument:
+Reads the OrderFill and Funding events of a journal and prints, per instrument:
   * a per-hour table: fills, maker share, bought and sold quantity, traded notional, fees in the
     quote asset and the inventory at the end of the hour;
   * the session totals and the trading PnL marked at the last fill price (or at the end snapshot's
-    mid when one is given).
+    mid when one is given). A perpetual's funding payments are cash in the settlement currency:
+    they are in the cash change and the PnL, and shown on their own line.
 
 Commission is booked the way the engine books it (include/fastmm/core/engine.hpp, on_fill):
   * fee_asset quote: the fee is a quote amount and is taken from cash;
@@ -78,6 +79,8 @@ class InstrumentBook:
         self.fees_base = 0.0   # commission charged in base units
         self.fees_quote_asset = 0.0  # commission charged in quote units
         self.fees_other = 0    # fills whose commission could not be converted
+        self.funding = 0.0     # funding payments, quote units (negative paid); inside cash
+        self.funding_events = 0
         self.notional = 0.0
         self.buy_qty = 0.0
         self.sell_qty = 0.0
@@ -137,6 +140,11 @@ class InstrumentBook:
         b["inventory"] = self.inventory
         self.fill_events.append((ts, 1.0 if buy else -1.0, px, qty))
 
+    def on_funding(self, amount: float) -> None:
+        self.funding += amount
+        self.cash += amount
+        self.funding_events += 1
+
     def pnl(self, mark: float) -> float:
         """Trading PnL in quote units: cash plus inventory at `mark`; commission is already in both."""
         return self.cash + self.inventory * mark * self.multiplier
@@ -170,13 +178,16 @@ def read_fills(path: str, verify_crc: bool):
                     t.append(ts)
                     m.append(mid)
             continue
-        if ev["type"] != "OrderFill":
+        if ev["type"] not in ("OrderFill", "Funding"):
             continue
         inst = instruments.get(ev["instrument"])
         symbol = inst["symbol"] if inst else f"instrument {ev['instrument']}"
         mult = inst["multiplier_raw"] / SCALE if inst and inst["multiplier_raw"] > 0 else 1.0
         book = books.setdefault(ev["instrument"], InstrumentBook(symbol, mult))
-        book.on_fill(ts, hdr["start_ts"], jd.fill_fields(body))
+        if ev["type"] == "Funding":
+            book.on_funding(struct.unpack_from("<q", body, 0)[0] / SCALE)
+        else:
+            book.on_fill(ts, hdr["start_ts"], jd.fill_fields(body))
     return hdr, instruments, books, stats, events, mids
 
 
@@ -281,6 +292,11 @@ def report(args, out=sys.stdout) -> int:
         p("no fills")
     for iid, b in books.items():
         p("")
+        if not b.fills:
+            p(f"{b.symbol} (instrument {iid}): no fills")
+            if b.funding_events:
+                p(f"funding {b.funding:+.4f} {quote_a} in {b.funding_events} payment(s)")
+            continue
         p(f"{b.symbol} (instrument {iid}): {b.fills} fills from {fmt_hours(hdr['start_ts'], b.first_ts)} "
           f"to {fmt_hours(hdr['start_ts'], b.last_ts)} after the session start")
         p(f"{'hour':>4} {'fills':>6} {'maker':>7} {'bought':>12} {'sold':>12} {'notional':>12} "
@@ -292,6 +308,8 @@ def report(args, out=sys.stdout) -> int:
           f"fees {b.fees_quote:.4f} {quote_a} ({1e4 * b.fees_quote / b.notional:.2f} bps of notional; "
           f"charged {b.fees_base:.8f} {base_a} and {b.fees_quote_asset:.4f} {quote_a}"
           + (f"; {b.fees_other} fills in another asset not included" if b.fees_other else "") + ")")
+        if b.funding_events:
+            p(f"funding {b.funding:+.4f} {quote_a} in {b.funding_events} payment(s) (in the cash change)")
         p(f"inventory change {b.inventory:+.8f} {base_a}, cash change {b.cash:+.4f} {quote_a} (both after fees)")
         p(f"trading PnL at the last fill price {b.last_px:.2f}: {b.pnl(b.last_px):+.4f} {quote_a}")
         if not horizons_ns:
@@ -398,6 +416,16 @@ def _ticker_body(bid: str, ask: str) -> bytes:
     return bytes(body)
 
 
+def _funding_body(amount_raw: int, funding_id: bytes) -> bytes:
+    body = bytearray(64)  # FundingMsg past the header: amount, funding_id (40 + len), asset
+    struct.pack_into("<q", body, 0, amount_raw)
+    body[8:8 + len(funding_id)] = funding_id
+    body[48] = len(funding_id)
+    body[49:53] = b"USDT"
+    body[57] = 4
+    return bytes(body)
+
+
 def write_synthetic_journal(path: str) -> None:
     """Two instruments' worth of header, one symbol with fills in hours 0 and 1, and a trailer.
 
@@ -406,6 +434,7 @@ def write_synthetic_journal(path: str) -> None:
     """
     start = 1_789_000_000_000_000_000
     fill = jd.EVENT_TYPES.index("OrderFill")
+    funding = jd.EVENT_TYPES.index("Funding")
     trade = jd.EVENT_TYPES.index("Trade")
     ticker = jd.EVENT_TYPES.index("BookTicker")
     sec = 1_000_000_000
@@ -421,6 +450,8 @@ def write_synthetic_journal(path: str) -> None:
         # sell 0.1 @ 101 as taker, commission in another asset (ignored)
         _event(fill, 7, 0, start + NS_PER_HOUR + 9, _fill_body("101", "0.1", "0.01", 2, 1, 2, 3)),
         _event(ticker, 8, 0, start + NS_PER_HOUR + sec + 9, _ticker_body("100", "102")),  # mid 101
+        # funding paid on the position: 0.25 quote
+        _event(funding, 9, 0, start + 2 * NS_PER_HOUR, _funding_body(-25_000_000, b"f-1")),
     ]
     payload = b"".join(events)
     inst = bytearray(128)
@@ -430,8 +461,8 @@ def write_synthetic_journal(path: str) -> None:
     header = bytearray(jd.HEADER.pack(b"FMJ1", 1, 256 + 128, 1, 42, start, 0, 0, 0, 0, 1, 1, 1 << 20,
                                       b"basic_mm", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b"", 0))
     struct.pack_into("<I", header, 252, jd.crc32c(bytes(header[:252])))
-    block = jd.BLOCK.pack(b"FMJB", len(payload), 1, 4, len(events), jd.crc32c(payload), 0, b"")
-    trailer = jd.BLOCK.pack(b"FMJB", 0, 5, 4, 0, jd.crc32c(b""), 1, b"")
+    block = jd.BLOCK.pack(b"FMJB", len(payload), 1, 9, len(events), jd.crc32c(payload), 0, b"")
+    trailer = jd.BLOCK.pack(b"FMJB", 0, 10, 9, 0, jd.crc32c(b""), 1, b"")
     with open(path, "wb") as f:
         f.write(bytes(header) + bytes(inst) + block + payload + trailer)
 
@@ -441,19 +472,20 @@ def self_test() -> int:
         fmj = os.path.join(d, "t.fmj")
         write_synthetic_journal(fmj)
         hdr, instruments, books, stats, events, mids = read_fills(fmj, verify_crc=True)
-        assert stats.bad_blocks == 0 and stats.trailer and events == 8, (stats.__dict__, events)
+        assert stats.bad_blocks == 0 and stats.trailer and events == 9, (stats.__dict__, events)
         assert instruments[0]["symbol"] == "TESTUSD"
         b = books[0]
         close = lambda a, x: math.isclose(a, x, rel_tol=0, abs_tol=1e-9)  # noqa: E731
         assert b.fills == 3 and b.maker == 2
         assert list(b.hours) == [0, 1] and b.hours[1]["fills"] == 2
         assert close(b.inventory, 0.4995 - 0.3 - 0.1), b.inventory
-        assert close(b.cash, -50.0 + 30.6 - 0.0306 + 10.1), b.cash
+        assert close(b.cash, -50.0 + 30.6 - 0.0306 + 10.1 - 0.25), b.cash
+        assert close(b.funding, -0.25) and b.funding_events == 1, b.funding
         assert close(b.fees_quote, 0.0005 * 100 + 0.0306), b.fees_quote
         assert b.fees_other == 1
         # Marked at 101: cash + inventory * 101. The base commission is inside the inventory and
         # must not be subtracted again (the bug of the first session script).
-        assert close(b.pnl(101.0), -9.3306 + 0.0995 * 101.0), b.pnl(101.0)
+        assert close(b.pnl(101.0), -9.5806 + 0.0995 * 101.0), b.pnl(101.0)
 
         # Markouts, by hand. Horizon 1 s:
         #   buy  0.5 @ 100 at +10 ns:   mid 100 -> 102, markout +0.5 * 2 = +1.0, capture 0
@@ -516,6 +548,7 @@ def self_test() -> int:
         assert report(A, out=buf) == 0
         text = buf.getvalue()
         assert "difference to the account +0.0000" in text, text
+        assert "funding -0.2500 USDT in 1 payment(s)" in text, text
         assert "engine risk_rejects 17 (MaxPosition 12, RateLimit 4, PriceCollar 1)" in text, text
         assert "engine venue_rejects 3 (PostOnlyWouldCross 3)" in text, text
     print("pnl_report self-test: ok")

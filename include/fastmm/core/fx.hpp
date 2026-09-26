@@ -26,6 +26,16 @@ namespace fastmm {
 inline constexpr std::size_t kMaxCurrencies = 8;
 using Currency = FixedString<8>;
 
+// Currency names compare without regard to case ("usdt" from one venue, "USDT" from another).
+[[nodiscard]] constexpr bool same_currency(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const auto up = [](char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 32) : c; };
+    if (up(a[i]) != up(b[i])) return false;
+  }
+  return true;
+}
+
 // amount in the reporting currency = amount * num / den. Unknown (num == 0) converts to zero.
 struct FxRate {
   std::int64_t num = 0;

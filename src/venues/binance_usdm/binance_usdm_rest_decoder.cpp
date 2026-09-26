@@ -177,4 +177,29 @@ std::string decode_balance(std::string_view json, std::vector<BalanceRecord>& ou
   return {};
 }
 
+std::string decode_income(std::string_view json, std::vector<IncomeRecord>& out) {
+  dom::parser parser;
+  dom::array arr;
+  if (parser.parse(sj::padded_string(json)).get(arr) != sj::SUCCESS)
+    return "income: expected an array";
+  for (dom::element e : arr) {
+    IncomeRecord r;
+    r.symbol = string_field(e, "symbol");
+    r.income_type = string_field(e, "incomeType");
+    r.asset = string_field(e, "asset");
+    if (!fixed_field(e, "income", r.income)) return "income: a row without a readable income";
+    if (e["time"].get(r.time_ms) != sj::SUCCESS) return "income: a row without a time";
+    // An integer in the documentation; a string is read too.
+    std::string_view id;
+    if (e["tranId"].get(r.tran_id) != sj::SUCCESS) {
+      if (e["tranId"].get(id) != sj::SUCCESS) return "income: a row without a tranId";
+      const auto v = parse_int64(id);
+      if (!v) return "income: an unreadable tranId";
+      r.tran_id = *v;
+    }
+    out.push_back(std::move(r));
+  }
+  return {};
+}
+
 }  // namespace fastmm::venues::binance_usdm

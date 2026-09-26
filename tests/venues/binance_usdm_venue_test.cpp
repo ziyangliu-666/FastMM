@@ -2,7 +2,8 @@
 // + private listenKey stream + WS API): reference data and account checks, depth sync with a pu
 // gap, order.place / order.modify / order.cancel with the venue client id kept across the modify,
 // reconciliation with positions, the ACCOUNT_UPDATE position check, listenKey expiry, order-channel
-// loss, the execution replay (GET /fapi/v1/userTrades) and the blocking kill-switch cancel_all.
+// loss, the execution replay (GET /fapi/v1/userTrades), funding (GET /fapi/v1/income) and the
+// blocking kill-switch cancel_all.
 #include "fastmm/venues/binance_usdm/binance_usdm_venue.hpp"
 
 #include "fake_venue_util.hpp"
@@ -13,6 +14,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -110,6 +113,13 @@ struct Harness {
     const std::lock_guard<std::mutex> lock(trades_mu);
     user_trades = std::move(body);
   }
+  std::string income = "[]";            // GET /fapi/v1/income answer (trades_mu)
+  std::atomic<int> income_queries{0};   // counted once the answer is fixed
+  std::atomic<int> income_failures{0};  // the next N income queries answer 503
+  void set_income(std::string body) {
+    const std::lock_guard<std::mutex> lock(trades_mu);
+    income = std::move(body);
+  }
 
   explicit Harness(bool hedge = false) : hedge_mode(hedge) {
     srv.route("GET", "/fapi/v1/exchangeInfo", [this](const net::HttpRequest&) {
@@ -155,6 +165,22 @@ struct Harness {
       }
       const std::lock_guard<std::mutex> lock(trades_mu);
       return net::HttpServerResponse::json(200, user_trades);
+    });
+    srv.route("GET", "/fapi/v1/income", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("income", std::string(r.query));
+      if (income_failures.load() > 0) {
+        --income_failures;
+        ++income_queries;
+        return net::HttpServerResponse::text(503, "Service Unavailable");
+      }
+      std::string body;
+      {
+        const std::lock_guard<std::mutex> lock(trades_mu);
+        body = income;
+      }
+      ++income_queries;
+      return net::HttpServerResponse::json(200, body);
     });
     srv.route("GET", "/fapi/v3/positionRisk", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
@@ -656,7 +682,8 @@ struct DmsFixture {
   std::unique_ptr<BinanceUsdmVenue> venue;
   Collected oc;
 
-  explicit DmsFixture(std::int64_t window_ms) {
+  explicit DmsFixture(std::int64_t window_ms,
+                      const std::function<void(BinanceUsdmVenue&)>& before_connect = {}) {
     REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
     BinanceUsdmVenueConfig cfg = h.config(false);
     cfg.dead_mans_switch_ms = window_ms;
@@ -666,6 +693,7 @@ struct DmsFixture {
     venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
     const InstrumentId ids[] = {InstrumentId{0}};
     venue->subscribe(ids);
+    if (before_connect) before_connect(*venue);
     venue->connect(reactor);
   }
   ~DmsFixture() {
@@ -939,4 +967,126 @@ TEST_CASE("binance_usdm.venue: a failed userTrades query is retried from the hou
   CHECK(st.execution_queries >= 3);
   CHECK(st.execution_query_errors == 1);
   CHECK(st.executions_fetched >= 1);
+}
+
+// ---- funding (GET /fapi/v1/income?incomeType=FUNDING_FEE) --------------------------------------
+namespace {
+
+// One income row, Binance's example shape ("Get Income History") with a FUNDING_FEE on `symbol`.
+std::string income_row(const char* symbol, const char* income, long long tran_id, long long time) {
+  return std::string(R"({"symbol":")") + symbol + R"(","incomeType":"FUNDING_FEE","income":")" +
+         income + R"(","asset":"USDT","info":"FUNDING_FEE","time":)" + std::to_string(time) +
+         R"(,"tranId":)" + std::to_string(tran_id) + R"(,"tradeId":""})";
+}
+
+// The balance-only ACCOUNT_UPDATE Binance pushes for funding on a crossed position ("User Data
+// Streams": reason FUNDING_FEE, the symbol in a.S since 2026-08-07, no position P).
+std::string funding_event(long long time) {
+  return R"({"e":"ACCOUNT_UPDATE","E":)" + std::to_string(time + 1) + R"(,"T":)" +
+         std::to_string(time) +
+         R"(,"a":{"m":"FUNDING_FEE","S":"BTCUSDT","B":[{"a":"USDT","wb":"4999.625","cw":"4999.625","bc":"-0.375"}]}})";
+}
+
+std::vector<const FundingMsg*> funding_of(const Collected& c) {
+  std::vector<const FundingMsg*> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) == EventType::Funding)
+      out.push_back(&RecordingSink::as<FundingMsg>(m));
+  }
+  return out;
+}
+
+// The connector's start-up: its sweep done and its first income query answered.
+void wait_started(DmsFixture& f) {
+  REQUIRE(f.pump([&] {
+    return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1 && f.h.income_queries.load() >= 1;
+  }));
+  idle(f.reactor, 50);  // the answer to that query is processed
+}
+
+}  // namespace
+
+TEST_CASE("binance_usdm.venue: funding on the user stream is booked from the income history") {
+  DmsFixture f(0);
+  wait_started(f);
+  const auto first = f.h.srv.frames("income");
+  REQUIRE(first.size() == 1);
+  CHECK(first[0].find("incomeType=FUNDING_FEE") != std::string::npos);
+  CHECK(first[0].find("startTime=") != std::string::npos);  // from connect()
+  CHECK(first[0].find("symbol=") == std::string::npos);     // every symbol in one query
+  CHECK(funding_of(f.oc).empty());
+
+  // The venue pays funding: the history has the payment (and one on a symbol not traded here),
+  // and the stream says so without an id. Nothing else asks: the stream event does.
+  const long long t = wall_now().ns / 1'000'000;
+  f.h.set_income("[" + income_row("BTCUSDT", "-0.37500000", 9689322392, t) + "," +
+                 income_row("ETHUSDT", "-1.2", 9689322393, t) + "]");
+  f.h.srv.send_to(kPrivatePath, funding_event(t));
+  REQUIRE(f.pump([&] { return funding_of(f.oc).size() == 1; }, 8000));
+  CHECK(f.h.income_queries.load() == 2);
+  const FundingMsg& m = *funding_of(f.oc)[0];
+  CHECK(m.hdr.instrument == InstrumentId{0});
+  CHECK(m.hdr.venue == VenueId{0});
+  CHECK(m.amount == Notional::from_decimal("-0.375").value());
+  CHECK(m.asset.view() == "USDT");
+  CHECK(m.funding_id.view() == "9689322392");
+  CHECK(m.hdr.exch_ts == Timestamp{t * 1'000'000});
+  CHECK((m.flags & FundingMsg::kReplayed) != 0);
+
+  // The same event again (and every later query) finds the same row: not forwarded again.
+  f.h.srv.send_to(kPrivatePath, funding_event(t));
+  REQUIRE(f.pump([&] { return f.h.income_queries.load() == 3; }, 8000));
+  idle(f.reactor, 100);
+  CHECK(funding_of(f.oc).size() == 1);
+  // The next query asks from the payment's millisecond on.
+  CHECK(f.h.srv.frames("income").back().find("startTime=" + std::to_string(t)) !=
+        std::string::npos);
+  CHECK(f.h.unsigned_requests.load() == 0);
+  REQUIRE(f.pump([&] { return f.venue->status().funding_fetched == 1; }));
+}
+
+TEST_CASE("binance_usdm.venue: funding missed while the user stream was down is booked once") {
+  DmsFixture f(0);
+  wait_started(f);
+  // Paid while the stream is down: the reconnect's reconciliation finds it.
+  const long long t = wall_now().ns / 1'000'000;
+  f.h.set_income("[" + income_row("BTCUSDT", "0.12", 555001, t) + "]");
+  f.h.srv.close_sessions(kPrivatePath);
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2 && funding_of(f.oc).size() == 1; }));
+  CHECK(funding_of(f.oc)[0]->funding_id.view() == "555001");
+  CHECK(funding_of(f.oc)[0]->amount == Notional::from_decimal("0.12").value());
+  // Its stream event arrives after all: the history is asked again, and nothing is new.
+  const int queries = f.h.income_queries.load();
+  f.h.srv.send_to(kPrivatePath, funding_event(t));
+  REQUIRE(f.pump([&] { return f.h.income_queries.load() == queries + 1; }, 8000));
+  idle(f.reactor, 100);
+  CHECK(funding_of(f.oc).size() == 1);
+}
+
+TEST_CASE("binance_usdm.venue: a restart replays funding from its store's resume point") {
+  // The earlier session stored payment 700001; 700002 was paid while nothing ran.
+  const long long t = wall_now().ns / 1'000'000 - 3'600'000;
+  DmsFixture f(0, [&](BinanceUsdmVenue& v) {
+    v.resume_executions(t - 1'000, {std::string(kFundingIdPrefix) + "700001"});
+  });
+  f.h.set_income("[" + income_row("BTCUSDT", "-0.5", 700001, t) + "," +
+                 income_row("BTCUSDT", "-0.7", 700002, t + 60'000) + "]");
+  wait_started(f);
+  const auto q = f.h.srv.frames("income");
+  REQUIRE_FALSE(q.empty());
+  CHECK(q[0].find("startTime=" + std::to_string(t - 1'000)) != std::string::npos);
+  const auto got = funding_of(f.oc);
+  REQUIRE(got.size() == 1);
+  CHECK(got[0]->funding_id.view() == "700002");
+}
+
+TEST_CASE("binance_usdm.venue: a failed income query is asked again from the timer") {
+  DmsFixture f(0);
+  wait_started(f);
+  const long long t = wall_now().ns / 1'000'000;
+  f.h.set_income("[" + income_row("BTCUSDT", "-0.375", 777, t) + "]");
+  f.h.income_failures.store(1);
+  f.h.srv.send_to(kPrivatePath, funding_event(t));
+  REQUIRE(f.pump([&] { return funding_of(f.oc).size() == 1; }, 15000));
+  CHECK(f.h.income_queries.load() == 3);  // the stream's, which failed, and the retry
 }

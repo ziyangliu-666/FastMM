@@ -2,8 +2,9 @@
 // AccountBook: the positions of an account on one venue, as fastmm-gateway sees them. Every
 // execution that passes through is booked once (keyed like the OMS dedupe: venue execution id,
 // instrument, side) into a PositionTracker, marked at the mid of the venue's books as the engine
-// marks its own. check_exposure() is the account's version of RiskEngine's portfolio check.
-// Single-threaded: it belongs to the venue's network thread.
+// marks its own; so is every funding payment (keyed like the engine's: venue id, instrument).
+// check_exposure() is the account's version of RiskEngine's portfolio check. Single-threaded: it
+// belongs to the venue's network thread.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/enums.hpp"
@@ -16,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 namespace fastmm {
@@ -49,6 +51,27 @@ class AccountBook {
                               (static_cast<std::uint64_t>(m.hdr.instrument.value) << 1U) ^
                               (static_cast<std::uint64_t>(m.side) * 0x9E3779B97F4A7C15ULL);
     return seen_->assign(key, 1);
+  }
+
+  // Has this funding payment been booked? Remembers it if not, as first_time() does executions.
+  [[nodiscard]] bool first_time(const FundingMsg& m) noexcept {
+    if (m.funding_id.empty()) return true;
+    const std::uint64_t key =
+        m.funding_id.hash() ^
+        (static_cast<std::uint64_t>(m.hdr.instrument.value) * 0x9E3779B97F4A7C15ULL) ^ kFundingKey;
+    return seen_->assign(key, 1);
+  }
+  // Books a funding payment first_time() accepted into its instrument's realized PnL, as
+  // Engine::on_funding does. An asset other than the instrument's settlement currency is not
+  // booked (returns false).
+  bool book(const FundingMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (!insts_->contains(id)) return false;
+    const Instrument& inst = insts_->get(id);
+    const std::string_view ccy = inst.settlement_ccy();
+    if (!m.asset.empty() && !ccy.empty() && !same_currency(m.asset.view(), ccy)) return false;
+    pos_.on_funding(id, m.amount);
+    return true;
   }
 
   // Books an execution first_time() accepted, as Engine::on_fill books one: commission in the base
@@ -99,6 +122,8 @@ class AccountBook {
   }
 
  private:
+  // Funding keys share the execution window; this keeps them apart from execution keys.
+  static constexpr std::uint64_t kFundingKey = 0xF0D1'46E5'0000'0001ULL;
   using Seen = RecentMap<std::uint64_t, std::uint8_t, kExecWindow>;
   PositionTracker pos_;
   const InstrumentTable* insts_;

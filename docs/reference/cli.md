@@ -277,7 +277,9 @@ SUBCOMMANDS:
   sessions                    one row per session: when it ran, what it made, how it ended
   fills                       one row per execution
   orders                      one row per order, in its last known state
-  pnl                         realised, fees and net by UTC day and instrument
+  pnl                         realised (and the funding in it), fees and net by UTC day and
+                              instrument
+  funding                     one row per perpetual funding payment
   positions                   the last position snapshot of each session and instrument
   recover                     what the newest session left behind
 ```

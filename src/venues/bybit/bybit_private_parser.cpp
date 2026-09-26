@@ -192,12 +192,6 @@ struct OrderIds {
 };
 
 [[gnu::noinline]] Item decode_execution(ItemCtx& c, od::object& o, const OrderIds& ids) noexcept {
-  std::string_view exec_type;
-  if (o["execType"].get_string().get(exec_type) != sj::SUCCESS) return Item::Malformed;
-  if (exec_type != "Trade") {
-    ++c.stats->ignored;
-    return Item::Next;
-  }
   std::string_view exec_id;
   std::string_view price_s;
   std::string_view qty_s;
@@ -367,6 +361,47 @@ struct OrderIds {
   return Item::Next;
 }
 
+// A funding execution (execType Funding, linear): execFee is the funding fee, positive when the
+// account paid, so the amount booked is its negation. Its currency is feeCurrency, else the
+// settlement coin (the instrument's quote). execId identifies it, in the stream and in
+// execution/list alike.
+[[gnu::noinline]] Item decode_funding(ItemCtx& c, od::object& o) noexcept {
+  std::string_view symbol;
+  std::string_view exec_id;
+  std::string_view fee_s;
+  std::string_view fee_ccy;
+  std::string_view time_s;
+  o.reset();
+  if (o["symbol"].get_string().get(symbol) != sj::SUCCESS) return Item::Malformed;
+  o.reset();
+  if (o["execId"].get_string().get(exec_id) != sj::SUCCESS) return Item::Malformed;
+  o.reset();
+  if (o["execFee"].get_string().get(fee_s) != sj::SUCCESS) return Item::Malformed;
+  o.reset();
+  if (o["feeCurrency"].get_string().get(fee_ccy) != sj::SUCCESS) fee_ccy = {};
+  o.reset();
+  if (o["execTime"].get_string().get(time_s) != sj::SUCCESS) time_s = {};
+  const InstrumentId inst = c.symbols->find(c.venue, symbol);
+  if (!inst.valid()) {
+    ++c.stats->unknown_symbol;
+    return Item::Next;
+  }
+  const auto fee = parse_notional(fee_s);
+  if (!fee) return Item::Malformed;
+  if (!c.room(sizeof(FundingMsg))) return Item::Stop;
+  auto* m = c.place<FundingMsg>();
+  init_header(*m, EventType::Funding, inst, c.venue);
+  m->amount = Notional{} - *fee;
+  m->funding_id.assign(exec_id);
+  m->asset.assign(fee_ccy.empty() ? c.instruments->get(inst).settlement_ccy() : fee_ccy);
+  const auto t = parse_int64(time_s);
+  stamp(*m, c.recv_ts, c.t0, t ? *t : c.creation);
+  c.written += sizeof(FundingMsg);
+  ++c.count;
+  ++c.stats->funding;
+  return Item::Next;
+}
+
 // One execution or order item: the shared fields, then the topic's decoder.
 [[gnu::noinline]] Item decode_order_item(ItemCtx& c, od::object& o, bool is_exec) noexcept {
   std::string_view category;
@@ -374,6 +409,16 @@ struct OrderIds {
   if (category != to_string(c.category)) {
     ++c.stats->ignored;
     return Item::Next;
+  }
+  if (is_exec) {
+    std::string_view exec_type;
+    if (o["execType"].get_string().get(exec_type) != sj::SUCCESS) return Item::Malformed;
+    if (exec_type == "Funding" && c.category == BybitCategory::Linear) return decode_funding(c, o);
+    if (exec_type != "Trade") {
+      ++c.stats->ignored;  // AdlTrade, BustTrade, Settle, Delivery
+      return Item::Next;
+    }
+    o.reset();
   }
   std::string_view symbol;
   std::string_view link_id;

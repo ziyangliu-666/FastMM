@@ -1521,6 +1521,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       Notional::from_raw(rs.fees_raw),
       rs.tick_to_trade_p50_ns,
       rs.tick_to_trade_p99_ns);
+  if (rs.funding_raw != 0)
+    FASTMM_LOG_INFO("fastmm-live: funding={} (part of realized_pnl)",
+                    Notional::from_raw(rs.funding_raw));
   if (fx_plan.active())
     FASTMM_LOG_INFO("fastmm-live: the PnL totals are in {} ([accounting])", fx_plan.reporting());
   for (auto& s : slots) {

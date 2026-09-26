@@ -27,12 +27,13 @@ def store_path(tmp_path_factory):
     v1 = _sql_between(text, 'constexpr std::string_view kV1 = R"SQL(', ')SQL";')
     v2 = _sql_between(text, 'constexpr std::string_view kV2 = R"SQL(', ')SQL";')
     v3 = _sql_between(text, 'constexpr std::string_view kV3 = R"SQL(', ')SQL";')
+    v4 = _sql_between(text, 'constexpr std::string_view kV4 = R"SQL(', ')SQL";')
     path = tmp_path_factory.mktemp("store") / "mm1.db"
     db = sqlite3.connect(path)
     db.executescript(
         "CREATE TABLE schema_version (version INTEGER NOT NULL, applied_ns INTEGER NOT NULL,"
         " fastmm TEXT NOT NULL);"
-        "INSERT INTO schema_version VALUES (3, 0, 'test');"
+        "INSERT INTO schema_version VALUES (4, 0, 'test');"
     )
     db.executescript(v1)
     db.executescript(v2)
@@ -78,6 +79,17 @@ def store_path(tmp_path_factory):
     )
     # Rows written under version 2, then migrated, as a store carried across the upgrade is.
     db.executescript(v3)
+    db.executescript(v4)
+    # A funding payment of -0.25 USDT on day two, under version 4.
+    db.executescript(
+        f"""
+        INSERT INTO funding VALUES
+          (1, 6, {day2 + 28800000000000}, '2024-03-05', {day2 + 28800000000000}, 0, 0,
+           'BTCUSDT', '9689322392', 'USDT', -25000000, 0, 75000000, -25000000, 0);
+        UPDATE pnl_daily SET funding_raw = -25000000, realized_raw = realized_raw - 25000000
+          WHERE day = '2024-03-05';
+        """
+    )
     db.commit()
     db.close()
     return path
@@ -109,7 +121,7 @@ def test_sessions_frame(store_path):
     assert df["realized"][0] == pytest.approx(1.5)
     assert df["fees"][0] == pytest.approx(0.00003)
     assert str(df["started"][0]) == "2024-03-04 00:00:00+00:00"
-    assert store.schema_version == 3
+    assert store.schema_version == 4
 
 
 def test_fills_frame_and_filters(store_path):
@@ -132,12 +144,24 @@ def test_pnl_by_day_and_by_currency(store_path):
         by_currency = store.pnl(by="currency")
         yesterday = store.pnl(since="2024-03-05", until="2024-03-05")
     assert list(by_instrument["day"]) == ["2024-03-04", "2024-03-05"]
-    assert by_instrument["realized"].sum() == pytest.approx(1.0)
-    assert by_instrument["net"].iloc[1] == pytest.approx(1.0 - 0.00002)
+    assert by_instrument["realized"].sum() == pytest.approx(0.75)
+    assert by_instrument["net"].iloc[1] == pytest.approx(0.75 - 0.00002)
     assert list(by_currency["settlement_ccy"]) == ["USDT", "USDT"]
     assert len(yesterday) == 1
     with pytest.raises(ValueError):
         store.pnl(by="galaxy")
+
+
+def test_funding_frame_and_pnl(store_path):
+    with fastmm.open_store(store_path) as store:
+        funding = store.funding()
+        pnl = store.pnl()
+    assert list(funding["funding_id"]) == ["9689322392"]
+    assert funding["amount"][0] == pytest.approx(-0.25)
+    assert funding["asset"][0] == "USDT"
+    # Funding is realized PnL; the day's row says how much of it.
+    assert pnl["funding"].iloc[1] == pytest.approx(-0.25)
+    assert pnl["realized"].iloc[1] == pytest.approx(0.75)
 
 
 def test_orders_positions_kills_and_journals(store_path):

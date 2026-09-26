@@ -12,6 +12,8 @@
 //                                                             `execution`)
 //   execution  data[] execType Trade                       -> OrderFillMsg (execId dedupe,
 //                                 cum = orderQty - leavesQty, isMaker -> liquidity)
+//                                 Funding (linear)         -> FundingMsg (amount = -execFee,
+//                                 execId, feeCurrency or the settle coin, execTime)
 //   wallet     data[].coin[]                               -> PositionUpdateMsg for each
 //                                 instrument whose base coin matches (qty = walletBalance)
 //   position   data[] positionIdx 0 (linear)               -> PositionUpdateMsg (qty = size,
@@ -43,6 +45,7 @@ struct PrivateParserStats {
   std::uint64_t frames = 0;
   std::uint64_t orders = 0;
   std::uint64_t executions = 0;
+  std::uint64_t funding = 0;  // execType Funding
   std::uint64_t wallets = 0;
   std::uint64_t positions = 0;
   std::uint64_t hedge_positions = 0;  // positionIdx 1 or 2: not decoded

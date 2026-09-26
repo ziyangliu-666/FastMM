@@ -13,13 +13,18 @@
 //   ACCOUNT_UPDATE a.P[]    ps == "BOTH"          -> PositionUpdateMsg (qty pa, avg ep) per known
 //                                                    symbol; LONG/SHORT (hedge mode) are counted
 //                                                    and skipped
+//                  a.m      FUNDING_FEE           -> `funding` set: the connector books the
+//                                                    payment from GET /fapi/v1/income (the event
+//                                                    has no id to deduplicate it by)
 //   listenKeyExpired                              -> Ignored with listen_key_expired set
 //
 // Client ids that FastMM did not mint are ignored, except fills (liquidations "autoclose-*", ADL,
 // manual trades): the engine books every fill into the position. Field names from the official
 // connector's generated models (binance-connector-python, derivatives_trading_usds_futures
 // websocket_streams models OrderTradeUpdateO, AccountUpdateAPInner), since the documentation page
-// embeds the schema. Funding fees arrive as balance-only ACCOUNT_UPDATE events and are not read.
+// embeds the schema. A funding fee arrives as an ACCOUNT_UPDATE with reason FUNDING_FEE, the symbol
+// in a.S and the balance change in B[].bc, and no transaction id ("User Data Streams", read
+// 2026-09-26).
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/venues/feed.hpp"
@@ -44,11 +49,13 @@ struct UserParserStats {
   std::uint64_t unknown_symbol = 0;
   std::uint64_t foreign_ids = 0;
   std::uint64_t listen_key_expired = 0;
+  std::uint64_t funding_events = 0;  // ACCOUNT_UPDATE with reason FUNDING_FEE
 };
 
 struct UserDecodeResult : DecodeResult {
   std::uint32_t count = 0;          // messages written back to back in `out`
   bool listen_key_expired = false;  // the stream stops until a new listenKey is used
+  bool funding = false;             // an ACCOUNT_UPDATE for a funding payment
 };
 
 class BinanceUsdmUserParser {

@@ -74,7 +74,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 3 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 4 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -95,6 +95,7 @@ One row per session, written at start and completed at shutdown.
 | `events`, `orders_sent`, `cancels_sent`, `replaces_sent`, `fills`, `risk_rejects`, `venue_rejects` | the runner's counters |
 | `records_dropped` | store records the ring could not take: the rows below are incomplete by that many |
 | `realized_raw`, `unrealized_raw`, `fees_raw` | the session's final PnL |
+| `funding_raw` | the part of `realized_raw` that is funding; null for sessions from before version 4 |
 
 ### session_journals
 
@@ -125,6 +126,21 @@ One row per execution, keyed `(session_id, seq)`, with a unique index on `(sessi
 | `synthetic` | 1 for a quantity the engine booked from a `cum_qty` jump, at the order's own price and with no fee |
 | `late` | 1 for a fill that arrived after the order was already terminal |
 
+### funding
+
+One row per perpetual funding payment the engine booked, keyed `(session_id, seq)`, with a unique index on `(session_id, instrument_id, funding_id)`. Version 4.
+
+| Column | Meaning |
+|---|---|
+| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when (the engine's clock), on what, where |
+| `exch_ns` | the venue's time of the payment |
+| `funding_id` | the venue's id of it (Binance `tranId`, Bybit `execId`) |
+| `amount_raw`, `asset` | the payment in the settlement currency: negative paid, positive received |
+| `position_qty_raw`, `position_realized_raw`, `position_funding_raw` | the position it was paid on, and the instrument's realized PnL and funding after it |
+| `replayed` | 1 when it came from the venue's history rather than its private stream |
+
+Funding is realized PnL (not a fee), so it is inside every `realized_raw` below; the `funding_raw` columns say how much of it.
+
 ### orders
 
 One row per order, keyed `(session_id, cl_ord_id)`, updated in place: the row holds the last state the session saw and `updates` counts how many changes it went through. `terminal` is 1 for `Filled`, `Canceled`, `Rejected`, `Expired` and `Replaced`; the `open_orders` view selects the rest.
@@ -133,7 +149,7 @@ One row per order, keyed `(session_id, cl_ord_id)`, updated in place: the row ho
 
 ### positions
 
-One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, and the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`.
+One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`, and (version 4) `funding_raw` and `total_funding_raw`.
 
 ### kill_events
 
@@ -145,7 +161,7 @@ One row per `(session_id, day, instrument_id)`, maintained as position records a
 
 | Column | Meaning |
 |---|---|
-| `realized_raw`, `fees_raw`, `gross_traded_raw`, `fills` | the change within that UTC day, not a running total |
+| `realized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, `funding_raw` | the change within that UTC day, not a running total (`funding_raw`, version 4, is part of `realized_raw`) |
 | `unrealized_raw`, `qty_raw` | the last snapshot of the day: a mark, not a flow |
 | `symbol`, `settlement_ccy` | denormalised from `instruments` |
 
@@ -155,7 +171,7 @@ A change that straddles midnight lands on the day of the snapshot that reports i
 
 | View | Rows |
 |---|---|
-| `pnl_by_day` | `day`, `symbol`, `settlement_ccy`, `realized_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions |
+| `pnl_by_day` | `day`, `symbol`, `settlement_ccy`, `realized_raw`, `funding_raw`, `fees_raw`, `net_raw`, `gross_traded_raw`, `fills`, summed over sessions |
 | `pnl_by_currency` | the same by `day` and `settlement_ccy` |
 | `open_orders` | `orders` with `terminal = 0` |
 
@@ -171,7 +187,7 @@ Nothing registers itself, for the reason the strategy registry does not: a stati
 
 `Backend::open` receives a `BackendOptions` holding the `[storage]` section verbatim, `[engine] name` and `[engine] journal_dir`: a backend parses its own keys from `GenericSection` and nothing is added to the central schema. Everything the interface calls runs off the engine thread and may allocate.
 
-The call order is `open`, `session_open`, `instruments`, then `begin` / records / `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the same store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `positions` and `recovery`; every query takes the same `QueryFilter` and returns string rows, because the store is read by people and tools, never on a hot path.
+The call order is `open`, `session_open`, `instruments`, then `begin` / records / `commit` repeatedly, then `session_close` and `close`. A `Reader` opens the same store read-only and answers `sessions`, `fills`, `orders`, `pnl`, `funding`, `positions` and `recovery`; every query takes the same `QueryFilter` and returns string rows, because the store is read by people and tools, never on a hot path.
 
 ## Recovery at start-up
 
@@ -179,7 +195,7 @@ The call order is `open`, `session_open`, `instruments`, then `begin` / records 
 
 With `[engine] restore_position` the session also carries the last position per instrument over and books what happened while it was down from the venue's trade history ([What survives a restart](../how-to/operations/running-in-production.md#1-what-survives-a-restart)). Where each venue's replay starts (`Recovery::venue_resume`, passed to `Venue::resume_executions`, and in the attach request behind a gateway):
 
-- **In the venue's clock.** From `exch_ns` of the venue's last stored fill, less 1 s, skipping the trade ids stored from there on. Both ends are venue time, so the host's clock does not enter. The second covers the order in which a venue publishes executions against their trade times (other symbols, a batch), which is milliseconds.
+- **In the venue's clock.** From `exch_ns` of the venue's last stored fill or funding payment, less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The second covers the order in which a venue publishes executions against their trade times (other symbols, a batch), which is milliseconds.
 - **At most 128 ids a venue.** When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
 - **Binance Spot and USDⓈ-M** resume each symbol at the trade id after the highest one stored (`fromId`), with no overlap and no ids (`Venue::resume_trade_ids`). In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
 - **A store from before version 3**, or a venue whose fills carry no venue time, starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.

@@ -24,6 +24,7 @@
 // engine clock.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/engine_config.hpp"
 #include "fastmm/core/engine_runner.hpp"
@@ -109,6 +110,16 @@ struct EngineStats {
   std::uint64_t clock_steps = 0;         // ... or had to step (old mapping off by > threshold)
   RejectCounts risk_rejects_by_reason;   // sums to risk_rejects
   RejectCounts venue_rejects_by_reason;  // sums to venue_rejects
+};
+
+// Funding payments booked (EventType::Funding), and those not booked: seen before (the same venue
+// id on the same instrument), on an instrument outside the table, or in an asset other than the
+// instrument's settlement currency. Apart from EngineStats: the event is rare, and its state stays
+// off the lines the market-data path uses.
+struct FundingStats {
+  std::uint64_t payments = 0;
+  std::uint64_t duplicates = 0;
+  std::uint64_t unbooked = 0;
 };
 
 template <class Strategy, ClockLike Clock, TransportLike Transport, FeedLike Feed = RingFeed>
@@ -348,6 +359,7 @@ class Engine {
   [[nodiscard]] Transport& transport() noexcept { return transport_; }
   [[nodiscard]] Context& context() noexcept { return ctx_; }
   [[nodiscard]] const EngineStats& stats() const noexcept { return stats_; }
+  [[nodiscard]] const FundingStats& funding_stats() const noexcept { return funding_->stats; }
   [[nodiscard]] const Seqlocked<LatencySnapshot>& latency_snapshot() const noexcept {
     return latency_pub_;
   }
@@ -393,6 +405,7 @@ class Engine {
     r.realized_pnl_raw = positions_.total_realized().raw;
     r.unrealized_pnl_raw = positions_.total_unrealized().raw;
     r.fees_raw = positions_.total_fees().raw;
+    r.funding_raw = positions_.total_funding().raw;
     const auto& h = latency_.histogram(LatencyInterval::TickToTrade);
     r.tick_to_trade_p50_ns = h.percentile(0.5);
     r.tick_to_trade_p99_ns = h.percentile(0.99);
@@ -615,6 +628,9 @@ class Engine {
       case EventType::PositionUpdate:
         on_position_update(msg_cast<PositionUpdateMsg>(h));
         break;
+      case EventType::Funding:
+        on_funding(msg_cast<FundingMsg>(h));
+        break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
         if (t.engine == kAckSweepTimer) {
@@ -764,6 +780,8 @@ class Engine {
     r.total_unrealized = positions_.total_unrealized();
     r.total_fees = positions_.total_fees();
     r.pnl_carry = cfg_.pnl_carry;
+    r.funding = positions_.funding(id);
+    r.total_funding = positions_.total_funding();
     account_record(records_.put(r.hdr));
   }
 
@@ -844,6 +862,25 @@ class Engine {
       r.exec_id = msg->exec_id;
       r.hdr.exch_ts = msg->hdr.exch_ts;
     }
+    account_record(records_.put(r.hdr));
+    emit_position(id);
+  }
+
+  void emit_funding(const FundingMsg& m) noexcept {
+    if (!records_.enabled()) return;
+    const InstrumentId id = m.hdr.instrument;
+    FundingRecord r;
+    records_.init(r, RecordType::Funding, id, instruments_.get(id).venue, now_, now_);
+    if ((m.flags & FundingMsg::kReplayed) != 0) r.hdr.flags |= RecordHeader::kReplayed;
+    r.hdr.exch_ts = m.hdr.exch_ts;
+    r.amount = m.amount;
+    const Position& p = positions_.get(id);
+    r.position_qty = p.qty;
+    r.position_realized = p.realized;
+    r.position_funding = positions_.funding(id);
+    r.total_funding = positions_.total_funding();
+    r.funding_id = m.funding_id;
+    r.asset = m.asset;
     account_record(records_.put(r.hdr));
     emit_position(id);
   }
@@ -1052,6 +1089,44 @@ class Engine {
       }
     }
     after_oms_update(u, f.hdr);
+  }
+
+  // A funding payment is realized PnL of its instrument, in the settlement currency it names, and
+  // counts against max_loss at once like a fill. Once per (venue id, instrument): the private
+  // stream and a replay of the venue's history can both deliver it. The strategy is not called: it
+  // reads the change in position(id).realized like any other PnL.
+  FASTMM_NOINLINE void on_funding(const FundingMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (!instruments_.contains(id)) {
+      if (funding_->stats.unbooked++ == 0)
+        FASTMM_LOG_WARN("funding on instrument {} outside the instrument table is not booked",
+                        id.value);
+      return;
+    }
+    if (!m.funding_id.empty()) {
+      const std::uint64_t key =
+          m.funding_id.hash() ^ (static_cast<std::uint64_t>(id.value) * 0x9E3779B97F4A7C15ULL);
+      if (!funding_->seen.assign(key, 1)) {
+        ++funding_->stats.duplicates;
+        return;
+      }
+    }
+    const Instrument& inst = instruments_.get(id);
+    if (!m.asset.empty() && !inst.settlement_ccy().empty() &&
+        !same_currency(m.asset.view(), inst.settlement_ccy())) {
+      ++funding_->stats.unbooked;
+      FASTMM_LOG_ERROR("funding {} of {} {} on {} is not in its settlement currency {}: not booked",
+                       m.funding_id.view(),
+                       m.amount,
+                       m.asset.view(),
+                       inst.symbol.view(),
+                       inst.settlement_ccy());
+      return;
+    }
+    ++funding_->stats.payments;
+    positions_.on_funding(id, m.amount);
+    emit_funding(m);
+    if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
   }
 
   void on_position_update(const PositionUpdateMsg& m) noexcept {
@@ -1980,6 +2055,15 @@ class Engine {
   bool started_ = false;
   bool finished_ = false;
   std::atomic<bool> stop_{false};
+  // Funding payments booked, by venue id and instrument (on_funding), and the counters. Payments
+  // come a few a day per instrument; the window reaches back further than any replay of the venue's
+  // history.
+  static constexpr std::size_t kFundingWindow = 4096;
+  struct FundingState {
+    RecentMap<std::uint64_t, std::uint8_t, kFundingWindow> seen;
+    FundingStats stats;
+  };
+  std::unique_ptr<FundingState> funding_ = std::make_unique<FundingState>();
 };
 
 }  // namespace fastmm

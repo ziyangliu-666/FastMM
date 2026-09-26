@@ -361,10 +361,18 @@ namespace {
     o.reset();
     if (o[key].get_string().get(out) != sj::SUCCESS) out = {};
   };
-  if (!req("symbol", rec.symbol) || !req("execId", rec.exec_id) ||
-      !req("execType", rec.exec_type) || !req("orderId", rec.order_id) || !req("side", rec.side) ||
-      !req("execPrice", rec.exec_price) || !req("execQty", rec.exec_qty))
+  if (!req("symbol", rec.symbol) || !req("execId", rec.exec_id) || !req("execType", rec.exec_type))
     return false;
+  // A funding row names no order of the account's; only its fee and time are read.
+  if (rec.exec_type == "Funding") {
+    opt("orderId", rec.order_id);
+    opt("side", rec.side);
+    opt("execPrice", rec.exec_price);
+    opt("execQty", rec.exec_qty);
+  } else if (!req("orderId", rec.order_id) || !req("side", rec.side) ||
+             !req("execPrice", rec.exec_price) || !req("execQty", rec.exec_qty)) {
+    return false;
+  }
   opt("orderLinkId", rec.order_link_id);
   opt("execFee", rec.exec_fee);
   opt("feeCurrency", rec.fee_currency);

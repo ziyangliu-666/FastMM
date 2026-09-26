@@ -310,6 +310,7 @@ class BybitVenue final : public Venue {
     std::int64_t time_ms = 0;
     Side side = Side::Buy;
     bool maker = false;
+    bool funding = false;  // execType Funding: `fee` is the funding fee, positive paid
   };
   std::int64_t exec_since_ms_ = 0;
   std::unordered_set<std::string> exec_edge_ids_;   // ids at exec_since_ms_, already forwarded
