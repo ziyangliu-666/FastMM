@@ -5,6 +5,7 @@
 
 #include "fake_venue_util.hpp"
 
+#include "fastmm/core/position.hpp"
 #include "fastmm/venues/deribit/deribit_md_feed.hpp"
 #include "fastmm/venues/deribit/deribit_rest_decoder.hpp"
 #include "fastmm/venues/deribit/deribit_venue.hpp"
@@ -289,7 +290,7 @@ TEST_CASE("deribit.rest: get_instruments decoding and the reference data mapping
   CHECK(c.tick_steps[0].tick == px("0.0005"));
   CHECK(c.contract_size == qt("1"));
   CHECK(c.min_trade_amount == qt("0.1"));
-  CHECK(c.inverse());
+  CHECK_FALSE(c.inverse());             // reversed, but priced in the BTC it settles in
   CHECK(c.settlement_period == "day");  // not in the OpenAPI enum
   CHECK(c.is_active);
 
@@ -304,7 +305,19 @@ TEST_CASE("deribit.rest: get_instruments decoding and the reference data mapping
   CHECK(inst.lot == qt("0.1"));
   CHECK(inst.min_qty == qt("0.1"));
   CHECK(inst.contract_multiplier == qt("1"));
-  CHECK(inst.inverse());
+  CHECK_FALSE(inst.inverse());
+  // Linear in the premium, in BTC: one contract at 0.0065 is 0.0065 BTC, and 0.0065 -> 0.0075 on
+  // two contracts gains 0.002 BTC.
+  CHECK(inst.settlement_ccy() == "BTC");
+  CHECK(inst.notional(px("0.0065"), qt("1")) == Notional::from_decimal("0.0065").value());
+  {
+    Instrument opt = inst;
+    opt.id = InstrumentId{0};
+    PositionTracker book;
+    book.on_fill(opt.id, Side::Buy, px("0.0065"), qt("2"), Notional{}, opt);
+    book.mark(opt.id, px("0.0075"), opt);
+    CHECK(book.get(opt.id).unrealized == Notional::from_decimal("0.002").value());
+  }
   CHECK(inst.enabled());
   CHECK(inst.price_decimals == 4);
   CHECK(inst.base.view() == "BTC");
