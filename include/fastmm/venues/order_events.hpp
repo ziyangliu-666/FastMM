@@ -124,6 +124,28 @@ inline void emit_replayed_fill(EventSink& sink,
   static_cast<void>(sink.push(m.hdr));
 }
 
+// A funding payment (FundingMsg): `amount` signed in `asset`, negative paid. `replayed` when it
+// comes from the venue's history rather than its private stream.
+inline void emit_funding(EventSink& sink,
+                         VenueId venue,
+                         InstrumentId inst,
+                         std::string_view funding_id,
+                         Notional amount,
+                         std::string_view asset,
+                         std::int64_t time_ms,
+                         bool replayed) noexcept {
+  FundingMsg m{};
+  init_header(m, EventType::Funding, inst, venue);
+  m.hdr.exch_ts = Timestamp{time_ms * 1'000'000};
+  m.amount = amount;
+  m.funding_id.assign(funding_id);
+  m.asset.assign(asset);
+  m.flags = replayed ? FundingMsg::kReplayed : std::uint8_t{0};
+  m.hdr.recv_ts = wall_now();
+  m.hdr.t0_cycles = rdtscp();
+  static_cast<void>(sink.push(m.hdr));
+}
+
 // The connector cannot trade on this venue any more (error map HardStop / Fatal, failed
 // authentication): asks the engine to trip this venue's kill switch only
 // (ControlCommand::TripVenueKill, the reason in `arg`). Travels with the order events, so it is

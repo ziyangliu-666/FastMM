@@ -117,6 +117,14 @@ class BinanceUsdmOrderEncoder {
                                std::int64_t timestamp_ms,
                                RestRequest& out);
 
+  // GET /fapi/v1/income?incomeType=FUNDING_FEE (weight 30): the account's funding payments on every
+  // symbol from `start_ms` to `end_ms` (both inclusive; `end_ms` 0 leaves it to the venue).
+  bool encode_rest_funding_income(std::int64_t start_ms,
+                                  std::int64_t end_ms,
+                                  int limit,
+                                  std::int64_t timestamp_ms,
+                                  RestRequest& out);
+
   // Any signed GET with an optional symbol, for the control path before attach().
   static bool encode_rest_signed_get(const Signer& signer,
                                      int recv_window_ms,

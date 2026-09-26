@@ -24,8 +24,14 @@
 // software). ACCOUNT_UPDATE and ORDER_TRADE_UPDATE are not ordered against each other, so
 // forwarding every position event would double count fills.
 //
-// Funding payments, leverage and margin mode are not managed: load_reference_data() logs the
-// position mode, leverage, margin type and balances, and refuses to start in hedge mode.
+// Funding: GET /fapi/v1/income?incomeType=FUNDING_FEE, account-wide, becomes one FundingMsg per
+// payment on a subscribed symbol (tranId as its id). It runs with every execution replay (connect,
+// reconciliation, the periodic sweep) from its own watermark, is retried like it, and runs a second
+// after an ACCOUNT_UPDATE with reason FUNDING_FEE: that event names the symbol but has no id, so
+// the income history is what is booked, once, whichever path found it first.
+//
+// Leverage and margin mode are not managed: load_reference_data() logs the position mode,
+// leverage, margin type and balances, and refuses to start in hedge mode.
 //
 // What this connector shares with Binance Spot, and what it does not. Shared, because Binance
 // documents one contract for both: request signing and the WS API frame
@@ -257,6 +263,10 @@ class BinanceUsdmVenue final : public Venue {
   bool request_executions_for(InstrumentId id);
   void emit_executions(InstrumentId id, std::string_view json, std::int64_t window_end_ms);
   void finish_execution_replay(bool ok);
+  // GET /fapi/v1/income?incomeType=FUNDING_FEE from funding_since_ms_; `emit_funding_rows` turns
+  // the reply into funding payments and moves the watermark.
+  void request_funding();
+  void emit_funding_rows(std::string_view json, std::int64_t window_end_ms, bool complete);
   [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
   void remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept;
   void emit_reconcile();
@@ -339,6 +349,14 @@ class BinanceUsdmVenue final : public Venue {
   bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
   std::int64_t exec_last_ns_ = 0;     // when the last replay started (the periodic one)
   std::int64_t exec_retry_ns_ = 0;
+  // Funding replay: the venue time to ask from (inclusive), the tranIds forwarded at that time,
+  // and a query a user-stream funding event asked for (reactor time; 0 none).
+  std::int64_t funding_since_ms_ = 0;
+  std::unordered_set<std::int64_t> funding_edge_ids_;
+  bool funding_active_ = false;
+  bool funding_retry_wanted_ = false;
+  std::int64_t funding_retry_ns_ = 0;
+  std::int64_t funding_due_ns_ = 0;
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::int64_t listen_key_retry_ns_ = 0;

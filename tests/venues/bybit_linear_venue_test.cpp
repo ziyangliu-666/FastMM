@@ -1,8 +1,9 @@
 // BybitVenue with category = "linear" against a scripted fake Bybit v5: reference data for a
 // perpetual, the position-mode check at start-up, the start-up sweep's positions, an order round
-// trip, a fill missed on the private stream booked from execution/list, the position topic
-// correcting the engine, and disconnect-cancel-all armed for derivatives. Wire formats as in
-// bybit_linear_test.cpp (Bybit v5 docs read 2026-09-26); nothing here has met the real venue.
+// trip, a fill missed on the private stream booked from execution/list, funding payments from both,
+// the position topic correcting the engine, and disconnect-cancel-all armed for derivatives. Wire
+// formats as in bybit_linear_test.cpp (Bybit v5 docs read 2026-09-26); nothing here has met the
+// real venue.
 #include "fake_venue_util.hpp"
 
 #include "fastmm/net/crypto.hpp"
@@ -622,4 +623,98 @@ TEST_CASE("bybit_linear.venue: disconnect-cancel-all is armed for derivatives") 
     CHECK(h2.srv.frames("dcp").empty());
   }
   h2.srv.stop();
+}
+
+namespace {
+
+// A Funding row of GET /v5/execution/list (execFee positive: paid).
+std::string funding_row(const char* symbol, const char* id, const char* fee, long long time_ms) {
+  return std::string(R"({"symbol":")") + symbol +
+         R"(","orderId":"1b3ffe0e-6e7a-4e8f-9fb0-2d2e31b0a7b2","orderLinkId":"","side":"Buy","orderPrice":"0","orderQty":"0","leavesQty":"0","orderType":"UNKNOWN","stopOrderType":"UNKNOWN","execFee":")" +
+         fee + R"(","execId":")" + id +
+         R"(","execPrice":"60010.2","execQty":"0.2","execType":"Funding","execValue":"12002.04","execTime":")" +
+         std::to_string(time_ms) +
+         R"(","feeCurrency":"","isMaker":false,"feeRate":"0.0000416","markPrice":"60010.2","closedSize":"","seq":2})";
+}
+
+std::string funding_frame(const char* id, const char* fee, long long time_ms) {
+  return std::string(R"({"topic":"execution","id":"f1","creationTime":)") +
+         std::to_string(time_ms + 10) + R"(,"data":[{"category":"linear",)" +
+         funding_row("BTCUSDT", id, fee, time_ms).substr(1) + "]}";
+}
+
+std::vector<const FundingMsg*> funding_of(const Collected& c) {
+  std::vector<const FundingMsg*> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) == EventType::Funding)
+      out.push_back(&RecordingSink::as<FundingMsg>(m));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("bybit_linear.venue: funding from execution/list and from the private topic") {
+  Harness h;
+  // Paid before this session connected, within its replay: the start-up sweep books it. A
+  // payment on a symbol not traded here is not forwarded.
+  h.execution_page = exec_page(
+      {funding_row("BTCUSDT", "fund-1", "0.5", kT), funding_row("ETHUSDT", "fund-eth", "0.1", kT)});
+  {
+    Live l(h, h.section(), [](BybitVenue& v) { v.resume_executions(kT - 1'000, {}); });
+    l.wait_for_sweep();
+    auto got = funding_of(l.oc);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0]->hdr.instrument == kBtc);
+    CHECK(got[0]->hdr.venue == kVenue);
+    CHECK(got[0]->amount == Notional::from_decimal("-0.5").value());
+    CHECK(got[0]->asset.view() == "USDT");
+    CHECK(got[0]->funding_id.view() == "fund-1");
+    CHECK(got[0]->hdr.exch_ts == Timestamp{kT * 1'000'000});
+    CHECK((got[0]->flags & FundingMsg::kReplayed) != 0);
+    CHECK(l.oc.count(EventType::OrderFill) == 0);  // not a fill
+
+    // The next payment on the private topic: forwarded as it comes, under its execId, which a
+    // later replay of the same row carries too (the engine books the id once).
+    h.srv.send_to("/v5/private", funding_frame("fund-2", "-0.25", kT + 28'800'000));
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return funding_of(l.oc).size() == 2;
+    }));
+    got = funding_of(l.oc);
+    CHECK(got[1]->funding_id.view() == "fund-2");
+    CHECK(got[1]->amount == Notional::from_decimal("0.25").value());
+    CHECK((got[1]->flags & FundingMsg::kReplayed) == 0);
+
+    // A reconciliation replays from the watermark: the row it forwarded is not forwarded again.
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      std::size_t ends = 0;
+      for (const auto& m : l.oc.all) {
+        if (RecordingSink::type_of(m) == EventType::Reconcile &&
+            RecordingSink::as<ReconcileMsg>(m).kind == ReconcileMsg::Kind::End)
+          ++ends;
+      }
+      return ends == 2;
+    }));
+    CHECK(funding_of(l.oc).size() == 2);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit_linear.venue: a restart skips the funding its store holds") {
+  Harness h;
+  h.execution_page = exec_page({funding_row("BTCUSDT", "fund-1", "0.5", kT),
+                                funding_row("BTCUSDT", "fund-3", "0.7", kT + 5)});
+  {
+    Live l(h, h.section(), [](BybitVenue& v) {
+      v.resume_executions(kT - 1'000, {std::string(kFundingIdPrefix) + "fund-1"});
+    });
+    l.wait_for_sweep();
+    const auto got = funding_of(l.oc);
+    REQUIRE(got.size() == 1);
+    CHECK(got[0]->funding_id.view() == "fund-3");
+  }
+  h.srv.stop();
 }

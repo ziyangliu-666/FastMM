@@ -9,6 +9,7 @@
 //   GET /fapi/v3/positionRisk      [{symbol,positionSide,positionAmt,entryPrice,...}]
 //   GET /fapi/v1/positionSide/dual {"dualSidePosition":bool}
 //   GET /fapi/v1/symbolConfig      [{symbol,marginType,isAutoAddMargin,leverage,maxNotionalValue}]
+//   GET /fapi/v1/income            [{symbol,incomeType,income,asset,info,time,tranId,tradeId}]
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
 
@@ -70,5 +71,17 @@ struct BalanceRecord {
   Notional available{};
 };
 std::string decode_balance(std::string_view json, std::vector<BalanceRecord>& out);
+
+// GET /fapi/v1/income: one row per income entry ("Get Income History"). tranId is "unique in the
+// same incomeType for a user"; income is signed (negative paid).
+struct IncomeRecord {
+  std::string symbol;
+  std::string income_type;  // "FUNDING_FEE"
+  Notional income{};
+  std::string asset;
+  std::int64_t time_ms = 0;
+  std::int64_t tran_id = 0;
+};
+std::string decode_income(std::string_view json, std::vector<IncomeRecord>& out);
 
 }  // namespace fastmm::venues::binance_usdm

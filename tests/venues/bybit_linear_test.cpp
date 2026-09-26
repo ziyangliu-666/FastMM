@@ -269,3 +269,65 @@ TEST_CASE("bybit_linear.private_parser: the position topic becomes a signed Posi
   j = padded_fixture("bybit/linear_private_position.json");
   CHECK(spot.decode(j.view(), Timestamp{11}, Cycles{12}, s.span()).status == ParseStatus::Ignored);
 }
+
+// A funding execution as Bybit writes it (enum page: execType "Funding", orderType "UNKNOWN";
+// execFee is the funding fee, positive when paid, the opposite of the transaction log's `funding`
+// field, which "Positive fee value means receive funding" and "This is opposite to the execFee from
+// Get Trade History"). execQty is the position, execPrice the mark price.
+TEST_CASE("bybit_linear.private_parser: a Funding execution becomes a funding payment") {
+  TestUniverse u;
+  BybitPrivateParser p(u.symbols, u.instruments, kBybit, 1U << 20, BybitCategory::Linear);
+  Scratch s;
+  const std::string frame =
+      R"({"id":"e9","topic":"execution","creationTime":1789315200010,"data":[)"
+      R"({"category":"linear","symbol":"BTCUSDT","closedSize":"","execFee":"0.5","execId":"fund-7c1a","execPrice":"60010.2","execQty":"0.2","execType":"Funding","execValue":"12002.04","feeRate":"0.0000416","tradeIv":"","markIv":"","blockTradeId":"","markPrice":"60010.2","indexPrice":"","underlyingPrice":"","leavesQty":"0","orderId":"1b3ffe0e-6e7a-4e8f-9fb0-2d2e31b0a7b2","orderLinkId":"","orderPrice":"0","orderQty":"0","orderType":"UNKNOWN","stopOrderType":"UNKNOWN","side":"Buy","execTime":"1789315200000","isLeverage":"0","isMaker":false,"seq":140612148849391,"feeCurrency":""},)"
+      R"({"category":"linear","symbol":"BTCUSDT","execFee":"-0.3","execId":"fund-9d2b","execPrice":"60010.2","execQty":"0.2","execType":"Funding","orderId":"x","orderLinkId":"","side":"Sell","execTime":"1789315200001","isMaker":false,"feeCurrency":"USDT"},)"
+      R"({"category":"linear","symbol":"ETHUSDT","execFee":"0.1","execId":"fund-eth","execType":"Funding","orderId":"y","orderLinkId":"","side":"Buy","execTime":"1789315200002","feeCurrency":""},)"
+      R"({"category":"linear","symbol":"BTCUSDT","execFee":"0.1","execId":"adl-1","execPrice":"60000","execQty":"0.1","execType":"AdlTrade","orderId":"z","orderLinkId":"","side":"Buy","orderQty":"0.1","leavesQty":"0","execTime":"1789315200003"}]})";
+  const PaddedJson j(frame);
+  const MdDecodeResult r = p.decode(j.view(), Timestamp{11}, Cycles{12}, s.span());
+  REQUIRE(r.ok());
+  REQUIRE(r.count == 2);  // ETHUSDT is not traded on this venue; the ADL trade is not funding
+  const auto& paid = nth<FundingMsg>(s, 0);
+  CHECK(paid.hdr.type == EventType::Funding);
+  CHECK(paid.hdr.instrument == kBtc);
+  CHECK(paid.hdr.venue == kBybit);
+  CHECK(paid.amount == Notional::from_decimal("-0.5").value());
+  CHECK(paid.asset.view() == "USDT");  // feeCurrency "": the settle coin
+  CHECK(paid.funding_id.view() == "fund-7c1a");
+  CHECK(paid.hdr.exch_ts.ns == 1789315200000LL * 1'000'000);
+  CHECK((paid.flags & FundingMsg::kReplayed) == 0);
+  const auto& received = nth<FundingMsg>(s, 1);
+  CHECK(received.amount == Notional::from_decimal("0.3").value());
+  CHECK(received.funding_id.view() == "fund-9d2b");
+  CHECK(p.stats().funding == 2);
+
+  // The spot parser has no funding: a linear row is another category's.
+  BybitPrivateParser spot(u.symbols, u.instruments, kBybit);
+  CHECK(spot.decode(j.view(), Timestamp{11}, Cycles{12}, s.span()).status == ParseStatus::Ignored);
+}
+
+TEST_CASE("bybit_linear.decoder: an execution/list Funding row needs no order fields") {
+  BybitResponseDecoder d;
+  const std::string body =
+      R"({"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"","category":"linear","list":[)"
+      R"({"symbol":"BTCUSDT","execFee":"0.5","execId":"fund-7c1a","execType":"Funding","execTime":"1789315200000","feeCurrency":"USDT"}]},"retExtInfo":{},"time":1789315201000})";
+  const PaddedJson j(body);
+  std::string cursor;
+  std::vector<ExecutionRecord> rows;
+  std::vector<std::string> ids;
+  REQUIRE(d.decode_executions(j.view(), cursor, [&](const ExecutionRecord& e) {
+    rows.push_back(e);
+    ids.emplace_back(e.exec_id);
+  }) == ParseStatus::Ok);
+  REQUIRE(rows.size() == 1);
+  CHECK(ids[0] == "fund-7c1a");
+  CHECK(rows[0].exec_type == "Funding");
+  CHECK(rows[0].exec_fee == "0.5");
+  CHECK(rows[0].exec_time_ms == 1789315200000);
+  // A Trade row still needs its order fields.
+  std::string trade = body;
+  trade.replace(trade.find("\"Funding\""), 9, "\"Trade\"");
+  const PaddedJson tj(trade);
+  CHECK(d.decode_executions(tj.view(), cursor, [](const ExecutionRecord&) {}) != ParseStatus::Ok);
+}

@@ -256,8 +256,21 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
     if (ev["T"].get_int64().get(tx_time) != sj::SUCCESS) return malformed();
     od::object a;
     if (ev["a"].get_object().get(a) != sj::SUCCESS) return malformed();
+    // A funding payment: the event names the symbol (a.S, since 2026-08-07) and the balance change
+    // but carries no id, so the connector books it from the income history, where it has one.
+    std::string_view reason;
+    if (a["m"].get_string().get(reason) != sj::SUCCESS) reason = {};
+    const bool funding = reason == "FUNDING_FEE";
+    if (funding) {
+      ++stats_.funding_events;
+      r.funding = true;
+    }
     od::array positions;
-    if (a["P"].get_array().get(positions) != sj::SUCCESS) return ignored();  // balance only
+    if (a["P"].get_array().get(positions) != sj::SUCCESS) {  // balance only
+      UserDecodeResult out_r = ignored();
+      out_r.funding = funding;
+      return out_r;
+    }
     std::uint32_t written = 0;
     std::uint32_t count = 0;
     for (auto pos_res : positions) {

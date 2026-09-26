@@ -269,6 +269,25 @@ bool BinanceUsdmOrderEncoder::encode_rest_user_trades(std::string_view symbol,
   return finish_rest(p, signer_, out);
 }
 
+bool BinanceUsdmOrderEncoder::encode_rest_funding_income(std::int64_t start_ms,
+                                                         std::int64_t end_ms,
+                                                         int limit,
+                                                         std::int64_t timestamp_ms,
+                                                         RestRequest& out) {
+  ParamList p;  // sorted by name
+  if (end_ms > 0) p.add_int("endTime", end_ms);
+  p.add("incomeType", "FUNDING_FEE");
+  p.add_int("limit", limit);
+  p.add_int("recvWindow", recv_window_ms_);
+  if (start_ms > 0) p.add_int("startTime", start_ms);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/fapi/v1/income";
+  out.weight = 30;
+  out.is_order = false;
+  return finish_rest(p, signer_, out);
+}
+
 bool BinanceUsdmOrderEncoder::encode_rest_signed_get(const Signer& signer,
                                                      int recv_window_ms,
                                                      std::string_view path,

@@ -1368,11 +1368,12 @@ void BybitVenue::emit_reconcile() {
 
 // ---- execution replay -------------------------------------------------------------------------
 //
-// GET /v5/execution/list, account-wide for category=spot, before every open-order snapshot. Each
+// GET /v5/execution/list, account-wide for the category, before every open-order snapshot. Each
 // "Trade" row on a subscribed symbol is emitted as an ordinary fill carrying Bybit's execId, so the
 // OMS keeps the ones it never saw and drops the rest; that is what recovers a fill that finished an
-// order, which the snapshot no longer mentions. Other execTypes (Funding, AdlTrade, BustTrade,
-// Settle, Delivery) are derivatives events, not fills of spot orders, and are skipped as the
+// order, which the snapshot no longer mentions. A "Funding" row (linear) is emitted as a funding
+// payment under its execId, which the engine books once whether or not the private stream
+// delivered it too. Other execTypes (AdlTrade, BustTrade, Settle, Delivery) are skipped as the
 // private stream skips them.
 //
 // Rows come newest first and a range may span at most 7 days, so the replay walks 7-day windows
@@ -1464,7 +1465,9 @@ void BybitVenue::request_executions_page(const std::string& cursor) {
             decoder_->decode_executions(padded.view(), next_cursor, [&](const ExecutionRecord& e) {
               if (exec_window_low_ms_ == 0 || e.exec_time_ms < exec_window_low_ms_)
                 exec_window_low_ms_ = e.exec_time_ms;
-              if (e.exec_type != "Trade") return;
+              const bool funding =
+                  e.exec_type == "Funding" && cfg_.category == BybitCategory::Linear;
+              if (e.exec_type != "Trade" && !funding) return;
               const InstrumentId inst = symbols_->find(id_, e.symbol);
               if (!inst.valid()) return;  // another symbol on this account: not ours
               exec_rows_.push_back(ExecRow{inst,
@@ -1478,7 +1481,8 @@ void BybitVenue::request_executions_page(const std::string& cursor) {
                                            std::string(e.fee_rate),
                                            e.exec_time_ms,
                                            e.side == "Sell" ? Side::Sell : Side::Buy,
-                                           e.is_maker});
+                                           e.is_maker,
+                                           funding});
             });
         if (st != ParseStatus::Ok) {
           ++stats_.rest_errors;
@@ -1533,7 +1537,27 @@ void BybitVenue::emit_executions() {
   });
   std::size_t count = 0;
   for (const ExecRow& e : exec_rows_) {
-    if (exec_edge_ids_.count(e.exec_id) != 0) continue;   // forwarded by the last pass
+    if (exec_edge_ids_.count(e.exec_id) != 0) continue;  // forwarded by the last pass
+    if (e.funding) {
+      if (known_exec_ids_.count(std::string(kFundingIdPrefix) + e.exec_id) != 0) continue;
+      const auto fee = parse_notional(e.fee);
+      if (!fee) {
+        FASTMM_LOG_WARN("{}: funding {} has an unreadable execFee", cfg_.name, e.exec_id);
+        continue;
+      }
+      const Instrument& in = instruments_->get(e.inst);
+      emit_funding(*order_sink_,
+                   id_,
+                   e.inst,
+                   e.exec_id,
+                   Notional{} - *fee,
+                   e.fee_currency.empty() ? in.settlement_ccy() : std::string_view(e.fee_currency),
+                   e.time_ms,
+                   /*replayed=*/true);
+      ++stats_.order_events;
+      ++stats_.funding_fetched;
+      continue;
+    }
     if (known_exec_ids_.count(e.exec_id) != 0) continue;  // the earlier session booked it
     const auto px = parse_price(e.price);
     const auto qty = parse_qty(e.qty);

@@ -58,7 +58,7 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Endpoints (from `configs/binance-usdm-demo.toml`): streams `wss://demo-fstream.binance.com` (`/public`, `/market`, `/private`), WebSocket API `wss://testnet.binancefuture.com/ws-fapi/v1`, REST `https://demo-fapi.binance.com`.
 - Contract: the BTCUSDT perpetual, tick 0.10, lot 0.0001, minimum notional 50 USDT. The config quotes 0.001 BTC about 1 bps from mid with `max_position = "0.003"` and `max_loss = "20"`.
 - Fees: 2 bps maker and 4 bps taker, charged in USDT (`GET /fapi/v1/commissionRate` on the Demo account).
-- Leverage and margin mode are account settings: the log shows them at startup and the connector changes nothing. Funding payments are not booked.
+- Leverage and margin mode are account settings: the log shows them at startup and the connector changes nothing. Funding payments are booked from the income history ([Venues](../../reference/venues.md#positions-and-reconciliation)).
 - After a session, flatten any remaining position with a reduce-only order.
 
 ### Binance Spot testnet

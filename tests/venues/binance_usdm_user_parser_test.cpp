@@ -177,3 +177,34 @@ TEST_CASE("binance_usdm.user: listenKeyExpired, foreign ids, AMENDMENT, balance-
     CHECK(p.decode(margin_call.view(), kRecv, kT0, s.span()).status == ParseStatus::Ignored);
   }
 }
+
+TEST_CASE("binance_usdm.user: an ACCOUNT_UPDATE for funding says so, crossed or isolated") {
+  TestUniverse u;
+  BinanceUsdmUserParser p(u.symbols, u.instruments, VenueId{0});
+  Scratch s;
+  {
+    // Crossed: the balance and the symbol, no position (the connector books it from the income
+    // history, which has an id for it).
+    const PaddedJson crossed(
+        R"({"e":"ACCOUNT_UPDATE","E":1789500000001,"T":1789500000000,"a":{"m":"FUNDING_FEE","S":"BTCUSDT","B":[{"a":"USDT","wb":"4999.625","cw":"4999.625","bc":"-0.375"}]}})");
+    const UserDecodeResult r = p.decode(crossed.view(), kRecv, kT0, s.span());
+    CHECK(r.status == ParseStatus::Ignored);
+    CHECK(r.funding);
+    CHECK(r.count == 0);
+  }
+  {
+    // Isolated: the position too, which is decoded as before.
+    const PaddedJson isolated(
+        R"({"e":"ACCOUNT_UPDATE","E":1789500000001,"T":1789500000000,"a":{"m":"FUNDING_FEE","S":"BTCUSDT","B":[{"a":"USDT","wb":"4999.625","cw":"99.625","bc":"-0.375"}],"P":[{"s":"BTCUSDT","pa":"0.002","ep":"70000.0","cr":"0","up":"0.1","mt":"isolated","iw":"99.625","ps":"BOTH"}]}})");
+    const UserDecodeResult r = p.decode(isolated.view(), kRecv, kT0, s.span());
+    REQUIRE(r.status == ParseStatus::Ok);
+    CHECK(r.funding);
+    REQUIRE(r.count == 1);
+    CHECK(s.as<PositionUpdateMsg>().qty == qty("0.002"));
+  }
+  {
+    const auto fx = padded_fixture("binance_usdm/account_update.json");
+    CHECK_FALSE(p.decode(fx.view(), kRecv, kT0, s.span()).funding);  // reason ORDER
+  }
+  CHECK(p.stats().funding_events == 2);
+}
