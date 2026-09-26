@@ -1,12 +1,13 @@
 # Go-live checklist
 
-Repeat this list whenever the binary, config or strategy parameters change. What this list does not cover, because no configuration fixes it, is in [Running this in production](running-in-production.md); the economics of the shipped strategies are in [Economics](../../explanation/economics.md).
+Repeat this list whenever the binary, config or strategy parameters change. Limits no configuration fixes are in [Running this in production](running-in-production.md); the economics of the shipped strategies are in [Economics](../../explanation/economics.md).
 
 ## The build and the strategy
 
 - [ ] The release build passes its tests: `ctest --preset release`.
 - [ ] You have run a backtest with the parameters you will use, for example `./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic` with your `[strategy.params]`.
 - [ ] It survives the simulated exchange with faults. Enable `[sim.faults]` in a copy of `configs/sim.toml` (market-data drop, order-channel drop, skipped depth update, delayed acks, rejects, rate limits; see [fastmm-sim-exchange](../../reference/sim-exchange.md#fault-injection)) and run `./scripts/run-sim.sh --duration 5m --sim-config <your sim config>`. Each ERROR line in the engine log follows from an injected fault, and the shutdown line says `cancel_all ok`.
+- [ ] A restart restores the position: `kill -9` a keyed session with a position, start it again, and check that it logs `restored position` and ends at the venue's position with no orders the dead process left ([What survives a restart](running-in-production.md#1-what-survives-a-restart)).
 - [ ] The strategy is deterministic: record a backtest with `./build/release/bin/fastmm-backtest --config <your config> --data synthetic --out - --journal-out runs/bt/session.fmj` and replay it with `./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify`, which must exit with code 0.
 - [ ] A live session replays: replay the journal of the simulator run above (the log names it, `journal: <path>`) with `./build/release/bin/fastmm-replay --journal <path> --verify`, which must print `replay MATCH` and exit with code 0 ([Journals, replay and PnL](journals-replay-pnl.md#replay)). Do the same for a journal of the practice session below.
 
@@ -21,14 +22,16 @@ Repeat this list whenever the binary, config or strategy parameters change. What
 
 A `[risk]` limit is off when it is `0` or missing ([Configuration](../../reference/configuration.md#risk)).
 
-- [ ] `max_order_qty` and `max_order_notional` (quote currency; BTC for Deribit options).
+- [ ] `max_order_qty` and `max_order_notional` (settlement currency: the base coin for an inverse contract).
 - [ ] `max_position` per instrument, which counts same-side open orders.
 - [ ] `max_open_orders` per instrument.
 - [ ] `price_collar_bps` and `fat_finger_bps`.
 - [ ] `stale_md_ms`.
-- [ ] `max_loss`, sized to what you accept losing in one session. `[engine] on_kill` decides what the process does when it trips ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)).
+- [ ] `max_gross_notional` and `max_net_notional` across instruments.
+- [ ] `max_loss`, sized to what you accept losing: the budget carries across restarts until `--clear-kill` ([The latched loss budget](kill-switch-and-shutdown.md#the-latched-loss-budget)). `[engine] on_kill` decides what the process does when it trips ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)).
+- [ ] With instruments in more than one settlement currency, `[accounting]` names the reporting currency and a rate source for each other currency; without it a start with `max_loss` exits 3 ([Configuration](../../reference/configuration.md#accounting)).
 - [ ] `orders_per_sec` and `burst` below the venue's order rate limit for your account. The connectors also limit themselves (Bybit `orders_per_second`, Deribit `matching_engine_rate` and `matching_engine_burst`, Binance from `exchangeInfo`).
-- [ ] `stp = true` unless you intend to trade against yourself.
+- [ ] `stp = true` unless you trade against yourself on purpose.
 
 ## Keys and access
 
@@ -39,7 +42,7 @@ A `[risk]` limit is off when it is `0` or missing ([Configuration](../../referen
 
 ## The host
 
-- [ ] On bare metal, `[engine] cpu` and `net_cpus` pin the engine and network threads to isolated cores with `spin_mode = "busy"`. Shared machines use `"adaptive"`; WSL2 and laptops also use `cpu = -1`. `configs/profiles/production-latency.toml` has the `[engine]` table for a dedicated host: busy spinning on isolated cores, `timer_slack_ns = 1`, `lock_memory = true` (raise `ulimit -l`, `LimitMEMLOCK=infinity` under systemd) and a larger journal ring.
+- [ ] On bare metal, `[engine] cpu` and `net_cpus` pin the engine and network threads to isolated cores with `spin_mode = "busy"`. Shared machines use `"adaptive"`; WSL2 and laptops also `cpu = -1`. `configs/profiles/production-latency.toml` has the `[engine]` table for a dedicated host: busy spinning on isolated cores, `timer_slack_ns = 1`, `lock_memory = true` (raise `ulimit -l`, `LimitMEMLOCK=infinity` under systemd) and a larger journal ring.
 - [ ] The engine and network cores are isolated (`isolcpus`, `nohz_full` and `rcu_nocbs`, or a cpuset), the CPU governor is `performance`, NIC interrupts go to other cores, and transparent huge pages are `madvise` or `always` (`/sys/kernel/mm/transparent_hugepage/enabled`): the order and book tables ask for 2 MiB pages.
 - [ ] Latency figures in `fastmm-top` and the log are not zero. Hosts without `nonstop_tsc` (many cloud VMs) take wall time from `clock_gettime` and still time intervals with the TSC when `constant_tsc` is present.
 - [ ] The system clock is synchronised (chrony or systemd-timesyncd), and the status line's `clock_offset_ms` stays well below `recv_window_ms`.
@@ -50,7 +53,7 @@ A `[risk]` limit is off when it is `0` or missing ([Configuration](../../referen
 ## Stopping
 
 - [ ] You have done a kill-switch drill with this config: a keyed session with open orders, Ctrl-C, `shutdown took <n> ms (cancel_all ok)` ([Reading the last lines](kill-switch-and-shutdown.md#reading-the-last-lines)), and no open orders on the venue.
-- [ ] After every stop, including one that logged `cancel_all ok`, the venue's open-orders page shows no orders. The shutdown cancel-all sends one request per subscribed instrument and `ok` means those requests succeeded; orders on other instruments, orders the venue accepted after the request, and every order in a `--dry-run` (where the cancel-all is skipped) are not covered.
+- [ ] After every stop, including one that logged `cancel_all ok`, the venue's open-orders page shows no orders. The shutdown cancel-all sends one request per subscribed instrument, and `ok` means those requests succeeded; it does not cover orders on other instruments, orders the venue accepted after the request, or a `--dry-run` (which skips it).
 - [ ] You know where the venue's own "cancel all" is on its website, and you have read [When cancel_all failed](kill-switch-and-shutdown.md#when-cancel_all-failed).
-- [ ] `[engine] on_kill` is set, and whatever starts `fastmm-live` or `python -m fastmm run` alerts on exit codes 5, 6 and 7 ([Kill switch and shutdown](kill-switch-and-shutdown.md#after-a-kill-the-engine-trips-itself)).
+- [ ] `[engine] on_kill` is set, and whatever starts `fastmm-live` or `python -m fastmm run` alerts on exit codes 5, 6 and 7, which the shipped systemd unit does not restart ([Deploy](deploy.md#run-under-systemd)).
 - [ ] Someone watches the first live session from start to finish.
