@@ -554,8 +554,8 @@ TEST_CASE("bybit.venue: an open-order reply with retCode != 0 reconciles nothing
       {R"({"retCode":10006,"retMsg":"Too many visits!","result":{},"retExtInfo":{},"time":1789299704000})"});
   {
     Live l(h, h.section(true));
+    // The start-up sweep is the first reconciliation: nothing to ask for.
     REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
-    l.venue->request_open_orders();
     REQUIRE(pump_until(l.reactor, [&] { return h.open_orders_calls.load() == 1; }));
     l.spin(40);
     CHECK(l.oc.count(EventType::Reconcile) == 0);
@@ -575,8 +575,8 @@ TEST_CASE("bybit.venue: the open-order snapshot follows nextPageCursor") {
   Harness h({page("fm000100000001", "cursor-2"), page("fm000100000002", "")});
   {
     Live l(h, h.section(true));
+    // The start-up sweep is the first reconciliation: nothing to ask for.
     REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
-    l.venue->request_open_orders();
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::Reconcile) == 4;  // Begin, two orders, End
@@ -835,8 +835,8 @@ TEST_CASE("bybit.venue: execution/list pages are followed and emitted oldest fir
                 "")};
   {
     Live l(h, h.section(true));
+    // The start-up sweep is the first reconciliation: nothing to ask for.
     REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
-    l.venue->request_open_orders();
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::Reconcile) == 3;
@@ -876,8 +876,8 @@ TEST_CASE("bybit.venue: the snapshot is exact only when the execution replay com
   h.executions_failing = 1;  // retCode 10006 on the first query
   {
     Live l(h, h.section(true));
+    // The start-up sweep is the first reconciliation: nothing to ask for.
     REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
-    l.venue->request_open_orders();
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::Reconcile) == 3;
@@ -907,8 +907,8 @@ TEST_CASE("bybit.venue: a failed execution query is retried from the housekeepin
       exec_page({exec_row("ex-7", "fm000100000001", "60007", "0.0000004", kT)}, "")};
   {
     Live l(h, h.section(true));
+    // The start-up sweep is the first reconciliation: nothing to ask for.
     REQUIRE(pump_until(l.reactor, [&] { return l.live_channels() >= 2; }));
-    l.venue->request_open_orders();
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::Reconcile) == 3;
