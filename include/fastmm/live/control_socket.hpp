@@ -54,6 +54,9 @@ struct ControlPlane {
   // The limits the session runs with. `limits` edits this copy and sends the whole struct, so the
   // keys a command does not name keep the values the session started with.
   RiskLimits limits;
+  // [risk.underlying]: each underlying of the session's plan, in its order, with the max_net it
+  // runs with (`limits underlying.<BASE>.max_net=...` edits it the same way).
+  std::vector<std::pair<std::string, Qty>> underlyings;
 };
 
 // What `fastmm-ctl help` and the socket's `help` answer.

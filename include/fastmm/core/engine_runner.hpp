@@ -5,6 +5,7 @@
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/latency.hpp"
 #include "fastmm/core/reject_counters.hpp"
+#include "fastmm/core/underlying.hpp"
 
 #include <array>
 #include <cstdint>
@@ -59,6 +60,15 @@ struct EngineLiveStats {
   std::int64_t quoting_two_sided_ns = 0;
   // [risk] max_loss as the engine applies it now (fastmm-ctl limits changes it); zero when off.
   std::int64_t max_loss_raw = 0;
+  // [risk.underlying], by the index of the session's UnderlyingPlan: the net position in base units
+  // (raw Qty; not known while an inverse contract with a position has no current mark) and the
+  // limit the engine applies now (0: none).
+  struct Underlying {
+    std::int64_t net_raw = 0;
+    std::int64_t max_net_raw = 0;
+    bool known = true;
+  };
+  std::array<Underlying, kMaxUnderlyings> underlyings{};
   LatencySnapshot latency;
 };
 

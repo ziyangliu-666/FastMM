@@ -76,9 +76,12 @@ struct TapeMsg {
 
 class Rig {
  public:
-  explicit Rig(bool hash_outbound, bool track_queue = false) {
+  // `underlying`: [risk.underlying.BTC] max_net set (far from the position), so every order also
+  // runs the net check over the underlying's instruments.
+  explicit Rig(bool hash_outbound, bool track_queue = false, bool underlying = false) {
     Instrument inst{};
     inst.symbol = "BTCUSDT";
+    inst.base = "BTC";
     inst.flags = Instrument::kEnabled;
     inst.tick = Price::from_decimal("0.01").value();
     inst.lot = Qty::from_decimal("0.00001").value();
@@ -106,6 +109,11 @@ class Rig {
     EngineConfig ec;
     ec.max_events_per_step = 64;
     ec.quotes.min_requote_interval = Duration{};
+    if (underlying) {
+      UnderlyingSpec spec;
+      spec.max_net["BTC"] = "1000";
+      if (auto plan = build_underlying_plan(table_, spec)) ec.underlying = *plan;
+    }
     engine_ = std::make_unique<SimEngine>(ec, table_, *clock_, *transport_, *feed_, strategy_);
     engine_->warm_up();
     engine_->start();
@@ -207,8 +215,11 @@ class Rig {
 
 }  // namespace
 
-static void tick_to_order(benchmark::State& state, bool hash_outbound, bool track_queue = false) {
-  auto rig = std::make_unique<Rig>(hash_outbound, track_queue);
+static void tick_to_order(benchmark::State& state,
+                          bool hash_outbound,
+                          bool track_queue = false,
+                          bool underlying = false) {
+  auto rig = std::make_unique<Rig>(hash_outbound, track_queue, underlying);
   if (!rig->settled()) {
     state.SkipWithError("rig did not settle after the snapshot");
     return;
@@ -260,6 +271,12 @@ static void BM_TickToOrder_SimQueue(benchmark::State& state) {
   tick_to_order(state, false, true);
 }
 BENCHMARK(BM_TickToOrder_SimQueue)->UseManualTime();
+
+// BM_TickToOrder_Sim with a [risk.underlying] limit: the cost of the net check per order.
+static void BM_TickToOrder_SimUnderlying(benchmark::State& state) {
+  tick_to_order(state, false, false, true);
+}
+BENCHMARK(BM_TickToOrder_SimUnderlying)->UseManualTime();
 
 static void engine_step(benchmark::State& state, bool track_queue) {
   static constexpr std::int64_t kBatch = 32;

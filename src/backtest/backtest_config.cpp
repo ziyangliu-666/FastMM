@@ -118,6 +118,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.warnings = cfg.warnings;
   warn_unknown_backtest_keys(bt, b.warnings);
   b.engine.fx = b.fx_plan(b.instruments);
+  b.underlying = cfg.risk.underlying;
+  b.engine.underlying = b.underlying_plan(b.instruments);
   b.set_seed(static_cast<std::uint64_t>(bt.get_int("seed", sm.get_int("seed", 1))));
   b.source = bt.get_string("source", "");
   b.path = bt.get_string("path", "");
@@ -199,6 +201,12 @@ FxPlan BacktestConfig::fx_plan(const InstrumentTable& table) {
       session_fx_plan(table, accounting, venue_names, false, engine.risk.reads_totals(), &warning);
   if (!plan) throw ConfigError(plan.error());
   if (!warning.empty()) warnings.push_back(warning);
+  return *plan;
+}
+
+UnderlyingPlan BacktestConfig::underlying_plan(const InstrumentTable& table) const {
+  auto plan = build_underlying_plan(table, underlying, "risk");
+  if (!plan) throw ConfigError(plan.error());
   return *plan;
 }
 

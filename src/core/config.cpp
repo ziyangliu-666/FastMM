@@ -147,6 +147,65 @@ void get(const toml::table& t, std::string_view key, T& out) {
 void get_decimal(const toml::table& t, std::string_view key, std::string& out) {
   if (const auto* n = t.get(key)) out = stringify(*n);
 }
+// [risk.underlying] / [gateway.underlying]: one table per base asset, each with max_net (base
+// units, a non-negative decimal).
+void get_underlying(const toml::table& parent,
+                    std::string_view section,
+                    std::vector<std::string>& warnings,
+                    UnderlyingSpec& out) {
+  const toml::node* n = parent.get("underlying");
+  if (n == nullptr) return;
+  const auto* t = n->as_table();
+  if (t == nullptr)
+    fail_at(*n,
+            fmt::format("{}.underlying must be a table of base assets: [{}.underlying.BTC] "
+                        "max_net = 0.5",
+                        section,
+                        section));
+  const std::string sub = fmt::format("{}.underlying.*", section);
+  for (const auto& [k, v] : *t) {
+    const std::string name(k.str());
+    const auto* u = v.as_table();
+    if (u == nullptr)
+      fail_at(v,
+              fmt::format("{}.underlying.{} must be a table: [{}.underlying.{}] max_net = ...",
+                          section,
+                          name,
+                          section,
+                          name));
+    bool valid = !name.empty() && name.size() <= UnderlyingName::kCapacity;
+    for (const char ch : name) valid = valid && ch != ':' && ch != ' ' && ch != '"';
+    if (!valid)
+      fail_at(v,
+              fmt::format("[{}.underlying.{}]: the base asset must be 1 to {} characters",
+                          section,
+                          name,
+                          UnderlyingName::kCapacity));
+    const toml::node* m = u->get("max_net");
+    if (m == nullptr)
+      fail_at(v, fmt::format("[{}.underlying.{}] needs max_net (base units)", section, name));
+    validate_table(*u, sub, warnings);
+    const std::string text = stringify(*m);
+    const auto q = Qty::from_decimal(text);
+    if (!q || q->raw < 0)
+      fail_at(
+          *m,
+          fmt::format(
+              "{}.underlying.{}.max_net: '{}' is not a non-negative decimal", section, name, text));
+    for (const auto& [other, unused] : out.max_net) {
+      if (same_currency(other, name))
+        fail_at(v,
+                fmt::format("[{}.underlying.{}]: {} is named already (base assets ignore case)",
+                            section,
+                            name,
+                            other));
+    }
+    out.max_net[name] = text;
+  }
+  if (out.max_net.size() > kMaxUnderlyings)
+    fail_at(*t, fmt::format("[{}.underlying]: at most {} base assets", section, kMaxUnderlyings));
+}
+
 // An optional number: absent leaves `out` empty, so "not set" and "set to 0" stay distinct.
 void get_optional(const toml::table& t, std::string_view key, std::optional<double>& out) {
   if (const auto* n = t.get(key)) {
@@ -488,6 +547,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "stp", r.stp);
     get(*t, "max_feed_lag_ms", r.max_feed_lag_ms);
     if (r.max_feed_lag_ms < 0) throw ConfigError("risk.max_feed_lag_ms must be >= 0");
+    get_underlying(*t, "risk", cfg.warnings, r.underlying);
   }
 
   // [gateway]
@@ -499,6 +559,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get_decimal(*t, "max_loss", cfg.gateway.max_loss);
     get_decimal(*t, "max_gross_notional", cfg.gateway.max_gross_notional);
     get_decimal(*t, "max_net_notional", cfg.gateway.max_net_notional);
+    get_underlying(*t, "gateway", cfg.warnings, cfg.gateway.underlying);
   }
 
   // [accounting]: after [[instruments]], whose entries the FX sources must name.
@@ -734,6 +795,10 @@ std::string Config::redacted() const {
   kv("burst", risk.burst);
   kv("stp", risk.stp);
   if (risk.max_feed_lag_ms != 0) kv("max_feed_lag_ms", risk.max_feed_lag_ms);
+  for (const auto& [k, v] : risk.underlying.max_net) {
+    fmt::format_to(std::back_inserter(out), "\n[risk.underlying.{}]\n", k);
+    kq("max_net", v);
+  }
   if (gateway.any()) {
     out += "\n[gateway]\n";
     kv("orders_per_sec", gateway.orders_per_sec);
@@ -742,6 +807,10 @@ std::string Config::redacted() const {
     if (!gateway.max_loss.empty()) kq("max_loss", gateway.max_loss);
     if (!gateway.max_gross_notional.empty()) kq("max_gross_notional", gateway.max_gross_notional);
     if (!gateway.max_net_notional.empty()) kq("max_net_notional", gateway.max_net_notional);
+    for (const auto& [k, v] : gateway.underlying.max_net) {
+      fmt::format_to(std::back_inserter(out), "\n[gateway.underlying.{}]\n", k);
+      kq("max_net", v);
+    }
   }
   if (accounting.configured()) {
     out += "\n[accounting]\n";
@@ -782,6 +851,17 @@ void insert_typed(toml::table& t, const std::string& key, const std::string& tex
     return;
   }
   t.insert_or_assign(key, text);
+}
+
+// [risk.underlying] / [gateway.underlying]: max_net as the text it was given, as the other limits.
+toml::table underlying_table(const UnderlyingSpec& spec) {
+  toml::table t;
+  for (const auto& [k, v] : spec.max_net) {
+    toml::table u;
+    u.insert("max_net", v);
+    t.insert(k, std::move(u));
+  }
+  return t;
 }
 
 toml::table generic_table(const GenericSection& g) {
@@ -911,6 +991,7 @@ std::string Config::effective_toml() const {
   // Only when set, so a configuration without it keeps its effective text and hash.
   if (risk.max_feed_lag_ms != 0)
     r.insert("max_feed_lag_ms", static_cast<std::int64_t>(risk.max_feed_lag_ms));
+  if (risk.underlying.configured()) r.insert("underlying", underlying_table(risk.underlying));
   root.insert("risk", std::move(r));
 
   // Only when set, so a configuration without it keeps its effective text and hash.
@@ -922,6 +1003,8 @@ std::string Config::effective_toml() const {
     g.insert("max_loss", gateway.max_loss);
     g.insert("max_gross_notional", gateway.max_gross_notional);
     g.insert("max_net_notional", gateway.max_net_notional);
+    if (gateway.underlying.configured())
+      g.insert("underlying", underlying_table(gateway.underlying));
     root.insert("gateway", std::move(g));
   }
 

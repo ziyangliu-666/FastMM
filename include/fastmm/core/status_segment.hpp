@@ -30,9 +30,12 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 6: the operator flatten's state, the instruments it has left and the orders it has sent.
 // 7: quoting presence (quoting_elapsed_ns, quoting_two_sided_ns).
 // 8: `kind`, and the gateway block (attachments, the account, its positions, routing counters).
-inline constexpr std::uint32_t kStatusVersion = 10;
+// 11: the net position per underlying ([risk.underlying], [gateway.underlying]); two more gateway
+//     refusal reasons.
+inline constexpr std::uint32_t kStatusVersion = 11;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
+inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
 
 enum class StatusRunState : std::uint8_t { Starting = 0, Running = 1, Stopping = 2, Stopped = 3 };
 [[nodiscard]] std::string_view to_string(StatusRunState s) noexcept;
@@ -111,12 +114,22 @@ struct StatusVenue {
   StatusFeed feed;
 };
 
+// The net position in one base asset ([risk.underlying.<name>], [gateway.underlying.<name>]) over
+// every instrument that counts towards it; an unused entry has an empty name.
+struct StatusUnderlying {
+  char name[16] = {};
+  std::uint8_t known = 0;  // 0: an inverse contract with a position has no current mark
+  std::uint8_t pad_[7] = {};
+  std::int64_t net_raw = 0;      // Qty raw (1e-8), base units, signed
+  std::int64_t max_net_raw = 0;  // the limit applied now; 0: none
+};
+
 // ---- fastmm-gateway ---------------------------------------------------------------------------
 
 inline constexpr std::size_t kStatusMaxAttachments = 16;  // gw::kMaxAttachments
 inline constexpr std::size_t kStatusMaxPositions = 256;   // kMaxInstruments
 // The gateway's refusals, counted per attachment and per venue in this order.
-inline constexpr std::size_t kStatusGatewayRefusals = 7;
+inline constexpr std::size_t kStatusGatewayRefusals = 9;
 inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusals] = {
     RejectReason::GatewayNotOwner,
     RejectReason::GatewayAccountKilled,
@@ -124,7 +137,9 @@ inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusal
     RejectReason::GatewayGrossNotional,
     RejectReason::GatewayNetNotional,
     RejectReason::GatewayRateLimit,
-    RejectReason::GatewayFxRateUnknown};
+    RejectReason::GatewayFxRateUnknown,
+    RejectReason::GatewayUnderlyingNet,
+    RejectReason::GatewayUnderlyingMarkUnknown};
 
 // One attached strategy. Its instruments are the positions whose owner_epoch is its epoch.
 struct StatusAttachment {
@@ -189,6 +204,8 @@ struct StatusGateway {
   StatusGatewayVenue venues[kStatusMaxVenues];
   StatusAttachment attachments[kStatusMaxAttachments];
   StatusPosition positions[kStatusMaxPositions];
+  // The account's net position per [gateway.underlying], over every venue.
+  StatusUnderlying underlyings[kStatusMaxUnderlyings];
 };
 
 struct StatusSnapshot {
@@ -244,6 +261,8 @@ struct StatusSnapshot {
   std::int64_t quoting_two_sided_ns = 0;
   StatusLatency latency[static_cast<std::size_t>(LatencyInterval::Count)];
   StatusVenue venues[kStatusMaxVenues];
+  // [risk.underlying]: the session's net position per underlying (kind Engine).
+  StatusUnderlying underlyings[kStatusMaxUnderlyings];
   // kind Gateway only, zero in an engine's segment. A gateway fills the header (pid, times, state,
   // dry_run, engine_name, venue_count, venues), kill_reason, kill_latched, kill_flags (bit 0 while
   // the account is killed) and the PnL fields with the account's, and leaves the rest zero.

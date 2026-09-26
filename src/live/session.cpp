@@ -753,6 +753,31 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         b.empty() ? std::string_view("?") : std::string_view(b));
   }
 
+  // [risk.underlying]: net position limits per base asset, over the instruments of the table (with
+  // the venues' multipliers and kInverse, known from here on).
+  UnderlyingPlan underlying_plan;
+  if (cfg.risk.underlying.configured()) {
+    auto plan = build_underlying_plan(instruments, cfg.risk.underlying, "risk");
+    if (!plan) {
+      std::fprintf(stderr, "%s: %s\n", prog, plan.error().c_str());
+      return kExitConfig;
+    }
+    underlying_plan = *plan;
+    for (std::size_t u = 0; u < underlying_plan.count; ++u) {
+      std::string members;
+      for (const InstrumentId id : underlying_plan.instruments(u)) {
+        const Instrument& i = instruments.get(id);
+        if (!members.empty()) members += ", ";
+        members += venue_names[i.venue.value] + ":" + std::string(i.symbol.view());
+        if (i.inverse()) members += " (inverse)";
+      }
+      FASTMM_LOG_INFO("risk: underlying {} max_net={} over {}",
+                      underlying_plan.names[u],
+                      underlying_plan.max_net[u],
+                      members);
+    }
+  }
+
   venues::SymbolTable symbols;
   if (!symbols.build(instruments)) {
     std::fprintf(stderr, "%s: duplicate or empty instrument symbols\n", prog);
@@ -913,6 +938,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.quotes = cfg.quote_params();
   deps.engine.fx = fx_plan;
   deps.engine.fees = fees;
+  deps.engine.underlying = underlying_plan;
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
@@ -1233,6 +1259,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.realized_pnl_raw = live.stats.realized_pnl_raw;
     snap.unrealized_pnl_raw = live.stats.unrealized_pnl_raw;
     snap.fees_raw = live.stats.fees_raw;
+    for (std::size_t u = 0; u < underlying_plan.count && u < kStatusMaxUnderlyings; ++u) {
+      StatusUnderlying& su = snap.underlyings[u];
+      set_status_name(su.name, underlying_plan.names[u].view());
+      su.net_raw = live.underlyings[u].net_raw;
+      su.max_net_raw = live.underlyings[u].max_net_raw;
+      su.known = live.underlyings[u].known ? 1 : 0;
+    }
     for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i)
       snap.latency[i] = to_status_latency(live.latency.interval[i]);
     for (std::size_t i = 0; i < snap.venue_count; ++i) {
@@ -1338,6 +1371,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   ControlPlane plane;
   plane.instruments = &instruments;
   plane.limits = cfg.risk_limits();
+  for (std::size_t u = 0; u < underlying_plan.count; ++u)
+    plane.underlyings.push_back(
+        {std::string(underlying_plan.names[u].view()), underlying_plan.max_net[u]});
   plane.submit = [&](const EventHeader& h) {
     if (!control_ring.try_push(&h, h.len)) return false;
     feed.notify();
@@ -1381,6 +1417,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         l.orders_per_sec,
         l.burst,
         l.stp);
+    for (const auto& [name, max_net] : plane.underlyings)
+      out += fmt::format("limits     underlying.{}.max_net={}\n", name, dec(max_net));
     return out;
   };
   if (publisher) {

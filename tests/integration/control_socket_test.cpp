@@ -155,6 +155,39 @@ TEST_CASE("integration.control: limits sends the whole limit set, edited") {
   CHECK(f.sent.size() == 2);
 }
 
+TEST_CASE(
+    "integration.control: limits underlying.<BASE>.max_net sends one message per underlying") {
+  Fake f;
+  f.plane.underlyings = {{"BTC", qt("0.5")}, {"ETH", Qty{}}};
+  CHECK(f.run("limits underlying.eth.max_net=20").starts_with("ok"));
+  REQUIRE(f.sent.size() == 1);  // no [risk] key named: no SetLimits
+  REQUIRE(f.sent.back().size() == sizeof(ControlUnderlyingMsg));
+  const auto& m = *reinterpret_cast<const ControlUnderlyingMsg*>(f.sent.back().data());
+  CHECK(m.command == ControlCommand::SetUnderlyingLimit);
+  CHECK(m.underlying == 1);
+  CHECK(m.name.view() == "ETH");
+  CHECK(static_cast<std::int64_t>(m.arg) == qt("20").raw);
+  CHECK(f.plane.underlyings[1].second == qt("20"));
+
+  // With a [risk] key: the SetLimits first, then the underlying.
+  CHECK(f.run("limits max_position=3 underlying.BTC.max_net=0").starts_with("ok"));
+  REQUIRE(f.sent.size() == 3);
+  CHECK(reinterpret_cast<const ControlMsg*>(f.sent[1].data())->command ==
+        ControlCommand::SetLimits);
+  const auto& m2 = *reinterpret_cast<const ControlUnderlyingMsg*>(f.sent[2].data());
+  CHECK(m2.underlying == 0);
+  CHECK(m2.arg == 0);
+
+  // Nothing is sent when any key is wrong.
+  CHECK(f.run("limits underlying.SOL.max_net=1").find("no [risk.underlying] section") !=
+        std::string::npos);
+  CHECK(f.run("limits underlying.BTC.max_net=-1").starts_with("error"));
+  CHECK(f.run("limits underlying.BTC.max_gross=1").starts_with("error"));
+  CHECK(f.run("limits underlying..max_net=1").starts_with("error"));
+  CHECK(f.run("limits max_position=1 underlying.SOL.max_net=1").starts_with("error"));
+  CHECK(f.sent.size() == 3);
+}
+
 TEST_CASE("integration.control: param is validated on the control thread, never on the ring") {
   Fake f;
   CHECK(f.run("param half_spread_bps=8 quote_qty=0.01").starts_with("ok"));

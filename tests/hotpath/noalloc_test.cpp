@@ -233,6 +233,71 @@ TEST_CASE("hotpath.noalloc: engine step on BookDelta with BasicMM") {
   CHECK(engine->stats().timers_fired >= 1);
 }
 
+// [risk.underlying]: the check gathers positions and open orders over the underlying's instruments
+// (one of them inverse, at its mark) on every order, without allocating.
+TEST_CASE("hotpath.noalloc: engine step with a net limit per underlying") {
+  InstrumentTable table;
+  Instrument btc = make_inst();
+  btc.base = "BTC";
+  REQUIRE(table.add(btc));
+  Instrument inv = make_inst();
+  inv.symbol = "BTCUSD";
+  inv.base = "BTC";
+  inv.flags = Instrument::kInverse;  // not quoted: it counts towards BTC all the same
+  inv.lot = qt("1");
+  inv.min_qty = qt("1");
+  inv.min_notional = Notional{};
+  inv.contract_multiplier = qt("100");
+  REQUIRE(table.add(inv));
+  UnderlyingSpec spec;
+  spec.max_net["BTC"] = "1";
+  auto plan = build_underlying_plan(table, spec);
+  REQUIRE(plan.has_value());
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 20};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.quotes.min_requote_interval = Duration{};
+  cfg.underlying = *plan;
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  auto push_book = [&](InstrumentId id, const char* bid, const char* ask, std::uint64_t seq) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(*d, EventType::BookSnapshot, id, VenueId{0}, BookDeltaMsg::size_for(1, 1));
+    d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->hdr.t0_cycles = clock.cycles();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = seq;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  push_book(InstrumentId{1}, "100.00", "100.02", 1);
+  push_book(InstrumentId{0}, "100.00", "100.02", 1);
+  push_book(InstrumentId{0}, "100.10", "100.12", 2);
+  push_book(InstrumentId{1}, "100.10", "100.12", 2);
+  {
+    NoAllocScope guard(true);
+    std::size_t n = 0;
+    while (engine->step() > 0) ++n;
+    CHECK(n > 0);
+  }
+  CHECK(engine->risk().underlying_on());
+  CHECK(engine->stats().orders_sent >= 2);
+  CHECK(engine->stats().risk_rejects == 0);
+}
+
 namespace {
 // BasicMM that requotes when its parameters change.
 struct ParamsMM : BasicMM {

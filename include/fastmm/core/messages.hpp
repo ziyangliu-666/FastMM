@@ -320,6 +320,23 @@ static_assert(sizeof(ControlLimitsMsg) == 192 && std::is_trivially_copyable_v<Co
 static_assert(offsetof(ControlLimitsMsg, command) == offsetof(ControlMsg, command) &&
               offsetof(ControlLimitsMsg, arg) == offsetof(ControlMsg, arg));
 
+// ControlCommand::SetUnderlyingLimit: a ControlMsg whose `arg` is the new max_net (raw Qty, base
+// units; 0 lifts the limit) of the underlying at index `underlying` of the session's plan
+// (core/underlying.hpp), named in `name` for the log and a journal reader.
+struct ControlUnderlyingMsg {
+  EventHeader hdr;
+  ControlCommand command;
+  std::uint8_t underlying;
+  std::uint8_t pad0_[6];
+  std::uint64_t arg;
+  FixedString<8> name;
+  std::uint8_t pad_[39];
+};
+static_assert(sizeof(ControlUnderlyingMsg) == sizeof(ControlMsg) &&
+              std::is_trivially_copyable_v<ControlUnderlyingMsg>);
+static_assert(offsetof(ControlUnderlyingMsg, command) == offsetof(ControlMsg, command) &&
+              offsetof(ControlUnderlyingMsg, arg) == offsetof(ControlMsg, arg));
+
 struct ConnectionStateMsg {
   EventHeader hdr;
   ConnState state;

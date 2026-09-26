@@ -89,6 +89,9 @@ void latency_quantiles(Exposition& e,
 }
 
 void engine_metrics(Exposition& e, const StatusSnapshot& s);
+void underlying_metrics(Exposition& e,
+                        std::string_view prefix,
+                        const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
 void gateway_metrics(Exposition& e, const StatusSnapshot& s);
 void venue_metrics(Exposition& e, const StatusSnapshot& s);
 
@@ -138,6 +141,30 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
 
 namespace {
 
+// [risk.underlying] / [gateway.underlying]: <prefix>_underlying_net (absent while an inverse
+// contract with a position has no mark) and <prefix>_underlying_max_net, base units. Nothing when
+// no underlying is configured.
+void underlying_metrics(Exposition& e,
+                        std::string_view prefix,
+                        const StatusUnderlying (&u)[kStatusMaxUnderlyings]) {
+  if (u[0].name[0] == '\0') return;
+  const std::string net = fmt::format("{}_underlying_net", prefix);
+  const std::string max = fmt::format("{}_underlying_max_net", prefix);
+  const auto labels = [](const StatusUnderlying& x) {
+    return fmt::format("underlying=\"{}\"", label(name_of(x.name, sizeof x.name)));
+  };
+  e.family(net, "gauge", "net position in the underlying over every instrument, base units");
+  for (const StatusUnderlying& x : u) {
+    if (x.name[0] != '\0' && x.known != 0)
+      e.value_of(net, labels(x), static_cast<double>(x.net_raw) * kRawToQuote);
+  }
+  e.family(max, "gauge", "max_net of the underlying applied now, 0 when off; base units");
+  for (const StatusUnderlying& x : u) {
+    if (x.name[0] != '\0')
+      e.value_of(max, labels(x), static_cast<double>(x.max_net_raw) * kRawToQuote);
+  }
+}
+
 void engine_metrics(Exposition& e, const StatusSnapshot& s) {
   e.gauge("fastmm_realized_pnl",
           "realized PnL, quote currency",
@@ -153,6 +180,7 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
   e.gauge("fastmm_pnl_carry",
           "net PnL of earlier sessions that max_loss is measured against as well, quote currency",
           static_cast<double>(s.pnl_carry_raw) * kRawToQuote);
+  underlying_metrics(e, "fastmm", s.underlyings);
 
   e.counter("fastmm_events_total", "events the engine consumed", s.events);
   e.counter("fastmm_book_updates_total", "book updates applied", s.book_updates);
@@ -377,6 +405,7 @@ void gateway_metrics(Exposition& e, const StatusSnapshot& s) {
   e.gauge("fastmm_account_max_net_notional",
           "[gateway] max_net_notional, 0 when off",
           quote(g.max_net_raw));
+  underlying_metrics(e, "fastmm_account", g.underlyings);
 
   e.family("fastmm_account_position", "gauge", "the account's position, base units");
   const std::size_t np = std::min<std::size_t>(g.position_count, kStatusMaxPositions);

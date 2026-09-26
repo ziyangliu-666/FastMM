@@ -91,6 +91,21 @@ TEST_CASE("core.status_prometheus: an engine exports the max_loss it applies") {
   CHECK(has(format_status_prometheus(s, s.updated_ns), "fastmm_max_loss 250\n"));
 }
 
+TEST_CASE("core.status_prometheus: the net position per underlying, only when configured") {
+  StatusSnapshot s = sample();
+  CHECK_FALSE(has(format_status_prometheus(s, s.updated_ns), "underlying"));
+  set_status_name(s.underlyings[0].name, "BTC");
+  s.underlyings[0].known = 1;
+  s.underlyings[0].net_raw = -30'000'000;         // -0.3
+  s.underlyings[0].max_net_raw = 50'000'000;      // 0.5
+  set_status_name(s.underlyings[1].name, "ETH");  // an inverse contract has no mark
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_underlying_net{underlying=\"BTC\"} -0.3\n"));
+  CHECK(has(text, "fastmm_underlying_max_net{underlying=\"BTC\"} 0.5\n"));
+  CHECK_FALSE(has(text, "fastmm_underlying_net{underlying=\"ETH\"}"));
+  CHECK(has(text, "fastmm_underlying_max_net{underlying=\"ETH\"} 0\n"));
+}
+
 TEST_CASE("core.status_prometheus: every sample belongs to a declared family") {
   StatusSnapshot s = sample();
   s.venue_count = 2;

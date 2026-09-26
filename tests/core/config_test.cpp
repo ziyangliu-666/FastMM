@@ -422,3 +422,83 @@ TEST_CASE("core.config: a settlement currency without a source is refused while 
   CHECK(plan_error(Config::parse(two_currencies(no_source))).find("not converted") !=
         std::string::npos);
 }
+
+TEST_CASE("core.config: [risk.underlying] and [gateway.underlying] parse and round-trip") {
+  const Config cfg = Config::parse(two_currencies(
+      "[risk.underlying.BTC]\nmax_net = 0.5\n[risk.underlying.eth]\nmax_net = \"0\"\n"
+      "[gateway.underlying.BTC]\nmax_net = \"2\"\n"));
+  CHECK(cfg.warnings.empty());
+  CHECK(cfg.risk.underlying.max_net.at("BTC") == "0.5");
+  CHECK(cfg.risk.underlying.max_net.at("eth") == "0");
+  CHECK(cfg.gateway.underlying.max_net.at("BTC") == "2");
+  CHECK(cfg.gateway.any());
+  const Config again = Config::parse(cfg.effective_toml());
+  CHECK(again.risk.underlying.max_net == cfg.risk.underlying.max_net);
+  CHECK(again.gateway.underlying.max_net == cfg.gateway.underlying.max_net);
+  CHECK(again.effective_hash() == cfg.effective_hash());
+  CHECK(cfg.redacted().find("[risk.underlying.BTC]\nmax_net = \"0.5\"") != std::string::npos);
+  const auto plan = build_underlying_plan(load_instruments(cfg), cfg.risk.underlying);
+  REQUIRE(plan.has_value());
+  CHECK(plan->count == 2);
+  CHECK(plan->max_net[static_cast<std::size_t>(plan->find("BTC"))] ==
+        Qty::from_decimal("0.5").value());
+
+  // Absent, nothing about it is in the effective configuration: its text and hash are unchanged.
+  const Config plain = Config::parse(kMinimal);
+  CHECK_FALSE(plain.risk.underlying.configured());
+  CHECK(plain.effective_toml().find("underlying") == std::string::npos);
+  CHECK(plain.redacted().find("underlying") == std::string::npos);
+}
+
+TEST_CASE("core.config: [risk.underlying] errors") {
+  const auto err = [](const std::string& text) -> std::string {
+    try {
+      static_cast<void>(Config::parse(two_currencies(text)));
+    } catch (const ConfigError& e) {
+      return e.what();
+    }
+    return "";
+  };
+  CHECK(err("[risk.underlying]\nBTC = 0.5\n").find("risk.underlying.BTC must be a table") !=
+        std::string::npos);
+  CHECK(err("[risk.underlying.BTC]\nmax_position = 1\n")
+            .find("[risk.underlying.BTC] needs max_net") != std::string::npos);
+  CHECK(err("[risk.underlying.BTC]\nmax_net = -1\n").find("not a non-negative decimal") !=
+        std::string::npos);
+  CHECK(err("[risk.underlying.BTC]\nmax_net = \"lots\"\n").find("'lots' is not") !=
+        std::string::npos);
+  CHECK(err("[risk.underlying.BTC]\nmax_net = 0.000000001\n").find("not a non-negative decimal") !=
+        std::string::npos);
+  CHECK(err("[risk.underlying.TOOLONGNAME]\nmax_net = 1\n").find("1 to 8 characters") !=
+        std::string::npos);
+  CHECK(err("[risk.underlying.BTC]\nmax_net = 1\n[risk.underlying.btc]\nmax_net = 2\n")
+            .find("named already") != std::string::npos);
+  std::string nine;
+  for (int i = 0; i < 9; ++i) nine += "[risk.underlying.C" + std::to_string(i) + "]\nmax_net = 1\n";
+  CHECK(err(nine).find("at most 8 base assets") != std::string::npos);
+  CHECK(err("[gateway.underlying.BTC]\nmax_net = -2\n").find("gateway.underlying.BTC.max_net") !=
+        std::string::npos);
+  // `underlying` as a plain key of [risk] (two_currencies' [risk] is open: the risk text goes
+  // there).
+  bool threw = false;
+  try {
+    static_cast<void>(Config::parse(two_currencies("", "underlying = 1")));
+  } catch (const ConfigError& e) {
+    threw = true;
+    CHECK(std::string(e.what()).find("'risk.underlying' has the wrong type (expected table)") !=
+          std::string::npos);
+  }
+  CHECK(threw);
+
+  // An unknown key is a warning, as in every other section.
+  const Config cfg =
+      Config::parse(two_currencies("[risk.underlying.BTC]\nmax_net = 1\nmax_gross = 2\n"));
+  REQUIRE(cfg.warnings.size() == 1);
+  CHECK(cfg.warnings[0].find("unknown key 'risk.underlying.*.max_gross'") != std::string::npos);
+
+  // A base asset no instrument has is refused once the table is known.
+  const Config sol = Config::parse(two_currencies("[risk.underlying.SOL]\nmax_net = 1\n"));
+  const auto plan = build_underlying_plan(load_instruments(sol), sol.risk.underlying);
+  REQUIRE_FALSE(plan.has_value());
+  CHECK(plan.error() == "[risk.underlying.SOL]: no instrument of this session has base SOL");
+}
