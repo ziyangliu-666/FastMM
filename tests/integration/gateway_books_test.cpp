@@ -369,8 +369,9 @@ TEST_CASE(
   ServerFixture fx(two_markets());
   // The smallest md ring (64 KiB): a stopped strategy overflows it in seconds.
   const Configs c = write_configs(fx, "gw-books-lag");
-  rewrite(c.gw.config,
-          [](std::string& t) { replace_first(t, "md_ring_bytes = 4194304", "md_ring_bytes = 65536"); });
+  rewrite(c.gw.config, [](std::string& t) {
+    replace_first(t, "md_ring_bytes = 4194304", "md_ring_bytes = 65536");
+  });
   const std::string status = tmp_path("gw-books-lag.gw.status");
   const GatewayProcess g = spawn_gateway_status(c.gw, status);
   wait_gateway_up(fx, g);
