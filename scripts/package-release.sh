@@ -11,7 +11,7 @@
 #   bin/      fastmm-live fastmm-sim-itch fastmm-top fastmm-replay
 #   tests/    fastmm_xdp_tests fastmm_dpdk_tests (scripts/xdp-test.sh --build .)
 #   configs/  scripts/  (bench-2host.sh, bench-e2e.sh, host-setup.sh, xdp-test.sh, bench-table.py)
-#   deploy/   fastmm-live.service
+#   deploy/   fastmm-live.service, prometheus/fastmm-alerts.yml
 #   LICENSE   README.md
 # On the target: tar xzf fastmm-*.tar.gz -C /opt && ln -sfn /opt/fastmm-<version> /opt/fastmm
 set -euo pipefail
@@ -49,6 +49,8 @@ cp scripts/bench-2host.sh scripts/bench-e2e.sh scripts/bench-table.py scripts/ho
 cp configs/nasdaq-itch-sim.toml configs/sim-itch.toml "$STAGE/configs/"
 mkdir -p "$STAGE/deploy"
 cp deploy/fastmm-live.service "$STAGE/deploy/"
+mkdir -p "$STAGE/deploy/prometheus"
+cp deploy/prometheus/fastmm-alerts.yml "$STAGE/deploy/prometheus/"
 cp LICENSE "$STAGE/"
 cat > "$STAGE/README.md" <<EOF
 # FastMM ${VERSION:-dev} (x86_64)
@@ -78,7 +80,8 @@ unshare -Urn sh -c 'ip link set lo up multicast on && ip route add 224.0.0.0/4 d
 \`bin/fastmm-top --name nasdaq-itch-sim\` watches a running session from the same namespace.
 
 \`deploy/fastmm-live.service\` is the systemd unit; copy it to \`/etc/systemd/system/\` and edit the
-paths. Read the deployment guide before pointing this at a venue:
+paths. \`deploy/prometheus/fastmm-alerts.yml\` holds Prometheus alerting rules for the metrics
+\`fastmm-top --metrics\` serves. Read the deployment guide before pointing this at a venue:
 <https://ziy.bio/FastMM/how-to/operations/deploy/> and
 <https://ziy.bio/FastMM/how-to/operations/go-live-checklist/>.
 
