@@ -1,26 +1,28 @@
 # Errors and exit codes
 
-One lookup table for every exit code, reject reason, kill reason and venue error action. Log messages with their causes and fixes are in [Troubleshooting](../how-to/operations/troubleshooting.md).
+Exit codes, reject reasons, kill reasons and venue error actions. Log messages with their causes and fixes are in [Troubleshooting](../how-to/operations/troubleshooting.md).
 
 ## Exit codes
 
-There is no shared exit-code enum; each program defines its own, and they disagree. `1` from `fastmm-live` means the process crashed.
+Each program defines its own exit codes. `1` from `fastmm-live` means the process crashed.
 
 ### fastmm-live
 
-The last two columns are what an operator has to decide. "Orders cancelled" is the cancel-all the control thread runs over REST at shutdown; `cancel_all FAILED` turns any code into 5 ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#reading-the-last-lines)).
+"Orders cancelled" is the cancel-all the control thread runs over REST at shutdown; `cancel_all FAILED` turns any code into 5 ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#reading-the-last-lines)).
 
 | Code | Meaning | Orders cancelled | Restart without a human |
 |---:|---|---|---|
-| 0 | stopped by `--duration`, SIGINT or SIGTERM with `cancel_all ok`; also after a kill with `on_kill = "stay"`; `--help`, `--version`, `--list-strategies` | yes | yes |
+| 0 | stopped by `--duration`, SIGINT, SIGTERM or `fastmm-ctl stop` with `cancel_all ok`; also after a kill with `on_kill = "stay"`; `--help`, `--version`, `--list-strategies` | yes | yes |
 | 2 | bad command line; an unset `${VAR}` in `[venues.*]` | nothing started | no: fix the invocation |
 | 3 | the configuration, strategy or a parameter does not load, a `[storage]` backend is unknown or cannot be opened, or a venue refuses a setting of the account (Bybit linear in hedge mode) | nothing started | no: fix the config or the account |
-| 4 | a venue's reference data failed to load | nothing started | retry once; a repeat means the venue or the network |
-| 5 | `cancel_all FAILED`, the journal cannot be opened or written (a full filesystem trips the kill switch), an order-event ring overflowed, or an uncaught error | not certain | no: check the venue for open orders first |
-| 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok` | yes | no: find the kill reason in the log |
+| 4 | a venue's reference data failed to load, or `--gateway` could not attach | nothing started | retry once; a repeat means the venue or the network |
+| 5 | `cancel_all FAILED`, the journal cannot be opened or written (a full filesystem trips the kill switch), an order-event ring overflowed, the gateway closed the attachment, or an uncaught error | not certain | no: check the venue for open orders first |
+| 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok`; or, at start, a `max_loss` trip is latched in `[engine] kill_file` (nothing started) | yes | no: find the kill reason in the log; a latched trip needs `--clear-kill` |
 | 7 | a Python strategy's slow tier failed, `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` never returns it) | yes | no: fix the slow method |
 
 A restart after 5, 6 or 7 is a decision for a person; the systemd unit does not make it ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restarted session carries over: [Running this in production](../how-to/operations/running-in-production.md#1-what-survives-a-restart).
+
+`fastmm-gateway` uses the same codes: 0, 2, 3 (also an invalid `[gateway]` limit or a refused account setting), 4 (reference data), 5 (`cancel_all FAILED` or an uncaught error), and 6 when its kill file holds a latched `[gateway] max_loss` trip at start.
 
 ### The other programs
 
@@ -33,18 +35,20 @@ A restart after 5, 6 or 7 is a decision for a person; the systemd unit does not 
 | 4 | the market data cannot be read | — | cannot listen on a port | cannot open a socket | — |
 | 5 | the run failed | — | — | — | — |
 
+`fastmm-data`: 2 bad command line, 3 bad config, 4 the market data cannot be read, 5 the output cannot be written. `fastmm-pnl`: 2 bad command line or a store that cannot be opened, 3 `recover` found no session. `fastmm-ctl`: 1 the session answered `error`, 2 bad command line, 3 no session answered.
+
 ## Reject reasons
 
 `RejectReason` (`include/fastmm/core/enums.hpp`). A reject means the order was not sent, or the venue refused it; nothing else changed. The strategy sees the reason in the `Result` of `ctx.send`; the engine counts them per reason and shows them in `fastmm-top` and the shutdown summary.
 
 ### Pre-trade checks (engine)
 
-Checked in this numeric order; the first failure decides. A limit of `0` or omitted turns its check off ([Risk model](../explanation/risk-model.md)). These rejects never reach the venue.
+Checked in the order listed, which is not numeric order; the first failure decides. A limit of `0` or omitted turns its check off ([Risk model](../explanation/risk-model.md)). These rejects never reach the venue.
 
 | # | Name | Setting | Clears when |
 |---:|---|---|---|
-| 1 | `KillSwitch` | — | the process restarts; nothing resets it |
-| 2 | `VenueKilled` | — | the process restarts |
+| 1 | `KillSwitch` | — | `fastmm-ctl unkill` or SIGHUP (with `on_kill = "stay"`), or a restart |
+| 2 | `VenueKilled` | — | as `KillSwitch` |
 | 3 | `InstrumentDisabled` | `[[instruments]] enabled` | the config changes, or the venue re-enables the symbol |
 | 4 | `InvalidTick` | `tick` | the strategy rounds prices with `inst.round_price` |
 | 5 | `InvalidLot` | `lot`, `min_qty`, `max_qty` | the strategy rounds quantities with `inst.round_qty` |
@@ -55,15 +59,15 @@ Checked in this numeric order; the first failure decides. A limit of `0` or omit
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |
 | 11 | `MaxOrderNotional` | `[risk] max_order_notional` | the order is smaller |
 | 12 | `MaxPosition` | `[risk] max_position` | the position or the same-side open orders shrink |
+| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book no older than `stale_md_ms`; an order that reduces its instrument's position is not refused |
+| 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order reduces its instrument's position |
+| 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
 | 13 | `MaxOpenOrders` | `[risk] max_open_orders` | an order of that instrument terminates |
 | 14 | `SelfTradePrevention` | `[risk] stp` | our resting order on the other side moves or is cancelled |
 | 15 | `RateLimit` | `[risk] orders_per_sec`, `burst` | the token bucket refills |
 | 16 | `MaxLoss` | — | never produced: a max-loss breach arrives as `KillSwitch` with `KillReason::MaxLoss` |
-| 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order reduces its instrument's position |
-| 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
-| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book no older than `stale_md_ms`; an order that reduces its instrument's position is not refused |
 
-Cancels skip every check, including the kill switch, so the engine can always reduce what is in the market.
+Cancels skip every check, including the kill switch.
 
 ### OMS and transport
 
@@ -125,7 +129,7 @@ The connectors map each venue's error codes onto these (`*_error_map.hpp` per ve
 | 13 | `GatewayMaxLoss` | every venue | yes | the gateway's account: `[gateway] max_loss` over every strategy |
 | 14 | `GatewayOperator` | every venue | yes | an operator's `kill` on the gateway's control socket |
 
-Nothing resets a kill switch. `fastmm-live` has no command to clear one; restart the process. What each reason does to quoting and orders: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
+A running session's kill switch is cleared by `fastmm-ctl unkill` or SIGHUP; with `on_kill = "exit"` the process has already exited. A latched `max_loss` trip refuses the next start (exit 6) until `--clear-kill`. What each reason does to quoting and orders: [Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md).
 
 ## Venue actions
 
@@ -148,7 +152,7 @@ Nothing resets a kill switch. `fastmm-live` has no command to clear one; restart
 
 | Symptom | Meaning |
 |---|---|
-| `trailer MISSING` | the session did not shut down cleanly; events before the damaged block are still readable. `fastmm-replay` refuses such a file without `--allow-incomplete`, because the outbound stream it compares against stops short of what the session sent |
+| `trailer MISSING` | the session did not shut down cleanly; events before the damaged block are still readable. `fastmm-replay` refuses such a file without `--allow-incomplete` |
 | a CRC failure on a block | the block is damaged; `--no-crc` reads past it |
 | `replay MISMATCH` | the replayed order stream differs from the recorded one; only the first difference means anything ([Determinism](../explanation/determinism.md)) |
 | a what-if warning | `--config` or `--strategy` differs from the recording, so a match is not expected |
