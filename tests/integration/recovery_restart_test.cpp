@@ -263,10 +263,10 @@ void restart_across_clock_skew(std::int64_t venue_ahead_ms, const std::string& s
 
   const pid_t second = spawn_live(f, 60);
   const std::string log = f.config + ".log";
+  // "previous session" is logged whatever the first one held; "restored position" only when it was
+  // not flat, which the outside trades can leave it by chance.
   REQUIRE(wait_until(
-      [&] {
-        return fastmm::test::read_file(log).find("restored position BTCUSDT") != std::string::npos;
-      },
+      [&] { return fastmm::test::read_file(log).find("previous session") != std::string::npos; },
       30000));
   const std::uint64_t accepted = fx.server.stats().orders_accepted;
   REQUIRE(wait_until([&] { return fx.server.stats().orders_accepted > accepted; }, 30000));
