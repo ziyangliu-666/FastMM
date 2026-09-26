@@ -1,6 +1,6 @@
 # Add a venue
 
-Model a JSON-over-WebSocket connector on the four that ship: Binance Spot (`include/fastmm/venues/binance/`), Binance USDⓈ-M (`include/fastmm/venues/binance_usdm/`), Bybit v5 spot and linear perpetuals (`include/fastmm/venues/bybit/`) and Deribit options and futures (`include/fastmm/venues/deribit/`). Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data. Binary wire formats live in `codecs/` ([FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md), [CME MDP 3.0](../../reference/codecs/cme-mdp3.md)), and a connector can build on them: `nasdaq_itch` is a `Venue` over ITCH, MoldUDP64 and OUCH ([Venue connectors](../../reference/venues.md#nasdaq-totalview-itch-nasdaq_itch)), and Binance SBE market data is a connector option (`md_format = "sbe"`). FIX and CME MDP 3.0 have no connector yet and are built only with `-DFASTMM_CODEC_FIX=ON` / `-DFASTMM_CODEC_MDP3=ON` ([Optional codecs](../../getting-started/install.md#optional-codecs)); turn the option on in the same change that adds the venue.
+Model a JSON-over-WebSocket connector on the five that ship: Binance Spot (`include/fastmm/venues/binance/`), Binance USDⓈ-M (`include/fastmm/venues/binance_usdm/`), Bybit v5 spot and linear perpetuals (`include/fastmm/venues/bybit/`), OKX v5 USDT-margined swaps (`include/fastmm/venues/okx/`) and Deribit options and futures (`include/fastmm/venues/deribit/`). Bybit is the main worked example; Deribit shows JSON-RPC, request credits and options data. Binary wire formats live in `codecs/` ([FIX](../../reference/codecs/fix.md), [Nasdaq](../../reference/codecs/nasdaq.md), [CME MDP 3.0](../../reference/codecs/cme-mdp3.md)), and a connector can build on them: `nasdaq_itch` is a `Venue` over ITCH, MoldUDP64 and OUCH ([Venue connectors](../../reference/venues.md#nasdaq-totalview-itch-nasdaq_itch)), and Binance SBE market data is a connector option (`md_format = "sbe"`). FIX and CME MDP 3.0 have no connector yet and are built only with `-DFASTMM_CODEC_FIX=ON` / `-DFASTMM_CODEC_MDP3=ON` ([Optional codecs](../../getting-started/install.md#optional-codecs)); turn the option on in the same change that adds the venue.
 
 Throughout, `foo` stands for your venue.
 
@@ -39,6 +39,7 @@ The Bybit connector, with the file names a new venue should mirror:
 Differences in the other connectors:
 
 - Binance names its private parser `binance_user_parser.hpp` and its book sync `binance_depth_sync.hpp` (the snapshot comes from REST).
+- OKX needs a third credential (the generic `api_passphrase`), names instruments by `instIdCode` in WebSocket order operations, counts swaps in contracts (`contract_multiplier` = `ctVal`) and keeps each book level's text for the (now deprecated) checksum in `okx_book_sync.hpp`.
 - Deribit adds `deribit_json.hpp` (exact parsing of JSON numbers with exponents) and `deribit_credits.hpp` (`CreditBucket`, the matching-engine request credits).
 - Binance USDⓈ-M is the same exchange as Binance Spot, so it reuses the Spot signing, feed and depth-sync code and holds only the futures protocol itself; `include/fastmm/venues/binance_usdm/binance_usdm_venue.hpp` lists what is shared and what is not.
 
@@ -116,8 +117,9 @@ The sink receives `on_snapshot()`, `on_delta()`, `on_resync(SyncReason)` and `re
 | `BinanceFuturesSyncTraits` (`book_syncer.hpp`) | REST snapshot; the first delta brackets `lastUpdateId`, later deltas chained on `pu` (Binance USDⓈ-M) |
 | `BybitSyncTraits` (`book_syncer.hpp`) | Snapshot in the stream; `u` strictly increasing; `u == 1` is a reset marker |
 | `DeribitSyncTraits` (`include/fastmm/venues/deribit/deribit_book_sync.hpp`) | First notification is the snapshot; `prev_change_id` equals the previous `change_id` |
+| `OkxSyncTraits` (`include/fastmm/venues/okx/okx_book_sync.hpp`) | Snapshot in the stream; `prevSeqId` equals the previous `seqId` (a heartbeat repeats it, a reset lowers it) |
 
-On a gap, the connector emits `ConnectionStateMsg` with `ConnState::Resyncing` on channel 0 (`emit_connection_state()` in `include/fastmm/venues/order_events.hpp`) and fetches a new snapshot, rate limited: Bybit and Deribit resubscribe at most once every 2 s per instrument and again when no snapshot arrives within 10 s. Any state other than `Live` on channel 0 makes the engine clear the book and pull the quotes of that venue's instruments.
+On a gap, the connector emits `ConnectionStateMsg` with `ConnState::Resyncing` on channel 0 (`emit_connection_state()` in `include/fastmm/venues/order_events.hpp`) and fetches a new snapshot, rate limited: Bybit, Deribit and OKX resubscribe at most once every 2 s per instrument and again when no snapshot arrives within 10 s. Any state other than `Live` on channel 0 makes the engine clear the book and pull the quotes of that venue's instruments.
 
 A market-data channel with no traffic for `stale_ms` reports `ConnState::Stale`; after `dead_ms` the connection is closed and reopened. Private and order channels are often quiet, so they report no `Stale`, and each connector raises `dead_ms` above its keepalive interval for them. The per-connector values are in [Venue connectors](../../reference/venues.md#configuration-keys).
 
