@@ -43,7 +43,7 @@ The engine builds a trivially copyable record and copies it into an SPSC ring, t
 
 | Record | Written when | Carries |
 |---|---|---|
-| `FillRecord` (256 B) | every execution, and every quantity the engine books from a `cum_qty` jump | price, quantity, booked quantity, fee and fee asset, liquidity, venue order id, exec id, and the position it left behind |
+| `FillRecord` (256 B) | every execution, and every quantity the engine books from a `cum_qty` jump | price, quantity, booked quantity, fee and fee asset, liquidity, venue order id, exec id, the venue's time of the trade (`RecordHeader::exch_ts`), and the position it left behind |
 | `OrderRecord` (192 B) | every OMS state change | the whole `Order`: state, previous state, price, quantity, filled quantity, reject reason |
 | `PositionRecord` (192 B) | after every fill, after a venue position snapshot, and once per instrument at `finish()` | the instrument's position and the portfolio totals |
 | `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
@@ -74,7 +74,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 2 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 3 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -100,6 +100,10 @@ One row per session, written at start and completed at shutdown.
 
 `(session_id, part, path)`: the journal parts the session wrote, in order.
 
+### session_venues
+
+`(session_id, venue_id, name)`: the `[venues.<name>]` behind each `venue_id` of the session, so a restart finds its venues by name. Version 3; sessions recorded before it have none.
+
 ### instruments
 
 `(session_id, instrument_id)` and the instrument as the session loaded it: `venue_id`, `symbol`, `base`, `quote`, `settlement_ccy`, `asset_class`, `inverse`, `tick_raw`, `lot_raw`, `multiplier_raw`. Per session, because a restart may load different reference data.
@@ -110,7 +114,8 @@ One row per execution, keyed `(session_id, seq)`, with a unique index on `(sessi
 
 | Column | Meaning |
 |---|---|
-| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when, what and where |
+| `ts_ns`, `day`, `symbol`, `venue_id`, `instrument_id` | when (the engine's clock), what and where |
+| `exch_ns` | the venue's time of the trade, in the venue's clock; 0 for a synthetic fill, a connector that reports none, and rows from before version 3 |
 | `cl_ord_id`, `venue_order_id`, `exec_id` | the ids the venue and FastMM know it by |
 | `side`, `liquidity` | `Buy`/`Sell`, `Maker`/`Taker`/`Unknown` |
 | `price_raw`, `qty_raw`, `booked_qty_raw` | the execution, and the quantity the position moved by (a base-asset fee is deducted) |
@@ -172,9 +177,15 @@ The call order is `open`, `session_open`, `instruments`, then `begin` / records 
 
 `fastmm-live` reads the store before the first session thread starts and logs what the previous session of the same `[engine] name` left behind: its PnL, whether it shut down cleanly, the kill state, the journal parts, the last position per instrument, and every order that was still open at its last record. `fastmm-pnl recover --engine <name>` prints the same thing.
 
+With `[engine] restore_position` the session also carries the last position per instrument over and books what happened while it was down from the venue's trade history ([What survives a restart](../how-to/operations/running-in-production.md#1-what-survives-a-restart)). Where each venue's replay starts (`Recovery::venue_resume`, passed to `Venue::resume_executions`, and in the attach request behind a gateway):
+
+- **In the venue's clock.** From `exch_ns` of the venue's last stored fill, less 1 s, skipping the trade ids stored from there on. Both ends are venue time, so the host's clock does not enter. The second covers the order in which a venue publishes executions against their trade times (other symbols, a batch), which is milliseconds.
+- **At most 128 ids a venue.** When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
+- **Binance Spot and USDⓈ-M** resume each symbol at the trade id after the highest one stored (`fromId`), with no overlap and no ids (`Venue::resume_trade_ids`). In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
+- **A store from before version 3**, or a venue whose fills carry no venue time, starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.
+
 What the store cannot tell you:
 
-- **Nothing that happened while the process was down.** FastMM does not fetch execution history from a venue at start-up. A fill between the shutdown and the restart is invisible until the venue's reconciliation snapshot arrives and the engine books the difference as a synthetic fill (`fills.synthetic = 1`).
 - **Whether the venue still holds the open orders.** The orders the recovery lists are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since.
 - **The position, authoritatively.** It is FastMM's view at the last record. The venue's view arrives with the reconciliation.
 
