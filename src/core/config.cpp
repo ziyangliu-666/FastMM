@@ -791,6 +791,8 @@ std::string Config::redacted() const {
   kv("fat_finger_bps", risk.fat_finger_bps);
   kv("stale_md_ms", risk.stale_md_ms);
   if (!risk.max_loss.empty()) kq("max_loss", risk.max_loss);
+  if (!risk.max_gross_notional.empty()) kq("max_gross_notional", risk.max_gross_notional);
+  if (!risk.max_net_notional.empty()) kq("max_net_notional", risk.max_net_notional);
   kv("orders_per_sec", risk.orders_per_sec);
   kv("burst", risk.burst);
   kv("stp", risk.stp);
@@ -985,6 +987,10 @@ std::string Config::effective_toml() const {
   r.insert("fat_finger_bps", static_cast<std::int64_t>(risk.fat_finger_bps));
   r.insert("stale_md_ms", static_cast<std::int64_t>(risk.stale_md_ms));
   r.insert("max_loss", risk.max_loss);
+  // Only when set, so a configuration without them keeps its effective text and hash; a replay
+  // needs them to refuse what the recorded session refused.
+  if (!risk.max_gross_notional.empty()) r.insert("max_gross_notional", risk.max_gross_notional);
+  if (!risk.max_net_notional.empty()) r.insert("max_net_notional", risk.max_net_notional);
   r.insert("orders_per_sec", static_cast<std::int64_t>(risk.orders_per_sec));
   r.insert("burst", static_cast<std::int64_t>(risk.burst));
   r.insert("stp", risk.stp);
