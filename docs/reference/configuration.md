@@ -345,6 +345,26 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
 | `max_feed_lag_ms` | integer |  | pull a venue's quotes and refuse orders that could rest there without reducing the position while its market data arrives this much later than its baseline, ms; resumes 100 ms after the last message over it (default 0: off) |
+| `underlying` | table |  | one [risk.underlying.BTC] table per base asset: a net position limit over every instrument and venue that trades it |
+<!-- END config-keys -->
+
+### `[risk.underlying.<BASE>]`
+
+A limit on the net position in one base asset, in base units, over every instrument of the session whose `base` it is, on every venue. Long 0.3 BTC on one venue and short 0.3 BTC on another is 0 BTC.
+
+```toml
+[risk.underlying.BTC]
+max_net = 0.5
+```
+
+- A contract counts `qty * contract_multiplier` base units, an inverse one `qty * multiplier / mark` at its current mark. Options do not count. [Risk model](../explanation/risk-model.md#net-position-per-underlying) has the check and when it refuses.
+- The base asset is matched against each instrument's `base` without regard to case, once the venues' reference data has loaded; a base asset no instrument has (other than options) exits with code 3. At most 8.
+- `max_net = 0` tracks the underlying (status, metrics) without a limit, so `fastmm-ctl limits underlying.BTC.max_net=...` can set one at run time.
+
+<!-- BEGIN config-keys risk.underlying.* -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `max_net` | any | yes | refuse an order that would take the net position in this base asset, open orders on the order's side included, further past this; base units (contracts times contract_multiplier, inverse contracts at the mark), decimal; 0: tracked, no limit |
 <!-- END config-keys -->
 
 ## `[gateway]`
@@ -360,6 +380,17 @@ Read by `fastmm-gateway` only: account guards over every attached strategy, chec
 | `max_loss` | any |  | fastmm-gateway: trip the account's kill switch when the net PnL of every strategy together, carried across restarts in the gateway's kill file, reaches -max_loss; decimal, in [accounting] reporting_currency when set |
 | `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it reduces its instrument's position; decimal |
 | `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it reduces its instrument's position; decimal |
+| `underlying` | table |  | fastmm-gateway: one [gateway.underlying.BTC] table per base asset: the account's net limit, over every strategy and venue |
+<!-- END config-keys -->
+
+### `[gateway.underlying.<BASE>]`
+
+`[risk.underlying]` for the account: the net position in one base asset over every instrument of the gateway, every venue and every attached strategy, with the orders working at the venues. Not adjustable at run time.
+
+<!-- BEGIN config-keys gateway.underlying.* -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `max_net` | any | yes | fastmm-gateway: refuse an order that would take the account's net position in this base asset, working orders on the order's side included, further past this; base units, decimal |
 <!-- END config-keys -->
 
 ## `[accounting]`

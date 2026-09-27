@@ -188,6 +188,7 @@ class Engine {
       own_ = std::make_unique<OwnQuantity>();
       own_->prepare(instruments_.size());
     }
+    risk_.set_underlying(cfg.underlying);
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -427,6 +428,10 @@ class Engine {
                    Price{}};
     RiskInputs sell = buy;
     sell.open_same_side = oms_.open_qty(id, Side::Sell);
+    if (risk_.underlying_on()) {
+      buy.underlying = underlying_inputs(id, Side::Buy);
+      sell.underlying = underlying_inputs(id, Side::Sell);
+    }
     return risk_.headroom(instruments_.get(id), buy, sell, net_pnl());
   }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
@@ -1427,6 +1432,20 @@ class Engine {
               m.limits.orders_per_sec);
         }
         break;
+      case ControlCommand::SetUnderlyingLimit: {
+        const auto& m = msg_cast<ControlUnderlyingMsg>(&c.hdr);
+        const Qty max_net = Qty::from_raw(static_cast<std::int64_t>(m.arg));
+        if (risk_.set_underlying_limit(m.underlying, max_net)) {
+          FASTMM_LOG_WARN("risk limit replaced by the operator: underlying {} max_net={}",
+                          m.name.view(),
+                          max_net);
+        } else {
+          FASTMM_LOG_WARN("underlying limit for index {} ({}) ignored: not in this session",
+                          m.underlying,
+                          m.name.view());
+        }
+        break;
+      }
       case ControlCommand::TripKill:
         risk_.trip();
         on_kill(KillReason::Requested);
@@ -1891,6 +1910,8 @@ class Engine {
                   oms_.open_count(req.instrument),
                   flatten ? Price{} : oms_.best_own_px(req.instrument, opposite(req.side)),
                   health_.gated(inst.venue, now)};
+    if (FASTMM_UNLIKELY(risk_.underlying_on()) && !flatten)
+      in.underlying = underlying_inputs(req.instrument, req.side);
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -1918,6 +1939,17 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.orders_sent;
     return id;
+  }
+
+  // [risk.underlying]: the position and same-side open orders of the order's underlying, over its
+  // instruments. Out of line: without a limit the order path does not reach it.
+  FASTMM_NOINLINE UnderlyingInputs underlying_inputs(InstrumentId id, Side side) const noexcept {
+    return risk_.underlying_inputs(
+        id,
+        instruments_,
+        now_,
+        [this](InstrumentId j) { return positions_.get(j).qty; },
+        [this, side](InstrumentId j) { return oms_.open_qty(j, side); });
   }
 
   Result<void, RejectReason> submit_cancel(Handle<Order> h) noexcept {
@@ -1950,6 +1982,8 @@ class Engine {
                   oms_.open_count(o.instrument),
                   oms_.best_own_px(o.instrument, opposite(o.side)),
                   health_.gated(o.venue, now)};
+    if (FASTMM_UNLIKELY(risk_.underlying_on()))
+      in.underlying = underlying_inputs(o.instrument, o.side);
     const RejectReason rr = risk_.check_replace(oi, o, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -2201,6 +2235,16 @@ class Engine {
     live.quoting_elapsed_ns = presence.elapsed_ns;
     live.quoting_two_sided_ns = presence.two_sided_ns;
     live.max_loss_raw = risk_.limits().max_loss.raw;
+    for (std::size_t u = 0; u < cfg_.underlying.count; ++u) {
+      auto& e = live.underlyings[u];
+      e.known = risk_.underlying_net(
+          u,
+          instruments_,
+          now_,
+          [this](InstrumentId j) { return positions_.get(j).qty; },
+          e.net_raw);
+      e.max_net_raw = risk_.underlying_limit(u).raw;
+    }
     live.latency = latency;
     live_pub_.store(live);
   }

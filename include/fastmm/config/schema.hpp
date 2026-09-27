@@ -406,6 +406,19 @@ inline constexpr KeySpec kConfigSchema[] = {
      "pull a venue's quotes and refuse orders that could rest there without reducing the "
      "position while its market data arrives this much later than its baseline, ms; resumes "
      "100 ms after the last message over it (default 0: off)"},
+    {"risk",
+     "underlying",
+     KeyType::Table,
+     false,
+     "one [risk.underlying.BTC] table per base asset: a net position limit over every instrument "
+     "and venue that trades it"},
+    {"risk.underlying.*",
+     "max_net",
+     KeyType::Any,
+     true,
+     "refuse an order that would take the net position in this base asset, open orders on the "
+     "order's side included, further past this; base units (contracts times contract_multiplier, "
+     "inverse contracts at the mark), decimal; 0: tracked, no limit"},
     // [gateway]
     {"gateway",
      "orders_per_sec",
@@ -443,6 +456,18 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "fastmm-gateway: refuse an order that would take the account's net position at the marks "
      "further past this, unless it reduces its instrument's position; decimal"},
+    {"gateway",
+     "underlying",
+     KeyType::Table,
+     false,
+     "fastmm-gateway: one [gateway.underlying.BTC] table per base asset: the account's net limit, "
+     "over every strategy and venue"},
+    {"gateway.underlying.*",
+     "max_net",
+     KeyType::Any,
+     true,
+     "fastmm-gateway: refuse an order that would take the account's net position in this base "
+     "asset, working orders on the order's side included, further past this; base units, decimal"},
     // [accounting]
     {"accounting",
      "reporting_currency",

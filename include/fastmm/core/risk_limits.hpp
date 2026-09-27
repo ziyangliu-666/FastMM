@@ -55,6 +55,11 @@ struct RiskHeadroom {
   // down to the lot.
   Qty buy_qty = Qty::max();
   Qty sell_qty = Qty::max();
+  // Largest buy / sell of this instrument passing [risk.underlying] max_net (the underlying's net
+  // plus its open orders on that side, over every instrument), in this instrument's contracts,
+  // rounded down to the lot; zero while an inverse contract of the underlying has no mark.
+  Qty underlying_buy_qty = Qty::max();
+  Qty underlying_sell_qty = Qty::max();
   // Exposure an order that does not reduce its position may add: max_gross_notional minus the
   // gross exposure, and per direction the net room of max_net_notional.
   Notional gross_notional = Notional::max();

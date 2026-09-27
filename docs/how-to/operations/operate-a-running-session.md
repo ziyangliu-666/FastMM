@@ -35,7 +35,7 @@ The control thread reads the socket every 50 ms. A command reaches the engine at
 | `pull [--instrument SYM \| --venue NAME]` | Stops quoting and pulls the quotes. Without a scope the whole session stops quoting; with one only that instrument or venue does, and the rest keeps trading. Working orders that are not quotes stay. |
 | `resume [--instrument SYM \| --venue NAME]` | Quotes again. Without a scope it also clears every scoped pull and stops a running flatten. |
 | `param <name>=<value> ... [--instrument SYM]` | New strategy parameters. Validated here first: an unknown name, a value out of range or a failed `validate()` is refused and nothing is published ([Strategy parameters](../../reference/strategy-api.md#parameters)). |
-| `limits <key>=<value> ...` | New risk limits. The keys are the `[risk]` keys; the ones you do not name keep the values the session started with. |
+| `limits <key>=<value> ...` | New risk limits. The keys are the `[risk]` keys and `underlying.<BASE>.max_net` for a base asset with a `[risk.underlying.<BASE>]` section; the ones you do not name keep the values the session started with. |
 | `flatten [--instrument SYM] [--max-slippage-bps N]` | The engine works the position off itself ([below](#flatten)). |
 | `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays. |
 | `unkill` | Clears it and resumes quoting, as `SIGHUP` does, including a latched `max_loss` trip ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)). |

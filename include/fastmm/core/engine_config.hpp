@@ -7,6 +7,7 @@
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/underlying.hpp"
 
 #include <cstdint>
 
@@ -53,6 +54,9 @@ struct EngineConfig {
   // Maker/taker rates per instrument (fee_table, config/config.hpp), what StrategyContext::fees
   // reports. The simulated venue charges fills with the same table; a live venue reports its own.
   FeeTable fees;
+  // [risk.underlying]: the underlyings with a net position limit and their instruments (inactive:
+  // none).
+  UnderlyingPlan underlying;
 };
 
 }  // namespace fastmm

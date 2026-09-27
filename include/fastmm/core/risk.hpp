@@ -14,6 +14,7 @@
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/underlying.hpp"
 
 #include <algorithm>
 #include <array>
@@ -91,6 +92,17 @@ struct OrderIntent {
   TimeInForce tif = TimeInForce::Gtc;  // Ioc / Fok never rest (the feed-lag gate lets them pass)
 };
 
+// The order's underlying ([risk.underlying]) as RiskEngine::underlying_inputs measures it, base
+// units (raw Qty): the position now and the leaves of the open orders on the order's side, over
+// every instrument of the underlying. `limited` false: the order's instrument has no limit to
+// check.
+struct UnderlyingInputs {
+  std::int64_t net = 0;
+  std::int64_t open = 0;
+  bool limited = false;
+  bool known = true;  // false: an inverse contract that counts has no current mark
+};
+
 // Dynamic inputs the engine gathers for one check.
 struct RiskInputs {
   Timestamp now;
@@ -102,6 +114,7 @@ struct RiskInputs {
   std::uint32_t open_orders = 0;  // open orders on the instrument
   Price best_own_opposite{};      // best price of our own resting orders on the other side
   bool feed_lagged = false;       // the venue's feed-lag gate holds (VenueHealth::gated)
+  UnderlyingInputs underlying{};  // [risk.underlying]; the engine fills it when underlying_on()
 };
 
 struct RiskStats {
@@ -203,6 +216,93 @@ class RiskEngine {
       fx_valid_[c] = false;
     }
   }
+  // ---- net position per underlying ([risk.underlying], core/underlying.hpp) -------------------
+  // Positions and open orders are converted to base units, an inverse contract's at its current
+  // mark: the last mid of a valid book, not older than stale_md when that is set. Without one, an
+  // order on the underlying is refused (UnderlyingMarkUnknown) while its limit is set; a flatten,
+  // which passes no position, is not checked.
+  void set_underlying(const UnderlyingPlan& plan) noexcept {
+    und_count_ = plan.count;
+    for (std::size_t i = 0; i < kMaxInstruments; ++i) und_of_[i] = plan.of[i];
+    und_members_ = plan.members;
+    und_begin_ = plan.begin;
+    for (std::size_t u = 0; u < kMaxUnderlyings; ++u) und_max_[u] = plan.max_net[u].raw;
+    update_flags();
+  }
+  // A new limit for underlying `u` (0 lifts it). Returns false for an index the plan does not have.
+  bool set_underlying_limit(std::size_t u, Qty max_net) noexcept {
+    if (u >= und_count_ || max_net.raw < 0) return false;
+    und_max_[u] = max_net.raw;
+    update_flags();
+    return true;
+  }
+  [[nodiscard]] Qty underlying_limit(std::size_t u) const noexcept {
+    return Qty::from_raw(u < kMaxUnderlyings ? und_max_[u] : 0);
+  }
+  // Some underlying has a limit: the engine gathers UnderlyingInputs for its orders.
+  [[nodiscard]] bool underlying_on() const noexcept { return und_on_; }
+  // The mark an inverse contract is converted at, or zero when it has no current one.
+  [[nodiscard]] Price underlying_mark(InstrumentId id, Timestamp now) const noexcept {
+    if (id.value >= kMaxInstruments) return {};
+    const MdState& md = md_[id.value];
+    if (!md.mid.is_positive()) return {};
+    if (limits_.stale_md.ns > 0 && (!md.book_ts.valid() || now - md.book_ts > limits_.stale_md))
+      return {};
+    return md.mid;
+  }
+  // The net position of underlying `u` in base units (raw); false when an inverse contract with a
+  // position has no current mark. `position_of(id)` is the instrument's position in contracts.
+  template <class PositionOf>
+  bool underlying_net(std::size_t u,
+                      const InstrumentTable& insts,
+                      Timestamp now,
+                      PositionOf&& position_of,
+                      std::int64_t& net) const noexcept {
+    net = 0;
+    bool known = true;
+    if (u >= und_count_) return false;
+    for (std::size_t k = und_begin_[u]; k < und_begin_[u + 1]; ++k) {
+      const InstrumentId j = und_members_[k];
+      std::int64_t b = 0;
+      if (to_base_units(insts.get(j), position_of(j).raw, underlying_mark(j, now), b)) {
+        net += b;
+      } else {
+        known = false;
+      }
+    }
+    return known;
+  }
+  // What check_new/check_replace need for an order on `id` of side `side`: the underlying's
+  // position now and its open orders on that side, over every instrument of the underlying.
+  // `position_of(id)` and `open_of(id)`: an instrument's position and same-side leaves, contracts.
+  template <class PositionOf, class OpenOf>
+  [[nodiscard]] UnderlyingInputs underlying_inputs(InstrumentId id,
+                                                   const InstrumentTable& insts,
+                                                   Timestamp now,
+                                                   PositionOf&& position_of,
+                                                   OpenOf&& open_of) const noexcept {
+    UnderlyingInputs r;
+    if (id.value >= kMaxInstruments || und_of_[id.value] == 0) return r;
+    const std::size_t u = und_of_[id.value] - 1U;
+    if (und_max_[u] <= 0) return r;
+    r.limited = true;
+    for (std::size_t k = und_begin_[u]; k < und_begin_[u + 1]; ++k) {
+      const InstrumentId j = und_members_[k];
+      const Instrument& inst = insts.get(j);
+      const Price mark = underlying_mark(j, now);
+      std::int64_t p = 0;
+      std::int64_t o = 0;
+      if (!to_base_units(inst, position_of(j).raw, mark, p) ||
+          !to_base_units(inst, open_of(j).raw, mark, o)) {
+        r.known = false;
+        return r;
+      }
+      r.net += p;
+      r.open += o;
+    }
+    return r;
+  }
+
   // The FX source of currency `c` has a valid book now (its mid came through on_book) or not.
   void on_fx_book(std::size_t c, bool valid) noexcept {
     if (c < kMaxCurrencies) fx_valid_[c] = valid;
@@ -271,6 +371,24 @@ class RiskEngine {
     }
     if (limits_.max_loss.is_positive())
       h.loss_budget = Notional::from_raw(limits_.max_loss.raw + net_pnl.raw);
+    if (buy.underlying.limited && inst.id.value < kMaxInstruments) {
+      const std::int64_t m = und_max_[und_of_[inst.id.value] - 1U];
+      const Price mark = underlying_mark(inst.id, buy.now);
+      // The same arithmetic as max_position, in base units, then back to contracts.
+      const auto room = [&](const UnderlyingInputs& u, bool is_buy) {
+        if (!u.known || (inst.inverse() && !mark.is_positive())) return Qty{};
+        const std::int64_t q = is_buy ? u.net : -u.net;
+        std::int64_t r = m - q - u.open;
+        if (q < 0) r = std::max(r, -2 * q - u.open);
+        if (r <= 0) return Qty{};
+        const Int128 c = inst.inverse()
+                             ? static_cast<Int128>(r) * mark.raw / inst.contract_multiplier.raw
+                             : static_cast<Int128>(r) * kFixedScale / inst.contract_multiplier.raw;
+        return lot_floor(inst, static_cast<std::int64_t>(c));
+      };
+      h.underlying_buy_qty = room(buy.underlying, true);
+      h.underlying_sell_qty = room(sell.underlying, false);
+    }
     return h;
   }
 
@@ -394,6 +512,20 @@ class RiskEngine {
         }
       }
     }
+    // Net position per underlying: worst case in the order's direction, as max_position, over every
+    // instrument of the underlying. The engine fills the inputs only for an order on a limited
+    // underlying: without one this is one branch.
+    if (FASTMM_UNLIKELY(in.underlying.limited) && in.position != nullptr) {
+      if (!in.underlying.known) return RejectReason::UnderlyingMarkUnknown;
+      std::int64_t add = 0;
+      if (!to_base_units(
+              inst, o.qty.raw - exclude_open.raw, underlying_mark(o.instrument, in.now), add))
+        return RejectReason::UnderlyingMarkUnknown;
+      const std::int64_t dir = sign(o.side);
+      const std::int64_t worst = in.underlying.net + dir * (in.underlying.open + add);
+      if (underlying_exceeds(und_max_[und_of_[o.instrument.value] - 1U], in.underlying.net, worst))
+        return RejectReason::MaxUnderlyingNet;
+    }
     if (count_order && limits_.max_open_orders > 0 && in.open_orders >= limits_.max_open_orders) {
       return RejectReason::MaxOpenOrders;
     }
@@ -419,6 +551,8 @@ class RiskEngine {
     fx_gate_ = fx_on_ && limits_.reads_totals();
     portfolio_ = fx_gate_ || limits_.max_gross_notional.is_positive() ||
                  limits_.max_net_notional.is_positive();
+    und_on_ = false;
+    for (std::size_t u = 0; u < und_count_; ++u) und_on_ = und_on_ || und_max_[u] > 0;
   }
   // Would a `side` order at `px` trade against our own resting order at `own_opposite`?
   static constexpr bool at_or_better_cross(Side side, Price px, Price own_opposite) noexcept {
@@ -440,9 +574,16 @@ class RiskEngine {
   bool portfolio_ = false;  // an exposure cap or fx_gate_: the portfolio block runs
   bool fx_gate_ = false;    // fx_on_ and a limit that reads the totals
   bool fx_on_ = false;
+  bool und_on_ = false;  // [risk.underlying]: some underlying has a limit
   std::array<bool, kMaxCurrencies> fx_valid_{};
   std::array<FxSource, kMaxCurrencies> fx_src_{};
   std::array<std::uint8_t, kMaxInstruments> fx_ccy_{};
+  // [risk.underlying], after the rest for the same reason (und_on_ sits with the flags above).
+  std::uint8_t und_count_ = 0;
+  std::array<std::int64_t, kMaxUnderlyings> und_max_{};  // raw base units; 0: no limit
+  std::array<std::uint8_t, kMaxInstruments> und_of_{};   // 1 + underlying index; 0: none
+  std::array<InstrumentId, kMaxInstruments> und_members_{};
+  std::array<std::uint16_t, kMaxUnderlyings + 1> und_begin_{};
 };
 
 }  // namespace fastmm

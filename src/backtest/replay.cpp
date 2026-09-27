@@ -216,6 +216,7 @@ ReplayResult replay_impl(const std::string& path,
     BacktestConfig c = cfg;
     deps.engine.fx = c.fx_plan(instruments);
   }
+  if (cfg.underlying.configured()) deps.engine.underlying = cfg.underlying_plan(instruments);
   if (session) {
     deps.engine.session_epoch = header.session_epoch;
     deps.engine.quoting_enabled = header.quoting_enabled != 0;

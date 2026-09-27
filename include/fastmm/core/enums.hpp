@@ -144,6 +144,13 @@ enum class RejectReason : std::uint8_t {
   // [risk] max_feed_lag_ms: the venue's market data is late (core/venue_health.hpp) and the order
   // could rest there without reducing the position.
   FeedLag = 20,
+  // [risk.underlying.<BASE>] max_net: the net position in the order's underlying, in base units
+  // over every instrument, with the open orders on the order's side and the order itself, would
+  // move further past the limit.
+  MaxUnderlyingNet = 21,
+  // The underlying cannot be measured: an inverse contract in it has a position or open orders (or
+  // is the order's instrument) and no current mark.
+  UnderlyingMarkUnknown = 22,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -160,6 +167,8 @@ enum class RejectReason : std::uint8_t {
   GatewayGrossNotional = 52,  // the account's |position| at the marks, over every instrument
   GatewayNetNotional = 53,    // the account's signed position at the marks
   GatewayFxRateUnknown = 54,  // [accounting]: the order's currency has no current rate
+  GatewayUnderlyingNet = 55,  // [gateway.underlying.<BASE>] max_net, over every strategy and venue
+  GatewayUnderlyingMarkUnknown = 56,  // an inverse contract of the underlying has no current mark
   // Venue-originated
   VenueReject = 64,
   PostOnlyWouldCross = 65,
@@ -211,6 +220,10 @@ enum class RejectReason : std::uint8_t {
       return "FxRateUnknown";
     case RejectReason::FeedLag:
       return "FeedLag";
+    case RejectReason::MaxUnderlyingNet:
+      return "MaxUnderlyingNet";
+    case RejectReason::UnderlyingMarkUnknown:
+      return "UnderlyingMarkUnknown";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:
@@ -239,6 +252,10 @@ enum class RejectReason : std::uint8_t {
       return "GatewayNetNotional";
     case RejectReason::GatewayFxRateUnknown:
       return "GatewayFxRateUnknown";
+    case RejectReason::GatewayUnderlyingNet:
+      return "GatewayUnderlyingNet";
+    case RejectReason::GatewayUnderlyingMarkUnknown:
+      return "GatewayUnderlyingMarkUnknown";
     case RejectReason::VenueReject:
       return "VenueReject";
     case RejectReason::PostOnlyWouldCross:
@@ -418,6 +435,9 @@ enum class ControlCommand : std::uint8_t {
   // disagree about an order (a cancel rejected more than three times), so the connector runs the
   // reconciliation it runs after a reconnect. The engine ignores it as an input.
   Reconcile = 11,
+  // A new [risk.underlying.<BASE>] max_net for RiskEngine::set_underlying_limit. The message is a
+  // ControlUnderlyingMsg: the underlying's index in the session's plan, and the limit in `arg`.
+  SetUnderlyingLimit = 12,
 };
 [[nodiscard]] constexpr std::string_view to_string(ControlCommand c) noexcept {
   switch (c) {
@@ -445,6 +465,8 @@ enum class ControlCommand : std::uint8_t {
       return "SetLimits";
     case ControlCommand::Reconcile:
       return "Reconcile";
+    case ControlCommand::SetUnderlyingLimit:
+      return "SetUnderlyingLimit";
   }
   return "?";
 }

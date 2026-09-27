@@ -302,7 +302,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 10,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 11,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -365,6 +365,30 @@ StatusSnapshot gateway_sample() {
 }
 }  // namespace
 
+TEST_CASE("core.status_segment: the net position per underlying on the dashboard and in JSON") {
+  StatusSnapshot s = sample();
+  CHECK(format_status(s, s.updated_ns, false).find("underlying") == std::string::npos);
+  CHECK(format_status_json(s).find(R"("underlyings": [])") != std::string::npos);
+  set_status_name(s.underlyings[0].name, "BTC");
+  s.underlyings[0].known = 1;
+  s.underlyings[0].net_raw = -30'000'000;
+  s.underlyings[0].max_net_raw = 50'000'000;
+  set_status_name(s.underlyings[1].name, "ETH");
+  const std::string frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("underlying BTC net=-0.3 max_net=0.5\n") != std::string::npos);
+  CHECK(frame.find("underlying ETH net=unknown (no mark) max_net=off\n") != std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("underlyings": [{"name": "BTC", "net": -0.3, "known": true, "max_net": 0.5}, )"
+                  R"({"name": "ETH", "net": 0, "known": false, "max_net": 0}])") !=
+        std::string::npos);
+  s.kind = StatusKind::Gateway;
+  s.gateway.underlyings[0] = s.underlyings[0];
+  CHECK(format_status(s, s.updated_ns, false).find("underlying BTC net=-0.3 max_net=0.5\n") !=
+        std::string::npos);
+  CHECK(format_status_json(s).find(R"("underlyings": [{"name": "BTC", "net": -0.3,)") !=
+        std::string::npos);
+}
+
 TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its attachments") {
   const std::string path = tmp_path("gateway.status");
   StatusWriter w;
@@ -413,7 +437,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 10,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 11,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);

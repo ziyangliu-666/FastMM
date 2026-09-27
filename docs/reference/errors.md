@@ -63,6 +63,8 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book no older than `stale_md_ms`; an order that reduces its instrument's position is not refused |
 | 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order reduces its instrument's position |
 | 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
+| 22 | `UnderlyingMarkUnknown` | `[risk.underlying]` | every inverse contract of the underlying with a position or open orders (and the order's own, if inverse) has a valid book no older than `stale_md_ms` |
+| 21 | `MaxUnderlyingNet` | `[risk.underlying.<BASE>] max_net` | the underlying's position or same-side open orders shrink, or the order brings the net towards zero |
 | 13 | `MaxOpenOrders` | `[risk] max_open_orders` | an order of that instrument terminates |
 | 14 | `SelfTradePrevention` | `[risk] stp` | our resting order on the other side moves or is cancelled |
 | 15 | `RateLimit` | `[risk] orders_per_sec`, `burst` | the token bucket refills |
@@ -95,6 +97,8 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus this order; an order that reduces its instrument's position passes |
 | 53 | `GatewayNetNotional` | `[gateway] max_net_notional`: the same for the signed sum |
 | 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
+| 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net position in the base asset over every venue, with the orders working on the order's side and this one, would move further past the limit |
+| 56 | `GatewayUnderlyingMarkUnknown` | `[gateway.underlying]`: an inverse contract of the underlying with a position or working orders has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
 
 ### Venue-originated
 

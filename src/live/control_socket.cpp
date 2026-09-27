@@ -1,7 +1,9 @@
 #include "fastmm/live/control_socket.hpp"
 
+#include "fastmm/core/fx.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/underlying.hpp"
 
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -23,7 +25,8 @@ constexpr std::string_view kUsage =
     "  resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears\n"
     "                                           every scoped pull and stops a running flatten\n"
     "  param <name>=<value> ... [--instrument SYM]  new strategy parameters, validated here\n"
-    "  limits <key>=<value> ...                 new risk limits (the [risk] keys)\n"
+    "  limits <key>=<value> ...                 new risk limits (the [risk] keys, and\n"
+    "                                           underlying.<BASE>.max_net)\n"
     "  flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only\n"
     "  kill                                     trip the kill switch (quotes pulled, all\n"
     "                                           orders cancelled; the position stays)\n"
@@ -271,17 +274,54 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
       return error(err);
     if (scope.values.empty()) return error("limits needs at least one key=value");
     RiskLimits next = plane.limits;
+    bool plain = false;
+    // underlying.<BASE>.max_net: one message per underlying, after the [risk] keys.
+    std::vector<std::pair<std::size_t, Qty>> und;
+    constexpr std::string_view kUnd = "underlying.";
+    constexpr std::string_view kMaxNet = ".max_net";
     for (const auto& [key, value] : scope.values) {
+      const std::string_view k = key;
+      if (k.starts_with(kUnd)) {
+        if (!k.ends_with(kMaxNet) || k.size() <= kUnd.size() + kMaxNet.size())
+          return error("'" + key + "': expected underlying.<BASE>.max_net");
+        const std::string_view name =
+            k.substr(kUnd.size(), k.size() - kUnd.size() - kMaxNet.size());
+        std::size_t u = 0;
+        while (u < plane.underlyings.size() && !same_currency(plane.underlyings[u].first, name))
+          ++u;
+        if (u == plane.underlyings.size())
+          return error("underlying " + std::string(name) +
+                       " has no [risk.underlying] section in this session (add one, max_net = 0 "
+                       "tracks it without a limit, and restart)");
+        const auto q = Qty::from_decimal(value);
+        if (!q || q->raw < 0) return error("'" + value + "' is not a non-negative decimal");
+        und.emplace_back(u, *q);
+        continue;
+      }
       if (const std::string err = parse_limit(next, key, value); !err.empty()) return error(err);
+      plain = true;
     }
     if (!plane.submit) return error("this session has no control ring");
-    ControlLimitsMsg m{};
-    init_header(m, EventType::Control);
-    m.command = ControlCommand::SetLimits;
-    m.limits = next;
-    m.hdr.recv_ts = wall_now();
-    if (!plane.submit(m.hdr)) return error("the control ring is full; try again");
-    plane.limits = next;
+    if (plain) {
+      ControlLimitsMsg m{};
+      init_header(m, EventType::Control);
+      m.command = ControlCommand::SetLimits;
+      m.limits = next;
+      m.hdr.recv_ts = wall_now();
+      if (!plane.submit(m.hdr)) return error("the control ring is full; try again");
+      plane.limits = next;
+    }
+    for (const auto& [u, max_net] : und) {
+      ControlUnderlyingMsg m{};
+      init_header(m, EventType::Control);
+      m.command = ControlCommand::SetUnderlyingLimit;
+      m.underlying = static_cast<std::uint8_t>(u);
+      m.arg = static_cast<std::uint64_t>(max_net.raw);
+      m.name = UnderlyingName(plane.underlyings[u].first);
+      m.hdr.recv_ts = wall_now();
+      if (!plane.submit(m.hdr)) return error("the control ring is full; try again");
+      plane.underlyings[u].second = max_net;
+    }
     return ok("limits queued (" + std::to_string(scope.values.size()) + " key(s))");
   }
   if (verb == "kill") {

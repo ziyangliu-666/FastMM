@@ -101,7 +101,8 @@ def flags_str(f: int) -> str:
 FEE_ASSETS = ("quote", "base", "other")
 # ControlCommand and the TimerMsg.engine tags (include/fastmm/core/enums.hpp, core/engine.hpp).
 CONTROL_COMMANDS = ("Stop", "PullQuotes", "ResumeQuotes", "TripKill", "ResetKill", "Reload",
-                    "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits")
+                    "FlushStats", "RecalibrateTsc", "TripVenueKill", "Flatten", "SetLimits",
+                    "Reconcile", "SetUnderlyingLimit")
 ENGINE_TIMERS = {1: "max_param_age", 2: "ack sweep", 3: "flatten"}
 
 
@@ -198,6 +199,9 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
                     f"price_collar_bps={q(48)} fat_finger_bps={q(56)} stale_md_ms={q(64) // 1000000} "
                     f"max_loss={dec(q(72))} orders_per_sec={u32(80)} burst={u32(84)} "
                     f"stp={'true' if body[88] else 'false'}")
+        if cmd == "SetUnderlyingLimit" and len(body) >= 25:  # ControlUnderlyingMsg
+            name = body[16:16 + min(body[24], 8)].decode("utf-8", "replace")
+            out = f"command={cmd} underlying={body[1]} ({name}) max_net={dec(q(8))}"
         return out
     if type_name == "ParamUpdate":
         return param_update_fields(body, params)

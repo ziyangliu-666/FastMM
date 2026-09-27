@@ -125,6 +125,8 @@ std::string json_string(std::string_view v) {
 }
 
 void append_venues(std::string& out, const StatusSnapshot& s, bool color);
+void append_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
+void json_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
 void json_venues(std::string& out, const StatusSnapshot& s);
 std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, bool color);
 std::string format_gateway_json(const StatusSnapshot& s);
@@ -416,6 +418,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.fees_raw),
                  money(s.pnl_carry_raw),
                  money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
+  append_underlyings(out, s.underlyings);
   fmt::format_to(std::back_inserter(out),
                  "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
                  "latency",
@@ -568,6 +571,39 @@ std::string limit_text(std::int64_t raw) {
   return raw > 0 ? money(raw) : std::string("off");
 }
 
+// One line per underlying, followed by a blank line; nothing without any.
+void append_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]) {
+  bool any = false;
+  for (const StatusUnderlying& e : u) {
+    if (e.name[0] == '\0') continue;
+    any = true;
+    fmt::format_to(std::back_inserter(out),
+                   "underlying {} net={} max_net={}\n",
+                   name_of(e.name, sizeof e.name),
+                   e.known != 0 ? qty_text(e.net_raw) : std::string("unknown (no mark)"),
+                   e.max_net_raw > 0 ? qty_text(e.max_net_raw) : std::string("off"));
+  }
+  if (any) out += "\n";
+}
+
+// "underlyings": [{"name": "BTC", "net": 0.3, "known": true, "max_net": 0.5}]
+void json_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]) {
+  out += "\"underlyings\": [";
+  bool first = true;
+  for (const StatusUnderlying& e : u) {
+    if (e.name[0] == '\0') continue;
+    fmt::format_to(std::back_inserter(out),
+                   "{}{{\"name\": {}, \"net\": {}, \"known\": {}, \"max_net\": {}}}",
+                   first ? "" : ", ",
+                   json_string(name_of(e.name, sizeof e.name)),
+                   qty_text(e.net_raw),
+                   e.known != 0,
+                   qty_text(e.max_net_raw));
+    first = false;
+  }
+  out += "]";
+}
+
 // "0", or "5 (GatewayRateLimit 3, GatewayOpenNotional 2)".
 std::string refusals_text(const std::uint64_t (&r)[kStatusGatewayRefusals]) {
   std::uint64_t total = 0;
@@ -651,6 +687,7 @@ std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, 
                  limit_text(g.max_gross_raw),
                  limit_text(g.max_net_raw),
                  limit_text(g.max_open_notional_raw));
+  append_underlyings(out, g.underlyings);
 
   const std::size_t na = std::min<std::size_t>(g.attachment_count, kStatusMaxAttachments);
   fmt::format_to(it,
@@ -766,6 +803,8 @@ std::string format_status_json(const StatusSnapshot& s) {
     json_latency(out, to_string(static_cast<LatencyInterval>(i)), s.latency[i]);
   }
   out += "}, ";
+  json_underlyings(out, s.underlyings);
+  out += ", ";
   json_venues(out, s);
   out += "}\n";
   return out;
@@ -960,6 +999,8 @@ std::string format_gateway_json(const StatusSnapshot& s) {
     out += "}";
   }
   out += "], ";
+  json_underlyings(out, g.underlyings);
+  out += ", ";
   json_venues(out, s);
   out += "}\n";
   return out;

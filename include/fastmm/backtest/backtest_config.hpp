@@ -47,6 +47,9 @@ struct BacktestConfig {
   // engine.fx from them for `instruments`; replay builds it again for the journal's table.
   AccountingSpec accounting;
   std::vector<std::string> venue_names;
+  // [risk.underlying]: from_config() builds engine.underlying from it for `instruments`; replay
+  // builds it again for the journal's table.
+  UnderlyingSpec underlying;
   // from_config: Config::warnings plus unknown [backtest] keys, each naming the key and its line.
   std::vector<std::string> warnings;
   int generator_seed_levels = 20;
@@ -74,6 +77,8 @@ struct BacktestConfig {
   // The FX plan for `table` under `accounting` (throws ConfigError when a limit reads the totals
   // and the table is not covered; otherwise a warning goes to `warnings` and nothing converts).
   [[nodiscard]] FxPlan fx_plan(const InstrumentTable& table);
+  // The [risk.underlying] plan for `table` (throws ConfigError when the spec does not fit it).
+  [[nodiscard]] UnderlyingPlan underlying_plan(const InstrumentTable& table) const;
 
   // "key=value" strategy parameter override (CLI --param).
   void set_param(const std::string& key, const std::string& value) { params[key] = value; }

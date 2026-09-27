@@ -17,6 +17,7 @@
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
+#include "fastmm/core/underlying.hpp"
 #include "fastmm/strategies/params.hpp"
 
 #include <cstdint>
@@ -169,6 +170,9 @@ struct RiskSection {
   int burst = 0;
   bool stp = true;
   int max_feed_lag_ms = 0;  // 0 = off
+  // [risk.underlying.<BASE>] max_net: net position per base asset over every instrument, base
+  // units.
+  UnderlyingSpec underlying;
 };
 
 // fastmm-gateway's account guards: one venue's account, shared by every attached strategy.
@@ -180,10 +184,12 @@ struct GatewaySection {
   std::string max_loss;            // net PnL, carried in <journal_dir>/<name>.kill
   std::string max_gross_notional;  // sum of |position| at the marks
   std::string max_net_notional;    // |signed sum| of the positions at the marks
+  // [gateway.underlying.<BASE>] max_net: the account's net position per base asset, base units.
+  UnderlyingSpec underlying;
 
   [[nodiscard]] bool any() const noexcept {
     return orders_per_sec != 0 || burst != 0 || !max_open_notional.empty() || !max_loss.empty() ||
-           !max_gross_notional.empty() || !max_net_notional.empty();
+           !max_gross_notional.empty() || !max_net_notional.empty() || underlying.configured();
   }
 };
 
