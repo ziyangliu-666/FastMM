@@ -449,5 +449,34 @@ TEST_CASE("core.underlying: without a plan the engine checks nothing more") {
   CHECK_FALSE(r.engine->risk().underlying_on());
   r.book(kUsdm, "49999.9", "50000.1");
   CHECK(r.order(kUsdm, Side::Buy, "49000", "100") == RejectReason::None);
+  CHECK(r.engine->risk_headroom(kUsdm).underlying_buy_qty == Qty::max());
   static_cast<void>(nt);
+}
+
+TEST_CASE("core.underlying: risk_headroom reports what the net limit admits, in contracts") {
+  EngineConfig cfg;
+  cfg.risk.stale_md = seconds(5);
+  Rig r(cfg, spec("0.5"));
+  for (const InstrumentId id : {kUsdm, kOkx}) r.book(id, "49999.9", "50000.1");
+  CHECK(r.engine->risk_headroom(kEth).underlying_buy_qty == Qty::max());  // ETH has no limit
+
+  // Long 0.2 BTC on USD-M: 0.3 more, which on OKX is 30 contracts of 0.01; selling may go through
+  // zero to -0.5, 0.7 BTC or 70 contracts.
+  r.fill(kUsdm, Side::Buy, "50000", "0.2");
+  RiskHeadroom h = r.engine->risk_headroom(kOkx);
+  CHECK(h.underlying_buy_qty == qt("30"));
+  CHECK(h.underlying_sell_qty == qt("70"));
+  CHECK(r.order(kOkx, Side::Buy, "49000", "31") == RejectReason::MaxUnderlyingNet);
+  CHECK(r.order(kOkx, Side::Buy, "49000", "30") == RejectReason::None);
+  // The 30 contracts now work on the buy side.
+  h = r.engine->risk_headroom(kUsdm);
+  CHECK(h.underlying_buy_qty == Qty{});
+  CHECK(h.underlying_sell_qty == qt("0.7"));
+
+  // An inverse contract at 50000: 0.7 BTC is 350 contracts of 100 USD; none without its mark.
+  CHECK(r.engine->risk_headroom(kInverse).underlying_sell_qty == Qty{});
+  r.book(kInverse, "49999.5", "50000.5");
+  CHECK(r.engine->risk_headroom(kInverse).underlying_sell_qty == qt("350"));
+  CHECK(r.order(kInverse, Side::Sell, "50000", "351") == RejectReason::MaxUnderlyingNet);
+  CHECK(r.order(kInverse, Side::Sell, "50000", "350") == RejectReason::None);
 }

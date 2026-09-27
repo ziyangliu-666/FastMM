@@ -1251,6 +1251,18 @@ class RiskHeadroom:
     @property
     def sell_qty_raw(self) -> int | None:
         ...
+    @property
+    def underlying_buy_qty(self) -> float | None:
+        ...
+    @property
+    def underlying_buy_qty_raw(self) -> int | None:
+        ...
+    @property
+    def underlying_sell_qty(self) -> float | None:
+        ...
+    @property
+    def underlying_sell_qty_raw(self) -> int | None:
+        ...
 class StaleViewError(RuntimeError):
     """
     A view (book, fill, trade, ...) was read outside the hook that received it.

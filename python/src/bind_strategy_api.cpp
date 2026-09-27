@@ -1311,6 +1311,8 @@ void bind_strategy_api(py::module_& m) {
   fixed_room("max_order_notional", [](const RiskHeadroom& h) { return h.max_order_notional; });
   fixed_room("buy_qty", [](const RiskHeadroom& h) { return h.buy_qty; });
   fixed_room("sell_qty", [](const RiskHeadroom& h) { return h.sell_qty; });
+  fixed_room("underlying_buy_qty", [](const RiskHeadroom& h) { return h.underlying_buy_qty; });
+  fixed_room("underlying_sell_qty", [](const RiskHeadroom& h) { return h.underlying_sell_qty; });
   fixed_room("gross_notional", [](const RiskHeadroom& h) { return h.gross_notional; });
   fixed_room("net_buy_notional", [](const RiskHeadroom& h) { return h.net_buy_notional; });
   fixed_room("net_sell_notional", [](const RiskHeadroom& h) { return h.net_sell_notional; });

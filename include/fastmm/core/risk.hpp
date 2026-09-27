@@ -371,6 +371,24 @@ class RiskEngine {
     }
     if (limits_.max_loss.is_positive())
       h.loss_budget = Notional::from_raw(limits_.max_loss.raw + net_pnl.raw);
+    if (buy.underlying.limited && inst.id.value < kMaxInstruments) {
+      const std::int64_t m = und_max_[und_of_[inst.id.value] - 1U];
+      const Price mark = underlying_mark(inst.id, buy.now);
+      // The same arithmetic as max_position, in base units, then back to contracts.
+      const auto room = [&](const UnderlyingInputs& u, bool is_buy) {
+        if (!u.known || (inst.inverse() && !mark.is_positive())) return Qty{};
+        const std::int64_t q = is_buy ? u.net : -u.net;
+        std::int64_t r = m - q - u.open;
+        if (q < 0) r = std::max(r, -2 * q - u.open);
+        if (r <= 0) return Qty{};
+        const Int128 c = inst.inverse()
+                             ? static_cast<Int128>(r) * mark.raw / inst.contract_multiplier.raw
+                             : static_cast<Int128>(r) * kFixedScale / inst.contract_multiplier.raw;
+        return lot_floor(inst, static_cast<std::int64_t>(c));
+      };
+      h.underlying_buy_qty = room(buy.underlying, true);
+      h.underlying_sell_qty = room(sell.underlying, false);
+    }
     return h;
   }
 

@@ -428,6 +428,10 @@ class Engine {
                    Price{}};
     RiskInputs sell = buy;
     sell.open_same_side = oms_.open_qty(id, Side::Sell);
+    if (risk_.underlying_on()) {
+      buy.underlying = underlying_inputs(id, Side::Buy);
+      sell.underlying = underlying_inputs(id, Side::Sell);
+    }
     return risk_.headroom(instruments_.get(id), buy, sell, net_pnl());
   }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
