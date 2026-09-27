@@ -3,6 +3,25 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**xmm on 30 minutes of real Binance USD-M + Bybit BTCUSDT (2026-09-28).** Recorded with
+`fastmm-live --dry-run` against production public streams (both books synced; 733k and 101k md
+messages; USD-M 5 resyncs, Bybit 0, no reconnects, machine at load 38; reason not checked).
+Backtest `l2_queue`, `md_arrival = recorded`, Binance 1 ms, Bybit 1 ms or 35 ms (Tokyo to
+Singapore), 0.001 BTC. Retail fees (Binance maker 2, Bybit taker 5.5 bps): quotes 10.5 bps out,
+0 fills. Market-maker fees (maker -0.5, taker 2): edge 0 / 0.5 / 1 bps gives 15 / 6 / 5 maker
+fills, net -0.16 / -0.04 / -0.01 USDT at 1 ms and -0.26 / -0.09 / -0.06 at 35 ms (10 s markout
++0.17 / +0.20 / +0.51 bps at 1 ms, negative at 35 ms). Fills come when the Binance book sweeps
+through the quote; the hedge races Bybit following it (one fill: +21.9 USDT/BTC at 1 ms, a loss at
+35 ms). Every run hedged each fill once and ended flat. Too few fills to judge the strategy; the
+engine question (two venues, hedging, latency per venue in a backtest) is answered.
+
+**USD-M could not start on production (fixed 2026-09-28).** Its exchangeInfo (no symbol filter) is
+1.1 MB, past the 1 MiB receive buffer the blocking client inherited from the streaming client.
+Every earlier run was on Demo, whose list is smaller. Blocking requests now take 16 MiB.
+
+**Flaky under load.** `integration.gateway: kill -9 of one strategy ...` failed once at load ~30
+(2026-09-27); 10 of 10 alone and 4 x 101 integration runs in parallel passed.
+
 **Quote/hedge step 1 done (2026-09-27): backtests across venues.** Every venue an instrument names
 is simulated with its own latency model (order, ack and md paths), wires, `md_arrival`, replace and
 STP (`[backtest.venues.<name>]`, `SimTransportConfig::venues`); books, matching engine and queue
