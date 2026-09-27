@@ -87,7 +87,9 @@ struct JournalFileHeader {
   std::uint32_t param_table_crc32c;  // of the table bytes
   std::uint32_t meta_bytes;          // strategy metadata after the padded table (0 = none)
   std::uint32_t meta_crc32c;         // of the metadata text
-  std::uint8_t reserved[100];
+  // ---- zero in older files ----
+  std::uint32_t await_reconcile;  // EngineConfig::await_reconcile (kHeaderSession)
+  std::uint8_t reserved[96];
   std::uint32_t crc32c;  // over the preceding 252 bytes
 };
 static_assert(sizeof(JournalFileHeader) == 256 && std::is_trivially_copyable_v<JournalFileHeader>);
@@ -95,6 +97,7 @@ static_assert(sizeof(JournalFileHeader) == 256 && std::is_trivially_copyable_v<J
 static_assert(offsetof(JournalFileHeader, session_epoch) == 112 &&
               offsetof(JournalFileHeader, param_count) == 132 &&
               offsetof(JournalFileHeader, meta_bytes) == 144 &&
+              offsetof(JournalFileHeader, await_reconcile) == 152 &&
               offsetof(JournalFileHeader, crc32c) == 252);
 
 // One entry of the v3 parameter table: the name and ParamType of a schema index.
@@ -251,6 +254,7 @@ struct JournalSessionInfo {
   std::uint16_t session_epoch = 0;
   bool quoting_enabled = true;
   std::uint64_t replace_venues = 0;     // bit v: venue v used cancel-replace
+  std::uint32_t await_reconcile = 0;    // EngineConfig::await_reconcile
   std::string_view config_toml;         // effective configuration (Config::effective_toml())
   const ParamSchema* params = nullptr;  // the strategy's parameter schema (v3 parameter table)
   std::string_view strategy_meta;       // `key=value` lines (v3 metadata; empty = none)

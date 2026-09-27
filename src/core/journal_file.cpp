@@ -112,6 +112,7 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
     h.session_epoch = info.session_epoch;
     h.quoting_enabled = info.quoting_enabled ? 1 : 0;
     h.replace_venues = info.replace_venues;
+    h.await_reconcile = info.await_reconcile;
   }
   h.config_bytes = static_cast<std::uint32_t>(config_bytes);
   h.config_crc32c = crc32c(info.config_toml.data(), config_bytes);

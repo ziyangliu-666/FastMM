@@ -54,20 +54,24 @@ struct Recovery {
   // "cl_ord_id SYMBOL side qty @ price state" per order that was not terminal at the last record.
   std::vector<std::string> open_orders;
 
-  // The same positions as numbers, for a session that carries them over (fastmm-live restores them
-  // before it connects; see Venue::resume_executions).
+  // The positions a session carries over (fastmm-live restores them before it connects; see
+  // Venue::resume_executions): per venue and symbol, the last one the engine's store holds, from
+  // this session or, for a venue and symbol it recorded nothing about (it crashed first), the
+  // newest earlier session that did. Two venues can list the same symbol.
   struct PositionState {
+    std::uint8_t venue_id = 0;  // in the session that recorded it
+    std::string venue;          // its [venues.<name>]; empty when the store predates schema 3
     std::string symbol;
     std::int64_t qty_raw = 0;
     std::int64_t avg_px_raw = 0;
   };
   std::vector<PositionState> position_state;
   // Where each venue's execution replay resumes (Venue::resume_executions): from the venue time of
-  // the last fill or funding payment the store holds for it, minus kResumeOverlapMs, skipping the
-  // trade ids and funding ids (kFundingIdPrefix + id) the store holds from there on. The funding
-  // replay starts there too, so a payment made while no session ran is booked by the next one. Both
-  // ends are the venue's clock, so the engine's clock (which follows the host's and may be seconds
-  // off, a WSL2 clock step) does not enter.
+  // the last fill or funding payment the store holds for it (in the newest session that stored
+  // one), minus kResumeOverlapMs, skipping the trade ids and funding ids (kFundingIdPrefix + id)
+  // the store holds from there on. The funding replay starts there too, so a payment made while no
+  // session ran is booked by the next one. Both ends are the venue's clock, so the engine's clock
+  // (which follows the host's and may be seconds off, a WSL2 clock step) does not enter.
   //
   // The overlap covers one thing: the order in which a venue publishes executions against their
   // trade times. Executions of different symbols (and a Bybit batch, a Deribit per-instrument
@@ -107,9 +111,16 @@ struct Recovery {
   // kMaxKnownExecIds, with the start moved later when more fall inside.
   static constexpr std::int64_t kFallbackOverlapNs = 10'000'000'000;  // 10 s
   static constexpr std::int64_t kFallbackIdsNs = 2 * kFallbackOverlapNs;
-  std::int64_t last_fill_ns = 0;       // engine time of the session's last fill (0: none)
+  std::int64_t last_fill_ns = 0;       // engine time of the newest session's last fill (0: none)
   std::int64_t fallback_since_ms = 0;  // 0: no replay
   std::vector<std::string> fallback_exec_ids;
+
+  // Where the replay of a venue with no stored fill starts (no venue_resume entry, in a store
+  // whose fills carry the venue's time or that holds none): the start of the newest session that
+  // shut down cleanly, else of the oldest session, less kFallbackOverlapNs, engine clock. Whatever
+  // the venue executed since is unbooked: a fill of a session that crashed before storing it, or
+  // one made while nothing ran.
+  std::int64_t unbooked_since_ms = 0;
 };
 
 class Reader {

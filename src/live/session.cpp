@@ -264,7 +264,8 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
       p.net,
       p.fills);
   // A clean shutdown asks for the kill switch itself, so only an unrequested one is news.
-  if (p.kill_latched || (p.kill_reason != "None" && p.kill_reason != "Requested"))
+  if (p.kill_latched ||
+      (!p.kill_reason.empty() && p.kill_reason != "None" && p.kill_reason != "Requested"))
     FASTMM_LOG_WARN("previous session kill switch: {}{}",
                     std::string_view(p.kill_reason),
                     p.kill_latched ? " (latched)" : "");
@@ -286,9 +287,15 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
   return *rec;
 }
 
+// A stored position belongs to the venue of this name (by its id in a store that predates names).
+bool same_venue(const store::Recovery::PositionState& p, std::string_view venue, VenueId vid) {
+  return p.venue.empty() ? p.venue_id == vid.value : p.venue == venue;
+}
+
 // Where one venue's first execution replay of a restored session starts: the store's resume point
 // for it, found by the venue's name (by its id in a store that predates the names), else the
-// engine-clock fallback. `instruments` is null before a gateway attach, which takes no trade ids.
+// engine-clock fallback of an old store, else the start of the sessions (a venue with no stored
+// fill). `instruments` is null before a gateway attach, which takes no trade ids.
 struct ResumePlan {
   std::int64_t since_ms = 0;  // venue time, inclusive; 0: no replay
   std::vector<std::string> known;
@@ -319,14 +326,24 @@ ResumePlan resume_plan(const store::Recovery& prev,
           store::Recovery::kResumeOverlapMs,
           r->since_ms - r->last_fill_ms,
           store::Recovery::kResumeOverlapMs);
-  } else {
+  } else if (prev.venue_resume.empty() && prev.fallback_since_ms > 0) {
+    // A store whose fills carry no venue time (written before schema 3).
     p.since_ms = prev.fallback_since_ms;
+    p.known = prev.fallback_exec_ids;
+    FASTMM_LOG_INFO(
+        "{}: no stored fill of this venue carries the venue's time; its execution replay starts "
+        "from the engine clock",
+        venue);
+  } else {
+    // No stored fill of this venue: everything it executed since the sessions began is unbooked.
+    p.since_ms = prev.unbooked_since_ms;
     p.known = prev.fallback_exec_ids;
     if (p.since_ms > 0)
       FASTMM_LOG_INFO(
-          "{}: no stored fill of this venue carries the venue's time; its execution replay starts "
-          "from the engine clock",
-          venue);
+          "{}: no stored fill of this venue; its execution replay starts {} s before the previous "
+          "sessions began, engine clock",
+          venue,
+          store::Recovery::kFallbackOverlapNs / 1'000'000'000);
   }
   if (instruments != nullptr) {
     for (const store::Recovery::TradeIdMark& m : prev.last_trade_ids) {
@@ -361,12 +378,11 @@ void restore_positions(const store::Recovery& prev,
                        std::span<const RestoreVenue> venues,
                        Push&& push,
                        Resume&& resume) {
-  if (prev.position_state.empty() && prev.last_fill_ns == 0) return;
   for (std::size_t i = 0; i < venues.size(); ++i) {
     const bool can_replay = venues[i].can_replay;
     const VenueId vid{static_cast<std::uint8_t>(i)};
     for (const store::Recovery::PositionState& p : prev.position_state) {
-      if (p.qty_raw == 0) continue;
+      if (p.qty_raw == 0 || !same_venue(p, venues[i].name, vid)) continue;
       const Instrument* inst = nullptr;
       for (const Instrument& in : instruments) {
         if (in.venue == vid && in.symbol.view() == p.symbol) inst = &in;
@@ -537,6 +553,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   std::vector<InstrumentId> not_mine;  // attached: the instruments other strategies trade
   std::vector<std::string> venue_names;
   std::uint64_t replace_venues = 0;  // bit v: venue v trades with cancel-replace (journal header)
+  // Bit v: venue v replays executions and reconciles at connect; nothing is sent before it has
+  // (EngineConfig::await_reconcile, journal header).
+  std::uint32_t await_venues = 0;
   // What the previous session left behind, read before the venues attach so its positions can be
   // carried over (restore_positions). Read-only: the store itself is opened further down.
   std::optional<store::Recovery> previous;
@@ -574,21 +593,19 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       // Each venue's execution replay starts where the store's record of it ends, in its own
       // clock. The trade-id start (Venue::resume_trade_ids) stays in-process: the gateway's venue
       // is shared, and it filters another attachment's replay for this one by time and ids.
-      if (previous->last_fill_ns > 0 || !previous->position_state.empty()) {
-        for (const auto& [venue, symbol] : req.instruments) {
-          bool listed = false;
-          for (const GatewayAttachRequest::Resume& r : req.resume)
-            listed = listed || r.venue == venue;
-          if (listed) continue;
-          ResumePlan plan = resume_plan(*previous, venue, VenueId{}, nullptr);
-          if (plan.since_ms > 0)
-            req.resume.push_back({venue, plan.since_ms, std::move(plan.known)});
-        }
+      for (const auto& [venue, symbol] : req.instruments) {
+        bool listed = false;
+        for (const GatewayAttachRequest::Resume& r : req.resume)
+          listed = listed || r.venue == venue;
+        if (listed) continue;
+        ResumePlan plan = resume_plan(*previous, venue, VenueId{}, nullptr);
+        if (plan.since_ms > 0) req.resume.push_back({venue, plan.since_ms, std::move(plan.known)});
       }
       // The gateway's account starts from what this strategy restores (restore_positions below).
+      // A store that predates venue names matches by symbol alone.
       for (const auto& [venue, symbol] : req.instruments) {
         for (const store::Recovery::PositionState& p : previous->position_state) {
-          if (p.symbol == symbol && p.qty_raw != 0)
+          if (p.symbol == symbol && p.qty_raw != 0 && (p.venue.empty() || p.venue == venue))
             req.positions.push_back(
                 {venue, symbol, Qty::from_raw(p.qty_raw), Price::from_raw(p.avg_px_raw)});
         }
@@ -835,6 +852,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     const bool replace = s.venue->caps().supports_replace && cfg.venues[i].supports_replace;
     transport.set_venue(vid, s.outbound.get(), replace);
     if (replace) replace_venues |= std::uint64_t{1} << i;
+    const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
+    if (entry != nullptr && entry->caps.executions && !opts.dry_run) await_venues |= 1U << i;
   }
   if (via_gateway) {
     // An adaptive gateway's network threads block in their reactors: wake them after a push.
@@ -845,6 +864,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       static_cast<void>(feed.add_ring(v.md.get()));
       transport.set_venue(v.id, v.outbound.get(), v.replace);
       if (v.replace) replace_venues |= std::uint64_t{1} << v.id.value;
+      if (v.executions && !opts.dry_run) await_venues |= 1U << v.id.value;
     }
     if (previous && cfg.engine.restore_position) {
       std::vector<RestoreVenue> rv;
@@ -940,6 +960,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.fees = fees;
   deps.engine.underlying = underlying_plan;
   deps.engine.quoting_enabled = !opts.dry_run;
+  deps.engine.await_reconcile = await_venues;
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
 
@@ -1060,6 +1081,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     info.session_epoch = deps.engine.session_epoch;
     info.quoting_enabled = deps.engine.quoting_enabled;
     info.replace_venues = replace_venues;
+    info.await_reconcile = await_venues;
     info.config_toml = effective;
     info.params = param_schema;
     if (custom != nullptr) info.strategy_meta = custom->meta;

@@ -41,6 +41,7 @@ struct Ctx {
   FeeRates fee_rates{0, 400};
   [[nodiscard]] const FeeRates& fees(InstrumentId) const { return fee_rates; }
   [[nodiscard]] VenueHealthView venue_health(VenueId) const { return VenueHealthView{}; }
+  [[nodiscard]] bool reconciling() const { return false; }
   bool set_quotes(InstrumentId, const DesiredQuotes&) noexcept {
     ++quotes;
     return true;

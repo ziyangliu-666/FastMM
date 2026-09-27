@@ -61,17 +61,50 @@ struct Writer {
   std::uint64_t seq = 0;
   std::uint64_t session = 0;
 
-  Writer(const std::string& path, std::uint64_t id) : session(id) {
+  Writer(const std::string& path,
+         std::uint64_t id,
+         std::int64_t started_ns = kDay1Ns,
+         const InstrumentTable& t = two_venues(),
+         std::vector<std::string> venues = {"binance", "bybit"})
+      : session(id) {
     section.values["path"] = path;
     BackendOptions o;
     o.config = &section;
     o.engine_name = "test";
     REQUIRE(backend->open(o));
-    SessionOpen s = fastmm::test::store_session(id, kDay1Ns);
-    s.venues = {"binance", "bybit"};
+    SessionOpen s = fastmm::test::store_session(id, started_ns);
+    s.venues = std::move(venues);
     REQUIRE(backend->session_open(s));
-    const InstrumentTable t = two_venues();
     REQUIRE(backend->instruments(id, std::span<const Instrument>(t.data(), t.size())));
+    backend->begin();
+  }
+  // A position snapshot of instrument `inst`.
+  void position(std::uint32_t inst, std::int64_t qty_raw) {
+    PositionRecord r = fastmm::test::store_position(session, ++seq, kDay1Ns, qty_raw, 0, 0, 1);
+    r.hdr.instrument = InstrumentId{inst};
+    r.hdr.venue = VenueId{static_cast<std::uint8_t>(inst)};
+    backend->position(r);
+  }
+  // A fill of instrument `inst` that leaves `position_raw`, with no position row after it.
+  void fill_leaving(std::uint32_t inst,
+                    std::int64_t exch_ms,
+                    const std::string& exec_id,
+                    std::int64_t position_raw) {
+    FillRecord r = fastmm::test::store_fill(
+        session, ++seq, exch_ms * kMs - kEngineBehindNs, Side::Buy, 100, 1, 0, 0, exec_id);
+    r.hdr.instrument = InstrumentId{inst};
+    r.hdr.venue = VenueId{static_cast<std::uint8_t>(inst)};
+    r.hdr.exch_ts = Timestamp{exch_ms * kMs};
+    r.position_qty = Qty::from_raw(position_raw);
+    backend->fill(r);
+  }
+  // The session records its shutdown (without it, it crashed).
+  void close_cleanly() {
+    backend->commit();
+    SessionClose c;
+    c.session_id = session;
+    c.stopped_ns = kDay1Ns + 1;
+    REQUIRE(backend->session_close(c));
     backend->begin();
   }
   // A fill on instrument `inst` (its venue has the same id) traded at venue time `exch_ms`.
@@ -265,4 +298,126 @@ TEST_CASE("store.resume: a version 2 store opens and resumes from the engine clo
   CHECK(scalar(path, "SELECT version FROM schema_version") == kSqliteSchemaVersion);
   CHECK(scalar(path, "SELECT exch_ns FROM fills WHERE exec_id = '203'") == 0);
   check(recover(path));
+}
+
+namespace {
+
+// BTCUSDT on venue 0 ("quote") and on venue 1 ("hedge"): one symbol, two venues.
+InstrumentTable same_symbol() {
+  InstrumentTable t = two_venues();
+  InstrumentTable out;
+  for (Instrument i : t) {
+    i.symbol = "BTCUSDT";
+    i.base = "BTC";
+    REQUIRE(out.add(i));
+  }
+  return out;
+}
+
+const Recovery::PositionState* position_of(const Recovery& r,
+                                           std::string_view venue,
+                                           std::string_view symbol) {
+  for (const Recovery::PositionState& p : r.position_state) {
+    if (p.venue == venue && p.symbol == symbol) return &p;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("store.resume: two venues trading one symbol keep their own positions") {
+  const std::string path = fresh("resume_same_symbol.db");
+  {
+    Writer w(path, 5, kDay1Ns, same_symbol(), {"quote", "hedge"});
+    w.position(0, 100'000);   // +0.001 on the quote venue
+    w.position(1, -100'000);  // -0.001 on the hedge venue
+  }
+  const Recovery r = recover(path);
+  REQUIRE(r.position_state.size() == 2);
+  const Recovery::PositionState* q = position_of(r, "quote", "BTCUSDT");
+  const Recovery::PositionState* h = position_of(r, "hedge", "BTCUSDT");
+  REQUIRE(q != nullptr);
+  REQUIRE(h != nullptr);
+  CHECK(q->venue_id == 0);
+  CHECK(q->qty_raw == 100'000);
+  CHECK(h->venue_id == 1);
+  CHECK(h->qty_raw == -100'000);
+}
+
+// The store commits whatever the ring holds when it drains: a crash can keep a fill whose
+// position row had not reached it. The fill carries the position it left.
+TEST_CASE("store.resume: a fill stored without the position row after it sets the position") {
+  const std::string path = fresh("resume_fill_last.db");
+  {
+    Writer w(path, 5);
+    w.position(0, 100'000);
+    w.fill_leaving(0, kT0, "104", 200'000);
+  }
+  const Recovery r = recover(path);
+  const Recovery::PositionState* b = position_of(r, "binance", "BTCUSDT");
+  REQUIRE(b != nullptr);
+  CHECK(b->qty_raw == 200'000);
+}
+
+// A session that crashed before it stored a fill (here: after restoring one position) holds no
+// resume point and only part of the positions; the restart takes the rest from the session before.
+TEST_CASE("store.resume: what the newest session did not record comes from the one before") {
+  const std::string path = fresh("resume_chain.db");
+  const std::int64_t start5 = kDay1Ns;
+  const std::int64_t start6 = kDay1Ns + 60'000 * kMs;
+  {
+    Writer w(path, 5, start5);
+    w.fill_leaving(0, kT0 - 400, "103", 100'000);
+    w.fill_leaving(0, kT0, "104", 200'000);
+    w.fill_leaving(1, kT1, "a-2", -300'000);
+  }
+  {
+    Writer w(path, 6, start6);
+    w.position(0, 200'000);  // restored, then it died
+  }
+  const Recovery r = recover(path);
+  CHECK(r.session_id == 6);
+  // Positions: binance from session 6, bybit (nothing in 6) from session 5.
+  REQUIRE(r.position_state.size() == 2);
+  REQUIRE(position_of(r, "binance", "BTCUSDT") != nullptr);
+  CHECK(position_of(r, "binance", "BTCUSDT")->qty_raw == 200'000);
+  REQUIRE(position_of(r, "bybit", "ETHUSDT") != nullptr);
+  CHECK(position_of(r, "bybit", "ETHUSDT")->qty_raw == -300'000);
+  // Resume points: session 5's, the newest that stored a fill of each venue.
+  REQUIRE(r.venue_resume.size() == 2);
+  const Recovery::VenueResume* b = venue(r, "binance");
+  REQUIRE(b != nullptr);
+  CHECK(b->last_fill_ms == kT0);
+  CHECK(b->since_ms == kT0 - Recovery::kResumeOverlapMs);
+  CHECK(sorted(b->known_exec_ids) == std::vector<std::string>{"103", "104"});
+  REQUIRE(venue(r, "bybit") != nullptr);
+  CHECK(venue(r, "bybit")->last_fill_ms == kT1);
+  REQUIRE(r.last_trade_ids.size() == 1);
+  CHECK(r.last_trade_ids[0].last_id == 104);
+  CHECK(r.last_fill_ns == kT0 * kMs - kEngineBehindNs);
+  // Neither shut down cleanly: a venue with no stored fill replays from the oldest start.
+  CHECK(r.unbooked_since_ms == (start5 - Recovery::kFallbackOverlapNs) / kMs);
+}
+
+TEST_CASE("store.resume: a venue with no stored fill replays from the newest clean shutdown") {
+  const std::string path = fresh("resume_unbooked.db");
+  const std::int64_t start4 = kDay1Ns;
+  const std::int64_t start5 = kDay1Ns + 60'000 * kMs;
+  const std::int64_t start6 = kDay1Ns + 120'000 * kMs;
+  {
+    Writer w(path, 4, start4);  // crashed
+  }
+  {
+    Writer w(path, 5, start5);
+    w.close_cleanly();
+  }
+  {
+    Writer w(path, 6, start6);  // crashed
+  }
+  const Recovery r = recover(path);
+  CHECK(r.session_id == 6);
+  CHECK(r.venue_resume.empty());
+  CHECK(r.last_fill_ns == 0);
+  CHECK(r.fallback_since_ms == 0);
+  CHECK(r.unbooked_since_ms == (start5 - Recovery::kFallbackOverlapNs) / kMs);
 }

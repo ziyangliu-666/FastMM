@@ -189,6 +189,11 @@ class Engine {
       own_->prepare(instruments_.size());
     }
     risk_.set_underlying(cfg.underlying);
+    // Venues whose positions wait for their first reconciliation: only those an instrument trades.
+    for (const Instrument& inst : instruments_) {
+      if (inst.venue.value < 32U && ((cfg.await_reconcile >> inst.venue.value) & 1U) != 0)
+        awaiting_ |= venue_mask(inst.venue);
+    }
   }
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
@@ -383,7 +388,7 @@ class Engine {
   }
   [[nodiscard]] EngineLiveStats live_stats() const noexcept { return live_pub_.load(); }
   [[nodiscard]] bool quoting_enabled() const noexcept {
-    return quoting_enabled_ && !reconciling_ && !params_stale_ && !risk_.killed();
+    return quoting_enabled_ && !reconciling() && !params_stale_ && !risk_.killed();
   }
   // ... and this instrument was not pulled on its own, nor its venue (ControlCommand::PullQuotes
   // with a scope, an engine-owned flatten).
@@ -397,7 +402,11 @@ class Engine {
   [[nodiscard]] FlattenState flatten_state() const noexcept { return flatten_state_; }
   // The instrument it covers; invalid when it covers every instrument.
   [[nodiscard]] InstrumentId flatten_scope() const noexcept { return flatten_scope_; }
-  [[nodiscard]] bool reconciling() const noexcept { return reconciling_; }
+  // A venue's orders and position are being reconciled, or (EngineConfig::await_reconcile) have
+  // not been since the session started: the positions may still be missing fills.
+  [[nodiscard]] bool reconciling() const noexcept { return (reconciling_ | awaiting_) != 0; }
+  // Venues whose first reconciliation has not ended (EngineConfig::await_reconcile).
+  [[nodiscard]] std::uint32_t awaiting_reconcile() const noexcept { return awaiting_; }
   // max_param_age is set and no ParamUpdate was applied within it (or none yet).
   [[nodiscard]] bool params_stale() const noexcept { return params_stale_; }
   // The first reason the global kill switch was set for (None while it is not set).
@@ -1503,7 +1512,7 @@ class Engine {
     own_inbound(m.hdr);
     switch (m.kind) {
       case ReconcileMsg::Kind::Begin: {
-        reconciling_ = true;
+        reconciling_ |= venue_mask(m.hdr.venue);
         reconcile_exact_ = (m.flags & ReconcileMsg::kExecutionsExact) != 0;
         if (reconcile_exact_) {
           ++stats_.exact_reconciles;
@@ -1541,7 +1550,15 @@ class Engine {
         // Orders the venue no longer has end like any other update, so the quote manager frees
         // their slots too.
         oms_.reconcile_end([&](const OmsUpdate& u) { after_oms_update(u, m.hdr); }, m.hdr.venue);
-        reconciling_ = false;
+        reconciling_ &= ~venue_mask(m.hdr.venue);
+        if ((awaiting_ & venue_mask(m.hdr.venue)) != 0) {
+          awaiting_ &= ~venue_mask(m.hdr.venue);
+          if (awaiting_ == 0)
+            FASTMM_LOG_INFO(
+                "every venue has reconciled its orders and executions since the start; orders "
+                "are sent from now on");
+        }
+        if (reconciling()) break;  // another venue's is still in progress
         resume_quotes();
         break;
     }
@@ -1899,6 +1916,7 @@ class Engine {
                                                  bool flatten = false) noexcept {
     if (FASTMM_UNLIKELY(!instruments_.contains(req.instrument)))
       return fail(RejectReason::InstrumentDisabled);
+    if (FASTMM_UNLIKELY(awaiting_ != 0)) return fail(RejectReason::NotReconciled);
     const Instrument& inst = instruments_.get(req.instrument);
     const Timestamp now = now_;
     OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty, req.tif};
@@ -2290,7 +2308,11 @@ class Engine {
   bool latched_ = false;
   bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;
-  bool reconciling_ = false;
+  std::uint32_t reconciling_ = 0;  // bit per venue between its reconciliation's Begin and End
+  // Bit per venue whose first reconciliation since the start has not ended (await_reconcile): its
+  // position is the store's plus whatever the execution replay has booked so far, so no order is
+  // sent (NotReconciled) and quoting stays off until every one of them has.
+  std::uint32_t awaiting_ = 0;
   // The reconciliation in progress was preceded by a complete execution replay, so what it reports
   // is the venue's own and nothing in it has to be estimated (ReconcileMsg::kExecutionsExact).
   bool reconcile_exact_ = false;
