@@ -8,7 +8,7 @@ Every shipped config points at a testnet, Demo Mode or a local simulator. There 
 
 | State | After a restart |
 |---|---|
-| Position | restored from the store (`[engine] restore_position`, default on), then brought up to date by the venue's executions since the last stored fill, counted in the venue's clock: fills of orders that were resting when the process died, and trades made on the account outside FastMM |
+| Position | restored per venue and symbol from the store (`[engine] restore_position`, default on), then brought up to date by the venue's executions since the last stored fill, counted in the venue's clock: fills of orders that were resting when the process died, and trades made on the account outside FastMM. No order goes out until every venue has replayed and reconciled |
 | Orders the dead process left | every connector sweeps the venue's open orders on its first connect; their ids belong to an earlier session epoch, so the engine cancels them (`cancelling unknown live order <id>`) |
 | Kill switch, `[risk] max_loss` budget | carried in `<journal_dir>/<name>.kill`: a latched kill exits 6 at every start until cleared, and the loss budget is for the deployment, not the process |
 | Client order id sequence | continues: `[engine] epoch_file` (default `runs/session_epoch`) keeps ids unique; keep the file |

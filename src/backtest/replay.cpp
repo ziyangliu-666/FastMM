@@ -221,6 +221,7 @@ ReplayResult replay_impl(const std::string& path,
     deps.engine.session_epoch = header.session_epoch;
     deps.engine.quoting_enabled = header.quoting_enabled != 0;
     deps.engine.rng_seed = header.rng_seed;
+    deps.engine.await_reconcile = header.await_reconcile;
   }
   deps.instruments = &instruments;
   deps.params = cfg.params;

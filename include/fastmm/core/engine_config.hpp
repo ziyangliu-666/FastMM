@@ -45,6 +45,13 @@ struct EngineConfig {
   // not per process); fastmm-live reads it from the durable kill state (core/session_state.hpp).
   Notional pnl_carry{};
   bool quoting_enabled = true;
+  // Bit v: venue v's positions are not current until its first reconciliation ends. A live
+  // session sets it for the venues that replay executions at connect: until then the position is
+  // the store's plus whatever the replay has booked so far, and an order sized, hedged or
+  // risk-checked on it could double a hedge or pass a limit. No order is sent and quoting stays
+  // off until every such venue has reconciled (journal header await_reconcile, so a replay does
+  // the same).
+  std::uint32_t await_reconcile = 0;
   int cpu = -1;
   SpinMode spin_mode = SpinMode::Busy;
   RiskLimits risk;

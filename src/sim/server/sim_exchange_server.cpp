@@ -820,6 +820,15 @@ std::vector<std::string> SimExchangeServer::open_client_order_ids() const {
   Impl& impl = *impl_;
   return impl.call([&impl] { return impl.open_client_ids(); });
 }
+std::vector<SimExchangeServer::OpenOrder> SimExchangeServer::open_orders() const {
+  Impl& impl = *impl_;
+  return impl.call([&impl] {
+    std::vector<OpenOrder> out;
+    for (const OrderRecord* r : impl.orders_.open_orders(kStrategyAccount, -1))
+      out.push_back(OpenOrder{r->client_order_id, r->side, r->price, r->leaves()});
+    return out;
+  });
+}
 void SimExchangeServer::ban_next_requests(std::uint32_t count) {
   impl_->call([this, count] { impl_->faults_.ban_next = count; });
 }

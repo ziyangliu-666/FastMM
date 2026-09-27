@@ -155,6 +155,10 @@ class StrategyContext {
   // ---- control --------------------------------------------------------------------------------
 
   [[nodiscard]] bool quoting_enabled() const noexcept { return e_->quoting_enabled(); }
+  // A venue's orders and position are being reconciled, or have not been yet since the session
+  // started (a live session waits for every venue that replays executions; new orders are refused
+  // with NotReconciled until then). Positions may be missing fills while this holds.
+  [[nodiscard]] bool reconciling() const noexcept { return e_->reconciling(); }
   [[nodiscard]] bool killed() const noexcept { return e_->risk().killed(); }
   // One venue's kill switch: new orders to it are refused and set_quotes ignores its instruments.
   [[nodiscard]] bool venue_killed(VenueId v) const noexcept { return e_->risk().venue_killed(v); }

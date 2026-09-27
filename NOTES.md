@@ -3,6 +3,32 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Quote/hedge step 4 done (2026-09-28): xmm through a real crash.** `integration/
+xmm_restart_test.cpp`: `fastmm-live` as a child, two in-process simulators outliving it, SIGKILL
+(1) with the hedge IOC executed at the venue but its reply and execution report held (sim ack
+delay), (2) with a quote left resting and filled while down, with and without an earlier hedged
+round, (3) behind `fastmm-gateway`, the strategy killed with its hedge unanswered and the held
+events reaching the gateway after the restarted strategy attached, (4) `[risk.underlying.BTC]
+max_net = 0.0015`, the down-time fill left unhedgeable (hedge venue rejects) while the test fills
+every quote at once. Venue facts: one hedge order per maker fill, venues net to zero, store
+position per venue = venue position, no exec id stored twice, no repeated client order id,
+|net| never past max_net; the gateway's account ends at the venues' positions too. Three bugs, each
+seen failing first: (a) restored positions were matched by symbol only, so BTCUSDT on two venues
+got each other's (hedge venue restored +0.001: 3 hedges); `Recovery::PositionState` now names the
+venue. (b) A session that died before storing a fill left no resume point, so the next one
+replayed from its connect and lost the down-time fill; recovery now reads the chain of the engine's
+sessions: per venue and symbol the newest recorded position (a fill row counts, as the store can
+commit a fill without the position row after it), per venue the newest session with a stored fill,
+and a venue with none replays from the newest clean shutdown's start (else the oldest) less 10 s.
+(c) After a restart each venue's replay books on its own thread, so a quote fill replayed before
+the hedge venue's replay made xmm hedge twice (and risk checked stale positions). A live session
+now sends nothing and keeps quoting off until every venue that replays executions has finished its
+first reconciliation (`EngineConfig::await_reconcile`, journal header field, orders refused
+`NotReconciled`); `reconciling_` is a per-venue mask; xmm does not hedge while
+`ctx.reconciling()`. Evidence: 10 of 10 runs of the 5 cases in a row (47 s each), 3 copies x 3
+runs in parallel with the other 111 integration tests (all passed), store and xmm unit cases,
+full ctest. Not measured: the extra branch in `submit_new` on the benchmarks.
+
 **xmm on 30 minutes of real Binance USD-M + Bybit BTCUSDT (2026-09-28).** Recorded with
 `fastmm-live --dry-run` against production public streams (both books synced; 733k and 101k md
 messages; USD-M 5 resyncs, Bybit 0, no reconnects, machine at load 38; reason not checked).

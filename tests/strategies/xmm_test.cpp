@@ -72,6 +72,7 @@ struct Ctx {
   std::vector<Sent> sent;
   bool refuse = false;
   bool quoting = true;
+  bool reconciling_now = false;
   // Quote venue maker 0, hedge venue taker 4 bps.
   std::array<FeeRates, 2> fee_rates{FeeRates{0, 0}, FeeRates{0, 400}};
   std::array<bool, 2> gated{};
@@ -95,6 +96,7 @@ struct Ctx {
   [[nodiscard]] FakePosition position(InstrumentId id) const { return FakePosition{pos[id.value]}; }
   [[nodiscard]] Timestamp now() const { return t; }
   [[nodiscard]] const FeeRates& fees(InstrumentId id) const { return fee_rates[id.value]; }
+  [[nodiscard]] bool reconciling() const { return reconciling_now; }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const {
     VenueHealthView h;
     h.gated = gated[v.value];
@@ -369,6 +371,47 @@ TEST_CASE("strategies.xmm: a maker fill sends one hedge, which blocks the next u
   CHECK(c.sent.size() == 1);
   CHECK(s.stats().hedges_sent == 1);
   CHECK(s.stats().hedge_failures == 0);
+}
+
+// After a restart the engine's positions are the store's plus what the execution replay has booked
+// so far, venue by venue: a quote fill replayed before the hedge venue's replay books the hedge
+// that covered it must not be hedged again. Nothing goes out until the reconciliation ends.
+TEST_CASE("strategies.xmm: no hedge while a venue reconciles; the positions after it decide") {
+  Xmm s = make();
+  Ctx c;
+  c.reconciling_now = true;
+  c.quoting = false;
+  start(s, c);
+  maker_fill(s, c, Side::Buy, "0.01");  // the quote venue's replay
+  s.on_timer(c, TimerId{1}, Xmm::kTimer);
+  CHECK(c.sent.empty());
+  c.pos[1] -= qt("1");  // the hedge venue's replay: the hedge that went out before the crash
+  Fill f;
+  f.instrument = InstrumentId{1};
+  f.side = Side::Sell;
+  f.qty = qt("1");
+  s.on_fill(c, f);
+  CHECK(c.sent.empty());
+  c.reconciling_now = false;
+  c.quoting = true;
+  s.on_quoting(c, true);
+  s.on_timer(c, TimerId{1}, Xmm::kTimer);
+  CHECK(c.sent.empty());
+  CHECK(s.unhedged(c).is_zero());
+
+  // Reconciled with only the quote fill booked: it is hedged once, when the reconciliation ends.
+  Xmm s2 = make();
+  Ctx c2;
+  c2.reconciling_now = true;
+  start(s2, c2);
+  maker_fill(s2, c2, Side::Buy, "0.01");
+  CHECK(c2.sent.empty());
+  c2.reconciling_now = false;
+  s2.on_quoting(c2, true);
+  REQUIRE(c2.sent.size() == 1);
+  CHECK(c2.sent[0].req.side == Side::Sell);
+  CHECK(c2.sent[0].req.qty == qt("1"));
+  CHECK(s2.stats().hedge_failures == 0);
 }
 
 TEST_CASE("strategies.xmm: a partial hedge is followed by one for the remainder") {

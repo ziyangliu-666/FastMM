@@ -157,6 +157,14 @@ class SimExchangeServer {
   [[nodiscard]] Qty fill_open_order(std::string_view client_order_id, Qty qty = Qty{});
   // Client order ids the account holds open, ascending venue order id.
   [[nodiscard]] std::vector<std::string> open_client_order_ids() const;
+  // The same orders with their side, price and remaining quantity.
+  struct OpenOrder {
+    std::string client_order_id;
+    Side side = Side::Buy;
+    Price price{};
+    Qty leaves{};
+  };
+  [[nodiscard]] std::vector<OpenOrder> open_orders() const;
 
   // Venue-side chaos.
   void ban_next_requests(std::uint32_t count);                // 418 + Retry-After, as an IP ban

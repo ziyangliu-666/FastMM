@@ -24,7 +24,10 @@
 // the next hedge until an ack, a fill or reconciliation ends it. A hedge the venue reports ended
 // before its executions arrive (Bybit's order and execution topics are not ordered) is booked by
 // the engine from the reported cumulative quantity before this strategy hears of the end, and the
-// executions that follow name that quantity instead of adding it (Oms::on_fill).
+// executions that follow name that quantity instead of adding it (Oms::on_fill). No hedge goes out
+// while a venue reconciles or, after a start, before every venue has replayed its executions and
+// reconciled (ctx.reconciling()): until then one venue's position may lack a fill the other's
+// already shows.
 //
 // Guards: the quotes come off when either book is invalid or older than stale_ms, when the hedge
 // venue's market data or order channel is down or its feed-lag gate holds it, and while the
@@ -416,7 +419,9 @@ class Xmm : public StrategyBase<XmmParams> {
 
   template <class Ctx>
   void maybe_hedge(Ctx& ctx) noexcept {
-    if (halted_ || hedge_down_mask_ != 0 || hedge_in_flight(ctx)) return;
+    // While a venue reconciles (and, after a start, until each has), a position may still be
+    // missing an execution the replay is about to book: a hedge now could be a second one.
+    if (halted_ || hedge_down_mask_ != 0 || ctx.reconciling() || hedge_in_flight(ctx)) return;
     const std::int64_t now = ctx.now().ns;
     if (now < next_hedge_ns_) return;
     const auto& hb = ctx.book(h_);
