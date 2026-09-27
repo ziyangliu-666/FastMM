@@ -137,10 +137,22 @@ Qty net_position(const ServerFixture& q, const ServerFixture& h) {
 }
 
 // Fills one of our quotes on the quote venue in full; its quantity.
-Qty fill_a_quote(ServerFixture& q) {
+Qty fill_a_quote_once(ServerFixture& q) {
   const std::vector<std::string> ids = q.server.open_client_order_ids();
   if (ids.empty()) return Qty{};
   return q.server.fill_open_order(ids.front(), Qty{});
+}
+
+// A requote cancels before it places (no replace), so the book can be empty for a moment.
+Qty fill_a_quote(ServerFixture& q) {
+  Qty filled{};
+  static_cast<void>(wait_until(
+      [&] {
+        filled = fill_a_quote_once(q);
+        return filled.is_positive();
+      },
+      10000));
+  return filled;
 }
 
 struct Outcome {

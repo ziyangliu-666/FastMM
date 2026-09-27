@@ -416,7 +416,8 @@ commands (one per datagram; the reply starts with ok or error)
   resume [--instrument SYM | --venue NAME] quote again; without a scope it also clears
                                            every scoped pull and stops a running flatten
   param <name>=<value> ... [--instrument SYM]  new strategy parameters, validated here
-  limits <key>=<value> ...                 new risk limits (the [risk] keys)
+  limits <key>=<value> ...                 new risk limits (the [risk] keys, and
+                                           underlying.<BASE>.max_net)
   flatten [--instrument SYM] [--max-slippage-bps N]  work the position off, reduce-only
   kill                                     trip the kill switch (quotes pulled, all
                                            orders cancelled; the position stays)
