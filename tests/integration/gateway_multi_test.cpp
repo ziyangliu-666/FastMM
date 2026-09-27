@@ -186,14 +186,25 @@ TEST_CASE(
   const pid_t a = spawn_strategy(c.a, g);
   const std::uint16_t ea = wait_resting(fx, c.a, {});
   // One of a's resting orders fills while a's private stream is out: a hears nothing of it.
-  std::string wire;
-  for (const std::string& id : fx.server.open_client_order_ids()) {
-    const auto cl = decode_cl_ord_id(id);
-    if (cl && cl_ord_id_epoch(*cl) == ea) wire = id;
-  }
-  REQUIRE(!wire.empty());
   fx.server.set_user_stream_muted(true);
-  const Qty filled = fx.server.fill_open_order(wire);
+  // A requote cancels before it places: pick a resting order of a's again until one fills.
+  Qty filled{};
+  std::string wire;
+  static_cast<void>(wait_until(
+      [&] {
+        for (const std::string& id : fx.server.open_client_order_ids()) {
+          const auto cl = decode_cl_ord_id(id);
+          if (cl && cl_ord_id_epoch(*cl) == ea) {
+            filled = fx.server.fill_open_order(id);
+            if (filled.is_positive()) {
+              wire = id;
+              return true;
+            }
+          }
+        }
+        return false;
+      },
+      10000));
   REQUIRE(filled.is_positive());
   fx.server.set_user_stream_muted(false);
   // b's attach replays the account's executions since its last stored fill, which includes it.

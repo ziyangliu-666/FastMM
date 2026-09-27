@@ -13,6 +13,8 @@
 #include <spawn.h>
 #include <sys/wait.h>
 
+#include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -82,6 +84,25 @@ inline SessionFiles write_config(const ServerFixture& fx,
 }
 
 // Starts `exe` with `args` (argv[0] is added).
+// Children not reaped yet. A case that fails between spawn and reap would leave them running
+// (a gateway has no --duration) and holding ctest's output pipe, so ctest waited out its timeout;
+// they are killed when the test process exits.
+// Never destroyed: the atexit handler below runs after function-local statics constructed later.
+inline std::vector<pid_t>& live_children() {
+  static auto* pids = new std::vector<pid_t>;  // NOLINT(cppcoreguidelines-owning-memory)
+  return *pids;
+}
+
+inline void kill_live_children() {
+  for (const pid_t pid : live_children()) {
+    // 0 only for a child of ours still running: a pid reaped elsewhere (ECHILD) is not touched,
+    // even if another process has it now.
+    if (::waitpid(pid, nullptr, WNOHANG) != 0) continue;
+    if (::kill(pid, SIGKILL) == 0) static_cast<void>(::waitpid(pid, nullptr, 0));
+  }
+  live_children().clear();
+}
+
 inline pid_t spawn_process(const char* exe, const std::vector<std::string>& args) {
   std::vector<const char*> argv{exe};
   for (const std::string& a : args) argv.push_back(a.c_str());
@@ -90,6 +111,9 @@ inline pid_t spawn_process(const char* exe, const std::vector<std::string>& args
   const int rc =
       posix_spawn(&pid, exe, nullptr, nullptr, const_cast<char* const*>(argv.data()), environ);
   REQUIRE_MESSAGE(rc == 0, "posix_spawn " << exe << " failed");
+  static const bool registered = std::atexit(kill_live_children) == 0;
+  static_cast<void>(registered);
+  live_children().push_back(pid);
   return pid;
 }
 
@@ -115,6 +139,7 @@ inline pid_t spawn_live(const SessionFiles& f,
 inline int reap(pid_t pid) {
   int status = 0;
   REQUIRE(::waitpid(pid, &status, 0) == pid);
+  std::erase(live_children(), pid);
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
