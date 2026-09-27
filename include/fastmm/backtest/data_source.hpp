@@ -249,4 +249,24 @@ class MergedSource final : public MdSource {
   EventBuf buf_{};
 };
 
+// MergedSource over sources it owns: open_data() of several specs ("a; b"), one per venue.
+class OwnedMergedSource final : public MdSource {
+ public:
+  explicit OwnedMergedSource(std::vector<std::unique_ptr<MdSource>> sources)
+      : owned_(std::move(sources)), merged_(raw(owned_)) {}
+  const EventHeader* next() override { return merged_.next(); }
+  void reset() override { merged_.reset(); }
+  [[nodiscard]] Timestamp start_ts() const override { return merged_.start_ts(); }
+
+ private:
+  static std::vector<MdSource*> raw(const std::vector<std::unique_ptr<MdSource>>& v) {
+    std::vector<MdSource*> out;
+    out.reserve(v.size());
+    for (const auto& s : v) out.push_back(s.get());
+    return out;
+  }
+  std::vector<std::unique_ptr<MdSource>> owned_;
+  MergedSource merged_;
+};
+
 }  // namespace fastmm::bt

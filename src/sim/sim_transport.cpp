@@ -1,7 +1,10 @@
 #include "fastmm/sim/sim_transport.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace fastmm::sim {
 
@@ -19,6 +22,15 @@ Timestamp venue_time(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
 
+// Latency seed of every venue after the first, which keeps SimTransportConfig::seed (so a
+// single-venue run draws exactly what it always drew).
+std::uint64_t venue_seed(std::uint64_t seed, VenueId v) noexcept {
+  std::uint64_t z = seed + 0x9E3779B97F4A7C15ULL * (static_cast<std::uint64_t>(v.value) + 1);
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
 }  // namespace
 
 SimTransport::SimTransport(const SimClock& clock,
@@ -28,18 +40,56 @@ SimTransport::SimTransport(const SimClock& clock,
       instruments_(instruments),
       cfg_(cfg),
       me_(instruments.size(), this),
-      lat_(cfg.order_out, cfg.ack_in, cfg.md_in, cfg.seed),
-      md_wire_(cfg.md_wire_bytes),
-      order_wire_(cfg.order_wire_bytes),
       mirror_(new L2Book<256>[instruments.size() == 0 ? 1 : instruments.size()]),
       queue_(cfg.queue_conservatism_bps),
       touch_(new QueueTouch[instruments.size() == 0 ? 1 : instruments.size()]) {
+  if (!cfg.venue.valid() || cfg.venue.value >= kMaxVenues)
+    throw std::invalid_argument("sim: default venue id out of range");
+  const auto venue_of = [&](const Instrument& i) { return i.venue.valid() ? i.venue : cfg.venue; };
+  bool used[kMaxVenues] = {};
+  for (const Instrument& i : instruments) {
+    const VenueId v = venue_of(i);
+    if (v.value >= kMaxVenues) {
+      throw std::invalid_argument("sim: instrument " + std::string(i.symbol.view()) +
+                                  " is on venue " + std::to_string(v.value) + ", at most " +
+                                  std::to_string(kMaxVenues) + " venues are simulated");
+    }
+    used[v.value] = true;
+  }
+  if (instruments.size() == 0) used[cfg.venue.value] = true;
+  for (const SimVenueConfig& c : cfg.venues) {
+    if (!c.venue.valid() || c.venue.value >= kMaxVenues || !used[c.venue.value]) {
+      throw std::invalid_argument("sim: settings for venue " + std::to_string(c.venue.value) +
+                                  ", which no instrument trades on");
+    }
+  }
+  std::uint8_t index_of[kMaxVenues] = {};
+  for (std::uint8_t v = 0; v < kMaxVenues; ++v) {
+    const SimVenueConfig vc = cfg.venue_config(VenueId{v});
+    replace_[v] = vc.supports_replace;
+    if (!used[v]) continue;
+    const std::uint64_t seed = n_links_ == 0 ? cfg.seed : venue_seed(cfg.seed, VenueId{v});
+    index_of[v] = static_cast<std::uint8_t>(n_links_);
+    links_[n_links_++].emplace(VenueId{v}, vc, seed, cfg);
+  }
   me_.set_stp(kStrategyAccount, cfg.stp);
+  for (const Instrument& i : instruments) {
+    const VenueId v = venue_of(i);
+    link_of_inst_[i.id.value] = index_of[v.value];
+    me_.set_stp(kStrategyAccount, i.id, cfg.venue_config(v).stp);
+  }
+}
+
+LatencyModel& SimTransport::latency(VenueId v) noexcept {
+  for (std::size_t k = 0; k < n_links_; ++k) {
+    if (at(k).id == v) return at(k).lat;
+  }
+  return at(0).lat;
 }
 
 void SimTransport::enable_aggregator(Timestamp start) noexcept {
   MdAggregatorConfig mc = cfg_.md;
-  mc.venue = cfg_.venue;
+  mc.venue = link(InstrumentId{0}).id;
   agg_ = std::make_unique<MdAggregator>(instruments_.size(), me_, mc, start);
 }
 
@@ -62,7 +112,7 @@ bool SimTransport::send(const EventHeader& m) noexcept {
       return true;  // not an order message: accepted and ignored
   }
   if (cfg_.hash_outbound) hasher_.add(m);
-  const LatencySample s = lat_.order_out();
+  const LatencySample s = link(m.instrument).lat.order_out();
   if (s.dropped) {
     ++stats_.dropped;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
@@ -131,7 +181,7 @@ void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
 
 void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
   if (cfg_.fill_model == FillModel::L2Queue) {
-    queue_cancel(m.cl_ord_id, now, CancelReason::Requested);
+    queue_cancel(m.cl_ord_id, m.hdr.instrument, now);
   } else {
     static_cast<void>(me_.cancel(kStrategyAccount, m.cl_ord_id, now));
   }
@@ -180,8 +230,9 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
     }
   }
   if (agg_ != nullptr) return;  // coupled mode publishes its own view of the book
-  // Forward a copy with the arrival stamp.
-  std::byte* p = md_wire_.try_reserve(md.len);
+  // Forward a copy with the arrival stamp, on the wire of the instrument's venue.
+  Link& l = link(id);
+  std::byte* p = l.md_wire.try_reserve(md.len);
   if (p == nullptr) {
     ++stats_.wire_full;
     return;
@@ -189,15 +240,15 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
   std::memcpy(p, &md, md.len);
   auto* h = reinterpret_cast<EventHeader*>(p);
   h->exch_ts = now;
-  Timestamp arrival = now + lat_.md_in();
-  if (cfg_.md_recorded_arrival && md.recv_ts > now) arrival = arrival + (md.recv_ts - now);
-  if (arrival < last_md_arrival_) arrival = last_md_arrival_;
-  last_md_arrival_ = arrival;
+  Timestamp arrival = now + l.lat.md_in();
+  if (l.md_recorded_arrival && md.recv_ts > now) arrival = arrival + (md.recv_ts - now);
+  if (arrival < l.last_md_arrival) arrival = l.last_md_arrival;
+  l.last_md_arrival = arrival;
   h->recv_ts = arrival;
   h->t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
   h->t1_delta = h->t2_delta = 0;
   h->seq = 0;
-  md_wire_.commit();
+  l.md_wire.commit();
   ++stats_.md_forwarded;
 }
 
@@ -335,15 +386,14 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
   queue_.get(h).cum_qty = cum;
 }
 
-void SimTransport::queue_cancel(ClientOrderId id, Timestamp now, CancelReason why) noexcept {
+void SimTransport::queue_cancel(ClientOrderId id, InstrumentId route, Timestamp now) noexcept {
   const auto h = queue_.find(id);
   if (!h.valid()) {
-    emit_cancel_reject(id, InstrumentId{}, now);
+    emit_cancel_reject(id, InstrumentId{}, now, route);
     return;
   }
   const QueuedOrder o = queue_.get(h);
   queue_.remove(h);
-  static_cast<void>(why);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
 }
 
@@ -474,7 +524,7 @@ void SimTransport::on_trade(
     InstrumentId id, Price px, Qty qty, Side aggr, std::uint64_t tid, Timestamp ts) {
   if (agg_ == nullptr) return;  // historical mode: the source carries its own trades
   TradeMsg t{};
-  init_header(t, EventType::Trade, id, cfg_.venue);
+  init_header(t, EventType::Trade, id, link(id).id);
   t.price = px;
   t.qty = qty;
   t.trade_id = tid;
@@ -490,11 +540,12 @@ void SimTransport::emit_ack(ClientOrderId id,
                             InstrumentId inst,
                             Timestamp ts) noexcept {
   ++stats_.acks;
+  Link& l = link(inst);
   OrderAckMsg m{};
-  init_header(m, EventType::OrderAck, inst, cfg_.venue);
+  init_header(m, EventType::OrderAck, inst, l.id);
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
-  push_order_wire(m.hdr, ts);
+  push_order_wire(l, m.hdr, ts);
 }
 void SimTransport::emit_reject(ClientOrderId id,
                                InstrumentId inst,
@@ -520,42 +571,49 @@ void SimTransport::emit_reject(ClientOrderId id,
       ++stats_.rejects_other;
       break;
   }
+  Link& l = link(inst);
   OrderRejectMsg m{};
-  init_header(m, EventType::OrderReject, inst, cfg_.venue);
+  init_header(m, EventType::OrderReject, inst, l.id);
   m.cl_ord_id = id;
   m.reason = r;
   m.venue_code = -static_cast<std::int32_t>(r);
   m.text = to_string(r);
-  push_order_wire(m.hdr, ts);
+  push_order_wire(l, m.hdr, ts);
 }
 void SimTransport::emit_cancel_ack(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {
   ++stats_.cancel_acks;
+  Link& l = link(inst);
   OrderCancelAckMsg m{};
-  init_header(m, EventType::OrderCancelAck, inst, cfg_.venue);
+  init_header(m, EventType::OrderCancelAck, inst, l.id);
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
-  push_order_wire(m.hdr, ts);
+  push_order_wire(l, m.hdr, ts);
 }
-void SimTransport::emit_cancel_reject(ClientOrderId id, InstrumentId inst, Timestamp ts) noexcept {
+void SimTransport::emit_cancel_reject(ClientOrderId id,
+                                      InstrumentId inst,
+                                      Timestamp ts,
+                                      InstrumentId route) noexcept {
   ++stats_.cancel_rejects;
+  Link& l = link(inst.valid() ? inst : route);
   OrderCancelRejectMsg m{};
-  init_header(m, EventType::OrderCancelReject, inst, cfg_.venue);
+  init_header(m, EventType::OrderCancelReject, inst, l.id);
   m.cl_ord_id = id;
   m.reason = RejectReason::VenueUnknownOrder;
   m.venue_code = -2011;  // Binance: unknown order sent
   m.text = "Unknown order sent.";
-  push_order_wire(m.hdr, ts);
+  push_order_wire(l, m.hdr, ts);
 }
 void SimTransport::emit_expired(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {
+  Link& l = link(inst);
   OrderExpiredMsg m{};
-  init_header(m, EventType::OrderExpired, inst, cfg_.venue);
+  init_header(m, EventType::OrderExpired, inst, l.id);
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
-  push_order_wire(m.hdr, ts);
+  push_order_wire(l, m.hdr, ts);
 }
 void SimTransport::emit_fill(ClientOrderId id,
                              std::uint64_t order_id,
@@ -571,8 +629,9 @@ void SimTransport::emit_fill(ClientOrderId id,
                              Qty queue_ahead,
                              bool queue_known) noexcept {
   ++stats_.fills;
+  Link& l = link(inst);
   OrderFillMsg m{};
-  init_header(m, EventType::OrderFill, inst, cfg_.venue);
+  init_header(m, EventType::OrderFill, inst, l.id);
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.exec_id = decimal_id(exec_id);
@@ -594,33 +653,34 @@ void SimTransport::emit_fill(ClientOrderId id,
     ctx.queue_known = queue_known;
     observer_->on_fill(m, ts, ctx);
   }
-  push_order_wire(m.hdr, ts);
+  push_order_wire(l, m.hdr, ts);
 }
 
-void SimTransport::push_order_wire(EventHeader& h, Timestamp venue_ts) noexcept {
+void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept {
   h.exch_ts = venue_ts;
-  Timestamp arrival = venue_ts + lat_.ack_in();
-  if (arrival < last_order_arrival_) arrival = last_order_arrival_;
-  last_order_arrival_ = arrival;
+  Timestamp arrival = venue_ts + l.lat.ack_in();
+  if (arrival < l.last_order_arrival) arrival = l.last_order_arrival;
+  l.last_order_arrival = arrival;
   h.recv_ts = arrival;
   h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
   h.t1_delta = h.t2_delta = 0;
   h.seq = 0;
   if (observer_ != nullptr && h.type != EventType::OrderFill)
     observer_->on_order_event(h, venue_ts);
-  if (!order_wire_.try_push(&h, h.len)) ++stats_.wire_full;
+  if (!l.order_wire.try_push(&h, h.len)) ++stats_.wire_full;
 }
 
 void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {
+  Link& l = link(h.instrument);
   h.exch_ts = venue_ts;
-  Timestamp arrival = venue_ts + lat_.md_in();
-  if (arrival < last_md_arrival_) arrival = last_md_arrival_;
-  last_md_arrival_ = arrival;
+  Timestamp arrival = venue_ts + l.lat.md_in();
+  if (arrival < l.last_md_arrival) arrival = l.last_md_arrival;
+  l.last_md_arrival = arrival;
   h.recv_ts = arrival;
   h.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
   h.t1_delta = h.t2_delta = 0;
   h.seq = 0;
-  if (!md_wire_.try_push(&h, h.len)) {
+  if (!l.md_wire.try_push(&h, h.len)) {
     ++stats_.wire_full;
     return;
   }
@@ -635,9 +695,10 @@ Timestamp SimTransport::head_ts(MsgRing& ring) noexcept {
 }
 
 Timestamp SimTransport::next_inbound_ts() noexcept {
-  const Timestamp a = head_ts(order_wire_);
-  const Timestamp b = head_ts(md_wire_);
-  return a < b ? a : b;
+  Timestamp t = Timestamp::max();
+  for (std::size_t k = 0; k < n_links_; ++k)
+    t = std::min({t, head_ts(at(k).order_wire), head_ts(at(k).md_wire)});
+  return t;
 }
 
 bool SimTransport::move_head(MsgRing& ring, InlineFeed& feed, EventType& type) noexcept {
@@ -654,14 +715,27 @@ bool SimTransport::move_head(MsgRing& ring, InlineFeed& feed, EventType& type) n
 }
 
 EventType SimTransport::deliver_next_inbound(InlineFeed& feed) noexcept {
-  const Timestamp a = head_ts(order_wire_);
-  const Timestamp b = head_ts(md_wire_);
+  // Earliest head among the order wires and among the md wires; a tie keeps the lower venue.
+  Link* ord = nullptr;
+  Link* md = nullptr;
+  Timestamp a = Timestamp::max();
+  Timestamp b = Timestamp::max();
+  for (std::size_t k = 0; k < n_links_; ++k) {
+    Link& l = at(k);
+    if (const Timestamp ts = head_ts(l.order_wire); ts < a) {
+      a = ts;
+      ord = &l;
+    }
+    if (const Timestamp ts = head_ts(l.md_wire); ts < b) {
+      b = ts;
+      md = &l;
+    }
+  }
   EventType t = EventType::Padding;
-  if (a == Timestamp::max() && b == Timestamp::max()) return t;
-  if (a <= b) {
-    if (move_head(order_wire_, feed, t)) ++stats_.order_events_delivered;
-  } else {
-    if (move_head(md_wire_, feed, t)) ++stats_.md_delivered;
+  if (ord != nullptr && a <= b) {
+    if (move_head(ord->order_wire, feed, t)) ++stats_.order_events_delivered;
+  } else if (md != nullptr) {
+    if (move_head(md->md_wire, feed, t)) ++stats_.md_delivered;
   }
   return t;
 }

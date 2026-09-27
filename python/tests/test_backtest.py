@@ -354,3 +354,79 @@ def test_per_instrument_fees(example_config):
     # The rebate is the whole difference: the fills themselves are identical.
     assert rebate["spread_capture"] == pytest.approx(fee["spread_capture"], abs=1e-9)
     assert rebate["net_pnl"] > fee["net_pnl"]
+
+
+_TWO_VENUES = """
+[venues.a]
+kind = "sim"
+[venues.b]
+kind = "sim"
+[[instruments]]
+venue = "a"
+symbol = "AAA"
+tick = "0.01"
+lot = "0.001"
+[[instruments]]
+venue = "b"
+symbol = "BBB"
+tick = "0.01"
+lot = "0.001"
+[strategy]
+name = "basic_mm"
+[strategy.params]
+half_spread_bps = 1.0
+quote_qty = 0.01
+max_inventory = 0.2
+pull_on_stale_ms = 0
+[risk]
+max_order_qty = "1"
+max_order_notional = "1000"
+max_position = "1"
+stale_md_ms = 0
+[backtest]
+fill_model = "l2_queue"
+latency_fixed_us = 100
+latency_jitter_us = 0
+markout_horizons_s = ""
+[backtest.venues.b]
+latency_fixed_us = 2500
+"""
+
+
+def _venue_csv(path, inst, offset_ns, mid_ticks):
+    rows = ["ts_ns,type,inst,side,price,qty,seq"]
+    t0 = 1_789_344_931_000_000_000
+    for k in range(500):
+        ts = t0 + k * 20_000_000 + offset_ns
+        mid = mid_ticks + (k // 7) % 5 - 2
+        rows.append(f"{ts},S,{inst},B,{(mid - 2) / 100:.2f},1,{k + 1}")
+        rows.append(f"{ts},S,{inst},A,{(mid + 2) / 100:.2f},1,{k + 1}")
+        if k % 4 == 3:
+            side, px = ("A", mid - 2) if k % 8 == 3 else ("B", mid + 2)
+            rows.append(f"{ts + 1_000_000},T,{inst},{side},{px / 100:.2f},2,{k + 1}")
+    path.write_text("\n".join(rows) + "\n")
+    return str(path)
+
+
+def test_two_venues_from_a_list_of_feeds(tmp_path):
+    cfg = fastmm.BacktestConfig.from_toml_string(_TWO_VENUES)
+    a = _venue_csv(tmp_path / "a.csv", 0, 0, 10_000)
+    b = _venue_csv(tmp_path / "b.csv", 1, 7_000_000, 10_100)
+    feeds = [f"csv:{a},venue=0", f"csv:{b},venue=1"]
+    r = fastmm.run_backtest(cfg, data=feeds)
+    again = fastmm.run_backtest(cfg, data=f"{feeds[0]}; {feeds[1]}")
+    assert r.outbound_sha256 == again.outbound_sha256
+    o = r.orders
+    lat = o["venue_ts"] - o["ts"]
+    assert set(np.unique(o["instrument"])) == {0, 1}
+    assert (lat[o["instrument"] == 0] == 100_000).all()
+    assert (lat[o["instrument"] == 1] == 2_500_000).all()
+    per = r.equity_by_instrument
+    assert len(per) == 2
+    e = r.equity
+    total = e["realized"][-1] + e["unrealized"][-1] - e["fees"][-1]
+    assert per[0]["pnl"][-1] + per[1]["pnl"][-1] == total
+    frame = r.to_pandas()["equity"]
+    assert {"pnl_0", "pnl_1", "position_1", "mid_1"} <= set(frame.columns)
+    with pytest.raises(TypeError):
+        fastmm.run_backtest(cfg, data=[1, 2])

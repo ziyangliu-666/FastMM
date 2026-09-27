@@ -1,5 +1,5 @@
 #pragma once
-// SimTransport (8.2): the TransportLike that stands in for a venue during backtests.
+// SimTransport (8.2): the TransportLike that stands in for the venues during backtests.
 //
 //   engine --send(Out*)--> EventScheduler (now + order_out) --> venue side at fire_ts:
 //       FillModel::Matching : MatchingEngine, account 1 (strategy) vs account 0 (flow)
@@ -8,9 +8,13 @@
 //   venue --acks/fills--> order wire (arrival = max(prev, t + ack_in)) --> InlineFeed
 //   venue --market data--> md wire   (arrival = max(prev, t + md_in))  --> InlineFeed
 //
-// Two byte FIFOs ("wires") model the venue's two TCP streams: messages arrive in order,
-// so arrivals are clamped monotone. SimDriver decides when to move a wire message into the
-// engine's feed (when the virtual clock reaches its recv_ts).
+// Every venue an instrument names is simulated with its own latency model, its own pair of wires,
+// cancel-replace and STP (SimTransportConfig::venues). A message goes through the venue of its
+// instrument. The wires model each venue's two TCP streams: messages arrive in order, so arrivals
+// are clamped monotone per wire, and a slow venue never holds back a fast one. Books, the matching
+// engine and the queue model are shared: instruments never span venues. SimDriver decides when to
+// move a wire message into the engine's feed (when the virtual clock reaches its recv_ts); on a tie
+// order wires come before md wires, lower venue ids first.
 //
 // Market data reaches the strategy in one of two ways:
 //   * coupled generator: a MarketGenerator drives the MatchingEngine and the MdAggregator
@@ -36,7 +40,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
+#include <vector>
 
 namespace fastmm::sim {
 
@@ -44,6 +50,18 @@ enum class FillModel : std::uint8_t { Matching = 0, L2Queue = 1 };
 [[nodiscard]] constexpr std::string_view to_string(FillModel m) noexcept {
   return m == FillModel::Matching ? "matching" : "l2_queue";
 }
+
+// One venue's own settings. A venue without an entry in SimTransportConfig::venues takes the
+// SimTransportConfig fields of the same names.
+struct SimVenueConfig {
+  VenueId venue{};
+  LatencyParams order_out{microseconds(200), microseconds(50)};
+  LatencyParams ack_in{microseconds(200), microseconds(50)};
+  LatencyParams md_in{};
+  bool md_recorded_arrival = false;
+  bool supports_replace = false;
+  StpMode stp = StpMode::None;
+};
 
 struct SimTransportConfig {
   LatencyParams order_out{microseconds(200), microseconds(50)};
@@ -66,7 +84,26 @@ struct SimTransportConfig {
   bool hash_outbound = true;
   std::size_t md_wire_bytes = 4U << 20;
   std::size_t order_wire_bytes = 1U << 20;
-  VenueId venue{0};
+  VenueId venue{0};  // venue of the instruments that name none (and of an empty table)
+  std::vector<SimVenueConfig> venues;
+
+  // The settings `v` runs with: its entry in `venues`, or the fields above.
+  [[nodiscard]] SimVenueConfig venue_config(VenueId v) const noexcept {
+    for (const SimVenueConfig& c : venues) {
+      if (c.venue == v) return c;
+    }
+    return SimVenueConfig{v, order_out, ack_in, md_in, md_recorded_arrival, supports_replace, stp};
+  }
+  // Bit v set: venue v uses cancel-replace (the journal header's replace_venues).
+  [[nodiscard]] std::uint64_t replace_mask() const noexcept {
+    std::uint64_t m = supports_replace ? ~std::uint64_t{0} : 0;
+    for (const SimVenueConfig& c : venues) {
+      if (!c.venue.valid() || c.venue.value >= 64) continue;
+      const std::uint64_t bit = std::uint64_t{1} << c.venue.value;
+      m = c.supports_replace ? (m | bit) : (m & ~bit);
+    }
+    return m;
+  }
 };
 
 struct SimTransportStats {
@@ -126,7 +163,9 @@ class SimTransport final : public MatchingSink {
   // ---- TransportLike ------------------------------------------------------------------------
   [[nodiscard]] bool send(const EventHeader& m) noexcept;
   [[nodiscard]] std::size_t send(std::span<const EventHeader* const> batch) noexcept;
-  [[nodiscard]] bool supports_replace(VenueId) const noexcept { return cfg_.supports_replace; }
+  [[nodiscard]] bool supports_replace(VenueId v) const noexcept {
+    return v.value < kMaxVenues ? replace_[v.value] : cfg_.supports_replace;
+  }
 
   // ---- venue side (driven by SimDriver in virtual-time order) -------------------------------
   // Enables the coupled-generator market-data path (MdAggregator publishes the shared book).
@@ -163,7 +202,12 @@ class SimTransport final : public MatchingSink {
                                                                Side side) const noexcept;
   [[nodiscard]] const SimTransportStats& stats() const noexcept { return stats_; }
   [[nodiscard]] const SimTransportConfig& config() const noexcept { return cfg_; }
-  [[nodiscard]] LatencyModel& latency() noexcept { return lat_; }
+  // The simulated venues, lowest id first; each instrument's venue is one of them.
+  [[nodiscard]] std::size_t venue_count() const noexcept { return n_links_; }
+  [[nodiscard]] VenueId venue_at(std::size_t k) const noexcept { return at(k).id; }
+  // Latency model of venue `v` (the first venue when `v` is not simulated).
+  [[nodiscard]] LatencyModel& latency(VenueId v) noexcept;
+  [[nodiscard]] LatencyModel& latency() noexcept { return at(0).lat; }
   [[nodiscard]] const OutboundHasher& outbound_hash() const noexcept { return hasher_; }
   [[nodiscard]] const QueuePositionModel& queue() const noexcept { return queue_; }
   void set_observer(SimObserver* o) noexcept { observer_ = o; }
@@ -184,6 +228,22 @@ class SimTransport final : public MatchingSink {
     std::uint32_t len;
     alignas(8) std::byte bytes[kOutSlotBytes];
   };
+  // One simulated venue: its latency model and its two wires to the engine.
+  struct Link {
+    Link(VenueId v, const SimVenueConfig& c, std::uint64_t seed, const SimTransportConfig& t)
+        : id(v),
+          lat(c.order_out, c.ack_in, c.md_in, seed),
+          md_wire(t.md_wire_bytes),
+          order_wire(t.order_wire_bytes),
+          md_recorded_arrival(c.md_recorded_arrival) {}
+    VenueId id;
+    LatencyModel lat;
+    MsgRing md_wire;
+    MsgRing order_wire;
+    Timestamp last_md_arrival{};
+    Timestamp last_order_arrival{};
+    bool md_recorded_arrival;
+  };
   using Scheduler = EventScheduler<OutSlot, kSchedulerCapacity>;
 
   // venue-side order handling
@@ -192,7 +252,7 @@ class SimTransport final : public MatchingSink {
   void venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept;
   // L2Queue fill model
   void queue_new(const NewOrder& n, Timestamp now) noexcept;
-  void queue_cancel(ClientOrderId id, Timestamp now, CancelReason why) noexcept;
+  void queue_cancel(ClientOrderId id, InstrumentId route, Timestamp now) noexcept;
   void queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept;
   void queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept;
   void queue_on_trade(const TradeMsg& t, Timestamp now) noexcept;
@@ -209,7 +269,11 @@ class SimTransport final : public MatchingSink {
   void emit_reject(ClientOrderId id, InstrumentId inst, RejectReason r, Timestamp ts) noexcept;
   void emit_cancel_ack(
       ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept;
-  void emit_cancel_reject(ClientOrderId id, InstrumentId inst, Timestamp ts) noexcept;
+  // `route`: the instrument whose venue answers (the cancel's), when `inst` is not known.
+  void emit_cancel_reject(ClientOrderId id,
+                          InstrumentId inst,
+                          Timestamp ts,
+                          InstrumentId route = InstrumentId{}) noexcept;
   void emit_expired(
       ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept;
   void emit_fill(ClientOrderId id,
@@ -225,8 +289,20 @@ class SimTransport final : public MatchingSink {
                  Timestamp ts,
                  Qty queue_ahead = Qty{},
                  bool queue_known = false) noexcept;
-  void push_order_wire(EventHeader& h, Timestamp venue_ts) noexcept;
+  void push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept;
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
+  // Venue of an instrument; an unknown one (a cancel of an order the venue never saw) goes
+  // through the first venue.
+  [[nodiscard]] Link& link(InstrumentId id) noexcept {
+    return at(id.value < kMaxInstruments ? link_of_inst_[id.value] : 0);
+  }
+  // links_[k] for k < n_links_, which the constructor engaged; [0] always is.
+  [[nodiscard]] Link& at(std::size_t k) noexcept {
+    return *links_[k];  // NOLINT(bugprone-unchecked-optional-access)
+  }
+  [[nodiscard]] const Link& at(std::size_t k) const noexcept {
+    return *links_[k];  // NOLINT(bugprone-unchecked-optional-access)
+  }
   static void emit_md_thunk(void* ctx, EventHeader& m, Timestamp venue_ts) noexcept;
   [[nodiscard]] static Timestamp head_ts(MsgRing& ring) noexcept;
   bool move_head(MsgRing& ring, InlineFeed& feed, EventType& type) noexcept;
@@ -235,10 +311,13 @@ class SimTransport final : public MatchingSink {
   const InstrumentTable& instruments_;
   SimTransportConfig cfg_;
   MatchingEngine me_;
-  LatencyModel lat_;
+  // The simulated venues in id order, [0, n_links_) engaged; inline, so the first venue's latency
+  // model and wires sit where a single venue's always did.
+  std::optional<Link> links_[kMaxVenues];
+  std::size_t n_links_ = 0;
+  std::uint8_t link_of_inst_[kMaxInstruments] = {};  // instrument id -> index into links_
+  bool replace_[kMaxVenues] = {};
   Scheduler sched_;
-  MsgRing md_wire_;
-  MsgRing order_wire_;
   std::unique_ptr<L2Book<256>[]> mirror_;
   QueuePositionModel queue_;
   std::unique_ptr<QueueTouch[]> touch_;  // L2Queue: the latest BookTicker per instrument
@@ -246,8 +325,6 @@ class SimTransport final : public MatchingSink {
   SimObserver* observer_ = nullptr;
   OutboundHasher hasher_;
   SimTransportStats stats_{};
-  Timestamp last_md_arrival_{};
-  Timestamp last_order_arrival_{};
   std::uint64_t next_queue_order_id_ = 1;
   std::uint64_t next_exec_id_ = 1;
 };

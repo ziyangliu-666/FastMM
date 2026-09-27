@@ -55,8 +55,9 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
       ->option_text("<file.toml>");
   app.add_option("--data",
                  data,
-                 "market data: 'synthetic', a *.fmj / *.csv path, or <source>:<args> (default: "
-                 "[backtest] source/path). `fastmm-data list` prints the sources")
+                 "market data: 'synthetic', a *.fmj / *.csv path, or <source>:<args>; several "
+                 "separated by ';' merge by time (default: [backtest] source/path). "
+                 "`fastmm-data list` prints the sources")
       ->option_text("<spec>");
   app.add_option("--strategy", strategy, "registered strategy (default: [strategy] name)")
       ->option_text("<name>");
@@ -150,7 +151,7 @@ int backtest(int argc, char** argv, std::span<const StrategyModule> modules) {
 
   std::unique_ptr<bt::MdSource> source;
   try {
-    source = data.empty() ? bt::open_source(cfg) : bt::open_data(data);
+    source = data.empty() ? bt::open_source(cfg) : bt::open_data(data, &cfg.instruments);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s: data error: %s\n", prog, e.what());
     return kExitData;

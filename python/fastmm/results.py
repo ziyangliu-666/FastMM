@@ -151,20 +151,23 @@ def equity_frame(result: BacktestResult) -> pd.DataFrame:
     realized = _fixed(e["realized"])
     unrealized = _fixed(e["unrealized"])
     fees = _fixed(e["fees"])
-    return pd.DataFrame(
-        {
-            "equity": (e["realized"] + e["unrealized"] - e["fees"]).astype(np.float64)
-            * FIXED_SCALE,
-            "realized": realized,
-            "unrealized": unrealized,
-            "fees": fees,
-            "position": _fixed(e["position"]),
-            "mid": _fixed(e["mid"]),
-            "bid_quoted": (e["quoted"] & 1).astype(bool),
-            "ask_quoted": (e["quoted"] & 2).astype(bool),
-        },
-        index=pd.DatetimeIndex(_time(e["ts"]), name="ts"),
-    )
+    cols = {
+        "equity": (e["realized"] + e["unrealized"] - e["fees"]).astype(np.float64) * FIXED_SCALE,
+        "realized": realized,
+        "unrealized": unrealized,
+        "fees": fees,
+        "position": _fixed(e["position"]),
+        "mid": _fixed(e["mid"]),
+        "bid_quoted": (e["quoted"] & 1).astype(bool),
+        "ask_quoted": (e["quoted"] & 2).astype(bool),
+    }
+    per = result.equity_by_instrument
+    if len(per) > 1:  # each instrument's own columns, suffixed by its id
+        for k, c in enumerate(per):
+            cols[f"pnl_{k}"] = _fixed(c["pnl"])
+            cols[f"position_{k}"] = _fixed(c["position"])
+            cols[f"mid_{k}"] = _fixed(c["mid"])
+    return pd.DataFrame(cols, index=pd.DatetimeIndex(_time(e["ts"]), name="ts"))
 
 
 def orders_frame(result: BacktestResult) -> pd.DataFrame:

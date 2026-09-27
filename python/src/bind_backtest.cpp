@@ -120,6 +120,19 @@ py::dict equity_dict(const ResultPtr& r) {
   return d;
 }
 
+py::list equity_by_instrument(const ResultPtr& r) {
+  py::list out;
+  for (const bt::InstrumentEquityRows& e : r->equity.by_instrument) {
+    py::dict d;
+    d["pnl"] = column_view(r, e.pnl);
+    d["position"] = column_view(r, e.position);
+    d["mid"] = column_view(r, e.mid);
+    d["quoted"] = column_view(r, e.quoted);
+    out.append(d);
+  }
+  return out;
+}
+
 py::dict orders_dict(const ResultPtr& r) {
   const bt::OrderRows& o = r->orders;
   py::dict d;
@@ -367,6 +380,20 @@ DataSpec parse_data(const py::object& data) {
     spec.path = fspath(data);
     return spec;
   }
+  if (py::isinstance<py::list>(data) || py::isinstance<py::tuple>(data)) {
+    // Several sources (one per venue), merged by event time: open_data() of "a; b".
+    spec.kind = DataSpec::Kind::Path;
+    for (const auto& item : data) {
+      if (!py::isinstance<py::str>(item) && !py::hasattr(item, "__fspath__"))
+        throw py::type_error("data: a list must hold source specs or paths");
+      const std::string one = fspath(item);
+      if (one.find(';') != std::string::npos)
+        throw py::value_error("data: '" + one + "' contains ';'");
+      spec.path += (spec.path.empty() ? "" : "; ") + one;
+    }
+    if (spec.path.empty()) throw py::value_error("data: empty list");
+    return spec;
+  }
   throw py::type_error(
       "data must be None, a '<source>:<args>' spec, a .fmj/.csv path or a dict of numpy arrays");
 }
@@ -535,6 +562,10 @@ void bind_backtest(py::module_& m) {
           "Internal: set slow_methods from (name, calls, p50_ns, p99_ns, max_ns) rows.")
       .def_property_readonly("fills", &fills_dict, "Fill columns (zero-copy numpy views).")
       .def_property_readonly("equity", &equity_dict, "Equity bar columns (zero-copy numpy views).")
+      .def_property_readonly("equity_by_instrument",
+                             &equity_by_instrument,
+                             "Per instrument id, its equity bar columns: pnl (realized + "
+                             "unrealized - fees, its settlement currency), position, mid, quoted.")
       .def_property_readonly("orders", &orders_dict, "Order columns (zero-copy numpy views).")
       .def(
           "stats",
@@ -607,7 +638,8 @@ void bind_backtest(py::module_& m) {
       py::arg("strategy") = py::none(),
       "Run one backtest with the GIL released.\n\n"
       "data: None (config.source), a source spec ('synthetic', 'binance:BTCUSDT,2024-03-27'; "
-      "fastmm.data_sources() lists them), a .fmj or .csv path, or a dict of numpy arrays "
+      "fastmm.data_sources() lists them), a .fmj or .csv path, a list of specs or paths merged "
+      "by event time (one per venue), or a dict of numpy arrays "
       "{ts: int64, type: uint8, inst: uint32, side: int8, price: int64 (raw 1e-8) | float64, "
       "qty: int64 | float64, seq: uint64 (optional)} used without copying.\n"
       "strategy: registry name; defaults to config.strategy.");

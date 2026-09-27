@@ -400,11 +400,11 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 
 ## `[backtest]`
 
-Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and strategy settings come from the sections above; each instrument pays its own venue's `fees` table (or its own `maker_bps` / `taker_bps`), self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`.
+Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`src/backtest/backtest_config.cpp`); the section is free-form in the schema. The engine, risk and strategy settings come from the sections above; each instrument pays its own venue's `fees` table (or its own `maker_bps` / `taker_bps`), self-trade prevention follows `[risk] stp`, and in-place replace follows `[engine] supports_replace`, unless `[backtest.venues.<name>]` sets them for one venue.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `source` | string | `""` | Market-data source: a name (`synthetic`, `journal`, `csv`, `binance`, `tardis`) or a whole spec with its options (`"binance:BTCUSDT,2024-03-27"`). When empty, the format is inferred from `path` ([Market-data sources](data-sources.md)) |
+| `source` | string | `""` | Market-data source: a name (`synthetic`, `journal`, `csv`, `binance`, `tardis`) or a whole spec with its options (`"binance:BTCUSDT,2024-03-27"`). Several specs separated by `;` are merged by event time, ties to the earlier spec (`"binance:BTCUSDT,2024-03-27,venue=0; csv:bybit.csv,venue=1"`); a TOML list is refused. When empty, the format is inferred from `path` ([Market-data sources](data-sources.md)) |
 | `path` | string | `""` | Data file, the positional argument of a bare `source` name. `.fmj` is a journal, `.csv` is CSV; empty means synthetic data |
 | `seed` | int | `[sim] seed`, else `1` | Seed for the synthetic market and the simulated venue; the engine's random generator uses `[engine] rng_seed` |
 | `duration_s` | int | `[sim] duration_s`, else `60` | Simulated horizon for synthetic data, s; must be positive |
@@ -425,6 +425,23 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
 
 Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`, `--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).
+
+### `[backtest.venues.<name>]`
+
+One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument trades on. Every venue an instrument names is simulated separately: orders, acknowledgements, fills and market data of an instrument go through its venue's latency and its venue's two connections, so a slow venue never delays a fast one. A missing key takes the value above. An unknown name, a venue without instruments or an unknown key is an error.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `latency_fixed_us` | int | `[backtest]` | Fixed latency for orders to this venue and acknowledgements back, µs |
+| `latency_jitter_us` | int | `[backtest]` | Jitter added to that latency, µs |
+| `latency_ack_us` | int | `[backtest] latency_ack_us`, else this venue's `latency_fixed_us` | Fixed latency for acknowledgements and fills back from this venue, µs |
+| `latency_ack_jitter_us` | int | `[backtest] latency_ack_jitter_us`, else this venue's `latency_jitter_us` | Jitter added to that latency, µs |
+| `latency_md_us` | int | `[backtest]` | Fixed market-data latency, µs |
+| `latency_md_jitter_us` | int | `[backtest]` | Market-data latency jitter, µs |
+| `md_arrival` | string | `[backtest]` | `venue` or `recorded`, for this venue's market data |
+| `p_drop` | number | `[backtest]` | Probability that an outbound order message to this venue is lost |
+| `supports_replace` | bool | `[engine] supports_replace` | In-place replace on this venue. The engine quotes with replace only when `[engine] supports_replace` is true and every venue it trades supports it |
+| `stp` | bool | `[risk] stp` | Self-trade prevention (cancel the taker) on this venue |
 
 ## `[sim]`
 

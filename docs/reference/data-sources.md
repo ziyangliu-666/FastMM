@@ -24,6 +24,12 @@ Only the first `:` separates the name, so a value may contain one (`start=09:30`
 
 An unknown option is an error naming the ones the source takes.
 
+Several specs separated by `;` are merged by event time, ties going to the earlier spec; this is how feeds of several venues run together ([Backtesting](../explanation/backtesting.md#several-venues)). Python takes a list as well.
+
+```bash
+--data "binance:BTCUSDT,2024-03-27,venue=0; csv:bybit-btcusdt.csv,venue=1"
+```
+
 ## What each source carries
 
 | Source | Top of book | L2 depth | Trades | Clock |

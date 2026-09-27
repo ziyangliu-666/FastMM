@@ -66,6 +66,12 @@ void EquityRows::reserve(std::size_t n) {
   position.reserve(n);
   mid.reserve(n);
   quoted.reserve(n);
+  for (InstrumentEquityRows& r : by_instrument) {
+    r.pnl.reserve(n);
+    r.position.reserve(n);
+    r.mid.reserve(n);
+    r.quoted.reserve(n);
+  }
 }
 void OrderRows::reserve(std::size_t n) {
   ts.reserve(n);
@@ -390,10 +396,15 @@ std::string BacktestResult::summary_json() const {
 }
 
 std::string BacktestResult::equity_csv() const {
-  std::string s = "ts_ns,equity,realized,unrealized,fees,position,mid,quoted\n";
+  // With more than one instrument each also gets its own columns, suffixed by its id.
+  const std::size_t n_inst = equity.by_instrument.size() > 1 ? equity.by_instrument.size() : 0;
+  std::string s = "ts_ns,equity,realized,unrealized,fees,position,mid,quoted";
+  for (std::size_t k = 0; k < n_inst; ++k)
+    fmt::format_to(std::back_inserter(s), ",pnl_{0},position_{0},mid_{0},quoted_{0}", k);
+  s += '\n';
   for (std::size_t i = 0; i < equity.size(); ++i) {
     fmt::format_to(std::back_inserter(s),
-                   "{},{},{},{},{},{},{},{}\n",
+                   "{},{},{},{},{},{},{},{}",
                    equity.ts[i],
                    dec(equity.equity(i)),
                    dec(equity.realized[i]),
@@ -402,6 +413,16 @@ std::string BacktestResult::equity_csv() const {
                    dec(equity.position[i]),
                    dec(equity.mid[i]),
                    static_cast<unsigned>(equity.quoted[i]));
+    for (std::size_t k = 0; k < n_inst; ++k) {
+      const InstrumentEquityRows& r = equity.by_instrument[k];
+      fmt::format_to(std::back_inserter(s),
+                     ",{},{},{},{}",
+                     dec(r.pnl[i]),
+                     dec(r.position[i]),
+                     dec(r.mid[i]),
+                     static_cast<unsigned>(r.quoted[i]));
+    }
+    s += '\n';
   }
   return s;
 }

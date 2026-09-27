@@ -40,14 +40,23 @@ struct FillRows {
   void reserve(std::size_t n);
 };
 
+// One instrument's columns of EquityRows, one row per bar.
+struct InstrumentEquityRows {
+  std::vector<std::int64_t> pnl;       // raw notional, realized + unrealized - fees, settlement ccy
+  std::vector<std::int64_t> position;  // raw qty
+  std::vector<std::int64_t> mid;       // raw price, venue mid
+  std::vector<std::uint8_t> quoted;    // bit 0 bid resting, bit 1 ask resting
+};
+
 struct EquityRows {
   std::vector<std::int64_t> ts;        // bar end
-  std::vector<std::int64_t> realized;  // raw notional
+  std::vector<std::int64_t> realized;  // raw notional, all instruments
   std::vector<std::int64_t> unrealized;
   std::vector<std::int64_t> fees;
   std::vector<std::int64_t> position;  // raw qty, net over all instruments
   std::vector<std::int64_t> mid;       // raw price, instrument 0
   std::vector<std::uint8_t> quoted;    // bit 0 bid resting, bit 1 ask resting (instrument 0)
+  std::vector<InstrumentEquityRows> by_instrument;  // indexed by instrument id
   [[nodiscard]] std::size_t size() const noexcept { return ts.size(); }
   [[nodiscard]] std::int64_t equity(std::size_t i) const noexcept {
     return realized[i] + unrealized[i] - fees[i];

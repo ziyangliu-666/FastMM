@@ -2,6 +2,8 @@
 
 #include "fastmm/backtest/fill_model.hpp"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -17,6 +19,121 @@ std::int64_t non_negative(const GenericSection& s, std::string_view key, std::in
   const std::int64_t v = s.get_int(key, def);
   if (v < 0) throw ConfigError("backtest." + std::string(key) + " must be >= 0");
   return v;
+}
+double drop_probability(const GenericSection& s, std::string_view key, double def) {
+  const double p = s.get_double(key, def);
+  if (!(p >= 0.0 && p < 1.0))
+    throw ConfigError("backtest." + std::string(key) + " must be in [0, 1)");
+  return p;
+}
+
+// The latency keys of [backtest] and of [backtest.venues.<name>]: `prefix` is "" or
+// "venues.<name>.", and a missing key keeps the value `v` has. The venue -> engine path follows
+// the order path unless latency_ack_us / latency_ack_jitter_us are set, here or (for a venue) in
+// [backtest]: a real venue's replies are often slower than its intake (Binance Spot from AWS
+// Tokyo: ~0.4 ms to transactTime, ~1.1 ms more to the ack).
+void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimVenueConfig& v) {
+  const std::int64_t fixed_def = v.order_out.fixed.ns / 1000;
+  const std::int64_t jitter_def = v.order_out.jitter.ns / 1000;
+  const Duration fixed = microseconds(non_negative(bt, prefix + "latency_fixed_us", fixed_def));
+  const Duration jitter = microseconds(non_negative(bt, prefix + "latency_jitter_us", jitter_def));
+  const double p_drop = drop_probability(bt, prefix + "p_drop", v.order_out.p_drop);
+  v.order_out = sim::LatencyParams{fixed, jitter, p_drop};
+  const auto ack = [&](std::string_view key, Duration order_path) {
+    const std::string own = prefix + std::string(key);
+    if (bt.has(own)) return microseconds(non_negative(bt, own, 0));
+    if (!prefix.empty() && bt.has(key)) return microseconds(non_negative(bt, key, 0));
+    return order_path;
+  };
+  v.ack_in =
+      sim::LatencyParams{ack("latency_ack_us", fixed), ack("latency_ack_jitter_us", jitter), 0.0};
+  v.md_in = sim::LatencyParams{
+      microseconds(non_negative(bt, prefix + "latency_md_us", v.md_in.fixed.ns / 1000)),
+      microseconds(non_negative(bt, prefix + "latency_md_jitter_us", v.md_in.jitter.ns / 1000)),
+      0.0};
+  const std::string arrival_key = prefix + "md_arrival";
+  if (bt.has(arrival_key)) {
+    const std::string a = bt.get_string(arrival_key, "venue");
+    if (a != "recorded" && a != "venue")
+      throw ConfigError("backtest." + arrival_key + ": '" + a + "' is not venue or recorded");
+    v.md_recorded_arrival = a == "recorded";
+  }
+}
+
+// Keys of [backtest.venues.<name>] (docs/reference/configuration.md#backtest).
+constexpr std::array<std::string_view, 10> kVenueKeys = {"latency_fixed_us",
+                                                         "latency_jitter_us",
+                                                         "latency_ack_us",
+                                                         "latency_ack_jitter_us",
+                                                         "latency_md_us",
+                                                         "latency_md_jitter_us",
+                                                         "md_arrival",
+                                                         "p_drop",
+                                                         "supports_replace",
+                                                         "stp"};
+constexpr std::string_view kVenuesPrefix = "venues.";
+
+// [backtest.venues.<name>]: one venue's own latency, cancel-replace and STP, over the [backtest]
+// values. A name that is not in [venues] or a key that is not one of kVenueKeys is an error.
+std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
+                                             const GenericSection& bt,
+                                             const sim::SimVenueConfig& defaults) {
+  std::vector<std::string> names;
+  for (const auto& [key, value] : bt.values) {
+    if (!key.starts_with(kVenuesPrefix)) continue;
+    const std::string rest = key.substr(kVenuesPrefix.size());
+    const std::size_t dot = rest.rfind('.');
+    const auto line = bt.lines.find(key);
+    const std::string where =
+        line == bt.lines.end() ? std::string() : fmt::format(" (line {})", line->second);
+    if (dot == std::string::npos || dot == 0) {
+      throw ConfigError(
+          fmt::format("backtest.{}: expected [backtest.venues.<name>] with keys{}", key, where));
+    }
+    const std::string name = rest.substr(0, dot);
+    const std::string field = rest.substr(dot + 1);
+    if (!cfg.venue_id(name).valid()) {
+      std::string known;
+      for (const VenueSection& v : cfg.venues)
+        known.append(known.empty() ? "" : ", ").append(v.name);
+      throw ConfigError(fmt::format("backtest.venues.{0}: no venue '{0}' in [venues] ({1}){2}",
+                                    name,
+                                    known.empty() ? "none configured" : "known: " + known,
+                                    where));
+    }
+    const bool traded = std::any_of(cfg.instruments.begin(),
+                                    cfg.instruments.end(),
+                                    [&](const InstrumentSection& i) { return i.venue == name; });
+    if (!traded) {
+      throw ConfigError(fmt::format(
+          "backtest.venues.{0}: no [[instruments]] trade on venue '{0}'{1}", name, where));
+    }
+    if (std::find(kVenueKeys.begin(), kVenueKeys.end(), field) == kVenueKeys.end()) {
+      throw ConfigError(
+          fmt::format("backtest.{}: unknown key (latency_fixed_us, latency_jitter_us, "
+                      "latency_ack_us, latency_ack_jitter_us, latency_md_us, "
+                      "latency_md_jitter_us, md_arrival, p_drop, supports_replace, stp){}",
+                      key,
+                      where));
+    }
+    if (std::find(names.begin(), names.end(), name) == names.end()) names.push_back(name);
+  }
+  std::vector<sim::SimVenueConfig> out;
+  for (const std::string& name : names) {
+    const std::string prefix = std::string(kVenuesPrefix) + name + ".";
+    sim::SimVenueConfig v = defaults;
+    v.venue = cfg.venue_id(name);
+    read_latency(bt, prefix, v);
+    v.supports_replace = bt.get_bool(prefix + "supports_replace", defaults.supports_replace);
+    if (bt.has(prefix + "stp")) {
+      v.stp = bt.get_bool(prefix + "stp", false) ? sim::StpMode::CancelTaker : sim::StpMode::None;
+    }
+    out.push_back(v);
+  }
+  std::sort(out.begin(), out.end(), [](const sim::SimVenueConfig& a, const sim::SimVenueConfig& b) {
+    return a.venue < b.venue;
+  });
+  return out;
 }
 std::int64_t positive(const GenericSection& s, std::string_view key, std::int64_t def) {
   const std::int64_t v = s.get_int(key, def);
@@ -81,6 +198,7 @@ constexpr std::array<std::string_view, 19> kBacktestKeys = {"markout_horizons_s"
 void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
   for (const auto& [key, value] : bt.values) {
     if (std::find(kBacktestKeys.begin(), kBacktestKeys.end(), key) != kBacktestKeys.end()) continue;
+    if (key.starts_with(kVenuesPrefix)) continue;  // read_venues() checks those
     const auto line = bt.lines.find(key);
     warnings.push_back(
         "unknown key 'backtest." + key + "' ignored" +
@@ -138,27 +256,19 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   const double c = bt.get_double("queue_conservatism", cfg.engine.queue_conservatism);
   if (!(c >= 0.0 && c <= 1.0)) throw ConfigError("backtest.queue_conservatism must be in [0, 1]");
   t.queue_conservatism_bps = static_cast<std::int64_t>(std::llround(c * 10'000.0));
-  const double p_drop = bt.get_double("p_drop", 0.0);
-  if (!(p_drop >= 0.0 && p_drop < 1.0)) throw ConfigError("backtest.p_drop must be in [0, 1)");
-  const Duration fixed = microseconds(non_negative(bt, "latency_fixed_us", 200));
-  const Duration jitter = microseconds(non_negative(bt, "latency_jitter_us", 50));
-  t.order_out = sim::LatencyParams{fixed, jitter, p_drop};
-  // Venue -> engine defaults to the order path; a real venue's replies are often slower than its
-  // intake (Binance Spot from AWS Tokyo: ~0.4 ms to transactTime, ~1.1 ms more to the ack).
-  t.ack_in =
-      sim::LatencyParams{microseconds(non_negative(bt, "latency_ack_us", fixed.ns / 1000)),
-                         microseconds(non_negative(bt, "latency_ack_jitter_us", jitter.ns / 1000)),
-                         0.0};
-  t.md_in = sim::LatencyParams{microseconds(non_negative(bt, "latency_md_us", 0)),
-                               microseconds(non_negative(bt, "latency_md_jitter_us", 0)),
-                               0.0};
-  if (const std::string a = bt.get_string("md_arrival", "venue"); a == "recorded") {
-    t.md_recorded_arrival = true;
-  } else if (a != "venue") {
-    throw ConfigError("backtest.md_arrival: '" + a + "' is not venue or recorded");
-  }
+  sim::SimVenueConfig defaults;  // [backtest] latency_*, [engine] supports_replace, [risk] stp
+  defaults.order_out = sim::LatencyParams{microseconds(200), microseconds(50), 0.0};
+  defaults.md_in = sim::LatencyParams{};
+  read_latency(bt, "", defaults);
+  t.order_out = defaults.order_out;
+  t.ack_in = defaults.ack_in;
+  t.md_in = defaults.md_in;
+  t.md_recorded_arrival = defaults.md_recorded_arrival;
   t.supports_replace = cfg.engine.supports_replace;
   t.stp = cfg.risk.stp ? sim::StpMode::CancelTaker : sim::StpMode::None;
+  defaults.supports_replace = t.supports_replace;
+  defaults.stp = t.stp;
+  t.venues = read_venues(cfg, bt, defaults);
   t.md.interval = milliseconds(positive(sm, "depth_update_ms", 100));
   t.md.book_ticker = sm.get_bool("book_ticker", true);
   t.venue = VenueId{0};
