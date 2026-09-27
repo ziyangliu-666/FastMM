@@ -7,7 +7,8 @@
 //   ref    = hedge book mid (or microprice)
 //   basis  = EWMA of (quote book mid - ref), half-life basis_halflife_s (0: no basis)
 //   fair   = ref + basis
-//   half   = fair * (edge + quote_fee + hedge_fee + slippage)
+//   half   = fair * (edge + quote maker fee + hedge taker fee + slippage), the fees from
+//            ctx.fees: [venues.<x>.fees], [[instruments]] overrides, or the account's own
 //   bid    = fair - half rounded down, ask = fair + half rounded up, one level, never crossing the
 //            quote venue's touch
 //
@@ -26,20 +27,21 @@
 // executions that follow name that quantity instead of adding it (Oms::on_fill).
 //
 // Guards: the quotes come off when either book is invalid or older than stale_ms, when the hedge
-// venue's market data or order channel is down, and while the strategy is halted. The side that
-// would take |unhedged| past max_unhedged is not quoted. A hedge that ends with nothing filled is a
-// failure: the next one waits hedge_retry_ms, and max_hedge_failures within failure_window_ms halt
-// the strategy (quotes pulled, no more hedges, logged) until `restart` gets a new value. A hedge
-// the venue never reported on (cancelled by the ack timeout, dropped by reconciliation with
-// quantity unaccounted for, or a generic VenueReject such as a REST timeout) holds hedging for
-// uncertain_hold_ms, so a fill that is still on its way is booked before the positions are
-// trusted again.
+// venue's market data or order channel is down or its feed-lag gate holds it, and while the
+// strategy is halted. The side that would take |unhedged| past max_unhedged is not quoted. A hedge
+// that ends with nothing filled is a failure: the next one waits hedge_retry_ms, and
+// max_hedge_failures within failure_window_ms halt the strategy (quotes pulled, no more hedges,
+// logged) until `restart` gets a new value. A hedge the venue never reported on (cancelled by the
+// ack timeout, dropped by reconciliation with quantity unaccounted for, or a generic VenueReject
+// such as a REST timeout) holds hedging for uncertain_hold_ms, so a fill that is still on its way
+// is booked before the positions are trusted again.
 //
 // Linear contracts only (spot, linear perpetuals and futures); an inverse instrument leaves the
 // strategy idle with an error at start. The instrument indices are read at start. The basis is
 // tracked in double (EWMA of price differences) and rounded back to raw price units; everything
 // else is fixed point. Every hook is noexcept and allocation-free.
 #include "fastmm/core/enums.hpp"
+#include "fastmm/core/fees.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/log.hpp"
@@ -48,6 +50,7 @@
 #include "fastmm/core/order.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
@@ -77,9 +80,6 @@ struct XmmParams {
                "index in [[instruments]] of the hedge instrument (read at start)")
   FASTMM_PARAM(Qty, quote_qty, 0.001_qty, 0_qty, 1000000000_qty, "size per side, base units")
   FASTMM_PARAM_BPS(edge_bps, 2_bps, 0_bps, 10000_bps, "margin kept per round trip, basis points")
-  FASTMM_PARAM_BPS(
-      quote_fee_bps, 0_bps, -(100_bps), 1000_bps, "maker fee on the quote venue (negative: rebate)")
-  FASTMM_PARAM_BPS(hedge_fee_bps, 4_bps, 0_bps, 1000_bps, "taker fee on the hedge venue")
   FASTMM_PARAM_BPS(slippage_bps, 1_bps, 0_bps, 1000_bps, "expected hedge slippage, priced in")
   FASTMM_PARAM_BPS(hedge_tolerance_bps,
                    5_bps,
@@ -324,14 +324,15 @@ class Xmm : public StrategyBase<XmmParams> {
   // (base units) past max_unhedged.
   [[nodiscard]] DesiredQuotes compute_quotes(const Instrument& qi,
                                              Price fair,
-                                             Qty unhedged) const noexcept {
+                                             Qty unhedged,
+                                             Ratio fees) const noexcept {
     const XmmParams& p = params();
     DesiredQuotes q;
     if (!fair.is_positive()) return q;
     const Qty qty = qi.round_qty(to_contracts(qi, p.quote_qty));
     if (!qty.is_positive() || qty < qi.min_qty) return q;
     const Qty size = to_base(qi, qty);
-    const Ratio width = p.edge_bps + p.quote_fee_bps + p.hedge_fee_bps + p.slippage_bps;
+    const Ratio width = p.edge_bps + fees + p.slippage_bps;
     const Price half = fair * width;
     const Qty cap = p.max_unhedged;
     const bool can_buy = cap.is_zero() || unhedged + size <= cap;
@@ -468,7 +469,8 @@ class Xmm : public StrategyBase<XmmParams> {
   template <class Ctx>
   void requote(Ctx& ctx, bool force) noexcept {
     const auto& qb = ctx.book(q_);
-    if (halted_ || hedge_down_mask_ != 0 || !qb.is_valid() || stale(ctx, q_) || stale(ctx, h_)) {
+    if (halted_ || hedge_down_mask_ != 0 || !qb.is_valid() || stale(ctx, q_) || stale(ctx, h_) ||
+        ctx.venue_health(ctx.instrument(h_).venue).gated) {
       pull(ctx);
       return;
     }
@@ -481,7 +483,8 @@ class Xmm : public StrategyBase<XmmParams> {
     if (!force && quoted_ && quoted_fair_.is_positive() &&
         (fair - quoted_fair_).abs() < qi.ticks(params().requote_threshold_ticks))
       return;
-    DesiredQuotes q = compute_quotes(qi, fair, unhedged(ctx));
+    const Ratio fees = cbps_ratio(ctx.fees(q_).maker_cbps) + cbps_ratio(ctx.fees(h_).taker_cbps);
+    DesiredQuotes q = compute_quotes(qi, fair, unhedged(ctx), fees);
     keep_passive(q, qb.best_bid().price, qb.best_ask().price, qi.tick);
     if (ctx.set_quotes(q_, q)) {
       quoted_ = true;
@@ -493,6 +496,11 @@ class Xmm : public StrategyBase<XmmParams> {
   }
 
   static constexpr std::size_t kMaxFailures = 16;
+
+  // A fee rate in centi-bps (FeeRates) as a Ratio.
+  [[nodiscard]] static constexpr Ratio cbps_ratio(std::int32_t cbps) noexcept {
+    return Ratio::from_raw(static_cast<std::int64_t>(cbps) * (kRatioPerBp / 100));
+  }
 
   InstrumentId q_{};
   InstrumentId h_{};

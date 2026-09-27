@@ -72,6 +72,9 @@ struct Ctx {
   std::vector<Sent> sent;
   bool refuse = false;
   bool quoting = true;
+  // Quote venue maker 0, hedge venue taker 4 bps.
+  std::array<FeeRates, 2> fee_rates{FeeRates{0, 0}, FeeRates{0, 400}};
+  std::array<bool, 2> gated{};
 
   explicit Ctx(const char* hedge_mult = "0.01", const char* hedge_lot = "0.01") {
     REQUIRE(table.add(linear("BTCUSDT", 0, "1", "0.001")));
@@ -91,6 +94,12 @@ struct Ctx {
   [[nodiscard]] const FakeBook& book(InstrumentId id) const { return books[id.value]; }
   [[nodiscard]] FakePosition position(InstrumentId id) const { return FakePosition{pos[id.value]}; }
   [[nodiscard]] Timestamp now() const { return t; }
+  [[nodiscard]] const FeeRates& fees(InstrumentId id) const { return fee_rates[id.value]; }
+  [[nodiscard]] VenueHealthView venue_health(VenueId v) const {
+    VenueHealthView h;
+    h.gated = gated[v.value];
+    return h;
+  }
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) {
     CHECK(id == InstrumentId{0});
     if (!quoting) return false;
@@ -129,8 +138,6 @@ struct Ctx {
 Xmm make(const ParamMap& extra = {}) {
   ParamMap p{{"quote_qty", "0.01"},
              {"edge_bps", "2"},
-             {"quote_fee_bps", "0"},
-             {"hedge_fee_bps", "4"},
              {"slippage_bps", "1"},
              {"hedge_tolerance_bps", "5"},
              {"basis_halflife_s", "0"},
@@ -221,7 +228,6 @@ TEST_CASE("strategies.xmm: parameters are validated") {
   CHECK(s.configure({{"quote_instrument", "1"}, {"hedge_instrument", "1"}}).has_value());
   CHECK(s.configure({{"quote_qty", "0.01"}, {"max_unhedged", "0.005"}}).has_value());
   CHECK_FALSE(s.configure({{"quote_qty", "0.01"}, {"max_unhedged", "0"}}).has_value());
-  CHECK_FALSE(s.configure({{"quote_fee_bps", "-0.5"}}).has_value());
 }
 
 TEST_CASE("strategies.xmm: quotes around the hedge mid, rounded away from it") {
@@ -237,9 +243,10 @@ TEST_CASE("strategies.xmm: quotes around the hedge mid, rounded away from it") {
   CHECK(q.bids[0].qty == qt("0.01"));
   CHECK(s.fair_value(c) == px("100000.1"));
 
-  // A quote fee is priced in as well; a rebate narrows the quotes.
-  Xmm r = make({{"quote_fee_bps", "-1"}});
+  // The quote venue's maker fee is priced in as well; a rebate narrows the quotes.
+  Xmm r = make();
   Ctx c2;
+  c2.fee_rates[0].maker_cbps = -100;
   start(r, c2);
   CHECK(c2.last().bids[0].price == px("99940.0"));  // half 60.00006
   CHECK(c2.last().asks[0].price == px("100060.2"));
@@ -577,6 +584,15 @@ TEST_CASE("strategies.xmm: a bad or stale hedge book and a hedge venue down pull
     s.on_timer(c, TimerId{1}, Xmm::kTimer);
     CHECK(c.sent.size() == 1);
     CHECK(c.sets.size() > sets);
+  }
+  SUBCASE("hedge venue feed lagging") {
+    c.gated[1] = true;  // the engine's feed-lag gate holds the hedge venue: its book is late
+    book(s, c, InstrumentId{1});
+    CHECK(c.pulls == 1);
+    const std::size_t sets = c.sets.size();
+    c.gated[1] = false;
+    book(s, c, InstrumentId{1});
+    CHECK(c.sets.size() == sets + 1);
   }
   SUBCASE("a drop of the quote venue does not stop hedging") {
     s.on_connection(c, connection(0, 1, ConnState::Disconnected));

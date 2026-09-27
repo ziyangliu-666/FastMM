@@ -38,6 +38,9 @@ struct Ctx {
   [[nodiscard]] const Book& book(InstrumentId id) const { return books[id.value]; }
   [[nodiscard]] Pos position(InstrumentId id) const { return Pos{pos[id.value]}; }
   [[nodiscard]] Timestamp now() const { return t; }
+  FeeRates fee_rates{0, 400};
+  [[nodiscard]] const FeeRates& fees(InstrumentId) const { return fee_rates; }
+  [[nodiscard]] VenueHealthView venue_health(VenueId) const { return VenueHealthView{}; }
   bool set_quotes(InstrumentId, const DesiredQuotes&) noexcept {
     ++quotes;
     return true;
