@@ -6,6 +6,7 @@
 #include "fastmm/net/http_message.hpp"
 #include "fastmm/net/tls_stream.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -34,6 +35,9 @@ struct BlockingHttpOptions {
   bool insecure_tls = false;
   std::uint32_t timeout_ms = 5000;
   std::uint32_t connect_timeout_ms = 5000;
+  // Largest response body. Binance USD-M's exchangeInfo has no symbol filter and was 1.1 MB on
+  // production in 2026-09 (1 MiB is the streaming client's default).
+  std::size_t recv_capacity = std::size_t{16} * 1024 * 1024;
 };
 
 class BlockingHttp {

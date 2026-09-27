@@ -566,6 +566,19 @@ TEST_CASE("binance_usdm.venue: dry run opens market data only, hedge mode refuse
   }
 }
 
+TEST_CASE("binance_usdm.venue: an exchangeInfo larger than the streaming client's buffer loads") {
+  // Production's exchangeInfo (no symbol filter) was 1.1 MB in 2026-09, past the 1 MiB default.
+  Harness h;
+  REQUIRE(h.exchange_info.front() == '{');
+  h.exchange_info.insert(1, "\"pad\":\"" + std::string(std::size_t{2} << 20, 'x') + "\",");
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  BinanceUsdmVenue venue(VenueId{0}, h.config(true));
+  const auto loaded = venue.load_reference_data(instruments);
+  CHECK_MESSAGE(loaded.has_value(), (loaded ? std::string{} : loaded.error()));
+  h.srv.stop();
+}
+
 TEST_CASE("binance_usdm.config: section mapping and factory registration") {
   VenueSection s;
   s.name = "usdm";

@@ -33,10 +33,20 @@ class FakeVenueServer final : public net::WsSessionHandler {
   using OpenFn = std::function<void(net::WsSession&)>;
 
   FakeVenueServer()
-      : server_(reactor_, [](net::TcpSocket&& s) { return net::PlainStream(std::move(s)); }) {
+      : server_(
+            reactor_,
+            [](net::TcpSocket&& s) { return net::PlainStream(std::move(s)); },
+            server_config()) {
     server_.set_ws_handler(this);
   }
   ~FakeVenueServer() override { stop(); }
+
+  // Room for a reference-data answer past the clients' 1 MiB streaming buffer.
+  static net::HttpServerConfig server_config() {
+    net::HttpServerConfig c;
+    c.send_capacity = std::size_t{4} << 20;
+    return c;
+  }
 
   // Register routes / handlers before start().
   void route(const std::string& method, const std::string& path, net::HttpRouteHandler h) {

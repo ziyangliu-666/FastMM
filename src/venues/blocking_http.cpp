@@ -38,6 +38,7 @@ HttpReply run_request(net::Reactor& reactor,
   HttpReply reply;
   net::HttpClientConfig cfg;
   cfg.timeout_ms = opts.timeout_ms;
+  cfg.recv_capacity = opts.recv_capacity;
   net::HttpClient<Stream> client(reactor, std::move(stream), host, port, tls, cfg);
   if (!client.start()) {
     reply.error = "cannot register socket";
