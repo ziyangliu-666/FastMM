@@ -139,6 +139,9 @@ if wanted sim; then
   # --8<-- [start:sim-log]
   grep -E "first_mm: |fastmm-live: (events|realized_pnl|shutdown took)" runs/tutorial/sim-live.log
   # --8<-- [end:sim-log]
+  grep -q "first_mm: started, quoting off" runs/tutorial/sim-live.log &&
+    grep -q "first_mm: quoting on" runs/tutorial/sim-live.log ||
+    fail "on_quoting did not report quoting on after the start-up reconciliation"
   grep -q "first_mm: venue 0 channel 0 is Disconnected; quotes pulled" runs/tutorial/sim-live.log ||
     fail "the market-data disconnect did not reach on_connection"
   grep -q "fastmm-live: shutdown took .* (cancel_all ok)" runs/tutorial/sim-live.log ||

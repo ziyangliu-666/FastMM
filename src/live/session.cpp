@@ -548,6 +548,45 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
 
+  // Latched kill switch and the loss budget already spent, so a restart does not re-arm
+  // [risk] max_loss (docs/how-to/operations/kill-switch-and-shutdown.md). Read before any venue or
+  // the gateway is contacted: a latched trip exits 6 even while they are unreachable.
+  const std::string kill_path =
+      cfg.engine.kill_file.empty()
+          ? KillStateStore::default_path(cfg.engine.journal_dir, cfg.engine.name)
+          : cfg.engine.kill_file;
+  if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
+    std::error_code ec;
+    std::filesystem::create_directories(kp.parent_path(), ec);
+  }
+  if (opts.clear_kill) {
+    if (auto r = KillStateStore::clear(kill_path); !r) {
+      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
+      return kExitConfig;
+    }
+    FASTMM_LOG_WARN("--clear-kill: {} removed; the whole [risk] max_loss budget is armed again",
+                    kill_path);
+  }
+  KillState kill_state;
+  if (auto loaded = KillStateStore::load(kill_path)) {
+    kill_state = *loaded;
+  } else {
+    std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
+    return kExitConfig;
+  }
+  if (kill_state.latched) {
+    std::fprintf(stderr,
+                 "%s: a %s kill switch is latched in %s (net PnL %.8f over %llu session(s)). "
+                 "Check the positions, then clear it with --clear-kill or by removing the file; "
+                 "that arms the whole [risk] max_loss budget again.\n",
+                 prog,
+                 std::string(to_string(kill_state.reason)).c_str(),
+                 kill_path.c_str(),
+                 kill_state.carry().to_double(),
+                 static_cast<unsigned long long>(kill_state.sessions));
+    return kExitKilled;
+  }
+
   VenueSlots slots;
   std::unique_ptr<GatewayClient> gateway;
   std::vector<InstrumentId> not_mine;  // attached: the instruments other strategies trade
@@ -968,43 +1007,6 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
 
-  // Latched kill switch and the loss budget already spent, so a restart does not re-arm
-  // [risk] max_loss (docs/how-to/operations/kill-switch-and-shutdown.md).
-  const std::string kill_path =
-      cfg.engine.kill_file.empty()
-          ? KillStateStore::default_path(cfg.engine.journal_dir, cfg.engine.name)
-          : cfg.engine.kill_file;
-  if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
-    std::error_code ec;
-    std::filesystem::create_directories(kp.parent_path(), ec);
-  }
-  if (opts.clear_kill) {
-    if (auto r = KillStateStore::clear(kill_path); !r) {
-      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
-      return kExitConfig;
-    }
-    FASTMM_LOG_WARN("--clear-kill: {} removed; the whole [risk] max_loss budget is armed again",
-                    kill_path);
-  }
-  KillState kill_state;
-  if (auto loaded = KillStateStore::load(kill_path)) {
-    kill_state = *loaded;
-  } else {
-    std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
-    return kExitConfig;
-  }
-  if (kill_state.latched) {
-    std::fprintf(stderr,
-                 "%s: a %s kill switch is latched in %s (net PnL %.8f over %llu session(s)). "
-                 "Check the positions, then clear it with --clear-kill or by removing the file; "
-                 "that arms the whole [risk] max_loss budget again.\n",
-                 prog,
-                 std::string(to_string(kill_state.reason)).c_str(),
-                 kill_path.c_str(),
-                 kill_state.carry().to_double(),
-                 static_cast<unsigned long long>(kill_state.sessions));
-    return kExitKilled;
-  }
   ++kill_state.sessions;
   deps.engine.pnl_carry = kill_state.carry();
 

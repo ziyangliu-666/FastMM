@@ -8,6 +8,7 @@
 #include "fastmm/core/journal.hpp"
 
 #include <chrono>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 
@@ -222,6 +223,10 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     info.params = schema;
     info.strategy_meta = strategy_meta;
     if (!cfg_.config_toml.empty()) info.config_hash = Config::text_hash(cfg_.config_toml);
+    if (const std::filesystem::path jp(cfg_.journal_out); jp.has_parent_path()) {
+      std::error_code ec;  // a failure shows as the writer's below
+      std::filesystem::create_directories(jp.parent_path(), ec);
+    }
     impl_->journal_file =
         std::make_unique<JournalFileWriter>(*impl_->journal_ring, cfg_.journal_out, info);
     if (!impl_->journal_file->ok())

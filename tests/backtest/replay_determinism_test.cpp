@@ -137,6 +137,16 @@ TEST_CASE("backtest.replay: BasicMM coupled sim run replays to the identical out
   CHECK(diff.first_mismatch >= 0);
 }
 
+TEST_CASE("backtest.replay: journal_out in a directory that does not exist yet is created") {
+  const auto dir = fastmm::test::tmp_dir() / "journal_out_new_dir";
+  std::filesystem::remove_all(dir);
+  BacktestConfig cfg = synthetic_config(11, seconds(2));
+  cfg.strategy = "basic_mm";
+  cfg.journal_out = (dir / "sub" / "session.fmj").string();
+  const BacktestResult rec = run_backtest(cfg, "basic_mm");
+  CHECK(inspect_journal(cfg.journal_out).outbound_messages == rec.outbound_messages);
+}
+
 TEST_CASE("backtest.replay: timer-driven quote pulls and the L2 queue model replay exactly") {
   BacktestConfig cfg = synthetic_config(12, seconds(10));
   cfg.strategy = "basic_mm";

@@ -4,7 +4,7 @@ A release comes in three forms, from <https://github.com/ziyangliu-666/FastMM/re
 
 | Form | What it holds | Use it for |
 |---|---|---|
-| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-itch`, the ITCH simulator configs, the systemd units, the Prometheus alert rules | a host that runs C++ strategies |
+| `fastmm-<version>-x86_64.tar.gz` | `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay`, `fastmm-sim-itch`, the ITCH simulator configs, the systemd units, the Prometheus alert rules (0.2.0: `fastmm-live`, `fastmm-top`, `fastmm-replay`, `fastmm-sim-itch` and `fastmm-live.service`) | a host that runs C++ strategies |
 | `ghcr.io/ziyangliu-666/fastmm:<version>` | the same programs without the simulator, non-root | a container host |
 | `pip install "fastmm-engine[live]"` | the engine as a Python package, for strategies written in Python | [Python](../../python.md) |
 
@@ -62,8 +62,8 @@ Logs: stderr carries the lines at `[logging] mirror_level` and above, so `journa
 ```bash
 systemctl status fastmm-live                 # the exit code of the last run
 journalctl -u fastmm-live -f
-/opt/fastmm/bin/fastmm-top                   # the live session
-sudo -u fastmm /opt/fastmm/bin/fastmm-live --config /etc/fastmm/live.toml --clear-kill
+/opt/fastmm/bin/fastmm-top --name <engine name>
+sudo rm /var/lib/fastmm/runs/<engine name>.kill   # clears a latched max_loss trip
 ```
 
 ## Run the container

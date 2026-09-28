@@ -43,19 +43,21 @@ grep -E "first_mm: |fastmm-live: (events|realized_pnl|shutdown took)" runs/tutor
 ```
 
 ```text
-INFO  first_mm: started, quoting enabled
+INFO  first_mm: started, quoting off
 INFO  first_mm: venue 0 channel 0 is live
 INFO  first_mm: venue 0 channel 1 is live
 INFO  first_mm: venue 0 channel 1 is live
-INFO  first_mm: fills=10 late_fills=0 disconnects=0 net_pnl=0.10923483
-INFO  first_mm: fills=15 late_fills=0 disconnects=0 net_pnl=0.1995342
+INFO  first_mm: quoting on
+INFO  first_mm: fills=11 late_fills=0 disconnects=0 net_pnl=0.16228803
+INFO  first_mm: fills=17 late_fills=0 disconnects=0 net_pnl=0.22196902
 WARN  first_mm: venue 0 channel 0 is Disconnected; quotes pulled
-INFO  first_mm: fills=22 late_fills=0 disconnects=1 net_pnl=0.30134376
 INFO  first_mm: venue 0 channel 0 is live
+INFO  first_mm: fills=22 late_fills=0 disconnects=1 net_pnl=0.29124105
 ...
-INFO  fastmm-live: events=4587 book_updates=402 orders=64 cancels=4 replaces=600 fills=61 risk_rejects=0 venue_rejects=0
-INFO  fastmm-live: realized_pnl=1.14957979 unrealized_pnl=0.08635009 fees=0.36000765 tick_to_trade p50=98303 ns p99=221183 ns
-INFO  fastmm-live: shutdown took 301 ms (cancel_all ok)
+INFO  first_mm: quoting off
+INFO  fastmm-live: events=4687 book_updates=402 orders=56 cancels=3 replaces=674 fills=55 risk_rejects=0 venue_rejects=0
+INFO  fastmm-live: realized_pnl=1.05586083 unrealized_pnl=0.01321016 fees=0.32585832 tick_to_trade p50=36863 ns p99=61439 ns
+INFO  fastmm-live: shutdown took 316 ms (cancel_all ok)
 ```
 
 (Timestamps and thread ids removed.) Channel 0 is market data; channel 1 is order entry and the user-data stream, which report separately. After the disconnect the connector reconnected within 250 ms, took a fresh snapshot, and the next `on_book` requoted. PnL and fees are in USDT.
@@ -72,12 +74,12 @@ The session journal also renders as a page: `python3 tools/report.py runs/tutori
 ```
 
 ```text
-journal  runs/tutorial/sim.fmj: format v3, 5308 messages (1980 market data, 668 outbound), rng_seed 42, strategy 'first_mm'
+journal  runs/tutorial/sim.fmj: format v3, 5473 messages (1810 market data, 733 outbound), rng_seed 42, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0x1, engine clock recorded
-config   embedded in the journal (hash cfc79bc62a2c22cb)
-replay   strategy=first_mm events=4595
-recorded outbound 668 msgs sha256 dee5a4e6d1c7ed4982f31905397f7b78fb5d76751fce221c6d062d325f02fed4
-replayed outbound 668 msgs sha256 dee5a4e6d1c7ed4982f31905397f7b78fb5d76751fce221c6d062d325f02fed4
+config   embedded in the journal (hash 03cb0711746f2516)
+replay   strategy=first_mm events=4695
+recorded outbound 733 msgs sha256 e265b576737c9773cba10dd22e69e3829cb062a0e0e913b63261901ab10e37d4
+replayed outbound 733 msgs sha256 e265b576737c9773cba10dd22e69e3829cb062a0e0e913b63261901ab10e37d4
 replay MATCH
 ```
 

@@ -13,7 +13,7 @@ path = "runs/mm1.db"
 ## What did I trade yesterday
 
 ```bash
-build/release/bin/fastmm-pnl pnl --day yesterday
+build/release/bin/fastmm-pnl pnl --engine mm1 --day yesterday
 ```
 
 ```text
@@ -25,12 +25,12 @@ day         symbol   settlement_ccy  realized  funding  fees      net       gros
 
 `--day`, `--since` and `--until` take a UTC day (`2024-03-04`) or `today` / `yesterday`. `realized` and `fees` are the change within that day; `net` is `realized - fees`. `funding` is the part of `realized` that perpetual funding paid or received. Unrealised PnL is a mark, not a flow, so it is not summed across days: read it from `fastmm-pnl positions`.
 
-`--instrument BTCUSDT` selects one symbol, `--engine mm1` one deployment; `--csv` prints comma-separated values.
+`--engine mm1` reads `runs/mm1.db` (`--store <path>` another file), `--instrument BTCUSDT` selects one symbol, `--csv` prints comma-separated values.
 
 ## What is my PnL by day and instrument
 
 ```bash
-build/release/bin/fastmm-pnl pnl --since 2024-03-01
+build/release/bin/fastmm-pnl pnl --engine mm1 --since 2024-03-01
 ```
 
 Do not add instruments that settle in different currencies; the `settlement_ccy` column separates them ([Risk model](../../explanation/risk-model.md)). For a total per currency, use the `pnl_by_currency` view:
@@ -43,7 +43,7 @@ sqlite3 -header -column runs/mm1.db \
 ## What did funding cost
 
 ```bash
-build/release/bin/fastmm-pnl funding --since 2024-03-01 --instrument BTCUSDT
+build/release/bin/fastmm-pnl funding --engine mm1 --since 2024-03-01 --instrument BTCUSDT
 ```
 
 One row per payment: `amount` in `asset` (negative paid), the venue's `funding_id`, the position it was paid on, and `replayed` = 1 for one booked from the venue's history rather than its stream.
@@ -51,13 +51,13 @@ One row per payment: `amount` in `asset` (negative paid), the venue's `funding_i
 ## Show me the fills of session X
 
 ```bash
-build/release/bin/fastmm-pnl sessions --limit 5
-build/release/bin/fastmm-pnl fills --session 1709510400123456789
+build/release/bin/fastmm-pnl sessions --engine mm1 --limit 5
+build/release/bin/fastmm-pnl fills --engine mm1 --session 1709510400123456789
 ```
 
 ```text
 ts                   symbol   side  liquidity  price      qty    fee      fee_asset  cl_ord_id         exec_id   position_qty  session_id
-2024-03-04 09:14:02  BTCUSDT  Buy   Maker      61250.10   0.002  0.00061  quote      0003000000000a1b  88213401  0.002         1709510400123456789
+2024-03-04 09:14:02  BTCUSDT  Buy   Maker      61250.10   0.002  0.00061  quote      fm000300000a1b    88213401  0.002         1709510400123456789
 ```
 
 `fastmm-pnl orders --session <id>` lists each order in its last state; `fastmm-pnl positions --session <id>` the last position per instrument.
@@ -77,7 +77,7 @@ session 1709510400123456789 (basic_mm)
   fills     186
   journal   runs/mm1-1709510400123456789.fmj
   position  BTCUSDT 0.002 @ 61250.1 realized=12.4 (funding -0.6) unrealized=-0.8 fees=0.31 fills=186
-  open      0003000000000a1c BTCUSDT Sell 0.002 (filled 0) @ 61260.5 Live
+  open      fm000300000a1c BTCUSDT Sell 0.002 (filled 0) @ 61260.5 Live
 ```
 
 `fastmm-live` logs the same summary when it starts. The open orders are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since, and nothing that happened while the process was down is in here. The next `fastmm-live` start restores the position from the store, books what the venue executed in between and cancels the orders left open ([Recovery at start-up](../../reference/storage.md#recovery-at-start-up)).

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -156,6 +157,26 @@ static int run(int argc, char** argv) {
   auto reader = registry.make_reader(backend);
   if (reader == nullptr)
     return bad_usage("no queryable backend '" + backend + "' (have " + registry.names() + ")");
+
+  // Neither --store nor --engine: runs/fastmm.db, the store of an [engine] without a name. When it
+  // is not there, name the stores that are.
+  if (store_path.empty() && f.engine.empty() && backend == "sqlite") {
+    const std::filesystem::path fallback = std::filesystem::path(engine_dir) / "fastmm.db";
+    std::error_code ec;
+    if (!std::filesystem::exists(fallback, ec)) {
+      std::vector<std::string> found;
+      for (const auto& e : std::filesystem::directory_iterator(engine_dir, ec)) {
+        if (e.path().extension() == ".db") found.push_back(e.path().stem().string());
+      }
+      std::sort(found.begin(), found.end());
+      std::string msg =
+          "no store at " + fallback.string() +
+          "; name one with --engine <[engine] name> (runs/<name>.db) or --store <path>";
+      for (std::size_t i = 0; i < found.size(); ++i)
+        msg += (i == 0 ? "; " + engine_dir + "/ has " : ", ") + found[i] + ".db";
+      return bad_usage(msg);
+    }
+  }
 
   fastmm::store::BackendOptions opts;
   opts.read_only = true;

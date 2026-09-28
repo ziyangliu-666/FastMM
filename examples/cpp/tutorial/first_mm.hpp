@@ -64,8 +64,7 @@ class FirstMM : public StrategyBase<FirstMMParams> {
   // [start:on_start]
   void on_start(auto& ctx) noexcept {
     if (params().report_ms > Duration{}) report_timer_ = ctx.every(params().report_ms);
-    FASTMM_LOG_INFO("first_mm: started, quoting {}",
-                    ctx.quoting_enabled() ? "enabled" : "disabled (dry run)");
+    FASTMM_LOG_INFO("first_mm: started, quoting {}", ctx.quoting_enabled() ? "on" : "off");
   }
   // [end:on_start]
 
@@ -101,6 +100,7 @@ class FirstMM : public StrategyBase<FirstMMParams> {
 
   // [start:on_quoting]
   void on_quoting(auto& ctx, bool enabled) noexcept {
+    FASTMM_LOG_INFO("first_mm: quoting {}", enabled ? "on" : "off");
     if (!enabled) return;  // paused: the engine has pulled the quotes
     for (const Instrument& inst : ctx.instruments()) on_book(ctx, inst.id, ctx.book(inst.id));
   }

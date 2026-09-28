@@ -28,6 +28,27 @@ All three done (2026-09-28), entries below.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**Docs followed as written, from a fresh clone (2026-09-28).** Pages: getting-started (install,
+quickstart), the tutorial (1-9), operations (gateway, deploy, fastmm-top, operate, journals,
+query, kill switch, runbook), strategies (xmm, python-live, register), backtesting on Binance
+data. Venues were `fastmm-sim-exchange` or `--dry-run`; systemd pages ran as user units
+(kill -9 of the gateway: restarted, the strategy reattached and restored its position).
+Code fixed, each with a test: a latched `max_loss` kill was read after reference data, so with the
+venue unreachable a restart exited 4 (restarted by the unit) instead of 6, and the docs' "before
+contacting any venue" was false; `fastmm-backtest --journal-out` did not create its directory
+(the journals page's command exited 5); `fastmm-pnl` without `--engine` said only `open
+runs/fastmm.db: unable to open database file`, now names the stores it finds; the tutorial's
+`first_mm` logged `quoting disabled (dry run)` in every live session (quoting is off until the
+start-up reconciliation), now logs `quoting on/off` from `on_quoting`. Docs fixed: the Binance day
+backtest stops at 09:37 on `max_loss = 500` (the page read its 36.9 % uptime as the spread);
+`fastmm-pnl` examples lacked `--engine`; deploy's `fastmm-top` lacked `--name` and its
+`--clear-kill` line would start a keyless session (now: remove the kill file); the 0.2.0 tarball
+holds only live, top, replay and sim-itch; runbook's `/opt` path lacked `-x86_64`; the gateway
+intro lacked the simulator and keys, and its unit needs the gateway named `gateway`; stale
+outputs (tutorial 7-8, cl_ord_id format). Not runnable here: Docker (no docker), Binance Demo
+keyed sessions, `host-setup.sh tune`. The first full ctest had 21 gateway/recovery failures while
+a reconfigure relinked the test binary under it; all pass rerun.
+
 **Order shadows: swept in send order, a full table refuses (2026-09-28).** Left by step 1: the
 sweep compared ids of the watermark's epoch only, so behind the gateway every other strategy's
 shadows whose end was lost stayed in the 8192-slot table (7168 usable) for good. What a full table
