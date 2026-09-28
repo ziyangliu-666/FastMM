@@ -99,6 +99,7 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
 | 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net position in the base asset over every venue, with the orders working on the order's side and this one, would move further past the limit |
 | 56 | `GatewayUnderlyingMarkUnknown` | `[gateway.underlying]`: an inverse contract of the underlying with a position or working orders has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
+| 57 | `GatewaySelfTrade` | `[gateway.shared]`: the order would trade with a resting order of another attached strategy on the same instrument |
 
 ### Venue-originated
 

@@ -625,13 +625,13 @@ std::string_view venue_name(const StatusSnapshot& s, std::uint8_t v) {
                               : std::string_view("?");
 }
 
-// "sim:BTCUSDT,sim:ETHUSDT": the instruments an attachment owns.
-std::string owned_instruments(const StatusSnapshot& s, std::uint16_t epoch) {
+// "sim:BTCUSDT,sim:ETHUSDT": the instruments an attachment trades.
+std::string owned_instruments(const StatusSnapshot& s, const StatusAttachment& a) {
   std::string out;
   const std::size_t n = std::min<std::size_t>(s.gateway.position_count, kStatusMaxPositions);
   for (std::size_t i = 0; i < n; ++i) {
     const StatusPosition& p = s.gateway.positions[i];
-    if (p.owner_epoch != epoch) continue;
+    if (!a.trades(i)) continue;
     fmt::format_to(std::back_inserter(out),
                    "{}{}:{}",
                    out.empty() ? "" : ",",
@@ -712,21 +712,36 @@ std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, 
                    fmt_duration_s(s.updated_ns - a.attached_ns),
                    a.md_dropped,
                    refusals_text(a.refused),
-                   owned_instruments(s, a.epoch));
+                   owned_instruments(s, a));
   }
 
-  // The instruments with a position or an owner.
+  // The instruments with a position or a strategy trading them. A shared one shows how many trade
+  // it, what no strategy holds and, when the account differs from the strategies' part plus that,
+  // by how much.
   fmt::format_to(it, "\n{:<14} {:<20} {:>20} {:>6}\n", "position", "instrument", "qty", "owner");
   const std::size_t np = std::min<std::size_t>(g.position_count, kStatusMaxPositions);
   for (std::size_t i = 0; i < np; ++i) {
     const StatusPosition& p = g.positions[i];
-    if (p.qty_raw == 0 && p.owner_epoch == 0) continue;
+    if (p.qty_raw == 0 && p.traders == 0 && p.unattributed_raw == 0 && p.unexplained_raw == 0)
+      continue;
+    std::string owner = p.owner_epoch != 0 ? std::to_string(p.owner_epoch) : std::string("-");
+    if (p.shared != 0) owner = fmt::format("shared x{}", p.traders);
     fmt::format_to(it,
-                   "{:<14} {:<20} {:>20} {:>6}\n",
+                   "{:<14} {:<20} {:>20} {:>6}",
                    venue_name(s, p.venue),
                    name_of(p.symbol, sizeof p.symbol),
                    qty_text(p.qty_raw),
-                   p.owner_epoch != 0 ? std::to_string(p.owner_epoch) : std::string("-"));
+                   owner);
+    if (p.shared != 0) {
+      fmt::format_to(it, "  unattributed={}", qty_text(p.unattributed_raw));
+      if (p.unexplained_raw != 0)
+        fmt::format_to(it,
+                       "  {}UNEXPLAINED={}{}",
+                       color ? "\x1b[31m" : "",
+                       qty_text(p.unexplained_raw),
+                       reset(color));
+    }
+    out += '\n';
   }
 
   append_venues(out, s, color);
@@ -949,7 +964,7 @@ std::string format_gateway_json(const StatusSnapshot& s) {
     bool first = true;
     for (std::size_t k = 0; k < np; ++k) {
       const StatusPosition& p = g.positions[k];
-      if (p.owner_epoch != a.epoch) continue;
+      if (!a.trades(k)) continue;
       fmt::format_to(it,
                      "{}{{\"venue\": {}, \"symbol\": {}}}",
                      first ? "" : ", ",
@@ -963,12 +978,17 @@ std::string format_gateway_json(const StatusSnapshot& s) {
   for (std::size_t i = 0; i < np; ++i) {
     const StatusPosition& p = g.positions[i];
     fmt::format_to(it,
-                   "{}{{\"venue\": {}, \"symbol\": {}, \"qty\": {}, \"owner_epoch\": {}}}",
+                   "{}{{\"venue\": {}, \"symbol\": {}, \"qty\": {}, \"owner_epoch\": {}, "
+                   "\"shared\": {}, \"traders\": {}, \"unattributed\": {}, \"unexplained\": {}}}",
                    i == 0 ? "" : ", ",
                    json_string(venue_name(s, p.venue)),
                    json_string(name_of(p.symbol, sizeof p.symbol)),
                    qty_text(p.qty_raw),
-                   p.owner_epoch);
+                   p.owner_epoch,
+                   p.shared != 0,
+                   p.traders,
+                   qty_text(p.unattributed_raw),
+                   qty_text(p.unexplained_raw));
   }
   out += "], \"routing\": [";
   const std::size_t nv = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);

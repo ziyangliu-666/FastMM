@@ -4,7 +4,7 @@
 #
 #   scripts/bench-gateway.sh [--runs 3] [--duration 60] [--spin busy|adaptive]
 #                            [--build build/release] [--out runs/bench-gateway-<time>]
-#                            [--account-limits]
+#                            [--account-limits] [--shared]
 #
 # Each run starts a fresh simulator, then trades once in-process and once attached to a gateway.
 # Per run and mode it prints the engine's tick-to-trade (market-data receive on the network thread
@@ -12,11 +12,12 @@
 # network thread's wire tick-to-trade (receive to the order's send returning; through the gateway
 # both rings and the extra copy). --account-limits sets [gateway] max_loss, max_gross_notional and
 # max_net_notional far out of reach, so every order takes the account checks (the gateway then
-# runs under a name of its own). Logs stay in the output directory.
+# runs under a name of its own). --shared lists BTCUSDT under [gateway.shared], so every order
+# also takes the self-trade check. Logs stay in the output directory.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RUNS=3; DURATION=60; SPIN=busy; BUILD=build/release; OUT=""; LIMITS=0
+RUNS=3; DURATION=60; SPIN=busy; BUILD=build/release; OUT=""; LIMITS=0; SHARED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --runs) RUNS="$2"; shift 2;;
@@ -25,7 +26,8 @@ while [[ $# -gt 0 ]]; do
     --build) BUILD="$2"; shift 2;;
     --out) OUT="$2"; shift 2;;
     --account-limits) LIMITS=1; shift;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    --shared) SHARED=1; shift;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "bench-gateway: unknown argument $1" >&2; exit 2;;
   esac
 done
@@ -69,6 +71,10 @@ for ((r = 1; r <= RUNS; r++)); do
         gw_config="$d/gateway.toml"; gw_name=sim-local-gw
         sed -e 's|name = "sim-local"|name = "sim-local-gw"|' "$d/config.toml" > "$gw_config"
         printf '\n[gateway]\nmax_loss = "1000000"\nmax_gross_notional = "1000000000"\nmax_net_notional = "1000000000"\n' >> "$gw_config"
+      fi
+      if [[ "$SHARED" == 1 ]]; then
+        [[ "$gw_config" != "$d/config.toml" ]] || { gw_config="$d/gateway.toml"; cp "$d/config.toml" "$gw_config"; }
+        printf '\n[gateway.shared."sim:BTCUSDT"]\n' >> "$gw_config"
       fi
       "$BUILD/bin/fastmm-gateway" --config "$gw_config" --log "$d/gateway.log" > /dev/null 2>&1 &
       GW=$!

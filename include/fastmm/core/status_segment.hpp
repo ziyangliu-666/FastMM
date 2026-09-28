@@ -32,7 +32,9 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 8: `kind`, and the gateway block (attachments, the account, its positions, routing counters).
 // 11: the net position per underlying ([risk.underlying], [gateway.underlying]); two more gateway
 //     refusal reasons.
-inline constexpr std::uint32_t kStatusVersion = 11;
+// 12: shared instruments (the position's traders, unattributed and unexplained parts, each
+//     attachment's instruments), GatewaySelfTrade.
+inline constexpr std::uint32_t kStatusVersion = 12;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -129,7 +131,7 @@ struct StatusUnderlying {
 inline constexpr std::size_t kStatusMaxAttachments = 16;  // gw::kMaxAttachments
 inline constexpr std::size_t kStatusMaxPositions = 256;   // kMaxInstruments
 // The gateway's refusals, counted per attachment and per venue in this order.
-inline constexpr std::size_t kStatusGatewayRefusals = 9;
+inline constexpr std::size_t kStatusGatewayRefusals = 10;
 inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusals] = {
     RejectReason::GatewayNotOwner,
     RejectReason::GatewayAccountKilled,
@@ -139,9 +141,10 @@ inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusal
     RejectReason::GatewayRateLimit,
     RejectReason::GatewayFxRateUnknown,
     RejectReason::GatewayUnderlyingNet,
-    RejectReason::GatewayUnderlyingMarkUnknown};
+    RejectReason::GatewayUnderlyingMarkUnknown,
+    RejectReason::GatewaySelfTrade};
 
-// One attached strategy. Its instruments are the positions whose owner_epoch is its epoch.
+// One attached strategy.
 struct StatusAttachment {
   char engine[32] = {};  // its [engine] name
   std::uint32_t pid = 0;
@@ -152,16 +155,27 @@ struct StatusAttachment {
   std::int64_t attached_ns = 0;  // wall clock
   std::uint64_t md_dropped = 0;  // market-data events its rings dropped, every venue
   std::uint64_t refused[kStatusGatewayRefusals] = {};  // its orders the gateway refused, by reason
+  // The instruments it trades: bit i is positions[i].
+  std::uint64_t instruments[kStatusMaxPositions / 64] = {};
+  [[nodiscard]] bool trades(std::size_t position) const noexcept {
+    return position < kStatusMaxPositions && ((instruments[position / 64] >> (position % 64)) & 1U);
+  }
 };
 
 // The account's position in one instrument of the gateway's table.
 struct StatusPosition {
   char symbol[24] = {};
-  std::uint8_t venue = 0;  // index into venues
-  std::uint8_t pad_[1] = {};
-  std::uint16_t owner_epoch = 0;  // the attachment that trades it, 0 for none
-  std::uint32_t pad2_ = 0;
-  std::int64_t qty_raw = 0;  // Qty raw (1e-8), signed
+  std::uint8_t venue = 0;         // index into venues
+  std::uint8_t shared = 0;        // [gateway.shared]: several strategies may trade it
+  std::uint16_t owner_epoch = 0;  // the one attachment that trades it, 0 for none or several
+  std::uint16_t traders = 0;      // attachments trading it
+  std::uint16_t pad_ = 0;
+  std::int64_t qty_raw = 0;  // Qty raw (1e-8), signed: the account's (the venue's when it reports)
+  // A shared instrument: what the account booked that no strategy holds (executions naming no
+  // order, orders of sessions no attachment claims), and what the account's position differs from
+  // the strategies' positions plus that (0 when the books agree).
+  std::int64_t unattributed_raw = 0;
+  std::int64_t unexplained_raw = 0;
 };
 
 // One venue as the gateway routes it.

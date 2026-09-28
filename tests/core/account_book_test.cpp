@@ -226,3 +226,48 @@ TEST_CASE("core.account_book: a funding payment is booked once into realized, in
   CHECK_FALSE(b.book(f3));
   CHECK(b.positions().total_realized() == nt("-0.25"));
 }
+
+TEST_CASE("core.account_book: a second holder's position adds to the account's") {
+  const InstrumentTable t = make_table();
+  AccountBook b(t, VenueId{0});
+  b.add_position(kBtc, qt("2"), px("100"));  // onto flat: as set
+  CHECK(b.positions()[kBtc].qty == qt("2"));
+  CHECK(b.positions()[kBtc].avg_px == px("100"));
+  b.add_position(kBtc, qt("2"), px("110"));  // same side: weighted
+  CHECK(b.positions()[kBtc].qty == qt("4"));
+  CHECK(b.positions()[kBtc].avg_px == px("105"));
+  b.add_position(kBtc, qt("-1"), px("90"));  // the other way, smaller: the larger's price stays
+  CHECK(b.positions()[kBtc].qty == qt("3"));
+  CHECK(b.positions()[kBtc].avg_px == px("105"));
+  b.add_position(kBtc, qt("-5"), px("120"));  // past it: the new side's price
+  CHECK(b.positions()[kBtc].qty == qt("-2"));
+  CHECK(b.positions()[kBtc].avg_px == px("120"));
+  b.add_position(kBtc, qt("2"), px("1"));  // back to flat
+  CHECK(b.positions()[kBtc].qty.is_zero());
+  b.add_position(kBtc, Qty{}, px("1"));  // nothing to add
+  CHECK(b.positions()[kBtc].qty.is_zero());
+}
+
+TEST_CASE("core.account_book: a booked execution keeps its tag until it is retagged") {
+  const InstrumentTable t = make_table();
+  AccountBook b(t, VenueId{0});
+  const OrderFillMsg m = fill(kBtc, Side::Sell, "100", "1", "t1");
+  CHECK(b.booked_as(m) == nullptr);
+  REQUIRE(b.first_time(m, 0));
+  REQUIRE(b.booked_as(m) != nullptr);
+  CHECK(*b.booked_as(m) == 0);
+  CHECK_FALSE(b.first_time(m, 3));  // booked: the tag stays
+  CHECK(*b.booked_as(m) == 0);
+  b.retag(m, 3);
+  CHECK(*b.booked_as(m) == 3);
+  // Without an id nothing is remembered.
+  const OrderFillMsg anon = fill(kBtc, Side::Buy, "100", "1", "");
+  CHECK(b.first_time(anon, 2));
+  CHECK(b.booked_as(anon) == nullptr);
+  // The change book() makes, signed, with a base-asset commission.
+  OrderFillMsg base = fill(kBtc, Side::Buy, "100", "1", "t2");
+  base.fee = Notional::from_raw(qt("0.001").raw);
+  base.fee_asset = FeeAsset::Base;
+  CHECK(AccountBook::position_change(base) == qt("0.999").raw);
+  CHECK(AccountBook::position_change(m) == qt("-1").raw);
+}

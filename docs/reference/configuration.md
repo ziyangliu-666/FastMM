@@ -381,6 +381,7 @@ Read by `fastmm-gateway` only: account guards over every attached strategy, chec
 | `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it reduces its instrument's position; decimal |
 | `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it reduces its instrument's position; decimal |
 | `underlying` | table |  | fastmm-gateway: one [gateway.underlying.BTC] table per base asset: the account's net limit, over every strategy and venue |
+| `shared` | table |  | fastmm-gateway: one [gateway.shared."venue:symbol"] table per instrument that several strategies may trade at once (default: one strategy per instrument) |
 <!-- END config-keys -->
 
 ### `[gateway.underlying.<BASE>]`
@@ -391,6 +392,21 @@ Read by `fastmm-gateway` only: account guards over every attached strategy, chec
 | Key | Type | Required | Meaning |
 |---|---|---|---|
 | `max_net` | any | yes | fastmm-gateway: refuse an order that would take the account's net position in this base asset, working orders on the order's side included, further past this; base units, decimal |
+<!-- END config-keys -->
+
+### `[gateway.shared."<venue>:<symbol>"]`
+
+An instrument of `[[instruments]]` that several attached strategies may trade at once ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#shared-instruments)). Without this table a second strategy claiming it is refused. An empty table shares it with no primary.
+
+```toml
+[gateway.shared."bybit:BTCUSDT"]
+primary = "hedger"
+```
+
+<!-- BEGIN config-keys gateway.shared.* -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `primary` | string |  | fastmm-gateway: [engine] name of the strategy that books this instrument's events naming no order (funding, liquidation fills, executions of orders placed elsewhere); default none: the account alone books them |
 <!-- END config-keys -->
 
 ## `[accounting]`

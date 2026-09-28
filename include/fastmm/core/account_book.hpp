@@ -43,14 +43,22 @@ class AccountBook {
 
   [[nodiscard]] const PositionTracker& positions() const noexcept { return pos_; }
 
-  // Has this execution been booked? Remembers it if not. An execution without an id cannot be
-  // recognised again and counts as new, as in the OMS.
-  [[nodiscard]] bool first_time(const OrderFillMsg& m) noexcept {
+  // Has this execution been booked? Remembers it if not, with `tag` (the gateway's attribution of
+  // it). An execution without an id cannot be recognised again and counts as new, as in the OMS.
+  [[nodiscard]] bool first_time(const OrderFillMsg& m, std::uint8_t tag = 1) noexcept {
     if (m.exec_id.empty()) return true;
-    const std::uint64_t key = m.exec_id.hash() ^
-                              (static_cast<std::uint64_t>(m.hdr.instrument.value) << 1U) ^
-                              (static_cast<std::uint64_t>(m.side) * 0x9E3779B97F4A7C15ULL);
-    return seen_->assign(key, 1);
+    const std::uint64_t key = exec_key(m);
+    if (seen_->contains(key)) return false;
+    return seen_->assign(key, tag);
+  }
+  // The tag a booked execution was remembered with; nullptr when it was not booked (or has left
+  // the window, or has no id).
+  [[nodiscard]] const std::uint8_t* booked_as(const OrderFillMsg& m) const noexcept {
+    return m.exec_id.empty() ? nullptr : seen_->find(exec_key(m));
+  }
+  // A booked execution's tag changes.
+  void retag(const OrderFillMsg& m, std::uint8_t tag) noexcept {
+    if (!m.exec_id.empty()) static_cast<void>(seen_->assign(exec_key(m), tag));
   }
 
   // Has this funding payment been booked? Remembers it if not, as first_time() does executions.
@@ -81,22 +89,53 @@ class AccountBook {
     const InstrumentId id = m.hdr.instrument;
     if (!insts_->contains(id)) return;
     const Instrument& inst = insts_->get(id);
-    Qty booked = m.qty;
+    const Qty booked = held_qty(m);
     Notional fee = m.fee;
     if (m.fee_asset == FeeAsset::Base) {
-      const Qty fee_base = Qty::from_raw(m.fee.raw);
-      fee = inst.notional(m.price, fee_base);
-      const Qty held = m.side == Side::Buy ? m.qty - fee_base : m.qty + fee_base;
-      if (held.raw > 0) booked = held;
+      fee = inst.notional(m.price, Qty::from_raw(m.fee.raw));
     } else if (m.fee_asset == FeeAsset::Other) {
       fee = Notional{};
     }
     if (booked.is_positive()) pos_.on_fill(id, m.side, m.price, booked, fee, inst);
   }
+  // The quantity book() adds to the position (a base-asset commission taken off a buy, added to a
+  // sell), unsigned.
+  [[nodiscard]] static Qty held_qty(const OrderFillMsg& m) noexcept {
+    if (m.fee_asset != FeeAsset::Base) return m.qty;
+    const Qty fee_base = Qty::from_raw(m.fee.raw);
+    const Qty held = m.side == Side::Buy ? m.qty - fee_base : m.qty + fee_base;
+    return held.raw > 0 ? held : m.qty;
+  }
+  // The signed change book() makes to the position.
+  [[nodiscard]] static std::int64_t position_change(const OrderFillMsg& m) noexcept {
+    const std::int64_t q = held_qty(m).raw;
+    return m.side == Side::Buy ? q : -q;
+  }
 
   // A position the account holds (a strategy's store, a venue's position record).
   void set_position(InstrumentId id, Qty qty, Price avg_px) noexcept {
     if (insts_->contains(id)) pos_.set(id, qty, avg_px, insts_->get(id));
+  }
+  // Another holder's position joins the account's (a second strategy's store on a shared
+  // instrument): the quantities add; the average price is the weighted one when both lie on the
+  // same side, else the larger one's.
+  void add_position(InstrumentId id, Qty qty, Price avg_px) noexcept {
+    if (!insts_->contains(id) || qty.is_zero()) return;
+    const Position& p = pos_.get(id);
+    const std::int64_t q0 = p.qty.raw;
+    const std::int64_t q1 = qty.raw;
+    const std::int64_t q = q0 + q1;
+    Price avg = avg_px;
+    if (q == 0) {
+      avg = Price{};
+    } else if (q0 != 0 && (q0 > 0) == (q1 > 0)) {
+      const Int128 w =
+          static_cast<Int128>(q0) * p.avg_px.raw + static_cast<Int128>(q1) * avg_px.raw;
+      avg = Price::from_raw(static_cast<std::int64_t>(w / q));
+    } else if (q0 != 0 && (q0 < 0 ? -q0 : q0) > (q1 < 0 ? -q1 : q1)) {
+      avg = p.avg_px;
+    }
+    pos_.set(id, Qty::from_raw(q), avg, insts_->get(id));
   }
 
   // Market data: the book, and the mark when it is valid. Returns true when it marked.
@@ -124,6 +163,10 @@ class AccountBook {
  private:
   // Funding keys share the execution window; this keeps them apart from execution keys.
   static constexpr std::uint64_t kFundingKey = 0xF0D1'46E5'0000'0001ULL;
+  [[nodiscard]] static std::uint64_t exec_key(const OrderFillMsg& m) noexcept {
+    return m.exec_id.hash() ^ (static_cast<std::uint64_t>(m.hdr.instrument.value) << 1U) ^
+           (static_cast<std::uint64_t>(m.side) * 0x9E3779B97F4A7C15ULL);
+  }
   using Seen = RecentMap<std::uint64_t, std::uint8_t, kExecWindow>;
   PositionTracker pos_;
   const InstrumentTable* insts_;

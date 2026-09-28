@@ -169,6 +169,7 @@ enum class RejectReason : std::uint8_t {
   GatewayFxRateUnknown = 54,  // [accounting]: the order's currency has no current rate
   GatewayUnderlyingNet = 55,  // [gateway.underlying.<BASE>] max_net, over every strategy and venue
   GatewayUnderlyingMarkUnknown = 56,  // an inverse contract of the underlying has no current mark
+  GatewaySelfTrade = 57,              // it would cross another attached strategy's resting order
   // Venue-originated
   VenueReject = 64,
   PostOnlyWouldCross = 65,
@@ -256,6 +257,8 @@ enum class RejectReason : std::uint8_t {
       return "GatewayUnderlyingNet";
     case RejectReason::GatewayUnderlyingMarkUnknown:
       return "GatewayUnderlyingMarkUnknown";
+    case RejectReason::GatewaySelfTrade:
+      return "GatewaySelfTrade";
     case RejectReason::VenueReject:
       return "VenueReject";
     case RejectReason::PostOnlyWouldCross:

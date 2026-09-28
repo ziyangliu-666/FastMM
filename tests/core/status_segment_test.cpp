@@ -302,7 +302,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 11,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 12,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -356,10 +356,14 @@ StatusSnapshot gateway_sample() {
   g.position_count = 3;
   set_status_name(g.positions[0].symbol, "BTCUSDT");
   g.positions[0].owner_epoch = 7;
+  g.positions[0].traders = 1;
   g.positions[0].qty_raw = 400'000;  // 0.004
+  g.attachments[0].instruments[0] = 1U << 0U;
   set_status_name(g.positions[1].symbol, "ETHUSDT");
   g.positions[1].owner_epoch = 8;
+  g.positions[1].traders = 1;
   g.positions[1].qty_raw = -200'000;  // -0.002
+  g.attachments[1].instruments[0] = 1U << 1U;
   set_status_name(g.positions[2].symbol, "SOLUSDT");
   return s;
 }
@@ -437,17 +441,46 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 11,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 12,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
   CHECK(json.find(R"("instruments": [{"venue": "sim", "symbol": "BTCUSDT"}])") !=
         std::string::npos);
-  CHECK(json.find(R"({"venue": "sim", "symbol": "ETHUSDT", "qty": -0.002, "owner_epoch": 8})") !=
+  CHECK(json.find(R"({"venue": "sim", "symbol": "ETHUSDT", "qty": -0.002, "owner_epoch": 8, )"
+                  R"("shared": false, "traders": 1, "unattributed": 0, "unexplained": 0})") !=
         std::string::npos);
   CHECK(json.find(R"("GatewayRateLimit": 3)") != std::string::npos);
   CHECK(json.find(R"("venues": [{"name": "sim", "md": "live")") != std::string::npos);
   CHECK(json.find(R"("events")") == std::string::npos);  // no engine counters
   CHECK(json.back() == '\n');
   CHECK(default_gateway_status_path("gw") == "/dev/shm/fastmm-gw.gw.status");
+}
+
+TEST_CASE("core.status_segment: a shared instrument shows its traders and what nobody holds") {
+  StatusSnapshot s = gateway_sample();
+  StatusGateway& g = s.gateway;
+  // Both attachments trade SOLUSDT: no single owner, 0.001 nobody's, the account 0.0005 off.
+  StatusPosition& p = g.positions[2];
+  p.shared = 1;
+  p.traders = 2;
+  p.qty_raw = 300'000;
+  p.unattributed_raw = 100'000;
+  g.attachments[0].instruments[0] |= 1U << 2U;
+  g.attachments[1].instruments[0] |= 1U << 2U;
+  std::string frame = format_status(s, s.updated_ns, false);
+  INFO(frame);
+  CHECK(frame.find("sim:BTCUSDT,sim:SOLUSDT") != std::string::npos);
+  CHECK(frame.find("sim:ETHUSDT,sim:SOLUSDT") != std::string::npos);
+  CHECK(frame.find("shared x2  unattributed=0.001\n") != std::string::npos);
+  CHECK(frame.find("UNEXPLAINED") == std::string::npos);
+  p.unexplained_raw = -50'000;
+  frame = format_status(s, s.updated_ns, false);
+  CHECK(frame.find("shared x2  unattributed=0.001  UNEXPLAINED=-0.0005\n") != std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("symbol": "SOLUSDT", "qty": 0.003, "owner_epoch": 0, "shared": true, )"
+                  R"("traders": 2, "unattributed": 0.001, "unexplained": -0.0005})") !=
+        std::string::npos);
+  CHECK(json.find(R"("instruments": [{"venue": "sim", "symbol": "BTCUSDT"}, )"
+                  R"({"venue": "sim", "symbol": "SOLUSDT"}])") != std::string::npos);
 }
