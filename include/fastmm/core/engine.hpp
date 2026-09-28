@@ -486,6 +486,7 @@ class Engine {
   }
   FASTMM_NOINLINE void start_queue_tracking() noexcept {
     queue_.enable();
+    queue_on_ = true;
     oms_.for_each_open_order([&](Handle<Order> h, const Order& o) {
       if (resting(o.state) && instruments_.contains(o.instrument))
         queue_.place(h, o, queue_shown(o));
@@ -786,7 +787,7 @@ class Engine {
     b.apply_delta(d);
     ++stats_.book_updates;
     track_feed_lag(d.hdr);
-    if (queue_.any(id)) queue_on_book(d, b);
+    if (FASTMM_UNLIKELY(queue_on_) && queue_.any(id)) queue_on_book(d, b);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     const Timestamp now = now_;
@@ -859,7 +860,7 @@ class Engine {
     const bool known_instrument = instruments_.contains(id);
     if (known_instrument) {
       risk_.on_trade(id, t.price);
-      if (queue_.any(id)) queue_on_trade(t);
+      if (FASTMM_UNLIKELY(queue_on_) && queue_.any(id)) queue_on_trade(t);
     }
     track_feed_lag(t.hdr);
     const Cycles t2 = clock_.cycles();
@@ -875,7 +876,7 @@ class Engine {
 
   void on_book_ticker(const BookTickerMsg& m) noexcept {
     track_feed_lag(m.hdr);
-    if (queue_.enabled()) queue_on_ticker(m);
+    if (FASTMM_UNLIKELY(queue_on_)) queue_on_ticker(m);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     if constexpr (has_hook(Hook::BookTicker)) {
@@ -1119,8 +1120,8 @@ class Engine {
         own_->on_gone(u.order.cl_ord_id, h.exch_ts.valid() ? h.exch_ts : h.recv_ts);
       return;
     }
-    if (queue_.enabled() && u.handle.valid() && resting(u.order.state) &&
-        !queue_.tracked(u.handle) && instruments_.contains(u.order.instrument))
+    if (queue_on_ && u.handle.valid() && resting(u.order.state) && !queue_.tracked(u.handle) &&
+        instruments_.contains(u.order.instrument))
       queue_.place(u.handle, u.order, queue_shown(u.order));
   }
 
@@ -1178,7 +1179,7 @@ class Engine {
     // A replace keeps its place in the queue at the same price and no more than the leaves (the
     // simulator's rule); otherwise the order joins the back again at its new price.
     bool keep = false;
-    if (const Handle<Order> h = queue_.enabled() ? oms_.find(m.cl_ord_id) : Handle<Order>{};
+    if (const Handle<Order> h = queue_on_ ? oms_.find(m.cl_ord_id) : Handle<Order>{};
         queue_.tracked(h)) {
       const Order& o = oms_.get(h);
       keep = o.state == OrderState::PendingReplace && m.cl_ord_id == o.pending_cl_ord_id &&
@@ -2201,8 +2202,12 @@ class Engine {
 
   // ---- latency ----------------------------------------------------------------------------------
 
-  void record_md_hops(Cycles t2) noexcept {
-    if (event_t0_.v == 0) return;
+  // Without a wire timestamp (the simulator, a replay) there is nothing to record: that test stays
+  // inline.
+  FASTMM_FORCE_INLINE void record_md_hops(Cycles t2) noexcept {
+    if (event_t0_.v != 0) record_md_hops_from_wire(t2);
+  }
+  void record_md_hops_from_wire(Cycles t2) noexcept {
     if (event_t1_.v > event_t0_.v) {
       latency_.record(LatencyInterval::Decode,
                       static_cast<std::uint64_t>(clock_.cycles_to_ns(event_t1_ - event_t0_)));
@@ -2312,6 +2317,9 @@ class Engine {
   bool latched_ = false;
   bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;
+  // queue_.enabled(), next to the flags every event reads: without queue tracking the market-data
+  // handlers do not touch the tracker's lines.
+  bool queue_on_ = false;
   std::uint32_t reconciling_ = 0;  // bit per venue between its reconciliation's Begin and End
   // Bit per venue whose first reconciliation since the start has not ended (await_reconcile): its
   // position is the store's plus whatever the execution replay has booked so far, so no order is
