@@ -1615,7 +1615,17 @@ class Gateway {
     // A primary has its slot before it attaches: what is its is counted towards it meanwhile.
     for (const auto& [inst, name] : primaries) {
       if (name.empty()) continue;
-      acct.primary[inst.value] = static_cast<std::uint8_t>(*slot_of(name) + 1U);
+      const std::optional<std::uint8_t> slot = slot_of(name);
+      if (!slot) {
+        FASTMM_LOG_ERROR(
+            "gateway: no slot for primary {} of instrument {}: more than {} [engine] "
+            "names; its unattributed events go to the account",
+            name,
+            inst.value,
+            Account::kMaxSlots);
+        continue;
+      }
+      acct.primary[inst.value] = static_cast<std::uint8_t>(*slot + 1U);
     }
   }
 
