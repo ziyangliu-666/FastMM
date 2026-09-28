@@ -644,6 +644,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       // its own, routes them here, and the gateway counts them in its share of the account.
       static_assert(store::Recovery::kMaxSessionEpochs <= gw::kMaxPastEpochs);
       req.past_epochs = previous->session_epochs;
+      // And the orders a venue's trade history may name by its own order id alone.
+      for (const store::Recovery::PastOrder& o : previous->past_orders) {
+        const auto id = decode_cl_ord_id(o.cl_ord_id);
+        if (!id || req.past_orders.size() == gw::kMaxPastOrders) continue;
+        req.past_orders.push_back({o.venue, o.symbol, o.venue_order_id, *id});
+      }
       // The gateway's account starts from what this strategy restores (restore_positions below).
       // A store that predates venue names matches by symbol alone.
       for (const auto& [venue, symbol] : req.instruments) {

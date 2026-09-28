@@ -63,121 +63,12 @@ std::string log_of(const SessionFiles& f) {
 }
 
 std::optional<StatusSnapshot> gateway_status(const Shared& c) {
-  StatusReader r;
-  std::string err;
-  if (!r.open(default_gateway_status_path(c.gw_name), &err)) return std::nullopt;
-  StatusSnapshot s;
-  if (!r.read(s)) return std::nullopt;
-  return s;
+  return fastmm::integration::gateway_status(c.gw_name);
 }
 
 // The gateway's BTCUSDT position, or nullopt before its status names it.
 std::optional<StatusPosition> btc_position(const Shared& c) {
-  const auto s = gateway_status(c);
-  if (!s) return std::nullopt;
-  for (std::uint32_t i = 0; i < s->gateway.position_count; ++i) {
-    if (std::string_view(s->gateway.positions[i].symbol) == "BTCUSDT")
-      return s->gateway.positions[i];
-  }
-  return std::nullopt;
-}
-
-// Fills one of `epoch`'s resting orders at the simulator; the quantity filled (zero when none
-// rests). A requote cancels before it places, so it tries the next one until one fills.
-Qty fill_one_of(ServerFixture& fx, std::uint16_t epoch, std::string* wire = nullptr) {
-  Qty filled{};
-  static_cast<void>(wait_until(
-      [&] {
-        for (const std::string& id : fx.server.open_client_order_ids()) {
-          const auto cl = decode_cl_ord_id(id);
-          if (!cl || cl_ord_id_epoch(*cl) != epoch) continue;
-          filled = fx.server.fill_open_order(id);
-          if (filled.is_positive()) {
-            if (wire != nullptr) *wire = id;
-            return true;
-          }
-        }
-        return false;
-      },
-      10000));
-  return filled;
-}
-
-// Every fill the store of `engine` holds: their signed sum, and the client order ids they name.
-struct StoredFills {
-  Qty sum{};
-  Qty no_order{};  // of the executions naming no order of FastMM's
-  std::vector<std::string> cl_ord_ids;
-  std::vector<std::string> exec_ids;
-};
-// Without assertions, so that a wait_until predicate can call it: nullopt when unreadable.
-std::optional<StoredFills> try_stored(const SessionFiles& f, const std::string& engine) {
-  store::register_builtin_backends();
-  auto reader = store::StoreRegistry::instance().make_reader("sqlite");
-  if (reader == nullptr) return std::nullopt;
-  store::BackendOptions opts;
-  opts.engine_name = engine;
-  opts.default_dir = f.journal_dir;
-  opts.read_only = true;
-  if (!reader->open(opts).has_value()) return std::nullopt;
-  store::QueryFilter qf;
-  qf.engine = engine;
-  auto rows = reader->fills(qf);
-  if (!rows.has_value()) return std::nullopt;
-  std::size_t side = 0;
-  std::size_t qty = 0;
-  std::size_t cl = 0;
-  std::size_t exec = 0;
-  for (std::size_t i = 0; i < rows->columns.size(); ++i) {
-    const std::string& n = rows->columns[i];
-    if (n == "side") side = i;
-    if (n == "qty") qty = i;
-    if (n == "cl_ord_id") cl = i;
-    if (n == "exec_id") exec = i;
-  }
-  StoredFills out;
-  for (const std::vector<std::string>& row : rows->rows) {
-    const auto q = Qty::from_decimal(row[qty]);
-    if (!q.has_value()) return std::nullopt;
-    const bool buy = !row[side].empty() && (row[side][0] == 'B' || row[side][0] == 'b');
-    out.sum = buy ? out.sum + *q : out.sum - *q;
-    const auto id = decode_cl_ord_id(row[cl]);
-    if (!id || cl_ord_id_epoch(*id) == 0)
-      out.no_order = buy ? out.no_order + *q : out.no_order - *q;
-    out.cl_ord_ids.push_back(row[cl]);
-    out.exec_ids.push_back(row[exec]);
-  }
-  return out;
-}
-StoredFills stored(const SessionFiles& f, const std::string& engine) {
-  std::optional<StoredFills> s = try_stored(f, engine);
-  REQUIRE_MESSAGE(s.has_value(), "cannot read the fills of " << engine);
-  return *s;
-}
-bool stored_holds(const SessionFiles& f, const std::string& engine, const std::string& cl_ord_id) {
-  const std::optional<StoredFills> s = try_stored(f, engine);
-  return s &&
-         std::find(s->cl_ord_ids.begin(), s->cl_ord_ids.end(), cl_ord_id) != s->cl_ord_ids.end();
-}
-
-bool holds(const std::vector<std::string>& ids, const std::string& id) {
-  return std::find(ids.begin(), ids.end(), id) != ids.end();
-}
-
-// The numbers the gateway's last account line gives BTCUSDT: `<name>=<qty>` of each strategy
-// and `unattributed=<qty>` (logged once a second when they change, and at the end).
-std::optional<Qty> logged_share(const GatewayProcess& g, const std::string& name) {
-  const std::string text = fastmm::test::read_file(g.log);
-  const std::size_t line = text.rfind("gateway: account position sim:BTCUSDT");
-  if (line == std::string::npos) return std::nullopt;
-  const std::size_t end = text.find('\n', line);
-  const std::string l = text.substr(line, end - line);
-  const std::string key = " " + name + "=";
-  const std::size_t at = l.find(key);
-  if (at == std::string::npos) return std::nullopt;
-  const std::size_t from = at + key.size();
-  const std::size_t to = l.find_first_of(" )", from);
-  return Qty::from_decimal(l.substr(from, to - from));
+  return gateway_position(c.gw_name);
 }
 
 // Each strategy's store equals its own fills, the gateway counted each fill towards the strategy

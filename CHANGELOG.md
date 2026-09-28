@@ -168,6 +168,18 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- After a `fastmm-gateway` restart, a fill of an earlier session's order made while the gateway
+  was down never reached its strategy: Binance's trade history names the venue's order id alone,
+  which the new gateway had never seen, so a shared instrument's account booked it for nobody (or
+  not at all) and an owned one's strategy booked it naming no order. The attach request (protocol
+  7) carries the store's orders that were open at their last record with their venue ids
+  (`Recovery::past_orders`, at most 256); executions no attached strategy received are kept (4096
+  per venue) and given to the strategy that attaches owning them, whichever replay found them
+  first; an owned instrument's account books nothing before its first owner's store seeds it (a
+  replay met first used to be booked and then overwritten by the seed). The account's "older than
+  the gateway" start is compared in the venue's clock, and connectors publish the clock offset
+  their reference data measured. `ReplayScheduler`: a restart while a replay runs (a second attach)
+  goes on from its start afterwards, where it used to be dropped or to replace the first's start.
 - Behind `fastmm-gateway` with several strategies, a connector swept only the order shadows of
   the snapshot watermark's session epoch, so another strategy's orders whose end was lost stayed
   in its 8192-slot table for good; once it was full, orders went out untracked (no instrument on
