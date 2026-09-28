@@ -657,7 +657,9 @@ TEST_CASE("bybit_linear.venue: disconnect-cancel-all is armed for derivatives") 
     VenueSection s = h.section();
     s.extra["dead_mans_switch_s"] = "30";
     Live l(h, s);
-    REQUIRE(pump_until(l.reactor, [&] { return h.dcp_ok.load() == 1; }));
+    REQUIRE(pump_until(l.reactor, [&] {
+      return h.dcp_ok.load() == 1 && !h.srv.frames("private_subscribe").empty();
+    }));
     const auto dcp = h.srv.frames("dcp");
     REQUIRE(dcp.size() == 1);
     CHECK(dcp[0] == R"({"product":"DERIVATIVES","timeWindow":30})");
