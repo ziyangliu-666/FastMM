@@ -206,6 +206,7 @@ TEST_CASE("binance.md: REST depth snapshot -> BookSnapshotMsg") {
   CHECK(s.as<BookDeltaMsg>().bids()[0].price == Price::from_int(1100 - 1023));
   CHECK(s.as<BookDeltaMsg>().bids()[kMaxBookLevelsPerMsg - 1].price == Price::from_int(1100));
   CHECK(s.as<BookDeltaMsg>().asks()[0].price == Price::from_int(2000));
+  CHECK(s.as<BookDeltaMsg>().hdr.flags == EventHeader::kSnapshot);  // replaces the book
   CHECK(p.stats().truncated == 1);
   // More than LevelSpill::kCapacity: reported as overflow.
   std::string huge = R"({"lastUpdateId":1,"bids":[)";

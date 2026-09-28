@@ -2,19 +2,21 @@
 // LevelSpill: room for the side of a depth update that changes more price levels than a
 // BookDeltaMsg carries (kMaxBookLevelsPerMsg a side).
 //
-// Binance's diff streams (Spot and USDⓈ-M `@depth@100ms`) have no bound on the levels one update
-// changes: in a fast market a single 100 ms update of USDⓈ-M BTCUSDT changed 1035 bids and 1224
-// asks (2026-09-28). Refusing it breaks the U/u (pu) chain, and the next update resyncs the book,
-// pulling quotes until a REST snapshot arrives. The parsers read such a side into the spill and
-// keep the kMaxBookLevelsPerMsg levels nearest the touch (bids: the highest prices, asks: the
-// lowest), in the order the venue sent them.
+// Binance's diff streams (Spot and USDⓈ-M `@depth@100ms`), OKX `books` and Deribit `book.*` have
+// no bound on the levels one update changes: in a fast market a single 100 ms update of USDⓈ-M
+// BTCUSDT changed 1035 bids and 1224 asks (2026-09-28). Refusing it breaks the update chain, and
+// the next update resyncs the book, pulling quotes until a new snapshot arrives. The parsers read
+// such a side into the spill and keep the kMaxBookLevelsPerMsg levels nearest the touch (bids: the
+// highest prices, asks: the lowest; OKX keeps half as many), in the order the venue sent them.
 //
 // Why a book of depth D <= kMaxBookLevelsPerMsg / 2 (the engine's L2Book<256>) ends the same: a
 // dropped level p lies behind kMaxBookLevelsPerMsg kept levels of its side. If p was in the book,
 // at most D - 1 levels were ahead of it, so at least kMaxBookLevelsPerMsg - D + 1 >= D kept levels
 // are new ones, which are non-empty (a venue deletes only levels it had, and every level ahead of
 // p was in the book). After the update p is behind at least D levels: the book drops it anyway.
-// A deeper book (the gateway's AccountBook, 1024) can keep a stale level behind its 512th.
+// A deeper book (the gateway's AccountBook, 1024) could keep a stale level behind its 512th: the
+// parsers flag a cut side (EventHeader::kTruncatedBids/Asks), and L2Book drops its levels behind
+// the last one the side carries.
 #include "fastmm/core/messages.hpp"
 
 #include <algorithm>

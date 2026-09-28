@@ -120,6 +120,8 @@ class L2Book {
     }
     for (const Level& l : d.bids()) apply_level(Side::Buy, l.price, l.qty);
     for (const Level& l : d.asks()) apply_level(Side::Sell, l.price, l.qty);
+    constexpr std::uint8_t kCut = EventHeader::kTruncatedBids | EventHeader::kTruncatedAsks;
+    if (FASTMM_UNLIKELY((d.hdr.flags & kCut) != 0)) trim_truncated(d);
     seq_ = d.last_update_id;
     last_update_ = ts;
     update_crossed(ts);
@@ -226,6 +228,27 @@ class L2Book {
   }
   FASTMM_FORCE_INLINE const StaticVector<Level, kMaxDepth>& levels(Side s) const noexcept {
     return s == Side::Buy ? bids_ : asks_;
+  }
+  // A side flagged kTruncatedBids/Asks left out the venue's changes behind the last level it
+  // carries: the book's levels behind that one may be stale, so they go (the side is truncated()
+  // until the next snapshot). A no-op for a book at most half as deep as the side carried
+  // (level_spill.hpp), such as the engine's.
+  [[gnu::noinline, gnu::cold]] void trim_truncated(const BookDeltaMsg& d) noexcept {
+    if ((d.hdr.flags & EventHeader::kTruncatedBids) != 0) trim_behind(Side::Buy, d.bids());
+    if ((d.hdr.flags & EventHeader::kTruncatedAsks) != 0) trim_behind(Side::Sell, d.asks());
+  }
+  void trim_behind(Side side, std::span<const Level> carried) noexcept {
+    if (carried.empty()) return;
+    Price bound = carried[0].price;
+    for (const Level& l : carried) {
+      if (better(side, bound, l.price)) bound = l.price;
+    }
+    auto& v = levels(side);
+    std::size_t k = 0;
+    while (k < v.size() && better(side, bound, v[k].price)) ++k;
+    if (k == 0) return;
+    v.erase_front(k);
+    truncated_[static_cast<std::size_t>(side)] = true;
   }
   void update_crossed(Timestamp ts) noexcept {
     if (crossed()) {

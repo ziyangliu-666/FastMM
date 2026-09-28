@@ -121,6 +121,7 @@ Every message starts with the 64-byte `EventHeader`; its total length (`len`) is
 | 3 | `kOutbound` | a copy of an order message the engine sent (`OutNewOrder`, `OutCancel`, `OutReplace`) |
 | 4 | `kEngineTime` | a consumed event; `reserved0` is the engine clock minus the previous engine-time record |
 | 5 | `kDropped` | an outbound copy the transport did not accept |
+| 6, 7 | `kTruncatedBids`, `kTruncatedAsks` | a book delta whose side kept only the levels nearest the touch of a longer venue update; a book drops its levels behind the last one carried |
 
 Message layouts are the structs in `include/fastmm/core/messages.hpp` (`EventType` in `core/enums.hpp`): book snapshots and deltas, trades, book tickers, option tickers, L3 order adds, executions, cancels and replaces, order acks, rejects, cancel acks and rejects, fills, expiries, positions, timers, control commands, connection states, reconciliation records, latency samples, outbound orders, parameter updates and funding payments (`FundingMsg`, 128 bytes: the signed amount in the settlement asset at offset 64, the venue's funding id, the asset, and flag bit 0 when it came from the venue's history).
 

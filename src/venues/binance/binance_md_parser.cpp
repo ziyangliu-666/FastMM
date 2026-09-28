@@ -131,8 +131,9 @@ DecodeResult fail(MdParserStats& stats, DecodeResult r) noexcept {
   od::value bids;
   od::value asks;
   if (data["b"].get(bids) != sj::SUCCESS) return fail(stats, r);
-  bool truncated = false;
-  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, *c.spill, true, &truncated);
+  bool cut_bids = false;
+  bool cut_asks = false;
+  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, *c.spill, true, &cut_bids);
   if (nb == -1) return fail(stats, r);
   if (nb == -2) {
     ++stats.overflow;
@@ -140,18 +141,19 @@ DecodeResult fail(MdParserStats& stats, DecodeResult r) noexcept {
     return r;
   }
   if (data["a"].get(asks) != sj::SUCCESS) return fail(stats, r);
-  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, *c.spill, false, &truncated);
+  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, *c.spill, false, &cut_asks);
   if (na == -1) return fail(stats, r);
   if (na == -2) {
     ++stats.overflow;
     r.status = ParseStatus::Overflow;
     return r;
   }
-  if (truncated) ++stats.truncated;
+  if (cut_bids || cut_asks) ++stats.truncated;
   const auto bid_count = static_cast<std::uint32_t>(nb);
   const auto ask_count = static_cast<std::uint32_t>(na);
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);
   init_header(*m, EventType::BookDelta, inst, c.venue, len);
+  m->hdr.flags |= truncation_flags(cut_bids, cut_asks);
   m->bid_count = bid_count;
   m->ask_count = ask_count;
   m->first_update_id = first;

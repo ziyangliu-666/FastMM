@@ -91,6 +91,13 @@ class StaticVector {
   }
   // Removes the first element (shifts everything down) - O(n); used when the book is full.
   void erase_front() noexcept { erase_at(0); }
+  // Removes the first k elements (k <= size()).
+  void erase_front(std::size_t k) noexcept {
+    FASTMM_ASSERT(k <= size_);
+    if (FASTMM_UNLIKELY(k > size_)) k = size_;
+    std::copy(data_ + k, data_ + size_, data_);
+    size_ = static_cast<size_type>(size_ - k);
+  }
 
   // Bulk assign from a range of trivially copyable T. Truncates to N; returns false then.
   bool assign(const T* src, std::size_t n) noexcept {

@@ -406,6 +406,7 @@ TEST_CASE("okx.md_feed: a books update longer than the parser keeps stays in the
   REQUIRE(big != nullptr);
   REQUIRE(big->bid_count == 512);
   REQUIRE(big->ask_count == 512);
+  CHECK(big->hdr.flags == truncation_flags(true, true));
   CHECK(big->bids()[0].price == Price::from_int(7600 - 512));
   CHECK(big->bids()[511].price == Price::from_int(7599));
   CHECK(big->asks()[0].price == Price::from_int(9000));
