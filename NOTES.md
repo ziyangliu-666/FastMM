@@ -28,6 +28,29 @@ All three done (2026-09-28), entries below.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**Replay queries bounded: a query never answered fails after 30 s (2026-09-28).** Left by step 3.
+What hung: `ReplayScheduler` had no deadline and `ReconcileDriver` none while it waits for the
+replay (its 60 s bound covers the snapshot fetch only). A Deribit trade-history query lost on a
+private WebSocket that stays up kept the replay active, the snapshot unasked, and after a restart
+the engine (`await_reconcile`) sending nothing until the connection dropped. REST: a written
+request fails after `http_timeout_ms` (5 s) and so did the replay, but `HttpClient` had no timer
+while connecting: a peer that accepts TCP and never answers the ClientHello held every queued
+request (replay, snapshot, listen key) for good, and a black-holed SYN for the kernel's ~2 min.
+Fix: (a) `ReplayScheduler::kQueryTimeoutNs` = 30 s per query, checked from `on_timer`: the query
+is `failed(q)`, the replay ends incomplete, the retry follows 5 s later, a late answer fails
+`expects(q)`. 30 s: above the REST timeout, which fails a REST query first; the scheduler's bound
+is for the WebSocket. (b) Deribit's reply id named only the currency, so a late answer was taken
+for the retry's query; the id now carries a per-query number. (c) `HttpClient` bounds the connect
+and the TLS handshake by `timeout_ms`. HA: a failed replay already gave a non-exact snapshot (the
+REST behaviour), the engine's gate opens on it and counts `estimated_reconciles`; the timeout now
+does the same. Kept: Deribit's snapshot carries the venue's positions, so what is estimated is the
+fill attribution of the gap, not the position, and the retry books the missed fills when the
+venue answers (the OMS dedupes by trade id); staying idle would hang the session on one lost
+reply. Tests failing on the old code: scheduler "a query never answered fails after
+kQueryTimeoutNs", Deribit "a trade-history query never answered ends the replay incomplete" (no
+End before; the engine gate is checked with a real `Engine`; with the deadline but the old ids,
+the late T1 was booked for the retry), http "a TLS handshake the peer never answers times out".
+
 **Docs followed as written, from a fresh clone (2026-09-28).** Pages: getting-started (install,
 quickstart), the tutorial (1-9), operations (gateway, deploy, fastmm-top, operate, journals,
 query, kill switch, runbook), strategies (xmm, python-live, register), backtesting on Binance
@@ -117,8 +140,8 @@ retry test ticks 6 s later and its window ends at start + 7 d - 1 ms; OKX's seco
 dated now, not 15 days back; Deribit's history test has no overlap. Full ctest (werror): 1330
 passed; integration recovery_*, xmm_*, gateway_*, store restart and gateway funding (63)
 green 3 times; clang-tidy-18: no bugprone or performance finding in the changed files. Left: a
-Deribit query never answered keeps the replay active until the connection drops (as before);
-Binance allows 10 pages a symbol per replay, so a long outage is read over several retries 5 s
+Deribit query never answered keeps the replay active until the connection drops (as before; closed
+above); Binance allows 10 pages a symbol per replay, so a long outage is read over several retries 5 s
 apart.
 
 **Connector machinery step 2: blocking control, countdown driver, watermark (2026-09-28).**

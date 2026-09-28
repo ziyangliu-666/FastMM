@@ -102,7 +102,12 @@ void ReplaySchedulerBase::due_in(std::int64_t delay_ns) {
 }
 
 void ReplaySchedulerBase::on_timer(std::int64_t now_ns) {
-  if (!open_ || active_) return;
+  if (!open_) return;
+  if (active_) {
+    // A retry it schedules waits for a later tick: kRetryNs after the replay ended.
+    expire(now_ns);
+    return;
+  }
   const bool retry = retry_at_ns_ != 0 && now_ns >= retry_at_ns_;
   const bool due = due_at_ns_ != 0 && now_ns >= due_at_ns_;
   const bool sweep =
@@ -187,6 +192,7 @@ void ReplaySchedulerBase::send(std::size_t i) {
   Stream& s = streams_[i];
   ++s.pages;
   s.awaiting = true;
+  s.sent_ns = net::Reactor::now_ns();
   if (hooks_.query(s.q)) return;
   if (!expects(s.q)) return;  // the hook moved the generation on
   s.awaiting = false;
@@ -320,6 +326,25 @@ void ReplaySchedulerBase::stream_done(std::size_t i, bool ok) {
   if (pending_ > 0) --pending_;
   if (pending_ > 0 || !active_) return;
   finish();
+}
+
+// A query the venue never answers (a WebSocket that stays up, a REST connect that hangs) would
+// keep the replay, and a reconciliation waiting for it, running until the connection drops.
+void ReplaySchedulerBase::expire(std::int64_t now_ns) {
+  const std::uint64_t gen = generation_;
+  for (std::size_t i = 0; i < streams_.size(); ++i) {
+    Stream& s = streams_[i];
+    if (!s.awaiting || now_ns - s.sent_ns < kQueryTimeoutNs) continue;
+    ++timeouts_;
+    FASTMM_LOG_WARN("{}: {} query got no answer in {} s; the replay is incomplete",
+                    name_,
+                    what_,
+                    kQueryTimeoutNs / 1'000'000'000);
+    s.awaiting = false;
+    stream_done(i, false);
+    // The last stream finished the replay: its hook may have started another one.
+    if (!active_ || generation_ != gen) return;
+  }
 }
 
 void ReplaySchedulerBase::finish() {

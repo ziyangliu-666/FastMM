@@ -205,6 +205,46 @@ TEST_CASE("replay_scheduler: an incomplete replay is retried kRetryNs after it e
   CHECK(w.queries.size() == 2);
 }
 
+TEST_CASE("replay_scheduler: a query never answered fails after kQueryTimeoutNs") {
+  // Deribit asks on its WebSocket, which may stay up with the query lost: the replay, and the
+  // reconciliation waiting for it, used to wait for the connection to drop.
+  Rig r({}, 2);
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 2);
+  const ReplayQuery lost = r.queries[1];
+  r.answer({{kNow - kMin, "a"}}, false, {}, r.queries.data());
+  CHECK(r.finished.empty());
+  const std::int64_t now = net::Reactor::now_ns();
+  r.sched.on_timer(now + ReplaySchedulerBase::kQueryTimeoutNs - 1'000'000'000);
+  CHECK(r.finished.empty());
+  CHECK(r.sched.active());
+  r.sched.on_timer(now + ReplaySchedulerBase::kQueryTimeoutNs + 1'000'000);
+  REQUIRE(r.finished.size() == 1);
+  CHECK_FALSE(r.finished[0]);
+  CHECK_FALSE(r.sched.active());
+  CHECK(r.sched.timeouts() == 1);
+  CHECK(r.sched.retry_pending());
+  CHECK(r.queries.size() == 2);  // the retry waits kRetryNs, not the same tick
+  CHECK_FALSE(r.sched.expects(lost));
+  // Its answer, late: nobody's.
+  r.answer({{kNow - kMin, "late"}}, false, {}, &lost);
+  CHECK(r.emitted == std::vector<std::string>{"a"});
+  CHECK(r.finished.size() == 1);
+
+  // The retry asks the lost stream again from its watermark; the late answer is still ignored.
+  r.sched.on_timer(net::Reactor::now_ns() + ReplaySchedulerBase::kRetryNs + 1'000'000);
+  REQUIRE(r.queries.size() == 4);
+  CHECK(r.queries[3].start_ms == lost.start_ms);
+  r.answer({{kNow - kMin, "late"}}, false, {}, &lost);
+  CHECK(r.emitted == std::vector<std::string>{"a"});
+  r.answer({}, false, {}, &r.queries[2]);
+  r.answer({{kNow - kMin, "b"}}, false, {}, &r.queries[3]);
+  CHECK(r.emitted == std::vector<std::string>{"a", "b"});
+  REQUIRE(r.finished.size() == 2);
+  CHECK(r.finished[1]);
+  CHECK_FALSE(r.sched.retry_pending());
+}
+
 TEST_CASE("replay_scheduler: after close() a reply is ignored and nothing runs until open()") {
   Rig r;
   REQUIRE(r.sched.run());

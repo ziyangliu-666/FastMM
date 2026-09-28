@@ -40,7 +40,7 @@ using HttpResponseCallback = std::function<void(const HttpResponse&)>;
 struct HttpClientConfig {
   std::size_t recv_capacity = std::size_t{1024} * 1024;
   std::size_t send_capacity = std::size_t{256} * 1024;
-  std::uint32_t timeout_ms = 5000;  // per request, from the moment it is written
+  std::uint32_t timeout_ms = 5000;  // per request, from the moment it is written; the connect too
   std::size_t max_queue = 8;        // in-flight + waiting
 };
 
@@ -135,6 +135,16 @@ class HttpClient final : public IoHandler {
     registered_ = true;
     state_ = HttpClientState::Connecting;
     drive_connect();
+    // The connect and the TLS handshake are bounded like a request: a peer that accepts the TCP
+    // connection and never answers the ClientHello would otherwise hold every request queued.
+    if (state_ == HttpClientState::Connecting) {
+      timer_ =
+          reactor_.add_timer_after(static_cast<std::int64_t>(cfg_.timeout_ms) * 1'000'000, [this] {
+            timer_ = kInvalidTimer;
+            ++stats_.timeouts;
+            fail_all(NetError::Timeout, "connect timed out");
+          });
+    }
     return true;
   }
 
@@ -207,6 +217,7 @@ class HttpClient final : public IoHandler {
       return;
     }
     if (r.would_block()) return;
+    cancel_timer();
     state_ = HttpClientState::Ready;
     send_next();
   }
