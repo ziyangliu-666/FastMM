@@ -108,7 +108,7 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
       info.strategy.size() < sizeof(h.strategy) - 1 ? info.strategy.size() : sizeof(h.strategy) - 1;
   if (n > 0) std::memcpy(h.strategy, info.strategy.data(), n);  // an empty view may be null
   if (info.has_session) {
-    h.header_flags |= kHeaderSession;
+    h.header_flags |= kHeaderSession | kHeaderReplacePerVenue;
     h.session_epoch = info.session_epoch;
     h.quoting_enabled = info.quoting_enabled ? 1 : 0;
     h.replace_venues = info.replace_venues;

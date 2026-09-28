@@ -42,6 +42,7 @@ InstrumentTable make_table() {
 struct FakeTransport {
   std::vector<std::vector<std::byte>> out;
   bool replace = false;
+  std::uint64_t replace_venues = 0;  // bit v: venue v amends in place (or `replace`: every venue)
   bool full = false;
   // Called on every send (a venue that reacts on the engine's thread, run-to-completion).
   void (*on_send)(void* ctx) noexcept = nullptr;
@@ -58,7 +59,9 @@ struct FakeTransport {
     for (const EventHeader* m : batch) n += send(*m) ? 1U : 0U;
     return n;
   }
-  bool supports_replace(VenueId) const noexcept { return replace; }
+  bool supports_replace(VenueId v) const noexcept {
+    return replace || ((replace_venues >> v.value) & 1U) != 0;
+  }
   template <class M>
   const M& at(std::size_t i) const {
     return *reinterpret_cast<const M*>(out[i].data());
@@ -1060,4 +1063,116 @@ TEST_CASE("core.engine: an order without an ack is cancelled after ack_timeout")
   }
   f.drain();
   CHECK(f.engine->oms().open_qty(InstrumentId{0}, Side::Buy) == Qty{});
+}
+
+// Replace is per venue: one venue that cannot amend in place used to turn replace off for every
+// instrument the engine quoted.
+TEST_CASE(
+    "core.engine: quotes are replaced on a venue that supports it, cancel and new elsewhere") {
+  struct Run {
+    std::size_t replaces[2] = {0, 0};
+    std::size_t cancels[2] = {0, 0};
+  };
+  const auto run = [](bool engine_replace, bool all_venues) {
+    InstrumentTable table;
+    for (std::uint8_t v = 0; v < 2; ++v) {
+      Instrument i{};
+      i.symbol = v == 0 ? "AAA" : "BBB";
+      i.venue = VenueId{v};
+      i.flags = Instrument::kEnabled;
+      i.tick = px("0.01");
+      i.lot = qt("0.001");
+      i.min_qty = qt("0.001");
+      i.min_notional = Notional::from_decimal("0.5").value();
+      REQUIRE(table.add(i));
+    }
+    SimClock clock{Timestamp{seconds(1000).ns}};
+    FakeTransport transport;
+    transport.replace_venues = 0b01;  // venue 0 amends in place, venue 1 does not
+    InlineFeed feed{1 << 20};
+    BasicMM strategy;
+    REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
+                                      {"quote_qty", "0.01"},
+                                      {"max_inventory", "0.05"},
+                                      {"requote_threshold_ticks", "1"},
+                                      {"pull_on_stale_ms", "0"}}));
+    EngineConfig cfg;
+    cfg.risk.max_order_qty = qt("1");
+    cfg.risk.max_position = qt("1");
+    cfg.risk.max_open_orders = 16;
+    cfg.risk.stale_md = seconds(5);
+    cfg.risk.price_collar_bps = 500;
+    cfg.quotes.min_requote_interval = Duration{};
+    cfg.quotes.min_requote_ticks = 1;
+    cfg.quotes.supports_replace = engine_replace;
+    cfg.quotes.replace_all_venues = all_venues;
+    TestEngine engine(cfg, table, clock, transport, feed, strategy);
+    engine.warm_up();
+    engine.start();
+    const auto book = [&](std::uint32_t inst, const char* bid, const char* ask, std::uint64_t seq) {
+      std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+      REQUIRE(p != nullptr);
+      auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+      init_header(*d,
+                  EventType::BookSnapshot,
+                  InstrumentId{inst},
+                  VenueId{static_cast<std::uint8_t>(inst)},
+                  BookDeltaMsg::size_for(1, 1));
+      d->hdr.flags |= EventHeader::kSnapshot;
+      d->hdr.recv_ts = d->hdr.exch_ts = clock.now();
+      d->bid_count = d->ask_count = 1;
+      d->last_update_id = seq;
+      d->levels()[0] = Level{px(bid), qt("5")};
+      d->levels()[1] = Level{px(ask), qt("5")};
+      feed.commit();
+    };
+    const auto drain = [&] {
+      while (engine.step() > 0) {
+      }
+    };
+    book(0, "100.00", "100.02", 1);
+    book(1, "200.00", "200.02", 1);
+    drain();
+    REQUIRE(transport.count(EventType::OutNewOrder) == 4);
+    for (const auto& m : transport.out) {
+      if (reinterpret_cast<const EventHeader*>(m.data())->type != EventType::OutNewOrder) continue;
+      const auto& n = *reinterpret_cast<const OutNewOrderMsg*>(m.data());
+      OrderAckMsg a{};
+      init_header(a, EventType::OrderAck, n.hdr.instrument, n.hdr.venue);
+      a.cl_ord_id = n.cl_ord_id;
+      a.venue_order_id = "V";
+      a.hdr.recv_ts = clock.now();
+      REQUIRE(feed.push(a.hdr));
+    }
+    drain();
+    transport.out.clear();
+    book(0, "100.03", "100.05", 2);  // both mids move 3 ticks
+    book(1, "200.03", "200.05", 2);
+    drain();
+    Run r;
+    for (const auto& m : transport.out) {
+      const auto* h = reinterpret_cast<const EventHeader*>(m.data());
+      REQUIRE(h->instrument.value < 2);
+      CHECK(h->venue.value == h->instrument.value);
+      if (h->type == EventType::OutReplace) ++r.replaces[h->instrument.value];
+      if (h->type == EventType::OutCancel) ++r.cancels[h->instrument.value];
+    }
+    CHECK(engine.quote_manager().replaces(InstrumentId{0}) == (engine_replace && !all_venues));
+    CHECK_FALSE(engine.quote_manager().replaces(InstrumentId{1}));
+    return r;
+  };
+  const Run per_venue = run(true, false);
+  CHECK(per_venue.replaces[0] == 2);
+  CHECK(per_venue.cancels[0] == 0);
+  CHECK(per_venue.replaces[1] == 0);
+  CHECK(per_venue.cancels[1] == 2);  // the News follow the cancel acks
+  // [engine] supports_replace = false still turns it off everywhere.
+  const Run off = run(false, false);
+  CHECK(off.replaces[0] + off.replaces[1] == 0);
+  CHECK(off.cancels[0] == 2);
+  CHECK(off.cancels[1] == 2);
+  // The engine before replace was per venue (a replay of its journals).
+  const Run old = run(true, true);
+  CHECK(old.replaces[0] + old.replaces[1] == 0);
+  CHECK(old.cancels[0] == 2);
 }

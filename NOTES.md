@@ -3,6 +3,23 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Replace per venue (2026-09-28).** The quote manager replaced only if every venue the engine
+traded could (the gap left by quote/hedge step 1): one venue without replace, say an IOC hedge
+venue, sent cancel + new on all of them. Now the engine resolves each instrument's venue at start
+(`QuoteManager::set_replace`: a per-instrument `replace` bool, resolved with `supports_replace` at
+start, replaces the `params_.supports_replace` test);
+`[engine] supports_replace = false` still turns it off everywhere. Replay: the journal already had
+`replace_venues` per venue; new session journals set header bit `kHeaderReplacePerVenue`, and one
+without it replays with the old all-or-nothing rule (`QuoteParams::replace_all_venues`), so old
+multi-venue journals still verify. Single-venue runs cannot differ: golden and replay hashes
+unchanged. Tests: a two-venue engine test (replace on venue 0, cancel + new on venue 1; the
+override; the old rule), `multi_venue_test` now asserts replaces on a and none on b, and a replay
+of that session, plus the old rule recorded, replayed without the bit (ok) and with it (mismatch).
+Benchmarks (release, base 19ebc2e at a path of the same length, 12 interleaved runs, taskset -c 2,
+load under 1): `BM_TickToOrder_Sim` 159.4 -> 159.7 ns, `BM_EngineStep_Sim` 2344 -> 2349 ns (medians).
+A first version testing `supports_replace && !no_replace` in the hot path was +7 ns on tick to
+order (GCC inlined `cancel` differently), hence the precomputed flag. Full ctest: 1292 passed.
+
 **Long depth updates, the two items left (2026-09-28).** (a) Deribit lists book levels best first
 in snapshots and changes: every one of 2114 snapshot sides and 104726 change sides with two or more
 levels, production 100ms books of 108 instruments (every BTC/ETH future, 80 BTC options, resubscribed

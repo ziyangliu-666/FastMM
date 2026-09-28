@@ -3,12 +3,15 @@
 #include "backtest_test_util.hpp"
 
 #include "fastmm/backtest/backtest_runner.hpp"
+#include "fastmm/backtest/replay.hpp"
+#include "fastmm/core/crc32c.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/rng.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 
 #include <fmt/format.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -283,8 +286,9 @@ TEST_CASE("backtest.multi_venue: every order, ack and market-data event uses its
   }
   CHECK(per_inst[0] > 10);
   CHECK(per_inst[1] > 10);
-  // Venue b has no replace, and the engine's quote manager replaces only when every venue can.
-  CHECK(replaces[0] + replaces[1] == 0);
+  // Venue a replaces its quotes in place; b, without replace, cancels and sends new ones.
+  CHECK(replaces[0] > 10);
+  CHECK(replaces[1] == 0);
 
   // Venue -> engine, as the engine consumed it (journal): acks and fills after the venue's ack
   // latency, market data after its md latency, each stamped with its instrument's venue.
@@ -346,6 +350,50 @@ TEST_CASE("backtest.multi_venue: the same run twice gives the same outbound hash
   // Another venue latency changes the run.
   const BacktestResult r3 = run(two_venue_config("", "latency_fixed_us = 400"), feeds);
   CHECK(r3.outbound_sha256 != r1.outbound_sha256);
+}
+
+// Clears or sets kHeaderReplacePerVenue in a journal's header.
+void set_replace_per_venue(const std::string& path, bool on) {
+  std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
+  JournalFileHeader h{};
+  REQUIRE(f.read(reinterpret_cast<char*>(&h), sizeof h));
+  h.header_flags = static_cast<std::uint8_t>(on ? (h.header_flags | kHeaderReplacePerVenue)
+                                                : (h.header_flags & ~kHeaderReplacePerVenue));
+  h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
+  f.seekp(0);
+  REQUIRE(f.write(reinterpret_cast<const char*>(&h), sizeof h));
+}
+
+TEST_CASE(
+    "backtest.multi_venue: a replay reproduces replace on one venue, cancel and new on the "
+    "other") {
+  const Feeds feeds = write_feeds("replay");
+  BacktestConfig cfg = two_venue_config();
+  cfg.journal_out = tmp_file("multi_venue_replay.fmj").string();
+  const BacktestResult rec = run(cfg, feeds);
+  REQUIRE(rec.outbound_messages > 0);
+  JournalReader jr;
+  REQUIRE(jr.open(cfg.journal_out));
+  CHECK((jr.header().header_flags & kHeaderReplacePerVenue) != 0);
+  CHECK(jr.header().replace_venues == cfg.transport.replace_mask());
+  const ReplayResult rp = replay_journal(cfg.journal_out, two_venue_config());
+  CHECK(rp.ok());
+  CHECK(rp.outbound_sha256 == rec.outbound_sha256);
+  CHECK(rp.outbound_messages == rec.outbound_messages);
+
+  // A journal of the engine before replace was per venue (no flag): replace only if every venue
+  // could. Recorded that way, it replays exactly; claiming per-venue replace, it does not.
+  BacktestConfig old = two_venue_config();
+  old.engine.quotes.replace_all_venues = true;
+  old.journal_out = tmp_file("multi_venue_replay_old.fmj").string();
+  const BacktestResult rec_old = run(old, feeds);
+  CHECK(rec_old.outbound_sha256 != rec.outbound_sha256);
+  set_replace_per_venue(old.journal_out, false);
+  const ReplayResult rp_old = replay_journal(old.journal_out, two_venue_config());
+  CHECK(rp_old.ok());
+  CHECK(rp_old.outbound_sha256 == rec_old.outbound_sha256);
+  set_replace_per_venue(old.journal_out, true);
+  CHECK_FALSE(replay_journal(old.journal_out, two_venue_config()).ok());
 }
 
 TEST_CASE("backtest.multi_venue: venue settings equal to the defaults change nothing") {
