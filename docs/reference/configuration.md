@@ -53,7 +53,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `min_requote_interval_ms` | integer |  | change the same quote slot at most this often, ms (default 50) |
 | `min_qty_bps` | integer |  | keep a resting quote whose remaining quantity covers this share of the desired quantity, bps (default 8000 = 80 %) |
 | `post_only` | boolean |  | send quotes as post-only orders (default true) |
-| `supports_replace` | boolean |  | let the quote manager amend quotes in place on the instruments whose venue supports it, cancel and new on the others; false: cancel and new everywhere (default true) |
+| `supports_replace` | boolean |  | let the quote manager amend orders in place where the venue supports it (default true) |
 | `reject_backoff_ms` | integer |  | after a venue reject other than a post-only cross, no new orders on that side for this long, doubling with each further reject, ms; 0 = off (default 1000) |
 | `reject_backoff_max_ms` | integer |  | cap of the doubling reject backoff, ms (default 60000) |
 | `on_kill` | string |  | fastmm-live after a kill switch the engine trips itself ([risk] max_loss, a full ring, every venue killed): exit (normal shutdown, exit code 6) \| stay (keep running with quoting off) (default exit) |
@@ -76,7 +76,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `api_secret` | string |  | API secret, written as "${VARIABLE}" |
 | `api_passphrase` | string |  | API key passphrase where the venue has one (OKX), written as "${VARIABLE}" |
 | `testnet` | boolean |  | the endpoints are a testnet or demo environment (default true) |
-| `supports_replace` | boolean |  | amend this venue's orders in place, if the connector can; the quote manager then replaces quotes on its instruments (default false) |
+| `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
 | `ca_file` | string |  | extra CA certificate, for example tests/fixtures/tls/cert.pem for the local simulator |
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
