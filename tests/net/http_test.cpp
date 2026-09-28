@@ -385,6 +385,38 @@ FASTMM_BACKEND_TEST("http: client/server over TlsStream", test_http_2) {
   });
 }
 
+FASTMM_BACKEND_TEST("http: a TLS handshake the peer never answers times out", test_http_4) {
+  // The peer's kernel completes the TCP connect (the listen backlog) and nobody reads the
+  // ClientHello. Before, the client stayed Connecting and its queued requests never ended: a venue
+  // REST channel held its execution replay and snapshot queries for good.
+  Reactor reactor(backend);
+  std::uint16_t port = 0;
+  const TcpSocket listener = listen_ephemeral(port);
+  TlsContext cctx;
+  cctx.set_insecure(true);
+  HttpClientConfig cfg;
+  cfg.timeout_ms = 200;
+  HttpClient<TlsStream<PlainStream>> client(
+      reactor,
+      TlsStream<PlainStream>(cctx, connect_plain(port), "localhost"),
+      "localhost",
+      port,
+      true,
+      cfg);
+  REQUIRE(client.start());
+  Captured a;
+  Captured b;
+  REQUIRE(client.request("GET", "/api/v3/myTrades", "", "", capture(a)));
+  REQUIRE(client.request("GET", "/api/v3/openOrders", "", "", capture(b)));
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(run_until(reactor, [&] { return a.done && b.done; }, 3000));
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(150));
+  CHECK(a.error == NetError::Timeout);
+  CHECK(b.error == NetError::Timeout);
+  CHECK(client.stats().timeouts == 1);
+  CHECK(client.state() == HttpClientState::Closed);
+}
+
 FASTMM_BACKEND_TEST("http: server rejects malformed and oversized requests", test_http_3) {
   Reactor reactor(backend);
   HttpServerConfig cfg;
