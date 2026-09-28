@@ -5,7 +5,7 @@ What to run on a first deploy, what to check each day, and what to do when somet
 ## First deploy
 
 1. Build a portable tarball on a build host and copy it: `scripts/package-release.sh --preset release --out dist` writes `dist/fastmm-<version>-x86_64.tar.gz`. It holds `fastmm-live`, `fastmm-gateway`, `fastmm-ctl`, `fastmm-top`, `fastmm-pnl`, `fastmm-replay` and `fastmm-sim-itch`, the systemd units, the Prometheus alert rules, the benchmark and host scripts, and the two ITCH simulator configs. It refuses a `-march=native` build, and needs glibc at least as new as the build host's plus libssl3. Your config and `fastmm-backtest` are not in it; copy them separately.
-2. Unpack it into a versioned directory and symlink it: `tar xzf fastmm-*.tar.gz -C /opt && ln -sfn /opt/fastmm-<version> /opt/fastmm`. The symlink is your rollback.
+2. Unpack it into a versioned directory and symlink it: `tar xzf fastmm-*.tar.gz -C /opt && ln -sfn /opt/fastmm-<version>-x86_64 /opt/fastmm`. The symlink is your rollback.
 3. Tune the host as root: `scripts/host-setup.sh tune` sets hugepages, disables irqbalance, moves device interrupts to CPU 0 and sets the `performance` governor. Add `isolcpus`, `nohz_full` and `rcu_nocbs` for the engine and network cores to the kernel command line yourself and reboot.
 4. Install `deploy/fastmm-live.service` ([Deploy](deploy.md#run-under-systemd)). It restarts the process after a crash or exit 4 and not after exit 2, 3, 5, 6 or 7; add an `ExecStopPost=` that alerts on `$EXIT_STATUS` in {5, 6, 7}.
 5. Copy the `[engine]` table from `configs/profiles/production-latency.toml` into your config and set `cpu` and `net_cpus` to your isolated cores. Take nothing else from that file: the rest of it is simulator configuration, including literal passwords.
@@ -95,7 +95,7 @@ When the session does not restart by itself:
 ## Roll back
 
 1. Stop the running session with SIGTERM or `fastmm-ctl stop` and confirm `cancel_all ok` and no open orders on the venue.
-2. Repoint the symlink: `ln -sfn /opt/fastmm-<previous version> /opt/fastmm`.
+2. Repoint the symlink: `ln -sfn /opt/fastmm-<previous version>-x86_64 /opt/fastmm`.
 3. Check the config loads with the older binary: `fastmm-live --config <your.toml> --dry-run --duration 10s`. A key the older build does not know is ignored with a warning naming the key and line, so a config written for a newer build usually starts, without that feature.
 4. Use the matching `fastmm-top`. The status file layout is versioned, and a mismatched reader refuses the file.
 5. Use the matching `fastmm-replay` for journals from the rolled-back build. Journal format v3 tools read v1 and v2; a replay with a different binary is not expected to match ([Determinism](../../explanation/determinism.md)).
@@ -106,6 +106,6 @@ When the session does not restart by itself:
 | Artefact | Versioned by | Rule |
 |---|---|---|
 | Journal (`.fmj`) | a format version in the header, currently 3 | the tools read 1, 2 and 3; pre-v2 journals carry no config or engine clock and only replay as what-if runs |
-| Status file | a magic number and a version field, currently 10 | `fastmm-top` refuses a file from another version; use the binary from the same build |
+| Status file | a magic number and a version field | `fastmm-top` refuses a file from another version; use the binary from the same build |
 | Configuration | none | an unknown key is a warning, a wrong type is an error |
 | Public API | version 0.2; breaking changes are listed in the CHANGELOG until 1.0 | [Public API and header tiers](../../reference/public-api.md) |

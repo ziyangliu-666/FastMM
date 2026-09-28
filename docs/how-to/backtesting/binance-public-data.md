@@ -41,7 +41,7 @@ The day is 18 million market-data events. To try an hour first, add `,start=12:0
     --data ~/.cache/fastmm/data/btcusdt-2024-03-27.fmj
 ```
 
-The journal holds the same events already decoded. It gives byte-identical results and runs several times faster: 3 s against 14 s for this day on a WSL2 desktop ([Journal format](../../reference/journal-format.md)).
+The journal holds the same events already decoded. It gives byte-identical results and runs faster: 3 s against 5 s for this day on a WSL2 desktop ([Journal format](../../reference/journal-format.md)).
 
 ## From Python
 
@@ -81,11 +81,11 @@ markout per fill (bps of notional)
   1m        -149.0135    -0.8488     5.6225     0.0320     0.8808    12529
 ```
 
-The strategy loses 499 USDT on 1.76 M USDT traded, and the decomposition says where: it captured 0.032 bps of spread and paid 2 bps of maker fee. No queue position closes that gap: BTCUSDT perpetual's spread is one tick, 0.1 USDT on a 70,000 USDT mid, which is 0.014 bps, a fourteenth of the fee.
+The run stops quoting at 09:37 UTC, when the loss reaches `[risk] max_loss` (500 USDT) and the kill switch trips (the `kill switch engaged (MaxLoss ...)` line in the log); the numbers cover those hours. The strategy loses 499 USDT on 1.76 M USDT traded, and the decomposition says where: it captured 0.032 bps of spread and paid 2 bps of maker fee. No queue position closes that gap: BTCUSDT perpetual's spread is one tick, 0.1 USDT on a 70,000 USDT mid, which is 0.014 bps, a fourteenth of the fee.
 
 The markouts say the fills were not worth having either: the mid moved 0.66 bps against each one within a second and 0.85 bps within ten. Buys and sells lose about equally, so this is adverse selection on both sides, not a directional bet gone wrong. A strategy that quoted for free would still lose 0.85 bps per fill.
 
-Quote uptime is 36.9 % and 5,796 of 70,301 orders are rejected, nearly all of them `PostOnlyWouldCross`. That is the spread again: with a one-tick market and a 5 ms round trip, the touch has usually moved by the time an order arrives, and a post-only order that would take liquidity is rejected rather than filled. Raise `latency_fixed_us` and it gets worse; that number is a property of the venue and the link, not of the simulator.
+5,796 of 70,301 orders are rejected, nearly all of them `PostOnlyWouldCross`. That is the spread again: with a one-tick market and a 5 ms round trip, the touch has usually moved by the time an order arrives, and a post-only order that would take liquidity is rejected rather than filled. Raise `latency_fixed_us` and it gets worse; that number is a property of the venue and the link, not of the simulator.
 
 The synthetic market cannot produce this number: its flow is a coin flip, so its markouts measure the queue and the latency and nothing else ([Backtesting](../../explanation/backtesting.md#what-the-simulator-cannot-tell-you)). Here the flow is real, and it costs 0.85 bps a fill.
 

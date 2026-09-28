@@ -2,12 +2,6 @@
 
 ## Backtest
 
-`--journal-out` does not create directories:
-
-```bash
-mkdir -p runs/tutorial
-```
-
 <!-- snippet: scripts/docs/tutorial.sh#cli-backtest -->
 ```bash
 "$BIN"/tutorial-backtest --config configs/backtest-example.toml --data synthetic \
@@ -68,7 +62,7 @@ One self-contained page from those four files: the equity curve and the inventor
 ```text
 journal  runs/tutorial/backtest.fmj: format v3, 18067 messages (15148 market data, 1189 outbound), rng_seed 1, strategy 'first_mm'
 session  epoch 1, quoting enabled, cancel-replace venues 0, engine clock recorded
-config   embedded in the journal (hash ee54bdbf1a4a7c80)
+config   embedded in the journal (hash 4b67f35b82760ab2)
 replay   strategy=first_mm events=16814
 recorded outbound 1189 msgs sha256 6ccab4815434470ef46161a79f32f6bf18ef422229d26be328adacc73df80812
 replayed outbound 1189 msgs sha256 6ccab4815434470ef46161a79f32f6bf18ef422229d26be328adacc73df80812
