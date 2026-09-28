@@ -28,6 +28,7 @@ void ReplaySchedulerBase::reset_streams() noexcept {
 }
 
 void ReplaySchedulerBase::close() noexcept {
+  take_again();
   open_ = false;
   ++generation_;  // a reply the shutdown aborts is not this replay's any more
   active_ = false;
@@ -43,6 +44,7 @@ void ReplaySchedulerBase::abort() noexcept {
   active_ = false;
   pending_ = 0;
   reset_streams();
+  take_again();
   retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
 }
 
@@ -63,6 +65,11 @@ void ReplaySchedulerBase::start_at(std::int64_t since_ms) {
 }
 
 void ReplaySchedulerBase::restart_from(std::int64_t since_ms) {
+  // The replay running started before the caller knew: it goes on from here once it has ended.
+  if (active_) {
+    again_from_ms_ = again_from_ms_ > 0 ? std::min(again_from_ms_, since_ms) : since_ms;
+    return;
+  }
   default_since_ms_ = since_ms;
   for (Stream& s : streams_) {
     s.since_ms = since_ms;
@@ -72,8 +79,26 @@ void ReplaySchedulerBase::restart_from(std::int64_t since_ms) {
 }
 
 void ReplaySchedulerBase::resume(std::int64_t since_ms, const std::vector<std::string>& known) {
+  if (active_) {
+    known_.insert(known.begin(), known.end());
+  } else {
+    known_ = {known.begin(), known.end()};
+  }
   restart_from(since_ms);
-  known_ = {known.begin(), known.end()};
+}
+
+// A restart asked for while a replay ran: every stream starts from there, or from where that replay
+// left it if that is earlier (a window it did not read in full).
+void ReplaySchedulerBase::take_again() noexcept {
+  if (again_from_ms_ <= 0) return;
+  const std::int64_t from = again_from_ms_;
+  again_from_ms_ = 0;
+  default_since_ms_ = std::min(default_since_ms_ > 0 ? default_since_ms_ : from, from);
+  for (Stream& s : streams_) {
+    s.since_ms = s.since_ms > 0 ? std::min(s.since_ms, from) : from;
+    s.read.clear();
+    s.from_id = 0;
+  }
 }
 
 void ReplaySchedulerBase::set_cursor(std::size_t stream, std::int64_t from_id) {
@@ -349,8 +374,20 @@ void ReplaySchedulerBase::expire(std::int64_t now_ns) {
 
 void ReplaySchedulerBase::finish() {
   active_ = false;
-  if (!ok_) retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
   if (emitted_ > 0) FASTMM_LOG_INFO("{}: replayed {} {}", name_, emitted_, what_);
+  // A restart asked for meanwhile: the replay goes on from there at the next timer tick, and
+  // whoever waits for it (a reconciliation) waits for that too, so it learns about the rows the
+  // restart was for. That one alone says complete or not: it starts no later than where this one
+  // left any stream.
+  if (again_from_ms_ > 0) {
+    take_again();
+    if (open_) {
+      due_at_ns_ = net::Reactor::now_ns();
+      return;
+    }
+    ok_ = false;
+  }
+  if (!ok_) retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
   if (hooks_.finished) hooks_.finished(ok_);
 }
 

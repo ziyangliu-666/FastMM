@@ -1,0 +1,196 @@
+// A gateway restart while a strategy's order rests: kill -9 of the gateway (its strategies exit on
+// the loss), the order fills at the venue while nothing runs, a new gateway comes up and does its
+// start-up sweep, then the strategies attach again. The fill is its strategy's: its store holds it
+// once, naming the order, and the gateway's account books it once, towards that strategy.
+//
+// The simulator's trade history, like Binance's, gives the venue's order id and not the client
+// order id; the new gateway never saw the order, so only the strategy's store can say whose it is.
+#include "gateway_util.hpp"
+
+#include "fastmm/core/status_segment.hpp"
+
+#include <algorithm>
+#include <csignal>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+using namespace fastmm;
+using namespace fastmm::integration;
+
+#if defined(FASTMM_LIVE_EXE) && defined(FASTMM_GATEWAY_EXE)
+
+namespace {
+
+struct Plan {
+  bool shared = false;  // a and b both trade BTCUSDT ([gateway.shared]); else b trades BTCUSDC
+  bool a_first = true;  // a attaches to the new gateway before b; else b's replay runs first
+  std::int64_t venue_ahead_ms = 0;  // the venue's clock ahead of the host's
+};
+
+void restart_with_fill(const std::string& stem, const Plan& p) {
+  sim::server::SimServerConfig sc = two_markets();
+  sc.generator.market_rate_per_s = 0.0;  // every fill is one the test makes
+  sc.clock_offset_ms = p.venue_ahead_ms;
+  ServerFixture fx(sc);
+  Configs c = write_configs(fx, stem);
+  if (p.shared) {
+    // Both trade BTCUSDT, which the gateway lists under [gateway.shared].
+    c.b = write_config(fx, c.b_name, "exit", "1000");
+    rewrite(c.gw.config, [](std::string& t) { t += "\n[gateway.shared.\"sim:BTCUSDT\"]\n"; });
+    remove_all_of({c.b.epoch, c.b.kill, c.b.journal_dir, c.b.config + ".log", c.b.status});
+  }
+  const std::string gw_name = stem + "-gw";
+  remove_all_of({default_gateway_status_path(gw_name)});
+  const std::size_t b_symbol = p.shared ? 0 : 1;
+
+  GatewayProcess g = spawn_gateway(c.gw);
+  wait_gateway_up(fx, g);
+  const pid_t a = spawn_strategy(c.a, g);
+  const std::uint16_t ea = wait_resting(fx, c.a, {});
+  const pid_t b = spawn_strategy(c.b, g);
+  const std::uint16_t eb = wait_resting(fx, c.b, {ea});
+  // Each has a fill in its store: its next attach resumes after it.
+  REQUIRE_MESSAGE(fill_one_of(fx, ea).is_positive(), fastmm::test::read_file(c.a.config + ".log"));
+  REQUIRE_MESSAGE(fill_one_of(fx, eb).is_positive(), fastmm::test::read_file(c.b.config + ".log"));
+  REQUIRE(wait_until(
+      [&] {
+        const auto sa = try_stored(c.a, c.a_name);
+        const auto sb = try_stored(c.b, c.b_name);
+        return sa && !sa->exec_ids.empty() && sb && !sb->exec_ids.empty() && open_of(fx, ea) > 0 &&
+               open_of(fx, eb) > 0;
+      },
+      20000));
+
+  // The gateway dies; both strategies exit on its loss, and their orders stay at the venue.
+  REQUIRE(::kill(g.pid, SIGKILL) == 0);
+  CHECK(reap(g.pid) == -1);
+  CHECK(reap(a) != live::kExitOk);
+  CHECK(reap(b) != live::kExitOk);
+  REQUIRE(wait_until(
+      [&] {
+        const sim::server::SimServerStats s = fx.server.stats();
+        return s.md_sessions == 0 && s.api_sessions == 0 && s.user_subscriptions == 0 &&
+               open_of(fx, ea) > 0;
+      },
+      10000));
+  std::string dead_order;
+  const Qty dead_fill = fill_one_of(fx, ea, &dead_order);
+  REQUIRE(dead_fill.is_positive());
+
+  // The new gateway: up, and its start-up sweep has cancelled the orders nobody holds.
+  g = spawn_gateway(c.gw);
+  wait_gateway_up(fx, g);
+  REQUIRE_MESSAGE(wait_until([&] { return fx.server.stats().open_orders == 0; }, 10000),
+                  fastmm::test::read_file(g.log));
+  // Then the strategies, one after the other: each rests orders only once its attach's replay and
+  // reconciliation are done.
+  pid_t a2 = -1;
+  pid_t b2 = -1;
+  std::uint16_t ea2 = 0;
+  std::uint16_t eb2 = 0;
+  if (p.a_first) {
+    a2 = spawn_strategy(c.a, g);
+    ea2 = wait_resting(fx, c.a, {ea, eb});
+    b2 = spawn_strategy(c.b, g);
+    eb2 = wait_resting(fx, c.b, {ea, eb, ea2});
+  } else {
+    b2 = spawn_strategy(c.b, g);
+    eb2 = wait_resting(fx, c.b, {ea, eb});
+    a2 = spawn_strategy(c.a, g);
+    ea2 = wait_resting(fx, c.a, {ea, eb, eb2});
+  }
+  CHECK_MESSAGE(wait_until([&] { return stored_holds(c.a, c.a_name, dead_order); }, 10000),
+                "a never booked the fill of " << dead_order << " made while the gateway was down: "
+                                              << fastmm::test::read_file(c.a.config + ".log")
+                                              << fastmm::test::read_file(g.log));
+  // The gateway's account: the venue's position, nothing unattributed or unexplained.
+  std::optional<StatusPosition> btc;
+  Qty venue_btc{};
+  const bool agreed = wait_until(
+      [&] {
+        btc = gateway_position(gw_name);
+        venue_btc = position(fx.server.stats(), 0);
+        return btc && btc->qty_raw == venue_btc.raw && btc->unattributed_raw == 0 &&
+               btc->unexplained_raw == 0;
+      },
+      5000);
+  REQUIRE(btc.has_value());
+  INFO("gateway BTCUSDT " << btc->qty_raw << " unattributed " << btc->unattributed_raw
+                          << " unexplained " << btc->unexplained_raw << "; venue "
+                          << venue_btc.raw);
+  CHECK(agreed);
+
+  stop_strategy(a2);
+  stop_strategy(b2);
+  CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
+  stop_gateway(g);
+
+  // a's store holds the fill once; the stores together are the venue.
+  const StoredFills fa = stored(c.a, c.a_name);
+  const StoredFills fb = stored(c.b, c.b_name);
+  CHECK(std::count(fa.cl_ord_ids.begin(), fa.cl_ord_ids.end(), dead_order) == 1);
+  CHECK(!holds(fb.cl_ord_ids, dead_order));
+  CHECK(booked_twice(c.a, c.a_name).empty());
+  CHECK(booked_twice(c.b, c.b_name).empty());
+  const Qty pa = store_position(c.a, c.a_name);
+  const Qty pb = store_position(c.b, c.b_name, p.shared ? "BTCUSDT" : "BTCUSDC");
+  const sim::server::SimServerStats end = fx.server.stats();
+  INFO("a " << pa.raw << " (fills " << fa.sum.raw << ") b " << pb.raw << " (fills " << fb.sum.raw
+            << ") venue " << position(end, 0).raw << " / " << position(end, b_symbol).raw);
+  CHECK(pa == fa.sum);
+  CHECK(pb == fb.sum);
+  if (p.shared) {
+    CHECK(pa + pb == position(end, 0));
+    CHECK(logged_share(g, c.a_name) == pa);
+    CHECK(logged_share(g, c.b_name) == pb);
+    CHECK(logged_share(g, "unattributed") == Qty{});
+  } else {
+    CHECK(pa == position(end, 0));
+    CHECK(pb == position(end, 1));
+  }
+  // Neither saw the other's fills.
+  for (const JournalEpochs& j : read_journals(c.b)) {
+    INFO(j.path);
+    CHECK(!j.fill_epochs.contains(ea));
+    CHECK(!j.fill_epochs.contains(ea2));
+  }
+  for (const JournalEpochs& j : read_journals(c.a)) {
+    INFO(j.path);
+    CHECK(!j.fill_epochs.contains(eb));
+    CHECK(!j.fill_epochs.contains(eb2));
+  }
+}
+
+}  // namespace
+
+TEST_CASE(
+    "gateway restart: a shared instrument's fill made while the gateway was down reaches its "
+    "strategy, attached first") {
+  restart_with_fill("gw-rs-sh-a", Plan{true, true, 0});
+}
+
+TEST_CASE(
+    "gateway restart: a shared instrument's fill another strategy's replay met first, the venue "
+    "clock ahead, reaches its strategy and the account once") {
+  // As in the Binance Demo run: the venue's clock ahead of the host's, so that the fill's venue
+  // time was later than the new gateway's start in the host's clock, and b's replay (booking what
+  // names no order and no primary for the account) met it before a had attached.
+  restart_with_fill("gw-rs-sh-b", Plan{true, false, 3000});
+}
+
+TEST_CASE(
+    "gateway restart: an owned instrument's fill made while the gateway was down reaches its "
+    "strategy, attached first") {
+  restart_with_fill("gw-rs-own-a", Plan{false, true, 0});
+}
+
+TEST_CASE(
+    "gateway restart: an owned instrument's fill another strategy's replay met first reaches its "
+    "strategy and the account once") {
+  // b's replay meets a's fill before a's store has seeded the account's position of BTCUSDT.
+  restart_with_fill("gw-rs-own-b", Plan{false, false, 3000});
+}
+
+#endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE

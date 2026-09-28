@@ -27,6 +27,8 @@
 //   * after an incomplete replay, again kRetryNs after it ended; while all is well, every
 //     sweep_ns; due_in(): once, a moment after a stream event (funding). A replay that starts
 //     serves them all.
+//   * a restart (resume(), restart_from()) while one runs: that replay goes on from the restart's
+//     start at the first timer tick after it has ended, and ends (Hooks::finished) after that.
 //   * a query not answered within kQueryTimeoutNs has failed (the housekeeping timer checks):
 //     the replay ends incomplete, so a reconciliation waiting for it goes ahead without
 //     kExecutionsExact, and the retry follows. A late answer is not this replay's any more.
@@ -136,10 +138,14 @@ class ReplaySchedulerBase {
   // Where a stream nobody placed starts: connect() passes the venue's time, unless resume() or
   // restart_from() said otherwise before.
   void start_at(std::int64_t since_ms);
-  // A restart: every stream from `since_ms`, skipping the rows `known` names (their keys).
+  // A restart: every stream from `since_ms`, skipping the rows `known` names (their keys). While a
+  // replay runs, the ids join those it skips and the start is taken as restart_from() takes it.
   void resume(std::int64_t since_ms, const std::vector<std::string>& known);
   // Every stream from `since_ms` again, cursors dropped (the caller knows of rows this connector
-  // never heard about).
+  // never heard about). While a replay runs, it goes on from there at the first timer tick after
+  // it has ended (from the earliest such start, or earlier where it did not read a window in
+  // full), as part of the same replay: Hooks::finished comes after that. fastmm-gateway attaches
+  // strategies whose stores end at different times, one while another's replay runs.
   void restart_from(std::int64_t since_ms);
   // A stream's next id (Binance fromId), from a restart's store.
   void set_cursor(std::size_t stream, std::int64_t from_id);
@@ -194,6 +200,7 @@ class ReplaySchedulerBase {
   void expire(std::int64_t now_ns);
   void finish();
   void reset_streams() noexcept;
+  void take_again() noexcept;
 
   std::string name_;
   std::string what_;
@@ -202,6 +209,7 @@ class ReplaySchedulerBase {
   std::vector<Stream> streams_;
   std::unordered_set<std::string> known_;
   std::int64_t default_since_ms_ = 0;
+  std::int64_t again_from_ms_ = 0;  // a restart_from() while a replay ran; 0: none
   bool open_ = false;
   bool active_ = false;
   bool ok_ = true;

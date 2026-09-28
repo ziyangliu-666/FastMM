@@ -95,7 +95,7 @@ namespace gw {
 static_assert(std::endian::native == std::endian::little);
 
 inline constexpr std::uint32_t kMagic = 0x57474d46;  // "FMGW"
-inline constexpr std::uint16_t kVersion = 6;
+inline constexpr std::uint16_t kVersion = 7;
 
 enum class MsgType : std::uint16_t {
   AttachRequest = 1,
@@ -158,8 +158,21 @@ inline constexpr std::uint32_t kMaxKnownExecIds = 1024;
 // executions of their orders are its own.
 inline constexpr std::uint32_t kMaxPastEpochs = 64;
 
+// An order of an earlier session that was not terminal at its last record, with the venue's id of
+// it (store::Recovery::past_orders). A venue's trade history can name an execution by the venue's
+// order id alone (Binance); after a gateway restart only the strategy's store can say whose it is.
+struct PastOrder {
+  char venue[32];
+  char symbol[32];
+  char venue_order_id[48];
+  std::uint64_t cl_ord_id;  // ClientOrderId::value
+  std::uint8_t reserved[8];
+};
+static_assert(sizeof(PastOrder) == 128);
+inline constexpr std::uint32_t kMaxPastOrders = 256;
+
 // Followed by known_count ExecId, claim_count InstrumentClaim, position_count PositionSeed,
-// resume_count VenueResume, then epoch_count std::uint16_t (past epochs).
+// resume_count VenueResume, epoch_count std::uint16_t (past epochs), then order_count PastOrder.
 struct AttachRequest {
   Header hdr;
   char engine[64];  // [engine] name of the strategy: its store's, and its share of the account's
@@ -170,7 +183,7 @@ struct AttachRequest {
   std::uint32_t known_count;
   std::uint32_t claim_count;
   std::uint32_t position_count;
-  std::uint32_t reserved;
+  std::uint32_t order_count;
 };
 static_assert(sizeof(AttachRequest) == 112);
 
@@ -244,7 +257,8 @@ inline constexpr std::size_t kMaxDatagram =
 inline constexpr std::size_t kMaxRequest =
     sizeof(AttachRequest) + kMaxKnownExecIds * sizeof(ExecId) +
     kMaxInstruments * sizeof(InstrumentClaim) + kMaxInstruments * sizeof(PositionSeed) +
-    kMaxVenuesConfig * sizeof(VenueResume) + kMaxPastEpochs * sizeof(std::uint16_t);
+    kMaxVenuesConfig * sizeof(VenueResume) + kMaxPastEpochs * sizeof(std::uint16_t) +
+    kMaxPastOrders * sizeof(PastOrder);
 // Strategies attached to one gateway at once.
 inline constexpr std::size_t kMaxAttachments = 16;
 
@@ -317,6 +331,15 @@ struct GatewayAttachRequest {
   // The session epochs of its earlier sessions (store::Recovery::session_epochs), for a strategy
   // that restores its position: executions of their orders are routed here.
   std::vector<std::uint16_t> past_epochs;
+  // Its earlier sessions' orders that were not terminal at their last record, with the venue's id
+  // of each (store::Recovery::past_orders): an execution the venue names by that id alone is its.
+  struct PastOrder {
+    std::string venue;
+    std::string symbol;
+    std::string venue_order_id;
+    ClientOrderId cl_ord_id;
+  };
+  std::vector<PastOrder> past_orders;
 };
 
 // One attachment. The connection stays open for as long as this object lives; closing it (the

@@ -37,9 +37,11 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -87,6 +89,15 @@ constexpr std::size_t kOrderTable = 1U << 14;
 constexpr std::uint32_t kOrderSpin = 100'000;
 // The venue is asked for fresh books (the account's copies were lost) at most this often.
 constexpr std::int64_t kResyncIntervalNs = 1'000'000'000;
+// Executions no attached strategy has received yet, per venue (VenueRouter::parked).
+constexpr std::size_t kMaxParked = 4096;
+
+// An order of a strategy's earlier session, by the venue's id of it (gw::PastOrder).
+struct PastOrder {
+  InstrumentId inst;
+  VenueOrderId venue_order_id;
+  ClientOrderId id;
+};
 
 struct Attachment;
 
@@ -269,6 +280,9 @@ struct Route {
   const std::unordered_set<std::string>* known = nullptr;
   std::uint8_t slot = 0;                // its [engine] name's slot (Account::share)
   std::bitset<kMaxInstruments> claims;  // the instruments it trades
+  // Executions it was given from VenueRouter::parked (fill_key): a replay's copy of one is not
+  // given again.
+  std::unordered_set<std::string> unparked;
 };
 
 // One order the gateway forwarded (or a reconciliation reported), for the account guards and for
@@ -354,6 +368,23 @@ struct VenueRouter {
   std::array<std::int64_t, kMaxInstruments> explained{};
   std::array<RestingOrders, kMaxInstruments> resting;
   std::int64_t start_ms = 0;  // the gateway's start: older executions are nobody's business here
+
+  // Owned instruments whose account position a first owner seeded. Before that the account books
+  // none of their executions: they wait in `parked` for the seed.
+  std::bitset<kMaxInstruments> seeded;
+  // The orders of earlier sessions the attached strategies' stores listed, by instrument and the
+  // venue's id of the order. An execution naming no client order id (a venue's trade history can
+  // give the venue's id alone; Binance's does) that names one of them is that order's: after a
+  // gateway restart nothing else says whose it is.
+  std::map<std::pair<std::uint32_t, std::string>, ClientOrderId> past_orders;
+  // Executions no attached strategy received: of an order of a session whose strategy is not
+  // attached, naming an order nobody has claimed, or naming none while the instrument has no
+  // owner (or primary) attached. Each attach looks through them for its own, so an execution
+  // reaches its strategy whether the replay that found it ran before or after the attach. Oldest
+  // first, at most kMaxParked (the oldest goes).
+  std::deque<OrderFillMsg> parked;
+  std::atomic<std::uint64_t> parked_count{0};
+  std::atomic<std::uint64_t> parked_dropped{0};
 
   std::atomic<std::uint64_t> md_discarded{0};
   std::atomic<std::uint64_t> order_discarded{0};
@@ -471,8 +502,9 @@ bool held_by(const Route& r, const OrderFillMsg& m) {
 
 // A shared instrument's execution, booked once and counted towards `tag` (slot + 1; 0 nobody). A
 // replayed one that the seed of its slot holds (older than that strategy's replay start or among
-// its store's trade ids), or, without such a seed, older than the gateway, is not booked. One the
-// account booked for nobody that now reaches a strategy (`delivered`) becomes that strategy's.
+// its store's trade ids), or, without such a seed, older than the gateway (in the venue's clock,
+// which the execution's time is), is not booked. One the account booked for nobody that now
+// reaches a strategy (`delivered`) becomes that strategy's.
 void account_fill_shared(VenueRouter& v, const OrderFillMsg& m, std::uint8_t tag, bool delivered) {
   const InstrumentId id = m.hdr.instrument;
   if (!v.insts->contains(id)) return;
@@ -485,7 +517,7 @@ void account_fill_shared(VenueRouter& v, const OrderFillMsg& m, std::uint8_t tag
     const bool held = seed != nullptr ? ms < seed->from_ms ||
                                             (seed->known != nullptr &&
                                              seed->known->contains(std::string(m.exec_id.view())))
-                                      : ms < v.start_ms;
+                                      : ms < v.start_ms + v.slot->venue->status().clock_offset_ms;
     if (held) {
       v.account_skipped.fetch_add(1, std::memory_order_relaxed);
       return;
@@ -887,8 +919,9 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
 // own epochs of this run and those the strategy's store listed); one naming no order to the
 // instrument's primary. The account counts it towards that strategy, attached or not, or towards
 // nobody: an order of a session no strategy claims, or no order and no primary. A replayed one that
-// the receiving strategy's history holds is not routed, as for an owner.
-void route_shared_fill(VenueRouter& v, const OrderFillMsg& m, bool replayed) {
+// the receiving strategy's history holds is not routed, as for an owner. The attachment it goes
+// to, or nullptr; `held`: the strategy's store holds it (it is not kept for a later attach).
+Route* route_shared_fill(VenueRouter& v, const OrderFillMsg& m, bool replayed, bool& held) {
   const InstrumentId id = m.hdr.instrument;
   const Account& a = *v.acct;
   Route* r = v.by_epoch(m.cl_ord_id);
@@ -902,19 +935,104 @@ void route_shared_fill(VenueRouter& v, const OrderFillMsg& m, bool replayed) {
     if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 && held_by(*r, m)) {
       v.stale_replays.fetch_add(1, std::memory_order_relaxed);
       r = nullptr;
+      held = true;
     }
   }
   account_fill_shared(v, m, tag, r != nullptr);
-  if (r != nullptr) {
-    push_order(*r, m.hdr);
+  return r;
+}
+
+// The key an execution given from VenueRouter::parked is remembered by (Route::unparked): as the
+// account's dedupe, its trade id, instrument and side.
+std::string fill_key(const OrderFillMsg& m) {
+  std::string k(m.exec_id.view());
+  k += '/';
+  k += std::to_string(m.hdr.instrument.value);
+  k += m.side == Side::Buy ? 'B' : 'S';
+  return k;
+}
+
+// An execution naming no client order id, but the venue's id of an order a strategy's store listed
+// (VenueRouter::past_orders), names that order: `buf` holds the copy that says so.
+const OrderFillMsg& named(const VenueRouter& v, const OrderFillMsg& m, OrderFillMsg& buf) {
+  if (m.cl_ord_id.valid() || m.venue_order_id.empty() || v.past_orders.empty()) return m;
+  const auto it =
+      v.past_orders.find({m.hdr.instrument.value, std::string(m.venue_order_id.view())});
+  if (it == v.past_orders.end()) return m;
+  buf = m;
+  buf.cl_ord_id = it->second;
+  return buf;
+}
+
+// An execution to its strategy and into the account (see route_fill). One no attached strategy
+// receives is kept in VenueRouter::parked for the attach that claims it, unless the store of the
+// strategy it belongs to holds it. `unparking`: it comes from there, at an attach.
+void deliver_fill(VenueRouter& v, const OrderFillMsg& raw, bool unparking) {
+  OrderFillMsg buf;
+  const OrderFillMsg& m = named(v, raw, buf);
+  const InstrumentId id = m.hdr.instrument;
+  const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
+  Route* r = nullptr;
+  bool held = false;
+  if (v.shared(id)) {
+    r = route_shared_fill(v, m, replayed, held);
+  } else if (v.insts->contains(id) && id.value < kMaxInstruments && !v.seeded[id.value]) {
+    // Nobody has seeded the account's position yet: it is booked, and routed, once the first
+    // owner's store has (unparked at that attach).
   } else {
-    v.unrouted.fetch_add(1, std::memory_order_relaxed);
+    account_fill(v, m);
+    // Streamed or replayed alike: to the order's epoch, else to the instrument's owner. A replay
+    // one attachment's attach started also names the others' executions; each books only those
+    // its OMS has not (it dedupes by venue execution id, instrument and side), and among them is
+    // a fill its private stream missed.
+    r = v.by_epoch(m.cl_ord_id);
+    if (r == nullptr) {
+      r = v.owner_of(id);
+      // Naming no live order, it goes to the owner only if the owner's store cannot hold it
+      // already: a replay another attach started can reach back before this owner's history
+      // began, and its engine never saw those executions, so it would book them a second time.
+      // (A connector that gives no trade time, exch_ts 0, is not filtered.)
+      if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 && held_by(*r, m)) {
+        v.stale_replays.fetch_add(1, std::memory_order_relaxed);
+        FASTMM_LOG_INFO(
+            "gateway: replayed execution {} ({} ms) is older than its owner's history ({} ms) or "
+            "in its store: not routed",
+            m.exec_id.view(),
+            m.hdr.exch_ts.ns / 1'000'000,
+            r->replay_from_ms);
+        return;
+      }
+    }
   }
+  if (r != nullptr) {
+    if (unparking) {
+      if (!m.exec_id.empty()) r->unparked.insert(fill_key(m));
+    } else if (replayed && !r->unparked.empty() && !m.exec_id.empty() &&
+               r->unparked.contains(fill_key(m))) {
+      return;  // given to it from `parked` at its attach
+    }
+    push_order(*r, m.hdr);
+    return;
+  }
+  if (!unparking) v.unrouted.fetch_add(1, std::memory_order_relaxed);
+  if (held || !v.insts->contains(id)) return;
+  if (v.parked.size() == kMaxParked) {
+    v.parked.pop_front();
+    v.parked_dropped.fetch_add(1, std::memory_order_relaxed);
+  }
+  v.parked.push_back(raw);
+}
+
+// At an attach, once its routes, seeds and past orders are in place: every parked execution is
+// routed again, and what nobody receives stays.
+void unpark(VenueRouter& v) {
+  std::deque<OrderFillMsg> was;
+  was.swap(v.parked);
+  for (const OrderFillMsg& m : was) deliver_fill(v, m, true);
+  v.parked_count.store(v.parked.size(), std::memory_order_relaxed);
 }
 
 void route_fill(VenueRouter& v, const OrderFillMsg& m) {
-  const bool shared = v.shared(m.hdr.instrument);
-  if (!shared) account_fill(v, m);
   const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
   if (!replayed) {
     if (GwOrder* o = v.orders.find(m.cl_ord_id)) {
@@ -928,37 +1046,8 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
       }
     }
   }
-  if (shared) {
-    route_shared_fill(v, m, replayed);
-    return;
-  }
-  // Streamed or replayed alike: to the order's epoch, else to the instrument's owner. A replay one
-  // attachment's attach started also names the others' executions; each books only those its
-  // OMS has not (it dedupes by venue execution id, instrument and side), and among them is a fill
-  // its private stream missed.
-  Route* r = v.by_epoch(m.cl_ord_id);
-  if (r == nullptr) {
-    r = v.owner_of(m.hdr.instrument);
-    // Naming no live order, it goes to the owner only if the owner's store cannot hold it
-    // already: a replay another attach started can reach back before this owner's history began,
-    // and its engine never saw those executions, so it would book them a second time. (A
-    // connector that gives no trade time, exch_ts 0, is not filtered.)
-    if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 && held_by(*r, m)) {
-      v.stale_replays.fetch_add(1, std::memory_order_relaxed);
-      FASTMM_LOG_INFO(
-          "gateway: replayed execution {} ({} ms) is older than its owner's history ({} ms) or "
-          "in its store: not routed",
-          m.exec_id.view(),
-          m.hdr.exch_ts.ns / 1'000'000,
-          r->replay_from_ms);
-      return;
-    }
-  }
-  if (r != nullptr) {
-    push_order(*r, m.hdr);
-  } else {
-    v.unrouted.fetch_add(1, std::memory_order_relaxed);
-  }
+  deliver_fill(v, m, false);
+  v.parked_count.store(v.parked.size(), std::memory_order_relaxed);
 }
 
 // A funding payment goes to the instrument's owner, which books it (its engine dedupes by id). One
@@ -1554,6 +1643,7 @@ class Gateway {
     bool set = false;
     std::int64_t since_ms = 0;  // venue time
     std::vector<std::string> known;
+    std::vector<PastOrder> orders;  // of its earlier sessions (gw::PastOrder)
   };
 
   Gateway(const Config& cfg,
@@ -1698,12 +1788,13 @@ class Gateway {
     }
     if (req.known_count > gw::kMaxKnownExecIds || req.claim_count > kMaxInstruments ||
         req.position_count > kMaxInstruments || req.resume_count > kMaxVenuesConfig ||
-        req.epoch_count > gw::kMaxPastEpochs ||
+        req.epoch_count > gw::kMaxPastEpochs || req.order_count > gw::kMaxPastOrders ||
         static_cast<std::size_t>(n) != sizeof req + req.known_count * sizeof(gw::ExecId) +
                                            req.claim_count * sizeof(gw::InstrumentClaim) +
                                            req.position_count * sizeof(gw::PositionSeed) +
                                            req.resume_count * sizeof(gw::VenueResume) +
-                                           req.epoch_count * sizeof(std::uint16_t)) {
+                                           req.epoch_count * sizeof(std::uint16_t) +
+                                           req.order_count * sizeof(gw::PastOrder)) {
       send_error(fd, "malformed attach request");
       ::close(fd);
       return;
@@ -1830,6 +1921,21 @@ class Gateway {
       r.known.assign(known.begin() + vr.first_known,
                      known.begin() + vr.first_known + vr.known_count);
     }
+    // Its earlier sessions' orders by the venue's id of them, on the instruments it claims.
+    const std::byte* orders_at = epochs_at + req.epoch_count * sizeof(std::uint16_t);
+    for (std::uint32_t i = 0; i < req.order_count; ++i) {
+      gw::PastOrder po{};
+      std::memcpy(&po, orders_at + i * sizeof po, sizeof po);
+      const VenueId vid = cfg_.venue_id(from_field(po.venue));
+      const Instrument* inst =
+          vid.valid() ? instruments_.find(vid, from_field(po.symbol)) : nullptr;
+      const ClientOrderId id{po.cl_ord_id};
+      if (inst == nullptr || vid.value >= resumes.size() || !id.valid() ||
+          std::find(owned.begin(), owned.end(), inst->id) == owned.end())
+        continue;
+      resumes[vid.value].orders.push_back(
+          PastOrder{inst->id, VenueOrderId(from_field(po.venue_order_id)), id});
+    }
     attach(fd, req, engine, resumes, std::move(owned), seeds, past);
   }
 
@@ -1950,12 +2056,14 @@ class Gateway {
       const std::uint64_t md_lost = v.account_md_lost.load(std::memory_order_relaxed);
       const std::uint64_t untracked = v.untracked.load(std::memory_order_relaxed);
       const std::uint64_t stale = v.stale_replays.load(std::memory_order_relaxed);
+      const std::uint64_t parked = v.parked_count.load(std::memory_order_relaxed);
+      const std::uint64_t parked_dropped = v.parked_dropped.load(std::memory_order_relaxed);
       Logged& l = logged_[i];
       if (md != l.md || order != l.order || unrouted != l.unrouted || cancels != l.cancels ||
           rate != l.rate || notional != l.notional || owner != l.owner || killed != l.killed ||
           gross != l.gross || net != l.net || fx != l.fx || und != l.und || self != l.self ||
           untracked != l.untracked || stale != l.stale || skipped != l.skipped ||
-          md_lost != l.md_lost) {
+          md_lost != l.md_lost || parked != l.parked || parked_dropped != l.parked_dropped) {
         FASTMM_LOG_INFO(
             "gateway: [{}] discarded with nothing attached: md={} order={}; order events for no "
             "attachment: {}; gateway cancels: {}; refused: rate={} open_notional={} not_owner={} "
@@ -1963,7 +2071,8 @@ class Gateway {
             "self_trade={}; "
             "untracked: {}; "
             "replayed fills "
-            "older than their owner's history: {}, than the account's: {}; account books lost: {}",
+            "older than their owner's history: {}, than the account's: {}; account books lost: {}; "
+            "executions kept for a strategy to claim: {} ({} dropped)",
             slots_[i]->venue->name(),
             md,
             order,
@@ -1981,7 +2090,9 @@ class Gateway {
             untracked,
             stale,
             skipped,
-            md_lost);
+            md_lost,
+            parked,
+            parked_dropped);
         l = Logged{md,
                    order,
                    unrouted,
@@ -1998,7 +2109,9 @@ class Gateway {
                    untracked,
                    stale,
                    skipped,
-                   md_lost};
+                   md_lost,
+                   parked,
+                   parked_dropped};
       }
       for (const auto& a : atts_) {
         const std::uint64_t d = a->routes[i].md_dropped.load(std::memory_order_relaxed);
@@ -2538,6 +2651,8 @@ class Gateway {
     std::uint64_t stale = 0;
     std::uint64_t skipped = 0;
     std::uint64_t md_lost = 0;
+    std::uint64_t parked = 0;
+    std::uint64_t parked_dropped = 0;
   };
 
   // A session epoch no live attachment has, from the gateway's epoch file (fail closed).
@@ -2746,7 +2861,13 @@ class Gateway {
         set_account_position(v, inst, q, px);
         v.seed_from_ms[inst.value] = r.replay_from_ms;
         v.seed_known[inst.value] = a.known[i];
+        v.seeded.set(inst.value);
       }
+      // Its earlier sessions' orders by the venue's id, then whatever was kept for it: executions
+      // a replay found before it attached, of its orders or of the instruments it now owns.
+      for (const PastOrder& o : res.orders)
+        v.past_orders[{o.inst.value, std::string(o.venue_order_id.view())}] = o.id;
+      if (!v.parked.empty()) unpark(v);
       r.snapshot_pending = true;
       // Its books start from the gateway's copies and go on with the events routed after them;
       // the venue is asked for nothing, so no other attachment's books pause.

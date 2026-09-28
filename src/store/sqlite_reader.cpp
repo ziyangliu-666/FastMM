@@ -240,6 +240,25 @@ class SqliteReader final : public Reader {
               rec.session_epochs.end())
         rec.session_epochs.push_back(c.epoch);
     }
+    for (std::size_t k = 0; k < chain.size() && k < Recovery::kMaxSessionEpochs; ++k) {
+      if (rec.past_orders.size() >= Recovery::kMaxPastOrders) break;
+      const std::vector<std::string> names = venue_names(chain[k].id);
+      collect(rec.past_orders,
+              "SELECT venue_id, symbol, venue_order_id, cl_ord_id FROM orders WHERE session_id = ?"
+              " AND terminal = 0 AND venue_order_id <> '' ORDER BY updated_ns DESC",
+              chain[k].id,
+              [&](sqlite3_stmt* s) {
+                const std::int64_t v = sqlite3_column_int64(s, 0);
+                return Recovery::PastOrder{v >= 0 && static_cast<std::size_t>(v) < names.size()
+                                               ? names[static_cast<std::size_t>(v)]
+                                               : std::string(),
+                                           text(s, 1),
+                                           text(s, 2),
+                                           text(s, 3)};
+              });
+    }
+    if (rec.past_orders.size() > Recovery::kMaxPastOrders)
+      rec.past_orders.resize(Recovery::kMaxPastOrders);
     resume_points(rec, chain);
     return rec;
   }

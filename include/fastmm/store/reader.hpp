@@ -71,6 +71,18 @@ struct Recovery {
   // orders are this engine's, whichever session placed them.
   static constexpr std::size_t kMaxSessionEpochs = 64;
   std::vector<std::uint16_t> session_epochs;
+  // The orders of those sessions that were not terminal at their last record and that the venue
+  // had acknowledged (a venue order id), newest first, at most kMaxPastOrders. A venue's trade
+  // history can name an execution by the venue's order id alone (Binance); behind fastmm-gateway,
+  // after a gateway restart, only this store can say whose order that was.
+  struct PastOrder {
+    std::string venue;  // its [venues.<name>]; empty when the store predates schema 3
+    std::string symbol;
+    std::string venue_order_id;
+    std::string cl_ord_id;
+  };
+  static constexpr std::size_t kMaxPastOrders = 256;
+  std::vector<PastOrder> past_orders;
   // Where each venue's execution replay resumes (Venue::resume_executions): from the venue time of
   // the last fill or funding payment the store holds for it (in the newest session that stored
   // one), minus kResumeOverlapMs, skipping the trade ids and funding ids (kFundingIdPrefix + id)

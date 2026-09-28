@@ -158,10 +158,13 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   const std::size_t resumes = req.resume.size();
   if (req.past_epochs.size() > gw::kMaxPastEpochs) return fail("too many past epochs to claim");
   const std::size_t epochs = req.past_epochs.size();
+  if (req.past_orders.size() > gw::kMaxPastOrders) return fail("too many past orders to claim");
+  const std::size_t orders = req.past_orders.size();
   std::vector<std::byte> out(sizeof(gw::AttachRequest) + known * sizeof(gw::ExecId) +
                              claims * sizeof(gw::InstrumentClaim) +
                              positions * sizeof(gw::PositionSeed) +
-                             resumes * sizeof(gw::VenueResume) + epochs * sizeof(std::uint16_t));
+                             resumes * sizeof(gw::VenueResume) + epochs * sizeof(std::uint16_t) +
+                             orders * sizeof(gw::PastOrder));
   gw::AttachRequest r{};
   r.hdr = gw::Header{gw::kMagic,
                      gw::kVersion,
@@ -176,6 +179,7 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   r.claim_count = static_cast<std::uint32_t>(claims);
   r.position_count = static_cast<std::uint32_t>(positions);
   r.epoch_count = static_cast<std::uint32_t>(epochs);
+  r.order_count = static_cast<std::uint32_t>(orders);
   std::memcpy(out.data(), &r, sizeof r);
   std::size_t next_id = 0;
   for (const GatewayAttachRequest::Resume& v : req.resume) {
@@ -215,6 +219,15 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   std::byte* epoch_at = resume_at + resumes * sizeof(gw::VenueResume);
   for (std::size_t i = 0; i < epochs; ++i)
     std::memcpy(epoch_at + i * sizeof(std::uint16_t), &req.past_epochs[i], sizeof(std::uint16_t));
+  std::byte* order_at = epoch_at + epochs * sizeof(std::uint16_t);
+  for (std::size_t i = 0; i < orders; ++i) {
+    gw::PastOrder po{};
+    to_field(po.venue, req.past_orders[i].venue);
+    to_field(po.symbol, req.past_orders[i].symbol);
+    to_field(po.venue_order_id, req.past_orders[i].venue_order_id);
+    po.cl_ord_id = req.past_orders[i].cl_ord_id.value;
+    std::memcpy(order_at + i * sizeof po, &po, sizeof po);
+  }
   if (::send(c->fd_, out.data(), out.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(out.size()))
     return fail(std::string("send attach request: ") + std::strerror(errno));
 
