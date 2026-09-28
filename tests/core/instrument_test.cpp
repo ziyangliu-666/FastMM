@@ -114,6 +114,22 @@ TEST_CASE("core.instrument_table: settlement_mix finds instruments of different 
     CHECK(m.first->settlement_ccy() == "USDT");
     CHECK(m.other->settlement_ccy() == "BTC");
   }
+  SUBCASE("an inverse perpetual and a coin-quoted option settle alike") {
+    InstrumentTable t;
+    REQUIRE(t.add(with("BTC-PERPETUAL", "USD", true)));
+    REQUIRE(t.add(with("BTC-30SEP26-84000-C", "BTC", false)));
+    CHECK_FALSE(t.settlement_mix().mixed());
+  }
+  SUBCASE("unnamed currencies: linear and inverse differ") {
+    InstrumentTable t;
+    Instrument a = make("A");
+    Instrument b = make("B");
+    a.flags = Instrument::kEnabled;
+    b.flags = static_cast<std::uint8_t>(Instrument::kEnabled | Instrument::kInverse);
+    REQUIRE(t.add(a));
+    REQUIRE(t.add(b));
+    CHECK(t.settlement_mix().mixed());
+  }
   SUBCASE("two quote currencies") {
     InstrumentTable t;
     REQUIRE(t.add(with("BTCUSDT", "USDT", false)));

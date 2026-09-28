@@ -177,16 +177,17 @@ class InstrumentTable {
   [[nodiscard]] const Instrument* begin() const noexcept { return by_id_.begin(); }
   [[nodiscard]] const Instrument* end() const noexcept { return by_id_.end(); }
   [[nodiscard]] const Instrument* data() const noexcept { return by_id_.data(); }
-  // Two instruments settle alike when both are linear (or both inverse) and name the same
-  // settlement currency; an unnamed currency only matches another unnamed one of the same kind.
+  // Two instruments settle alike when they name the same settlement currency, linear or inverse
+  // (Deribit's inverse BTC-PERPETUAL and its BTC-quoted options both settle in BTC); an unnamed
+  // currency only matches another unnamed one of the same kind.
   [[nodiscard]] SettlementMix settlement_mix() const noexcept {
     SettlementMix m;
     for (const Instrument& inst : *this) {
       if (!inst.enabled()) continue;
       if (m.first == nullptr) {
         m.first = &inst;
-      } else if (inst.inverse() != m.first->inverse() ||
-                 inst.settlement_ccy() != m.first->settlement_ccy()) {
+      } else if (inst.settlement_ccy() != m.first->settlement_ccy() ||
+                 (inst.settlement_ccy().empty() && inst.inverse() != m.first->inverse())) {
         m.other = &inst;
         break;
       }
