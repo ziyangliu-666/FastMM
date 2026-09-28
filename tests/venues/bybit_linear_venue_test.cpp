@@ -267,13 +267,15 @@ struct Live {
     venue->disconnect();
     reactor.run_once(0);
   }
-  // The start-up sweep is the connector's own first reconciliation: wait for its End.
+  // The start-up sweep is the connector's own first reconciliation: wait for its End, and for the
+  // trade connection, without which an order goes over REST, which the fake server does not serve.
   void wait_for_sweep() {
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
-      return oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
-        return m.kind == ReconcileMsg::Kind::End;
-      }) != nullptr;
+      return venue->order_channel_live() &&
+             oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+               return m.kind == ReconcileMsg::Kind::End;
+             }) != nullptr;
     }));
   }
   std::vector<const ReconcileMsg*> positions() const {
