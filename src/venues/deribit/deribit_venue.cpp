@@ -1,5 +1,6 @@
 #include "fastmm/venues/deribit/deribit_venue.hpp"
 
+#include "fastmm/venues/blocking_control.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
@@ -242,6 +243,9 @@ Result<void, std::string> DeribitVenue::load_reference_data(InstrumentTable& ins
     if (!cfg_.allow_offline_reference_data)
       return fail(
           fmt::format("{}: reference data failed: {}", cfg_.name, std::string_view(e.what())));
+    FASTMM_LOG_WARN("{}: reference data failed ({}); keeping the configured values",
+                    cfg_.name,
+                    std::string_view(e.what()));
   }
   const std::int64_t off = clock_offset_ms_.load();
   stats_.clock_offset_ms = off;
@@ -310,6 +314,7 @@ void DeribitVenue::subscribe(std::span<const InstrumentId> instruments) {
     added = true;
   }
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (added && connected_) {
     if (md_conn_.opened()) {
       md_conn_.close();
@@ -337,13 +342,7 @@ void DeribitVenue::connect(net::Reactor& reactor) {
     if (with_private) raw_private_.open(cfg_.record_raw_dir, cfg_.name, "private");
   }
   if (!cfg_.rest_url.empty()) {
-    RestChannelConfig rc;
-    rc.base_url = cfg_.rest_url;
-    rc.ca_file = cfg_.ca_file;
-    rc.insecure_tls = cfg_.insecure_tls;
-    rc.timeout_ms = cfg_.http_timeout_ms;
-    rc.max_queue = kMaxInstruments + 8;  // one cancel_all_by_instrument per instrument
-    rest_ = std::make_unique<RestChannel>(reactor, rc);
+    rest_ = std::make_unique<RestChannel>(reactor, rest_channel_config(cfg_, subscribed_.size()));
   }
   open_md();
   if (with_private) open_private();
@@ -1388,36 +1387,25 @@ void DeribitVenue::cancel_all_async() {
 
 bool DeribitVenue::cancel_all() {
   if (cfg_.dry_run || !cfg_.credentials.usable() || symbols_ == nullptr) return true;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  bool all_ok = true;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    const std::string auth = DeribitOrderEncoder::basic_auth_header(cfg_.credentials);
-    for (InstrumentId id : subscribed_) {
-      const std::string_view symbol = symbols_->venue_symbol(id);
-      const HttpReply reply = http.get(DeribitOrderEncoder::rest_cancel_all_target(symbol), auth);
-      RpcEnvelope env;
-      if (!reply.error.empty() || !decode_envelope(reply.body, env) || !env.has_result) {
-        all_ok = false;
-        FASTMM_LOG_ERROR("{}: kill-switch cancel_all_by_instrument {} failed: status={} code={} {}",
-                         cfg_.name,
-                         symbol,
-                         reply.status,
-                         env.error_code,
-                         reply.error.empty() ? env.message : reply.error);
-      } else {
-        FASTMM_LOG_INFO("{}: kill-switch cancel_all_by_instrument {} ok", cfg_.name, symbol);
-      }
-    }
-  } catch (const std::exception& e) {
-    FASTMM_LOG_ERROR(
-        "{}: kill-switch cancel-all failed: {}", cfg_.name, std::string_view(e.what()));
-    return false;
-  }
-  return all_ok;
+  BlockingControl control(cfg_);
+  const std::string auth = DeribitOrderEncoder::basic_auth_header(cfg_.credentials);
+  return control.per_target(
+      "kill-switch cancel_all_by_instrument",
+      std::span<const InstrumentId>(subscribed_),
+      [&](InstrumentId id) { return symbols_->venue_symbol(id); },
+      [&](InstrumentId id, BlockingRequest& q) {
+        q.method = "GET";
+        q.target = DeribitOrderEncoder::rest_cancel_all_target(symbols_->venue_symbol(id));
+        q.headers = auth;
+        return true;
+      },
+      // The result is the number cancelled, 0 included.
+      [](const HttpReply& reply, std::string& why) {
+        RpcEnvelope env;
+        if (reply.error.empty() && decode_envelope(reply.body, env) && env.has_result) return true;
+        why = fmt::format("code={} {}", env.error_code, env.message);
+        return false;
+      });
 }
 
 // ---- housekeeping -----------------------------------------------------------------------------

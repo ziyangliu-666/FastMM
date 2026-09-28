@@ -1,5 +1,6 @@
 #include "fastmm/venues/okx/okx_venue.hpp"
 
+#include "fastmm/venues/blocking_control.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
@@ -59,6 +60,19 @@ std::string with_path(const std::string& url, std::string_view path) {
 
 std::string reply_error(const HttpReply& r) {
   return r.error.empty() ? fmt::format("HTTP {} {}", r.status, r.body.substr(0, 200)) : r.error;
+}
+
+// 50011 "Rate limit reached" can come inside a 200: the blocking control path waits it out too.
+bool rate_limited_code(const HttpReply& r) {
+  int code = -1;
+  std::string msg;
+  return decode_envelope(r.body, code, msg) && code == 50011;
+}
+
+BlockingRetry okx_blocking_retry() {
+  BlockingRetry r;
+  r.rate_limited = &rate_limited_code;
+  return r;
 }
 
 }  // namespace
@@ -243,6 +257,9 @@ Result<void, std::string> OkxVenue::load_reference_data(InstrumentTable& instrum
     if (!cfg_.allow_offline_reference_data)
       return fail(
           fmt::format("{}: reference data failed: {}", cfg_.name, std::string_view(e.what())));
+    FASTMM_LOG_WARN("{}: reference data failed ({}); keeping the configured values",
+                    cfg_.name,
+                    std::string_view(e.what()));
   }
   const std::int64_t off = clock_offset_ms_.load();
   stats_.clock_offset_ms = off;
@@ -342,6 +359,7 @@ void OkxVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (md_feed_) md_feed_->add_instrument(id);
   }
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_ && md_conn_.opened()) {
     md_conn_.close();
     open_md();
@@ -402,8 +420,8 @@ void OkxVenue::disconnect() {
   // countdown has nothing left to protect: stop it, or it cancels whatever the account holds a
   // minute from now (it is account-wide). On its own blocking connection, as cancel_all() does: a
   // request queued on the REST channel behind another would be dropped by the reset below.
-  if (dms_.enabled() && dms_.ever_armed() && signer_.usable()) stop_cancel_all_after();
-  dms_.disarm();
+  if (dms_.needs_stop() && signer_.usable()) stop_cancel_all_after();
+  dms_.reset();
   connected_ = false;
   reconcile_.close();  // before the reset below: nothing it aborts asks again
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
@@ -428,14 +446,7 @@ void OkxVenue::disconnect() {
 }
 
 void OkxVenue::open_rest() {
-  RestChannelConfig rc;
-  rc.base_url = cfg_.rest_url;
-  rc.ca_file = cfg_.ca_file;
-  rc.insecure_tls = cfg_.insecure_tls;
-  rc.timeout_ms = cfg_.http_timeout_ms;
-  // Reconciliation, both replays, the dead man's switch and the clock can be in flight at once.
-  rc.max_queue = 32;
-  rest_ = std::make_unique<RestChannel>(*reactor_, rc);
+  rest_ = std::make_unique<RestChannel>(*reactor_, rest_channel_config(cfg_, subscribed_.size()));
 }
 
 void OkxVenue::open_md() {
@@ -1013,6 +1024,8 @@ void OkxVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* sha
       });
   if (!queued) return refuse(RejectReason::TransportFull, "rest queue full");
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+  // Its reply comes over REST: losing the WebSocket order connection does not settle it.
+  if (cmd.kind != OrderCommandKind::Cancel) sent_.sent_over_rest(cmd.cl_ord_id);
   rate_.on_sent(1, now_ns(), rr.is_order);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -1617,24 +1630,22 @@ void OkxVenue::send_cancel_all_after(int timeout_s) {
   if (rest_ == nullptr || !signer_.usable()) return;
   RestRequest rr;
   if (!OkxOrderEncoder::encode_rest_cancel_all_after(timeout_s, rr)) return;
+  const std::uint32_t round = dms_.begin_round(now_ns(), 1);
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "POST",
       rr.path,
       rest_headers(rr),
       rr.body,
-      [this, alive, timeout_s](const net::HttpResponse& r) {
+      [this, alive, timeout_s, round](const net::HttpResponse& r) {
         if (alive.expired() || r.error == net::NetError::Canceled) return;
         ++stats_.rest_requests;
         int code = -1;
         std::string msg;
         if (r.ok() && decode_envelope(r.body, code, msg) && code == 0) {
-          // The countdown runs from here, not from when the request went out.
-          if (timeout_s > 0) {
-            if (!dms_.ever_armed())
-              FASTMM_LOG_INFO("{}: cancel-all-after armed, {} s", cfg_.name, timeout_s);
-            dms_.armed(now_ns());
-          }
+          if (!dms_.ever_armed())
+            FASTMM_LOG_INFO("{}: cancel-all-after armed, {} s", cfg_.name, timeout_s);
+          dms_.confirmed(round);
           return;
         }
         ++stats_.rest_errors;
@@ -1648,34 +1659,31 @@ void OkxVenue::send_cancel_all_after(int timeout_s) {
                          msg.empty() ? r.body.substr(0, 160) : msg);
         if (code == 50011) apply_action(VenueAction::RateLimit, code, msg);
       });
-  if (queued && timeout_s > 0) dms_.attempted(now_ns());
+  if (queued) dms_.went_out();
 }
 
 void OkxVenue::stop_cancel_all_after() {
-  RestRequest rr;
-  if (!OkxOrderEncoder::encode_rest_cancel_all_after(0, rr)) return;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    const HttpReply reply = http.request("POST", rr.path, rest_headers(rr), rr.body);
-    int code = -1;
-    std::string msg;
-    if (reply.ok() && decode_envelope(reply.body, code, msg) && code == 0) {
-      FASTMM_LOG_INFO("{}: cancel-all-after stopped", cfg_.name);
-      return;
-    }
-    FASTMM_LOG_ERROR(
-        "{}: cancel-all-after could not be stopped ({}); it cancels the account's "
-        "pending orders when it runs out",
-        cfg_.name,
-        reply.ok() ? fmt::format("code {} {}", code, msg) : reply_error(reply));
-  } catch (const std::exception& e) {
-    FASTMM_LOG_ERROR(
-        "{}: cancel-all-after could not be stopped: {}", cfg_.name, std::string_view(e.what()));
+  BlockingControl control(cfg_, okx_blocking_retry());
+  int code = -1;
+  std::string msg;
+  const HttpReply reply = control.send("stopping cancel-all-after", [&](BlockingRequest& q) {
+    RestRequest rr;
+    if (!OkxOrderEncoder::encode_rest_cancel_all_after(0, rr)) return false;
+    q.method = "POST";
+    q.target = rr.path;
+    q.headers = rest_headers(rr);
+    q.body = rr.body;
+    return true;
+  });
+  if (reply.ok() && decode_envelope(reply.body, code, msg) && code == 0) {
+    FASTMM_LOG_INFO("{}: cancel-all-after stopped", cfg_.name);
+    return;
   }
+  FASTMM_LOG_ERROR(
+      "{}: cancel-all-after could not be stopped ({}); it cancels the account's "
+      "pending orders when it runs out",
+      cfg_.name,
+      reply.ok() ? fmt::format("code {} {}", code, msg) : reply_error(reply));
 }
 
 void OkxVenue::cancel_all_async() {
@@ -1739,63 +1747,65 @@ void OkxVenue::cancel_pending_async(const std::string& after, std::size_t pages)
 
 bool OkxVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr) return true;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
+  BlockingControl control(cfg_, okx_blocking_retry());
   bool all_ok = true;
   std::size_t cancelled = 0;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    std::string after;
-    for (std::size_t page = 0; page < kMaxReconcilePages; ++page) {
+  std::string after;
+  for (std::size_t page = 0; page < kMaxReconcilePages; ++page) {
+    const HttpReply reply = control.send("kill-switch orders-pending", [&](BlockingRequest& q) {
       RestRequest rr;
       OkxOrderEncoder::encode_rest_orders_pending(after, rr);
-      const HttpReply reply = http.request("GET", rr.path, rest_headers(rr));
-      std::vector<PendingOrder> rows;
-      const std::string err =
-          reply.ok() ? decode_pending_orders(reply.body, rows) : reply_error(reply);
-      if (!err.empty()) {
-        FASTMM_LOG_ERROR("{}: kill-switch cancel-all: orders-pending failed: {}", cfg_.name, err);
-        return false;
-      }
-      std::vector<OkxOrderEncoder::CancelEntry> batch;
-      auto flush = [&] {
-        RestRequest cr;
-        if (batch.empty() || !OkxOrderEncoder::encode_rest_cancel_batch(batch, cr)) return;
-        const std::size_t n = batch.size();
-        batch.clear();
-        const HttpReply c = http.request("POST", cr.path, rest_headers(cr), cr.body);
-        std::vector<std::string> failed;
-        const std::string e = c.ok() ? decode_cancel_batch(c.body, failed) : reply_error(c);
-        if (!e.empty() || !failed.empty()) {
-          all_ok = false;
-          FASTMM_LOG_ERROR("{}: kill-switch cancel-batch-orders failed: {}{}",
-                           cfg_.name,
-                           e,
-                           failed.empty() ? std::string() : failed.front());
-        } else {
-          cancelled += n;
-        }
-      };
-      // Every pending order on a subscribed instrument, FastMM's or not, as the other connectors'
-      // per-symbol cancel-all does.
-      for (const PendingOrder& o : rows) {
-        bool ours = false;
-        for (InstrumentId id : subscribed_)
-          ours = ours || iequals_symbol(symbols_->venue_symbol(id), o.inst_id);
-        if (!ours) continue;
-        batch.push_back({o.inst_id, o.ord_id});
-        if (batch.size() == kMaxBatch) flush();
-      }
-      flush();
-      if (rows.size() < kPageLimit) break;
-      after = rows.back().ord_id;
+      q.method = "GET";
+      q.target = rr.path;
+      q.headers = rest_headers(rr);
+      return true;
+    });
+    std::vector<PendingOrder> rows;
+    const std::string err =
+        reply.ok() ? decode_pending_orders(reply.body, rows) : reply_error(reply);
+    if (!err.empty()) {
+      FASTMM_LOG_ERROR("{}: kill-switch cancel-all: orders-pending failed: {}", cfg_.name, err);
+      return false;
     }
-  } catch (const std::exception& e) {
-    FASTMM_LOG_ERROR(
-        "{}: kill-switch cancel-all failed: {}", cfg_.name, std::string_view(e.what()));
-    return false;
+    std::vector<OkxOrderEncoder::CancelEntry> batch;
+    auto flush = [&] {
+      if (batch.empty()) return;
+      const std::size_t n = batch.size();
+      const HttpReply c = control.send("kill-switch cancel-batch-orders", [&](BlockingRequest& q) {
+        RestRequest cr;
+        if (!OkxOrderEncoder::encode_rest_cancel_batch(batch, cr)) return false;
+        q.method = "POST";
+        q.target = cr.path;
+        q.headers = rest_headers(cr);
+        q.body = cr.body;
+        return true;
+      });
+      batch.clear();
+      std::vector<std::string> failed;
+      const std::string e = c.ok() ? decode_cancel_batch(c.body, failed) : reply_error(c);
+      if (!e.empty() || !failed.empty()) {
+        all_ok = false;
+        FASTMM_LOG_ERROR("{}: kill-switch cancel-batch-orders failed: {}{}",
+                         cfg_.name,
+                         e,
+                         failed.empty() ? std::string() : failed.front());
+      } else {
+        cancelled += n;
+      }
+    };
+    // Every pending order on a subscribed instrument, FastMM's or not, as the other connectors'
+    // per-symbol cancel-all does.
+    for (const PendingOrder& o : rows) {
+      bool ours = false;
+      for (InstrumentId id : subscribed_)
+        ours = ours || iequals_symbol(symbols_->venue_symbol(id), o.inst_id);
+      if (!ours) continue;
+      batch.push_back({o.inst_id, o.ord_id});
+      if (batch.size() == kMaxBatch) flush();
+    }
+    flush();
+    if (rows.size() < kPageLimit) break;
+    after = rows.back().ord_id;
   }
   if (all_ok) FASTMM_LOG_INFO("{}: kill-switch cancel-all ok ({} orders)", cfg_.name, cancelled);
   return all_ok;
@@ -1839,18 +1849,24 @@ void OkxVenue::on_timer(std::int64_t now) {
     }
     // Venue-side dead man's switch, refreshed from the housekeeping timer: the thread that would
     // stop if this process died. If the window ran out anyway the venue has cancelled every
-    // order of the account and this process still runs: it must not put the quotes back.
-    if (dms_.expired(now)) {
-      FASTMM_LOG_ERROR(
-          "{}: cancel-all-after not refreshed within {} ms; the venue has cancelled this "
-          "account's orders",
-          cfg_.name,
-          dms_.window_ms());
-      dms_.disarm();
-      fatal_ = true;
-      trip_venue_kill(KillReason::DeadMansSwitchLost);
+    // order of the account and this process still runs: it must not put the quotes back
+    // (CountdownDriver).
+    switch (dms_.poll(now)) {
+      case CountdownDriver::Step::Lapsed:
+        FASTMM_LOG_ERROR(
+            "{}: cancel-all-after not refreshed within {} ms; the venue has cancelled this "
+            "account's orders",
+            cfg_.name,
+            dms_.window_ms());
+        fatal_ = true;
+        trip_venue_kill(KillReason::DeadMansSwitchLost);
+        break;
+      case CountdownDriver::Step::Refresh:
+        send_cancel_all_after(static_cast<int>(dms_.window_ms() / 1000));
+        break;
+      case CountdownDriver::Step::None:
+        break;
     }
-    if (dms_.due(now) && !fatal_) send_cancel_all_after(static_cast<int>(dms_.window_ms() / 1000));
     check_positions(now);
   }
   publish_status();

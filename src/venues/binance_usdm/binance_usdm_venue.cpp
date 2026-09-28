@@ -4,6 +4,7 @@
 #include "fastmm/venues/binance/binance_trade_history.hpp"
 #include "fastmm/venues/binance/binance_venue.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_rest_decoder.hpp"
+#include "fastmm/venues/blocking_control.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
@@ -131,36 +132,11 @@ net::ConnectionConfig BinanceUsdmVenue::ws_config(const std::string& url,
 
 // ---- reference data (blocking, main thread) -------------------------------------------------
 
-Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable& instruments) {
-  std::vector<Instrument*> mine;
-  std::vector<std::string> wanted;
-  for (const Instrument& inst : instruments) {
-    if (inst.venue != id_) continue;
-    mine.push_back(&instruments.get(inst.id));
-    wanted.emplace_back(inst.symbol.view());
-  }
-  if (mine.empty()) return {};
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  HttpReply reply;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    // "Exchange Information": no symbol filter, IP weight 1.
-    reply = http.get("/fapi/v1/exchangeInfo");
-  } catch (const std::exception& e) {
-    reply.error = e.what();
-  }
-  if (!reply.ok()) {
-    const std::string why = reply.error.empty()
-                                ? fmt::format("HTTP {} {}", reply.status, reply.body.substr(0, 200))
-                                : reply.error;
-    if (!cfg_.allow_offline_reference_data)
-      return fail(fmt::format("{}: exchangeInfo failed: {}", cfg_.name, why));
-    FASTMM_LOG_WARN("{}: exchangeInfo failed ({}); keeping configured tick/lot", cfg_.name, why);
-    return {};
-  }
+// exchangeInfo's rules for the configured symbols, and the venue's rate limits.
+Result<void, std::string> BinanceUsdmVenue::apply_exchange_info(
+    const HttpReply& reply,
+    const std::vector<Instrument*>& mine,
+    const std::vector<std::string>& wanted) {
   ExchangeInfo info;
   if (const std::string err = decode_exchange_info(reply.body, info, wanted); !err.empty())
     return fail(fmt::format("{}: {}", cfg_.name, err));
@@ -214,6 +190,43 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
       rate_.add_order_bucket(static_cast<std::uint32_t>(r.limit), r.window_ns());
     }
   }
+  if (const auto used = parse_int64(reply.header("x-mbx-used-weight-1m")))
+    rate_.on_headers(*used, -1, now_ns());
+  return {};
+}
+
+Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable& instruments) {
+  std::vector<Instrument*> mine;
+  std::vector<std::string> wanted;
+  for (const Instrument& inst : instruments) {
+    if (inst.venue != id_) continue;
+    mine.push_back(&instruments.get(inst.id));
+    wanted.emplace_back(inst.symbol.view());
+  }
+  if (mine.empty()) return {};
+  BlockingHttpOptions opts;
+  opts.ca_file = cfg_.ca_file;
+  opts.insecure_tls = cfg_.insecure_tls;
+  opts.timeout_ms = cfg_.http_timeout_ms;
+  HttpReply reply;
+  try {
+    BlockingHttp http(cfg_.rest_url, opts);
+    // "Exchange Information": no symbol filter, IP weight 1.
+    reply = http.get("/fapi/v1/exchangeInfo");
+  } catch (const std::exception& e) {
+    reply.error = e.what();
+  }
+  if (!reply.ok()) {
+    const std::string why = reply.error.empty()
+                                ? fmt::format("HTTP {} {}", reply.status, reply.body.substr(0, 200))
+                                : reply.error;
+    if (!cfg_.allow_offline_reference_data)
+      return fail(fmt::format("{}: exchangeInfo failed: {}", cfg_.name, why));
+    // Only the symbol rules are missing: the clock and the account checks below still run.
+    FASTMM_LOG_WARN("{}: exchangeInfo failed ({}); keeping configured tick/lot", cfg_.name, why);
+  } else if (auto applied = apply_exchange_info(reply, mine, wanted); !applied) {
+    return applied;
+  }
   // exchangeInfo.serverTime is cached (5 days old on Demo, observed 2026-09-15): the clock offset
   // comes from GET /fapi/v1/time.
   try {
@@ -230,12 +243,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
   } catch (const std::exception& e) {
     FASTMM_LOG_WARN("{}: server time failed: {}", cfg_.name, std::string_view(e.what()));
   }
-  if (const auto used = parse_int64(reply.header("x-mbx-used-weight-1m")))
-    rate_.on_headers(*used, -1, now_ns());
-  FASTMM_LOG_INFO("{}: reference data loaded for {} symbols ({} rate limit rules)",
-                  cfg_.name,
-                  mine.size(),
-                  info.rate_limits.size());
+  FASTMM_LOG_INFO("{}: reference data loaded for {} symbols", cfg_.name, mine.size());
   if (!cfg_.dry_run && signer_.usable()) {
     if (std::string err = account_checks(mine); !err.empty()) return fail(std::move(err));
   }
@@ -360,6 +368,7 @@ void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (md_feed_) md_feed_->add_instrument(id);
   }
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_) {
     // The stream lists live in the URLs: reopen the market-data connections.
     md_conn_.close();
@@ -411,8 +420,8 @@ void BinanceUsdmVenue::disconnect() {
   // countdown has nothing left to protect: stop it, rather than leave a timer running against an
   // account nobody is quoting. On its own blocking connection, as cancel_all() does: queued on the
   // REST channel it could be dropped by the reset below.
-  if (dms_.enabled() && !cfg_.dry_run) stop_countdown_blocking();
-  dms_.disarm();
+  if (dms_.needs_stop()) stop_countdown_blocking();
+  dms_.reset();
   connected_ = false;
   reconcile_.close();  // before the reset below: nothing it aborts asks again
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
@@ -441,12 +450,7 @@ void BinanceUsdmVenue::disconnect() {
 }
 
 void BinanceUsdmVenue::open_rest() {
-  RestChannelConfig rc;
-  rc.base_url = cfg_.rest_url;
-  rc.ca_file = cfg_.ca_file;
-  rc.insecure_tls = cfg_.insecure_tls;
-  rc.timeout_ms = cfg_.http_timeout_ms;
-  rest_ = std::make_unique<RestChannel>(*reactor_, rc);
+  rest_ = std::make_unique<RestChannel>(*reactor_, rest_channel_config(cfg_, subscribed_.size()));
 }
 
 void BinanceUsdmVenue::open_md() {
@@ -1139,6 +1143,8 @@ void BinanceUsdmVenue::send_command_rest(const OrderCommand& cmd, const OrderSha
     return;
   }
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+  // Its reply comes over REST: losing the WebSocket order connection does not settle it.
+  if (cmd.kind != OrderCommandKind::Cancel) sent_.sent_over_rest(cmd.cl_ord_id);
   rate_.on_sent(rr.weight, now_ns(), rr.is_order);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -1833,40 +1839,37 @@ void BinanceUsdmVenue::keepalive_listen_key() {
 // countdownCancelAll with countdownTime=0 for every subscribed symbol, synchronously.
 void BinanceUsdmVenue::stop_countdown_blocking() {
   if (!signer_.usable() || subscribed_.empty() || symbols_ == nullptr) return;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    for (InstrumentId id : subscribed_) {
-      const std::string_view symbol = symbols_->venue_symbol(id);
-      if (symbol.empty()) continue;
-      RestRequest rr;
-      if (!encoder_->encode_rest_countdown_cancel_all(symbol, 0, venue_time_ms(), rr)) continue;
-      const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
-      const HttpReply r = http.request(rr.method, target, api_headers());
-      if (!r.ok())
-        FASTMM_LOG_WARN("{}: stopping countdownCancelAll for {} failed: status={} {}",
-                        cfg_.name,
-                        symbol,
-                        r.status,
-                        r.body.substr(0, 160));
-    }
-  } catch (const std::exception& e) {
-    FASTMM_LOG_WARN("{}: stopping countdownCancelAll: {}", cfg_.name, e.what());
-  }
+  BlockingControl control(cfg_);
+  static_cast<void>(control.per_target(
+      "stopping countdownCancelAll",
+      std::span<const InstrumentId>(subscribed_),
+      [&](InstrumentId id) { return symbols_->venue_symbol(id); },
+      [&](InstrumentId id, BlockingRequest& q) {
+        const std::string_view symbol = symbols_->venue_symbol(id);
+        RestRequest rr;
+        if (symbol.empty() ||
+            !encoder_->encode_rest_countdown_cancel_all(symbol, 0, venue_time_ms(), rr))
+          return false;
+        q.method = rr.method;
+        q.target = std::string(rr.path) + "?" + std::string(rr.query.view());
+        q.headers = api_headers();
+        return true;
+      },
+      [](const HttpReply& reply, std::string&) { return reply.ok(); }));
 }
 
 // POST /fapi/v1/countdownCancelAll, one request per subscribed symbol: the countdown is per
-// symbol, and sending it again replaces the running one. A request that does not go out leaves
-// the switch unarmed so the next housekeeping tick retries; if this process is what broke, the
-// countdown runs out and the venue cancels, which is the whole point.
+// symbol, and sending it again replaces the running one. The round counts only when every symbol
+// confirmed it (CountdownDriver): a symbol whose refresh fails keeps its old countdown, which
+// runs out. A request that does not go out is retried from the next housekeeping tick; if this
+// process is what broke, the countdown runs out and the venue cancels, which is the whole point.
 void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
-  if (rest_ == nullptr || !signer_.usable() || subscribed_.empty()) return;
+  if (rest_ == nullptr || !signer_.usable() || subscribed_.empty() || symbols_ == nullptr) return;
+  const std::uint32_t round =
+      dms_.begin_round(now_ns(), static_cast<std::uint32_t>(subscribed_.size()));
   bool any = false;
   for (InstrumentId id : subscribed_) {
-    const std::string_view symbol = symbols_ != nullptr ? symbols_->venue_symbol(id) : "";
+    const std::string_view symbol = symbols_->venue_symbol(id);
     if (symbol.empty()) continue;
     RestRequest rr;
     if (!encoder_->encode_rest_countdown_cancel_all(symbol, countdown_ms, venue_time_ms(), rr))
@@ -1874,17 +1877,12 @@ void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
     const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
     std::weak_ptr<int> alive = alive_;
     const bool queued = rest_->request(
-        rr.method,
-        target,
-        api_headers(),
-        {},
-        [this, alive, id, countdown_ms](const net::HttpResponse& r) {
+        rr.method, target, api_headers(), {}, [this, alive, id, round](const net::HttpResponse& r) {
           if (alive.expired() || r.error == net::NetError::Canceled) return;
           ++stats_.rest_requests;
           note_rate_headers(r);
           if (r.ok()) {
-            // The countdown is running from here, not from when the request went out.
-            if (countdown_ms > 0) dms_.armed(now_ns());
+            dms_.confirmed(round);
             return;
           }
           ++stats_.rest_errors;
@@ -1902,7 +1900,7 @@ void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
     any = true;
     rate_.on_sent(rr.weight, now_ns());
   }
-  if (any && countdown_ms > 0) dms_.attempted(now_ns());
+  if (any) dms_.went_out();
 }
 
 void BinanceUsdmVenue::cancel_all_async() {
@@ -1933,40 +1931,23 @@ void BinanceUsdmVenue::cancel_all_async() {
 
 bool BinanceUsdmVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr) return true;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  bool all_ok = true;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    BinanceUsdmOrderEncoder enc(signer_, *symbols_, cfg_.recv_window_ms);  // this thread's copy
-    for (InstrumentId id : subscribed_) {
-      RestRequest rr;
-      if (!enc.encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr)) {
-        all_ok = false;
-        continue;
-      }
-      const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
-      const HttpReply reply = http.request("DELETE", target, api_headers());
-      if (!reply.ok()) {
-        all_ok = false;
-        FASTMM_LOG_ERROR("{}: kill-switch cancel-all for {} failed: {} {}",
-                         cfg_.name,
-                         symbols_->venue_symbol(id),
-                         reply.status,
-                         reply.error.empty() ? reply.body.substr(0, 120) : reply.error);
-      } else {
-        FASTMM_LOG_INFO(
-            "{}: kill-switch cancel-all for {} ok", cfg_.name, symbols_->venue_symbol(id));
-      }
-    }
-  } catch (const std::exception& e) {
-    FASTMM_LOG_ERROR(
-        "{}: kill-switch cancel-all failed: {}", cfg_.name, std::string_view(e.what()));
-    return false;
-  }
-  return all_ok;
+  BlockingControl control(cfg_);
+  BinanceUsdmOrderEncoder enc(signer_, *symbols_, cfg_.recv_window_ms);  // this thread's copy
+  return control.per_target(
+      "kill-switch cancel-all",
+      std::span<const InstrumentId>(subscribed_),
+      [&](InstrumentId id) { return symbols_->venue_symbol(id); },
+      [&](InstrumentId id, BlockingRequest& q) {
+        RestRequest rr;
+        if (!enc.encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr))
+          return false;
+        q.method = "DELETE";
+        q.target = std::string(rr.path) + "?" + std::string(rr.query.view());
+        q.headers = api_headers();
+        return true;
+      },
+      // DELETE allOpenOrders answers 200 with nothing open too.
+      [](const HttpReply& reply, std::string&) { return reply.ok(); });
 }
 
 // ---- housekeeping ---------------------------------------------------------------------------
@@ -2012,18 +1993,23 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
     //
     // If the window ran out anyway, the venue has cancelled everything of ours and this process
     // is still running: it must not quietly put the quotes back. Kill the venue and let an
-    // operator look, exactly as a venue-fatal error does.
-    if (dms_.expired(now)) {
-      FASTMM_LOG_ERROR(
-          "{}: countdownCancelAll not refreshed within {} ms; the venue has "
-          "cancelled this account's orders",
-          cfg_.name,
-          dms_.window_ms());
-      dms_.disarm();
-      fatal_ = true;
-      trip_venue_kill(KillReason::DeadMansSwitchLost);
+    // operator look, exactly as a venue-fatal error does (CountdownDriver).
+    switch (dms_.poll(now)) {
+      case CountdownDriver::Step::Lapsed:
+        FASTMM_LOG_ERROR(
+            "{}: countdownCancelAll not refreshed within {} ms; the venue has "
+            "cancelled this account's orders",
+            cfg_.name,
+            dms_.window_ms());
+        fatal_ = true;
+        trip_venue_kill(KillReason::DeadMansSwitchLost);
+        break;
+      case CountdownDriver::Step::Refresh:
+        send_countdown_cancel_all(dms_.window_ms());
+        break;
+      case CountdownDriver::Step::None:
+        break;
     }
-    if (dms_.due(now)) send_countdown_cancel_all(dms_.window_ms());
     check_positions(now);
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();

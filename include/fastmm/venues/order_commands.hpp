@@ -92,7 +92,9 @@ struct OrderCommand {
 // may reach the matching engine, or the venue's open-order view, after the snapshot is taken
 // (Binance Spot, 2026-09-26: an order sent 1 ms before openOrders.status and accepted by the
 // matching engine was missing from the reply, and the engine cancelled it as gone). An order with
-// no answer after kUnansweredNs no longer holds the watermark back.
+// no answer after kUnansweredNs no longer holds the watermark back, and neither does one sent on a
+// WebSocket connection that is gone (it will not be answered on it); one sent over REST does, as
+// its reply still comes.
 //
 // One engine allocates its ids in the order it sends them; fastmm-gateway interleaves several
 // engines' ids on one venue and finds the point the snapshot was taken at from the id itself
@@ -106,7 +108,7 @@ class SentWatermark {
     if (c.kind == OrderCommandKind::Cancel) return;
     prune(now_ns);
     if (n_ == kMaxInFlight) pop();  // treat the oldest as answered: never blocks new orders
-    in_flight_[(head_ + n_) % kMaxInFlight] = InFlight{c.cl_ord_id, high_, now_ns, false};
+    in_flight_[(head_ + n_) % kMaxInFlight] = InFlight{c.cl_ord_id, high_, now_ns, false, false};
     ++n_;
     high_ = c.cl_ord_id;
   }
@@ -142,10 +144,24 @@ class SentWatermark {
         break;
     }
   }
-  // The connection the requests went out on is gone: none of them will be answered on it.
+  // Order `id` (noted last, or nearly) went out over REST rather than on the WebSocket order
+  // connection: losing that connection does not settle it.
+  void sent_over_rest(ClientOrderId id) noexcept {
+    for (std::size_t k = n_; k > 0; --k) {
+      InFlight& f = in_flight_[(head_ + k - 1) % kMaxInFlight];
+      if (f.id == id) {
+        f.rest = true;
+        break;
+      }
+    }
+  }
+  // The WebSocket order connection is gone: the requests sent on it will not be answered on it.
+  // REST requests still will, and keep holding the watermark back.
   void connection_lost() noexcept {
-    head_ = 0;
-    n_ = 0;
+    for (std::size_t k = 0; k < n_; ++k) {
+      InFlight& f = in_flight_[(head_ + k) % kMaxInFlight];
+      if (!f.rest) f.answered = true;
+    }
   }
   // The watermark for a snapshot requested now.
   [[nodiscard]] ClientOrderId value(std::int64_t now_ns) noexcept {
@@ -165,6 +181,7 @@ class SentWatermark {
     ClientOrderId prev;  // the id sent just before it
     std::int64_t sent_ns;
     bool answered;
+    bool rest;  // sent over REST, not on the WebSocket order connection
   };
   void pop() noexcept {
     head_ = (head_ + 1) % kMaxInFlight;

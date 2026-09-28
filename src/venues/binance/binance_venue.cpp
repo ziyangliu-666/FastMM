@@ -2,6 +2,7 @@
 
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
 #include "fastmm/venues/binance/binance_trade_history.hpp"
+#include "fastmm/venues/blocking_control.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connector_common.hpp"
 #include "fastmm/venues/decimal.hpp"
@@ -11,12 +12,10 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
-#include <thread>
 
 namespace fastmm::venues::binance {
 
@@ -33,10 +32,6 @@ constexpr std::int64_t kLogonRetryNs = 2'000'000'000;
 constexpr int kMyTradesLimit = 1000;
 constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;  // between retries of a failed replay
 constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
-// cancel_all() is the kill switch's only remedy, so a rate-limited refusal is retried rather than
-// reported: bounded, because the caller is blocked on it.
-constexpr int kCancelAllRateLimitRetries = 3;
-constexpr int kCancelAllRetryMs = 400;
 constexpr std::int64_t kMyTradesMaxLookbackMs = 24LL * 3600 * 1000;
 // rest-api.md "Order book" weight by limit: 1-100:5, 101-500:25, 501-1000:50, 1001-5000:250.
 std::uint32_t depth_weight(int limit) noexcept {
@@ -286,6 +281,7 @@ void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (md_feed_) md_feed_->add_instrument(id);
   }
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_ && md_conn_.opened()) {
     // Stream list lives in the URL: reopen the market-data connection.
     md_conn_.close();
@@ -355,12 +351,7 @@ void BinanceVenue::disconnect() {
 }
 
 void BinanceVenue::open_rest() {
-  RestChannelConfig rc;
-  rc.base_url = cfg_.rest_url;
-  rc.ca_file = cfg_.ca_file;
-  rc.insecure_tls = cfg_.insecure_tls;
-  rc.timeout_ms = cfg_.http_timeout_ms;
-  rest_ = std::make_unique<RestChannel>(*reactor_, rc);
+  rest_ = std::make_unique<RestChannel>(*reactor_, rest_channel_config(cfg_, subscribed_.size()));
 }
 
 void BinanceVenue::open_md() {
@@ -1042,6 +1033,8 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd,
     return;
   }
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+  // Its reply comes over REST: losing the WebSocket order connection does not settle it.
+  if (cmd.kind != OrderCommandKind::Cancel) sent_.sent_over_rest(cmd.cl_ord_id);
   rate_.on_sent(rr.weight, now_ns(), rr.is_order);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -1595,62 +1588,30 @@ void BinanceVenue::cancel_all_async() {
 
 bool BinanceVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr) return true;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  bool all_ok = true;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    BinanceOrderEncoder enc(signer_, *symbols_, cfg_.recv_window_ms);  // thread-local copy
-    for (InstrumentId id : subscribed_) {
-      RestRequest rr;
-      if (!enc.encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr)) {
-        all_ok = false;
-        continue;
-      }
-      const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
-      // A rate limit is the one refusal worth waiting out here: the kill switch has no other
-      // remedy than this call, and a caller that takes the first `false` as final leaves the book
-      // on. Bounded, because a real IP ban lasts minutes and the caller must not hang on it -
-      // past these attempts the false is the truth and the operator is told.
-      HttpReply reply = http.request("DELETE", target, api_headers());
-      for (int attempt = 0;
-           attempt < kCancelAllRateLimitRetries && (reply.status == 418 || reply.status == 429);
-           ++attempt) {
-        FASTMM_LOG_WARN("{}: kill-switch cancel-all for {} rate limited ({}); retrying",
-                        cfg_.name,
-                        symbols_->venue_symbol(id),
-                        reply.status);
-        std::this_thread::sleep_for(std::chrono::milliseconds(kCancelAllRetryMs));
-        RestRequest again;
-        if (!enc.encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), again)) break;
-        reply = http.request("DELETE",
-                             std::string(again.path) + "?" + std::string(again.query.view()),
-                             api_headers());
-      }
-      int code = 0;
-      std::string msg;
-      const bool nothing_open =
-          reply.status == 400 && decode_rest_error(reply.body, code, msg) && code == -2011;
-      if (!reply.ok() && !nothing_open) {
-        all_ok = false;
-        FASTMM_LOG_ERROR("{}: kill-switch cancel-all for {} failed: {} {}",
-                         cfg_.name,
-                         symbols_->venue_symbol(id),
-                         reply.status,
-                         reply.error.empty() ? reply.body.substr(0, 120) : reply.error);
-      } else {
-        FASTMM_LOG_INFO(
-            "{}: kill-switch cancel-all for {} ok", cfg_.name, symbols_->venue_symbol(id));
-      }
-    }
-  } catch (const std::exception& e) {
-    FASTMM_LOG_ERROR(
-        "{}: kill-switch cancel-all failed: {}", cfg_.name, std::string_view(e.what()));
-    return false;
-  }
-  return all_ok;
+  BlockingControl control(cfg_);
+  BinanceOrderEncoder enc(signer_, *symbols_, cfg_.recv_window_ms);  // thread-local copy
+  return control.per_target(
+      "kill-switch cancel-all",
+      std::span<const InstrumentId>(subscribed_),
+      [&](InstrumentId id) { return symbols_->venue_symbol(id); },
+      [&](InstrumentId id, BlockingRequest& q) {
+        RestRequest rr;
+        if (!enc.encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr))
+          return false;
+        q.method = "DELETE";
+        q.target = std::string(rr.path) + "?" + std::string(rr.query.view());
+        q.headers = api_headers();
+        return true;
+      },
+      [](const HttpReply& reply, std::string& why) {
+        int code = 0;
+        std::string msg;
+        const bool decoded = decode_rest_error(reply.body, code, msg);
+        // -2011 "Unknown order sent": there was nothing open to cancel.
+        if (reply.ok() || (reply.status == 400 && decoded && code == -2011)) return true;
+        if (decoded) why = fmt::format("code {} {}", code, msg);
+        return false;
+      });
 }
 
 // ---- housekeeping ---------------------------------------------------------------------------

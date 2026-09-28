@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 
 using namespace fastmm;
@@ -105,6 +106,10 @@ struct Harness {
   std::atomic<int> countdowns{0};       // POST /fapi/v1/countdownCancelAll with a window
   std::atomic<int> countdown_stops{0};  // ...with countdownTime=0
   std::atomic<bool> countdown_fails{false};
+  std::atomic<bool> countdown_fails_eth{false};  // only ETHUSDT's countdown is refused
+  std::atomic<int> cancel_all_limited{0};        // the next N allOpenOrders answer 429
+  std::atomic<int> cancel_all_requests{0};
+  std::atomic<bool> exchange_info_down{false};  // exchangeInfo answers 503
   std::atomic<int> user_trades_queries{0};
   std::atomic<int> user_trades_failures{0};  // the next N userTrades queries answer 503
   std::mutex trades_mu;
@@ -132,6 +137,8 @@ struct Harness {
   ~Harness() { srv.stop(); }
   explicit Harness(bool hedge = false) : hedge_mode(hedge) {
     srv.route("GET", "/fapi/v1/exchangeInfo", [this](const net::HttpRequest&) {
+      if (exchange_info_down.load())
+        return net::HttpServerResponse::text(503, "Service Unavailable");
       return net::HttpServerResponse::json(200, exchange_info);
     });
     srv.route("GET", "/fapi/v1/time", [](const net::HttpRequest&) {
@@ -217,7 +224,8 @@ struct Harness {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
       srv.record("countdown", std::string(r.query));
       const bool stop = r.query.find("countdownTime=0&") != std::string_view::npos;
-      if (countdown_fails.load())
+      if (countdown_fails.load() ||
+          (countdown_fails_eth.load() && r.query.find("symbol=ETHUSDT") != std::string_view::npos))
         return net::HttpServerResponse::json(
             400, R"({"code":-1130,"msg":"Data sent for parameter 'countdownTime' is not valid."})");
       if (stop) {
@@ -228,6 +236,15 @@ struct Harness {
       return net::HttpServerResponse::json(200, R"({"symbol":"BTCUSDT","countdownTime":"3000"})");
     });
     srv.route("DELETE", "/fapi/v1/allOpenOrders", [this](const net::HttpRequest& r) {
+      ++cancel_all_requests;
+      if (cancel_all_limited.load() > 0) {
+        --cancel_all_limited;
+        auto limited = net::HttpServerResponse::json(
+            429,
+            R"({"code":-1003,"msg":"Too many requests; please use the websocket for live updates."})");
+        limited.headers.emplace_back("Retry-After", "1");
+        return limited;
+      }
       if (r.header("X-MBX-APIKEY") == kKey && signed_ok(r.query) &&
           r.query.find("symbol=BTCUSDT") != std::string_view::npos)
         ++cancel_all_ok;
@@ -717,16 +734,18 @@ struct DmsFixture {
   Collected oc;
 
   explicit DmsFixture(std::int64_t window_ms,
-                      const std::function<void(BinanceUsdmVenue&)>& before_connect = {}) {
+                      const std::function<void(BinanceUsdmVenue&)>& before_connect = {},
+                      bool with_eth = false) {
     REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+    if (with_eth) REQUIRE(instruments.add(make_instrument("ETHUSDT", 0, "ETH", "USDT")));
     BinanceUsdmVenueConfig cfg = h.config(false);
     cfg.dead_mans_switch_ms = window_ms;
     venue = std::make_unique<BinanceUsdmVenue>(VenueId{0}, std::move(cfg));
     REQUIRE(venue->load_reference_data(instruments));
     REQUIRE(symbols.build(instruments));
     venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
-    const InstrumentId ids[] = {InstrumentId{0}};
-    venue->subscribe(ids);
+    const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
+    venue->subscribe(std::span<const InstrumentId>(ids, with_eth ? 2 : 1));
     if (before_connect) before_connect(*venue);
     venue->connect(reactor);
   }
@@ -800,6 +819,99 @@ TEST_CASE("binance_usdm.venue: a lapsed dead man's switch kills the venue instea
   f.venue->on_wake();
   REQUIRE(f.pump([&] { return f.oc.count(EventType::OrderReject) > rejects; }));
   CHECK(f.oc.last<OrderRejectMsg>(EventType::OrderReject)->reason == RejectReason::VenueKilled);
+}
+
+TEST_CASE("binance_usdm.venue: after a lapse the countdown is left to run out, not re-armed") {
+  // The lapse killed the venue; the venue's own timer is what clears the account whatever the
+  // local cancels manage. A refresh sent now would push that timer out again, so none goes out
+  // until the session reconnects. (It used to re-arm on the very tick that reported the lapse.)
+  DmsFixture f(1200);  // refreshed every 500 ms
+  REQUIRE(f.pump([&] { return f.h.countdowns.load() >= 1; }));
+  f.h.countdown_fails.store(true);
+  REQUIRE(f.pump([&] { return f.venue->fatal(); }, 8000));
+  f.h.countdown_fails.store(false);
+  const std::size_t sent = f.h.srv.frames("countdown").size();
+  idle(f.reactor, 2500);  // five refresh periods
+  CHECK(f.h.srv.frames("countdown").size() == sent);
+  // The shutdown still stops it: the last refresh may have reached the venue.
+  f.venue->disconnect();
+  CHECK(f.h.countdown_stops.load() == 1);
+}
+
+TEST_CASE("binance_usdm.venue: one symbol's refused refresh lapses the switch") {
+  // The countdown is per symbol. When ETHUSDT's refresh is refused its countdown still runs from
+  // the last one that was confirmed, and the venue cancels ETHUSDT's orders when it ends, however
+  // well BTCUSDT's refreshes go. It used to count as armed if any one symbol answered.
+  DmsFixture f(1200, {}, /*with_eth=*/true);
+  REQUIRE(f.pump([&] { return f.h.countdowns.load() >= 2; }));  // both symbols armed
+  CHECK_FALSE(f.venue->fatal());
+  f.h.countdown_fails_eth.store(true);
+  REQUIRE(f.pump([&] { return f.venue->fatal(); }, 8000));
+  const auto* kill = f.oc.first_if<ControlMsg>(EventType::Control, [](const ControlMsg& m) {
+    return m.command == ControlCommand::TripVenueKill;
+  });
+  REQUIRE(kill != nullptr);
+  CHECK(static_cast<KillReason>(kill->arg) == KillReason::DeadMansSwitchLost);
+  CHECK(f.h.countdowns.load() >= 3);  // BTCUSDT kept being confirmed meanwhile
+}
+
+TEST_CASE("binance_usdm.venue: the kill-switch cancel-all waits out a rate limit") {
+  // A 429 on the kill path used to be final: the call returned false and the orders stayed on
+  // the book. It is retried after the venue's Retry-After, within a deadline.
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  SymbolTable symbols;
+  BinanceUsdmVenue venue(VenueId{0}, h.config(false));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}};
+  venue.subscribe(ids);
+  h.cancel_all_limited = 1;
+  const std::int64_t t0 = net::Reactor::now_ns();
+  CHECK(venue.cancel_all());
+  const std::int64_t took_ms = (net::Reactor::now_ns() - t0) / 1'000'000;
+  CHECK(h.cancel_all_requests.load() == 2);
+  CHECK(h.cancel_all_ok.load() == 1);
+  CHECK(took_ms >= 900);  // Retry-After: 1
+
+  // A limit that does not lift is reported, not waited on forever.
+  h.cancel_all_limited = 100;
+  CHECK_FALSE(venue.cancel_all());
+  CHECK(h.cancel_all_requests.load() == 6);  // the first and three retries
+  h.srv.stop();
+}
+
+TEST_CASE("binance_usdm.venue: offline reference data still runs the account checks") {
+  // allow_offline_reference_data keeps the configured tick and lot when exchangeInfo cannot be
+  // had. It used to skip everything after it too, including the hedge-mode refusal.
+  Harness h(/*hedge=*/true);
+  h.exchange_info_down = true;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  BinanceUsdmVenueConfig cfg = h.config(false);
+  cfg.allow_offline_reference_data = true;
+  BinanceUsdmVenue venue(VenueId{0}, std::move(cfg));
+  const auto loaded = venue.load_reference_data(instruments);
+  REQUIRE_FALSE(loaded);
+  CHECK(loaded.error().find("hedge mode") != std::string::npos);
+  h.srv.stop();
+
+  // One-way mode: it loads, on the configured values.
+  Harness h2;
+  h2.exchange_info_down = true;
+  InstrumentTable instruments2;
+  REQUIRE(instruments2.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  BinanceUsdmVenueConfig cfg2 = h2.config(false);
+  cfg2.allow_offline_reference_data = true;
+  BinanceUsdmVenue venue2(VenueId{0}, std::move(cfg2));
+  REQUIRE(venue2.load_reference_data(instruments2));
+  CHECK(h2.srv.frames("/fapi/v1/positionSide/dual").size() == 1);
+  h2.srv.stop();
 }
 
 TEST_CASE("binance_usdm.venue: a quote is charged what the endpoint costs, not one of everything") {

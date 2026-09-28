@@ -271,7 +271,7 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   ConnectionSlot<PrivateHandler> private_conn_;
   ConnectionSlot<TradeHandler> trade_conn_;
   RateLimiter rate_;
-  CountdownSwitch dms_;
+  CountdownDriver dms_;
   OpenHashMap<ClientOrderId, OrderShadow, 8192> shadows_;
   OpenHashMap<ClientOrderId, ClientOrderId, 8192> aliases_;  // venue clOrdId -> engine id
   alignas(64) std::byte scratch_[kDecoderScratchBytes];

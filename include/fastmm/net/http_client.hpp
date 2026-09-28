@@ -171,6 +171,8 @@ class HttpClient final : public IoHandler {
   bool is_ready() const noexcept { return state_ == HttpClientState::Ready; }
   bool in_flight() const noexcept { return in_flight_; }
   std::size_t queued() const noexcept { return queue_.size(); }
+  // Requests queued already stay queued when this is lowered below their number.
+  void set_max_queue(std::size_t n) noexcept { cfg_.max_queue = n; }
   const HttpClientStats& stats() const noexcept { return stats_; }
   Stream& stream() noexcept { return stream_; }
 

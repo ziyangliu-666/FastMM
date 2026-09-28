@@ -28,6 +28,26 @@ struct RestChannelConfig {
   std::size_t max_queue = 8;
 };
 
+// Queue room for a connector's REST channel with `symbols` subscribed: every connector fans some
+// requests out per symbol (cancel-all, the USDⓈ-M countdown, execution and funding replays), and
+// those can overlap, on top of a fixed set (reconciliation, clock, listen key, the dead man's
+// switch, orders falling back to REST). The queue is a deque: room costs nothing until used.
+[[nodiscard]] constexpr std::size_t rest_queue_for(std::size_t symbols) noexcept {
+  return 32 + 4 * symbols;
+}
+
+// The RestChannelConfig every connector config spells the same way.
+template <class Cfg>
+[[nodiscard]] RestChannelConfig rest_channel_config(const Cfg& cfg, std::size_t symbols) {
+  RestChannelConfig rc;
+  rc.base_url = cfg.rest_url;
+  rc.ca_file = cfg.ca_file;
+  rc.insecure_tls = cfg.insecure_tls;
+  rc.timeout_ms = cfg.http_timeout_ms;
+  rc.max_queue = rest_queue_for(symbols);
+  return rc;
+}
+
 class RestChannel {
  public:
   using Callback = net::HttpResponseCallback;
@@ -93,7 +113,15 @@ class RestChannel {
     tls_.reset();
   }
 
+  // For a subscription that grew after connect: see rest_queue_for().
+  void set_max_queue(std::size_t n) noexcept {
+    cfg_.max_queue = n;
+    if (plain_) plain_->set_max_queue(n);
+    if (tls_) tls_->set_max_queue(n);
+  }
+
   [[nodiscard]] bool connected() const noexcept { return plain_ || tls_; }
+  [[nodiscard]] std::size_t max_queue() const noexcept { return cfg_.max_queue; }
   [[nodiscard]] std::uint64_t requests() const noexcept { return requests_; }
   [[nodiscard]] std::uint64_t errors() const noexcept { return errors_; }
   [[nodiscard]] const std::string& host() const noexcept { return host_; }

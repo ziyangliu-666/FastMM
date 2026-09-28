@@ -104,6 +104,9 @@ struct Harness {
   std::atomic<int> auth_failures{0};
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
+  std::atomic<int> cancel_all_calls{0};
+  std::atomic<int> cancel_all_429{0};    // the next N cancel-all requests answer HTTP 429
+  std::atomic<int> cancel_all_10006{0};  // ...then the next N retCode 10006 in a 200
   std::atomic<int> open_orders_ok{0};
   std::atomic<int> open_orders_calls{0};
   std::atomic<int> rest_cancels{0};
@@ -169,6 +172,17 @@ struct Harness {
           R"({"retCode":0,"retMsg":"success","result":{},"retExtInfo":{},"time":1789299700000})");
     });
     srv.route("POST", "/v5/order/cancel-all", [this](const net::HttpRequest& r) {
+      ++cancel_all_calls;
+      if (cancel_all_429.load() > 0) {
+        --cancel_all_429;
+        return net::HttpServerResponse::text(429, "Too Many Requests");
+      }
+      if (cancel_all_10006.load() > 0) {
+        --cancel_all_10006;
+        return net::HttpServerResponse::json(
+            200,
+            R"({"retCode":10006,"retMsg":"Too many visits!","result":{},"retExtInfo":{},"time":1789299704000})");
+      }
       const bool ok =
           rest_signed(r, r.body) && r.body == R"({"category":"spot","symbol":"BTCUSDT"})";
       ++(ok ? cancel_all_ok : cancel_all_bad);
@@ -458,6 +472,36 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
     venue.disconnect();
     reactor.run_once(0);
   }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: the kill-switch cancel-all waits out a rate limit") {
+  // A refusal for rate on the kill path used to be final: cancel_all() returned false and the
+  // orders stayed on the book. An HTTP 429 and a retCode 10006 are both retried, a bounded
+  // number of times.
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 1, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  SymbolTable symbols;
+  BybitVenue venue(kVenue, make_bybit_config(h.section(true), false));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {kBtc};
+  venue.subscribe(ids);
+  h.cancel_all_429 = 1;
+  h.cancel_all_10006 = 1;
+  CHECK(venue.cancel_all());
+  CHECK(h.cancel_all_calls.load() == 3);
+  CHECK(h.cancel_all_ok.load() == 1);
+  CHECK(h.cancel_all_bad.load() == 0);
+
+  h.cancel_all_429 = 100;
+  CHECK_FALSE(venue.cancel_all());
+  CHECK(h.cancel_all_calls.load() == 7);  // the first and three retries
   h.srv.stop();
 }
 
