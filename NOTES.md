@@ -3,6 +3,13 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Binance Spot Demo rerun after the fix (2026-09-28, 47 min).** Same scenario, the gateway down
+90 s after its kill -9 with orders resting. 4789 orders (all client ids distinct), 709 trades, all
+booked exactly once by the strategy whose epoch they carry, 0 open at the end, each store's
+position equal to its trades less BTC fees, the account's BTC exact (`verify.py`: ALL CHECKS
+PASS). 4 fills landed while the gateway was down (2 of each strategy): each booked by its own
+strategy after the restart; the gateway's unattributed stayed 0.
+
 **Binance Spot Demo, gateway + two strategies sharing BTCUSDT, 45 min with faults (2026-09-28).**
 The user approved a demo run (demo keys only; the USD-M demo wallet is empty, so spot only).
 `fastmm-gateway` with `[gateway.shared."binance:BTCUSDT"]`, `basic_mm` A (1.5 bps) and B (3 bps).
@@ -14,8 +21,8 @@ carry; no booked fill the venue lacks; 0 open at the end; the account's BTC move
 trades less BTC fees; B's position equals its trades less fees. **One fill lost to its strategy:**
 A's order (epoch 5) filled 2 s after the gateway's kill -9, while nothing ran; the new gateway's
 connect-time replay booked it to the account as unattributed, and A's attach never claimed it
-(A's position short by exactly that fill). The untested path the shared-instruments entry left
-open; being fixed.
+(A's position short by exactly that fill). Fixed: the attach carries the store's open orders
+(Binance's myTrades names only the venue order id); see the entry above.
 
 ## Next direction (chosen 2026-09-28): one connector machinery, written once
 
