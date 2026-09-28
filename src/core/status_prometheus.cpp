@@ -377,6 +377,13 @@ double quote(std::int64_t raw) {
   return static_cast<double>(raw) * kRawToQuote;
 }
 
+std::string position_labels(const StatusSnapshot& s, const StatusPosition& p) {
+  const std::uint8_t v = p.venue < kStatusMaxVenues ? p.venue : 0;
+  return fmt::format("venue=\"{}\",instrument=\"{}\"",
+                     label(name_of(s.venues[v].name, sizeof s.venues[v].name)),
+                     label(name_of(p.symbol, sizeof p.symbol)));
+}
+
 // fastmm-gateway: the account over every strategy, its positions, the attachments and the
 // gateway's own routing counters.
 void gateway_metrics(Exposition& e, const StatusSnapshot& s) {
@@ -417,6 +424,34 @@ void gateway_metrics(Exposition& e, const StatusSnapshot& s) {
                            label(name_of(s.venues[v].name, sizeof s.venues[v].name)),
                            label(name_of(p.symbol, sizeof p.symbol))),
                static_cast<double>(p.qty_raw) * kRawToQuote);
+  }
+  e.family("fastmm_account_unattributed",
+           "gauge",
+           "a shared instrument: what the account holds that no strategy's position holds, base "
+           "units");
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    if (p.shared == 0) continue;
+    e.value_of("fastmm_account_unattributed",
+               position_labels(s, p),
+               static_cast<double>(p.unattributed_raw) * kRawToQuote);
+  }
+  e.family("fastmm_account_unexplained",
+           "gauge",
+           "a shared instrument: the account's position less the strategies' and the unattributed "
+           "part, base units; 0 when they agree");
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    if (p.shared == 0) continue;
+    e.value_of("fastmm_account_unexplained",
+               position_labels(s, p),
+               static_cast<double>(p.unexplained_raw) * kRawToQuote);
+  }
+  e.family("fastmm_gateway_instrument_traders", "gauge", "attachments trading the instrument");
+  for (std::size_t i = 0; i < np; ++i) {
+    const StatusPosition& p = g.positions[i];
+    e.value_of(
+        "fastmm_gateway_instrument_traders", position_labels(s, p), static_cast<double>(p.traders));
   }
   e.family("fastmm_gateway_instrument_owner",
            "gauge",

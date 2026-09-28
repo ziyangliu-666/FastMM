@@ -66,6 +66,11 @@ struct Recovery {
     std::int64_t avg_px_raw = 0;
   };
   std::vector<PositionState> position_state;
+  // The session epochs (the high bits of their client order ids) of the sessions a restart carries
+  // over, newest first, at most kMaxSessionEpochs: behind fastmm-gateway, executions of their
+  // orders are this engine's, whichever session placed them.
+  static constexpr std::size_t kMaxSessionEpochs = 64;
+  std::vector<std::uint16_t> session_epochs;
   // Where each venue's execution replay resumes (Venue::resume_executions): from the venue time of
   // the last fill or funding payment the store holds for it (in the newest session that stored
   // one), minus kResumeOverlapMs, skipping the trade ids and funding ids (kFundingIdPrefix + id)

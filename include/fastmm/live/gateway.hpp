@@ -10,7 +10,8 @@
 //   main: AF_UNIX SOCK_SEQPACKET listener  ◄──── each attachment: one connection for its lifetime
 //
 // Attach: the strategy connects and sends an AttachRequest naming the instruments it trades; the
-// gateway refuses it when a live attachment owns one of them. Otherwise it gives it a session
+// gateway refuses it when a live attachment trades one of them that [gateway.shared] does not name,
+// or has its [engine] name. Otherwise it gives it a session
 // epoch from its own epoch file (the high 16 bits of every client order id, so epochs are unique
 // across attachments and across gateway restarts), creates three ShmRings per venue under
 // /dev/shm, adds the attachment to every venue's router on the venue's network thread, puts a
@@ -25,13 +26,19 @@
 //     it then gets a Resyncing state of its own and snapshots of the gateway's books again.
 //   * an order event to the attachment whose epoch its client order id carries. A fill of an
 //     epoch no attachment holds (a dead session's, or an execution naming no order) goes to the
-//     owner of the instrument, and so does an account-level Position record.
+//     owner of the instrument, and so does an account-level Position record. On a shared
+//     instrument ([gateway.shared]) there is no owner: such a fill goes to the live attachment of
+//     the strategy whose earlier session the epoch was (by [engine] name: the epochs this gateway
+//     gave it and those its store lists), one naming no order and funding to the primary, a
+//     Position record to nobody; the account counts each execution towards that strategy or
+//     towards nobody (Account::share, unattributed).
 //   * a reconciliation (Begin, rows, End) to the attachments that asked for one (their attach,
 //     their engine's Reconcile), or to all when the connector started it itself. Each gets its own
 //     rows only, under a Begin whose sent watermark is its own last order the venue had taken. A
 //     row of an epoch no attachment holds is a dead session's order, which the gateway cancels.
 // Outbound, the network thread moves each attachment's orders into the venue's own ring after the
-// account guards ([gateway]: the instrument belongs to the sender, the account's kill switch, the
+// account guards ([gateway]: the sender trades the instrument, the account's kill switch, on a
+// shared instrument no trade with another attachment's resting order (core/self_trade.hpp), the
 // notional working at the venue, the account's gross and net exposure, the order rate per venue);
 // a refused order goes back to its sender as an OrderReject.
 //
@@ -88,7 +95,7 @@ namespace gw {
 static_assert(std::endian::native == std::endian::little);
 
 inline constexpr std::uint32_t kMagic = 0x57474d46;  // "FMGW"
-inline constexpr std::uint16_t kVersion = 5;
+inline constexpr std::uint16_t kVersion = 6;
 
 enum class MsgType : std::uint16_t {
   AttachRequest = 1,
@@ -147,15 +154,19 @@ inline constexpr std::uint32_t kStrategyBlocks = 1U << 1;
 // always fits (gateway_client.cpp checks). A request carrying more is refused, never truncated.
 inline constexpr std::uint32_t kMaxKnownExecIds = 1024;
 
-// Followed by known_count ExecId, claim_count InstrumentClaim, position_count PositionSeed, then
-// resume_count VenueResume.
+// The session epochs of the strategy's earlier sessions (store::Recovery::session_epochs): the
+// executions of their orders are its own.
+inline constexpr std::uint32_t kMaxPastEpochs = 64;
+
+// Followed by known_count ExecId, claim_count InstrumentClaim, position_count PositionSeed,
+// resume_count VenueResume, then epoch_count std::uint16_t (past epochs).
 struct AttachRequest {
   Header hdr;
-  char engine[64];  // [engine] name of the strategy, for the gateway's log
+  char engine[64];  // [engine] name of the strategy: its store's, and its share of the account's
   std::uint32_t pid;
   std::uint32_t flags;
   std::uint32_t resume_count;
-  std::uint32_t reserved0;
+  std::uint32_t epoch_count;
   std::uint32_t known_count;
   std::uint32_t claim_count;
   std::uint32_t position_count;
@@ -233,7 +244,7 @@ inline constexpr std::size_t kMaxDatagram =
 inline constexpr std::size_t kMaxRequest =
     sizeof(AttachRequest) + kMaxKnownExecIds * sizeof(ExecId) +
     kMaxInstruments * sizeof(InstrumentClaim) + kMaxInstruments * sizeof(PositionSeed) +
-    kMaxVenuesConfig * sizeof(VenueResume);
+    kMaxVenuesConfig * sizeof(VenueResume) + kMaxPastEpochs * sizeof(std::uint16_t);
 // Strategies attached to one gateway at once.
 inline constexpr std::size_t kMaxAttachments = 16;
 
@@ -282,8 +293,8 @@ struct GatewayVenue {
 
 struct GatewayAttachRequest {
   std::string engine;
-  // The instruments this strategy trades, (venue name, symbol). The gateway routes their fills and
-  // position records here and refuses the attach when another attachment owns one of them.
+  // The instruments this strategy trades, (venue name, symbol). The gateway refuses the attach when
+  // another attachment trades one of them, unless [gateway.shared] names it.
   std::vector<std::pair<std::string, std::string>> instruments;
   bool blocks = false;  // the engine runs with spin_mode = "adaptive"
   // Where each venue's execution replay starts, for a strategy that restores a position: the
@@ -303,6 +314,9 @@ struct GatewayAttachRequest {
     Price avg_px;
   };
   std::vector<Position> positions;
+  // The session epochs of its earlier sessions (store::Recovery::session_epochs), for a strategy
+  // that restores its position: executions of their orders are routed here.
+  std::vector<std::uint16_t> past_epochs;
 };
 
 // One attachment. The connection stays open for as long as this object lives; closing it (the

@@ -9,6 +9,7 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/risk.hpp"
+#include "fastmm/core/self_trade.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/session_state.hpp"
 #include "fastmm/core/status_segment.hpp"
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bitset>
 #include <cctype>
 #include <csignal>
 #include <cstdio>
@@ -39,6 +41,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -139,6 +142,21 @@ struct Account {
   std::array<std::array<std::atomic<std::int64_t>, 2>, kMaxInstruments> open{};
   std::array<std::atomic<std::int64_t>, kMaxInstruments> mark{};
   std::array<std::atomic<std::int64_t>, kMaxInstruments> mark_ns{};
+
+  // [gateway.shared]: instruments several strategies trade at once. Each strategy has a slot, by
+  // its [engine] name, for this gateway's life; an execution of a shared instrument counts towards
+  // the slot of the strategy whose order it names (share), or towards nobody (unattributed). The
+  // instrument's network thread publishes both with every change, and the account's position less
+  // their sum (unexplained: 0 unless a venue's position record says otherwise). Set before the
+  // network threads start, except epoch_slot, which the main thread fills in before an attachment
+  // whose epochs it names is routed.
+  static constexpr std::size_t kMaxSlots = 64;
+  std::array<bool, kMaxInstruments> shared{};
+  std::array<std::uint8_t, kMaxInstruments> primary{};        // its primary's slot + 1, 0 for none
+  std::array<std::atomic<std::uint8_t>, 65536> epoch_slot{};  // a session epoch's slot + 1
+  std::array<std::array<std::atomic<std::int64_t>, kMaxSlots>, kMaxInstruments> share{};  // raw Qty
+  std::array<std::atomic<std::int64_t>, kMaxInstruments> unattributed{};
+  std::array<std::atomic<std::int64_t>, kMaxInstruments> unexplained{};
 
   [[nodiscard]] bool exposure_limits() const noexcept { return max_gross > 0 || max_net > 0; }
   [[nodiscard]] std::size_t currencies() const noexcept { return fx.active() ? fx.count : 1; }
@@ -249,12 +267,15 @@ struct Route {
   // overlap before it are too.
   std::int64_t replay_from_ms = 0;
   const std::unordered_set<std::string>* known = nullptr;
+  std::uint8_t slot = 0;                // its [engine] name's slot (Account::share)
+  std::bitset<kMaxInstruments> claims;  // the instruments it trades
 };
 
 // One order the gateway forwarded (or a reconciliation reported), for the account guards and for
 // cancelling a detached strategy's orders.
 struct GwOrder {
   static constexpr std::uint8_t kCancelSent = 1U << 0;
+  static constexpr std::uint8_t kRests = 1U << 1;  // it can rest in the book (not IOC, FOK, market)
   InstrumentId inst{};
   std::uint16_t epoch = 0;
   std::uint8_t flags = 0;
@@ -319,6 +340,21 @@ struct VenueRouter {
   std::array<std::shared_ptr<const std::unordered_set<std::string>>, kMaxInstruments> seed_known{};
   bool killed = false;  // it acted on the account's trip
 
+  // Shared instruments. The live attachment of each slot. Per instrument: each slot that seeded
+  // the account's position with its store, and the history that seed holds (its replay start and
+  // the trade ids its store listed); the sum of every slot's share and the unattributed part; per
+  // side, the orders of every attachment that can rest, for the self-trade check.
+  std::array<Route*, Account::kMaxSlots> by_slot{};
+  struct ShareSeed {
+    std::uint8_t slot = 0;
+    std::int64_t from_ms = 0;
+    std::shared_ptr<const std::unordered_set<std::string>> known;
+  };
+  std::array<std::vector<ShareSeed>, kMaxInstruments> share_seeds;
+  std::array<std::int64_t, kMaxInstruments> explained{};
+  std::array<RestingOrders, kMaxInstruments> resting;
+  std::int64_t start_ms = 0;  // the gateway's start: older executions are nobody's business here
+
   std::atomic<std::uint64_t> md_discarded{0};
   std::atomic<std::uint64_t> order_discarded{0};
   std::atomic<std::uint64_t> unrouted{0};
@@ -332,6 +368,7 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_fx{0};
   std::atomic<std::uint64_t> refused_underlying{0};
   std::atomic<std::uint64_t> refused_underlying_mark{0};
+  std::atomic<std::uint64_t> refused_self_trade{0};
   std::atomic<std::uint64_t> account_skipped{0};  // replayed fills / funding its seed holds
   std::atomic<std::uint64_t> account_md_lost{0};  // times acct_md was full
   std::atomic<std::uint64_t> untracked{0};        // the order table was full
@@ -347,6 +384,9 @@ struct VenueRouter {
   }
   [[nodiscard]] Route* owner_of(InstrumentId id) const noexcept {
     return id.value < owner.size() ? owner[id.value] : nullptr;
+  }
+  [[nodiscard]] bool shared(InstrumentId id) const noexcept {
+    return id.value < kMaxInstruments && acct->shared[id.value];
   }
 };
 
@@ -391,9 +431,82 @@ void publish_account(VenueRouter& v) noexcept {
   }
 }
 
+// A shared instrument: the account's position less every strategy's share and the unattributed
+// part.
+void publish_unexplained(VenueRouter& v, InstrumentId id) noexcept {
+  v.acct->unexplained[id.value].store(v.book->positions().get(id).qty.raw - v.explained[id.value],
+                                      std::memory_order_relaxed);
+}
+
+// A shared instrument's position changes by `d` (raw Qty) for `tag`: slot + 1, 0 for nobody.
+void add_share(VenueRouter& v, InstrumentId id, std::uint8_t tag, std::int64_t d) noexcept {
+  Account& a = *v.acct;
+  std::atomic<std::int64_t>& to = tag != 0 ? a.share[id.value][tag - 1U] : a.unattributed[id.value];
+  to.store(to.load(std::memory_order_relaxed) + d, std::memory_order_relaxed);  // one writer
+  v.explained[id.value] += d;
+}
+
 void set_account_position(VenueRouter& v, InstrumentId id, Qty qty, Price avg) noexcept {
   v.book->set_position(id, qty, avg);
   v.acct->qty[id.value].store(v.book->positions().get(id).qty.raw, std::memory_order_relaxed);
+  if (v.shared(id)) publish_unexplained(v, id);
+  publish_account(v);
+}
+
+// A strategy's store joins a shared instrument's account position, as its share.
+void seed_share(VenueRouter& v, InstrumentId id, std::uint8_t slot, Qty qty, Price avg) noexcept {
+  v.book->add_position(id, qty, avg);
+  v.acct->qty[id.value].store(v.book->positions().get(id).qty.raw, std::memory_order_relaxed);
+  add_share(v, id, static_cast<std::uint8_t>(slot + 1U), qty.raw);
+  publish_unexplained(v, id);
+  publish_account(v);
+}
+
+// A replayed execution that the history of an attachment holds already: older than where its
+// replay started, or among the trade ids its store listed.
+bool held_by(const Route& r, const OrderFillMsg& m) {
+  return m.hdr.exch_ts.ns / 1'000'000 < r.replay_from_ms ||
+         (r.known != nullptr && r.known->contains(std::string(m.exec_id.view())));
+}
+
+// A shared instrument's execution, booked once and counted towards `tag` (slot + 1; 0 nobody). A
+// replayed one that the seed of its slot holds (older than that strategy's replay start or among
+// its store's trade ids), or, without such a seed, older than the gateway, is not booked. One the
+// account booked for nobody that now reaches a strategy (`delivered`) becomes that strategy's.
+void account_fill_shared(VenueRouter& v, const OrderFillMsg& m, std::uint8_t tag, bool delivered) {
+  const InstrumentId id = m.hdr.instrument;
+  if (!v.insts->contains(id)) return;
+  if ((m.flags & OrderFillMsg::kReplayed) != 0 && m.hdr.exch_ts.ns > 0) {
+    const std::int64_t ms = m.hdr.exch_ts.ns / 1'000'000;
+    const VenueRouter::ShareSeed* seed = nullptr;
+    for (const VenueRouter::ShareSeed& s : v.share_seeds[id.value]) {
+      if (tag != 0 && s.slot + 1U == tag) seed = &s;
+    }
+    const bool held = seed != nullptr ? ms < seed->from_ms ||
+                                            (seed->known != nullptr &&
+                                             seed->known->contains(std::string(m.exec_id.view())))
+                                      : ms < v.start_ms;
+    if (held) {
+      v.account_skipped.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+  }
+  if (const std::uint8_t* was = v.book->booked_as(m)) {
+    if (*was == 0 && tag != 0 && delivered) {
+      v.book->retag(m, tag);
+      const std::int64_t d = AccountBook::position_change(m);
+      add_share(v, id, 0, -d);
+      add_share(v, id, tag, d);
+    }
+    return;
+  }
+  const std::int64_t before = v.book->positions().get(id).qty.raw;
+  if (!v.book->first_time(m, tag)) return;
+  v.book->book(m);
+  const std::int64_t after = v.book->positions().get(id).qty.raw;
+  add_share(v, id, tag, after - before);
+  v.acct->qty[id.value].store(after, std::memory_order_relaxed);
+  publish_unexplained(v, id);
   publish_account(v);
 }
 
@@ -620,8 +733,23 @@ void set_leaves(VenueRouter& v, GwOrder& o, Qty leaves) noexcept {
   o.leaves = leaves;
 }
 
+// A shared instrument's orders that can rest, for the self-trade check: `id` leaves the list of its
+// side, and is in it while it rests with a working quantity.
+void drop_resting(VenueRouter& v, ClientOrderId id, const GwOrder& o) noexcept {
+  if (v.shared(o.inst)) v.resting[o.inst.value].remove(id, o.side);
+}
+void sync_resting(VenueRouter& v, ClientOrderId id, const GwOrder& o) {
+  if (!v.shared(o.inst)) return;
+  if ((o.flags & GwOrder::kRests) != 0 && o.leaves.is_positive()) {
+    v.resting[o.inst.value].set(id, o.side, o.price, o.epoch);
+  } else {
+    v.resting[o.inst.value].remove(id, o.side);
+  }
+}
+
 void untrack(VenueRouter& v, ClientOrderId id) noexcept {
   if (const GwOrder* o = v.orders.find(id)) {
+    drop_resting(v, id, *o);
     v.open_notional -= o->notional;
     add_leaves(v, *o, -o->leaves.raw);
     v.orders.erase(id);
@@ -707,9 +835,11 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
           o.g = 1;
           o.gen = v.gen;
           o.venue_order_id = m.venue_order_id;
+          o.flags = GwOrder::kRests;
           if (v.orders.insert(m.cl_ord_id, o).second) {
             v.open_notional += o.notional;
             add_leaves(v, o, o.leaves.raw);
+            sync_resting(v, m.cl_ord_id, o);
           }
         }
         if (r->in_snapshot) push_order(*r, m.hdr);
@@ -723,6 +853,9 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
     case ReconcileMsg::Kind::Position:
       if (v.insts->contains(m.hdr.instrument))
         set_account_position(v, m.hdr.instrument, m.position_qty, m.avg_px);
+      // A shared instrument's venue position is the account's, no strategy's: it is compared with
+      // theirs (Account::unexplained) instead.
+      if (v.shared(m.hdr.instrument)) return;
       if (Route* o = v.owner_of(m.hdr.instrument)) {
         push_order(*o, m.hdr);
       } else {
@@ -749,8 +882,39 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
   }
 }
 
+// A shared instrument's execution goes to the attachment whose order it names; one naming an order
+// of an earlier session to the live attachment of that session's strategy (by slot: the gateway's
+// own epochs of this run and those the strategy's store listed); one naming no order to the
+// instrument's primary. The account counts it towards that strategy, attached or not, or towards
+// nobody: an order of a session no strategy claims, or no order and no primary. A replayed one that
+// the receiving strategy's history holds is not routed, as for an owner.
+void route_shared_fill(VenueRouter& v, const OrderFillMsg& m, bool replayed) {
+  const InstrumentId id = m.hdr.instrument;
+  const Account& a = *v.acct;
+  Route* r = v.by_epoch(m.cl_ord_id);
+  std::uint8_t tag = 0;
+  if (r != nullptr) {
+    tag = static_cast<std::uint8_t>(r->slot + 1U);
+  } else {
+    const std::uint16_t e = cl_ord_id_epoch(m.cl_ord_id);
+    tag = e != 0 ? a.epoch_slot[e].load(std::memory_order_relaxed) : a.primary[id.value];
+    r = tag != 0 ? v.by_slot[tag - 1U] : nullptr;
+    if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 && held_by(*r, m)) {
+      v.stale_replays.fetch_add(1, std::memory_order_relaxed);
+      r = nullptr;
+    }
+  }
+  account_fill_shared(v, m, tag, r != nullptr);
+  if (r != nullptr) {
+    push_order(*r, m.hdr);
+  } else {
+    v.unrouted.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
 void route_fill(VenueRouter& v, const OrderFillMsg& m) {
-  account_fill(v, m);
+  const bool shared = v.shared(m.hdr.instrument);
+  if (!shared) account_fill(v, m);
   const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
   if (!replayed) {
     if (GwOrder* o = v.orders.find(m.cl_ord_id)) {
@@ -764,6 +928,10 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
       }
     }
   }
+  if (shared) {
+    route_shared_fill(v, m, replayed);
+    return;
+  }
   // Streamed or replayed alike: to the order's epoch, else to the instrument's owner. A replay one
   // attachment's attach started also names the others' executions; each books only those its
   // OMS has not (it dedupes by venue execution id, instrument and side), and among them is a fill
@@ -775,9 +943,7 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
     // already: a replay another attach started can reach back before this owner's history began,
     // and its engine never saw those executions, so it would book them a second time. (A
     // connector that gives no trade time, exch_ts 0, is not filtered.)
-    if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 &&
-        (m.hdr.exch_ts.ns / 1'000'000 < r->replay_from_ms ||
-         (r->known != nullptr && r->known->contains(std::string(m.exec_id.view()))))) {
+    if (r != nullptr && replayed && m.hdr.exch_ts.ns > 0 && held_by(*r, m)) {
       v.stale_replays.fetch_add(1, std::memory_order_relaxed);
       FASTMM_LOG_INFO(
           "gateway: replayed execution {} ({} ms) is older than its owner's history ({} ms) or "
@@ -800,7 +966,12 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
 // as with a replayed execution naming no live order.
 void route_funding(VenueRouter& v, const FundingMsg& m) {
   account_funding(v, m);
+  // A shared instrument's funding is its primary's, or the account's alone.
   Route* r = v.owner_of(m.hdr.instrument);
+  if (v.shared(m.hdr.instrument)) {
+    const std::uint8_t p = v.acct->primary[m.hdr.instrument.value];
+    r = p != 0 ? v.by_slot[p - 1U] : nullptr;
+  }
   if (r == nullptr) {
     v.unrouted.fetch_add(1, std::memory_order_relaxed);
     return;
@@ -853,6 +1024,7 @@ void route_order(VenueRouter& v, const EventHeader& h) {
             orig->notional = o->replaced_notional;
             v.open_notional += o->replaced_notional;
             set_leaves(v, *orig, o->replaced_leaves);
+            sync_resting(v, o->replaces, *orig);
           }
         }
       }
@@ -887,6 +1059,7 @@ void route_order(VenueRouter& v, const EventHeader& h) {
     case EventType::PositionUpdate: {
       const auto& m = msg_cast<PositionUpdateMsg>(&h);
       if (v.insts->contains(h.instrument)) set_account_position(v, h.instrument, m.qty, m.avg_px);
+      if (v.shared(h.instrument)) return;  // the account's, as a reconciliation's Position row
       if (Route* o = v.owner_of(h.instrument)) {
         push_order(*o, h);
       } else {
@@ -958,29 +1131,43 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
     case RejectReason::GatewayUnderlyingMarkUnknown:
       v.refused_underlying_mark.fetch_add(1, std::memory_order_relaxed);
       break;
+    case RejectReason::GatewaySelfTrade:
+      v.refused_self_trade.fetch_add(1, std::memory_order_relaxed);
+      break;
     default:
       v.refused_owner.fetch_add(1, std::memory_order_relaxed);
       break;
   }
 }
 
-// The account guards: the sender owns the instrument, the account's kill switch, the notional
-// working at the venue, a current rate for the order's currency ([accounting], when it adds to
-// exposure; an unknown side counts as adding), the account's exposure (when the side is known),
-// the venue's order rate. `replaced` is the working notional of the order a replace takes over,
-// `replaced_leaves` its working quantity.
+// The account guards: the sender trades the instrument, the account's kill switch, on a shared
+// instrument no trade with another attachment's resting order, the notional working at the venue,
+// a current rate for the order's currency ([accounting], when it adds to exposure; an unknown side
+// counts as adding), the account's exposure (when the side is known), the venue's order rate.
+// `replaced` is the working notional of the order a replace takes over, `replaced_leaves` its
+// working quantity.
 RejectReason check_order(VenueRouter& v,
                          const Route& r,
                          InstrumentId inst,
                          const Side* side,
                          Price px,
                          Qty qty,
+                         bool market,
                          std::int64_t replaced,
                          Qty replaced_leaves,
                          std::int64_t* notional) {
-  if (v.owner_of(inst) != &r || !v.insts->contains(inst)) return RejectReason::GatewayNotOwner;
+  if (inst.value >= kMaxInstruments || !r.claims[inst.value] || !v.insts->contains(inst))
+    return RejectReason::GatewayNotOwner;
   if (FASTMM_UNLIKELY(v.acct->tripped.load(std::memory_order_relaxed)))
     return RejectReason::GatewayAccountKilled;
+  if (v.acct->shared[inst.value]) {
+    // A replace of an order the gateway does not track has no known side: neither may cross.
+    for (const Side s : {Side::Buy, Side::Sell}) {
+      if (side != nullptr && s != *side) continue;
+      if (v.resting[inst.value].crosses(r.epoch, s, px, market))
+        return RejectReason::GatewaySelfTrade;
+    }
+  }
   const Notional n = v.insts->get(inst).notional(px, qty);
   *notional = n.raw;
   if (v.max_open_notional > 0 && v.open_notional - replaced + *notional > v.max_open_notional)
@@ -1023,6 +1210,7 @@ void track(VenueRouter& v, ClientOrderId id, const GwOrder& o) noexcept {
   if (v.orders.insert(id, o).second) {
     v.open_notional += o.notional;
     add_leaves(v, o, o.leaves.raw);
+    sync_resting(v, id, o);
   } else {
     v.untracked.fetch_add(1, std::memory_order_relaxed);
   }
@@ -1041,8 +1229,9 @@ std::size_t forward(VenueRouter& v, Route& r) {
       case EventType::OutNewOrder: {
         const auto& m = msg_cast<OutNewOrderMsg>(&h);
         std::int64_t notional = 0;
-        if (const RejectReason why =
-                check_order(v, r, h.instrument, &m.side, m.price, m.qty, 0, Qty{}, &notional);
+        const bool market = m.type == OrderType::Market;
+        if (const RejectReason why = check_order(
+                v, r, h.instrument, &m.side, m.price, m.qty, market, 0, Qty{}, &notional);
             why != RejectReason::None) {
           refuse(v, r, h, m.cl_ord_id, why);
           send = false;
@@ -1055,6 +1244,8 @@ std::size_t forward(VenueRouter& v, Route& r) {
         o.price = m.price;
         o.notional = notional;
         o.leaves = m.qty;
+        if (!market && (m.tif == TimeInForce::Gtc || m.tif == TimeInForce::Day))
+          o.flags = GwOrder::kRests;
         note_forwarded(v, m.cl_ord_id);
         o.g = v.forwarded;
         track(v, m.cl_ord_id, o);
@@ -1074,6 +1265,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
                                                  orig != nullptr ? &side : nullptr,
                                                  m.price,
                                                  m.qty,
+                                                 /*market=*/false,
                                                  replaced,
                                                  replaced_leaves,
                                                  &notional);
@@ -1082,12 +1274,17 @@ std::size_t forward(VenueRouter& v, Route& r) {
           send = false;
           break;
         }
+        const std::uint8_t rests = orig != nullptr
+                                       ? static_cast<std::uint8_t>(orig->flags & GwOrder::kRests)
+                                       : GwOrder::kRests;
         if (orig != nullptr) {
           v.open_notional -= orig->notional;
           orig->notional = 0;
           set_leaves(v, *orig, Qty{});
+          drop_resting(v, m.orig_cl_ord_id, *orig);
         }
         GwOrder o;
+        o.flags = rests;
         o.inst = h.instrument;
         o.epoch = r.epoch;
         o.side = side;
@@ -1313,6 +1510,7 @@ struct Attachment {
   std::int64_t since_wall_ns = 0;
   bool blocks = false;  // its engine blocks when idle
   std::uint16_t epoch = 0;
+  std::uint8_t slot = 0;  // its [engine] name's (Account::share)
   std::vector<InstrumentId> owned;
   struct Rings {
     std::unique_ptr<ShmRing> md;
@@ -1366,7 +1564,8 @@ class Gateway {
           int net_page_fd,
           Account& acct,
           std::string kill_path,
-          const KillState& kill)
+          const KillState& kill,
+          const std::vector<std::pair<InstrumentId, std::string>>& primaries)
       : cfg_(cfg),
         opts_(opts),
         slots_(slots),
@@ -1397,6 +1596,11 @@ class Gateway {
       // Before any strategy seeded an instrument, a replayed execution from before the gateway
       // started is none of the account's business: the positions start with the strategies'.
       v->seed_from_ms.fill(start_ms);
+      v->start_ms = start_ms;
+      for (const Instrument& inst : insts) {
+        if (inst.venue != v->vid || !acct.shared[inst.id.value]) continue;
+        v->resting[inst.id.value].reserve(64);
+      }
       acct.slots[i] = slots[i].get();
       VenueSlot& s = *slots[i];
       s.hook = &gateway_hook;
@@ -1408,9 +1612,33 @@ class Gateway {
       s.order_sink.set_drain_hook(&drain_orders, v.get(), /*on_commit=*/true);
       routers_.push_back(std::move(v));
     }
+    // A primary has its slot before it attaches: what is its is counted towards it meanwhile.
+    for (const auto& [inst, name] : primaries) {
+      if (name.empty()) continue;
+      acct.primary[inst.value] = static_cast<std::uint8_t>(*slot_of(name) + 1U);
+    }
   }
 
   [[nodiscard]] std::size_t attachments() const noexcept { return atts_.size(); }
+
+  // The slot of an [engine] name (Account::share), given at its first attach (or as a primary) and
+  // kept for the gateway's life; nullopt when every slot is taken.
+  std::optional<std::uint8_t> slot_of(const std::string& engine) {
+    for (std::size_t k = 0; k < slot_names_.size(); ++k) {
+      if (slot_names_[k] == engine) return static_cast<std::uint8_t>(k);
+    }
+    if (slot_names_.size() == Account::kMaxSlots) return std::nullopt;
+    slot_names_.push_back(engine);
+    return static_cast<std::uint8_t>(slot_names_.size() - 1);
+  }
+  // Attachments trading `inst`.
+  [[nodiscard]] std::size_t traders(InstrumentId inst) const {
+    std::size_t n = 0;
+    for (const auto& a : atts_)
+      n += static_cast<std::size_t>(std::find(a->owned.begin(), a->owned.end(), inst) !=
+                                    a->owned.end());
+    return n;
+  }
 
   // pollfds for the attachments' connections, in atts_ order.
   void poll_fds(std::vector<pollfd>& fds) const {
@@ -1460,10 +1688,12 @@ class Gateway {
     }
     if (req.known_count > gw::kMaxKnownExecIds || req.claim_count > kMaxInstruments ||
         req.position_count > kMaxInstruments || req.resume_count > kMaxVenuesConfig ||
+        req.epoch_count > gw::kMaxPastEpochs ||
         static_cast<std::size_t>(n) != sizeof req + req.known_count * sizeof(gw::ExecId) +
                                            req.claim_count * sizeof(gw::InstrumentClaim) +
                                            req.position_count * sizeof(gw::PositionSeed) +
-                                           req.resume_count * sizeof(gw::VenueResume)) {
+                                           req.resume_count * sizeof(gw::VenueResume) +
+                                           req.epoch_count * sizeof(std::uint16_t)) {
       send_error(fd, "malformed attach request");
       ::close(fd);
       return;
@@ -1516,8 +1746,12 @@ class Gateway {
         return;
       }
       if (const Attachment* other = owner_[inst->id.value]) {
-        refuse_attach(fmt::format(
-            "instrument {} on venue '{}' is traded by {}", symbol, venue, other->who()));
+        refuse_attach(
+            fmt::format("instrument {} on venue '{}' is traded by {} (several strategies trade one "
+                        "instrument only when [gateway.shared] names it)",
+                        symbol,
+                        venue,
+                        other->who()));
         return;
       }
       if (std::find(owned.begin(), owned.end(), inst->id) == owned.end()) owned.push_back(inst->id);
@@ -1525,6 +1759,23 @@ class Gateway {
     if (owned.empty()) {
       refuse_attach("the attach request names no instrument to trade");
       return;
+    }
+    // An [engine] name is one strategy: its store, and its share of shared instruments.
+    for (const auto& other : atts_) {
+      if (other->engine != engine) continue;
+      refuse_attach("a strategy with [engine] name '" + engine +
+                    "' is attached already: " + other->who());
+      return;
+    }
+    std::vector<std::uint16_t> past;
+    const std::byte* epochs_at = buf.data() + sizeof req + req.known_count * sizeof(gw::ExecId) +
+                                 req.claim_count * sizeof(gw::InstrumentClaim) +
+                                 req.position_count * sizeof(gw::PositionSeed) +
+                                 req.resume_count * sizeof(gw::VenueResume);
+    for (std::uint32_t i = 0; i < req.epoch_count; ++i) {
+      std::uint16_t e = 0;
+      std::memcpy(&e, epochs_at + i * sizeof e, sizeof e);
+      past.push_back(e);
     }
     // The positions it restored, of the instruments it claimed.
     std::vector<Seed> seeds;
@@ -1569,7 +1820,7 @@ class Gateway {
       r.known.assign(known.begin() + vr.first_known,
                      known.begin() + vr.first_known + vr.known_count);
     }
-    attach(fd, req, engine, resumes, std::move(owned), seeds);
+    attach(fd, req, engine, resumes, std::move(owned), seeds, past);
   }
 
   // The attachment's connection closed (or misbehaved): the strategy is gone.
@@ -1589,6 +1840,7 @@ class Gateway {
       for (Route*& o : v.owner) {
         if (o == r) o = nullptr;
       }
+      if (v.by_slot[r->slot] == r) v.by_slot[r->slot] = nullptr;
       if (opts_.dry_run) return;
       std::vector<ClientOrderId> mine;
       v.orders.for_each_key([&](ClientOrderId id) {
@@ -1613,7 +1865,9 @@ class Gateway {
     a.rings.clear();
     ::close(a.fd);
     a.fd = -1;
-    for (const InstrumentId id : a.owned) owner_[id.value] = nullptr;
+    for (const InstrumentId id : a.owned) {
+      if (owner_[id.value] == &a) owner_[id.value] = nullptr;
+    }
     // Its positions are the account's, not the process's: they stay, and the fills of its orders
     // still in flight are booked into them.
     std::string kept;
@@ -1681,6 +1935,7 @@ class Gateway {
       const std::uint64_t fx = v.refused_fx.load(std::memory_order_relaxed);
       const std::uint64_t und = v.refused_underlying.load(std::memory_order_relaxed) +
                                 v.refused_underlying_mark.load(std::memory_order_relaxed);
+      const std::uint64_t self = v.refused_self_trade.load(std::memory_order_relaxed);
       const std::uint64_t skipped = v.account_skipped.load(std::memory_order_relaxed);
       const std::uint64_t md_lost = v.account_md_lost.load(std::memory_order_relaxed);
       const std::uint64_t untracked = v.untracked.load(std::memory_order_relaxed);
@@ -1688,13 +1943,14 @@ class Gateway {
       Logged& l = logged_[i];
       if (md != l.md || order != l.order || unrouted != l.unrouted || cancels != l.cancels ||
           rate != l.rate || notional != l.notional || owner != l.owner || killed != l.killed ||
-          gross != l.gross || net != l.net || fx != l.fx || und != l.und ||
+          gross != l.gross || net != l.net || fx != l.fx || und != l.und || self != l.self ||
           untracked != l.untracked || stale != l.stale || skipped != l.skipped ||
           md_lost != l.md_lost) {
         FASTMM_LOG_INFO(
             "gateway: [{}] discarded with nothing attached: md={} order={}; order events for no "
             "attachment: {}; gateway cancels: {}; refused: rate={} open_notional={} not_owner={} "
-            "account_killed={} gross_notional={} net_notional={} fx_rate={} underlying={}; "
+            "account_killed={} gross_notional={} net_notional={} fx_rate={} underlying={} "
+            "self_trade={}; "
             "untracked: {}; "
             "replayed fills "
             "older than their owner's history: {}, than the account's: {}; account books lost: {}",
@@ -1711,6 +1967,7 @@ class Gateway {
             net,
             fx,
             und,
+            self,
             untracked,
             stale,
             skipped,
@@ -1727,6 +1984,7 @@ class Gateway {
                    net,
                    fx,
                    und,
+                   self,
                    untracked,
                    stale,
                    skipped,
@@ -1853,13 +2111,53 @@ class Gateway {
                       known ? "" : " (an inverse contract has no current mark)");
     }
     for (const Instrument& inst : instruments_) {
-      const std::int64_t q = acct_.qty[inst.id.value].load(std::memory_order_relaxed);
-      if (q == qty_logged_[inst.id.value] && (!force || q == 0)) continue;
-      qty_logged_[inst.id.value] = q;
-      FASTMM_LOG_INFO("gateway: account position {}:{} {}",
-                      slots_[inst.venue.value]->venue->name(),
-                      inst.symbol,
-                      Qty::from_raw(q));
+      const std::size_t i = inst.id.value;
+      const std::int64_t q = acct_.qty[i].load(std::memory_order_relaxed);
+      if (!acct_.shared[i]) {
+        if (q == qty_logged_[i] && (!force || q == 0)) continue;
+        qty_logged_[i] = q;
+        FASTMM_LOG_INFO("gateway: account position {}:{} {}",
+                        slots_[inst.venue.value]->venue->name(),
+                        inst.symbol,
+                        Qty::from_raw(q));
+        continue;
+      }
+      // A shared instrument: the account's position, each strategy's share and what nobody holds;
+      // the account (the venue's position when it reports one) should be their sum. Logged when
+      // any of them changed.
+      std::string parts;
+      for (std::size_t k = 0; k < slot_names_.size(); ++k) {
+        if (!share_seeded_[i].test(k) && acct_.primary[i] != k + 1) continue;
+        parts += fmt::format(" {}={}",
+                             slot_names_[k],
+                             dec(Qty::from_raw(acct_.share[i][k].load(std::memory_order_relaxed))));
+      }
+      const std::int64_t off = acct_.unexplained[i].load(std::memory_order_relaxed);
+      parts +=
+          fmt::format(" unattributed={}",
+                      dec(Qty::from_raw(acct_.unattributed[i].load(std::memory_order_relaxed))));
+      if (parts == shared_logged_[i] && q == qty_logged_[i] && off == unexplained_logged_[i] &&
+          (!force || share_seeded_[i].none()))
+        continue;
+      shared_logged_[i] = parts;
+      qty_logged_[i] = q;
+      unexplained_logged_[i] = off;
+      if (off == 0) {
+        FASTMM_LOG_INFO("gateway: account position {}:{} {} (shared:{})",
+                        slots_[inst.venue.value]->venue->name(),
+                        inst.symbol,
+                        Qty::from_raw(q),
+                        std::string_view(parts));
+      } else {
+        FASTMM_LOG_WARN(
+            "gateway: account position {}:{} {} does not match its strategies' (shared:{}): off "
+            "by {}",
+            slots_[inst.venue.value]->venue->name(),
+            inst.symbol,
+            Qty::from_raw(q),
+            std::string_view(parts),
+            Qty::from_raw(off));
+      }
     }
   }
 
@@ -1937,6 +2235,7 @@ class Gateway {
       gv.refused[6] = v.refused_fx.load(std::memory_order_relaxed);
       gv.refused[7] = v.refused_underlying.load(std::memory_order_relaxed);
       gv.refused[8] = v.refused_underlying_mark.load(std::memory_order_relaxed);
+      gv.refused[9] = v.refused_self_trade.load(std::memory_order_relaxed);
       const Account::Sum t = acct_.venue_sum(i);
       gv.realized_raw = t.realized;
       gv.unrealized_raw = t.unrealized;
@@ -1969,11 +2268,23 @@ class Gateway {
     }
     for (const Instrument& inst : instruments_) {
       if (g.position_count == kStatusMaxPositions) break;
-      StatusPosition& p = g.positions[g.position_count++];
+      const std::size_t k = g.position_count++;
+      StatusPosition& p = g.positions[k];
       set_status_name(p.symbol, inst.symbol.view());
       p.venue = inst.venue.value;
       p.qty_raw = acct_.qty[inst.id.value].load(std::memory_order_relaxed);
       if (const Attachment* o = owner_[inst.id.value]) p.owner_epoch = o->epoch;
+      p.shared = acct_.shared[inst.id.value] ? 1 : 0;
+      if (p.shared != 0) {
+        p.unattributed_raw = acct_.unattributed[inst.id.value].load(std::memory_order_relaxed);
+        p.unexplained_raw = acct_.unexplained[inst.id.value].load(std::memory_order_relaxed);
+      }
+      for (std::size_t n = 0; n < g.attachment_count; ++n) {
+        const auto& owned = atts_[n]->owned;
+        if (std::find(owned.begin(), owned.end(), inst.id) == owned.end()) continue;
+        ++p.traders;
+        g.attachments[n].instruments[k / 64] |= std::uint64_t{1} << (k % 64);
+      }
     }
     for (std::size_t u = 0; u < acct_.und.count && u < kStatusMaxUnderlyings; ++u) {
       StatusUnderlying& su = g.underlyings[u];
@@ -2032,12 +2343,20 @@ class Gateway {
     for (const auto& ap : atts_) {
       const Attachment& a = *ap;
       std::string symbols;
+      std::string shares;  // its share of each shared instrument
       for (const InstrumentId inst : a.owned) {
         const Instrument& i = instruments_.get(inst);
         symbols += fmt::format("{}{}:{}",
                                symbols.empty() ? "" : ",",
                                slots_[i.venue.value]->venue->name(),
                                i.symbol.view());
+        if (acct_.shared[inst.value])
+          shares += fmt::format(
+              "{}{}:{}={}",
+              shares.empty() ? " share=" : ",",
+              slots_[i.venue.value]->venue->name(),
+              i.symbol.view(),
+              dec(Qty::from_raw(acct_.share[inst.value][a.slot].load(std::memory_order_relaxed))));
       }
       std::uint64_t dropped = 0;
       std::uint64_t refused = 0;
@@ -2047,7 +2366,7 @@ class Gateway {
       }
       fmt::format_to(std::back_inserter(out),
                      "attachment={} epoch={} engine={} pid={} up={:.0f}s instruments={} "
-                     "md_dropped={} refused={}\n",
+                     "md_dropped={} refused={}{}\n",
                      a.id,
                      a.epoch,
                      a.engine,
@@ -2055,7 +2374,8 @@ class Gateway {
                      static_cast<double>(steady_now().ns - a.since_ns) / 1e9,
                      symbols,
                      dropped,
-                     refused);
+                     refused,
+                     shares);
     }
     return out;
   }
@@ -2079,7 +2399,7 @@ class Gateway {
     plane.submit = [&](const EventHeader& h) {
       ControlMsg m = msg_cast<ControlMsg>(&h);
       m.hdr.t0_cycles = rdtscp();
-      if (h.instrument.valid() && owner_[h.instrument.value] == nullptr) {
+      if (h.instrument.valid() && traders(h.instrument) == 0) {
         refusal =
             fmt::format("no strategy trades {}", instruments_.get(h.instrument).symbol.view());
         return true;
@@ -2112,7 +2432,8 @@ class Gateway {
       if (i != target.value) return;
       VenueRouter& v = *routers_[i];
       if (m.hdr.instrument.valid()) {
-        if (Route* r = v.owner_of(m.hdr.instrument)) {
+        for (Route* r : v.routes) {
+          if (!r->claims[m.hdr.instrument.value]) continue;
           push_order(*r, m.hdr);
           sent.fetch_add(1, std::memory_order_relaxed);
         }
@@ -2202,6 +2523,7 @@ class Gateway {
     std::uint64_t net = 0;
     std::uint64_t fx = 0;
     std::uint64_t und = 0;
+    std::uint64_t self = 0;
     std::uint64_t untracked = 0;
     std::uint64_t stale = 0;
     std::uint64_t skipped = 0;
@@ -2234,7 +2556,8 @@ class Gateway {
               const std::string& engine,
               const std::vector<Resume>& resumes,
               std::vector<InstrumentId> owned,
-              const std::vector<Seed>& seeds) {
+              const std::vector<Seed>& seeds,
+              const std::vector<std::uint16_t>& past_epochs) {
     const auto epoch = next_epoch();
     if (!epoch) {
       FASTMM_LOG_ERROR("gateway: cannot give {} a session epoch: {}",
@@ -2243,6 +2566,36 @@ class Gateway {
       send_error(fd, "cannot assign a session epoch: " + epoch.error());
       ::close(fd);
       return;
+    }
+    const std::optional<std::uint8_t> slot = slot_of(engine);
+    if (!slot) {
+      FASTMM_LOG_ERROR("gateway: refused {} (pid {}): {} strategies have attached already",
+                       std::string_view(engine),
+                       req.pid,
+                       Account::kMaxSlots);
+      send_error(fd,
+                 fmt::format("the gateway has seen {} [engine] names already; restart it to "
+                             "attach another",
+                             Account::kMaxSlots));
+      ::close(fd);
+      return;
+    }
+    const auto tag = static_cast<std::uint8_t>(*slot + 1U);
+    // Executions of its orders are its own: those of this session, of its earlier sessions this
+    // gateway gave an epoch (kept since), and of those its store lists. An epoch another strategy
+    // holds stays theirs.
+    acct_.epoch_slot[*epoch].store(tag, std::memory_order_relaxed);
+    for (const std::uint16_t e : past_epochs) {
+      if (e == 0 || e == *epoch) continue;
+      const std::uint8_t had = acct_.epoch_slot[e].load(std::memory_order_relaxed);
+      if (had != 0 && had != tag) {
+        FASTMM_LOG_WARN("gateway: {}'s store lists session epoch {}, which is {}'s here: ignored",
+                        std::string_view(engine),
+                        e,
+                        std::string_view(slot_names_[had - 1U]));
+        continue;
+      }
+      acct_.epoch_slot[e].store(tag, std::memory_order_relaxed);
     }
     const std::uint32_t id = ++next_id_;
     auto ap = std::make_unique<Attachment>();
@@ -2311,15 +2664,27 @@ class Gateway {
       r.out = a.rings[i].outbound.get();
       r.waker = strategy_blocks ? a.engine_waker.get() : nullptr;
       r.known = a.known[i].get();
+      r.slot = *slot;
+      for (const InstrumentId inst : a.owned) r.claims.set(inst.value);
     }
-    for (const InstrumentId inst : a.owned) owner_[inst.value] = &a;
+    a.slot = *slot;
+    for (const InstrumentId inst : a.owned) {
+      if (!acct_.shared[inst.value]) owner_[inst.value] = &a;
+    }
     // The account's position of an instrument starts with what its first owner restored from its
     // store (flat when it restored nothing, or its venue cannot replay executions and so the
     // strategy starts flat). From then on the account books every execution itself; a later owner
     // finds the account's position, whatever its store says.
     std::vector<InstrumentId> to_seed;
     for (const InstrumentId inst : a.owned) {
-      if (!seeded_[inst.value]) to_seed.push_back(inst);
+      if (!acct_.shared[inst.value] && !seeded_[inst.value]) to_seed.push_back(inst);
+    }
+    // A shared instrument's account position is every strategy's store's, each added once per
+    // gateway run, the first time that strategy trades it; its share starts there.
+    std::vector<InstrumentId> to_share;
+    for (const InstrumentId inst : a.owned) {
+      if (acct_.shared[inst.value] && !share_seeded_[inst.value].test(*slot))
+        to_share.push_back(inst);
     }
     // On each network thread, between two of its callbacks: from here on the venue's events reach
     // the strategy's rings, starting with the gateway's books and the account's truth (executions,
@@ -2335,8 +2700,26 @@ class Gateway {
       r.replay_from_ms =
           resume ? res.since_ms : wall_now().ns / 1'000'000 + s.venue->status().clock_offset_ms;
       static_cast<void>(v.routes.push_back(&r));
+      v.by_slot[r.slot] = &r;
       for (const InstrumentId inst : a.owned) {
-        if (instruments_.get(inst).venue == v.vid) v.owner[inst.value] = &r;
+        if (instruments_.get(inst).venue == v.vid && !acct_.shared[inst.value])
+          v.owner[inst.value] = &r;
+      }
+      for (const InstrumentId inst : to_share) {
+        if (instruments_.get(inst).venue != v.vid) continue;
+        Qty q{};
+        Price px{};
+        if (executions(i)) {
+          for (const Seed& sd : seeds) {
+            if (sd.inst == inst) {
+              q = sd.qty;
+              px = sd.avg_px;
+            }
+          }
+        }
+        seed_share(v, inst, r.slot, q, px);
+        v.share_seeds[inst.value].push_back(
+            VenueRouter::ShareSeed{r.slot, r.replay_from_ms, a.known[i]});
       }
       for (const InstrumentId inst : to_seed) {
         if (instruments_.get(inst).venue != v.vid) continue;
@@ -2427,13 +2810,33 @@ class Gateway {
                       Qty::from_raw(acct_.qty[inst.value].load(std::memory_order_relaxed)),
                       std::string_view(a.who()));
     }
+    for (const InstrumentId inst : to_share) {
+      share_seeded_[inst.value].set(*slot);
+      FASTMM_LOG_INFO("gateway: {}'s share of {} (shared) starts at {}; the account's is {}",
+                      std::string_view(a.who()),
+                      instruments_.get(inst).symbol,
+                      Qty::from_raw(acct_.share[inst.value][*slot].load(std::memory_order_relaxed)),
+                      Qty::from_raw(acct_.qty[inst.value].load(std::memory_order_relaxed)));
+    }
     for (const InstrumentId inst : a.owned) {
-      if (std::find(to_seed.begin(), to_seed.end(), inst) != to_seed.end()) continue;
-      const Qty q = Qty::from_raw(acct_.qty[inst.value].load(std::memory_order_relaxed));
+      if (std::find(to_seed.begin(), to_seed.end(), inst) != to_seed.end() ||
+          std::find(to_share.begin(), to_share.end(), inst) != to_share.end())
+        continue;
       Qty stored{};
       for (const Seed& sd : seeds) {
         if (sd.inst == inst) stored = sd.qty;
       }
+      if (acct_.shared[inst.value]) {
+        FASTMM_LOG_INFO(
+            "gateway: {}'s share of {} (shared) is {}, booked here since it first attached; its "
+            "store says {} before its replay",
+            std::string_view(a.who()),
+            instruments_.get(inst).symbol,
+            Qty::from_raw(acct_.share[inst.value][*slot].load(std::memory_order_relaxed)),
+            stored);
+        continue;
+      }
+      const Qty q = Qty::from_raw(acct_.qty[inst.value].load(std::memory_order_relaxed));
       FASTMM_LOG_INFO(
           "gateway: account position of {} is {}, booked here since its first owner attached; {}'s "
           "store says {} before its replay",
@@ -2466,6 +2869,12 @@ class Gateway {
   std::vector<std::unique_ptr<Attachment>> atts_;
   std::array<const Attachment*, kMaxInstruments> owner_{};
   std::array<bool, kMaxInstruments> seeded_{};  // the account's position has started
+  // [engine] names by slot (Account::share), and per shared instrument the slots whose store has
+  // joined the account's position.
+  std::vector<std::string> slot_names_;
+  std::array<std::bitset<Account::kMaxSlots>, kMaxInstruments> share_seeded_{};
+  std::array<std::int64_t, kMaxInstruments> unexplained_logged_{};
+  std::array<std::string, kMaxInstruments> shared_logged_;
   std::array<Logged, 8> logged_{};
   std::uint32_t next_id_ = 0;
   Account& acct_;
@@ -2498,7 +2907,7 @@ std::string default_gateway_path(const Config& cfg) {
 std::string_view gateway_control_usage() noexcept {
   return "gateway commands (one per datagram; the reply starts with ok or error)\n"
          "  pull [--instrument SYM | --venue NAME]   the strategies in that scope stop quoting\n"
-         "                                           (the owner of SYM, every strategy on NAME,\n"
+         "                                           (those trading SYM, every strategy on NAME,\n"
          "                                           or every strategy)\n"
          "  resume [--instrument SYM | --venue NAME] they quote again\n"
          "  kill                                     trip the account kill switch, as max_loss\n"
@@ -2713,8 +3122,37 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   }
 
   acct->venue_count = slots.size();
-  Gateway gateway(
-      cfg, opts, slots, instruments, net_page, net_page_fd, *acct, kill_path, kill_state);
+  // [gateway.shared]: the instruments several strategies may trade at once, with their primaries.
+  std::vector<std::pair<InstrumentId, std::string>> primaries;
+  for (const auto& [where, primary] : cfg.gateway.shared) {
+    const std::size_t colon = where.find(':');
+    const VenueId vid = cfg.venue_id(where.substr(0, colon));
+    const Instrument* inst = vid.valid() ? instruments.find(vid, where.substr(colon + 1)) : nullptr;
+    if (inst == nullptr) {
+      std::fprintf(stderr,
+                   "%s: [gateway.shared.\"%s\"]: not an instrument of the gateway\n",
+                   prog,
+                   where.c_str());
+      return kExitConfig;
+    }
+    acct->shared[inst->id.value] = true;
+    primaries.emplace_back(inst->id, primary);
+    FASTMM_LOG_INFO("gateway: {} is shared: several strategies may trade it; primary {}",
+                    where,
+                    primary.empty()
+                        ? std::string_view("none (the account books what names no order)")
+                        : std::string_view(primary));
+  }
+  Gateway gateway(cfg,
+                  opts,
+                  slots,
+                  instruments,
+                  net_page,
+                  net_page_fd,
+                  *acct,
+                  kill_path,
+                  kill_state,
+                  primaries);
   gateway.persist_kill();
   // fastmm-top reads the status segment; fastmm-ctl --gateway talks to the control socket.
   if (!opts.no_status) {

@@ -5,6 +5,14 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `[gateway.shared."<venue>:<symbol>"]`: several strategies attached to `fastmm-gateway` trade one
+  instrument. Fills of earlier sessions go to their strategy by `[engine] name` (the epochs the
+  gateway gave it and, protocol 6, those its store lists); events naming no order and funding to
+  an optional `primary`, else the account alone; the venue's position records to no strategy. The
+  account splits its position into each strategy's share and an unattributed part and shows what
+  the venue's position leaves unexplained (status segment version 12, `fastmm_account_unattributed`,
+  `fastmm_account_unexplained`, a log warning). An order that would trade with another strategy's
+  resting order is refused (`GatewaySelfTrade`). One attachment per `[engine] name`.
 - `[risk.underlying.<BASE>] max_net` and `[gateway.underlying.<BASE>] max_net`: a limit on the net
   position in one base asset, in base units, over every instrument and venue (the gateway's over
   every strategy too). Contracts count `qty * contract_multiplier`, inverse contracts

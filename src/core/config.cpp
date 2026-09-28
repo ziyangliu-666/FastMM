@@ -206,6 +206,48 @@ void get_underlying(const toml::table& parent,
     fail_at(*t, fmt::format("[{}.underlying]: at most {} base assets", section, kMaxUnderlyings));
 }
 
+// [gateway.shared."<venue>:<symbol>"] primary = "<engine name>": instruments of [[instruments]]
+// that several strategies may trade at once.
+void get_shared(const toml::table& gateway, Config& cfg) {
+  const toml::node* n = gateway.get("shared");
+  if (n == nullptr) return;
+  const auto* t = n->as_table();
+  if (t == nullptr)
+    fail_at(*n, "gateway.shared must be a table: [gateway.shared.\"venue:symbol\"]");
+  for (const auto& [k, v] : *t) {
+    const std::string where(k.str());
+    const auto* e = v.as_table();
+    if (e == nullptr)
+      fail_at(v,
+              fmt::format("gateway.shared.\"{}\" must be a table: [gateway.shared.\"{}\"] "
+                          "primary = \"<engine name>\"",
+                          where,
+                          where));
+    validate_table(*e, "gateway.shared.*", cfg.warnings);
+    const std::size_t colon = where.find(':');
+    const std::string venue = colon == std::string::npos ? std::string{} : where.substr(0, colon);
+    const std::string symbol = colon == std::string::npos ? std::string{} : where.substr(colon + 1);
+    if (venue.empty() || symbol.empty())
+      fail_at(v, fmt::format("[gateway.shared.\"{}\"]: expected \"venue:symbol\"", where));
+    if (cfg.venue(venue) == nullptr)
+      fail_at(v, fmt::format("[gateway.shared.\"{}\"]: unknown venue '{}'", where, venue));
+    bool listed = false;
+    for (const InstrumentSection& i : cfg.instruments)
+      listed = listed || (i.venue == venue && i.symbol == symbol);
+    if (!listed)
+      fail_at(v,
+              fmt::format("[gateway.shared.\"{}\"]: {} is not in [[instruments]]", where, symbol));
+    std::string primary;
+    get(*e, "primary", primary);
+    if (primary.size() > 63)
+      fail_at(v,
+              fmt::format("gateway.shared.\"{}\".primary: an [engine] name is at most 63 "
+                          "characters",
+                          where));
+    cfg.gateway.shared[where] = primary;
+  }
+}
+
 // An optional number: absent leaves `out` empty, so "not set" and "set to 0" stay distinct.
 void get_optional(const toml::table& t, std::string_view key, std::optional<double>& out) {
   if (const auto* n = t.get(key)) {
@@ -560,6 +602,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get_decimal(*t, "max_gross_notional", cfg.gateway.max_gross_notional);
     get_decimal(*t, "max_net_notional", cfg.gateway.max_net_notional);
     get_underlying(*t, "gateway", cfg.warnings, cfg.gateway.underlying);
+    get_shared(*t, cfg);
   }
 
   // [accounting]: after [[instruments]], whose entries the FX sources must name.
@@ -813,6 +856,10 @@ std::string Config::redacted() const {
       fmt::format_to(std::back_inserter(out), "\n[gateway.underlying.{}]\n", k);
       kq("max_net", v);
     }
+    for (const auto& [k, v] : gateway.shared) {
+      fmt::format_to(std::back_inserter(out), "\n[gateway.shared.\"{}\"]\n", k);
+      if (!v.empty()) kq("primary", v);
+    }
   }
   if (accounting.configured()) {
     out += "\n[accounting]\n";
@@ -1011,6 +1058,15 @@ std::string Config::effective_toml() const {
     g.insert("max_net_notional", gateway.max_net_notional);
     if (gateway.underlying.configured())
       g.insert("underlying", underlying_table(gateway.underlying));
+    if (!gateway.shared.empty()) {
+      toml::table sh;
+      for (const auto& [k, v] : gateway.shared) {
+        toml::table entry;
+        if (!v.empty()) entry.insert("primary", v);
+        sh.insert(k, std::move(entry));
+      }
+      g.insert("shared", std::move(sh));
+    }
     root.insert("gateway", std::move(g));
   }
 

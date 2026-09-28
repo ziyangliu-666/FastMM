@@ -3,6 +3,55 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Several strategies on one instrument behind the gateway (2026-09-28).** Before: an attach
+claiming an instrument a live attachment traded was refused (asserted by `gateway_test`,
+`gateway_multi_test`); still so unless `[gateway.shared."venue:symbol"]` names it (optional
+`primary = "<engine name>"`). Decisions:
+(a) Routing. Own orders by the client order id's epoch, unchanged. A fill of an earlier session's
+order goes to that session's strategy by `[engine] name`: the gateway keeps the epochs it gave
+each name, and the attach request (protocol 6) carries the store's session epochs
+(`Recovery::session_epochs`, last 64), so a restart after kill -9 or after a gateway restart gets
+its own. Events naming no order (liquidation/ADL, orders placed elsewhere, funding) go to the
+primary, else the account alone. The venue's position records go to no strategy: the engine sets
+its position from them, and on a shared instrument they are the account's. One attachment per
+`[engine] name` (a name is a store and a share).
+(b) Positions. The account's is the venue's, as before. Every execution the account books counts
+once towards its strategy's share or towards nobody (unattributed); a strategy's store joins the
+account the first time it attaches in a gateway run (summed, where an unshared instrument keeps
+its first owner's). One booked for nobody that later reaches a strategy (its session claimed after
+the fill) moves to it, via a tag in the account's dedupe window (not exercised by a test).
+unexplained = account − shares − unattributed, nonzero when a venue position record disagrees:
+status v12 (position: shared, traders, unattributed, unexplained; attachment: its instruments, as
+there is no single owner), `fastmm_account_unattributed`/`_unexplained`, a WARN line a second.
+(c) Self-trade: refused at the gateway (`GatewaySelfTrade`) when an order would trade with another
+strategy's resting (GTC/Day) order. Holding needs timers and state for an order that is stale by
+then; venue STP alone differs per venue and, on one account, cancels the other strategy's quote
+(the simulator's CancelMaker did exactly that in a first run). `RestingOrders`
+(core/self_trade.hpp), a linear scan: 0.8 / 1.0 / 3.2 / 11.1 ns with 0 / 2 / 8 / 32 resting
+(`bench_self_trade`); an unshared instrument skips it. Test 1 hit it once for real: a's skewed
+quote would have crossed b's.
+(d) Risk: `[gateway]` limits already sum over strategies; per-strategy `[risk]` in each engine.
+(e) Detach and restart: unchanged; tested below.
+Evidence: `integration/gateway_shared_test.cpp` (quiet simulator, every fill made by the test):
+two strategies trading, stores = own fills, venue = a + b + an outside trade left unattributed,
+the gateway's shares = the stores; kill -9 of a while b trades, restart, nothing booked twice; a's
+order filled while a was dead (gateway SIGSTOPped so it cannot cancel first) is booked by a's
+restart, never by b; a raw third client's crossing limit buy, limit sell and market order refused,
+a non-crossing one rests and is cancelled on its detach; an execution naming no order booked by
+the primary alone. `gateway_funding_test.cpp` (fake Bybit linear): funding without a primary booked
+once by the account and by no strategy; a venue position no store holds reaches no strategy and
+shows as unexplained (status and log). Each fails with its piece broken (5 mutations: no routing
+by past epoch or to the primary, no check, no attribution, funding to a trader, a position row to
+a trader). The 7 new cases 10 times each in a row (all passed); the integration suite 3 times at
+-j8 (below); full ctest. Gateway t2t (`scripts/bench-gateway.sh`, new `--shared`; adaptive, 45 s,
+base 1eb45c6 and this built at the same path length, interleaved, load under 2): gateway p50
+engine/wire 36.9/70.3 µs for base (6 runs), this (6) and this with BTCUSDT shared (3), one run
+each of base and this at 66.4 wire; wire p99 105-121 (base), 109-133 (this), 105-109 (shared).
+Left: no real venue; the venue's position is compared only where the connector reports one (not
+spot: there the account is its seeds plus the fills); after a gateway restart a strategy that has
+not reattached leaves its old sessions' fills unattributed until it does. `fastmm-ctl --gateway
+pull --instrument` on a shared instrument reaches every strategy trading it.
+
 **Every connector on production public data (2026-09-28).** `fastmm-live --dry-run --record-raw`,
 6 connectors in parallel, 15 min each, load 1 to 6, before (r1) and after (r2) the fixes. Configs
 were the demo/testnet ones with production hosts (`/tmp/aw/p-*.toml`, not kept).
@@ -521,7 +570,7 @@ gateway, instrument ownership, per-epoch detach, `[gateway]` rate and open-notio
 positions, exposure and loss). Open:
 * ~~The replay start in the engine's clock~~ Fixed: see "Resume point in venue time" below.
 * ~~1024 known ids per attach could overflow~~ Fixed there too.
-* Two strategies on one instrument.
+* ~~Two strategies on one instrument~~ Done 2026-09-28 (`[gateway.shared]`, entry at the top).
 * The account's position of an instrument is seeded once per gateway run, by its first owner's
   store; the gateway books a strategy's missed fill from the replayed execution, where the engine
   first books an estimate from cum_qty, so the two can differ until that replay.

@@ -186,10 +186,15 @@ struct GatewaySection {
   std::string max_net_notional;    // |signed sum| of the positions at the marks
   // [gateway.underlying.<BASE>] max_net: the account's net position per base asset, base units.
   UnderlyingSpec underlying;
+  // [gateway.shared."<venue>:<symbol>"]: an instrument several strategies may trade at once, and
+  // the [engine] name of its primary strategy (empty: none), which books the events naming no
+  // order.
+  std::map<std::string, std::string> shared;
 
   [[nodiscard]] bool any() const noexcept {
     return orders_per_sec != 0 || burst != 0 || !max_open_notional.empty() || !max_loss.empty() ||
-           !max_gross_notional.empty() || !max_net_notional.empty() || underlying.configured();
+           !max_gross_notional.empty() || !max_net_notional.empty() || underlying.configured() ||
+           !shared.empty();
   }
 };
 

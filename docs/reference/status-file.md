@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 11) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 12) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
@@ -120,11 +120,11 @@ A gateway (`kind` 1) fills the header (`pid`, times, `state`, `dry_run`, `engine
 | `net_pnl_raw`, `gross_raw`, `net_raw` | i64 | the account's net PnL (carried + realized + unrealized − fees), gross and net exposure |
 | `trip_net_raw` | i64 | the net PnL when it tripped |
 | `max_loss_raw`, `max_gross_raw`, `max_net_raw`, `max_open_notional_raw` | i64 | `[gateway]` limits, 0 off |
-| `venues` | 8 x routing entry | per venue: `md_discarded`, `order_discarded`, `unrouted`, `gateway_cancels`, `untracked`, `stale_replays`, `account_skipped`, `account_md_lost` (u64), `refused` (9 x u64), and the account on that venue: `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_raw`, `net_raw` |
-| `attachments` | 16 x attachment | `engine` (char[32]), `pid`, `id` (u32), `epoch` (u16), `blocks` (u8: its engine sleeps when idle), `attached_ns` (i64), `md_dropped` (u64: market data its rings dropped), `refused` (9 x u64) |
-| `positions` | 256 x position | one per instrument of the gateway's table: `symbol` (char[24]), `venue` (u8, index into `venues`), `owner_epoch` (u16, the attachment that trades it, 0 none), `qty_raw` (i64) |
+| `venues` | 8 x routing entry | per venue: `md_discarded`, `order_discarded`, `unrouted`, `gateway_cancels`, `untracked`, `stale_replays`, `account_skipped`, `account_md_lost` (u64), `refused` (10 x u64), and the account on that venue: `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_raw`, `net_raw` |
+| `attachments` | 16 x attachment | `engine` (char[32]), `pid`, `id` (u32), `epoch` (u16), `blocks` (u8: its engine sleeps when idle), `attached_ns` (i64), `md_dropped` (u64: market data its rings dropped), `refused` (10 x u64), `instruments` (4 x u64: bit i set when it trades `positions[i]`) |
+| `positions` | 256 x position | one per instrument of the gateway's table: `symbol` (char[24]), `venue` (u8, index into `venues`), `shared` (u8, `[gateway.shared]`), `owner_epoch` (u16, the one attachment that trades it; 0 for none, and always for a shared one), `traders` (u16, attachments trading it), `qty_raw` (i64, the account's), `unattributed_raw` and `unexplained_raw` (i64, a shared one's: see [Shared instruments](../how-to/operations/run-behind-a-gateway.md#shared-instruments)) |
 | `underlyings` | 8 x underlying entry | `[gateway.underlying]`: the account's net position per base asset over every venue, as the snapshot's `underlyings` |
 
-`refused` counts in the order `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional`, `GatewayRateLimit`, `GatewayFxRateUnknown`, `GatewayUnderlyingNet`, `GatewayUnderlyingMarkUnknown` ([Reject reasons](errors.md#gateway)). An attachment's instruments are the positions whose `owner_epoch` is its epoch.
+`refused` counts in the order `GatewayNotOwner`, `GatewayAccountKilled`, `GatewayOpenNotional`, `GatewayGrossNotional`, `GatewayNetNotional`, `GatewayRateLimit`, `GatewayFxRateUnknown`, `GatewayUnderlyingNet`, `GatewayUnderlyingMarkUnknown`, `GatewaySelfTrade` ([Reject reasons](errors.md#gateway)).
 
 `fastmm-top --json` prints the snapshot as one JSON object, with states, kill reasons and latency intervals by name ([Command lines](cli.md#fastmm-top)); `scripts/bench-e2e.sh` reads it.

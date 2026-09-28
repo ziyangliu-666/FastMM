@@ -10,6 +10,7 @@
 #include "fastmm/live/session.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -57,6 +58,8 @@ struct FakeBybit {
   std::string snapshot = fastmm::test::fixture("bybit/orderbook50_snapshot.json");
   std::mutex mu;
   net::WsSession* private_session = nullptr;  // server thread only
+  // The account's positions by settle coin: none, or `mode`'s (Sell 0.015 BTCUSDT).
+  std::atomic<bool> report_position{false};
 
   static std::string pong(std::string_view t) {
     return R"({"success":true,"ret_msg":"pong","conn_id":"c","req_id":")" + json_str(t, "req_id") +
@@ -78,7 +81,7 @@ struct FakeBybit {
     srv.route("GET", "/v5/position/list", [this](const net::HttpRequest& r) {
       srv.record("positions", std::string(r.query));
       const bool by_symbol = r.query.find("symbol=") != std::string_view::npos;
-      return net::HttpServerResponse::json(200, by_symbol ? mode : kEmptyList);
+      return net::HttpServerResponse::json(200, by_symbol || report_position ? mode : kEmptyList);
     });
     srv.route("GET", "/v5/order/realtime", json(kEmptyList));
     srv.route("GET", "/v5/execution/list", [this](const net::HttpRequest& r) {
@@ -300,6 +303,205 @@ TEST_CASE("gateway funding: a payment reaches the owner and the account, each bo
   REQUIRE(rows->rows.size() == 2);
   CHECK(rows->rows[0][2] == "-0.5");
   CHECK(rows->rows[1][2] == "0.2");
+}
+
+TEST_CASE(
+    "gateway funding: on a shared instrument without a primary the account books a payment once "
+    "and no strategy does") {
+  FakeBybit bybit;
+  const Files gw = write_files(bybit, "gw-fsh-gw");
+  {
+    std::ofstream out(gw.config, std::ios::app);
+    out << "\n[gateway.shared.\"bybit_linear:BTCUSDT\"]\n";
+  }
+  const Files a = write_files(bybit, "gw-fsh-a");
+  const Files b = write_files(bybit, "gw-fsh-b");
+  const std::string socket = gw.config + ".gw";
+  const std::string gw_log = gw.config + ".gw.log";
+  const pid_t gateway = spawn_process(FASTMM_GATEWAY_EXE,
+                                      {"--config",
+                                       gw.config,
+                                       "--socket",
+                                       socket,
+                                       "--log",
+                                       gw_log,
+                                       "--status",
+                                       gw.status,
+                                       "--duration",
+                                       "120s"});
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        return std::filesystem::exists(socket) &&
+                               !bybit.srv.frames("private_subscribe").empty();
+                      },
+                      20000),
+                  "the gateway did not come up: " << fastmm::test::read_file(gw_log));
+  std::vector<pid_t> strategies;
+  for (const Files* f : {&a, &b}) {
+    strategies.push_back(spawn_process(FASTMM_LIVE_EXE,
+                                       {"--config",
+                                        f->config,
+                                        "--duration",
+                                        "120s",
+                                        "--status",
+                                        f->status,
+                                        "--log",
+                                        f->log,
+                                        "--gateway",
+                                        socket,
+                                        "--no-control"}));
+  }
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto s = read_status(gw.status);
+                        return s && s->gateway.positions[0].traders == 2;
+                      },
+                      20000),
+                  "both did not attach: " << fastmm::test::read_file(gw_log));
+
+  bybit.srv.send_to("/v5/private", funding_frame("fund-s", "0.5"));
+  bybit.srv.send_to("/v5/private", funding_frame("fund-s", "0.5"));
+  const std::int64_t paid = Notional::from_decimal("-0.5").value().raw;
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto s = read_status(gw.status);
+                        return s && s->gateway.venues[0].realized_raw == paid;
+                      },
+                      20000),
+                  "the account did not book it: " << fastmm::test::read_file(gw_log));
+  // A second payment: once it is in the account, the first has passed every strategy's ring.
+  bybit.srv.send_to("/v5/private", funding_frame("fund-t", "0.25"));
+  const std::int64_t both = Notional::from_decimal("-0.75").value().raw;
+  REQUIRE(wait_until(
+      [&] {
+        const auto s = read_status(gw.status);
+        return s && s->gateway.venues[0].realized_raw == both;
+      },
+      20000));
+  for (const pid_t pid : strategies) {
+    REQUIRE(::kill(pid, SIGTERM) == 0);
+    CHECK(reap(pid) == live::kExitOk);
+  }
+  const auto last = read_status(gw.status);
+  REQUIRE(last.has_value());
+  CHECK(last->gateway.venues[0].realized_raw == both);
+  REQUIRE(::kill(gateway, SIGTERM) == 0);
+  CHECK(reap(gateway) == live::kExitOk);
+  for (const Files* f : {&a, &b}) {
+    INFO(f->config);
+    CHECK(journal_funding(*f).empty());
+    const auto s = read_status(f->status);
+    REQUIRE(s.has_value());
+    CHECK(s->realized_pnl_raw == 0);
+  }
+}
+
+#endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE
+
+#if defined(FASTMM_LIVE_EXE) && defined(FASTMM_GATEWAY_EXE)
+
+TEST_CASE(
+    "gateway funding: a shared instrument's venue position reaches no strategy, and one the "
+    "strategies do not hold shows as unexplained") {
+  FakeBybit bybit;
+  bybit.report_position = true;  // the venue holds -0.015 that no strategy's store knows
+  const Files gw = write_files(bybit, "gw-psh-gw");
+  {
+    std::ofstream out(gw.config, std::ios::app);
+    out << "\n[gateway.shared.\"bybit_linear:BTCUSDT\"]\n";
+  }
+  const Files a = write_files(bybit, "gw-psh-a");
+  const Files b = write_files(bybit, "gw-psh-b");
+  const std::string socket = gw.config + ".gw";
+  const std::string gw_log = gw.config + ".gw.log";
+  const pid_t gateway = spawn_process(FASTMM_GATEWAY_EXE,
+                                      {"--config",
+                                       gw.config,
+                                       "--socket",
+                                       socket,
+                                       "--log",
+                                       gw_log,
+                                       "--status",
+                                       gw.status,
+                                       "--duration",
+                                       "120s"});
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        return std::filesystem::exists(socket) &&
+                               !bybit.srv.frames("private_subscribe").empty();
+                      },
+                      20000),
+                  "the gateway did not come up: " << fastmm::test::read_file(gw_log));
+  std::vector<pid_t> strategies;
+  for (const Files* f : {&a, &b}) {
+    strategies.push_back(spawn_process(FASTMM_LIVE_EXE,
+                                       {"--config",
+                                        f->config,
+                                        "--duration",
+                                        "120s",
+                                        "--status",
+                                        f->status,
+                                        "--log",
+                                        f->log,
+                                        "--gateway",
+                                        socket,
+                                        "--no-control"}));
+  }
+  // Each attach reconciles, with the venue's position: the account takes it, and the strategies'
+  // shares (their stores: flat) and the unattributed part (nothing) leave all of it unexplained.
+  const std::int64_t venue = Qty::from_decimal("-0.015").value().raw;
+  std::optional<StatusPosition> p;
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto s = read_status(gw.status);
+                        if (!s) return false;
+                        p = s->gateway.positions[0];
+                        return p->traders == 2 && p->qty_raw == venue &&
+                               p->unexplained_raw == venue;
+                      },
+                      20000),
+                  "gateway: " << fastmm::test::read_file(gw_log));
+  CHECK(p->shared == 1);
+  CHECK(p->unattributed_raw == 0);
+  // The log says so once a second (the strategies in the order they attached).
+  std::string warned;
+  REQUIRE(wait_until(
+      [&] {
+        const std::string text = fastmm::test::read_file(gw_log);
+        const std::size_t at = text.find(
+            "account position bybit_linear:BTCUSDT -0.015 does not match its strategies' (shared:");
+        if (at == std::string::npos) return false;
+        warned = text.substr(at, text.find('\n', at) - at);
+        return true;
+      },
+      5000));
+  INFO(warned);
+  CHECK(warned.find(" gw-psh-a=0 ") != std::string::npos);
+  CHECK(warned.find(" gw-psh-b=0 ") != std::string::npos);
+  CHECK(warned.find("unattributed=0): off by -0.015") != std::string::npos);
+  for (const pid_t pid : strategies) {
+    REQUIRE(::kill(pid, SIGTERM) == 0);
+    CHECK(reap(pid) == live::kExitOk);
+  }
+  REQUIRE(::kill(gateway, SIGTERM) == 0);
+  CHECK(reap(gateway) == live::kExitOk);
+  // Neither strategy was given the venue's position as its own.
+  for (const Files* f : {&a, &b}) {
+    INFO(f->config);
+    std::size_t rows = 0;
+    for (const auto& e : std::filesystem::directory_iterator(f->journal_dir)) {
+      if (e.path().extension() != ".fmj") continue;
+      JournalReader r;
+      REQUIRE(r.open(e.path().string()).has_value());
+      r.for_each([&](const EventHeader* h) {
+        if (h->type == EventType::Reconcile &&
+            msg_cast<ReconcileMsg>(h).kind == ReconcileMsg::Kind::Position)
+          ++rows;
+        if (h->type == EventType::PositionUpdate) ++rows;
+      });
+    }
+    CHECK(rows == 0);
+  }
 }
 
 #endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE

@@ -468,6 +468,19 @@ inline constexpr KeySpec kConfigSchema[] = {
      true,
      "fastmm-gateway: refuse an order that would take the account's net position in this base "
      "asset, working orders on the order's side included, further past this; base units, decimal"},
+    {"gateway",
+     "shared",
+     KeyType::Table,
+     false,
+     "fastmm-gateway: one [gateway.shared.\"venue:symbol\"] table per instrument that several "
+     "strategies may trade at once (default: one strategy per instrument)"},
+    {"gateway.shared.*",
+     "primary",
+     KeyType::String,
+     false,
+     "fastmm-gateway: [engine] name of the strategy that books this instrument's events naming no "
+     "order (funding, liquidation fills, executions of orders placed elsewhere); default none: "
+     "the account alone books them"},
     // [accounting]
     {"accounting",
      "reporting_currency",

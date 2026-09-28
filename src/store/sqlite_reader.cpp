@@ -233,6 +233,13 @@ class SqliteReader final : public Reader {
 
     const std::vector<ChainSession> chain = sessions_up_to(engine, started_ns);
     rec.position_state = last_positions(chain);
+    for (const ChainSession& c : chain) {
+      if (rec.session_epochs.size() == Recovery::kMaxSessionEpochs) break;
+      if (c.epoch != 0 &&
+          std::find(rec.session_epochs.begin(), rec.session_epochs.end(), c.epoch) ==
+              rec.session_epochs.end())
+        rec.session_epochs.push_back(c.epoch);
+    }
     resume_points(rec, chain);
     return rec;
   }
@@ -283,6 +290,7 @@ class SqliteReader final : public Reader {
     std::uint64_t id = 0;
     std::int64_t started_ns = 0;
     bool clean = false;  // recorded a clean shutdown
+    std::uint16_t epoch = 0;
   };
 
   // Every session of `engine` that started no later than `started_ns`, newest first. A session
@@ -293,7 +301,7 @@ class SqliteReader final : public Reader {
     sqlite3_stmt* st = nullptr;
     if (sqlite3_prepare_v2(
             db_,
-            "SELECT session_id, started_ns, clean_shutdown FROM sessions WHERE"
+            "SELECT session_id, started_ns, clean_shutdown, session_epoch FROM sessions WHERE"
             " engine = ?1 AND started_ns <= ?2 ORDER BY started_ns DESC, session_id DESC",
             -1,
             &st,
@@ -304,7 +312,8 @@ class SqliteReader final : public Reader {
     while (sqlite3_step(st) == SQLITE_ROW) {
       out.push_back(ChainSession{static_cast<std::uint64_t>(sqlite3_column_int64(st, 0)),
                                  sqlite3_column_int64(st, 1),
-                                 sqlite3_column_int(st, 2) != 0});
+                                 sqlite3_column_int(st, 2) != 0,
+                                 static_cast<std::uint16_t>(sqlite3_column_int(st, 3))});
     }
     sqlite3_finalize(st);
     return out;

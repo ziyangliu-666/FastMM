@@ -156,10 +156,12 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   if (req.positions.size() > kMaxInstruments) return fail("too many positions to report");
   const std::size_t positions = req.positions.size();
   const std::size_t resumes = req.resume.size();
+  if (req.past_epochs.size() > gw::kMaxPastEpochs) return fail("too many past epochs to claim");
+  const std::size_t epochs = req.past_epochs.size();
   std::vector<std::byte> out(sizeof(gw::AttachRequest) + known * sizeof(gw::ExecId) +
                              claims * sizeof(gw::InstrumentClaim) +
                              positions * sizeof(gw::PositionSeed) +
-                             resumes * sizeof(gw::VenueResume));
+                             resumes * sizeof(gw::VenueResume) + epochs * sizeof(std::uint16_t));
   gw::AttachRequest r{};
   r.hdr = gw::Header{gw::kMagic,
                      gw::kVersion,
@@ -173,6 +175,7 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   r.known_count = static_cast<std::uint32_t>(known);
   r.claim_count = static_cast<std::uint32_t>(claims);
   r.position_count = static_cast<std::uint32_t>(positions);
+  r.epoch_count = static_cast<std::uint32_t>(epochs);
   std::memcpy(out.data(), &r, sizeof r);
   std::size_t next_id = 0;
   for (const GatewayAttachRequest::Resume& v : req.resume) {
@@ -209,6 +212,9 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
     first += vr.known_count;
     std::memcpy(resume_at + i * sizeof vr, &vr, sizeof vr);
   }
+  std::byte* epoch_at = resume_at + resumes * sizeof(gw::VenueResume);
+  for (std::size_t i = 0; i < epochs; ++i)
+    std::memcpy(epoch_at + i * sizeof(std::uint16_t), &req.past_epochs[i], sizeof(std::uint16_t));
   if (::send(c->fd_, out.data(), out.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(out.size()))
     return fail(std::string("send attach request: ") + std::strerror(errno));
 

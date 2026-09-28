@@ -502,3 +502,41 @@ TEST_CASE("core.config: [risk.underlying] errors") {
   REQUIRE_FALSE(plan.has_value());
   CHECK(plan.error() == "[risk.underlying.SOL]: no instrument of this session has base SOL");
 }
+
+TEST_CASE("core.config: [gateway.shared] parses, round-trips and names instruments it has") {
+  const Config cfg = Config::parse(two_currencies(
+      "[gateway.shared.\"sim:BTCUSDT\"]\nprimary = \"mm-a\"\n[gateway.shared.\"sim:ETHBTC\"]\n"));
+  CHECK(cfg.warnings.empty());
+  REQUIRE(cfg.gateway.shared.size() == 2);
+  CHECK(cfg.gateway.shared.at("sim:BTCUSDT") == "mm-a");
+  CHECK(cfg.gateway.shared.at("sim:ETHBTC").empty());
+  CHECK(cfg.gateway.any());
+  const Config again = Config::parse(cfg.effective_toml());
+  CHECK(again.gateway.shared == cfg.gateway.shared);
+  CHECK(again.effective_hash() == cfg.effective_hash());
+  CHECK(cfg.redacted().find("[gateway.shared.\"sim:BTCUSDT\"]\nprimary = \"mm-a\"") !=
+        std::string::npos);
+  CHECK(Config::parse(kMinimal).effective_toml().find("shared") == std::string::npos);
+
+  const auto err = [](const std::string& text) -> std::string {
+    try {
+      static_cast<void>(Config::parse(two_currencies(text)));
+    } catch (const ConfigError& e) {
+      return e.what();
+    }
+    return "";
+  };
+  CHECK(err("[gateway.shared]\n\"sim:BTCUSDT\" = \"mm-a\"\n").find("must be a table") !=
+        std::string::npos);
+  CHECK(err("[gateway.shared.BTCUSDT]\n").find("expected \"venue:symbol\"") != std::string::npos);
+  CHECK(err("[gateway.shared.\"other:BTCUSDT\"]\n").find("unknown venue 'other'") !=
+        std::string::npos);
+  CHECK(err("[gateway.shared.\"sim:SOLUSDT\"]\n").find("SOLUSDT is not in [[instruments]]") !=
+        std::string::npos);
+  CHECK(err("[gateway.shared.\"sim:BTCUSDT\"]\nprimary = 3\n").find("wrong type") !=
+        std::string::npos);
+  const Config odd =
+      Config::parse(two_currencies("[gateway.shared.\"sim:BTCUSDT\"]\nowner = \"mm-a\"\n"));
+  REQUIRE(odd.warnings.size() == 1);
+  CHECK(odd.warnings[0].find("unknown key 'gateway.shared.*.owner'") != std::string::npos);
+}

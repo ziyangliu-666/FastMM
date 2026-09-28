@@ -428,7 +428,7 @@ commands (one per datagram; the reply starts with ok or error)
 
 gateway commands (one per datagram; the reply starts with ok or error)
   pull [--instrument SYM | --venue NAME]   the strategies in that scope stop quoting
-                                           (the owner of SYM, every strategy on NAME,
+                                           (those trading SYM, every strategy on NAME,
                                            or every strategy)
   resume [--instrument SYM | --venue NAME] they quote again
   kill                                     trip the account kill switch, as max_loss

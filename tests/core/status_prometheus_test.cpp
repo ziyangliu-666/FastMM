@@ -173,8 +173,12 @@ TEST_CASE("core.status_prometheus: a gateway exports its account, positions and 
   set_status_name(g.positions[0].symbol, "BTCUSDT");
   g.positions[0].owner_epoch = 7;
   g.positions[0].qty_raw = 400'000;
+  g.positions[0].traders = 1;
   set_status_name(g.positions[1].symbol, "ETHUSDT");
   g.positions[1].qty_raw = -200'000;
+  g.positions[1].shared = 1;
+  g.positions[1].unattributed_raw = 100'000;
+  g.positions[1].unexplained_raw = -50'000;
   const std::string text = format_status_prometheus(s, s.updated_ns);
   INFO(text);
   CHECK(has(text, "fastmm_info{gateway=\"gw\",pid=\"99\"} 1\n"));
@@ -188,6 +192,11 @@ TEST_CASE("core.status_prometheus: a gateway exports its account, positions and 
   CHECK(has(text, "fastmm_account_position{venue=\"sim\",instrument=\"ETHUSDT\"} -0.002\n"));
   CHECK(has(text, "fastmm_gateway_instrument_owner{venue=\"sim\",instrument=\"BTCUSDT\"} 7\n"));
   CHECK_FALSE(has(text, "fastmm_gateway_instrument_owner{venue=\"sim\",instrument=\"ETHUSDT\"}"));
+  CHECK(has(text, "fastmm_gateway_instrument_traders{venue=\"sim\",instrument=\"BTCUSDT\"} 1\n"));
+  // Only a shared instrument has an unattributed and an unexplained part.
+  CHECK(has(text, "fastmm_account_unattributed{venue=\"sim\",instrument=\"ETHUSDT\"} 0.001\n"));
+  CHECK(has(text, "fastmm_account_unexplained{venue=\"sim\",instrument=\"ETHUSDT\"} -0.0005\n"));
+  CHECK_FALSE(has(text, "fastmm_account_unattributed{venue=\"sim\",instrument=\"BTCUSDT\"}"));
   CHECK(has(text, "fastmm_gateway_attachments 1\n"));
   CHECK(has(text,
             "fastmm_gateway_attachment_info{epoch=\"7\",engine=\"mm-a\",pid=\"1001\","
