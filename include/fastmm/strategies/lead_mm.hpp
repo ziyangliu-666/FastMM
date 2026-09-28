@@ -35,10 +35,12 @@
 #include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
+#include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
@@ -97,6 +99,12 @@ struct LeadMMParams {
                    100_bps,
                    "fair shift per unit of target book imbalance, bps (0 = off)")
   FASTMM_PARAM(int, imb_levels, 1, 1, 8, "target levels per side in the imbalance")
+  FASTMM_PARAM(bool,
+               log_exec_view,
+               false,
+               false,
+               true,
+               "log queue_ahead at each ack and the target venue's health every 10 s")
 
   [[nodiscard]] std::optional<std::string> validate() const {
     if (leader == target || fx == target || fx == leader)
@@ -109,6 +117,7 @@ class LeadMM : public StrategyBase<LeadMMParams> {
  public:
   static constexpr std::string_view name() noexcept { return "lead_mm"; }
   static constexpr std::uint64_t kStaleTimer = 0x5741'4c45;  // "STALE"
+  static constexpr std::uint64_t kLogTimer = 0x4c4f'4721;    // "LOG!"
 
   // Before the engine is built: every role must name an instrument, and the target must be
   // tradable. Startup only.
@@ -134,6 +143,12 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     pulled_ = false;
     for (Top& t : ticker_) t = Top{};
     stale_timer_ = ctx.every(milliseconds(100), kStaleTimer);
+    if constexpr (requires { ctx.queue_ahead(ClientOrderId{}); }) {
+      if (p.log_exec_view) static_cast<void>(ctx.queue_ahead(ClientOrderId{}));  // starts tracking
+    }
+    if (p.log_exec_view) {
+      static_cast<void>(ctx.every(seconds(10), kLogTimer));
+    }
   }
 
   template <class Ctx, class Book>
@@ -167,6 +182,35 @@ class LeadMM : public StrategyBase<LeadMMParams> {
   template <class Ctx>
   void on_timer(Ctx& ctx, TimerId, std::uint64_t user_data) noexcept {
     if (user_data == kStaleTimer && !pulled_ && !fair(ctx)) pull(ctx);
+    if constexpr (requires { ctx.venue_health(VenueId{}); }) {
+      if (user_data != kLogTimer) return;
+      const VenueHealthView h = ctx.venue_health(ctx.instrument(target_).venue);
+      FASTMM_LOG_INFO(
+          "lead_mm venue_health lag_ns={} base_ns={} excess_ns={} ack_rtt_ns={} "
+          "ack_srtt_ns={} gates={} gated={}",
+          h.feed_lag.ns,
+          h.feed_lag_base.ns,
+          h.feed_lag_excess.ns,
+          h.ack_rtt.ns,
+          h.ack_rtt_smoothed.ns,
+          h.gate_engagements,
+          h.gated);
+    }
+  }
+
+  // With log_exec_view: the queue estimate of each of our target orders when its ack arrives.
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OmsUpdate& u) noexcept {
+    if constexpr (requires { ctx.queue_ahead(ClientOrderId{}); }) {
+      if (!params().log_exec_view || !u.changed || u.prev != OrderState::PendingNew ||
+          u.order.instrument != target_)
+        return;
+      const std::optional<Qty> q = ctx.queue_ahead(u.order.cl_ord_id);
+      FASTMM_LOG_INFO("lead_mm ack cl_ord_id={} px_raw={} queue_ahead_raw={}",
+                      u.order.cl_ord_id.value,
+                      u.order.price.raw,
+                      q ? q->raw : -1);
+    }
   }
 
   // The engine pulls a venue's quotes when a connection drops; requote at once when it is Live
