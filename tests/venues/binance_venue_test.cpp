@@ -56,6 +56,9 @@ struct Harness {
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
   std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
+  std::atomic<bool> hold_trades{false};    // GET myTrades answers only once released (3 s at most)
+  std::atomic<int> my_trades{0};           // GET myTrades requests seen
+  std::atomic<int> rest_open_orders{0};    // GET /api/v3/openOrders requests seen
   net::WsSession* user_session = nullptr;  // server thread only
 
   // The server thread reads this harness's members: stop it before they go.
@@ -80,6 +83,17 @@ struct Harness {
       const bool ok = r.header("X-MBX-APIKEY") == kKey && signed_ok(r.query) &&
                       r.query.find("symbol=BTCUSDT") != std::string_view::npos;
       ++(ok ? cancel_all_ok : cancel_all_bad);
+      return net::HttpServerResponse::json(200, "[]");
+    });
+    srv.route("GET", "/api/v3/myTrades", [this](const net::HttpRequest&) {
+      ++my_trades;
+      // Blocks the fake's thread: the reply is in flight for as long as the test says.
+      for (int i = 0; i < 600 && hold_trades.load(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return net::HttpServerResponse::json(200, "[]");
+    });
+    srv.route("GET", "/api/v3/openOrders", [this](const net::HttpRequest&) {
+      ++rest_open_orders;
       return net::HttpServerResponse::json(200, "[]");
     });
     srv.on_ws_open("/stream", [](net::WsSession& s) {
@@ -522,5 +536,43 @@ TEST_CASE("binance.venue: md_format sbe reads binary frames from the SBE stream 
     CHECK(venue.md_feed()->stats().malformed == 0);
     venue.disconnect();
   }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a shutdown during the execution replay opens no REST connection") {
+  // disconnect() resets the REST channel, which fails the myTrades request in flight. That used to
+  // finish the replay and release the open-order snapshot it held: a GET openOrders on a fresh
+  // connection, from a connector that had just been told to stop.
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  BinanceVenue venue(VenueId{0}, h.config(false));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}};
+  venue.subscribe(ids);
+  venue.connect(reactor);
+  Collected oc;
+  REQUIRE(pump_until(reactor, [&] {
+    oc.take(orders);
+    return oc.count(EventType::Reconcile) >= 2;  // the start-up sweep
+  }));
+  h.hold_trades = true;
+  const int asked = h.my_trades.load();
+  venue.request_open_orders();
+  REQUIRE(pump_until(reactor, [&] { return h.my_trades.load() == asked + 1; }));
+  venue.disconnect();
+  h.hold_trades = false;
+  static_cast<void>(pump_until(reactor, [] { return false; }, 500));
+  CHECK(h.rest_open_orders.load() == 0);
+  oc.take(orders);
+  const std::size_t reconciles = oc.count(EventType::Reconcile);
+  CHECK(reconciles == 2);  // nothing after the sweep
   h.srv.stop();
 }

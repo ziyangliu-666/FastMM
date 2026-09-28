@@ -151,6 +151,10 @@ class DeribitOrderEncoder {
                                         std::string_view currency,
                                         std::string_view access_token,
                                         std::span<char> out) noexcept;
+  static std::size_t encode_positions(std::int64_t id,
+                                      std::string_view currency,
+                                      std::string_view access_token,
+                                      std::span<char> out) noexcept;
   static std::size_t encode_user_trades(std::int64_t id,
                                         std::string_view currency,
                                         std::int64_t start_ms,

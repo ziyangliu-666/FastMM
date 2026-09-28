@@ -35,6 +35,7 @@
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
+#include "fastmm/venues/reconcile_driver.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -94,7 +95,7 @@ struct BinanceVenueConfig {
   net::BackoffConfig backoff{};
 };
 
-class BinanceVenue final : public Venue {
+class BinanceVenue final : public Venue, private ReconcileHooks {
  public:
   BinanceVenue(VenueId id, BinanceVenueConfig cfg);
   ~BinanceVenue() override;
@@ -119,7 +120,6 @@ class BinanceVenue final : public Venue {
   void on_wake() override;
   void send_now(std::span<const EventHeader* const> batch) override;
   void request_open_orders() override;
-  void request_open_orders(ClientOrderId watermark);
   bool request_executions(std::int64_t since_venue_ms = 0) override;
   // Orders the connector still keeps a shadow for (tests: a lost terminal event leaks one).
   [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
@@ -226,13 +226,16 @@ class BinanceVenue final : public Venue {
   void request_listen_key();
   void keepalive_listen_key();
   void cancel_all_async();
-  void emit_reconcile(std::string_view json, bool rest_array, ClientOrderId sent_watermark);
-  // Emits the open-order snapshot request itself, once any execution replay before it has finished.
-  void send_open_orders(ClientOrderId watermark);
+  // ReconcileHooks: openOrders.status on the order connection, else GET /api/v3/openOrders.
+  bool fetch_snapshot(std::uint64_t generation) override;
+  bool replay_executions() override;
+  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void drop_shadow(ClientOrderId id) override;
+  // Decodes the whole reply into the driver's rows before anything reaches the engine.
+  void on_open_orders(std::uint64_t generation, std::string_view json, bool rest_array);
   // GET /api/v3/myTrades for one subscribed instrument; `emit_executions` turns the reply into
   // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
   bool request_executions_for(InstrumentId id);
-  void sweep_shadows(ClientOrderId sent_watermark);
   void emit_executions(InstrumentId id, std::string_view json);
   void finish_execution_replay(bool ok);
   [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
@@ -295,12 +298,9 @@ class BinanceVenue final : public Venue {
   std::size_t exec_pending_ = 0;  // myTrades replies still outstanding
   bool exec_replay_ok_ = true;    // every reply so far covered its instrument in full
   bool exec_replay_active_ = false;
-  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
-  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;     // when the last replay started (the periodic one)
+  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
   std::int64_t exec_retry_ns_ = 0;
-  bool oo_wanted_ = false;  // a snapshot was asked for while a replay was in flight
-  ClientOrderId oo_wanted_watermark_{};
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::atomic<std::int64_t> clock_offset_ms_{0};  // read by cancel_all() from any thread
@@ -322,11 +322,9 @@ class BinanceVenue final : public Venue {
   SentWatermark sent_;
   std::uint64_t amends_sent_ = 0;
   BatchedOrders batch_;  // orders written into the corked order connection
-  // Open-order snapshot, decoded in full before anything reaches the engine.
-  std::vector<ReconcileMsg> reconcile_records_;
-  // Sent watermark of each openOrders.status request on the order connection, in send order (the
-  // replies come back in that order).
-  std::vector<ClientOrderId> oo_watermarks_;
+  ReconcileDriver reconcile_{*this, sent_};
+  // The generation of the openOrders.status request on the order connection (0: none).
+  std::uint64_t oo_ws_generation_ = 0;
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 

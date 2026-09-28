@@ -9,7 +9,7 @@
 //            (optional), private/subscribe user.orders.KIND.CURRENCY.raw and
 //            user.trades.KIND.CURRENCY.raw; order entry (private/buy, sell, edit, cancel,
 //            cancel_by_label) and reconciliation (private/get_user_trades_by_currency_and_time,
-//            then private/get_open_orders_by_currency) run here too
+//            then private/get_open_orders_by_currency and private/get_positions) run here too
 //   rest     rest_url (https://test.deribit.com/api/v2): public/get_instruments and public/get_time
 //            at startup; private/cancel_all_by_instrument with HTTP Basic credentials for the
 //            kill switch (independent BlockingHttp) and after the private channel drops
@@ -40,6 +40,7 @@
 #include "fastmm/venues/deribit/deribit_private_parser.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
+#include "fastmm/venues/reconcile_driver.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -91,9 +92,10 @@ inline constexpr std::int64_t kIdCancelOnDisconnect = 5;
 inline constexpr std::int64_t kIdPrivateSubscribe = 6;
 inline constexpr std::int64_t kIdReauth = 7;
 inline constexpr std::int64_t kIdOpenOrdersBase = 100;   // + currency index
+inline constexpr std::int64_t kIdPositionsBase = 200;    // + currency index
 inline constexpr std::int64_t kIdExecutionsBase = 1000;  // + currency index
 
-class DeribitVenue final : public Venue {
+class DeribitVenue final : public Venue, private ReconcileHooks {
  public:
   DeribitVenue(VenueId id, DeribitVenueConfig cfg);
   ~DeribitVenue() override;
@@ -125,6 +127,8 @@ class DeribitVenue final : public Venue {
   [[nodiscard]] const DeribitVenueConfig& config() const noexcept { return cfg_; }
   [[nodiscard]] bool fatal() const noexcept { return fatal_; }
   [[nodiscard]] bool authenticated() const noexcept { return !access_token_.empty(); }
+  // Orders the connector still keeps a shadow for (tests: a lost terminal event leaks one).
+  [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
   [[nodiscard]] const TickSchedule& tick_schedule(InstrumentId id) const noexcept {
     return ticks_[id.value < kMaxInstruments ? id.value : 0];
   }
@@ -161,9 +165,15 @@ class DeribitVenue final : public Venue {
   void send_private(std::string_view frame, std::string_view what);
   void handle_control_response(const PrivateDecodeResult& r);
   void handle_order_response(RequestKind kind, ClientOrderId id, const PrivateDecodeResult& r);
-  void handle_open_orders_response(std::size_t currency_index, std::string_view json, bool error);
-  // The open-order snapshot request itself, once any execution replay before it has finished.
-  void send_open_orders();
+  // ReconcileHooks: get_open_orders_by_currency and get_positions per currency, on the private
+  // connection; the snapshot once every reply is in.
+  bool fetch_snapshot(std::uint64_t generation) override;
+  bool replay_executions() override;
+  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void drop_shadow(ClientOrderId id) override;
+  void handle_open_orders_response(std::string_view json, bool error);
+  void handle_positions_response(std::string_view json, bool error);
+  void finish_snapshot_reply();
   // Execution replay (see deribit_venue.cpp): one query per currency at a time, paged.
   bool send_executions_query(std::size_t currency_index);
   void handle_executions_response(std::size_t currency_index, std::string_view json, bool error);
@@ -222,13 +232,13 @@ class DeribitVenue final : public Venue {
   std::uint32_t private_channels_requested_ = 0;
   bool user_channels_ok_ = false;
   bool auth_in_flight_ = false;
-  // Reconciliation across currencies: records are collected until every response arrived.
-  std::vector<ReconcileMsg> reconcile_records_;
-  std::size_t reconcile_pending_ = 0;
-  bool reconcile_failed_ = false;
-  ClientOrderId reconcile_watermark_{};  // sent watermark when the open orders were requested
-  bool sweep_next_ = false;  // the next snapshot is the start-up sweep: an empty watermark
-  bool oo_wanted_ = false;   // a snapshot waits for the execution replay in flight
+  // The snapshot in flight: open orders and positions per currency, collected until every
+  // response arrived. Positions per instrument, the rows the venue lists (absent means flat).
+  std::uint64_t snapshot_generation_ = 0;
+  std::size_t snapshot_pending_ = 0;
+  bool snapshot_failed_ = false;
+  std::array<Qty, kMaxInstruments> snapshot_qty_{};
+  std::array<Price, kMaxInstruments> snapshot_avg_{};
 
   // Execution replay, per currency: the next query starts at since_ms (inclusive, the timestamp
   // of the last row forwarded) and skips edge_ids, the rows at since_ms already forwarded.
@@ -249,11 +259,11 @@ class DeribitVenue final : public Venue {
   std::size_t exec_pending_ = 0;  // currencies still being fetched
   bool exec_replay_ok_ = true;    // every currency so far was fetched in full
   bool exec_replay_active_ = false;
-  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
-  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;     // when the last replay started (the periodic one)
+  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
   std::int64_t exec_retry_ns_ = 0;
   SentWatermark sent_;
+  ReconcileDriver reconcile_{*this, sent_};
   BatchedOrders batch_;  // orders written into the corked private connection
 
   std::atomic<std::int64_t> clock_offset_ms_{0};

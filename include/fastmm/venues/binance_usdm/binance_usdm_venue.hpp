@@ -67,6 +67,7 @@
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
+#include "fastmm/venues/reconcile_driver.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -117,7 +118,7 @@ struct BinanceUsdmVenueConfig {
   net::BackoffConfig backoff{};
 };
 
-class BinanceUsdmVenue final : public Venue {
+class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
  public:
   BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg);
   ~BinanceUsdmVenue() override;
@@ -154,6 +155,8 @@ class BinanceUsdmVenue final : public Venue {
   [[nodiscard]] std::int64_t clock_offset_ms() const noexcept { return clock_offset_ms_; }
   [[nodiscard]] const BinanceUsdmVenueConfig& config() const noexcept { return cfg_; }
   [[nodiscard]] bool fatal() const noexcept { return fatal_; }
+  // Orders the connector still keeps a shadow for (tests: a lost terminal event leaks one).
+  [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
   [[nodiscard]] std::int64_t venue_time_ms() const noexcept;
 
  private:
@@ -200,17 +203,6 @@ class BinanceUsdmVenue final : public Venue {
     std::int64_t last_event_ns = 0;
     bool pending = false;  // an ACCOUNT_UPDATE position has not been compared yet
   };
-  // One reconciliation: both REST replies are collected, then emitted together.
-  struct ReconcileState {
-    std::uint64_t generation = 0;
-    bool in_flight = false;
-    bool again = false;
-    int replies = 0;
-    bool failed = false;
-    ClientOrderId watermark{};
-    std::string orders_body;
-    std::string positions_body;
-  };
 
   // channel callbacks (reactor thread)
   void on_md_state(net::ConnState s);
@@ -256,8 +248,12 @@ class BinanceUsdmVenue final : public Venue {
   // Arms or refreshes countdownCancelAll on every subscribed symbol. `countdown_ms` 0 stops it.
   void send_countdown_cancel_all(std::int64_t countdown_ms);
   void stop_countdown_blocking();
-  // GET /fapi/v1/openOrders + positionRisk, once any execution replay before it has finished.
-  void send_open_orders();
+  // ReconcileHooks: GET /fapi/v1/openOrders + GET /fapi/v3/positionRisk, the snapshot once both
+  // replies are in.
+  bool fetch_snapshot(std::uint64_t generation) override;
+  bool replay_executions() override;
+  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void drop_shadow(ClientOrderId id) override;
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
   // GET /fapi/v1/userTrades for one subscribed instrument; `emit_executions` turns the reply into
   // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
@@ -270,7 +266,8 @@ class BinanceUsdmVenue final : public Venue {
   void emit_funding_rows(std::string_view json, std::int64_t window_end_ms, bool complete);
   [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
   void remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept;
-  void emit_reconcile();
+  // Both replies in: decodes them into the driver's rows (false when one does not parse).
+  bool snapshot_rows();
   void on_account_position(const PositionUpdateMsg& m);
   void check_positions(std::int64_t now);
   void publish_status() noexcept;
@@ -326,9 +323,11 @@ class BinanceUsdmVenue final : public Venue {
   std::vector<InstrumentId> subscribed_;
   CountdownSwitch dms_;
   std::array<PositionCheck, kMaxInstruments> positions_{};
-  ReconcileState reconcile_;
-  std::int64_t reconcile_retry_ns_ = 0;
-  bool oo_wanted_ = false;  // a snapshot is waiting for the execution replay
+  // The snapshot's two REST replies, collected before anything is emitted.
+  int snapshot_replies_ = 0;
+  bool snapshot_failed_ = false;
+  std::string orders_body_;
+  std::string positions_body_;
   // Execution replay (GET /fapi/v1/userTrades), parallel to subscribed_: the trade id to ask from
   // next (0 before this connector has forwarded one), else the venue time to ask from.
   // exec_since_ms_ seeds exec_start_ms_ and starts at connect() or resume_executions().
@@ -346,9 +345,8 @@ class BinanceUsdmVenue final : public Venue {
   std::size_t exec_pending_ = 0;       // userTrades replies still outstanding
   bool exec_replay_ok_ = true;
   bool exec_replay_active_ = false;
-  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
-  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;     // when the last replay started (the periodic one)
+  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
   std::int64_t exec_retry_ns_ = 0;
   // Funding replay: the venue time to ask from (inclusive), the tranIds forwarded at that time,
   // and a query a user-stream funding event asked for (reactor time; 0 none).
@@ -376,10 +374,10 @@ class BinanceUsdmVenue final : public Venue {
   ConnState user_state_ = ConnState::Disconnected;
   ConnState order_state_ = ConnState::Disconnected;
   bool order_was_live_ = false;
+  bool user_was_live_ = false;
   SentWatermark sent_;
   BatchedOrders batch_;  // orders written into the corked order connection
-  // Open-order snapshot, decoded in full before anything reaches the engine.
-  std::vector<ReconcileMsg> reconcile_records_;
+  ReconcileDriver reconcile_{*this, sent_};
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 

@@ -275,6 +275,7 @@ void BinanceVenue::attach(const SymbolTable& symbols,
   user_parser_ = std::make_unique<BinanceUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<BinanceWsApiDecoder>();
+  reconcile_.attach(cfg_.name, id_, order_sink_);
 }
 
 void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -297,6 +298,7 @@ void BinanceVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("BinanceVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Nobody said where the execution replay should start, so it starts here: this session can only
   // have missed what happened after it connected, and replaying further back would book another
   // session's fills into a position that starts at zero.
@@ -333,6 +335,10 @@ void BinanceVenue::connect(net::Reactor& reactor) {
 void BinanceVenue::disconnect() {
   if (!connected_) return;
   connected_ = false;
+  // Before the reset below: a replay or snapshot request it aborts must not start another one
+  // (it used to, on a fresh REST connection, during shutdown).
+  reconcile_.close();
+  oo_ws_generation_ = 0;
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -616,18 +622,16 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     // On the first connect, sweep for orders nobody owns: a session that died without cancelling
     // left its orders resting and nothing else would ever go looking for them. Their client order
     // ids belong to an earlier session epoch, so the engine does not recognise them and cancels
-    // them. The empty watermark keeps that sweep from saying anything about our own orders.
+    // them (ReconcileDriver::sweep).
     const bool first_connect = !order_was_live_;
     order_was_live_ = true;
     // Stale is not reported for a quiet order channel, so neither is the return from it.
     if (prev != ConnState::Stale) emit_connection_state(Channel::Order, ConnState::Live);
     drain_outbound();  // anything queued while the channel was down
-    if (!cfg_.dry_run) {
-      if (reconnected) {
-        request_open_orders();
-      } else if (first_connect) {
-        request_open_orders(ClientOrderId{});
-      }
+    if (reconnected) {
+      reconcile_.request();
+    } else if (first_connect) {
+      reconcile_.sweep();
     }
     return;
   }
@@ -636,7 +640,10 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     session_logged_on_ = false;
     encoder_->set_session_authenticated(false);
     emit_connection_state(Channel::Order, ConnState::Disconnected);
-    oo_watermarks_.clear();  // requests on the closed connection get no reply
+    // An openOrders.status on the closed connection gets no reply.
+    if (oo_ws_generation_ != 0 && reconcile_.current(oo_ws_generation_))
+      reconcile_.transport_lost();
+    oo_ws_generation_ = 0;
     // 6.7 "order channel down": cancel everything through REST immediately.
     // disconnect() clears connected_ before closing the channels: a requested shutdown already
     // runs the synchronous cancel_all(), and an async request would only be aborted.
@@ -707,14 +714,14 @@ void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_vi
     return;
   }
   if (r.id == "oo") {
-    const ClientOrderId watermark =
-        oo_watermarks_.empty() ? sent_.value(now_ns()) : oo_watermarks_.front();
-    if (!oo_watermarks_.empty()) oo_watermarks_.erase(oo_watermarks_.begin());
+    const std::uint64_t gen = oo_ws_generation_;
+    oo_ws_generation_ = 0;
     if (r.is_error) {
       FASTMM_LOG_WARN("{}: openOrders.status failed: {} {}", cfg_.name, r.code, r.msg);
+      reconcile_.fetched(gen, false);
       return;
     }
-    emit_reconcile(raw, /*rest_array=*/false, watermark);
+    on_open_orders(gen, raw, /*rest_array=*/false);
     return;
   }
   if (r.id == "ca") {
@@ -1214,18 +1221,16 @@ void BinanceVenue::emit_cancel_ack(InstrumentId inst,
 // Decodes the whole open-order snapshot before anything reaches the engine: Oms::reconcile_end()
 // cancels every order the snapshot does not name, so a reply that did not parse must not be
 // emitted as an empty snapshot.
-void BinanceVenue::emit_reconcile(std::string_view json,
-                                  bool rest_array,
-                                  ClientOrderId sent_watermark) {
-  reconcile_records_.clear();
+void BinanceVenue::on_open_orders(std::uint64_t generation,
+                                  std::string_view json,
+                                  bool rest_array) {
+  if (!reconcile_.current(generation)) return;
   const PaddedJson padded(json);
   const ParseStatus st =
       ws_api_decoder_->decode_open_orders(padded.view(), rest_array, [&](const OpenOrderRecord& o) {
         const InstrumentId inst = instrument_of(o.symbol);
         if (!inst.valid()) return;  // another symbol on this account: not ours
-        ReconcileMsg m{};
-        init_header(m, EventType::Reconcile, inst, id_);
-        m.kind = ReconcileMsg::Kind::OpenOrder;
+        ReconcileMsg& m = reconcile_.add_order(inst);
         m.side = o.side == "SELL" ? Side::Sell : Side::Buy;
         m.state = o.status == "PARTIALLY_FILLED" ? OrderState::PartiallyFilled : OrderState::Live;
         if (const auto id = decode_cl_ord_id(o.client_order_id)) m.cl_ord_id = *id;
@@ -1235,103 +1240,48 @@ void BinanceVenue::emit_reconcile(std::string_view json,
         if (const auto p = parse_price(o.price)) m.price = *p;
         if (const auto q = parse_qty(o.orig_qty)) m.orig_qty = *q;
         if (const auto q = parse_qty(o.executed_qty)) m.cum_qty = *q;
-        m.hdr.recv_ts = wall_now();
-        reconcile_records_.push_back(m);
       });
-  if (st != ParseStatus::Ok) {
-    FASTMM_LOG_WARN("{}: open orders reply could not be parsed; reconciliation skipped", cfg_.name);
-    reconcile_records_.clear();
-    return;
-  }
-  ReconcileMsg begin{};
-  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
-  begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, sent_watermark);
-  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
-  exec_snapshot_exact_ = false;
-  begin.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(begin.hdr));
-  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
-  ReconcileMsg end{};
-  init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
-  end.kind = ReconcileMsg::Kind::End;
-  end.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(end.hdr));
-  FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
-  sweep_shadows(sent_watermark);
-  reconcile_records_.clear();
+  if (st != ParseStatus::Ok)
+    FASTMM_LOG_WARN("{}: open orders reply could not be parsed", cfg_.name);
+  reconcile_.fetched(generation, st == ParseStatus::Ok);
 }
 
-// An order's shadow is dropped when its terminal event arrives. When that event is lost with a
-// connection - the REST cancel-all that follows an order-channel drop is the usual way - the
-// shadow stays, and the table is fixed-size: enough of them and a new order gets no shadow, so its
-// replace and cancel are refused as "original unknown". A snapshot settles it: an order the venue
-// does not hold, sent before the snapshot was asked for, is over. Orders sent after the request
-// (ids above the watermark) may simply not have reached the venue yet and keep their shadows.
-void BinanceVenue::sweep_shadows(ClientOrderId sent_watermark) {
-  if (!sent_watermark.valid()) return;  // no watermark: nothing tells old from in flight
-  std::vector<ClientOrderId> dead;
-  shadows_.for_each_key([&](ClientOrderId id) {
-    if (id.value > sent_watermark.value) return;
-    for (const ReconcileMsg& m : reconcile_records_) {
-      if (m.cl_ord_id == id) return;
-    }
-    dead.push_back(id);
-  });
-  for (const ClientOrderId id : dead) shadows_.erase(id);
-  if (!dead.empty()) {
-    stats_.shadows_swept += dead.size();
-    FASTMM_LOG_INFO(
-        "{}: dropped {} order shadow(s) the venue no longer holds", cfg_.name, dead.size());
-  }
+void BinanceVenue::shadow_ids(std::vector<ClientOrderId>& out) {
+  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+}
+
+void BinanceVenue::drop_shadow(ClientOrderId id) {
+  shadows_.erase(id);
 }
 
 // ---- control requests -----------------------------------------------------------------------
 
 void BinanceVenue::request_open_orders() {
-  request_open_orders(sent_.value(now_ns()));
+  reconcile_.request();
 }
 
-// `watermark` bounds what the snapshot may conclude: the engine's orders above it had not been
-// sent when it was asked for, so their absence means nothing. The start-up sweep passes an empty
-// id, which makes the whole snapshot read-only for our own orders - an order sent over REST before
-// the order channel came up can still be in flight, and its absence is not proof that it is gone.
-// Orders the snapshot reports that the engine does not know are still cancelled: that is the point
-// of the sweep.
-void BinanceVenue::request_open_orders(ClientOrderId watermark) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable()) return;
-  // One reconciliation at a time: a second request while the executions are being fetched is
-  // remembered and served once they are in, so its snapshot is exact too.
-  if (exec_replay_active_) {
-    oo_wanted_ = true;
-    oo_wanted_watermark_ = watermark;
-    return;
-  }
-  // Latched before the replay starts: a query that cannot be issued at all finishes inside
-  // request_executions(), and the snapshot it releases must already be the one that was asked for.
-  oo_wanted_ = true;
-  oo_wanted_watermark_ = watermark;
-  if (request_executions()) return;
-  oo_wanted_ = false;
-  send_open_orders(watermark);
+// The executions first (request_executions), then the snapshot (ReconcileDriver).
+bool BinanceVenue::replay_executions() {
+  return request_executions();
 }
 
-void BinanceVenue::send_open_orders(ClientOrderId watermark) {
+bool BinanceVenue::fetch_snapshot(std::uint64_t generation) {
+  if (!connected_) return false;
   if (cfg_.ws_order_api && order_conn_.is_live()) {
     const std::size_t n = encoder_->encode_ws_open_orders({}, "oo", venue_time_ms(), request_buf_);
     if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
       rate_.on_sent(80, now_ns());
-      oo_watermarks_.push_back(watermark);
-      return;
+      oo_ws_generation_ = generation;
+      return true;
     }
   }
-  if (rest_ == nullptr || rest_hard_stopped_) return;
+  if (rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
-  if (!encoder_->encode_rest_open_orders({}, venue_time_ms(), rr)) return;
+  if (!encoder_->encode_rest_open_orders({}, venue_time_ms(), rr)) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
-      "GET", target, api_headers(), {}, [this, alive, watermark](const net::HttpResponse& r) {
+      "GET", target, api_headers(), {}, [this, alive, generation](const net::HttpResponse& r) {
         if (alive.expired()) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
@@ -1341,11 +1291,13 @@ void BinanceVenue::send_open_orders(ClientOrderId watermark) {
                           cfg_.name,
                           r.status,
                           net::to_string(r.error));
+          reconcile_.fetched(generation, false);
           return;
         }
-        emit_reconcile(r.body, /*rest_array=*/true, watermark);
+        on_open_orders(generation, r.body, /*rest_array=*/true);
       });
   if (queued) rate_.on_sent(rr.weight, now_ns());
+  return queued;
 }
 
 // ---- execution replay -------------------------------------------------------------------------
@@ -1513,13 +1465,8 @@ void BinanceVenue::finish_execution_replay(bool ok) {
   if (exec_pending_ > 0) --exec_pending_;
   if (exec_pending_ > 0) return;
   exec_replay_active_ = false;
-  exec_snapshot_exact_ = exec_replay_ok_;
   if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  if (!oo_wanted_) return;
-  oo_wanted_ = false;
-  const ClientOrderId wm = oo_wanted_watermark_;
-  oo_wanted_watermark_ = ClientOrderId{};
-  send_open_orders(wm);
+  reconcile_.replay_done(exec_replay_ok_);
 }
 
 void BinanceVenue::request_server_time() {
@@ -1719,6 +1666,7 @@ void BinanceVenue::on_timer(std::int64_t now) {
     }
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  reconcile_.on_timer(now);
   // A replay that could not be completed left fills unaccounted for, and the next reconnect may be
   // hours away. Ask again until the venue answers, keeping the watermark where it was so nothing is
   // skipped; the snapshot is not repeated, only the executions.
@@ -1749,6 +1697,7 @@ void BinanceVenue::on_timer(std::int64_t now) {
 }
 
 void BinanceVenue::publish_status() noexcept {
+  stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

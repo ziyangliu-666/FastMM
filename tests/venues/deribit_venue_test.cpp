@@ -164,7 +164,10 @@ struct Harness {
   std::mutex mu;
   std::function<std::string(std::int64_t, bool)> trades_reply;
   std::vector<TradesQuery> trades_queries;
-  std::string open_orders_reply;  // result array; empty: the open_orders fixture
+  std::string open_orders_reply;       // result array; empty: the open_orders fixture
+  std::string positions_reply = "[]";  // get_positions result array
+  std::atomic<int> positions_requests{0};
+  std::atomic<int> open_orders_failures{0};  // get_open_orders_by_currency answers an error
 
   void set_trades(std::function<std::string(std::int64_t, bool)> f) {
     const std::lock_guard lock(mu);
@@ -261,8 +264,17 @@ struct Harness {
         s.send_text(orders_cancelled);
       } else if (method == "private/get_open_orders_by_currency") {
         ++open_orders_requests;
+        if (open_orders_failures.load() > 0) {
+          --open_orders_failures;
+          s.send_text(rpc_error(id, 10028, "too_many_requests"));
+          return;
+        }
         const std::lock_guard lock(mu);
         s.send_text(open_orders_reply.empty() ? open_orders : rpc_ok(id, open_orders_reply));
+      } else if (method == "private/get_positions") {
+        ++positions_requests;
+        const std::lock_guard lock(mu);
+        s.send_text(rpc_ok(id, positions_reply));
       } else if (method == "private/get_user_trades_by_currency_and_time") {
         const TradesQuery q{std::stoll(json_int(t, "start_timestamp")),
                             std::stoll(json_int(t, "end_timestamp")),
@@ -482,8 +494,8 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     venue.request_open_orders();
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
-      // Begin, option order, perpetual order, End
-      return oc.count(EventType::Reconcile) == before + 4;
+      // Begin, option order, perpetual order, a position per instrument, End
+      return oc.count(EventType::Reconcile) == before + 6;
     }));
     const auto* rec = oc.last<ReconcileMsg>(EventType::Reconcile);
     CHECK(rec->kind == ReconcileMsg::Kind::End);
@@ -503,7 +515,7 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
         [&] {
           oc.take(orders);
           return h.cancel_all_ok.load() >= 2 && h.auths.load() > auths_before &&
-                 oc.count(EventType::Reconcile) == reconciles_before + 4 &&
+                 oc.count(EventType::Reconcile) == reconciles_before + 6 &&
                  count_state(oc, ConnState::Disconnected) >= 1;
         },
         15'000));
@@ -944,4 +956,85 @@ TEST_CASE("deribit.venue: a replay reaching back past 24 h asks the history firs
   CHECK(q[1].start == q[0].start + 2);
   // T1 was booked by the session resumed from; T2 once.
   CHECK(s.replayed_ids() == std::vector<std::string>{"T2", "T3"});
+}
+
+// ---- the snapshot (ReconcileDriver) -----------------------------------------------------------
+
+TEST_CASE("deribit.venue: a snapshot whose open orders fail is asked again") {
+  // Before ReconcileDriver a failed get_open_orders_by_currency was logged and dropped: the next
+  // snapshot came with the next reconnect or ControlCommand::Reconcile, however long that took.
+  ReplaySession s;
+  s.h.open_orders_failures = 1;
+  const std::size_t ends = s.count_kind(ReconcileMsg::Kind::End);
+  s.venue->request_open_orders();
+  REQUIRE(pump_until(s.reactor, [&] { return s.h.open_orders_requests.load() == 1; }));
+  static_cast<void>(pump_until(s.reactor, [] { return false; }, 300));
+  s.oc.take(s.orders);
+  CHECK(s.count_kind(ReconcileMsg::Kind::Begin) == 0);  // nothing of the failed one
+  // Nobody asks again: the driver does, after its retry delay.
+  REQUIRE(pump_until(
+      s.reactor,
+      [&] {
+        s.oc.take(s.orders);
+        return s.count_kind(ReconcileMsg::Kind::End) == ends + 1;
+      },
+      9000));
+  CHECK(s.h.open_orders_requests.load() == 2);
+  CHECK(s.count_kind(ReconcileMsg::Kind::Begin) == 1);
+}
+
+TEST_CASE("deribit.venue: the snapshot carries the position of every subscribed instrument") {
+  // Nothing on the private stream reports a position: without this leg a delivery, a
+  // liquidation or another client's trade never reached the engine.
+  ReplaySession s;
+  {
+    const std::lock_guard lock(s.h.mu);
+    s.h.positions_reply =
+        R"([{"average_price":0.006,"delta":-0.3,"direction":"sell","floating_profit_loss":0.0001,"index_price":77000.0,"initial_margin":0.01,"instrument_name":"BTC-15SEP26-77000-C","kind":"option","maintenance_margin":0.005,"mark_price":0.0058,"open_orders_margin":0,"realized_profit_loss":0,"settlement_price":0.0059,"size":-0.5,"total_profit_loss":0.0001},)"
+        R"({"average_price":70000.0,"direction":"buy","instrument_name":"BTC-PERPETUAL","kind":"future","size":100.0,"size_currency":0.0014}])";
+  }
+  const ReconcileMsg* begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK(s.h.positions_requests.load() >= 2);  // the start-up sweep's and this one
+  CHECK(find_frame(s.h.srv, kPrivatePath, "private/get_positions").find(R"("currency":"BTC")") !=
+        std::string::npos);
+  std::vector<const ReconcileMsg*> rows;
+  for (const auto& m : s.oc.all) {
+    if (RecordingSink::type_of(m) == EventType::Reconcile &&
+        RecordingSink::as<ReconcileMsg>(m).kind == ReconcileMsg::Kind::Position)
+      rows.push_back(&RecordingSink::as<ReconcileMsg>(m));
+  }
+  // Subscribed: the option only. The perpetual's row is not this session's instrument.
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0]->hdr.instrument == kCall);
+  CHECK(rows[0]->position_qty == Qty::from_decimal("-0.5").value());
+  CHECK(rows[0]->avg_px == Price::from_decimal("0.006").value());
+
+  // Flat is a row too: the venue lists nothing for the instrument.
+  {
+    const std::lock_guard lock(s.h.mu);
+    s.h.positions_reply = "[]";
+  }
+  static_cast<void>(s.reconcile());
+  const auto* flat = s.oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+    return m.kind == ReconcileMsg::Kind::Position;
+  });
+  REQUIRE(flat != nullptr);
+  CHECK(flat != rows[0]);
+  CHECK(flat->position_qty.is_zero());
+}
+
+TEST_CASE("deribit.venue: an order shadow whose terminal event was lost is dropped") {
+  // Before ReconcileDriver only Binance Spot swept its shadows: an order that ended with nobody
+  // told kept its entry in the 8192-slot table for the rest of the session.
+  ReplaySession s;
+  Mirror m(s.instruments);
+  static_cast<void>(s.buy(m));
+  CHECK(s.venue->shadow_count() == 1);
+  // The order is gone at the venue (cancelled with the connection, say) and no event said so.
+  const ReconcileMsg* begin = s.reconcile();
+  REQUIRE(begin != nullptr);
+  CHECK(begin->sent_watermark.valid());
+  CHECK(s.venue->shadow_count() == 0);
+  CHECK(s.status().shadows_swept == 1);
 }

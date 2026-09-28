@@ -185,6 +185,17 @@ std::size_t DeribitOrderEncoder::encode_open_orders(std::int64_t id,
   return end_request(w, access_token);
 }
 
+// Every kind (futures, perpetuals, options) of `currency`.
+std::size_t DeribitOrderEncoder::encode_positions(std::int64_t id,
+                                                  std::string_view currency,
+                                                  std::string_view access_token,
+                                                  std::span<char> out) noexcept {
+  JsonWriter w(out);
+  begin_request(w, id, "private/get_positions");
+  w.key("currency").string(currency);
+  return end_request(w, access_token);
+}
+
 std::size_t DeribitOrderEncoder::encode_user_trades(std::int64_t id,
                                                     std::string_view currency,
                                                     std::int64_t start_ms,

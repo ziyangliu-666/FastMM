@@ -91,6 +91,14 @@ struct OpenOrderRecord {
   Qty filled_amount{};  // venue units
 };
 
+// One row of private/get_positions: `size` signed (negative short) in venue units, the same as an
+// order's amount (USD for futures, the base currency for options).
+struct PositionRecord {
+  std::string_view instrument_name;
+  Qty size{};
+  Price average_price{};
+};
+
 // One row of private/get_user_trades_by_*: the same fields user.trades carries, already mapped
 // (instrument, contracts, fee asset). `direction` is the side of the account's order.
 struct UserTradeRecord {
@@ -135,6 +143,11 @@ class DeribitPrivateParser {
   // private/get_open_orders_by_currency response (control path). Error for an error response.
   ParseStatus decode_open_orders(std::string_view json,
                                  const std::function<void(const OpenOrderRecord&)>& fn) noexcept;
+
+  // private/get_positions response (control path). Error for an error response, Malformed when a
+  // row lacks instrument_name or size.
+  ParseStatus decode_positions(std::string_view json,
+                               const std::function<void(const PositionRecord&)>& fn) noexcept;
 
   // private/get_user_trades_by_currency_and_time response (control path). Error for an error
   // response, Malformed when a row lacks trade_id, order_id, instrument_name, direction, price,

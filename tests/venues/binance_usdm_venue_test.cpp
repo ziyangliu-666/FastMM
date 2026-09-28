@@ -114,9 +114,15 @@ struct Harness {
     const std::lock_guard<std::mutex> lock(trades_mu);
     user_trades = std::move(body);
   }
-  std::string income = "[]";            // GET /fapi/v1/income answer (trades_mu)
-  std::atomic<int> income_queries{0};   // counted once the answer is fixed
-  std::atomic<int> income_failures{0};  // the next N income queries answer 503
+  std::string income = "[]";                // GET /fapi/v1/income answer (trades_mu)
+  std::atomic<int> income_queries{0};       // counted once the answer is fixed
+  std::atomic<int> income_failures{0};      // the next N income queries answer 503
+  std::atomic<int> listen_key_failures{0};  // the next N listenKey requests answer 503
+  std::string open_orders = "[]";           // GET /fapi/v1/openOrders answer (trades_mu)
+  void set_open_orders(std::string body) {
+    const std::lock_guard<std::mutex> lock(trades_mu);
+    open_orders = std::move(body);
+  }
   void set_income(std::string body) {
     const std::lock_guard<std::mutex> lock(trades_mu);
     income = std::move(body);
@@ -158,7 +164,12 @@ struct Harness {
         "GET",
         "/fapi/v3/balance",
         R"([{"accountAlias":"x","asset":"USDT","balance":"5000","availableBalance":"5000"}])");
-    signed_route("GET", "/fapi/v1/openOrders", "[]");
+    srv.route("GET", "/fapi/v1/openOrders", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("/fapi/v1/openOrders", std::string(r.query));
+      const std::lock_guard<std::mutex> lock(trades_mu);
+      return net::HttpServerResponse::json(200, open_orders);
+    });
     srv.route("GET", "/fapi/v1/userTrades", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
       srv.record("userTrades", std::string(r.query));
@@ -196,6 +207,10 @@ struct Harness {
     srv.route("POST", "/fapi/v1/listenKey", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey) ++unsigned_requests;
       ++listen_keys;
+      if (listen_key_failures.load() > 0) {
+        --listen_key_failures;
+        return net::HttpServerResponse::text(503, "Service Unavailable");
+      }
       return net::HttpServerResponse::json(200, R"({"listenKey":"lk-test-0001"})");
     });
     srv.route("POST", "/fapi/v1/countdownCancelAll", [this](const net::HttpRequest& r) {
@@ -1108,4 +1123,76 @@ TEST_CASE("binance_usdm.venue: a failed income query is asked again from the tim
   f.h.srv.send_to(kPrivatePath, funding_event(t));
   REQUIRE(f.pump([&] { return funding_of(f.oc).size() == 1; }, 15000));
   CHECK(f.h.income_queries.load() == 3);  // the stream's, which failed, and the retry
+}
+
+// ---- the snapshot (ReconcileDriver) -----------------------------------------------------------
+
+TEST_CASE(
+    "binance_usdm.venue: the first snapshot is the start-up sweep, whatever was sent before") {
+  // The user stream comes up late (its listenKey request fails once), after an order went out on
+  // the order channel and was answered. Before ReconcileDriver the first snapshot carried that
+  // order as its watermark and so judged this session's orders; every other connector's start-up
+  // snapshot is a sweep, which judges none and finds the ones nobody holds.
+  DmsFixture f(0);
+  f.h.listen_key_failures = 1;
+  const char* earlier = "fm000900000007";  // an order of a session that died
+  f.h.set_open_orders(
+      R"([{"orderId":4293153,"symbol":"BTCUSDT","status":"NEW","clientOrderId":"fm000100000001","price":"70000.00","origQty":"0.001","executedQty":"0","timeInForce":"GTX","type":"LIMIT","side":"BUY"},)"
+      R"({"orderId":4293001,"symbol":"BTCUSDT","status":"NEW","clientOrderId":")" +
+      std::string(earlier) +
+      R"(","price":"69000.00","origQty":"0.002","executedQty":"0","timeInForce":"GTC","type":"LIMIT","side":"SELL"}])");
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 1; }));  // the order channel
+  place_order(f, "fm000100000001");
+  CHECK(reconcile_ends(f.oc) == 0);
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 1; }));
+  CHECK(f.h.listen_keys.load() == 2);
+  const std::size_t at = index_of_begin(f.oc, 0);
+  REQUIRE(at != SIZE_MAX);
+  const auto& begin = RecordingSink::as<ReconcileMsg>(f.oc.all[at]);
+  CHECK((begin.flags & ReconcileMsg::kSentWatermark) != 0);
+  CHECK_FALSE(begin.sent_watermark.valid());
+
+  // What the engine does with it: the earlier session's order is unknown and cancelled; this
+  // session's is judged by nothing, so an order of it that were missing would not be cancelled.
+  Oms oms{1};
+  NewOrderRequest req;
+  req.instrument = InstrumentId{0};
+  req.venue = VenueId{0};
+  req.side = Side::Buy;
+  req.price = Price::from_decimal("70000").value();
+  req.qty = Qty::from_decimal("0.001").value();
+  REQUIRE(oms.submit(req, cid("fm000100000001"), Timestamp{1}).has_value());
+  REQUIRE(oms.submit(req, cid("fm000100000002"), Timestamp{1}).has_value());  // not listed
+  oms.reconcile_begin(VenueId{0}, begin.sent_watermark);
+  std::size_t unknown = 0;
+  for (std::size_t i = at + 1; i < f.oc.all.size(); ++i) {
+    if (RecordingSink::type_of(f.oc.all[i]) != EventType::Reconcile) continue;
+    const auto& m = RecordingSink::as<ReconcileMsg>(f.oc.all[i]);
+    if (m.kind != ReconcileMsg::Kind::OpenOrder) continue;
+    if (oms.reconcile_open_order(m).action == OmsAction::CancelUnknown) {
+      ++unknown;
+      CHECK(m.cl_ord_id == cid(earlier));
+      CHECK(m.venue_order_id.view() == "4293001");
+    }
+  }
+  CHECK(unknown == 1);
+  std::size_t cancelled = 0;
+  oms.reconcile_end([&](const OmsUpdate&) { ++cancelled; }, VenueId{0});
+  CHECK(cancelled == 0);
+}
+
+TEST_CASE("binance_usdm.venue: an order shadow whose terminal event was lost is dropped") {
+  // Before ReconcileDriver only Binance Spot swept its shadows: an order that ended with nobody
+  // told kept its entry in the 8192-slot table for the rest of the session.
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  place_order(f, "fm000100000001");
+  CHECK(f.venue->shadow_count() == 1);
+  // The order is gone at the venue and no event said so: the snapshot does not name it.
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  CHECK(RecordingSink::as<ReconcileMsg>(f.oc.all[index_of_begin(f.oc, 1)]).sent_watermark ==
+        cid("fm000100000001"));
+  CHECK(f.venue->shadow_count() == 0);
+  REQUIRE(f.pump([&] { return f.venue->status().shadows_swept == 1; }));
 }
