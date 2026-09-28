@@ -733,12 +733,14 @@ TEST_CASE(
     REQUIRE(q.size() == 1);
     CHECK(q[0] == "instType=SWAP&begin=" + std::to_string(kT - 1'001) + "&limit=100");
     CHECK(h.rest()[1].rfind("fills-history?", 0) == 0);
-    // The next reconciliation replays from the newest fill: nothing is forwarded twice.
+    // The next reconciliation replays from past the fill (the watermark moved to the first
+    // replay's start less the settle margin): nothing is forwarded twice.
     l.venue->request_open_orders();
     REQUIRE(pump_until(l.reactor, [&] { return l.ends() == 2; }));
     CHECK(l.all<OrderFillMsg>(EventType::OrderFill).size() == 1);
-    CHECK(h.srv.frames("fills")[1] ==
-          "instType=SWAP&begin=" + std::to_string(kT + 6) + "&limit=100");
+    const std::string again = h.srv.frames("fills")[1];
+    REQUIRE(again.rfind("instType=SWAP&begin=", 0) == 0);
+    CHECK(std::stoll(again.substr(20)) > kT + 5);
   }
 }
 
@@ -773,8 +775,9 @@ TEST_CASE("okx.venue: funding from the bills is booked once") {
     // A balance_and_position push says funding was paid: the bills are read a second later, and
     // the new payment is booked; the old one is not forwarded again.
     {
+      // Paid now (by the venue's clock), after the watermark.
       const std::lock_guard lock(h.mu);
-      h.bills = ok_data(bill_row("BTC-USDT-SWAP", "fund-2", "0.5", kT + 28'800'000) + "," +
+      h.bills = ok_data(bill_row("BTC-USDT-SWAP", "fund-2", "0.5", l.venue->venue_time_ms()) + "," +
                         bill_row("BTC-USDT-SWAP", "fund-1", "-0.25", kT));
     }
     const std::size_t queries = h.srv.frames("bills").size();

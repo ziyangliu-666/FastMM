@@ -25,10 +25,10 @@
 // forwarding every position event would double count fills.
 //
 // Funding: GET /fapi/v1/income?incomeType=FUNDING_FEE, account-wide, becomes one FundingMsg per
-// payment on a subscribed symbol (tranId as its id). It runs with every execution replay (connect,
-// reconciliation, the periodic sweep) from its own watermark, is retried like it, and runs a second
-// after an ACCOUNT_UPDATE with reason FUNDING_FEE: that event names the symbol but has no id, so
-// the income history is what is booked, once, whichever path found it first.
+// payment on a subscribed symbol (tranId as its id). It runs with every reconciliation's execution
+// replay and once a minute (its own ReplayScheduler and watermark), is retried like it, and runs a
+// second after an ACCOUNT_UPDATE with reason FUNDING_FEE: that event names the symbol but has no
+// id, so the income history is what is booked, once, whichever path found it first.
 //
 // Leverage and margin mode are not managed: load_reference_data() logs the position mode,
 // leverage, margin type and balances, and refuses to start in hedge mode.
@@ -61,6 +61,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_error_map.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_md_feed.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
+#include "fastmm/venues/binance_usdm/binance_usdm_rest_decoder.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_user_parser.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connection_slot.hpp"
@@ -69,6 +70,7 @@
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/reconcile_driver.hpp"
+#include "fastmm/venues/replay_scheduler.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -78,7 +80,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::binance_usdm {
@@ -257,16 +258,18 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   void shadow_ids(std::vector<ClientOrderId>& out) override;
   void drop_shadow(ClientOrderId id) override;
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
-  // GET /fapi/v1/userTrades for one subscribed instrument; `emit_executions` turns the reply into
-  // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
-  bool request_executions_for(InstrumentId id);
-  void emit_executions(InstrumentId id, std::string_view json, std::int64_t window_end_ms);
-  void finish_execution_replay(bool ok);
-  // GET /fapi/v1/income?incomeType=FUNDING_FEE from funding_since_ms_; `emit_funding_rows` turns
-  // the reply into funding payments and moves the watermark.
-  void request_funding();
-  void emit_funding_rows(std::string_view json, std::int64_t window_end_ms, bool complete);
-  [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
+  // Execution replay (ReplayScheduler): GET /fapi/v1/userTrades for one subscribed instrument,
+  // and a row of it forwarded as a replayed fill.
+  [[nodiscard]] bool replay_ready() const noexcept;
+  bool query_executions(const ReplayQuery& q);
+  bool emit_execution(std::size_t stream, const binance::MyTradeRecord& t);
+  // Funding (ReplayScheduler): GET /fapi/v1/income?incomeType=FUNDING_FEE, and a row forwarded
+  // as a funding payment.
+  bool query_funding(const ReplayQuery& q);
+  bool emit_funding_row(const IncomeRecord& row);
+  // A REST failure of a replay query: the error mapping's action, the log line.
+  void replay_query_failed(std::string_view what, const net::HttpResponse& r);
+  [[nodiscard]] std::size_t subscribed_slot(InstrumentId id) const noexcept;
   void remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept;
   // Both replies in: decodes them into the driver's rows (false when one does not parse).
   bool snapshot_rows();
@@ -333,34 +336,17 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   bool snapshot_failed_ = false;
   std::string orders_body_;
   std::string positions_body_;
-  // Execution replay (GET /fapi/v1/userTrades), parallel to subscribed_: the trade id to ask from
-  // next (0 before this connector has forwarded one), else the venue time to ask from.
-  // exec_since_ms_ seeds exec_start_ms_ and starts at connect() or resume_executions().
-  std::vector<std::int64_t> exec_from_id_;
-  std::vector<std::int64_t> exec_start_ms_;
-  std::int64_t exec_since_ms_ = 0;
   // Venue order id -> the engine id it was acknowledged for: userTrades names the order by orderId
   // only. A restarted session's orders are not in it and reach the position as unknown fills.
   RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
-  std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
-  // The first trade id per instrument an earlier session left off at (resume_trade_ids): moved
-  // into exec_from_id_ by the next replay, once subscribed_ gives the instruments their slots.
+  // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
+  // read (fromId), else from the time watermark.
+  ReplayScheduler<binance::MyTradeRecord> exec_replay_;
+  // Funding, one account-wide stream.
+  ReplayScheduler<IncomeRecord> funding_replay_;
+  // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed
+  // to exec_replay_ at connect(), once subscribed_ gives the instruments their streams.
   std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;
-  std::uint64_t exec_generation_ = 0;  // replies of an abandoned replay are ignored
-  std::size_t exec_pending_ = 0;       // userTrades replies still outstanding
-  bool exec_replay_ok_ = true;
-  bool exec_replay_active_ = false;
-  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
-  std::int64_t exec_retry_ns_ = 0;
-  // Funding replay: the venue time to ask from (inclusive), the tranIds forwarded at that time,
-  // and a query a user-stream funding event asked for (reactor time; 0 none).
-  std::int64_t funding_since_ms_ = 0;
-  std::unordered_set<std::int64_t> funding_edge_ids_;
-  bool funding_active_ = false;
-  bool funding_retry_wanted_ = false;
-  std::int64_t funding_retry_ns_ = 0;
-  std::int64_t funding_due_ns_ = 0;
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::int64_t listen_key_retry_ns_ = 0;

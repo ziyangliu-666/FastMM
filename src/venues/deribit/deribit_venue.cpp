@@ -23,15 +23,14 @@ namespace {
 constexpr std::int64_t kNsPerMs = 1'000'000;
 constexpr std::int64_t kNsPerSec = 1'000'000'000;
 constexpr std::int64_t kHousekeepingNs = kNsPerSec;
-constexpr std::int64_t kExecutionRetryNs = 5 * kNsPerSec;  // between retries of a failed replay
-constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
-constexpr std::int64_t kUserTradesCount = 1000;                   // the method's maximum page
-constexpr std::uint32_t kMaxExecutionPages = 100;                 // per currency and replay
-// historical: false answers the last 24 h. Older than 23 h ago is also asked with historical:
-// true; the hour of overlap is answered twice and deduplicated by trade id.
+constexpr std::int64_t kUserTradesCount = 1000;    // the method's maximum page
+constexpr std::uint32_t kMaxExecutionPages = 100;  // per currency and replay
+// historical: false answers the last 24 h, historical: true everything older (indexed after a short
+// delay). A start older than 23 h is read from the history up to 23 h ago, then from the recent
+// endpoint: the hour between is well inside both.
 constexpr std::int64_t kRecentWindowMs = 23LL * 3600 * 1000;
-// A complete replay moves the cursor to this long before it started, not later: an execution
-// the history does not show yet must still fall inside the next query.
+// How late the history may show an execution: the watermark stays this far behind a replay's
+// start, and the open-ended query reaches this far past it (the venue's clock is not ours).
 constexpr std::int64_t kSettleMs = 60'000;
 
 std::string_view kind_of(AssetClass a) noexcept {
@@ -134,6 +133,21 @@ DeribitVenue::DeribitVenue(VenueId id, DeribitVenueConfig cfg)
   if (cfg_.ws_private_url.empty()) cfg_.ws_private_url = cfg_.ws_url;
   std::memset(scratch_, 0, sizeof scratch_);
   std::memset(request_buf_, 0, sizeof request_buf_);
+  ReplayLimits limits;
+  limits.recent_ms = kRecentWindowMs;
+  limits.history_covers_recent = false;
+  limits.max_pages = kMaxExecutionPages;
+  limits.settle_ms = kSettleMs;
+  exec_replay_.setup(cfg_.name,
+                     "execution(s)",
+                     limits,
+                     {[this] { return replay_ready(); },
+                      [this] { return venue_now_ms(); },
+                      [this](const ReplayQuery& q) { return send_executions_query(q); },
+                      [this](bool complete) { reconcile_.replay_done(complete); }},
+                     [this](std::size_t, const UserTradeRecord& t) { return emit_execution(t); });
+  exec_replay_.set_streams(cfg_.currencies.size());
+  exec_queries_.resize(cfg_.currencies.size());
 }
 
 DeribitVenue::~DeribitVenue() {
@@ -335,7 +349,8 @@ void DeribitVenue::connect(net::Reactor& reactor) {
   reconcile_.open(!cfg_.dry_run && cfg_.credentials.usable());
   // The execution replay starts here unless resume_executions() said otherwise: this session can
   // only have missed what happened after it connected.
-  if (exec_since_ms_ <= 0) exec_since_ms_ = venue_now_ms();
+  exec_replay_.start_at(venue_now_ms());
+  exec_replay_.open(!cfg_.dry_run && cfg_.credentials.usable());
   const bool with_private = !cfg_.dry_run && cfg_.credentials.usable();
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
@@ -359,6 +374,7 @@ void DeribitVenue::disconnect() {
   if (!connected_) return;
   connected_ = false;
   reconcile_.close();
+  exec_replay_.close();
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -536,9 +552,7 @@ void DeribitVenue::on_private_state(net::ConnState s) {
     refresh_at_ns_ = 0;
     // A replay cut off here is asked for again by the reconnect's reconciliation, or the timer;
     // the snapshot (or the replay before it) is asked again by the driver.
-    if (exec_replay_active_) exec_retry_wanted_ = true;
-    exec_replay_active_ = false;
-    exec_pending_ = 0;
+    exec_replay_.abort();
     snapshot_pending_ = 0;
     reconcile_.transport_lost();
     // disconnect() clears connected_ before closing: a requested shutdown runs cancel_all().
@@ -1077,7 +1091,7 @@ void DeribitVenue::request_open_orders() {
 }
 
 bool DeribitVenue::replay_executions() {
-  return request_executions();
+  return exec_replay_.run();
 }
 
 // Open orders and positions of every configured currency: Deribit trades futures and perpetuals,
@@ -1179,21 +1193,16 @@ void DeribitVenue::drop_shadow(ClientOrderId id) {
 // ---- execution replay -------------------------------------------------------------------------
 //
 // private/get_user_trades_by_currency_and_time per configured currency (kind any, sorting asc,
-// count 1000), before every open-order snapshot. Every row is emitted as an ordinary fill carrying
-// Deribit's trade_id, so the OMS keeps the ones it never saw and drops the rest; this is what
-// recovers a fill that finished an order, which the snapshot no longer mentions.
+// count 1000), before every open-order snapshot and once a minute (ReplayScheduler). Every row is
+// emitted as an ordinary fill carrying Deribit's trade_id, so the OMS keeps the ones it never saw
+// and drops the rest; this is what recovers a fill that finished an order, which the snapshot no
+// longer mentions.
 //
-// Each currency has a cursor: the timestamp of the last row forwarded (start_timestamp, inclusive)
-// and the trade ids at that timestamp, skipped when they come back. A page with has_more asks for
-// the next from the last row's timestamp; the replay is complete when every currency answered
-// has_more false. historical: false covers the last 24 h only and historical: true everything
-// older (indexed after a short delay), and one call cannot span both, so a cursor older than 23 h
-// is first paged with historical: true up to 23 h ago, then with historical: false from wherever
-// that left it; rows of the overlap come back twice and are deduplicated by trade id.
-//
-// A failed or malformed reply, more than kMaxExecutionPages pages, or a page that cannot advance
-// (1000 rows in one millisecond) leaves the cursor where it got to: the snapshot then carries no
-// kExecutionsExact, and the housekeeping timer asks again every 5 s.
+// Each currency is a stream with a time watermark. A page with has_more asks for the next from
+// the last row's timestamp (its rows are known by trade id); a page that cannot advance (1000 rows
+// in one millisecond) leaves the replay incomplete. historical: false covers the last 24 h only
+// and historical: true everything older, and one call cannot span both: a watermark older than
+// 23 h is read from the history up to 23 h ago first.
 
 std::int64_t DeribitVenue::venue_now_ms() const noexcept {
   return wall_now().ns / kNsPerMs + clock_offset_ms_.load(std::memory_order_relaxed);
@@ -1201,158 +1210,91 @@ std::int64_t DeribitVenue::venue_now_ms() const noexcept {
 
 void DeribitVenue::resume_executions(std::int64_t since_venue_ms,
                                      const std::vector<std::string>& known) {
-  exec_since_ms_ = since_venue_ms;
-  exec_cursors_.clear();
-  known_exec_ids_ = {known.begin(), known.end()};
+  exec_replay_.resume(since_venue_ms, known);
 }
 
 bool DeribitVenue::request_executions(std::int64_t since_venue_ms) {
-  if (cfg_.dry_run || !connected_ || !private_conn_.is_live() || access_token_.empty())
-    return false;
-  if (cfg_.currencies.empty()) return false;
-  if (exec_replay_active_) return true;
   // An explicit start overrides every cursor: the caller knows of executions this connector
   // never heard about.
-  if (since_venue_ms > 0) {
-    exec_since_ms_ = since_venue_ms;
-    exec_cursors_.clear();
-  }
-  if (exec_cursors_.size() != cfg_.currencies.size()) {
-    exec_cursors_.resize(cfg_.currencies.size());
-    for (ExecCursor& c : exec_cursors_) {
-      if (c.since_ms <= 0) c.since_ms = exec_since_ms_;
-    }
-  }
-  exec_last_ns_ = net::Reactor::now_ns();
-  exec_replay_active_ = true;
-  exec_replay_ok_ = true;
-  exec_now_ms_ = venue_now_ms();
-  exec_seen_.clear();
-  ++stats_.execution_queries;
-  // Held by the loop itself, so a currency that fails inside it cannot finish the replay early.
-  exec_pending_ = 1;
-  for (std::size_t i = 0; i < exec_cursors_.size(); ++i) {
-    ExecCursor& c = exec_cursors_[i];
-    c.pages = 0;
-    c.historical = c.since_ms < exec_now_ms_ - kRecentWindowMs;
-    ++exec_pending_;
-    if (!send_executions_query(i)) finish_executions_for(i, false);
-  }
-  finish_executions_for(exec_cursors_.size(), true);
-  return true;
+  if (since_venue_ms > 0 && !exec_replay_.active()) exec_replay_.restart_from(since_venue_ms);
+  return exec_replay_.run();
 }
 
-bool DeribitVenue::send_executions_query(std::size_t i) {
-  ExecCursor& c = exec_cursors_[i];
+bool DeribitVenue::replay_ready() const noexcept {
+  return !cfg_.dry_run && connected_ && private_conn_.is_live() && !access_token_.empty() &&
+         !cfg_.currencies.empty();
+}
+
+bool DeribitVenue::send_executions_query(const ReplayQuery& q) {
+  if (q.stream >= cfg_.currencies.size() || !private_conn_.is_live() || access_token_.empty())
+    return false;
+  exec_queries_[q.stream] = q;
   // Never ask before the venue's epoch; a start of 0 would ask for the account's whole history.
-  c.query_start_ms = std::max<std::int64_t>(c.since_ms, 1);
-  const std::int64_t end_ms =
-      c.historical ? exec_now_ms_ - kRecentWindowMs : exec_now_ms_ + kSettleMs;
-  const std::size_t n =
-      DeribitOrderEncoder::encode_user_trades(kIdExecutionsBase + static_cast<std::int64_t>(i),
-                                              cfg_.currencies[i],
-                                              c.query_start_ms,
-                                              end_ms,
-                                              kUserTradesCount,
-                                              c.historical,
-                                              access_token_,
-                                              request_buf_);
-  if (n > 0 && private_conn_.send_text(std::string_view(request_buf_, n))) {
-    ++c.pages;
-    return true;
-  }
+  const std::int64_t start_ms = std::max<std::int64_t>(q.start_ms, 1);
+  const std::int64_t end_ms = q.end_ms != 0 ? q.end_ms : q.now_ms + kSettleMs;
+  const std::size_t n = DeribitOrderEncoder::encode_user_trades(
+      kIdExecutionsBase + static_cast<std::int64_t>(q.stream),
+      cfg_.currencies[q.stream],
+      start_ms,
+      end_ms,
+      kUserTradesCount,
+      q.history,
+      access_token_,
+      request_buf_);
+  if (n > 0 && private_conn_.send_text(std::string_view(request_buf_, n))) return true;
   ++stats_.execution_query_errors;
-  FASTMM_LOG_ERROR("{}: could not ask for the {} executions", cfg_.name, cfg_.currencies[i]);
+  FASTMM_LOG_ERROR("{}: could not ask for the {} executions", cfg_.name, cfg_.currencies[q.stream]);
   return false;
 }
 
 void DeribitVenue::handle_executions_response(std::size_t i, std::string_view json, bool error) {
-  if (!exec_replay_active_ || i >= exec_cursors_.size()) return;
+  if (i >= exec_queries_.size() || !exec_replay_.expects(exec_queries_[i])) return;
+  const ReplayQuery q = exec_queries_[i];
   if (error) {
     ++stats_.execution_query_errors;
-    finish_executions_for(i, false);
+    exec_replay_.failed(q);
     return;
   }
-  ExecCursor& c = exec_cursors_[i];
-  std::size_t count = 0;
-  UserTradesPage page;
+  // The rows view `json`: answer() emits them before it returns (ascending pages).
+  ReplayPage<UserTradeRecord> page;
+  UserTradesPage meta;
   const ParseStatus st =
-      private_parser_->decode_user_trades(json, page, [&](const UserTradeRecord& t) {
-        const std::string id(t.trade_id);
-        const bool at_edge =
-            t.timestamp_ms == c.since_ms &&
-            std::find(c.edge_ids.begin(), c.edge_ids.end(), id) != c.edge_ids.end();
-        if (t.timestamp_ms > c.since_ms) {
-          c.since_ms = t.timestamp_ms;
-          c.edge_ids.clear();
-        }
-        if (t.timestamp_ms == c.since_ms && !at_edge) c.edge_ids.push_back(id);
-        if (at_edge || !exec_seen_.insert(id).second) return;
-        if (!known_exec_ids_.empty() && known_exec_ids_.count(id) != 0) return;
-        // The label names the order the engine knows; after an edit that is the new client id.
-        // The side comes from the order when the connector still holds it, else `direction`.
-        const ClientOrderId cl = t.cl_ord_id.valid() ? current_id(t.cl_ord_id) : ClientOrderId{};
-        const OrderShadow* s = cl.valid() ? shadows_.find(cl) : nullptr;
-        emit_replayed_fill(*order_sink_,
-                           id_,
-                           t.instrument,
-                           cl,
-                           t.order_id,
-                           t.trade_id,
-                           s != nullptr ? s->side : t.side,
-                           t.price,
-                           t.qty,
-                           t.fee,
-                           t.fee_asset,
-                           t.liquidity,
-                           t.timestamp_ms);
-        ++stats_.order_events;
-        ++stats_.executions_fetched;
-        ++count;
+      private_parser_->decode_user_trades(json, meta, [&](const UserTradeRecord& t) {
+        page.rows.push_back({t.timestamp_ms, 0, std::string(t.trade_id), t});
       });
-  if (count > 0)
-    FASTMM_LOG_INFO("{}: replayed {} {} execution(s)", cfg_.name, count, cfg_.currencies[i]);
   if (st != ParseStatus::Ok) {
     ++stats_.execution_query_errors;
     FASTMM_LOG_ERROR("{}: get_user_trades_by_currency_and_time reply could not be parsed",
                      cfg_.name);
-    finish_executions_for(i, false);
+    exec_replay_.failed(q);
     return;
   }
-  if (page.has_more) {
-    // The next page starts at the last row's timestamp. A full page all at the start timestamp
-    // would be asked for again unchanged.
-    if (page.last_ms <= c.query_start_ms || c.pages >= kMaxExecutionPages) {
-      FASTMM_LOG_WARN("{}: {} executions still waiting after {} page(s); the replay is incomplete",
-                      cfg_.name,
-                      cfg_.currencies[i],
-                      c.pages);
-      finish_executions_for(i, false);
-      return;
-    }
-    if (!send_executions_query(i)) finish_executions_for(i, false);
-    return;
-  }
-  if (c.historical) {
-    c.historical = false;  // the last 24 h next, from wherever the history left the cursor
-    if (!send_executions_query(i)) finish_executions_for(i, false);
-    return;
-  }
-  // Everything up to the replay's start is in; nothing before kSettleMs of it is asked for again.
-  if (exec_now_ms_ - kSettleMs > c.since_ms) {
-    c.since_ms = exec_now_ms_ - kSettleMs;
-    c.edge_ids.clear();
-  }
-  finish_executions_for(i, true);
+  page.more = meta.has_more;
+  exec_replay_.answer(q, std::move(page));
 }
 
-void DeribitVenue::finish_executions_for(std::size_t /*currency_index*/, bool ok) {
-  if (!ok) exec_replay_ok_ = false;
-  if (exec_pending_ > 0) --exec_pending_;
-  if (exec_pending_ > 0) return;
-  exec_replay_active_ = false;
-  if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  reconcile_.replay_done(exec_replay_ok_);
+bool DeribitVenue::emit_execution(const UserTradeRecord& t) {
+  if (!t.instrument.valid()) return false;
+  // The label names the order the engine knows; after an edit that is the new client id. The side
+  // comes from the order when the connector still holds it, else `direction`.
+  const ClientOrderId cl = t.cl_ord_id.valid() ? current_id(t.cl_ord_id) : ClientOrderId{};
+  const OrderShadow* s = cl.valid() ? shadows_.find(cl) : nullptr;
+  emit_replayed_fill(*order_sink_,
+                     id_,
+                     t.instrument,
+                     cl,
+                     t.order_id,
+                     t.trade_id,
+                     s != nullptr ? s->side : t.side,
+                     t.price,
+                     t.qty,
+                     t.fee,
+                     t.fee_asset,
+                     t.liquidity,
+                     t.timestamp_ms);
+  ++stats_.order_events;
+  ++stats_.executions_fetched;
+  return true;
 }
 
 void DeribitVenue::cancel_all_async() {
@@ -1422,22 +1364,10 @@ void DeribitVenue::on_timer(std::int64_t now) {
     auth_in_flight_ = n > 0 && private_conn_.send_text(std::string_view(request_buf_, n));
     std::memset(request_buf_, 0, n);
   }
-  // A replay that could not be completed left fills unaccounted for, and the next reconnect may be
-  // hours away. Ask again until the venue answers; only the executions, not the snapshot.
-  if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs &&
-      private_conn_.is_live() && !access_token_.empty()) {
-    exec_retry_ns_ = now;
-    exec_retry_wanted_ = false;
-    static_cast<void>(request_executions());
-  }
-  // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers a
-  // bounded number of executions, so a reconnect after hours of streaming would replay more than
-  // it can recognise. A replay a minute keeps that short, and books a fill the private stream
-  // dropped without disconnecting.
-  if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs &&
-      private_conn_.is_live() && !access_token_.empty()) {
-    static_cast<void>(request_executions());
-  }
+  // The execution replay: a retry 5 s after an incomplete one (the next reconnect may be hours
+  // away), and one a minute while all is well, which keeps the watermark within what the OMS can
+  // deduplicate and books a fill the private stream dropped without disconnecting.
+  exec_replay_.on_timer(now);
   publish_status();
   raw_md_.flush();
   raw_private_.flush();
@@ -1453,6 +1383,7 @@ void DeribitVenue::on_timer(std::int64_t now) {
 
 void DeribitVenue::publish_status() noexcept {
   stats_.shadows_swept = reconcile_.shadows_swept();
+  stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

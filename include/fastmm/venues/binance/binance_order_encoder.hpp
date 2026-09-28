@@ -139,12 +139,13 @@ class BinanceOrderEncoder {
                                std::int64_t timestamp_ms,
                                RestRequest& out);
   // GET /api/v3/myTrades: the account's executions on `symbol`. `from_id` > 0 asks for trades from
-  // that trade id on (what a connector that has seen one uses); otherwise `start_ms` bounds the
-  // window, which the venue caps at 24 hours. The two cannot be combined - rest-api.md lists the
-  // legal parameter combinations - so from_id wins. Weight 20.
+  // that trade id on (what a connector that has seen one uses); otherwise `start_ms` and `end_ms`
+  // (0: none) bound the window, which may span 24 hours at most. The two cannot be combined -
+  // rest-api.md lists the legal parameter combinations - so from_id wins. Weight 20.
   bool encode_rest_my_trades(std::string_view symbol,
                              std::int64_t from_id,
                              std::int64_t start_ms,
+                             std::int64_t end_ms,
                              int limit,
                              std::int64_t timestamp_ms,
                              RestRequest& out);

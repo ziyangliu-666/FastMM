@@ -26,8 +26,6 @@ constexpr std::int64_t kDayMs = 24LL * 3600 * 1000;
 // orders-pending: 100 a page; more than this many pages is a runaway, not a book to reconcile.
 constexpr std::size_t kMaxReconcilePages = 40;
 constexpr std::size_t kPageLimit = 100;
-constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;
-constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;
 // GET /api/v5/trade/fills covers "the last 3 days", fills-history "the last 3 months". A start
 // within an hour of the 3 days already reads the history.
 constexpr std::int64_t kHourMs = 3600LL * 1000;
@@ -38,8 +36,8 @@ constexpr std::int64_t kBillsRecentMs = 7 * kDayMs - kHourMs;
 constexpr std::size_t kMaxExecPagesPerWindow = 20;
 constexpr std::size_t kMaxExecRequests = 100;
 constexpr std::size_t kMaxFundingPages = 20;
-// A replay that found nothing moves its watermark up to this long before the query: a fill or a
-// bill the venue indexes late is still found by the next one.
+// How late OKX may index a fill or a bill: a replay's watermark stays this far behind its start,
+// so one the venue shows late is still found by the next.
 constexpr std::int64_t kSettleMs = 5LL * 60 * 1000;
 constexpr std::int64_t kPositionSettleNs = 1'000'000'000;
 constexpr std::int64_t kFundingQueryDelayNs = 1'000'000'000;
@@ -88,6 +86,34 @@ OkxVenue::OkxVenue(VenueId id, OkxVenueConfig cfg)
   if (cfg_.orders_per_second > 0) rate_.add_order_bucket(cfg_.orders_per_second, 1'000'000'000);
   inst_codes_.fill(-1);
   std::memset(scratch_, 0, sizeof scratch_);
+  ReplayLimits limits;
+  limits.history_ms = kHistoryMs;
+  limits.recent_ms = kFillsRecentMs;  // fills-history answers the recent days too
+  limits.page_rows = kPageLimit;
+  limits.newest_first = true;
+  limits.window_pages = kMaxExecPagesPerWindow;
+  limits.max_pages = kMaxExecRequests;
+  limits.settle_ms = kSettleMs;
+  exec_replay_.setup(cfg_.name,
+                     "fill(s)",
+                     limits,
+                     {[this] { return replay_ready(); },
+                      [this] { return venue_time_ms(); },
+                      [this](const ReplayQuery& q) { return query_fills(q); },
+                      [this](bool complete) { reconcile_.replay_done(complete); }},
+                     [this](std::size_t, const FillRecord& f) { return emit_fill(f); });
+  exec_replay_.set_streams(1);
+  limits.recent_ms = kBillsRecentMs;
+  limits.window_pages = kMaxFundingPages;
+  funding_replay_.setup(cfg_.name,
+                        "funding payment(s)",
+                        limits,
+                        {[this] { return replay_ready(); },
+                         [this] { return venue_time_ms(); },
+                         [this](const ReplayQuery& q) { return query_bills(q); },
+                         [](bool) {}},
+                        [this](std::size_t, const BillRecord& b) { return emit_bill(b); });
+  funding_replay_.set_streams(1);
 }
 
 OkxVenue::~OkxVenue() {
@@ -382,8 +408,10 @@ void OkxVenue::connect(net::Reactor& reactor) {
   reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Nobody said where the replays should start, so they start here: this session can only have
   // missed what happened after it connected.
-  if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
-  if (funding_since_ms_ <= 0) funding_since_ms_ = exec_since_ms_;
+  exec_replay_.start_at(venue_time_ms());
+  exec_replay_.open(!cfg_.dry_run && signer_.usable());
+  funding_replay_.start_at(venue_time_ms());
+  funding_replay_.open(!cfg_.dry_run && signer_.usable());
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
     if (!cfg_.dry_run) {
@@ -433,9 +461,8 @@ void OkxVenue::disconnect() {
   trade_conn_.close();
   // Replies to requests the reset aborts are ignored: a later connect() starts afresh.
   ++generation_;
-  exec_replay_active_ = false;
-  funding_active_ = false;
-  funding_due_ns_ = 0;
+  exec_replay_.close();
+  funding_replay_.close();
   time_request_pending_ = false;
   if (rest_) rest_->reset();
   md_feed_->on_disconnected();
@@ -634,7 +661,7 @@ void OkxVenue::on_private_text(std::string_view t, std::int64_t ts) {
   if (raw_private_.enabled()) raw_private_.record(ts, t);
   const Cycles t0 = rdtscp();
   const PrivateDecodeResult r = private_parser_->decode(t, wall_now(), t0, scratch_);
-  if (r.funding_event && funding_due_ns_ == 0) funding_due_ns_ = now_ns() + kFundingQueryDelayNs;
+  if (r.funding_event) funding_replay_.due_in(kFundingQueryDelayNs);
   if (r.status == ParseStatus::Ok) {
     std::uint32_t off = 0;
     for (std::uint32_t i = 0; i < r.count; ++i) {
@@ -1128,7 +1155,9 @@ void OkxVenue::request_open_orders() {
 }
 
 bool OkxVenue::replay_executions() {
-  return request_executions();
+  // The funding payments go alongside: they change no position, so the snapshot does not wait.
+  static_cast<void>(funding_replay_.run());
+  return exec_replay_.run();
 }
 
 // Nothing reaches the engine before every page parsed: Oms::reconcile_end() cancels every order
@@ -1264,92 +1293,46 @@ void OkxVenue::drop_shadow(ClientOrderId id) {
 // ---- execution replay -------------------------------------------------------------------------
 //
 // GET /api/v5/trade/fills (the last 3 days; fills-history, 3 months, for an older watermark),
-// account-wide for instType SWAP, before every open-order snapshot and once a minute. Each row on a
-// subscribed instrument is emitted as an ordinary fill carrying its tradeId, so the OMS keeps the
-// ones it never saw; that recovers a fill that finished an order, which the snapshot no longer
-// mentions. Rows come newest first and are paged with `after` = the last billId; a window is read
-// to its last page and emitted oldest first, then the watermark moves to its newest `ts`.
+// account-wide for instType SWAP, before every open-order snapshot and once a minute
+// (ReplayScheduler). Each row on a subscribed instrument is emitted as an ordinary fill carrying
+// its tradeId, so the OMS keeps the ones it never saw; that recovers a fill that finished an order,
+// which the snapshot no longer mentions. Rows come newest first and are paged with `after` = the
+// last billId; a window is read to its last page and emitted oldest first. OKX's bounds are asked
+// one millisecond wide on each side (whether they are inclusive is not documented); rows outside
+// the window are dropped by the scheduler.
 
 void OkxVenue::resume_executions(std::int64_t since_venue_ms,
                                  const std::vector<std::string>& known) {
-  exec_since_ms_ = since_venue_ms;
-  exec_edge_ids_.clear();
-  known_exec_ids_ = {known.begin(), known.end()};
-  funding_since_ms_ = since_venue_ms;
-  funding_edge_ids_.clear();
+  exec_replay_.resume(since_venue_ms, known);
+  funding_replay_.resume(since_venue_ms, known);
 }
 
 bool OkxVenue::request_executions(std::int64_t since_venue_ms) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
-  if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
-  if (exec_replay_active_) return true;
-  if (since_venue_ms > 0) {
-    exec_since_ms_ = since_venue_ms;
-    exec_edge_ids_.clear();
-    funding_since_ms_ = since_venue_ms;
-    funding_edge_ids_.clear();
-  }
-  // The funding payments go alongside: they change no position, so the snapshot does not wait.
-  request_funding({});
-  exec_last_ns_ = now_ns();
-  exec_replay_active_ = true;
-  exec_replay_ok_ = true;
-  exec_requests_ = 0;
-  ++stats_.execution_queries;
-  start_execution_window();
-  return true;
+  if (since_venue_ms > 0 && !exec_replay_.active()) exec_replay_.restart_from(since_venue_ms);
+  if (since_venue_ms > 0 && !funding_replay_.active()) funding_replay_.restart_from(since_venue_ms);
+  static_cast<void>(funding_replay_.run());
+  return exec_replay_.run();
 }
 
-void OkxVenue::start_execution_window() {
-  const std::int64_t now = venue_time_ms();
-  if (exec_since_ms_ <= 0) exec_since_ms_ = now;
-  if (exec_since_ms_ < now - kHistoryMs) {
-    FASTMM_LOG_ERROR("{}: fills before {} are beyond OKX's 3 months; replaying from there",
-                     cfg_.name,
-                     now - kHistoryMs);
-    exec_since_ms_ = now - kHistoryMs;
-    exec_edge_ids_.clear();
-    exec_replay_ok_ = false;
-  }
-  exec_history_ = exec_since_ms_ < now - kFillsRecentMs;
-  exec_window_start_ = exec_since_ms_;
-  exec_window_end_ = 0;
-  exec_rows_.clear();
-  exec_window_pages_ = 0;
-  exec_window_low_ms_ = 0;
-  request_executions_page({});
+bool OkxVenue::replay_ready() const noexcept {
+  return !cfg_.dry_run && connected_ && signer_.usable() && rest_ != nullptr &&
+         !rest_hard_stopped_ && !subscribed_.empty();
 }
 
-void OkxVenue::request_executions_page(const std::string& after) {
-  if (++exec_requests_ > kMaxExecRequests) {
-    FASTMM_LOG_WARN("{}: fill replay stopped after {} requests; it continues later",
-                    cfg_.name,
-                    kMaxExecRequests);
-    finish_execution_replay(false);
-    return;
-  }
-  if (rest_ == nullptr) {
-    finish_execution_replay(false);
-    return;
-  }
+bool OkxVenue::query_fills(const ReplayQuery& q) {
+  if (rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
-  // `begin` one millisecond early: whether OKX's bound is inclusive is not documented, and the
-  // rows at the watermark's own millisecond are skipped by id.
   OkxOrderEncoder::encode_rest_fills(
-      exec_history_, exec_window_start_ - 1, exec_window_end_, after, kPageLimit, rr);
+      q.history, q.start_ms - 1, q.end_ms > 0 ? q.end_ms + 1 : 0, q.page, kPageLimit, rr);
   std::weak_ptr<int> alive = alive_;
-  const std::uint64_t gen = generation_;
   const bool queued = rest_->request(
-      "GET", rr.path, rest_headers(rr), {}, [this, alive, gen](const net::HttpResponse& r) {
-        if (alive.expired() || gen != generation_) return;
+      "GET", rr.path, rest_headers(rr), {}, [this, alive, q](const net::HttpResponse& r) {
+        if (alive.expired() || !exec_replay_.expects(q)) return;
         ++stats_.rest_requests;
         std::vector<FillRecord> rows;
-        std::string err;
-        if (!r.ok()) {
-          err = fmt::format("status={} err={}", r.status, net::to_string(r.error));
-        } else {
-          err = decode_fills(r.body, rows);
-        }
+        const std::string err =
+            r.ok() ? decode_fills(r.body, rows)
+                   : fmt::format("status={} err={}", r.status, net::to_string(r.error));
         if (!err.empty()) {
           ++stats_.rest_errors;
           ++stats_.execution_query_errors;
@@ -1357,7 +1340,7 @@ void OkxVenue::request_executions_page(const std::string& after) {
               "{}: GET {} failed ({}); this reconciliation cannot book the fills the private "
               "stream missed",
               cfg_.name,
-              exec_history_ ? "fills-history" : "fills",
+              q.history ? "fills-history" : "fills",
               err);
           int code = -1;
           std::string msg;
@@ -1365,232 +1348,111 @@ void OkxVenue::request_executions_page(const std::string& after) {
             const VenueAction a = map_error(code, msg).action;
             if (a != VenueAction::Reconcile) apply_action(a, code, msg);
           }
-          finish_execution_replay(false);
+          exec_replay_.failed(q);
           return;
         }
+        ReplayPage<FillRecord> page;
+        page.more = rows.size() >= kPageLimit;
+        if (!rows.empty()) page.next = rows.back().bill_id;
+        page.rows.reserve(rows.size());
         for (FillRecord& f : rows) {
-          if (exec_window_low_ms_ == 0 || f.ts_ms < exec_window_low_ms_)
-            exec_window_low_ms_ = f.ts_ms;
+          const std::int64_t t = f.ts_ms;
+          std::string key = f.trade_id;
+          page.rows.push_back({t, 0, std::move(key), std::move(f)});
         }
-        const std::size_t n = rows.size();
-        const std::string last_bill = n > 0 ? rows.back().bill_id : std::string();
-        for (FillRecord& f : rows) exec_rows_.push_back(std::move(f));
-        if (n < kPageLimit) {
-          on_executions_window_done();
-          return;
-        }
-        if (++exec_window_pages_ < kMaxExecPagesPerWindow) {
-          request_executions_page(last_bill);
-          return;
-        }
-        // Too many rows for one window: what was read is its newest part. Read the window again
-        // up to its oldest row seen, so that it can still be emitted oldest first.
-        if (exec_window_low_ms_ <= exec_window_start_) {
-          finish_execution_replay(false);
-          return;
-        }
-        exec_window_end_ = exec_window_low_ms_ + 1;
-        exec_rows_.clear();
-        exec_window_pages_ = 0;
-        exec_window_low_ms_ = 0;
-        request_executions_page({});
+        exec_replay_.answer(q, std::move(page));
       });
   if (!queued) {
     ++stats_.execution_query_errors;
     FASTMM_LOG_ERROR("{}: no room to ask for the account's fills", cfg_.name);
-    finish_execution_replay(false);
   }
+  return queued;
 }
 
-void OkxVenue::on_executions_window_done() {
-  const bool narrowed = exec_window_end_ > 0;
-  emit_executions();
-  if (narrowed) {
-    start_execution_window();
-    return;
-  }
-  finish_execution_replay(true);
-}
-
-void OkxVenue::emit_executions() {
-  // Received newest first; reversed, rows with equal times keep the venue's order.
-  std::reverse(exec_rows_.begin(), exec_rows_.end());
-  std::stable_sort(exec_rows_.begin(),
-                   exec_rows_.end(),
-                   [](const FillRecord& a, const FillRecord& b) { return a.ts_ms < b.ts_ms; });
-  std::size_t count = 0;
-  std::int64_t newest = 0;
-  for (const FillRecord& f : exec_rows_) {
-    newest = std::max(newest, f.ts_ms);
-    const InstrumentId inst = subscribed_instrument(f.inst_id);
-    if (!inst.valid()) continue;  // another instrument on this account: not ours
-    // Below the watermark: before the `begin` asked for, so read by an earlier replay.
-    if (f.ts_ms < exec_since_ms_) continue;
-    if (f.ts_ms == exec_since_ms_ && exec_edge_ids_.count(f.trade_id) != 0) continue;
-    if (known_exec_ids_.count(f.trade_id) != 0) continue;  // the earlier session booked it
-    const Notional fee = Notional{} - f.fee;  // OKX: negative charged; FastMM: positive paid
-    ClientOrderId cl{};
-    if (const auto id = decode_cl_ord_id(f.cl_ord_id)) cl = current_id(*id);
-    emit_replayed_fill(*order_sink_,
-                       id_,
-                       inst,
-                       cl,
-                       f.ord_id,
-                       f.trade_id,
-                       f.side == "sell" ? Side::Sell : Side::Buy,
-                       f.px,
-                       f.sz,
-                       fee,
-                       fee_asset_of(instruments_->get(inst), fee, f.fee_ccy),
-                       f.exec_type == "M" ? Liquidity::Maker : Liquidity::Taker,
-                       f.fill_time_ms);
-    ++stats_.order_events;
-    ++stats_.executions_fetched;
-    ++count;
-  }
-  // The watermark moves to the newest row read; with none, to kSettleMs before the query, so a
-  // quiet account keeps asking the recent endpoint.
-  std::int64_t since = exec_since_ms_;
-  if (newest > 0) {
-    since = std::max(since, newest);
-  } else if (exec_window_end_ == 0) {
-    since = std::max(since, venue_time_ms() - kSettleMs);
-  }
-  if (since != exec_since_ms_) exec_edge_ids_.clear();
-  exec_since_ms_ = since;
-  for (const FillRecord& f : exec_rows_) {
-    if (f.ts_ms == since) exec_edge_ids_.insert(f.trade_id);
-  }
-  exec_rows_.clear();
-  if (count > 0) FASTMM_LOG_INFO("{}: replayed {} fill(s)", cfg_.name, count);
-}
-
-void OkxVenue::finish_execution_replay(bool ok) {
-  if (!ok) exec_replay_ok_ = false;
-  exec_replay_active_ = false;
-  exec_rows_.clear();
-  if (!exec_replay_ok_) {
-    exec_retry_wanted_ = true;
-    exec_retry_ns_ = now_ns();  // the retry comes kExecutionRetryNs after the failure
-  }
-  reconcile_.replay_done(exec_replay_ok_);
+bool OkxVenue::emit_fill(const FillRecord& f) {
+  const InstrumentId inst = subscribed_instrument(f.inst_id);
+  if (!inst.valid()) return false;          // another instrument on this account: not ours
+  const Notional fee = Notional{} - f.fee;  // OKX: negative charged; FastMM: positive paid
+  ClientOrderId cl{};
+  if (const auto id = decode_cl_ord_id(f.cl_ord_id)) cl = current_id(*id);
+  emit_replayed_fill(*order_sink_,
+                     id_,
+                     inst,
+                     cl,
+                     f.ord_id,
+                     f.trade_id,
+                     f.side == "sell" ? Side::Sell : Side::Buy,
+                     f.px,
+                     f.sz,
+                     fee,
+                     fee_asset_of(instruments_->get(inst), fee, f.fee_ccy),
+                     f.exec_type == "M" ? Liquidity::Maker : Liquidity::Taker,
+                     f.fill_time_ms);
+  ++stats_.order_events;
+  ++stats_.executions_fetched;
+  return true;
 }
 
 // ---- funding ----------------------------------------------------------------------------------
 //
-// GET /api/v5/account/bills?instType=SWAP&type=8 (funding fee; bills-archive beyond 7 days), from
-// its own watermark, with every execution replay, a second after a balance_and_position push with
-// eventType funding_fee, and again from the housekeeping timer after a failure. Each bill on a
-// subscribed instrument is one FundingMsg: balChg (positive received) in ccy, billId as its id.
+// GET /api/v5/account/bills?instType=SWAP&type=8 (funding fee; bills-archive beyond 7 days), with
+// every reconciliation's execution replay, once a minute, a second after a balance_and_position
+// push with eventType funding_fee, and again after a failure. Each bill on a subscribed instrument
+// is one FundingMsg: balChg (positive received) in ccy, billId as its id.
 
-void OkxVenue::request_funding(const std::string& after) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable()) return;
-  if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return;
-  const std::int64_t now = venue_time_ms();
-  if (after.empty()) {
-    if (funding_active_) return;
-    funding_active_ = true;
-    funding_rows_.clear();
-    funding_pages_ = 0;
-    if (funding_since_ms_ <= 0) funding_since_ms_ = exec_since_ms_ > 0 ? exec_since_ms_ : now;
-    if (funding_since_ms_ < now - kHistoryMs) {
-      FASTMM_LOG_ERROR(
-          "{}: funding before {} is beyond OKX's 3 months", cfg_.name, now - kHistoryMs);
-      funding_since_ms_ = now - kHistoryMs;
-      funding_edge_ids_.clear();
-    }
-    funding_archive_ = funding_since_ms_ < now - kBillsRecentMs;
-  }
+bool OkxVenue::query_bills(const ReplayQuery& q) {
+  if (rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
   OkxOrderEncoder::encode_rest_funding_bills(
-      funding_archive_, funding_since_ms_ - 1, after, kPageLimit, rr);
+      q.history, q.start_ms - 1, q.end_ms > 0 ? q.end_ms + 1 : 0, q.page, kPageLimit, rr);
   std::weak_ptr<int> alive = alive_;
-  const std::uint64_t gen = generation_;
   const bool queued = rest_->request(
-      "GET", rr.path, rest_headers(rr), {}, [this, alive, gen](const net::HttpResponse& r) {
-        if (alive.expired() || gen != generation_) return;
+      "GET", rr.path, rest_headers(rr), {}, [this, alive, q](const net::HttpResponse& r) {
+        if (alive.expired() || !funding_replay_.expects(q)) return;
         ++stats_.rest_requests;
         std::vector<BillRecord> rows;
-        std::string err;
-        if (!r.ok()) {
-          err = fmt::format("status={} err={}", r.status, net::to_string(r.error));
-        } else {
-          err = decode_bills(r.body, rows);
-        }
+        const std::string err =
+            r.ok() ? decode_bills(r.body, rows)
+                   : fmt::format("status={} err={}", r.status, net::to_string(r.error));
         if (!err.empty()) {
           ++stats_.rest_errors;
           FASTMM_LOG_ERROR("{}: GET {} failed ({}); funding is asked again",
                            cfg_.name,
-                           funding_archive_ ? "bills-archive" : "bills",
+                           q.history ? "bills-archive" : "bills",
                            err);
-          funding_active_ = false;
-          funding_retry_wanted_ = true;
-          funding_retry_ns_ = now_ns();
+          funding_replay_.failed(q);
           return;
         }
-        const std::size_t n = rows.size();
-        const std::string last_bill = n > 0 ? rows.back().bill_id : std::string();
-        for (BillRecord& b : rows) funding_rows_.push_back(std::move(b));
-        if (n >= kPageLimit) {
-          if (++funding_pages_ < kMaxFundingPages) {
-            request_funding(last_bill);
-            return;
-          }
-          FASTMM_LOG_ERROR("{}: more than {} pages of funding bills; asked again later",
-                           cfg_.name,
-                           kMaxFundingPages);
-          funding_active_ = false;
-          funding_retry_wanted_ = true;
-          funding_retry_ns_ = now_ns();
-          funding_rows_.clear();
-          return;
+        ReplayPage<BillRecord> page;
+        page.more = rows.size() >= kPageLimit;
+        if (!rows.empty()) page.next = rows.back().bill_id;
+        page.rows.reserve(rows.size());
+        for (BillRecord& b : rows) {
+          const std::int64_t t = b.ts_ms;
+          std::string key = std::string(kFundingIdPrefix) + b.bill_id;
+          page.rows.push_back({t, 0, std::move(key), std::move(b)});
         }
-        funding_active_ = false;
-        emit_funding_rows();
+        funding_replay_.answer(q, std::move(page));
       });
-  if (!queued) {
-    funding_active_ = false;
-    funding_retry_wanted_ = true;
-    funding_retry_ns_ = now_ns();
-    FASTMM_LOG_ERROR("{}: no room to ask for the account's funding", cfg_.name);
-  }
+  if (!queued) FASTMM_LOG_ERROR("{}: no room to ask for the account's funding", cfg_.name);
+  return queued;
 }
 
-void OkxVenue::emit_funding_rows() {
-  std::stable_sort(funding_rows_.begin(),
-                   funding_rows_.end(),
-                   [](const BillRecord& a, const BillRecord& b) { return a.ts_ms < b.ts_ms; });
-  std::size_t count = 0;
-  std::int64_t newest = 0;
-  for (const BillRecord& b : funding_rows_) {
-    newest = std::max(newest, b.ts_ms);
-    if (b.type != "8") continue;
-    const InstrumentId inst = subscribed_instrument(b.inst_id);
-    if (!inst.valid()) continue;                // not traded here
-    if (b.ts_ms < funding_since_ms_) continue;  // before the `begin` asked for
-    if (b.ts_ms == funding_since_ms_ && funding_edge_ids_.count(b.bill_id) != 0) continue;
-    if (known_exec_ids_.count(std::string(kFundingIdPrefix) + b.bill_id) != 0) continue;
-    emit_funding(*order_sink_,
-                 id_,
-                 inst,
-                 b.bill_id,
-                 b.bal_chg,
-                 b.ccy.empty() ? instruments_->get(inst).settlement_ccy() : std::string_view(b.ccy),
-                 b.ts_ms,
-                 /*replayed=*/true);
-    ++stats_.order_events;
-    ++stats_.funding_fetched;
-    ++count;
-  }
-  std::int64_t since = funding_since_ms_;
-  since = newest > 0 ? std::max(since, newest) : std::max(since, venue_time_ms() - kSettleMs);
-  if (since != funding_since_ms_) funding_edge_ids_.clear();
-  funding_since_ms_ = since;
-  for (const BillRecord& b : funding_rows_) {
-    if (b.ts_ms == since) funding_edge_ids_.insert(b.bill_id);
-  }
-  funding_rows_.clear();
-  if (count > 0) FASTMM_LOG_INFO("{}: booked {} funding payment(s)", cfg_.name, count);
+bool OkxVenue::emit_bill(const BillRecord& b) {
+  if (b.type != "8") return false;
+  const InstrumentId inst = subscribed_instrument(b.inst_id);
+  if (!inst.valid()) return false;  // not traded here
+  emit_funding(*order_sink_,
+               id_,
+               inst,
+               b.bill_id,
+               b.bal_chg,
+               b.ccy.empty() ? instruments_->get(inst).settlement_ccy() : std::string_view(b.ccy),
+               b.ts_ms,
+               /*replayed=*/true);
+  ++stats_.order_events;
+  ++stats_.funding_fetched;
+  return true;
 }
 
 // ---- control requests -----------------------------------------------------------------------
@@ -1826,27 +1688,11 @@ void OkxVenue::on_timer(std::int64_t now) {
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
   reconcile_.on_timer(now);
   if (!cfg_.dry_run && signer_.usable()) {
-    // A replay that could not be completed left fills unaccounted for, and the next reconnect may
-    // be hours away. Ask again until the venue answers; the watermark moved only past what was
-    // booked.
-    if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
-      exec_retry_ns_ = now;
-      exec_retry_wanted_ = false;
-      static_cast<void>(request_executions());
-    }
-    // And while nothing is wrong: once a minute, which books a fill the private stream dropped
-    // without disconnecting and keeps the replay within what the OMS can deduplicate.
-    if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs)
-      static_cast<void>(request_executions());
-    if (funding_due_ns_ != 0 && now >= funding_due_ns_ && !funding_active_) {
-      funding_due_ns_ = 0;
-      request_funding({});
-    }
-    if (funding_retry_wanted_ && !funding_active_ && now - funding_retry_ns_ >= kExecutionRetryNs) {
-      funding_retry_ns_ = now;
-      funding_retry_wanted_ = false;
-      request_funding({});
-    }
+    // The replays: a retry 5 s after an incomplete one (the next reconnect may be hours away), one
+    // a minute while all is well (the OMS deduplicates a bounded window, and the private stream can
+    // drop an event without disconnecting), and funding a second after a funding push.
+    exec_replay_.on_timer(now);
+    funding_replay_.on_timer(now);
     // Venue-side dead man's switch, refreshed from the housekeeping timer: the thread that would
     // stop if this process died. If the window ran out anyway the venue has cancelled every
     // order of the account and this process still runs: it must not put the quotes back
@@ -1891,7 +1737,7 @@ void OkxVenue::note_fill(const OrderFillMsg& f) noexcept {
 }
 
 void OkxVenue::check_positions(std::int64_t now) {
-  if (order_sink_ == nullptr || reconcile_.busy() || exec_replay_active_) return;
+  if (order_sink_ == nullptr || reconcile_.busy() || exec_replay_.active()) return;
   for (InstrumentId id : subscribed_) {
     PositionCheck& p = positions_[id.value];
     if (!p.pending || now - p.last_event_ns < kPositionSettleNs) continue;
@@ -1918,6 +1764,7 @@ void OkxVenue::check_positions(std::int64_t now) {
 
 void OkxVenue::publish_status() noexcept {
   stats_.shadows_swept = reconcile_.shadows_swept();
+  stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

@@ -205,11 +205,12 @@ TEST_CASE("okx.encoder: REST paths and bodies of the control requests") {
   CHECK(rr.path ==
         "/api/v5/trade/fills-history?instType=SWAP&after=77&begin=1789299700000&end=1789299800000&"
         "limit=100");
-  OkxOrderEncoder::encode_rest_funding_bills(false, 1789299700000, "", 100, rr);
+  OkxOrderEncoder::encode_rest_funding_bills(false, 1789299700000, 0, "", 100, rr);
   CHECK(rr.path == "/api/v5/account/bills?instType=SWAP&type=8&begin=1789299700000&limit=100");
-  OkxOrderEncoder::encode_rest_funding_bills(true, 1789299700000, "9", 100, rr);
+  OkxOrderEncoder::encode_rest_funding_bills(true, 1789299700000, 1789299800000, "9", 100, rr);
   CHECK(rr.path ==
-        "/api/v5/account/bills-archive?instType=SWAP&type=8&after=9&begin=1789299700000&limit=100");
+        "/api/v5/account/bills-archive?instType=SWAP&type=8&after=9&begin=1789299700000&end="
+        "1789299800000&limit=100");
   OkxOrderEncoder::encode_rest_positions(rr);
   CHECK(rr.path == "/api/v5/account/positions?instType=SWAP");
   OkxOrderEncoder::encode_rest_account_config(rr);

@@ -338,15 +338,18 @@ bool BinanceOrderEncoder::encode_rest_open_orders(std::string_view symbol,
 bool BinanceOrderEncoder::encode_rest_my_trades(std::string_view symbol,
                                                 std::int64_t from_id,
                                                 std::int64_t start_ms,
+                                                std::int64_t end_ms,
                                                 int limit,
                                                 std::int64_t timestamp_ms,
                                                 RestRequest& out) {
   if (symbol.empty()) return false;  // rest-api.md: symbol is required
   ParamList p;                       // sorted by name, as the signature payload requires
+  const bool by_time = from_id <= 0 && start_ms > 0;
+  if (by_time && end_ms > 0) p.add_int("endTime", end_ms);
   if (from_id > 0) p.add_int("fromId", from_id);
   p.add_int("limit", limit);
   p.add_int("recvWindow", recv_window_ms_);
-  if (from_id <= 0 && start_ms > 0) p.add_int("startTime", start_ms);
+  if (by_time) p.add_int("startTime", start_ms);
   p.add("symbol", symbol);
   p.add_int("timestamp", timestamp_ms);
   out.method = "GET";

@@ -36,6 +36,7 @@
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/reconcile_driver.hpp"
+#include "fastmm/venues/replay_scheduler.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -45,7 +46,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::binance {
@@ -233,12 +233,11 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   void drop_shadow(ClientOrderId id) override;
   // Decodes the whole reply into the driver's rows before anything reaches the engine.
   void on_open_orders(std::uint64_t generation, std::string_view json, bool rest_array);
-  // GET /api/v3/myTrades for one subscribed instrument; `emit_executions` turns the reply into
-  // replayed fills and `finish_execution_replay` releases the snapshot when the last one is in.
-  bool request_executions_for(InstrumentId id);
-  void emit_executions(InstrumentId id, std::string_view json);
-  void finish_execution_replay(bool ok);
-  [[nodiscard]] std::size_t exec_slot(InstrumentId id) const noexcept;
+  // Execution replay (ReplayScheduler): GET /api/v3/myTrades for one subscribed instrument, and a
+  // row of it forwarded as a replayed fill.
+  [[nodiscard]] bool exec_ready() const noexcept;
+  bool query_executions(const ReplayQuery& q);
+  bool emit_execution(std::size_t stream, const MyTradeRecord& t);
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   [[nodiscard]] std::int64_t now_ns() const noexcept { return net::Reactor::now_ns(); }
@@ -279,28 +278,17 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
-  // Execution replay (GET /api/v3/myTrades), parallel to subscribed_: the trade id to ask from next
-  // for each instrument, zero until the venue has named one. Before that the query is bounded by
-  // exec_since_ms_, the venue time of the last execution the engine booked - what the store knew of
-  // the previous session at start-up, then whatever the replay itself finds.
-  std::vector<std::int64_t> exec_from_id_;
   // Venue order id -> the client order id this session gave it, so an execution the trade history
   // reports (which names only orderId) reaches the order it belongs to. A restarted session starts
   // empty: those executions arrive with no client order id and reach the position as unknown fills,
   // which is what a restart needs from them.
   RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
-  std::int64_t exec_since_ms_ = 0;
-  // Trade ids an earlier session booked; a resumed replay skips them (resume_executions).
-  std::unordered_set<std::string> known_exec_ids_;
-  // The first trade id per instrument an earlier session left off at (resume_trade_ids): moved
-  // into exec_from_id_ by the next replay, once subscribed_ gives the instruments their slots.
+  // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
+  // forwarded (fromId), else from the time watermark.
+  ReplayScheduler<MyTradeRecord> exec_replay_;
+  // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed
+  // to exec_replay_ at connect(), once subscribed_ gives the instruments their streams.
   std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;
-  std::size_t exec_pending_ = 0;  // myTrades replies still outstanding
-  bool exec_replay_ok_ = true;    // every reply so far covered its instrument in full
-  bool exec_replay_active_ = false;
-  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
-  std::int64_t exec_retry_ns_ = 0;
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::atomic<std::int64_t> clock_offset_ms_{0};  // read by cancel_all() from any thread

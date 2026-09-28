@@ -13,8 +13,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -57,15 +60,25 @@ struct Harness {
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
-  std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
-  std::atomic<bool> hold_trades{false};    // GET myTrades answers only once released (3 s at most)
-  std::atomic<int> my_trades{0};           // GET myTrades requests seen
+  std::atomic<bool> hold_place{false};   // order.place gets no answer (still in flight)
+  std::atomic<bool> hold_trades{false};  // GET myTrades answers only once released (3 s at most)
+  std::atomic<int> my_trades{0};         // GET myTrades requests seen
+  std::mutex trades_mu;
+  // GET myTrades answers (status, body), served in order; "[]" once they run out (trades_mu).
+  std::vector<std::pair<int, std::string>> trades_replies;
   std::atomic<int> rest_open_orders{0};    // GET /api/v3/openOrders requests seen
   net::WsSession* user_session = nullptr;  // server thread only
 
   // The server thread reads this harness's members: stop it before they go.
   ~Harness() { srv.stop(); }
   Harness() {
+    // The fixture's serverTime is from when it was recorded; the connector takes its clock from it
+    // until GET /api/v3/time answers, and the execution replay starts at that clock. Now, as the
+    // venue would say, or every replay would walk the days since the recording.
+    const std::string recorded = R"("serverTime":1789295119614)";
+    exchange_info.replace(exchange_info.find(recorded),
+                          recorded.size(),
+                          R"("serverTime":)" + std::to_string(wall_now().ns / 1'000'000));
     srv.route("GET", "/api/v3/exchangeInfo", [this](const net::HttpRequest&) {
       return net::HttpServerResponse::json(200, exchange_info);
     });
@@ -87,12 +100,18 @@ struct Harness {
       ++(ok ? cancel_all_ok : cancel_all_bad);
       return net::HttpServerResponse::json(200, "[]");
     });
-    srv.route("GET", "/api/v3/myTrades", [this](const net::HttpRequest&) {
+    srv.route("GET", "/api/v3/myTrades", [this](const net::HttpRequest& r) {
       ++my_trades;
+      srv.record("myTrades", std::string(r.query));
       // Blocks the fake's thread: the reply is in flight for as long as the test says.
       for (int i = 0; i < 600 && hold_trades.load(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
-      return net::HttpServerResponse::json(200, "[]");
+      const std::lock_guard lock(trades_mu);
+      if (trades_replies.empty()) return net::HttpServerResponse::json(200, "[]");
+      const auto [status, body] = trades_replies.front();
+      trades_replies.erase(trades_replies.begin());
+      return status == 200 ? net::HttpServerResponse::json(200, body)
+                           : net::HttpServerResponse::text(status, body);
     });
     srv.route("GET", "/api/v3/openOrders", [this](const net::HttpRequest&) {
       ++rest_open_orders;
@@ -701,11 +720,116 @@ TEST_CASE("binance.venue: a shutdown during the execution replay opens no REST c
   venue.request_open_orders();
   REQUIRE(pump_until(reactor, [&] { return h.my_trades.load() == asked + 1; }));
   venue.disconnect();
+  // The reply the reset aborted is nobody's: not a failed query (Spot had no generation on its
+  // replay's replies and counted, logged and retried it).
+  CHECK(venue.status().execution_query_errors == 0);
   h.hold_trades = false;
   static_cast<void>(pump_until(reactor, [] { return false; }, 500));
   CHECK(h.rest_open_orders.load() == 0);
   oc.take(orders);
   const std::size_t reconciles = oc.count(EventType::Reconcile);
   CHECK(reconciles == 2);  // nothing after the sweep
+  h.srv.stop();
+}
+
+namespace {
+
+// One row of GET /api/v3/myTrades (rest-api.md "Account trade list").
+std::string my_trade(long long id, long long time_ms) {
+  return R"({"symbol":"BTCUSDT","id":)" + std::to_string(id) +
+         R"(,"orderId":4293153,"orderListId":-1,"price":"70000.00000000","qty":"0.00010000","quoteQty":"7.00000000","commission":"0.00000010","commissionAsset":"BTC","time":)" +
+         std::to_string(time_ms) + R"(,"isBuyer":true,"isMaker":true,"isBestMatch":true})";
+}
+
+std::string query_param(const std::string& query, const std::string& key) {
+  const std::size_t p = query.find(key + "=");
+  if (p == std::string::npos) return {};
+  const std::size_t v = p + key.size() + 1;
+  return query.substr(v, query.find('&', v) - v);
+}
+
+// A connector on the harness, resumed from `since` with `known` booked, up to its start-up sweep.
+struct Resumed {
+  InstrumentTable instruments;
+  RecordingSink md{8U << 20};
+  RecordingSink orders{4U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  SymbolTable symbols;
+  std::unique_ptr<BinanceVenue> venue;
+  Collected oc;
+
+  Resumed(Harness& h, std::int64_t since, const std::vector<std::string>& known) {
+    REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+    venue = std::make_unique<BinanceVenue>(VenueId{0}, h.config(false));
+    REQUIRE(venue->load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue->subscribe(ids);
+    venue->resume_executions(since, known);
+    venue->connect(reactor);
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) >= 2;  // the start-up sweep's Begin and End
+    }));
+  }
+  ~Resumed() {
+    venue->disconnect();
+    reactor.run_once(0);
+  }
+  [[nodiscard]] bool first_exact() const {
+    const auto* b = oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+    return b != nullptr && (b->flags & ReconcileMsg::kExecutionsExact) != 0;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("binance.venue: a full myTrades page is full by the rows returned, not forwarded") {
+  // 1000 trades (the limit), one of them booked by the session resumed from, and the next page
+  // cannot be read. Spot counted the trades it forwarded, 999, took the page for the last and
+  // called the replay exact; USD-M counted the rows. Now the next page is asked for at once, from
+  // the id after the last, and the replay is exact only once it is in.
+  Harness h;
+  const long long now = wall_now().ns / 1'000'000;
+  std::string page = "[";
+  for (int i = 0; i < 1000; ++i) page += (i > 0 ? "," : "") + my_trade(5000 + i, now - 1000);
+  page += "]";
+  {
+    const std::lock_guard lock(h.trades_mu);
+    h.trades_replies = {{200, page}, {503, "Service Unavailable"}};
+  }
+  {
+    Resumed r(h, now - 60'000, {"5000"});
+    CHECK_FALSE(r.first_exact());
+    CHECK(r.oc.count(EventType::OrderFill) == 999);
+    const auto q = h.srv.frames("myTrades");
+    REQUIRE(q.size() >= 2);
+    CHECK(query_param(q[0], "startTime") == std::to_string(now - 60'000));
+    CHECK(query_param(q[1], "fromId") == "6000");
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a replay more than 24 hours back walks 24-hour windows") {
+  // myTrades takes a range of 24 hours at most. Spot clamped an older start to 24 hours ago, so a
+  // restart after a longer outage never asked for the trades before that (and said so: never
+  // exact). The history itself is kept.
+  Harness h;
+  constexpr std::int64_t kDay = 24LL * 3600 * 1000;
+  const std::int64_t since = wall_now().ns / 1'000'000 - 30LL * 3600 * 1000;
+  {
+    Resumed r(h, since, {});
+    CHECK(r.first_exact());
+    const auto q = h.srv.frames("myTrades");
+    REQUIRE(q.size() >= 2);
+    CHECK(query_param(q[0], "startTime") == std::to_string(since));
+    CHECK(query_param(q[0], "endTime") == std::to_string(since + kDay - 1));
+    CHECK(query_param(q[1], "startTime") == std::to_string(since + kDay));
+    CHECK(query_param(q[1], "endTime").empty());
+  }
   h.srv.stop();
 }
