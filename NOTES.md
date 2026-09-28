@@ -3,6 +3,12 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Binance Spot Demo, third run with the order lookup (2026-09-28, 47 min).** Same scenario after
+the unacknowledged-order work: 1850 orders (distinct ids), 137 trades each booked once by its
+strategy, 0 open, positions and BTC exact, unattributed 0 (`verify.py`: ALL CHECKS PASS). Three
+open-orders snapshots in the first 11 s failed with -1021 (timestamp 1 s ahead: the WSL host clock
+steps by up to 1 s every ~10 s); `ReconcileDriver`'s 5 s retry took the fourth.
+
 **Binance Spot Demo rerun after the fix (2026-09-28, 47 min).** Same scenario, the gateway down
 90 s after its kill -9 with orders resting. 4789 orders (all client ids distinct), 709 trades, all
 booked exactly once by the strategy whose epoch they carry, 0 open at the end, each store's
