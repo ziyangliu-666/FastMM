@@ -28,6 +28,56 @@ All three done (2026-09-28), entries below.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**A fill made while the gateway was down reaches its strategy (2026-09-28).** Binance Spot Demo
+run (`/home/rufus/fastmm-demo-run`, BTCUSDT shared, no primary): kill -9 of the gateway at
+12:10:27 with demo-a's buy `fm0005000001de` resting; it filled at 12:10:29.2 (venue time, trade
+311389073); demo-a's store never got it and the account showed `unattributed=0.0001998` to the end.
+Root cause: Binance's `myTrades` gives the venue's `orderId`, not the client order id; the
+connector names a replayed trade's order from its own orderId map, which a new gateway process
+starts empty (its start-up sweep learns only orders still open). The fill named no order: epoch 0,
+so on a shared instrument without a primary it was nobody's, and the epochs demo-a's attach sent
+(1, 3, 5) were never consulted; on an owned instrument it went to the owner naming no order
+(position right, the order's row left Live). It was booked at all because the account's "older
+than the gateway" start was host time and the trade time venue time (offset +1.27 s): the fill,
+0.8 s before the gateway started, counted as after it. Not the cause: the account's dedupe,
+demo-a's replay start (its last fill), the "order events for no attachment" (the sweep's cancels).
+Found on the way, same restart: (i) an owned instrument's account booked a fill another strategy's
+replay met first, then its first owner's seed overwrote the position and the dedupe kept the fill
+out for good (account short by it); (ii) `ReplayScheduler::resume()` from a second attach while
+the first's replay ran replaced that start and joined the running replay, so after a failed one
+the retry began at the later store's end and the earlier gap was never read (the demo's first two
+`myTrades` failed with -1021, the retry ran from demo-b's start); (iii) connectors published the
+clock offset their reference data measured only at their first timer tick after connecting.
+Fix: (a) the attach request (protocol 7) carries the store's orders open at their last record with
+their venue ids (`Recovery::past_orders`: newest first, at most 256, from the chain's last 64
+sessions); the gateway names a fill that names no order by them (per venue, instrument and venue
+order id) before routing it. (b) `VenueRouter::parked`: a fill no attached strategy receives
+(epoch nobody has claimed, strategy detached, no owner or primary attached, owned instrument not
+seeded yet) is kept, at most 4096 per venue (oldest dropped, both counted in the log line), and
+routed again at each attach once its routes, seeds and past orders are in; a replay's copy of one
+given that way is not given again (`Route::unparked`), and the strategy's OMS dedupe stays behind
+it. One booked for nobody and claimed later moves to the claimant's share by the existing retag.
+(c) An owned instrument's account books nothing before its first owner's store seeds it. (d) The
+"older than the gateway" start adds the venue's clock offset; every connector publishes the offset
+from its reference data. (e) `ReplayScheduler`: a restart while a replay runs goes on from the
+earliest start at the next tick, as the same replay (`finished` after it).
+Tests, each failing on the old code: `integration/gateway_restart_test.cpp` (kill -9 of the
+gateway with a's order resting, the order filled while nothing runs, a new gateway up and swept,
+then the strategies one after the other): shared with a first; shared with b first and the venue
+3 s ahead (the demo's timing); owned with a first; owned with b first, venue 3 s ahead. Each: a's
+store holds the fill once naming its order, no other store has it, stores = venue, the gateway's
+position = venue with unattributed and unexplained 0, logged shares = stores. Old code: shared, a
+never booked it (account short, or 0.002 unattributed with the skew); owned a first, booked naming
+no order; owned b first, the account short by it. `replay_scheduler_test` "a restart while a
+replay runs goes on from its start, as one replay" fails on the old scheduler. gateway_*, recovery_*,
+xmm_* (65) green 3 times; full ctest (werror) 1350 passed; clang-tidy-18: no bugprone or performance
+finding in the changed files.
+Left: an order the venue never acknowledged before the kill has no venue id in the store, so its
+fill stays ownerless (asking the venue for an unknown orderId would name it); a fill booked for
+nobody that a store also holds (a clock error beyond the offset) counts twice; the retag path (a
+streamed fill of an unclaimed epoch between a new gateway's connect and its sweep) has no test; an
+instrument no strategy ever owns has its executions kept, not booked.
+
 **Replay queries bounded: a query never answered fails after 30 s (2026-09-28).** Left by step 3.
 What hung: `ReplayScheduler` had no deadline and `ReconcileDriver` none while it waits for the
 replay (its 60 s bound covers the snapshot fetch only). A Deribit trade-history query lost on a
@@ -252,7 +302,8 @@ claiming an instrument a live attachment traded was refused (asserted by `gatewa
 order goes to that session's strategy by `[engine] name`: the gateway keeps the epochs it gave
 each name, and the attach request (protocol 6) carries the store's session epochs
 (`Recovery::session_epochs`, last 64), so a restart after kill -9 or after a gateway restart gets
-its own. Events naming no order (liquidation/ADL, orders placed elsewhere, funding) go to the
+its own (after a gateway restart it did not on Binance, whose replay names no order: see "A fill
+made while the gateway was down" above). Events naming no order (liquidation/ADL, orders placed elsewhere, funding) go to the
 primary, else the account alone. The venue's position records go to no strategy: the engine sets
 its position from them, and on a shared instrument they are the account's. One attachment per
 `[engine] name` (a name is a store and a share).
@@ -290,8 +341,9 @@ engine/wire 36.9/70.3 µs for base (6 runs), this (6) and this with BTCUSDT shar
 each of base and this at 66.4 wire; wire p99 105-121 (base), 109-133 (this), 105-109 (shared).
 Left: no real venue; the venue's position is compared only where the connector reports one (not
 spot: there the account is its seeds plus the fills); after a gateway restart a strategy that has
-not reattached leaves its old sessions' fills unattributed until it does. `fastmm-ctl --gateway
-pull --instrument` on a shared instrument reaches every strategy trading it.
+not reattached leaves its old sessions' fills unattributed until it does (wrong as written: they
+were never re-assigned, and a Binance Demo run lost one; fixed, see "A fill made while the gateway
+was down" above). `fastmm-ctl --gateway pull --instrument` on a shared instrument reaches every strategy trading it.
 
 **Every connector on production public data (2026-09-28).** `fastmm-live --dry-run --record-raw`,
 6 connectors in parallel, 15 min each, load 1 to 6, before (r1) and after (r2) the fixes. Configs
