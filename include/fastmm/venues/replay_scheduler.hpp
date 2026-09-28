@@ -27,6 +27,9 @@
 //   * after an incomplete replay, again kRetryNs after it ended; while all is well, every
 //     sweep_ns; due_in(): once, a moment after a stream event (funding). A replay that starts
 //     serves them all.
+//   * a query not answered within kQueryTimeoutNs has failed (the housekeeping timer checks):
+//     the replay ends incomplete, so a reconciliation waiting for it goes ahead without
+//     kExecutionsExact, and the retry follows. A late answer is not this replay's any more.
 //   * close() (disconnect) and abort() (the transport the queries went out on is gone) move the
 //     generation on: a reply to an earlier query is ignored. After close() nothing runs until
 //     open(); after abort() the retry follows.
@@ -91,6 +94,10 @@ struct ReplayPage {
 class ReplaySchedulerBase {
  public:
   static constexpr std::int64_t kRetryNs = 5'000'000'000;
+  // A query the venue has not answered in this long has failed. Above the REST channel's own
+  // timeout (http_timeout_ms, 5 s by default), which fails a REST query first; what it bounds is
+  // a query on a WebSocket that stays up (Deribit), where nothing else does.
+  static constexpr std::int64_t kQueryTimeoutNs = 30'000'000'000;
   // An open-ended window this close to window_ms gets an end: the venue's clock is not ours.
   static constexpr std::int64_t kClockSlackMs = 60'000;
 
@@ -115,7 +122,7 @@ class ReplaySchedulerBase {
   bool run();
   // A replay delay_ns from now (unless one is due sooner).
   void due_in(std::int64_t delay_ns);
-  // The housekeeping timer: retry, due, sweep.
+  // The housekeeping timer: queries past kQueryTimeoutNs, retry, due, sweep.
   void on_timer(std::int64_t now_ns);
   // The query failed (transport, status, unreadable reply).
   void failed(const ReplayQuery& q);
@@ -140,6 +147,8 @@ class ReplaySchedulerBase {
   [[nodiscard]] bool active() const noexcept { return active_; }
   [[nodiscard]] bool retry_pending() const noexcept { return retry_at_ns_ != 0; }
   [[nodiscard]] std::uint64_t replays() const noexcept { return replays_; }
+  // Queries that got no answer within kQueryTimeoutNs.
+  [[nodiscard]] std::uint64_t timeouts() const noexcept { return timeouts_; }
   [[nodiscard]] std::int64_t since_ms(std::size_t stream) const noexcept;
   [[nodiscard]] std::int64_t from_id(std::size_t stream) const noexcept;
   [[nodiscard]] const ReplayLimits& limits() const noexcept { return limits_; }
@@ -169,6 +178,7 @@ class ReplaySchedulerBase {
     bool awaiting = false;       // a query is out
     std::int64_t cursor_ms = 0;  // the next window's start
     ReplayQuery q;               // the query out (or last sent)
+    std::int64_t sent_ns = 0;    // when it went out
     std::size_t pages = 0;
     std::size_t window_pages = 0;
     std::int64_t low_ms = 0;  // oldest row of the window so far (newest_first)
@@ -181,6 +191,7 @@ class ReplaySchedulerBase {
   void close_window(std::size_t i, bool more);
   void commit(Stream& s, std::int64_t read_to) const;
   void stream_done(std::size_t i, bool ok);
+  void expire(std::int64_t now_ns);
   void finish();
   void reset_streams() noexcept;
 
@@ -201,6 +212,7 @@ class ReplaySchedulerBase {
   std::int64_t retry_at_ns_ = 0;    // 0: none
   std::int64_t due_at_ns_ = 0;      // 0: none
   std::uint64_t replays_ = 0;
+  std::uint64_t timeouts_ = 0;
   std::size_t emitted_ = 0;
 };
 

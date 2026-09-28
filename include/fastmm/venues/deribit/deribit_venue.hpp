@@ -91,9 +91,11 @@ inline constexpr std::int64_t kIdTest = 4;
 inline constexpr std::int64_t kIdCancelOnDisconnect = 5;
 inline constexpr std::int64_t kIdPrivateSubscribe = 6;
 inline constexpr std::int64_t kIdReauth = 7;
-inline constexpr std::int64_t kIdOpenOrdersBase = 100;   // + currency index
-inline constexpr std::int64_t kIdPositionsBase = 200;    // + currency index
-inline constexpr std::int64_t kIdExecutionsBase = 1000;  // + currency index
+inline constexpr std::int64_t kIdOpenOrdersBase = 100;  // + currency index
+inline constexpr std::int64_t kIdPositionsBase = 200;   // + currency index
+// + currency index + currencies * the query's number: a reply names the query it answers, so a
+// late one (ReplayScheduler::kQueryTimeoutNs) is not taken for the one asked after it.
+inline constexpr std::int64_t kIdExecutionsBase = 1000;
 
 class DeribitVenue final : public Venue, private ReconcileHooks {
  public:
@@ -178,7 +180,7 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   // paged; a row forwarded as a replayed fill.
   [[nodiscard]] bool replay_ready() const noexcept;
   bool send_executions_query(const ReplayQuery& q);
-  void handle_executions_response(std::size_t currency_index, std::string_view json, bool error);
+  void handle_executions_response(std::string_view json, const RpcHeader& rpc);
   bool emit_execution(const UserTradeRecord& t);
   [[nodiscard]] std::int64_t venue_now_ms() const noexcept;
   void drain_outbound();
@@ -245,10 +247,12 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   std::array<Qty, kMaxInstruments> snapshot_qty_{};
   std::array<Price, kMaxInstruments> snapshot_avg_{};
 
-  // Execution replay, one stream per configured currency, and the query each has out (the reply
-  // names the currency by its request id only).
+  // Execution replay, one stream per configured currency, the query each has out and its request
+  // id (the reply names the query by its id only).
   ReplayScheduler<UserTradeRecord> exec_replay_;
   std::vector<ReplayQuery> exec_queries_;
+  std::vector<std::int64_t> exec_query_ids_;
+  std::int64_t exec_query_seq_ = 0;
   SentWatermark sent_;
   ReconcileDriver reconcile_{*this, sent_};
   BatchedOrders batch_;  // orders written into the corked private connection

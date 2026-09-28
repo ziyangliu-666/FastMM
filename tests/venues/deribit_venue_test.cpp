@@ -16,6 +16,7 @@
 
 #include "fake_venue_util.hpp"
 
+#include "fastmm/core/engine.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/time.hpp"
@@ -169,6 +170,14 @@ struct Harness {
   std::string positions_reply = "[]";  // get_positions result array
   std::atomic<int> positions_requests{0};
   std::atomic<int> open_orders_failures{0};  // get_open_orders_by_currency answers an error
+  // get_user_trades_by_currency_and_time is not answered; its request ids are kept here.
+  std::atomic<bool> hold_trades{false};
+  std::vector<std::string> held_ids;
+
+  std::vector<std::string> held() {
+    const std::lock_guard lock(mu);
+    return held_ids;
+  }
 
   void set_trades(std::function<std::string(std::int64_t, bool)> f) {
     const std::lock_guard lock(mu);
@@ -284,6 +293,10 @@ struct Harness {
         {
           const std::lock_guard lock(mu);
           trades_queries.push_back(q);
+          if (hold_trades.load()) {
+            held_ids.push_back(id);
+            return;
+          }
           if (trades_reply) result = trades_reply(q.start, q.historical);
         }
         s.send_text(result.empty() ? rpc_error(id, 10028, "too_many_requests")
@@ -958,6 +971,101 @@ TEST_CASE("deribit.venue: a replay reaching back past 24 h asks the history firs
   CHECK(q[1].start == q[0].end + 1);
   // T1 was booked by the session resumed from.
   CHECK(s.replayed_ids() == std::vector<std::string>{"T2", "T3"});
+}
+
+namespace {
+
+// The engine side of EngineConfig::await_reconcile: no order and no quote until the venue's first
+// reconciliation has ended.
+struct NullTransport {
+  bool send(const EventHeader&) noexcept { return true; }
+  std::size_t send(std::span<const EventHeader* const> batch) noexcept { return batch.size(); }
+  bool supports_replace(VenueId) const noexcept { return false; }
+};
+struct NoStrategy {};
+using GateEngine = Engine<NoStrategy, SimClock, NullTransport, InlineFeed>;
+
+struct Gate {
+  InlineFeed feed{1U << 20};
+  InstrumentTable instruments = make_instruments();
+  SimClock clock{Timestamp{1'000'000'000}};
+  std::unique_ptr<GateEngine> engine;
+  NullTransport transport;
+  NoStrategy strategy;
+
+  Gate() {
+    EngineConfig cfg;
+    cfg.await_reconcile = 1U << kVenue.value;
+    engine = std::make_unique<GateEngine>(cfg, instruments, clock, transport, feed, strategy);
+    engine->start();
+  }
+  // The connector's reconciliation messages, as the engine reads them from the order ring.
+  void feed_reconcile(const Collected& c) {
+    for (const auto& m : c.all) {
+      if (RecordingSink::type_of(m) == EventType::Reconcile)
+        REQUIRE(feed.push(RecordingSink::as<ReconcileMsg>(m).hdr));
+    }
+    static_cast<void>(engine->drain());
+  }
+};
+
+}  // namespace
+
+TEST_CASE("deribit.venue: a trade-history query never answered ends the replay incomplete") {
+  // The query goes out on the private WebSocket, which stays up. Before, the replay waited for
+  // its answer until the connection dropped, the snapshot waited for the replay, and after a
+  // restart the engine (await_reconcile) sent no order for as long.
+  ReplaySession s;
+  s.h.hold_trades = true;
+  const std::size_t ends = s.count_kind(ReconcileMsg::Kind::End);
+  s.venue->request_open_orders();
+  REQUIRE(pump_until(s.reactor, [&] { return s.h.held().size() == 1; }));
+  static_cast<void>(pump_until(s.reactor, [] { return false; }, 300));
+  s.oc.take(s.orders);
+  CHECK(s.count_kind(ReconcileMsg::Kind::Begin) == 0);
+  CHECK(s.h.open_orders_requests.load() == 0);  // the snapshot waits for the replay
+
+  // The housekeeping timer past the query's deadline: the replay is incomplete and the snapshot
+  // goes ahead without kExecutionsExact.
+  s.venue->on_timer(net::Reactor::now_ns() + ReplaySchedulerBase::kQueryTimeoutNs + 1'000'000);
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    return s.count_kind(ReconcileMsg::Kind::End) == ends + 1;
+  }));
+  const auto* begin = s.oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+    return m.kind == ReconcileMsg::Kind::Begin;
+  });
+  REQUIRE(begin != nullptr);
+  CHECK((begin->flags & ReconcileMsg::kExecutionsExact) == 0);
+  CHECK(s.h.open_orders_requests.load() == 1);
+
+  // The engine's gate opens, the reconciliation counted as estimated.
+  Gate g;
+  CHECK(g.engine->awaiting_reconcile() == 1U << kVenue.value);
+  g.feed_reconcile(s.oc);
+  CHECK(g.engine->awaiting_reconcile() == 0);
+  CHECK_FALSE(g.engine->reconciling());
+  CHECK(g.engine->stats().estimated_reconciles == 1);
+  CHECK(g.engine->stats().exact_reconciles == 0);
+
+  // The replay is asked again kRetryNs later. The first query's answer, arriving now, is not the
+  // retry's: only the retry's own answer is booked.
+  REQUIRE(pump_until(s.reactor, [&] { return s.h.held().size() == 2; }, 9000));
+  const std::vector<std::string> held = s.h.held();
+  const std::int64_t ts = wall_now().ns / 1'000'000;
+  s.h.srv.send_to(
+      kPrivatePath,
+      rpc_ok(held[0], trades_page({trade_row("T1", ts, "0.0055", "1.0", "0.0003")}, false)));
+  s.h.srv.send_to(
+      kPrivatePath,
+      rpc_ok(held[1], trades_page({trade_row("T2", ts, "0.0056", "1.0", "0.0003")}, false)));
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    return !s.replayed_ids().empty();
+  }));
+  CHECK(s.replayed_ids() == std::vector<std::string>{"T2"});
+  CHECK(held[0] != held[1]);
+  CHECK(s.count_kind(ReconcileMsg::Kind::Begin) == 1);  // the retry is not a reconciliation
 }
 
 // ---- the snapshot (ReconcileDriver) -----------------------------------------------------------

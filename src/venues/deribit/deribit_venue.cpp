@@ -148,6 +148,7 @@ DeribitVenue::DeribitVenue(VenueId id, DeribitVenueConfig cfg)
                      [this](std::size_t, const UserTradeRecord& t) { return emit_execution(t); });
   exec_replay_.set_streams(cfg_.currencies.size());
   exec_queries_.resize(cfg_.currencies.size());
+  exec_query_ids_.resize(cfg_.currencies.size());
 }
 
 DeribitVenue::~DeribitVenue() {
@@ -679,17 +680,8 @@ void DeribitVenue::on_private_text(std::string_view t, std::int64_t ts) {
         handle_positions_response(t, r.rpc.is_error);
         return;
       }
-      if (id >= kIdExecutionsBase &&
-          id < kIdExecutionsBase + static_cast<std::int64_t>(cfg_.currencies.size())) {
-        if (r.rpc.is_error)
-          FASTMM_LOG_ERROR(
-              "{}: get_user_trades_by_currency_and_time failed: {} {}; this reconciliation "
-              "cannot book the fills the private stream missed",
-              cfg_.name,
-              r.rpc.error_code,
-              r.rpc.error_message);
-        handle_executions_response(
-            static_cast<std::size_t>(id - kIdExecutionsBase), t, r.rpc.is_error);
+      if (id >= kIdExecutionsBase && !cfg_.currencies.empty()) {
+        handle_executions_response(t, r.rpc);
         return;
       }
       handle_control_response(r);
@@ -1251,28 +1243,41 @@ bool DeribitVenue::send_executions_query(const ReplayQuery& q) {
   if (q.stream >= cfg_.currencies.size() || !private_conn_.is_live() || access_token_.empty())
     return false;
   exec_queries_[q.stream] = q;
+  const std::int64_t id = kIdExecutionsBase + static_cast<std::int64_t>(q.stream) +
+                          static_cast<std::int64_t>(cfg_.currencies.size()) * exec_query_seq_++;
+  exec_query_ids_[q.stream] = id;
   // Never ask before the venue's epoch; a start of 0 would ask for the account's whole history.
   const std::int64_t start_ms = std::max<std::int64_t>(q.start_ms, 1);
   const std::int64_t end_ms = q.end_ms != 0 ? q.end_ms : q.now_ms + kSettleMs;
-  const std::size_t n = DeribitOrderEncoder::encode_user_trades(
-      kIdExecutionsBase + static_cast<std::int64_t>(q.stream),
-      cfg_.currencies[q.stream],
-      start_ms,
-      end_ms,
-      kUserTradesCount,
-      q.history,
-      access_token_,
-      request_buf_);
+  const std::size_t n = DeribitOrderEncoder::encode_user_trades(id,
+                                                                cfg_.currencies[q.stream],
+                                                                start_ms,
+                                                                end_ms,
+                                                                kUserTradesCount,
+                                                                q.history,
+                                                                access_token_,
+                                                                request_buf_);
   if (n > 0 && private_conn_.send_text(std::string_view(request_buf_, n))) return true;
   ++stats_.execution_query_errors;
   FASTMM_LOG_ERROR("{}: could not ask for the {} executions", cfg_.name, cfg_.currencies[q.stream]);
   return false;
 }
 
-void DeribitVenue::handle_executions_response(std::size_t i, std::string_view json, bool error) {
-  if (i >= exec_queries_.size() || !exec_replay_.expects(exec_queries_[i])) return;
+void DeribitVenue::handle_executions_response(std::string_view json, const RpcHeader& rpc) {
+  const auto i = static_cast<std::size_t>((rpc.id - kIdExecutionsBase) %
+                                          static_cast<std::int64_t>(cfg_.currencies.size()));
+  // A reply to a query the replay gave up on, or to one of an earlier replay: nobody's.
+  if (i >= exec_queries_.size() || exec_query_ids_[i] != rpc.id ||
+      !exec_replay_.expects(exec_queries_[i]))
+    return;
   const ReplayQuery q = exec_queries_[i];
-  if (error) {
+  if (rpc.is_error) {
+    FASTMM_LOG_ERROR(
+        "{}: get_user_trades_by_currency_and_time failed: {} {}; this reconciliation cannot book "
+        "the fills the private stream missed",
+        cfg_.name,
+        rpc.error_code,
+        rpc.error_message);
     ++stats_.execution_query_errors;
     exec_replay_.failed(q);
     return;
