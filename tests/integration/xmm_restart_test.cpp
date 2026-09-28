@@ -291,7 +291,7 @@ void one_more_round(ServerFixture& qv, ServerFixture& hv, std::uint16_t epoch) {
 // reply and the execution report (ack delay), so the process has not heard anything about the
 // hedge when it is killed. The restarted process restores the quote position from the store,
 // replays the hedge venue's executions, finds the hedge done and sends no second one.
-TEST_CASE("xmm restart: SIGKILL between the hedge going out and its ack; no second hedge") {
+TEST_CASE("xmm restart: SIGKILL between the hedge going out and its ack, no second hedge") {
   ServerFixture qv(quiet(7));
   ServerFixture hv(quiet(11));
   const SessionFiles f = session_files("xmm-crash-hedge");

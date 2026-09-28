@@ -376,7 +376,7 @@ TEST_CASE("strategies.xmm: a maker fill sends one hedge, which blocks the next u
 // After a restart the engine's positions are the store's plus what the execution replay has booked
 // so far, venue by venue: a quote fill replayed before the hedge venue's replay books the hedge
 // that covered it must not be hedged again. Nothing goes out until the reconciliation ends.
-TEST_CASE("strategies.xmm: no hedge while a venue reconciles; the positions after it decide") {
+TEST_CASE("strategies.xmm: no hedge while a venue reconciles, the positions after it decide") {
   Xmm s = make();
   Ctx c;
   c.reconciling_now = true;
