@@ -27,7 +27,6 @@ constexpr std::int64_t kListenKeyRetryNs = 5 * kSecNs;
 constexpr std::int64_t kClockResyncNs = 30LL * 60 * kSecNs;
 constexpr std::int64_t kHousekeepingNs = kSecNs;
 constexpr std::int64_t kDefaultCooldownNs = 10 * kSecNs;
-constexpr std::int64_t kReconcileRetryNs = 5 * kSecNs;
 constexpr std::int64_t kExecutionRetryNs = 5 * kSecNs;  // between retries of a failed replay
 constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
 constexpr std::int64_t kFundingQueryDelayNs = 1'000'000'000;  // after a user-stream funding event
@@ -350,6 +349,7 @@ void BinanceUsdmVenue::attach(const SymbolTable& symbols,
   user_parser_ = std::make_unique<BinanceUsdmUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceUsdmOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<binance::BinanceWsApiDecoder>();
+  reconcile_.attach(cfg_.name, id_, order_sink_);
 }
 
 void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -374,6 +374,7 @@ void BinanceUsdmVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("BinanceUsdmVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Where the execution replay starts unless resume_executions() said otherwise: this session can
   // only have missed what happened after it connected.
   if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
@@ -413,6 +414,7 @@ void BinanceUsdmVenue::disconnect() {
   if (dms_.enabled() && !cfg_.dry_run) stop_countdown_blocking();
   dms_.disarm();
   connected_ = false;
+  reconcile_.close();  // before the reset below: nothing it aborts asks again
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -427,10 +429,7 @@ void BinanceUsdmVenue::disconnect() {
   exec_pending_ = 0;
   funding_active_ = false;
   funding_due_ns_ = 0;
-  oo_wanted_ = false;
   if (rest_) rest_->reset();
-  reconcile_.in_flight = false;
-  ++reconcile_.generation;
   listen_key_pending_ = false;
   time_request_pending_ = false;
   md_feed_->on_disconnected();
@@ -626,8 +625,15 @@ void BinanceUsdmVenue::on_user_state(net::ConnState s) {
   if (mapped == ConnState::Live) {
     if (prev == ConnState::Stale) return;  // a quiet stream coming back is not news
     report_channel_state(Channel::User, ConnState::Live);
-    // Open orders and positions may have changed while the stream was down (or before start).
-    request_open_orders();
+    // Open orders and positions may have changed while the stream was down. On the first connect,
+    // the start-up sweep: orders a session that died left resting, which the engine cancels, and
+    // nothing about this session's own (one sent before the stream was up may be in flight).
+    if (user_was_live_) {
+      reconcile_.request();
+    } else {
+      reconcile_.sweep();
+    }
+    user_was_live_ = true;
   } else if (mapped == ConnState::Disconnected && prev != ConnState::Connecting) {
     report_channel_state(Channel::User, ConnState::Disconnected);
   }
@@ -741,7 +747,7 @@ void BinanceUsdmVenue::on_account_position(const PositionUpdateMsg& m) {
 }
 
 void BinanceUsdmVenue::check_positions(std::int64_t now) {
-  if (order_sink_ == nullptr || reconcile_.in_flight) return;
+  if (order_sink_ == nullptr || reconcile_.busy()) return;
   const std::int64_t settle_ns = cfg_.position_settle_ms * kNsPerMs;
   for (InstrumentId id : subscribed_) {
     PositionCheck& p = positions_[id.value];
@@ -1265,74 +1271,58 @@ void BinanceUsdmVenue::report_channel_state(Channel ch, ConnState state, std::in
 // ---- reconciliation -------------------------------------------------------------------------
 
 void BinanceUsdmVenue::request_open_orders() {
-  if (cfg_.dry_run || !connected_ || !signer_.usable() || rest_ == nullptr || rest_hard_stopped_)
-    return;
-  if (reconcile_.in_flight) {
-    reconcile_.again = true;
-    return;
-  }
-  // The executions first (request_executions), then the snapshot. Latched before the replay
-  // starts: a replay whose queries cannot be issued at all finishes inside request_executions(),
-  // and the snapshot it releases must already be asked for. A request during a replay is served by
-  // the snapshot that replay releases.
-  oo_wanted_ = true;
-  if (exec_replay_active_ || request_executions()) return;
-  oo_wanted_ = false;
-  exec_snapshot_exact_ = false;
-  send_open_orders();
+  reconcile_.request();
 }
 
-void BinanceUsdmVenue::send_open_orders() {
-  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return;
+// The executions first (request_executions), then the snapshot (ReconcileDriver).
+bool BinanceUsdmVenue::replay_executions() {
+  return request_executions();
+}
+
+bool BinanceUsdmVenue::fetch_snapshot(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest oo;
   RestRequest pr;
   if (!encoder_->encode_rest_open_orders({}, venue_time_ms(), oo) ||
       !encoder_->encode_rest_position_risk({}, venue_time_ms(), pr))
-    return;
-  const std::uint64_t gen = ++reconcile_.generation;
-  reconcile_.in_flight = true;
-  reconcile_.again = false;
-  reconcile_.replies = 0;
-  reconcile_.failed = false;
-  reconcile_.watermark = sent_.value(now_ns());
-  reconcile_.orders_body.clear();
-  reconcile_.positions_body.clear();
+    return false;
+  snapshot_replies_ = 0;
+  snapshot_failed_ = false;
+  orders_body_.clear();
+  positions_body_.clear();
   std::weak_ptr<int> alive = alive_;
   const std::string headers = api_headers();
   const bool q1 = rest_->request("GET",
                                  std::string(oo.path) + "?" + std::string(oo.query.view()),
                                  headers,
                                  {},
-                                 [this, alive, gen](const net::HttpResponse& r) {
-                                   if (!alive.expired()) on_reconcile_reply(gen, true, r);
+                                 [this, alive, generation](const net::HttpResponse& r) {
+                                   if (!alive.expired()) on_reconcile_reply(generation, true, r);
                                  });
-  const bool q2 = rest_->request("GET",
-                                 std::string(pr.path) + "?" + std::string(pr.query.view()),
-                                 headers,
-                                 {},
-                                 [this, alive, gen](const net::HttpResponse& r) {
-                                   if (!alive.expired()) on_reconcile_reply(gen, false, r);
-                                 });
-  if (!q1 || !q2) {
-    // A queued request's reply is ignored once the generation moves on.
-    reconcile_.in_flight = false;
-    ++reconcile_.generation;
-    reconcile_retry_ns_ = now_ns() + kReconcileRetryNs;
-    return;
-  }
-  rate_.on_sent(oo.weight + pr.weight, now_ns());
+  const bool q2 = q1 && rest_->request("GET",
+                                       std::string(pr.path) + "?" + std::string(pr.query.view()),
+                                       headers,
+                                       {},
+                                       [this, alive, generation](const net::HttpResponse& r) {
+                                         if (!alive.expired())
+                                           on_reconcile_reply(generation, false, r);
+                                       });
+  if (q1) rate_.on_sent(oo.weight, now_ns());
+  if (q2) rate_.on_sent(pr.weight, now_ns());
+  // A queued request's reply is ignored once the driver's generation moves on.
+  return q1 && q2;
 }
 
 void BinanceUsdmVenue::on_reconcile_reply(std::uint64_t generation,
                                           bool orders,
                                           const net::HttpResponse& r) {
-  if (generation != reconcile_.generation || !reconcile_.in_flight) return;
+  if (!reconcile_.current(generation)) return;
   ++stats_.rest_requests;
   note_rate_headers(r);
-  ++reconcile_.replies;
+  ++snapshot_replies_;
   if (!r.ok()) {
     ++stats_.rest_errors;
-    reconcile_.failed = true;
+    snapshot_failed_ = true;
     int code = 0;
     std::string msg;
     if (r.error == net::NetError::None && binance::decode_rest_error(r.body, code, msg)) {
@@ -1346,40 +1336,29 @@ void BinanceUsdmVenue::on_reconcile_reply(std::uint64_t generation,
                     net::to_string(r.error),
                     r.body.substr(0, 120));
   } else if (orders) {
-    reconcile_.orders_body = r.body;
+    orders_body_ = r.body;
   } else {
-    reconcile_.positions_body = r.body;
+    positions_body_ = r.body;
   }
-  if (reconcile_.replies < 2) return;
-  reconcile_.in_flight = false;
-  if (reconcile_.failed) {
-    reconcile_retry_ns_ = now_ns() + kReconcileRetryNs;
-    return;
-  }
-  emit_reconcile();
-  if (reconcile_.again) request_open_orders();
+  if (snapshot_replies_ < 2) return;
+  reconcile_.fetched(generation, !snapshot_failed_ && snapshot_rows());
 }
 
-// Decodes the whole open-order snapshot before anything reaches the engine: Oms::reconcile_end()
-// cancels every order the snapshot does not name, so a reply that did not parse must not be
-// emitted as an empty snapshot.
-void BinanceUsdmVenue::emit_reconcile() {
+// Decodes the whole snapshot before anything reaches the engine: Oms::reconcile_end() cancels
+// every order the snapshot does not name, so a reply that did not parse must not be emitted as an
+// empty snapshot.
+bool BinanceUsdmVenue::snapshot_rows() {
   std::vector<PositionRecord> records;
-  if (const std::string err = decode_position_risk(reconcile_.positions_body, records);
-      !err.empty()) {
-    FASTMM_LOG_WARN("{}: {}; reconciliation retried", cfg_.name, err);
-    reconcile_retry_ns_ = now_ns() + kReconcileRetryNs;
-    return;
+  if (const std::string err = decode_position_risk(positions_body_, records); !err.empty()) {
+    FASTMM_LOG_WARN("{}: {}", cfg_.name, err);
+    return false;
   }
-  reconcile_records_.clear();
-  const PaddedJson padded(reconcile_.orders_body);
+  const PaddedJson padded(orders_body_);
   const ParseStatus st = ws_api_decoder_->decode_open_orders(
       padded.view(), /*rest_array=*/true, [&](const binance::OpenOrderRecord& o) {
         const InstrumentId inst = instrument_of(o.symbol);
         if (!inst.valid()) return;  // another symbol on this account
-        ReconcileMsg m{};
-        init_header(m, EventType::Reconcile, inst, id_);
-        m.kind = ReconcileMsg::Kind::OpenOrder;
+        ReconcileMsg& m = reconcile_.add_order(inst);
         m.side = o.side == "SELL" ? Side::Sell : Side::Buy;
         m.state = o.status == "PARTIALLY_FILLED" ? OrderState::PartiallyFilled : OrderState::Live;
         Qty base{};
@@ -1392,32 +1371,16 @@ void BinanceUsdmVenue::emit_reconcile() {
         if (const auto p = parse_price(o.price)) m.price = *p;
         if (const auto q = parse_qty(o.orig_qty)) m.orig_qty = non_negative(*q - base);
         if (const auto q = parse_qty(o.executed_qty)) m.cum_qty = non_negative(*q - base);
-        m.hdr.recv_ts = wall_now();
-        reconcile_records_.push_back(m);
       });
   if (st != ParseStatus::Ok) {
-    FASTMM_LOG_WARN("{}: open orders reply could not be parsed; reconciliation retried", cfg_.name);
-    reconcile_records_.clear();
-    reconcile_retry_ns_ = now_ns() + kReconcileRetryNs;
-    return;
+    FASTMM_LOG_WARN("{}: open orders reply could not be parsed", cfg_.name);
+    return false;
   }
-  ReconcileMsg begin{};
-  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
-  begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, reconcile_.watermark);
-  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
-  exec_snapshot_exact_ = false;
-  begin.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(begin.hdr));
-  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
-  const std::size_t count = reconcile_records_.size();
-  reconcile_records_.clear();
   std::string summary;
   for (InstrumentId id : subscribed_) {
     const std::string_view sym = symbols_->venue_symbol(id);
-    ReconcileMsg m{};
-    init_header(m, EventType::Reconcile, id, id_);
-    m.kind = ReconcileMsg::Kind::Position;
+    Qty qty{};
+    Price avg{};
     // positionRisk v3 lists only symbols with a position or open orders: absent means flat.
     for (const PositionRecord& p : records) {
       if (!iequals_symbol(p.symbol, sym)) continue;
@@ -1430,25 +1393,27 @@ void BinanceUsdmVenue::emit_reconcile() {
                            p.qty);
         continue;
       }
-      m.position_qty = p.qty;
-      m.avg_px = p.entry_price;
+      qty = p.qty;
+      avg = p.entry_price;
     }
-    m.hdr.recv_ts = wall_now();
-    static_cast<void>(order_sink_->push(m.hdr));
+    reconcile_.add_position(id, qty, avg);
     PositionCheck& pc = positions_[id.value];
-    pc.tracked = m.position_qty;
-    pc.venue = m.position_qty;
-    pc.venue_avg = m.avg_px;
+    pc.tracked = qty;
+    pc.venue = qty;
+    pc.venue_avg = avg;
     pc.pending = false;
-    summary += fmt::format(" {}={}", sym, DecimalText(m.position_qty).view());
+    summary += fmt::format(" {}={}", sym, DecimalText(qty).view());
   }
-  ReconcileMsg end{};
-  init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
-  end.kind = ReconcileMsg::Kind::End;
-  end.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(end.hdr));
-  stats_.order_events += count + subscribed_.size() + 2;
-  FASTMM_LOG_INFO("{}: reconciled {} open orders, positions{}", cfg_.name, count, summary);
+  FASTMM_LOG_INFO("{}: positions{}", cfg_.name, summary);
+  return true;
+}
+
+void BinanceUsdmVenue::shadow_ids(std::vector<ClientOrderId>& out) {
+  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+}
+
+void BinanceUsdmVenue::drop_shadow(ClientOrderId id) {
+  forget_order(id);
 }
 
 // ---- execution replay -------------------------------------------------------------------------
@@ -1651,15 +1616,8 @@ void BinanceUsdmVenue::finish_execution_replay(bool ok) {
   if (exec_pending_ > 0) --exec_pending_;
   if (exec_pending_ > 0) return;
   exec_replay_active_ = false;
-  exec_snapshot_exact_ = exec_replay_ok_;
   if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  if (!oo_wanted_) return;
-  oo_wanted_ = false;
-  if (reconcile_.in_flight) {
-    reconcile_.again = true;
-    return;
-  }
-  send_open_orders();
+  reconcile_.replay_done(exec_replay_ok_);
 }
 
 // ---- funding ----------------------------------------------------------------------------------
@@ -2022,10 +1980,7 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
     } else if (now - listen_key_refresh_ns_ >= kListenKeyKeepaliveNs) {
       keepalive_listen_key();
     }
-    if (reconcile_retry_ns_ != 0 && now >= reconcile_retry_ns_) {
-      reconcile_retry_ns_ = 0;
-      request_open_orders();
-    }
+    reconcile_.on_timer(now);
     // A replay that could not be completed left fills unaccounted for, and the next reconnect may
     // be hours away. Ask again until the venue answers, keeping the watermark where it was; the
     // snapshot is not repeated, only the executions.
@@ -2088,6 +2043,7 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
 }
 
 void BinanceUsdmVenue::publish_status() noexcept {
+  stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

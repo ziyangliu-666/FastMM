@@ -327,6 +327,7 @@ void BybitVenue::attach(const SymbolTable& symbols,
   encoder_ =
       std::make_unique<BybitOrderEncoder>(signer_, symbols, cfg_.recv_window_ms, cfg_.category);
   decoder_ = std::make_unique<BybitResponseDecoder>();
+  reconcile_.attach(cfg_.name, id_, order_sink_);
 }
 
 void BybitVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -354,6 +355,7 @@ void BybitVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("BybitVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Nobody said where the execution replay should start, so it starts here: this session can only
   // have missed what happened after it connected.
   if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
@@ -388,6 +390,7 @@ void BybitVenue::connect(net::Reactor& reactor) {
 void BybitVenue::disconnect() {
   if (!connected_) return;
   connected_ = false;
+  reconcile_.close();  // before the reset below: nothing it aborts asks again
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -529,10 +532,9 @@ void BybitVenue::on_private_state(net::ConnState s) {
     // is off unless the account has it): their ids belong to an earlier epoch, so the engine
     // cancels them. The replay before the snapshot also books what happened while nothing ran.
     if (private_was_live_ && prev != ConnState::Stale) {
-      request_open_orders();
+      reconcile_.request();
     } else if (!private_was_live_) {
-      sweep_next_ = true;
-      request_open_orders();
+      reconcile_.sweep();
     }
     private_was_live_ = true;
   } else if ((mapped == ConnState::Disconnected || mapped == ConnState::Connecting) &&
@@ -1138,61 +1140,42 @@ void BybitVenue::apply_action(VenueAction action,
   }
 }
 
-// ---- control requests -----------------------------------------------------------------------
+// ---- reconciliation ---------------------------------------------------------------------------
 
-// One reconciliation at a time: the account's executions are replayed first (request_executions),
-// then the open-order snapshot is read. A request while the replay runs is served by its end.
+// The account's executions are replayed first (request_executions), then the open-order snapshot
+// is read (ReconcileDriver).
 void BybitVenue::request_open_orders() {
-  if (cfg_.dry_run || !connected_ || !signer_.usable() || reconcile_in_flight_) return;
-  oo_wanted_ = true;
-  if (exec_replay_active_) return;
-  // Latched before the replay starts: a query that cannot be issued at all finishes inside
-  // request_executions(), and the snapshot it releases is the one asked for here.
-  if (request_executions()) return;
-  oo_wanted_ = false;
-  exec_snapshot_exact_ = false;
-  send_open_orders();
+  reconcile_.request();
 }
 
-// Collects one page of the open-order snapshot. Nothing reaches the engine before every page
-// parsed: Oms::reconcile_end() cancels every order the snapshot does not name, so a truncated or
-// unparsed snapshot would cancel orders that are still resting at the venue.
-void BybitVenue::send_open_orders() {
-  if (reconcile_in_flight_) return;
-  reconcile_records_.clear();
+bool BybitVenue::replay_executions() {
+  return request_executions();
+}
+
+// Nothing reaches the engine before every page parsed: Oms::reconcile_end() cancels every order
+// the snapshot does not name, so a truncated or unparsed snapshot would cancel orders that are
+// still resting at the venue.
+bool BybitVenue::fetch_snapshot(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
   reconcile_pages_ = 0;
-  // The start-up sweep says nothing about our own orders: one sent before the snapshot was asked
-  // for can still be in flight.
-  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value(now_ns());
-  sweep_next_ = false;
   reconcile_coin_ = 0;
   reconcile_positions_.clear();
-  request_open_orders_page({});
+  return request_open_orders_page(generation, {});
 }
 
-void BybitVenue::request_open_orders_page(const std::string& cursor) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable() || rest_ == nullptr || rest_hard_stopped_) {
-    reconcile_in_flight_ = false;
-    return;
-  }
+bool BybitVenue::request_open_orders_page(std::uint64_t generation, const std::string& cursor) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
   const bool linear = cfg_.category == BybitCategory::Linear;
-  if (linear && reconcile_coin_ >= settle_coins_.size()) {
-    reconcile_in_flight_ = false;
-    return;
-  }
+  if (linear && reconcile_coin_ >= settle_coins_.size()) return false;
   RestRequest rr;
   if (!encoder_->encode_rest_open_orders(
-          {}, linear ? std::string_view(settle_coins_[reconcile_coin_]) : "", cursor, rr)) {
-    reconcile_in_flight_ = false;
-    return;
-  }
+          {}, linear ? std::string_view(settle_coins_[reconcile_coin_]) : "", cursor, rr))
+    return false;
   const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
   std::weak_ptr<int> alive = alive_;
-  reconcile_in_flight_ = true;
-  const bool queued =
-      rest_->request("GET", rr.target(), headers, {}, [this, alive](const net::HttpResponse& r) {
-        if (alive.expired()) return;
-        reconcile_in_flight_ = false;
+  return rest_->request(
+      "GET", rr.target(), headers, {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.current(generation)) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
@@ -1201,7 +1184,7 @@ void BybitVenue::request_open_orders_page(const std::string& cursor) {
                           cfg_.name,
                           r.status,
                           net::to_string(r.error));
-          reconcile_records_.clear();
+          reconcile_.fetched(generation, false);
           return;
         }
         std::string next_cursor;
@@ -1210,9 +1193,7 @@ void BybitVenue::request_open_orders_page(const std::string& cursor) {
             decoder_->decode_open_orders(padded.view(), next_cursor, [&](const OpenOrderRecord& o) {
               const InstrumentId inst = symbols_->find(id_, o.symbol);
               if (!inst.valid()) return;
-              ReconcileMsg m{};
-              init_header(m, EventType::Reconcile, inst, id_);
-              m.kind = ReconcileMsg::Kind::OpenOrder;
+              ReconcileMsg& m = reconcile_.add_order(inst);
               m.side = o.side == "Sell" ? Side::Sell : Side::Buy;
               m.state =
                   o.status == "PartiallyFilled" ? OrderState::PartiallyFilled : OrderState::Live;
@@ -1223,69 +1204,56 @@ void BybitVenue::request_open_orders_page(const std::string& cursor) {
               if (!o.cum_exec_qty.empty()) {
                 if (const auto q = parse_qty(o.cum_exec_qty)) m.cum_qty = *q;
               }
-              m.hdr.recv_ts = wall_now();
-              reconcile_records_.push_back(m);
             });
         if (st != ParseStatus::Ok) {
           // retCode != 0 comes back with HTTP 200: rate limits (10006/10018) and clock or
           // signature errors (10002/10004) among others.
           ++stats_.rest_errors;
-          FASTMM_LOG_WARN("{}: open orders reply rejected ({}); reconciliation skipped",
+          FASTMM_LOG_WARN("{}: open orders reply rejected ({})",
                           cfg_.name,
                           st == ParseStatus::Error ? "retCode != 0" : "malformed");
-          reconcile_records_.clear();
-          return;
-        }
-        if (!next_cursor.empty() && ++reconcile_pages_ < kMaxReconcilePages) {
-          request_open_orders_page(next_cursor);
+          reconcile_.fetched(generation, false);
           return;
         }
         if (!next_cursor.empty()) {
-          FASTMM_LOG_WARN("{}: more than {} pages of open orders; reconciliation skipped",
-                          cfg_.name,
-                          kMaxReconcilePages);
-          reconcile_records_.clear();
-          return;
-        }
-        if (cfg_.category == BybitCategory::Linear) {
-          // The next settle coin's orders, then the positions of every settle coin.
-          reconcile_pages_ = 0;
-          if (++reconcile_coin_ < settle_coins_.size()) {
-            request_open_orders_page({});
-          } else {
-            reconcile_coin_ = 0;
-            request_positions_page({});
+          if (++reconcile_pages_ >= kMaxReconcilePages) {
+            FASTMM_LOG_WARN("{}: more than {} pages of open orders", cfg_.name, kMaxReconcilePages);
+            reconcile_.fetched(generation, false);
+          } else if (!request_open_orders_page(generation, next_cursor)) {
+            reconcile_.fetched(generation, false);
           }
           return;
         }
-        emit_reconcile();
+        if (cfg_.category != BybitCategory::Linear) {
+          finish_snapshot(generation);
+          return;
+        }
+        // The next settle coin's orders, then the positions of every settle coin.
+        reconcile_pages_ = 0;
+        bool sent = false;
+        if (++reconcile_coin_ < settle_coins_.size()) {
+          sent = request_open_orders_page(generation, {});
+        } else {
+          reconcile_coin_ = 0;
+          sent = request_positions_page(generation, {});
+        }
+        if (!sent) reconcile_.fetched(generation, false);
       });
-  if (!queued) {
-    reconcile_in_flight_ = false;
-    reconcile_records_.clear();
-  }
 }
 
-void BybitVenue::request_positions_page(const std::string& cursor) {
-  const auto abandon = [this] {
-    reconcile_in_flight_ = false;
-    reconcile_records_.clear();
-    reconcile_positions_.clear();
-  };
-  if (cfg_.dry_run || !connected_ || rest_ == nullptr || rest_hard_stopped_ ||
+bool BybitVenue::request_positions_page(std::uint64_t generation, const std::string& cursor) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_ ||
       reconcile_coin_ >= settle_coins_.size())
-    return abandon();
+    return false;
   RestRequest rr;
   if (!BybitOrderEncoder::encode_rest_positions(
           cfg_.category, {}, settle_coins_[reconcile_coin_], cursor, rr))
-    return abandon();
+    return false;
   const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
   std::weak_ptr<int> alive = alive_;
-  reconcile_in_flight_ = true;
-  const bool queued = rest_->request(
-      "GET", rr.target(), headers, {}, [this, alive, abandon](const net::HttpResponse& r) {
-        if (alive.expired()) return;
-        reconcile_in_flight_ = false;
+  return rest_->request(
+      "GET", rr.target(), headers, {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.current(generation)) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
         std::string next_cursor;
@@ -1298,79 +1266,68 @@ void BybitVenue::request_positions_page(const std::string& cursor) {
         if (!err.empty()) {
           // Positions are part of the snapshot: without them nothing is emitted.
           ++stats_.rest_errors;
-          FASTMM_LOG_WARN(
-              "{}: GET position/list failed ({}); reconciliation skipped", cfg_.name, err);
-          return abandon();
+          FASTMM_LOG_WARN("{}: GET position/list failed ({})", cfg_.name, err);
+          reconcile_.fetched(generation, false);
+          return;
         }
         if (!next_cursor.empty()) {
           if (++reconcile_pages_ >= kMaxPositionPages) {
-            FASTMM_LOG_WARN("{}: more than {} pages of positions; reconciliation skipped",
-                            cfg_.name,
-                            kMaxPositionPages);
-            return abandon();
+            FASTMM_LOG_WARN("{}: more than {} pages of positions", cfg_.name, kMaxPositionPages);
+            reconcile_.fetched(generation, false);
+          } else if (!request_positions_page(generation, next_cursor)) {
+            reconcile_.fetched(generation, false);
           }
-          request_positions_page(next_cursor);
           return;
         }
         reconcile_pages_ = 0;
         if (++reconcile_coin_ < settle_coins_.size()) {
-          request_positions_page({});
+          if (!request_positions_page(generation, {})) reconcile_.fetched(generation, false);
           return;
         }
-        emit_reconcile();
+        finish_snapshot(generation);
       });
-  if (!queued) abandon();
 }
 
-void BybitVenue::emit_reconcile() {
-  ReconcileMsg begin{};
-  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
-  begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, reconcile_watermark_);
-  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
-  exec_snapshot_exact_ = false;
-  begin.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(begin.hdr));
-  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
+void BybitVenue::finish_snapshot(std::uint64_t generation) {
+  bool hedge = false;
   if (cfg_.category == BybitCategory::Linear) {
     // Listed by settle coin, the venue returns only the non-zero positions: absent means flat.
-    bool hedge = false;
     for (InstrumentId id : subscribed_) {
       const std::string_view sym = symbols_->venue_symbol(id);
-      ReconcileMsg m{};
-      init_header(m, EventType::Reconcile, id, id_);
-      m.kind = ReconcileMsg::Kind::Position;
+      Qty qty{};
+      Price avg{};
       for (const PositionRecord& p : reconcile_positions_) {
         if (!iequals_symbol(p.symbol, sym)) continue;
         if (p.position_idx != 0) {
           hedge = hedge || !p.qty.is_zero();
           continue;
         }
-        m.position_qty = p.qty;
-        m.avg_px = p.avg_px;
+        qty = p.qty;
+        avg = p.avg_px;
       }
-      m.hdr.recv_ts = wall_now();
-      static_cast<void>(order_sink_->push(m.hdr));
+      reconcile_.add_position(id, qty, avg);
       PositionCheck& pc = positions_[id.value];
-      pc.tracked = m.position_qty;
-      pc.venue = m.position_qty;
-      pc.venue_avg = m.avg_px;
+      pc.tracked = qty;
+      pc.venue = qty;
+      pc.venue_avg = avg;
       pc.pending = false;
-      FASTMM_LOG_INFO("{}: {} position {} @ {}", cfg_.name, sym, m.position_qty, m.avg_px);
+      FASTMM_LOG_INFO("{}: {} position {} @ {}", cfg_.name, sym, qty, avg);
     }
     reconcile_positions_.clear();
-    if (hedge) {
-      FASTMM_LOG_ERROR("{}: position/list reports a hedge-mode position", cfg_.name);
-      apply_action(VenueAction::Fatal, 0, "hedge-mode position", 0);
-    }
   }
-  ReconcileMsg end{};
-  init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
-  end.kind = ReconcileMsg::Kind::End;
-  end.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(end.hdr));
-  FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
-  reconcile_records_.clear();
+  reconcile_.fetched(generation, true);
+  if (hedge) {
+    FASTMM_LOG_ERROR("{}: position/list reports a hedge-mode position", cfg_.name);
+    apply_action(VenueAction::Fatal, 0, "hedge-mode position", 0);
+  }
+}
+
+void BybitVenue::shadow_ids(std::vector<ClientOrderId>& out) {
+  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+}
+
+void BybitVenue::drop_shadow(ClientOrderId id) {
+  forget_order(id);
 }
 
 // ---- execution replay -------------------------------------------------------------------------
@@ -1623,10 +1580,7 @@ void BybitVenue::finish_execution_replay(bool ok) {
   exec_replay_active_ = false;
   exec_rows_.clear();
   if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  if (!oo_wanted_) return;
-  oo_wanted_ = false;
-  exec_snapshot_exact_ = exec_replay_ok_;
-  send_open_orders();
+  reconcile_.replay_done(exec_replay_ok_);
 }
 
 void BybitVenue::request_server_time() {
@@ -1741,6 +1695,7 @@ void BybitVenue::on_timer(std::int64_t now) {
     if (trade_conn_.is_live()) static_cast<void>(trade_conn_.send_text(ping));
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  reconcile_.on_timer(now);
   // A replay that could not be completed left fills unaccounted for, and the next reconnect may be
   // hours away. Ask again until the venue answers; the watermark only moved past what was booked.
   if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
@@ -1778,7 +1733,7 @@ void BybitVenue::note_fill(const OrderFillMsg& f) noexcept {
 }
 
 void BybitVenue::check_positions(std::int64_t now) {
-  if (order_sink_ == nullptr || reconcile_in_flight_ || exec_replay_active_) return;
+  if (order_sink_ == nullptr || reconcile_.busy() || exec_replay_active_) return;
   for (InstrumentId id : subscribed_) {
     PositionCheck& p = positions_[id.value];
     if (!p.pending || now - p.last_event_ns < kPositionSettleNs) continue;
@@ -1804,6 +1759,7 @@ void BybitVenue::check_positions(std::int64_t now) {
 }
 
 void BybitVenue::publish_status() noexcept {
+  stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

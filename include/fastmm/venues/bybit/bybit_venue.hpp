@@ -43,6 +43,7 @@
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
+#include "fastmm/venues/reconcile_driver.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -96,7 +97,7 @@ struct BybitVenueConfig {
   net::BackoffConfig backoff{};
 };
 
-class BybitVenue final : public Venue {
+class BybitVenue final : public Venue, private ReconcileHooks {
  public:
   BybitVenue(VenueId id, BybitVenueConfig cfg);
   ~BybitVenue() override;
@@ -195,20 +196,25 @@ class BybitVenue final : public Venue {
   // POST /v5/order/disconnected-cancel-all, once per session after the private channel is up.
   void set_dcp();
   // Requests one page of GET /v5/order/realtime; the reply reads the next page or, on the last
-  // one, emits the whole snapshot (emit_reconcile). Nothing is emitted unless every page parsed.
-  void request_open_orders_page(const std::string& cursor);
+  // one, ends the snapshot (finish_snapshot). Nothing is emitted unless every page parsed. False:
+  // not sent.
+  bool request_open_orders_page(std::uint64_t generation, const std::string& cursor);
   // Linear: one page of GET /v5/position/list for settle_coins_[reconcile_coin_]; the last page of
-  // the last coin emits the snapshot.
-  void request_positions_page(const std::string& cursor);
+  // the last coin ends the snapshot.
+  bool request_positions_page(std::uint64_t generation, const std::string& cursor);
   // Linear, start-up: GET /v5/position/list per symbol; an error when a symbol is in hedge mode or
   // its mode cannot be read.
   std::string check_position_mode(const std::vector<Instrument*>& mine);
   // Linear: compares the position topic with the forwarded fills (see the header comment).
   void check_positions(std::int64_t now);
   void note_fill(const OrderFillMsg& f) noexcept;
-  // Emits the open-order snapshot request itself, once any execution replay before it finished.
-  void send_open_orders();
-  void emit_reconcile();
+  // ReconcileHooks: the open-order pages (per settle coin), then (linear) the position pages.
+  bool fetch_snapshot(std::uint64_t generation) override;
+  bool replay_executions() override;
+  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void drop_shadow(ClientOrderId id) override;
+  // Every page is in: the position rows (linear), then the driver emits the snapshot.
+  void finish_snapshot(std::uint64_t generation);
   // Execution replay (GET /v5/execution/list): one window of at most 7 days at a time, paged
   // with nextPageCursor; a window's rows are emitted oldest first once its last page is in.
   void start_execution_window();
@@ -269,13 +275,8 @@ class BybitVenue final : public Venue {
   bool trade_was_live_ = false;
   SentWatermark sent_;
   BatchedOrders batch_;  // orders written into the corked trade connection
-  // Open-order snapshot, collected across pages before anything reaches the engine.
-  std::vector<ReconcileMsg> reconcile_records_;
-  ClientOrderId reconcile_watermark_{};  // sent watermark when the first page was requested
-  bool sweep_next_ = false;  // the next snapshot is the start-up sweep: an empty watermark
-  std::size_t reconcile_pages_ = 0;
-  bool reconcile_in_flight_ = false;
-  bool oo_wanted_ = false;  // a snapshot waits for the execution replay in flight
+  ReconcileDriver reconcile_{*this, sent_};
+  std::size_t reconcile_pages_ = 0;  // pages of the snapshot being fetched
   // Linear: open orders and positions are listed per settle coin (the quotes of the subscribed
   // instruments); the snapshot walks them in turn.
   std::vector<std::string> settle_coins_;
@@ -323,9 +324,8 @@ class BybitVenue final : public Venue {
   std::size_t exec_requests_ = 0;  // pages asked for by this replay
   bool exec_replay_active_ = false;
   bool exec_replay_ok_ = true;
-  bool exec_snapshot_exact_ = false;  // stamp kExecutionsExact on the next snapshot's Begin
-  bool exec_retry_wanted_ = false;    // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;     // when the last replay started (the periodic one)
+  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
+  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
   std::int64_t exec_retry_ns_ = 0;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;

@@ -27,6 +27,36 @@ USD-M's offline reference-data path skips its account checks (hedge-mode refusal
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**Step 1 done: `ReconcileDriver` (2026-09-28).** `venues/reconcile_driver.hpp` is the open-order
+snapshot of all five connectors: generation, one at a time with one more queued, retry 5 s after a
+failure and 60 s without an answer, start-up sweep, shadow sweep, Begin/End, sent watermark,
+`kExecutionsExact`, closed by `disconnect()` before the REST reset. Hooks: `fetch_snapshot` (REST
+pages, or WebSocket requests for Spot's `openOrders.status` and Deribit), `replay_executions`,
+`shadow_ids`/`drop_shadow`; rows through `add_order`/`add_position`; `transport_lost()` when the
+connection a fetch went out on drops. Lines, cpp + hpp: Spot -121 +68, USD-M -146 +101, Bybit
+-159 +115, OKX -123 +77, Deribit -89 +124 (+55 for its positions request); driver +357.
+Watermark rule: taken when the snapshot is asked for, after the replay (Spot and Deribit took it
+at the request): an order answered while the replay ran is then judged too, and it is what
+`SentWatermark::value` describes. The survey held, except that USD-M did find orders nobody holds
+at start-up (its first user-stream snapshot); it judged this session's orders with a real
+watermark while doing so. Deribit now has a positions leg (`private/get_positions` per currency, a
+row per subscribed instrument, absent = flat): its caps say `positions`, and nothing on its private
+stream reports one, so a delivery, liquidation or other client's trade never reached the engine.
+Divergences closed, each with a test that fails on the old code: Deribit retries a failed snapshot
+(Bybit and OKX share the path); USD-M's first snapshot is a sweep (empty watermark, an earlier
+session's order reported, the engine's Oms cancels it); Spot's shutdown during a replay opens no
+REST connection; USD-M and Deribit drop the shadow of an order whose end was lost; Deribit's
+positions. Driver unit tests: coalescing, replay first, retry, transport loss and timeout,
+close/open generation, sweep, shadow sweep, row order. The Deribit end-to-end test now counts the
+two position rows. Integration recovery_*, xmm_restart, gateway_* (67 tests) green 3 times; full ctest
+(werror): 1306 passed. clang-tidy-18: no bugprone or performance finding in the changed files.
+Left: the shadow sweep only compares ids of the watermark's epoch (ids of several engines behind
+the gateway are not in send order), so a gateway with several strategies still leaks the others'
+shadows; a send-order stamp on the shadow would fix it. `bybit_linear.venue: order round trip`
+failed once under a parallel run, 60 runs alone pass: the test waits for the sweep, not for the
+trade channel, and an order sent before that is Live goes over REST, which the fake does not
+serve. The race is older than the driver (same steps before the snapshot).
+
 **Replace per venue (2026-09-28).** The quote manager replaced only if every venue the engine
 traded could (the gap left by quote/hedge step 1): one venue without replace, say an IOC hedge
 venue, sent cancel + new on all of them. Now the engine resolves each instrument's venue at start

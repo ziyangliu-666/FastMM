@@ -331,6 +331,7 @@ void OkxVenue::attach(const SymbolTable& symbols,
     if (in.venue == id_) encoder_->set_inst_id_code(in.id, inst_codes_[in.id.value]);
   }
   decoder_ = std::make_unique<OkxResponseDecoder>();
+  reconcile_.attach(cfg_.name, id_, order_sink_);
 }
 
 void OkxVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -360,6 +361,7 @@ void OkxVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("OkxVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Nobody said where the replays should start, so they start here: this session can only have
   // missed what happened after it connected.
   if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
@@ -403,6 +405,7 @@ void OkxVenue::disconnect() {
   if (dms_.enabled() && dms_.ever_armed() && signer_.usable()) stop_cancel_all_after();
   dms_.disarm();
   connected_ = false;
+  reconcile_.close();  // before the reset below: nothing it aborts asks again
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -415,8 +418,6 @@ void OkxVenue::disconnect() {
   exec_replay_active_ = false;
   funding_active_ = false;
   funding_due_ns_ = 0;
-  oo_wanted_ = false;
-  reconcile_in_flight_ = false;
   time_request_pending_ = false;
   if (rest_) rest_->reset();
   md_feed_->on_disconnected();
@@ -575,10 +576,9 @@ void OkxVenue::on_private_state(net::ConnState s) {
     // epoch, so the engine cancels them. The replay before the snapshot also books what happened
     // while nothing ran.
     if (private_was_live_ && prev != ConnState::Stale) {
-      request_open_orders();
+      reconcile_.request();
     } else if (!private_was_live_) {
-      sweep_next_ = true;
-      request_open_orders();
+      reconcile_.sweep();
     }
     private_was_live_ = true;
   } else if ((mapped == ConnState::Disconnected || mapped == ConnState::Connecting) &&
@@ -1108,46 +1108,32 @@ void OkxVenue::apply_action(VenueAction action, int code, std::string_view msg) 
 
 // ---- reconciliation -------------------------------------------------------------------------
 
-// One reconciliation at a time: the account's fills are replayed first (request_executions), then
-// the open-order snapshot is read. A request while the replay runs is served by its end.
+// The account's fills are replayed first (request_executions), then the open-order snapshot is
+// read (ReconcileDriver).
 void OkxVenue::request_open_orders() {
-  if (cfg_.dry_run || !connected_ || !signer_.usable() || reconcile_in_flight_) return;
-  oo_wanted_ = true;
-  if (exec_replay_active_) return;
-  if (request_executions()) return;
-  oo_wanted_ = false;
-  exec_snapshot_exact_ = false;
-  send_open_orders();
+  reconcile_.request();
+}
+
+bool OkxVenue::replay_executions() {
+  return request_executions();
 }
 
 // Nothing reaches the engine before every page parsed: Oms::reconcile_end() cancels every order
 // the snapshot does not name, so a truncated or unparsed snapshot would cancel live orders.
-void OkxVenue::send_open_orders() {
-  if (reconcile_in_flight_) return;
-  reconcile_records_.clear();
+bool OkxVenue::fetch_snapshot(std::uint64_t generation) {
   reconcile_positions_.clear();
   reconcile_pages_ = 0;
-  // The start-up sweep says nothing about our own orders: one sent before the snapshot was asked
-  // for can still be in flight.
-  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value(now_ns());
-  sweep_next_ = false;
-  request_open_orders_page({});
+  return request_open_orders_page(generation, {});
 }
 
-void OkxVenue::request_open_orders_page(const std::string& after) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable() || rest_ == nullptr || rest_hard_stopped_) {
-    reconcile_in_flight_ = false;
-    return;
-  }
+bool OkxVenue::request_open_orders_page(std::uint64_t generation, const std::string& after) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
   OkxOrderEncoder::encode_rest_orders_pending(after, rr);
   std::weak_ptr<int> alive = alive_;
-  const std::uint64_t gen = generation_;
-  reconcile_in_flight_ = true;
-  const bool queued = rest_->request(
-      "GET", rr.path, rest_headers(rr), {}, [this, alive, gen](const net::HttpResponse& r) {
-        if (alive.expired() || gen != generation_) return;
-        reconcile_in_flight_ = false;
+  return rest_->request(
+      "GET", rr.path, rest_headers(rr), {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.current(generation)) return;
         ++stats_.rest_requests;
         std::vector<PendingOrder> rows;
         std::string err;
@@ -1160,22 +1146,20 @@ void OkxVenue::request_open_orders_page(const std::string& after) {
           // A non-zero code comes back with HTTP 200 as well: rate limits (50011) and clock or
           // signature errors (50102, 50113) among others.
           ++stats_.rest_errors;
-          FASTMM_LOG_WARN("{}: orders-pending failed ({}); reconciliation skipped", cfg_.name, err);
+          FASTMM_LOG_WARN("{}: orders-pending failed ({})", cfg_.name, err);
           int code = -1;
           std::string msg;
           if (decode_envelope(r.body, code, msg)) {
             const VenueAction a = map_error(code, msg).action;
             if (a != VenueAction::Reconcile) apply_action(a, code, msg);
           }
-          reconcile_records_.clear();
+          reconcile_.fetched(generation, false);
           return;
         }
         for (const PendingOrder& o : rows) {
           const InstrumentId inst = subscribed_instrument(o.inst_id);
           if (!inst.valid()) continue;
-          ReconcileMsg m{};
-          init_header(m, EventType::Reconcile, inst, id_);
-          m.kind = ReconcileMsg::Kind::OpenOrder;
+          ReconcileMsg& m = reconcile_.add_order(inst);
           m.side = o.side == "sell" ? Side::Sell : Side::Buy;
           m.state = o.state == "partially_filled" ? OrderState::PartiallyFilled : OrderState::Live;
           if (const auto cl = decode_cl_ord_id(o.cl_ord_id)) m.cl_ord_id = current_id(*cl);
@@ -1183,48 +1167,29 @@ void OkxVenue::request_open_orders_page(const std::string& after) {
           m.price = o.px;
           m.orig_qty = o.sz;
           m.cum_qty = o.acc_fill_sz;
-          m.hdr.recv_ts = wall_now();
-          reconcile_records_.push_back(m);
         }
+        bool sent = false;
         if (rows.size() >= kPageLimit) {
           if (++reconcile_pages_ >= kMaxReconcilePages) {
-            FASTMM_LOG_WARN("{}: more than {} pages of open orders; reconciliation skipped",
-                            cfg_.name,
-                            kMaxReconcilePages);
-            reconcile_records_.clear();
-            return;
+            FASTMM_LOG_WARN("{}: more than {} pages of open orders", cfg_.name, kMaxReconcilePages);
+          } else {
+            sent = request_open_orders_page(generation, rows.back().ord_id);
           }
-          request_open_orders_page(rows.back().ord_id);
-          return;
+        } else {
+          sent = request_positions(generation);
         }
-        request_positions();
+        if (!sent) reconcile_.fetched(generation, false);
       });
-  if (!queued) {
-    reconcile_in_flight_ = false;
-    reconcile_records_.clear();
-  }
 }
 
-void OkxVenue::request_positions() {
-  const auto abandon = [this] {
-    reconcile_in_flight_ = false;
-    reconcile_records_.clear();
-    reconcile_positions_.clear();
-  };
-  if (cfg_.dry_run || !connected_ || rest_ == nullptr || rest_hard_stopped_) return abandon();
+bool OkxVenue::request_positions(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
   OkxOrderEncoder::encode_rest_positions(rr);
   std::weak_ptr<int> alive = alive_;
-  const std::uint64_t gen = generation_;
-  reconcile_in_flight_ = true;
-  const bool queued = rest_->request(
-      "GET",
-      rr.path,
-      rest_headers(rr),
-      {},
-      [this, alive, gen, abandon](const net::HttpResponse& r) {
-        if (alive.expired() || gen != generation_) return;
-        reconcile_in_flight_ = false;
+  return rest_->request(
+      "GET", rr.path, rest_headers(rr), {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.current(generation)) return;
         ++stats_.rest_requests;
         std::string err;
         if (!r.ok()) {
@@ -1235,62 +1200,52 @@ void OkxVenue::request_positions() {
         if (!err.empty()) {
           // Positions are part of the snapshot: without them nothing is emitted.
           ++stats_.rest_errors;
-          FASTMM_LOG_WARN(
-              "{}: account/positions failed ({}); reconciliation skipped", cfg_.name, err);
-          return abandon();
+          FASTMM_LOG_WARN("{}: account/positions failed ({})", cfg_.name, err);
+          reconcile_.fetched(generation, false);
+          return;
         }
-        emit_reconcile();
+        finish_snapshot(generation);
       });
-  if (!queued) abandon();
 }
 
-void OkxVenue::emit_reconcile() {
-  ReconcileMsg begin{};
-  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
-  begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, reconcile_watermark_);
-  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
-  exec_snapshot_exact_ = false;
-  begin.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(begin.hdr));
-  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
+void OkxVenue::finish_snapshot(std::uint64_t generation) {
   // Only open positions are listed: a subscribed instrument absent from the list is flat.
   bool long_short = false;
   for (InstrumentId id : subscribed_) {
     const std::string_view sym = symbols_->venue_symbol(id);
-    ReconcileMsg m{};
-    init_header(m, EventType::Reconcile, id, id_);
-    m.kind = ReconcileMsg::Kind::Position;
+    Qty qty{};
+    Price avg{};
     for (const PositionRecord& p : reconcile_positions_) {
       if (!iequals_symbol(p.inst_id, sym)) continue;
       if (p.pos_side == "long" || p.pos_side == "short") {
         long_short = long_short || !p.qty.is_zero();
         continue;
       }
-      m.position_qty = p.qty;
-      m.avg_px = p.avg_px;
+      qty = p.qty;
+      avg = p.avg_px;
     }
-    m.hdr.recv_ts = wall_now();
-    static_cast<void>(order_sink_->push(m.hdr));
+    reconcile_.add_position(id, qty, avg);
     PositionCheck& pc = positions_[id.value];
-    pc.tracked = m.position_qty;
-    pc.venue = m.position_qty;
-    pc.venue_avg = m.avg_px;
+    pc.tracked = qty;
+    pc.venue = qty;
+    pc.venue_avg = avg;
     pc.pending = false;
-    FASTMM_LOG_INFO("{}: {} position {} contracts @ {}", cfg_.name, sym, m.position_qty, m.avg_px);
+    FASTMM_LOG_INFO("{}: {} position {} contracts @ {}", cfg_.name, sym, qty, avg);
   }
   reconcile_positions_.clear();
-  ReconcileMsg end{};
-  init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
-  end.kind = ReconcileMsg::Kind::End;
-  end.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(end.hdr));
-  FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
-  reconcile_records_.clear();
+  reconcile_.fetched(generation, true);
   if (long_short) {
     FASTMM_LOG_ERROR("{}: account/positions reports a long/short-mode position", cfg_.name);
     apply_action(VenueAction::Fatal, 0, "long/short-mode position");
   }
+}
+
+void OkxVenue::shadow_ids(std::vector<ClientOrderId>& out) {
+  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+}
+
+void OkxVenue::drop_shadow(ClientOrderId id) {
+  forget_order(id);
 }
 
 // ---- execution replay -------------------------------------------------------------------------
@@ -1505,10 +1460,7 @@ void OkxVenue::finish_execution_replay(bool ok) {
     exec_retry_wanted_ = true;
     exec_retry_ns_ = now_ns();  // the retry comes kExecutionRetryNs after the failure
   }
-  if (!oo_wanted_) return;
-  oo_wanted_ = false;
-  exec_snapshot_exact_ = exec_replay_ok_;
-  send_open_orders();
+  reconcile_.replay_done(exec_replay_ok_);
 }
 
 // ---- funding ----------------------------------------------------------------------------------
@@ -1862,6 +1814,7 @@ void OkxVenue::on_timer(std::int64_t now) {
     if (trade_conn_.is_live()) static_cast<void>(trade_conn_.send_text("ping"));
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  reconcile_.on_timer(now);
   if (!cfg_.dry_run && signer_.usable()) {
     // A replay that could not be completed left fills unaccounted for, and the next reconnect may
     // be hours away. Ask again until the venue answers; the watermark moved only past what was
@@ -1922,7 +1875,7 @@ void OkxVenue::note_fill(const OrderFillMsg& f) noexcept {
 }
 
 void OkxVenue::check_positions(std::int64_t now) {
-  if (order_sink_ == nullptr || reconcile_in_flight_ || exec_replay_active_) return;
+  if (order_sink_ == nullptr || reconcile_.busy() || exec_replay_active_) return;
   for (InstrumentId id : subscribed_) {
     PositionCheck& p = positions_[id.value];
     if (!p.pending || now - p.last_event_ns < kPositionSettleNs) continue;
@@ -1948,6 +1901,7 @@ void OkxVenue::check_positions(std::int64_t now) {
 }
 
 void OkxVenue::publish_status() noexcept {
+  stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

@@ -500,6 +500,33 @@ ParseStatus DeribitPrivateParser::decode_open_orders(
   return ParseStatus::Ok;
 }
 
+ParseStatus DeribitPrivateParser::decode_positions(
+    std::string_view json, const std::function<void(const PositionRecord&)>& fn) noexcept {
+  od::document doc;
+  od::object root;
+  if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS ||
+      doc.get_object().get(root) != sj::SUCCESS)
+    return ParseStatus::Malformed;
+  {
+    od::value err;
+    if (root["error"].get(err) == sj::SUCCESS) return ParseStatus::Error;
+  }
+  root.reset();
+  od::array list;
+  if (root["result"].get_array().get(list) != sj::SUCCESS) return ParseStatus::Malformed;
+  for (auto item : list) {
+    od::object o;
+    if (item.get_object().get(o) != sj::SUCCESS) return ParseStatus::Malformed;
+    PositionRecord rec;
+    if (o["instrument_name"].get_string().get(rec.instrument_name) != sj::SUCCESS ||
+        !fixed_of(o["size"], rec.size))
+      return ParseStatus::Malformed;
+    if (!fixed_of(o["average_price"], rec.average_price)) rec.average_price = Price{};
+    fn(rec);
+  }
+  return ParseStatus::Ok;
+}
+
 ParseStatus DeribitPrivateParser::decode_user_trades(
     std::string_view json,
     UserTradesPage& page,

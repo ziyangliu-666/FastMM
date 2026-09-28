@@ -279,6 +279,7 @@ void DeribitVenue::attach(const SymbolTable& symbols,
   private_parser_ = std::make_unique<DeribitPrivateParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<DeribitOrderEncoder>(
       symbols, instruments, std::span<const TickSchedule>(ticks_), cfg_.reject_post_only);
+  reconcile_.attach(cfg_.name, id_, order_sink_);
 }
 
 std::vector<std::string> DeribitVenue::private_channels() const {
@@ -326,6 +327,7 @@ void DeribitVenue::connect(net::Reactor& reactor) {
   if (md_feed_ == nullptr) throw std::logic_error("DeribitVenue::connect before attach");
   reactor_ = &reactor;
   connected_ = true;
+  reconcile_.open(!cfg_.dry_run && cfg_.credentials.usable());
   // The execution replay starts here unless resume_executions() said otherwise: this session can
   // only have missed what happened after it connected.
   if (exec_since_ms_ <= 0) exec_since_ms_ = venue_now_ms();
@@ -357,6 +359,7 @@ void DeribitVenue::connect(net::Reactor& reactor) {
 void DeribitVenue::disconnect() {
   if (!connected_) return;
   connected_ = false;
+  reconcile_.close();
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -518,10 +521,9 @@ void DeribitVenue::on_private_state(net::ConnState s) {
     // connect, sweep for orders a session that died left resting (cancel-on-disconnect only
     // covers a connection that closed): the engine does not know their ids and cancels them.
     if (reconnected) {
-      request_open_orders();
+      reconcile_.request();
     } else if (first_connect) {
-      sweep_next_ = true;
-      request_open_orders();
+      reconcile_.sweep();
     }
     return;
   }
@@ -533,14 +535,13 @@ void DeribitVenue::on_private_state(net::ConnState s) {
     user_channels_ok_ = false;
     auth_in_flight_ = false;
     refresh_at_ns_ = 0;
-    reconcile_records_.clear();
-    reconcile_pending_ = 0;
-    oo_wanted_ = false;
-    // A replay cut off here is asked for again by the reconnect's reconciliation, or the timer.
+    // A replay cut off here is asked for again by the reconnect's reconciliation, or the timer;
+    // the snapshot (or the replay before it) is asked again by the driver.
     if (exec_replay_active_) exec_retry_wanted_ = true;
     exec_replay_active_ = false;
     exec_pending_ = 0;
-    exec_snapshot_exact_ = false;
+    snapshot_pending_ = 0;
+    reconcile_.transport_lost();
     // disconnect() clears connected_ before closing: a requested shutdown runs cancel_all().
     if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run && connected_) cancel_all_async();
   }
@@ -654,8 +655,15 @@ void DeribitVenue::on_private_text(std::string_view t, std::int64_t ts) {
                           cfg_.name,
                           r.rpc.error_code,
                           r.rpc.error_message);
-        handle_open_orders_response(
-            static_cast<std::size_t>(id - kIdOpenOrdersBase), t, r.rpc.is_error);
+        handle_open_orders_response(t, r.rpc.is_error);
+        return;
+      }
+      if (id >= kIdPositionsBase &&
+          id < kIdPositionsBase + static_cast<std::int64_t>(cfg_.currencies.size())) {
+        if (r.rpc.is_error)
+          FASTMM_LOG_WARN(
+              "{}: get_positions failed: {} {}", cfg_.name, r.rpc.error_code, r.rpc.error_message);
+        handle_positions_response(t, r.rpc.is_error);
         return;
       }
       if (id >= kIdExecutionsBase &&
@@ -1061,57 +1069,59 @@ void DeribitVenue::apply_action(VenueAction action, int code, std::string_view m
   }
 }
 
-// ---- control requests -----------------------------------------------------------------------
+// ---- reconciliation -------------------------------------------------------------------------
 
+// The executions first (request_executions), then the snapshot (ReconcileDriver), both on the
+// private connection.
 void DeribitVenue::request_open_orders() {
-  if (cfg_.dry_run || !connected_ || !private_conn_.is_live() || access_token_.empty()) return;
-  if (reconcile_pending_ > 0) return;  // one reconciliation at a time
-  // The start-up sweep says nothing about our own orders: one sent before it can be in flight.
-  reconcile_watermark_ = sweep_next_ ? ClientOrderId{} : sent_.value(now_ns());
-  sweep_next_ = false;
-  // A request while the executions are being fetched is served once they are in, so its snapshot
-  // is exact too. Latched before the replay starts: a replay that cannot send anything finishes
-  // inside request_executions() and releases the snapshot there.
-  oo_wanted_ = true;
-  if (exec_replay_active_ || request_executions()) return;
-  oo_wanted_ = false;
-  send_open_orders();
+  reconcile_.request();
 }
 
-void DeribitVenue::send_open_orders() {
-  if (!private_conn_.is_live() || access_token_.empty() || reconcile_pending_ > 0) return;
-  reconcile_records_.clear();
-  reconcile_failed_ = false;
+bool DeribitVenue::replay_executions() {
+  return request_executions();
+}
+
+// Open orders and positions of every configured currency: Deribit trades futures and perpetuals,
+// and nothing on the private stream reports a position (a delivery, a liquidation or another
+// client's trade would otherwise never reach the engine).
+bool DeribitVenue::fetch_snapshot(std::uint64_t generation) {
+  if (!connected_ || !private_conn_.is_live() || access_token_.empty()) return false;
+  snapshot_generation_ = generation;
+  snapshot_pending_ = 0;
+  snapshot_failed_ = false;
+  snapshot_qty_.fill(Qty{});
+  snapshot_avg_.fill(Price{});
   for (std::size_t i = 0; i < cfg_.currencies.size(); ++i) {
-    const std::size_t n =
-        DeribitOrderEncoder::encode_open_orders(kIdOpenOrdersBase + static_cast<std::int64_t>(i),
-                                                cfg_.currencies[i],
-                                                access_token_,
-                                                request_buf_);
+    const auto k = static_cast<std::int64_t>(i);
+    std::size_t n = DeribitOrderEncoder::encode_open_orders(
+        kIdOpenOrdersBase + k, cfg_.currencies[i], access_token_, request_buf_);
     if (n > 0 && private_conn_.send_text(std::string_view(request_buf_, n))) {
-      ++reconcile_pending_;
+      ++snapshot_pending_;
     } else {
-      reconcile_failed_ = true;
+      snapshot_failed_ = true;
+    }
+    n = DeribitOrderEncoder::encode_positions(
+        kIdPositionsBase + k, cfg_.currencies[i], access_token_, request_buf_);
+    if (n > 0 && private_conn_.send_text(std::string_view(request_buf_, n))) {
+      ++snapshot_pending_;
+    } else {
+      snapshot_failed_ = true;
     }
   }
-  if (reconcile_pending_ == 0) FASTMM_LOG_WARN("{}: could not request open orders", cfg_.name);
+  if (snapshot_pending_ == 0) FASTMM_LOG_WARN("{}: could not request open orders", cfg_.name);
+  return snapshot_pending_ > 0;
 }
 
-void DeribitVenue::handle_open_orders_response(std::size_t currency_index,
-                                               std::string_view json,
-                                               bool error) {
-  if (reconcile_pending_ == 0) return;
-  --reconcile_pending_;
+void DeribitVenue::handle_open_orders_response(std::string_view json, bool error) {
+  if (snapshot_pending_ == 0 || !reconcile_.current(snapshot_generation_)) return;
   if (error) {
-    reconcile_failed_ = true;
+    snapshot_failed_ = true;
   } else {
     const ParseStatus st = private_parser_->decode_open_orders(json, [&](const OpenOrderRecord& o) {
       const InstrumentId inst = symbols_->find(id_, o.instrument_name);
       if (!inst.valid() || !instruments_->contains(inst)) return;
       const Qty csize = instruments_->get(inst).contract_multiplier;
-      ReconcileMsg m{};
-      init_header(m, EventType::Reconcile, inst, id_);
-      m.kind = ReconcileMsg::Kind::OpenOrder;
+      ReconcileMsg& m = reconcile_.add_order(inst);
       m.side = o.direction == "sell" ? Side::Sell : Side::Buy;
       m.cum_qty = amount_to_contracts(o.filled_amount, csize);
       m.state = m.cum_qty.is_positive() ? OrderState::PartiallyFilled : OrderState::Live;
@@ -1119,36 +1129,52 @@ void DeribitVenue::handle_open_orders_response(std::size_t currency_index,
       m.venue_order_id.assign(o.order_id);
       m.price = o.price;
       m.orig_qty = amount_to_contracts(o.amount, csize);
-      m.hdr.recv_ts = wall_now();
-      reconcile_records_.push_back(m);
     });
-    if (st != ParseStatus::Ok) reconcile_failed_ = true;
+    if (st != ParseStatus::Ok) snapshot_failed_ = true;
   }
-  static_cast<void>(currency_index);
-  if (reconcile_pending_ > 0) return;
-  if (reconcile_failed_) {
-    FASTMM_LOG_WARN(
-        "{}: open orders could not be fetched for every currency; reconciliation skipped",
-        cfg_.name);
-    reconcile_records_.clear();
+  finish_snapshot_reply();
+}
+
+void DeribitVenue::handle_positions_response(std::string_view json, bool error) {
+  if (snapshot_pending_ == 0 || !reconcile_.current(snapshot_generation_)) return;
+  if (error) {
+    snapshot_failed_ = true;
+  } else {
+    const ParseStatus st = private_parser_->decode_positions(json, [&](const PositionRecord& p) {
+      const InstrumentId inst = symbols_->find(id_, p.instrument_name);
+      if (!inst.valid() || !instruments_->contains(inst) || inst.value >= kMaxInstruments) return;
+      snapshot_qty_[inst.value] =
+          amount_to_contracts(p.size, instruments_->get(inst).contract_multiplier);
+      snapshot_avg_[inst.value] = p.average_price;
+    });
+    if (st != ParseStatus::Ok) snapshot_failed_ = true;
+  }
+  finish_snapshot_reply();
+}
+
+void DeribitVenue::finish_snapshot_reply() {
+  if (--snapshot_pending_ > 0) return;
+  if (snapshot_failed_) {
+    FASTMM_LOG_WARN("{}: open orders or positions could not be fetched for every currency",
+                    cfg_.name);
+    reconcile_.fetched(snapshot_generation_, false);
     return;
   }
-  ReconcileMsg begin{};
-  init_header(begin, EventType::Reconcile, InstrumentId::invalid(), id_);
-  begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, reconcile_watermark_);
-  if (exec_snapshot_exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
-  exec_snapshot_exact_ = false;
-  begin.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(begin.hdr));
-  for (const ReconcileMsg& m : reconcile_records_) static_cast<void>(order_sink_->push(m.hdr));
-  ReconcileMsg end{};
-  init_header(end, EventType::Reconcile, InstrumentId::invalid(), id_);
-  end.kind = ReconcileMsg::Kind::End;
-  end.hdr.recv_ts = wall_now();
-  static_cast<void>(order_sink_->push(end.hdr));
-  FASTMM_LOG_INFO("{}: reconciled {} open orders", cfg_.name, reconcile_records_.size());
-  reconcile_records_.clear();
+  // get_positions lists what the account holds in the currency: a subscribed instrument it does
+  // not list is flat.
+  for (InstrumentId id : subscribed_) {
+    if (id.value >= kMaxInstruments) continue;
+    reconcile_.add_position(id, snapshot_qty_[id.value], snapshot_avg_[id.value]);
+  }
+  reconcile_.fetched(snapshot_generation_, true);
+}
+
+void DeribitVenue::shadow_ids(std::vector<ClientOrderId>& out) {
+  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+}
+
+void DeribitVenue::drop_shadow(ClientOrderId id) {
+  forget_order(id);
 }
 
 // ---- execution replay -------------------------------------------------------------------------
@@ -1326,11 +1352,8 @@ void DeribitVenue::finish_executions_for(std::size_t /*currency_index*/, bool ok
   if (exec_pending_ > 0) --exec_pending_;
   if (exec_pending_ > 0) return;
   exec_replay_active_ = false;
-  exec_snapshot_exact_ = exec_replay_ok_;
   if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  if (!oo_wanted_) return;
-  oo_wanted_ = false;
-  send_open_orders();
+  reconcile_.replay_done(exec_replay_ok_);
 }
 
 void DeribitVenue::cancel_all_async() {
@@ -1402,6 +1425,7 @@ bool DeribitVenue::cancel_all() {
 void DeribitVenue::on_timer(std::int64_t now) {
   if (!connected_) return;
   md_feed_->on_timer(now);
+  reconcile_.on_timer(now);
   if (refresh_at_ns_ != 0 && now >= refresh_at_ns_ && private_conn_.is_live() && !auth_in_flight_ &&
       !refresh_token_.empty()) {
     refresh_at_ns_ = 0;
@@ -1440,6 +1464,7 @@ void DeribitVenue::on_timer(std::int64_t now) {
 }
 
 void DeribitVenue::publish_status() noexcept {
+  stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

@@ -62,6 +62,7 @@
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
+#include "fastmm/venues/reconcile_driver.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -110,7 +111,7 @@ struct OkxVenueConfig {
   net::BackoffConfig backoff{};
 };
 
-class OkxVenue final : public Venue {
+class OkxVenue final : public Venue, private ReconcileHooks {
  public:
   OkxVenue(VenueId id, OkxVenueConfig cfg);
   ~OkxVenue() override;
@@ -214,11 +215,16 @@ class OkxVenue final : public Venue {
   void send_cancel_all_after(int timeout_s);
   // disconnect(): timeOut "0" over an independent blocking connection.
   void stop_cancel_all_after();
-  // One reconciliation: orders-pending (paged), then positions, then the snapshot.
-  void send_open_orders();
-  void request_open_orders_page(const std::string& after);
-  void request_positions();
-  void emit_reconcile();
+  // ReconcileHooks: orders-pending (paged), then positions, then the snapshot.
+  bool fetch_snapshot(std::uint64_t generation) override;
+  bool replay_executions() override;
+  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void drop_shadow(ClientOrderId id) override;
+  // One page of orders-pending, then positions; false when it could not be sent.
+  bool request_open_orders_page(std::uint64_t generation, const std::string& after);
+  bool request_positions(std::uint64_t generation);
+  // Every reply is in: the position rows, then the driver emits the snapshot.
+  void finish_snapshot(std::uint64_t generation);
   // Start-up: GET /api/v5/account/config; an error when the account cannot trade here.
   std::string check_account();
   void check_positions(std::int64_t now);
@@ -290,14 +296,9 @@ class OkxVenue final : public Venue {
   SentWatermark sent_;
   BatchedOrders batch_;
 
-  // Open-order snapshot, collected across pages before anything reaches the engine.
-  std::vector<ReconcileMsg> reconcile_records_;
+  ReconcileDriver reconcile_{*this, sent_};
   std::vector<PositionRecord> reconcile_positions_;
-  ClientOrderId reconcile_watermark_{};
-  bool sweep_next_ = false;  // the next snapshot is the start-up sweep: an empty watermark
-  std::size_t reconcile_pages_ = 0;
-  bool reconcile_in_flight_ = false;
-  bool oo_wanted_ = false;  // a snapshot waits for the execution replay in flight
+  std::size_t reconcile_pages_ = 0;  // pages of the snapshot being fetched
 
   // Per instrument: the position the engine holds from the fills forwarded and the last one the
   // positions channel reported.
@@ -324,7 +325,6 @@ class OkxVenue final : public Venue {
   bool exec_history_ = false;  // this replay reads fills-history
   bool exec_replay_active_ = false;
   bool exec_replay_ok_ = true;
-  bool exec_snapshot_exact_ = false;
   bool exec_retry_wanted_ = false;
   std::int64_t exec_last_ns_ = 0;
   std::int64_t exec_retry_ns_ = 0;
