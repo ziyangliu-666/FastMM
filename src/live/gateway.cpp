@@ -972,6 +972,14 @@ void deliver_fill(VenueRouter& v, const OrderFillMsg& raw, bool unparking) {
   const OrderFillMsg& m = named(v, raw, buf);
   const InstrumentId id = m.hdr.instrument;
   const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
+  // A replay that names the order of an execution an earlier one sent naming none (the connector
+  // could not look the order up then): the copy parked for nobody is this one, and is dropped.
+  if (replayed && !unparking && m.cl_ord_id.valid() && !m.exec_id.empty() && !v.parked.empty()) {
+    std::erase_if(v.parked, [&](const OrderFillMsg& p) {
+      return !p.cl_ord_id.valid() && p.hdr.instrument == id && p.side == m.side &&
+             p.exec_id.view() == m.exec_id.view();
+    });
+  }
   Route* r = nullptr;
   bool held = false;
   if (v.shared(id)) {

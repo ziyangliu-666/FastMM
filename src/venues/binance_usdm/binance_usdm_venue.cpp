@@ -83,16 +83,23 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
   limits.history_ms = kUserTradesHistoryMs;
   limits.page_rows = kUserTradesLimit;
   limits.max_pages = kUserTradesMaxPages;
-  exec_replay_.setup(cfg_.name,
-                     "execution(s)",
-                     limits,
-                     {[this] { return replay_ready(); },
-                      [this] { return venue_time_ms(); },
-                      [this](const ReplayQuery& q) { return query_executions(q); },
-                      [this](bool complete) { reconcile_.replay_done(complete); }},
-                     [this](std::size_t stream, const binance::MyTradeRecord& t) {
-                       return emit_execution(stream, t);
-                     });
+  exec_replay_.setup(
+      cfg_.name,
+      "execution(s)",
+      limits,
+      {[this] { return replay_ready(); },
+       [this] { return venue_time_ms(); },
+       [this](const ReplayQuery& q) { return query_executions(q); },
+       [this](bool complete) { reconcile_.replay_done(complete); },
+       [this](const ReplayLookup& l) { return lookup_order(l); }},
+      [this](std::size_t stream, const binance::MyTradeRow& t) {
+        return emit_execution(stream, t);
+      },
+      [this](std::size_t, const binance::MyTradeRow& t) {
+        return t.order_id > 0 && order_ids_.find(static_cast<std::uint64_t>(t.order_id)) == nullptr
+                   ? std::string(IdText(t.order_id).view())
+                   : std::string{};
+      });
   limits.max_pages = kIncomeMaxPages;
   funding_replay_.setup(
       cfg_.name,
@@ -101,7 +108,8 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
       {[this] { return replay_ready(); },
        [this] { return venue_time_ms(); },
        [this](const ReplayQuery& q) { return query_funding(q); },
-       [](bool) {}},
+       [](bool) {},
+       {}},
       [this](std::size_t, const IncomeRecord& row) { return emit_funding_row(row); });
   funding_replay_.set_streams(1);
 }
@@ -1554,12 +1562,13 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
           exec_replay_.failed(q);
           return;
         }
-        // The rows view `padded`: answer() emits them before it returns (ascending pages).
+        // The rows own their text: a window waits for its lookups past this reply.
         const PaddedJson padded(r.body);
-        ReplayPage<binance::MyTradeRecord> page;
+        ReplayPage<binance::MyTradeRow> page;
         const ParseStatus st = ws_api_decoder_->decode_user_trades(
             padded.view(), [&](const binance::MyTradeRecord& t) {
-              page.rows.push_back({t.time_ms, t.id, std::string(IdText(t.id).view()), t});
+              page.rows.push_back(
+                  {t.time_ms, t.id, std::string(IdText(t.id).view()), binance::MyTradeRow::of(t)});
             });
         if (st != ParseStatus::Ok) {
           ++stats_.execution_query_errors;
@@ -1578,16 +1587,64 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
   return true;
 }
 
-bool BinanceUsdmVenue::emit_execution(std::size_t stream, const binance::MyTradeRecord& t) {
+bool BinanceUsdmVenue::emit_execution(std::size_t stream, const binance::MyTradeRow& t) {
   if (stream >= subscribed_.size() || instruments_ == nullptr) return false;
   const InstrumentId id = subscribed_[stream];
   if (!instruments_->contains(id)) return false;
   const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
   const ClientOrderId cl = mapped != nullptr ? current_id(*mapped) : ClientOrderId{};
-  if (!binance::emit_trade_history_fill(*order_sink_, id_, instruments_->get(id), id, cl, t))
+  if (!binance::emit_trade_history_fill(*order_sink_, id_, instruments_->get(id), id, cl, t.view()))
     return false;
   ++stats_.order_events;
   ++stats_.executions_fetched;
+  return true;
+}
+
+// As Spot's: userTrades names an order by orderId only; one order_ids_ does not hold (placed by a
+// session that ended before the answer, or before this process started) is asked for, so that its
+// fill names its client order id. Bounded and retried by the execution replay (ReplayScheduler).
+bool BinanceUsdmVenue::lookup_order(const ReplayLookup& l) {
+  if (rest_ == nullptr || rest_hard_stopped_ || l.stream >= subscribed_.size()) return false;
+  const std::string_view symbol =
+      symbols_ == nullptr ? std::string_view{} : symbols_->venue_symbol(subscribed_[l.stream]);
+  const auto parsed = parse_int64(l.order_id);
+  if (!parsed) return false;
+  const std::int64_t order_id = *parsed;
+  RestRequest rr;
+  if (symbol.empty() || !encoder_->encode_rest_query_order(symbol, order_id, venue_time_ms(), rr))
+    return false;
+  if (!rate_.can_send(rr.weight, now_ns())) return false;
+  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  std::weak_ptr<int> alive = alive_;
+  const bool queued = rest_->request(
+      "GET", target, api_headers(), {}, [this, alive, l, order_id](const net::HttpResponse& r) {
+        if (alive.expired() || !connected_) return;  // a shutdown's reset: nobody waits
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          replay_query_failed("order", r);
+          exec_replay_.looked_up(l, LookupResult::Failed);
+          return;
+        }
+        const PaddedJson padded(r.body);
+        std::int64_t oid = 0;
+        std::string_view client;
+        if (ws_api_decoder_->decode_order_ids(padded.view(), oid, client) != ParseStatus::Ok ||
+            oid != order_id) {
+          FASTMM_LOG_WARN("{}: GET order {} reply could not be read", cfg_.name, order_id);
+          exec_replay_.looked_up(l, LookupResult::Failed);
+          return;
+        }
+        const auto cl = decode_cl_ord_id(client);
+        if (!cl) {
+          exec_replay_.looked_up(l, LookupResult::NotOurs);
+          return;
+        }
+        remember_order_id(oid, *cl);
+        exec_replay_.looked_up(l, LookupResult::Named);
+      });
+  if (!queued) return false;
+  rate_.on_sent(rr.weight, now_ns());
   return true;
 }
 

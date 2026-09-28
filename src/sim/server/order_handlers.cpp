@@ -958,9 +958,10 @@ OpResult Impl::op_query_order(Account& a, const ParamList& p) {
   if (symbol.empty()) return OpResult::error(400, -1102, mandatory("symbol"));
   const auto idx = find_symbol(symbol);
   if (!idx) return OpResult::error(400, -1121, "Invalid symbol.");
-  OrderRecord* r = nullptr;
+  const OrderRecord* r = nullptr;
   if (const auto id = parse_int(p.get("orderId"))) {
     r = orders_.by_order_id(*id);
+    if (r == nullptr) r = orders_.past(*id);  // ended and traded: still answered
   } else if (p.has("origClientOrderId")) {
     r = orders_.by_client_id(a.id, *idx, p.get("origClientOrderId"));
   } else {

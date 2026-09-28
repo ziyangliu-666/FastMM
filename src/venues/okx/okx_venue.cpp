@@ -100,7 +100,8 @@ OkxVenue::OkxVenue(VenueId id, OkxVenueConfig cfg)
                      {[this] { return replay_ready(); },
                       [this] { return venue_time_ms(); },
                       [this](const ReplayQuery& q) { return query_fills(q); },
-                      [this](bool complete) { reconcile_.replay_done(complete); }},
+                      [this](bool complete) { reconcile_.replay_done(complete); },
+                      {}},  // rows carry clOrdId: no lookup,
                      [this](std::size_t, const FillRecord& f) { return emit_fill(f); });
   exec_replay_.set_streams(1);
   limits.recent_ms = kBillsRecentMs;
@@ -111,7 +112,8 @@ OkxVenue::OkxVenue(VenueId id, OkxVenueConfig cfg)
                         {[this] { return replay_ready(); },
                          [this] { return venue_time_ms(); },
                          [this](const ReplayQuery& q) { return query_bills(q); },
-                         [](bool) {}},
+                         [](bool) {},
+                         {}},
                         [this](std::size_t, const BillRecord& b) { return emit_bill(b); });
   funding_replay_.set_streams(1);
 }

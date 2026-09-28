@@ -262,7 +262,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // and a row of it forwarded as a replayed fill.
   [[nodiscard]] bool replay_ready() const noexcept;
   bool query_executions(const ReplayQuery& q);
-  bool emit_execution(std::size_t stream, const binance::MyTradeRecord& t);
+  bool emit_execution(std::size_t stream, const binance::MyTradeRow& t);
+  // GET /fapi/v1/order?orderId= for a replayed execution whose order order_ids_ does not name.
+  bool lookup_order(const ReplayLookup& l);
   // Funding (ReplayScheduler): GET /fapi/v1/income?incomeType=FUNDING_FEE, and a row forwarded
   // as a funding payment.
   bool query_funding(const ReplayQuery& q);
@@ -340,11 +342,12 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   std::string orders_body_;
   std::string positions_body_;
   // Venue order id -> the engine id it was acknowledged for: userTrades names the order by orderId
-  // only. A restarted session's orders are not in it and reach the position as unknown fills.
+  // only. One not here (a restarted process, an answer that never came) the execution replay asks
+  // the venue for (lookup_order), and keeps here.
   RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
   // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
   // read (fromId), else from the time watermark.
-  ReplayScheduler<binance::MyTradeRecord> exec_replay_;
+  ReplayScheduler<binance::MyTradeRow> exec_replay_;
   // Funding, one account-wide stream.
   ReplayScheduler<IncomeRecord> funding_replay_;
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed

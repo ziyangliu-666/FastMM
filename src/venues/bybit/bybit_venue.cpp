@@ -88,7 +88,8 @@ BybitVenue::BybitVenue(VenueId id, BybitVenueConfig cfg)
                      {[this] { return replay_ready(); },
                       [this] { return venue_time_ms(); },
                       [this](const ReplayQuery& q) { return query_executions(q); },
-                      [this](bool complete) { reconcile_.replay_done(complete); }},
+                      [this](bool complete) { reconcile_.replay_done(complete); },
+                      {}},  // rows carry orderLinkId: no lookup,
                      [this](std::size_t, const ExecRow& e) { return emit_execution(e); });
   exec_replay_.set_streams(1);
 }

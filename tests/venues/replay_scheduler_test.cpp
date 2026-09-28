@@ -1,12 +1,13 @@
 // ReplayScheduler against a fake venue: paging with rows an earlier session booked, window
 // narrowing, the watermark after an empty window and near "now", retry timing, the generation
-// after a disconnect, id cursors, windows and the history floor, the due trigger.
+// after a disconnect, id cursors, windows and the history floor, the due trigger, order lookups.
 #include "fastmm/venues/replay_scheduler.hpp"
 
 #include "test_support.hpp"
 
 #include "fastmm/net/reactor.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -420,4 +421,189 @@ TEST_CASE("replay_scheduler: a restart while a replay runs goes on from its star
   f.answer({});
   REQUIRE(f.finished.size() == 1);
   CHECK(f.finished[0]);  // the one that went on read it all
+}
+
+// ---- order lookups (Hooks::lookup) -----------------------------------------------------------
+namespace {
+
+// Rows "<key>@<order>" name an order by the venue's id; the connector can name it once `named`
+// holds it. Emitted as "<key>+" (naming its order) or "<key>-" (naming none).
+struct LookupRig {
+  ReplayScheduler<std::string> sched;
+  std::vector<ReplayQuery> queries;
+  std::vector<ReplayLookup> lookups;
+  std::vector<std::string> emitted;
+  std::vector<bool> finished;
+  std::vector<std::string> named;
+  bool can_look_up = true;
+
+  static std::string order_of(const std::string& r) {
+    const std::size_t at = r.find('@');
+    return at == std::string::npos ? std::string{} : r.substr(at + 1);
+  }
+  [[nodiscard]] bool is_named(const std::string& order) const {
+    return order.empty() || std::find(named.begin(), named.end(), order) != named.end();
+  }
+
+  explicit LookupRig(ReplayLimits limits = {}) {
+    ReplaySchedulerBase::Hooks h;
+    h.ready = [] { return true; };
+    h.now_ms = [] { return kNow; };
+    h.query = [this](const ReplayQuery& q) {
+      queries.push_back(q);
+      return true;
+    };
+    h.finished = [this](bool complete) { finished.push_back(complete); };
+    h.lookup = [this](const ReplayLookup& l) {
+      lookups.push_back(l);
+      return can_look_up;
+    };
+    sched.setup(
+        "fake",
+        "row(s)",
+        limits,
+        h,
+        [this](std::size_t, const std::string& r) {
+          emitted.push_back(r.substr(0, r.find('@')) + (is_named(order_of(r)) ? "+" : "-"));
+          return true;
+        },
+        [this](std::size_t, const std::string& r) {
+          const std::string o = order_of(r);
+          return is_named(o) ? std::string{} : o;
+        });
+    sched.set_streams(1);
+    sched.start_at(kNow - 10 * kMin);
+    sched.open(true);
+  }
+  void answer(const std::vector<std::string>& rows) {
+    ReplayPage<std::string> p;
+    std::int64_t t = queries.back().start_ms;
+    for (const std::string& r : rows) p.rows.push_back({t++, 0, r.substr(0, r.find('@')), r});
+    sched.answer(queries.back(), std::move(p));
+  }
+  // The venue's answer to the last lookup of `order`.
+  void look_up(const std::string& order, LookupResult res) {
+    for (auto it = lookups.rbegin(); it != lookups.rend(); ++it) {
+      if (it->order_id != order) continue;
+      if (res == LookupResult::Named) named.push_back(order);
+      sched.looked_up(*it, res);
+      return;
+    }
+    FAIL("no lookup of " << order);
+  }
+  void next_replay() {
+    sched.on_timer(net::Reactor::now_ns() + ReplaySchedulerBase::kRetryNs + 1'000'000);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("replay_scheduler: rows naming an order by the venue's id wait for its lookup") {
+  ReplayLimits l;
+  l.max_lookups = 2;
+  LookupRig r(l);
+  REQUIRE(r.sched.run());
+  r.answer({"a@1", "b@1", "c@2", "d@3", "e"});
+  // One lookup per order, two in this replay: 3 is over the budget.
+  REQUIRE(r.lookups.size() == 2);
+  CHECK(r.lookups[0].order_id == "1");
+  CHECK(r.lookups[1].order_id == "2");
+  CHECK(r.emitted.empty());  // the window waits
+  r.look_up("1", LookupResult::Named);
+  CHECK(r.emitted.empty());
+  r.look_up("2", LookupResult::NotOurs);
+  CHECK(r.emitted == std::vector<std::string>{"a+", "b+", "c-", "d-", "e+"});
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);        // lookups do not make a replay incomplete
+  CHECK(r.sched.held() == 1);  // d: over the budget; c's order is not ours
+  CHECK(r.sched.retry_pending());
+
+  // The next replay asks for d's order and sends d again, naming it.
+  r.next_replay();
+  REQUIRE(r.lookups.size() == 3);
+  CHECK(r.lookups[2].order_id == "3");
+  r.look_up("3", LookupResult::Named);
+  r.answer({"f@2"});  // not ours: not asked again
+  CHECK(r.lookups.size() == 3);
+  CHECK(r.emitted == std::vector<std::string>{"a+", "b+", "c-", "d-", "e+", "d+", "f-"});
+  REQUIRE(r.finished.size() == 2);
+  CHECK(r.finished[1]);
+  CHECK(r.sched.held() == 0);
+  CHECK_FALSE(r.sched.retry_pending());
+  CHECK(r.sched.lookups() == 3);
+}
+
+TEST_CASE("replay_scheduler: a failed lookup is asked again at the next replay, a few times") {
+  LookupRig r;
+  REQUIRE(r.sched.run());
+  r.answer({"a@1"});
+  REQUIRE(r.lookups.size() == 1);
+  r.look_up("1", LookupResult::Failed);
+  // Not held back: the row goes out naming no order, and its order is asked for again.
+  CHECK(r.emitted == std::vector<std::string>{"a-"});
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);
+  CHECK(r.sched.held() == 1);
+  CHECK(r.sched.retry_pending());
+  r.next_replay();
+  REQUIRE(r.lookups.size() == 2);
+  r.answer({});
+  CHECK(r.finished.size() == 1);  // the replay waits for the lookup too
+  r.look_up("1", LookupResult::Named);
+  CHECK(r.emitted == std::vector<std::string>{"a-", "a+"});
+  CHECK(r.finished.size() == 2);
+  CHECK(r.sched.held() == 0);
+
+  // One that keeps failing (or cannot be sent: no rate-limit headroom) is dropped after
+  // kMaxLookupAttempts replays.
+  LookupRig f;
+  f.can_look_up = false;
+  REQUIRE(f.sched.run());
+  f.answer({"a@7"});
+  CHECK(f.emitted == std::vector<std::string>{"a-"});
+  for (std::uint32_t i = 0; i < ReplaySchedulerBase::kMaxLookupAttempts; ++i) {
+    INFO("replay " << i);
+    CHECK(f.sched.held() == 1);
+    REQUIRE(f.sched.retry_pending());
+    f.next_replay();
+    f.answer({});
+  }
+  CHECK(f.sched.held() == 0);
+  CHECK_FALSE(f.sched.retry_pending());
+  CHECK(f.lookups.size() == 1 + ReplaySchedulerBase::kMaxLookupAttempts);
+  CHECK(f.emitted == std::vector<std::string>{"a-"});
+}
+
+TEST_CASE("replay_scheduler: a lookup never answered releases its window after kQueryTimeoutNs") {
+  LookupRig r;
+  REQUIRE(r.sched.run());
+  r.answer({"a@1", "b"});
+  REQUIRE(r.lookups.size() == 1);
+  const std::int64_t now = net::Reactor::now_ns();
+  r.sched.on_timer(now + ReplaySchedulerBase::kQueryTimeoutNs - 1'000'000'000);
+  CHECK(r.emitted.empty());
+  r.sched.on_timer(now + ReplaySchedulerBase::kQueryTimeoutNs + 1'000'000);
+  CHECK(r.emitted == std::vector<std::string>{"a-", "b+"});
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.sched.held() == 1);
+  // Its late answer is an earlier replay's: nothing moves.
+  const ReplayLookup late = r.lookups[0];
+  r.named.emplace_back("1");
+  r.sched.looked_up(late, LookupResult::Named);
+  CHECK(r.emitted.size() == 2);
+
+  // A disconnect while a window waits: nothing goes out, and the rows are read again after it.
+  LookupRig c;
+  REQUIRE(c.sched.run());
+  c.answer({"a@1"});
+  REQUIRE(c.lookups.size() == 1);
+  c.sched.close();
+  c.look_up("1", LookupResult::Named);
+  CHECK(c.emitted.empty());
+  c.sched.open(true);
+  REQUIRE(c.sched.run());
+  CHECK(c.queries.back().start_ms == c.queries.front().start_ms);
+  c.answer({"a@1"});  // named now: no lookup
+  CHECK(c.lookups.size() == 1);
+  CHECK(c.emitted == std::vector<std::string>{"a+"});
 }

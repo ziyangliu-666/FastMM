@@ -35,6 +35,15 @@
 //   * close() (disconnect) and abort() (the transport the queries went out on is gone) move the
 //     generation on: a reply to an earlier query is ignored. After close() nothing runs until
 //     open(); after abort() the retry follows.
+// Orders by the venue's id (Hooks::lookup, for a history that names an order by its venue id only,
+// as Binance's does): before a window's rows go out, those naming an order the connector cannot
+// name (the typed layer's `unnamed`) have it asked for, at most ReplayLimits::max_lookups per
+// replay, one per order, and the window waits for the answers (kQueryTimeoutNs at most). A row
+// still unnamed then (the lookup failed, timed out, or was over the budget) goes out as before,
+// naming no order, and a copy is kept (kMaxHeld): the next replay asks again and sends the row
+// once more if it is named now (the same key: the engine keeps one), kMaxLookupAttempts times at
+// most. An order the venue says is not ours (LookupResult::NotOurs) is not asked for again. Rows
+// kept past answer() must own their data.
 //
 // Reactor thread only; control path (std::function, strings), nothing per order or per market-data
 // message.
@@ -61,6 +70,21 @@ struct ReplayLimits {
   std::size_t max_pages = 100;        // pages per stream and replay
   std::int64_t settle_ms = 60'000;    // how late the venue may index a row
   std::int64_t sweep_ns = 60'000'000'000;  // a replay while all is well; 0: none
+  std::size_t max_lookups = 16;            // order lookups per replay (Hooks::lookup)
+};
+
+// An order a replayed row names by the venue's id only. The connector asks the venue for it and
+// answers ReplaySchedulerBase::looked_up(), passing it back.
+struct ReplayLookup {
+  std::uint64_t generation = 0;
+  std::size_t stream = 0;
+  std::string order_id;
+};
+
+enum class LookupResult : std::uint8_t {
+  Named,    // the connector can name the order now
+  NotOurs,  // the venue's answer names no order of FastMM's: not asked for again
+  Failed,   // transport, status, unreadable: asked again at the next replay
 };
 
 // One page to ask for. The connector sends it and answers with ReplayScheduler::answer() or
@@ -102,12 +126,18 @@ class ReplaySchedulerBase {
   static constexpr std::int64_t kQueryTimeoutNs = 30'000'000'000;
   // An open-ended window this close to window_ms gets an end: the venue's clock is not ours.
   static constexpr std::int64_t kClockSlackMs = 60'000;
+  // Rows sent naming no order that the next replays try to name, and how many times.
+  static constexpr std::size_t kMaxHeld = 256;
+  static constexpr std::uint32_t kMaxLookupAttempts = 5;
 
   struct Hooks {
     std::function<bool()> ready;                    // the venue can be asked now
     std::function<std::int64_t()> now_ms;           // venue time
     std::function<bool(const ReplayQuery&)> query;  // sends it; false: could not
     std::function<void(bool complete)> finished;    // the replay is over
+    // Optional: asks the venue for an order (ReplayLookup); false: could not (rate limit, no
+    // channel), which counts as a failed lookup.
+    std::function<bool(const ReplayLookup&)> lookup;
   };
 
   ReplaySchedulerBase(const ReplaySchedulerBase&) = delete;
@@ -128,6 +158,8 @@ class ReplaySchedulerBase {
   void on_timer(std::int64_t now_ns);
   // The query failed (transport, status, unreadable reply).
   void failed(const ReplayQuery& q);
+  // The venue's answer to a lookup. One of an earlier replay only counts for NotOurs.
+  void looked_up(const ReplayLookup& l, LookupResult r);
   // `q` is the query this replay waits for: false for a reply to one a close(), an abort() or a
   // new replay moved on from, which the connector drops without counting it.
   [[nodiscard]] bool expects(const ReplayQuery& q) const noexcept;
@@ -155,6 +187,9 @@ class ReplaySchedulerBase {
   [[nodiscard]] std::uint64_t replays() const noexcept { return replays_; }
   // Queries that got no answer within kQueryTimeoutNs.
   [[nodiscard]] std::uint64_t timeouts() const noexcept { return timeouts_; }
+  // Order lookups sent, and rows kept for the next replay to name.
+  [[nodiscard]] std::uint64_t lookups() const noexcept { return lookups_total_; }
+  [[nodiscard]] std::size_t held() const noexcept { return held_.size(); }
   [[nodiscard]] std::int64_t since_ms(std::size_t stream) const noexcept;
   [[nodiscard]] std::int64_t from_id(std::size_t stream) const noexcept;
   [[nodiscard]] const ReplayLimits& limits() const noexcept { return limits_; }
@@ -173,6 +208,13 @@ class ReplaySchedulerBase {
   void page(const ReplayQuery& q, std::vector<Entry> rows, bool more, std::string next);
   virtual bool emit_row(std::size_t stream, std::size_t ref) = 0;
   virtual void drop_rows(std::size_t stream) = 0;
+  // The venue's id of the order a row names when the connector cannot name it; empty otherwise.
+  virtual std::string unnamed_row(std::size_t stream, std::size_t ref) = 0;
+  // Rows kept for the next replay (by `id`): kept, still unnamed?, sent again, dropped.
+  virtual void hold_row(std::size_t stream, std::size_t ref, std::uint64_t id) = 0;
+  virtual std::string unnamed_held(std::uint64_t id) = 0;
+  virtual bool emit_held(std::uint64_t id) = 0;
+  virtual void drop_held(std::uint64_t id) = 0;
 
  private:
   struct Stream {
@@ -189,12 +231,43 @@ class ReplaySchedulerBase {
     std::size_t window_pages = 0;
     std::int64_t low_ms = 0;  // oldest row of the window so far (newest_first)
     std::vector<Entry> rows;  // the window so far (newest_first)
+    // The window is read and waits for this many lookups before it goes out.
+    std::size_t resolving = 0;
+    bool resolve_more = false;  // close_window's `more`, for then
   };
+  // A lookup out: the streams (or kHeldWaiter) whose rows wait for it.
+  struct Lookup {
+    std::size_t stream = 0;
+    std::string order_id;
+    std::int64_t sent_ns = 0;
+    std::vector<std::size_t> waiters;
+  };
+  // A row sent naming no order, kept to be named by a later replay.
+  struct Held {
+    std::uint64_t id = 0;
+    std::size_t stream = 0;
+    std::string key;
+    std::string order_id;
+    std::uint32_t attempts = 0;
+  };
+  static constexpr std::size_t kHeldWaiter = static_cast<std::size_t>(-1);
+  static constexpr std::size_t kMaxNotOurs = 4096;
 
   void start();
   void begin_window(std::size_t i);
   void send(std::size_t i);
   void close_window(std::size_t i, bool more);
+  void emit_window(std::size_t i, bool more);
+  bool ask_lookups(std::size_t i);
+  void ask_held();
+  void held_done();
+  // Sends the lookup of `order_id` for `waiter` unless one is out; true: the waiter waits for it.
+  bool want_lookup(std::size_t stream, const std::string& order_id, std::size_t waiter);
+  void lookup_done(const std::string& key);
+  void waiter_done(std::size_t waiter);
+  void hold(std::size_t i, const Entry& e);
+  void drop_lookups() noexcept;
+  [[nodiscard]] static std::string lookup_key(std::size_t stream, const std::string& order_id);
   void commit(Stream& s, std::int64_t read_to) const;
   void stream_done(std::size_t i, bool ok);
   void expire(std::int64_t now_ns);
@@ -222,12 +295,23 @@ class ReplaySchedulerBase {
   std::uint64_t replays_ = 0;
   std::uint64_t timeouts_ = 0;
   std::size_t emitted_ = 0;
+  // Order lookups (Hooks::lookup).
+  std::unordered_map<std::string, Lookup> lookups_;  // lookup_key -> out
+  std::unordered_set<std::string> not_ours_;         // lookup_key
+  std::vector<Held> held_;
+  std::uint64_t next_held_ = 0;
+  std::size_t held_waiting_ = 0;  // lookups the held rows wait for in this replay
+  std::size_t lookups_sent_ = 0;  // in this replay
+  std::size_t not_held_ = 0;      // rows sent naming no order past kMaxHeld, in this replay
+  std::uint64_t lookups_total_ = 0;
 };
 
 template <class Row>
 class ReplayScheduler final : public ReplaySchedulerBase {
  public:
   using Emit = std::function<bool(std::size_t stream, const Row& row)>;
+  // The venue's id of the order `row` names when the connector cannot name it, else empty.
+  using Unnamed = std::function<std::string(std::size_t stream, const Row& row)>;
 
   ReplayScheduler() = default;
   ~ReplayScheduler() = default;
@@ -236,13 +320,21 @@ class ReplayScheduler final : public ReplaySchedulerBase {
 
   // `name` and `what` for the log ("fake-okx: replayed 3 fill(s)"); `emit` forwards a row and
   // says whether it did (a row of an instrument not traded here is read, not forwarded).
-  void setup(std::string name, std::string what, ReplayLimits limits, Hooks hooks, Emit emit) {
+  // `unnamed` goes with Hooks::lookup.
+  void setup(std::string name,
+             std::string what,
+             ReplayLimits limits,
+             Hooks hooks,
+             Emit emit,
+             Unnamed unnamed = {}) {
     ReplaySchedulerBase::setup(std::move(name), std::move(what), limits, std::move(hooks));
     emit_ = std::move(emit);
+    unnamed_ = std::move(unnamed);
   }
 
   // The venue's answer to `q`. Rows of an ascending page (no token) are emitted before this
-  // returns, so they may view the reply's buffer; rows of a newest-first window must own theirs.
+  // returns, so they may view the reply's buffer, unless they wait for lookups (Hooks::lookup);
+  // rows of a newest-first window must own theirs.
   void answer(const ReplayQuery& q, ReplayPage<Row> page) {
     if (!expects(q)) return;
     if (rows_.size() < streams()) rows_.resize(streams());
@@ -264,9 +356,29 @@ class ReplayScheduler final : public ReplaySchedulerBase {
   void drop_rows(std::size_t stream) override {
     if (stream < rows_.size()) rows_[stream].clear();
   }
+  std::string unnamed_row(std::size_t stream, std::size_t ref) override {
+    if (!unnamed_ || stream >= rows_.size() || ref >= rows_[stream].size()) return {};
+    return unnamed_(stream, rows_[stream][ref]);
+  }
+  void hold_row(std::size_t stream, std::size_t ref, std::uint64_t id) override {
+    if (stream < rows_.size() && ref < rows_[stream].size())
+      held_rows_.emplace(id, std::make_pair(stream, rows_[stream][ref]));
+  }
+  std::string unnamed_held(std::uint64_t id) override {
+    const auto it = held_rows_.find(id);
+    if (it == held_rows_.end() || !unnamed_) return {};
+    return unnamed_(it->second.first, it->second.second);
+  }
+  bool emit_held(std::uint64_t id) override {
+    const auto it = held_rows_.find(id);
+    return it != held_rows_.end() && emit_ && emit_(it->second.first, it->second.second);
+  }
+  void drop_held(std::uint64_t id) override { held_rows_.erase(id); }
 
   Emit emit_;
+  Unnamed unnamed_;
   std::vector<std::vector<Row>> rows_;
+  std::unordered_map<std::uint64_t, std::pair<std::size_t, Row>> held_rows_;
 };
 
 }  // namespace fastmm::venues

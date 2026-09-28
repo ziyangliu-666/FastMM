@@ -27,6 +27,10 @@ struct Plan {
   bool shared = false;  // a and b both trade BTCUSDT ([gateway.shared]); else b trades BTCUSDC
   bool a_first = true;  // a attaches to the new gateway before b; else b's replay runs first
   std::int64_t venue_ahead_ms = 0;  // the venue's clock ahead of the host's
+  // The order that fills is one a sent last, which the venue placed and never answered (no reply,
+  // no execution report): a's store has no venue order id for it. a is killed -9 before the
+  // gateway.
+  bool unacked = false;
 };
 
 void restart_with_fill(const std::string& stem, const Plan& p) {
@@ -63,20 +67,47 @@ void restart_with_fill(const std::string& stem, const Plan& p) {
       },
       20000));
 
-  // The gateway dies; both strategies exit on its loss, and their orders stay at the venue.
+  std::string dead_order;
+  if (p.unacked) {
+    // Nothing comes back from the venue any more: a's next order (a requote) is placed there and
+    // nobody hears of it. Then a dies.
+    const std::vector<std::string> answered = fx.server.open_client_order_ids();
+    fx.server.set_user_stream_muted(true);
+    fx.server.swallow_next_ws_api_responses(1'000'000);
+    REQUIRE_MESSAGE(wait_until(
+                        [&] {
+                          for (const std::string& id : fx.server.open_client_order_ids()) {
+                            const auto cl = decode_cl_ord_id(id);
+                            if (cl && cl_ord_id_epoch(*cl) == ea && !holds(answered, id)) {
+                              dead_order = id;
+                              return true;
+                            }
+                          }
+                          return false;
+                        },
+                        20000),
+                    "a placed nothing more: " << fastmm::test::read_file(c.a.config + ".log"));
+  }
+  // The gateway dies; the strategies exit on its loss (a is killed -9 as well when its order went
+  // unanswered), and their orders stay at the venue. The gateway goes first: a's detach would have
+  // it cancel a's orders.
   REQUIRE(::kill(g.pid, SIGKILL) == 0);
+  if (p.unacked) REQUIRE(::kill(a, SIGKILL) == 0);
   CHECK(reap(g.pid) == -1);
   CHECK(reap(a) != live::kExitOk);
   CHECK(reap(b) != live::kExitOk);
+  fx.server.set_user_stream_muted(false);
+  fx.server.swallow_next_ws_api_responses(0);
   REQUIRE(wait_until(
       [&] {
         const sim::server::SimServerStats s = fx.server.stats();
         return s.md_sessions == 0 && s.api_sessions == 0 && s.user_subscriptions == 0 &&
-               open_of(fx, ea) > 0;
+               (p.unacked ? holds(fx.server.open_client_order_ids(), dead_order)
+                          : open_of(fx, ea) > 0);
       },
       10000));
-  std::string dead_order;
-  const Qty dead_fill = fill_one_of(fx, ea, &dead_order);
+  const Qty dead_fill =
+      p.unacked ? fx.server.fill_open_order(dead_order) : fill_one_of(fx, ea, &dead_order);
   REQUIRE(dead_fill.is_positive());
 
   // The new gateway: up, and its start-up sweep has cancelled the orders nobody holds.
@@ -191,6 +222,20 @@ TEST_CASE(
     "strategy and the account once") {
   // b's replay meets a's fill before a's store has seeded the account's position of BTCUSDT.
   restart_with_fill("gw-rs-own-b", Plan{false, false, 3000});
+}
+
+TEST_CASE(
+    "gateway restart: a shared instrument's fill of an order the venue never acknowledged reaches "
+    "its strategy naming the order") {
+  // The trade history names the order by the venue's id only, and neither the new gateway nor a's
+  // store has that id: the connector asks the venue for the order (GET /api/v3/order).
+  restart_with_fill("gw-rs-sh-u", Plan{true, true, 0, true});
+}
+
+TEST_CASE(
+    "gateway restart: an owned instrument's fill of an order the venue never acknowledged reaches "
+    "its strategy naming the order, another strategy's replay first") {
+  restart_with_fill("gw-rs-own-u", Plan{false, false, 0, true});
 }
 
 #endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE

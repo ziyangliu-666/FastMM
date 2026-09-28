@@ -63,10 +63,16 @@ std::size_t OrderIndex::erase_terminal() {
     if (const auto bc = by_client_.find(client_key(r.account, r.symbol, r.client_order_id));
         bc != by_client_.end() && bc->second == r.order_id)
       by_client_.erase(bc);
+    if (r.executed.is_positive()) past_.insert_or_assign(r.order_id, r);
     it = orders_.erase(it);
     ++n;
   }
   return n;
+}
+
+const OrderRecord* OrderIndex::past(std::int64_t id) const noexcept {
+  const auto it = past_.find(id);
+  return it == past_.end() ? nullptr : &it->second;
 }
 
 std::vector<OrderRecord*> OrderIndex::open_orders(AccountId account, std::int64_t symbol) {

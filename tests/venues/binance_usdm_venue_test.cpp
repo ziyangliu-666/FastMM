@@ -132,6 +132,11 @@ struct Harness {
     const std::lock_guard<std::mutex> lock(trades_mu);
     income = std::move(body);
   }
+  std::string order_reply;  // GET /fapi/v1/order answer; empty: -2013 (trades_mu)
+  void set_order_reply(std::string body) {
+    const std::lock_guard<std::mutex> lock(trades_mu);
+    order_reply = std::move(body);
+  }
 
   // The server thread reads this harness's members: stop it before they go.
   ~Harness() { srv.stop(); }
@@ -196,6 +201,15 @@ struct Harness {
       }
       const std::lock_guard<std::mutex> lock(trades_mu);
       return net::HttpServerResponse::json(200, user_trades);
+    });
+    srv.route("GET", "/fapi/v1/order", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("order", std::string(r.query));
+      const std::lock_guard<std::mutex> lock(trades_mu);
+      if (order_reply.empty())
+        return net::HttpServerResponse::json(400,
+                                             R"({"code":-2013,"msg":"Order does not exist."})");
+      return net::HttpServerResponse::json(200, order_reply);
     });
     srv.route("GET", "/fapi/v1/income", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
@@ -1124,6 +1138,34 @@ TEST_CASE("binance_usdm.venue: a failed userTrades query is retried from the hou
   CHECK(st.execution_queries >= 3);
   CHECK(st.execution_query_errors == 1);
   CHECK(st.executions_fetched >= 1);
+}
+
+TEST_CASE(
+    "binance_usdm.venue: a replayed trade of an order this process never saw acked names it") {
+  // userTrades names the order by orderId only; one the orderId map does not hold (placed by a
+  // session that died before the answer) is asked for with GET /fapi/v1/order before the fill
+  // goes out, so the fill names its client order id.
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  std::string row = user_trade(906, "70000.00", "0.001", "0.028");
+  row.replace(row.find("4293153"), 7, "5550001");
+  f.h.set_user_trades("[" + row + "]");
+  f.h.set_order_reply(
+      R"({"avgPrice":"70000.0","clientOrderId":"fm000500000007","cumQuote":"70.0","executedQty":"0.001","orderId":5550001,"origQty":"0.001","origType":"LIMIT","price":"70000.00","reduceOnly":false,"side":"BUY","positionSide":"BOTH","status":"FILLED","stopPrice":"0","closePosition":false,"symbol":"BTCUSDT","time":1789469199999,"timeInForce":"GTX","type":"LIMIT","updateTime":1789469199999,"workingType":"CONTRACT_PRICE","priceProtect":false,"priceMatch":"NONE","selfTradePreventionMode":"NONE","goodTillDate":0})");
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  const std::size_t at = index_of_fill(f.oc, "906");
+  REQUIRE(at != SIZE_MAX);
+  CHECK(at < index_of_begin(f.oc, 1));  // named, then the snapshot
+  const auto& fill = RecordingSink::as<OrderFillMsg>(f.oc.all[at]);
+  CHECK(fill.cl_ord_id == cid("fm000500000007"));
+  CHECK(fill.venue_order_id.view() == "5550001");
+  CHECK(begin_exact(f.oc, 1));
+  const auto q = f.h.srv.frames("order");
+  REQUIRE(q.size() == 1);
+  CHECK(q[0].find("orderId=5550001") != std::string::npos);
+  CHECK(q[0].find("symbol=BTCUSDT") != std::string::npos);
+  CHECK(f.h.unsigned_requests.load() == 0);
 }
 
 // ---- funding (GET /fapi/v1/income?incomeType=FUNDING_FEE) --------------------------------------

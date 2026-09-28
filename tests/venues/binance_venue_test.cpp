@@ -66,7 +66,10 @@ struct Harness {
   std::mutex trades_mu;
   // GET myTrades answers (status, body), served in order; "[]" once they run out (trades_mu).
   std::vector<std::pair<int, std::string>> trades_replies;
-  std::atomic<int> rest_open_orders{0};    // GET /api/v3/openOrders requests seen
+  std::atomic<int> rest_open_orders{0};  // GET /api/v3/openOrders requests seen
+  // GET /api/v3/order answers (status, body), served in order; 400 -2013 once they run out
+  // (trades_mu).
+  std::vector<std::pair<int, std::string>> order_replies;
   net::WsSession* user_session = nullptr;  // server thread only
 
   // The server thread reads this harness's members: stop it before they go.
@@ -110,6 +113,17 @@ struct Harness {
       if (trades_replies.empty()) return net::HttpServerResponse::json(200, "[]");
       const auto [status, body] = trades_replies.front();
       trades_replies.erase(trades_replies.begin());
+      return status == 200 ? net::HttpServerResponse::json(200, body)
+                           : net::HttpServerResponse::text(status, body);
+    });
+    srv.route("GET", "/api/v3/order", [this](const net::HttpRequest& r) {
+      srv.record("order", std::string(r.query));
+      const std::lock_guard lock(trades_mu);
+      if (order_replies.empty())
+        return net::HttpServerResponse::json(400,
+                                             R"({"code":-2013,"msg":"Order does not exist."})");
+      const auto [status, body] = order_replies.front();
+      order_replies.erase(order_replies.begin());
       return status == 200 ? net::HttpServerResponse::json(200, body)
                            : net::HttpServerResponse::text(status, body);
     });
@@ -735,10 +749,36 @@ TEST_CASE("binance.venue: a shutdown during the execution replay opens no REST c
 namespace {
 
 // One row of GET /api/v3/myTrades (rest-api.md "Account trade list").
-std::string my_trade(long long id, long long time_ms) {
-  return R"({"symbol":"BTCUSDT","id":)" + std::to_string(id) +
-         R"(,"orderId":4293153,"orderListId":-1,"price":"70000.00000000","qty":"0.00010000","quoteQty":"7.00000000","commission":"0.00000010","commissionAsset":"BTC","time":)" +
+std::string my_trade(long long id, long long time_ms, long long order_id = 4293153) {
+  return R"({"symbol":"BTCUSDT","id":)" + std::to_string(id) + R"(,"orderId":)" +
+         std::to_string(order_id) +
+         R"(,"orderListId":-1,"price":"70000.00000000","qty":"0.00010000","quoteQty":"7.00000000","commission":"0.00000010","commissionAsset":"BTC","time":)" +
          std::to_string(time_ms) + R"(,"isBuyer":true,"isMaker":true,"isBestMatch":true})";
+}
+
+// GET /api/v3/order's answer (rest-api.md "Query order").
+std::string order_object(long long order_id, const char* client_order_id) {
+  return R"({"symbol":"BTCUSDT","orderId":)" + std::to_string(order_id) +
+         R"(,"orderListId":-1,"clientOrderId":")" + client_order_id +
+         R"(","price":"70000.00000000","origQty":"0.00010000","executedQty":"0.00010000","cummulativeQuoteQty":"7.00000000","status":"FILLED","timeInForce":"GTC","type":"LIMIT_MAKER","side":"BUY","stopPrice":"0.00000000","icebergQty":"0.00000000","time":1789295199990,"updateTime":1789295199990,"isWorking":true,"workingTime":1789295199990,"origQuoteOrderQty":"0.00000000","selfTradePreventionMode":"NONE"})";
+}
+
+// The client order id order_object() gives order 555.
+ClientOrderId looked_up_id() {
+  const ClientOrderId id = decode_cl_ord_id("fm000500000007").value_or(ClientOrderId{});
+  REQUIRE(id.valid());
+  return id;
+}
+
+// The replayed fills in `c` with this trade id, in the order they came.
+std::vector<const OrderFillMsg*> replayed(const Collected& c, std::string_view exec_id) {
+  std::vector<const OrderFillMsg*> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) != EventType::OrderFill) continue;
+    const auto& f = RecordingSink::as<OrderFillMsg>(m);
+    if ((f.flags & OrderFillMsg::kReplayed) != 0 && f.exec_id.view() == exec_id) out.push_back(&f);
+  }
+  return out;
 }
 
 std::string query_param(const std::string& query, const std::string& key) {
@@ -830,6 +870,77 @@ TEST_CASE("binance.venue: a replay more than 24 hours back walks 24-hour windows
     CHECK(query_param(q[0], "endTime") == std::to_string(since + kDay - 1));
     CHECK(query_param(q[1], "startTime") == std::to_string(since + kDay));
     CHECK(query_param(q[1], "endTime").empty());
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a replayed trade of an order this process never saw acked names it") {
+  // myTrades names the order by orderId only. An order a session placed and never heard back
+  // about (it died first; behind fastmm-gateway, a gateway restarted since) is not in the orderId
+  // map, so its fill named no order. The connector now asks GET /api/v3/order, once per order,
+  // before the fill goes out; an order that is not FastMM's is asked for once.
+  Harness h;
+  const long long now = wall_now().ns / 1'000'000;
+  {
+    const std::lock_guard lock(h.trades_mu);
+    h.trades_replies = {{200,
+                         "[" + my_trade(7001, now - 2000, 555) + "," +
+                             my_trade(7002, now - 1500, 555) + "," +
+                             my_trade(7003, now - 1000, 556) + "]"}};
+    h.order_replies = {{200, order_object(555, "fm000500000007")},
+                       {200, order_object(556, "web_7f3a9c")}};
+  }
+  {
+    Resumed r(h, now - 60'000, {});
+    CHECK(r.first_exact());
+    const auto a = replayed(r.oc, "7001");
+    const auto b = replayed(r.oc, "7002");
+    const auto c = replayed(r.oc, "7003");
+    REQUIRE(a.size() == 1);
+    REQUIRE(b.size() == 1);
+    REQUIRE(c.size() == 1);
+    CHECK(a[0]->cl_ord_id == looked_up_id());
+    CHECK(b[0]->cl_ord_id == looked_up_id());
+    CHECK(a[0]->venue_order_id.view() == "555");
+    CHECK_FALSE(c[0]->cl_ord_id.valid());  // someone else's order on the account
+    const auto q = h.srv.frames("order");
+    REQUIRE(q.size() == 2);
+    CHECK(query_param(q[0], "orderId") == "555");
+    CHECK(query_param(q[0], "symbol") == "BTCUSDT");
+    CHECK(query_param(q[1], "orderId") == "556");
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a failed order lookup is asked again at the next replay") {
+  // The lookup fails: the fill goes out naming no order (as before), and the retry 5 s later asks
+  // again and sends the fill once more, naming its order; the engine keeps one of the two.
+  Harness h;
+  const long long now = wall_now().ns / 1'000'000;
+  {
+    const std::lock_guard lock(h.trades_mu);
+    h.trades_replies = {{200, "[" + my_trade(7001, now - 2000, 555) + "]"}};
+    h.order_replies = {{503, "Service Unavailable"}, {200, order_object(555, "fm000500000007")}};
+  }
+  {
+    Resumed r(h, now - 60'000, {});
+    CHECK(r.first_exact());  // every execution was read
+    {
+      const auto first = replayed(r.oc, "7001");
+      REQUIRE(first.size() == 1);
+      CHECK_FALSE(first[0]->cl_ord_id.valid());
+    }
+    REQUIRE(pump_until(
+        r.reactor,
+        [&] {
+          r.oc.take(r.orders);
+          return replayed(r.oc, "7001").size() == 2;
+        },
+        10'000));
+    const auto both = replayed(r.oc, "7001");
+    CHECK(both[1]->cl_ord_id == looked_up_id());
+    CHECK(both[1]->venue_order_id.view() == "555");
+    CHECK(h.srv.frames("order").size() == 2);
   }
   h.srv.stop();
 }

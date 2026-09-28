@@ -358,6 +358,22 @@ bool BinanceOrderEncoder::encode_rest_my_trades(std::string_view symbol,
   return finish_rest(p, out);
 }
 
+bool BinanceOrderEncoder::encode_rest_query_order(std::string_view symbol,
+                                                  std::int64_t order_id,
+                                                  std::int64_t timestamp_ms,
+                                                  RestRequest& out) {
+  if (symbol.empty() || order_id <= 0) return false;
+  ParamList p;  // sorted by name
+  p.add_int("orderId", order_id);
+  p.add_int("recvWindow", recv_window_ms_);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/api/v3/order";
+  out.weight = 4;  // rest-api.md "Query order"
+  return finish_rest(p, out);
+}
+
 bool BinanceOrderEncoder::encode_rest_commission(std::string_view symbol,
                                                  std::int64_t timestamp_ms,
                                                  RestRequest& out) {
@@ -611,6 +627,20 @@ ParseStatus BinanceWsApiDecoder::decode_open_orders(
     if (!read_open_order(o, rec)) return ParseStatus::Malformed;
     fn(rec);
   }
+  return ParseStatus::Ok;
+}
+
+ParseStatus BinanceWsApiDecoder::decode_order_ids(std::string_view json,
+                                                  std::int64_t& order_id,
+                                                  std::string_view& client_order_id) noexcept {
+  od::document doc;
+  od::object o;
+  if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS ||
+      doc.get_object().get(o) != sj::SUCCESS)
+    return ParseStatus::Malformed;
+  if (o["orderId"].get_int64().get(order_id) != sj::SUCCESS) return ParseStatus::Malformed;
+  if (o["clientOrderId"].get_string().get(client_order_id) != sj::SUCCESS)
+    return ParseStatus::Malformed;
   return ParseStatus::Ok;
 }
 
