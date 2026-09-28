@@ -63,6 +63,7 @@
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/reconcile_driver.hpp"
+#include "fastmm/venues/replay_scheduler.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -72,7 +73,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::okx {
@@ -229,16 +229,13 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   std::string check_account();
   void check_positions(std::int64_t now);
   void note_fill(const OrderFillMsg& f) noexcept;
-  // Execution replay (fills / fills-history): one window from the watermark, paged newest first
-  // with `after` = billId; emitted oldest first once the window's last page is in.
-  void start_execution_window();
-  void request_executions_page(const std::string& after);
-  void on_executions_window_done();
-  void emit_executions();
-  void finish_execution_replay(bool ok);
-  // Funding replay (bills type 8), from its own watermark.
-  void request_funding(const std::string& after);
-  void emit_funding_rows();
+  // Execution replay (ReplayScheduler over fills / fills-history) and funding (bills type 8, its
+  // own ReplayScheduler): a page asked for, a row forwarded.
+  [[nodiscard]] bool replay_ready() const noexcept;
+  bool query_fills(const ReplayQuery& q);
+  bool emit_fill(const FillRecord& f);
+  bool query_bills(const ReplayQuery& q);
+  bool emit_bill(const BillRecord& b);
   void publish_status() noexcept;
   void forget_order(ClientOrderId id) noexcept;
   [[nodiscard]] ClientOrderId current_id(ClientOrderId link) const noexcept;
@@ -311,34 +308,10 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   };
   std::array<PositionCheck, kMaxInstruments> positions_{};
 
-  // Execution replay. The watermark is the `ts` of the newest fill forwarded (inclusive); the
-  // tradeIds forwarded at exactly that time are skipped on the next pass.
-  std::int64_t exec_since_ms_ = 0;
-  std::unordered_set<std::string> exec_edge_ids_;
-  std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
-  std::vector<FillRecord> exec_rows_;               // the current window, newest first
-  std::int64_t exec_window_start_ = 0;
-  std::int64_t exec_window_end_ = 0;     // 0: open-ended
-  std::int64_t exec_window_low_ms_ = 0;  // oldest `ts` seen in the window so far
-  std::size_t exec_window_pages_ = 0;
-  std::size_t exec_requests_ = 0;
-  bool exec_history_ = false;  // this replay reads fills-history
-  bool exec_replay_active_ = false;
-  bool exec_replay_ok_ = true;
-  bool exec_retry_wanted_ = false;
-  std::int64_t exec_last_ns_ = 0;
-  std::int64_t exec_retry_ns_ = 0;
-  // Funding replay: watermark (`ts`, inclusive), the billIds forwarded at it, a query a
-  // balance_and_position funding push asked for (reactor time, 0 none).
-  std::int64_t funding_since_ms_ = 0;
-  std::unordered_set<std::string> funding_edge_ids_;
-  std::vector<BillRecord> funding_rows_;
-  std::size_t funding_pages_ = 0;
-  bool funding_archive_ = false;
-  bool funding_active_ = false;
-  bool funding_retry_wanted_ = false;
-  std::int64_t funding_retry_ns_ = 0;
-  std::int64_t funding_due_ns_ = 0;
+  // Execution replay and funding, one account-wide stream each. OKX's history has no ascending
+  // id: the watermarks are times (`ts`), and the rows read at or after them are known by id.
+  ReplayScheduler<FillRecord> exec_replay_;
+  ReplayScheduler<BillRecord> funding_replay_;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;
   ConnState trade_state_ = ConnState::Disconnected;

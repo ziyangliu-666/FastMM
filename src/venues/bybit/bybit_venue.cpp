@@ -24,8 +24,6 @@ constexpr std::int64_t kClockResyncNs = 30LL * 60 * 1'000'000'000;
 constexpr std::int64_t kDefaultCooldownNs = 10'000'000'000;
 // 50 open orders per page; more than this many pages is a runaway, not a book we can reconcile.
 constexpr std::size_t kMaxReconcilePages = 40;
-constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;  // between retries of a failed replay
-constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
 // GET /v5/execution/list: "endTime - startTime <= 7 days", "limit [1, 100]", and two years of
 // history (https://bybit-exchange.github.io/docs/v5/order/execution).
 constexpr std::int64_t kExecWindowMs = 7LL * 24 * 3600 * 1000;
@@ -78,6 +76,21 @@ BybitVenue::BybitVenue(VenueId id, BybitVenueConfig cfg)
   rate_.add_weight_bucket(0, 1'000'000'000);  // limits come from X-Bapi-Limit headers
   if (cfg_.orders_per_second > 0) rate_.add_order_bucket(cfg_.orders_per_second, 1'000'000'000);
   std::memset(scratch_, 0, sizeof scratch_);
+  ReplayLimits limits;
+  limits.window_ms = kExecWindowMs;
+  limits.history_ms = kExecHistoryMs;
+  limits.newest_first = true;
+  limits.window_pages = kMaxExecPagesPerWindow;
+  limits.max_pages = kMaxExecRequests;
+  exec_replay_.setup(cfg_.name,
+                     "execution(s)",
+                     limits,
+                     {[this] { return replay_ready(); },
+                      [this] { return venue_time_ms(); },
+                      [this](const ReplayQuery& q) { return query_executions(q); },
+                      [this](bool complete) { reconcile_.replay_done(complete); }},
+                     [this](std::size_t, const ExecRow& e) { return emit_execution(e); });
+  exec_replay_.set_streams(1);
 }
 
 BybitVenue::~BybitVenue() {
@@ -363,7 +376,8 @@ void BybitVenue::connect(net::Reactor& reactor) {
   reconcile_.open(!cfg_.dry_run && signer_.usable());
   // Nobody said where the execution replay should start, so it starts here: this session can only
   // have missed what happened after it connected.
-  if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
+  exec_replay_.start_at(venue_time_ms());
+  exec_replay_.open(!cfg_.dry_run && signer_.usable());
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
     if (!cfg_.dry_run) {
@@ -396,6 +410,7 @@ void BybitVenue::disconnect() {
   if (!connected_) return;
   connected_ = false;
   reconcile_.close();  // before the reset below: nothing it aborts asks again
+  exec_replay_.close();
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -1151,7 +1166,7 @@ void BybitVenue::request_open_orders() {
 }
 
 bool BybitVenue::replay_executions() {
-  return request_executions();
+  return exec_replay_.run();
 }
 
 // Nothing reaches the engine before every page parsed: Oms::reconcile_end() cancels every order
@@ -1334,83 +1349,42 @@ void BybitVenue::drop_shadow(ClientOrderId id) {
 
 // ---- execution replay -------------------------------------------------------------------------
 //
-// GET /v5/execution/list, account-wide for the category, before every open-order snapshot. Each
-// "Trade" row on a subscribed symbol is emitted as an ordinary fill carrying Bybit's execId, so the
-// OMS keeps the ones it never saw and drops the rest; that is what recovers a fill that finished an
-// order, which the snapshot no longer mentions. A "Funding" row (linear) is emitted as a funding
-// payment under its execId, which the engine books once whether or not the private stream
-// delivered it too. Other execTypes (AdlTrade, BustTrade, Settle, Delivery) are skipped as the
-// private stream skips them.
+// GET /v5/execution/list, account-wide for the category, before every open-order snapshot and once
+// a minute (ReplayScheduler). Each "Trade" row on a subscribed symbol is emitted as an ordinary
+// fill carrying Bybit's execId, so the OMS keeps the ones it never saw and drops the rest; that is
+// what recovers a fill that finished an order, which the snapshot no longer mentions. A "Funding"
+// row (linear) is emitted as a funding payment under its execId, which the engine books once
+// whether or not the private stream delivered it too. Other execTypes (AdlTrade, BustTrade,
+// Settle, Delivery) are skipped as the private stream skips them.
 //
-// Rows come newest first and a range may span at most 7 days, so the replay walks 7-day windows
-// from the watermark, pages each one to its last nextPageCursor, and emits the window oldest first.
-// Only then does the watermark move: to the newest row's execTime, or to the window's end when the
-// window was not the last one.
+// Rows come newest first and a range may span at most 7 days: the replay walks 7-day windows from
+// the watermark, pages each one to its last nextPageCursor, and emits the window oldest first.
 
 void BybitVenue::resume_executions(std::int64_t since_venue_ms,
                                    const std::vector<std::string>& known) {
-  exec_since_ms_ = since_venue_ms;
-  exec_edge_ids_.clear();
-  known_exec_ids_ = {known.begin(), known.end()};
+  exec_replay_.resume(since_venue_ms, known);
 }
 
 bool BybitVenue::request_executions(std::int64_t since_venue_ms) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
-  if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
-  if (exec_replay_active_) return true;
-  if (since_venue_ms > 0) {
-    exec_since_ms_ = since_venue_ms;
-    exec_edge_ids_.clear();
-  }
-  exec_last_ns_ = net::Reactor::now_ns();
-  exec_replay_active_ = true;
-  exec_replay_ok_ = true;
-  exec_requests_ = 0;
-  ++stats_.execution_queries;
-  start_execution_window();
-  return true;
+  if (since_venue_ms > 0 && !exec_replay_.active()) exec_replay_.restart_from(since_venue_ms);
+  return exec_replay_.run();
 }
 
-void BybitVenue::start_execution_window() {
-  const std::int64_t now = venue_time_ms();
-  if (exec_since_ms_ <= 0) exec_since_ms_ = now;
-  if (exec_since_ms_ < now - kExecHistoryMs) {
-    FASTMM_LOG_ERROR("{}: executions before {} are beyond Bybit's history; replaying from there",
-                     cfg_.name,
-                     now - kExecHistoryMs);
-    exec_since_ms_ = now - kExecHistoryMs;
-    exec_edge_ids_.clear();
-    exec_replay_ok_ = false;
-  }
-  exec_window_start_ = exec_since_ms_;
-  // The last window leaves its end open, so it reaches whatever the venue holds when it answers.
-  exec_window_end_ =
-      exec_window_start_ + kExecWindowMs < now ? exec_window_start_ + kExecWindowMs : 0;
-  exec_rows_.clear();
-  exec_window_pages_ = 0;
-  exec_window_low_ms_ = 0;
-  request_executions_page({});
+bool BybitVenue::replay_ready() const noexcept {
+  return !cfg_.dry_run && connected_ && signer_.usable() && rest_ != nullptr &&
+         !rest_hard_stopped_ && !subscribed_.empty();
 }
 
-void BybitVenue::request_executions_page(const std::string& cursor) {
-  if (++exec_requests_ > kMaxExecRequests) {
-    FASTMM_LOG_WARN("{}: execution replay stopped after {} requests; it continues later",
-                    cfg_.name,
-                    kMaxExecRequests);
-    finish_execution_replay(false);
-    return;
-  }
+bool BybitVenue::query_executions(const ReplayQuery& q) {
   RestRequest rr;
-  if (rest_ == nullptr || !encoder_->encode_rest_executions(
-                              exec_window_start_, exec_window_end_, kExecPageLimit, cursor, rr)) {
-    finish_execution_replay(false);
-    return;
-  }
+  if (rest_ == nullptr || rest_hard_stopped_ ||
+      !encoder_->encode_rest_executions(q.start_ms, q.end_ms, kExecPageLimit, q.page, rr))
+    return false;
   const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
   std::weak_ptr<int> alive = alive_;
   const bool queued =
-      rest_->request("GET", rr.target(), headers, {}, [this, alive](const net::HttpResponse& r) {
-        if (alive.expired()) return;
+      rest_->request("GET", rr.target(), headers, {}, [this, alive, q](const net::HttpResponse& r) {
+        if (alive.expired() || !exec_replay_.expects(q)) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
@@ -1422,33 +1396,31 @@ void BybitVenue::request_executions_page(const std::string& cursor) {
               cfg_.name,
               r.status,
               net::to_string(r.error));
-          finish_execution_replay(false);
+          exec_replay_.failed(q);
           return;
         }
-        std::string next_cursor;
+        ReplayPage<ExecRow> page;
         const PaddedJson padded(r.body);
         const ParseStatus st =
-            decoder_->decode_executions(padded.view(), next_cursor, [&](const ExecutionRecord& e) {
-              if (exec_window_low_ms_ == 0 || e.exec_time_ms < exec_window_low_ms_)
-                exec_window_low_ms_ = e.exec_time_ms;
+            decoder_->decode_executions(padded.view(), page.next, [&](const ExecutionRecord& e) {
               const bool funding =
                   e.exec_type == "Funding" && cfg_.category == BybitCategory::Linear;
-              if (e.exec_type != "Trade" && !funding) return;
-              const InstrumentId inst = symbols_->find(id_, e.symbol);
-              if (!inst.valid()) return;  // another symbol on this account: not ours
-              exec_rows_.push_back(ExecRow{inst,
-                                           std::string(e.exec_id),
-                                           std::string(e.order_id),
-                                           std::string(e.order_link_id),
-                                           std::string(e.exec_price),
-                                           std::string(e.exec_qty),
-                                           std::string(e.exec_fee),
-                                           std::string(e.fee_currency),
-                                           std::string(e.fee_rate),
-                                           e.exec_time_ms,
-                                           e.side == "Sell" ? Side::Sell : Side::Buy,
-                                           e.is_maker,
-                                           funding});
+              ExecRow row{symbols_->find(id_, e.symbol),
+                          std::string(e.exec_id),
+                          std::string(e.order_id),
+                          std::string(e.order_link_id),
+                          std::string(e.exec_price),
+                          std::string(e.exec_qty),
+                          std::string(e.exec_fee),
+                          std::string(e.fee_currency),
+                          std::string(e.fee_rate),
+                          e.exec_time_ms,
+                          e.side == "Sell" ? Side::Sell : Side::Buy,
+                          e.is_maker,
+                          e.exec_type == "Trade",
+                          funding};
+              std::string key = funding ? std::string(kFundingIdPrefix) + row.exec_id : row.exec_id;
+              page.rows.push_back({e.exec_time_ms, 0, std::move(key), std::move(row)});
             });
         if (st != ParseStatus::Ok) {
           ++stats_.rest_errors;
@@ -1456,133 +1428,77 @@ void BybitVenue::request_executions_page(const std::string& cursor) {
           FASTMM_LOG_ERROR("{}: execution/list reply rejected ({}); its executions are not booked",
                            cfg_.name,
                            st == ParseStatus::Error ? "retCode != 0" : "malformed");
-          finish_execution_replay(false);
+          exec_replay_.failed(q);
           return;
         }
-        if (next_cursor.empty()) {
-          on_executions_window_done();
-          return;
-        }
-        if (++exec_window_pages_ < kMaxExecPagesPerWindow) {
-          request_executions_page(next_cursor);
-          return;
-        }
-        // Too many rows for one window: what was read is its newest part. Read the window again
-        // up to its oldest row seen, so that it can still be emitted oldest first.
-        if (exec_window_low_ms_ <= exec_window_start_) {
-          finish_execution_replay(false);
-          return;
-        }
-        exec_window_end_ = exec_window_low_ms_;
-        exec_rows_.clear();
-        exec_window_pages_ = 0;
-        exec_window_low_ms_ = 0;
-        request_executions_page({});
+        page.more = !page.next.empty();
+        exec_replay_.answer(q, std::move(page));
       });
   if (!queued) {
     ++stats_.execution_query_errors;
     FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
-    finish_execution_replay(false);
   }
+  return queued;
 }
 
-void BybitVenue::on_executions_window_done() {
-  emit_executions();
-  if (exec_window_end_ > 0) {
-    start_execution_window();
-    return;
-  }
-  finish_execution_replay(true);
-}
-
-void BybitVenue::emit_executions() {
-  // Received newest first; reversed, rows with equal times keep the venue's order.
-  std::reverse(exec_rows_.begin(), exec_rows_.end());
-  std::stable_sort(exec_rows_.begin(), exec_rows_.end(), [](const ExecRow& a, const ExecRow& b) {
-    return a.time_ms < b.time_ms;
-  });
-  std::size_t count = 0;
-  for (const ExecRow& e : exec_rows_) {
-    if (exec_edge_ids_.count(e.exec_id) != 0) continue;  // forwarded by the last pass
-    if (e.funding) {
-      if (known_exec_ids_.count(std::string(kFundingIdPrefix) + e.exec_id) != 0) continue;
-      const auto fee = parse_notional(e.fee);
-      if (!fee) {
-        FASTMM_LOG_WARN("{}: funding {} has an unreadable execFee", cfg_.name, e.exec_id);
-        continue;
-      }
-      const Instrument& in = instruments_->get(e.inst);
-      emit_funding(*order_sink_,
-                   id_,
-                   e.inst,
-                   e.exec_id,
-                   Notional{} - *fee,
-                   e.fee_currency.empty() ? in.settlement_ccy() : std::string_view(e.fee_currency),
-                   e.time_ms,
-                   /*replayed=*/true);
-      ++stats_.order_events;
-      ++stats_.funding_fetched;
-      continue;
+bool BybitVenue::emit_execution(const ExecRow& e) {
+  if (!e.inst.valid() || (!e.trade && !e.funding)) return false;  // not ours, or not a fill
+  const Instrument& in = instruments_->get(e.inst);
+  if (e.funding) {
+    const auto fee = parse_notional(e.fee);
+    if (!fee) {
+      FASTMM_LOG_WARN("{}: funding {} has an unreadable execFee", cfg_.name, e.exec_id);
+      return false;
     }
-    if (known_exec_ids_.count(e.exec_id) != 0) continue;  // the earlier session booked it
-    const auto px = parse_price(e.price);
-    const auto qty = parse_qty(e.qty);
-    if (!px || !qty) {
-      FASTMM_LOG_WARN("{}: execution {} has an unreadable price or quantity", cfg_.name, e.exec_id);
-      continue;
-    }
-    Notional fee{};
-    if (!e.fee.empty()) {
-      if (const auto f = parse_notional(e.fee)) fee = *f;
-    }
-    const Instrument& in = instruments_->get(e.inst);
-    ClientOrderId cl{};
-    if (const auto id = decode_cl_ord_id(e.order_link_id)) cl = current_id(*id);
-    emit_replayed_fill(*order_sink_,
-                       id_,
-                       e.inst,
-                       cl,
-                       e.order_id,
-                       e.exec_id,
-                       e.side,
-                       *px,
-                       *qty,
-                       fee,
-                       fee_asset_of(in,
-                                    fee,
-                                    e.fee_currency,
-                                    e.fee_rate,
-                                    e.side,
-                                    e.maker,
-                                    cfg_.category == BybitCategory::Linear),
-                       e.maker ? Liquidity::Maker : Liquidity::Taker,
-                       e.time_ms);
+    emit_funding(*order_sink_,
+                 id_,
+                 e.inst,
+                 e.exec_id,
+                 Notional{} - *fee,
+                 e.fee_currency.empty() ? in.settlement_ccy() : std::string_view(e.fee_currency),
+                 e.time_ms,
+                 /*replayed=*/true);
     ++stats_.order_events;
-    ++stats_.executions_fetched;
-    ++count;
-    // Not added to positions_[].tracked: most replayed rows are fills the stream already
-    // delivered, which the OMS drops. A reconciliation resets `tracked` to the venue's position,
-    // and a periodic replay that booked a missed fill ends in one correction to the same value.
+    ++stats_.funding_fetched;
+    return true;
   }
-  // The watermark moves to the newest row read, or to the end of a window that was not the last.
-  std::int64_t since = exec_since_ms_;
-  if (!exec_rows_.empty()) since = std::max(since, exec_rows_.back().time_ms);
-  if (exec_window_end_ > 0) since = std::max(since, exec_window_end_);
-  if (since != exec_since_ms_) exec_edge_ids_.clear();
-  exec_since_ms_ = since;
-  for (const ExecRow& e : exec_rows_) {
-    if (e.time_ms == since) exec_edge_ids_.insert(e.exec_id);
+  const auto px = parse_price(e.price);
+  const auto qty = parse_qty(e.qty);
+  if (!px || !qty) {
+    FASTMM_LOG_WARN("{}: execution {} has an unreadable price or quantity", cfg_.name, e.exec_id);
+    return false;
   }
-  exec_rows_.clear();
-  if (count > 0) FASTMM_LOG_INFO("{}: replayed {} execution(s)", cfg_.name, count);
-}
-
-void BybitVenue::finish_execution_replay(bool ok) {
-  if (!ok) exec_replay_ok_ = false;
-  exec_replay_active_ = false;
-  exec_rows_.clear();
-  if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  reconcile_.replay_done(exec_replay_ok_);
+  Notional fee{};
+  if (!e.fee.empty()) {
+    if (const auto f = parse_notional(e.fee)) fee = *f;
+  }
+  ClientOrderId cl{};
+  if (const auto id = decode_cl_ord_id(e.order_link_id)) cl = current_id(*id);
+  emit_replayed_fill(*order_sink_,
+                     id_,
+                     e.inst,
+                     cl,
+                     e.order_id,
+                     e.exec_id,
+                     e.side,
+                     *px,
+                     *qty,
+                     fee,
+                     fee_asset_of(in,
+                                  fee,
+                                  e.fee_currency,
+                                  e.fee_rate,
+                                  e.side,
+                                  e.maker,
+                                  cfg_.category == BybitCategory::Linear),
+                     e.maker ? Liquidity::Maker : Liquidity::Taker,
+                     e.time_ms);
+  ++stats_.order_events;
+  ++stats_.executions_fetched;
+  // Not added to positions_[].tracked: most replayed rows are fills the stream already delivered,
+  // which the OMS drops. A reconciliation resets `tracked` to the venue's position, and a periodic
+  // replay that booked a missed fill ends in one correction to the same value.
+  return true;
 }
 
 void BybitVenue::request_server_time() {
@@ -1691,20 +1607,10 @@ void BybitVenue::on_timer(std::int64_t now) {
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
   reconcile_.on_timer(now);
-  // A replay that could not be completed left fills unaccounted for, and the next reconnect may be
-  // hours away. Ask again until the venue answers; the watermark only moved past what was booked.
-  if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
-    exec_retry_ns_ = now;
-    exec_retry_wanted_ = false;
-    static_cast<void>(request_executions());
-  }
-  // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers a
-  // bounded number of executions, so a reconnect after hours of streaming would replay more than
-  // it can recognise. A replay a minute keeps that short, and books a fill the private stream
-  // dropped without disconnecting.
-  if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs) {
-    static_cast<void>(request_executions());
-  }
+  // The execution replay: a retry 5 s after an incomplete one (the next reconnect may be hours
+  // away), and one a minute while all is well, which keeps the watermark within what the OMS can
+  // deduplicate and books a fill the private stream dropped without disconnecting.
+  exec_replay_.on_timer(now);
   if (cfg_.category == BybitCategory::Linear) check_positions(now);
   publish_status();
   raw_md_.flush();
@@ -1728,7 +1634,7 @@ void BybitVenue::note_fill(const OrderFillMsg& f) noexcept {
 }
 
 void BybitVenue::check_positions(std::int64_t now) {
-  if (order_sink_ == nullptr || reconcile_.busy() || exec_replay_active_) return;
+  if (order_sink_ == nullptr || reconcile_.busy() || exec_replay_.active()) return;
   for (InstrumentId id : subscribed_) {
     PositionCheck& p = positions_[id.value];
     if (!p.pending || now - p.last_event_ns < kPositionSettleNs) continue;
@@ -1755,6 +1661,7 @@ void BybitVenue::check_positions(std::int64_t now) {
 
 void BybitVenue::publish_status() noexcept {
   stats_.shadows_swept = reconcile_.shadows_swept();
+  stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;

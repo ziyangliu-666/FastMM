@@ -875,7 +875,8 @@ TEST_CASE("bybit.venue: execution/list pages are followed and emitted oldest fir
                  exec_row("ex-2", "fm000100000001", "60002", "0", kT + 2)},
                 "cur-2"),
       exec_page({exec_row("ex-1", "fm000100000001", "60001", "0", kT + 1)}, ""),
-      // The next replay starts at the newest execTime seen: ex-3 comes back and is not repeated.
+      // The next replay starts no later than the newest execTime seen: ex-3 comes back and is
+      // not repeated.
       exec_page({exec_row("ex-4", "fm000100000001", "60004", "0", kT + 4),
                  exec_row("ex-3", "fm000100000001", "60003", "0", kT + 3)},
                 "")};
@@ -911,7 +912,9 @@ TEST_CASE("bybit.venue: execution/list pages are followed and emitted oldest fir
     CHECK(fills[3]->exec_id.view() == "ex-4");
     queries = h.srv.frames("executions");
     REQUIRE(queries.size() == 3);
-    CHECK(param(queries[2], "startTime") == std::to_string(kT + 3));
+    // Not past the first replay's start less the settle margin (the rows here are dated after
+    // the fake's clock): what was read after it is known by execId.
+    CHECK(std::stoll(param(queries[2], "startTime")) <= kT + 3);
     CHECK(queries[2].find("cursor=") == std::string::npos);
   }
   h.srv.stop();
@@ -960,8 +963,14 @@ TEST_CASE("bybit.venue: a failed execution query is retried from the housekeepin
       return l.oc.count(EventType::Reconcile) == 3;
     }));
     CHECK(l.oc.count(EventType::OrderFill) == 0);
-    // No reconnect and no new reconciliation: the timer asks again and books the fill.
+    const std::int64_t failed = net::Reactor::now_ns();
+    // Not on the next tick: 5 s after the failure, as every connector (only OKX waited before;
+    // the others asked again on the next tick, into the rate limit that may have failed it).
     l.venue->on_timer(net::Reactor::now_ns());
+    l.spin(10);
+    if (net::Reactor::now_ns() - failed < 3'000'000'000) CHECK(h.executions_calls.load() == 1);
+    // No reconnect and no new reconciliation: the timer asks again and books the fill.
+    l.venue->on_timer(net::Reactor::now_ns() + 6'000'000'000);
     REQUIRE(pump_until(l.reactor, [&] {
       l.oc.take(l.orders);
       return l.oc.count(EventType::OrderFill) == 1;
@@ -1025,9 +1034,34 @@ TEST_CASE("bybit.venue: a replay longer than 7 days walks 7-day windows") {
     const auto queries = h.srv.frames("executions");
     REQUIRE(queries.size() == 2);
     CHECK(param(queries[0], "startTime") == std::to_string(since));
-    CHECK(param(queries[0], "endTime") == std::to_string(since + week));
+    CHECK(param(queries[0], "endTime") == std::to_string(since + week - 1));  // inclusive
     CHECK(param(queries[1], "startTime") == std::to_string(since + week));
     CHECK(queries[1].find("endTime") == std::string::npos);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a replay that finds nothing still moves its watermark") {
+  // Bybit kept the watermark where it was when the history had nothing new, so a quiet account
+  // asked from its connect time for ever (7-day windows after a week, the 2-year floor after
+  // two); OKX moved it. Now every venue moves it to the replay's start less the settle margin.
+  Harness h;
+  std::int64_t since = 0;
+  {
+    Live l(h, h.section(true), [&](BybitVenue& v) {
+      since = v.venue_time_ms() - 3'600'000;
+      v.resume_executions(since, {});
+    });
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::Reconcile) == 3;
+    }));
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] { return h.executions_calls.load() == 2; }));
+    const auto queries = h.srv.frames("executions");
+    REQUIRE(queries.size() == 2);
+    CHECK(param(queries[0], "startTime") == std::to_string(since));
+    CHECK(std::stoll(param(queries[1], "startTime")) > since + 1'800'000);
   }
   h.srv.stop();
 }

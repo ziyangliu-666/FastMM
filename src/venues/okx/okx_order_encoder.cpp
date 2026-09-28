@@ -219,8 +219,12 @@ void OkxOrderEncoder::encode_rest_fills(bool history,
   out.is_order = false;
 }
 
-void OkxOrderEncoder::encode_rest_funding_bills(
-    bool archive, std::int64_t begin_ms, std::string_view after, int limit, RestRequest& out) {
+void OkxOrderEncoder::encode_rest_funding_bills(bool archive,
+                                                std::int64_t begin_ms,
+                                                std::int64_t end_ms,
+                                                std::string_view after,
+                                                int limit,
+                                                RestRequest& out) {
   out.method = "GET";
   out.path = archive ? "/api/v5/account/bills-archive?instType=SWAP&type=8"
                      : "/api/v5/account/bills?instType=SWAP&type=8";
@@ -229,6 +233,7 @@ void OkxOrderEncoder::encode_rest_funding_bills(
     out.path += after;
   }
   if (begin_ms > 0) out.path += "&begin=" + std::to_string(begin_ms);
+  if (end_ms > 0) out.path += "&end=" + std::to_string(end_ms);
   out.path += "&limit=" + std::to_string(limit);
   out.body.clear();
   out.is_order = false;

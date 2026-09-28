@@ -124,9 +124,14 @@ class OkxOrderEncoder {
                                 std::string_view after,
                                 int limit,
                                 RestRequest& out);
-  // GET /api/v5/account/bills (7 days) or bills-archive (3 months), type 8 (funding fee).
-  static void encode_rest_funding_bills(
-      bool archive, std::int64_t begin_ms, std::string_view after, int limit, RestRequest& out);
+  // GET /api/v5/account/bills (7 days) or bills-archive (3 months), type 8 (funding fee), newest
+  // first; `begin_ms` and `end_ms` (0 = open) filter on `ts`.
+  static void encode_rest_funding_bills(bool archive,
+                                        std::int64_t begin_ms,
+                                        std::int64_t end_ms,
+                                        std::string_view after,
+                                        int limit,
+                                        RestRequest& out);
   static void encode_rest_positions(RestRequest& out);
   static void encode_rest_account_config(RestRequest& out);
 

@@ -1184,9 +1184,12 @@ TEST_CASE("binance_usdm.venue: funding on the user stream is booked from the inc
   REQUIRE(f.pump([&] { return f.h.income_queries.load() == 3; }, 8000));
   idle(f.reactor, 100);
   CHECK(funding_of(f.oc).size() == 1);
-  // The next query asks from the payment's millisecond on.
-  CHECK(f.h.srv.frames("income").back().find("startTime=" + std::to_string(t)) !=
-        std::string::npos);
+  // The next query asks from no later than the payment's millisecond: the watermark stays the
+  // settle margin behind the query before it, and the payment is known by its id.
+  const std::string last = f.h.srv.frames("income").back();
+  const std::size_t at = last.find("startTime=");
+  REQUIRE(at != std::string::npos);
+  CHECK(std::stoll(last.substr(at + 10)) <= t);
   CHECK(f.h.unsigned_requests.load() == 0);
   REQUIRE(f.pump([&] { return f.venue->status().funding_fetched == 1; }));
 }
@@ -1224,6 +1227,23 @@ TEST_CASE("binance_usdm.venue: a restart replays funding from its store's resume
   const auto got = funding_of(f.oc);
   REQUIRE(got.size() == 1);
   CHECK(got[0]->funding_id.view() == "700002");
+}
+
+TEST_CASE("binance_usdm.venue: an empty last income window moves the funding watermark") {
+  // USD-M left its funding watermark where it was after an empty last window (OKX moved it), so
+  // every later query asked from the connect time, and after a week in windows. Now it moves to
+  // the query's start less the settle margin, as the execution replays do.
+  const long long since = wall_now().ns / 1'000'000 - 3'600'000;
+  DmsFixture f(0, [&](BinanceUsdmVenue& v) { v.resume_executions(since, {}); });
+  wait_started(f);
+  f.h.srv.send_to(kPrivatePath, funding_event(since + 1));
+  REQUIRE(f.pump([&] { return f.h.income_queries.load() == 2; }, 8000));
+  const auto q = f.h.srv.frames("income");
+  REQUIRE(q.size() == 2);
+  CHECK(q[0].find("startTime=" + std::to_string(since)) != std::string::npos);
+  const std::size_t at = q[1].find("startTime=");
+  REQUIRE(at != std::string::npos);
+  CHECK(std::stoll(q[1].substr(at + 10)) > since + 1'800'000);
 }
 
 TEST_CASE("binance_usdm.venue: a failed income query is asked again from the timer") {

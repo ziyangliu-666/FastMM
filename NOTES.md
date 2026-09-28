@@ -18,14 +18,56 @@ REST connection during shutdown; USD-M and Bybit give up on 418/429 in the kill-
 USD-M's offline reference-data path skips its account checks (hedge-mode refusal).
 
 **Plan.** Each extraction keeps the connector tests green and adds a test per closed divergence.
-1. `ReconcileDriver`: open-orders snapshot vs the OMS, generation, in-flight/again, retry,
+All three done (2026-09-28), entries below.
+1. Done. `ReconcileDriver`: open-orders snapshot vs the OMS, generation, in-flight/again, retry,
    start-up sweep, shadow sweep, Begin/End, the exact flag. Venue hooks: fetch snapshot, rows.
-2. Blocking control helper (kill-path cancel-all, countdown stops, bounded 418/429 retry),
+2. Done. Blocking control helper (kill-path cancel-all, countdown stops, bounded 418/429 retry),
    `CountdownDriver` over `CountdownSwitch`, and `SentWatermark` losing only WebSocket-sent orders.
-3. `ReplayScheduler`: windows, cursors, edge ids, watermark settle, retry/sweep timers, shared by
+3. Done. `ReplayScheduler`: windows, cursors, edge ids, watermark settle, retry/sweep timers, shared by
    execution replay and funding. After 1.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
+
+**Connector machinery step 3: `ReplayScheduler` (2026-09-28).** `venues/replay_scheduler.hpp`
+runs the execution replay of all five connectors and the USD-M income and OKX bills funding
+queries. It owns the streams (a symbol, a currency, the account), windows (length, history floor,
+Deribit's history window ending where the recent one starts), paging (oldest first from the newest
+row or the id after the highest; newest first by the venue's token, a window re-read up to its
+oldest row after 20 pages), the watermark and the keys read at or after it, the known ids of a
+restart, one generation (`close()`, `abort()`, `expects(q)`), retry, sweep and `due_in()`. Hooks:
+ready, venue time, `query(q)` answered by `answer(q, page)` or `failed(q)`, `emit(row)`, `finished`.
+Endpoints, parsing and what a row becomes stay in the connectors. Lines, venue cpp + hpp: Spot
+-166 +103, USD-M -322 +192, Bybit -245 +140, OKX -343 +163, Deribit -194 +109; scheduler +584.
+Decisions: (a) Watermark: moves to the end of what a replay read in full, never past the replay's
+start less a settle margin (60 s, OKX its 5 min), rows found or not; the rows read at or after it
+are known by key. The margin is for an execution the history shows only after the query ran,
+with a time before it. Before, Bybit, OKX and USD-M jumped to the newest row (a late row older
+than it was never asked for), Bybit and USD-M funding stayed put when nothing came (a quiet account
+asked from its connect time for ever, in 7-day windows after a week), OKX and Deribit settled only
+the empty case. Cost: the last margin's rows are read again each replay (on Bybit and OKX a page
+more at over 100 fills a minute); Binance's fromId cursor is not affected. (b) Retry 5 s after the
+replay ended, OKX's rule: the others asked again on the next tick, into the rate limit that may
+have failed it. (c) A page is full by the rows returned (Spot counted forwarded ones, so a known id
+made a full page pass for the last), and the next page is asked in the same replay (Spot and USD-M
+waited for the retry). (d) Spot's 24 h is a window, not a lookback: an older start walks 24 h
+windows (it was clamped to 24 h ago, never exact, the trades before lost); the encoder takes
+`endTime`. (e) Deribit's recent query starts after the history window: no overlap, no per-replay
+seen set. (f) Generation: step 1 had closed Spot's REST connection at shutdown, but an aborted
+myTrades reply still counted as an error and scheduled a retry; every reply now checks
+`expects(q)`. (g) Funding has its own scheduler: with every reconciliation's replay, once a minute
+(it rode the execution sweep), 1 s after a stream event. Tests: scheduler units (10); failing on the
+old code (6): Spot full page with a known id and the second page failing (old: exact, no second
+page), Spot 24 h windows, Spot aborted reply not an error, Bybit no retry on the next tick, Bybit
+and USD-M funding empty replays move the watermark. Changed tests: the Spot harness's exchangeInfo
+`serverTime` is now (the 2026-09-13 fixture put the replay start 15 days back); Bybit, OKX, Deribit
+and USD-M funding "next query starts at the newest row" now check "no later than" (settle); Bybit's
+retry test ticks 6 s later and its window ends at start + 7 d - 1 ms; OKX's second funding bill is
+dated now, not 15 days back; Deribit's history test has no overlap. Full ctest (werror): 1330
+passed; integration recovery_*, xmm_*, gateway_*, store restart and gateway funding (63)
+green 3 times; clang-tidy-18: no bugprone or performance finding in the changed files. Left: a
+Deribit query never answered keeps the replay active until the connection drops (as before);
+Binance allows 10 pages a symbol per replay, so a long outage is read over several retries 5 s
+apart.
 
 **Connector machinery step 2: blocking control, countdown driver, watermark (2026-09-28).**
 (a) `BlockingControl` (venues/blocking_control.hpp): one BlockingHttp from the connector config,

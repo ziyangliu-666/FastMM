@@ -848,13 +848,14 @@ TEST_CASE("deribit.venue: a fill the private stream missed is booked at reconcil
   CHECK(st.executions_fetched == 1);
   CHECK(st.execution_query_errors == 0);
 
-  // The next reconciliation starts at T1's timestamp and does not replay it again.
+  // The next reconciliation starts no later than T1's timestamp (the watermark stays the settle
+  // margin behind the replay before) and does not replay it again.
   s.h.set_trades([](std::int64_t start, bool) {
     return trades_page({trade_row("T1", start, "0.0055", "1.0", "0.0003")}, false);
   });
   static_cast<void>(s.reconcile());
   CHECK(s.replayed_ids().size() == 1);
-  CHECK(s.h.queries().back().start == q[0].start + 5);
+  CHECK(s.h.queries().back().start <= q[0].start + 5);
 }
 
 TEST_CASE("deribit.venue: the execution replay follows has_more across pages") {
@@ -938,10 +939,8 @@ TEST_CASE("deribit.venue: a replay reaching back past 24 h asks the history firs
       return trades_page({trade_row("T1", start + 1, "0.0055", "0.1", "0"),
                           trade_row("T2", start + 2, "0.0055", "0.1", "0")},
                          false);
-    // The last 24 h overlap the history's last hour: T2 is answered twice.
-    return trades_page({trade_row("T2", start, "0.0055", "0.1", "0"),
-                        trade_row("T3", start + 1, "0.0055", "0.1", "0")},
-                       false);
+    // The last 24 h, from where the history window ended.
+    return trades_page({trade_row("T3", start + 1, "0.0055", "0.1", "0")}, false);
   });
   const ReconcileMsg* begin = s.reconcile();
   REQUIRE(begin != nullptr);
@@ -953,8 +952,8 @@ TEST_CASE("deribit.venue: a replay reaching back past 24 h asks the history firs
   CHECK(q[0].end <= venue_now - 22 * kHour);
   CHECK(q[0].end >= venue_now - 24 * kHour);
   CHECK_FALSE(q[1].historical);
-  CHECK(q[1].start == q[0].start + 2);
-  // T1 was booked by the session resumed from; T2 once.
+  CHECK(q[1].start == q[0].end + 1);
+  // T1 was booked by the session resumed from.
   CHECK(s.replayed_ids() == std::vector<std::string>{"T2", "T3"});
 }
 

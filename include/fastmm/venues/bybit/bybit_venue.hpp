@@ -44,6 +44,7 @@
 #include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/raw_recorder.hpp"
 #include "fastmm/venues/reconcile_driver.hpp"
+#include "fastmm/venues/replay_scheduler.hpp"
 #include "fastmm/venues/rest_channel.hpp"
 #include "fastmm/venues/venue.hpp"
 
@@ -53,7 +54,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace fastmm::venues::bybit {
@@ -217,13 +217,12 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   void drop_shadow(ClientOrderId id) override;
   // Every page is in: the position rows (linear), then the driver emits the snapshot.
   void finish_snapshot(std::uint64_t generation);
-  // Execution replay (GET /v5/execution/list): one window of at most 7 days at a time, paged
-  // with nextPageCursor; a window's rows are emitted oldest first once its last page is in.
-  void start_execution_window();
-  void request_executions_page(const std::string& cursor);
-  void on_executions_window_done();
-  void emit_executions();
-  void finish_execution_replay(bool ok);
+  // Execution replay (ReplayScheduler): GET /v5/execution/list, a window of at most 7 days paged
+  // with nextPageCursor, and a row of it forwarded as a replayed fill or a funding payment.
+  [[nodiscard]] bool replay_ready() const noexcept;
+  bool query_executions(const ReplayQuery& q);
+  struct ExecRow;
+  bool emit_execution(const ExecRow& e);
   void publish_status() noexcept;
   void note_rate_headers(const net::HttpResponse& r);
   void forget_order(ClientOrderId id) noexcept;
@@ -297,11 +296,10 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   };
   std::array<PositionCheck, kMaxInstruments> positions_{};
 
-  // Execution replay. Bybit's history has no ascending id, so the watermark is the venue time of
-  // the newest execution seen (inclusive); the ids seen at exactly that time are skipped on the
-  // next pass. It starts at connect(), or where resume_executions() says.
+  // A row of GET /v5/execution/list. Bybit's history has no ascending id: the replay's watermark is
+  // a time, and the rows read at or after it are known by execId.
   struct ExecRow {
-    InstrumentId inst;
+    InstrumentId inst;  // invalid: a symbol not traded here
     std::string exec_id;
     std::string order_id;
     std::string order_link_id;
@@ -313,22 +311,12 @@ class BybitVenue final : public Venue, private ReconcileHooks {
     std::int64_t time_ms = 0;
     Side side = Side::Buy;
     bool maker = false;
-    bool funding = false;  // execType Funding: `fee` is the funding fee, positive paid
+    bool trade = false;    // execType Trade
+    bool funding = false;  // execType Funding (linear): `fee` is the funding fee, positive paid
   };
-  std::int64_t exec_since_ms_ = 0;
-  std::unordered_set<std::string> exec_edge_ids_;   // ids at exec_since_ms_, already forwarded
-  std::unordered_set<std::string> known_exec_ids_;  // booked by an earlier session
-  std::vector<ExecRow> exec_rows_;                  // the current window, newest first as received
-  std::int64_t exec_window_start_ = 0;
-  std::int64_t exec_window_end_ = 0;     // 0: open-ended (the last window)
-  std::int64_t exec_window_low_ms_ = 0;  // oldest row seen in the window so far
-  std::size_t exec_window_pages_ = 0;
-  std::size_t exec_requests_ = 0;  // pages asked for by this replay
-  bool exec_replay_active_ = false;
-  bool exec_replay_ok_ = true;
-  bool exec_retry_wanted_ = false;  // the last replay was incomplete: ask again from on_timer
-  std::int64_t exec_last_ns_ = 0;   // when the last replay started (the periodic one)
-  std::int64_t exec_retry_ns_ = 0;
+  // The account's executions for the category, one stream; from connect(), or where
+  // resume_executions() says.
+  ReplayScheduler<ExecRow> exec_replay_;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState private_state_ = ConnState::Disconnected;
   ConnState trade_state_ = ConnState::Disconnected;

@@ -27,12 +27,11 @@ constexpr std::int64_t kClockResyncNs = 30LL * 60 * 1'000'000'000;
 constexpr std::int64_t kHousekeepingNs = 1'000'000'000;
 constexpr std::int64_t kDefaultCooldownNs = 10'000'000'000;
 constexpr std::int64_t kLogonRetryNs = 2'000'000'000;
-// rest-api.md "Account trade list": limit max 1000, and the window the venue will look back over
-// is at most 24 hours. A replay that would need more than that cannot be complete.
+// rest-api.md "Account trade list": limit max 1000, and "the time between startTime and endTime
+// can't be longer than 24 hours". The history itself is not limited.
 constexpr int kMyTradesLimit = 1000;
-constexpr std::int64_t kExecutionRetryNs = 5'000'000'000;  // between retries of a failed replay
-constexpr std::int64_t kExecutionSweepNs = 60 * 1'000'000'000LL;  // a replay while all is well
-constexpr std::int64_t kMyTradesMaxLookbackMs = 24LL * 3600 * 1000;
+constexpr std::int64_t kMyTradesWindowMs = 24LL * 3600 * 1000;
+constexpr std::size_t kMyTradesMaxPages = 10;  // per symbol and replay (weight 20 each)
 // rest-api.md "Order book" weight by limit: 1-100:5, 101-500:25, 501-1000:50, 1001-5000:250.
 std::uint32_t depth_weight(int limit) noexcept {
   if (limit <= 100) return 5;
@@ -51,6 +50,19 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
     cfg_.user_stream = signer_.usable() ? UserStreamMode::WsApi : UserStreamMode::None;
   if (cfg_.dry_run) cfg_.user_stream = UserStreamMode::None;
   std::memset(scratch_, 0, sizeof scratch_);
+  ReplayLimits limits;
+  limits.window_ms = kMyTradesWindowMs;
+  limits.page_rows = kMyTradesLimit;
+  limits.max_pages = kMyTradesMaxPages;
+  exec_replay_.setup(
+      cfg_.name,
+      "execution(s)",
+      limits,
+      {[this] { return exec_ready(); },
+       [this] { return venue_time_ms(); },
+       [this](const ReplayQuery& q) { return query_executions(q); },
+       [this](bool complete) { reconcile_.replay_done(complete); }},
+      [this](std::size_t stream, const MyTradeRecord& t) { return emit_execution(stream, t); });
 }
 
 BinanceVenue::~BinanceVenue() {
@@ -280,6 +292,7 @@ void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
     subscribed_.push_back(id);
     if (md_feed_) md_feed_->add_instrument(id);
   }
+  exec_replay_.set_streams(subscribed_.size());
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_ && md_conn_.opened()) {
@@ -298,7 +311,16 @@ void BinanceVenue::connect(net::Reactor& reactor) {
   // Nobody said where the execution replay should start, so it starts here: this session can only
   // have missed what happened after it connected, and replaying further back would book another
   // session's fills into a position that starts at zero.
-  if (exec_since_ms_ <= 0) exec_since_ms_ = venue_time_ms();
+  exec_replay_.set_streams(subscribed_.size());
+  exec_replay_.start_at(venue_time_ms());
+  // A restart's exact start: the trade after the last one the earlier session booked.
+  for (const auto& [id, next] : resume_from_ids_) {
+    const auto it = std::find(subscribed_.begin(), subscribed_.end(), id);
+    if (it != subscribed_.end())
+      exec_replay_.set_cursor(static_cast<std::size_t>(it - subscribed_.begin()), next);
+  }
+  resume_from_ids_.clear();
+  exec_replay_.open(!cfg_.dry_run && signer_.usable());
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
     raw_user_.open(cfg_.record_raw_dir, cfg_.name, "user");
@@ -332,8 +354,9 @@ void BinanceVenue::disconnect() {
   if (!connected_) return;
   connected_ = false;
   // Before the reset below: a replay or snapshot request it aborts must not start another one
-  // (it used to, on a fresh REST connection, during shutdown).
+  // (it used to, on a fresh REST connection, during shutdown), nor count as a failed query.
   reconcile_.close();
+  exec_replay_.close();
   oo_ws_generation_ = 0;
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
@@ -1255,7 +1278,7 @@ void BinanceVenue::request_open_orders() {
 
 // The executions first (request_executions), then the snapshot (ReconcileDriver).
 bool BinanceVenue::replay_executions() {
-  return request_executions();
+  return exec_replay_.run();
 }
 
 bool BinanceVenue::fetch_snapshot(std::uint64_t generation) {
@@ -1295,29 +1318,20 @@ bool BinanceVenue::fetch_snapshot(std::uint64_t generation) {
 
 // ---- execution replay -------------------------------------------------------------------------
 //
-// GET /api/v3/myTrades per subscribed symbol, before every open-order snapshot. Every execution it
-// returns is emitted as an ordinary fill carrying Binance's trade id, so the OMS keeps the ones it
-// never saw and drops the rest. This is what makes a fill that *finished* an order recoverable: the
-// snapshot no longer mentions such an order at all, so nothing else would ever report it.
+// GET /api/v3/myTrades per subscribed symbol, before every open-order snapshot and once a minute
+// (ReplayScheduler). Every execution it returns is emitted as an ordinary fill carrying Binance's
+// trade id, so the OMS keeps the ones it never saw and drops the rest. This is what makes a fill
+// that *finished* an order recoverable: the snapshot no longer mentions such an order at all, so
+// nothing else would ever report it.
 //
-// Where the replay starts, in order of preference: the trade id after the last one this connector
-// forwarded for that symbol (`fromId`, which the venue will not take together with a time range),
-// otherwise the venue time of the last execution the engine booked (`startTime`, which the store
-// seeds at start-up). Binance looks back at most 24 hours, so a watermark older than that is
-// clamped and the replay reports itself as incomplete: the snapshot then carries no
-// kExecutionsExact and the engine says the reconciliation was an estimate instead of pretending it
-// was exact.
-
-std::size_t BinanceVenue::exec_slot(InstrumentId id) const noexcept {
-  for (std::size_t i = 0; i < subscribed_.size(); ++i)
-    if (subscribed_[i] == id) return i;
-  return subscribed_.size();
-}
+// Where the replay starts: the trade id after the last one this connector read for that symbol
+// (`fromId`, which the venue will not take together with a time range), otherwise the time
+// watermark (`startTime`), from the store at start-up or connect(), in windows of 24 hours. A full
+// page is followed by the next within the same replay.
 
 void BinanceVenue::resume_executions(std::int64_t since_venue_ms,
                                      const std::vector<std::string>& known) {
-  exec_since_ms_ = since_venue_ms;
-  known_exec_ids_ = {known.begin(), known.end()};
+  exec_replay_.resume(since_venue_ms, known);
 }
 
 void BinanceVenue::resume_trade_ids(
@@ -1326,62 +1340,32 @@ void BinanceVenue::resume_trade_ids(
 }
 
 bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {
-  if (cfg_.dry_run || !connected_ || !signer_.usable()) return false;
-  if (rest_ == nullptr || rest_hard_stopped_ || subscribed_.empty()) return false;
-  if (exec_replay_active_) return true;
   // An explicit start overrides both the time watermark and the per-symbol trade ids: the caller
   // is saying it knows of executions this connector never heard about.
-  if (since_venue_ms > 0) {
-    exec_since_ms_ = since_venue_ms;
-    exec_from_id_.assign(subscribed_.size(), 0);
-  }
-  exec_from_id_.resize(subscribed_.size(), 0);
-  // A restart's exact start: the trade after the last one the earlier session booked.
-  for (const auto& [id, next] : resume_from_ids_) {
-    if (const std::size_t slot = exec_slot(id); slot < exec_from_id_.size() && next > 0)
-      exec_from_id_[slot] = next;
-  }
-  resume_from_ids_.clear();
-  exec_last_ns_ = net::Reactor::now_ns();
-  exec_replay_active_ = true;
-  exec_replay_ok_ = true;
-  ++stats_.execution_queries;
-  // Held by the loop itself, so a reply that lands inside it cannot finish the replay early.
-  exec_pending_ = 1;
-  for (const InstrumentId id : subscribed_) {
-    if (!request_executions_for(id)) exec_replay_ok_ = false;
-  }
-  finish_execution_replay(true);
-  return true;
+  if (since_venue_ms > 0 && !exec_replay_.active()) exec_replay_.restart_from(since_venue_ms);
+  return exec_replay_.run();
 }
 
-bool BinanceVenue::request_executions_for(InstrumentId id) {
+bool BinanceVenue::exec_ready() const noexcept {
+  return !cfg_.dry_run && connected_ && signer_.usable() && rest_ != nullptr &&
+         !rest_hard_stopped_ && !subscribed_.empty();
+}
+
+bool BinanceVenue::query_executions(const ReplayQuery& q) {
+  if (rest_ == nullptr || rest_hard_stopped_ || q.stream >= subscribed_.size()) return false;
   const std::string_view symbol =
-      symbols_ == nullptr ? std::string_view{} : symbols_->venue_symbol(id);
-  if (symbol.empty()) return false;
-  const std::size_t slot = exec_slot(id);
-  const std::int64_t from_id = slot < exec_from_id_.size() ? exec_from_id_[slot] : 0;
-  std::int64_t start_ms = exec_since_ms_;
-  // Complete unless the watermark asks for more history than the venue will look back over. A
-  // connector that was never told where to start has nothing earlier to miss.
-  bool complete = true;
-  if (from_id <= 0) {
-    const std::int64_t floor_ms = venue_time_ms() - kMyTradesMaxLookbackMs;
-    if (start_ms < floor_ms) {
-      complete = start_ms <= 0;
-      start_ms = floor_ms;
-    }
-  }
+      symbols_ == nullptr ? std::string_view{} : symbols_->venue_symbol(subscribed_[q.stream]);
   RestRequest rr;
-  if (!encoder_->encode_rest_my_trades(
-          symbol, from_id, start_ms, kMyTradesLimit, venue_time_ms(), rr))
+  if (symbol.empty() ||
+      !encoder_->encode_rest_my_trades(
+          symbol, q.from_id, q.start_ms, q.end_ms, kMyTradesLimit, venue_time_ms(), rr))
     return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
-  ++exec_pending_;
   const bool queued = rest_->request(
-      "GET", target, api_headers(), {}, [this, alive, id, complete](const net::HttpResponse& r) {
-        if (alive.expired()) return;
+      "GET", target, api_headers(), {}, [this, alive, q](const net::HttpResponse& r) {
+        // A reply the shutdown (or a later replay) aborted is nobody's: not even a failure.
+        if (alive.expired() || !exec_replay_.expects(q)) return;
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
@@ -1393,14 +1377,25 @@ bool BinanceVenue::request_executions_for(InstrumentId id) {
               cfg_.name,
               r.status,
               net::to_string(r.error));
-          finish_execution_replay(false);
+          exec_replay_.failed(q);
           return;
         }
-        emit_executions(id, r.body);
-        finish_execution_replay(complete);
+        // The rows view `padded`: answer() emits them before it returns (ascending pages).
+        const PaddedJson padded(r.body);
+        ReplayPage<MyTradeRecord> page;
+        const ParseStatus st =
+            ws_api_decoder_->decode_my_trades(padded.view(), [&](const MyTradeRecord& t) {
+              page.rows.push_back({t.time_ms, t.id, std::string(IdText(t.id).view()), t});
+            });
+        if (st != ParseStatus::Ok) {
+          ++stats_.execution_query_errors;
+          FASTMM_LOG_ERROR("{}: myTrades reply could not be parsed; asked again", cfg_.name);
+          exec_replay_.failed(q);
+          return;
+        }
+        exec_replay_.answer(q, std::move(page));
       });
   if (!queued) {
-    --exec_pending_;
     ++stats_.execution_query_errors;
     FASTMM_LOG_ERROR("{}: no room to ask for the account's executions", cfg_.name);
     return false;
@@ -1409,57 +1404,21 @@ bool BinanceVenue::request_executions_for(InstrumentId id) {
   return true;
 }
 
-void BinanceVenue::emit_executions(InstrumentId id, std::string_view json) {
-  if (instruments_ == nullptr || !instruments_->contains(id)) return;
-  const Instrument& inst = instruments_->get(id);
-  const std::size_t slot = exec_slot(id);
-  const PaddedJson padded(json);
-  std::int64_t high_id = 0;
-  std::int64_t high_ms = 0;
-  std::size_t count = 0;
-  const ParseStatus st =
-      ws_api_decoder_->decode_my_trades(padded.view(), [&](const MyTradeRecord& t) {
-        if (!known_exec_ids_.empty() &&
-            known_exec_ids_.count(std::string(IdText(t.id).view())) != 0) {
-          if (t.id > high_id) high_id = t.id;
-          if (t.time_ms > high_ms) high_ms = t.time_ms;
-          return;  // the earlier session booked it
-        }
-        const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
-        if (!emit_trade_history_fill(
-                *order_sink_, id_, inst, id, mapped != nullptr ? *mapped : ClientOrderId{}, t))
-          return;
-        ++stats_.order_events;
-        ++stats_.executions_fetched;
-        ++count;
-        if (t.id > high_id) high_id = t.id;
-        if (t.time_ms > high_ms) high_ms = t.time_ms;
-      });
-  if (st != ParseStatus::Ok) {
-    ++stats_.execution_query_errors;
-    FASTMM_LOG_ERROR("{}: myTrades reply could not be parsed; its executions are lost", cfg_.name);
-    exec_replay_ok_ = false;
-    return;
-  }
-  if (slot < exec_from_id_.size() && high_id > 0) exec_from_id_[slot] = high_id + 1;
-  if (high_ms > exec_since_ms_) exec_since_ms_ = high_ms;
-  if (count >= static_cast<std::size_t>(kMyTradesLimit)) {
-    // A full page is not proof there is nothing behind it. The next replay carries on from where
-    // this one stopped, so nothing is lost, but this snapshot cannot claim to be exact.
-    exec_replay_ok_ = false;
-    FASTMM_LOG_WARN(
-        "{}: myTrades returned a full page ({}); more executions are waiting", cfg_.name, count);
-  }
-  if (count > 0) FASTMM_LOG_INFO("{}: replayed {} execution(s)", cfg_.name, count);
-}
-
-void BinanceVenue::finish_execution_replay(bool ok) {
-  if (!ok) exec_replay_ok_ = false;
-  if (exec_pending_ > 0) --exec_pending_;
-  if (exec_pending_ > 0) return;
-  exec_replay_active_ = false;
-  if (!exec_replay_ok_) exec_retry_wanted_ = true;
-  reconcile_.replay_done(exec_replay_ok_);
+bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRecord& t) {
+  if (stream >= subscribed_.size() || instruments_ == nullptr) return false;
+  const InstrumentId id = subscribed_[stream];
+  if (!instruments_->contains(id)) return false;
+  const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
+  if (!emit_trade_history_fill(*order_sink_,
+                               id_,
+                               instruments_->get(id),
+                               id,
+                               mapped != nullptr ? *mapped : ClientOrderId{},
+                               t))
+    return false;
+  ++stats_.order_events;
+  ++stats_.executions_fetched;
+  return true;
 }
 
 void BinanceVenue::request_server_time() {
@@ -1628,21 +1587,10 @@ void BinanceVenue::on_timer(std::int64_t now) {
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
   reconcile_.on_timer(now);
-  // A replay that could not be completed left fills unaccounted for, and the next reconnect may be
-  // hours away. Ask again until the venue answers, keeping the watermark where it was so nothing is
-  // skipped; the snapshot is not repeated, only the executions.
-  if (exec_retry_wanted_ && !exec_replay_active_ && now - exec_retry_ns_ >= kExecutionRetryNs) {
-    exec_retry_ns_ = now;
-    exec_retry_wanted_ = false;
-    static_cast<void>(request_executions());
-  }
-  // And while nothing is wrong: the watermark moves only when a replay runs and the OMS remembers a
-  // bounded number of executions, so a reconnect after hours of streaming would replay more than
-  // it can recognise. A replay a minute keeps that short, and books a fill the private stream
-  // dropped without disconnecting.
-  if (!exec_replay_active_ && !exec_retry_wanted_ && now - exec_last_ns_ >= kExecutionSweepNs) {
-    static_cast<void>(request_executions());
-  }
+  // The execution replay: a retry 5 s after an incomplete one (the next reconnect may be hours
+  // away), and one a minute while all is well, which keeps the watermark within what the OMS can
+  // deduplicate and books a fill the private stream dropped without disconnecting.
+  exec_replay_.on_timer(now);
   publish_status();
   raw_md_.flush();
   raw_user_.flush();
@@ -1659,6 +1607,7 @@ void BinanceVenue::on_timer(std::int64_t now) {
 
 void BinanceVenue::publish_status() noexcept {
   stats_.shadows_swept = reconcile_.shadows_swept();
+  stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;
