@@ -363,8 +363,8 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
       mdc.take(md);
       oc.take(orders);
       return venue.md_feed()->synced_count() == 2 && mdc.count(EventType::OptionTicker) == 1 &&
-             count_state(oc, ConnState::Live) >= 1 && h.md_test_replies.load() >= 1 &&
-             h.private_test_replies.load() >= 1;
+             mdc.count(EventType::BookDelta) >= 3 && count_state(oc, ConnState::Live) >= 1 &&
+             h.md_test_replies.load() >= 1 && h.private_test_replies.load() >= 1;
     }));
     CHECK(venue.authenticated());
     const std::string auth = find_frame(h.srv, kPrivatePath, "public/auth");
