@@ -80,9 +80,21 @@ unattributed and the test fails.
 gateway_*, recovery_*, xmm_* (68) green 3 times; full ctest (werror) 1359 passed; clang-tidy-18:
 no bugprone or performance finding in the changed code (the analyzer's NewDeleteLeaks on the new
 REST callbacks, as on every existing one).
-Left: with a `primary` attached, a fill whose lookup failed goes to the primary unnamed and later,
-named, to its owner as well (two stores hold it); an instrument no strategy ever owns has its
-executions kept, not booked.
+Then closed (same day): with a `primary` attached, a fill whose lookup failed went to the primary
+unnamed and later, named, to its owner as well (two stores held it). Now such a fill carries
+`OrderFillMsg::kUnresolved` (`ReplayScheduler::emitting_unresolved()` while it is emitted); the
+gateway books it for nobody and parks it, routing it to no strategy even at an attach. The copy
+naming its order drops the parked one and goes to its strategy (the account retags it); when the
+connector gives up (5 attempts, or not FastMM's order) it sends a last copy without the flag, which
+drops the flagged one and follows the primary/unattributed rule. An engine ignores the flag.
+Test: `gateway_restart_test` "a fill whose order lookup failed first reaches its strategy only, not
+the primary" (b primary attaches first, the simulator's first `GET /api/v3/order` answers 503,
+`fail_next_order_queries`); every restart case now also checks no trade id is in both stores. With
+the gateway's hold-back disabled: b's store holds a's fill (trade 13) unnamed, a + b != venue, the
+account 0.005 against the venue's 0.004. gateway_*, recovery_*, xmm_* (69) green 3 times; full
+ctest 1360 passed; lint ok; clang-tidy-18: nothing new.
+Left: a flagged fill whose stream goes away (unsubscribe) stays parked for nobody; an instrument no
+strategy ever owns has its executions kept, not booked.
 
 **A fill made while the gateway was down reaches its strategy (2026-09-28).** Binance Spot Demo
 run (`/home/rufus/fastmm-demo-run`, BTCUSDT shared, no primary): kill -9 of the gateway at
