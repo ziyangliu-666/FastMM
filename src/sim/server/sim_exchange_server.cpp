@@ -782,6 +782,9 @@ void SimExchangeServer::drop_ws_api_connections(bool include_user_streams) {
 void SimExchangeServer::skip_next_depth_update() {
   impl_->call([this] { impl_->faults_.skip_depth = true; });
 }
+void SimExchangeServer::set_open_orders_delay_ms(std::uint32_t ms) {
+  impl_->call([this, ms] { impl_->faults_.delay_open_orders_ms = ms; });
+}
 void SimExchangeServer::set_ack_delay_ms(std::uint32_t ms) {
   impl_->call([this, ms] { impl_->faults_.delay_ack_ms = ms; });
 }

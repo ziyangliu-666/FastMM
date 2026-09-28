@@ -290,6 +290,7 @@ void Impl::handle_ws_api(net::WsSession& s, std::string_view text) {
     const bool order_method =
         req.method.starts_with("order.") || req.method == "openOrders.cancelAll";
     if (order_method) delay = faults_.delay_ack_ms;
+    if (req.method == "openOrders.status") delay = faults_.delay_open_orders_ms;
     request_delay_ms_ = delay;
     if (auto banned = injected_stop(now_ms)) {
       r = *banned;

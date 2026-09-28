@@ -168,6 +168,7 @@ struct FaultState {
   std::uint32_t reject_next = 0;
   std::uint32_t rate_limit_next = 0;
   std::uint32_t swallow_ws_api_next = 0;
+  std::uint32_t delay_open_orders_ms = 0;  // openOrders.status replies
   std::uint32_t duplicate_user_events_next = 0;
   std::uint32_t ban_next = 0;
   std::uint32_t auth_fail_next = 0;

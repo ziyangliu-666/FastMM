@@ -4,7 +4,9 @@
 // once, naming the order, and the gateway's account books it once, towards that strategy.
 //
 // The simulator's trade history, like Binance's, gives the venue's order id and not the client
-// order id; the new gateway never saw the order, so only the strategy's store can say whose it is.
+// order id; the new gateway never saw the order, so the strategy's store says whose it is, or the
+// venue (GET /api/v3/order) for an order it never acknowledged. The last case: a fill streamed to
+// the new gateway before its start-up sweep, of a session no strategy has claimed yet.
 #include "gateway_util.hpp"
 
 #include "fastmm/core/status_segment.hpp"
@@ -12,6 +14,7 @@
 #include <algorithm>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -236,6 +239,94 @@ TEST_CASE(
     "gateway restart: an owned instrument's fill of an order the venue never acknowledged reaches "
     "its strategy naming the order, another strategy's replay first") {
   restart_with_fill("gw-rs-own-u", Plan{false, false, 0, true});
+}
+
+TEST_CASE(
+    "gateway restart: a streamed fill of a session nobody has claimed yet is the account's, then "
+    "its strategy's when it attaches") {
+  // A new gateway is connected and its start-up sweep has not answered yet (the venue holds the
+  // open-order snapshot) when a's order from before the restart fills: the execution report names
+  // an epoch no attached strategy holds, so the account books it for nobody (unattributed). When a
+  // attaches and claims its earlier epochs, the parked fill reaches it and the account moves it to
+  // a's share (AccountBook::retag).
+  sim::server::SimServerConfig sc = two_markets();
+  sc.generator.market_rate_per_s = 0.0;  // every fill is one the test makes
+  ServerFixture fx(sc);
+  Configs c = write_configs(fx, "gw-rs-retag");
+  rewrite(c.gw.config, [](std::string& t) { t += "\n[gateway.shared.\"sim:BTCUSDT\"]\n"; });
+  const std::string gw_name = "gw-rs-retag-gw";
+  remove_all_of({default_gateway_status_path(gw_name)});
+
+  GatewayProcess g = spawn_gateway(c.gw);
+  wait_gateway_up(fx, g);
+  const pid_t a = spawn_strategy(c.a, g);
+  const std::uint16_t ea = wait_resting(fx, c.a, {});
+  REQUIRE(::kill(g.pid, SIGKILL) == 0);
+  CHECK(reap(g.pid) == -1);
+  CHECK(reap(a) != live::kExitOk);
+  REQUIRE(wait_until(
+      [&] {
+        const sim::server::SimServerStats s = fx.server.stats();
+        return s.md_sessions == 0 && s.api_sessions == 0 && s.user_subscriptions == 0 &&
+               open_of(fx, ea) > 0;
+      },
+      10000));
+
+  // The new gateway's snapshot is answered 8 s after it asks: its sweep cannot cancel a's orders
+  // before then.
+  fx.server.set_open_orders_delay_ms(8000);
+  g = spawn_gateway(c.gw);
+  wait_gateway_up(fx, g);
+  std::string order;
+  const Qty filled = fill_one_of(fx, ea, &order);
+  REQUIRE_MESSAGE(filled.is_positive(), fastmm::test::read_file(g.log));
+  fx.server.set_open_orders_delay_ms(0);
+  // The account holds it, for nobody.
+  std::optional<StatusPosition> btc;
+  const bool nobodys = wait_until(
+      [&] {
+        btc = gateway_position(gw_name);
+        return btc && btc->qty_raw == position(fx.server.stats(), 0).raw && btc->qty_raw != 0 &&
+               std::abs(btc->unattributed_raw) == filled.raw && btc->unexplained_raw == 0;
+      },
+      10000);
+  REQUIRE(btc.has_value());
+  INFO("gateway BTCUSDT " << btc->qty_raw << " unattributed " << btc->unattributed_raw
+                          << " unexplained " << btc->unexplained_raw << "; filled " << filled.raw);
+  REQUIRE_MESSAGE(nobodys, fastmm::test::read_file(g.log));
+  // The sweep, answered, has cancelled a's other orders.
+  REQUIRE_MESSAGE(wait_until([&] { return fx.server.stats().open_orders == 0; }, 20000),
+                  fastmm::test::read_file(g.log));
+
+  // a attaches: the fill is a's, in its store and in the account's share.
+  const pid_t a2 = spawn_strategy(c.a, g);
+  const std::uint16_t ea2 = wait_resting(fx, c.a, {ea});
+  CHECK(ea2 != ea);
+  CHECK_MESSAGE(wait_until([&] { return stored_holds(c.a, c.a_name, order); }, 10000),
+                "a never booked " << order << ": " << fastmm::test::read_file(c.a.config + ".log")
+                                  << fastmm::test::read_file(g.log));
+  const bool claimed = wait_until(
+      [&] {
+        btc = gateway_position(gw_name);
+        return btc && btc->qty_raw == position(fx.server.stats(), 0).raw &&
+               btc->unattributed_raw == 0 && btc->unexplained_raw == 0;
+      },
+      10000);
+  INFO("gateway BTCUSDT " << btc->qty_raw << " unattributed " << btc->unattributed_raw
+                          << " unexplained " << btc->unexplained_raw);
+  CHECK(claimed);
+
+  stop_strategy(a2);
+  CHECK(wait_until([&] { return fx.server.stats().open_orders == 0; }, 5000));
+  stop_gateway(g);
+  const StoredFills fa = stored(c.a, c.a_name);
+  CHECK(std::count(fa.cl_ord_ids.begin(), fa.cl_ord_ids.end(), order) == 1);
+  CHECK(booked_twice(c.a, c.a_name).empty());
+  const Qty pa = store_position(c.a, c.a_name);
+  CHECK(pa == fa.sum);
+  CHECK(pa == position(fx.server.stats(), 0));
+  CHECK(logged_share(g, c.a_name) == pa);
+  CHECK(logged_share(g, "unattributed") == Qty{});
 }
 
 #endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE
