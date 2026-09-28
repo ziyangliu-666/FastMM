@@ -131,6 +131,8 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] const BybitMdFeed* md_feed() const noexcept { return md_feed_.get(); }
   [[nodiscard]] const BybitVenueConfig& config() const noexcept { return cfg_; }
   [[nodiscard]] bool fatal() const noexcept { return fatal_; }
+  // The trade (order) connection is logged in: orders go over it, not REST (reactor thread; tests).
+  [[nodiscard]] bool order_channel_live() const noexcept { return trade_conn_.is_live(); }
   [[nodiscard]] std::int64_t clock_offset_ms() const noexcept { return clock_offset_ms_.load(); }
   [[nodiscard]] std::int64_t venue_time_ms() const noexcept;
 

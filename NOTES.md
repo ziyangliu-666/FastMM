@@ -50,9 +50,16 @@ offline data is allowed. `rest_channel_config()` / `rest_queue_for()` size every
 queue as 32 + 4 per subscribed symbol (was 8, OKX 32, Deribit 264), resized on a later subscribe.
 Tests, each failing with its piece reverted: USD-M and Bybit kill-path 429 then success (and a
 limit that never lifts gives up after 4 requests); USD-M no refresh after a lapse, one symbol's
-refused refresh kills; OKX stop after an unreadable arm reply; Spot REST order in flight across an
-order-connection drop stays above the reconnect snapshot's watermark (WS API on a second fake
-server so the REST reply can be held); USD-M offline hedge-mode refusal; `CountdownDriver` units.
+refused refresh kills; OKX stop after an unreadable arm reply; Spot: order connection dropped, a
+reconciliation's replay held on REST, an order queued behind it over REST, the connection back,
+then the snapshot's watermark (taken after the replay, ReconcileDriver) stays below that order
+(WS API on a second fake server so it answers while REST is held); USD-M offline hedge-mode
+refusal; `CountdownDriver` units. With ReconcileDriver taking the watermark after a replay over
+the same REST connection, a REST order sent before the replay is answered first; the flag matters
+for one sent during it. `bybit_linear.venue: order round trip` now waits for the trade connection
+(`BybitVenue::order_channel_live()`). On top of step 1: integration recovery_*, xmm_*, gateway_*
+(60) green 3 times; full ctest (werror) 1316 passed; clang-tidy-18: no bugprone or performance
+finding in the changed files.
 
 **Step 1 done: `ReconcileDriver` (2026-09-28).** `venues/reconcile_driver.hpp` is the open-order
 snapshot of all five connectors: generation, one at a time with one more queued, retry 5 s after a

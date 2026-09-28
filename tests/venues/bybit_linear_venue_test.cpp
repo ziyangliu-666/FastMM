@@ -446,6 +446,9 @@ TEST_CASE("bybit_linear.venue: order round trip with positionIdx, reduceOnly and
   {
     Live l(h, h.section());
     l.wait_for_sweep();
+    // The sweep does not wait for the trade connection: an order sent before it is logged in goes
+    // over REST, which this fake does not serve.
+    REQUIRE(pump_until(l.reactor, [&] { return l.venue->order_channel_live(); }));
     OutNewOrderMsg n{};
     init_header(n, EventType::OutNewOrder, kBtc, kVenue);
     n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();

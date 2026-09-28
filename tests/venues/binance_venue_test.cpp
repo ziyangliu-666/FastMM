@@ -57,12 +57,11 @@ struct Harness {
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
-  std::atomic<bool> hold_place{false};       // order.place gets no answer (still in flight)
-  std::atomic<bool> hold_trades{false};      // GET myTrades answers only once released (3 s at most)
-  std::atomic<bool> hold_rest_order{false};  // POST /api/v3/order answers only once cleared
-  std::atomic<int> my_trades{0};             // GET myTrades requests seen
-  std::atomic<int> rest_open_orders{0};      // GET /api/v3/openOrders requests seen
-  net::WsSession* user_session = nullptr;    // server thread only
+  std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
+  std::atomic<bool> hold_trades{false};    // GET myTrades answers only once released (3 s at most)
+  std::atomic<int> my_trades{0};           // GET myTrades requests seen
+  std::atomic<int> rest_open_orders{0};    // GET /api/v3/openOrders requests seen
+  net::WsSession* user_session = nullptr;  // server thread only
 
   // The server thread reads this harness's members: stop it before they go.
   ~Harness() { srv.stop(); }
@@ -103,7 +102,6 @@ struct Harness {
       s.send_text(depth_frame(95, 100, "69999.00", "9"));  // stale: u <= lastUpdateId
       s.send_text(depth_frame(101, 101, "70000.00", "1.5"));
     });
-    // Blocks this server's thread while held: a test that holds it serves the WS API elsewhere.
     srv.route("POST", "/api/v3/order", [this](const net::HttpRequest& r) {
       const std::string query(r.query);
       const std::size_t p = query.find("newClientOrderId=");
@@ -111,8 +109,6 @@ struct Harness {
                                  ? std::string()
                                  : query.substr(p + 17, query.find('&', p) - p - 17);
       srv.record("rest_order", id);
-      for (int i = 0; i < 1000 && hold_rest_order.load(); ++i)
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
       return net::HttpServerResponse::json(
           200,
           R"({"symbol":"BTCUSDT","orderId":4293160,"orderListId":-1,"clientOrderId":")" + id +
@@ -431,10 +427,12 @@ TEST_CASE("binance.venue: an order still in flight is above the snapshot's water
 
 TEST_CASE(
     "binance.venue: an order sent over REST while the order connection is down stays in flight") {
-  // The order connection drops, an order goes out over REST, and its reply is slow. The reconnect
-  // asks for the open orders at once, and the venue may not list the order yet. Losing the
-  // WebSocket connection settles what was sent on it, not a REST request: that one must still
-  // hold the snapshot's watermark back, or the engine cancels the order as gone.
+  // The order connection drops and a reconciliation is asked for; its execution replay goes out
+  // over REST first, and an order sent then goes over REST too, queued behind it. The connection
+  // comes back, and the replay's reply releases the snapshot, whose watermark is taken there,
+  // before the order's reply. Losing the WebSocket connection settles what was sent on it, not a
+  // REST request: the order must still hold the watermark back, or the snapshot (which may not
+  // list it yet) has the engine cancel it as gone.
   Harness h;
   FakeVenueServer api;  // the WS API on its own thread, so it answers while REST is held
   h.serve_ws_api(api);
@@ -499,19 +497,17 @@ TEST_CASE(
       oc.take(orders);
       return count_state(ConnState::Disconnected) >= 2;  // order and user channels
     }));
-    h.hold_rest_order = true;
-    const ClientOrderId over_rest = place("fm000100000002");
-    REQUIRE(pump_until(reactor, [&] { return h.srv.frames("rest_order").size() == 1; }));
-    CHECK(h.srv.frames("rest_order")[0] == "fm000100000002");
-
-    // The reconnect: the snapshot is asked for (and its watermark taken) on the order
-    // connection's return, with the REST reply still outstanding.
     const std::size_t reconciles = oc.count(EventType::Reconcile);
+    h.hold_trades = true;
+    const int asked = h.my_trades.load();
+    venue.request_open_orders();
+    REQUIRE(pump_until(reactor, [&] { return h.my_trades.load() == asked + 1; }));
+    const ClientOrderId over_rest = place("fm000100000002");
     REQUIRE(pump_until(reactor, [&] {
       oc.take(orders);
-      return count_state(ConnState::Live) >= 4;
+      return count_state(ConnState::Live) >= 4;  // back, while the replay is still held
     }));
-    h.hold_rest_order = false;
+    h.hold_trades = false;
     REQUIRE(pump_until(
         reactor,
         [&] {
@@ -519,9 +515,18 @@ TEST_CASE(
           return oc.count(EventType::Reconcile) >= reconciles + 2;
         },
         10000));
-    const auto* begin = oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
-      return m.kind == ReconcileMsg::Kind::Begin;
-    });
+    REQUIRE(pump_until(reactor, [&] { return h.srv.frames("rest_order").size() == 1; }));
+    CHECK(h.srv.frames("rest_order")[0] == "fm000100000002");
+    // The first snapshot after the drop.
+    const ReconcileMsg* begin = nullptr;
+    std::size_t seen = 0;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) != EventType::Reconcile || seen++ < reconciles) continue;
+      if (RecordingSink::as<ReconcileMsg>(m).kind == ReconcileMsg::Kind::Begin) {
+        begin = &RecordingSink::as<ReconcileMsg>(m);
+        break;
+      }
+    }
     REQUIRE(begin != nullptr);
     CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
     // Below the REST order: the snapshot (empty here) says nothing about it.
