@@ -364,3 +364,50 @@ TEST_CASE("okx.md_feed: a recorded production session syncs the book with no res
   }
   CHECK(snapshot_seen);
 }
+
+// Production, 2026-09-28: books pushes of BTC-USDT-SWAP (a 400-level book) changed up to 612 bids
+// and 800 asks in one update, past the 512 a side the parser keeps. It refused them, the next
+// update's prevSeqId did not chain and the book resynced (6 resyncs in 15 minutes, no gap in the
+// raw stream). The update now keeps the 512 levels a side nearest the touch.
+TEST_CASE("okx.md_feed: a books update longer than the parser keeps stays in the chain") {
+  Universe u;
+  RecordingSink sink(8U << 20);
+  Resubscribes resub;
+  OkxMdFeed feed(u.symbols, kOkx, sink.sink, ResubscribeRequester{&Resubscribes::fn, &resub});
+  REQUIRE(feed.add_instrument(InstrumentId{0}));
+  feed.on_connected();
+  auto push = [&](const std::string& f) {
+    const PaddedJson j(f);
+    return feed.on_message(j.view(), 1);
+  };
+  REQUIRE(push(kSnapshot) == ParseStatus::Ok);
+  // 600 bids 7000..7599 and 800 asks 9000..9799, ascending.
+  std::string bids;
+  for (int i = 0; i < 600; ++i)
+    bids +=
+        std::string(i != 0 ? "," : "") + "[\"" + std::to_string(7000 + i) + "\",\"1\",\"0\",\"1\"]";
+  std::string asks;
+  for (int i = 0; i < 800; ++i)
+    asks +=
+        std::string(i != 0 ? "," : "") + "[\"" + std::to_string(9000 + i) + "\",\"1\",\"0\",\"1\"]";
+  REQUIRE(push(books("update", asks.c_str(), bids.c_str(), 0, 10, 11)) == ParseStatus::Ok);
+  REQUIRE(push(books("update", R"(["8478","1","0","1"])", "", 0, 11, 12)) == ParseStatus::Ok);
+  CHECK(feed.sync(InstrumentId{0})->synced());
+  CHECK(feed.sync(InstrumentId{0})->resync_count() == 0);
+  CHECK(resub.ids.empty());
+  CHECK(feed.parser_stats().truncated == 1);
+  const BookDeltaMsg* big = nullptr;
+  const auto msgs = sink.drain();
+  for (const auto& m : msgs) {
+    if (RecordingSink::type_of(m) == EventType::BookDelta &&
+        RecordingSink::as<BookDeltaMsg>(m).last_update_id == 11)
+      big = &RecordingSink::as<BookDeltaMsg>(m);
+  }
+  REQUIRE(big != nullptr);
+  REQUIRE(big->bid_count == 512);
+  REQUIRE(big->ask_count == 512);
+  CHECK(big->bids()[0].price == Price::from_int(7600 - 512));
+  CHECK(big->bids()[511].price == Price::from_int(7599));
+  CHECK(big->asks()[0].price == Price::from_int(9000));
+  CHECK(big->asks()[511].price == Price::from_int(9511));
+}

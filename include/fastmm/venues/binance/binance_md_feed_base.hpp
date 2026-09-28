@@ -8,6 +8,7 @@
 // (trades) connection.
 //
 // Everything here runs on the venue's reactor thread; after add_instrument() nothing allocates.
+#include "fastmm/core/log.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/binance/binance_depth_sync.hpp"
 #include "fastmm/venues/event_sink.hpp"
@@ -19,6 +20,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fastmm::venues::binance {
@@ -26,7 +28,7 @@ namespace fastmm::venues::binance {
 struct MdFeedStats {
   std::uint64_t messages = 0;
   std::uint64_t pushed = 0;
-  std::uint64_t dropped = 0;  // ring overflow on ticker/trade (deltas resync instead)
+  std::uint64_t dropped = 0;  // ring overflow on ticker/trade, or a frame too large to decode
   std::uint64_t malformed = 0;
   std::uint64_t ignored = 0;
   std::uint64_t unknown_symbol = 0;
@@ -59,8 +61,15 @@ class BasicBinanceMdFeed {
       return false;
     index_[id.value] = static_cast<std::int16_t>(syncs_.size());
     syncs_.push_back(std::make_unique<Sync>(id, venue_, sink_, requester_, min_interval_));
+    syncs_.back()->set_log_names(log_name_, symbols_.venue_symbol(id));
     ids_.push_back(id);
     return true;
+  }
+  // The connector's name for the syncs' log lines; it must outlive the feed.
+  void set_log_name(std::string_view venue) noexcept {
+    log_name_ = venue;
+    for (std::size_t i = 0; i < syncs_.size(); ++i)
+      syncs_[i]->set_log_names(venue, symbols_.venue_symbol(ids_[i]));
   }
   [[nodiscard]] std::span<const InstrumentId> instruments() const noexcept { return ids_; }
 
@@ -79,6 +88,9 @@ class BasicBinanceMdFeed {
       case ParseStatus::UnknownSymbol:
         ++stats_.unknown_symbol;
         return r.status;
+      case ParseStatus::Overflow:  // a frame too large to decode: lost like a full ring
+        ++stats_.dropped;
+        return r.status;
       default:
         ++stats_.ignored;
         return r.status;
@@ -88,6 +100,7 @@ class BasicBinanceMdFeed {
     if (r.kind == MdKind::BookDelta) {
       Sync* s = sync(h->instrument);
       if (s == nullptr) return ParseStatus::UnknownSymbol;
+      note_truncated(parser_.stats().truncated);
       s->on_delta(*reinterpret_cast<const BookDeltaMsg*>(scratch_), rx_ts);
       ++stats_.pushed;
       return ParseStatus::Ok;
@@ -123,6 +136,7 @@ class BasicBinanceMdFeed {
     }
     auto* h = reinterpret_cast<EventHeader*>(scratch_);
     h->t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
+    note_truncated(parser_.stats().truncated);
     ++stats_.snapshots_ok;
     s->on_snapshot(*reinterpret_cast<const BookDeltaMsg*>(scratch_), now_ns);
   }
@@ -152,6 +166,21 @@ class BasicBinanceMdFeed {
   [[nodiscard]] const auto& parser_stats() const noexcept { return parser_.stats(); }
 
  protected:
+  // A depth update or snapshot with a side longer than a BookDeltaMsg holds was cut to the levels
+  // nearest the touch (LevelSpill): `n` is the parser's count of them.
+  void note_truncated(std::uint64_t n) noexcept {
+    if (FASTMM_LIKELY(n == truncated_logged_)) return;
+    truncated_logged_ = n;
+    if (n <= 5 || n % 100 == 0)
+      FASTMM_LOG_WARN(
+          "{}: depth update with more than {} levels on a side; kept the {} nearest the touch "
+          "({} so far)",
+          log_name_,
+          kMaxBookLevelsPerMsg,
+          kMaxBookLevelsPerMsg,
+          n);
+  }
+
   // "<path>?streams=btcusdt@depth@100ms/btcusdt@bookTicker" over every subscribed symbol
   // (web-socket-streams.md: combined streams, lowercase symbols, 1024 streams per connection).
   [[nodiscard]] std::string stream_target_for(std::string_view path,
@@ -176,6 +205,8 @@ class BasicBinanceMdFeed {
   EventSink& sink_;
   SnapshotRequester requester_;
   std::int64_t min_interval_;
+  std::string_view log_name_ = "binance";
+  std::uint64_t truncated_logged_ = 0;
   Parser parser_;
   std::array<std::int16_t, kMaxInstruments> index_{};
   std::vector<std::unique_ptr<Sync>> syncs_;

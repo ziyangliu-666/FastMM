@@ -10,6 +10,7 @@
   "book_ticker.json": "recorded (public combined stream frame)",
   "agg_trade.json": "recorded (market combined stream frame)",
   "raw_md_stream.jsonl": "recorded, the first 400 public frames of the session, one frame per line",
+  "depth_burst.jsonl": "recorded on production (wss://fstream.binance.com/public/stream?streams=btcusdt@depth@100ms/..., fastmm-live --dry-run --record-raw, 2026-09-28T00:18:37Z): three consecutive BTCUSDT depth frames, the second changing 1035 bids and 1224 asks",
   "order_update_*.json, account_update.json, listen_key_expired.json": "docs-example (hand-written from https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams event descriptions and the field names of the official connector models, binance-connector-python derivatives_trading_usds_futures websocket_streams OrderTradeUpdateO / AccountUpdateAPInner; FastMM client ids; the Demo account had no margin balance, so no private events could be recorded)",
   "position_risk.json": "docs-example (field names of binance-connector-python PositionInformationV3ResponseInner)"
  }

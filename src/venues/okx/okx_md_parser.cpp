@@ -1,6 +1,7 @@
 #include "fastmm/venues/okx/okx_md_parser.hpp"
 
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/level_spill.hpp"
 
 #include <simdjson.h>
 
@@ -13,6 +14,9 @@ namespace od = simdjson::ondemand;
 
 struct OkxMdParser::Impl {
   od::parser parser;
+  LevelSpill spill;
+  std::unique_ptr<OkxLevelText[]> text_spill =
+      std::make_unique<OkxLevelText[]>(LevelSpill::kCapacity);
   explicit Impl(std::size_t capacity) {
     if (parser.allocate(capacity) != sj::SUCCESS) std::abort();
   }
@@ -36,14 +40,37 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
   return r;
 }
 
+// Where read_levels() puts a side longer than `max`: it keeps the `max` levels nearest the touch
+// (LevelSpill; a books push of 400 levels a side can change 800 on one).
+struct Spill {
+  LevelSpill* levels = nullptr;  // none: a longer side is refused (-2)
+  OkxLevelText* texts = nullptr;
+  bool bids = false;
+  bool* truncated = nullptr;
+};
+
 // Reads [[px, sz, "0", orders], ...] into `levels` and, when `texts` is given, the texts next to
 // them: count, -1 malformed, -2 too many.
-int read_levels(od::value arr_val, Level* levels, OkxLevelText* texts, std::uint32_t max) noexcept {
+int read_levels(od::value arr_val,
+                Level* levels,
+                OkxLevelText* texts,
+                std::uint32_t max,
+                const Spill& spill = {}) noexcept {
   od::array arr;
   if (arr_val.get_array().get(arr) != sj::SUCCESS) return -1;
   std::uint32_t n = 0;
+  Level* dst = levels;
+  OkxLevelText* dst_texts = texts;
+  std::uint32_t cap = max;
   for (auto lvl_res : arr) {
-    if (n >= max) return -2;
+    if (n >= cap) {
+      if (spill.levels == nullptr || dst != levels) return -2;
+      std::copy_n(levels, n, spill.levels->data());
+      if (texts != nullptr) std::copy_n(texts, n, spill.texts);
+      dst = spill.levels->data();
+      dst_texts = texts != nullptr ? spill.texts : nullptr;
+      cap = LevelSpill::kCapacity;
+    }
     od::array entry;
     if (lvl_res.get_array().get(entry) != sj::SUCCESS) return -1;
     std::string_view px;
@@ -61,9 +88,21 @@ int read_levels(od::value arr_val, Level* levels, OkxLevelText* texts, std::uint
     const auto p = parse_price(px);
     const auto q = parse_qty(sz);
     if (!p || !q) return -1;
-    levels[n] = Level{*p, *q};
-    if (texts != nullptr) texts[n] = OkxLevelText{p->raw, px, sz, q->is_zero()};
+    dst[n] = Level{*p, *q};
+    if (dst_texts != nullptr) dst_texts[n] = OkxLevelText{p->raw, px, sz, q->is_zero()};
     ++n;
+  }
+  if (dst != levels) {
+    const std::int64_t bound = spill.levels->nearest_bound(n, spill.bids, max);
+    std::uint32_t kept = 0;
+    for (std::uint32_t i = 0; i < n && kept < max; ++i) {
+      if (!LevelSpill::within(dst[i].price.raw, bound, spill.bids)) continue;
+      levels[kept] = dst[i];
+      if (texts != nullptr) texts[kept] = dst_texts[i];
+      ++kept;
+    }
+    n = kept;
+    *spill.truncated = true;
   }
   return static_cast<int>(n);
 }
@@ -120,6 +159,8 @@ int read_levels(od::value arr_val, Level* levels, OkxLevelText* texts, std::uint
 
 struct DecodeCtx {
   MdParserStats* stats;
+  LevelSpill* spill;
+  OkxLevelText* text_spill;
   InstrumentId inst;
   VenueId venue;
   Timestamp recv_ts;
@@ -162,7 +203,12 @@ struct DecodeCtx {
   OkxLevelText* texts = c.texts.data();
   od::value asks;
   if (item["asks"].get(asks) != sj::SUCCESS) return malformed(stats, r);
-  const int na = read_levels(asks, levels + kMaxBookLevelsPerMsg / 2, texts + kHalf, kHalf);
+  bool truncated = false;
+  const int na = read_levels(asks,
+                             levels + kMaxBookLevelsPerMsg / 2,
+                             texts + kHalf,
+                             kHalf,
+                             Spill{c.spill, c.text_spill, false, &truncated});
   if (na == -1) return malformed(stats, r);
   od::value bids;
   if (na == -2 || item["bids"].get(bids) != sj::SUCCESS) {
@@ -173,13 +219,15 @@ struct DecodeCtx {
     }
     return malformed(stats, r);
   }
-  const int nb = read_levels(bids, levels, texts, kHalf);
+  const int nb =
+      read_levels(bids, levels, texts, kHalf, Spill{c.spill, c.text_spill, true, &truncated});
   if (nb == -1) return malformed(stats, r);
   if (nb == -2) {
     ++stats.overflow;
     r.status = ParseStatus::Overflow;
     return r;
   }
+  if (truncated) ++stats.truncated;
   const auto bid_count = static_cast<std::uint32_t>(nb);
   const auto ask_count = static_cast<std::uint32_t>(na);
   // Close the gap between the bids and the asks.
@@ -386,7 +434,17 @@ MdDecodeResult OkxMdParser::decode(std::string_view json,
       r.status = ParseStatus::UnknownSymbol;
       return r;
     }
-    const DecodeCtx c{&stats_, inst, venue_, recv_ts, t0, out, texts_, &text_count_, &text_bids_};
+    const DecodeCtx c{&stats_,
+                      &impl_->spill,
+                      impl_->text_spill.get(),
+                      inst,
+                      venue_,
+                      recv_ts,
+                      t0,
+                      out,
+                      texts_,
+                      &text_count_,
+                      &text_bids_};
     switch (kind) {
       case Kind::Books:
         return decode_books(c, action, field.value(), r);

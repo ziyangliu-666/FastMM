@@ -324,6 +324,7 @@ void OkxVenue::attach(const SymbolTable& symbols,
                                   md_sink,
                                   ResubscribeRequester{&OkxVenue::resubscribe_requester, this},
                                   cfg_.depth_channel);
+  md_feed_->set_log_name(cfg_.name);
   private_parser_ = std::make_unique<OkxPrivateParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<OkxOrderEncoder>(symbols, cfg_.td_mode);
   for (const Instrument& in : instruments) {

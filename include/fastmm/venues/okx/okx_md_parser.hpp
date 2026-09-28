@@ -46,6 +46,9 @@ struct MdParserStats {
   std::uint64_t malformed = 0;
   std::uint64_t unknown_symbol = 0;
   std::uint64_t overflow = 0;
+  // books pushes with a side longer than half a BookDeltaMsg, cut to the levels nearest the touch
+  // (LevelSpill) rather than refused.
+  std::uint64_t truncated = 0;
 };
 
 enum class ControlOp : std::uint8_t {

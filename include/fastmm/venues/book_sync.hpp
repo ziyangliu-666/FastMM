@@ -10,12 +10,19 @@
 //
 // Output contract (6.2): BookSnapshot before the first BookDelta; a gap emits
 // ConnectionState{Resyncing, channel 0} before the next snapshot.
+//
+// Every resync is logged with its reason and the update ids that caused it, and the book's return
+// with how long it was away (the engine pulls quotes for that long).
 #include "fastmm/core/book/book_syncer.hpp"
+#include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/event_sink.hpp"
 
+#include <fmt/format.h>  // before the log calls below format a std::string_view
+
 #include <cstdint>
+#include <string_view>
 
 namespace fastmm::venues {
 
@@ -65,16 +72,23 @@ class StreamBookSync {
   void on_book(const BookDeltaMsg& d, std::int64_t now_ns) noexcept {
     if (!active_) return;
     overflowed_ = false;
+    now_ = now_ns;
     const bool was_synced = syncer_.synced();
+    cause_ = &d;
     syncer_.on_delta(d);  // snapshots are routed to on_snapshot by the core syncer
     if (overflowed_) syncer_.resync(SyncReason::BufferOverflow);
-    if (syncer_.synced() && !was_synced) waiting_since_ = 0;
+    cause_ = nullptr;
+    if (syncer_.synced() && !was_synced) {
+      waiting_since_ = 0;
+      note_synced();
+    }
     if (!syncer_.synced() && waiting_since_ == 0) waiting_since_ = now_ns;
     flush(now_ns);
   }
 
   void resync(SyncReason reason, std::int64_t now_ns) noexcept {
     if (!active_) return;
+    now_ = now_ns;
     syncer_.resync(reason);
     waiting_since_ = now_ns;
     flush(now_ns);
@@ -98,6 +112,13 @@ class StreamBookSync {
   [[nodiscard]] std::uint64_t resubscribe_requests() const noexcept { return requests_; }
   [[nodiscard]] InstrumentId instrument() const noexcept { return instrument_; }
 
+  // Names for the log: the venue (the connector's config name) and the venue's symbol. Both must
+  // outlive the sync.
+  void set_log_names(std::string_view venue, std::string_view symbol) noexcept {
+    venue_name_ = venue;
+    symbol_ = symbol;
+  }
+
  private:
   struct Inner {
     StreamBookSync* owner;
@@ -114,6 +135,18 @@ class StreamBookSync {
     if (!sink_.push(m.hdr)) overflowed_ = true;
   }
   void emit_resyncing(SyncReason reason) noexcept {
+    if (cause_ != nullptr) {
+      FASTMM_LOG_WARN("{}: {} book resync ({}): book at update {}, next update {} (previous {})",
+                      venue_name_,
+                      symbol_,
+                      to_string(reason),
+                      syncer_.last_update_id(),
+                      cause_->last_update_id,
+                      cause_->prev_update_id);
+    } else {
+      FASTMM_LOG_WARN("{}: {} book resync ({})", venue_name_, symbol_, to_string(reason));
+    }
+    if (away_since_ == 0) away_since_ = now_ != 0 ? now_ : 1;
     ConnectionStateMsg m{};
     init_header(m, EventType::ConnectionState, instrument_, venue_);
     m.state = ConnState::Resyncing;
@@ -121,6 +154,16 @@ class StreamBookSync {
     m.reason_code = static_cast<std::int32_t>(reason);
     m.hdr.recv_ts = wall_now();
     static_cast<void>(sink_.push(m.hdr));
+  }
+  // After a resync: the book is back, and was away (the engine without it) for this long.
+  void note_synced() noexcept {
+    if (away_since_ == 0) return;
+    FASTMM_LOG_INFO("{}: {} book synced again after {} ms ({} re-subscriptions so far)",
+                    venue_name_,
+                    symbol_,
+                    (now_ - away_since_) / 1'000'000,
+                    requests_);
+    away_since_ = 0;
   }
   void flush(std::int64_t now_ns) noexcept {
     if (!want_resubscribe_) return;
@@ -139,6 +182,11 @@ class StreamBookSync {
   std::int64_t snapshot_timeout_ns_;
   std::int64_t last_request_ns_ = 0;
   std::int64_t waiting_since_ = 0;
+  std::int64_t now_ = 0;
+  std::int64_t away_since_ = 0;          // since the last resync, until the book is synced again
+  const BookDeltaMsg* cause_ = nullptr;  // the update being handled, for the log
+  std::string_view venue_name_ = "venue";
+  std::string_view symbol_;
   std::uint64_t requests_ = 0;
   bool active_ = false;
   bool want_resubscribe_ = false;

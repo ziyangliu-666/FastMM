@@ -275,6 +275,7 @@ void DeribitVenue::attach(const SymbolTable& symbols,
       md_sink,
       ResubscribeRequester{&DeribitVenue::resubscribe_requester, this},
       cfg_.intervals);
+  md_feed_->set_log_name(cfg_.name);
   private_parser_ = std::make_unique<DeribitPrivateParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<DeribitOrderEncoder>(
       symbols, instruments, std::span<const TickSchedule>(ticks_), cfg_.reject_post_only);

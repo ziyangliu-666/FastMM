@@ -66,9 +66,16 @@ class OkxMdFeed {
       return false;
     index_[id.value] = static_cast<std::int16_t>(books_.size());
     books_.push_back(std::make_unique<Book>(id, venue_, sink_, requester_, min_interval_));
+    books_.back()->sync.set_log_names(log_name_, symbols_.venue_symbol(id));
     ids_.push_back(id);
     rebuild_payloads();
     return true;
+  }
+  // The connector's name for the syncs' log lines; it must outlive the feed.
+  void set_log_name(std::string_view venue) noexcept {
+    log_name_ = venue;
+    for (std::size_t i = 0; i < books_.size(); ++i)
+      books_[i]->sync.set_log_names(venue, symbols_.venue_symbol(ids_[i]));
   }
   [[nodiscard]] std::span<const InstrumentId> instruments() const noexcept { return ids_; }
   [[nodiscard]] OkxDepthChannel depth() const noexcept { return depth_; }
@@ -99,6 +106,9 @@ class OkxMdFeed {
       case ParseStatus::Error:
         if (r.control == ControlOp::Error) ++stats_.subscribe_errors;  // venue logs it
         return r.status;
+      case ParseStatus::Overflow:  // a frame too large to decode: lost like a full ring
+        ++stats_.dropped;
+        return r.status;
       default:
         if (r.control == ControlOp::Pong) ++stats_.pongs;
         ++stats_.ignored;
@@ -113,6 +123,7 @@ class OkxMdFeed {
       if (h->type == EventType::BookDelta || h->type == EventType::BookSnapshot) {
         Book* b = book(h->instrument);
         if (b == nullptr) return ParseStatus::UnknownSymbol;
+        note_truncated();
         on_book(*b, *reinterpret_cast<const BookDeltaMsg*>(h), r, rx_ts);
         ++stats_.pushed;
         continue;
@@ -210,6 +221,22 @@ class OkxMdFeed {
     b.sync.resync(SyncReason::ChecksumMismatch, rx);
   }
 
+  // A books push with a side longer than the parser keeps was cut to the levels nearest the touch
+  // (LevelSpill).
+  void note_truncated() noexcept {
+    const std::uint64_t n = parser_.stats().truncated;
+    if (FASTMM_LIKELY(n == truncated_logged_)) return;
+    truncated_logged_ = n;
+    if (n <= 5 || n % 100 == 0)
+      FASTMM_LOG_WARN(
+          "{}: books push with more than {} levels on a side; kept the {} nearest the touch ({} so "
+          "far)",
+          log_name_,
+          OkxMdParser::kMaxLevelTexts / 2,
+          OkxMdParser::kMaxLevelTexts / 2,
+          n);
+  }
+
   void rebuild_payloads() {
     payloads_.clear();
     // One request for all: three args per instrument are far below the 64 KB bound.
@@ -234,6 +261,8 @@ class OkxMdFeed {
 
   const SymbolTable& symbols_;
   VenueId venue_;
+  std::string_view log_name_ = "okx";
+  std::uint64_t truncated_logged_ = 0;
   EventSink& sink_;
   ResubscribeRequester requester_;
   OkxDepthChannel depth_;

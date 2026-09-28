@@ -213,3 +213,63 @@ TEST_CASE("core.book_syncer: binance futures first live delta after an empty buf
   CHECK(s.resync_count() == 0);
   CHECK(sink.events.back() == "delta:106-110");
 }
+
+// A gap is noticed on the update after the missing one. That update is the stream's next, and the
+// snapshot requested for the gap is often taken inside its range (Binance's REST depth is current
+// to within the 100 ms batch): it must be kept, or the snapshot looks older than the buffer
+// (SnapshotTooOld) and costs another request, 2 s later.
+TEST_CASE("core.book_syncer: binance futures keeps the update that revealed a gap") {
+  RecordingSink sink;
+  BookSyncer<BinanceFuturesSyncTraits, RecordingSink> s(sink);
+  s.start();
+  s.on_snapshot(snapshot(100));
+  s.on_delta(delta(95, 105, 90));
+  REQUIRE(s.synced());
+  s.on_delta(delta(120, 130, 115));  // pu 115 != 105: an update was lost
+  CHECK_FALSE(s.synced());
+  s.on_delta(delta(131, 140, 130));
+  s.on_snapshot(snapshot(125));  // inside the update that revealed the gap
+  CHECK(s.synced());
+  CHECK(s.resync_count() == 1);
+  CHECK(sink.events == std::vector<std::string>{"request",
+                                                "snap:100",
+                                                "delta:95-105",
+                                                "resync:1",
+                                                "request",
+                                                "snap:125",
+                                                "delta:120-130",
+                                                "delta:131-140"});
+}
+
+TEST_CASE("core.book_syncer: binance spot keeps the update that revealed a gap") {
+  RecordingSink sink;
+  BookSyncer<BinanceSpotSyncTraits, RecordingSink> s(sink);
+  s.start();
+  s.on_snapshot(snapshot(100));
+  s.on_delta(delta(101, 105));
+  s.on_delta(delta(110, 120));  // 106..109 lost
+  CHECK_FALSE(s.synced());
+  s.on_snapshot(snapshot(115));
+  CHECK(s.synced());
+  CHECK(s.resync_count() == 1);
+  CHECK(sink.events.back() == "delta:110-120");
+}
+
+// A gap inside the buffered updates replayed on a snapshot: the updates from the gap on are the
+// next attempt's buffer, so the next snapshot applies without waiting for more of the stream.
+TEST_CASE("core.book_syncer: a gap in the replayed buffer keeps the updates after it") {
+  RecordingSink sink;
+  BookSyncer<BinanceFuturesSyncTraits, RecordingSink> s(sink);
+  s.start();
+  s.on_delta(delta(90, 100, 85));
+  s.on_delta(delta(101, 110, 100));
+  s.on_delta(delta(120, 130, 115));  // lost 111..119
+  s.on_delta(delta(131, 140, 130));
+  s.on_snapshot(snapshot(95));
+  CHECK_FALSE(s.synced());
+  CHECK(s.resync_count() == 1);
+  s.on_snapshot(snapshot(125));
+  CHECK(s.synced());
+  CHECK(s.resync_count() == 1);
+  CHECK(sink.events.back() == "delta:131-140");
+}

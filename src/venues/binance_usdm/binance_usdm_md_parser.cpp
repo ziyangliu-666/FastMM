@@ -1,6 +1,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_md_parser.hpp"
 
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/level_spill.hpp"
 
 #include <simdjson.h>
 
@@ -13,6 +14,7 @@ namespace od = simdjson::ondemand;
 
 struct BinanceUsdmMdParser::Impl {
   od::parser parser;
+  LevelSpill spill;
   explicit Impl(std::size_t capacity) {
     if (parser.allocate(capacity) != sj::SUCCESS) std::abort();
   }
@@ -30,13 +32,27 @@ namespace {
   return sj::padded_string_view(s.data(), s.size(), s.size() + sj::SIMDJSON_PADDING);
 }
 
-// [["px","qty"],...] into `levels`: the count, -1 on a malformed level, -2 above `max` levels.
-int read_levels(od::value arr_val, Level* levels, std::uint32_t max) noexcept {
+// [["px","qty"],...] into `levels`: the count, -1 on a malformed level, -2 above
+// LevelSpill::kCapacity levels. A side longer than `max` goes through `spill`, which keeps the
+// `max` levels nearest the touch (`*truncated` is set).
+int read_levels(od::value arr_val,
+                Level* levels,
+                std::uint32_t max,
+                LevelSpill& spill,
+                bool bids,
+                bool* truncated) noexcept {
   od::array arr;
   if (arr_val.get_array().get(arr) != sj::SUCCESS) return -1;
   std::uint32_t n = 0;
+  Level* dst = levels;
+  std::uint32_t cap = max;
   for (auto lvl_res : arr) {
-    if (n >= max) return -2;
+    if (n >= cap) {
+      if (dst != levels) return -2;
+      std::copy_n(levels, n, spill.data());
+      dst = spill.data();
+      cap = LevelSpill::kCapacity;
+    }
     od::array pair;
     if (lvl_res.get_array().get(pair) != sj::SUCCESS) return -1;
     std::string_view px;
@@ -56,7 +72,11 @@ int read_levels(od::value arr_val, Level* levels, std::uint32_t max) noexcept {
     const auto p = parse_price(px);
     const auto q = parse_qty(qty);
     if (!p || !q) return -1;
-    levels[n++] = Level{*p, *q};
+    dst[n++] = Level{*p, *q};
+  }
+  if (dst != levels) {
+    n = spill.keep_nearest(n, bids, levels, max);
+    *truncated = true;
   }
   return static_cast<int>(n);
 }
@@ -70,6 +90,7 @@ void stamp(M& m, Timestamp recv_ts, Cycles t0) noexcept {
 struct DecodeCtx {
   MdParserStats* stats;
   const SymbolTable* symbols;
+  LevelSpill* spill;
   VenueId venue;
   Timestamp recv_ts;
   Cycles t0;
@@ -95,13 +116,15 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
 // Bids then asks of a depth payload into the message's level array.
 // Returns Ok, Malformed or Overflow in `r.status` (Ok leaves r otherwise untouched).
 [[gnu::noinline]] bool read_book_sides(MdParserStats& stats,
+                                       LevelSpill& spill,
                                        od::value bids,
                                        od::object& obj,
                                        const char* ask_key,
                                        BookDeltaMsg& m,
                                        DecodeResult& r) noexcept {
   Level* levels = m.levels();
-  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg);
+  bool truncated = false;
+  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, spill, true, &truncated);
   if (nb == -1) {
     r = fail(stats, r);
     return false;
@@ -115,7 +138,7 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
     r = fail(stats, r);
     return false;
   }
-  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg);
+  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, spill, false, &truncated);
   if (na == -1) {
     r = fail(stats, r);
     return false;
@@ -126,6 +149,7 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
   }
   m.bid_count = static_cast<std::uint32_t>(nb);
   m.ask_count = static_cast<std::uint32_t>(na);
+  if (truncated) ++stats.truncated;
   return true;
 }
 
@@ -149,7 +173,7 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
   auto* m = reinterpret_cast<BookDeltaMsg*>(c.out.data());
   od::value bids;
   if (data["b"].get(bids) != sj::SUCCESS) return fail(stats, r);
-  if (!read_book_sides(stats, bids, data, "a", *m, r)) return r;
+  if (!read_book_sides(stats, *c.spill, bids, data, "a", *m, r)) return r;
   const std::uint32_t len = BookDeltaMsg::size_for(m->bid_count, m->ask_count);
   const std::uint32_t bid_count = m->bid_count;
   const std::uint32_t ask_count = m->ask_count;
@@ -301,7 +325,7 @@ DecodeResult BinanceUsdmMdParser::decode(std::string_view json,
       data.reset();
     }
   }
-  const DecodeCtx c{&stats_, &symbols_, venue_, recv_ts, t0, out};
+  const DecodeCtx c{&stats_, &symbols_, &impl_->spill, venue_, recv_ts, t0, out};
   switch (kind) {
     case StreamKind::Depth:
       return decode_depth(c, data, r);
@@ -337,7 +361,7 @@ DecodeResult BinanceUsdmMdParser::decode_depth_snapshot(std::string_view json,
   auto* m = reinterpret_cast<BookDeltaMsg*>(out.data());
   od::value bids;
   if (root["bids"].get(bids) != sj::SUCCESS) return fail(stats_, r);
-  if (!read_book_sides(stats_, bids, root, "asks", *m, r)) return r;
+  if (!read_book_sides(stats_, impl_->spill, bids, root, "asks", *m, r)) return r;
   const std::uint32_t bid_count = m->bid_count;
   const std::uint32_t ask_count = m->ask_count;
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);

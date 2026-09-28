@@ -11,7 +11,13 @@
 // an injected callback and are rate limited to one per instrument per min_interval (2 s by
 // default) so a flapping stream cannot burn REST weight. A full market-data ring drops the
 // delta and forces a resync (6.7).
+//
+// Every resync is logged with its reason and the update ids that caused it, and the book's return
+// with how long it was away (the engine pulls quotes for that long).
+#include "fastmm/core/log.hpp"
 #include "fastmm/venues/book_sync.hpp"
+
+#include <string_view>
 
 namespace fastmm::venues::binance {
 
@@ -56,8 +62,11 @@ class BasicBinanceDepthSync {
   void on_delta(const BookDeltaMsg& d, std::int64_t now_ns) noexcept {
     now_ = now_ns;
     overflowed_ = false;
+    cause_ = &d;
     syncer_.on_delta(d);
     if (overflowed_) syncer_.resync(SyncReason::Explicit);
+    cause_ = nullptr;
+    note_synced();
     flush_request(now_ns);
   }
   // REST snapshot arrived (already decoded to a kSnapshot BookDeltaMsg).
@@ -65,8 +74,11 @@ class BasicBinanceDepthSync {
     now_ = now_ns;
     pending_request_ = false;
     overflowed_ = false;
+    snapshot_id_ = snap.last_update_id;
     syncer_.on_snapshot(snap);
     if (overflowed_) syncer_.resync(SyncReason::Explicit);
+    snapshot_id_ = 0;
+    note_synced();
     flush_request(now_ns);
   }
   // REST snapshot failed (HTTP error / timeout): retry after the interval.
@@ -95,6 +107,13 @@ class BasicBinanceDepthSync {
   [[nodiscard]] bool request_pending() const noexcept { return pending_request_; }
   [[nodiscard]] InstrumentId instrument() const noexcept { return instrument_; }
 
+  // Names for the log: the venue (the connector's config name) and the venue's symbol. Both must
+  // outlive the sync.
+  void set_log_names(std::string_view venue, std::string_view symbol) noexcept {
+    venue_name_ = venue;
+    symbol_ = symbol;
+  }
+
  private:
   struct Inner {
     BasicBinanceDepthSync* owner;
@@ -108,6 +127,8 @@ class BasicBinanceDepthSync {
     if (!sink_.push(m.hdr)) overflowed_ = true;
   }
   void emit_resyncing(SyncReason reason) noexcept {
+    log_resync(reason);
+    if (away_since_ == 0) away_since_ = now_ != 0 ? now_ : 1;
     ConnectionStateMsg m{};
     init_header(m, EventType::ConnectionState, instrument_, venue_);
     m.state = ConnState::Resyncing;
@@ -116,6 +137,37 @@ class BasicBinanceDepthSync {
     m.hdr.recv_ts = wall_now();
     static_cast<void>(sink_.push(m.hdr));
   }
+  void log_resync(SyncReason reason) const noexcept {
+    if (cause_ != nullptr) {
+      FASTMM_LOG_WARN("{}: {} book resync ({}): book at update {}, next update U={} u={} pu={}",
+                      venue_name_,
+                      symbol_,
+                      to_string(reason),
+                      syncer_.last_update_id(),
+                      cause_->first_update_id,
+                      cause_->last_update_id,
+                      cause_->prev_update_id);
+    } else if (snapshot_id_ != 0) {
+      FASTMM_LOG_WARN("{}: {} book resync ({}): snapshot lastUpdateId={}",
+                      venue_name_,
+                      symbol_,
+                      to_string(reason),
+                      snapshot_id_);
+    } else {
+      FASTMM_LOG_WARN("{}: {} book resync ({})", venue_name_, symbol_, to_string(reason));
+    }
+  }
+  // After a resync: the book is back, and was away (the engine without it) for this long.
+  void note_synced() noexcept {
+    if (away_since_ == 0 || !syncer_.synced()) return;
+    FASTMM_LOG_INFO("{}: {} book synced again after {} ms ({} snapshot requests so far)",
+                    venue_name_,
+                    symbol_,
+                    (now_ - away_since_) / 1'000'000,
+                    requests_);
+    away_since_ = 0;
+  }
+
   // Issues the deferred request if the rate limit allows it.
   void flush_request(std::int64_t now_ns) noexcept {
     if (stopped_) stopped_ = false;
@@ -141,6 +193,11 @@ class BasicBinanceDepthSync {
   SnapshotRequester requester_;
   std::int64_t min_interval_ns_;
   std::int64_t now_ = 0;
+  std::int64_t away_since_ = 0;          // since the last resync, until the book is synced again
+  const BookDeltaMsg* cause_ = nullptr;  // the delta being handled, for the log
+  std::uint64_t snapshot_id_ = 0;        // the snapshot being handled, for the log
+  std::string_view venue_name_ = "binance";
+  std::string_view symbol_;
   std::int64_t last_request_ns_ = 0;
   std::uint64_t requests_ = 0;
   std::uint64_t deferred_ = 0;

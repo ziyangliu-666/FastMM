@@ -51,6 +51,7 @@ class BinanceMdFeed : public BasicBinanceMdFeed<BinanceMdParser, BinanceDepthSyn
         sbe_.decode(frame, recv, t0, scratch_, [&](EventHeader& h, MdKind kind) noexcept {
           h.t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
           if (kind == MdKind::BookDelta) {
+            note_truncated(sbe_.stats().truncated);
             if (BinanceDepthSync* s = sync(h.instrument)) {
               s->on_delta(*reinterpret_cast<const BookDeltaMsg*>(&h), rx_ts);
               ++stats_.pushed;
@@ -74,6 +75,9 @@ class BinanceMdFeed : public BasicBinanceMdFeed<BinanceMdParser, BinanceDepthSyn
         break;
       case ParseStatus::UnknownSymbol:
         ++stats_.unknown_symbol;
+        break;
+      case ParseStatus::Overflow:  // a frame too large to decode: lost like a full ring
+        ++stats_.dropped;
         break;
       default:
         ++stats_.ignored;
