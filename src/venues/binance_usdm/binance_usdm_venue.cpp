@@ -1069,6 +1069,12 @@ void BinanceUsdmVenue::refuse(const OrderCommand& cmd, RejectReason reason, std:
   ++stats_.order_events;
 }
 
+void BinanceUsdmVenue::refuse_untracked(const OrderCommand& cmd) {
+  shadow_overflow_.refused(cfg_.name, shadows_.size());
+  sent_.answered(cmd.cl_ord_id);  // the refusal is its answer: it holds no snapshot back
+  refuse(cmd, RejectReason::OrderTableFull, "order table full");
+}
+
 void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
   const std::int64_t now = now_ns();
   if (cfg_.dry_run) return refuse(cmd, RejectReason::VenueKilled, "dry-run: orders disabled");
@@ -1090,16 +1096,18 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
         ++stats_.rate_limit_cooldowns;
         return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
       }
-      shadows_.assign(cmd.cl_ord_id,
-                      OrderShadow{cmd.instrument,
-                                  cmd.side,
-                                  cmd.type,
-                                  cmd.tif,
-                                  cmd.reduce_only,
-                                  cmd.cl_ord_id,
-                                  ClientOrderId{},
-                                  Qty{},
-                                  Qty{}});
+      if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id,
+                                          OrderShadow{cmd.instrument,
+                                                      cmd.side,
+                                                      cmd.type,
+                                                      cmd.tif,
+                                                      cmd.reduce_only,
+                                                      cmd.cl_ord_id,
+                                                      ClientOrderId{},
+                                                      Qty{},
+                                                      Qty{},
+                                                      sent_.last_seq()}) == nullptr))
+        return refuse_untracked(cmd);
       break;
     case OrderCommandKind::Cancel:
       shadow = shadows_.find(cmd.cl_ord_id);
@@ -1114,7 +1122,9 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
       }
       OrderShadow copy = *orig;
       copy.replaces = cmd.orig_cl_ord_id;
-      shadows_.assign(cmd.cl_ord_id, copy);
+      copy.sent_seq = sent_.last_seq();
+      if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id, copy) == nullptr))
+        return refuse_untracked(cmd);
       shadow = shadows_.find(cmd.orig_cl_ord_id);
       break;
     }
@@ -1447,8 +1457,9 @@ bool BinanceUsdmVenue::snapshot_rows() {
   return true;
 }
 
-void BinanceUsdmVenue::shadow_ids(std::vector<ClientOrderId>& out) {
-  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+void BinanceUsdmVenue::shadow_ids(std::vector<SentShadow>& out) {
+  shadows_.for_each(
+      [&](ClientOrderId id, const OrderShadow& s) { out.push_back(SentShadow{id, s.sent_seq}); });
 }
 
 void BinanceUsdmVenue::drop_shadow(ClientOrderId id) {
@@ -1896,6 +1907,7 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
     check_positions(now);
   }
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  shadow_overflow_.check(cfg_.name, shadows_.size(), decltype(shadows_)::kMaxSize);
   publish_status();
   raw_md_.flush();
   raw_trades_.flush();
@@ -1912,6 +1924,8 @@ void BinanceUsdmVenue::on_timer(std::int64_t now) {
 }
 
 void BinanceUsdmVenue::publish_status() noexcept {
+  stats_.shadows = shadows_.size();
+  stats_.shadows_refused = shadow_overflow_.count();
   stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;

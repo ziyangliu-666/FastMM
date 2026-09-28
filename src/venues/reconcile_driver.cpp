@@ -91,7 +91,7 @@ void ReconcileDriver::fetch() {
   const std::uint64_t gen = ++generation_;
   in_flight_ = true;
   fetch_started_ns_ = now;
-  watermark_ = running_ == Want::Sweep ? ClientOrderId{} : sent_.value(now);
+  watermark_ = running_ == Want::Sweep ? SentWatermark::Mark{} : sent_.mark(now);
   orders_.clear();
   positions_.clear();
   if (hooks_.fetch_snapshot(gen)) return;
@@ -153,7 +153,7 @@ void ReconcileDriver::emit() {
   ReconcileMsg begin{};
   init_header(begin, EventType::Reconcile, InstrumentId::invalid(), venue_);
   begin.kind = ReconcileMsg::Kind::Begin;
-  SentWatermark::stamp(begin, watermark_);
+  SentWatermark::stamp(begin, watermark_.id);
   if (exact_) begin.flags |= ReconcileMsg::kExecutionsExact;
   exact_ = false;
   begin.hdr.recv_ts = wall_now();
@@ -168,18 +168,19 @@ void ReconcileDriver::emit() {
   FASTMM_LOG_INFO("{}: reconciled {} open orders{}",
                   name_,
                   orders_.size(),
-                  watermark_.valid() ? "" : " (start-up sweep)");
+                  watermark_.id.valid() ? "" : " (start-up sweep)");
 }
 
 // An order's shadow is dropped when its terminal event arrives. When that event is lost with a
 // connection - the REST cancel-all that follows an order-channel drop is the usual way - the
 // shadow stays, and the table is fixed-size: enough of them and a new order gets no shadow, so its
-// replace and cancel are refused as "original unknown". The snapshot settles it: an order the venue
-// does not hold, answered before the snapshot was asked for, is over. "Answered before" is what the
-// watermark says, which is a point in send order; ids compare in send order within one epoch only
-// (fastmm-gateway interleaves several engines' ids), so a shadow of another epoch is left alone.
+// replace and cancel are refused as "original unknown", and once the table is full every new order
+// is refused. The snapshot settles it: an order the venue does not hold, answered before the
+// snapshot was asked for, is over. "Answered before" is what the watermark says, a point in send
+// order: its send sequence, which orders every engine's orders behind fastmm-gateway (their ids
+// are in send order within one epoch only).
 void ReconcileDriver::sweep_shadows() {
-  if (!watermark_.valid()) return;  // the start-up sweep: nothing tells old from in flight
+  if (watermark_.seq == 0) return;  // the start-up sweep, or nothing sent: nothing to judge
   named_.clear();
   for (const ReconcileMsg& m : orders_) {
     if (m.cl_ord_id.valid()) named_.push_back(m.cl_ord_id);
@@ -187,17 +188,37 @@ void ReconcileDriver::sweep_shadows() {
   std::sort(named_.begin(), named_.end());
   shadows_.clear();
   hooks_.shadow_ids(shadows_);
-  const std::uint16_t epoch = cl_ord_id_epoch(watermark_);
   std::uint64_t dropped = 0;
-  for (const ClientOrderId id : shadows_) {
-    if (cl_ord_id_epoch(id) != epoch || id.value > watermark_.value) continue;
-    if (std::binary_search(named_.begin(), named_.end(), id)) continue;
-    hooks_.drop_shadow(id);
+  for (const SentShadow& s : shadows_) {
+    if (s.seq > watermark_.seq) continue;
+    if (std::binary_search(named_.begin(), named_.end(), s.id)) continue;
+    hooks_.drop_shadow(s.id);
     ++dropped;
   }
   if (dropped == 0) return;
   shadows_swept_ += dropped;
   FASTMM_LOG_INFO("{}: dropped {} order shadow(s) the venue no longer holds", name_, dropped);
+}
+
+void ShadowOverflow::refused(std::string_view venue, std::size_t size) {
+  ++count_;
+  if (full_) return;
+  full_ = true;
+  episode_start_ = count_ - 1;
+  FASTMM_LOG_ERROR(
+      "{}: order table full ({} orders working or in flight): refusing new orders and replaces "
+      "(OrderTableFull) until it has room",
+      venue,
+      size);
+}
+
+void ShadowOverflow::check(std::string_view venue, std::size_t size, std::size_t max_size) {
+  if (!full_ || size >= max_size) return;
+  full_ = false;
+  FASTMM_LOG_WARN("{}: order table has room again ({} orders); {} order(s) were refused",
+                  venue,
+                  size,
+                  count_ - episode_start_);
 }
 
 void ReconcileDriver::on_timer(std::int64_t now_ns) {

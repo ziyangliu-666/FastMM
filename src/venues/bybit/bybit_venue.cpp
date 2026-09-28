@@ -913,6 +913,19 @@ void BybitVenue::send_now(std::span<const EventHeader* const> batch) {
   write_orders(b);
 }
 
+void BybitVenue::refuse_untracked(const OrderCommand& cmd) {
+  shadow_overflow_.refused(cfg_.name, shadows_.size());
+  sent_.answered(cmd.cl_ord_id);  // the refusal is its answer: it holds no snapshot back
+  emit_order_reject(*order_sink_,
+                    id_,
+                    cmd.instrument,
+                    cmd.cl_ord_id,
+                    RejectReason::OrderTableFull,
+                    0,
+                    "order table full");
+  ++stats_.order_events;
+}
+
 void BybitVenue::send_command(const OrderCommand& cmd) {
   const std::int64_t now = now_ns();
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
@@ -934,9 +947,11 @@ void BybitVenue::send_command(const OrderCommand& cmd) {
       ++stats_.rate_limit_cooldowns;
       return refuse(RejectReason::VenueRateLimit, "local rate limit");
     }
-    shadows_.assign(cmd.cl_ord_id,
-                    OrderShadow{cmd.instrument, cmd.side, cmd.type, cmd.tif, cmd.cl_ord_id, {}});
-    shadow = shadows_.find(cmd.cl_ord_id);
+    shadow = shadows_.assign(
+        cmd.cl_ord_id,
+        OrderShadow{
+            cmd.instrument, cmd.side, cmd.type, cmd.tif, cmd.cl_ord_id, {}, sent_.last_seq()});
+    if (FASTMM_UNLIKELY(shadow == nullptr)) return refuse_untracked(cmd);
   } else if (cmd.kind == OrderCommandKind::Replace) {
     const OrderShadow* orig = shadows_.find(cmd.orig_cl_ord_id);
     if (orig == nullptr) return refuse(RejectReason::UnknownOrder, "amend: original unknown");
@@ -946,8 +961,9 @@ void BybitVenue::send_command(const OrderCommand& cmd) {
     }
     OrderShadow copy = *orig;
     copy.replaces = cmd.orig_cl_ord_id;
-    shadows_.assign(cmd.cl_ord_id, copy);
-    shadow = shadows_.find(cmd.cl_ord_id);
+    copy.sent_seq = sent_.last_seq();
+    shadow = shadows_.assign(cmd.cl_ord_id, copy);
+    if (FASTMM_UNLIKELY(shadow == nullptr)) return refuse_untracked(cmd);
   } else {
     shadow = shadows_.find(cmd.cl_ord_id);
   }
@@ -1339,8 +1355,9 @@ void BybitVenue::finish_snapshot(std::uint64_t generation) {
   }
 }
 
-void BybitVenue::shadow_ids(std::vector<ClientOrderId>& out) {
-  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+void BybitVenue::shadow_ids(std::vector<SentShadow>& out) {
+  shadows_.for_each(
+      [&](ClientOrderId id, const OrderShadow& s) { out.push_back(SentShadow{id, s.sent_seq}); });
 }
 
 void BybitVenue::drop_shadow(ClientOrderId id) {
@@ -1612,6 +1629,7 @@ void BybitVenue::on_timer(std::int64_t now) {
   // deduplicate and books a fill the private stream dropped without disconnecting.
   exec_replay_.on_timer(now);
   if (cfg_.category == BybitCategory::Linear) check_positions(now);
+  shadow_overflow_.check(cfg_.name, shadows_.size(), decltype(shadows_)::kMaxSize);
   publish_status();
   raw_md_.flush();
   raw_private_.flush();
@@ -1660,6 +1678,8 @@ void BybitVenue::check_positions(std::int64_t now) {
 }
 
 void BybitVenue::publish_status() noexcept {
+  stats_.shadows = shadows_.size();
+  stats_.shadows_refused = shadow_overflow_.count();
   stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;

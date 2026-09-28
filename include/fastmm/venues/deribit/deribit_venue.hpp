@@ -169,7 +169,7 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   // connection; the snapshot once every reply is in.
   bool fetch_snapshot(std::uint64_t generation) override;
   bool replay_executions() override;
-  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   void handle_open_orders_response(std::string_view json, bool error);
   void handle_positions_response(std::string_view json, bool error);
@@ -194,6 +194,8 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   void request_resubscribe(InstrumentId id);
   void cancel_all_async();
   void publish_status() noexcept;
+  // An order the shadow table had no room for goes back as OrderTableFull.
+  void refuse_untracked(const OrderCommand& cmd);
   void forget_order(ClientOrderId id) noexcept;
   [[nodiscard]] ClientOrderId current_id(ClientOrderId label) const noexcept;
   [[nodiscard]] std::int64_t now_ns() const noexcept { return net::Reactor::now_ns(); }
@@ -220,8 +222,9 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   ConnectionSlot<MdHandler> md_conn_;
   ConnectionSlot<PrivateHandler> private_conn_;
   CreditBucket matching_credits_;
-  OpenHashMap<ClientOrderId, OrderShadow, 8192> shadows_;
-  OpenHashMap<ClientOrderId, ClientOrderId, 8192> aliases_;  // venue label -> engine id
+  OpenHashMap<ClientOrderId, OrderShadow, kShadowSlots> shadows_;
+  ShadowOverflow shadow_overflow_;
+  OpenHashMap<ClientOrderId, ClientOrderId, kShadowSlots> aliases_;  // venue label -> engine id
   alignas(64) std::byte scratch_[kDecoderScratchBytes];
   char request_buf_[kMaxRequestBytes];
   RawRecorder raw_md_;

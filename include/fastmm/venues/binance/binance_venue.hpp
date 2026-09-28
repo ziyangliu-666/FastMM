@@ -229,7 +229,7 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // ReconcileHooks: openOrders.status on the order connection, else GET /api/v3/openOrders.
   bool fetch_snapshot(std::uint64_t generation) override;
   bool replay_executions() override;
-  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   // Decodes the whole reply into the driver's rows before anything reaches the engine.
   void on_open_orders(std::uint64_t generation, std::string_view json, bool rest_array);
@@ -239,6 +239,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   bool query_executions(const ReplayQuery& q);
   bool emit_execution(std::size_t stream, const MyTradeRecord& t);
   void publish_status() noexcept;
+  // An order the shadow table had no room for goes back as OrderTableFull.
+  void refuse_untracked(const OrderCommand& cmd);
   void note_rate_headers(const net::HttpResponse& r);
   [[nodiscard]] std::int64_t now_ns() const noexcept { return net::Reactor::now_ns(); }
   static void snapshot_requester(void* ctx, InstrumentId id) noexcept {
@@ -270,7 +272,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   ConnectionSlot<UserHandler> user_conn_;
   ConnectionSlot<OrderHandler> order_conn_;
   RateLimiter rate_;
-  OpenHashMap<ClientOrderId, OrderShadow, 8192> shadows_;
+  OpenHashMap<ClientOrderId, OrderShadow, kShadowSlots> shadows_;
+  ShadowOverflow shadow_overflow_;
   alignas(64) std::byte scratch_[kDecoderScratchBytes];
   char request_buf_[kMaxRequestBytes];
   RawRecorder raw_md_;

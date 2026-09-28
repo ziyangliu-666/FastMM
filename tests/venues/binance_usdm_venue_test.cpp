@@ -135,7 +135,16 @@ struct Harness {
 
   // The server thread reads this harness's members: stop it before they go.
   ~Harness() { srv.stop(); }
-  explicit Harness(bool hedge = false) : hedge_mode(hedge) {
+  // `order_limits` false: exchangeInfo allows far more orders than a test sends (the fixture's
+  // 300 per 10 s would refuse most of them locally).
+  explicit Harness(bool hedge = false, bool order_limits = true) : hedge_mode(hedge) {
+    if (!order_limits) {
+      for (const char* limit : {R"("limit":1200})", R"("limit":300})"}) {
+        const std::size_t at = exchange_info.find(limit);
+        REQUIRE(at != std::string::npos);
+        exchange_info.replace(at, std::string_view(limit).size(), R"("limit":1000000})");
+      }
+    }
     srv.route("GET", "/fapi/v1/exchangeInfo", [this](const net::HttpRequest&) {
       if (exchange_info_down.load())
         return net::HttpServerResponse::text(503, "Service Unavailable");
@@ -735,7 +744,9 @@ struct DmsFixture {
 
   explicit DmsFixture(std::int64_t window_ms,
                       const std::function<void(BinanceUsdmVenue&)>& before_connect = {},
-                      bool with_eth = false) {
+                      bool with_eth = false,
+                      bool order_limits = true)
+      : h(false, order_limits) {
     REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
     if (with_eth) REQUIRE(instruments.add(make_instrument("ETHUSDT", 0, "ETH", "USDT")));
     BinanceUsdmVenueConfig cfg = h.config(false);
@@ -1327,4 +1338,115 @@ TEST_CASE("binance_usdm.venue: an order shadow whose terminal event was lost is 
         cid("fm000100000001"));
   CHECK(f.venue->shadow_count() == 0);
   REQUIRE(f.pump([&] { return f.venue->status().shadows_swept == 1; }));
+}
+
+namespace {
+
+OutNewOrderMsg new_order(ClientOrderId id) {
+  OutNewOrderMsg n{};
+  init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  n.cl_ord_id = id;
+  n.side = Side::Buy;
+  n.type = OrderType::PostOnly;
+  n.price = Price::from_decimal("70000").value();
+  n.qty = Qty::from_decimal("0.001").value();
+  return n;
+}
+
+// Sends `ids` as New orders through the outbound ring and waits until the venue acked them all.
+void place_all(DmsFixture& f, const std::vector<ClientOrderId>& ids) {
+  const std::size_t acked = f.oc.count(EventType::OrderAck);
+  for (const ClientOrderId id : ids) {
+    const OutNewOrderMsg n = new_order(id);
+    while (!f.outbound.try_push(&n, n.hdr.len)) {
+      f.venue->on_wake();
+      f.reactor.run_once(1);
+    }
+  }
+  f.venue->on_wake();
+  REQUIRE(f.pump([&] { return f.oc.count(EventType::OrderAck) == acked + ids.size(); }, 60000));
+}
+
+std::size_t frames_with(DmsFixture& f, std::string_view method) {
+  std::size_t n = 0;
+  for (const auto& t : f.h.srv.frames("/ws-fapi/v1")) n += t.find(method) != std::string::npos;
+  return n;
+}
+
+}  // namespace
+
+TEST_CASE("binance_usdm.venue: shadows of several engines' orders are swept in send order") {
+  // Behind fastmm-gateway two engines send orders through one connector, their ids interleaved and
+  // in send order only within each epoch. The sweep used to judge only the watermark's epoch, so
+  // the other engine's orders whose end was lost stayed in the table for the session.
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  std::vector<ClientOrderId> ids;
+  for (std::uint32_t k = 1; k <= 20; ++k) {
+    ids.push_back(make_cl_ord_id(0x0007, 1000 + k));  // engine a: high sequence numbers
+    ids.push_back(make_cl_ord_id(0x0003, k));         // engine b, the last to send
+  }
+  place_all(f, ids);
+  CHECK(f.venue->shadow_count() == 40);
+  // Every one ended at the venue with no event: the snapshot names none.
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  CHECK(RecordingSink::as<ReconcileMsg>(f.oc.all[index_of_begin(f.oc, 1)]).sent_watermark ==
+        ids.back());
+  CHECK(f.venue->shadow_count() == 0);
+  REQUIRE(f.pump([&] { return f.venue->status().shadows_swept == 40; }));
+  CHECK(f.venue->status().shadows == 0);
+}
+
+TEST_CASE("binance_usdm.venue: with the order table full an order or modify is refused, not sent") {
+  // 7168 orders the connector holds shadows for: working, or ended with no event and not swept yet
+  // (another engine's, behind the gateway, before the sweep compared send order). Before, the
+  // next order went out untracked. A modify did too, and the venue acked it: the engine took the
+  // new id as the working order while the venue's later fills, still under the first client id,
+  // were booked to the id it had replaced (and its cumulative quantity counted from the start).
+  DmsFixture f(0, {}, false, /*order_limits=*/false);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  constexpr std::size_t kRoom = kShadowSlots - kShadowSlots / 8;
+  std::vector<ClientOrderId> ids;
+  for (std::uint32_t k = 1; k <= kRoom; ++k) ids.push_back(make_cl_ord_id(1, k));
+  place_all(f, ids);
+  REQUIRE(f.venue->shadow_count() == kRoom);
+  REQUIRE(frames_with(f, "\"order.place\"") == kRoom);
+
+  // One more order: refused with OrderTableFull, never sent.
+  const ClientOrderId extra = make_cl_ord_id(1, kRoom + 1);
+  const OutNewOrderMsg n = new_order(extra);
+  REQUIRE(f.outbound.try_push(&n, n.hdr.len));
+  // A modify of the first order to a new id: refused the same way, the original stays working.
+  const ClientOrderId modified = make_cl_ord_id(1, kRoom + 2);
+  OutReplaceMsg r{};
+  init_header(r, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+  r.cl_ord_id = modified;
+  r.orig_cl_ord_id = ids.front();
+  r.venue_order_id.assign("4293153");
+  r.price = Price::from_decimal("70001").value();
+  r.qty = Qty::from_decimal("0.001").value();
+  REQUIRE(f.outbound.try_push(&r, r.hdr.len));
+  f.venue->on_wake();
+  const auto refused = [&](ClientOrderId id) {
+    return f.oc.first_if<OrderRejectMsg>(EventType::OrderReject, [&](const OrderRejectMsg& m) {
+      return m.cl_ord_id == id && m.reason == RejectReason::OrderTableFull;
+    });
+  };
+  REQUIRE(f.pump([&] { return refused(extra) != nullptr && refused(modified) != nullptr; }));
+  CHECK(refused(extra)->hdr.instrument == InstrumentId{0});
+  REQUIRE(f.pump([&] { return f.venue->status().shadows_refused == 2; }));
+
+  // The snapshot names none of the orders, so they are swept: the table has room, the next order
+  // goes. Its ack comes after every frame sent before it on the order connection.
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  CHECK(f.venue->shadow_count() == 0);
+  place_all(f, {make_cl_ord_id(1, kRoom + 3)});
+  CHECK(frames_with(f, "\"order.place\"") == kRoom + 1);
+  CHECK(frames_with(f, "\"order.modify\"") == 0);
+  CHECK(f.oc.first_if<OrderAckMsg>(EventType::OrderAck, [&](const OrderAckMsg& m) {
+    return m.cl_ord_id == modified;
+  }) == nullptr);
+  CHECK(f.venue->status().shadows_refused == 2);
 }

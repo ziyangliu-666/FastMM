@@ -66,7 +66,8 @@ struct OrderShadow {
   OrderType type = OrderType::Limit;
   TimeInForce tif = TimeInForce::Gtc;
   ClientOrderId link_id{};
-  ClientOrderId replaces{};  // Replace: the order this one amends
+  ClientOrderId replaces{};    // Replace: the order this one amends
+  std::uint64_t sent_seq = 0;  // SentWatermark send sequence of its New or Replace
 };
 
 struct RestRequest {

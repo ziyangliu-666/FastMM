@@ -26,7 +26,7 @@ struct FakeHooks final : ReconcileHooks {
   bool can_fetch = true;
   int replays = 0;
   bool replay_runs = false;  // the replay answers later (ReconcileDriver::replay_done)
-  std::vector<ClientOrderId> shadows;
+  std::vector<SentShadow> shadows;
   std::vector<ClientOrderId> dropped;
 
   bool fetch_snapshot(std::uint64_t g) override {
@@ -38,12 +38,18 @@ struct FakeHooks final : ReconcileHooks {
     ++replays;
     return replay_runs;
   }
-  void shadow_ids(std::vector<ClientOrderId>& out) override {
+  void shadow_ids(std::vector<SentShadow>& out) override {
     out.insert(out.end(), shadows.begin(), shadows.end());
   }
   void drop_shadow(ClientOrderId id) override {
     dropped.push_back(id);
-    std::erase(shadows, id);
+    std::erase_if(shadows, [&](const SentShadow& s) { return s.id == id; });
+  }
+  [[nodiscard]] std::vector<ClientOrderId> shadow_list() const {
+    std::vector<ClientOrderId> out;
+    for (const SentShadow& s : shadows) out.push_back(s.id);
+    std::sort(out.begin(), out.end());
+    return out;
   }
 };
 
@@ -51,12 +57,18 @@ ClientOrderId id_of(std::uint16_t epoch, std::uint32_t seq) {
   return make_cl_ord_id(epoch, seq);
 }
 
-// An order sent and answered: the watermark moves up to it.
-void sent_and_answered(SentWatermark& sent, ClientOrderId id) {
+// An order sent, as the connector records it: its shadow stamped with its send sequence.
+void sent_only(SentWatermark& sent, FakeHooks& hooks, ClientOrderId id) {
   OrderCommand c;
   c.kind = OrderCommandKind::New;
   c.cl_ord_id = id;
   sent.note(c, net::Reactor::now_ns());
+  hooks.shadows.push_back(SentShadow{id, sent.last_seq()});
+}
+
+// An order sent and answered: the watermark moves up to it.
+void sent_and_answered(SentWatermark& sent, FakeHooks& hooks, ClientOrderId id) {
+  sent_only(sent, hooks, id);
   sent.answered(id);
 }
 
@@ -244,7 +256,7 @@ TEST_CASE("reconcile_driver: after close() nothing in flight counts and nothing 
 
 TEST_CASE("reconcile_driver: the start-up sweep carries an empty watermark") {
   Rig r;
-  sent_and_answered(r.sent, id_of(5, 1));
+  sent_and_answered(r.sent, r.hooks, id_of(5, 1));
   r.driver.sweep();
   r.answer(id_of(3, 7));  // an earlier session's order: the engine cancels it
   auto begins = r.of_kind(ReconcileMsg::Kind::Begin);
@@ -280,13 +292,8 @@ TEST_CASE("reconcile_driver: shadows the snapshot proves over are dropped, no ot
   const ClientOrderId lost_1 = id_of(5, 1);
   const ClientOrderId lost_3 = id_of(5, 3);
   const ClientOrderId in_flight = id_of(5, 4);
-  const ClientOrderId other_epoch = id_of(4, 9);  // another engine behind the gateway
-  for (const ClientOrderId id : {lost_1, resting, lost_3}) sent_and_answered(r.sent, id);
-  OrderCommand c;
-  c.kind = OrderCommandKind::New;
-  c.cl_ord_id = in_flight;
-  r.sent.note(c, net::Reactor::now_ns());  // sent, not answered
-  r.hooks.shadows = {lost_1, resting, lost_3, in_flight, other_epoch};
+  for (const ClientOrderId id : {lost_1, resting, lost_3}) sent_and_answered(r.sent, r.hooks, id);
+  sent_only(r.sent, r.hooks, in_flight);  // sent, not answered
 
   // The start-up sweep's empty watermark tells nothing apart: every shadow stays.
   r.driver.sweep();
@@ -301,8 +308,41 @@ TEST_CASE("reconcile_driver: shadows the snapshot proves over are dropped, no ot
   std::sort(r.hooks.dropped.begin(), r.hooks.dropped.end());
   CHECK(r.hooks.dropped == std::vector<ClientOrderId>{lost_1, lost_3});
   CHECK(r.driver.shadows_swept() == 2);
-  std::sort(r.hooks.shadows.begin(), r.hooks.shadows.end());
-  CHECK(r.hooks.shadows == std::vector<ClientOrderId>{other_epoch, resting, in_flight});
+  CHECK(r.hooks.shadow_list() == std::vector<ClientOrderId>{resting, in_flight});
+}
+
+TEST_CASE("reconcile_driver: several engines' shadows are judged by send order, not by id") {
+  // Behind fastmm-gateway the connector sends two engines' orders interleaved; their ids are in
+  // send order within each epoch only. The sweep used to compare ids of the watermark's epoch and
+  // left every other engine's shadows in the table for good.
+  Rig r;
+  const ClientOrderId a_resting = id_of(7, 500);
+  const ClientOrderId b_lost_1 = id_of(3, 1);
+  const ClientOrderId a_lost = id_of(7, 501);
+  const ClientOrderId b_lost_2 = id_of(3, 2);
+  const ClientOrderId a_in_flight = id_of(7, 502);
+  const ClientOrderId b_after = id_of(3, 3);  // answered, but sent after a_in_flight
+  for (const ClientOrderId id : {a_resting, b_lost_1, a_lost, b_lost_2})
+    sent_and_answered(r.sent, r.hooks, id);
+  sent_only(r.sent, r.hooks, a_in_flight);
+  sent_and_answered(r.sent, r.hooks, b_after);
+
+  r.driver.request();
+  r.answer(a_resting);
+  const auto begins = r.of_kind(ReconcileMsg::Kind::Begin);
+  REQUIRE(begins.size() == 1);
+  CHECK(begins[0]->sent_watermark == b_lost_2);  // the last sent before the one in flight
+  CHECK(r.driver.shadows_swept() == 3);
+  std::sort(r.hooks.dropped.begin(), r.hooks.dropped.end());
+  CHECK(r.hooks.dropped == std::vector<ClientOrderId>{b_lost_1, b_lost_2, a_lost});
+  CHECK(r.hooks.shadow_list() == std::vector<ClientOrderId>{b_after, a_resting, a_in_flight});
+
+  // Once the one in flight is answered, the next snapshot judges it and the one after it.
+  r.sent.answered(a_in_flight);
+  r.driver.request();
+  r.answer(a_resting);
+  CHECK(r.driver.shadows_swept() == 5);
+  CHECK(r.hooks.shadow_list() == std::vector<ClientOrderId>{a_resting});
 }
 
 TEST_CASE("reconcile_driver: positions follow the open orders between Begin and End") {

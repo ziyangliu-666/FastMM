@@ -99,16 +99,29 @@ struct OrderCommand {
 // One engine allocates its ids in the order it sends them; fastmm-gateway interleaves several
 // engines' ids on one venue and finds the point the snapshot was taken at from the id itself
 // (live/gateway.hpp), which is why the watermark is always an id that was sent.
+//
+// The connector itself compares by send sequence: every New and Replace noted takes the next
+// number (last_seq()), in send order over every engine behind the connector, and the watermark's
+// sequence (Mark::seq) is that of the id it names. An order shadow stamped with its sequence is
+// judged by the snapshot when its sequence is at or below the mark's, whichever engine sent it.
 class SentWatermark {
  public:
   static constexpr std::int64_t kUnansweredNs = 10'000'000'000;
   static constexpr std::size_t kMaxInFlight = 256;
 
+  // The watermark for a snapshot: the id, for the engine, and its send sequence (0: none sent).
+  struct Mark {
+    ClientOrderId id;
+    std::uint64_t seq = 0;
+  };
+
   void note(const OrderCommand& c, std::int64_t now_ns) noexcept {
     if (c.kind == OrderCommandKind::Cancel) return;
     prune(now_ns);
     if (n_ == kMaxInFlight) pop();  // treat the oldest as answered: never blocks new orders
-    in_flight_[(head_ + n_) % kMaxInFlight] = InFlight{c.cl_ord_id, high_, now_ns, false, false};
+    ++seq_;
+    in_flight_[(head_ + n_) % kMaxInFlight] =
+        InFlight{c.cl_ord_id, high_, seq_, now_ns, false, false};
     ++n_;
     high_ = c.cl_ord_id;
   }
@@ -164,12 +177,17 @@ class SentWatermark {
     }
   }
   // The watermark for a snapshot requested now.
-  [[nodiscard]] ClientOrderId value(std::int64_t now_ns) noexcept {
+  [[nodiscard]] ClientOrderId value(std::int64_t now_ns) noexcept { return mark(now_ns).id; }
+  [[nodiscard]] Mark mark(std::int64_t now_ns) noexcept {
     prune(now_ns);
-    return n_ == 0 ? high_ : in_flight_[head_].prev;
+    if (n_ == 0) return Mark{high_, seq_};
+    const InFlight& f = in_flight_[head_];
+    return Mark{f.prev, f.seq - 1};
   }
-  // The last id sent, answered or not.
+  // The last id sent, answered or not, and its send sequence (the order being sent, inside the
+  // connector's send path).
   [[nodiscard]] ClientOrderId last_sent() const noexcept { return high_; }
+  [[nodiscard]] std::uint64_t last_seq() const noexcept { return seq_; }
   static void stamp(ReconcileMsg& begin, ClientOrderId watermark) noexcept {
     begin.sent_watermark = watermark;
     begin.flags |= ReconcileMsg::kSentWatermark;
@@ -179,6 +197,7 @@ class SentWatermark {
   struct InFlight {
     ClientOrderId id;
     ClientOrderId prev;  // the id sent just before it
+    std::uint64_t seq;   // its send sequence
     std::int64_t sent_ns;
     bool answered;
     bool rest;  // sent over REST, not on the WebSocket order connection
@@ -199,6 +218,7 @@ class SentWatermark {
   std::size_t head_ = 0;
   std::size_t n_ = 0;
   ClientOrderId high_{};
+  std::uint64_t seq_ = 0;  // send sequence of high_
 };
 
 // The engine asks for a reconciliation (ControlCommand::Reconcile on the outbound ring).
