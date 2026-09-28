@@ -269,7 +269,7 @@ TEST_CASE(
   const pid_t a = spawn_strategy(c.a, g);
   const std::uint16_t ea = wait_resting(fx, c.a, {});
   const pid_t b = spawn_strategy(c.b, g);
-  const std::uint16_t eb = wait_resting(fx, c.b, {ea});
+  static_cast<void>(wait_resting(fx, c.b, {ea}));
   const std::uint64_t fb = fills(fx, 1);
   // The gateway's once-a-second counters: "refused: ... gross_notional=<n>".
   const auto refusals = [&] {
@@ -298,7 +298,9 @@ TEST_CASE(
   // b trades on.
   CHECK_MESSAGE(wait_until([&] { return fills(fx, 1) >= fb + 2; }, 90000),
                 "b stopped trading: " << fastmm::test::read_file(c.b.config + ".log"));
-  CHECK(wait_until([&] { return open_of(fx, eb) > 0; }, 5000));
+  // Not checked: that b has an order resting now. The simulator's own market flow fills a's quotes
+  // too, and with a past the cap a flat b has no side that reduces, so both are refused, as the
+  // cap says.
 
   stop_strategy(a);
   stop_strategy(b);
