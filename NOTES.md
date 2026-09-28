@@ -29,6 +29,14 @@ first reconciliation (`EngineConfig::await_reconcile`, journal header field, ord
 runs in parallel with the other 111 integration tests (all passed), store and xmm unit cases,
 full ctest. Not measured: the extra branch in `submit_new` on the benchmarks.
 
+**Quote/hedge direction done (2026-09-28), CI green.** Steps 1-4 on main: multi-venue backtest,
+`xmm`, `[risk.underlying]`, recovery through kill -9 mid-hedge (three bugs fixed, see the entry
+below). The restart gate (no order before every venue has reconciled) costs nothing measurable:
+6 interleaved pinned rounds, both built at the same path length, t2o 160.6 / 160.7 ns, t2o+hash
+332.8 / 326.6, engine step 2333 / 2320. Test harness: children of a failed integration case are
+killed at exit (15 orphaned gateways up to 45 h old had kept load at 30-40). Next: every connector
+against its production public data (dry run), then choose the next direction.
+
 **xmm on 30 minutes of real Binance USD-M + Bybit BTCUSDT (2026-09-28).** Recorded with
 `fastmm-live --dry-run` against production public streams (both books synced; 733k and 101k md
 messages; USD-M 5 resyncs, Bybit 0, no reconnects, machine at load 38; reason not checked).
