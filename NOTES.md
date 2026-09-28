@@ -3,6 +3,30 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## Next direction (chosen 2026-09-28): one connector machinery, written once
+
+**Why.** The five exchange connectors are ~9,500 lines, of which ~5,100 are the same machinery
+written five times: execution replay, reconciliation, dead man's switch, blocking shutdown
+requests, funding windows, reference data. The copies have drifted and the drift is where
+recovery bugs live (the USD-M countdown stop was fixed in OKX's copy only). A read-only survey
+(2026-09-28) found, among others: Bybit, OKX and Deribit never retry a failed open-orders
+snapshot and drop a request while one is in flight; USD-M skips the start-up sweep of orders
+nobody holds; only Spot sweeps its order shadows (the others leak up to 8192 entries);
+`SentWatermark::connection_lost()` also forgets REST-sent orders, during exactly the outage they
+are used in; Spot's replay counts emitted rows, not returned ones, for a full page, and can open a
+REST connection during shutdown; USD-M and Bybit give up on 418/429 in the kill-path cancel-all;
+USD-M's offline reference-data path skips its account checks (hedge-mode refusal).
+
+**Plan.** Each extraction keeps the connector tests green and adds a test per closed divergence.
+1. `ReconcileDriver`: open-orders snapshot vs the OMS, generation, in-flight/again, retry,
+   start-up sweep, shadow sweep, Begin/End, the exact flag. Venue hooks: fetch snapshot, rows.
+2. Blocking control helper (kill-path cancel-all, countdown stops, bounded 418/429 retry),
+   `CountdownDriver` over `CountdownSwitch`, and `SentWatermark` losing only WebSocket-sent orders.
+3. `ReplayScheduler`: windows, cursors, edge ids, watermark settle, retry/sweep timers, shared by
+   execution replay and funding. After 1.
+Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
+cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
+
 **Replace per venue (2026-09-28).** The quote manager replaced only if every venue the engine
 traded could (the gap left by quote/hedge step 1): one venue without replace, say an IOC hedge
 venue, sent cancel + new on all of them. Now the engine resolves each instrument's venue at start
