@@ -58,6 +58,8 @@ struct Harness {
   std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
   net::WsSession* user_session = nullptr;  // server thread only
 
+  // The server thread reads this harness's members: stop it before they go.
+  ~Harness() { srv.stop(); }
   Harness() {
     srv.route("GET", "/api/v3/exchangeInfo", [this](const net::HttpRequest&) {
       return net::HttpServerResponse::json(200, exchange_info);

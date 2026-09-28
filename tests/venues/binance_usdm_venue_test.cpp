@@ -122,6 +122,8 @@ struct Harness {
     income = std::move(body);
   }
 
+  // The server thread reads this harness's members: stop it before they go.
+  ~Harness() { srv.stop(); }
   explicit Harness(bool hedge = false) : hedge_mode(hedge) {
     srv.route("GET", "/fapi/v1/exchangeInfo", [this](const net::HttpRequest&) {
       return net::HttpServerResponse::json(200, exchange_info);

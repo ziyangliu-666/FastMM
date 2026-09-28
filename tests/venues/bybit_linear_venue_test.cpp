@@ -121,6 +121,8 @@ struct Harness {
     ++(rest_signed(r, payload) ? signed_ok : signed_bad);
   }
 
+  // The server thread reads this harness's members: stop it before they go.
+  ~Harness() { srv.stop(); }
   Harness() {
     srv.route("GET", "/v5/market/time", [this](const net::HttpRequest&) {
       return net::HttpServerResponse::json(200, server_time);

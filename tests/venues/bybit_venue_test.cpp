@@ -119,6 +119,8 @@ struct Harness {
   std::atomic<bool> dcp_refused{false};       // "DCP feature is only available for Ins clients"
   net::WsSession* private_session = nullptr;  // server thread only
 
+  // The server thread reads this harness's members: stop it before they go.
+  ~Harness() { srv.stop(); }
   explicit Harness(std::vector<std::string> pages = {}) {
     if (!pages.empty()) open_orders_pages = std::move(pages);
     srv.route("GET", "/v5/market/time", [this](const net::HttpRequest&) {
