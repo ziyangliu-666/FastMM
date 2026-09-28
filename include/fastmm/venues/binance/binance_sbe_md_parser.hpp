@@ -23,6 +23,7 @@
 #include "fastmm/venues/binance/binance_md_parser.hpp"
 #include "fastmm/venues/binance/generated/binance_stream_sbe.hpp"
 #include "fastmm/venues/feed.hpp"
+#include "fastmm/venues/level_spill.hpp"
 #include "fastmm/venues/symbology.hpp"
 
 #include <cstddef>
@@ -33,7 +34,7 @@ namespace fastmm::venues::binance {
 
 class BinanceSbeMdParser {
  public:
-  BinanceSbeMdParser(const SymbolTable& symbols, VenueId venue) noexcept
+  BinanceSbeMdParser(const SymbolTable& symbols, VenueId venue)
       : symbols_(symbols), venue_(venue) {}
 
   // Decodes one binary frame. For every normalised message `emit(EventHeader&, MdKind)` is called
@@ -120,17 +121,30 @@ class BinanceSbeMdParser {
     m.hdr.t0_cycles = t0;
   }
 
-  // Reads one side into `levels`; -1 malformed / inexact, -2 more than `max` levels.
+  // Reads one side into `levels`; -1 malformed / inexact, -2 more than LevelSpill::kCapacity
+  // levels. A side longer than `max` keeps the `max` levels nearest the touch (LevelSpill) and
+  // sets `truncated`.
   template <class Group>
-  static int read_side(const Group& g, int pe, int qe, Level* levels, std::uint32_t max) noexcept {
+  int read_side(const Group& g,
+                int pe,
+                int qe,
+                Level* levels,
+                std::uint32_t max,
+                bool bids,
+                bool& truncated) noexcept {
     if (!g.valid()) return -1;
-    if (g.count() > max) return -2;
+    if (g.count() > LevelSpill::kCapacity) return -2;
+    Level* const dst = g.count() > max ? spill_.data() : levels;
     std::uint32_t n = 0;
     for (const auto e : g) {
       std::int64_t p = 0;
       std::int64_t q = 0;
       if (!to_raw(e.price(), pe, p) || !to_raw(e.qty(), qe, q)) return -1;
-      levels[n++] = Level{Price::from_raw(p), Qty::from_raw(q)};
+      dst[n++] = Level{Price::from_raw(p), Qty::from_raw(q)};
+    }
+    if (dst != levels) {
+      n = spill_.keep_nearest(n, bids, levels, max);
+      truncated = true;
     }
     return static_cast<int>(n);
   }
@@ -149,16 +163,19 @@ class BinanceSbeMdParser {
     const int qe = msg.qty_exponent();
     auto* m = reinterpret_cast<BookDeltaMsg*>(out.data());
     Level* levels = m->levels();
-    const int nb = read_side(msg.bids(), pe, qe, levels, kMaxBookLevelsPerMsg);
+    bool truncated = false;
+    const int nb = read_side(msg.bids(), pe, qe, levels, kMaxBookLevelsPerMsg, true, truncated);
     if (nb == -2) return count(ParseStatus::Overflow);
     if (nb < 0) return count(ParseStatus::Malformed);
-    const int na = read_side(msg.asks(), pe, qe, levels + nb, kMaxBookLevelsPerMsg);
+    const int na =
+        read_side(msg.asks(), pe, qe, levels + nb, kMaxBookLevelsPerMsg, false, truncated);
     if (na == -2) return count(ParseStatus::Overflow);
     if (na < 0) return count(ParseStatus::Malformed);
     const auto bid_count = static_cast<std::uint32_t>(nb);
     const auto ask_count = static_cast<std::uint32_t>(na);
     const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);
     if (len > kDecoderScratchBytes) return count(ParseStatus::Overflow);
+    if (truncated) ++stats_.truncated;
     std::uint64_t first = 0;
     std::uint64_t last = 0;
     if constexpr (requires { msg.first_book_update_id(); }) {
@@ -255,6 +272,7 @@ class BinanceSbeMdParser {
   const SymbolTable& symbols_;
   VenueId venue_;
   MdParserStats stats_;
+  LevelSpill spill_;
 };
 
 }  // namespace fastmm::venues::binance

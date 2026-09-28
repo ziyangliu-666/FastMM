@@ -3,7 +3,9 @@
 #include "venue_test_util.hpp"
 
 #include "fastmm/venues/binance_usdm/binance_usdm_md_feed.hpp"
+#include "fastmm/venues/level_spill.hpp"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -220,4 +222,74 @@ TEST_CASE("binance_usdm.md_feed: recorded session syncs the book with no resync"
   }
   CHECK(deltas == 161);  // every recorded depth update was applied
   CHECK(tickers == 400 - 161);
+}
+
+// Production, 2026-09-28: one 100 ms update of BTCUSDT changed 1035 bids and 1224 asks, more than
+// a BookDeltaMsg carries (1024 a side). The parser refused it, the next update's pu did not chain
+// and the book resynced: 14 resyncs in 15 minutes while the raw stream had no gap. The update now
+// keeps the 1024 levels a side nearest the touch and the book stays synced.
+TEST_CASE(
+    "binance_usdm.md_feed: a depth update longer than a message keeps the levels nearest "
+    "the touch") {
+  TestUniverse u;
+  RecordingSink rs(16U << 20);
+  Requests req;
+  BinanceUsdmMdFeed feed(u.symbols, VenueId{0}, rs.sink, {&Requests::on_request, &req}, 0);
+  REQUIRE(feed.add_instrument(InstrumentId{0}));
+  const std::vector<std::string> frames =
+      lines(fastmm::test::fixture("binance_usdm/depth_burst.jsonl"));
+  REQUIRE(frames.size() == 3);
+  // A snapshot inside the first frame's range, with the recorded snapshot's levels.
+  std::string snapshot = fastmm::test::fixture("binance_usdm/depth_snapshot.json");
+  const std::string key = R"("lastUpdateId":)";
+  const std::size_t at = snapshot.find(key) + key.size();
+  snapshot.replace(at, snapshot.find(',', at) - at, std::to_string(json_uint(frames[0], "U")));
+  feed.on_connected();
+  const PaddedJson snap(snapshot);
+  feed.on_snapshot_body(InstrumentId{0}, snap.view(), 1'000'000'000);
+  for (const std::string& f : frames) {
+    const PaddedJson j(f);
+    CHECK(feed.on_message(j.view(), 1'000'000'000) == ParseStatus::Ok);
+  }
+  UsdmDepthSync* sync = feed.sync(InstrumentId{0});
+  REQUIRE(sync != nullptr);
+  CHECK(sync->synced());
+  CHECK(feed.resync_count() == 0);
+  CHECK(req.count == 1);
+  CHECK(feed.parser_stats().truncated == 1);
+  CHECK(feed.stats().dropped == 0);
+
+  std::vector<std::vector<std::byte>> deltas;
+  for (auto& m : rs.drain()) {
+    if (RecordingSink::type_of(m) == EventType::BookDelta) deltas.push_back(std::move(m));
+  }
+  REQUIRE(deltas.size() == 3);
+  const auto& big = RecordingSink::as<BookDeltaMsg>(deltas[1]);
+  REQUIRE(big.bid_count == kMaxBookLevelsPerMsg);
+  REQUIRE(big.ask_count == kMaxBookLevelsPerMsg);
+  CHECK(big.last_update_id == 11673992035278ULL);
+  // Wire order (ascending) is kept: the far bids 33999.90 .. 34209.40 and asks above 85346.30 go.
+  CHECK(big.bids()[0].price == px("34209.50"));
+  CHECK(big.bids()[kMaxBookLevelsPerMsg - 1].price == px("84517.20"));
+  CHECK(big.asks()[0].price == px("84501.40"));
+  Price worst_ask = big.asks()[0].price;
+  for (std::uint32_t i = 0; i < big.ask_count; ++i)
+    worst_ask = std::max(worst_ask, big.asks()[i].price);
+  CHECK(worst_ask == px("85346.30"));
+}
+
+// A side longer than LevelSpill::kCapacity is still refused: counted as dropped, and the gap it
+// leaves resyncs the book.
+TEST_CASE("binance_usdm.md: a side longer than the spill is an overflow") {
+  TestUniverse u;
+  BinanceUsdmMdParser p(u.symbols, VenueId{0});
+  Scratch s;
+  std::string huge = R"({"lastUpdateId":1,"T":1,"bids":[)";
+  for (std::uint32_t i = 0; i <= LevelSpill::kCapacity; ++i)
+    huge += std::string(i != 0 ? "," : "") + "[\"" + std::to_string(i + 1) + "\",\"1\"]";
+  huge += R"(],"asks":[]})";
+  const PaddedJson hp(huge);
+  CHECK(p.decode_depth_snapshot(hp.view(), InstrumentId{0}, kRecv, kT0, s.span()).status ==
+        ParseStatus::Overflow);
+  CHECK(p.stats().overflow == 1);
 }

@@ -346,6 +346,7 @@ void BinanceUsdmVenue::attach(const SymbolTable& symbols,
       md_sink,
       SnapshotRequester{&BinanceUsdmVenue::snapshot_requester, this},
       cfg_.min_snapshot_interval_ns);
+  md_feed_->set_log_name(cfg_.name);
   user_parser_ = std::make_unique<BinanceUsdmUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceUsdmOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<binance::BinanceWsApiDecoder>();

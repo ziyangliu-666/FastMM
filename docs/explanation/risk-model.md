@@ -60,7 +60,7 @@ Binance Spot BTCU (session of 2026-09-26, 3 h, SBE market data): the excess lag 
 
 `Price`, `Qty` and `Notional` carry no currency. PnL, fees, `max_order_notional`, `min_notional` and `max_loss` are all denominated in the instrument's **settlement currency**: the quote currency for a linear contract, the base coin for an inverse (coin-margined) one.
 
-Without `[accounting]`, instruments of one session must settle in the same currency; otherwise the PnL totals add unrelated numbers and `max_loss` compares the sum with one limit. `fastmm-live` checks this after the venues' reference data has loaded (`InstrumentTable::settlement_mix()`): with `max_loss` set it refuses to start, otherwise it warns.
+Without `[accounting]`, instruments of one session must settle in the same currency (an inverse perpetual and options quoted in its coin, Deribit's `BTC-PERPETUAL` and BTC options, both settle in BTC); otherwise the PnL totals add unrelated numbers and `max_loss` compares the sum with one limit. `fastmm-live` checks this after the venues' reference data has loaded (`InstrumentTable::settlement_mix()`): with `max_loss` set it refuses to start, otherwise it warns.
 
 With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) they can mix. Positions, PnL and fees stay in each instrument's currency (`PositionTracker` also keeps them summed per currency); the totals, `max_loss` and the exposure caps are in the reporting currency, each other currency converted at the mid of its FX source's book (`core/fx.hpp`). The conversion runs where the totals change, on a fill, a mark or a new rate, not per order. The rules fail closed:
 

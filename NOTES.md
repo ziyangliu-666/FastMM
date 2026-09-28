@@ -3,6 +3,41 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Every connector on production public data (2026-09-28).** `fastmm-live --dry-run --record-raw`,
+6 connectors in parallel, 15 min each, load 1 to 6, before (r1) and after (r2) the fixes. Configs
+were the demo/testnet ones with production hosts (`/tmp/aw/p-*.toml`, not kept).
+
+| connector, instruments | md msgs r1 / r2 | resyncs r1 / r2 | other |
+|---|---|---|---|
+| binance spot BTCUSDT ETHUSDT | 381k / 335k | 0 / 0 | largest depth side 1009 |
+| binance_usdm BTCUSDT ETHUSDT | 1.00M / 927k | 14 / 0 | 17 / 2 updates past 1024 levels a side (max 2144) |
+| bybit linear BTCUSDT ETHUSDT | 128k / 132k | 0 / 0 | |
+| bybit spot BTCUSDT ETHUSDT | 81k / 86k | 0 / 0 | |
+| okx BTC- ETH-USDT-SWAP | 143k / 130k | 6 / 0 | updates up to 612 / 800 levels a side |
+| deribit BTC-PERPETUAL, 4 options 30SEP26 84000/84500 | 15k / 16k | 0 / 0 | did not start before fix (a) |
+
+No reconnects, malformed or dropped frames anywhere; every book synced within 1 s of start.
+Clock offsets 8 to 116 ms (the WSL host clock also steps by a few ms every 10 s; by 0.8 to 1.8 s at
+load 38 in the earlier xmm recording). Found and fixed:
+(a) `settlement_mix()` treated an inverse and a linear contract as different currencies even when
+both settle in BTC, so `configs/deribit-testnet.toml` (perpetual + options, `max_loss` set) exited 3
+at start. Only the currency counts now.
+(b) The USD-M resyncs, including the 5 of the 30-minute xmm recording, were ours, not Binance's and
+not load: the raw frames have no `pu` gap. In a burst one 100 ms update changes more than 1024
+levels a side (`kMaxBookLevelsPerMsg`); the parser refused it (`Overflow`, counted as `ignored` and
+never shown), and the next update's `pu` did not chain. OKX the same past 512 a side. The parsers
+now keep the levels nearest the touch (`LevelSpill`; exact for books up to 512 deep, the engine's
+are 256, argument in `level_spill.hpp`); a side past 16384 levels still overflows and now counts as
+`dropped`. Pausing the process 1 to 5 s (SIGSTOP) left no gap in the raw stream.
+(c) A resync dropped the update that revealed the gap, so a snapshot taken inside it looked older
+than the buffer (`SnapshotTooOld`) and waited out the 2 s request interval: 2.1 s without a book
+against 85 to 240 ms (median 92) for the other USD-M resyncs (OKX's resubscribe: 170 to 400 ms).
+That update and, after a gap in a replayed buffer, the updates behind it now start the next attempt.
+(d) Resyncs were logged nowhere (the journal has only the reason code): every sync now logs its
+reason with the update ids, and the book's return with the time it was away.
+Left: Deribit deltas past 1024 levels a side still overflow (its snapshots are cut to the best);
+the gateway's 1024-deep `AccountBook` can keep a stale level behind its 512th after a cut update.
+
 **Quote/hedge step 4 done (2026-09-28): xmm through a real crash.** `integration/
 xmm_restart_test.cpp`: `fastmm-live` as a child, two in-process simulators outliving it, SIGKILL
 (1) with the hedge IOC executed at the venue but its reply and execution report held (sim ack

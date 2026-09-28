@@ -97,6 +97,7 @@ struct Harness {
   std::string exchange_info = fastmm::test::fixture("binance_usdm/exchange_info.json");
   bool hedge_mode = false;  // set before start
   std::atomic<int> depth_requests{0};
+  std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> listen_keys{0};
   std::atomic<int> reconcile_requests{0};
   std::atomic<int> unsigned_requests{0};
@@ -134,7 +135,8 @@ struct Harness {
       srv.record("depth", std::string(r.query));
       return net::HttpServerResponse::json(
           200,
-          R"({"lastUpdateId":100,"E":1789469121900,"T":1789469121800,"bids":[["70000.00","1.000"]],"asks":[["70000.10","2.000"]]})");
+          R"({"lastUpdateId":)" + std::to_string(depth_last_update_id.load()) +
+              R"(,"E":1789469121900,"T":1789469121800,"bids":[["70000.00","1.000"]],"asks":[["70000.10","2.000"]]})");
     });
     auto signed_route = [this](const char* method, const char* path, std::string body) {
       srv.route(method, path, [this, path, body](const net::HttpRequest& r) {
@@ -361,7 +363,9 @@ TEST_CASE("binance_usdm.venue: scripted fake exchange end to end") {
     CHECK(pos->avg_px == Price::from_decimal("70000").value());
     CHECK(oc.count(EventType::Reconcile) == 3);
 
-    // pu gap -> Resyncing and a new snapshot.
+    // pu gap -> Resyncing and a new snapshot, taken inside the update that revealed the gap (which
+    // is kept: it applies on the snapshot).
+    h.depth_last_update_id = 122;
     h.srv.send_to("/public/stream", depth_frame(120, 125, 118, "70000.00"));
     REQUIRE(pump_until(reactor, [&] {
       mdc.take(md);

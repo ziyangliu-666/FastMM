@@ -1,6 +1,7 @@
 #include "fastmm/venues/binance/binance_md_parser.hpp"
 
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/level_spill.hpp"
 
 #include <simdjson.h>
 
@@ -15,6 +16,7 @@ static_assert(kJsonPadding == sj::SIMDJSON_PADDING, "RecvBuffer padding must mat
 
 struct BinanceMdParser::Impl {
   od::parser parser;
+  LevelSpill spill;
   explicit Impl(std::size_t capacity) {
     // Reserve once so no allocation happens per frame.
     if (parser.allocate(capacity) != sj::SUCCESS) std::abort();
@@ -31,14 +33,27 @@ namespace {
   return sj::padded_string_view(s.data(), s.size(), s.size() + sj::SIMDJSON_PADDING);
 }
 
-// Reads [["px","qty"],...] into `levels` (at most `max`), returning the count or -1 on a
-// malformed level, -2 if more than `max` levels are present (the rest is not read).
-int read_levels(od::value arr_val, Level* levels, std::uint32_t max) noexcept {
+// Reads [["px","qty"],...] into `levels`, returning the count or -1 on a malformed level, -2
+// above LevelSpill::kCapacity levels. A side longer than `max` goes through `spill`, which keeps
+// the `max` levels nearest the touch (`*truncated` is set).
+int read_levels(od::value arr_val,
+                Level* levels,
+                std::uint32_t max,
+                LevelSpill& spill,
+                bool bids,
+                bool* truncated) noexcept {
   od::array arr;
   if (arr_val.get_array().get(arr) != sj::SUCCESS) return -1;
   std::uint32_t n = 0;
+  Level* dst = levels;
+  std::uint32_t cap = max;
   for (auto lvl_res : arr) {
-    if (n >= max) return -2;
+    if (n >= cap) {
+      if (dst != levels) return -2;
+      std::copy_n(levels, n, spill.data());
+      dst = spill.data();
+      cap = LevelSpill::kCapacity;
+    }
     od::array pair;
     if (lvl_res.get_array().get(pair) != sj::SUCCESS) return -1;
     std::string_view px;
@@ -58,7 +73,11 @@ int read_levels(od::value arr_val, Level* levels, std::uint32_t max) noexcept {
     const auto p = parse_price(px);
     const auto q = parse_qty(qty);
     if (!p || !q) return -1;
-    levels[n++] = Level{*p, *q};
+    dst[n++] = Level{*p, *q};
+  }
+  if (dst != levels) {
+    n = spill.keep_nearest(n, bids, levels, max);
+    *truncated = true;
   }
   return static_cast<int>(n);
 }
@@ -75,6 +94,7 @@ void stamp(M& m, Timestamp recv_ts, Cycles t0) noexcept {
 struct DecodeCtx {
   MdParserStats* stats;
   const SymbolTable* symbols;
+  LevelSpill* spill;
   VenueId venue;
   Timestamp recv_ts;
   Cycles t0;
@@ -111,7 +131,8 @@ DecodeResult fail(MdParserStats& stats, DecodeResult r) noexcept {
   od::value bids;
   od::value asks;
   if (data["b"].get(bids) != sj::SUCCESS) return fail(stats, r);
-  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg);
+  bool truncated = false;
+  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, *c.spill, true, &truncated);
   if (nb == -1) return fail(stats, r);
   if (nb == -2) {
     ++stats.overflow;
@@ -119,13 +140,14 @@ DecodeResult fail(MdParserStats& stats, DecodeResult r) noexcept {
     return r;
   }
   if (data["a"].get(asks) != sj::SUCCESS) return fail(stats, r);
-  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg);
+  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, *c.spill, false, &truncated);
   if (na == -1) return fail(stats, r);
   if (na == -2) {
     ++stats.overflow;
     r.status = ParseStatus::Overflow;
     return r;
   }
+  if (truncated) ++stats.truncated;
   const auto bid_count = static_cast<std::uint32_t>(nb);
   const auto ask_count = static_cast<std::uint32_t>(na);
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);
@@ -297,7 +319,7 @@ DecodeResult BinanceMdParser::decode(std::string_view json,
     data.reset();
   }
 
-  const DecodeCtx c{&stats_, &symbols_, venue_, recv_ts, t0, out};
+  const DecodeCtx c{&stats_, &symbols_, &impl_->spill, venue_, recv_ts, t0, out};
   switch (kind) {
     case Kind::Depth:
       return decode_depth(c, data, r);
@@ -347,7 +369,8 @@ DecodeResult BinanceMdParser::decode_depth_snapshot(std::string_view json,
     r.status = ParseStatus::Malformed;
     return r;
   }
-  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg);
+  bool truncated = false;
+  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, impl_->spill, true, &truncated);
   if (nb < 0 || root["asks"].get(asks) != sj::SUCCESS) {
     if (nb == -2) {
       ++stats_.overflow;
@@ -358,7 +381,8 @@ DecodeResult BinanceMdParser::decode_depth_snapshot(std::string_view json,
     }
     return r;
   }
-  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg);
+  const int na =
+      read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, impl_->spill, false, &truncated);
   if (na < 0) {
     if (na == -2) {
       ++stats_.overflow;
@@ -369,6 +393,7 @@ DecodeResult BinanceMdParser::decode_depth_snapshot(std::string_view json,
     }
     return r;
   }
+  if (truncated) ++stats_.truncated;
   const auto bid_count = static_cast<std::uint32_t>(nb);
   const auto ask_count = static_cast<std::uint32_t>(na);
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);

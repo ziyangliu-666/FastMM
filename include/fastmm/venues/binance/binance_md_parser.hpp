@@ -36,6 +36,9 @@ struct MdParserStats {
   std::uint64_t malformed = 0;
   std::uint64_t unknown_symbol = 0;
   std::uint64_t overflow = 0;
+  // Depth updates with a side longer than kMaxBookLevelsPerMsg, cut to the levels nearest the
+  // touch (LevelSpill) rather than refused.
+  std::uint64_t truncated = 0;
 };
 
 class BinanceMdParser {

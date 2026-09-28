@@ -78,9 +78,16 @@ class DeribitMdFeed {
     index_[id.value] = static_cast<std::int16_t>(syncs_.size());
     syncs_.push_back(
         std::make_unique<DeribitBookSync>(id, venue_, sink_, requester_, min_interval_));
+    syncs_.back()->set_log_names(log_name_, symbols_.venue_symbol(id));
     ids_.push_back(id);
     rebuild_payloads();
     return true;
+  }
+  // The connector's name for the syncs' log lines; it must outlive the feed.
+  void set_log_name(std::string_view venue) noexcept {
+    log_name_ = venue;
+    for (std::size_t i = 0; i < syncs_.size(); ++i)
+      syncs_[i]->set_log_names(venue, symbols_.venue_symbol(ids_[i]));
   }
   [[nodiscard]] std::span<const InstrumentId> instruments() const noexcept { return ids_; }
 
@@ -219,6 +226,7 @@ class DeribitMdFeed {
   alignas(64) std::byte scratch_[kDecoderScratchBytes];  // first: keeps the padding small
   const SymbolTable& symbols_;
   VenueId venue_;
+  std::string_view log_name_ = "deribit";
   EventSink& sink_;
   ResubscribeRequester requester_;
   MdIntervals intervals_;

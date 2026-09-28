@@ -32,6 +32,25 @@ enum class SyncReason : std::uint8_t {
   SnapshotMarker = 5,    // venue signalled a reset (Bybit u == 1)
   ChecksumMismatch = 6,  // the venue's book checksum disagrees with ours (OKX)
 };
+[[nodiscard]] constexpr const char* to_string(SyncReason r) noexcept {
+  switch (r) {
+    case SyncReason::None:
+      return "none";
+    case SyncReason::SequenceGap:
+      return "sequence gap";
+    case SyncReason::BufferOverflow:
+      return "buffer overflow";
+    case SyncReason::SnapshotTooOld:
+      return "snapshot too old";
+    case SyncReason::Explicit:
+      return "explicit";
+    case SyncReason::SnapshotMarker:
+      return "venue reset";
+    case SyncReason::ChecksumMismatch:
+      return "checksum mismatch";
+  }
+  return "?";
+}
 [[nodiscard]] constexpr const char* to_string(SyncState s) noexcept {
   switch (s) {
     case SyncState::Idle:
@@ -164,7 +183,7 @@ class BookSyncer {
           if (FASTMM_UNLIKELY(awaiting_first_)) {
             if (Traits::is_stale(d, prev_u_)) return;
             if (!Traits::first_applies(d, prev_u_)) {
-              resync(SyncReason::SequenceGap);
+              resync_keeping(d);
               return;
             }
             awaiting_first_ = false;
@@ -177,7 +196,7 @@ class BookSyncer {
           prev_u_ = d.last_update_id;
           sink_.on_delta(d);
         } else if (!Traits::is_stale(d, prev_u_)) {
-          resync(SyncReason::SequenceGap);
+          resync_keeping(d);
         }
         // stale duplicates are silently dropped
         return;
@@ -210,8 +229,14 @@ class BookSyncer {
         const BookDeltaMsg& d = *at(i);
         const bool ok = first ? Traits::first_applies(d, L) : Traits::next_applies(d, prev_u_);
         if (!ok) {
-          reset_buffer();
-          resync(SyncReason::SequenceGap);
+          // The stream itself has a gap before d: d and what follows it start the next attempt.
+          drop_front(i);
+          ++resyncs_;
+          state_ = SyncState::Resync;
+          sink_.on_resync(SyncReason::SequenceGap);
+          awaiting_first_ = false;
+          state_ = SyncState::Buffering;
+          sink_.request_snapshot();
           return;
         }
         first = false;
@@ -228,6 +253,16 @@ class BookSyncer {
   }
 
  private:
+  // A gap revealed by d. d itself is the next update of the stream, so a venue that buffers for a
+  // REST snapshot keeps it: a snapshot taken inside d's range applies at once, where without d it
+  // would look older than the buffer and cost another request (SnapshotTooOld).
+  void resync_keeping(const BookDeltaMsg& d) noexcept {
+    resync(SyncReason::SequenceGap);
+    if constexpr (Traits::kBuffersDeltas) {
+      if (state_ == SyncState::Buffering && !buffer(d)) resync(SyncReason::BufferOverflow);
+    }
+  }
+
   bool buffer(const BookDeltaMsg& d) noexcept {
     if (count_ >= kMaxBuffered || used_ + d.hdr.len > buf_bytes_) return false;
     std::memcpy(buf_.get() + used_, &d, d.hdr.len);

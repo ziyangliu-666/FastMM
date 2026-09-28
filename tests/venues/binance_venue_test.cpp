@@ -52,6 +52,7 @@ struct Harness {
   FakeVenueServer srv;
   std::string exchange_info = fastmm::test::fixture("binance/exchange_info.json");
   std::atomic<int> depth_requests{0};
+  std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
   std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
@@ -70,7 +71,8 @@ struct Harness {
       srv.record("depth", std::string(r.query));
       return net::HttpServerResponse::json(
           200,
-          R"({"lastUpdateId":100,"bids":[["70000.00000000","1.00000000"]],"asks":[["70000.10000000","2.00000000"]]})");
+          R"({"lastUpdateId":)" + std::to_string(depth_last_update_id.load()) +
+              R"(,"bids":[["70000.00000000","1.00000000"]],"asks":[["70000.10000000","2.00000000"]]})");
     });
     srv.route("DELETE", "/api/v3/openOrders", [this](const net::HttpRequest& r) {
       const bool ok = r.header("X-MBX-APIKEY") == kKey && signed_ok(r.query) &&
@@ -193,7 +195,9 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
     }));
     CHECK(mdc.last<TradeMsg>(EventType::Trade)->aggressor == Side::Sell);
 
-    // Sequence gap -> Resyncing + a new snapshot request.
+    // Sequence gap -> Resyncing + a new snapshot request, answered with a snapshot inside the
+    // update that revealed the gap (which is kept: it applies on the snapshot).
+    h.depth_last_update_id = 150;
     h.srv.send_to("/stream", depth_frame(150, 151, "70000.00", "3"));
     REQUIRE(pump_until(reactor, [&] {
       mdc.take(md);

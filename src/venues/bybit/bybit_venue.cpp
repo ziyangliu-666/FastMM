@@ -321,6 +321,7 @@ void BybitVenue::attach(const SymbolTable& symbols,
                                     md_sink,
                                     ResubscribeRequester{&BybitVenue::resubscribe_requester, this},
                                     cfg_.depth);
+  md_feed_->set_log_name(cfg_.name);
   private_parser_ =
       std::make_unique<BybitPrivateParser>(symbols, instruments, id_, 1U << 20, cfg_.category);
   encoder_ =

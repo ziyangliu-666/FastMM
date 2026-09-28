@@ -2,6 +2,8 @@
 
 #include "venue_test_util.hpp"
 
+#include "fastmm/venues/level_spill.hpp"
+
 #include <string>
 
 using namespace fastmm;
@@ -190,9 +192,25 @@ TEST_CASE("binance.md: REST depth snapshot -> BookSnapshotMsg") {
   const PaddedJson bad(R"({"lastUpdateId":"x","bids":[],"asks":[]})");
   CHECK(p.decode_depth_snapshot(bad.view(), InstrumentId{0}, kRecv, kT0, s.span()).status ==
         ParseStatus::Malformed);
-  // More than kMaxBookLevelsPerMsg levels on a side: reported as overflow, never truncated.
+  // More than kMaxBookLevelsPerMsg levels on a side: the ones nearest the touch are kept, in
+  // their order (bids 1..1100 ascending: 77..1100 stay).
+  std::string long_side = R"({"lastUpdateId":1,"bids":[)";
+  for (int i = 1; i <= 1100; ++i)
+    long_side += std::string(i > 1 ? "," : "") + "[\"" + std::to_string(i) + "\",\"1\"]";
+  long_side += R"(],"asks":[["2000","1"]]})";
+  const PaddedJson lp(long_side);
+  REQUIRE(p.decode_depth_snapshot(lp.view(), InstrumentId{0}, kRecv, kT0, s.span()).status ==
+          ParseStatus::Ok);
+  CHECK(s.as<BookDeltaMsg>().bid_count == kMaxBookLevelsPerMsg);
+  CHECK(s.as<BookDeltaMsg>().ask_count == 1);
+  CHECK(s.as<BookDeltaMsg>().bids()[0].price == Price::from_int(1100 - 1023));
+  CHECK(s.as<BookDeltaMsg>().bids()[kMaxBookLevelsPerMsg - 1].price == Price::from_int(1100));
+  CHECK(s.as<BookDeltaMsg>().asks()[0].price == Price::from_int(2000));
+  CHECK(p.stats().truncated == 1);
+  // More than LevelSpill::kCapacity: reported as overflow.
   std::string huge = R"({"lastUpdateId":1,"bids":[)";
-  for (int i = 0; i < 1100; ++i) huge += std::string(i ? "," : "") + "[\"1\",\"1\"]";
+  for (std::uint32_t i = 0; i <= LevelSpill::kCapacity; ++i)
+    huge += std::string(i != 0 ? "," : "") + "[\"1\",\"1\"]";
   huge += R"(],"asks":[]})";
   const PaddedJson hp(huge);
   CHECK(p.decode_depth_snapshot(hp.view(), InstrumentId{0}, kRecv, kT0, s.span()).status ==
