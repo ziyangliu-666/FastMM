@@ -168,6 +168,13 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- Behind `fastmm-gateway` with several strategies, a connector swept only the order shadows of
+  the snapshot watermark's session epoch, so another strategy's orders whose end was lost stayed
+  in its 8192-slot table for good; once it was full, orders went out untracked (no instrument on
+  their replies, no amend, and a USD-ⓈM modify left the venue's later fills booked to the order it
+  replaced). Shadows now carry the connector's send sequence and the sweep compares that; an order
+  or replace the table has no room for is refused with the new `RejectReason::OrderTableFull` (39),
+  counted in `VenueStatus::shadows_refused` and logged once per episode.
 - An order a venue reported ended with its cumulative quantity before the execution arrived
   (Bybit's `order` and `execution` topics are not ordered; OKX pushes out of order) was booked
   twice: once from the cum_qty as a synthetic fill, again from the live execution. A live execution

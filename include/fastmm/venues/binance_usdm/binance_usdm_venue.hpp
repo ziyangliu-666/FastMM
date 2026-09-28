@@ -255,7 +255,7 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // replies are in.
   bool fetch_snapshot(std::uint64_t generation) override;
   bool replay_executions() override;
-  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
   // Execution replay (ReplayScheduler): GET /fapi/v1/userTrades for one subscribed instrument,
@@ -276,6 +276,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   void on_account_position(const PositionUpdateMsg& m);
   void check_positions(std::int64_t now);
   void publish_status() noexcept;
+  // An order the shadow table had no room for goes back as OrderTableFull.
+  void refuse_untracked(const OrderCommand& cmd);
   void note_rate_headers(const net::HttpResponse& r);
   [[nodiscard]] ClientOrderId current_id(ClientOrderId link) const noexcept;
   void forget_order(ClientOrderId id) noexcept;
@@ -319,8 +321,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   ConnectionSlot<UserHandler> user_conn_;
   ConnectionSlot<OrderHandler> order_conn_;
   RateLimiter rate_;
-  OpenHashMap<ClientOrderId, OrderShadow, 8192> shadows_;
-  OpenHashMap<ClientOrderId, ClientOrderId, 8192> aliases_;  // venue link id -> engine id
+  OpenHashMap<ClientOrderId, OrderShadow, kShadowSlots> shadows_;
+  ShadowOverflow shadow_overflow_;
+  OpenHashMap<ClientOrderId, ClientOrderId, kShadowSlots> aliases_;  // venue link id -> engine id
   alignas(64) std::byte scratch_[kDecoderScratchBytes];
   char request_buf_[kMaxRequestBytes];
   RawRecorder raw_md_;

@@ -131,6 +131,8 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] const BybitMdFeed* md_feed() const noexcept { return md_feed_.get(); }
   [[nodiscard]] const BybitVenueConfig& config() const noexcept { return cfg_; }
   [[nodiscard]] bool fatal() const noexcept { return fatal_; }
+  // Orders the connector holds a shadow for (tests).
+  [[nodiscard]] std::size_t shadow_count() const noexcept { return shadows_.size(); }
   // The trade (order) connection is logged in: orders go over it, not REST (reactor thread; tests).
   [[nodiscard]] bool order_channel_live() const noexcept { return trade_conn_.is_live(); }
   [[nodiscard]] std::int64_t clock_offset_ms() const noexcept { return clock_offset_ms_.load(); }
@@ -213,7 +215,7 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   // ReconcileHooks: the open-order pages (per settle coin), then (linear) the position pages.
   bool fetch_snapshot(std::uint64_t generation) override;
   bool replay_executions() override;
-  void shadow_ids(std::vector<ClientOrderId>& out) override;
+  void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   // Every page is in: the position rows (linear), then the driver emits the snapshot.
   void finish_snapshot(std::uint64_t generation);
@@ -224,6 +226,8 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   struct ExecRow;
   bool emit_execution(const ExecRow& e);
   void publish_status() noexcept;
+  // An order the shadow table had no room for goes back as OrderTableFull.
+  void refuse_untracked(const OrderCommand& cmd);
   void note_rate_headers(const net::HttpResponse& r);
   void forget_order(ClientOrderId id) noexcept;
   [[nodiscard]] ClientOrderId current_id(ClientOrderId link) const noexcept;
@@ -254,8 +258,10 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   ConnectionSlot<PrivateHandler> private_conn_;
   ConnectionSlot<TradeHandler> trade_conn_;
   RateLimiter rate_;
-  OpenHashMap<ClientOrderId, OrderShadow, 8192> shadows_;
-  OpenHashMap<ClientOrderId, ClientOrderId, 8192> aliases_;  // venue orderLinkId -> engine id
+  OpenHashMap<ClientOrderId, OrderShadow, kShadowSlots> shadows_;
+  ShadowOverflow shadow_overflow_;
+  OpenHashMap<ClientOrderId, ClientOrderId, kShadowSlots>
+      aliases_;  // venue orderLinkId -> engine id
   alignas(64) std::byte scratch_[kDecoderScratchBytes];
   char request_buf_[kMaxRequestBytes];
   RawRecorder raw_md_;

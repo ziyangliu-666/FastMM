@@ -83,6 +83,7 @@ Cancels skip every check, including the kill switch.
 | 36 | `TransportFull` | the connector's outbound or REST queue was full; the message was dropped |
 | 37 | `NotReconciled` | never produced by the current code |
 | 38 | `InvalidTag` | `ctx.send` used a `user_tag` inside the quote manager's reserved range |
+| 39 | `OrderTableFull` | the connector's table of the orders it has sent (7168 working orders and replaces in flight, over every strategy behind a gateway) was full; the order was not sent |
 
 ### Gateway
 

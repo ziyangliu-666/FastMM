@@ -72,7 +72,8 @@ struct OrderShadow {
   InstrumentId instrument{};
   Price price{};
   Qty qty{};
-  std::uint16_t amends = 0;  // keepPriority amendments applied to this venue order so far
+  std::uint16_t amends = 0;    // keepPriority amendments applied to this venue order so far
+  std::uint64_t sent_seq = 0;  // SentWatermark send sequence of its New or Replace
 };
 
 // True when the replace is a pure quantity reduction at the order's price, the only amendment

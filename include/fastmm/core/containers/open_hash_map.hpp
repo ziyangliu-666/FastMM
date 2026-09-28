@@ -64,6 +64,14 @@ class OpenHashMap {
     }
   }
 
+  // Calls f(key, value) for every entry. Control path: it walks all N slots.
+  template <class F>
+  void for_each(F&& f) const {
+    for (std::size_t i = 0; i < N; ++i) {
+      if (slots_[i].used != 0) f(slots_[i].key, slots_[i].value);
+    }
+  }
+
   void clear() noexcept {
     for (std::size_t i = 0; i < N; ++i) slots_[i].used = 0;
     size_ = 0;

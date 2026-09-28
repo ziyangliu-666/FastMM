@@ -159,6 +159,9 @@ enum class RejectReason : std::uint8_t {
   TransportFull = 36,
   NotReconciled = 37,
   InvalidTag = 38,  // a direct order used a user_tag in the QuoteManager's range
+  // The connector's table of the orders it has sent is full: it could not record this one (whose
+  // fills, amends and replies it would then not map back), so it did not send it.
+  OrderTableFull = 39,
   // fastmm-gateway's account guards ([gateway]), refused before the order reached the connector
   GatewayRateLimit = 48,      // the venue's order rate, shared by every attached strategy
   GatewayOpenNotional = 49,   // the notional working at the venue, over every attached strategy
@@ -239,6 +242,8 @@ enum class RejectReason : std::uint8_t {
       return "NotReconciled";
     case RejectReason::InvalidTag:
       return "InvalidTag";
+    case RejectReason::OrderTableFull:
+      return "OrderTableFull";
     case RejectReason::GatewayRateLimit:
       return "GatewayRateLimit";
     case RejectReason::GatewayOpenNotional:

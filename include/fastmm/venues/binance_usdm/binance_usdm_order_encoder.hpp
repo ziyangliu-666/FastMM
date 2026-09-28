@@ -55,10 +55,11 @@ struct OrderShadow {
   OrderType type = OrderType::Limit;
   TimeInForce tif = TimeInForce::Gtc;
   bool reduce_only = false;
-  ClientOrderId link_id{};   // clientOrderId the venue knows the order by (kept by order.modify)
-  ClientOrderId replaces{};  // Replace in flight: the engine id being modified
-  Qty cum{};                 // venue executedQty seen so far
-  Qty base_cum{};            // venue executedQty when this engine id took the order over
+  ClientOrderId link_id{};     // clientOrderId the venue knows the order by (kept by order.modify)
+  ClientOrderId replaces{};    // Replace in flight: the engine id being modified
+  Qty cum{};                   // venue executedQty seen so far
+  Qty base_cum{};              // venue executedQty when this engine id took the order over
+  std::uint64_t sent_seq = 0;  // SentWatermark send sequence of its New or Replace
 };
 
 class BinanceUsdmOrderEncoder {

@@ -833,3 +833,119 @@ TEST_CASE("binance.venue: a replay more than 24 hours back walks 24-hour windows
   }
   h.srv.stop();
 }
+
+TEST_CASE("binance.venue: with the order table full an order or replace is refused, not sent") {
+  // Before, the order went out untracked: its reply carried no instrument and a replace of it was
+  // refused as unknown; a replace that found no room went out and left its new order untracked.
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(4U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenue venue(VenueId{0}, h.config(false));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) >= 2;  // the start-up sweep, over the order connection
+    }));
+    constexpr std::size_t kRoom = kShadowSlots - kShadowSlots / 8;
+    const auto id_of = [](std::size_t k) {
+      return make_cl_ord_id(2, static_cast<std::uint32_t>(k));
+    };
+    const auto push_new = [&](ClientOrderId id) {
+      OutNewOrderMsg n{};
+      init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+      n.cl_ord_id = id;
+      n.side = Side::Buy;
+      n.type = OrderType::PostOnly;
+      n.price = Price::from_decimal("70000").value();
+      n.qty = Qty::from_decimal("0.001").value();
+      REQUIRE(outbound.try_push(&n, n.hdr.len));
+    };
+    // Acks from the replies (the fake's execution reports name another order).
+    std::size_t acked = 0;
+    const auto count_acks = [&] {
+      oc.take(orders);
+      acked = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::OrderAck &&
+            cl_ord_id_epoch(RecordingSink::as<OrderAckMsg>(m).cl_ord_id) == 2)
+          ++acked;
+      }
+    };
+    // In batches under the fixture's 50 orders per 10 s (each reply resets the count to 1).
+    for (std::size_t k = 1; k <= kRoom; k += 40) {
+      const std::size_t end = std::min(kRoom + 1, k + 40);
+      for (std::size_t j = k; j < end; ++j) push_new(id_of(j));
+      venue.on_wake();
+      REQUIRE(pump_until(reactor, [&] {
+        count_acks();
+        return acked == end - 1;
+      }));
+    }
+    REQUIRE(venue.shadow_count() == kRoom);
+
+    push_new(id_of(kRoom + 1));
+    OutReplaceMsg r{};
+    init_header(r, EventType::OutReplace, InstrumentId{0}, VenueId{0});
+    r.cl_ord_id = id_of(kRoom + 2);
+    r.orig_cl_ord_id = id_of(1);
+    r.venue_order_id.assign("4293153");
+    r.price = Price::from_decimal("70001").value();
+    r.qty = Qty::from_decimal("0.001").value();
+    REQUIRE(outbound.try_push(&r, r.hdr.len));
+    venue.on_wake();
+    const auto refused = [&](ClientOrderId id) {
+      return oc.first_if<OrderRejectMsg>(EventType::OrderReject, [&](const OrderRejectMsg& m) {
+        return m.cl_ord_id == id && m.reason == RejectReason::OrderTableFull;
+      });
+    };
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return refused(id_of(kRoom + 1)) != nullptr && refused(id_of(kRoom + 2)) != nullptr;
+    }));
+    CHECK(refused(id_of(kRoom + 1))->hdr.instrument == InstrumentId{0});
+
+    // The snapshot names none of them: swept, and the next order goes. Its reply comes after every
+    // frame sent before it on the order connection.
+    const std::size_t reconciles = oc.count(EventType::Reconcile);
+    venue.request_open_orders();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) == reconciles + 2;
+    }));
+    CHECK(venue.shadow_count() == 0);
+    push_new(id_of(kRoom + 3));
+    venue.on_wake();
+    REQUIRE(pump_until(reactor, [&] {
+      count_acks();
+      return acked == kRoom + 1;
+    }));
+    std::size_t places = 0;
+    std::size_t replaces = 0;
+    for (const auto& f : h.srv.frames("/ws-api/v3")) {
+      places += f.find("\"order.place\"") != std::string::npos ? 1U : 0U;
+      replaces += f.find("\"order.cancelReplace\"") != std::string::npos ||
+                          f.find("\"order.amend") != std::string::npos
+                      ? 1U
+                      : 0U;
+    }
+    CHECK(places == kRoom + 1);
+    CHECK(replaces == 0);
+    venue.on_timer(net::Reactor::now_ns());
+    CHECK(venue.status().shadows_refused == 2);
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}

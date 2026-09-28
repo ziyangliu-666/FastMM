@@ -105,6 +105,7 @@ struct OrderShadow {
   // An edit of this order is in flight: user.orders "open" updates for its label are not acked
   // until the edit response, so the OMS never sees the old id acked while it waits for the new one.
   bool edit_pending = false;
+  std::uint64_t sent_seq = 0;  // SentWatermark send sequence of its New or Replace
 };
 
 class DeribitOrderEncoder {

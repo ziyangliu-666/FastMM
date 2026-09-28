@@ -950,8 +950,12 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
           cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
       return;
     }
-    shadows_.assign(cmd.cl_ord_id,
-                    OrderShadow{cmd.side, cmd.type, cmd.tif, cmd.instrument, cmd.price, cmd.qty});
+    OrderShadow s{cmd.side, cmd.type, cmd.tif, cmd.instrument, cmd.price, cmd.qty};
+    s.sent_seq = sent_.last_seq();
+    if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id, s) == nullptr)) {
+      refuse_untracked(cmd);
+      return;
+    }
   } else if (cmd.kind == OrderCommandKind::Replace) {
     shadow = shadows_.find(cmd.orig_cl_ord_id);
     if (shadow == nullptr) {
@@ -983,7 +987,11 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
     copy.qty = cmd.qty;
     // The venue counts amendments per order, and the amended order is the same order.
     copy.amends = amend_in_place ? static_cast<std::uint16_t>(copy.amends + 1) : 0;
-    shadows_.assign(cmd.cl_ord_id, copy);
+    copy.sent_seq = sent_.last_seq();
+    if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id, copy) == nullptr)) {
+      refuse_untracked(cmd);
+      return;
+    }
     shadow = shadows_.find(cmd.orig_cl_ord_id);
   }
   if (cfg_.ws_order_api && order_conn_.is_live()) {
@@ -1012,6 +1020,11 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
     ++stats_.order_send_failures;
   }
   send_command_rest(cmd, shadow, amend_in_place);
+}
+
+void BinanceVenue::refuse_untracked(const OrderCommand& cmd) {
+  shadow_overflow_.refused(cfg_.name, shadows_.size());
+  emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::OrderTableFull, 0, "order table full");
 }
 
 void BinanceVenue::send_command_rest(const OrderCommand& cmd,
@@ -1262,8 +1275,9 @@ void BinanceVenue::on_open_orders(std::uint64_t generation,
   reconcile_.fetched(generation, st == ParseStatus::Ok);
 }
 
-void BinanceVenue::shadow_ids(std::vector<ClientOrderId>& out) {
-  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+void BinanceVenue::shadow_ids(std::vector<SentShadow>& out) {
+  shadows_.for_each(
+      [&](ClientOrderId id, const OrderShadow& s) { out.push_back(SentShadow{id, s.sent_seq}); });
 }
 
 void BinanceVenue::drop_shadow(ClientOrderId id) {
@@ -1591,6 +1605,7 @@ void BinanceVenue::on_timer(std::int64_t now) {
   // away), and one a minute while all is well, which keeps the watermark within what the OMS can
   // deduplicate and books a fill the private stream dropped without disconnecting.
   exec_replay_.on_timer(now);
+  shadow_overflow_.check(cfg_.name, shadows_.size(), decltype(shadows_)::kMaxSize);
   publish_status();
   raw_md_.flush();
   raw_user_.flush();
@@ -1606,7 +1621,9 @@ void BinanceVenue::on_timer(std::int64_t now) {
 }
 
 void BinanceVenue::publish_status() noexcept {
+  stats_.shadows = shadows_.size();
   stats_.shadows_swept = reconcile_.shadows_swept();
+  stats_.shadows_refused = shadow_overflow_.count();
   stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;

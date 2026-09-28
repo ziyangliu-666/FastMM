@@ -927,6 +927,19 @@ void DeribitVenue::send_now(std::span<const EventHeader* const> batch) {
   write_orders(b);
 }
 
+void DeribitVenue::refuse_untracked(const OrderCommand& cmd) {
+  shadow_overflow_.refused(cfg_.name, shadows_.size());
+  sent_.answered(cmd.cl_ord_id);  // the refusal is its answer: it holds no snapshot back
+  emit_order_reject(*order_sink_,
+                    id_,
+                    cmd.instrument,
+                    cmd.cl_ord_id,
+                    RejectReason::OrderTableFull,
+                    0,
+                    "order table full");
+  ++stats_.order_events;
+}
+
 void DeribitVenue::send_command(const OrderCommand& cmd) {
   const std::int64_t now = now_ns();
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
@@ -961,18 +974,22 @@ void DeribitVenue::send_command(const OrderCommand& cmd) {
         refuse(RejectReason::VenueRateLimit, "local rate limit");
         return;
       }
-      shadows_.assign(cmd.cl_ord_id,
-                      OrderShadow{cmd.instrument,
-                                  cmd.side,
-                                  cmd.type,
-                                  cmd.tif,
-                                  cmd.cl_ord_id,
-                                  {},
-                                  {},
-                                  cmd.qty,
-                                  {},
-                                  false});
-      shadow = shadows_.find(cmd.cl_ord_id);
+      shadow = shadows_.assign(cmd.cl_ord_id,
+                               OrderShadow{cmd.instrument,
+                                           cmd.side,
+                                           cmd.type,
+                                           cmd.tif,
+                                           cmd.cl_ord_id,
+                                           {},
+                                           {},
+                                           cmd.qty,
+                                           {},
+                                           false,
+                                           sent_.last_seq()});
+      if (FASTMM_UNLIKELY(shadow == nullptr)) {
+        refuse_untracked(cmd);
+        return;
+      }
       break;
     case OrderCommandKind::Replace: {
       orig = shadows_.find(cmd.orig_cl_ord_id);
@@ -995,7 +1012,11 @@ void DeribitVenue::send_command(const OrderCommand& cmd) {
       copy.replaces = cmd.orig_cl_ord_id;
       copy.qty = cmd.qty;
       copy.edit_pending = false;
-      shadows_.assign(cmd.cl_ord_id, copy);
+      copy.sent_seq = sent_.last_seq();
+      if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id, copy) == nullptr)) {
+        refuse_untracked(cmd);
+        return;
+      }
       orig = shadows_.find(cmd.orig_cl_ord_id);  // assign may have moved entries
       if (orig != nullptr) orig->edit_pending = true;
       shadow = shadows_.find(cmd.cl_ord_id);
@@ -1182,8 +1203,9 @@ void DeribitVenue::finish_snapshot_reply() {
   reconcile_.fetched(snapshot_generation_, true);
 }
 
-void DeribitVenue::shadow_ids(std::vector<ClientOrderId>& out) {
-  shadows_.for_each_key([&](ClientOrderId id) { out.push_back(id); });
+void DeribitVenue::shadow_ids(std::vector<SentShadow>& out) {
+  shadows_.for_each(
+      [&](ClientOrderId id, const OrderShadow& s) { out.push_back(SentShadow{id, s.sent_seq}); });
 }
 
 void DeribitVenue::drop_shadow(ClientOrderId id) {
@@ -1368,6 +1390,7 @@ void DeribitVenue::on_timer(std::int64_t now) {
   // away), and one a minute while all is well, which keeps the watermark within what the OMS can
   // deduplicate and books a fill the private stream dropped without disconnecting.
   exec_replay_.on_timer(now);
+  shadow_overflow_.check(cfg_.name, shadows_.size(), decltype(shadows_)::kMaxSize);
   publish_status();
   raw_md_.flush();
   raw_private_.flush();
@@ -1382,6 +1405,8 @@ void DeribitVenue::on_timer(std::int64_t now) {
 }
 
 void DeribitVenue::publish_status() noexcept {
+  stats_.shadows = shadows_.size();
+  stats_.shadows_refused = shadow_overflow_.count();
   stats_.shadows_swept = reconcile_.shadows_swept();
   stats_.execution_queries = exec_replay_.replays();
   stats_.books_synced = md_feed_ ? md_feed_->synced_count() : 0;

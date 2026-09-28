@@ -28,6 +28,37 @@ All three done (2026-09-28), entries below.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**Order shadows: swept in send order, a full table refuses (2026-09-28).** Left by step 1: the
+sweep compared ids of the watermark's epoch only, so behind the gateway every other strategy's
+shadows whose end was lost stayed in the 8192-slot table (7168 usable) for good. What a full table
+did, per connector (inserts ignored `assign()`'s result): the order went out untracked, its replies
+had no instrument (Spot, Bybit, OKX, Deribit), a later amend of it was refused as unknown; a
+Bybit/OKX amend with no room went to REST and came back "no order channel"; a Deribit order without
+a shadow reports its first partial fill with leaves 0; a USD-M modify with no room was sent and
+acked, and the venue's later fills (still under the first client id) were booked to the replaced id
+with the cumulative quantity not rebased (seen with the refusal removed: fill for fm000100000001,
+cum 0.0007, after the ack of fm000100001c02). Design: `SentWatermark` numbers every New and
+Replace it notes (connector-local, all engines), `mark()` returns the watermark id and its
+sequence, each shadow stores `sent_seq` (`last_seq()` in the send path: one increment and one store
+per order), the driver sweeps by sequence. An order or replace the table has no room for is refused
+as `RejectReason::OrderTableFull` (39), marked answered so it holds no snapshot back, counted in
+`VenueStatus::shadows_refused`, one ERROR when the table fills and one WARN when it has room
+(`ShadowOverflow`, checked from `on_timer`). `VenueStatus::shadows` is the table's size; the
+once-a-second venue line prints `shadows= swept= refused=`. Size kept at 8192: with the sweep the
+table holds working orders plus replaces in flight; one engine has at most 4096, venues cap 200-500
+per symbol, and overflow is now a refusal. Aliases (link id -> engine id) are at most one per live
+shadow, so they cannot fill first. Tests failing on the old code: driver "several engines' shadows
+are judged by send order", USD-M two epochs swept, gateway_shadows_test (two raw clients, 4 rounds
+of 60+60 orders cancelled with the answers swallowed and the user stream muted: 120 shadows, 0
+after the snapshot; old: 60 left after round 1, 180 at round 2), full-table refusal for all five
+connectors (7168 orders through each fake). Left: a shadow whose end was lost stays until the
+next snapshot (reconnect, the engine's request). `bench_tick_to_order` (sim transport, so no
+connector code; base main at a path of the same length, werror release, taskset -c 2, 2 x 12
+interleaved runs, load under 3): `BM_TickToOrder_Sim` 159.5/159.1 -> 161.2/159.4 ns,
+`BM_EngineStep_Sim` 2337/2327 -> 2333/2344 ns (medians): noise. Connector tests and integration
+recovery_*, gateway_*, xmm_* (61) green 3 times; full ctest (werror) 1338 passed; clang-tidy-18:
+no bugprone or performance finding in the changed src files.
+
 **Connector machinery step 3: `ReplayScheduler` (2026-09-28).** `venues/replay_scheduler.hpp`
 runs the execution replay of all five connectors and the USD-M income and OKX bills funding
 queries. It owns the streams (a symbol, a currency, the account), windows (length, history floor,

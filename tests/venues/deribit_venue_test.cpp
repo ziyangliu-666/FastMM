@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -698,12 +699,14 @@ struct ReplaySession {
   std::unique_ptr<DeribitVenue> venue;
   Collected oc;
 
-  ReplaySession() {
+  explicit ReplaySession(const std::map<std::string, std::string>& extra = {}) {
     {
       const std::lock_guard lock(h.mu);
       h.open_orders_reply = "[]";
     }
-    DeribitVenueConfig cfg = make_deribit_config(h.section(), false);
+    VenueSection section = h.section();
+    for (const auto& [k, v] : extra) section.extra[k] = v;
+    DeribitVenueConfig cfg = make_deribit_config(section, false);
     cfg.ws_private_url = h.srv.ws_base() + kPrivatePath;
     venue = std::make_unique<DeribitVenue>(kVenue, cfg);
     REQUIRE(venue->load_reference_data(instruments));
@@ -1036,4 +1039,71 @@ TEST_CASE("deribit.venue: an order shadow whose terminal event was lost is dropp
   CHECK(begin->sent_watermark.valid());
   CHECK(s.venue->shadow_count() == 0);
   CHECK(s.status().shadows_swept == 1);
+}
+
+TEST_CASE("deribit.venue: with the order table full an order or edit is refused, not sent") {
+  // Before, the order went out untracked: its reply carried no instrument, an edit of it was
+  // refused as unknown, and its first user.trades fill came with no cumulative or remaining
+  // quantity (the shadow counts them), so the engine took a partial fill for the whole order.
+  ReplaySession s({{"matching_engine_rate", "1000000"}, {"matching_engine_burst", "1000000"}});
+  constexpr std::size_t kRoom = kShadowSlots - kShadowSlots / 8;
+  const auto id_of = [](std::size_t k) { return make_cl_ord_id(2, static_cast<std::uint32_t>(k)); };
+  const auto push_new = [&](ClientOrderId id) {
+    OutNewOrderMsg n{};
+    init_header(n, EventType::OutNewOrder, kCall, kVenue);
+    n.cl_ord_id = id;
+    n.side = Side::Buy;
+    n.type = OrderType::PostOnly;
+    n.price = Price::from_decimal("0.0065").value();
+    n.qty = Qty::from_int(1);
+    while (!s.outbound.try_push(&n, n.hdr.len)) {
+      s.venue->on_wake();
+      s.reactor.run_once(1);
+    }
+  };
+  const int buys = s.h.buys.load();
+  for (std::size_t k = 1; k <= kRoom; ++k) push_new(id_of(k));
+  s.venue->on_wake();
+  REQUIRE(pump_until(
+      s.reactor,
+      [&] {
+        s.oc.take(s.orders);
+        return s.h.buys.load() == buys + static_cast<int>(kRoom);
+      },
+      60000));
+  REQUIRE(s.venue->shadow_count() == kRoom);
+
+  push_new(id_of(kRoom + 1));
+  OutReplaceMsg r{};
+  init_header(r, EventType::OutReplace, kCall, kVenue);
+  r.cl_ord_id = id_of(kRoom + 2);
+  r.orig_cl_ord_id = id_of(1);
+  r.venue_order_id.assign("ETH-349280");
+  r.price = Price::from_decimal("0.007").value();
+  r.qty = Qty::from_int(2);
+  REQUIRE(s.outbound.try_push(&r, r.hdr.len));
+  s.venue->on_wake();
+  const auto refused = [&](ClientOrderId id) {
+    return s.oc.first_if<OrderRejectMsg>(EventType::OrderReject, [&](const OrderRejectMsg& m) {
+      return m.cl_ord_id == id && m.reason == RejectReason::OrderTableFull;
+    });
+  };
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    return refused(id_of(kRoom + 1)) != nullptr && refused(id_of(kRoom + 2)) != nullptr;
+  }));
+  CHECK(refused(id_of(kRoom + 1))->hdr.instrument == kCall);
+  CHECK(refused(id_of(kRoom + 2))->hdr.instrument == kCall);
+
+  // The snapshot names none of them: swept, but for the last ones sent, which the fake never
+  // answered (its replies name another order) and which still hold the watermark back. The next
+  // order goes; the fake has counted every frame sent before it by the time it counts that one.
+  static_cast<void>(s.reconcile());
+  CHECK(s.venue->shadow_count() <= SentWatermark::kMaxInFlight);
+  push_new(id_of(kRoom + 3));
+  s.venue->on_wake();
+  REQUIRE(
+      pump_until(s.reactor, [&] { return s.h.buys.load() == buys + static_cast<int>(kRoom) + 1; }));
+  CHECK(find_frame(s.h.srv, kPrivatePath, "private/edit").empty());
+  CHECK(s.status().shadows_refused == 2);
 }

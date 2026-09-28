@@ -1037,3 +1037,91 @@ TEST_CASE("okx.venue: the positions channel corrects the engine only when it dif
     REQUIRE(pump_until(l.reactor, [&] { return l.venue->fatal(); }));
   }
 }
+
+TEST_CASE("okx.venue: with the order table full an order or amend is refused, not sent") {
+  // Before, the order went out untracked: its reply carried no instrument and an amend of it was
+  // refused as unknown; an amend that found no room went to REST and was rejected as "no order
+  // channel".
+  Harness h;
+  {
+    VenueSection s = h.section();
+    s.extra["orders_per_second"] = "0";  // no local order cap: the table is what is tested
+    Live l(s);
+    l.wait_for_sweep();
+    constexpr std::size_t kRoom = kShadowSlots - kShadowSlots / 8;
+    const auto id_of = [](std::size_t k) {
+      return make_cl_ord_id(2, static_cast<std::uint32_t>(k));
+    };
+    const auto push_new = [&](ClientOrderId id) {
+      OutNewOrderMsg n = new_order();
+      n.cl_ord_id = id;
+      REQUIRE(l.outbound.try_push(&n, n.hdr.len));
+    };
+    // Acks from the replies (the fake's orders pushes name another order).
+    std::size_t acked = 0;
+    const auto count_acks = [&] {
+      l.oc.take(l.orders);
+      acked = 0;
+      for (const auto& m : l.oc.all) {
+        if (RecordingSink::type_of(m) == EventType::OrderAck &&
+            cl_ord_id_epoch(RecordingSink::as<OrderAckMsg>(m).cl_ord_id) == 2)
+          ++acked;
+      }
+    };
+    for (std::size_t k = 1; k <= kRoom; k += 256) {
+      const std::size_t end = std::min(kRoom + 1, k + 256);
+      for (std::size_t j = k; j < end; ++j) push_new(id_of(j));
+      l.venue->on_wake();
+      REQUIRE(pump_until(l.reactor, [&] {
+        count_acks();
+        return acked == end - 1;
+      }));
+    }
+    REQUIRE(l.venue->shadow_count() == kRoom);
+
+    push_new(id_of(kRoom + 1));
+    OutReplaceMsg r{};
+    init_header(r, EventType::OutReplace, kBtc, kVenue);
+    r.cl_ord_id = id_of(kRoom + 2);
+    r.orig_cl_ord_id = id_of(1);
+    r.venue_order_id.assign("312");
+    r.price = Price::from_decimal("60001").value();
+    r.qty = Qty::from_int(4);
+    REQUIRE(l.outbound.try_push(&r, r.hdr.len));
+    l.venue->on_wake();
+    const auto refused = [&](ClientOrderId id) {
+      return l.oc.first_if<OrderRejectMsg>(EventType::OrderReject, [&](const OrderRejectMsg& m) {
+        return m.cl_ord_id == id && m.reason == RejectReason::OrderTableFull;
+      });
+    };
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return refused(id_of(kRoom + 1)) != nullptr && refused(id_of(kRoom + 2)) != nullptr;
+    }));
+    CHECK(refused(id_of(kRoom + 1))->hdr.instrument == kBtc);
+    CHECK(refused(id_of(kRoom + 2))->hdr.instrument == kBtc);
+
+    // The snapshot names none of them: swept, and the next order goes. Its reply comes after every
+    // frame sent before it on the trade connection.
+    const std::size_t ends = l.ends();
+    l.venue->request_open_orders();
+    REQUIRE(pump_until(l.reactor, [&] { return l.ends() > ends; }));
+    CHECK(l.venue->shadow_count() == 0);
+    push_new(id_of(kRoom + 3));
+    l.venue->on_wake();
+    REQUIRE(pump_until(l.reactor, [&] {
+      count_acks();
+      return acked == kRoom + 1;
+    }));
+    std::size_t places = 0;
+    std::size_t amends = 0;
+    for (const auto& f : h.srv.frames("trade")) {
+      places += f.find(R"("op":"order")") != std::string::npos ? 1U : 0U;
+      amends += f.find(R"("op":"amend-order")") != std::string::npos ? 1U : 0U;
+    }
+    CHECK(places == kRoom + 1);
+    CHECK(amends == 0);
+    l.venue->on_timer(net::Reactor::now_ns());
+    CHECK(l.venue->status().shadows_refused == 2);
+  }
+}
