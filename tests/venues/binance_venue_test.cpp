@@ -12,7 +12,9 @@
 #include "fastmm/venues/binance/generated/binance_stream_sbe.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <string>
+#include <thread>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -55,11 +57,12 @@ struct Harness {
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> cancel_all_ok{0};
   std::atomic<int> cancel_all_bad{0};
-  std::atomic<bool> hold_place{false};     // order.place gets no answer (still in flight)
-  std::atomic<bool> hold_trades{false};    // GET myTrades answers only once released (3 s at most)
-  std::atomic<int> my_trades{0};           // GET myTrades requests seen
-  std::atomic<int> rest_open_orders{0};    // GET /api/v3/openOrders requests seen
-  net::WsSession* user_session = nullptr;  // server thread only
+  std::atomic<bool> hold_place{false};       // order.place gets no answer (still in flight)
+  std::atomic<bool> hold_trades{false};      // GET myTrades answers only once released (3 s at most)
+  std::atomic<bool> hold_rest_order{false};  // POST /api/v3/order answers only once cleared
+  std::atomic<int> my_trades{0};             // GET myTrades requests seen
+  std::atomic<int> rest_open_orders{0};      // GET /api/v3/openOrders requests seen
+  net::WsSession* user_session = nullptr;    // server thread only
 
   // The server thread reads this harness's members: stop it before they go.
   ~Harness() { srv.stop(); }
@@ -100,7 +103,28 @@ struct Harness {
       s.send_text(depth_frame(95, 100, "69999.00", "9"));  // stale: u <= lastUpdateId
       s.send_text(depth_frame(101, 101, "70000.00", "1.5"));
     });
-    srv.on_ws_text("/ws-api/v3", [this](net::WsSession& s, std::string_view t) {
+    // Blocks this server's thread while held: a test that holds it serves the WS API elsewhere.
+    srv.route("POST", "/api/v3/order", [this](const net::HttpRequest& r) {
+      const std::string query(r.query);
+      const std::size_t p = query.find("newClientOrderId=");
+      const std::string id = p == std::string::npos
+                                 ? std::string()
+                                 : query.substr(p + 17, query.find('&', p) - p - 17);
+      srv.record("rest_order", id);
+      for (int i = 0; i < 1000 && hold_rest_order.load(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return net::HttpServerResponse::json(
+          200,
+          R"({"symbol":"BTCUSDT","orderId":4293160,"orderListId":-1,"clientOrderId":")" + id +
+              R"(","transactTime":1789295199990})");
+    });
+    serve_ws_api(srv);
+    srv.start();
+  }
+
+  // The WS API (order entry, the user stream, openOrders.status) on `server`.
+  void serve_ws_api(FakeVenueServer& server) {
+    server.on_ws_text("/ws-api/v3", [this, &server](net::WsSession& s, std::string_view t) {
       const std::string method = json_str(t, "method");
       const std::string id = json_str(t, "id");
       if (method == "userDataStream.subscribe.signature") {
@@ -108,7 +132,7 @@ struct Harness {
         s.send_text(R"({"id":")" + id + R"(","status":200,"result":{"subscriptionId":0}})");
       } else if (method == "order.place") {
         if (hold_place.load()) {
-          srv.record("held", json_str(t, "newClientOrderId"));
+          server.record("held", json_str(t, "newClientOrderId"));
           return;
         }
         s.send_text(
@@ -129,7 +153,6 @@ struct Harness {
         s.send_text(R"({"id":")" + id + R"(","status":200,"result":[]})");
       }
     });
-    srv.start();
   }
 
   BinanceVenueConfig config(bool dry_run) const {
@@ -403,6 +426,111 @@ TEST_CASE("binance.venue: an order still in flight is above the snapshot's water
     venue.disconnect();
     reactor.run_once(0);
   }
+  h.srv.stop();
+}
+
+TEST_CASE(
+    "binance.venue: an order sent over REST while the order connection is down stays in flight") {
+  // The order connection drops, an order goes out over REST, and its reply is slow. The reconnect
+  // asks for the open orders at once, and the venue may not list the order yet. Losing the
+  // WebSocket connection settles what was sent on it, not a REST request: that one must still
+  // hold the snapshot's watermark back, or the engine cancels the order as gone.
+  Harness h;
+  FakeVenueServer api;  // the WS API on its own thread, so it answers while REST is held
+  h.serve_ws_api(api);
+  api.start();
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenueConfig cfg = h.config(false);
+    cfg.ws_api_url = api.ws_base() + "/ws-api/v3";
+    cfg.cancel_on_order_channel_loss = false;
+    cfg.http_timeout_ms = 8000;
+    // A fixed reconnect delay, so the REST order goes out while the connection is down.
+    cfg.backoff.base_ms = 800;
+    cfg.backoff.max_ms = 800;
+    cfg.backoff.jitter = 0.0;
+    BinanceVenue venue(VenueId{0}, std::move(cfg));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    const auto count_state = [&](ConnState state) {
+      std::size_t n = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::ConnectionState &&
+            RecordingSink::as<ConnectionStateMsg>(m).state == state)
+          ++n;
+      }
+      return n;
+    };
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return count_state(ConnState::Live) >= 2 && oc.count(EventType::Reconcile) >= 2;
+    }));
+    const auto place = [&](const char* id) {
+      OutNewOrderMsg n{};
+      init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+      n.cl_ord_id = decode_cl_ord_id(id).value();
+      n.side = Side::Buy;
+      n.type = OrderType::PostOnly;
+      n.price = Price::from_decimal("70000").value();
+      n.qty = Qty::from_decimal("0.001").value();
+      REQUIRE(outbound.try_push(&n, n.hdr.len));
+      venue.on_wake();
+      return n.cl_ord_id;
+    };
+    const ClientOrderId answered = place("fm000100000001");
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderAck) >= 1;
+    }));
+
+    api.close_sessions("/ws-api/v3");
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return count_state(ConnState::Disconnected) >= 2;  // order and user channels
+    }));
+    h.hold_rest_order = true;
+    const ClientOrderId over_rest = place("fm000100000002");
+    REQUIRE(pump_until(reactor, [&] { return h.srv.frames("rest_order").size() == 1; }));
+    CHECK(h.srv.frames("rest_order")[0] == "fm000100000002");
+
+    // The reconnect: the snapshot is asked for (and its watermark taken) on the order
+    // connection's return, with the REST reply still outstanding.
+    const std::size_t reconciles = oc.count(EventType::Reconcile);
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return count_state(ConnState::Live) >= 4;
+    }));
+    h.hold_rest_order = false;
+    REQUIRE(pump_until(
+        reactor,
+        [&] {
+          oc.take(orders);
+          return oc.count(EventType::Reconcile) >= reconciles + 2;
+        },
+        10000));
+    const auto* begin = oc.last_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::Begin;
+    });
+    REQUIRE(begin != nullptr);
+    CHECK((begin->flags & ReconcileMsg::kSentWatermark) != 0);
+    // Below the REST order: the snapshot (empty here) says nothing about it.
+    CHECK(begin->sent_watermark == answered);
+    CHECK(begin->sent_watermark.value < over_rest.value);
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  api.stop();
   h.srv.stop();
 }
 

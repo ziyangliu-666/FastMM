@@ -62,6 +62,7 @@
 #include "fastmm/venues/binance_usdm/binance_usdm_md_feed.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_user_parser.hpp"
+#include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/connection_slot.hpp"
 #include "fastmm/venues/dead_mans_switch.hpp"
 #include "fastmm/venues/order_commands.hpp"
@@ -245,7 +246,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   void request_listen_key();
   void keepalive_listen_key();
   void cancel_all_async();
-  // Arms or refreshes countdownCancelAll on every subscribed symbol. `countdown_ms` 0 stops it.
+  // Arms or refreshes countdownCancelAll on every subscribed symbol: one CountdownDriver round.
+  // stop_countdown_blocking() stops it.
   void send_countdown_cancel_all(std::int64_t countdown_ms);
   void stop_countdown_blocking();
   // ReconcileHooks: GET /fapi/v1/openOrders + GET /fapi/v3/positionRisk, the snapshot once both
@@ -285,6 +287,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] std::string private_root() const;
   [[nodiscard]] net::ConnectionConfig ws_config(const std::string& url,
                                                 std::uint32_t min_dead_ms) const;
+  Result<void, std::string> apply_exchange_info(const HttpReply& reply,
+                                                const std::vector<Instrument*>& mine,
+                                                const std::vector<std::string>& wanted);
   std::string account_checks(const std::vector<Instrument*>& mine);
 
   VenueId id_;
@@ -321,7 +326,7 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
-  CountdownSwitch dms_;
+  CountdownDriver dms_;
   std::array<PositionCheck, kMaxInstruments> positions_{};
   // The snapshot's two REST replies, collected before anything is emitted.
   int snapshot_replies_ = 0;

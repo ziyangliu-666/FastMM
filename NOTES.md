@@ -27,6 +27,33 @@ USD-M's offline reference-data path skips its account checks (hedge-mode refusal
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**Connector machinery step 2: blocking control, countdown driver, watermark (2026-09-28).**
+(a) `BlockingControl` (venues/blocking_control.hpp): one BlockingHttp from the connector config,
+one request or one per target, a 418/429 (plus Bybit retCode 10006, OKX 50011) retried up to 3
+times after Retry-After or 400 ms, never waiting past a 10 s deadline for the whole call. Used by
+the five `cancel_all`s (OKX's paged batch and Deribit's per-instrument GET keep their bodies) and
+both countdown stops. Before, only Spot retried; USD-M and Bybit left orders resting on a 429.
+(b) `CountdownDriver` (dead_mans_switch.hpp) over `CountdownSwitch`, used by USD-M and OKX.
+Decisions: a refresh round counts only when every part is confirmed (USD-M's countdown is per
+symbol, and one refused symbol still has its old countdown running; it used to count as armed if
+any symbol answered), measured from when the round went out. A lapse is reported once, the
+connector kills the venue, and nothing is refreshed after it until a reconnect: the venue's own
+timer is left to clear the account whatever the local cancels do (USD-M used to re-arm on the same
+tick). The shutdown stop is sent once any refresh went out, confirmed or not, since a lost reply
+may have armed it (OKX stopped only a confirmed one, USD-M always). A fatal error other than a
+lapse no longer stops OKX's refresh: the switch is the backstop for exactly that case.
+(c) `SentWatermark::connection_lost()` settles only the WebSocket-sent entries (a `rest` flag per
+entry, set by `sent_over_rest()` where the four REST fallbacks queue an order); REST-sent orders
+keep holding the snapshot back. (d) USD-M's offline reference data now runs the clock probe and
+`account_checks` (hedge-mode refusal); Bybit, OKX and Deribit log the exception they swallow when
+offline data is allowed. `rest_channel_config()` / `rest_queue_for()` size every connector's REST
+queue as 32 + 4 per subscribed symbol (was 8, OKX 32, Deribit 264), resized on a later subscribe.
+Tests, each failing with its piece reverted: USD-M and Bybit kill-path 429 then success (and a
+limit that never lifts gives up after 4 requests); USD-M no refresh after a lapse, one symbol's
+refused refresh kills; OKX stop after an unreadable arm reply; Spot REST order in flight across an
+order-connection drop stays above the reconnect snapshot's watermark (WS API on a second fake
+server so the REST reply can be held); USD-M offline hedge-mode refusal; `CountdownDriver` units.
+
 **Step 1 done: `ReconcileDriver` (2026-09-28).** `venues/reconcile_driver.hpp` is the open-order
 snapshot of all five connectors: generation, one at a time with one more queued, retry 5 s after a
 failure and 60 s without an answer, start-up sweep, shadow sweep, Begin/End, sent watermark,

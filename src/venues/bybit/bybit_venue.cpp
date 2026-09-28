@@ -1,5 +1,6 @@
 #include "fastmm/venues/bybit/bybit_venue.hpp"
 
+#include "fastmm/venues/blocking_control.hpp"
 #include "fastmm/venues/blocking_http.hpp"
 #include "fastmm/venues/bybit/bybit_rest_decoder.hpp"
 #include "fastmm/venues/connector_common.hpp"
@@ -232,6 +233,9 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
     if (!cfg_.allow_offline_reference_data)
       return fail(
           fmt::format("{}: reference data failed: {}", cfg_.name, std::string_view(e.what())));
+    FASTMM_LOG_WARN("{}: reference data failed ({}); keeping the configured values",
+                    cfg_.name,
+                    std::string_view(e.what()));
   }
   const std::int64_t off = clock_offset_ms_.load();
   stats_.clock_offset_ms = off;
@@ -344,6 +348,7 @@ void BybitVenue::subscribe(std::span<const InstrumentId> instruments) {
     }
   }
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_ && md_conn_.opened()) {
     md_conn_.close();
     open_md();
@@ -407,12 +412,7 @@ void BybitVenue::disconnect() {
 }
 
 void BybitVenue::open_rest() {
-  RestChannelConfig rc;
-  rc.base_url = cfg_.rest_url;
-  rc.ca_file = cfg_.ca_file;
-  rc.insecure_tls = cfg_.insecure_tls;
-  rc.timeout_ms = cfg_.http_timeout_ms;
-  rest_ = std::make_unique<RestChannel>(*reactor_, rc);
+  rest_ = std::make_unique<RestChannel>(*reactor_, rest_channel_config(cfg_, subscribed_.size()));
 }
 
 void BybitVenue::open_md() {
@@ -1022,6 +1022,8 @@ void BybitVenue::send_command_rest(const OrderCommand& cmd, const OrderShadow* s
     return;
   }
   wire_.record(cmd.t0_cycles(), before_encode, after_encode, rdtscp());
+  // Its reply comes over REST: losing the WebSocket order connection does not settle it.
+  if (cmd.kind != OrderCommandKind::Cancel) sent_.sent_over_rest(cmd.cl_ord_id);
   rate_.on_sent(1, now_ns(), rr.is_order);
   switch (cmd.kind) {
     case OrderCommandKind::New:
@@ -1643,42 +1645,35 @@ void BybitVenue::cancel_all_async() {
 
 bool BybitVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr || encoder_ == nullptr) return true;
-  BlockingHttpOptions opts;
-  opts.ca_file = cfg_.ca_file;
-  opts.insecure_tls = cfg_.insecure_tls;
-  opts.timeout_ms = cfg_.http_timeout_ms;
-  bool all_ok = true;
-  try {
-    BlockingHttp http(cfg_.rest_url, opts);
-    for (InstrumentId id : subscribed_) {
-      RestRequest rr;
-      if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), rr)) {
-        all_ok = false;
-        continue;
-      }
-      const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
-      const HttpReply reply = http.request("POST", rr.target(), headers, rr.body);
-      int code = -1;
-      std::string msg;
-      if (!reply.ok() || !decode_envelope(reply.body, code, msg) || code != 0) {
-        all_ok = false;
-        FASTMM_LOG_ERROR("{}: kill-switch cancel-all for {} failed: status={} retCode={} {}",
-                         cfg_.name,
-                         symbols_->venue_symbol(id),
-                         reply.status,
-                         code,
-                         reply.error.empty() ? msg : reply.error);
-      } else {
-        FASTMM_LOG_INFO(
-            "{}: kill-switch cancel-all for {} ok", cfg_.name, symbols_->venue_symbol(id));
-      }
-    }
-  } catch (const std::exception& e) {
-    FASTMM_LOG_ERROR(
-        "{}: kill-switch cancel-all failed: {}", cfg_.name, std::string_view(e.what()));
-    return false;
-  }
-  return all_ok;
+  BlockingRetry retry;
+  // retCode 10006 "Too many visits" comes inside a 200: waited out like a 429.
+  retry.rate_limited = [](const HttpReply& r) {
+    int code = -1;
+    std::string msg;
+    return decode_envelope(r.body, code, msg) && code == 10006;
+  };
+  BlockingControl control(cfg_, retry);
+  return control.per_target(
+      "kill-switch cancel-all",
+      std::span<const InstrumentId>(subscribed_),
+      [&](InstrumentId id) { return symbols_->venue_symbol(id); },
+      [&](InstrumentId id, BlockingRequest& q) {
+        RestRequest rr;
+        if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), rr)) return false;
+        q.method = "POST";
+        q.target = rr.target();
+        q.headers = encoder_->rest_headers(rr, venue_time_ms());
+        q.body = rr.body;
+        return true;
+      },
+      // retCode 0 with an empty list when nothing was open.
+      [](const HttpReply& reply, std::string& why) {
+        int code = -1;
+        std::string msg;
+        if (reply.ok() && decode_envelope(reply.body, code, msg) && code == 0) return true;
+        if (code != -1) why = fmt::format("retCode={} {}", code, msg);
+        return false;
+      });
 }
 
 // ---- housekeeping -----------------------------------------------------------------------------

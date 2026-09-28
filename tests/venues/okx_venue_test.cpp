@@ -876,6 +876,27 @@ TEST_CASE("okx.venue: cancel-all-after is armed, refreshed and stopped") {
   }
 }
 
+TEST_CASE("okx.venue: cancel-all-after is stopped after an unconfirmed arm") {
+  // The arm went out and its reply could not be read (a proxy's error page, a timeout): the
+  // venue may well be counting down. The shutdown stops it anyway; it used to stop only a
+  // countdown it had seen confirmed, and an account-wide timer left running cancels whatever the
+  // next session places a minute later.
+  Harness h;
+  h.cancel_after_reply = "upstream request timeout";
+  VenueSection s = h.section();
+  s.extra["dead_mans_switch_s"] = "30";
+  {
+    Live l(s);
+    REQUIRE(pump_until(l.reactor, [&] { return h.srv.frames("cancel_after").size() == 1; }));
+    l.pump();
+    CHECK_FALSE(l.venue->fatal());
+    l.venue->disconnect();
+    const auto ca = h.srv.frames("cancel_after");
+    REQUIRE(ca.size() == 2);
+    CHECK(ca.back() == R"({"timeOut":"0"})");
+  }
+}
+
 TEST_CASE("okx.venue: a failed fills query is retried from the timer") {
   Harness h;
   h.fills_failures = 1;
