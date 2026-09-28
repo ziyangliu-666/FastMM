@@ -49,6 +49,41 @@ All three done (2026-09-28), entries below.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**A fill of an order the venue never acknowledged names its order (2026-09-29).** Left by the
+entry below: an order whose ack never came before a kill has no venue id in the store, and a
+replayed Binance trade names only `orderId`, so its fill named no order (shared: nobody's; owned:
+the owner's, naming no order). Per venue: Binance Spot (`myTrades`) and USD-M (`userTrades`) give
+`orderId` only; Bybit (`orderLinkId`), OKX (`clOrdId`) and Deribit (`label`) rows carry the client
+id, no lookup needed. Fix, in `ReplayScheduler` (optional `Hooks::lookup` and the typed
+`unnamed`): before a window's rows go out, the orders the connector cannot name are asked for, one
+per order, at most `max_lookups` (16) per replay, and the window waits (`kQueryTimeoutNs` at most).
+Spot asks `GET /api/v3/order?orderId=` (weight 4), USD-M `GET /fapi/v1/order` (weight 1), only
+with rate-limit room; the answer goes into the connector's orderId map; an order not FastMM's is
+not asked again. A row still unnamed goes out naming no order, as before, and a copy is kept (256
+at most): the next replay (5 s later, 5 attempts) asks again and sends it once more naming its
+order, same trade id, so the OMS and the account keep one; the gateway drops a parked unnamed copy
+when the named one arrives. Replay rows own their text now (`binance::MyTradeRow`). Simulator: a
+filled order that ended is still answered by `GET /api/v3/order` (`OrderIndex::past`), as on
+Binance; `set_open_orders_delay_ms` holds `openOrders.status`. `wait_gateway_up` also waits for the
+order channel's session.
+Tests, each failing with the lookup disabled: `gateway_restart_test` "... never acknowledged ..."
+shared (a first) and owned (b first): a's requote is placed with every reply swallowed and the user
+stream muted, kill -9 of the gateway and a, the order filled while nothing runs, both restarted:
+a's store holds the fill once naming it (disabled: shared never booked, account short; owned
+booked naming no order). Connector: Spot "never saw acked names it" and "a failed order lookup is
+asked again at the next replay", USD-M "never saw acked names it"; `replay_scheduler_test`: budget,
+not-ours, re-send, 5 failures then dropped, a lookup never answered, a close while waiting.
+The retag path has its test: "a streamed fill of a session nobody has claimed yet ..." (the new
+gateway's snapshot held 8 s, a's order from before the restart filled meanwhile): the account books
+it unattributed, and a's attach moves it to a's share. With the retag disabled it stays
+unattributed and the test fails.
+gateway_*, recovery_*, xmm_* (68) green 3 times; full ctest (werror) 1359 passed; clang-tidy-18:
+no bugprone or performance finding in the changed code (the analyzer's NewDeleteLeaks on the new
+REST callbacks, as on every existing one).
+Left: with a `primary` attached, a fill whose lookup failed goes to the primary unnamed and later,
+named, to its owner as well (two stores hold it); an instrument no strategy ever owns has its
+executions kept, not booked.
+
 **A fill made while the gateway was down reaches its strategy (2026-09-28).** Binance Spot Demo
 run (`/home/rufus/fastmm-demo-run`, BTCUSDT shared, no primary): kill -9 of the gateway at
 12:10:27 with demo-a's buy `fm0005000001de` resting; it filled at 12:10:29.2 (venue time, trade
