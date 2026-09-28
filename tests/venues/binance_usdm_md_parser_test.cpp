@@ -267,6 +267,8 @@ TEST_CASE(
   const auto& big = RecordingSink::as<BookDeltaMsg>(deltas[1]);
   REQUIRE(big.bid_count == kMaxBookLevelsPerMsg);
   REQUIRE(big.ask_count == kMaxBookLevelsPerMsg);
+  CHECK(big.hdr.flags == truncation_flags(true, true));
+  CHECK(RecordingSink::as<BookDeltaMsg>(deltas[0]).hdr.flags == 0);
   CHECK(big.last_update_id == 11673992035278ULL);
   // Wire order (ascending) is kept: the far bids 33999.90 .. 34209.40 and asks above 85346.30 go.
   CHECK(big.bids()[0].price == px("34209.50"));

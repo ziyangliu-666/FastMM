@@ -163,19 +163,20 @@ class BinanceSbeMdParser {
     const int qe = msg.qty_exponent();
     auto* m = reinterpret_cast<BookDeltaMsg*>(out.data());
     Level* levels = m->levels();
-    bool truncated = false;
-    const int nb = read_side(msg.bids(), pe, qe, levels, kMaxBookLevelsPerMsg, true, truncated);
+    bool cut_bids = false;
+    bool cut_asks = false;
+    const int nb = read_side(msg.bids(), pe, qe, levels, kMaxBookLevelsPerMsg, true, cut_bids);
     if (nb == -2) return count(ParseStatus::Overflow);
     if (nb < 0) return count(ParseStatus::Malformed);
     const int na =
-        read_side(msg.asks(), pe, qe, levels + nb, kMaxBookLevelsPerMsg, false, truncated);
+        read_side(msg.asks(), pe, qe, levels + nb, kMaxBookLevelsPerMsg, false, cut_asks);
     if (na == -2) return count(ParseStatus::Overflow);
     if (na < 0) return count(ParseStatus::Malformed);
     const auto bid_count = static_cast<std::uint32_t>(nb);
     const auto ask_count = static_cast<std::uint32_t>(na);
     const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);
     if (len > kDecoderScratchBytes) return count(ParseStatus::Overflow);
-    if (truncated) ++stats_.truncated;
+    if (cut_bids || cut_asks) ++stats_.truncated;
     std::uint64_t first = 0;
     std::uint64_t last = 0;
     if constexpr (requires { msg.first_book_update_id(); }) {
@@ -186,6 +187,7 @@ class BinanceSbeMdParser {
     }
     init_header(*m, snapshot ? EventType::BookSnapshot : EventType::BookDelta, inst, venue_, len);
     if (snapshot) m->hdr.flags |= EventHeader::kSnapshot;
+    if (!snapshot) m->hdr.flags |= truncation_flags(cut_bids, cut_asks);
     m->bid_count = bid_count;
     m->ask_count = ask_count;
     m->first_update_id = first;

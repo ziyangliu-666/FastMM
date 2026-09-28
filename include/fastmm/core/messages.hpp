@@ -42,6 +42,11 @@ struct EventHeader {
     // signed ns delta from the previous kEngineTime record or EngineTimeMsg.
     kEngineTime = 1U << 4,
     kDropped = 1U << 5,  // journal only: outbound message the transport did not accept
+    // BookDelta: the venue's update changed more levels on this side than the message carries,
+    // and the side holds the ones nearest the touch (LevelSpill). A book level behind the last
+    // one it carries may be stale; L2Book drops those.
+    kTruncatedBids = 1U << 6,
+    kTruncatedAsks = 1U << 7,
   };
 
   std::uint32_t len;     // total bytes incl. header, multiple of 64   (offset 0)
@@ -122,6 +127,13 @@ struct BookDeltaMsg {
   }
 };
 static_assert(sizeof(BookDeltaMsg) == 96 && alignof(BookDeltaMsg) == 8);
+// The header flags of a delta whose bids and/or asks kept only the levels nearest the touch.
+[[nodiscard]] constexpr std::uint8_t truncation_flags(bool bids, bool asks) noexcept {
+  std::uint8_t f = 0;
+  if (bids) f |= EventHeader::kTruncatedBids;
+  if (asks) f |= EventHeader::kTruncatedAsks;
+  return f;
+}
 using BookSnapshotMsg = BookDeltaMsg;  // same layout; hdr.type == BookSnapshot, kSnapshot set
 
 struct TradeMsg {

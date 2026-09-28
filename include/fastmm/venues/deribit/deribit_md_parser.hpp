@@ -29,9 +29,11 @@
 // for BTC options). IVs arrive in percent and are stored as decimals. The trade `direction` is
 // taken as the taker (aggressor) side; the current docs only say "Direction: buy, or sell".
 //
-// Snapshots carry every price level (no depth limit); more than kMaxBookLevelsPerMsg levels per
-// side are truncated to the best ones (stats.truncated_snapshots). simdjson On-Demand lives in the
-// .cpp; frames need kJsonPadding readable bytes behind them. No allocation after construction.
+// Snapshots carry every price level (no depth limit; BTC-PERPETUAL had 1210 bids on 2026-09-28),
+// and a change can too. A side with more than kMaxBookLevelsPerMsg levels keeps the ones nearest
+// the touch (LevelSpill: stats.truncated_snapshots, or truncated_changes and kTruncatedBids/Asks
+// on the delta); one past LevelSpill::kCapacity is refused (Overflow). simdjson On-Demand lives in
+// the .cpp; frames need kJsonPadding readable bytes behind them. No allocation after construction.
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/time.hpp"
@@ -60,6 +62,7 @@ struct MdParserStats {
   std::uint64_t unknown_symbol = 0;
   std::uint64_t overflow = 0;
   std::uint64_t truncated_snapshots = 0;
+  std::uint64_t truncated_changes = 0;
 };
 
 enum class FrameKind : std::uint8_t {

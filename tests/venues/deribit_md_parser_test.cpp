@@ -9,6 +9,7 @@
 #include "fastmm/venues/deribit/deribit_md_feed.hpp"
 #include "fastmm/venues/deribit/deribit_rest_decoder.hpp"
 #include "fastmm/venues/deribit/deribit_venue.hpp"
+#include "fastmm/venues/level_spill.hpp"
 #include "fastmm/venues/registry.hpp"
 
 #include <cmath>
@@ -269,6 +270,114 @@ TEST_CASE("deribit.md_feed: the recorded option session syncs without a gap") {
       R"({"jsonrpc":"2.0","id":1000,"result":["book.BTC-15SEP26-77000-C.100ms"],"usIn":1,"usOut":2,"usDiff":1,"testnet":true})");
   static_cast<void>(feed.on_message(ok.view(), 1));
   CHECK(feed.stats().subscribe_errors == 1);  // 1 of 3 channels subscribed
+}
+
+// The recorded production BTC-PERPETUAL snapshot (1195 bids, 847 asks), and a change made of the
+// same levels: Deribit lists both best first, and a change is not bounded either.
+namespace {
+std::string long_change(std::uint64_t prev) {
+  std::string f = fastmm::test::fixture("deribit/book_perp_long_snapshot.json");
+  const std::string from = R"("type":"snapshot","change_id":176209440222)";
+  const std::size_t at = f.find(from);
+  REQUIRE(at != std::string::npos);
+  f.replace(at,
+            from.size(),
+            R"("type":"change","change_id":176209440223,"prev_change_id":)" + std::to_string(prev));
+  return f;
+}
+}  // namespace
+
+TEST_CASE("deribit.md_parser: a snapshot longer than a message keeps the best levels") {
+  Universe u;
+  DeribitMdParser p(u.symbols, u.instruments, kVenue);
+  Scratch s;
+  REQUIRE(decode(p, "deribit/book_perp_long_snapshot.json", s).ok());
+  const auto& m = s.as<BookDeltaMsg>();
+  CHECK(m.is_snapshot());
+  CHECK((m.hdr.flags & (EventHeader::kTruncatedBids | EventHeader::kTruncatedAsks)) == 0);
+  REQUIRE(m.bid_count == kMaxBookLevelsPerMsg);
+  REQUIRE(m.ask_count == 847);
+  CHECK(m.bids()[0] == Level{px("83958"), qt("378")});
+  CHECK(m.bids()[kMaxBookLevelsPerMsg - 1] == Level{px("50831"), qt("50831")});
+  CHECK(m.asks()[846].price == px("300000"));
+  CHECK(p.stats().truncated_snapshots == 1);
+  CHECK(p.stats().truncated_changes == 0);
+}
+
+TEST_CASE("deribit.md_parser: a change longer than a message keeps the levels nearest the touch") {
+  Universe u;
+  DeribitMdParser p(u.symbols, u.instruments, kVenue);
+  Scratch s;
+  const PaddedJson j(long_change(176209440222ULL));
+  const MdDecodeResult r = p.decode(j.view(), Timestamp{42}, Cycles{7}, s.span());
+  REQUIRE(r.ok());
+  CHECK(r.kind == MdKind::BookDelta);
+  const auto& m = s.as<BookDeltaMsg>();
+  CHECK_FALSE(m.is_snapshot());
+  CHECK(m.prev_update_id == 176209440222ULL);
+  CHECK(m.last_update_id == 176209440223ULL);
+  CHECK((m.hdr.flags & EventHeader::kTruncatedBids) != 0);
+  CHECK((m.hdr.flags & EventHeader::kTruncatedAsks) == 0);
+  REQUIRE(m.bid_count == kMaxBookLevelsPerMsg);
+  REQUIRE(m.ask_count == 847);
+  CHECK(m.bids()[0].price == px("83958"));
+  CHECK(m.bids()[kMaxBookLevelsPerMsg - 1].price == px("50831"));
+  CHECK(p.stats().truncated_changes == 1);
+  CHECK(p.stats().overflow == 0);
+
+  // Worst first (bids 1..1100 ascending): the selection is by price, not by position.
+  std::string asc =
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"book.BTC-PERPETUAL.100ms","data":{"timestamp":1,"type":"change","change_id":3,"prev_change_id":2,"instrument_name":"BTC-PERPETUAL","bids":[)";
+  for (int i = 1; i <= 1100; ++i)
+    asc += std::string(i > 1 ? "," : "") + R"(["new",)" + std::to_string(i) + ".0,10.0]";
+  asc += R"(],"asks":[["delete",2000.0,0.0]]}}})";
+  const PaddedJson ja(asc);
+  REQUIRE(p.decode(ja.view(), Timestamp{}, Cycles{}, s.span()).ok());
+  REQUIRE(s.as<BookDeltaMsg>().bid_count == kMaxBookLevelsPerMsg);
+  CHECK(s.as<BookDeltaMsg>().bids()[0].price == Price::from_int(1100 - 1023));
+  CHECK(s.as<BookDeltaMsg>().bids()[kMaxBookLevelsPerMsg - 1].price == Price::from_int(1100));
+  CHECK(s.as<BookDeltaMsg>().asks()[0] == Level{Price::from_int(2000), Qty{}});
+
+  // Past LevelSpill::kCapacity a side is refused.
+  std::string huge =
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"book.BTC-PERPETUAL.100ms","data":{"timestamp":1,"type":"change","change_id":4,"prev_change_id":3,"instrument_name":"BTC-PERPETUAL","bids":[)";
+  for (std::uint32_t i = 0; i <= LevelSpill::kCapacity; ++i)
+    huge += std::string(i != 0 ? "," : "") + R"(["new",)" + std::to_string(i + 1) + ".0,10.0]";
+  huge += R"(],"asks":[]}}})";
+  const PaddedJson jh(huge);
+  CHECK(p.decode(jh.view(), Timestamp{}, Cycles{}, s.span()).status == ParseStatus::Overflow);
+  CHECK(p.stats().overflow == 1);
+}
+
+TEST_CASE("deribit.md_feed: a change longer than a message keeps the book synced") {
+  Universe u;
+  RecordingSink md(8U << 20);
+  int resubscribes = 0;
+  DeribitMdFeed feed(
+      u.symbols,
+      u.instruments,
+      kVenue,
+      md.sink,
+      ResubscribeRequester{[](void* c, InstrumentId) noexcept { ++*static_cast<int*>(c); },
+                           &resubscribes});
+  REQUIRE(feed.add_instrument(InstrumentId{1}));
+  feed.on_connected();
+  const PaddedJson snap = padded_fixture("deribit/book_perp_long_snapshot.json");
+  CHECK(feed.on_message(snap.view(), 1) == ParseStatus::Ok);
+  const PaddedJson chg(long_change(176209440222ULL));
+  CHECK(feed.on_message(chg.view(), 1) == ParseStatus::Ok);
+  // The next change chains on it (a refused change would leave a gap here and resync the book).
+  const PaddedJson next(
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"book.BTC-PERPETUAL.100ms","data":{"timestamp":1790559412933,"type":"change","change_id":176209440224,"prev_change_id":176209440223,"instrument_name":"BTC-PERPETUAL","bids":[["change",83958.0,4000.0]],"asks":[]}}})");
+  CHECK(feed.on_message(next.view(), 1) == ParseStatus::Ok);
+  CHECK(feed.synced_count() == 1);
+  CHECK(feed.resync_count() == 0);
+  CHECK(resubscribes == 0);
+  CHECK(feed.stats().dropped == 0);
+  Collected c;
+  c.take(md);
+  CHECK(c.count(EventType::BookSnapshot) == 1);
+  CHECK(c.count(EventType::BookDelta) == 2);
 }
 
 TEST_CASE("deribit.rest: get_instruments decoding and the reference data mapping") {

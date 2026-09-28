@@ -320,6 +320,48 @@ void BM_Json_DeribitBookChange(benchmark::State& state) {
 }
 BENCHMARK(BM_Json_DeribitBookChange);
 
+// A BTC-PERPETUAL book frame with `bids` and 850 asks, best first as Deribit sends them. Past 1024
+// levels a side (production snapshots have about 1200 bids) the parser keeps the 1024 nearest the
+// touch (LevelSpill).
+std::string deribit_book(const char* type, int bids) {
+  std::string s =
+      std::string(
+          R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"book.BTC-PERPETUAL.100ms","data":{"timestamp":1790559412833,"type":")") +
+      type +
+      R"(","change_id":176209440223,"prev_change_id":176209440222,"instrument_name":"BTC-PERPETUAL","bids":[)";
+  char buf[64];
+  for (int i = 0; i < bids; ++i) {
+    std::snprintf(buf,
+                  sizeof buf,
+                  R"(%s["new",%d.5,%d.0])",
+                  i != 0 ? "," : "",
+                  83958 - 3 * i,
+                  10 * (1 + i % 97));
+    s += buf;
+  }
+  s += R"(],"asks":[)";
+  for (int i = 0; i < 850; ++i) {
+    std::snprintf(buf,
+                  sizeof buf,
+                  R"(%s["new",%d.0,%d.0])",
+                  i != 0 ? "," : "",
+                  83959 + 3 * i,
+                  10 * (1 + i % 89));
+    s += buf;
+  }
+  return s + "]}}}";
+}
+
+void BM_Json_DeribitBook(benchmark::State& state) {
+  DeribitUniverse u;
+  deribit::DeribitMdParser p(u.symbols, u.instruments, VenueId{2});
+  run_decode(
+      state,
+      deribit_book(state.range(0) != 0 ? "snapshot" : "change", static_cast<int>(state.range(1))),
+      p);
+}
+BENCHMARK(BM_Json_DeribitBook)->ArgNames({"snapshot", "bids"})->ArgsProduct({{0, 1}, {1000, 1200}});
+
 void BM_Json_DeribitTickerOption(benchmark::State& state) {
   DeribitUniverse u;
   deribit::DeribitMdParser p(u.symbols, u.instruments, VenueId{2});

@@ -113,7 +113,8 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
   return r;
 }
 
-// Bids then asks of a depth payload into the message's level array.
+// Bids then asks of a depth payload into the message's level array; `cut` gets the
+// truncation_flags of the sides that kept only the levels nearest the touch.
 // Returns Ok, Malformed or Overflow in `r.status` (Ok leaves r otherwise untouched).
 [[gnu::noinline]] bool read_book_sides(MdParserStats& stats,
                                        LevelSpill& spill,
@@ -121,10 +122,12 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
                                        od::object& obj,
                                        const char* ask_key,
                                        BookDeltaMsg& m,
-                                       DecodeResult& r) noexcept {
+                                       DecodeResult& r,
+                                       std::uint8_t& cut) noexcept {
   Level* levels = m.levels();
-  bool truncated = false;
-  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, spill, true, &truncated);
+  bool cut_bids = false;
+  bool cut_asks = false;
+  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, spill, true, &cut_bids);
   if (nb == -1) {
     r = fail(stats, r);
     return false;
@@ -138,7 +141,7 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
     r = fail(stats, r);
     return false;
   }
-  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, spill, false, &truncated);
+  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, spill, false, &cut_asks);
   if (na == -1) {
     r = fail(stats, r);
     return false;
@@ -149,7 +152,8 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
   }
   m.bid_count = static_cast<std::uint32_t>(nb);
   m.ask_count = static_cast<std::uint32_t>(na);
-  if (truncated) ++stats.truncated;
+  cut = truncation_flags(cut_bids, cut_asks);
+  if (cut != 0) ++stats.truncated;
   return true;
 }
 
@@ -173,11 +177,13 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
   auto* m = reinterpret_cast<BookDeltaMsg*>(c.out.data());
   od::value bids;
   if (data["b"].get(bids) != sj::SUCCESS) return fail(stats, r);
-  if (!read_book_sides(stats, *c.spill, bids, data, "a", *m, r)) return r;
+  std::uint8_t cut = 0;
+  if (!read_book_sides(stats, *c.spill, bids, data, "a", *m, r, cut)) return r;
   const std::uint32_t len = BookDeltaMsg::size_for(m->bid_count, m->ask_count);
   const std::uint32_t bid_count = m->bid_count;
   const std::uint32_t ask_count = m->ask_count;
   init_header(*m, EventType::BookDelta, inst, c.venue, len);
+  m->hdr.flags |= cut;
   m->bid_count = bid_count;
   m->ask_count = ask_count;
   m->first_update_id = first;
@@ -361,7 +367,8 @@ DecodeResult BinanceUsdmMdParser::decode_depth_snapshot(std::string_view json,
   auto* m = reinterpret_cast<BookDeltaMsg*>(out.data());
   od::value bids;
   if (root["bids"].get(bids) != sj::SUCCESS) return fail(stats_, r);
-  if (!read_book_sides(stats_, impl_->spill, bids, root, "asks", *m, r)) return r;
+  std::uint8_t cut = 0;  // a snapshot replaces the book: nothing behind it can be stale
+  if (!read_book_sides(stats_, impl_->spill, bids, root, "asks", *m, r, cut)) return r;
   const std::uint32_t bid_count = m->bid_count;
   const std::uint32_t ask_count = m->ask_count;
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);

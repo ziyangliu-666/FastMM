@@ -8,6 +8,7 @@
 #include "fastmm/core/account_book.hpp"
 #include "fastmm/core/rng.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -255,4 +256,107 @@ TEST_CASE(
     }
   }
   CHECK(next == attach_at.size());
+}
+
+// A venue update that changes more levels on a side than a message carries arrives with the ones
+// nearest the touch (LevelSpill) and kTruncatedBids. A change it left out can be one of the
+// gateway's 1024 levels; unless the gateway drops its levels behind the last one carried, that
+// level stays and the next strategy to attach gets it in its snapshot.
+TEST_CASE(
+    "core.book_snapshot: after a truncated update the gateway's copy holds no level the update "
+    "left out") {
+  const InstrumentTable t = one_instrument();
+  Venue v(1500);
+  AccountBook gw(t, kVenue);
+  CHECK(gw.on_book(as_msg(v.snapshot(1000))));
+  EngineBook engine;  // a strategy attached before the update
+  engine.apply_delta(as_msg(v.snapshot(1000)));
+
+  // The update: 25 new bids between the best 26, and every one of the gateway's 1000 bids deleted.
+  // The 1024 nearest the touch are carried; the delete of the 1000th bid is not.
+  std::vector<Level> changes;
+  const std::int64_t best = v.bids.begin()->first;
+  for (std::int64_t k = 0; k < 25; ++k)
+    changes.push_back(Level{Price::from_raw(best - (2 * k + 1) * kTick), Qty::from_raw(100'000)});
+  std::vector<std::int64_t> gone;
+  for (const auto& [p, q] : v.bids) {
+    if (gone.size() == 1000) break;
+    gone.push_back(p);
+    changes.push_back(Level{Price::from_raw(p), Qty{}});
+  }
+  REQUIRE(changes.size() == 1025);
+  // Best first, as Deribit sends them: the book never holds more than its 1000 bids.
+  std::sort(changes.begin(), changes.end(), [](const Level& x, const Level& y) {
+    return x.price > y.price;
+  });
+  const Level left_out = changes.back();
+  changes.pop_back();
+  for (const std::int64_t p : gone) v.bids.erase(p);
+  for (const Level& l : changes) {
+    if (!l.qty.is_zero()) v.bids[l.price.raw] = l.qty.raw;
+  }
+  Msg cut = make_msg(changes, {}, false);
+  as_msg(cut).hdr.flags |= truncation_flags(true, false);
+  as_msg(cut).first_update_id = v.seq + 1;
+  v.seq += 1025;
+  as_msg(cut).last_update_id = v.seq;
+  as_msg(cut).hdr.venue_seq = v.seq;
+  as_msg(cut).hdr.exch_ts = Timestamp{v.ts};
+
+  CHECK(gw.on_book(as_msg(cut)));
+  engine.apply_delta(as_msg(cut));
+  const AccountBook::Book& copy = *gw.book(kInst);
+  CHECK(copy.depth(Side::Buy) == 25);
+  CHECK(copy.truncated(Side::Buy));
+  CHECK_FALSE(copy.truncated(Side::Sell));
+  CHECK(copy.depth(Side::Sell) == 1000);
+  CHECK(copy.level(Side::Buy, 0).price.raw == best - kTick);
+  CHECK(copy.level(Side::Buy, 24).price.raw == best - 49 * kTick);
+  for (std::size_t i = 0; i < copy.depth(Side::Buy); ++i)
+    CHECK(copy.level(Side::Buy, i).price != left_out.price);
+
+  // A strategy attaching now gets what the venue's snapshot would give it, up to the depth the
+  // gateway knows; the one attached before holds the same book.
+  Msg out(kMaxMsgBytes / 8);
+  EngineBook from_gw;
+  from_gw.apply_delta(write_book_snapshot(
+      copy, kInst, kVenue, Timestamp{1}, reinterpret_cast<std::byte*>(out.data())));
+  for (std::size_t i = 0; i < from_gw.depth(Side::Buy); ++i) {
+    const Level l = from_gw.level(Side::Buy, i);
+    REQUIRE(v.bids.contains(l.price.raw));
+    CHECK(v.bids.at(l.price.raw) == l.qty.raw);
+  }
+  CHECK(from_gw.depth(Side::Buy) == 25);
+  CHECK(engine.depth(Side::Buy) == 25);
+  for (std::size_t i = 0; i < 25; ++i)
+    CHECK(engine.level(Side::Buy, i) == from_gw.level(Side::Buy, i));
+}
+
+TEST_CASE("core.l2_book: a truncated side drops only the levels behind the last one carried") {
+  L2Book<1024> b;
+  std::vector<Level> bids;
+  std::vector<Level> asks;
+  for (int i = 0; i < 10; ++i) {
+    bids.push_back(Level{Price::from_int(100 - i), Qty::from_int(1)});
+    asks.push_back(Level{Price::from_int(101 + i), Qty::from_int(1)});
+  }
+  b.apply_delta(as_msg(make_msg(bids, asks, true)));
+  // Carried: bids 96..100 (worst carried 96) and asks 101..105, in any order.
+  Msg d = make_msg({Level{Price::from_int(98), Qty::from_int(2)},
+                    Level{Price::from_int(96), Qty::from_int(3)},
+                    Level{Price::from_int(100), Qty::from_int(4)}},
+                   {Level{Price::from_int(105), Qty::from_int(5)}},
+                   false);
+  as_msg(d).hdr.flags |= truncation_flags(true, false);
+  b.apply_delta(as_msg(d));
+  CHECK(b.depth(Side::Buy) == 5);
+  CHECK(b.level(Side::Buy, 4) == Level{Price::from_int(96), Qty::from_int(3)});
+  CHECK(b.truncated(Side::Buy));
+  CHECK(b.depth(Side::Sell) == 10);
+  CHECK_FALSE(b.truncated(Side::Sell));
+  as_msg(d).hdr.flags = truncation_flags(false, true);
+  b.apply_delta(as_msg(d));
+  CHECK(b.depth(Side::Sell) == 5);
+  CHECK(b.best_ask() == Level{Price::from_int(101), Qty::from_int(1)});
+  CHECK(b.truncated(Side::Sell));
 }

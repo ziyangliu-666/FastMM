@@ -331,7 +331,7 @@ Engine quantities are contracts: `contract_multiplier` = Deribit `contract_size`
 
 ### Book sync
 
-The first `book.NAME.interval` notification is a full snapshot. Every later change must have `prev_change_id` equal to the previous `change_id` (the ids are not consecutive integers). A mismatch emits `ConnectionState{Resyncing}` and sends `public/unsubscribe` then `public/subscribe` for that book channel, which yields a new snapshot. A missing snapshot (10 s) does the same, at most once per 2 s per instrument. Snapshots deeper than 1024 levels per side are truncated to the best levels.
+The first `book.NAME.interval` notification is a full snapshot. Every later change must have `prev_change_id` equal to the previous `change_id` (the ids are not consecutive integers). A mismatch emits `ConnectionState{Resyncing}` and sends `public/unsubscribe` then `public/subscribe` for that book channel, which yields a new snapshot. A missing snapshot (10 s) does the same, at most once per 2 s per instrument. A snapshot or change longer than 1024 levels on a side keeps the 1024 nearest the touch (`level_spill.hpp`); production BTC-PERPETUAL snapshots have about 1200 bids. Deribit lists levels best first in both (every one of 2114 snapshot sides and 104726 change sides with two or more levels, 108 books recorded on 2026-09-28; the docs do not say), but the parser selects by price and does not rely on it.
 
 ### Options data
 

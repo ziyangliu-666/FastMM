@@ -203,12 +203,13 @@ struct DecodeCtx {
   OkxLevelText* texts = c.texts.data();
   od::value asks;
   if (item["asks"].get(asks) != sj::SUCCESS) return malformed(stats, r);
-  bool truncated = false;
+  bool cut_asks = false;
+  bool cut_bids = false;
   const int na = read_levels(asks,
                              levels + kMaxBookLevelsPerMsg / 2,
                              texts + kHalf,
                              kHalf,
-                             Spill{c.spill, c.text_spill, false, &truncated});
+                             Spill{c.spill, c.text_spill, false, &cut_asks});
   if (na == -1) return malformed(stats, r);
   od::value bids;
   if (na == -2 || item["bids"].get(bids) != sj::SUCCESS) {
@@ -220,14 +221,14 @@ struct DecodeCtx {
     return malformed(stats, r);
   }
   const int nb =
-      read_levels(bids, levels, texts, kHalf, Spill{c.spill, c.text_spill, true, &truncated});
+      read_levels(bids, levels, texts, kHalf, Spill{c.spill, c.text_spill, true, &cut_bids});
   if (nb == -1) return malformed(stats, r);
   if (nb == -2) {
     ++stats.overflow;
     r.status = ParseStatus::Overflow;
     return r;
   }
-  if (truncated) ++stats.truncated;
+  if (cut_bids || cut_asks) ++stats.truncated;
   const auto bid_count = static_cast<std::uint32_t>(nb);
   const auto ask_count = static_cast<std::uint32_t>(na);
   // Close the gap between the bids and the asks.
@@ -249,7 +250,11 @@ struct DecodeCtx {
   if (item["seqId"].get_int64().get(seq) != sj::SUCCESS) return malformed(stats, r);
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);
   init_header(*m, snapshot ? EventType::BookSnapshot : EventType::BookDelta, c.inst, c.venue, len);
-  if (snapshot) m->hdr.flags |= EventHeader::kSnapshot;
+  if (snapshot) {
+    m->hdr.flags |= EventHeader::kSnapshot;
+  } else {
+    m->hdr.flags |= truncation_flags(cut_bids, cut_asks);
+  }
   m->bid_count = bid_count;
   m->ask_count = ask_count;
   m->first_update_id = static_cast<std::uint64_t>(seq);
