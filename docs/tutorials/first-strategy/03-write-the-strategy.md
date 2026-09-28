@@ -72,8 +72,7 @@ The class derives from `StrategyBase<FirstMMParams>`, which stores the parameter
 ```cpp
 void on_start(auto& ctx) noexcept {
   if (params().report_ms > Duration{}) report_timer_ = ctx.every(params().report_ms);
-  FASTMM_LOG_INFO("first_mm: started, quoting {}",
-                  ctx.quoting_enabled() ? "enabled" : "disabled (dry run)");
+  FASTMM_LOG_INFO("first_mm: started, quoting {}", ctx.quoting_enabled() ? "on" : "off");
 }
 ```
 
@@ -116,11 +115,12 @@ void on_connection(auto& /*ctx*/, const ConnectionStateMsg& m) noexcept {
 }
 ```
 
-`on_quoting` runs when quoting is paused or resumed: an operator pull, the kill switch, or a reconciliation after a reconnect. On resume the strategy requotes without waiting for the next book update:
+`on_quoting` runs when quoting is paused or resumed: an operator pull, the kill switch, or a reconciliation (a live session starts with one, so quoting comes on after `on_start`). On resume the strategy requotes without waiting for the next book update:
 
 <!-- snippet: examples/cpp/tutorial/first_mm.hpp#on_quoting -->
 ```cpp
 void on_quoting(auto& ctx, bool enabled) noexcept {
+  FASTMM_LOG_INFO("first_mm: quoting {}", enabled ? "on" : "off");
   if (!enabled) return;  // paused: the engine has pulled the quotes
   for (const Instrument& inst : ctx.instruments()) on_book(ctx, inst.id, ctx.book(inst.id));
 }

@@ -415,6 +415,9 @@ if(TARGET fastmm-pnl)
   fastmm_cli_test(apps.fastmm-pnl.missing_store EXPECT_RC 2
     CMD $<TARGET_FILE:fastmm-pnl> sessions --store ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/no-such.db
     EXPECT_REGEX "fastmm-pnl: .*no-such.db")
+  fastmm_cli_test(apps.fastmm-pnl.no_store_named EXPECT_RC 2
+    CMD $<TARGET_FILE:fastmm-pnl> sessions
+    EXPECT_REGEX "fastmm-pnl: no store at runs/fastmm.db; name one with --engine")
 endif()
 
 if(TARGET fastmm-live)
@@ -457,6 +460,17 @@ if(TARGET fastmm-live)
   fastmm_cli_test(apps.fastmm-live.bad_on_kill EXPECT_RC 3
     CMD $<TARGET_FILE:fastmm-live> --config ${_bad_on_kill_file} --dry-run --no-journal --no-status
     EXPECT_REGEX "on_kill must be exit\\|stay")
+  # A latched max_loss trip exits 6 before any venue is contacted, so also while it is unreachable.
+  set(_latched_kill ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/latched.kill)
+  file(WRITE ${_latched_kill}
+    "fastmm-kill 1\nlatched 1\nreason 2\nrealized_raw -5000000000\nfees_raw 0\nsessions 1\nupdated_ns 1\n")
+  string(REPLACE "[engine]\n" "[engine]\nkill_file = \"${_latched_kill}\"\n" _latched "${_sim_local}")
+  set(_latched_file ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/sim-local-latched.toml)
+  file(CONFIGURE OUTPUT ${_latched_file} CONTENT "${_latched}" @ONLY)
+  fastmm_cli_test(apps.fastmm-live.latched_kill_before_venues EXPECT_RC 6
+    CMD $<TARGET_FILE:fastmm-live> --config ${_latched_file} --dry-run --no-journal --no-status
+    EXPECT_REGEX "a MaxLoss kill switch is latched in .*latched.kill"
+    REJECT_REGEX "exchangeInfo")
   fastmm_cli_test(apps.fastmm-live.help_lists_exit_codes EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-live> --help
     EXPECT_REGEX "Exit codes:.*  6  kill switch tripped by the engine \\(on_kill = \"exit\"\\)")
