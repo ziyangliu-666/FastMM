@@ -264,6 +264,7 @@ Result<void, std::string> DeribitVenue::load_reference_data(InstrumentTable& ins
   }
   const std::int64_t off = clock_offset_ms_.load();
   stats_.clock_offset_ms = off;
+  publish_status();  // the offset is known before the venue connects (fastmm-gateway reads it)
   if (off > 1000 || off < -1000)
     FASTMM_LOG_WARN("{}: clock offset to venue is {} ms", cfg_.name, off);
   FASTMM_LOG_INFO("{}: reference data loaded for {} instruments", cfg_.name, mine.size());

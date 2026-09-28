@@ -261,6 +261,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
       clock_offset_ms_ = server_ms - wall_now().ns / kNsPerMs;
       clock_sync_ns_ = now_ns();
       stats_.clock_offset_ms = clock_offset_ms_;
+      publish_status();  // the offset is known before the venue connects (fastmm-gateway reads it)
       if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000)
         FASTMM_LOG_WARN("{}: clock offset to venue is {} ms", cfg_.name, clock_offset_ms_.load());
     }

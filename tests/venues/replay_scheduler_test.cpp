@@ -380,3 +380,44 @@ TEST_CASE("replay_scheduler: due_in runs one replay a moment later, once") {
   r.sched.on_timer(now + 60'000'000'000);
   CHECK(r.queries.size() == 2);
 }
+
+TEST_CASE("replay_scheduler: a restart while a replay runs goes on from its start, as one replay") {
+  // fastmm-gateway: strategy a attaches (its store ends at -5 min) and its replay runs; b attaches
+  // (its store ends at -8 min) before that replay has ended. b's gap was read only if the replay
+  // running had started early enough, and after a failed one the retry started at b's start, so a
+  // gap before it was never read.
+  Rig r;
+  r.sched.resume(kNow - 5 * kMin, {"a1"});
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 1);
+  CHECK(r.last().start_ms == kNow - 5 * kMin);
+  r.sched.resume(kNow - 8 * kMin, {"b1"});
+  CHECK(r.sched.run());  // joined
+  CHECK(r.queries.size() == 1);
+  r.answer({{kNow - 4 * kMin, "a1"}, {kNow - 3 * kMin, "x"}});
+  CHECK(r.finished.empty());  // not before b's start has been read
+  CHECK(r.queries.size() == 1);
+  r.sched.on_timer(net::Reactor::now_ns());  // the next tick
+  REQUIRE(r.queries.size() == 2);
+  CHECK(r.last().start_ms == kNow - 8 * kMin);
+  r.answer({{kNow - 7 * kMin, "b1"}, {kNow - 6 * kMin, "y"}, {kNow - 3 * kMin, "x"}});
+  // Both stores' rows skipped; x again, as a restart reads again what it covers.
+  CHECK(r.emitted == std::vector<std::string>{"x", "y", "x"});
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);
+
+  // A restart later than where a failed replay started: it goes on from the earlier.
+  Rig f;
+  f.sched.resume(kNow - 8 * kMin, {});
+  REQUIRE(f.sched.run());
+  f.sched.resume(kNow - 5 * kMin, {});
+  f.sched.failed(f.last());
+  CHECK(f.finished.empty());
+  CHECK_FALSE(f.sched.retry_pending());
+  f.sched.on_timer(net::Reactor::now_ns());
+  REQUIRE(f.queries.size() == 2);
+  CHECK(f.last().start_ms == kNow - 8 * kMin);
+  f.answer({});
+  REQUIRE(f.finished.size() == 1);
+  CHECK(f.finished[0]);  // the one that went on read it all
+}
