@@ -53,10 +53,13 @@ def main():
     ap.add_argument("--budget", default=os.path.join(os.path.dirname(__file__), "..", "bench", "ci_budget.toml"))
     ap.add_argument("--slack", type=float, default=0.10,
                     help="allowance over the budget (0.10 = 10%%); use more on unknown hardware")
+    ap.add_argument("--hosted", action="store_true",
+                    help="a hosted runner: [hosted_slack] raises the slack of the benchmarks it names")
     a = ap.parse_args()
     cfg = tomllib.load(open(a.budget, "rb"))
     budgets = cfg["p50_ns"]
     floors = cfg.get("min_counters", {})
+    hosted = cfg.get("hosted_slack", {}) if a.hosted else {}
     paths = glob.glob(os.path.join(a.results, "*.json"))
     rows = load(paths)
     errs = errors(paths)
@@ -71,11 +74,12 @@ def main():
             print(f"{name:60} missing")
             continue
         best = r["min"]
-        limit = budget * (1 + a.slack)
+        slack = max(a.slack, hosted.get(name, 0.0))
+        limit = budget * (1 + slack)
         status = "OK" if best <= limit else "OVER"
         bad += status == "OVER"
         print(f"{name:60} {best:10.1f} ns (median {r['median']:9.1f})  budget {budget:8.0f} ns "
-              f"(+{a.slack * 100:.0f}% = {limit:8.0f})  {status}")
+              f"(+{slack * 100:.0f}% = {limit:8.0f})  {status}")
     for name, counters in floors.items():
         if name in errs and name not in budgets:
             print(f"{name:60} ERROR  {errs[name]}")

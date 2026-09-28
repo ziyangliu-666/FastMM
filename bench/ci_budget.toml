@@ -80,3 +80,10 @@
 # Share of timed ticks that sent orders. Without it the timing is of ticks that did nothing.
 "BM_TickToOrder_Sim/manual_time" = { order_events_pct = 50 }
 "BM_TickToOrder_SimHash/manual_time" = { order_events_pct = 50 }
+
+# Slack on a hosted runner (check_budgets.py --hosted), for benchmarks bound by cache size rather
+# than code: the reference machine's budget stays the local gate. BM_ItchL2Bridge_Message_LargeBook
+# (a 2^20-order book) runs at 2.2x BM_ItchL2Bridge_Message on GitHub's runners (12.5 and 15.7 us,
+# 2026-09-27/28) against 1.1x on the reference machine.
+[hosted_slack]
+"BM_ItchL2Bridge_Message_LargeBook" = 4

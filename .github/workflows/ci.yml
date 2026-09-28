@@ -151,7 +151,7 @@ jobs:
           ./build/release/bin/bench/bench_tick_to_order --benchmark_min_time=0.02s \
             --benchmark_repetitions=3 --benchmark_out_format=json \
             --benchmark_out=bench/results/ci/bench_tick_to_order.json
-          python3 tools/check_budgets.py bench/results/ci --slack 2
+          python3 tools/check_budgets.py bench/results/ci --slack 2 --hosted
 
       - name: install + external project
         if: matrix.name == 'gcc-release'
@@ -195,7 +195,7 @@ jobs:
             ./build/release/bin/bench/$b --benchmark_min_time=0.1s --benchmark_repetitions=3 \
               --benchmark_out_format=json --benchmark_out="bench/results/ci/$b.json"
           done
-          python3 tools/check_budgets.py bench/results/ci --slack 2
+          python3 tools/check_budgets.py bench/results/ci --slack 2 --hosted
 
   autobahn:
     needs: plan

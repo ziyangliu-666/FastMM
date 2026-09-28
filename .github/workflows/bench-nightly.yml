@@ -19,6 +19,6 @@ jobs:
       - name: compare to baseline (advisory)
         run: python3 tools/bench_compare.py bench/results/baseline-ci bench/results/latest || true
       - name: budgets (same three-times-the-budget gate as the CI subset)
-        run: python3 tools/check_budgets.py bench/results/latest --slack 2
+        run: python3 tools/check_budgets.py bench/results/latest --slack 2 --hosted
       - uses: actions/upload-artifact@v4
         with: { name: bench-results, path: bench/results/latest }
