@@ -87,3 +87,5 @@
 # 2026-09-27/28) against 1.1x on the reference machine.
 [hosted_slack]
 "BM_ItchL2Bridge_Message_LargeBook" = 4
+# 31.6 to 66.3 ns on six consecutive CI runs of unchanged L3 code (2026-09-28); 19-22 ns locally.
+"BM_L3_AddCancelExecMix" = 4
