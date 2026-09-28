@@ -1,6 +1,7 @@
 #include "fastmm/venues/deribit/deribit_md_parser.hpp"
 
 #include "fastmm/venues/deribit/deribit_json.hpp"
+#include "fastmm/venues/level_spill.hpp"
 
 #include <simdjson.h>
 
@@ -17,6 +18,7 @@ static_assert(kJsonPadding == sj::SIMDJSON_PADDING, "RecvBuffer padding must mat
 
 struct DeribitMdParser::Impl {
   od::parser parser;
+  LevelSpill spill;
   explicit Impl(std::size_t capacity) {
     if (parser.allocate(capacity) != sj::SUCCESS) std::abort();
   }
@@ -62,26 +64,31 @@ double double_or_nan(V&& v) noexcept {
   return d;
 }
 
-// Reads [[action, price, amount], ...] into `levels` (at most `max` kept).
-// Returns the number kept, -1 if malformed, -2 if more than `max` levels
-// arrived; `*extra` counts the levels beyond `max` when `truncate` is set
-// (snapshots keep the best `max` levels, which Deribit sends first).
+// Reads [[action, price, amount], ...] into `levels`: the count, -1 if malformed, -2 above
+// LevelSpill::kCapacity levels. A side longer than `max` goes through `spill`, which keeps the
+// `max` levels nearest the touch (`*truncated` is set). Deribit lists both snapshot and change
+// levels best first (recorded 2026-09-28; the docs do not say), which the selection does not rely
+// on.
 int read_levels(od::value arr_val,
                 Level* levels,
                 std::uint32_t max,
                 Qty contract_size,
-                bool truncate,
-                std::uint32_t* extra) noexcept {
+                LevelSpill& spill,
+                bool bids,
+                bool* truncated) noexcept {
   od::array arr;
   if (arr_val.get_array().get(arr) != sj::SUCCESS) return -1;
   std::uint32_t n = 0;
+  Level* dst = levels;
+  std::uint32_t cap = max;
   for (auto lvl_res : arr) {
     od::array triple;
     if (lvl_res.get_array().get(triple) != sj::SUCCESS) return -1;
-    if (n >= max) {
-      if (!truncate) return -2;
-      ++*extra;
-      continue;
+    if (n >= cap) {
+      if (dst != levels) return -2;
+      std::copy_n(levels, n, spill.data());
+      dst = spill.data();
+      cap = LevelSpill::kCapacity;
     }
     std::string_view action;
     Price px{};
@@ -106,7 +113,11 @@ int read_levels(od::value arr_val,
     } else {
       return -1;
     }
-    levels[n++] = Level{px, qty};
+    dst[n++] = Level{px, qty};
+  }
+  if (dst != levels) {
+    n = spill.keep_nearest(n, bids, levels, max);
+    *truncated = true;
   }
   return static_cast<int>(n);
 }
@@ -142,6 +153,7 @@ bool split_channel(std::string_view channel, Channel& kind, std::string_view& na
 // than 15 minutes to compile.
 struct DecodeCtx {
   MdParserStats* stats;
+  LevelSpill* spill;
   const Instrument* ins;
   InstrumentId inst;
   VenueId venue;
@@ -175,10 +187,11 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
   if (!snapshot && type != "change") return malformed(stats, r);
   auto* m = reinterpret_cast<BookDeltaMsg*>(c.out.data());
   Level* levels = m->levels();
-  std::uint32_t extra = 0;
+  bool cut_bids = false;
+  bool cut_asks = false;
   od::value bids;
   if (data["bids"].get(bids) != sj::SUCCESS) return malformed(stats, r);
-  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, csize, snapshot, &extra);
+  const int nb = read_levels(bids, levels, kMaxBookLevelsPerMsg, csize, *c.spill, true, &cut_bids);
   if (nb == -1) return malformed(stats, r);
   if (nb == -2) {
     ++stats.overflow;
@@ -187,7 +200,8 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
   }
   od::value asks;
   if (data["asks"].get(asks) != sj::SUCCESS) return malformed(stats, r);
-  const int na = read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, csize, snapshot, &extra);
+  const int na =
+      read_levels(asks, levels + nb, kMaxBookLevelsPerMsg, csize, *c.spill, false, &cut_asks);
   if (na == -1) return malformed(stats, r);
   if (na == -2) {
     ++stats.overflow;
@@ -200,12 +214,16 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
                                     r);  // "Every message except the first also contains"
     prev = 0;
   }
-  if (extra > 0) ++stats.truncated_snapshots;
+  if (cut_bids || cut_asks) ++(snapshot ? stats.truncated_snapshots : stats.truncated_changes);
   const auto bid_count = static_cast<std::uint32_t>(nb);
   const auto ask_count = static_cast<std::uint32_t>(na);
   const std::uint32_t len = BookDeltaMsg::size_for(bid_count, ask_count);
   init_header(*m, snapshot ? EventType::BookSnapshot : EventType::BookDelta, c.inst, c.venue, len);
-  if (snapshot) m->hdr.flags |= EventHeader::kSnapshot;
+  if (snapshot) {
+    m->hdr.flags |= EventHeader::kSnapshot;
+  } else {
+    m->hdr.flags |= truncation_flags(cut_bids, cut_asks);
+  }
   m->bid_count = bid_count;
   m->ask_count = ask_count;
   m->first_update_id = change_id;
@@ -485,7 +503,7 @@ MdDecodeResult DeribitMdParser::decode(std::string_view json,
     }
     const Instrument& ins = instruments_.get(inst);
 
-    const DecodeCtx c{&stats_, &ins, inst, venue_, recv_ts, t0, out};
+    const DecodeCtx c{&stats_, &impl_->spill, &ins, inst, venue_, recv_ts, t0, out};
     switch (kind) {
       case Channel::Book:
         return decode_book(c, params, r);

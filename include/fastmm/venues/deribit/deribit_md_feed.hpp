@@ -12,6 +12,7 @@
 // article), so channels are batched kInstrumentsPerSubscribe instruments per request.
 // A book gap re-subscribes only that book channel: public/unsubscribe then public/subscribe, after
 // which the venue sends a new snapshot.
+#include "fastmm/core/log.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/deribit/deribit_book_sync.hpp"
 #include "fastmm/venues/deribit/deribit_md_parser.hpp"
@@ -38,7 +39,7 @@ inline constexpr std::int64_t kMdResubSubscribeId = 21;
 struct MdFeedStats {
   std::uint64_t messages = 0;
   std::uint64_t pushed = 0;
-  std::uint64_t dropped = 0;
+  std::uint64_t dropped = 0;  // ring overflow on ticker/trade, or a frame too large to decode
   std::uint64_t malformed = 0;
   std::uint64_t ignored = 0;
   std::uint64_t unknown_symbol = 0;
@@ -123,6 +124,9 @@ class DeribitMdFeed {
       case ParseStatus::UnknownSymbol:
         ++stats_.unknown_symbol;
         return last_.status;
+      case ParseStatus::Overflow:  // a side past LevelSpill::kCapacity: lost like a full ring
+        ++stats_.dropped;
+        return last_.status;
       case ParseStatus::Error:
         ++stats_.rpc_errors;
         if (is_subscribe_id(last_.rpc.id)) ++stats_.subscribe_errors;
@@ -147,6 +151,7 @@ class DeribitMdFeed {
       if (h->type == EventType::BookDelta || h->type == EventType::BookSnapshot) {
         DeribitBookSync* s = sync(h->instrument);
         if (s == nullptr) return ParseStatus::UnknownSymbol;
+        note_truncated();
         s->on_book(*reinterpret_cast<const BookDeltaMsg*>(h), rx_ts);
         ++stats_.pushed;
         continue;
@@ -199,6 +204,21 @@ class DeribitMdFeed {
     return id >= kMdSubscribeIdBase &&
            id < kMdSubscribeIdBase + static_cast<std::int64_t>(expected_.size());
   }
+  // A change with a side longer than a BookDeltaMsg carries was cut to the levels nearest the
+  // touch (LevelSpill).
+  void note_truncated() noexcept {
+    const std::uint64_t n = parser_.stats().truncated_changes;
+    if (FASTMM_LIKELY(n == truncated_logged_)) return;
+    truncated_logged_ = n;
+    if (n <= 5 || n % 100 == 0)
+      FASTMM_LOG_WARN(
+          "{}: book change with more than {} levels on a side; kept the {} nearest the touch ({} "
+          "so far)",
+          log_name_,
+          kMaxBookLevelsPerMsg,
+          kMaxBookLevelsPerMsg,
+          n);
+  }
   void rebuild_payloads() {
     payloads_.clear();
     expected_.clear();
@@ -238,6 +258,7 @@ class DeribitMdFeed {
   std::vector<std::string> payloads_;
   std::vector<std::uint32_t> expected_;  // channels requested per subscribe batch
   MdDecodeResult last_{};
+  std::uint64_t truncated_logged_ = 0;
   MdFeedStats stats_;
 };
 

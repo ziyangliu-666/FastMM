@@ -3,6 +3,25 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Long depth updates, the two items left (2026-09-28).** (a) Deribit lists book levels best first
+in snapshots and changes: every one of 2114 snapshot sides and 104726 change sides with two or more
+levels, production 100ms books of 108 instruments (every BTC/ETH future, 80 BTC options, resubscribed
+every minute) plus BTC-PERPETUAL through `fastmm-live --dry-run --record-raw` (20 min, 0 resyncs).
+The docs do not say. The largest change had 121 levels a side, snapshots up to 1210 bids. A side
+past 1024 now goes through `LevelSpill` like the others (selection by price, so the order is not
+relied on), for changes and snapshots; past 16384 it counts as `dropped`. Cost, 1200 bids + 850
+asks: 108 us against 99 us for the old cut snapshot (the extra 176 levels are parsed now), and a
+change that long used to resync the book; short changes unchanged (636 / 640 ns). Test: the
+recorded 1195-bid snapshot as a fixture, and a change made of its levels, then one chained on it
+(fails before: Overflow, resync). (b) The gateway's 1024-level books: parsers set
+`EventHeader::kTruncatedBids/Asks` (bits 6, 7) on a delta side they cut, and `L2Book::apply_delta`
+drops its levels behind the last one that side carries (cold path behind one flag test;
+`BM_L2_ApplyDelta` 269 / 270 ns). Trim rather than a depth mark or a resync: the copy stays exact
+up to the carried range, no consumer has to know about it, no book time lost; a no-op for the
+engine's 256 levels (argument in `level_spill.hpp`). `gateway.cpp` unchanged. Test: 25 new bids
+between the best and 1000 deletes, the 1000th left out; before, the gateway kept that bid and an
+attaching strategy got it. Full ctest (werror): 1276 passed.
+
 **Every connector on production public data (2026-09-28).** `fastmm-live --dry-run --record-raw`,
 6 connectors in parallel, 15 min each, load 1 to 6, before (r1) and after (r2) the fixes. Configs
 were the demo/testnet ones with production hosts (`/tmp/aw/p-*.toml`, not kept).

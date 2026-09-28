@@ -24,6 +24,7 @@
   "heartbeat_interval_too_small.json": "recorded (public/set_heartbeat interval 5)",
   "string_id_echo.json": "recorded (public/test with a string id)",
   "raw_option_stream.jsonl": "recorded, every book/ticker/trades notification for BTC-15SEP26-77000-C (45 s)",
+  "book_perp_long_snapshot.json": "recorded on production (wss://www.deribit.com, fastmm-live --dry-run --record-raw, 2026-09-28T01:36Z): BTC-PERPETUAL snapshot with 1195 bids and 847 asks, best first",
   "get_instruments_option.json": "recorded (public/get_instruments currency=BTC kind=option), trimmed to 3 instruments",
   "get_instruments_future.json": "recorded (public/get_instruments currency=BTC kind=future), trimmed to BTC-PERPETUAL and BTC-25DEC26",
   "get_time.json": "recorded (public/get_time)",
