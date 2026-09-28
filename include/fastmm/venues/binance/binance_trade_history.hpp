@@ -12,13 +12,15 @@
 
 namespace fastmm::venues::binance {
 
-// False when the trade's price or quantity does not parse (nothing is emitted).
+// False when the trade's price or quantity does not parse (nothing is emitted). `extra_flags`:
+// OrderFillMsg::kUnresolved.
 inline bool emit_trade_history_fill(EventSink& sink,
                                     VenueId venue,
                                     const Instrument& inst,
                                     InstrumentId id,
                                     ClientOrderId cl_ord_id,
-                                    const MyTradeRecord& t) noexcept {
+                                    const MyTradeRecord& t,
+                                    std::uint8_t extra_flags = 0) noexcept {
   const auto px = parse_price(t.price);
   const auto qty = parse_qty(t.qty);
   if (!px || !qty) return false;
@@ -46,7 +48,8 @@ inline bool emit_trade_history_fill(EventSink& sink,
                      fee,
                      fee_asset,
                      t.is_maker ? Liquidity::Maker : Liquidity::Taker,
-                     t.time_ms);
+                     t.time_ms,
+                     extra_flags);
   return true;
 }
 

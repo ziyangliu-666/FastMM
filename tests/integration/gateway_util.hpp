@@ -38,14 +38,14 @@ inline GatewayProcess spawn_gateway(const SessionFiles& f) {
   return g;
 }
 
-// The gateway listens and its venue is connected: market data, the WebSocket API and the user
-// stream are up at the simulator.
+// The gateway listens and its venue is connected: market data, the order channel and the user
+// stream are up at the simulator (two WebSocket API sessions: orders, and the user stream's).
 inline void wait_gateway_up(const ServerFixture& fx, const GatewayProcess& g) {
   REQUIRE_MESSAGE(wait_until(
                       [&] {
                         const sim::server::SimServerStats s = fx.server.stats();
                         return std::filesystem::exists(g.socket) && s.md_sessions >= 1 &&
-                               s.api_sessions >= 1 && s.user_subscriptions >= 1;
+                               s.api_sessions >= 2 && s.user_subscriptions >= 1;
                       },
                       20000),
                   "the gateway did not come up: " << fastmm::test::read_file(g.log));

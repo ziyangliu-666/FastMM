@@ -61,8 +61,14 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
       {[this] { return exec_ready(); },
        [this] { return venue_time_ms(); },
        [this](const ReplayQuery& q) { return query_executions(q); },
-       [this](bool complete) { reconcile_.replay_done(complete); }},
-      [this](std::size_t stream, const MyTradeRecord& t) { return emit_execution(stream, t); });
+       [this](bool complete) { reconcile_.replay_done(complete); },
+       [this](const ReplayLookup& l) { return lookup_order(l); }},
+      [this](std::size_t stream, const MyTradeRow& t) { return emit_execution(stream, t); },
+      [this](std::size_t, const MyTradeRow& t) {
+        return t.order_id > 0 && order_ids_.find(static_cast<std::uint64_t>(t.order_id)) == nullptr
+                   ? std::string(IdText(t.order_id).view())
+                   : std::string{};
+      });
 }
 
 BinanceVenue::~BinanceVenue() {
@@ -1395,12 +1401,13 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
           exec_replay_.failed(q);
           return;
         }
-        // The rows view `padded`: answer() emits them before it returns (ascending pages).
+        // The rows own their text: a window waits for its lookups past this reply.
         const PaddedJson padded(r.body);
-        ReplayPage<MyTradeRecord> page;
+        ReplayPage<MyTradeRow> page;
         const ParseStatus st =
             ws_api_decoder_->decode_my_trades(padded.view(), [&](const MyTradeRecord& t) {
-              page.rows.push_back({t.time_ms, t.id, std::string(IdText(t.id).view()), t});
+              page.rows.push_back(
+                  {t.time_ms, t.id, std::string(IdText(t.id).view()), MyTradeRow::of(t)});
             });
         if (st != ParseStatus::Ok) {
           ++stats_.execution_query_errors;
@@ -1419,7 +1426,7 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
   return true;
 }
 
-bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRecord& t) {
+bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRow& t) {
   if (stream >= subscribed_.size() || instruments_ == nullptr) return false;
   const InstrumentId id = subscribed_[stream];
   if (!instruments_->contains(id)) return false;
@@ -1429,10 +1436,66 @@ bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRecord& t) {
                                instruments_->get(id),
                                id,
                                mapped != nullptr ? *mapped : ClientOrderId{},
-                               t))
+                               t.view(),
+                               exec_replay_.emitting_unresolved() ? OrderFillMsg::kUnresolved : 0))
     return false;
   ++stats_.order_events;
   ++stats_.executions_fetched;
+  return true;
+}
+
+// myTrades names an order by orderId only, and order_ids_ holds only the orders this process saw
+// acknowledged: an order a session placed that ended before the answer came (or before this
+// process started, behind fastmm-gateway) is asked for, so that its fill names its client order id
+// and with it the session (epoch) and strategy it belongs to. The execution replay bounds and
+// retries these (ReplayScheduler); the rate limiter's headroom comes first.
+bool BinanceVenue::lookup_order(const ReplayLookup& l) {
+  if (rest_ == nullptr || rest_hard_stopped_ || l.stream >= subscribed_.size()) return false;
+  const std::string_view symbol =
+      symbols_ == nullptr ? std::string_view{} : symbols_->venue_symbol(subscribed_[l.stream]);
+  const auto parsed = parse_int64(l.order_id);
+  if (!parsed) return false;
+  const std::int64_t order_id = *parsed;
+  RestRequest rr;
+  if (symbol.empty() || !encoder_->encode_rest_query_order(symbol, order_id, venue_time_ms(), rr))
+    return false;
+  if (!rate_.can_send(rr.weight, now_ns())) return false;
+  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  std::weak_ptr<int> alive = alive_;
+  const bool queued = rest_->request(
+      "GET", target, api_headers(), {}, [this, alive, l, order_id](const net::HttpResponse& r) {
+        if (alive.expired() || !connected_) return;  // a shutdown's reset: nobody waits
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: GET order {} failed: status={} err={}; its fill names no order yet",
+                          cfg_.name,
+                          order_id,
+                          r.status,
+                          net::to_string(r.error));
+          exec_replay_.looked_up(l, LookupResult::Failed);
+          return;
+        }
+        const PaddedJson padded(r.body);
+        std::int64_t oid = 0;
+        std::string_view client;
+        if (ws_api_decoder_->decode_order_ids(padded.view(), oid, client) != ParseStatus::Ok ||
+            oid != order_id) {
+          FASTMM_LOG_WARN("{}: GET order {} reply could not be read", cfg_.name, order_id);
+          exec_replay_.looked_up(l, LookupResult::Failed);
+          return;
+        }
+        const auto cl = decode_cl_ord_id(client);
+        if (!cl) {
+          exec_replay_.looked_up(l, LookupResult::NotOurs);
+          return;
+        }
+        static_cast<void>(order_ids_.assign(static_cast<std::uint64_t>(oid), *cl));
+        exec_replay_.looked_up(l, LookupResult::Named);
+      });
+  if (!queued) return false;
+  rate_.on_sent(rr.weight, now_ns());
   return true;
 }
 

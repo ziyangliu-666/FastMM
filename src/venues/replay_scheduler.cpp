@@ -22,9 +22,15 @@ void ReplaySchedulerBase::reset_streams() noexcept {
     Stream& s = streams_[i];
     s.running = false;
     s.awaiting = false;
+    s.resolving = 0;
     s.rows.clear();
     drop_rows(i);
   }
+}
+
+void ReplaySchedulerBase::drop_lookups() noexcept {
+  lookups_.clear();
+  held_waiting_ = 0;
 }
 
 void ReplaySchedulerBase::close() noexcept {
@@ -36,6 +42,7 @@ void ReplaySchedulerBase::close() noexcept {
   retry_at_ns_ = 0;
   due_at_ns_ = 0;
   reset_streams();
+  drop_lookups();
 }
 
 void ReplaySchedulerBase::abort() noexcept {
@@ -44,6 +51,7 @@ void ReplaySchedulerBase::abort() noexcept {
   active_ = false;
   pending_ = 0;
   reset_streams();
+  drop_lookups();
   take_again();
   retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
 }
@@ -52,6 +60,11 @@ void ReplaySchedulerBase::set_streams(std::size_t n) {
   const std::size_t old = streams_.size();
   if (n < old) {
     for (std::size_t i = n; i < old; ++i) drop_rows(i);
+    std::erase_if(held_, [&](const Held& h) {
+      if (h.stream < n) return false;
+      drop_held(h.id);
+      return true;
+    });
   }
   streams_.resize(n);
   for (std::size_t i = old; i < n; ++i) streams_[i].since_ms = default_since_ms_;
@@ -149,11 +162,15 @@ void ReplaySchedulerBase::start() {
   active_ = true;
   ok_ = true;
   emitted_ = 0;
+  not_held_ = 0;
   retry_at_ns_ = 0;  // this attempt replaces the retry; its own failure schedules the next
   last_start_ns_ = net::Reactor::now_ns();
   now_ms_ = hooks_.now_ms();
+  lookups_sent_ = 0;
+  drop_lookups();
   // Held by the loop itself, so a stream that ends inside it cannot finish the replay early.
   pending_ = 1;
+  ask_held();
   for (std::size_t i = 0; i < streams_.size(); ++i) {
     Stream& s = streams_[i];
     if (s.since_ms <= 0) s.since_ms = default_since_ms_ > 0 ? default_since_ms_ : now_ms_;
@@ -278,15 +295,197 @@ void ReplaySchedulerBase::page(const ReplayQuery& q,
   close_window(i, more && next.empty());
 }
 
-// The window (or the ascending page) is read: its rows go out oldest first, skipping those read
-// before and those an earlier session booked, and the watermark moves.
+// The window (or the ascending page) is read: the orders its rows name by the venue's id only are
+// asked for first (Hooks::lookup), then emit_window().
 void ReplaySchedulerBase::close_window(std::size_t i, bool more) {
   Stream& s = streams_[i];
-  const ReplayQuery& q = s.q;
   if (limits_.newest_first) std::reverse(s.rows.begin(), s.rows.end());
   std::stable_sort(s.rows.begin(), s.rows.end(), [](const Entry& a, const Entry& b) {
     return a.time_ms < b.time_ms;
   });
+  if (hooks_.lookup && ask_lookups(i)) {
+    s.resolve_more = more;
+    return;
+  }
+  emit_window(i, more);
+}
+
+std::string ReplaySchedulerBase::lookup_key(std::size_t stream, const std::string& order_id) {
+  std::string k = std::to_string(stream);
+  k += '/';
+  k += order_id;
+  return k;
+}
+
+bool ReplaySchedulerBase::want_lookup(std::size_t stream,
+                                      const std::string& order_id,
+                                      std::size_t waiter) {
+  const std::string key = lookup_key(stream, order_id);
+  if (not_ours_.contains(key)) return false;
+  if (const auto it = lookups_.find(key); it != lookups_.end()) {
+    std::vector<std::size_t>& w = it->second.waiters;
+    if (std::find(w.begin(), w.end(), waiter) != w.end()) return false;
+    w.push_back(waiter);
+    return true;
+  }
+  if (lookups_sent_ >= limits_.max_lookups) return false;
+  ++lookups_sent_;
+  ++lookups_total_;
+  lookups_.emplace(key, Lookup{stream, order_id, net::Reactor::now_ns(), {waiter}});
+  return true;
+}
+
+// The rows of stream i's window that will go out and name an order the connector cannot: their
+// orders are asked for. True: the window waits for at least one answer.
+bool ReplaySchedulerBase::ask_lookups(std::size_t i) {
+  Stream& s = streams_[i];
+  const ReplayQuery& q = s.q;
+  std::vector<std::string> ask;
+  for (const Entry& e : s.rows) {
+    if (q.from_id > 0 ? (e.seq > 0 && e.seq < q.from_id) : e.time_ms < q.start_ms) continue;
+    if (s.read.contains(e.key) || known_.contains(e.key)) continue;
+    std::string order = unnamed_row(i, e.ref);
+    if (order.empty()) continue;
+    const bool is_new = !lookups_.contains(lookup_key(i, order));
+    if (!want_lookup(i, order, i)) continue;
+    ++s.resolving;
+    if (is_new) ask.push_back(std::move(order));
+  }
+  if (s.resolving == 0) return false;
+  // Sent once the waits are counted, and held by this loop: an answer inside the hook must not
+  // release the window early.
+  ++s.resolving;
+  const std::uint64_t gen = generation_;
+  for (const std::string& order : ask) {
+    if (hooks_.lookup(ReplayLookup{gen, i, order})) continue;
+    lookup_done(lookup_key(i, order));  // could not be sent: failed
+    if (generation_ != gen) return true;
+  }
+  if (generation_ != gen) return true;
+  return --s.resolving > 0;
+}
+
+// The rows an earlier replay sent naming no order: their orders are asked for again.
+void ReplaySchedulerBase::ask_held() {
+  if (held_.empty() || !hooks_.lookup) return;
+  ++pending_;
+  std::vector<std::pair<std::size_t, std::string>> ask;
+  for (const Held& h : held_) {
+    if (h.stream >= streams_.size() || unnamed_held(h.id).empty()) continue;  // named meanwhile
+    const bool is_new = !lookups_.contains(lookup_key(h.stream, h.order_id));
+    if (!want_lookup(h.stream, h.order_id, kHeldWaiter)) continue;
+    ++held_waiting_;
+    if (is_new) ask.emplace_back(h.stream, h.order_id);
+  }
+  ++held_waiting_;  // held by this loop
+  const std::uint64_t gen = generation_;
+  for (const auto& [stream, order] : ask) {
+    if (hooks_.lookup(ReplayLookup{gen, stream, order})) continue;
+    lookup_done(lookup_key(stream, order));
+    if (generation_ != gen) return;
+  }
+  if (generation_ != gen) return;
+  waiter_done(kHeldWaiter);
+}
+
+// Every lookup the held rows waited for is answered: those named now go out again, the others
+// stay for the next replay (kMaxLookupAttempts in all).
+void ReplaySchedulerBase::held_done() {
+  std::size_t named = 0;
+  std::size_t given_up = 0;
+  std::erase_if(held_, [&](Held& h) {
+    if (h.stream >= streams_.size()) {
+      drop_held(h.id);
+      return true;
+    }
+    const bool ours = !not_ours_.contains(lookup_key(h.stream, h.order_id));
+    const bool is_named = unnamed_held(h.id).empty();
+    if (ours && !is_named && ++h.attempts < kMaxLookupAttempts) return false;
+    // Named now: the copy that names it. Not FastMM's, or given up: a last copy without
+    // kUnresolved, so that whoever held the first one back knows it will stay naming no order.
+    if (emit_held(h.id)) {
+      ++emitted_;
+      ++(is_named ? named : given_up);
+    }
+    if (ours && !is_named)
+      FASTMM_LOG_WARN(
+          "{}: order {} of a replayed row could not be looked up in {} attempts; the row stays "
+          "naming no order",
+          name_,
+          h.order_id,
+          h.attempts);
+    drop_held(h.id);
+    return true;
+  });
+  if (named > 0)
+    FASTMM_LOG_INFO("{}: {} {} sent naming no order earlier now name theirs", name_, named, what_);
+  if (given_up > 0)
+    FASTMM_LOG_INFO("{}: {} {} sent naming no order for good", name_, given_up, what_);
+  stream_done(streams_.size(), true);
+}
+
+void ReplaySchedulerBase::looked_up(const ReplayLookup& l, LookupResult r) {
+  const std::string key = lookup_key(l.stream, l.order_id);
+  if (r == LookupResult::NotOurs) {
+    if (not_ours_.size() >= kMaxNotOurs) not_ours_.clear();
+    not_ours_.insert(key);
+  }
+  if (!active_ || l.generation != generation_) return;
+  lookup_done(key);
+}
+
+void ReplaySchedulerBase::lookup_done(const std::string& key) {
+  const auto it = lookups_.find(key);
+  if (it == lookups_.end()) return;
+  const std::vector<std::size_t> waiters = std::move(it->second.waiters);
+  lookups_.erase(it);
+  const std::uint64_t gen = generation_;
+  for (const std::size_t w : waiters) {
+    if (generation_ != gen) return;  // the replay ended and another began
+    waiter_done(w);
+  }
+}
+
+void ReplaySchedulerBase::waiter_done(std::size_t waiter) {
+  if (waiter == kHeldWaiter) {
+    if (held_waiting_ == 0) return;
+    --held_waiting_;
+    if (held_waiting_ == 0) held_done();
+    return;
+  }
+  if (waiter >= streams_.size()) return;
+  Stream& s = streams_[waiter];
+  if (s.resolving == 0) return;
+  --s.resolving;
+  if (s.resolving == 0) emit_window(waiter, s.resolve_more);
+}
+
+// A row about to go out naming an order the connector cannot name: whether a later replay will
+// ask for that order again (it goes out with kUnresolved, and is kept).
+bool ReplaySchedulerBase::will_retry(std::size_t i,
+                                     const Entry& e,
+                                     const std::string& order) const {
+  if (order.empty() || not_ours_.contains(lookup_key(i, order))) return false;
+  for (const Held& h : held_) {
+    if (h.stream == i && h.key == e.key) return true;  // a restart read it again
+  }
+  return held_.size() < kMaxHeld;
+}
+
+void ReplaySchedulerBase::hold(std::size_t i, const Entry& e, std::string order) {
+  for (const Held& h : held_) {
+    if (h.stream == i && h.key == e.key) return;
+  }
+  const std::uint64_t id = ++next_held_;
+  hold_row(i, e.ref, id);
+  held_.push_back(Held{id, i, e.key, std::move(order), 0});
+}
+
+// The window's rows go out oldest first, skipping those read before and those an earlier session
+// booked, and the watermark moves.
+void ReplaySchedulerBase::emit_window(std::size_t i, bool more) {
+  Stream& s = streams_[i];
+  const ReplayQuery& q = s.q;
   std::int64_t newest = 0;
   std::int64_t high_seq = 0;
   for (const Entry& e : s.rows) {
@@ -296,7 +495,16 @@ void ReplaySchedulerBase::close_window(std::size_t i, bool more) {
     if (q.from_id > 0 ? (e.seq > 0 && e.seq < q.from_id) : e.time_ms < q.start_ms) continue;
     if (!s.read.emplace(e.key, e.time_ms).second) continue;  // forwarded before
     if (known_.contains(e.key)) continue;                    // the earlier session booked it
-    if (emit_row(i, e.ref)) ++emitted_;
+    std::string order = hooks_.lookup ? unnamed_row(i, e.ref) : std::string{};
+    const bool retry = will_retry(i, e, order);
+    if (!order.empty() && !retry && !not_ours_.contains(lookup_key(i, order)))
+      ++not_held_;  // logged once, at the end of the replay
+    unresolved_ = retry;
+    const bool sent = emit_row(i, e.ref);
+    unresolved_ = false;
+    if (!sent) continue;
+    ++emitted_;
+    if (retry) hold(i, e, std::move(order));
   }
   const bool had_rows = !s.rows.empty();
   s.rows.clear();
@@ -370,11 +578,29 @@ void ReplaySchedulerBase::expire(std::int64_t now_ns) {
     // The last stream finished the replay: its hook may have started another one.
     if (!active_ || generation_ != gen) return;
   }
+  // A lookup never answered counts as failed: its rows go out naming no order.
+  std::vector<std::string> late;
+  for (const auto& [key, l] : lookups_) {
+    if (now_ns - l.sent_ns >= kQueryTimeoutNs) late.push_back(key);
+  }
+  for (const std::string& key : late) {
+    ++timeouts_;
+    FASTMM_LOG_WARN(
+        "{}: an order lookup got no answer in {} s", name_, kQueryTimeoutNs / 1'000'000'000);
+    lookup_done(key);
+    if (!active_ || generation_ != gen) return;
+  }
 }
 
 void ReplaySchedulerBase::finish() {
   active_ = false;
   if (emitted_ > 0) FASTMM_LOG_INFO("{}: replayed {} {}", name_, emitted_, what_);
+  if (not_held_ > 0)
+    FASTMM_LOG_WARN("{}: {} {} naming no order beyond the {} kept are not looked up again",
+                    name_,
+                    not_held_,
+                    what_,
+                    kMaxHeld);
   // A restart asked for meanwhile: the replay goes on from there at the next timer tick, and
   // whoever waits for it (a reconciliation) waits for that too, so it learns about the rows the
   // restart was for. That one alone says complete or not: it starts no later than where this one
@@ -387,7 +613,8 @@ void ReplaySchedulerBase::finish() {
     }
     ok_ = false;
   }
-  if (!ok_) retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
+  // Rows sent naming no order: the next replay asks for their orders again, soon.
+  if (!ok_ || (hooks_.lookup && !held_.empty())) retry_at_ns_ = net::Reactor::now_ns() + kRetryNs;
   if (hooks_.finished) hooks_.finished(ok_);
 }
 

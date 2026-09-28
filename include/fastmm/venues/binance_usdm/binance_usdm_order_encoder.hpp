@@ -118,6 +118,13 @@ class BinanceUsdmOrderEncoder {
                                std::int64_t timestamp_ms,
                                RestRequest& out);
 
+  // GET /fapi/v1/order?orderId= (weight 1): one order of the account by the venue's id, which
+  // gives its clientOrderId ("Query Order").
+  bool encode_rest_query_order(std::string_view symbol,
+                               std::int64_t order_id,
+                               std::int64_t timestamp_ms,
+                               RestRequest& out);
+
   // GET /fapi/v1/income?incomeType=FUNDING_FEE (weight 30): the account's funding payments on every
   // symbol from `start_ms` to `end_ms` (both inclusive; `end_ms` 0 leaves it to the venue).
   bool encode_rest_funding_income(std::int64_t start_ms,

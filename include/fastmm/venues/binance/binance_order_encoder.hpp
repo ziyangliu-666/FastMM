@@ -51,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace fastmm::venues::binance {
@@ -150,6 +151,13 @@ class BinanceOrderEncoder {
                              int limit,
                              std::int64_t timestamp_ms,
                              RestRequest& out);
+
+  // GET /api/v3/order?orderId=: one order of the account by the venue's id, which gives its
+  // clientOrderId (rest-api.md "Query order"). Weight 4.
+  bool encode_rest_query_order(std::string_view symbol,
+                               std::int64_t order_id,
+                               std::int64_t timestamp_ms,
+                               RestRequest& out);
 
   // GET /api/v3/account/commission: the account's fee rates on `symbol`. Weight 20.
   bool encode_rest_commission(std::string_view symbol, std::int64_t timestamp_ms, RestRequest& out);
@@ -256,6 +264,46 @@ struct MyTradeRecord {
   bool is_maker = false;
 };
 
+// A MyTradeRecord that owns its text: the execution replay keeps rows past the reply they came in
+// (while it asks for the order a row names, ReplayScheduler's lookups).
+struct MyTradeRow {
+  std::int64_t id = 0;
+  std::int64_t order_id = 0;
+  std::string price;
+  std::string qty;
+  std::string commission;
+  std::string commission_asset;
+  std::int64_t time_ms = 0;
+  bool is_buyer = false;
+  bool is_maker = false;
+
+  static MyTradeRow of(const MyTradeRecord& t) {
+    return MyTradeRow{t.id,
+                      t.order_id,
+                      std::string(t.price),
+                      std::string(t.qty),
+                      std::string(t.commission),
+                      std::string(t.commission_asset),
+                      t.time_ms,
+                      t.is_buyer,
+                      t.is_maker};
+  }
+  // Views into this row (symbol empty: the stream names it).
+  [[nodiscard]] MyTradeRecord view() const noexcept {
+    MyTradeRecord t;
+    t.id = id;
+    t.order_id = order_id;
+    t.price = price;
+    t.qty = qty;
+    t.commission = commission;
+    t.commission_asset = commission_asset;
+    t.time_ms = time_ms;
+    t.is_buyer = is_buyer;
+    t.is_maker = is_maker;
+    return t;
+  }
+};
+
 // One open order as returned by openOrders.status / GET /api/v3/openOrders.
 struct OpenOrderRecord {
   std::string_view symbol;
@@ -288,6 +336,11 @@ class BinanceWsApiDecoder {
   // into `json`.
   ParseStatus decode_my_trades(std::string_view json,
                                const std::function<void(const MyTradeRecord&)>& fn) noexcept;
+  // The order object GET /api/v3/order (Spot) and GET /fapi/v1/order (USDⓈ-M) return: its orderId
+  // and clientOrderId (a view into `json`).
+  ParseStatus decode_order_ids(std::string_view json,
+                               std::int64_t& order_id,
+                               std::string_view& client_order_id) noexcept;
   // The same for GET /fapi/v1/userTrades (Binance USDⓈ-M): `buyer`/`maker` instead of
   // `isBuyer`/`isMaker`, otherwise the fields MyTradeRecord keeps are the same.
   ParseStatus decode_user_trades(std::string_view json,

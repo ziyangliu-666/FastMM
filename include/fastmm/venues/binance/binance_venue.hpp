@@ -237,7 +237,9 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // row of it forwarded as a replayed fill.
   [[nodiscard]] bool exec_ready() const noexcept;
   bool query_executions(const ReplayQuery& q);
-  bool emit_execution(std::size_t stream, const MyTradeRecord& t);
+  bool emit_execution(std::size_t stream, const MyTradeRow& t);
+  // GET /api/v3/order?orderId= for a replayed execution whose order order_ids_ does not name.
+  bool lookup_order(const ReplayLookup& l);
   void publish_status() noexcept;
   // An order the shadow table had no room for goes back as OrderTableFull.
   void refuse_untracked(const OrderCommand& cmd);
@@ -282,13 +284,13 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
 
   std::vector<InstrumentId> subscribed_;
   // Venue order id -> the client order id this session gave it, so an execution the trade history
-  // reports (which names only orderId) reaches the order it belongs to. A restarted session starts
-  // empty: those executions arrive with no client order id and reach the position as unknown fills,
-  // which is what a restart needs from them.
+  // reports (which names only orderId) reaches the order it belongs to. A restarted process starts
+  // empty: the execution replay asks the venue for an order it names that is not here
+  // (lookup_order) and keeps the answer here.
   RecentMap<std::uint64_t, ClientOrderId, 8192> order_ids_;
   // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
   // forwarded (fromId), else from the time watermark.
-  ReplayScheduler<MyTradeRecord> exec_replay_;
+  ReplayScheduler<MyTradeRow> exec_replay_;
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed
   // to exec_replay_ at connect(), once subscribed_ gives the instruments their streams.
   std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;

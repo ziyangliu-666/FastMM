@@ -243,6 +243,10 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
     case RestEndpoint::CancelOrder:
       return op_cancel(*acct, params);
     case RestEndpoint::QueryOrder:
+      if (faults_.fail_order_queries_next > 0) {
+        --faults_.fail_order_queries_next;
+        return OpResult::error(503, -1008, "Server is currently overloaded with other requests.");
+      }
       return op_query_order(*acct, params);
     case RestEndpoint::CancelReplace:
       return op_cancel_replace(*acct, params);
@@ -290,6 +294,7 @@ void Impl::handle_ws_api(net::WsSession& s, std::string_view text) {
     const bool order_method =
         req.method.starts_with("order.") || req.method == "openOrders.cancelAll";
     if (order_method) delay = faults_.delay_ack_ms;
+    if (req.method == "openOrders.status") delay = faults_.delay_open_orders_ms;
     request_delay_ms_ = delay;
     if (auto banned = injected_stop(now_ms)) {
       r = *banned;

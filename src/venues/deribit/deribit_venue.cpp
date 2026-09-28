@@ -144,7 +144,8 @@ DeribitVenue::DeribitVenue(VenueId id, DeribitVenueConfig cfg)
                      {[this] { return replay_ready(); },
                       [this] { return venue_now_ms(); },
                       [this](const ReplayQuery& q) { return send_executions_query(q); },
-                      [this](bool complete) { reconcile_.replay_done(complete); }},
+                      [this](bool complete) { reconcile_.replay_done(complete); },
+                      {}},  // rows carry the label (client order id): no lookup,
                      [this](std::size_t, const UserTradeRecord& t) { return emit_execution(t); });
   exec_replay_.set_streams(cfg_.currencies.size());
   exec_queries_.resize(cfg_.currencies.size());

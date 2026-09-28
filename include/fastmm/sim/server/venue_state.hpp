@@ -121,8 +121,11 @@ class OrderIndex {
                                           std::string_view client_order_id) noexcept;
   void rekey_internal(OrderRecord& r, ClientOrderId new_internal);
   void rekey_client(OrderRecord& r, std::string new_client_order_id);
-  // Drops terminal records from every index; returns how many were erased.
+  // Drops terminal records from every index; returns how many were erased. One that traded is kept
+  // for past() (Binance answers GET /api/v3/order for a filled order long after it ended).
   std::size_t erase_terminal();
+  // A terminal order that traded, by Binance orderId; nullptr if none.
+  [[nodiscard]] const OrderRecord* past(std::int64_t id) const noexcept;
 
   // Open (non-terminal) orders of `account`, ascending order id; symbol < 0 = all symbols.
   [[nodiscard]] std::vector<OrderRecord*> open_orders(AccountId account, std::int64_t symbol);
@@ -134,6 +137,7 @@ class OrderIndex {
                                               std::uint32_t symbol,
                                               std::string_view id);
   std::map<std::int64_t, OrderRecord> orders_;
+  std::map<std::int64_t, OrderRecord> past_;  // terminal, traded: kept for the run
   std::unordered_map<std::uint64_t, std::int64_t> by_internal_;
   std::unordered_map<std::string, std::int64_t> by_client_;
 };
