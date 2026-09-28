@@ -170,19 +170,31 @@ inline Qty store_position(const SessionFiles& f,
 // A market order on the simulator's account over signed REST: a trade FastMM did not make. A
 // running session gets it on its user stream as an execution of no order of its own; made while
 // nothing runs, only the next session's execution replay can book it.
+// Retried until the venue reports a fill: a market order that meets an empty side of the simulated
+// book is answered 200 EXPIRED with nothing executed.
 inline void outside_trade(const ServerFixture& fx,
                           std::string_view side,
                           std::string_view qty = "0.001") {
-  const std::string query =
-      "symbol=BTCUSDT&side=" + std::string(side) + "&type=MARKET&quantity=" + std::string(qty) +
-      "&recvWindow=5000&timestamp=" + std::to_string(fx.server.server_time_ms());
   venues::BlockingHttp http(fx.http());
-  const venues::HttpReply r =
-      http.request("POST",
-                   "/api/v3/order?" + query +
-                       "&signature=" + std::string(net::hmac_sha256_hex(kApiSecret, query).view()),
-                   std::string("X-MBX-APIKEY: ") + kApiKey + "\r\n");
-  REQUIRE_MESSAGE(r.status == 200, r.body);
+  std::string body;
+  for (int attempt = 0; attempt < 50; ++attempt) {
+    const std::string query =
+        "symbol=BTCUSDT&side=" + std::string(side) + "&type=MARKET&quantity=" + std::string(qty) +
+        "&recvWindow=5000&timestamp=" + std::to_string(fx.server.server_time_ms());
+    const venues::HttpReply r = http.request(
+        "POST",
+        "/api/v3/order?" + query +
+            "&signature=" + std::string(net::hmac_sha256_hex(kApiSecret, query).view()),
+        std::string("X-MBX-APIKEY: ") + kApiKey + "\r\n");
+    REQUIRE_MESSAGE(r.status == 200, r.body);
+    body = r.body;
+    const std::string_view key = "\"executedQty\":\"";
+    if (const auto at = body.find(key);
+        at != std::string::npos && std::strtod(body.c_str() + at + key.size(), nullptr) > 0.0)
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  FAIL("the outside market order never filled: " << body);
 }
 
 // The venue execution ids the store of `engine` holds in more than one session: each is an
