@@ -91,7 +91,6 @@ class ReconcileDriver {
   // An OpenOrder row with its header set; the connector fills the rest.
   ReconcileMsg& add_order(InstrumentId instrument);
   void add_position(InstrumentId instrument, Qty qty, Price avg_px);
-  [[nodiscard]] std::size_t order_rows() const noexcept { return orders_.size(); }
   // The fetch for `generation` is over: `ok` emits the snapshot, otherwise it is asked again after
   // kRetryNs. Ignored for a generation the driver moved on from.
   void fetched(std::uint64_t generation, bool ok);
@@ -102,7 +101,6 @@ class ReconcileDriver {
   // A snapshot is being fetched or waits for its replay (position checks hold off meanwhile).
   [[nodiscard]] bool busy() const noexcept { return in_flight_ || waiting_replay_; }
   [[nodiscard]] bool retry_pending() const noexcept { return retry_at_ns_ != 0; }
-  [[nodiscard]] std::uint64_t generation() const noexcept { return generation_; }
   [[nodiscard]] std::uint64_t snapshots() const noexcept { return snapshots_; }
   [[nodiscard]] std::uint64_t failures() const noexcept { return failures_; }
   [[nodiscard]] std::uint64_t shadows_swept() const noexcept { return shadows_swept_; }
