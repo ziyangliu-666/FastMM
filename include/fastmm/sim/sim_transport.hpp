@@ -159,6 +159,8 @@ class SimTransport final : public MatchingSink {
   SimTransport(const SimClock& clock,
                const InstrumentTable& instruments,
                const SimTransportConfig& cfg);
+  SimTransport(const SimTransport&) = delete;  // link_of_inst_ points into links_
+  SimTransport& operator=(const SimTransport&) = delete;
 
   // ---- TransportLike ------------------------------------------------------------------------
   [[nodiscard]] bool send(const EventHeader& m) noexcept;
@@ -294,7 +296,7 @@ class SimTransport final : public MatchingSink {
   // Venue of an instrument; an unknown one (a cancel of an order the venue never saw) goes
   // through the first venue.
   [[nodiscard]] Link& link(InstrumentId id) noexcept {
-    return at(id.value < kMaxInstruments ? link_of_inst_[id.value] : 0);
+    return id.value < kMaxInstruments ? *link_of_inst_[id.value] : at(0);
   }
   // links_[k] for k < n_links_, which the constructor engaged; [0] always is.
   [[nodiscard]] Link& at(std::size_t k) noexcept {
@@ -315,7 +317,9 @@ class SimTransport final : public MatchingSink {
   // model and wires sit where a single venue's always did.
   std::optional<Link> links_[kMaxVenues];
   std::size_t n_links_ = 0;
-  std::uint8_t link_of_inst_[kMaxInstruments] = {};  // instrument id -> index into links_
+  // Instrument id -> its venue's link (the first venue's for an id no instrument has): one load
+  // on every message, where an index into links_ took a multiply and two adds.
+  Link* link_of_inst_[kMaxInstruments] = {};
   bool replace_[kMaxVenues] = {};
   Scheduler sched_;
   std::unique_ptr<L2Book<256>[]> mirror_;

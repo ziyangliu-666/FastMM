@@ -55,6 +55,51 @@ All three done (2026-09-28), entries below.
 Keep separate: order replies and amend semantics, instrument mapping, Bybit DCP and Deribit
 cancel-on-disconnect, venue cancel-all bodies, Deribit's WebSocket transport.
 
+**Performance: BM_TickToOrder_Sim +8 % since f5f7461, bisected (2026-09-29).** Found: 152.6 ns at
+f5f7461 (the OKX merge) against 164.6 at main. Each first-parent merge built with the `release`
+preset under `/tmp/bench-*` (same path length); `bench_tick_to_order` pinned (`taskset -c 2`),
+interleaved, load < 1.5, 3 byte-identical copies of each binary, 3 processes each (median of the
+file medians, the file range for t2o). "instr" is the instructions of one timed tick (push +
+`Engine::step`, cancel of both quotes), counted by single-stepping it in gdb (no PMU under WSL2).
+
+| first-parent commit | t2o ns | t2o+hash | engine step | instr |
+|---|---:|---:|---:|---:|
+| f5f7461 OKX merge (df175aa: same `.text`) | 155.6 (152.8-156.0) | 324.4 | 2290 | 2092 |
+| cab2aa1 fees, headroom, venue health, feed-lag gate | 156.9 | 325.7 | 2297 | 2088 |
+| d386044 execution view (QueueTracker) | 157.8 | 328.2 | 2304 | 2089 |
+| 54f78f9 research merge (71708bf: same `.text`) | 157.3 | 329.7 | 2303 | 2089 |
+| d2cea64 multi-venue backtest | 159.2 | 327.5 | 2319 | 2110 |
+| e88e4d0 net limit per underlying | 160.8 | 329.6 | 2321 | 2117 |
+| 8252b40 xmm recovery, restart gate | 167.8 (161.3-168.3) | 333.8 | 2319 | 2120 |
+| eea4a24 shared instruments | 158.2 | 331.6 | 2333 | 2122 |
+| 205f03b per-venue replace (5e35fc0: same `.text`) | 160.2 | 328.4 | 2337 | 2125 |
+| bfbfd40 .. main (same `.text` as each other) | 164.3 (163.9-186.2) | 330.7 | 2331 | 2125 |
+| this fix | 159.8 (157.5-161.4) | 326.9 | 2324 | 2109 |
+
+The work added is 33 instructions per tick (+1.6 %): 21 in `SimTransport::send` (d2cea64: the
+per-venue latency model is found by an instrument -> byte index -> `links_[k]` multiply, twice per
+tick), 7 in e88e4d0 (gcc stopped inlining `record_md_hops`, which returns at once in the
+simulator), 4 in `set_quotes` (cab2aa1's gate check), 3 at 8252b40 (`awaiting_`), 3 at 205f03b
+(per-instrument replace flag), 2 at eea4a24 (the truncated-side test in `L2Book::apply_delta`);
+cab2aa1 moved `on_book_delta` out of `step` and saved 4. The xmm/OMS work (095d5b8, inside
+54f78f9) and the connector refactors execute nothing on the tick. The time is mostly layout, not
+work: 8252b40 costs 7 ns with 3 more instructions and eea4a24 gives it back with 2 more; four
+byte-identical copies of main's binary measure 159.7 to 164.0 ns and bfbfd40's build (26 bytes
+differ from main's: its path) 157.7, so one file is not a sample of a build.
+Fixed: `SimTransport` keeps a `Link*` per instrument (one load); `record_md_hops` tests for a wire
+timestamp inline and records out of line; the market-data handlers test `queue_on_`, a copy of
+`queue_.enabled()` next to the engine's flags, before the tracker's per-instrument heads. 2109
+instructions per tick. Same method, 5 copies x 5 processes per side, base f5f7461 / main / fix:
+t2o 154.1 / 163.3 / 159.2 ns (file medians 153.2-158.1 / 160.5-165.0 / 158.1-160.8), t2o+hash
+323.4 / 330.0 / 327.1, engine step 2297 / 2336 / 2318. Golden and replay hashes unchanged (full
+ctest). Tried and dropped: a hot `feed_gate_seen_` flag in front of the gate check (+17
+instructions from register spills in `BasicMM::requote`), `on_book_delta` forced inline (+15:
+`dispatch` went out of line). What remains (+17 instructions, about 1 ns; the rest layout) is the
+gate check, the reconcile gate, per-venue replace, the book's truncation test and the sim's venue
+lookup. `Oms_Submit` and `QuoteManager_Reconcile` pay for `OrderTimes` (a 32-byte slot per order
+in its own array, written on submit, replace and ack, and copied into every `OmsUpdate`): kept,
+it is what `ctx.order_times` and `OmsUpdate::times` read.
+
 **A fill of an order the venue never acknowledged names its order (2026-09-29).** Left by the
 entry below: an order whose ack never came before a kill has no venue id in the store, and a
 replayed Binance trade names only `orderId`, so its fill named no order (shared: nobody's; owned:

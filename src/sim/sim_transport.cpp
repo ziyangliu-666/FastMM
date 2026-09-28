@@ -73,9 +73,10 @@ SimTransport::SimTransport(const SimClock& clock,
     links_[n_links_++].emplace(VenueId{v}, vc, seed, cfg);
   }
   me_.set_stp(kStrategyAccount, cfg.stp);
+  for (Link*& l : link_of_inst_) l = &at(0);
   for (const Instrument& i : instruments) {
     const VenueId v = venue_of(i);
-    link_of_inst_[i.id.value] = index_of[v.value];
+    link_of_inst_[i.id.value] = &at(index_of[v.value]);
     me_.set_stp(kStrategyAccount, i.id, cfg.venue_config(v).stp);
   }
 }
