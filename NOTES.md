@@ -59,6 +59,20 @@ sim), `queue_ahead` (the l2_queue model, capped by a newer BookTicker), `order_t
 `[backtest] md_arrival = "recorded"`. Not done: spot balances (a new event type per venue), a book
 quality flag (`is_valid`, `last_update` and `on_connection` cover it). Hot hooks do not see them.
 
+**Live check of the new calls (2026-09-28, 921f904, 1 h, session A settings + `fetch_fees`,
+`max_feed_lag_ms = 5`, `log_exec_view`).** 4094 orders, 628 fills, net -0.18 U, exit 0.
+`fetch_fees` on the production account: BTCU 0/10 bps as configured, BTCUSDT 10/10 and UUSDT 0/0
+replaced the configured 0/10. `queue_ahead` at each ack equals fill-check's for 98.4 % of 3784
+orders; the rest differ by one of our own orders (0.0001) at a price we had just cancelled from:
+arrival order vs venue-time order. fill-check: 621/621 live fills, 7 false of 3163. Feed-lag base
+0.40 ms, excess p90 0.24 ms at the 10 s samples; the 5 ms gate engaged 303 times. Rejects: 3393
+RateLimit (4/s, burst 8), 304 InsufficientBalance (0.00024 BTC at the start).
+Open: the backtest of this journal (`strip_own=1`, `md_arrival = "recorded"`, same limits) makes
+13 699 RateLimit rejects and 814 fills against live's 3393 and 628. Balances explain part of the
+fills (the backtest does not model spot balances); nothing found yet explains the 4x order
+attempts. The backtest summary's `rejects` counts venue rejects only, so the risk rejects show
+only in the log. Gate off / 2 ms / 5 ms on this journal: -0.148 / -0.110 / -0.151 U.
+
 **For the quote/hedge plan below.** `xmm` can take the hedge cost from `ctx.fees`, the hedge
 venue from `venue_health`, and the quote leg's queue from `queue_ahead`; a multi-venue backtest
 should keep per-venue `md_arrival` and the ack latency split.
