@@ -392,29 +392,35 @@ void ReplaySchedulerBase::ask_held() {
 // stay for the next replay (kMaxLookupAttempts in all).
 void ReplaySchedulerBase::held_done() {
   std::size_t named = 0;
+  std::size_t given_up = 0;
   std::erase_if(held_, [&](Held& h) {
-    bool drop = h.stream >= streams_.size() || not_ours_.contains(lookup_key(h.stream, h.order_id));
-    if (!drop && unnamed_held(h.id).empty()) {
-      if (emit_held(h.id)) {
-        ++named;
-        ++emitted_;
-      }
-      drop = true;
+    if (h.stream >= streams_.size()) {
+      drop_held(h.id);
+      return true;
     }
-    if (!drop && ++h.attempts >= kMaxLookupAttempts) {
+    const bool ours = !not_ours_.contains(lookup_key(h.stream, h.order_id));
+    const bool is_named = unnamed_held(h.id).empty();
+    if (ours && !is_named && ++h.attempts < kMaxLookupAttempts) return false;
+    // Named now: the copy that names it. Not FastMM's, or given up: a last copy without
+    // kUnresolved, so that whoever held the first one back knows it will stay naming no order.
+    if (emit_held(h.id)) {
+      ++emitted_;
+      ++(is_named ? named : given_up);
+    }
+    if (ours && !is_named)
       FASTMM_LOG_WARN(
           "{}: order {} of a replayed row could not be looked up in {} attempts; the row stays "
           "naming no order",
           name_,
           h.order_id,
           h.attempts);
-      drop = true;
-    }
-    if (drop) drop_held(h.id);
-    return drop;
+    drop_held(h.id);
+    return true;
   });
   if (named > 0)
     FASTMM_LOG_INFO("{}: {} {} sent naming no order earlier now name theirs", name_, named, what_);
+  if (given_up > 0)
+    FASTMM_LOG_INFO("{}: {} {} sent naming no order for good", name_, given_up, what_);
   stream_done(streams_.size(), true);
 }
 
@@ -454,16 +460,21 @@ void ReplaySchedulerBase::waiter_done(std::size_t waiter) {
   if (s.resolving == 0) emit_window(waiter, s.resolve_more);
 }
 
-// A row that went out naming no order: kept for the next replay to name.
-void ReplaySchedulerBase::hold(std::size_t i, const Entry& e) {
-  std::string order = unnamed_row(i, e.ref);
-  if (order.empty() || not_ours_.contains(lookup_key(i, order))) return;
-  if (held_.size() >= kMaxHeld) {
-    ++not_held_;  // logged once, at the end of the replay
-    return;
-  }
+// A row about to go out naming an order the connector cannot name: whether a later replay will
+// ask for that order again (it goes out with kUnresolved, and is kept).
+bool ReplaySchedulerBase::will_retry(std::size_t i,
+                                     const Entry& e,
+                                     const std::string& order) const {
+  if (order.empty() || not_ours_.contains(lookup_key(i, order))) return false;
   for (const Held& h : held_) {
-    if (h.stream == i && h.key == e.key) return;  // a restart read it again
+    if (h.stream == i && h.key == e.key) return true;  // a restart read it again
+  }
+  return held_.size() < kMaxHeld;
+}
+
+void ReplaySchedulerBase::hold(std::size_t i, const Entry& e, std::string order) {
+  for (const Held& h : held_) {
+    if (h.stream == i && h.key == e.key) return;
   }
   const std::uint64_t id = ++next_held_;
   hold_row(i, e.ref, id);
@@ -484,9 +495,16 @@ void ReplaySchedulerBase::emit_window(std::size_t i, bool more) {
     if (q.from_id > 0 ? (e.seq > 0 && e.seq < q.from_id) : e.time_ms < q.start_ms) continue;
     if (!s.read.emplace(e.key, e.time_ms).second) continue;  // forwarded before
     if (known_.contains(e.key)) continue;                    // the earlier session booked it
-    if (!emit_row(i, e.ref)) continue;
+    std::string order = hooks_.lookup ? unnamed_row(i, e.ref) : std::string{};
+    const bool retry = will_retry(i, e, order);
+    if (!order.empty() && !retry && !not_ours_.contains(lookup_key(i, order)))
+      ++not_held_;  // logged once, at the end of the replay
+    unresolved_ = retry;
+    const bool sent = emit_row(i, e.ref);
+    unresolved_ = false;
+    if (!sent) continue;
     ++emitted_;
-    if (hooks_.lookup) hold(i, e);
+    if (retry) hold(i, e, std::move(order));
   }
   const bool had_rows = !s.rows.empty();
   s.rows.clear();

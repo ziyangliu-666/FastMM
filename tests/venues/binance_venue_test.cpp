@@ -902,7 +902,8 @@ TEST_CASE("binance.venue: a replayed trade of an order this process never saw ac
     CHECK(a[0]->cl_ord_id == looked_up_id());
     CHECK(b[0]->cl_ord_id == looked_up_id());
     CHECK(a[0]->venue_order_id.view() == "555");
-    CHECK_FALSE(c[0]->cl_ord_id.valid());  // someone else's order on the account
+    CHECK_FALSE(c[0]->cl_ord_id.valid());  // someone else's order on the account, for good
+    CHECK((c[0]->flags & OrderFillMsg::kUnresolved) == 0);
     const auto q = h.srv.frames("order");
     REQUIRE(q.size() == 2);
     CHECK(query_param(q[0], "orderId") == "555");
@@ -929,6 +930,7 @@ TEST_CASE("binance.venue: a failed order lookup is asked again at the next repla
       const auto first = replayed(r.oc, "7001");
       REQUIRE(first.size() == 1);
       CHECK_FALSE(first[0]->cl_ord_id.valid());
+      CHECK((first[0]->flags & OrderFillMsg::kUnresolved) != 0);  // to be sent again
     }
     REQUIRE(pump_until(
         r.reactor,
@@ -940,6 +942,7 @@ TEST_CASE("binance.venue: a failed order lookup is asked again at the next repla
     const auto both = replayed(r.oc, "7001");
     CHECK(both[1]->cl_ord_id == looked_up_id());
     CHECK(both[1]->venue_order_id.view() == "555");
+    CHECK((both[1]->flags & OrderFillMsg::kUnresolved) == 0);
     CHECK(h.srv.frames("order").size() == 2);
   }
   h.srv.stop();

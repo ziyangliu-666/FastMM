@@ -972,13 +972,41 @@ void deliver_fill(VenueRouter& v, const OrderFillMsg& raw, bool unparking) {
   const OrderFillMsg& m = named(v, raw, buf);
   const InstrumentId id = m.hdr.instrument;
   const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
-  // A replay that names the order of an execution an earlier one sent naming none (the connector
-  // could not look the order up then): the copy parked for nobody is this one, and is dropped.
-  if (replayed && !unparking && m.cl_ord_id.valid() && !m.exec_id.empty() && !v.parked.empty()) {
+  const bool unresolved = replayed && !m.cl_ord_id.valid() && !m.exec_id.empty() &&
+                          (m.flags & OrderFillMsg::kUnresolved) != 0;
+  const auto same = [&](const OrderFillMsg& p) {
+    return p.hdr.instrument == id && p.side == m.side && p.exec_id.view() == m.exec_id.view();
+  };
+  // The copy that settles an execution sent naming no order before: one naming its order (the
+  // connector has looked it up) replaces every parked copy naming none; a last one without
+  // kUnresolved (the connector gave up) replaces the copy held back for it.
+  if (replayed && !unresolved && !unparking && !m.exec_id.empty() && !v.parked.empty()) {
     std::erase_if(v.parked, [&](const OrderFillMsg& p) {
-      return !p.cl_ord_id.valid() && p.hdr.instrument == id && p.side == m.side &&
-             p.exec_id.view() == m.exec_id.view();
+      return !p.cl_ord_id.valid() &&
+             (m.cl_ord_id.valid() || (p.flags & OrderFillMsg::kUnresolved) != 0) && same(p);
     });
+  }
+  // One the connector will send again (kUnresolved): no strategy receives it, not the primary nor
+  // the owner, until the copy that settles it; the account books it now, for nobody (a later copy
+  // naming its order moves it to that strategy's share).
+  if (unresolved) {
+    if (!unparking) {
+      if (v.shared(id)) {
+        account_fill_shared(v, m, 0, false);
+      } else if (v.insts->contains(id) && id.value < kMaxInstruments && v.seeded[id.value]) {
+        account_fill(v, m);
+      }
+      if (std::any_of(v.parked.begin(), v.parked.end(), [&](const OrderFillMsg& p) {
+            return (p.flags & OrderFillMsg::kUnresolved) != 0 && same(p);
+          }))
+        return;  // a replay read it again
+    }
+    if (v.parked.size() == kMaxParked) {
+      v.parked.pop_front();
+      v.parked_dropped.fetch_add(1, std::memory_order_relaxed);
+    }
+    v.parked.push_back(raw);
+    return;
   }
   Route* r = nullptr;
   bool held = false;

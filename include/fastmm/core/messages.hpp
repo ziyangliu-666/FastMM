@@ -235,6 +235,11 @@ struct OrderFillMsg {
   // private stream: it may already have been booked, so cum_qty and leaves_qty are not reported and
   // the OMS works out how much of it is new (Oms::on_fill, OmsUpdate::corrected_qty).
   static constexpr std::uint8_t kReplayed = 1U << 0;
+  // A replayed execution naming no order whose order the connector could not look up yet and will
+  // ask for again (ReplayScheduler): a later copy with the same exec_id names it, or, once the
+  // connector gives up, a last copy without this flag says it never will. fastmm-gateway holds it
+  // back from every strategy until then; an engine books it as any fill naming no order.
+  static constexpr std::uint8_t kUnresolved = 1U << 1;
   EventHeader hdr;
   ClientOrderId cl_ord_id;
   VenueOrderId venue_order_id;
@@ -248,7 +253,7 @@ struct OrderFillMsg {
   Side side;
   Liquidity liquidity;
   FeeAsset fee_asset;  // Quote: `fee` is a quote amount; Base: base units; Other: not convertible
-  std::uint8_t flags;  // kReplayed
+  std::uint8_t flags;  // kReplayed, kUnresolved
   std::uint8_t pad_[52];
 };
 static_assert(sizeof(OrderFillMsg) == 256);

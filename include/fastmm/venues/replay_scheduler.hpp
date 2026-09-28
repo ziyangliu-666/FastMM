@@ -39,11 +39,12 @@
 // as Binance's does): before a window's rows go out, those naming an order the connector cannot
 // name (the typed layer's `unnamed`) have it asked for, at most ReplayLimits::max_lookups per
 // replay, one per order, and the window waits for the answers (kQueryTimeoutNs at most). A row
-// still unnamed then (the lookup failed, timed out, or was over the budget) goes out as before,
-// naming no order, and a copy is kept (kMaxHeld): the next replay asks again and sends the row
-// once more if it is named now (the same key: the engine keeps one), kMaxLookupAttempts times at
-// most. An order the venue says is not ours (LookupResult::NotOurs) is not asked for again. Rows
-// kept past answer() must own their data.
+// still unnamed then (the lookup failed, timed out, or was over the budget) goes out naming no
+// order, marked as one to be sent again (emitting_unresolved()), and a copy is kept (kMaxHeld):
+// the next replays ask again and send the row once more (the same key: an engine keeps one),
+// naming its order, or, after kMaxLookupAttempts or when the venue says the order is not ours
+// (LookupResult::NotOurs, not asked for again), unmarked and naming none. Rows kept past answer()
+// must own their data.
 //
 // Reactor thread only; control path (std::function, strings), nothing per order or per market-data
 // message.
@@ -187,6 +188,9 @@ class ReplaySchedulerBase {
   [[nodiscard]] std::uint64_t replays() const noexcept { return replays_; }
   // Queries that got no answer within kQueryTimeoutNs.
   [[nodiscard]] std::uint64_t timeouts() const noexcept { return timeouts_; }
+  // True while the emit callback runs for a row that goes out naming no order and that a later
+  // replay will send again, naming it or, having given up, not (OrderFillMsg::kUnresolved).
+  [[nodiscard]] bool emitting_unresolved() const noexcept { return unresolved_; }
   // Order lookups sent, and rows kept for the next replay to name.
   [[nodiscard]] std::uint64_t lookups() const noexcept { return lookups_total_; }
   [[nodiscard]] std::size_t held() const noexcept { return held_.size(); }
@@ -265,7 +269,8 @@ class ReplaySchedulerBase {
   bool want_lookup(std::size_t stream, const std::string& order_id, std::size_t waiter);
   void lookup_done(const std::string& key);
   void waiter_done(std::size_t waiter);
-  void hold(std::size_t i, const Entry& e);
+  [[nodiscard]] bool will_retry(std::size_t i, const Entry& e, const std::string& order) const;
+  void hold(std::size_t i, const Entry& e, std::string order);
   void drop_lookups() noexcept;
   [[nodiscard]] static std::string lookup_key(std::size_t stream, const std::string& order_id);
   void commit(Stream& s, std::int64_t read_to) const;
@@ -302,6 +307,7 @@ class ReplaySchedulerBase {
   std::uint64_t next_held_ = 0;
   std::size_t held_waiting_ = 0;  // lookups the held rows wait for in this replay
   std::size_t lookups_sent_ = 0;  // in this replay
+  bool unresolved_ = false;       // emit_window: the row being emitted will be sent again
   std::size_t not_held_ = 0;      // rows sent naming no order past kMaxHeld, in this replay
   std::uint64_t lookups_total_ = 0;
 };

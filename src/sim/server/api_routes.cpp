@@ -243,6 +243,10 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
     case RestEndpoint::CancelOrder:
       return op_cancel(*acct, params);
     case RestEndpoint::QueryOrder:
+      if (faults_.fail_order_queries_next > 0) {
+        --faults_.fail_order_queries_next;
+        return OpResult::error(503, -1008, "Server is currently overloaded with other requests.");
+      }
       return op_query_order(*acct, params);
     case RestEndpoint::CancelReplace:
       return op_cancel_replace(*acct, params);

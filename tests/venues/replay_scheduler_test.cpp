@@ -427,7 +427,8 @@ TEST_CASE("replay_scheduler: a restart while a replay runs goes on from its star
 namespace {
 
 // Rows "<key>@<order>" name an order by the venue's id; the connector can name it once `named`
-// holds it. Emitted as "<key>+" (naming its order) or "<key>-" (naming none).
+// holds it. Emitted as "<key>+" (naming its order) or "<key>-" (naming none), "?" appended when
+// marked to be sent again (emitting_unresolved()).
 struct LookupRig {
   ReplayScheduler<std::string> sched;
   std::vector<ReplayQuery> queries;
@@ -464,7 +465,8 @@ struct LookupRig {
         limits,
         h,
         [this](std::size_t, const std::string& r) {
-          emitted.push_back(r.substr(0, r.find('@')) + (is_named(order_of(r)) ? "+" : "-"));
+          emitted.push_back(r.substr(0, r.find('@')) + (is_named(order_of(r)) ? "+" : "-") +
+                            (sched.emitting_unresolved() ? "?" : ""));
           return true;
         },
         [this](std::size_t, const std::string& r) {
@@ -512,7 +514,8 @@ TEST_CASE("replay_scheduler: rows naming an order by the venue's id wait for its
   r.look_up("1", LookupResult::Named);
   CHECK(r.emitted.empty());
   r.look_up("2", LookupResult::NotOurs);
-  CHECK(r.emitted == std::vector<std::string>{"a+", "b+", "c-", "d-", "e+"});
+  // d is sent again later: marked. c's order is not ours: it stays naming none, unmarked.
+  CHECK(r.emitted == std::vector<std::string>{"a+", "b+", "c-", "d-?", "e+"});
   REQUIRE(r.finished.size() == 1);
   CHECK(r.finished[0]);        // lookups do not make a replay incomplete
   CHECK(r.sched.held() == 1);  // d: over the budget; c's order is not ours
@@ -525,7 +528,7 @@ TEST_CASE("replay_scheduler: rows naming an order by the venue's id wait for its
   r.look_up("3", LookupResult::Named);
   r.answer({"f@2"});  // not ours: not asked again
   CHECK(r.lookups.size() == 3);
-  CHECK(r.emitted == std::vector<std::string>{"a+", "b+", "c-", "d-", "e+", "d+", "f-"});
+  CHECK(r.emitted == std::vector<std::string>{"a+", "b+", "c-", "d-?", "e+", "d+", "f-"});
   REQUIRE(r.finished.size() == 2);
   CHECK(r.finished[1]);
   CHECK(r.sched.held() == 0);
@@ -539,8 +542,8 @@ TEST_CASE("replay_scheduler: a failed lookup is asked again at the next replay, 
   r.answer({"a@1"});
   REQUIRE(r.lookups.size() == 1);
   r.look_up("1", LookupResult::Failed);
-  // Not held back: the row goes out naming no order, and its order is asked for again.
-  CHECK(r.emitted == std::vector<std::string>{"a-"});
+  // Not held back: the row goes out naming no order, marked, and its order is asked for again.
+  CHECK(r.emitted == std::vector<std::string>{"a-?"});
   REQUIRE(r.finished.size() == 1);
   CHECK(r.finished[0]);
   CHECK(r.sched.held() == 1);
@@ -550,17 +553,17 @@ TEST_CASE("replay_scheduler: a failed lookup is asked again at the next replay, 
   r.answer({});
   CHECK(r.finished.size() == 1);  // the replay waits for the lookup too
   r.look_up("1", LookupResult::Named);
-  CHECK(r.emitted == std::vector<std::string>{"a-", "a+"});
+  CHECK(r.emitted == std::vector<std::string>{"a-?", "a+"});
   CHECK(r.finished.size() == 2);
   CHECK(r.sched.held() == 0);
 
-  // One that keeps failing (or cannot be sent: no rate-limit headroom) is dropped after
-  // kMaxLookupAttempts replays.
+  // One that keeps failing (or cannot be sent: no rate-limit headroom) is given up after
+  // kMaxLookupAttempts replays: a last copy, unmarked, still naming no order.
   LookupRig f;
   f.can_look_up = false;
   REQUIRE(f.sched.run());
   f.answer({"a@7"});
-  CHECK(f.emitted == std::vector<std::string>{"a-"});
+  CHECK(f.emitted == std::vector<std::string>{"a-?"});
   for (std::uint32_t i = 0; i < ReplaySchedulerBase::kMaxLookupAttempts; ++i) {
     INFO("replay " << i);
     CHECK(f.sched.held() == 1);
@@ -571,7 +574,18 @@ TEST_CASE("replay_scheduler: a failed lookup is asked again at the next replay, 
   CHECK(f.sched.held() == 0);
   CHECK_FALSE(f.sched.retry_pending());
   CHECK(f.lookups.size() == 1 + ReplaySchedulerBase::kMaxLookupAttempts);
-  CHECK(f.emitted == std::vector<std::string>{"a-"});
+  CHECK(f.emitted == std::vector<std::string>{"a-?", "a-"});
+
+  // A retry the venue answers "not ours": the last copy, unmarked.
+  LookupRig n;
+  REQUIRE(n.sched.run());
+  n.answer({"a@9"});
+  n.look_up("9", LookupResult::Failed);
+  n.next_replay();
+  n.answer({});
+  n.look_up("9", LookupResult::NotOurs);
+  CHECK(n.emitted == std::vector<std::string>{"a-?", "a-"});
+  CHECK(n.sched.held() == 0);
 }
 
 TEST_CASE("replay_scheduler: a lookup never answered releases its window after kQueryTimeoutNs") {
@@ -583,7 +597,7 @@ TEST_CASE("replay_scheduler: a lookup never answered releases its window after k
   r.sched.on_timer(now + ReplaySchedulerBase::kQueryTimeoutNs - 1'000'000'000);
   CHECK(r.emitted.empty());
   r.sched.on_timer(now + ReplaySchedulerBase::kQueryTimeoutNs + 1'000'000);
-  CHECK(r.emitted == std::vector<std::string>{"a-", "b+"});
+  CHECK(r.emitted == std::vector<std::string>{"a-?", "b+"});
   REQUIRE(r.finished.size() == 1);
   CHECK(r.sched.held() == 1);
   // Its late answer is an earlier replay's: nothing moves.

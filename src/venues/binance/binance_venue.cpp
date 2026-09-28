@@ -1436,7 +1436,8 @@ bool BinanceVenue::emit_execution(std::size_t stream, const MyTradeRow& t) {
                                instruments_->get(id),
                                id,
                                mapped != nullptr ? *mapped : ClientOrderId{},
-                               t.view()))
+                               t.view(),
+                               exec_replay_.emitting_unresolved() ? OrderFillMsg::kUnresolved : 0))
     return false;
   ++stats_.order_events;
   ++stats_.executions_fetched;

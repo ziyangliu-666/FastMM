@@ -105,7 +105,8 @@ inline void emit_replayed_fill(EventSink& sink,
                                Notional fee,
                                FeeAsset fee_asset,
                                Liquidity liquidity,
-                               std::int64_t trade_time_ms) noexcept {
+                               std::int64_t trade_time_ms,
+                               std::uint8_t extra_flags = 0) noexcept {
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, inst, venue);
   m.hdr.exch_ts = Timestamp{trade_time_ms * 1'000'000};  // the venue's time of the trade
@@ -118,7 +119,7 @@ inline void emit_replayed_fill(EventSink& sink,
   m.side = side;
   m.liquidity = liquidity;
   m.fee_asset = fee_asset;
-  m.flags = OrderFillMsg::kReplayed;
+  m.flags = static_cast<std::uint8_t>(OrderFillMsg::kReplayed | extra_flags);
   m.hdr.recv_ts = wall_now();
   m.hdr.t0_cycles = rdtscp();
   static_cast<void>(sink.push(m.hdr));

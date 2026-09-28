@@ -1593,7 +1593,14 @@ bool BinanceUsdmVenue::emit_execution(std::size_t stream, const binance::MyTrade
   if (!instruments_->contains(id)) return false;
   const ClientOrderId* mapped = order_ids_.find(static_cast<std::uint64_t>(t.order_id));
   const ClientOrderId cl = mapped != nullptr ? current_id(*mapped) : ClientOrderId{};
-  if (!binance::emit_trade_history_fill(*order_sink_, id_, instruments_->get(id), id, cl, t.view()))
+  if (!binance::emit_trade_history_fill(
+          *order_sink_,
+          id_,
+          instruments_->get(id),
+          id,
+          cl,
+          t.view(),
+          exec_replay_.emitting_unresolved() ? OrderFillMsg::kUnresolved : 0))
     return false;
   ++stats_.order_events;
   ++stats_.executions_fetched;

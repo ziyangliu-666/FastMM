@@ -138,6 +138,8 @@ class SimExchangeServer {
   // The WebSocket API's openOrders.status answers `ms` late (0: at once), as they stood when asked:
   // a client's snapshot, and the sweep or reconciliation it is for, is held that long.
   void set_open_orders_delay_ms(std::uint32_t ms);
+  // The next `count` REST order queries (GET /api/v3/order) answer 503 -1008.
+  void fail_next_order_queries(std::uint32_t count);
   void reject_next_orders(std::uint32_t count);
   void fail_next_timestamp();
   void set_rest_unresponsive(bool unresponsive);
