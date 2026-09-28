@@ -62,7 +62,7 @@ Each part is a complete journal: it repeats the header, the instrument table, th
 | 80 | 32 | `strategy` | strategy name, NUL-padded |
 | 112 | 2 | `session_epoch` | client order id epoch (v2) |
 | 114 | 1 | `quoting_enabled` | 0 for a dry run (v2) |
-| 115 | 1 | `header_flags` | bit 0: the three session fields above are valid (v2) |
+| 115 | 1 | `header_flags` | bit 0: the three session fields above are valid (v2); bit 1: the engine replaced quotes per venue (without it, a replay replaces only if every traded venue could, as the engine did then) |
 | 116 | 4 | `config_bytes` | length of the configuration text; 0 = none (v2) |
 | 120 | 8 | `replace_venues` | bit v set when venue v traded with cancel-replace (v2) |
 | 128 | 4 | `config_crc32c` | CRC32C of the configuration text (v2) |

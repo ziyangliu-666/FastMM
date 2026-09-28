@@ -217,6 +217,9 @@ ReplayResult replay_impl(const std::string& path,
     deps.engine.fx = c.fx_plan(instruments);
   }
   if (cfg.underlying.configured()) deps.engine.underlying = cfg.underlying_plan(instruments);
+  // Recorded by an engine that replaced quotes only if every venue it traded could.
+  if (reader.has_session() && (header.header_flags & kHeaderReplacePerVenue) == 0)
+    deps.engine.quotes.replace_all_venues = true;
   if (session) {
     deps.engine.session_epoch = header.session_epoch;
     deps.engine.quoting_enabled = header.quoting_enabled != 0;

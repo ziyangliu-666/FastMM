@@ -131,7 +131,7 @@ A market-data channel with no traffic for `stale_ms` reports `ConnState::Stale`;
 2. It checks the client-side rate limiter (`include/fastmm/venues/rate_limiter.hpp`; Deribit's `CreditBucket`), then encodes into a fixed buffer with `JsonWriter` (`include/fastmm/venues/json_writer.hpp`), which never allocates and refuses to send a truncated request.
 3. Request ids are `<kind><client order id>` (`include/fastmm/venues/request_id.hpp`: kind `n`, `c`, `r` or `a` for an amend, 15 characters).
 4. Post-only maps to the venue's flag: Binance `LIMIT_MAKER`, Bybit `timeInForce` `PostOnly`, Deribit `post_only` with `reject_post_only`.
-5. Replace is used only when both `VenueCaps::supports_replace` and the config's `supports_replace` are true; otherwise the quote manager sends cancel and new.
+5. The quote manager replaces quotes on the venue's instruments only when `VenueCaps::supports_replace`, the venue's `supports_replace` and `[engine] supports_replace` are all true; otherwise it sends cancel and new.
 6. When a request cannot be sent (rate limit, fatal state, dry run), emit a reject to the order sink with `emit_order_reject()`; otherwise the OMS waits for an answer that never comes.
 
 Record encode and send latency in `VenueStatus::order_encode` and `order_send` (`include/fastmm/venues/wire_latency.hpp`). Inside a drain the send stamp of every order is the return of the drain's one write.

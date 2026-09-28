@@ -60,7 +60,7 @@ Check a maker rebate against the venue's published schedule. Binance spot pays n
 
 ## Several venues
 
-A run can hold instruments on several venues: quote one on venue A and hedge another on venue B. Each venue gets its own latency model (the first keeps `[backtest] seed`, the others derive theirs from it and the venue id), its own order and market-data connection, and its own replace and STP settings ([`[backtest.venues.<name>]`](../reference/configuration.md#backtestvenues)). The matching engine, the queue model and the books are shared, since an instrument lives on one venue.
+A run can hold instruments on several venues: quote one on venue A and hedge another on venue B. Each venue gets its own latency model (the first keeps `[backtest] seed`, the others derive theirs from it and the venue id), its own order and market-data connection, and its own replace and STP settings ([`[backtest.venues.<name>]`](../reference/configuration.md#backtestvenues)): quotes on a venue with replace are amended in place, on one without it cancelled and sent again. The matching engine, the queue model and the books are shared, since an instrument lives on one venue.
 
 Recorded feeds of the venues are merged by event time: `--data "binance:BTCUSDT,2024-03-27,venue=0; csv:other.csv,venue=1"`, or a list in Python (`data=[...]`). Each source's `venue=` must be the venue of its instruments in `[venues]` order. The venues' clocks are taken as they are: a feed stamped with local receive time and one stamped with venue time interleave wrongly by the difference.
 

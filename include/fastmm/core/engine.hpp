@@ -172,10 +172,14 @@ class Engine {
         params_stale_(cfg.max_param_age.ns > 0) {
     // Every hook the strategy declares must match the engine's call (strategies/hooks.hpp).
     static_assert(verify_strategy<Strategy, Context, Book>());
-    // Replace is only used if every venue we trade supports it (QuoteManager is global).
+    // Quotes are replaced in place on the instruments whose venue supports it; [engine]
+    // supports_replace = false turns replace off everywhere. replace_all_venues (a replay of a
+    // journal recorded before this was per venue) turns it off everywhere if one venue lacks it.
     QuoteParams qp = cfg.quotes;
     for (const Instrument& inst : instruments_) {
-      if (!transport_.supports_replace(inst.venue)) qp.supports_replace = false;
+      const bool venue_replace = transport_.supports_replace(inst.venue);
+      quotes_.set_replace(inst.id, venue_replace);
+      if (!venue_replace && qp.replace_all_venues) qp.supports_replace = false;
     }
     quotes_.set_params(qp);
     positions_.set_accounting(cfg.fx);

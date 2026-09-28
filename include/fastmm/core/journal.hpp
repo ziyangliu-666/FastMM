@@ -55,7 +55,10 @@ inline constexpr std::size_t kJournalBlockBytes = 1U << 20;
 inline constexpr std::size_t kJournalExtentBytes = 64U << 20;
 inline constexpr std::uint32_t kBlockFlagTrailer = 1U << 0;
 inline constexpr std::uint8_t kHeaderSession = 1U << 0;  // v2 session settings are valid
-inline constexpr std::size_t kJournalMaxParams = 32;     // parameter table entries (kMaxParams)
+// The engine replaced quotes per venue (replace_venues bit of the instrument's venue). Without it
+// a session journal comes from an engine that replaced only if every traded venue could.
+inline constexpr std::uint8_t kHeaderReplacePerVenue = 1U << 1;
+inline constexpr std::size_t kJournalMaxParams = 32;  // parameter table entries (kMaxParams)
 
 class ParamSchema;
 
@@ -77,7 +80,7 @@ struct JournalFileHeader {
   // ---- v2 (zero in v1 files) ----
   std::uint16_t session_epoch;   // client order id epoch (kHeaderSession)
   std::uint8_t quoting_enabled;  // 0 for a dry run (kHeaderSession)
-  std::uint8_t header_flags;     // kHeaderSession
+  std::uint8_t header_flags;     // kHeaderSession, kHeaderReplacePerVenue
   std::uint32_t config_bytes;    // effective config TOML after the instrument table (0 = none)
   std::uint64_t replace_venues;  // bit v: venue v used cancel-replace (kHeaderSession)
   std::uint32_t config_crc32c;   // of the config text
