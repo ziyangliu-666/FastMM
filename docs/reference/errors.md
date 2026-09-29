@@ -20,7 +20,7 @@ Each program defines its own exit codes. `1` from `fastmm-live` means the proces
 | 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok`; or, at start, a `max_loss` trip is latched in `[engine] kill_file` (nothing started) | yes | no: find the kill reason in the log; a latched trip needs `--clear-kill` |
 | 7 | a Python strategy's slow tier failed, `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` never returns it) | yes | no: fix the slow method |
 
-A restart after 5, 6 or 7 is a decision for a person; the systemd unit does not make it ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restarted session carries over: [Running this in production](../how-to/operations/running-in-production.md#1-what-survives-a-restart).
+A restart after 5, 6 or 7 is a decision for a person; the systemd unit does not make it ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restarted session carries over: [Run in production](../how-to/operations/running-in-production.md#restarts).
 
 `fastmm-gateway` uses the same codes: 0, 2, 3 (also an invalid `[gateway]` limit or a refused account setting), 4 (reference data), 5 (`cancel_all FAILED` or an uncaught error), and 6 when its kill file holds a latched `[gateway] max_loss` trip at start.
 
@@ -169,4 +169,4 @@ A running session's kill switch is cleared by `fastmm-ctl unkill` or SIGHUP; wit
 - [Troubleshooting](../how-to/operations/troubleshooting.md): every log message with its cause and fix.
 - [Status file](status-file.md): where the counters and reasons are published.
 - [Storage](storage.md): `sessions.clean_shutdown`, `journal_complete` and `records_dropped` say what a session's record is missing.
-- [Running this in production](../how-to/operations/running-in-production.md): the failures that have no error at all.
+- [Run in production](../how-to/operations/running-in-production.md): restarts, venue-side switches, monitoring and accounting.

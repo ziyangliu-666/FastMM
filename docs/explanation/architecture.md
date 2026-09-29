@@ -19,35 +19,20 @@ flowchart LR
 
 ## Threads
 
-```
-             ┌──────────────────────────── net thread (per venue) ────────────────────────────┐
- Venue WS ──►│ reactor ─ TLS (OpenSSL memory BIO) ─ WebSocket frames ─ simdjson ─ book sync    │──► md / order MsgRing ──┐
- Venue WS/REST◄ WebSocket write / HTTP/1.1 keep-alive ◄── order encoder + signer ◄──────────────│◄── outbound MsgRing ◄─┐ │
-             └────────────────────────────────────────────────────────────────────────────────┘                        │ │
-                                                                                                                        │ ▼
-   ┌──────────────────────────────── engine thread (pinned, busy-spin) ─────────────────────────────┐                  │
-   │  dispatch(switch on EventType) → L2/L3 book apply → Strategy hooks → QuoteManager diff         │                  │
-   │  → RiskEngine.check_new (O(1)) → OMS state machine → Transport.send(batch) ─────────────────────┼──────────────────┘
-   │  TimerWheel · PositionTracker · LatencyTracker(T0..T5) · JournalWriter(seq) · Seqlocked snapshots│
-   └───────────────────────────────────────────┬────────────────────────────────────────────────────┘
-                                               │ journal ring            per-thread log rings
-                                               ▼                                 ▼
-                       journal thread: .fmj append (CRC32C)      log sink thread: fmt formatting, FILE*
-                       main thread: control, stats, TSC recalibration, kill switch
-
-   Backtest / replay: SimClock + SimTransport(MatchingEngine + LatencyModel) + InlineFeed/JournalFeed
-```
-
 The live application (`fastmm-live`, `src/live/session.cpp`) runs a fixed set of threads for the whole session:
 
 | Thread | Owns | Waits by |
 |---|---|---|
-| `fm-net-<i>` (one per venue) | `net::Reactor`: sockets, TLS, WebSocket/HTTP, JSON decode, book sync, order encoding and signing, rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), busy (`spin_mode = busy`); `adaptive` polls while active and for 200 µs after, then waits with a 1 ms timeout, and the engine writes the wake eventfd only while it waits |
-| `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing, its `TscClock` copy | busy-spin; with `spin_mode = adaptive` it spins, then blocks on a futex the network threads signal after they push events (at most until the next timer, 1 ms) |
-| journal writer (when journaling) | `JournalFileWriter`: drains the journal ring into the `.fmj` file | spin, then timed waits growing from 50 µs to 1 ms |
-| `fm-store` (unless `[storage] backend = "none"`) | `StoreThread`: turns the engine's fill, order, position, kill and funding records into store rows | 2 ms sleeps when idle |
-| log sink (`Logger::start`) | formats log records from every thread's ring and writes them | spin, then timed waits growing from 50 µs to 10 ms (`flush()` and `stop()` wake it) |
-| main thread | control: parses the config, loads reference data, starts and stops the other threads, serves the control socket, posts `Venue::on_timer` and prints the stats line every second, writes the status file and the kill file every 250 ms, recalibrates the TSC every `[engine] tsc_recalibrate_s`, handles SIGINT/SIGTERM and `--duration` (kill switch, `cancel_all` on every venue over an independent REST connection) | 50 ms sleeps |
+| `fm-net-<i>`, one per venue | `net::Reactor`: sockets, TLS, WebSocket and HTTP, JSON decoding, book sync, order encoding and signing, the rate limiter, the venue's order latency histograms | `epoll_wait` or `io_uring_enter` (`[engine] net_backend`), or busy |
+| `fm-engine` | books, strategy, risk, OMS, quote manager, timers, positions, journal sequencing | busy spin, or a futex with `spin_mode = adaptive` |
+| journal writer | `JournalFileWriter`: the journal ring into the `.fmj` file | spin, then waits of 50 µs to 1 ms |
+| `fm-store` | `StoreThread`: fill, order, position, kill and funding records into store rows | 2 ms sleeps when idle |
+| log sink | formats every thread's log records and writes them | spin, then waits of 50 µs to 10 ms |
+| main | config, reference data, thread start and stop, the control socket, the stats line, the status and kill files, TSC recalibration, signals | 50 ms sleeps |
+
+With `spin_mode = adaptive` a network thread polls while active and for 200 µs after, then waits with a 1 ms timeout; the engine writes the wake eventfd only while it waits. The engine spins, then blocks on a futex that the network threads signal after they push events, at most until the next timer (1 ms). The journal writer runs when journaling is on, and `fm-store` unless `[storage] backend = "none"`. The log sink is woken by `flush()` and `stop()`.
+
+The main thread posts `Venue::on_timer` and prints the stats line every second, writes the status file and the kill file every 250 ms, recalibrates the TSC every `[engine] tsc_recalibrate_s`, and handles SIGINT, SIGTERM and `--duration`: kill switch, then `cancel_all` on every venue over an independent REST connection.
 
 All queues are single-producer/single-consumer (`MsgRing`, byte-oriented, variable-length 64-byte-aligned messages). N producers means N rings; the engine polls them round-robin, at most 64 messages per ring per visit, so one venue cannot starve another. The journal records events in the order the engine consumes them.
 
@@ -61,7 +46,7 @@ With `fastmm-live --gateway <socket>` there are no `fm-net-<i>` threads: the ven
 * Orders: `LiveTransport::set_direct` passes the engine's batch to `Venue::send_now`, which encodes and writes it with one write, as the network thread's drain of the outbound ring does. T4 to T5 is then encoding plus the write system call, and the engine's tick-to-trade ends with the order on the socket.
 * Order events, control messages, parameter rings and timers are taken by the step after each reactor iteration. An event the venue emits while the engine is running (an order it refuses) waits in its ring for that step: `drain()` does nothing when entered from inside the engine.
 
-The rings stay, as same-thread FIFOs. The journal thread, the log sink and the main thread are unchanged, and the journal records events in the order the engine consumed them, so `fastmm-replay` works the same way. The costs: while the engine works nobody reads the sockets, and a slow strategy hook delays the venue's heartbeats and timers too. Measured with `scripts/bench-e2e.sh`: [Benchmarks](benchmarks.md#end-to-end-over-veth).
+The rings stay, as same-thread FIFOs. The journal thread, the log sink and the main thread are unchanged, and the journal records events in the order the engine consumed them, so `fastmm-replay` works the same way. The costs: while the engine works nobody reads the sockets, and a slow strategy hook delays the venue's heartbeats and timers too. Measured with `scripts/bench-e2e.sh`: [Benchmarks](benchmarks.md).
 
 ## Network reactor
 
@@ -79,18 +64,16 @@ Both backends map events the same way: `POLLERR` calls `on_error(SO_ERROR)`, `PO
 
 The io_uring backend uses liburing 2.15, linked statically into `fastmm_net`; SQE preparation, submission and completion reaping are liburing's inline helpers.
 
-* **Ring.** `io_uring_queue_init_params` with 512 SQEs, 4096 CQEs, and `IORING_SETUP_SUBMIT_ALL`, `COOP_TASKRUN` and `TASKRUN_FLAG` on 5.19 and newer. `EXT_ARG` and `NODROP` are required. Registrations are queued and go out with the next wait, except `remove()`, which submits at once.
-* **Support probe.** `Reactor::io_uring_supported()` creates a small ring once and checks that a multishot poll on an eventfd can be updated and then reports `IORING_CQE_F_MORE`. It is false on ENOSYS, EPERM (`kernel.io_uring_disabled`, seccomp), ENOMEM and kernels older than 5.13; `fastmm-live` and the simulator then log a warning and use epoll.
-* **Stale completions.** `user_data` packs the operation (4 bits), a registration generation (28 bits) and the fd (32 bits). `add()` bumps the generation, so completions still queued for a removed registration, or for an earlier file that had the same fd number, are dropped.
-* **Re-arming.** A multishot poll that ends without `IORING_CQE_F_MORE` (CQ overflow, a racing update) is re-armed while its registration exists. An update or remove that races with a completing poll (`-EALREADY`) is retried. A poll the kernel refuses (for example `-EBADF`) is reported once through `on_error(errno)`.
-* **Descriptor lifetime.** A poll request holds a reference to its file, so a socket closed while still registered stays open (no FIN, port still bound) until the request is cancelled. Always `remove()` before `close()`, as the net classes do. If a socket number is reused while the old registration is still there, `add()` sees a different inode and cancels the stale request. eventfd and timerfd descriptors share one anonymous inode, so this check cannot tell two of them apart.
-* **Wake-ups.** A multishot poll reports every wake-up of the socket's wait queue, so a handler can be called for readiness it already consumed; it costs one read or write that returns EAGAIN.
+* Ring: `io_uring_queue_init_params` with 512 SQEs, 4096 CQEs, and `IORING_SETUP_SUBMIT_ALL`, `COOP_TASKRUN` and `TASKRUN_FLAG` on 5.19 and newer. `EXT_ARG` and `NODROP` are required. Registrations are queued and go out with the next wait, except `remove()`, which submits at once.
+* Support probe: `Reactor::io_uring_supported()` creates a small ring once and checks that a multishot poll on an eventfd can be updated and then reports `IORING_CQE_F_MORE`. It is false on ENOSYS, EPERM (`kernel.io_uring_disabled`, seccomp), ENOMEM and kernels older than 5.13; `fastmm-live` and the simulator then log a warning and use epoll.
+* Stale completions: `user_data` packs the operation (4 bits), a registration generation (28 bits) and the fd (32 bits). `add()` bumps the generation, so completions still queued for a removed registration, or for an earlier file that had the same fd number, are dropped.
+* Re-arming: A multishot poll that ends without `IORING_CQE_F_MORE` (CQ overflow, a racing update) is re-armed while its registration exists. An update or remove that races with a completing poll (`-EALREADY`) is retried. A poll the kernel refuses (for example `-EBADF`) is reported once through `on_error(errno)`.
+* Descriptor lifetime: A poll request holds a reference to its file, so a socket closed while still registered stays open (no FIN, port still bound) until the request is cancelled. Always `remove()` before `close()`, as the net classes do. If a socket number is reused while the old registration is still there, `add()` sees a different inode and cancels the stale request. eventfd and timerfd descriptors share one anonymous inode, so this check cannot tell two of them apart.
+* Wake-ups: A multishot poll reports every wake-up of the socket's wait queue, so a handler can be called for readiness it already consumed; it costs one read or write that returns EAGAIN.
 
 ### Backend latency
 
-`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends. On the development machine (WSL2, Linux 6.6, a shared 8-core host, 2026-09-23) the two are within measurement noise: p50 12.3 to 12.8 µs for both when client and server share one reactor; 10.75 µs for both with the server on its own busy-polling thread; 19.5 to 20.5 µs for both when both sides block and each round trip needs two cross-thread wake-ups. Loopback TCP and the `read`/`write` system calls dominate, and both backends make those calls the same way; io_uring saves only the empty `epoll_wait` of an idle busy-polling loop.
-
-The threaded variants are run unpinned, and the benchmark refuses to run with fewer than two cores in its affinity mask (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`): pinned to the same core as its echo thread, a busy-polling round trip costs a scheduler time slice. On a loaded host the busy variants still have runs a thousand times slower than their p50, because both spinning threads need a core of their own. `bench/README.md` gives the spread.
+`bench/bench_reactor.cpp` measures 64-byte loopback TCP echo round trips with both backends; they are within measurement noise of each other ([bench/README.md](../../bench/README.md)). Loopback TCP and the `read` and `write` system calls dominate, and both backends make those calls the same way; io_uring saves only the empty `epoll_wait` of an idle busy-polling loop. The threaded variants need two free cores and refuse to run with fewer in their affinity mask (`FASTMM_BENCH_NEEDS_CORES`, `bench/bench_pin.hpp`).
 
 ## Hot-path rules
 

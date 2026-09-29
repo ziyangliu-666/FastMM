@@ -1,13 +1,13 @@
 # Go-live checklist
 
-Repeat this list whenever the binary, config or strategy parameters change. Limits no configuration fixes are in [Running this in production](running-in-production.md); the economics of the shipped strategies are in [Economics](../../explanation/economics.md).
+Repeat this list whenever the binary, config or strategy parameters change. Operational background is in [Run in production](running-in-production.md); the economics of the shipped strategies are in [Economics](../../explanation/economics.md).
 
 ## The build and the strategy
 
 - [ ] The release build passes its tests: `ctest --preset release`.
 - [ ] You have run a backtest with the parameters you will use, for example `./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic` with your `[strategy.params]`.
 - [ ] It survives the simulated exchange with faults. Enable `[sim.faults]` in a copy of `configs/sim.toml` (market-data drop, order-channel drop, skipped depth update, delayed acks, rejects, rate limits; see [fastmm-sim-exchange](../../reference/sim-exchange.md#fault-injection)) and run `./scripts/run-sim.sh --duration 5m --sim-config <your sim config>`. Each ERROR line in the engine log follows from an injected fault, and the shutdown line says `cancel_all ok`.
-- [ ] A restart restores the position: `kill -9` a keyed session with a position, start it again, and check that it logs `restored position` and ends at the venue's position with no orders the dead process left ([What survives a restart](running-in-production.md#1-what-survives-a-restart)).
+- [ ] A restart restores the position: `kill -9` a keyed session with a position, start it again, and check that it logs `restored position` and ends at the venue's position with no orders the dead process left ([What survives a restart](running-in-production.md#restarts)).
 - [ ] The strategy is deterministic: record a backtest with `./build/release/bin/fastmm-backtest --config <your config> --data synthetic --out - --journal-out runs/bt/session.fmj` and replay it with `./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify`, which must exit with code 0.
 - [ ] A live session replays: replay the journal of the simulator run above (the log names it, `journal: <path>`) with `./build/release/bin/fastmm-replay --journal <path> --verify`, which must print `replay MATCH` and exit with code 0 ([Journals, replay and PnL](journals-replay-pnl.md#replay)). Do the same for a journal of the practice session below.
 

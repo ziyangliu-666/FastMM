@@ -287,7 +287,8 @@ target_link_libraries(echo-live PRIVATE echo_venue fastmm::live)
 Once market data works, record public frames from the venue's testnet with the connector:
 
 ```bash
-./build/release/bin/fastmm-live --config configs/foo-testnet.toml --dry-run --duration 60s --record-raw tests/fixtures/foo/raw
+./build/release/bin/fastmm-live --config configs/foo-testnet.toml --dry-run --duration 60s \
+    --record-raw tests/fixtures/foo/raw
 ```
 
 Each channel is appended to `<dir>/<venue>-<channel>.jsonl`, one frame per line prefixed with the receive timestamp and a tab. Cut single messages out into `tests/fixtures/foo/*.json`, remove keys, account ids and order ids that identify an account, and describe every file in `tests/fixtures/foo/fixtures.meta.json` as `recorded`, `synthesised from ...` or `docs-example (<url>)`, with the source URL and recording date (see `tests/fixtures/bybit/fixtures.meta.json`). Private payloads you cannot record yet come from the venue's documentation examples; say so in the meta file and in the CHANGELOG.

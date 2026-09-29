@@ -1,0 +1,128 @@
+# FastMM: xmm quoting BTCUSDT on Binance Spot Demo Mode and hedging on the Binance USDⓈ-M Demo
+# BTCUSDT perpetual. The settings of the 2026-09-29 Demo soak (docs/how-to/strategies/xmm.md).
+#   ./build/release/bin/fastmm-live --config configs/xmm-binance-demo.toml --dry-run --duration 60s
+# Keys: Binance Demo Trading HMAC keys with Spot and Futures enabled; USDT in the USDⓈ-M wallet,
+# one-way position mode, and BTC and USDT in the spot wallet:
+#   export FASTMM_BINANCE_API_KEY=... FASTMM_BINANCE_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/xmm-binance-demo.toml
+[engine]
+name = "xmm-binance-demo"
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+min_requote_ticks = 10
+min_requote_interval_ms = 500
+ack_timeout_ms = 0
+
+[venues.binance]
+kind = "binance_spot"
+ws_url = "wss://demo-stream.binance.com/stream"
+ws_api_url = "wss://demo-ws-api.binance.com/ws-api/v3"
+rest_url = "https://demo-api.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = true
+recv_window_ms = 3000
+stale_ms = 10000
+
+[venues.binance.fees]
+# The Demo account charges 10 bps; 4 here prices the quotes closer, so they fill on Demo.
+maker_bps = 4.0
+taker_bps = 10.0
+
+[venues.binance_usdm]
+kind = "binance_usdm"
+ws_url = "wss://demo-fstream.binance.com"
+ws_api_url = "wss://testnet.binancefuture.com/ws-fapi/v1"
+rest_url = "https://demo-fapi.binance.com"
+api_key = "${FASTMM_BINANCE_API_KEY}"
+api_secret = "${FASTMM_BINANCE_API_SECRET}"
+testnet = true
+supports_replace = false
+recv_window_ms = 3000
+stale_ms = 10000
+dead_mans_switch_ms = 60000
+
+[venues.binance_usdm.fees]
+maker_bps = 2.0
+taker_bps = 4.0
+
+# 0: quote instrument
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00001"
+min_qty = "0.00001"
+max_qty = "9000"
+min_notional = "5"
+enabled = true
+
+# 1: hedge instrument
+[[instruments]]
+venue = "binance_usdm"
+symbol = "BTCUSDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "perpetual"
+tick = "0.10"
+lot = "0.0001"
+min_qty = "0.0001"
+max_qty = "1000"
+min_notional = "50"
+enabled = true
+
+[strategy]
+name = "xmm"
+
+[strategy.params]
+quote_instrument = 0
+hedge_instrument = 1
+quote_qty = 0.002            # ~168 USDT: a fill is hedged at >= the USD-M minimum notional
+edge_bps = 0.0
+slippage_bps = 0.5
+hedge_tolerance_bps = 10.0
+basis_halflife_s = 600
+use_microprice = false
+max_unhedged = 0.004
+requote_threshold_ticks = 100   # 1 USDT on spot
+stale_ms = 5000
+hedge_retry_ms = 500
+max_hedge_failures = 5
+failure_window_ms = 60000
+uncertain_hold_ms = 5000
+
+[risk]
+max_order_qty = "0.005"
+max_order_notional = "500"
+max_position = "0.008"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 5000
+max_loss = "40"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

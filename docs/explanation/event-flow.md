@@ -2,15 +2,17 @@
 
 One market-data update in `fastmm-live`, from the venue's socket to an order on the wire and its fill back into the strategy. Backtests and replay run the same engine with a simulated clock, feed and transport ([Determinism](determinism.md)); threads and rings: [Architecture](architecture.md).
 
-```text
- network thread (per venue)                  engine thread                                           network thread
- ───────────────────────────                 ─────────────                                           ──────────────
- socket ─ TLS ─ WebSocket ─ parser ─ book sync ─► md ring ─► journal ─► book ─► risk marks ─► on_book ─► quote manager ─► risk check ─► OMS ─► outbound ring ─► encoder ─ signer ─ socket
-                                                                                                                                                              │
- socket ─ TLS ─ WebSocket ─ user-stream parser ──────────► order ring ─► journal ─► OMS ─► position ─► on_fill ─► on_order_update ◄──── venue ack / fill ◄──────┘
-
- multicast (nasdaq_itch): UDP A/B ─ MoldUDP64 ─ ITCH ─ L3 book ─► md ring ─► ...                                              ... outbound ring ─► OUCH encoder ─ socket
+```mermaid
+flowchart LR
+  RX["socket, TLS, WebSocket,<br/>parser, book sync"] -- "md ring" --> ENG["engine: journal, book,<br/>on_book"]
+  ENG --> QM["quote manager,<br/>risk check, OMS"]
+  QM -- "outbound ring" --> TX["encoder, signer,<br/>socket"]
+  TX --> V["venue"]
+  V -- "ack, fill" --> US["user-stream parser"]
+  US -- "order ring" --> OE["engine: journal, OMS,<br/>position, on_fill"]
 ```
+
+The network threads run the left and right ends; the engine thread runs the middle. On `nasdaq_itch` the receive side is UDP lines A and B, MoldUDP64, ITCH and an L3 book, and orders go out through the OUCH encoder.
 
 ## 1. Receive and normalise (network thread)
 
@@ -46,9 +48,9 @@ The hook reads what it needs through `ctx` (book, position, working orders, para
 
 The quote manager compares each desired level with the order in the same slot:
 
-- **keep** it when the price is within `min_requote_ticks` and the remaining quantity covers `min_qty_bps` of the desired one, or when the slot changed less than `min_requote_interval_ms` ago;
-- **replace** it when the venue and `supports_replace` allow;
-- otherwise **cancel** it and send a **new** order.
+- keep it when the price is within `min_requote_ticks` and the remaining quantity covers `min_qty_bps` of the desired one, or when the slot changed less than `min_requote_interval_ms` ago;
+- replace it when the venue and `supports_replace` allow;
+- otherwise cancel it and send a new order.
 
 Orders waiting for a venue response are never touched until the response arrives, and a side that the venue rejected recently is paused (`reject_backoff_ms`). Direct orders from `ctx.send` skip this step.
 
@@ -66,8 +68,8 @@ The venue's acknowledgement or fill arrives on the user stream and takes steps 1
 
 ## 10. Everything else
 
-- **Timers** fire from a timer wheel in engine time, between events; each firing is journaled as a synthetic `Timer` message and calls `on_timer`.
-- **Connection changes**: for any state other than `Live` the engine pulls the venue's quotes and, for market data, clears its books, then calls `on_connection`. After an order-channel reconnect the connector replays the executions since the last one booked, then sends a reconciliation (Begin, open orders, positions where the venue has them, End) that aligns the OMS with the venue; quotes are paused during it and restored at the end. Every connector with order entry also replays executions once a minute, which books a fill the stream dropped without a disconnect.
-- **Funding** payments of perpetuals arrive on the order ring as `Funding` events and are booked as realized PnL of the instrument, once per venue id; `max_loss` is checked at once. There is no strategy hook.
-- **Quoting changes**: after each event or timer, if `ctx.quoting_enabled()` changed, the engine calls `on_quoting`.
-- **Shutdown**: the control thread requests the kill switch (quotes pulled, orders cancelled through the engine) and independently cancels all orders on each venue over REST, then stops the threads ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).
+- Timers fire from a timer wheel in engine time, between events; each firing is journaled as a synthetic `Timer` message and calls `on_timer`.
+- Connection changes: for any state other than `Live` the engine pulls the venue's quotes and, for market data, clears its books, then calls `on_connection`. After an order-channel reconnect the connector replays the executions since the last one booked, then sends a reconciliation (Begin, open orders, positions where the venue has them, End) that aligns the OMS with the venue; quotes are paused during it and restored at the end. Every connector with order entry also replays executions once a minute, which books a fill the stream dropped without a disconnect.
+- Funding payments of perpetuals arrive on the order ring as `Funding` events and are booked as realized PnL of the instrument, once per venue id; `max_loss` is checked at once. There is no strategy hook.
+- Quoting changes: after each event or timer, if `ctx.quoting_enabled()` changed, the engine calls `on_quoting`.
+- Shutdown: the control thread requests the kill switch (quotes pulled, orders cancelled through the engine) and independently cancels all orders on each venue over REST, then stops the threads ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md)).

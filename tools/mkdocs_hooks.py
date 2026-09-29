@@ -1,7 +1,8 @@
 """MkDocs hooks for the FastMM site (mkdocs.yml `hooks:`).
 
-Three jobs:
+Four jobs:
 
+  * `on_page_markdown` hides the navigation sidebar on the home page;
   * `on_page_markdown` turns a relative link that leaves `docs/` (to a test, an example or
     `CONTRIBUTING.md`) into a link to the same file on GitHub, so the pages stay browsable on
     GitHub and `tools/docs_links.py --check` keeps passing while the site has no dead links;
@@ -61,6 +62,9 @@ def _rewrite_target(target: str, page_dir: Path, docs_dir: Path, repo_url: str) 
 
 
 def on_page_markdown(markdown: str, page, config, files) -> str:  # noqa: ANN001, ARG001
+    if page.is_homepage:
+        # The home page is short: no navigation sidebar (front matter would show on GitHub).
+        page.meta.setdefault("hide", ["navigation"])
     repo_url = config.get("repo_url")
     if not repo_url:
         return markdown

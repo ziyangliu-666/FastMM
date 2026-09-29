@@ -1,6 +1,6 @@
 # How FastMM works
 
-One page on the thread model, the path an event takes and what the engine does and does not guarantee. [Architecture](architecture.md) and [Event flow](event-flow.md) give the detail.
+FastMM runs every trading decision on one thread and records every event before acting on it. [Architecture](architecture.md) and [Event flow](event-flow.md) give the detail.
 
 ## One engine thread owns the trading state
 
@@ -11,7 +11,7 @@ Everything else is a producer or consumer around that thread:
 | Thread | Does | Talks to the engine through |
 |---|---|---|
 | `fm-net-<i>`, one per venue | sockets, TLS, WebSocket or MoldUDP64 framing, JSON or binary decoding, book sync, order encoding and signing | two SPSC rings in (market data, order events), one out (outbound orders) |
-| `fm-engine` | applies events, runs the strategy, diffs quotes, checks risk, updates the OMS | — |
+| `fm-engine` | applies events, runs the strategy, diffs quotes, checks risk, updates the OMS | |
 | journal writer | appends the journal ring to the `.fmj` file | the journal ring |
 | `fm-store` | writes fills, orders, positions, kills and funding to the store | the record ring |
 | log sink | formats and writes log records | a ring per thread |
@@ -34,31 +34,30 @@ With `[engine] threading = "single"` (one venue only) the network thread disappe
 
 The venue's acknowledgement or fill comes back on the order-event ring and re-enters at step 3.
 
-## What the engine guarantees
+## Guarantees
 
 | Guarantee | How it holds | Where it stops |
 |---|---|---|
 | A refused order is never sent | the risk check runs on the engine thread between the quote manager and the OMS | limits you did not set are not checked; a limit of `0` is off |
 | Cancels always go out | the risk checks skip cancels, also while the kill switch is set | the venue can still refuse or lose one |
-| Every consumed event is recorded before it is acted on | `JournalWriter::record_at` runs before `dispatch` in `Engine::process` | the record reaches a ring, not the disk ([durability](../how-to/operations/running-in-production.md#the-journal-is-durable-against-a-crash-not-against-power-loss)) |
+| Every consumed event is recorded before it is acted on | `JournalWriter::record_at` runs before `dispatch` in `Engine::process` | the record reaches a ring, not the disk ([durability](../how-to/operations/running-in-production.md#durability)) |
 | Replaying a journal sends the same order messages | the clock, feed, transport and RNG are compile-time policies fed from the journal ([Determinism](determinism.md)) | needs the same binary and the embedded config |
 | Order events are never silently dropped | a full order-event ring trips the kill switch and ends the session (exit code 5) | market-data messages are dropped on a full ring, which forces a resync |
 | Client order ids are unique across restarts | `[engine] epoch_file` counts sessions into the upper 32 bits of the id | delete or lose the file and ids repeat |
 | The engine thread does not allocate or block | fixed-capacity pools and rings, no heap after start-up (`tests/hotpath` counts global `operator new`) | with `spin_mode = "adaptive"` the engine sleeps when idle and writes the network thread's eventfd when it sends |
 
-## What the engine does not guarantee
+## Restarts, accounts and monitoring
 
-| Not guaranteed | What that means for you |
+| Topic | What happens |
 |---|---|
-| Everything survives a restart | the position carries over from the store, and the kill switch and `max_loss` budget from `<engine>.kill`; the previous session's open orders are cancelled at the first reconciliation, and the books are rebuilt from the venue's snapshot |
-| Fills that arrive while the private stream is down are booked exactly | every connector replays the trade history before reconciling and once a minute; a replay that fails is retried every 5 s, and until then the reconciliation is counted as an estimate |
-| PnL adds up across settlement currencies | only with `[accounting]`: inverse contracts are valued in their base coin, linear ones in their quote currency, and the totals, `max_loss` and the exposure caps are converted to one reporting currency at the mid of an FX source instrument; with no current rate, new exposure in that currency is refused. Without it a session or gateway whose instruments settle in more than one currency refuses to start with `max_loss` set, and its PnL totals add unrelated numbers |
-| Monitoring beyond a pull | a status file, `fastmm-top` and its Prometheus endpoint, all published every 250 ms; the engine pushes nothing and alerts on nothing |
-| Risk across processes | `max_loss`, `max_gross_notional` and `max_net_notional` cover one session; across strategies only `fastmm-gateway`'s `[gateway]` limits see the account |
-| The venue's margin, balance or position limits | the venue enforces them; its rejection is a reject like any other |
-| Profit | the shipped strategies are reference implementations ([Economics](economics.md)) |
+| Restart | the position carries over from the store, and the kill switch and `max_loss` budget from `<engine>.kill`; the previous session's open orders are cancelled at the first reconciliation, and the books are rebuilt from the venue's snapshot. No order goes out until every venue has replayed its executions and reconciled |
+| Fills missed while the private stream was down | every connector replays the trade history before reconciling and once a minute; a failed replay is retried every 5 s, and until then the reconciliation is counted as an estimate |
+| Several settlement currencies | `[accounting]` converts inverse (base-coin) and linear (quote-currency) PnL, `max_loss` and the exposure caps to one reporting currency at the mid of an FX source instrument; with no current rate, new exposure in that currency is refused. Without it, a session or gateway with mixed settlement currencies refuses to start with `max_loss` set |
+| Monitoring | the status file, `fastmm-top` and its Prometheus endpoint, published every 250 ms; `deploy/prometheus/fastmm-alerts.yml` holds the alerting rules ([Monitor a session](../how-to/operations/monitor-with-fastmm-top.md)) |
+| Risk across processes | `max_loss`, `max_gross_notional` and `max_net_notional` cover one session; `fastmm-gateway`'s `[gateway]` limits cover the account across strategies |
+| Venue margin, balance and position limits | enforced by the venue; its rejection is a reject like any other |
 
-Each of these is spelled out with its mitigation in [Running this in production](../how-to/operations/running-in-production.md).
+The operator's side of each row, with what to set, is in [Run in production](../how-to/operations/running-in-production.md).
 
 ## Where the same code runs
 
@@ -70,9 +69,4 @@ Each of these is spelled out with its mitigation in [Running this in production]
 | Replay | simulated, set to the recorded engine clock | the journal, in recorded order | the recorded acknowledgements |
 | Live | TSC calibrated against wall time | the network threads' rings | the venue |
 
-## Next
-
-- [Running this in production](../how-to/operations/running-in-production.md): what breaks and what is not covered.
-- [Economics of the shipped strategies](economics.md): what the example backtest and a live session earned, and the fees they have to beat.
-- [Architecture](architecture.md): threads, rings, the reactor and the clock, in full.
-- [Event flow](event-flow.md): the same path with the venue-specific steps.
+Next: [Run in production](../how-to/operations/running-in-production.md), [Economics](economics.md), [Architecture](architecture.md), [Event flow](event-flow.md).

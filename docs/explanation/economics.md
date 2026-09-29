@@ -1,13 +1,14 @@
 # Economics of the shipped strategies
 
-`basic_mm`, `avellaneda_stoikov`, `options_mm` and `xmm` are reference implementations of published quoting rules, written to show the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge. None has been shown to make money at a fee schedule you can get. [Running this in production](../how-to/operations/running-in-production.md) covers the operational side.
+`basic_mm`, `avellaneda_stoikov`, `options_mm` and `xmm` are reference implementations of published quoting rules, written to show the engine's API. `lead_mm` joins the touch of a thin pair when a liquid leader's mid, converted by an FX pair, leaves enough edge. None has been shown to make money at a fee schedule you can get.
 
 ## The example backtest and the fee table
 
 `configs/backtest-example.toml` charges Binance spot VIP 0, `[venues.sim.fees] maker_bps = 10.0`:
 
 ```bash
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic --out -
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml \
+    --data synthetic --out -
 ```
 
 ```text
@@ -55,7 +56,7 @@ Two one-hour `basic_mm` sessions on BTCUSDT in Binance Demo Mode, at the account
 
 ## The arithmetic you have to beat
 
-A round trip pays the maker fee twice. To break even, the half spread you actually capture, after adverse selection, must exceed the maker fee:
+A round trip pays the maker fee twice. To break even, the half spread you capture, after adverse selection, must exceed the maker fee:
 
 ```text
 captured_half_spread_bps  >  maker_fee_bps
@@ -64,7 +65,8 @@ captured_half_spread_bps  >  maker_fee_bps
 Widening the quote does not solve it, because the fill rate falls faster than the spread rises. `basic_mm`'s default `half_spread_bps = 5` fills nothing in the synthetic market:
 
 ```bash
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic --param half_spread_bps=5 --out -
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml \
+    --data synthetic --param half_spread_bps=5 --out -
 ```
 
 ```text
@@ -78,7 +80,7 @@ Widening the quote does not solve it, because the fill rate falls faster than th
 
 | Not modelled | Consequence |
 |---|---|
-| Informed order flow | Spread capture is an upper bound; adverse selection is 0 |
+| Informed order flow | Adverse selection is 0 |
 | Market impact of your own quotes | Other participants do not react to you |
 | Queue position on `l2_queue` beyond `queue_conservatism` | Fill counts are an optimistic estimate |
 | Venue rate limits, throttles and maintenance windows | Fill and cancel counts are higher than a real session's |
@@ -91,4 +93,4 @@ Widening the quote does not solve it, because the fill rate falls faster than th
 - Run the backtest with your venue's real `maker_bps` and `taker_bps`.
 - Compare realised PnL against fees: if `realized` is smaller than `fees`, the strategy is paying the venue to trade.
 - Run the practice session in [Run on a testnet or Binance Demo](../how-to/operations/run-on-testnet.md), then reconcile it against the account ([Check PnL](../how-to/operations/journals-replay-pnl.md#check-pnl)). A testnet's thin book will not reproduce the fill rate; Demo Mode follows the real market and charges the real commission.
-- Set `[risk] max_loss` to what you accept losing across restarts: the budget is carried in `<journal_dir>/<name>.kill` until you clear it ([Running this in production](../how-to/operations/running-in-production.md#1-what-survives-a-restart)). It is not a daily budget.
+- Set `[risk] max_loss` to what you accept losing across restarts: the budget is carried in `<journal_dir>/<name>.kill` until you clear it ([Run in production](../how-to/operations/running-in-production.md#restarts)). It is not a daily budget.

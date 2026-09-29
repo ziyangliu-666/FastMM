@@ -153,7 +153,7 @@ A Python strategy is as deterministic as its own code. The engine clock, event o
 
 ## Performance
 
-The GIL is held for the whole run of a Python strategy (C++ strategies release it). Measured with `python bench/python/bench_py_strategy.py --seconds 3600 --repeat 5` (1,356,426 market-data events of the synthetic L2 queue market; gcc 13 release module, Python 3.12, WSL2 on an 8-thread desktop):
+The GIL is held for the whole run of a Python strategy (C++ strategies release it). Measured with `python bench/python/bench_py_strategy.py --seconds 3600 --repeat 5` (1,356,426 market-data events of the synthetic L2 queue market; gcc 13 release module, Python 3.12, AMD Ryzen 7 7800X3D under WSL2):
 
 | Case | Wall time | Events/s end to end |
 |---|---|---|
@@ -280,7 +280,7 @@ With `hot_cache=True` compiled hooks are stored under `$FASTMM_CACHE_DIR/numba/`
 
 ### Performance
 
-Measured with `python bench/python/bench_hot_strategy.py --build build/release` (gcc 13 release module, numba 0.67.0, Python 3.12, WSL2 on an 8-core desktop, one core). Cost of one `on_book` call without the engine, on the same books, positions and parameters (`levels = 2`):
+Measured with `python bench/python/bench_hot_strategy.py --build build/release` (gcc 13 release module, numba 0.67.0, Python 3.12, AMD Ryzen 7 7800X3D under WSL2, one core). Cost of one `on_book` call without the engine, on the same books, positions and parameters (`levels = 2`):
 
 | Case | ns per call |
 |---|---|

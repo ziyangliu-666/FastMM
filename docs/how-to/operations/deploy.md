@@ -13,8 +13,9 @@ The tarball and the image are built for x86-64-v2 and need glibc of the build ho
 ## Install the tarball
 
 ```bash
-curl -LO https://github.com/ziyangliu-666/FastMM/releases/download/v0.2.0/fastmm-0.2.0-x86_64.tar.gz
-curl -LO https://github.com/ziyangliu-666/FastMM/releases/download/v0.2.0/fastmm-0.2.0-x86_64.tar.gz.sha256
+URL=https://github.com/ziyangliu-666/FastMM/releases/download/v0.2.0
+curl -LO $URL/fastmm-0.2.0-x86_64.tar.gz
+curl -LO $URL/fastmm-0.2.0-x86_64.tar.gz.sha256
 sha256sum -c fastmm-0.2.0-x86_64.tar.gz.sha256
 sudo tar xzf fastmm-0.2.0-x86_64.tar.gz -C /opt
 sudo ln -sfn /opt/fastmm-0.2.0-x86_64 /opt/fastmm
@@ -38,7 +39,7 @@ sudo install -m 0644 /opt/fastmm/deploy/fastmm-live.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl start fastmm-live
 ```
 
-`/etc/fastmm/fastmm-live.env` holds `FASTMM_CONFIG` and the API keys the config reads as `${VAR}`, root-owned, mode 0600. An unset variable exits 2 before anything connects ([Keys](running-in-production.md#9-keys)).
+`/etc/fastmm/fastmm-live.env` holds `FASTMM_CONFIG` and the API keys the config reads as `${VAR}`, root-owned, mode 0600. An unset variable exits 2 before anything connects ([Keys](running-in-production.md#keys)).
 
 ```ini
 FASTMM_CONFIG=/etc/fastmm/live.toml
@@ -50,14 +51,14 @@ What the unit sets:
 
 | Directive | Why |
 |---|---|
-| `Restart=on-failure`, `RestartPreventExitStatus=2 3 5 6 7` | a crash (any signal, `kill -9` included) or exit 4 restarts after 2 s: the new session restores the position from the store and the venue's executions and cancels the orders the dead one left ([Running this in production](running-in-production.md#1-what-survives-a-restart)). 2 and 3 need a config fix, and 5, 6 and 7 a human ([Errors and exit codes](../../reference/errors.md)); a latched kill switch exits 6 at every start. `StartLimitBurst=5` in ten minutes ends a crash loop |
+| `Restart=on-failure`, `RestartPreventExitStatus=2 3 5 6 7` | a crash (any signal, `kill -9` included) or exit 4 restarts after 2 s: the new session restores the position from the store and the venue's executions and cancels the orders the dead one left ([Run in production](running-in-production.md#restarts)). 2 and 3 need a config fix, and 5, 6 and 7 a human ([Errors and exit codes](../../reference/errors.md)); a latched kill switch exits 6 at every start. `StartLimitBurst=5` in ten minutes ends a crash loop |
 | `TimeoutStopSec=90` | SIGTERM pulls the quotes and cancels every order over REST before the process exits ([Kill switch and shutdown](kill-switch-and-shutdown.md)) |
 | `LimitMEMLOCK=infinity` | `[engine] lock_memory = true` calls `mlockall()`, which fails with a warning without it. Drop the line when `lock_memory` is off |
 | `CPUAffinity=2 3` | the cores the process may use, a superset of `[engine] cpu` and `net_cpus` and disjoint from everything else on the host. Pair it with `isolcpus`, `nohz_full` and `rcu_nocbs` (`scripts/host-setup.sh tune`), and delete the line on a shared host, where `cpu = -1` ([Go-live checklist](go-live-checklist.md)) |
 | `MemorySwapMax=0`, `OOMScoreAdjust=-500` | a swapped-out or OOM-killed engine leaves orders resting at the venue with nothing to cancel them |
 | `ReadWritePaths=/var/lib/fastmm` | `ProtectSystem=strict` makes the rest of the filesystem read-only; journals, the epoch file and the kill file live here |
 
-Logs: stderr carries the lines at `[logging] mirror_level` and above, so `journalctl -u fastmm-live -f` shows the warnings and errors, and `[logging] file` takes the full log for a rotation you own. Journal files grow without a cap ([The journal](running-in-production.md#5-the-journal)).
+Logs: stderr carries the lines at `[logging] mirror_level` and above, so `journalctl -u fastmm-live -f` shows the warnings and errors, and `[logging] file` takes the full log for a rotation you own. Journal files grow without a cap ([The journal](running-in-production.md#the-journal)).
 
 ```bash
 systemctl status fastmm-live                 # the exit code of the last run
@@ -92,8 +93,4 @@ Other programs run through the same entrypoint by name: `docker run --rm -v "$PW
 
 Build it from a checkout with `docker build -f docker/Dockerfile.production -t fastmm:local .`. `docker/Dockerfile` and `docker-compose.yml` are the demo instead: they run as root with test certificates and a simulated exchange ([Install](../../getting-started/install.md#docker)).
 
-## Related
-
-- [Go-live checklist](go-live-checklist.md): the list to run before every session.
-- [Operations runbook](runbook.md): first deploy, daily checks, what to do when something fires.
-- [Running this in production](running-in-production.md): what breaks, and the mitigation for each.
+Next: [Run in production](running-in-production.md), then the [Go-live checklist](go-live-checklist.md).

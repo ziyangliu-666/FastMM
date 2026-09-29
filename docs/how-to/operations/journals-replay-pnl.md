@@ -16,7 +16,7 @@ Next to the journal, `[storage]` writes the same session as rows: fills, orders,
 
 ## Read a journal
 
-`fastmm report runs/demo-1/session.fmj` writes the session as one HTML page — equity, inventory, fees, order and reject counts — beside the journal ([Run report](../../reference/run-report.md)). For the events themselves, `tools/journal_dump.py` needs only Python 3:
+`fastmm report runs/demo-1/session.fmj` writes the session as one HTML page (equity, inventory, fees, order and reject counts) beside the journal ([Run report](../../reference/run-report.md)). For the events themselves, `tools/journal_dump.py` needs only Python 3:
 
 ```bash
 python3 tools/journal_dump.py runs/demo-1/session.fmj --type OrderFill --first 3
@@ -40,7 +40,8 @@ A journal recorded by `fastmm-live` or by `fastmm-backtest --journal-out` replay
 
 ```bash
 ./build/release/bin/fastmm-replay --journal runs/sim-local-1789370000000000000.fmj --verify
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic --out - --journal-out runs/bt/session.fmj
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic \
+    --out - --journal-out runs/bt/session.fmj
 ./build/release/bin/fastmm-replay --journal runs/bt/session.fmj --verify
 ```
 
@@ -86,7 +87,8 @@ A mismatch with the embedded configuration and the same binary is a determinism 
 `fastmm-data fill-check` measures how well `[backtest] fill_model = "l2_queue"` predicts the passive fills of a live session. It does not re-run the strategy. It takes the orders the session had resting, each from its ack until its cancel ack, last fill or expiry in venue time, puts each one behind the quantity displayed at its price at the ack's venue time, and feeds the queue model the journal's book deltas, trades and book tickers in venue time order, the way a backtest does. A book ticker newer than the depth (by the venue's update id when both carry one, else by venue time) caps the queue: an order priced better than its touch has nothing ahead, an order at the touch at most the touch's quantity less ours. A replace follows the new order id. Orders that crossed the book at the ack, market, IOC and FOK orders are left out.
 
 ```bash
-./build/release/bin/fastmm-data fill-check runs/demo-1/session.fmj --csv runs/demo-1/fill-check.csv
+./build/release/bin/fastmm-data fill-check runs/demo-1/session.fmj \
+    --csv runs/demo-1/fill-check.csv
 ```
 
 The one-hour Binance Demo session quoting at the touch ([Example](#example-binance-demo)):

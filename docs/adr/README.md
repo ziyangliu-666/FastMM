@@ -1,6 +1,6 @@
 # Design records
 
-One record per decision, written when it was taken and not edited afterwards except by an amendment. They explain why the code is the way it is; they are not a description of what the code does today. For that, read [Architecture](../explanation/architecture.md) and the [reference](../README.md#reference).
+One record per decision, written when it was taken and not edited afterwards except by an amendment. They explain why the code is the way it is; [Architecture](../explanation/architecture.md) and the reference pages describe what it does today.
 
 | # | Decision | Status |
 |---|---|---|

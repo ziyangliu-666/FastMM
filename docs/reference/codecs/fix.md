@@ -120,7 +120,7 @@ F and G require Side, OrderQty and OrdType, which `OutCancelMsg` / `OutReplaceMs
 
 ## Performance
 
-`bench/bench_codecs_fix.cpp`, from [bench/README.md](../../../bench/README.md) (`scripts/bench.sh`, preset `release-native`, gcc 13, an 8-core desktop under WSL2, pinned, median of 5 repetitions, 2026-09-23):
+`bench/bench_codecs_fix.cpp`, from [bench/README.md](../../../bench/README.md) (`scripts/bench.sh`, preset `release-native`, gcc 13, AMD Ryzen 7 7800X3D under WSL2, pinned, median of 5 repetitions, 2026-09-23):
 
 | benchmark | p50 |
 |---|---|
@@ -148,7 +148,7 @@ Budgets: `bench/ci_budget.toml`.
 * FIX Trading Community, FIX session-level test cases and expected behaviours (MsgSeqNum too low, PossDup handling, OrigSendingTime later than SendingTime), from secondary summaries only.
 * Known-answer check: the ExecutionReport example of the Wikipedia article "Financial Information eXchange" (BodyLength 178, CheckSum 128).
 
-## Limitations and unverified details
+## Unhandled fields and open questions
 
 * Session rules come from the dictionary's message descriptions and secondary summaries of the session test cases. Not confirmed against FIX 4.4 Volume 2 (session protocol):
   * GapFill messages sent in reply to a ResendRequest carry PossDupFlag=Y (implemented);

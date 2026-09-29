@@ -7,7 +7,12 @@ All integers are little-endian. Prices, quantities and notionals are raw fixed-p
 ## File layout
 
 ```text
-file   := header (256 B) | instrument[instrument_count] (128 B each) | config (config_bytes, padded to 64) | params (param_table_bytes, padded to 64) | meta (meta_bytes, padded to 64) | block* | trailer
+file   := header (256 B)
+          | instrument[instrument_count] (128 B each)
+          | config (config_bytes, padded to 64)
+          | params (param_table_bytes, padded to 64)
+          | meta (meta_bytes, padded to 64)
+          | block* | trailer
 block  := block header (64 B) | message* (byte_len bytes)
 ```
 

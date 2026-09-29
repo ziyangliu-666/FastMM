@@ -1,7 +1,7 @@
 # FastMM documentation site (MkDocs + Material). Preview: ./scripts/docs-serve.sh
 # The Markdown under docs/ is the source and stays readable on GitHub; this file only orders it.
 site_name: FastMM
-site_description: A market-making engine in C++20. Backtests, replay and live trading run the same strategy code.
+site_description: A C++20 market-making engine that quotes on one venue, hedges on another, and turns a book update into an order in about 120 ns.
 site_url: https://ziy.bio/FastMM/
 site_author: Ziyang Liu
 repo_url: https://github.com/ziyangliu-666/FastMM
@@ -26,20 +26,19 @@ theme:
       toggle: { icon: material/brightness-auto, name: Follow the system theme }
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle: { icon: material/brightness-7, name: Switch to dark mode }
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle: { icon: material/brightness-4, name: Switch to light mode }
   font:
-    text: Roboto
-    code: Roboto Mono
+    text: Inter
+    code: JetBrains Mono
   features:
     - navigation.tabs
-    - navigation.tabs.sticky
     - navigation.sections
     - navigation.indexes
     - navigation.top
@@ -47,9 +46,9 @@ theme:
     - navigation.footer
     - search.suggest
     - search.highlight
-    - search.share
     - toc.follow
     - content.code.copy
+    - content.tabs.link
     - content.action.edit
     - content.tooltips
 
@@ -110,7 +109,11 @@ markdown_extensions:
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.keys
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.tasklist:
@@ -150,29 +153,33 @@ nav:
       - Backtesting:
           - how-to/backtesting/binance-public-data.md
       - Strategies:
-          - how-to/strategies/register-a-strategy.md
           - how-to/strategies/xmm.md
+          - how-to/strategies/register-a-strategy.md
           - how-to/strategies/python-hot-hooks.md
           - how-to/strategies/python-slow-methods.md
           - how-to/strategies/python-live.md
       - Venues:
           - how-to/venues/add-a-venue.md
       - Operations:
-          - how-to/operations/run-on-testnet.md
-          - how-to/operations/deploy.md
-          - how-to/operations/running-in-production.md
-          - how-to/operations/runbook.md
-          - how-to/operations/go-live-checklist.md
-          - how-to/operations/operate-a-running-session.md
-          - how-to/operations/run-behind-a-gateway.md
-          - how-to/operations/kill-switch-and-shutdown.md
-          - how-to/operations/journals-replay-pnl.md
-          - how-to/operations/query-trading-records.md
-          - how-to/operations/monitor-with-fastmm-top.md
-          - how-to/operations/multicast-feeds.md
-          - how-to/operations/low-latency-tcp.md
-          - how-to/operations/two-host-benchmark.md
-          - how-to/operations/troubleshooting.md
+          - Go live:
+              - how-to/operations/run-on-testnet.md
+              - how-to/operations/deploy.md
+              - how-to/operations/running-in-production.md
+              - how-to/operations/go-live-checklist.md
+              - how-to/operations/runbook.md
+          - Operate a session:
+              - how-to/operations/operate-a-running-session.md
+              - how-to/operations/run-behind-a-gateway.md
+              - how-to/operations/kill-switch-and-shutdown.md
+              - how-to/operations/monitor-with-fastmm-top.md
+              - how-to/operations/troubleshooting.md
+          - Records:
+              - how-to/operations/journals-replay-pnl.md
+              - how-to/operations/query-trading-records.md
+          - Low latency:
+              - how-to/operations/multicast-feeds.md
+              - how-to/operations/low-latency-tcp.md
+              - how-to/operations/two-host-benchmark.md
   - Reference:
       - Strategies:
           - reference/strategy-api.md
@@ -203,6 +210,7 @@ nav:
       - api/python.md
   - Explanation:
       - explanation/how-it-works.md
+      - explanation/benchmarks.md
       - explanation/economics.md
       - explanation/backtesting.md
       - explanation/signal-research.md
@@ -210,7 +218,11 @@ nav:
       - explanation/event-flow.md
       - explanation/determinism.md
       - explanation/risk-model.md
-      - explanation/benchmarks.md
+  - Contributing:
+      - contributing/writing-docs.md
+      - contributing/dependencies.md
+      - contributing/python-packages.md
+      - contributing/releasing.md
       - Design records:
           - adr/README.md
           - adr/0001-fixed-point-int64-price-qty.md
@@ -229,8 +241,3 @@ nav:
           - adr/0014-us-equities.md
           - adr/0015-multicast-market-data.md
           - adr/0016-storage-backends.md
-  - Contributing:
-      - contributing/writing-docs.md
-      - contributing/dependencies.md
-      - contributing/python-packages.md
-      - contributing/releasing.md

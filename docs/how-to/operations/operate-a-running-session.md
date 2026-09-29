@@ -96,15 +96,11 @@ A flatten is not persisted and a restart does not resume it: the shutdown cancel
 
 A strategy attached to `fastmm-gateway` has its own socket and takes every command above. The gateway has one too, `fastmm-ctl --gateway <name>`, whose `pull`, `resume`, `kill` and `clear-kill` act on every attached strategy or the account ([Run behind a gateway](run-behind-a-gateway.md#control)).
 
-## What an operator cannot do
+## Scope of the control socket
 
-- Change anything that is not a strategy parameter or a risk limit. Instruments, venues, threads, ring sizes and the strategy itself need a restart; `ControlCommand::Reload` is still not implemented.
+- Change anything that is not a strategy parameter or a risk limit. Instruments, venues, threads, ring sizes and the strategy itself need a restart; `ControlCommand::Reload` is not implemented.
 - Cancel one order, or place one. The control plane works in scopes (session, venue, instrument), not in single orders.
 - Reach the engine from another host. The socket is local; tunnel over SSH.
 - Undo a fill. `flatten` trades the position away at the market; it does not restore the PnL.
 
-## See also
-
-- [Kill switch and shutdown](kill-switch-and-shutdown.md) — what trips the kill switch, the latched loss budget, the shutdown sequence.
-- [Monitoring a live session](monitor-with-fastmm-top.md) — the status file and Prometheus.
-- [Running this in production](running-in-production.md) — what still needs a human.
+Next: [Kill switch and shutdown](kill-switch-and-shutdown.md).

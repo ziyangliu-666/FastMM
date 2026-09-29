@@ -17,7 +17,8 @@ The live tests start `fastmm-sim-exchange` from `FASTMM_BIN_DIR` (default `build
 Regenerate the type stub after changing the bindings:
 
 ```bash
-.venv/bin/pybind11-stubgen fastmm._core -o /tmp/stubs && cp /tmp/stubs/fastmm/_core.pyi python/fastmm/
+.venv/bin/pybind11-stubgen fastmm._core -o /tmp/stubs
+cp /tmp/stubs/fastmm/_core.pyi python/fastmm/
 ```
 
 ## Building and publishing wheels
@@ -28,7 +29,8 @@ Regenerate the type stub after changing the bindings:
 
 ```bash
 ./scripts/wheels/build-openssl.sh "$HOME/.cache/fastmm-openssl"
-OPENSSL_ROOT_DIR="$HOME/.cache/fastmm-openssl" .venv/bin/pip wheel ./python/live --no-deps -w dist
+OPENSSL_ROOT_DIR="$HOME/.cache/fastmm-openssl" \
+  .venv/bin/pip wheel ./python/live --no-deps -w dist
 ./scripts/wheels/check-live-wheel.sh dist/fastmm_engine_live-*.whl
 ```
 

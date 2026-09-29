@@ -163,7 +163,7 @@ Sequence token: a ClOrdID of `'T'` followed by 13 zero-padded decimal digits nam
 
 ## Benchmarks
 
-`bench/bench_codecs_nasdaq.cpp`. Each benchmark iteration times a batch of 64 operations with rdtsc; `p50_ns` is the median per-operation time. Figures from [bench/README.md](../../../bench/README.md) and `bench/results/latest/bench_codecs_nasdaq.json` (`scripts/bench.sh`, preset `release-native`, gcc 13, WSL2, pinned, 5 repetitions, 2026-09-23; see [Benchmarks](../../explanation/benchmarks.md#caveats)):
+`bench/bench_codecs_nasdaq.cpp`. Each benchmark iteration times a batch of 64 operations with rdtsc; `p50_ns` is the median per-operation time. Figures from [bench/README.md](../../../bench/README.md) and `bench/results/latest/bench_codecs_nasdaq.json` (`scripts/bench.sh`, preset `release-native`, gcc 13, WSL2, pinned, 5 repetitions, 2026-09-23; see [Benchmarks](../../explanation/benchmarks.md#method)):
 
 | Benchmark | What is timed | p50 |
 |---|---|---|
@@ -179,7 +179,7 @@ Sequence token: a ClOrdID of `'T'` followed by 13 zero-padded decimal digits nam
 
 Run them with `build/<dir>/bin/bench/bench_codecs_nasdaq --cpu=N --benchmark_min_time=1s`.
 
-## Limitations
+## Unhandled fields
 
 * ITCH: Attribution (F), Cross Type (Q) and the P Buy/Sell Indicator (always `B` since 2014) have no field in the engine messages and are dropped.
 * MoldUDP64: adopting a new session (`follow_session`) is not reported to the handler; `on_message` sequence numbers restart at 1.

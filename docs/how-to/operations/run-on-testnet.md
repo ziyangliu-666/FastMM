@@ -1,6 +1,6 @@
 # Run on a testnet or Binance Demo
 
-FastMM ships configs for seven practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading and the Deribit testnet. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
+FastMM ships configs for seven practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading and the Deribit testnet. Two more run `xmm` across two of them. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
 
 Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
 
@@ -31,8 +31,12 @@ set -a && . ./.env && set +a
 | Bybit testnet, linear perpetuals | `configs/bybit-linear-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
 | OKX demo trading | `configs/okx-demo.toml` | `FASTMM_OKX_API_KEY`, `FASTMM_OKX_API_SECRET`, `FASTMM_OKX_API_PASSPHRASE` |
 | Deribit testnet | `configs/deribit-testnet.toml` | `FASTMM_DERIBIT_CLIENT_ID`, `FASTMM_DERIBIT_CLIENT_SECRET` |
+| `xmm`: Spot Demo quotes, USDⓈ-M Demo hedges | `configs/xmm-binance-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
+| `xmm`: USDⓈ-M Demo quotes, Bybit testnet hedges | `configs/xmm-demo.toml` | the Binance and the Bybit variables |
 
 The Binance configs share variable names, so one set of Binance keys is loaded at a time.
+
+The two `xmm` configs trade on two venues in one session: they quote on the first and hedge every fill on the second ([Quote on one venue, hedge on another](../strategies/xmm.md#run-it)).
 
 ## 3. The environments
 

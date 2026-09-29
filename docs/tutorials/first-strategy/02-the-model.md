@@ -11,8 +11,9 @@ Prices, quantities, amounts and ratios are 64-bit integers with 8 decimals (`Pri
 A session journals each event the engine consumed and the clock at which it did. Replaying the journal through the same strategy must send the same orders, byte for byte; pages 7 and 8 check this.
 
 ```text
-venue ──► network thread ──► ring ──► engine: book ─► on_book ─► set_quotes ─► quote manager ─► risk ─► OMS ──► ring ──► network thread ──► venue
-                                            └──────────────────────────── journal ──────────────────────────────┘
+venue ─► network thread ─► ring ─► engine ─► ring ─► network thread ─► venue
+
+engine: journal ─► book ─► on_book ─► set_quotes ─► quote manager ─► risk ─► OMS
 ```
 
 Two rules follow for hook code:

@@ -72,11 +72,11 @@ With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) 
 
 `[risk.underlying.<BASE>] max_net` limits the net position in one base asset over every instrument of the session that has that `base`, on every venue ([Configuration](../reference/configuration.md#riskunderlying)). Long 0.3 BTC on Binance USD-M and short 0.3 BTC on Bybit is 0 BTC. The unit is the base asset, so the limit needs no price and no `[accounting]`.
 
-- **Base units.** A linear contract (or spot) counts `qty * contract_multiplier`: 30 OKX `BTC-USDT-SWAP` contracts of 0.01 BTC are 0.3 BTC. An inverse contract counts `qty * multiplier / mark`, its value in the base coin at the current mark: 150 contracts of 100 USD at 50000 are 0.3 BTC, and the same position is 0.375 BTC at 40000.
-- **The check** is the underlying's version of `max_position`: the position now, plus the open orders on the order's side over every instrument of the underlying, plus the order (a replace excludes the order it replaces). The order is refused when the absolute value of that would pass `max_net` and be further from zero than the position is now; an order that brings the underlying towards zero always passes, also while it is over the limit.
-- **Marks.** The mark is the instrument's last valid mid, not older than `stale_md_ms` when that is set. An inverse contract with a position or open orders and no such mark makes the whole underlying unmeasurable: every order on it is refused (`UnderlyingMarkUnknown`) until the book is back. A flatten is not checked.
-- **Options do not count.** Their exposure in the underlying is a delta, which needs a pricing model the engine does not have; an option neither adds to the net nor is checked. A `[risk.underlying]` section whose base asset only options have is a configuration error.
-- **What is not counted:** balances and margin in the base coin (the collateral of an inverse contract is BTC too), and positions held outside the session. Behind `fastmm-gateway`, `[gateway.underlying]` holds the account's net over every strategy ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)).
+- Base units: A linear contract (or spot) counts `qty * contract_multiplier`: 30 OKX `BTC-USDT-SWAP` contracts of 0.01 BTC are 0.3 BTC. An inverse contract counts `qty * multiplier / mark`, its value in the base coin at the current mark: 150 contracts of 100 USD at 50000 are 0.3 BTC, and the same position is 0.375 BTC at 40000.
+- The check is the underlying's version of `max_position`: the position now, plus the open orders on the order's side over every instrument of the underlying, plus the order (a replace excludes the order it replaces). The order is refused when the absolute value of that would pass `max_net` and be further from zero than the position is now; an order that brings the underlying towards zero always passes, also while it is over the limit.
+- Marks: The mark is the instrument's last valid mid, not older than `stale_md_ms` when that is set. An inverse contract with a position or open orders and no such mark makes the whole underlying unmeasurable: every order on it is refused (`UnderlyingMarkUnknown`) until the book is back. A flatten is not checked.
+- Options do not count: Their exposure in the underlying is a delta, which needs a pricing model the engine does not have; an option neither adds to the net nor is checked. A `[risk.underlying]` section whose base asset only options have is a configuration error.
+- What is not counted: balances and margin in the base coin (the collateral of an inverse contract is BTC too), and positions held outside the session. Behind `fastmm-gateway`, `[gateway.underlying]` holds the account's net over every strategy ([Run behind a gateway](../how-to/operations/run-behind-a-gateway.md#account-guards)).
 
 Without the section the check costs a branch per order. With it, each order sums the underlying's instruments (a few array reads per instrument); `fastmm-ctl limits underlying.BTC.max_net=...` changes a limit at run time, for an underlying the configuration names (`max_net = 0` names one without a limit).
 
@@ -90,7 +90,7 @@ unrealized = qty * multiplier * (1 / avg_entry - 1 / mark)     coins
 notional   = qty * multiplier / price                          coins
 ```
 
-The average entry price of an inverse position is the size-weighted **harmonic** mean: two lots of 10 contracts at 50000 and 40000 average to 44444.44444444, not 45000. `Instrument::pnl_per_tick()` is zero for an inverse contract; its tick value depends on the price.
+The average entry price of an inverse position is the size-weighted harmonic mean: two lots of 10 contracts at 50000 and 40000 average to 44444.44444444, not 45000. `Instrument::pnl_per_tick()` is zero for an inverse contract; its tick value depends on the price.
 
 `Instrument::kInverse` is set from Deribit reference data, not from the configuration. An inverse contract on another connector is booked as a linear one.
 
