@@ -453,6 +453,30 @@ TEST_CASE("strategies.xmm: a fill too small to hedge waits, it does not fail or 
   CHECK(s.stats().hedge_failures == 0);
 }
 
+// A market-data Resyncing on the hedge venue (one symbol's book resync, or the gateway's after a
+// ring drop) is followed by snapshots, never by Live. It set the channel's bit for good: no quotes
+// and no hedges for the rest of the session.
+TEST_CASE("strategies.xmm: a hedge book resync does not stop quoting and hedging") {
+  Xmm s = make();
+  Ctx c;
+  start(s, c);
+  const std::size_t quoted = c.sets.size();
+  ConnectionStateMsg m = connection(1, 0, ConnState::Resyncing);
+  m.hdr.instrument = InstrumentId{1};
+  s.on_connection(c, m);
+  s.on_connection(c, connection(1, 0, ConnState::Resyncing));  // venue-wide, as the gateway's
+  // The engine cleared the book; its snapshot comes back.
+  c.books[1].valid = false;
+  s.on_timer(c, TimerId{1}, Xmm::kTimer);
+  c.hedge_book("100000.0", "100000.2");
+  book(s, c, InstrumentId{1});
+  CHECK(c.sets.size() > quoted);
+  CHECK_FALSE(c.sets.back().empty());
+  maker_fill(s, c, Side::Buy, "0.01");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.side == Side::Sell);
+}
+
 TEST_CASE("strategies.xmm: a partial hedge is followed by one for the remainder") {
   Xmm s = make();
   Ctx c("1", "0.001");  // Bybit-style hedge: quantity in BTC

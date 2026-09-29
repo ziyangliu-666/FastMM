@@ -152,9 +152,15 @@ class AccountBook {
   [[nodiscard]] const Book* book(InstrumentId id) const noexcept {
     return id.value < books_.size() ? books_[id.value].get() : nullptr;
   }
-  // A market-data channel that is not live: its books start over, as the engine's do.
+  // A market-data channel that is not live: its books start over, as the engine's do. One naming
+  // an instrument (a per-symbol resync) clears that book only; the venue re-sends that one alone.
   void on_connection_state(const ConnectionStateMsg& m) noexcept {
     if (m.channel != 0 || m.state == ConnState::Live) return;
+    const InstrumentId only = m.hdr.instrument;
+    if (only.valid()) {
+      if (only.value < books_.size() && books_[only.value] != nullptr) books_[only.value]->clear();
+      return;
+    }
     for (auto& b : books_) {
       if (b != nullptr) b->clear();
     }

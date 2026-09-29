@@ -247,7 +247,11 @@ class Xmm : public StrategyBase<XmmParams> {
   template <class Ctx>
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
     if (!ready_) return;
-    if (m.hdr.venue == ctx.instrument(h_).venue) {
+    // Market data (channel 0) is covered by the hedge book's validity: the engine clears the books
+    // when the channel drops. A book resync (one symbol's, or the gateway's after an attachment's
+    // ring dropped) is a Resyncing followed by snapshots and no Live, so counting channel 0 here
+    // stopped hedging for good.
+    if (m.hdr.venue == ctx.instrument(h_).venue && m.channel != 0) {
       const std::uint32_t bit = 1U << (m.channel & 31U);
       if (m.state == ConnState::Live) {
         hedge_down_mask_ &= ~bit;

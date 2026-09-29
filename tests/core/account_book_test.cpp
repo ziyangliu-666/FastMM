@@ -128,6 +128,27 @@ TEST_CASE("core.account_book: marks at the mid of a valid book, and seeds a posi
   CHECK_FALSE(b.on_book(*d));
 }
 
+// fastmm-gateway's copies: a BTCUSDT resync at start cleared the ETHUSDT copy too, which the venue
+// never sent again, and every strategy attaching after it got no ETHUSDT book.
+TEST_CASE("core.account_book: a resync naming one instrument clears that copy only") {
+  const InstrumentTable t = make_table();
+  AccountBook b(t, VenueId{0});
+  snapshot(b, kBtc, "109", "111");
+  snapshot(b, kEth, "9", "11");
+  ConnectionStateMsg cs{};
+  init_header(cs, EventType::ConnectionState, kBtc, VenueId{0});
+  cs.state = ConnState::Resyncing;
+  cs.channel = 0;
+  b.on_connection_state(cs);
+  REQUIRE(b.book(kBtc) != nullptr);
+  REQUIRE(b.book(kEth) != nullptr);
+  CHECK_FALSE(b.book(kBtc)->has_snapshot());
+  CHECK(b.book(kEth)->has_snapshot());
+  init_header(cs, EventType::ConnectionState, InstrumentId::invalid(), VenueId{0});
+  b.on_connection_state(cs);
+  CHECK_FALSE(b.book(kEth)->has_snapshot());
+}
+
 TEST_CASE("core.account_book: the exposure check lets an order that reduces its position through") {
   Position flat{};
   Position longp{};
