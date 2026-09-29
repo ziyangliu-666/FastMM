@@ -26,7 +26,7 @@ Quotes never cross the quote venue's touch. A fair value move under `requote_thr
 ## Hedging
 
 - `unhedged = quote position + hedge position`, in base units.
-- When `|unhedged|` rounds down to at least one hedge lot (and the hedge instrument's `min_qty`), one IOC limit goes out on the hedge instrument, `hedge_tolerance_bps` through the touch.
+- When `|unhedged|` rounds down to at least one hedge lot (and the hedge instrument's `min_qty` and `min_notional`), one IOC limit goes out on the hedge instrument, `hedge_tolerance_bps` through the touch. Less than that waits for the next fill: a partial maker fill under the hedge venue's minimum notional (Binance USDⓈ-M: 50 USDT) stays unhedged, within `max_unhedged`.
 - While any order is open on the hedge instrument, including one sent but not acknowledged, no other hedge is sent. When it ends, the positions are read again: a partial fill is followed by a hedge for the rest.
 - Fills are never counted. A restart, a replayed or duplicated execution and a fill booked late by reconciliation all lead to the same hedge.
 - No hedge goes out while a venue reconciles (`ctx.reconciling()`), nor after a start until every venue has replayed its executions and reconciled: a quote fill replayed before the hedge venue's replay books the hedge that covered it would otherwise be hedged twice. `tests/integration/xmm_restart_test.cpp` kills `fastmm-live` (and a strategy behind `fastmm-gateway`) with the hedge out and unanswered, and with a quote filled while it is down.

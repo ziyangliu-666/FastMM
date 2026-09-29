@@ -328,6 +328,17 @@ TEST_CASE("strategies.xmm: hedge size and price across contract multipliers") {
     REQUIRE(o);
     CHECK(o->qty == qt("0.01"));
   }
+  SUBCASE("Binance USD-M: under min_notional there is no hedge") {
+    Instrument h = linear("BTCUSDT", 1, "1", "0.0001");
+    h.min_notional = Notional::from_int(50);
+    // 0.0004 BTC sells at 99950.0: 39.98 USDT.
+    CHECK_FALSE(Xmm::hedge_order(h, qt("0.0004"), bid, ask, tol));
+    const auto o = Xmm::hedge_order(h, qt("0.0005"), bid, ask, tol);  // 49.975: still under
+    CHECK_FALSE(o);
+    const auto p = Xmm::hedge_order(h, qt("0.0006"), bid, ask, tol);  // 59.97
+    REQUIRE(p);
+    CHECK(p->qty == qt("0.0006"));
+  }
   SUBCASE("no hedge without the touch it needs or with nothing to hedge") {
     const Instrument h = linear("BTCUSDT", 1, "1", "0.001");
     CHECK_FALSE(Xmm::hedge_order(h, qt("0.01"), Price{}, ask, tol));
@@ -412,6 +423,34 @@ TEST_CASE("strategies.xmm: no hedge while a venue reconciles, the positions afte
   CHECK(c2.sent[0].req.side == Side::Sell);
   CHECK(c2.sent[0].req.qty == qt("1"));
   CHECK(s2.stats().hedge_failures == 0);
+}
+
+// Demo soak (2026-09-29): a partial maker fill of 0.0002 BTC on Binance Spot, hedged on USD-M
+// (min_notional 50 USDT). The hedge was refused by the risk check (BelowMinNotional) five times in
+// two seconds and the strategy halted with its quotes pulled. The remainder waits for a fill that
+// takes it past the minimum instead, and nothing counts as a failure.
+TEST_CASE("strategies.xmm: a fill too small to hedge waits, it does not fail or halt") {
+  Xmm s = make({{"hedge_retry_ms", "0"}, {"max_hedge_failures", "3"}});
+  Ctx c("1", "0.0001");
+  c.table.get(InstrumentId{1}).min_notional = Notional::from_int(50);
+  c.refuse = true;  // anything sent would be refused, as the risk check refuses under min_notional
+  start(s, c);
+  maker_fill(s, c, Side::Buy, "0.0002");
+  for (int i = 0; i < 10; ++i) {
+    c.advance(milliseconds(100));
+    s.on_timer(c, TimerId{1}, Xmm::kTimer);
+  }
+  CHECK(s.stats().hedge_failures == 0);
+  CHECK_FALSE(s.halted());
+  CHECK(c.sent.empty());
+  CHECK(s.unhedged(c) == qt("0.0002"));
+  // The rest of the quote fills: 0.001 BTC is hedged in one order.
+  c.refuse = false;
+  maker_fill(s, c, Side::Buy, "0.0008");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.side == Side::Sell);
+  CHECK(c.sent[0].req.qty == qt("0.001"));
+  CHECK(s.stats().hedge_failures == 0);
 }
 
 TEST_CASE("strategies.xmm: a partial hedge is followed by one for the remainder") {
