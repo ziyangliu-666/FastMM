@@ -3,6 +3,15 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Binance Spot Demo soak, 4 h, a fault every 30 min (2026-09-29).** Gateway + A/B sharing
+BTCUSDT; cycling kill -9 of A, a 20 s SIGSTOP of the gateway, kill -9 of the gateway with 90 s
+down (twice each, eight faults). Against the venue (`~/fastmm-soak/verify.py`): 10697 orders
+(distinct ids), 852 trades each booked once by its strategy, 0 open, positions and BTC exact:
+ALL CHECKS PASS. Resources sampled each minute (`resources.log`): gateway RSS at most 43.8 MB,
+strategies at most 43.0 MB, none growing over a process's life; fds 15 (gateway) and 10
+(strategy) from the first minute to the last; threads 6. ERROR lines are the expected ones (the
+gateway went away; an order left at the venue by a kill -9, then swept).
+
 **Binance Spot Demo, third run with the order lookup (2026-09-28, 47 min).** Same scenario after
 the unacknowledged-order work: 1850 orders (distinct ids), 137 trades each booked once by its
 strategy, 0 open, positions and BTC exact, unattributed 0 (`verify.py`: ALL CHECKS PASS). Three
