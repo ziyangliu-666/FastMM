@@ -72,8 +72,8 @@ In the FastMM build tree:
 
 ```bash
 cmake --build --preset release --target my_mm_backtest
-./build/release/examples/quickstart/my_mm_backtest        # prints the summary, writes runs/quickstart/
-python3 tools/report.py runs/quickstart                   # -> runs/quickstart/report.html
+./build/release/examples/quickstart/my_mm_backtest   # writes runs/quickstart/
+python3 tools/report.py runs/quickstart              # writes runs/quickstart/report.html
 ```
 
 Open `runs/quickstart/report.html`: one self-contained page with the equity curve, the inventory, where the PnL came from, the markouts and the fill quality ([Run report](../reference/run-report.md)). `python3 tools/report.py` needs nothing but Python 3; with the Python package installed the same command is `fastmm report runs/quickstart`.

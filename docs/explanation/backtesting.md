@@ -2,9 +2,9 @@
 
 `fastmm-backtest` prints the net PnL, where it came from, and what each fill was worth afterwards. Read the decomposition and the markouts before the net PnL: a passive quoter can show a positive spread capture and a positive net PnL while losing on every fill it gets.
 
-## What the simulator cannot tell you
+## Model assumptions
 
-The simulated venue ([Simulated exchange](../reference/sim-exchange.md)) and the synthetic market generator are a latency and book-mechanics model, not a market model. Four properties of the run are assumptions:
+The simulated venue ([Simulated exchange](../reference/sim-exchange.md)) and the synthetic market generator model latency and book mechanics. The run assumes four properties of the market:
 
 | Assumption | Consequence |
 |---|---|
@@ -14,8 +14,6 @@ The simulated venue ([Simulated exchange](../reference/sim-exchange.md)) and the
 | There is no informed flow and no toxic counterparty | The markouts you measure here are a floor on the adverse selection you will see live, not an estimate of it |
 
 The synthetic market's touch sits `base_spread_ticks` from its mid, so at a mid of 60,000 USDT and a tick of 0.01 USDT the whole spread is about 0.003 bps: no passive strategy in that market can capture more than a fraction of a basis point, whatever it quotes. And `fill_model = "l2_queue"` replays recorded levels with no counterparties at all, so it checks post-only orders against the same book the strategy saw and never produces the post-only rejects that stale market data causes live ([Configuration](../reference/configuration.md#backtest)). Its queue position starts at the displayed quantity at the order's price and is capped by a book ticker newer than the depth; `ctx.queue_ahead` runs the same model on the data the strategy sees ([Strategy API](../reference/strategy-api.md#execution-view)).
-
-A backtest here is a determinism, latency and plumbing test that also gives an upper bound on PnL.
 
 ## Markouts
 
@@ -31,8 +29,8 @@ adverse selection(h) = spread capture - markout(h)
 
 The horizons come from `[backtest] markout_horizons_s` (default `"1,10,60"` seconds). The mid used is the venue mid at `t + h`, read with the simulated clock stopped there; the run loop stops at every fill time plus horizon, so nothing is interpolated. A fill the run could not mark is dropped from that horizon and counted, never marked at a substitute price:
 
-* `past end` — `t + h` is after the last event of the run. A 60 s markout on a 60 s run measures nothing and says so.
-* `no mid` — the venue book had only one side at `t + h`, or at the fill. Under `l2_queue` the mirrored book holds only the levels the feed published, so it empties on one side when the price moves past the recorded depth. Under `matching` the synthetic generator's market orders are larger than its limit orders (`market_qty_median_lots` 1500 against `limit_qty_median_lots` 300 in `configs/backtest-example.toml`), so the sweep that fills a passive quote often empties that side of the book: a fifth to a half of the fills of a `matching` run have no mid at the moment of the fill and drop out of every horizon. Such a fill contributes its whole `signed qty * (final mid − price)` to the mid drift of the decomposition, because none of it can be called spread capture.
+* `past end`: `t + h` is after the last event of the run. A 60 s markout on a 60 s run measures nothing and says so.
+* `no mid`: the venue book had only one side at `t + h`, or at the fill. Under `l2_queue` the mirrored book holds only the levels the feed published, so it empties on one side when the price moves past the recorded depth. Under `matching` the synthetic generator's market orders are larger than its limit orders (`market_qty_median_lots` 1500 against `limit_qty_median_lots` 300 in `configs/backtest-example.toml`), so the sweep that fills a passive quote often empties that side of the book: a fifth to a half of the fills of a `matching` run have no mid at the moment of the fill and drop out of every horizon. Such a fill contributes its whole `signed qty * (final mid − price)` to the mid drift of the decomposition, because none of it can be called spread capture.
 
 Because the excluded fills differ per horizon, `capture` is recomputed over the same fills as the markout of that horizon, so the two columns of one row are comparable.
 
@@ -81,7 +79,8 @@ net = gross spread capture + mid drift after the fills − fees paid + rebates r
 `basic_mm` from `configs/backtest-example.toml` on the synthetic market, 60 s, seed 1, at Binance spot VIP 0 fees:
 
 ```bash
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml \
+    --data synthetic
 ```
 
 ```text

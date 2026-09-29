@@ -4,23 +4,23 @@
 
 ## 1. Build and copy
 
-On the build machine (Ubuntu 24.04 or older glibc):
+On the build machine (Ubuntu 24.04 or older glibc), `scripts/package-release.sh` builds `build/release-dpdk` with DPDK linked in and writes `dist/fastmm-<version>-x86_64.tar.gz`:
 
 ```bash
-scripts/package-release.sh            # build/release-dpdk, DPDK linked in; dist/fastmm-<version>-x86_64.tar.gz
+scripts/package-release.sh
 scp dist/fastmm-*-x86_64.tar.gz root@<sim>:/opt/
 scp dist/fastmm-*-x86_64.tar.gz root@<live>:/opt/
 ```
 
-On both hosts:
+On both hosts, `all` installs the packages and hugepages, turns irqbalance off and sends interrupts to CPU 0; `firewall` lets ufw, on by default on Vultr, pass the VPC subnet:
 
 ```bash
 cd /opt && tar xzf fastmm-*-x86_64.tar.gz && ln -sfn /opt/fastmm-*-x86_64 /opt/fastmm
-/opt/fastmm/scripts/host-setup.sh all     # packages, hugepages, irqbalance off, interrupts to CPU 0, info
-/opt/fastmm/scripts/host-setup.sh firewall enp6s0   # ufw (on by default on Vultr): allow the VPC subnet
+/opt/fastmm/scripts/host-setup.sh all
+/opt/fastmm/scripts/host-setup.sh firewall enp6s0
 ```
 
-`info` lists each NIC with its PCI address, driver and queues. Check that the VPC addresses ping each other, and give the live host a key for `ssh root@<sim public address>` (the live host's VPC NIC leaves the kernel for DPDK, so use the public address for ssh).
+`all` ends with `info`, which lists each NIC with its PCI address, driver and queues. Check that the VPC addresses ping each other, and give the live host a key for `ssh root@<sim public address>` (the live host's VPC NIC leaves the kernel for DPDK, so use the public address for ssh).
 
 ## 2. Run
 
@@ -28,15 +28,16 @@ On the live host (`--prefix-len` is the VPC subnet's):
 
 ```bash
 cd /opt/fastmm
-C="--remote-sim root@<sim public ip> --sim-ip <sim vpc ip> --live-ip <live vpc ip> --prefix-len 20 --build . --duration 30 --runs 3"
+C="--remote-sim root@<sim public ip> --sim-ip <sim vpc ip> --live-ip <live vpc ip>"
+C="$C --prefix-len 20 --build . --duration 30 --runs 3"
 
 scripts/bench-2host.sh $C --backend kernel --iface enp6s0
-scripts/bench-2host.sh $C --backend kernel --iface enp6s0 --md multicast   # only if the VPC carries multicast
+scripts/bench-2host.sh $C --backend kernel --iface enp6s0 --md multicast  # VPC with multicast
 
-scripts/host-setup.sh xdp-prep enp6s0                                        # fewest queues, GRO/LRO off
+scripts/host-setup.sh xdp-prep enp6s0     # fewest queues, GRO/LRO off
 scripts/bench-2host.sh $C --backend af_xdp --iface enp6s0
 
-scripts/host-setup.sh dpdk-bind enp6s0                                       # prints the PCI address
+scripts/host-setup.sh dpdk-bind enp6s0    # prints the PCI address
 scripts/bench-2host.sh $C --backend dpdk --dpdk-pci 0000:06:00.0
 scripts/host-setup.sh dpdk-unbind 0000:06:00.0
 ```
@@ -49,6 +50,6 @@ scripts/host-setup.sh dpdk-unbind 0000:06:00.0
 ## 3. Privileged tests on the live host
 
 ```bash
-scripts/xdp-test.sh --build . --e2e        # verifier, XDP over veth, bench-e2e af_xdp
-tests/fastmm_dpdk_tests                     # DPDK over veth (af_packet vdev), in a user namespace
+scripts/xdp-test.sh --build . --e2e   # verifier, XDP over veth, bench-e2e af_xdp
+tests/fastmm_dpdk_tests                # DPDK over veth, in a user namespace
 ```

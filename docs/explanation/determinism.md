@@ -37,7 +37,7 @@ replay MATCH
 
 On a mismatch it prints the first differing message as recorded and as replayed and exits with code 1. Only the first difference means anything: replay feeds the recorded acknowledgements whatever it sent, so later messages diverge too.
 
-## What breaks it
+## What makes a replay differ
 
 | Cause | Why | Instead |
 |---|---|---|

@@ -7,10 +7,10 @@ The file is self-contained: inline CSS, charts as inline SVG and CSS bars, no Ja
 ## Write one
 
 ```bash
-fastmm report runs/backtest                          # -> runs/backtest/report.html
-fastmm report runs/20260101-101500/session.fmj       # -> the same directory
+fastmm report runs/backtest                      # writes runs/backtest/report.html
+fastmm report runs/20260101-101500/session.fmj   # writes into the same directory
 fastmm report runs/backtest -o /tmp/run.html
-python3 tools/report.py runs/backtest                # the same, from a checkout, nothing installed
+python3 tools/report.py runs/backtest            # from a checkout, nothing installed
 ```
 
 The command prints the path it wrote and nothing else.

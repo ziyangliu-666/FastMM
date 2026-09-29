@@ -2,14 +2,16 @@
 
 `fastmm-sim-itch` is a Nasdaq-style simulated exchange for the multicast market-data path ([ADR-0015](../adr/0015-multicast-market-data.md), section 6). It publishes TotalView-ITCH 5.0 over MoldUDP64 to two multicast lines, answers MoldUDP64 re-requests, serves GLIMPSE 5.0 snapshots and accepts OUCH 5.0 orders, all over the protocol codecs in [Nasdaq ITCH and OUCH](codecs/nasdaq.md). It measures wire to wire: from the `sendmmsg` of the datagram that carried a market-data message to the arrival of the order that names it.
 
+```text
+fastmm-sim-itch: one thread, one net::Reactor
+  ├─ per symbol   MatchingEngine, MarketGenerator, ItchPublisher
+  ├─ feed         moldudp::Transmitter, sendmmsg to lines A and B
+  ├─ UDP          MoldUDP64 re-request server          :31000
+  ├─ TCP          GLIMPSE 5.0 over SoupBinTCP          :31010
+  └─ TCP          OUCH 5.0 over SoupBinTCP             :31020
 ```
-fastmm-sim-itch ── one thread, one net::Reactor
-  ├─ per symbol     MatchingEngine + MarketGenerator, ItchPublisher (engine effects -> ITCH)
-  ├─ feed           moldudp::Transmitter -> sendmmsg to line A and line B     (239.192.0.1:31001, .2:31002)
-  ├─ UDP            MoldUDP64 re-request server                               (:31000)
-  ├─ TCP            GLIMPSE 5.0 over SoupBinTCP                               (:31010)
-  └─ TCP            OUCH 5.0 over SoupBinTCP                                  (:31020)
-```
+
+The lines are 239.192.0.1:31001 and 239.192.0.2:31002; `ItchPublisher` turns the matching engine's effects into ITCH messages.
 
 Code: `include/fastmm/sim/itch/` and `src/sim/itch/` (targets `fastmm::sim_itch_publisher` and `fastmm::sim_itch`), app `apps/fastmm-sim-itch/`.
 
@@ -17,7 +19,8 @@ Code: `include/fastmm/sim/itch/` and `src/sim/itch/` (targets `fastmm::sim_itch_
 
 ```bash
 ./build/release/bin/fastmm-sim-itch --config configs/sim-itch.toml
-./build/release/bin/fastmm-sim-itch --cpu 2 --busy-poll --duration 60s --summary-json runs/w2w.json
+./build/release/bin/fastmm-sim-itch --cpu 2 --busy-poll --duration 60s \
+    --summary-json runs/w2w.json
 ```
 
 Multicast on `lo` needs the loopback interface to carry multicast and a route for 224.0.0.0/4. In an unprivileged namespace:
@@ -109,7 +112,7 @@ ClOrdID = 'T' + 13 decimal digits, zero padded = the MoldUDP64 sequence number o
           message that triggered the order                          "T0000000012345"
 ```
 
-`codecs::ouch50::put_seq_token()` writes it and `parse_seq_token()` reads it; the `nasdaq_itch` venue with `order_entry = "sim_ouch"` sets it ([Venue connectors](venues.md#orders)). `scripts/bench-e2e.sh` runs the simulator against `fastmm-live` ([Benchmarks](../explanation/benchmarks.md#end-to-end-over-veth)). The simulator stamps every data datagram with `rdtscp` right before the `sendmmsg` call that first carries it, keeps the last `stamp_ring` stamps (default 1 048 576 datagrams) with the sequence range of each datagram, and stamps each TCP read with `rdtscp` right after it returns. For an order with a token the difference, converted with the calibrated TSC rate, goes into a `LogLinearHistogram` before the order is processed. A token outside the stamp ring counts as a miss.
+`codecs::ouch50::put_seq_token()` writes it and `parse_seq_token()` reads it; the `nasdaq_itch` venue with `order_entry = "sim_ouch"` sets it ([Venue connectors](venues.md#orders)). `scripts/bench-e2e.sh` runs the simulator against `fastmm-live` ([Benchmarks](../explanation/benchmarks.md)). The simulator stamps every data datagram with `rdtscp` right before the `sendmmsg` call that first carries it, keeps the last `stamp_ring` stamps (default 1 048 576 datagrams) with the sequence range of each datagram, and stamps each TCP read with `rdtscp` right after it returns. For an order with a token the difference, converted with the calibrated TSC rate, goes into a `LogLinearHistogram` before the order is processed. A token outside the stamp ring counts as a miss.
 
 `--summary-json <file>` writes one JSON object at exit:
 

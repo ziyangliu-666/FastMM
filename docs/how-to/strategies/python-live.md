@@ -5,7 +5,7 @@ A class with hot hooks runs against venues inside the Python process, through `f
 ## Install
 
 ```bash
-pip install "fastmm-engine[hot,live]"     # numba and the live runtime, CPython 3.10 or later
+pip install "fastmm-engine[hot,live]"   # numba and the live runtime
 ```
 
 To build both packages from a checkout instead: [Install from source](../../getting-started/install.md#install-from-source).
@@ -21,7 +21,9 @@ Start the simulated exchange (a C++ program: a build or a [release](../operation
 Copy `configs/sim-local.toml` to `sim-py.toml` and set `name = "py:BasicMMHot"` in its `[strategy]` table, so its `[strategy.params]` apply to the class. In another terminal:
 
 ```bash
-FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret PYTHONPATH=examples/python/strategies python -m fastmm run basic_mm_hot:BasicMMHot --config sim-py.toml --duration 60s
+FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
+PYTHONPATH=examples/python/strategies \
+  python -m fastmm run basic_mm_hot:BasicMMHot --config sim-py.toml --duration 60s
 ```
 
 The hooks compile and run once on scratch data before the session connects; the log is then the one `fastmm-live` writes. Ctrl-C stops the session: the kill switch trips, open orders are cancelled and the process exits with code 0 after `fastmm-live: shutdown took <n> ms (cancel_all ok)` ([Kill switch and shutdown](../operations/kill-switch-and-shutdown.md)).
@@ -39,7 +41,10 @@ raise SystemExit(fastmm.run_live(BasicMMHot, "sim-py.toml", duration="60s"))
 A class with slow methods ([Run slow methods beside hot hooks](python-slow-methods.md)) runs the same way. `on_start` runs before the session connects; the session does not quote before the first publish:
 
 ```bash
-FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret PYTHONPATH=examples/python/strategies python -m fastmm run hot_slow_mm:HotSlowMM --config configs/sim-local.toml --duration 60s
+FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
+PYTHONPATH=examples/python/strategies \
+  python -m fastmm run hot_slow_mm:HotSlowMM \
+    --config configs/sim-local.toml --duration 60s
 ```
 
 `[strategy.params]` of `basic_mm` in `configs/sim-local.toml` do not apply to the class (stderr says `note: ignoring [strategy.params]`). The session stops with exit code 7 when a slow method raises, a call runs past its `timeout`, the fills ring is full or the slow thread ends ([Slow methods live](../../reference/python-api.md#slow-methods-live)).
@@ -59,17 +64,21 @@ FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret PYTHONPATH=examples/
 The journal header records the class, a hash of the hot-hook source and the package versions:
 
 ```bash
-python -c "import fastmm; print(fastmm.inspect_journal('runs/sim-local-<session id>.fmj')['strategy_meta'])"
+python -c "import fastmm
+j = fastmm.inspect_journal('runs/sim-local-<session id>.fmj')
+print(j['strategy_meta'])"
 ```
 
 Replay a Python strategy's journal with its class; slow methods do not run, the parameter updates come from the journal ([Replay](../../reference/python-api.md#replay)):
 
 ```bash
-PYTHONPATH=examples/python/strategies python -c "import fastmm, hot_slow_mm; print(fastmm.replay('runs/sim-local-<session id>.fmj', hot_slow_mm.HotSlowMM))"
+PYTHONPATH=examples/python/strategies python -c "import fastmm, hot_slow_mm
+print(fastmm.replay('runs/sim-local-<session id>.fmj', hot_slow_mm.HotSlowMM))"
 ```
 
 `BasicMMHot` sends the orders C++ `basic_mm` sends, so the C++ strategy also replays its journal. Pass a configuration that names `basic_mm` with the same parameters; `fastmm-replay` warns that the configuration hash differs and still compares every message:
 
 ```bash
-./build/release/bin/fastmm-replay --journal runs/sim-local-<session id>.fmj --config configs/sim-local.toml --strategy basic_mm --verify
+./build/release/bin/fastmm-replay --journal runs/sim-local-<session id>.fmj \
+    --config configs/sim-local.toml --strategy basic_mm --verify
 ```

@@ -74,7 +74,8 @@ Without hugepages, PCI access or root, for example over a veth (what `scripts/be
 ```toml
 rx_backend = "dpdk"
 interface = "fmlive"
-dpdk_eal_args = "--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 --vdev=net_af_packet0,iface=fmlive,framecnt=4096"
+dpdk_eal_args = """--no-huge --no-pci --in-memory --no-telemetry -l 0 -m 128 \
+  --vdev=net_af_packet0,iface=fmlive,framecnt=4096"""
 dpdk_port = "net_af_packet0"
 ```
 

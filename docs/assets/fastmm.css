@@ -1,8 +1,32 @@
-/* Typography and spacing on top of mkdocs-material (mkdocs.yml, extra_css). */
+/* Palette, typography and spacing on top of mkdocs-material (mkdocs.yml, extra_css). */
 
 :root {
-  --md-text-font: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --md-code-font: "Roboto Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --md-text-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --md-code-font: "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Ink header, teal accent. */
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: #13202e;
+  --md-primary-fg-color--light: #243447;
+  --md-primary-fg-color--dark: #0b141d;
+  --md-primary-bg-color: #f4f6f8;
+  --md-primary-bg-color--light: #f4f6f8b3;
+  --md-typeset-a-color: #0b6e75;
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: #0e8a8f;
+  --md-accent-fg-color--transparent: #0e8a8f1a;
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="custom"] {
+  --md-default-bg-color: #12171d;
+  --md-typeset-a-color: #5cc8c8;
+}
+
+[data-md-color-scheme="slate"][data-md-color-accent="custom"] {
+  --md-accent-fg-color: #7fdada;
 }
 
 /* A measure of roughly 80 characters; tables and code still use the full column. */
@@ -17,18 +41,20 @@
   line-height: 1.65;
 }
 
-.md-typeset h1,
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--md-default-fg-color);
+}
+
 .md-typeset h2,
-.md-typeset h3,
-.md-typeset h4 {
-  font-weight: 500;
+.md-typeset h3 {
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .md-typeset h2 {
-  margin-top: 2em;
-  padding-top: 0.4em;
-  border-top: 1px solid var(--md-default-fg-color--lightest);
+  margin-top: 2.2em;
 }
 
 /* Reference pages are mostly tables: keep them dense and let them scroll on a phone. */
@@ -42,10 +68,24 @@
   white-space: nowrap;
 }
 
+.md-typeset table:not([class]) td {
+  font-variant-numeric: tabular-nums;
+}
+
 .md-typeset pre > code {
-  font-size: 0.72rem;
+  font-size: 0.7rem;
 }
 
 .md-typeset code {
   word-break: normal;
+}
+
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  padding: 0.45em 1em;
+}
+
+/* The first paragraph of a page, under its title, is its lede. */
+.md-content__inner > h1:first-child + p {
+  font-size: 0.86rem;
 }

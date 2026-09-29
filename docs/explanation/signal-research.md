@@ -97,7 +97,7 @@ Not on average. Over every book update of the day, a quote resting at the touch 
 | 10 s | 0.0162 bps | -0.0065 bps | +0.0389 bps | 3.46 bps |
 | 1 min | 0.0162 bps | -0.1477 bps | +0.1801 bps | 8.11 bps |
 
-Restricted to the 2 253 431 timestamps where a trade printed, which is where a fill can actually happen, it is the same picture: at 1 s the resting bid is worth +0.0248 bps and the resting ask +0.0674 bps, against a mean half spread of 0.0461 bps.
+Restricted to the 2 253 431 timestamps where a trade printed, which is where a fill can happen, it is the same picture: at 1 s the resting bid is worth +0.0248 bps and the resting ask +0.0674 bps, against a mean half spread of 0.0461 bps.
 
 The fills `basic_mm` got are worth -0.663 bps at 1 s, -0.854 bps at 10 s and -0.849 bps at 1 minute. The adverse selection is therefore not a property of the touch; it is a property of which fills a quote gets.
 

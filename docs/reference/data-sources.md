@@ -37,10 +37,10 @@ Several specs separated by `;` are merged by event time, ties going to the earli
 | `synthetic` | yes | yes | yes | simulated, ns |
 | `journal` | as recorded | as recorded | as recorded | as recorded, ns |
 | `csv` | as written | as written | as written | as written, ns |
-| `binance` | yes | **no** | yes | venue transaction time, ms |
+| `binance` | yes | no | yes | venue transaction time, ms |
 | `tardis` | yes | yes | yes | exchange time, µs |
 
-The queue model sets an order's queue position from the displayed quantity at its price, so a source without depth says nothing about any price except the touch: an order resting one tick behind the best quote is modelled as alone at its price and fills as soon as a trade reaches it. On such a source, fills behind the touch are optimistic ([Backtesting](../explanation/backtesting.md#what-the-simulator-cannot-tell-you)).
+The queue model sets an order's queue position from the displayed quantity at its price, so a source without depth says nothing about any price except the touch: an order resting one tick behind the best quote is modelled as alone at its price and fills as soon as a trade reaches it. On such a source, fills behind the touch are optimistic ([Backtesting](../explanation/backtesting.md#model-assumptions)).
 
 ## `journal`
 
@@ -72,7 +72,7 @@ Daily dumps from [data.binance.vision](https://data.binance.vision): `bookTicker
 
 Decoding: the first update becomes a one-level `BookSnapshot`, every later one a `BookDelta` carrying only what changed (a price move is the old level deleted and the new one added). Rows that repeat the previous top of book with a new update id produce nothing. Both files stamp milliseconds, so a trade and the book update it caused routinely share a timestamp; the merge puts the trade first, so it consumes the queue before the level is recorded as smaller.
 
-**Licence.** The datasets are [CC BY-NC-SA 4.0](https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf) (Binance Vision Dataset Terms, clause 3.1). Clause 4.1 allows "algorithmic historical backtesting for purely personal non-production research"; clause 4.2 forbids using them for "live proprietary trading execution"; clause 4.5 requires any redistributed derivative to keep the same licence and attribute Binance Vision. No sample ships in this repository: ShareAlike and the non-commercial clause are incompatible with an MIT tree.
+Licence: The datasets are [CC BY-NC-SA 4.0](https://data.binance.vision/Binance_Vision-Terms_of_Use.pdf) (Binance Vision Dataset Terms, clause 3.1). Clause 4.1 allows "algorithmic historical backtesting for purely personal non-production research"; clause 4.2 forbids using them for "live proprietary trading execution"; clause 4.5 requires any redistributed derivative to keep the same licence and attribute Binance Vision. No sample ships in this repository: ShareAlike and the non-commercial clause are incompatible with an MIT tree.
 
 ## `tardis`
 
@@ -91,7 +91,7 @@ Normalized datasets from [datasets.tardis.dev](https://datasets.tardis.dev): `in
 
 Depth is truncated to the 256 best levels per side (`RowAssembler`). Rows sharing a timestamp form one message; the feed has no update id.
 
-**Licence.** The [Tardis terms](https://docs.tardis.dev/legal/terms-of-service) grant a perpetual licence to keep and use downloaded data, including free samples (clause 9.4), for internal, research or personal use. Clause 9.2 forbids redistributing the raw data; only derived data aggregated to 10 minutes or coarser may be passed on.
+Licence: The [Tardis terms](https://docs.tardis.dev/legal/terms-of-service) grant a perpetual licence to keep and use downloaded data, including free samples (clause 9.4), for internal, research or personal use. Clause 9.2 forbids redistributing the raw data; only derived data aggregated to 10 minutes or coarser may be passed on.
 
 ## Others considered
 

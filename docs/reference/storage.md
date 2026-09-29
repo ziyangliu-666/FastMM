@@ -53,10 +53,10 @@ Session metadata (`session_open`, `session_close`, the instrument table) is writ
 
 ## What a backend guarantees
 
-- **Ordering.** Records arrive on one thread in the order the engine made them; `seq` is strictly increasing within a session.
-- **At most once.** A record the ring dropped, or a batch the process died inside of, is gone. A backend must not invent one. Records carry keys (session id plus `seq`, and a venue exec id on a fill) so re-ingesting the same record is a no-op.
-- **No back pressure.** The store never signals the engine. A ring that fills drops records on the engine side and counts them in `EngineStats::records_dropped`; the count is logged at shutdown and stored in `sessions.records_dropped`. A backend that fails counts the error, logs the first one and keeps going. Neither stops trading: the journal is the authority for anything lost.
-- **No exceptions across the interface** and no `abort()`.
+- Ordering: Records arrive on one thread in the order the engine made them; `seq` is strictly increasing within a session.
+- At most once: A record the ring dropped, or a batch the process died inside of, is gone. A backend must not invent one. Records carry keys (session id plus `seq`, and a venue exec id on a fill) so re-ingesting the same record is a no-op.
+- No back pressure: The store never signals the engine. A ring that fills drops records on the engine side and counts them in `EngineStats::records_dropped`; the count is logged at shutdown and stored in `sessions.records_dropped`. A backend that fails counts the error, logs the first one and keeps going. Neither stops trading: the journal is the authority for anything lost.
+- No exceptions across the interface and no `abort()`.
 
 `fastmm-live` logs the totals when a session ends:
 
@@ -68,10 +68,10 @@ store: 1284 record(s) in 37 batch(es), 1284 row(s), 0 error(s), 0 dropped
 
 The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMAL`, and checkpoints every 256 pages.
 
-- A **committed batch survives the process dying** (a crash, `SIGKILL`, an `abort()`): the write-ahead log is in the page cache and the next open replays it.
-- A batch the process died **inside of** is rolled back whole: no partial batch is ever visible.
-- **Power loss** can cost the batches written since the last checkpoint. `synchronous=FULL` would fsync the log on every commit; the journal already holds every record, so the store does not pay for it.
-- A **reader never blocks the writer** and never sees a half-written batch: `fastmm-pnl` and a notebook can query a store while the session writes it.
+- A committed batch survives the process dying (a crash, `SIGKILL`, an `abort()`): the write-ahead log is in the page cache and the next open replays it.
+- A batch the process died inside of is rolled back whole: no partial batch is ever visible.
+- Power loss can cost the batches written since the last checkpoint. `synchronous=FULL` would fsync the log on every commit; the journal already holds every record, so the store does not pay for it.
+- A reader never blocks the writer and never sees a half-written batch: `fastmm-pnl` and a notebook can query a store while the session writes it.
 
 ## Schema
 
@@ -194,20 +194,17 @@ The call order is `open`, `session_open`, `instruments`, then `begin` / records 
 
 `fastmm-live` reads the store before the first session thread starts and logs what the previous session of the same `[engine] name` left behind: its PnL, whether it shut down cleanly, the kill state, the journal parts, the last position per instrument, and every order that was still open at its last record. `fastmm-pnl recover --engine <name>` prints the same thing.
 
-With `[engine] restore_position` the session also carries the last position per venue and symbol over and books what happened while it was down from the venue's trade history ([What survives a restart](../how-to/operations/running-in-production.md#1-what-survives-a-restart)). The position is the last record the store holds for that venue and symbol: a position row or a fill (each fill row carries the position it left, so a crash that kept a fill but not the position row after it loses nothing), from the newest session of the engine that recorded one. A session that crashed before recording anything about a venue leaves the earlier session's record in force. Where each venue's replay starts (`Recovery::venue_resume`, passed to `Venue::resume_executions`, and in the attach request behind a gateway):
+With `[engine] restore_position` the session also carries the last position per venue and symbol over and books what happened while it was down from the venue's trade history ([What survives a restart](../how-to/operations/running-in-production.md#restarts)). The position is the last record the store holds for that venue and symbol: a position row or a fill (each fill row carries the position it left, so a crash that kept a fill but not the position row after it loses nothing), from the newest session of the engine that recorded one. A session that crashed before recording anything about a venue leaves the earlier session's record in force. Where each venue's replay starts (`Recovery::venue_resume`, passed to `Venue::resume_executions`, and in the attach request behind a gateway):
 
-- **In the venue's clock.** From `exch_ns` of the venue's last stored fill or funding payment (in the newest session that stored one), less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The 1 s covers a venue publishing executions out of trade-time order (other symbols, a batch), which is milliseconds.
-- **At most 128 ids a venue.** When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
-- **Binance Spot and USDⓈ-M** resume each symbol at the trade id after the highest one stored (`fromId`), with no overlap and no ids (`Venue::resume_trade_ids`). In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
-- **A store from before version 3** starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.
-- **A venue with no stored fill** replays from the start of the newest session that shut down cleanly, else of the oldest session of the engine, less 10 s (engine clock): a fill of a session that died before storing it, or one made while nothing ran, is booked.
+- In the venue's clock: From `exch_ns` of the venue's last stored fill or funding payment (in the newest session that stored one), less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The 1 s covers a venue publishing executions out of trade-time order (other symbols, a batch), which is milliseconds.
+- At most 128 ids a venue: When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
+- Binance Spot and USDⓈ-M resume each symbol at the trade id after the highest one stored (`fromId`), with no overlap and no ids (`Venue::resume_trade_ids`). In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
+- A store from before version 3 starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.
+- A venue with no stored fill replays from the start of the newest session that shut down cleanly, else of the oldest session of the engine, less 10 s (engine clock): a fill of a session that died before storing it, or one made while nothing ran, is booked.
 
 Until every venue that replays executions has finished its first reconciliation (the replay, then the open-order snapshot), the engine sends no order and quoting stays off: the positions are not complete before that, and an order sized, hedged or risk-checked on them could double a hedge or pass a limit. New orders are refused with `NotReconciled`; the log says `every venue has reconciled its orders and executions since the start` when it ends.
 
-What the store cannot tell you:
-
-- **Whether the venue still holds the open orders.** The orders the recovery lists are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since.
-- **The position, authoritatively.** It is FastMM's view at the last record. The venue's view arrives with the reconciliation.
+The open orders the recovery lists are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since. The position is FastMM's view at the last record; the venue's view arrives with the reconciliation.
 
 The loss budget `[risk] max_loss` is carried across restarts by the kill-state file (`include/fastmm/core/session_state.hpp`), not by the store: it is read before any store is opened, so a session with `backend = "none"` still carries it.
 

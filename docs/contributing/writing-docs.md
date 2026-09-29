@@ -5,10 +5,10 @@ The Markdown under `docs/` is the source of both the site at <https://ziy.bio/Fa
 both. Preview the site:
 
 ```bash
-./scripts/docs-serve.sh          # http://127.0.0.1:8000, reloads on edit; --api adds the API reference
+./scripts/docs-serve.sh          # http://127.0.0.1:8000, reloads on edit
 ```
 
-The script creates `build/docs-venv` from [`docs/requirements.txt`](../requirements.txt) on first use.
+The script creates `build/docs-venv` from [`docs/requirements.txt`](../requirements.txt) on first use; `--api` adds the API reference.
 
 ## Where a page goes
 
@@ -22,7 +22,7 @@ The script creates `build/docs-venv` from [`docs/requirements.txt`](../requireme
 | `docs/contributing/` | how-to | covers work on FastMM itself |
 | `docs/adr/` | decision record | records one decision; not edited after acceptance except for amendments |
 
-A new page gets an entry in the `nav` of [`mkdocs.yml`](../../mkdocs.yml) and a link from [`docs/README.md`](../README.md), which is the site's home page; the site build fails on a page that is missing from the nav. The glossary defines each term once. Python pages (`docs/python.md` and the Python reference) belong to the Python package.
+A new page gets an entry in the `nav` of [`mkdocs.yml`](../../mkdocs.yml); the site build fails on a page that is missing from the nav. [`docs/README.md`](../README.md), the home page, links only the five entry points. The glossary defines each term once. Python pages (`docs/python.md` and the Python reference) belong to the Python package.
 
 ## Style
 

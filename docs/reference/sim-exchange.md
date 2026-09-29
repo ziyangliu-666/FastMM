@@ -2,26 +2,33 @@
 
 `fastmm-sim-exchange` is a Binance Spot-compatible simulated exchange ([ADR-0008](../adr/0008-sim-exchange-speaks-binance.md)). The unmodified Binance connector (`fastmm::venues::binance::BinanceVenue`, see [venues.md](venues.md)) and `fastmm-live` run against it on localhost over TCP or TLS: REST, market-data WebSockets, the WebSocket API, depth sequence sync, HMAC and Ed25519 authentication, order flow with fills, and fault injection.
 
+```text
+fastmm-sim-exchange: one net::Reactor thread
+  ├─ HttpServer<PlainStream>             REST /api/v3/*, WebSocket   :9080
+  ├─ HttpServer<TlsStream<PlainStream>>  the same over TLS           :9443
+  ├─ MatchingEngine   price-time, LIMIT_MAKER rejection, STP, update ids
+  ├─ MarketGenerator  counterparty flow: random-walk mid, Poisson orders
+  ├─ MdAggregator     depthUpdate U/u batches, bookTicker
+  └─ venue state      balances, order index, listen keys, rate limits
 ```
-fastmm-sim-exchange ── one net::Reactor thread
-  ├─ HttpServer<PlainStream>              REST /api/v3/* + WebSocket upgrades   (:9080)
-  ├─ HttpServer<TlsStream<PlainStream>>   the same over TLS (fixture cert)       (:9443)
-  ├─ MatchingEngine        price-time, LIMIT_MAKER rejection, STP, per-symbol update ids
-  ├─ MarketGenerator       counter-party flow (random-walk mid, Poisson limits/markets/cancels)
-  ├─ MdAggregator          depthUpdate U/u batches every depth_update_ms, bookTicker
-  └─ venue state           account balances, order index, listen keys, rate-limit windows
-```
+
+The TLS server uses the test fixture certificate. `MarketGenerator` places Poisson limit orders, market orders and cancels; `MdAggregator` publishes depth updates every `depth_update_ms`.
 
 Code: `include/fastmm/sim/server/` and `src/sim/server/` (target `fastmm::sim_server`), app `apps/fastmm-sim-exchange/`.
 
 ## Running
 
 ```bash
-./build/release/bin/fastmm-sim-exchange --config configs/sim.toml          # 127.0.0.1:9080 / :9443
+./build/release/bin/fastmm-sim-exchange --config configs/sim.toml   # :9080, TLS :9443
 FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
-  ./build/release/bin/fastmm-live --config configs/sim-local.toml           # or sim-local-tls.toml
-./scripts/run-sim.sh --duration 30s [--tls] [--build-dir build/<dir>]      # both, plus a summary
-docker compose up --build                                                   # configs/sim-docker.toml
+  ./build/release/bin/fastmm-live --config configs/sim-local.toml
+```
+
+`configs/sim-local-tls.toml` connects over TLS instead. `scripts/run-sim.sh` runs both and prints a summary; `docker compose up --build` runs them in containers with `configs/sim-docker.toml`:
+
+```bash
+./scripts/run-sim.sh --duration 30s [--tls] [--build-dir build/<dir>]
+docker compose up --build
 ```
 
 Flags and exit codes: [Command lines](cli.md#fastmm-sim-exchange). Every `--stats-interval` the simulator prints a line with connections, orders, rejects, cancels, replaces, fills, open orders, public trades, depth diffs, tickers, snapshots, REST and WS API requests, rate-limited requests, authentication errors, the account position and the touch.
@@ -56,7 +63,7 @@ The simulator reads `[[instruments]]` (symbol, base, quote, tick, lot, min_qty, 
 | `generator.*` | see file | `MarketGeneratorParams` + `enabled`, `seed_levels` |
 | `faults.*` | off | see Fault injection |
 
-The default generator places its touch 2990 ticks (29.90 USDT) from a slowly moving latent mid, so `BasicMM`'s 5 bps quotes (30 USDT at 60000) rest just behind the best generator levels and are filled by the larger market orders. The book is not realistic.
+The default generator places its touch 2990 ticks (29.90 USDT) from a slowly moving latent mid, so `BasicMM`'s 5 bps quotes (30 USDT at 60000) rest behind the best generator levels and are filled by the larger market orders. The book is not realistic.
 
 ## What is implemented
 

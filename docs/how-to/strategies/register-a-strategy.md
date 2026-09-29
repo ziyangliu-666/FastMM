@@ -74,7 +74,8 @@ way. As a subproject FastMM builds no tests, benchmarks, apps or examples and in
     --strategy microprice_mm --param edge_ticks=1
 ./build/release/bin/fastmm-sim-exchange --config configs/sim.toml &
 FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret ./build/mm/mm-live \
-    --config configs/sim-local.toml --strategy microprice_mm --duration 60s --journal runs/mm.fmj
+    --config configs/sim-local.toml --strategy microprice_mm --duration 60s \
+    --journal runs/mm.fmj
 ./build/mm/mm-replay --journal runs/mm.fmj --verify
 ```
 

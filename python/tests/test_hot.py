@@ -521,3 +521,10 @@ def test_fx_matches_the_cpp_operators_in_python_and_in_numba():
     assert fx.to_raw(99.95) == 9_995_000_000 and fx.to_raw(-0.000000005) == -1
     with pytest.raises(ZeroDivisionError):
         fx.tdiv(1, 0)
+
+
+def test_the_readme_example_runs_and_fills():
+    out = subprocess.run([sys.executable, str(EXAMPLES / "touch_mm.py")], cwd=REPO, check=True,
+                         capture_output=True, text=True).stdout
+    assert out.startswith("backtest py:TouchMM")
+    assert "fills (maker / taker)          56 (56 / 0)" in out

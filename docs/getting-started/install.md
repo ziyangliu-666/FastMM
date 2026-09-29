@@ -3,8 +3,8 @@
 ## Without building it
 
 ```bash
-pip install "fastmm-engine[hot]"     # backtests and Python strategies, CPython 3.10 or later
-fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest to run
+pip install "fastmm-engine[hot]"     # CPython 3.10 or later
+fastmm init my-mm && cd my-mm        # a config, a strategy and a backtest
 python backtest.py
 ```
 
@@ -14,7 +14,7 @@ The C++ programs come as a tarball or a container image, one per release: [Deplo
 
 ## Build from source
 
-The rest of this page builds the repository; all commands run from its root.
+The steps below build the repository; all commands run from its root.
 
 ## Requirements
 
@@ -43,7 +43,8 @@ ctest --preset release -j"$(nproc)"
 
 ```bash
 ./build/release/bin/fastmm-backtest --list-strategies
-./build/release/bin/fastmm-backtest --config configs/backtest-example.toml --data synthetic
+./build/release/bin/fastmm-backtest --config configs/backtest-example.toml \
+    --data synthetic
 ```
 
 The first command lists the built-in strategies with their parameters. The second backtests `basic_mm` for 60 s of simulated time and prints a summary.
@@ -101,8 +102,8 @@ The `fastmm-engine` package (imported as `fastmm`) runs backtests on CPython 3.9
 | `fastmm-engine[hot]` | numba and llvmlite | CPython 3.10 or later |
 
 ```bash
-pip install "fastmm-engine[hot]"          # backtests, Python strategies, the fastmm command
-pip install "fastmm-engine[live]"         # adds fastmm-engine-live of the same version
+pip install "fastmm-engine[hot]"    # backtests, Python strategies, the fastmm command
+pip install "fastmm-engine[live]"   # adds fastmm-engine-live of the same version
 ```
 
 Both wheels are `manylinux_2_28` x86-64 and have to be the same version ([Versions and compatibility](../reference/compatibility.md)). The `fastmm` console script is the same entry point as `python -m fastmm`: `fastmm init <dir>` writes a starter project, `fastmm run module:Class --config file.toml` runs a strategy live ([Run a Python strategy live](../how-to/strategies/python-live.md)).

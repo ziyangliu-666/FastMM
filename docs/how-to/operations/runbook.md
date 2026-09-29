@@ -1,6 +1,6 @@
 # Operations runbook
 
-What to run on a first deploy, what to check each day, and what to do when something fires. The limits behind these procedures are in [Running this in production](running-in-production.md); the codes are in [Errors and exit codes](../../reference/errors.md).
+What to run on a first deploy, what to check each day, and what to do when something fires. Background for each procedure is in [Run in production](running-in-production.md); the codes are in [Errors and exit codes](../../reference/errors.md).
 
 ## First deploy
 
@@ -67,7 +67,7 @@ The reason is in the log (`kill switch engaged (<reason>, flags=<hex>)`), in `fa
 | `AllVenuesKilled` | every venue with instruments was killed individually | read each venue's own reason first |
 | `VenueFatal` | bad key, signature, permission or a failed authentication on one venue | the key usually cannot cancel either: cancel that venue's orders on its website, fix the key, restart |
 | `VenueHardStop` | a Binance HTTP 418 IP ban; REST is stopped until the process restarts and the cancel-all fails | cancel on the website, stop the process, wait out the ban, lower the request rate before restarting |
-| `DeadMansSwitchLost` | the venue refused the dead man's switch refresh for a whole window, so it may have cancelled the orders itself | check the venue's order channel and REST access ([A dead man's switch that lapses](running-in-production.md#a-dead-mans-switch-that-lapses-is-a-kill-not-a-retry)) |
+| `DeadMansSwitchLost` | the venue refused the dead man's switch refresh for a whole window, so it may have cancelled the orders itself | check the venue's order channel and REST access ([A dead man's switch that lapses](running-in-production.md#a-lapsed-switch-is-a-kill)) |
 | `OrderRingOverflow` | the engine did not drain a venue's order events fast enough; exit code 5 | raise `[engine] order_ring_bytes`; check that the engine thread is pinned and not starved |
 | `OrderIdsExhausted` | the session's 32-bit client order id sequence ran out | restart |
 | `StrategyError` | a Python hot hook raised, called `ctx.fail` or produced a non-finite value | reproduce it in a backtest from the session's journal |
@@ -80,14 +80,14 @@ After any of them, confirm the venue shows no open orders before starting anythi
 
 A crash is any stop that did not log `shutdown took <n> ms (cancel_all ok)`: `kill -9`, an OOM kill, a panic, a power loss, or an exit code 5.
 
-Under the shipped unit a crash or an exit 4 restarts the process. The new session restores the position from the store (`[engine] restore_position`), replays the venue's executions since the last stored fill, and cancels the orders the dead process left on its first connect ([What survives a restart](running-in-production.md#1-what-survives-a-restart)). Until then those orders rest, unless the venue's dead man's switch cancels them: Binance USDⓈ-M (`dead_mans_switch_ms`, default 60 s), Bybit (`dead_mans_switch_s`, off by default), Deribit (`cancel_on_disconnect`, default on). Binance Spot has none.
+Under the shipped unit a crash or an exit 4 restarts the process. The new session restores the position from the store (`[engine] restore_position`), replays the venue's executions since the last stored fill, and cancels the orders the dead process left on its first connect ([What survives a restart](running-in-production.md#restarts)). Until then those orders rest, unless the venue's dead man's switch cancels them: Binance USDⓈ-M (`dead_mans_switch_ms`, default 60 s), Bybit (`dead_mans_switch_s`, off by default), Deribit (`cancel_on_disconnect`, default on). Binance Spot has none.
 
 When the session does not restart by itself:
 
 1. Cancel every order on the venue's own interface if you do not restart soon.
 2. Read the venue's position and balances.
 3. Read what the last session recorded: `fastmm-pnl recover --engine <name>` prints its PnL, its last position per instrument and every order it still had open ([Query what you traded](query-trading-records.md)). `stopped   never recorded` confirms the crash.
-4. Establish what the journal holds: `python3 tools/journal_dump.py <journal> --type OrderFill` and the tail of the file. `trailer MISSING` means the process did not close the file; with `journal_sync = "async"` up to the last 100 ms of events were never synced ([durability](running-in-production.md#the-journal-is-durable-against-a-crash-not-against-power-loss)).
+4. Establish what the journal holds: `python3 tools/journal_dump.py <journal> --type OrderFill` and the tail of the file. `trailer MISSING` means the process did not close the file; with `journal_sync = "async"` up to the last 100 ms of events were never synced ([durability](running-in-production.md#durability)).
 5. Recompute PnL from the journal: `python3 tools/pnl_report.py <journal> --start <before.json> --end <after.json>`. Where the account and the journal disagree, the account is right.
 6. Keep `[engine] epoch_file` (`runs/session_epoch`). Deleting it makes client order ids repeat across sessions.
 7. Start the session. It logs `<venue>: restored position <symbol> <qty> @ <px> from the previous session`; compare that and its first status with the venue's position. A venue that cannot replay executions starts flat (`not restoring the previous position ...`).
