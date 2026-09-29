@@ -98,7 +98,10 @@ std::string decode_positions(std::string_view json,
     if (e["side"].get(side) != sj::SUCCESS) side = {};
     p.qty = side == "Sell" ? -size : size;
     // avgPrice is "0" (or "") for an empty position.
-    static_cast<void>(fixed_field(e, "avgPrice", p.avg_px));
+    std::string_view avg;
+    if (e["avgPrice"].get(avg) == sj::SUCCESS) {
+      if (const auto px = parse_avg_price(avg)) p.avg_px = *px;  // an average: may pass 8 decimals
+    }
     out.push_back(std::move(p));
   }
   std::string_view cursor;

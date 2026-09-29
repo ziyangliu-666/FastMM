@@ -24,7 +24,8 @@ Qty qt(const char* s) {
   return Qty::from_decimal(s).value();
 }
 
-InstrumentTable make_table() {
+// BTCUSDT; with `eth`, ETHUSDT on the same venue as instrument 1.
+InstrumentTable make_table(bool eth = false) {
   InstrumentTable t;
   Instrument i{};
   i.symbol = "BTCUSDT";
@@ -35,6 +36,10 @@ InstrumentTable make_table() {
   i.min_qty = qt("0.001");
   i.min_notional = Notional::from_decimal("0.5").value();
   REQUIRE(t.add(i));
+  if (eth) {
+    i.symbol = "ETHUSDT";
+    REQUIRE(t.add(i));
+  }
   return t;
 }
 
@@ -86,7 +91,10 @@ struct Fixture {
   BasicMM strategy;
   std::unique_ptr<TestEngine> engine;
 
-  explicit Fixture(bool with_journal = true, void (*tweak)(EngineConfig&) = nullptr) {
+  explicit Fixture(bool with_journal = true,
+                   void (*tweak)(EngineConfig&) = nullptr,
+                   bool eth = false) {
+    if (eth) table = make_table(true);
     REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
                                       {"quote_qty", "0.01"},
                                       {"max_inventory", "0.05"},
@@ -112,13 +120,14 @@ struct Fixture {
                  const char* ask,
                  std::uint64_t seq,
                  bool snapshot = false,
-                 Duration recv_offset = {}) {
+                 Duration recv_offset = {},
+                 InstrumentId id = InstrumentId{0}) {
     std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
     REQUIRE(p != nullptr);
     auto* d = reinterpret_cast<BookDeltaMsg*>(p);
     init_header(*d,
                 snapshot ? EventType::BookSnapshot : EventType::BookDelta,
-                InstrumentId{0},
+                id,
                 VenueId{0},
                 BookDeltaMsg::size_for(1, 1));
     if (snapshot) d->hdr.flags |= EventHeader::kSnapshot;
@@ -354,6 +363,42 @@ TEST_CASE(
   CHECK(c.cl_ord_id == ClientOrderId{0xBEEF});
   CHECK(c.venue_order_id == "ghost");
   CHECK(f.engine->stats().unknown_order_cancels == 1);
+}
+
+// Binance's depth sync resyncs one symbol: ConnectionState{Resyncing, channel 0} naming it, then
+// that symbol's snapshot. The engine cleared every book of the venue, and the other symbols stayed
+// empty (a demo soak: ETHUSDT never quoted after a BTCUSDT sequence gap on the same venue).
+TEST_CASE("core.engine: a resync naming one instrument clears that book only") {
+  Fixture f(true, nullptr, true);
+  f.push_book("100.00", "100.02", 1, true);
+  f.push_book("50.00", "50.02", 1, true, {}, InstrumentId{1});
+  f.drain();
+  REQUIRE(f.engine->book(InstrumentId{0}).is_valid());
+  REQUIRE(f.engine->book(InstrumentId{1}).is_valid());
+  f.ack_all_new();
+  f.drain();
+  REQUIRE(f.transport.count(EventType::OutCancel) == 0);
+  ConnectionStateMsg cs{};
+  init_header(cs, EventType::ConnectionState, InstrumentId{0}, VenueId{0});
+  cs.state = ConnState::Resyncing;
+  cs.channel = 0;
+  f.push(cs);
+  f.drain();
+  CHECK_FALSE(f.engine->book(InstrumentId{0}).has_snapshot());
+  CHECK(f.engine->book(InstrumentId{1}).is_valid());
+  // BTCUSDT's quotes are pulled, ETHUSDT's stay.
+  REQUIRE(f.transport.count(EventType::OutCancel) >= 1);
+  for (std::size_t i = 0; i < f.transport.out.size(); ++i) {
+    const auto& h = f.transport.at<EventHeader>(i);
+    if (h.type == EventType::OutCancel) CHECK(h.instrument == InstrumentId{0});
+  }
+  // A venue-wide state still clears both.
+  init_header(cs, EventType::ConnectionState, InstrumentId{}, VenueId{0});
+  cs.state = ConnState::Disconnected;
+  cs.channel = 0;
+  f.push(cs);
+  f.drain();
+  CHECK_FALSE(f.engine->book(InstrumentId{1}).has_snapshot());
 }
 
 TEST_CASE("core.engine: direct order API, risk rejects, transport full trips the kill switch") {

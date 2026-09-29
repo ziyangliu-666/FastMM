@@ -151,6 +151,31 @@ TEST_CASE("core.position: set() remeasures unrealized at the last mark") {
   CHECK(t.total_unrealized() == nt("10"));
 }
 
+// A venue position record without an average price (Binance USD-M's entryPrice once failed to
+// parse and came through as 0) valued a short of 0.0014 BTC at an average of 0: unrealized
+// -117.5 USDT, and max_loss tripped on a flat book.
+TEST_CASE("core.position: set() without an average keeps the tracked one, else the mark") {
+  const Instrument inst = spot();
+  const InstrumentId id = inst.id;
+  PositionTracker t;
+  t.on_fill(id, Side::Sell, px("100"), qt("2"), Notional{}, inst);
+  t.mark(id, px("101"), inst);
+  CHECK(t[id].unrealized == nt("-2"));
+  // Same side, no average: ours stays.
+  t.set(id, qt("-1"), Price{}, inst);
+  CHECK(t[id].avg_px == px("100"));
+  CHECK(t[id].unrealized == nt("-1"));
+  CHECK(t.total_unrealized() == nt("-1"));
+  // The other side, no average: valued at the last mark, nothing unrealized.
+  t.set(id, qt("3"), Price{}, inst);
+  CHECK(t[id].avg_px == px("101"));
+  CHECK(t[id].unrealized == Notional{});
+  // An average given is taken as it is.
+  t.set(id, qt("3"), px("99"), inst);
+  CHECK(t[id].avg_px == px("99"));
+  CHECK(t[id].unrealized == nt("6"));
+}
+
 TEST_CASE("core.position: contract multiplier scales pnl") {
   Instrument fut = spot();
   fut.contract_multiplier = Qty::from_int(10);

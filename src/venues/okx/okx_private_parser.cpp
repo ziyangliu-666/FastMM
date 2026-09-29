@@ -382,7 +382,7 @@ struct OrderItem {
   init_header(*m, EventType::PositionUpdate, inst, c.venue);
   m->qty = qty;
   if (!avg_px.empty()) {
-    if (const auto px = parse_price(avg_px)) m->avg_px = *px;
+    if (const auto px = parse_avg_price(avg_px)) m->avg_px = *px;  // may pass 8 decimals
   }
   stamp(*m, c.recv_ts, c.t0, ms_or(u_time, 0));
   c.written += sizeof(PositionUpdateMsg);

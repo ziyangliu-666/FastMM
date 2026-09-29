@@ -60,6 +60,29 @@ template <class F>
 [[nodiscard]] inline Result<Price, DecimalError> parse_price(std::string_view s) noexcept {
   return parse_fixed<Price>(s);
 }
+// A price the venue computed rather than one an order carries (a position's entry price, an
+// average fill price) can have more fraction digits than 8: Binance USDⓈ-M's positionRisk and
+// ACCOUNT_UPDATE give "83954.61851851852". Rounded half away from zero to 8 decimals; anything
+// else parse_price refuses is refused here too.
+[[nodiscard]] inline Result<Price, DecimalError> parse_avg_price(std::string_view s) noexcept {
+  if (const auto v = Price::from_decimal(s)) return *v;
+  const std::size_t dot = s.find('.');
+  constexpr auto kKeep = static_cast<std::size_t>(kFixedDecimals);
+  if (dot == std::string_view::npos || s.size() - dot - 1 <= kKeep)
+    return fail(detail::classify(s));
+  for (std::size_t i = dot + 1; i < s.size(); ++i) {
+    if (s[i] < '0' || s[i] > '9') return fail(DecimalError::Malformed);
+  }
+  const auto v = Price::from_decimal(s.substr(0, dot + 1 + kKeep));
+  if (!v) return fail(detail::classify(s));
+  if (s[dot + 1 + kKeep] < '5') return *v;
+  const std::int64_t up = v->raw < 0 || (v->raw == 0 && s[0] == '-') ? -1 : 1;
+  if (up > 0 && v->raw == std::numeric_limits<std::int64_t>::max())
+    return fail(DecimalError::Overflow);
+  if (up < 0 && v->raw == std::numeric_limits<std::int64_t>::min())
+    return fail(DecimalError::Overflow);
+  return Price::from_raw(v->raw + up);
+}
 [[nodiscard]] inline Result<Qty, DecimalError> parse_qty(std::string_view s) noexcept {
   return parse_fixed<Qty>(s);
 }

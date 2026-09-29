@@ -134,6 +134,22 @@ TEST_CASE("binance_usdm.user: ACCOUNT_UPDATE -> one-way positions, hedge and unk
   CHECK(p.stats().hedge_positions == 1);
 }
 
+// "ep" is an average and can carry more than 8 fraction digits; the update used to be dropped as
+// malformed.
+TEST_CASE("binance_usdm.user: ACCOUNT_UPDATE with an entry price past 8 decimals") {
+  TestUniverse u;
+  BinanceUsdmUserParser p(u.symbols, u.instruments, VenueId{0});
+  Scratch s;
+  const PaddedJson j(
+      R"({"e":"ACCOUNT_UPDATE","E":1789467601201,"T":1789467601199,"a":{"m":"ORDER","B":[],"P":[{"s":"BTCUSDT","pa":"-0.0014","ep":"83954.61851851852","bep":"83846.1","cr":"0","up":"0","mt":"cross","iw":"0","ps":"BOTH"}]}})");
+  const UserDecodeResult r = p.decode(j.view(), kRecv, kT0, s.span());
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 1);
+  const auto& m = s.as<PositionUpdateMsg>();
+  CHECK(m.qty == qty("-0.0014"));
+  CHECK(m.avg_px == px("83954.61851852"));
+}
+
 TEST_CASE("binance_usdm.user: listenKeyExpired, foreign ids, AMENDMENT, balance-only, malformed") {
   TestUniverse u;
   BinanceUsdmUserParser p(u.symbols, u.instruments, VenueId{0});

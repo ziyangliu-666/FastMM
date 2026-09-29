@@ -1496,11 +1496,16 @@ class Engine {
     }
   }
 
+  // A state naming an instrument is that book's alone (a per-symbol resync: Binance's depth sync,
+  // BookSyncer), and only that book gets a new snapshot: clearing the venue's other books would
+  // leave them empty until the channel itself drops.
   void on_connection_state(const ConnectionStateMsg& m) noexcept {
     const VenueId venue = m.hdr.venue;
+    const InstrumentId only = m.hdr.instrument;
+    const bool one = only.valid();
     if (m.state != ConnState::Live) {
       for (const Instrument& inst : instruments_) {
-        if (inst.venue != venue) continue;
+        if (inst.venue != venue || (one && inst.id != only)) continue;
         if (m.channel == 0) {
           books_[inst.id.value].clear();
           if (FASTMM_UNLIKELY(cfg_.fx.prices[inst.id.value] != 0))

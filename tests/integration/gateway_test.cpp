@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <chrono>
 #include <csignal>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -49,6 +51,39 @@ TEST_CASE("gateway: a strategy attached through the gateway trades and its posit
   CHECK(after.md == opened.md);
   CHECK(after.api == opened.api);
   stop_gateway(g);
+}
+
+namespace {
+// The ring files in /dev/shm of the gateway with this pid.
+std::vector<std::string> rings_of(pid_t gateway) {
+  std::vector<std::string> out;
+  const std::string mark = "-" + std::to_string(gateway) + "-";
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator("/dev/shm", ec)) {
+    const std::string name = e.path().filename().string();
+    if (name.starts_with("fastmm-gw-") && name.find(mark) != std::string::npos) out.push_back(name);
+  }
+  return out;
+}
+}  // namespace
+
+// Demo soak: every kill -9 of the gateway left the rings of the strategies attached at the time in
+// /dev/shm (12.6 MB per strategy on two venues), with nobody left to remove them.
+TEST_CASE("gateway: kill -9 of the gateway leaves no ring in /dev/shm") {
+  ServerFixture fx;
+  const SessionFiles f = write_config(fx, "gateway-rings", "exit", "1000");
+  remove_all_of({f.epoch, f.kill, f.journal_dir, f.config + ".log"});
+  const GatewayProcess g = spawn_gateway(f);
+  wait_gateway_up(fx, g);
+  const pid_t strategy = spawn_strategy(f, g);
+  REQUIRE_MESSAGE(wait_until([&] { return fx.server.stats().orders_accepted >= 2; }, 60000),
+                  "the strategy never quoted: " << fastmm::test::read_file(f.config + ".log"));
+  CHECK(rings_of(g.pid).empty());  // mapped by both sides, unlinked
+  REQUIRE(::kill(g.pid, SIGKILL) == 0);
+  static_cast<void>(reap(g.pid));
+  CHECK(reap(strategy) == live::kExitRuntime);
+  const std::vector<std::string> left = rings_of(g.pid);
+  CHECK_MESSAGE(left.empty(), "left in /dev/shm: " << (left.empty() ? "" : left.front()));
 }
 
 TEST_CASE(

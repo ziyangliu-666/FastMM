@@ -16,18 +16,18 @@
 //
 //   unhedged = quote position * multiplier + hedge position * multiplier   (base units)
 //
-// When |unhedged| rounds to at least one hedge lot (and min_qty) and no order is open on the hedge
-// instrument, one IOC limit goes out: -unhedged / hedge multiplier rounded down to the lot, priced
-// hedge_tolerance_bps through the hedge touch. When it ends the strategy looks at the positions
-// again. A restart, a replayed or duplicated fill and an order whose outcome arrives late all end
-// in the same place, and an order the OMS still holds (sent, not acknowledged, venue down) blocks
-// the next hedge until an ack, a fill or reconciliation ends it. A hedge the venue reports ended
-// before its executions arrive (Bybit's order and execution topics are not ordered) is booked by
-// the engine from the reported cumulative quantity before this strategy hears of the end, and the
-// executions that follow name that quantity instead of adding it (Oms::on_fill). No hedge goes out
-// while a venue reconciles or, after a start, before every venue has replayed its executions and
-// reconciled (ctx.reconciling()): until then one venue's position may lack a fill the other's
-// already shows.
+// When |unhedged| rounds to at least one hedge lot (and min_qty and min_notional) and no order is
+// open on the hedge instrument, one IOC limit goes out: -unhedged / hedge multiplier rounded down
+// to the lot, priced hedge_tolerance_bps through the hedge touch. When it ends the strategy looks
+// at the positions again. A restart, a replayed or duplicated fill and an order whose outcome
+// arrives late all end in the same place, and an order the OMS still holds (sent, not acknowledged,
+// venue down) blocks the next hedge until an ack, a fill or reconciliation ends it. A hedge the
+// venue reports ended before its executions arrive (Bybit's order and execution topics are not
+// ordered) is booked by the engine from the reported cumulative quantity before this strategy hears
+// of the end, and the executions that follow name that quantity instead of adding it
+// (Oms::on_fill). No hedge goes out while a venue reconciles or, after a start, before every venue
+// has replayed its executions and reconciled (ctx.reconciling()): until then one venue's position
+// may lack a fill the other's already shows.
 //
 // Guards: the quotes come off when either book is invalid or older than stale_ms, when the hedge
 // venue's market data or order channel is down or its feed-lag gate holds it, and while the
@@ -247,7 +247,11 @@ class Xmm : public StrategyBase<XmmParams> {
   template <class Ctx>
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
     if (!ready_) return;
-    if (m.hdr.venue == ctx.instrument(h_).venue) {
+    // Market data (channel 0) is covered by the hedge book's validity: the engine clears the books
+    // when the channel drops. A book resync (one symbol's, or the gateway's after an attachment's
+    // ring dropped) is a Resyncing followed by snapshots and no Live, so counting channel 0 here
+    // stopped hedging for good.
+    if (m.hdr.venue == ctx.instrument(h_).venue && m.channel != 0) {
       const std::uint32_t bit = 1U << (m.channel & 31U);
       if (m.state == ConnState::Live) {
         hedge_down_mask_ &= ~bit;
@@ -299,8 +303,10 @@ class Xmm : public StrategyBase<XmmParams> {
 
   // The hedge that brings `unhedged` (base units) back towards zero: an IOC on the hedge
   // instrument, its quantity rounded down to the lot and capped at max_qty, priced `tolerance`
-  // through the touch and rounded towards the touch. None when it rounds below the lot or min_qty
-  // or the touch it needs is empty.
+  // through the touch and rounded towards the touch. None when it rounds below the lot or min_qty,
+  // its notional is below the hedge instrument's min_notional, or the touch it needs is empty: a
+  // hedge the venue (or the risk check) must refuse would only count as a failure and, repeated,
+  // halt the strategy. The remainder waits for the next fill, as one under a lot does.
   [[nodiscard]] static std::optional<NewOrderRequest> hedge_order(const Instrument& hi,
                                                                   Qty unhedged,
                                                                   Price best_bid,
@@ -320,6 +326,8 @@ class Xmm : public StrategyBase<XmmParams> {
       px = hi.round_price(best_bid - best_bid * tolerance, Side::Sell);
     }
     if (!px.is_positive()) return std::nullopt;
+    if (hi.min_notional.is_positive() && hi.notional(px, qty) < hi.min_notional)
+      return std::nullopt;
     return NewOrderRequest::limit(hi.id, side, px, qty).ioc().tag(kHedgeTag);
   }
 

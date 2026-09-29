@@ -122,7 +122,10 @@ std::string decode_positions(std::string_view json, std::vector<PositionRecord>&
       if (!q) return "positions: bad pos for " + p.inst_id;
       p.qty = *q;
     }
-    static_cast<void>(fixed(e, "avgPx", p.avg_px));
+    std::string_view avg;
+    if (e["avgPx"].get(avg) == sj::SUCCESS) {
+      if (const auto px = parse_avg_price(avg)) p.avg_px = *px;  // an average: may pass 8 decimals
+    }
     out.push_back(std::move(p));
   }
   return {};

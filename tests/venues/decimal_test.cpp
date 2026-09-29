@@ -24,6 +24,23 @@ TEST_CASE("venues.decimal: exact parse of venue price/qty strings") {
   CHECK(parse_price(" 1").error() == DecimalError::Malformed);
 }
 
+// Binance USD-M's positionRisk and ACCOUNT_UPDATE give an entry price with more than 8 fraction
+// digits; parse_price refuses it, and the position was then valued at an average of 0.
+TEST_CASE("venues.decimal: parse_avg_price rounds an average to 8 decimals") {
+  CHECK(parse_avg_price("83954.61851851852")->raw == 8'395'461'851'852LL);
+  CHECK(parse_avg_price("83954.618518514")->raw == 8'395'461'851'851LL);
+  CHECK(parse_avg_price("83954.618518515")->raw == 8'395'461'851'852LL);
+  CHECK(parse_avg_price("-1.000000005")->raw == -100'000'001LL);
+  CHECK(parse_avg_price("-0.000000005")->raw == -1);
+  CHECK(parse_avg_price("0.999999995")->raw == 100'000'000LL);
+  CHECK(parse_avg_price("76980.0")->raw == 7'698'000'000'000LL);
+  CHECK(parse_avg_price("0")->raw == 0);
+  CHECK(parse_avg_price("").error() == DecimalError::Empty);
+  CHECK(parse_avg_price("1.1234567891x").error() == DecimalError::Malformed);
+  CHECK(parse_avg_price("1e5").error() == DecimalError::Malformed);
+  CHECK(parse_avg_price("999999999999.123456789").error() == DecimalError::Overflow);
+}
+
 TEST_CASE("venues.decimal: parse_int64 and timestamps") {
   CHECK(*parse_int64("1789295134226") == 1789295134226LL);
   CHECK(*parse_int64("-1") == -1);
