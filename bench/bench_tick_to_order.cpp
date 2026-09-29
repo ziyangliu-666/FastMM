@@ -4,12 +4,12 @@
 //
 //   BM_TickToOrder_Sim       one delta: bytes into the feed -> Engine::step() -> Out* serialized
 //                            into SimTransport. Per-event rdtsc deltas go into a
-//                            LogLinearHistogram; counters p50 / p99 (ns) cover the events that
-//                            produced orders. Venue processing and ack delivery run outside the
-//                            timed region, until nothing is in flight and both quotes are working,
-//                            so each timed event starts from a settled state and sends a Cancel per
-//                            side. The benchmark fails when fewer than kMinOrderEventsPct of the
-//                            events sent orders.
+//                            LogLinearHistogram; counters p50 / p99 / p999 (ns) cover the events
+//                            that produced orders. Venue processing and ack delivery run outside
+//                            the timed region, until nothing is in flight and both quotes are
+//                            working, so each timed event starts from a settled state and sends a
+//                            Cancel per side. The benchmark fails when fewer than
+//                            kMinOrderEventsPct of the events sent orders.
 //   BM_TickToOrder_SimHash   the same with the simulator's outbound SHA-256 on. The difference is
 //                            what the hash costs; it is a determinism check of the simulator, not
 //                            engine work, so the headline benchmark runs without it.
@@ -247,6 +247,7 @@ static void tick_to_order(benchmark::State& state,
           : 100.0 * static_cast<double>(with_orders.count()) / static_cast<double>(all.count());
   state.counters["p50"] = static_cast<double>(with_orders.percentile(0.50));
   state.counters["p99"] = static_cast<double>(with_orders.percentile(0.99));
+  state.counters["p999"] = static_cast<double>(with_orders.percentile(0.999));
   state.counters["all_p50"] = static_cast<double>(all.percentile(0.50));
   state.counters["order_events_pct"] = order_events_pct;
   state.counters["kills"] = static_cast<double>(rig->engine().stats().kills);

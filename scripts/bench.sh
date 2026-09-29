@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run all micro-benchmarks and regenerate bench/README.md.
+# Run all micro-benchmarks and regenerate bench/README.md, bench/full-results.md and the tables in
+# docs/explanation/benchmarks.md.
 #   ./scripts/bench.sh [--preset release-native] [--cpu 2] [--min-time 0.5s] [--tag mytag]
 #                      [--repetitions 5] [--rounds 3] [--only bench_x]
 # --only (repeatable) reruns just those executables and keeps the other results in bench/results/latest.
@@ -69,6 +70,7 @@ for ((round = 1; round <= ROUNDS; round++)); do
     fi
   done
 done
-python3 tools/bench_table.py "$OUT"/*.json --template bench/README.tmpl.md --preset "$PRESET" --cpu "$CPU" > bench/README.md
+python3 tools/bench_table.py "$OUT"/*.json --template bench/README.tmpl.md --preset "$PRESET" --cpu "$CPU" \
+  --full bench/full-results.md --docs docs/explanation/benchmarks.md > bench/README.md
 [[ -n "$TAG" ]] && { mkdir -p bench/results; cp -r "$OUT" "bench/results/$TAG-$STAMP"; }
 echo "wrote bench/README.md"
