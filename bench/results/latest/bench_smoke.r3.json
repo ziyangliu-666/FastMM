@@ -1,41 +1,41 @@
 {
   "context": {
-    "date": "2026-09-23T10:10:52+00:00",
+    "date": "2026-09-29T15:54:49+00:00",
     "executable": "build/release-native/bin/bench/bench_smoke",
-    "num_cpus": 8,
-    "mhz_per_cpu": 4192,
+    "num_cpus": 4,
+    "mhz_per_cpu": 3784,
     "cpu_scaling_enabled": false,
     "aslr_enabled": true,
     "caches": [
       {
         "type": "Data",
         "level": 1,
-        "size": 32768,
-        "num_sharing": 1
+        "size": 49152,
+        "num_sharing": 2
       },
       {
         "type": "Instruction",
         "level": 1,
         "size": 32768,
-        "num_sharing": 1
+        "num_sharing": 2
       },
       {
         "type": "Unified",
         "level": 2,
-        "size": 1048576,
-        "num_sharing": 1
+        "size": 2097152,
+        "num_sharing": 2
       },
       {
         "type": "Unified",
         "level": 3,
-        "size": 100663296,
-        "num_sharing": 8
+        "size": 110100480,
+        "num_sharing": 4
       }
     ],
     "load_avg": [
-      13.4414,
-      15.4429,
-      26.8394
+      1,
+      1.0498,
+      2.06738
     ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
@@ -51,9 +51,9 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 1298832628,
-      "real_time": 0.926611314678889,
-      "cpu_time": 0.21920745203207198,
+      "iterations": 1051426826,
+      "real_time": 0.26526343831370663,
+      "cpu_time": 0.2652563194159933,
       "time_unit": "ns"
     },
     {
@@ -65,9 +65,9 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 1298832628,
-      "real_time": 1.3230032792086095,
-      "cpu_time": 0.21969639339858038,
+      "iterations": 1051426826,
+      "real_time": 0.26512530982373106,
+      "cpu_time": 0.2651226762593558,
       "time_unit": "ns"
     },
     {
@@ -79,9 +79,9 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 1298832628,
-      "real_time": 1.2523832393293841,
-      "cpu_time": 0.21675297796722734,
+      "iterations": 1051426826,
+      "real_time": 0.26512712735373123,
+      "cpu_time": 0.2651270427068217,
       "time_unit": "ns"
     },
     {
@@ -93,9 +93,9 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 1298832628,
-      "real_time": 1.2816853597021538,
-      "cpu_time": 0.21935417532489024,
+      "iterations": 1051426826,
+      "real_time": 0.2662833209847373,
+      "cpu_time": 0.26627872912955325,
       "time_unit": "ns"
     },
     {
@@ -107,9 +107,9 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 1298832628,
-      "real_time": 1.2805697270985013,
-      "cpu_time": 0.2229428925310307,
+      "iterations": 1051426826,
+      "real_time": 0.26515734058333884,
+      "cpu_time": 0.2651572873222468,
       "time_unit": "ns"
     },
     {
@@ -123,8 +123,8 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.2128505840035078,
-      "cpu_time": 0.2195907782507601,
+      "real_time": 0.26539130741184896,
+      "cpu_time": 0.2653884109667942,
       "time_unit": "ns"
     },
     {
@@ -138,8 +138,8 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1.2805697270985015,
-      "cpu_time": 0.2193541753248903,
+      "real_time": 0.26515734058333884,
+      "cpu_time": 0.2651572873222468,
       "time_unit": "ns"
     },
     {
@@ -153,8 +153,8 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.16198261873466147,
-      "cpu_time": 0.0022081584573584905,
+      "real_time": 0.0005018279130792353,
+      "cpu_time": 0.0005006148843745377,
       "time_unit": "ns"
     },
     {
@@ -168,8 +168,8 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.1335552959870554,
-      "cpu_time": 0.010055788658105214,
+      "real_time": 0.0018908980779105582,
+      "cpu_time": 0.0018863479477149265,
       "time_unit": "ns"
     }
   ]

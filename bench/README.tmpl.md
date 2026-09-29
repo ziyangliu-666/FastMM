@@ -12,24 +12,24 @@ Tick to order is one book update through `Engine::step()`: the L2 book, the stra
 
 ## End to end over veth
 
-`fastmm-sim-itch` sends ITCH over MoldUDP64 multicast to `fastmm-live` in another network namespace; `basic_mm` answers with OUCH 5.0 orders over TCP. Preset `release`, kernel receive, `spin_mode = "busy"`, simulator, engine and network thread on cores 2, 4 and 6, `configs/nasdaq-itch-sim.toml`. Three runs of 30 s on 2026-09-23; each cell is the range over the runs.
+`fastmm-sim-itch` sends ITCH over MoldUDP64 multicast to `fastmm-live` in another network namespace; `basic_mm` answers with OUCH 5.0 orders over TCP. Preset `release`, kernel receive, `spin_mode = "busy"`, `configs/nasdaq-itch-sim.toml`, on the machine above: simulator on CPU 0, engine on CPU 1, network thread on CPU 3 (the engine core's second hyperthread). Three runs of 30 s on 2026-09-29; each cell is the range over the runs.
 
 | Interval | samples per run | p50 | p99 | p99.9 |
 |---|---:|---:|---:|---:|
-| Wire to wire: market data sent to order received | 275 to 354 | 23.6 to 25.6 µs | 61 to 139 µs | 76 to 217 µs |
-| Kernel receive to T0 (network thread) | 138k to 140k | 3.1 to 3.2 µs | 11.8 to 22.5 µs | 61 to 688 µs |
-| T0 to T5: engine, tick to order in the ring | 184 to 215 | 2.4 to 2.6 µs | 33 µs to 3.2 ms | 46 µs to 3.2 ms |
-| T0 to the order's `write` returning | 279 to 358 | 16.6 µs | 53 µs to 3.2 ms | 64 µs to 3.2 ms |
+| Wire to wire: market data sent to order received | 206 to 337 | 11.3 to 11.8 µs | 19.5 to 23.6 µs | 21.3 to 33.2 µs |
+| Kernel receive to T0 (network thread) | 138k to 139k | 2.3 µs | 5.4 to 5.6 µs | 14.8 to 32.8 µs |
+| T0 to T5: engine, tick to order in the ring | 129 to 191 | 2.6 to 2.7 µs | 12.8 to 14.3 µs | 14.4 to 18.3 µs |
+| T0 to the order's `write` returning | 210 to 337 | 7.7 to 8.1 µs | 15.4 to 19.6 µs | 20.0 to 21.7 µs |
 
-With 300 samples a run, p99.9 is the largest sample. The millisecond tails are a handful of orders in two of the runs. On veth the order's `write` runs the simulator's TCP receive path inside the system call, which is most of the gap between T5 and wire to wire.
+With about 300 samples a run, p99.9 is the largest sample. On veth the order's `write` runs the simulator's TCP receive path inside the system call, which is most of the gap between T5 and wire to wire.
 
 ## Method
 
 [Benchmarks](../docs/explanation/benchmarks.md) says what each benchmark times and how the results are pooled.
 
 ```bash
-./scripts/bench.sh --preset release-native --cpu 2 --rounds 3
-scripts/bench-e2e.sh --duration 30 --runs 3
+./scripts/bench.sh --preset release-native --cpu 1 --rounds 3
+scripts/bench-e2e.sh --duration 30 --runs 3 --sim-cpu 0 --engine-cpu 1 --net-cpu 3
 python3 tools/check_budgets.py bench/results/latest
 python3 tools/bench_compare.py bench/results/baseline bench/results/latest
 ```

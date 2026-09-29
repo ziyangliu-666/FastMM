@@ -1,41 +1,41 @@
 {
   "context": {
-    "date": "2026-09-23T09:59:14+00:00",
+    "date": "2026-09-29T15:44:11+00:00",
     "executable": "build/release-native/bin/bench/bench_json",
-    "num_cpus": 8,
-    "mhz_per_cpu": 4192,
+    "num_cpus": 4,
+    "mhz_per_cpu": 3796,
     "cpu_scaling_enabled": false,
     "aslr_enabled": true,
     "caches": [
       {
         "type": "Data",
         "level": 1,
-        "size": 32768,
-        "num_sharing": 1
+        "size": 49152,
+        "num_sharing": 2
       },
       {
         "type": "Instruction",
         "level": 1,
         "size": 32768,
-        "num_sharing": 1
+        "num_sharing": 2
       },
       {
         "type": "Unified",
         "level": 2,
-        "size": 1048576,
-        "num_sharing": 1
+        "size": 2097152,
+        "num_sharing": 2
       },
       {
         "type": "Unified",
         "level": 3,
-        "size": 100663296,
-        "num_sharing": 8
+        "size": 110100480,
+        "num_sharing": 4
       }
     ],
     "load_avg": [
-      18.1821,
-      35.062,
-      37.083
+      1,
+      1.46729,
+      3.14746
     ],
     "library_version": "v1.9.5",
     "library_build_type": "release",
@@ -51,12 +51,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 402057,
-      "real_time": 644.3246504978754,
-      "cpu_time": 665.4899628659618,
+      "iterations": 417304,
+      "real_time": 669.8711706572291,
+      "cpu_time": 669.8553189042043,
       "time_unit": "ns",
-      "bytes_per_second": 1152534287.2143116,
-      "ns/msg": 6.654899628659618e-07
+      "bytes_per_second": 1145023377.9657252,
+      "ns/msg": 6.698553189042042e-07
     },
     {
       "name": "BM_Json_BinanceDepth20",
@@ -67,12 +67,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 402057,
-      "real_time": 660.3507836057922,
-      "cpu_time": 668.9886831966612,
+      "iterations": 417304,
+      "real_time": 669.9544289059675,
+      "cpu_time": 669.9492456338784,
       "time_unit": "ns",
-      "bytes_per_second": 1146506688.7753713,
-      "ns/msg": 6.689886831966612e-07
+      "bytes_per_second": 1144862845.9523022,
+      "ns/msg": 6.699492456338784e-07
     },
     {
       "name": "BM_Json_BinanceDepth20",
@@ -83,12 +83,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 402057,
-      "real_time": 688.3328782237908,
-      "cpu_time": 679.9609508104572,
+      "iterations": 417304,
+      "real_time": 669.7102735653635,
+      "cpu_time": 669.7099189080384,
       "time_unit": "ns",
-      "bytes_per_second": 1128005952.5268316,
-      "ns/msg": 6.799609508104573e-07
+      "bytes_per_second": 1145271972.7529092,
+      "ns/msg": 6.697099189080384e-07
     },
     {
       "name": "BM_Json_BinanceDepth20",
@@ -99,12 +99,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 402057,
-      "real_time": 702.0431306861008,
-      "cpu_time": 694.2785376202877,
+      "iterations": 417304,
+      "real_time": 669.3222279198098,
+      "cpu_time": 669.3175263117531,
       "time_unit": "ns",
-      "bytes_per_second": 1104743929.7619262,
-      "ns/msg": 6.942785376202877e-07
+      "bytes_per_second": 1145943397.3386624,
+      "ns/msg": 6.693175263117532e-07
     },
     {
       "name": "BM_Json_BinanceDepth20",
@@ -115,12 +115,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 402057,
-      "real_time": 698.1706425009168,
-      "cpu_time": 707.5913962448113,
+      "iterations": 417304,
+      "real_time": 670.7692018286788,
+      "cpu_time": 670.7504624925714,
       "time_unit": "ns",
-      "bytes_per_second": 1083958911.9800923,
-      "ns/msg": 7.075913962448113e-07
+      "bytes_per_second": 1143495298.012552,
+      "ns/msg": 6.707504624925714e-07
     },
     {
       "name": "BM_Json_BinanceDepth20_mean",
@@ -133,11 +133,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 678.6444171028952,
-      "cpu_time": 683.2619061476358,
+      "real_time": 669.9254605754098,
+      "cpu_time": 669.9164944500892,
       "time_unit": "ns",
-      "bytes_per_second": 1123149954.0517066,
-      "ns/msg": 6.832619061476359e-07
+      "bytes_per_second": 1144919378.4044302,
+      "ns/msg": 6.699164944500892e-07
     },
     {
       "name": "BM_Json_BinanceDepth20_median",
@@ -150,11 +150,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 688.3328782237908,
-      "cpu_time": 679.9609508104572,
+      "real_time": 669.8711706572292,
+      "cpu_time": 669.8553189042043,
       "time_unit": "ns",
-      "bytes_per_second": 1128005952.5268316,
-      "ns/msg": 6.799609508104573e-07
+      "bytes_per_second": 1145023377.9657252,
+      "ns/msg": 6.698553189042042e-07
     },
     {
       "name": "BM_Json_BinanceDepth20_stddev",
@@ -167,11 +167,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 25.17510159306408,
-      "cpu_time": 17.633444253368005,
+      "real_time": 0.5305376866964737,
+      "cpu_time": 0.5248223672850304,
       "time_unit": "ns",
-      "bytes_per_second": 28754461.924931232,
-      "ns/msg": 1.7633444253366393e-08
+      "bytes_per_second": 896514.6878886034,
+      "ns/msg": 5.248223671813693e-10
     },
     {
       "name": "BM_Json_BinanceDepth20_cv",
@@ -184,11 +184,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.037096159577257766,
-      "cpu_time": 0.025807737991407727,
+      "real_time": 0.0007919353986647802,
+      "cpu_time": 0.0007834146070934386,
       "time_unit": "ns",
-      "bytes_per_second": 0.02560162320374138,
-      "ns/msg": 0.025807737991405368
+      "bytes_per_second": 0.0007830373952950245,
+      "ns/msg": 0.0007834146069387013
     },
     {
       "name": "BM_Json_BinanceDepth100",
@@ -199,12 +199,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 92355,
-      "real_time": 2972.915684218935,
-      "cpu_time": 3068.8844458881476,
+      "iterations": 94761,
+      "real_time": 2961.26100399851,
+      "cpu_time": 2961.223815704772,
       "time_unit": "ns",
-      "bytes_per_second": 1084107290.0146792,
-      "ns/msg": 3.068884445888148e-06
+      "bytes_per_second": 1123521964.923875,
+      "ns/msg": 2.961223815704772e-06
     },
     {
       "name": "BM_Json_BinanceDepth100",
@@ -215,12 +215,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 92355,
-      "real_time": 3119.328265956141,
-      "cpu_time": 3129.2785772291677,
+      "iterations": 94761,
+      "real_time": 2960.586106098846,
+      "cpu_time": 2960.559196293832,
       "time_unit": "ns",
-      "bytes_per_second": 1063184346.7723175,
-      "ns/msg": 3.1292785772291677e-06
+      "bytes_per_second": 1123774185.6892765,
+      "ns/msg": 2.960559196293832e-06
     },
     {
       "name": "BM_Json_BinanceDepth100",
@@ -231,12 +231,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 92355,
-      "real_time": 2961.134426864,
-      "cpu_time": 3036.7182069189566,
+      "iterations": 94761,
+      "real_time": 2960.982756619119,
+      "cpu_time": 2960.933538058905,
       "time_unit": "ns",
-      "bytes_per_second": 1095590625.5706096,
-      "ns/msg": 3.036718206918957e-06
+      "bytes_per_second": 1123632110.3583694,
+      "ns/msg": 2.960933538058905e-06
     },
     {
       "name": "BM_Json_BinanceDepth100",
@@ -247,12 +247,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 92355,
-      "real_time": 2947.9306371132598,
-      "cpu_time": 3044.5599913377773,
+      "iterations": 94761,
+      "real_time": 2961.760882640125,
+      "cpu_time": 2961.7471111533205,
       "time_unit": "ns",
-      "bytes_per_second": 1092768744.733494,
-      "ns/msg": 3.044559991337777e-06
+      "bytes_per_second": 1123323455.76407,
+      "ns/msg": 2.961747111153321e-06
     },
     {
       "name": "BM_Json_BinanceDepth100",
@@ -263,12 +263,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 92355,
-      "real_time": 2900.7213904635455,
-      "cpu_time": 3014.442834713876,
+      "iterations": 94761,
+      "real_time": 2958.3237091196893,
+      "cpu_time": 2958.3218834752693,
       "time_unit": "ns",
-      "bytes_per_second": 1103686545.880639,
-      "ns/msg": 3.014442834713876e-06
+      "bytes_per_second": 1124624071.0262496,
+      "ns/msg": 2.9583218834752693e-06
     },
     {
       "name": "BM_Json_BinanceDepth100_mean",
@@ -281,11 +281,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2980.4060809231764,
-      "cpu_time": 3058.776811217585,
+      "real_time": 2960.5828916952582,
+      "cpu_time": 2960.5571089372197,
       "time_unit": "ns",
-      "bytes_per_second": 1087867510.594348,
-      "ns/msg": 3.058776811217585e-06
+      "bytes_per_second": 1123775157.5523682,
+      "ns/msg": 2.96055710893722e-06
     },
     {
       "name": "BM_Json_BinanceDepth100_median",
@@ -298,11 +298,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2961.1344268639996,
-      "cpu_time": 3044.559991337777,
+      "real_time": 2960.982756619119,
+      "cpu_time": 2960.9335380589046,
       "time_unit": "ns",
-      "bytes_per_second": 1092768744.733494,
-      "ns/msg": 3.044559991337777e-06
+      "bytes_per_second": 1123632110.3583694,
+      "ns/msg": 2.960933538058905e-06
     },
     {
       "name": "BM_Json_BinanceDepth100_stddev",
@@ -315,11 +315,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 82.35772661322437,
-      "cpu_time": 43.95129336298573,
+      "real_time": 1.333351712430239,
+      "cpu_time": 1.3227376245082951,
       "time_unit": "ns",
-      "bytes_per_second": 15470199.687502421,
-      "ns/msg": 4.395129336299401e-08
+      "bytes_per_second": 502309.30264131085,
+      "ns/msg": 1.3227376246980685e-09
     },
     {
       "name": "BM_Json_BinanceDepth100_cv",
@@ -332,11 +332,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.027633055488772252,
-      "cpu_time": 0.01436891152103718,
+      "real_time": 0.0004503679718512286,
+      "cpu_time": 0.00044678672825302506,
       "time_unit": "ns",
-      "bytes_per_second": 0.014220665234363326,
-      "ns/msg": 0.014368911521039888
+      "bytes_per_second": 0.0004469838110101692,
+      "ns/msg": 0.00044678672831712564
     },
     {
       "name": "BM_Json_BinanceBookTicker",
@@ -347,12 +347,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 2274082,
-      "real_time": 125.8393114266389,
-      "cpu_time": 124.22198320025402,
+      "iterations": 2395913,
+      "real_time": 116.5838897321782,
+      "cpu_time": 116.58315681746379,
       "time_unit": "ns",
-      "bytes_per_second": 1151165005.709775,
-      "ns/msg": 1.2422198320025402e-07
+      "bytes_per_second": 1226592278.8820815,
+      "ns/msg": 1.165831568174638e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker",
@@ -363,12 +363,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 2274082,
-      "real_time": 119.32670941767745,
-      "cpu_time": 122.38474997823289,
+      "iterations": 2395913,
+      "real_time": 116.52864148241014,
+      "cpu_time": 116.52799746902339,
       "time_unit": "ns",
-      "bytes_per_second": 1168446232.2751298,
-      "ns/msg": 1.2238474997823288e-07
+      "bytes_per_second": 1227172894.9775667,
+      "ns/msg": 1.1652799746902338e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker",
@@ -379,12 +379,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 2274082,
-      "real_time": 117.54045896622925,
-      "cpu_time": 122.17440883837983,
+      "iterations": 2395913,
+      "real_time": 116.64571543298975,
+      "cpu_time": 116.64491698989063,
       "time_unit": "ns",
-      "bytes_per_second": 1170457883.6077662,
-      "ns/msg": 1.2217440883837983e-07
+      "bytes_per_second": 1225942833.0888476,
+      "ns/msg": 1.1664491698989064e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker",
@@ -395,12 +395,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 2274082,
-      "real_time": 122.86309949006424,
-      "cpu_time": 124.31849555117186,
+      "iterations": 2395913,
+      "real_time": 116.65686149703909,
+      "cpu_time": 116.65543448363918,
       "time_unit": "ns",
-      "bytes_per_second": 1150271320.1764777,
-      "ns/msg": 1.2431849555117184e-07
+      "bytes_per_second": 1225832303.7668307,
+      "ns/msg": 1.1665543448363918e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker",
@@ -411,12 +411,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 2274082,
-      "real_time": 118.04073203486313,
-      "cpu_time": 122.71346327880872,
+      "iterations": 2395913,
+      "real_time": 116.68941276252168,
+      "cpu_time": 116.68844903800766,
       "time_unit": "ns",
-      "bytes_per_second": 1165316308.244839,
-      "ns/msg": 1.227134632788087e-07
+      "bytes_per_second": 1225485480.1731246,
+      "ns/msg": 1.1668844903800767e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker_mean",
@@ -429,11 +429,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 120.72206226709461,
-      "cpu_time": 123.16262016936949,
+      "real_time": 116.62090418142778,
+      "cpu_time": 116.61999095960493,
       "time_unit": "ns",
-      "bytes_per_second": 1161131350.0027976,
-      "ns/msg": 1.2316262016936945e-07
+      "bytes_per_second": 1226205158.1776903,
+      "ns/msg": 1.1661999095960495e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker_median",
@@ -446,11 +446,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 119.32670941767745,
-      "cpu_time": 122.71346327880872,
+      "real_time": 116.64571543298976,
+      "cpu_time": 116.64491698989063,
       "time_unit": "ns",
-      "bytes_per_second": 1165316308.244839,
-      "ns/msg": 1.227134632788087e-07
+      "bytes_per_second": 1225942833.0888476,
+      "ns/msg": 1.1664491698989064e-07
     },
     {
       "name": "BM_Json_BinanceBookTicker_stddev",
@@ -463,11 +463,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 3.536573917781152,
-      "cpu_time": 1.0297673900864865,
+      "real_time": 0.0641958478164999,
+      "cpu_time": 0.06399924849057055,
       "time_unit": "ns",
-      "bytes_per_second": 9685993.413501788,
-      "ns/msg": 1.0297673900893159e-09
+      "bytes_per_second": 673080.2788375247,
+      "ns/msg": 6.399924846053061e-11
     },
     {
       "name": "BM_Json_BinanceBookTicker_cv",
@@ -480,11 +480,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.029295174812012142,
-      "cpu_time": 0.008361038346459192,
+      "real_time": 0.0005504660443776877,
+      "cpu_time": 0.0005487845434042156,
       "time_unit": "ns",
-      "bytes_per_second": 0.00834185849299345,
-      "ns/msg": 0.008361038346482167
+      "bytes_per_second": 0.0005489132665514266,
+      "ns/msg": 0.0005487845431466274
     },
     {
       "name": "BM_Json_BinanceTrade",
@@ -495,12 +495,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 2323048,
-      "real_time": 114.45667631267501,
-      "cpu_time": 118.97295578911846,
+      "iterations": 2414487,
+      "real_time": 115.95209002992993,
+      "cpu_time": 115.95203038989234,
       "time_unit": "ns",
-      "bytes_per_second": 1386869805.0375855,
-      "ns/msg": 1.1897295578911844e-07
+      "bytes_per_second": 1423002248.819467,
+      "ns/msg": 1.1595203038989236e-07
     },
     {
       "name": "BM_Json_BinanceTrade",
@@ -511,12 +511,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 2323048,
-      "real_time": 115.12158810351823,
-      "cpu_time": 119.68327430169344,
+      "iterations": 2414487,
+      "real_time": 115.99104116114236,
+      "cpu_time": 115.99098276362656,
       "time_unit": "ns",
-      "bytes_per_second": 1378638752.68046,
-      "ns/msg": 1.1968327430169343e-07
+      "bytes_per_second": 1422524372.7458277,
+      "ns/msg": 1.1599098276362656e-07
     },
     {
       "name": "BM_Json_BinanceTrade",
@@ -527,12 +527,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 2323048,
-      "real_time": 114.90789686084351,
-      "cpu_time": 119.42437478691795,
+      "iterations": 2414487,
+      "real_time": 115.99186618105433,
+      "cpu_time": 115.99015277365329,
       "time_unit": "ns",
-      "bytes_per_second": 1381627496.8522968,
-      "ns/msg": 1.1942437478691796e-07
+      "bytes_per_second": 1422534551.8941252,
+      "ns/msg": 1.159901527736533e-07
     },
     {
       "name": "BM_Json_BinanceTrade",
@@ -543,12 +543,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 2323048,
-      "real_time": 116.58922115030407,
-      "cpu_time": 118.8907861568077,
+      "iterations": 2414487,
+      "real_time": 115.93529184459018,
+      "cpu_time": 115.93299321967774,
       "time_unit": "ns",
-      "bytes_per_second": 1387828319.8697822,
-      "ns/msg": 1.188907861568077e-07
+      "bytes_per_second": 1423235917.7283273,
+      "ns/msg": 1.1593299321967775e-07
     },
     {
       "name": "BM_Json_BinanceTrade",
@@ -559,12 +559,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 2323048,
-      "real_time": 115.57055988539013,
-      "cpu_time": 120.15291375813143,
+      "iterations": 2414487,
+      "real_time": 116.02202206928617,
+      "cpu_time": 116.02099866348453,
       "time_unit": "ns",
-      "bytes_per_second": 1373250093.0617967,
-      "ns/msg": 1.2015291375813142e-07
+      "bytes_per_second": 1422156350.1498346,
+      "ns/msg": 1.1602099866348453e-07
     },
     {
       "name": "BM_Json_BinanceTrade_mean",
@@ -577,11 +577,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 115.3291884625462,
-      "cpu_time": 119.4248609585338,
+      "real_time": 115.97846225720062,
+      "cpu_time": 115.97743156206688,
       "time_unit": "ns",
-      "bytes_per_second": 1381642893.5003843,
-      "ns/msg": 1.194248609585338e-07
+      "bytes_per_second": 1422690688.2675166,
+      "ns/msg": 1.1597743156206689e-07
     },
     {
       "name": "BM_Json_BinanceTrade_median",
@@ -594,11 +594,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 115.12158810351825,
-      "cpu_time": 119.42437478691795,
+      "real_time": 115.99104116114236,
+      "cpu_time": 115.99015277365329,
       "time_unit": "ns",
-      "bytes_per_second": 1381627496.8522968,
-      "ns/msg": 1.1942437478691796e-07
+      "bytes_per_second": 1422534551.8941252,
+      "ns/msg": 1.159901527736533e-07
     },
     {
       "name": "BM_Json_BinanceTrade_stddev",
@@ -611,11 +611,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.8105252174312471,
-      "cpu_time": 0.5211268433062318,
+      "real_time": 0.03462127279975695,
+      "cpu_time": 0.03486955130768134,
       "time_unit": "ns",
-      "bytes_per_second": 6021716.987517763,
-      "ns/msg": 5.211268433129959e-10
+      "bytes_per_second": 427756.29285844526,
+      "ns/msg": 3.486955137785981e-11
     },
     {
       "name": "BM_Json_BinanceTrade_cv",
@@ -628,11 +628,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.007027927866625625,
-      "cpu_time": 0.004363637848296723,
+      "real_time": 0.00029851467355187725,
+      "cpu_time": 0.000300658074920554,
       "time_unit": "ns",
-      "bytes_per_second": 0.004358374378680281,
-      "ns/msg": 0.0043636378483533625
+      "bytes_per_second": 0.00030066710662128956,
+      "ns/msg": 0.0003006580755256586
     },
     {
       "name": "BM_Json_BinanceExecutionReport",
@@ -643,12 +643,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 854743,
-      "real_time": 317.3304572487763,
-      "cpu_time": 329.9126836955673,
+      "iterations": 732808,
+      "real_time": 378.2527415092456,
+      "cpu_time": 378.24741405661496,
       "time_unit": "ns",
-      "bytes_per_second": 1651952249.5925262,
-      "ns/msg": 3.299126836955673e-07
+      "bytes_per_second": 1440855851.874842,
+      "ns/msg": 3.7824741405661497e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport",
@@ -659,12 +659,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 854743,
-      "real_time": 317.6542785330751,
-      "cpu_time": 330.2210722989249,
+      "iterations": 732808,
+      "real_time": 376.55844641448107,
+      "cpu_time": 376.5552013624312,
       "time_unit": "ns",
-      "bytes_per_second": 1650409515.6793976,
-      "ns/msg": 3.302210722989249e-07
+      "bytes_per_second": 1447330957.1295555,
+      "ns/msg": 3.7655520136243114e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport",
@@ -675,12 +675,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 854743,
-      "real_time": 320.4919268078878,
-      "cpu_time": 327.5529194155433,
+      "iterations": 732808,
+      "real_time": 376.75417435409076,
+      "cpu_time": 376.7539423696246,
       "time_unit": "ns",
-      "bytes_per_second": 1663853282.005394,
-      "ns/msg": 3.275529194155433e-07
+      "bytes_per_second": 1446567477.3624878,
+      "ns/msg": 3.767539423696246e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport",
@@ -691,12 +691,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 854743,
-      "real_time": 316.82881403682904,
-      "cpu_time": 329.33694221537894,
+      "iterations": 732808,
+      "real_time": 376.1791355988858,
+      "cpu_time": 376.1788954269063,
       "time_unit": "ns",
-      "bytes_per_second": 1654840165.6185365,
-      "ns/msg": 3.293369422153789e-07
+      "bytes_per_second": 1448778776.867605,
+      "ns/msg": 3.7617889542690634e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport",
@@ -707,12 +707,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 854743,
-      "real_time": 314.81308066848663,
-      "cpu_time": 326.36042646737053,
+      "iterations": 732808,
+      "real_time": 376.38621030334957,
+      "cpu_time": 376.3823593628893,
       "time_unit": "ns",
-      "bytes_per_second": 1669932858.8924031,
-      "ns/msg": 3.263604264673706e-07
+      "bytes_per_second": 1447995599.269141,
+      "ns/msg": 3.7638235936288926e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport_mean",
@@ -725,11 +725,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 317.423711459011,
-      "cpu_time": 328.676808818557,
+      "real_time": 376.82614163601056,
+      "cpu_time": 376.8235625156933,
       "time_unit": "ns",
-      "bytes_per_second": 1658197614.3576517,
-      "ns/msg": 3.28676808818557e-07
+      "bytes_per_second": 1446305732.5007265,
+      "ns/msg": 3.7682356251569326e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport_median",
@@ -742,11 +742,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 317.33045724877627,
-      "cpu_time": 329.33694221537894,
+      "real_time": 376.55844641448107,
+      "cpu_time": 376.55520136243115,
       "time_unit": "ns",
-      "bytes_per_second": 1654840165.6185365,
-      "ns/msg": 3.293369422153789e-07
+      "bytes_per_second": 1447330957.1295555,
+      "ns/msg": 3.7655520136243114e-07
     },
     {
       "name": "BM_Json_BinanceExecutionReport_stddev",
@@ -759,11 +759,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2.039920281390179,
-      "cpu_time": 1.6565526777792132,
+      "real_time": 0.8252550528937137,
+      "cpu_time": 0.8237830055955678,
       "time_unit": "ns",
-      "bytes_per_second": 8376068.065282182,
-      "ns/msg": 1.656552677794961e-09
+      "bytes_per_second": 3154060.592341244,
+      "ns/msg": 8.237830056231151e-10
     },
     {
       "name": "BM_Json_BinanceExecutionReport_cv",
@@ -776,11 +776,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.0064264899178888045,
-      "cpu_time": 0.005040065600410822,
+      "real_time": 0.0021900153989073724,
+      "cpu_time": 0.002186123925202422,
       "time_unit": "ns",
-      "bytes_per_second": 0.005051308717825457,
-      "ns/msg": 0.005040065600458735
+      "bytes_per_second": 0.0021807703042756627,
+      "ns/msg": 0.0021861239252755267
     },
     {
       "name": "BM_Sbe_BinanceDepth20",
@@ -791,12 +791,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 5439734,
-      "real_time": 50.107150458441815,
-      "cpu_time": 50.532912454910544,
+      "iterations": 5911236,
+      "real_time": 47.358792475888016,
+      "cpu_time": 47.358752890258536,
       "time_unit": "ns",
-      "bytes_per_second": 7321960718.772013,
-      "ns/msg": 5.0532912454910544e-08
+      "bytes_per_second": 7812705728.492846,
+      "ns/msg": 4.735875289025854e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20",
@@ -807,12 +807,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 5439734,
-      "real_time": 47.93884425236406,
-      "cpu_time": 49.83555023094881,
+      "iterations": 5911236,
+      "real_time": 47.3738473645717,
+      "cpu_time": 47.373506826660126,
       "time_unit": "ns",
-      "bytes_per_second": 7424418879.401135,
-      "ns/msg": 4.983555023094881e-08
+      "bytes_per_second": 7810272550.7282295,
+      "ns/msg": 4.737350682666013e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20",
@@ -823,12 +823,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 5439734,
-      "real_time": 48.105469491276594,
-      "cpu_time": 50.01173641946442,
+      "iterations": 5911236,
+      "real_time": 47.3707419226566,
+      "cpu_time": 47.370371780115114,
       "time_unit": "ns",
-      "bytes_per_second": 7398263417.544469,
-      "ns/msg": 5.001173641946442e-08
+      "bytes_per_second": 7810789446.987551,
+      "ns/msg": 4.737037178011511e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20",
@@ -839,12 +839,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 5439734,
-      "real_time": 48.47985709915524,
-      "cpu_time": 50.40072878563533,
+      "iterations": 5911236,
+      "real_time": 47.40841695375986,
+      "cpu_time": 47.40764909403017,
       "time_unit": "ns",
-      "bytes_per_second": 7341163687.804716,
-      "ns/msg": 5.0400728785635336e-08
+      "bytes_per_second": 7804647711.303459,
+      "ns/msg": 4.740764909403017e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20",
@@ -855,12 +855,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 5439734,
-      "real_time": 48.23366197576809,
-      "cpu_time": 50.02679947218006,
+      "iterations": 5911236,
+      "real_time": 47.33785083189836,
+      "cpu_time": 47.33781852052604,
       "time_unit": "ns",
-      "bytes_per_second": 7396035802.885157,
-      "ns/msg": 5.0026799472180066e-08
+      "bytes_per_second": 7816160768.785007,
+      "ns/msg": 4.7337818520526044e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20_mean",
@@ -873,11 +873,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 48.572996655401155,
-      "cpu_time": 50.161545472627836,
+      "real_time": 47.3699299097549,
+      "cpu_time": 47.36961982231799,
       "time_unit": "ns",
-      "bytes_per_second": 7376368501.281498,
-      "ns/msg": 5.016154547262784e-08
+      "bytes_per_second": 7810915241.2594185,
+      "ns/msg": 4.7369619822318e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20_median",
@@ -890,11 +890,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 48.23366197576808,
-      "cpu_time": 50.026799472180066,
+      "real_time": 47.3707419226566,
+      "cpu_time": 47.370371780115114,
       "time_unit": "ns",
-      "bytes_per_second": 7396035802.885157,
-      "ns/msg": 5.0026799472180066e-08
+      "bytes_per_second": 7810789446.987551,
+      "ns/msg": 4.737037178011511e-08
     },
     {
       "name": "BM_Sbe_BinanceDepth20_stddev",
@@ -907,11 +907,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.8800826399545769,
-      "cpu_time": 0.292401362597357,
+      "real_time": 0.025740862670672455,
+      "cpu_time": 0.025452469227510138,
       "time_unit": "ns",
-      "bytes_per_second": 42937788.24522754,
-      "ns/msg": 2.924013625966591e-10
+      "bytes_per_second": 4196195.022198087,
+      "ns/msg": 2.545246921021537e-11
     },
     {
       "name": "BM_Sbe_BinanceDepth20_cv",
@@ -924,11 +924,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.018118763522009605,
-      "cpu_time": 0.0058291936550662025,
+      "real_time": 0.000543400902634049,
+      "cpu_time": 0.0005373163078568411,
       "time_unit": "ns",
-      "bytes_per_second": 0.005820992841906955,
-      "ns/msg": 0.00582919365505229
+      "bytes_per_second": 0.0005372219378380425,
+      "ns/msg": 0.0005373163074917385
     },
     {
       "name": "BM_Sbe_BinanceDepth100",
@@ -939,12 +939,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 1954841,
-      "real_time": 142.48495351280994,
-      "cpu_time": 144.8528054199796,
+      "iterations": 1859471,
+      "real_time": 150.64813809945952,
+      "cpu_time": 150.64667854459668,
       "time_unit": "ns",
-      "bytes_per_second": 11390873619.713926,
-      "ns/msg": 1.448528054199796e-07
+      "bytes_per_second": 10952780479.070051,
+      "ns/msg": 1.5064667854459672e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100",
@@ -955,12 +955,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 1954841,
-      "real_time": 145.5400203852262,
-      "cpu_time": 146.47853457135398,
+      "iterations": 1859471,
+      "real_time": 150.56356189480266,
+      "cpu_time": 150.559450510387,
       "time_unit": "ns",
-      "bytes_per_second": 11264449121.016,
-      "ns/msg": 1.4647853457135398e-07
+      "bytes_per_second": 10959126075.49114,
+      "ns/msg": 1.50559450510387e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100",
@@ -971,12 +971,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 1954841,
-      "real_time": 138.51057859797814,
-      "cpu_time": 143.9296720295923,
+      "iterations": 1859471,
+      "real_time": 150.48901542435607,
+      "cpu_time": 150.48790112886934,
       "time_unit": "ns",
-      "bytes_per_second": 11463932188.081106,
-      "ns/msg": 1.439296720295923e-07
+      "bytes_per_second": 10964336585.351358,
+      "ns/msg": 1.5048790112886934e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100",
@@ -987,12 +987,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 1954841,
-      "real_time": 137.84088526204388,
-      "cpu_time": 143.30259238475156,
+      "iterations": 1859471,
+      "real_time": 150.55754351639698,
+      "cpu_time": 150.55619528349726,
       "time_unit": "ns",
-      "bytes_per_second": 11514097355.405357,
-      "ns/msg": 1.4330259238475156e-07
+      "bytes_per_second": 10959363026.496855,
+      "ns/msg": 1.5055619528349725e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100",
@@ -1003,12 +1003,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 1954841,
-      "real_time": 138.79592355162592,
-      "cpu_time": 144.29902994668166,
+      "iterations": 1859471,
+      "real_time": 150.5565174182051,
+      "cpu_time": 150.5541231887989,
       "time_unit": "ns",
-      "bytes_per_second": 11434588303.259373,
-      "ns/msg": 1.4429902994668165e-07
+      "bytes_per_second": 10959513861.542376,
+      "ns/msg": 1.5055412318879891e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100_mean",
@@ -1021,11 +1021,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 140.63447226193682,
-      "cpu_time": 144.57252687047182,
+      "real_time": 150.56295527064407,
+      "cpu_time": 150.56086973122984,
       "time_unit": "ns",
-      "bytes_per_second": 11413588117.495155,
-      "ns/msg": 1.445725268704718e-07
+      "bytes_per_second": 10959024005.590357,
+      "ns/msg": 1.5056086973122985e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100_median",
@@ -1038,11 +1038,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 138.7959235516259,
-      "cpu_time": 144.29902994668166,
+      "real_time": 150.55754351639698,
+      "cpu_time": 150.5561952834973,
       "time_unit": "ns",
-      "bytes_per_second": 11434588303.259373,
-      "ns/msg": 1.4429902994668165e-07
+      "bytes_per_second": 10959363026.496855,
+      "ns/msg": 1.5055619528349725e-07
     },
     {
       "name": "BM_Sbe_BinanceDepth100_stddev",
@@ -1055,11 +1055,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 3.28572660273588,
-      "cpu_time": 1.2054270957745379,
+      "real_time": 0.05655598153307469,
+      "cpu_time": 0.05647333416030263,
       "time_unit": "ns",
-      "bytes_per_second": 94652032.24246588,
-      "ns/msg": 1.2054270957786018e-09
+      "bytes_per_second": 4110062.021760742,
+      "ns/msg": 5.647333409316043e-11
     },
     {
       "name": "BM_Sbe_BinanceDepth100_cv",
@@ -1072,11 +1072,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.023363593220701213,
-      "cpu_time": 0.008337871114714119,
+      "real_time": 0.0003756301238336655,
+      "cpu_time": 0.000375086397024105,
       "time_unit": "ns",
-      "bytes_per_second": 0.008292925175508994,
-      "ns/msg": 0.00833787111474223
+      "bytes_per_second": 0.0003750390563670761,
+      "ns/msg": 0.00037508639657815774
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk",
@@ -1087,12 +1087,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 16222141,
-      "real_time": 16.16074844967044,
-      "cpu_time": 17.08436358677937,
+      "iterations": 16235126,
+      "real_time": 17.24687951297893,
+      "cpu_time": 17.246865161379088,
       "time_unit": "ns",
-      "bytes_per_second": 3863181655.246069,
-      "ns/msg": 1.708436358677937e-08
+      "bytes_per_second": 3826782396.8261685,
+      "ns/msg": 1.7246865161379085e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk",
@@ -1103,12 +1103,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 16222141,
-      "real_time": 16.109781316416516,
-      "cpu_time": 17.03003179420028,
+      "iterations": 16235126,
+      "real_time": 17.248183106182815,
+      "cpu_time": 17.248167707475744,
       "time_unit": "ns",
-      "bytes_per_second": 3875506563.7914343,
-      "ns/msg": 1.703003179420028e-08
+      "bytes_per_second": 3826493406.1021523,
+      "ns/msg": 1.724816770747574e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk",
@@ -1119,12 +1119,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 16222141,
-      "real_time": 16.167766202738424,
-      "cpu_time": 17.091390217851103,
+      "iterations": 16235126,
+      "real_time": 17.25200488126658,
+      "cpu_time": 17.251867524773107,
       "time_unit": "ns",
-      "bytes_per_second": 3861593419.7714524,
-      "ns/msg": 1.7091390217851103e-08
+      "bytes_per_second": 3825672780.3657312,
+      "ns/msg": 1.7251867524773107e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk",
@@ -1135,12 +1135,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 16222141,
-      "real_time": 16.347943345433652,
-      "cpu_time": 17.281905699130633,
+      "iterations": 16235126,
+      "real_time": 17.245183868614472,
+      "cpu_time": 17.24507078047931,
       "time_unit": "ns",
-      "bytes_per_second": 3819023269.1363506,
-      "ns/msg": 1.7281905699130633e-08
+      "bytes_per_second": 3827180580.476898,
+      "ns/msg": 1.7245070780479308e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk",
@@ -1151,12 +1151,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 16222141,
-      "real_time": 16.16121047210276,
-      "cpu_time": 17.084863890654074,
+      "iterations": 16235126,
+      "real_time": 17.244594837149688,
+      "cpu_time": 17.24439995106913,
       "time_unit": "ns",
-      "bytes_per_second": 3863068527.932725,
-      "ns/msg": 1.7084863890654075e-08
+      "bytes_per_second": 3827329462.740052,
+      "ns/msg": 1.724439995106913e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk_mean",
@@ -1169,11 +1169,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 16.189489957272357,
-      "cpu_time": 17.114511037723094,
+      "real_time": 17.247369241238495,
+      "cpu_time": 17.247274225035277,
       "time_unit": "ns",
-      "bytes_per_second": 3856474687.1756067,
-      "ns/msg": 1.711451103772309e-08
+      "bytes_per_second": 3826691725.3022003,
+      "ns/msg": 1.7247274225035273e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk_median",
@@ -1186,11 +1186,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 16.16121047210276,
-      "cpu_time": 17.08486389065407,
+      "real_time": 17.246879512978925,
+      "cpu_time": 17.246865161379084,
       "time_unit": "ns",
-      "bytes_per_second": 3863068527.932725,
-      "ns/msg": 1.7084863890654075e-08
+      "bytes_per_second": 3826782396.8261685,
+      "ns/msg": 1.7246865161379085e-08
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk_stddev",
@@ -1203,11 +1203,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 0.09159512636982885,
-      "cpu_time": 0.09679890197330643,
+      "real_time": 0.0029523101219122655,
+      "cpu_time": 0.0029656645466906544,
       "time_unit": "ns",
-      "bytes_per_second": 21676511.600561563,
-      "ns/msg": 9.679890197443778e-11
+      "bytes_per_second": 657930.285911813,
+      "ns/msg": 2.9656645697864473e-12
     },
     {
       "name": "BM_Sbe_BinanceBestBidAsk_cv",
@@ -1220,11 +1220,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.005657690675343611,
-      "cpu_time": 0.005655954865432399,
+      "real_time": 0.00017117451830585772,
+      "cpu_time": 0.00017194975321873442,
       "time_unit": "ns",
-      "bytes_per_second": 0.005620810029596471,
-      "ns/msg": 0.005655954865498506
+      "bytes_per_second": 0.0001719318756620917,
+      "ns/msg": 0.00017194975455783257
     },
     {
       "name": "BM_Sbe_BinanceTrade",
@@ -1235,12 +1235,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 14470726,
-      "real_time": 25.008031870313,
-      "cpu_time": 20.366090616324385,
+      "iterations": 14682346,
+      "real_time": 19.072790615334725,
+      "cpu_time": 19.07263764251294,
       "time_unit": "ns",
-      "bytes_per_second": 3191579632.268719,
-      "ns/msg": 2.0366090616324387e-08
+      "bytes_per_second": 3408023641.948447,
+      "ns/msg": 1.907263764251294e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade",
@@ -1251,12 +1251,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 14470726,
-      "real_time": 25.714571680657475,
-      "cpu_time": 18.90271510911069,
+      "iterations": 14682346,
+      "real_time": 19.078684223894864,
+      "cpu_time": 19.078667741517663,
       "time_unit": "ns",
-      "bytes_per_second": 3438659453.142339,
-      "ns/msg": 1.890271510911069e-08
+      "bytes_per_second": 3406946484.9765973,
+      "ns/msg": 1.907866774151766e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade",
@@ -1267,12 +1267,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 14470726,
-      "real_time": 49.61230542138982,
-      "cpu_time": 19.303692364847507,
+      "iterations": 14682346,
+      "real_time": 19.06602337255673,
+      "cpu_time": 19.066011521591996,
       "time_unit": "ns",
-      "bytes_per_second": 3367231448.340245,
-      "ns/msg": 1.930369236484751e-08
+      "bytes_per_second": 3409208052.055795,
+      "ns/msg": 1.9066011521591997e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade",
@@ -1283,12 +1283,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 14470726,
-      "real_time": 39.99852799285687,
-      "cpu_time": 18.877184669241803,
+      "iterations": 14682346,
+      "real_time": 19.07813853454434,
+      "cpu_time": 19.078031194742334,
       "time_unit": "ns",
-      "bytes_per_second": 3443310066.5646405,
-      "ns/msg": 1.8877184669241804e-08
+      "bytes_per_second": 3407060159.2219424,
+      "ns/msg": 1.907803119474233e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade",
@@ -1299,12 +1299,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 14470726,
-      "real_time": 61.26933652089991,
-      "cpu_time": 18.952338880578537,
+      "iterations": 14682346,
+      "real_time": 19.07166238964816,
+      "cpu_time": 19.071176295668188,
       "time_unit": "ns",
-      "bytes_per_second": 3429655854.592645,
-      "ns/msg": 1.895233888057854e-08
+      "bytes_per_second": 3408284784.969664,
+      "ns/msg": 1.9071176295668188e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade_mean",
@@ -1317,11 +1317,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 40.32055469722342,
-      "cpu_time": 19.280404328020587,
+      "real_time": 19.073459827195766,
+      "cpu_time": 19.073304879206624,
       "time_unit": "ns",
-      "bytes_per_second": 3374087290.981718,
-      "ns/msg": 1.9280404328020587e-08
+      "bytes_per_second": 3407904624.6344895,
+      "ns/msg": 1.9073304879206626e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade_median",
@@ -1334,11 +1334,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 39.99852799285688,
-      "cpu_time": 18.95233888057854,
+      "real_time": 19.07279061533473,
+      "cpu_time": 19.07263764251294,
       "time_unit": "ns",
-      "bytes_per_second": 3429655854.592645,
-      "ns/msg": 1.895233888057854e-08
+      "bytes_per_second": 3408023641.948447,
+      "ns/msg": 1.907263764251294e-08
     },
     {
       "name": "BM_Sbe_BinanceTrade_stddev",
@@ -1351,11 +1351,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 15.597274504053862,
-      "cpu_time": 0.6308960346963177,
+      "real_time": 0.0052000987391222124,
+      "cpu_time": 0.005226554516844115,
       "time_unit": "ns",
-      "bytes_per_second": 106542562.05209559,
-      "ns/msg": 6.308960346963004e-10
+      "bytes_per_second": 933911.5956448982,
+      "ns/msg": 5.226554513879261e-12
     },
     {
       "name": "BM_Sbe_BinanceTrade_cv",
@@ -1368,11 +1368,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.38683184348969113,
-      "cpu_time": 0.032722137148307844,
+      "real_time": 0.0002726353155764476,
+      "cpu_time": 0.00027402458828946894,
       "time_unit": "ns",
-      "bytes_per_second": 0.031576705895210014,
-      "ns/msg": 0.03272213714830694
+      "bytes_per_second": 0.000274042761905364,
+      "ns/msg": 0.00027402458813402373
     },
     {
       "name": "BM_Json_BybitOrderbook20",
@@ -1383,12 +1383,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 398484,
-      "real_time": 2789.402906971745,
-      "cpu_time": 722.8079471195855,
+      "iterations": 381559,
+      "real_time": 733.9450386436847,
+      "cpu_time": 733.9383660194077,
       "time_unit": "ns",
-      "bytes_per_second": 1092959759.4328856,
-      "ns/msg": 7.228079471195854e-07
+      "bytes_per_second": 1076384661.9500878,
+      "ns/msg": 7.339383660194077e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20",
@@ -1399,12 +1399,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 398484,
-      "real_time": 2910.7699657046837,
-      "cpu_time": 700.9293196213663,
+      "iterations": 381559,
+      "real_time": 734.5276379276081,
+      "cpu_time": 734.5220843958588,
       "time_unit": "ns",
-      "bytes_per_second": 1127075124.2461202,
-      "ns/msg": 7.009293196213664e-07
+      "bytes_per_second": 1075529268.3265905,
+      "ns/msg": 7.345220843958586e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20",
@@ -1415,12 +1415,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 398484,
-      "real_time": 2966.209601856133,
-      "cpu_time": 700.4062572148435,
+      "iterations": 381559,
+      "real_time": 734.9071572154469,
+      "cpu_time": 734.9006470821013,
       "time_unit": "ns",
-      "bytes_per_second": 1127916822.3616745,
-      "ns/msg": 7.004062572148435e-07
+      "bytes_per_second": 1074975240.7167811,
+      "ns/msg": 7.349006470821013e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20",
@@ -1431,12 +1431,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 398484,
-      "real_time": 2865.2406721450157,
-      "cpu_time": 718.0578944198531,
+      "iterations": 381559,
+      "real_time": 734.1987032147325,
+      "cpu_time": 734.1983100909661,
       "time_unit": "ns",
-      "bytes_per_second": 1100189840.0382767,
-      "ns/msg": 7.180578944198532e-07
+      "bytes_per_second": 1076003566.260075,
+      "ns/msg": 7.34198310090966e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20",
@@ -1447,12 +1447,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 398484,
-      "real_time": 2012.035818249714,
-      "cpu_time": 739.1977218658709,
+      "iterations": 381559,
+      "real_time": 734.7668171897395,
+      "cpu_time": 734.766395236384,
       "time_unit": "ns",
-      "bytes_per_second": 1068726237.4211527,
-      "ns/msg": 7.39197721865871e-07
+      "bytes_per_second": 1075171653.3604488,
+      "ns/msg": 7.34766395236384e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20_mean",
@@ -1465,11 +1465,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2708.731792985459,
-      "cpu_time": 716.2798280483039,
+      "real_time": 734.4690708382424,
+      "cpu_time": 734.4651605649435,
       "time_unit": "ns",
-      "bytes_per_second": 1103373556.700022,
-      "ns/msg": 7.16279828048304e-07
+      "bytes_per_second": 1075612878.1227968,
+      "ns/msg": 7.344651605649435e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20_median",
@@ -1482,11 +1482,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2865.240672145016,
-      "cpu_time": 718.057894419853,
+      "real_time": 734.5276379276081,
+      "cpu_time": 734.5220843958587,
       "time_unit": "ns",
-      "bytes_per_second": 1100189840.0382767,
-      "ns/msg": 7.180578944198532e-07
+      "bytes_per_second": 1075529268.3265905,
+      "ns/msg": 7.345220843958586e-07
     },
     {
       "name": "BM_Json_BybitOrderbook20_stddev",
@@ -1499,11 +1499,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 394.8108358432931,
-      "cpu_time": 16.268190400546633,
+      "real_time": 0.39740126473155135,
+      "cpu_time": 0.39760307640790765,
       "time_unit": "ns",
-      "bytes_per_second": 24915638.422465518,
-      "ns/msg": 1.626819040054629e-08
+      "bytes_per_second": 582352.7379174927,
+      "ns/msg": 3.976030763159392e-10
     },
     {
       "name": "BM_Json_BybitOrderbook20_cv",
@@ -1516,11 +1516,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.14575486464392548,
-      "cpu_time": 0.022712059956893762,
+      "real_time": 0.0005410728382040665,
+      "cpu_time": 0.0005413504925163165,
       "time_unit": "ns",
-      "bytes_per_second": 0.022581326397728252,
-      "ns/msg": 0.022712059956893283
+      "bytes_per_second": 0.0005414148061650566,
+      "ns/msg": 0.0005413504923910983
     },
     {
       "name": "BM_Json_BybitTrade",
@@ -1531,12 +1531,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 1718258,
-      "real_time": 371.5436087153239,
-      "cpu_time": 161.32277108559893,
+      "iterations": 1840526,
+      "real_time": 152.10526773328834,
+      "cpu_time": 152.10377142186505,
       "time_unit": "ns",
-      "bytes_per_second": 1338930632.9568872,
-      "ns/msg": 1.6132277108559894e-07
+      "bytes_per_second": 1420083131.2782938,
+      "ns/msg": 1.5210377142186506e-07
     },
     {
       "name": "BM_Json_BybitTrade",
@@ -1547,12 +1547,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 1718258,
-      "real_time": 602.5587711444313,
-      "cpu_time": 153.09038107199234,
+      "iterations": 1840526,
+      "real_time": 152.13226327695966,
+      "cpu_time": 152.1321589589067,
       "time_unit": "ns",
-      "bytes_per_second": 1410931232.1746964,
-      "ns/msg": 1.5309038107199236e-07
+      "bytes_per_second": 1419818146.7887075,
+      "ns/msg": 1.5213215895890672e-07
     },
     {
       "name": "BM_Json_BybitTrade",
@@ -1563,12 +1563,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 1718258,
-      "real_time": 603.5102144207195,
-      "cpu_time": 154.2401437967999,
+      "iterations": 1840526,
+      "real_time": 152.08835083008304,
+      "cpu_time": 152.08722995491473,
       "time_unit": "ns",
-      "bytes_per_second": 1400413632.1641672,
-      "ns/msg": 1.542401437967999e-07
+      "bytes_per_second": 1420237583.81313,
+      "ns/msg": 1.5208722995491476e-07
     },
     {
       "name": "BM_Json_BybitTrade",
@@ -1579,12 +1579,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 1718258,
-      "real_time": 608.8933477979692,
-      "cpu_time": 153.6360348678737,
+      "iterations": 1840526,
+      "real_time": 152.0977818296575,
+      "cpu_time": 152.09530156053182,
       "time_unit": "ns",
-      "bytes_per_second": 1405920168.3105075,
-      "ns/msg": 1.536360348678737e-07
+      "bytes_per_second": 1420162212.663979,
+      "ns/msg": 1.5209530156053183e-07
     },
     {
       "name": "BM_Json_BybitTrade",
@@ -1595,12 +1595,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 1718258,
-      "real_time": 655.453806131319,
-      "cpu_time": 154.121240814826,
+      "iterations": 1840526,
+      "real_time": 152.20549831951635,
+      "cpu_time": 152.20541030118486,
       "time_unit": "ns",
-      "bytes_per_second": 1401494037.1491058,
-      "ns/msg": 1.5412124081482598e-07
+      "bytes_per_second": 1419134836.0914245,
+      "ns/msg": 1.5220541030118486e-07
     },
     {
       "name": "BM_Json_BybitTrade_mean",
@@ -1613,11 +1613,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 568.3919496419527,
-      "cpu_time": 155.28211432741818,
+      "real_time": 152.125832397901,
+      "cpu_time": 152.12477443948063,
       "time_unit": "ns",
-      "bytes_per_second": 1391537940.551073,
-      "ns/msg": 1.552821143274182e-07
+      "bytes_per_second": 1419887182.127107,
+      "ns/msg": 1.5212477443948066e-07
     },
     {
       "name": "BM_Json_BybitTrade_median",
@@ -1630,11 +1630,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 603.5102144207195,
-      "cpu_time": 154.12124081482597,
+      "real_time": 152.10526773328831,
+      "cpu_time": 152.10377142186505,
       "time_unit": "ns",
-      "bytes_per_second": 1401494037.1491058,
-      "ns/msg": 1.5412124081482598e-07
+      "bytes_per_second": 1420083131.2782938,
+      "ns/msg": 1.5210377142186506e-07
     },
     {
       "name": "BM_Json_BybitTrade_stddev",
@@ -1647,11 +1647,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 112.21637987186523,
-      "cpu_time": 3.4072032599743585,
+      "real_time": 0.04744107655650256,
+      "cpu_time": 0.048156097699496234,
       "time_unit": "ns",
-      "bytes_per_second": 29700079.161128175,
-      "ns/msg": 3.4072032599741626e-09
+      "bytes_per_second": 449335.5218542153,
+      "ns/msg": 4.815609769130554e-11
     },
     {
       "name": "BM_Json_BybitTrade_cv",
@@ -1664,11 +1664,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.19742781357574427,
-      "cpu_time": 0.021942020011333323,
+      "real_time": 0.0003118541789300812,
+      "cpu_time": 0.00031655657585644625,
       "time_unit": "ns",
-      "bytes_per_second": 0.021343348460456945,
-      "ns/msg": 0.02194202001133206
+      "bytes_per_second": 0.00031645860847977653,
+      "ns/msg": 0.0003165565758026043
     },
     {
       "name": "BM_Json_BybitExecution",
@@ -1679,12 +1679,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 647958,
-      "real_time": 1993.834966192854,
-      "cpu_time": 474.41619672879796,
+      "iterations": 627133,
+      "real_time": 443.81777868503303,
+      "cpu_time": 443.8174836916539,
       "time_unit": "ns",
-      "bytes_per_second": 1062358333.2002338,
-      "ns/msg": 4.7441619672879795e-07
+      "bytes_per_second": 1135601950.170486,
+      "ns/msg": 4.4381748369165395e-07
     },
     {
       "name": "BM_Json_BybitExecution",
@@ -1695,12 +1695,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 647958,
-      "real_time": 1962.2260239270656,
-      "cpu_time": 436.6186759018301,
+      "iterations": 627133,
+      "real_time": 444.17266512837625,
+      "cpu_time": 444.1724115937093,
       "time_unit": "ns",
-      "bytes_per_second": 1154325336.539933,
-      "ns/msg": 4.366186759018301e-07
+      "bytes_per_second": 1134694516.9143372,
+      "ns/msg": 4.441724115937092e-07
     },
     {
       "name": "BM_Json_BybitExecution",
@@ -1711,12 +1711,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 647958,
-      "real_time": 1749.4059722806674,
-      "cpu_time": 448.8167381219181,
+      "iterations": 627133,
+      "real_time": 443.26878668505947,
+      "cpu_time": 443.2536702740866,
       "time_unit": "ns",
-      "bytes_per_second": 1122952771.567739,
-      "ns/msg": 4.488167381219181e-07
+      "bytes_per_second": 1137046422.3981514,
+      "ns/msg": 4.432536702740866e-07
     },
     {
       "name": "BM_Json_BybitExecution",
@@ -1727,12 +1727,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 647958,
-      "real_time": 1668.6147126717215,
-      "cpu_time": 449.2234851641648,
+      "iterations": 627133,
+      "real_time": 444.0582587744097,
+      "cpu_time": 444.05800523972,
       "time_unit": "ns",
-      "bytes_per_second": 1121935999.8861537,
-      "ns/msg": 4.4922348516416476e-07
+      "bytes_per_second": 1134986857.6919832,
+      "ns/msg": 4.4405800523972e-07
     },
     {
       "name": "BM_Json_BybitExecution",
@@ -1743,12 +1743,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 647958,
-      "real_time": 1629.5712515383875,
-      "cpu_time": 444.4207510363315,
+      "iterations": 627133,
+      "real_time": 444.5836146399407,
+      "cpu_time": 444.5773225137267,
       "time_unit": "ns",
-      "bytes_per_second": 1134060456.9537706,
-      "ns/msg": 4.444207510363315e-07
+      "bytes_per_second": 1133661062.940156,
+      "ns/msg": 4.445773225137267e-07
     },
     {
       "name": "BM_Json_BybitExecution_mean",
@@ -1761,11 +1761,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1800.7305853221394,
-      "cpu_time": 450.6991693906086,
+      "real_time": 443.98022078256383,
+      "cpu_time": 443.97577866257933,
       "time_unit": "ns",
-      "bytes_per_second": 1119126579.629566,
-      "ns/msg": 4.5069916939060854e-07
+      "bytes_per_second": 1135198162.0230227,
+      "ns/msg": 4.4397577866257937e-07
     },
     {
       "name": "BM_Json_BybitExecution_median",
@@ -1778,11 +1778,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1749.4059722806676,
-      "cpu_time": 448.8167381219181,
+      "real_time": 444.05825877440964,
+      "cpu_time": 444.05800523971993,
       "time_unit": "ns",
-      "bytes_per_second": 1122952771.567739,
-      "ns/msg": 4.488167381219181e-07
+      "bytes_per_second": 1134986857.6919832,
+      "ns/msg": 4.4405800523972e-07
     },
     {
       "name": "BM_Json_BybitExecution_stddev",
@@ -1795,11 +1795,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 167.89462160310399,
-      "cpu_time": 14.194166152829627,
+      "real_time": 0.48469960067326817,
+      "cpu_time": 0.4883079322865894,
       "time_unit": "ns",
-      "bytes_per_second": 34304298.453543104,
-      "ns/msg": 1.4194166152830593e-08
+      "bytes_per_second": 1249008.8860532579,
+      "ns/msg": 4.88307932224342e-10
     },
     {
       "name": "BM_Json_BybitExecution_cv",
@@ -1812,11 +1812,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.09323694669909141,
-      "cpu_time": 0.03149365944477242,
+      "real_time": 0.0010917144007427447,
+      "cpu_time": 0.0010998526400641836,
       "time_unit": "ns",
-      "bytes_per_second": 0.030652742127613413,
-      "ns/msg": 0.03149365944477457
+      "bytes_per_second": 0.00110025626171506,
+      "ns/msg": 0.001099852639923979
     },
     {
       "name": "BM_Json_DeribitBookChange",
@@ -1827,12 +1827,12 @@
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 406913,
-      "real_time": 3698.457508101217,
-      "cpu_time": 663.8543546163344,
+      "iterations": 460118,
+      "real_time": 607.9838476218015,
+      "cpu_time": 607.9744174320459,
       "time_unit": "ns",
-      "bytes_per_second": 715518391.4919406,
-      "ns/msg": 6.638543546163344e-07
+      "bytes_per_second": 781282873.7207375,
+      "ns/msg": 6.079744174320459e-07
     },
     {
       "name": "BM_Json_DeribitBookChange",
@@ -1843,12 +1843,12 @@
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 406913,
-      "real_time": 4378.8088362862,
-      "cpu_time": 667.7163767193424,
+      "iterations": 460118,
+      "real_time": 608.2194697880643,
+      "cpu_time": 608.2190655440567,
       "time_unit": "ns",
-      "bytes_per_second": 711379886.073476,
-      "ns/msg": 6.677163767193425e-07
+      "bytes_per_second": 780968612.9702443,
+      "ns/msg": 6.082190655440566e-07
     },
     {
       "name": "BM_Json_DeribitBookChange",
@@ -1859,12 +1859,12 @@
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 406913,
-      "real_time": 4206.555961589302,
-      "cpu_time": 669.1955700604333,
+      "iterations": 460118,
+      "real_time": 607.6317335990992,
+      "cpu_time": 607.6313402214222,
       "time_unit": "ns",
-      "bytes_per_second": 709807448.3026,
-      "ns/msg": 6.691955700604333e-07
+      "bytes_per_second": 781723997.032327,
+      "ns/msg": 6.076313402214222e-07
     },
     {
       "name": "BM_Json_DeribitBookChange",
@@ -1875,12 +1875,12 @@
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 406913,
-      "real_time": 4388.313165238884,
-      "cpu_time": 679.5918390417609,
+      "iterations": 460118,
+      "real_time": 607.8886111825108,
+      "cpu_time": 607.8853381089191,
       "time_unit": "ns",
-      "bytes_per_second": 698948946.5761688,
-      "ns/msg": 6.795918390417609e-07
+      "bytes_per_second": 781397362.6633036,
+      "ns/msg": 6.078853381089191e-07
     },
     {
       "name": "BM_Json_DeribitBookChange",
@@ -1891,12 +1891,12 @@
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 406913,
-      "real_time": 3909.704627266939,
-      "cpu_time": 713.4848997205846,
+      "iterations": 460118,
+      "real_time": 607.7544216918579,
+      "cpu_time": 607.7540587414543,
       "time_unit": "ns",
-      "bytes_per_second": 665746395.173913,
-      "ns/msg": 7.134848997205846e-07
+      "bytes_per_second": 781566150.2674893,
+      "ns/msg": 6.077540587414542e-07
     },
     {
       "name": "BM_Json_DeribitBookChange_mean",
@@ -1909,11 +1909,11 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 4116.368019696509,
-      "cpu_time": 678.7686080316912,
+      "real_time": 607.8956167766667,
+      "cpu_time": 607.8928440095797,
       "time_unit": "ns",
-      "bytes_per_second": 700280213.5236197,
-      "ns/msg": 6.787686080316911e-07
+      "bytes_per_second": 781387799.3308206,
+      "ns/msg": 6.078928440095797e-07
     },
     {
       "name": "BM_Json_DeribitBookChange_median",
@@ -1926,11 +1926,11 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 4206.555961589302,
-      "cpu_time": 669.1955700604333,
+      "real_time": 607.8886111825108,
+      "cpu_time": 607.8853381089191,
       "time_unit": "ns",
-      "bytes_per_second": 709807448.3026,
-      "ns/msg": 6.691955700604333e-07
+      "bytes_per_second": 781397362.6633036,
+      "ns/msg": 6.078853381089191e-07
     },
     {
       "name": "BM_Json_DeribitBookChange_stddev",
@@ -1943,11 +1943,11 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 303.44775610124964,
-      "cpu_time": 20.261592026802262,
+      "real_time": 0.22488047771387326,
+      "cpu_time": 0.22404052833518215,
       "time_unit": "ns",
-      "bytes_per_second": 20251727.59629558,
-      "ns/msg": 2.0261592026804545e-08
+      "bytes_per_second": 287947.9100115158,
+      "ns/msg": 2.2404052794174183e-10
     },
     {
       "name": "BM_Json_DeribitBookChange_cv",
@@ -1960,95 +1960,687 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.07371735341671957,
-      "cpu_time": 0.02985051427990651,
+      "real_time": 0.0003699327179003029,
+      "cpu_time": 0.0003685526660544988,
       "time_unit": "ns",
-      "bytes_per_second": 0.028919462816740734,
-      "ns/msg": 0.029850514279909875
+      "bytes_per_second": 0.0003685083261577849,
+      "ns/msg": 0.0003685526654072789
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3015,
+      "real_time": 92841.1087894214,
+      "cpu_time": 92840.26600331618,
+      "time_unit": "ns",
+      "bytes_per_second": 439012098.46322674,
+      "ns/msg": 9.284026600331617e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 1,
+      "threads": 1,
+      "iterations": 3015,
+      "real_time": 92926.99369815612,
+      "cpu_time": 92926.07860696524,
+      "time_unit": "ns",
+      "bytes_per_second": 438606692.6636136,
+      "ns/msg": 9.292607860696523e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 2,
+      "threads": 1,
+      "iterations": 3015,
+      "real_time": 92951.33830844794,
+      "cpu_time": 92950.30215588718,
+      "time_unit": "ns",
+      "bytes_per_second": 438492388.4555497,
+      "ns/msg": 9.295030215588718e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 3,
+      "threads": 1,
+      "iterations": 3015,
+      "real_time": 92881.58706468836,
+      "cpu_time": 92881.52106135908,
+      "time_unit": "ns",
+      "bytes_per_second": 438817103.06051713,
+      "ns/msg": 9.288152106135908e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 4,
+      "threads": 1,
+      "iterations": 3015,
+      "real_time": 92866.93665012799,
+      "cpu_time": 92866.88192371523,
+      "time_unit": "ns",
+      "bytes_per_second": 438886276.30978644,
+      "ns/msg": 9.286688192371524e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000_mean",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 92893.59290216837,
+      "cpu_time": 92893.00995024858,
+      "time_unit": "ns",
+      "bytes_per_second": 438762911.7905387,
+      "ns/msg": 9.28930099502486e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000_median",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 92881.58706468836,
+      "cpu_time": 92881.52106135909,
+      "time_unit": "ns",
+      "bytes_per_second": 438817103.06051713,
+      "ns/msg": 9.288152106135908e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000_stddev",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 44.88714489260001,
+      "cpu_time": 44.64449901284058,
+      "time_unit": "ns",
+      "bytes_per_second": 210853.49567887178,
+      "ns/msg": 4.46444989349236e-08
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1000_cv",
+      "family_index": 13,
+      "per_family_instance_index": 0,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.000483210343041347,
+      "cpu_time": 0.00048060127491563874,
+      "time_unit": "ns",
+      "bytes_per_second": 0.00048056362562278566,
+      "ns/msg": 0.0004806012740768567
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3018,
+      "real_time": 92840.89198140473,
+      "cpu_time": 92838.2438701126,
+      "time_unit": "ns",
+      "bytes_per_second": 439043203.5425636,
+      "ns/msg": 9.283824387011259e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 1,
+      "threads": 1,
+      "iterations": 3018,
+      "real_time": 92757.14678593785,
+      "cpu_time": 92756.79953611716,
+      "time_unit": "ns",
+      "bytes_per_second": 439428701.7646516,
+      "ns/msg": 9.275679953611717e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 2,
+      "threads": 1,
+      "iterations": 3018,
+      "real_time": 92804.12690525051,
+      "cpu_time": 92803.44864148358,
+      "time_unit": "ns",
+      "bytes_per_second": 439207816.0528626,
+      "ns/msg": 9.280344864148358e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 3,
+      "threads": 1,
+      "iterations": 3018,
+      "real_time": 92771.3310138998,
+      "cpu_time": 92769.87607687159,
+      "time_unit": "ns",
+      "bytes_per_second": 439366761.3205086,
+      "ns/msg": 9.276987607687159e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 4,
+      "threads": 1,
+      "iterations": 3018,
+      "real_time": 92888.18323394275,
+      "cpu_time": 92887.46587143876,
+      "time_unit": "ns",
+      "bytes_per_second": 438810550.1383149,
+      "ns/msg": 9.288746587143878e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000_mean",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 92812.33598408713,
+      "cpu_time": 92811.16679920474,
+      "time_unit": "ns",
+      "bytes_per_second": 439171406.56378025,
+      "ns/msg": 9.281116679920475e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000_median",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 92804.12690525051,
+      "cpu_time": 92803.44864148358,
+      "time_unit": "ns",
+      "bytes_per_second": 439207816.0528626,
+      "ns/msg": 9.280344864148358e-05
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000_stddev",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 53.29843911799422,
+      "cpu_time": 53.09192310006144,
+      "time_unit": "ns",
+      "bytes_per_second": 251168.93072193462,
+      "ns/msg": 5.309192305947664e-08
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1000_cv",
+      "family_index": 13,
+      "per_family_instance_index": 1,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1000",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.0005742602915105203,
+      "cpu_time": 0.0005720424053597435,
+      "time_unit": "ns",
+      "bytes_per_second": 0.0005719154912364672,
+      "ns/msg": 0.0005720424049224597
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2669,
+      "real_time": 104898.39565377173,
+      "cpu_time": 104897.65417759524,
+      "time_unit": "ns",
+      "bytes_per_second": 430324208.4286887,
+      "ns/msg": 0.00010489765417759523
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 1,
+      "threads": 1,
+      "iterations": 2669,
+      "real_time": 104821.57549643592,
+      "cpu_time": 104820.72573997838,
+      "time_unit": "ns",
+      "bytes_per_second": 430640025.4466441,
+      "ns/msg": 0.00010482072573997838
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 2,
+      "threads": 1,
+      "iterations": 2669,
+      "real_time": 104769.64968152174,
+      "cpu_time": 104769.59123267164,
+      "time_unit": "ns",
+      "bytes_per_second": 430850206.33280295,
+      "ns/msg": 0.00010476959123267165
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 3,
+      "threads": 1,
+      "iterations": 2669,
+      "real_time": 104809.78568748165,
+      "cpu_time": 104809.01835893583,
+      "time_unit": "ns",
+      "bytes_per_second": 430688128.8155051,
+      "ns/msg": 0.00010480901835893584
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 4,
+      "threads": 1,
+      "iterations": 2669,
+      "real_time": 104852.63619325653,
+      "cpu_time": 104851.9674035214,
+      "time_unit": "ns",
+      "bytes_per_second": 430511712.06239086,
+      "ns/msg": 0.00010485196740352142
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200_mean",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 104830.40854249352,
+      "cpu_time": 104829.7913825405,
+      "time_unit": "ns",
+      "bytes_per_second": 430602856.2172064,
+      "ns/msg": 0.00010482979138254051
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200_median",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 104821.57549643592,
+      "cpu_time": 104820.72573997838,
+      "time_unit": "ns",
+      "bytes_per_second": 430640025.4466441,
+      "ns/msg": 0.00010482072573997838
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200_stddev",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 48.24748643116442,
+      "cpu_time": 48.04918651833772,
+      "time_unit": "ns",
+      "bytes_per_second": 197349.24241050432,
+      "ns/msg": 4.804918647999647e-08
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:0/bids:1200_cv",
+      "family_index": 13,
+      "per_family_instance_index": 2,
+      "run_name": "BM_Json_DeribitBook/snapshot:0/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.0004602432357363852,
+      "cpu_time": 0.000458354308299619,
+      "time_unit": "ns",
+      "bytes_per_second": 0.0004583091810959949,
+      "ns/msg": 0.0004583543079338714
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2674,
+      "real_time": 104763.78421836965,
+      "cpu_time": 104762.85340314089,
+      "time_unit": "ns",
+      "bytes_per_second": 430897007.2272449,
+      "ns/msg": 0.00010476285340314088
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 1,
+      "threads": 1,
+      "iterations": 2674,
+      "real_time": 104789.58975319559,
+      "cpu_time": 104789.51084517543,
+      "time_unit": "ns",
+      "bytes_per_second": 430787391.1797953,
+      "ns/msg": 0.00010478951084517545
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 2,
+      "threads": 1,
+      "iterations": 2674,
+      "real_time": 104632.50336575617,
+      "cpu_time": 104632.41922213881,
+      "time_unit": "ns",
+      "bytes_per_second": 431434160.99518573,
+      "ns/msg": 0.0001046324192221388
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 3,
+      "threads": 1,
+      "iterations": 2674,
+      "real_time": 104755.95250558284,
+      "cpu_time": 104755.36761406061,
+      "time_unit": "ns",
+      "bytes_per_second": 430927799.0060806,
+      "ns/msg": 0.00010475536761406062
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "iteration",
+      "repetitions": 5,
+      "repetition_index": 4,
+      "threads": 1,
+      "iterations": 2674,
+      "real_time": 104522.24644725895,
+      "cpu_time": 104519.19072550404,
+      "time_unit": "ns",
+      "bytes_per_second": 431901545.41624063,
+      "ns/msg": 0.00010451919072550404
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200_mean",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "mean",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 104692.81525803263,
+      "cpu_time": 104691.86836200397,
+      "time_unit": "ns",
+      "bytes_per_second": 431189580.7649095,
+      "ns/msg": 0.00010469186836200396
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200_median",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "median",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 104755.95250558286,
+      "cpu_time": 104755.36761406061,
+      "time_unit": "ns",
+      "bytes_per_second": 430927799.0060806,
+      "ns/msg": 0.00010475536761406062
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200_stddev",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "stddev",
+      "aggregate_unit": "time",
+      "iterations": 5,
+      "real_time": 113.04805596235454,
+      "cpu_time": 113.97022852157279,
+      "time_unit": "ns",
+      "bytes_per_second": 469733.58943128603,
+      "ns/msg": 1.139702285426585e-07
+    },
+    {
+      "name": "BM_Json_DeribitBook/snapshot:1/bids:1200_cv",
+      "family_index": 13,
+      "per_family_instance_index": 3,
+      "run_name": "BM_Json_DeribitBook/snapshot:1/bids:1200",
+      "run_type": "aggregate",
+      "repetitions": 5,
+      "threads": 1,
+      "aggregate_name": "cv",
+      "aggregate_unit": "percentage",
+      "iterations": 5,
+      "real_time": 0.001079807202468756,
+      "cpu_time": 0.0010886254138428983,
+      "time_unit": "ns",
+      "bytes_per_second": 0.00108938993516031,
+      "ns/msg": 0.0010886254140443058
     },
     {
       "name": "BM_Json_DeribitTickerOption",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 682270,
-      "real_time": 1989.9511146462685,
-      "cpu_time": 408.21886936256914,
+      "iterations": 656841,
+      "real_time": 425.66678237216445,
+      "cpu_time": 425.6636689853389,
       "time_unit": "ns",
-      "bytes_per_second": 1927887364.0233607,
-      "ns/msg": 4.082188693625691e-07
+      "bytes_per_second": 1848877546.6226287,
+      "ns/msg": 4.256636689853389e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 682270,
-      "real_time": 1961.054323047389,
-      "cpu_time": 420.2577190848186,
+      "iterations": 656841,
+      "real_time": 426.5923945063237,
+      "cpu_time": 426.5856059533431,
       "time_unit": "ns",
-      "bytes_per_second": 1872660427.781848,
-      "ns/msg": 4.2025771908481856e-07
+      "bytes_per_second": 1844881751.7909327,
+      "ns/msg": 4.26585605953343e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 682270,
-      "real_time": 1691.1018262305859,
-      "cpu_time": 407.2925909097561,
+      "iterations": 656841,
+      "real_time": 426.06212919091024,
+      "cpu_time": 426.0586625987116,
       "time_unit": "ns",
-      "bytes_per_second": 1932271830.0426333,
-      "ns/msg": 4.072925909097561e-07
+      "bytes_per_second": 1847163475.5640337,
+      "ns/msg": 4.2605866259871154e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 682270,
-      "real_time": 1763.1471191595715,
-      "cpu_time": 439.36445542087216,
+      "iterations": 656841,
+      "real_time": 426.23845192359806,
+      "cpu_time": 426.23820072133435,
       "time_unit": "ns",
-      "bytes_per_second": 1791223641.9901648,
-      "ns/msg": 4.3936445542087214e-07
+      "bytes_per_second": 1846385421.738687,
+      "ns/msg": 4.262382007213343e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 682270,
-      "real_time": 1779.9325867772109,
-      "cpu_time": 450.56927609304194,
+      "iterations": 656841,
+      "real_time": 426.8036830830284,
+      "cpu_time": 426.80337555055314,
       "time_unit": "ns",
-      "bytes_per_second": 1746679238.3719606,
-      "ns/msg": 4.5056927609304187e-07
+      "bytes_per_second": 1843940430.3792415,
+      "ns/msg": 4.2680337555055315e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption_mean",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "aggregate",
@@ -2057,15 +2649,15 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1837.0373939722053,
-      "cpu_time": 425.14058217421154,
+      "real_time": 426.2726882152051,
+      "cpu_time": 426.26990276185626,
       "time_unit": "ns",
-      "bytes_per_second": 1854144500.4419937,
-      "ns/msg": 4.251405821742116e-07
+      "bytes_per_second": 1846249725.2191048,
+      "ns/msg": 4.262699027618562e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption_median",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "aggregate",
@@ -2074,15 +2666,15 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1779.9325867772106,
-      "cpu_time": 420.2577190848186,
+      "real_time": 426.2384519235981,
+      "cpu_time": 426.2382007213343,
       "time_unit": "ns",
-      "bytes_per_second": 1872660427.781848,
-      "ns/msg": 4.2025771908481856e-07
+      "bytes_per_second": 1846385421.738687,
+      "ns/msg": 4.262382007213343e-07
     },
     {
       "name": "BM_Json_DeribitTickerOption_stddev",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "aggregate",
@@ -2091,15 +2683,15 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 131.13039914180592,
-      "cpu_time": 19.220266342847637,
+      "real_time": 0.44631736997847293,
+      "cpu_time": 0.4464886725600684,
       "time_unit": "ns",
-      "bytes_per_second": 82753468.36395246,
-      "ns/msg": 1.9220266342848134e-08
+      "bytes_per_second": 1934101.3756264173,
+      "ns/msg": 4.464886725598649e-10
     },
     {
       "name": "BM_Json_DeribitTickerOption_cv",
-      "family_index": 13,
+      "family_index": 14,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTickerOption",
       "run_type": "aggregate",
@@ -2108,95 +2700,95 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.07138145340540082,
-      "cpu_time": 0.04520920172935095,
+      "real_time": 0.001047023143441806,
+      "cpu_time": 0.0010474318493217847,
       "time_unit": "ns",
-      "bytes_per_second": 0.044631617624314376,
-      "ns/msg": 0.04520920172935212
+      "bytes_per_second": 0.001047583839394688,
+      "ns/msg": 0.0010474318493213072
     },
     {
       "name": "BM_Json_DeribitTrades3",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 639196,
-      "real_time": 2039.452826679418,
-      "cpu_time": 448.7384839704906,
+      "iterations": 655329,
+      "real_time": 427.50135275584296,
+      "cpu_time": 427.49811773933016,
       "time_unit": "ns",
-      "bytes_per_second": 2355492202.602149,
-      "ns/msg": 4.487384839704907e-07
+      "bytes_per_second": 2472525506.2865863,
+      "ns/msg": 4.274981177393302e-07
     },
     {
       "name": "BM_Json_DeribitTrades3",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 639196,
-      "real_time": 1933.1510694536375,
-      "cpu_time": 500.44737294977125,
+      "iterations": 655329,
+      "real_time": 427.47824680422826,
+      "cpu_time": 427.4779355102566,
       "time_unit": "ns",
-      "bytes_per_second": 2112110198.060903,
-      "ns/msg": 5.004473729497713e-07
+      "bytes_per_second": 2472642239.9750714,
+      "ns/msg": 4.274779355102566e-07
     },
     {
       "name": "BM_Json_DeribitTrades3",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 639196,
-      "real_time": 3069.2907871913235,
-      "cpu_time": 491.12136340026785,
+      "iterations": 655329,
+      "real_time": 426.36321145534976,
+      "cpu_time": 426.35961173700656,
       "time_unit": "ns",
-      "bytes_per_second": 2152217514.3876534,
-      "ns/msg": 4.911213634002679e-07
+      "bytes_per_second": 2479127879.1481647,
+      "ns/msg": 4.263596117370065e-07
     },
     {
       "name": "BM_Json_DeribitTrades3",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 639196,
-      "real_time": 3213.757254442794,
-      "cpu_time": 549.3766544221186,
+      "iterations": 655329,
+      "real_time": 427.74499068423734,
+      "cpu_time": 427.7396437514565,
       "time_unit": "ns",
-      "bytes_per_second": 1923998756.5759292,
-      "ns/msg": 5.493766544221184e-07
+      "bytes_per_second": 2471129378.445415,
+      "ns/msg": 4.277396437514566e-07
     },
     {
       "name": "BM_Json_DeribitTrades3",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 639196,
-      "real_time": 2891.7588345343697,
-      "cpu_time": 504.796021877481,
+      "iterations": 655329,
+      "real_time": 427.4800840493374,
+      "cpu_time": 427.47640650726544,
       "time_unit": "ns",
-      "bytes_per_second": 2093915074.981602,
-      "ns/msg": 5.04796021877481e-07
+      "bytes_per_second": 2472651084.1529565,
+      "ns/msg": 4.274764065072654e-07
     },
     {
       "name": "BM_Json_DeribitTrades3_mean",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "aggregate",
@@ -2205,15 +2797,15 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2629.4821544603083,
-      "cpu_time": 498.89597932402586,
+      "real_time": 427.31357714979924,
+      "cpu_time": 427.31034304906314,
       "time_unit": "ns",
-      "bytes_per_second": 2127546749.3216474,
-      "ns/msg": 4.988959793240259e-07
+      "bytes_per_second": 2473615217.601639,
+      "ns/msg": 4.273103430490631e-07
     },
     {
       "name": "BM_Json_DeribitTrades3_median",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "aggregate",
@@ -2222,15 +2814,15 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 2891.7588345343697,
-      "cpu_time": 500.4473729497712,
+      "real_time": 427.48008404933745,
+      "cpu_time": 427.4779355102566,
       "time_unit": "ns",
-      "bytes_per_second": 2112110198.060903,
-      "ns/msg": 5.004473729497713e-07
+      "bytes_per_second": 2472642239.9750714,
+      "ns/msg": 4.274779355102566e-07
     },
     {
       "name": "BM_Json_DeribitTrades3_stddev",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "aggregate",
@@ -2239,15 +2831,15 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 599.2932651012925,
-      "cpu_time": 35.922607350996664,
+      "real_time": 0.5430038931151979,
+      "cpu_time": 0.5429347936035669,
       "time_unit": "ns",
-      "bytes_per_second": 154409308.58010757,
-      "ns/msg": 3.5922607350995644e-08
+      "bytes_per_second": 3147719.1409145766,
+      "ns/msg": 5.429347935009626e-10
     },
     {
       "name": "BM_Json_DeribitTrades3_cv",
-      "family_index": 14,
+      "family_index": 15,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitTrades3",
       "run_type": "aggregate",
@@ -2256,95 +2848,95 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.2279130375860243,
-      "cpu_time": 0.0720042029596423,
+      "real_time": 0.0012707386850122065,
+      "cpu_time": 0.0012705865945801082,
       "time_unit": "ns",
-      "bytes_per_second": 0.07257622359148622,
-      "ns/msg": 0.07200420295964025
+      "bytes_per_second": 0.0012725176973832387,
+      "ns/msg": 0.0012705865943399915
     },
     {
       "name": "BM_Json_DeribitUserOrder",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 998084,
-      "real_time": 1864.631740398772,
-      "cpu_time": 305.22123488604393,
+      "iterations": 887017,
+      "real_time": 315.1660622062061,
+      "cpu_time": 315.1658592789098,
       "time_unit": "ns",
-      "bytes_per_second": 2090287067.47157,
-      "ns/msg": 3.052212348860439e-07
+      "bytes_per_second": 2024330939.460655,
+      "ns/msg": 3.151658592789098e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 998084,
-      "real_time": 1096.6426262961688,
-      "cpu_time": 284.7586335418668,
+      "iterations": 887017,
+      "real_time": 315.24321743569834,
+      "cpu_time": 315.2411780157545,
       "time_unit": "ns",
-      "bytes_per_second": 2240493965.2380996,
-      "ns/msg": 2.847586335418668e-07
+      "bytes_per_second": 2023847277.8708982,
+      "ns/msg": 3.152411780157545e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 998084,
-      "real_time": 1227.5244648822477,
-      "cpu_time": 310.82484640571346,
+      "iterations": 887017,
+      "real_time": 314.9056804999685,
+      "cpu_time": 314.9004833052807,
       "time_unit": "ns",
-      "bytes_per_second": 2052602960.7273781,
-      "ns/msg": 3.1082484640571346e-07
+      "bytes_per_second": 2026036903.1618474,
+      "ns/msg": 3.1490048330528073e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 998084,
-      "real_time": 1529.002859455638,
-      "cpu_time": 294.3260627362004,
+      "iterations": 887017,
+      "real_time": 313.74003654950667,
+      "cpu_time": 313.73380668014175,
       "time_unit": "ns",
-      "bytes_per_second": 2167663964.478161,
-      "ns/msg": 2.943260627362004e-07
+      "bytes_per_second": 2033571092.4849565,
+      "ns/msg": 3.137338066801417e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 998084,
-      "real_time": 1835.793783891679,
-      "cpu_time": 298.41170582836725,
+      "iterations": 887017,
+      "real_time": 314.4222049857996,
+      "cpu_time": 314.42005395612216,
       "time_unit": "ns",
-      "bytes_per_second": 2137985834.8014953,
-      "ns/msg": 2.984117058283673e-07
+      "bytes_per_second": 2029132658.5963693,
+      "ns/msg": 3.144200539561222e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder_mean",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "aggregate",
@@ -2353,15 +2945,15 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1510.7190949849014,
-      "cpu_time": 298.7084966796384,
+      "real_time": 314.69544033543593,
+      "cpu_time": 314.6922762472418,
       "time_unit": "ns",
-      "bytes_per_second": 2137806758.5433407,
-      "ns/msg": 2.987084966796384e-07
+      "bytes_per_second": 2027383774.3149452,
+      "ns/msg": 3.146922762472418e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder_median",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "aggregate",
@@ -2370,15 +2962,15 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1529.0028594556381,
-      "cpu_time": 298.41170582836725,
+      "real_time": 314.9056804999685,
+      "cpu_time": 314.9004833052808,
       "time_unit": "ns",
-      "bytes_per_second": 2137985834.8014953,
-      "ns/msg": 2.984117058283673e-07
+      "bytes_per_second": 2026036903.1618474,
+      "ns/msg": 3.1490048330528073e-07
     },
     {
       "name": "BM_Json_DeribitUserOrder_stddev",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "aggregate",
@@ -2387,15 +2979,15 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 347.46241898787116,
-      "cpu_time": 10.03885181769174,
+      "real_time": 0.6231371385986303,
+      "cpu_time": 0.624838600203639,
       "time_unit": "ns",
-      "bytes_per_second": 72377405.72018315,
-      "ns/msg": 1.0038851817691182e-08
+      "bytes_per_second": 4030576.014020825,
+      "ns/msg": 6.248386001970746e-10
     },
     {
       "name": "BM_Json_DeribitUserOrder_cv",
-      "family_index": 15,
+      "family_index": 16,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserOrder",
       "run_type": "aggregate",
@@ -2404,95 +2996,95 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.22999803215656306,
-      "cpu_time": 0.03360752013846563,
+      "real_time": 0.0019801276368492165,
+      "cpu_time": 0.0019855542934035246,
       "time_unit": "ns",
-      "bytes_per_second": 0.033855915849709296,
-      "ns/msg": 0.033607520138463756
+      "bytes_per_second": 0.001988067609637825,
+      "ns/msg": 0.001985554293382665
     },
     {
       "name": "BM_Json_DeribitUserTrade",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 0,
       "threads": 1,
-      "iterations": 631532,
-      "real_time": 2269.2597588103886,
-      "cpu_time": 448.2833411450259,
+      "iterations": 494047,
+      "real_time": 565.6976158135927,
+      "cpu_time": 565.6908796126723,
       "time_unit": "ns",
-      "bytes_per_second": 1389746044.1173317,
-      "ns/msg": 4.482833411450259e-07
+      "bytes_per_second": 1101308192.252573,
+      "ns/msg": 5.656908796126723e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 1,
       "threads": 1,
-      "iterations": 631532,
-      "real_time": 2180.757218944584,
-      "cpu_time": 463.71451169537085,
+      "iterations": 494047,
+      "real_time": 565.9786963590869,
+      "cpu_time": 565.9724661823707,
       "time_unit": "ns",
-      "bytes_per_second": 1343499037.2034528,
-      "ns/msg": 4.637145116953708e-07
+      "bytes_per_second": 1100760261.717844,
+      "ns/msg": 5.659724661823707e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 2,
       "threads": 1,
-      "iterations": 631532,
-      "real_time": 1736.8453000106672,
-      "cpu_time": 463.83891710950525,
+      "iterations": 494047,
+      "real_time": 565.7687790838349,
+      "cpu_time": 565.7684430833502,
       "time_unit": "ns",
-      "bytes_per_second": 1343138699.707078,
-      "ns/msg": 4.638389171095052e-07
+      "bytes_per_second": 1101157209.484408,
+      "ns/msg": 5.657684430833503e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 3,
       "threads": 1,
-      "iterations": 631532,
-      "real_time": 1643.5848856825482,
-      "cpu_time": 461.3005295060238,
+      "iterations": 494047,
+      "real_time": 566.0750920456561,
+      "cpu_time": 566.0747641418697,
       "time_unit": "ns",
-      "bytes_per_second": 1350529557.5253932,
-      "ns/msg": 4.6130052950602383e-07
+      "bytes_per_second": 1100561338.296762,
+      "ns/msg": 5.660747641418697e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "iteration",
       "repetitions": 5,
       "repetition_index": 4,
       "threads": 1,
-      "iterations": 631532,
-      "real_time": 1814.12105322302,
-      "cpu_time": 477.61080832008804,
+      "iterations": 494047,
+      "real_time": 565.9697822273595,
+      "cpu_time": 565.9667825125956,
       "time_unit": "ns",
-      "bytes_per_second": 1304409341.5542517,
-      "ns/msg": 4.776108083200882e-07
+      "bytes_per_second": 1100771316.00234,
+      "ns/msg": 5.659667825125955e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade_mean",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "aggregate",
@@ -2501,15 +3093,15 @@
       "aggregate_name": "mean",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1928.9136433342417,
-      "cpu_time": 462.9496215552028,
+      "real_time": 565.897993105906,
+      "cpu_time": 565.8946671065717,
       "time_unit": "ns",
-      "bytes_per_second": 1346264536.0215015,
-      "ns/msg": 4.6294962155520283e-07
+      "bytes_per_second": 1100911663.5507855,
+      "ns/msg": 5.658946671065717e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade_median",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "aggregate",
@@ -2518,15 +3110,15 @@
       "aggregate_name": "median",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 1814.1210532230205,
-      "cpu_time": 463.71451169537085,
+      "real_time": 565.9697822273595,
+      "cpu_time": 565.9667825125955,
       "time_unit": "ns",
-      "bytes_per_second": 1343499037.2034528,
-      "ns/msg": 4.637145116953708e-07
+      "bytes_per_second": 1100771316.00234,
+      "ns/msg": 5.659667825125955e-07
     },
     {
       "name": "BM_Json_DeribitUserTrade_stddev",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "aggregate",
@@ -2535,15 +3127,15 @@
       "aggregate_name": "stddev",
       "aggregate_unit": "time",
       "iterations": 5,
-      "real_time": 278.72062719256576,
-      "cpu_time": 10.418080275667403,
+      "real_time": 0.15801744371809998,
+      "cpu_time": 0.15902053093169988,
       "time_unit": "ns",
-      "bytes_per_second": 30323703.99120002,
-      "ns/msg": 1.041808027566491e-08
+      "bytes_per_second": 309384.6910239742,
+      "ns/msg": 1.5902053082767614e-10
     },
     {
       "name": "BM_Json_DeribitUserTrade_cv",
-      "family_index": 16,
+      "family_index": 17,
       "per_family_instance_index": 0,
       "run_name": "BM_Json_DeribitUserTrade",
       "run_type": "aggregate",
@@ -2552,11 +3144,11 @@
       "aggregate_name": "cv",
       "aggregate_unit": "percentage",
       "iterations": 5,
-      "real_time": 0.14449616661468603,
-      "cpu_time": 0.02250370189453786,
+      "real_time": 0.0002792330873110686,
+      "cpu_time": 0.00028100729724981217,
       "time_unit": "ns",
-      "bytes_per_second": 0.022524328005261895,
-      "ns/msg": 0.022503701894532477
+      "bytes_per_second": 0.0002810258999583232,
+      "ns/msg": 0.0002810072970659904
     }
   ]
 }
