@@ -3,6 +3,196 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**End to end over veth is slower on this host today (2026-09-29).** `scripts/bench-e2e.sh`, kernel, busy, 3 x 60 s: wire to wire p50 51 to 74 µs, T0 to T5 p50 7 to 20 µs, against 23.6 to 25.6 and 2.4 to 2.6 on 2026-09-23. The 2026-09-23 `release-native` build and the 2026-09-26 `release` build measure the same today (57 and 51 µs, one 30 s run each), so it is the host, not the code; `BM_TickToOrder_Sim` (release) is unchanged at 151 ns p50. The published e2e numbers stay those of 2026-09-23.
+
+## Benchmark history, moved from bench/README.md (2026-09-29)
+
+bench/README.md now carries current results only. The measurements below were its dated sections.
+
+### Hot-path changes, 2026-09-23
+
+Before: 6d43d8e. After: the commits listed. `release-native`, pinned to one core, 5 repetitions,
+median; ns per operation (p50 where the benchmark records one).
+
+Both columns were measured with the harness as it was on that day, so they are comparable with each
+other but not with the table above: `BM_TickToOrder_Sim` then included the simulator's outbound
+SHA-256 in its timed region, and `BM_ItchL2Bridge_Message_DefaultBook` ran a working set that fit
+L2. The two rows affected say so.
+
+| benchmark | before | after | change |
+|---|---:|---:|---|
+| `BM_Ouch50_EncodeColdMap` p50 | 1770 | 12.8 | UserRefMap tables resident at construction (no page fault per new order), direct-mapped |
+| `BM_Ouch50_EncodeNewIds` p50 | 26.6 | 14.8 | same, and the message written in place (no store-forwarding stall) |
+| `BM_Ouch50_EncodeEnterOrder` p50 | 19.5 | 9.7 | in place, SWAR ClOrdID hex |
+| `BM_Ouch42_EncodeNewIds` p50 | 14.8 | 7.4 | in place, SWAR ClOrdID hex |
+| `BM_Encode_BinanceOrderPlace` | 1440 | 522 | HMAC key schedule done once; bulk JSON and query appends |
+| `BM_Encode_BybitOrderCreate` | 313 | 223 | same |
+| `BM_Encode_DeribitBuy` | 319 | 207 | bulk JSON appends |
+| `BM_TickToOrder_Sim` p50, hash included | 991 | 247 | see below: most of this is the benchmark's own SHA-256, not engine work |
+| `BM_EngineStep_Sim` (32 events) | 9200 | 2900 | running PnL totals (the max-loss check summed 256 positions per event) |
+| `BM_ItchL2Bridge_Message` p50 | 61.4 | 55.3 | L3 tables on huge pages, prefetch of the named order |
+| `BM_ItchL2Bridge_Message_DefaultBook` p50 | 82 to 86 | 55.3 | same; the working set was the small one, so this row says nothing about the large book |
+| one-day synthetic backtest, wall time | 21.5 s | 17.4 s | same outbound SHA-256 |
+
+End to end (`scripts/bench-e2e.sh`, settings as below), the builds interleaved, 3 runs of 20 s
+each; p50 in µs, range over the runs. The OUCH encode row is the network thread's `encode` figure
+from the `final order latency` log line.
+
+| build | wire to wire | T0 to T5 | T0 to OUCH write returned | OUCH encode |
+|---|---:|---:|---:|---:|
+| before (6d43d8e) | 34.8 to 38.9 | 2.9 to 3.2 | 24.4 to 28.3 | 4.40 to 4.64 |
+| after | 24.6 to 25.6 | 2.6 to 2.7 | 16.6 | 0.09 to 0.11 |
+| after, PGO (`scripts/build-pgo.sh`) | 23.6 to 28.7 | 2.6 to 3.2 | 16.6 to 18.6 | 0.09 to 0.15 |
+| after, PGO + BOLT (`--bolt`) | 24.6 to 25.6 | 2.7 to 2.8 | 16.6 to 17.6 | 0.07 to 0.09 |
+
+### Build variants, 2026-09-23
+
+Same machine, 3 interleaved rounds of 5 repetitions, median; ns per operation (p50 where
+recorded). All gcc 13 unless noted; `release-native` is `-O3 -march=native` with LTO.
+
+Measured with the harness of that day: the `BM_TickToOrder_Sim` row includes the simulator's
+SHA-256 (about 180 ns of it) and the `_DefaultBook` row ran the small working set. The columns are
+comparable with each other, not with the table at the top of this file.
+
+| benchmark | release-native | PGO | PGO + BOLT | `-O2` | no LTO | `x86-64-v2` | clang 18 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `BM_TickToOrder_Sim` p50 | 247 | 215 | 215 | 231 | 247 | 271 | 271 |
+| `BM_EngineStep_Sim` | 2877 | 2748 | 2751 | 2784 | 2896 | 3397 | 4182 |
+| `BM_Encode_BinanceOrderPlace` | 522 | 462 | 464 | 553 | 513 | 570 | 541 |
+| `BM_ItchL2Bridge_Message` p50 | 55.3 | 53.2 | 53.2 | 57.3 | 57.3 | 63.5 | 57.3 |
+| `BM_ItchL2Bridge_Message_DefaultBook` p50 | 57.3 | 53.2 | 55.3 | 57.3 | 57.3 | 63.5 | 59.4 |
+| `BM_Ouch42_EncodeNewIds` p50 | 7.4 | 7.4 | 7.4 | 7.4 | 8.7 | 7.7 | 6.4 |
+| `BM_Ouch50_EncodeNewIds` p50 | 14.8 | 12.3 | 11.8 | 15.4 | 13.8 | 14.8 | 12.8 |
+
+`release-native` stays gcc `-O3 -march=native` with LTO: `-O2` and no-LTO are within the noise, the
+portable `x86-64-v2` build is 9 to 18 % slower, and clang 45 % slower on the engine step (faster on
+the OUCH encoders). PGO gains another 4 to 17 % on the micro-benchmarks and nothing measurable end
+to end, where the OUCH `write` system call dominates; BOLT adds nothing on top (the hot code fits
+the instruction cache). `scripts/build-pgo.sh [--bolt]` builds both.
+
+### Code alignment, 2026-09-26
+
+Edits that execute nothing in a benchmark moved `BM_EngineStep_Sim` and `BM_TickToOrder_Sim` by 3
+to 5 %. The test: base, an identical copy, and four edits off the benchmarked path (8 or 40 bytes of
+`nop` in `Engine::on_funding`, 24 in `calibrate_tsc`, two `EngineConfig` members swapped), each
+built with every setting; `bench_tick_to_order` pinned to one core, the binaries interleaved, 8
+processes of 3 repetitions each. A variant's figure is the median over its processes of the
+process's median; the table gives the median of the six variants in ns and their spread,
+(max - min) / min. All gcc 13 portable `release` (`x86-64-v2`, LTO) unless noted; the alignment
+rows set the flags on every target (`CMAKE_CXX_FLAGS`).
+
+| setting | `BM_EngineStep_Sim` | `BM_TickToOrder_Sim` | `BM_TickToOrder_SimHash` | `.text` |
+|---|---:|---:|---:|---:|
+| `release` (gcc defaults, 16 B) | 2390, 3.8 % | 161, 7.4 % | 330, 5.4 % | 410 KB |
+| `-falign-functions=64` | 2317, 1.3 % | 159, 4.9 % | 335, 3.9 % | 422 KB |
+| functions 64, loops 64 | 2346, 2.3 % | 157, 8.5 % | 329, 5.0 % | 433 KB |
+| functions 64, loops and jumps 32 | 2337, 3.0 % | 156, 1.2 % | 334, 2.3 % | 446 KB |
+| clang 18 | 3448, 1.3 % | 178, 4.2 % | 342, 1.9 % | 413 KB |
+| `release-native` | 1791, 6.3 % | 120, 1.8 % | 302, 3.9 % | 402 KB |
+| PGO (`scripts/build-pgo.sh`, native) | 1685, 5.0 % | 105, 6.8 % | 282, 2.4 % | 361 KB |
+
+The identical copy alone differed from base by up to 5 %: the process matters as much as the code,
+so one run of each side says nothing about a 3 % change. PGO is the fastest and not stable: the
+identical copy, profiled again, came out 7 % slower on the tick; it also needs an instrumented
+build and a training run in every build that ships (CI, the release tarball, the wheels).
+
+`FASTMM_ALIGN_CODE` (default ON, gcc) puts functions 64 and loops and jump targets 32 on the
+fastmm targets only. Confirmed on four new edits (16 and 56 bytes in `on_funding`, 64 in
+`calibrate_tsc`, 32 in `on_kill`), 18 processes per variant, a busier machine than above:
+
+| setting | `BM_EngineStep_Sim` | `BM_TickToOrder_Sim` | `BM_TickToOrder_SimHash` |
+|---|---:|---:|---:|
+| `-DFASTMM_ALIGN_CODE=OFF` | 2730, 7.8 % | 188, 5.6 % | 393, 3.6 % |
+| `FASTMM_ALIGN_CODE=ON` | 2610, 2.1 % | 182, 4.7 % | 393, 2.9 % |
+
+The engine step no longer moves with layout and both tick benchmarks got faster or stayed. The
+tick's remaining spread is the size of the process-to-process difference of one binary (2 to 3 %
+here), so it cannot be attributed to layout; compare such changes over several interleaved
+processes, not one run each.
+
+The other benchmarks, `release-native` on against off, 8 interleaved processes: within 3 % except
+`BM_L2_PriceForQty` -22 %, `BM_L2_ApplyDelta/20` -13 %, `BM_L2_ApplyDelta/100` -5 %, and
+`BM_Json_BybitExecution` +10 %, `BM_L3_OverflowAddCancel` +5 %, `BM_L3_AddCancelExecMix` +4 %.
+
+### End to end: fastmm-sim-itch to fastmm-live over veth
+
+Measured by `scripts/bench-e2e.sh` on 2026-09-23: WSL2 (Linux 6.6, 8 cores), `fastmm-sim-itch` and `fastmm-live` in two network namespaces joined by a veth pair, `kernel` receive backend, `spin_mode = "busy"` in both processes, simulator on core 2, engine on core 4, network thread on core 6, no CPU isolation (`isolcpus` not set). BasicMM on FMAA and FMBB (`configs/nasdaq-itch-sim.toml`, `half_spread_bps = 1`), generator at `--speed 4`, ITCH on lines A and B, OUCH 5.0 over TCP. 3 runs of 30 s; each cell is the range over the runs, in µs. The wire-to-wire and OUCH rows have 275 to 358 samples per run, so their p99.9 is the largest sample. In runs 1 and 3 a few orders had T0 to T5 near 3 ms while every engine hop stayed below 1.2 ms at p99.9 (as in run 3 of the 2026-09-22 measurement); they set the upper end of the T0 to T5 and OUCH p99 columns.
+
+| hop | samples per run | p50 | p99 | p99.9 |
+|---|---:|---:|---:|---:|
+| wire to wire: simulator `sendmmsg` to the order read | 312 / 354 / 275 | 23.6 to 25.6 | 61.4 to 139.3 | 76.1 to 217.1 |
+| kernel receive timestamp to T0 | 137934 / 139164 / 139986 | 3.1 to 3.2 | 11.8 to 22.5 | 61.4 to 688.1 |
+| T0 to T1: MoldUDP64, ITCH decode, L3 update | 79020 / 81569 / 82623 | 0.8 | 2.4 to 5.9 | 6.7 to 15.4 |
+| T1 to T2: ring hand-off, L2 book apply | 79020 / 81569 / 82623 | 0.2 | 5.9 to 19.5 | 63.5 to 1179.6 |
+| T2 to T3: strategy | 69044 / 69662 / 70143 | 0.1 | 0.2 | 0.2 to 11.3 |
+| T3 to T4: quote manager, risk, OMS | 488 / 548 / 1112 | 0.4 to 0.5 | 1.3 to 1.7 | 1.6 to 49.2 |
+| T4 to T5: outbound ring push (no eventfd write when busy) | 536 / 594 / 1243 | 0.2 | 0.4 to 0.6 | 0.6 to 1.5 |
+| T0 to T5: tick to trade (engine) | 186 / 215 / 184 | 2.4 to 2.6 | 32.8 to 3183.9 | 46.0 to 3183.9 |
+| T0 to OUCH write returned (network thread) | 316 / 358 / 279 | 16.6 | 52.8 to 3194.4 | 63.6 to 3194.4 |
+
+The network thread writes all orders of one drain of the outbound ring with one `write`; the write (p50 7 to 9 µs) runs the veth and the simulator's TCP receive path inside the system call. With `spin_mode = "adaptive"` (one 30 s run, 2026-09-21) wire to wire is 98.3 / 262.1 / 263.7 µs and kernel to T0 21.5 / 53.2 / 163.8 µs (p50 / p99 / p99.9): the network thread wakes from `epoll_wait`. `af_xdp` was not measured (it needs root: `sudo scripts/bench-e2e.sh --backend af_xdp`).
+
+`[engine] timer_slack_ns` with `spin_mode = "adaptive"` (2026-09-23, `--spin adaptive
+--timer-slack N`, 2 interleaved runs of 20 s each, µs, range over the runs). The engine sleeps
+50 µs when idle; the network thread waits in `epoll_wait`, which the slack does not delay, so
+wire to wire does not change. In busy mode nothing sleeps.
+
+| timer slack | wire to wire p50 | T0 to T5 p50 | T0 to T5 p99 |
+|---|---:|---:|---:|
+| 0 (the kernel's 50 µs) | 69.6 to 77.8 | 11.8 to 13.3 | 147.5 to 155.6 |
+| 1 ns | 73.7 to 81.9 | 7.4 to 9.2 | 98.3 to 127.0 |
+
+Order send path, 2026-09-22 (before the hot-path changes above), same machine and settings, 3 runs of 20 s per row (9 for the first and third), p50 in µs, range over the runs:
+
+| network thread | wire to wire | T0 to T5 | T0 to OUCH write returned |
+|---|---:|---:|---:|
+| before: two writes per order (SoupBinTCP header, then OUCH message), one order after the other; eventfd write per wake | 47.1 to 55.3 | 4.6 to 5.4 | 30.3 to 39.1 |
+| one write per drain | 32.8 to 34.8 | 4.9 to 5.1 | 24.4 |
+| one write per drain, no eventfd write when busy | 32.8 to 34.8 | 2.7 to 3.1 | 23.4 to 26.4 |
+| `IORING_OP_SEND` + `io_uring_enter` instead of `write` | 32.8 to 34.8 | 2.7 to 2.9 | 24.4 to 26.4 |
+| `IORING_OP_SEND` with SQPOLL, thread on core 0 | 34.8 | 2.8 to 3.1 | 12.7 to 13.2 |
+| `IORING_OP_SEND` with SQPOLL, thread unpinned | 163.8 to 172.0 | 2.9 | 12.2 to 13.2 |
+
+The io_uring rows were a prototype and are not in the code: the plain submission costs what `write` costs, and SQPOLL only moves the send to another core (the call returns in 0.3 µs) without shortening wire to wire.
+
+```bash
+scripts/bench-e2e.sh --duration 30 --runs 3            # --backend af_xdp needs root
+```
+
+#### Receive backend
+
+Same machine and settings, 2026-09-22 (load average 2 to 4), one 20 s run per cell and round, three rounds with the configurations interleaved; p50 in µs, range over the rounds. `dpdk` is EAL with `--no-huge --no-pci --in-memory` and the `net_af_packet` vdev on the veth. OUCH runs on kernel TCP.
+
+| rx_backend | wire to wire | T0 to T5 | T0 to OUCH write returned |
+|---|---:|---:|---:|
+| kernel | 32.8 to 34.8 | 2.8 to 2.9 | 23.4 to 24.4 |
+| dpdk | 30.7 to 31.7 | 2.8 to 3.1 | 24.4 to 25.4 |
+
+`bench_order_tcp` isolates the send call over a veth (one thread, the server in a second namespace, 64-byte messages): `write` on a `TCP_NODELAY` socket 3.97 µs p50, 7.9 µs until the server's `read` returns. The kernel's TCP send path is about 0.5 µs of that; the rest of the ~23 µs OUCH write in the table is the veth and the simulator's receive path and wake-up, which run inside whatever system call puts the frame on the veth. A user-space TCP client over an `AF_PACKET` ring measured the same (7.7 µs until the server's `read`) and was removed. `af_packet` (for `dpdk`) is a copy of the kernel path, not kernel bypass: these numbers bound what the code adds, not what a NIC would give.
+
+Kernel-bypass options:
+
+| option | status | needs |
+|---|---|---|
+| DPDK receive (`rx_backend = "dpdk"`) | implemented; measured on virtio below | a NIC DPDK can own: AWS ENA (c6in, c7gn), Azure mlx5 (Accelerated Networking), GCP gVNIC, Intel E810/X710 |
+| AF_XDP receive (`rx_backend = "af_xdp"`) | implemented; measured on virtio below | root or `CAP_NET_ADMIN`+`CAP_BPF`; zero-copy on ice, i40e, mlx5, ENA |
+| Onload (`LD_PRELOAD`, TCP and UDP) | documented ([Low-latency TCP](../docs/how-to/operations/low-latency-tcp.md)), not measured here | AMD Solarflare (bare metal, colocation) |
+| NVIDIA XLIO (`LD_PRELOAD`, TCP and UDP) | documented, not measured here | NVIDIA ConnectX, BlueField (Azure Accelerated Networking VMs, OCI bare metal) |
+| F-Stack (DPDK + FreeBSD TCP) | not tried: owns the event loop and the port, hugepages | same NICs as DPDK |
+
+### End to end across two hosts (Vultr VMs)
+
+`scripts/bench-2host.sh`, 2026-09-23: fastmm-sim-itch and fastmm-live on two Vultr `vhf-2c-4gb` VMs in Tokyo (2 vCPU, Ubuntu 24.04, Linux 6.8, virtio_net), joined by a VPC (MTU 1450, ping round trip 0.27 to 0.85 ms). Unicast market data, `threading = "single"`, busy spin, the engine on CPU 1 and interrupts on CPU 0. `dpdk` binds the VPC NIC to `vfio-pci` (no-IOMMU) with the virtio PMD; `af_xdp` runs native with a socket on each RX queue. Three 30 s runs per cell; p50 in µs, range over the runs.
+
+| rx_backend | wire to wire | T4 to T5 (encode + write) | T0 to T5 |
+|---|---:|---:|---:|
+| kernel | 327.7 to 344.1 | 27.6 to 47.1 | 61.4 to 69.6 |
+| af_xdp | 327.7 to 344.1 | 30.7 to 59.4 | 77.8 to 81.9 |
+| dpdk | 311.3 to 360.4 | 29.7 to 86.0 | 77.8 to 110.6 |
+
+The VPC dominates wire to wire (p99 0.6 to 15 ms in every cell). OUCH runs on kernel TCP in every cell. The removed user-space TCP client, sending on the XDP socket and the DPDK port, measured 8.7 to 27.6 µs for T4 to T5 in the same setup and 278.5 to 311.3 µs wire to wire, inside the VPC's spread. The kernel backend's kernel-to-T0 was 10.8 to 15.9 µs p50 (61 to 107 µs p99), against 3 µs on the WSL2 machine above.
+
+
 **Binance Demo, USD-M smoke and a spot + USD-M gateway soak (2026-09-29).** Scripts and logs in
 `~/fastmm-usdm-soak`. Smoke: `fastmm-live` basic_mm on USD-M BTCUSDT at 0.002 BTC; 56 trades, each
 booked once, store = venue = positionRisk; countdownCancelAll armed (a 75 s SIGSTOP: the venue
@@ -733,7 +923,7 @@ The engine step no longer moves with layout and the engine benchmarks got faster
 difference of one identical binary (2 to 5 %), so a 3 % change needs several interleaved
 processes per side to mean anything; the funding measurement below had one. PGO is the fastest but not stable (the identical copy re-profiled: +7 % on the tick) and
 needs instrumented builds plus training in CI, the tarball and the wheels: not adopted.
-`-fno-semantic-interposition` and LTO were already on. Details: bench/README.md, "Code alignment".
+`-fno-semantic-interposition` and LTO were already on. Details: "Code alignment, 2026-09-26" in the benchmark history above.
 
 **Performance: the hot path is sensitive to code layout (2026-09-26).** Booking funding cost
 BM_EngineStep_Sim +3.5% (2263 → 2338 ns) and BM_TickToOrder_Sim +3–5% with no new work on the
