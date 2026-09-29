@@ -15,7 +15,7 @@ The gateway uses `[engine]` (`name`, `journal_dir`, `epoch_file`, `kill_file`, `
 The socket is `<journal_dir>/<engine name>.gw` of the gateway's configuration, `AF_UNIX` `SOCK_SEQPACKET`, mode 0600 (`--socket` moves it). The gateway refuses an attach naming an instrument it does not have, or one a live attachment trades and `[gateway.shared]` does not name (`instrument BTCUSDT on venue 'sim' is traded by <engine> (pid, attachment, epoch) ...`), one with the `[engine] name` of an attached strategy, at most 16 at a time, and every attach while the account's kill switch is latched ([Account risk](#account-risk)). Otherwise it:
 
 1. gives the strategy a session epoch from the gateway's `epoch_file` (the high 16 bits of every client order id, so ids are unique across strategies and across gateway restarts; the strategy's own `epoch_file` is not used),
-2. creates three rings per venue under `/dev/shm` (`fastmm-gw-<name>-<pid>-<attachment>-<venue>.md`, `.ord`, `.out`) and adds them to the venue's routing,
+2. creates three rings per venue under `/dev/shm` (`fastmm-gw-<name>-<pid>-<attachment>-<venue>.md`, `.ord`, `.out`) and adds them to the venue's routing; the strategy unlinks the files once it has mapped them, so a `kill -9` of either side leaves nothing in `/dev/shm`,
 3. puts a snapshot of every book in its market-data ring, taken from the gateway's own copy ([Books](#books)),
 4. reconciles: the account's executions since the strategy's last stored fill on each venue (in the venue's clock, [Recovery at start-up](../../reference/storage.md#recovery-at-start-up)), then the open orders,
 5. answers with the epoch, the instrument table, the ring paths and, as descriptors, the wake pages and its reactors' eventfds ([Latency](#latency)).

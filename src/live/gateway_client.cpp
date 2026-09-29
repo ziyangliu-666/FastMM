@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <filesystem>
 #include <new>
+#include <string>
+#include <system_error>
 #include <vector>
 
 namespace fastmm::live {
@@ -282,6 +285,11 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
   c->epoch_ = rep.session_epoch;
   c->gateway_blocks_ = (rep.flags & gw::kGatewayBlocks) != 0;
   const std::byte* p = in.data() + sizeof rep;
+  // Once both sides have mapped the rings their names are no longer needed: unlinked here, the
+  // memory goes when the last mapping does, whichever process dies first. Left to the gateway's
+  // detach, the rings of every attachment stayed in /dev/shm after a kill -9 of the gateway
+  // (25 MB for two strategies on two venues, each crash).
+  std::vector<std::string> ring_paths;
   for (std::uint32_t i = 0; i < rep.venue_count; ++i, p += sizeof(gw::VenueInfo)) {
     gw::VenueInfo vi{};
     std::memcpy(&vi, p, sizeof vi);
@@ -292,7 +300,8 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
     v.executions = (vi.flags & gw::kVenueExecutions) != 0;
     if (vi.id != i) return fail("the gateway's venue ids are not dense");
     const auto open = [&](const char(&f)[128], std::unique_ptr<ShmRing>& ring) {
-      auto opened = ShmRing::open(from_field(f));
+      ring_paths.push_back(from_field(f));
+      auto opened = ShmRing::open(ring_paths.back());
       if (!opened) {
         if (error != nullptr) *error = opened.error();
         return false;
@@ -304,6 +313,10 @@ std::unique_ptr<GatewayClient> GatewayClient::attach(const std::string& path,
         !open(vi.outbound_path, v.outbound))
       return nullptr;
     c->venues_.push_back(std::move(v));
+  }
+  for (const std::string& ring : ring_paths) {
+    std::error_code ec;
+    std::filesystem::remove(ring, ec);
   }
   for (std::uint32_t i = 0; i < rep.instrument_count; ++i, p += sizeof(Instrument)) {
     Instrument inst{};
