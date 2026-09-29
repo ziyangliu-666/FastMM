@@ -272,6 +272,16 @@ TEST_CASE("binance_usdm.rest_decoder: exchangeInfo filters, positions, mode, con
   CHECK(pos[0].qty == Qty::from_decimal("-0.002").value());
   CHECK(pos[0].entry_price == Price::from_decimal("76975.3").value());
   CHECK_FALSE(decode_position_risk("{}", pos).empty());
+  // The entry price is an average: Demo Trading gave "83954.61851851852" for a short of 0.0014
+  // BTC. It used to decode as 0, and the engine valued the short at an average of 0.
+  pos.clear();
+  REQUIRE(
+      decode_position_risk(
+          R"([{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"-0.0014","entryPrice":"83954.61851851852"}])",
+          pos)
+          .empty());
+  REQUIRE(pos.size() == 1);
+  CHECK(pos[0].entry_price == Price::from_decimal("83954.61851852").value());
 
   bool dual = true;
   REQUIRE(decode_position_mode(R"({"dualSidePosition":false})", dual).empty());

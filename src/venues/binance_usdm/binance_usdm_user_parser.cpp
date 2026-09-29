@@ -285,7 +285,7 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
       if (p["ep"].get_string().get(entry) != sj::SUCCESS) return malformed();
       if (p["ps"].get_string().get(side) != sj::SUCCESS) return malformed();
       const auto qty = parse_qty(amount);
-      const auto avg = parse_price(entry);
+      const auto avg = parse_avg_price(entry);  // an average: often more than 8 decimals
       if (!qty || !avg) return malformed();
       if (side != "BOTH") {
         ++stats_.hedge_positions;

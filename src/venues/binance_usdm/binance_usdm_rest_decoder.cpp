@@ -130,7 +130,12 @@ std::string decode_position_risk(std::string_view json, std::vector<PositionReco
     p.position_side = string_field(e, "positionSide");
     if (p.symbol.empty() || !fixed_field(e, "positionAmt", p.qty))
       return "positionRisk: entry without symbol or positionAmt";
-    static_cast<void>(fixed_field(e, "entryPrice", p.entry_price));
+    // An average: more than 8 fraction digits is normal ("83954.61851851852"). Absent or
+    // unreadable leaves it zero (unknown); PositionTracker::set does not value a position at 0.
+    std::string_view entry;
+    if (e["entryPrice"].get(entry) == sj::SUCCESS) {
+      if (const auto px = parse_avg_price(entry)) p.entry_price = *px;
+    }
     out.push_back(std::move(p));
   }
   return {};

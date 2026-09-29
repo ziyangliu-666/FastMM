@@ -165,8 +165,15 @@ class PositionTracker {
   // Reconciliation: overwrite qty/avg with the venue's view. Realized PnL and fees are history and
   // are kept; the unrealized PnL of the new position is remeasured at the last mark, so the totals
   // the max-loss budget reads stay consistent with the positions.
+  // A record without an average price (zero: the venue gave none, or none that could be read) keeps
+  // the tracked one when the position stays on the same side, else takes the last mark: valued at
+  // an average of 0, a short of 0.0014 BTC is a loss of its whole notional, which trips max_loss.
   void set(InstrumentId id, Qty qty, Price avg_px, const Instrument& inst) noexcept {
     Position& p = pos_[id.value];
+    if (!qty.is_zero() && !avg_px.is_positive()) {
+      const bool same_side = !p.qty.is_zero() && p.qty.is_negative() == qty.is_negative();
+      avg_px = same_side && p.avg_px.is_positive() ? p.avg_px : p.last_mark;
+    }
     p.qty = qty;
     p.avg_px = qty.is_zero() ? Price{} : avg_px;
     set_unrealized(id, p, revalue(p, p.last_mark, inst));
