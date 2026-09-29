@@ -3,6 +3,27 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Binance Demo, USD-M smoke and a spot + USD-M gateway soak (2026-09-29).** Scripts and logs in
+`~/fastmm-usdm-soak`. Smoke: `fastmm-live` basic_mm on USD-M BTCUSDT at 0.002 BTC; 56 trades, each
+booked once, store = venue = positionRisk; countdownCancelAll armed (a 75 s SIGSTOP: the venue
+cancelled both quotes 60 s after the last refresh, the session killed the venue on resume) and
+stopped at shutdown (an order placed after the exit survived 78 s). The smoke died of max_loss at
+8 min: the reconciliation's positionRisk `entryPrice` "83954.61851851852" failed to parse and the
+short was valued at an average of 0 (fixed, 7936228). Soak: gateway + X (xmm, spot BTCUSDT quotes,
+USD-M BTCUSDT hedges, 0.002, max_unhedged 0.004) + M (basic_mm USD-M ETHUSDT, 0.04), a fault every
+20 min (kill -9 X after a spot fill, 20 s SIGSTOP of the gateway, kill -9 of the gateway 90 s down,
+kill -9 M). Two more bugs stopped the first runs: xmm halted on a hedge under USD-M's 50 USDT
+minimum notional (a 0.0002 partial fill; 8d426d7), and a BTCUSDT depth resync cleared every USD-M
+book in the engine and the gateway's copies, so M never got an ETHUSDT book (5dc3829; xmm's
+hedge-venue md bit had the same stickiness). Third run, 2 h 28 min, all six faults: spot 3011
+orders / 33 trades, USD-M BTCUSDT 25 hedge IOCs all filled, ETHUSDT 1482 orders / 1316 trades;
+every trade booked once by its epoch's strategy, no duplicate ids, 0 open, positions = venue,
+balances exact (`verify.py`: ALL CHECKS PASS). X's unhedged at most 0.00209 (a fill while its hedge
+was out, ~75 ms), 0.0000453 at the end; the X killed 76 ms before its hedge reached the venue had
+sent it, and its successor booked the fill and sent nothing. A gateway kill -9 left 12.6 MB of
+rings per attached strategy in /dev/shm (fixed, 212d40a). Strategy RSS grows about 0.8 MB/min:
+the journal's mapped file (46 MB after 72 min of M), not the heap; the gateway stays at 90 MB.
+
 **Binance Spot Demo soak, 4 h, a fault every 30 min (2026-09-29).** Gateway + A/B sharing
 BTCUSDT; cycling kill -9 of A, a 20 s SIGSTOP of the gateway, kill -9 of the gateway with 90 s
 down (twice each, eight faults). Against the venue (`~/fastmm-soak/verify.py`): 10697 orders
