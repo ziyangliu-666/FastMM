@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 12) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 14) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
@@ -47,6 +47,7 @@ The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The 
 | `venues` | 8 x venue entry | below |
 | `underlyings` | 8 x underlying entry | `[risk.underlying]`, in the order of the configuration's base assets: `name` (char[16], empty for an unused entry), `known` (u8: 0 while an inverse contract with a position has no mark), `net_raw` (i64, base units, signed), `max_net_raw` (i64, the limit applied now, 0 none) |
 | `balance_count`, `balances` | u32, 32 x balance entry | the balance table ([Balance check](../explanation/risk-model.md#balance-check)); a gateway's is the account's over every strategy: `asset` (char[12]), `venue` (u8, index into `venues`), `account` (u8: the venue's account-wide margin), `known` (u8: the venue has reported it), `free_raw`, `locked_raw`, `total_raw`, `equity_raw`, `maintenance_raw` (i64, asset units), `as_of_ns` (i64, venue time of the last report) |
+| `perp_count`, `perps` | u32, 32 x perp entry | the venues' mark, index and funding per derivative that has reported ([Perpetuals](strategy-api.md#perpetuals)); a gateway's is the account's: `symbol` (char[24]), `venue` (u8), `valued_at_mark` (u8: the position is valued at the mark now), `mark_stale`, `funding_stale` (u8), `mark_raw`, `index_raw` (i64), `funding_rate` (f64, per interval), `funding_interval_ns`, `next_funding_ns` (venue time, 0 continuous), `open_interest_raw` (contracts), `mark_age_ns`, `funding_age_ns` (-1 never) (i64), `reports` (u64) |
 | `gateway` | gateway block | `kind` 1 only, zero otherwise ([below](#gateway-block)) |
 
 A `fastmm-top` session is `STALE` when `state` is running and `updated_ns` is more than 3 s old.
