@@ -617,6 +617,13 @@ void bind_backtest(py::module_& m) {
       .def_readonly("outbound_messages", &BacktestResult::outbound_messages)
       .def_readonly(
           "md_events", &BacktestResult::md_events, "Market-data messages delivered to the engine.")
+      .def_readonly("md_reordered",
+                    &BacktestResult::md_reordered,
+                    "Recorded events the simulated venue took ahead of one recorded before them.")
+      .def_readonly("md_late",
+                    &BacktestResult::md_late,
+                    "Recorded events that came after a later-stamped one (beyond "
+                    "reorder_window_ms).")
       .def_readonly("engine_steps", &BacktestResult::engine_steps)
       .def_readonly("start_ts", &BacktestResult::start_ts, "First event time, ns.")
       .def_readonly("end_ts", &BacktestResult::end_ts, "Last event time, ns.")

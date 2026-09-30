@@ -220,6 +220,7 @@ class Walker {
     // at that time or later is applied after the order entered.
     o.queue_ahead = queue_at_placement(
         level_qty(b, s.side, s.price), s.side, s.price, b, touch(s.instrument), tape(s.instrument));
+    const Timestamp view = queue_view_ts(s.side, s.price, b, touch(s.instrument));
     o.ack_ts = s.ack.ts;
     o.end = s.ended ? s.why : FillCheckEnd::Open;
     o.end_ts = s.ended ? s.end.ts : Timestamp{};
@@ -238,12 +239,13 @@ class Walker {
         if (h.valid()) {
           const QueuedOrder& old = q->get(h);
           if (old.price == s.price && s.qty <= old.leaves() &&
-              q->amend_keep_priority(h, s.id, 0, s.qty))
+              q->amend_keep_priority(h, s.id, 0, s.qty, s.ack.ts))
             continue;
           q->remove(h);
         }
       }
-      if (!q->place(s.id, 0, s.instrument, s.side, s.price, s.qty, o.queue_ahead).valid())
+      if (!q->place(s.id, 0, s.instrument, s.side, s.price, s.qty, o.queue_ahead, s.ack.ts, view)
+               .valid())
         ++res_.model_full;
     }
     if (orig != nullptr) deactivate(*orig);
@@ -295,6 +297,7 @@ class Walker {
                  t.price,
                  t.qty,
                  t.aggressor,
+                 ts,
                  [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
                    if (const OwnOrder* s = log_.find(o.cl_ord_id)) {
                      if (FillCheckOrder* r = row(*s)) {

@@ -1229,8 +1229,10 @@ class Engine {
                            "short by that much");
   }
 
-  void after_oms_update(const OmsUpdate& u, const EventHeader& h) noexcept {
-    if (FASTMM_UNLIKELY(balances_live_) && u.changed && u.slot.valid()) update_hold(u, h.exch_ts);
+  // `hold_done`: on_fill moved the order's hold already.
+  void after_oms_update(const OmsUpdate& u, const EventHeader& h, bool hold_done = false) noexcept {
+    if (FASTMM_UNLIKELY(balances_live_) && !hold_done && u.changed && u.slot.valid())
+      update_hold(u, h.exch_ts);
     if (u.known) {
       const int delta =
           static_cast<int>(resting(u.order.state)) - static_cast<int>(resting(u.prev));
@@ -1390,6 +1392,10 @@ class Engine {
             "fill for unknown order {} qty {} @ {}", encode_cl_ord_id(f.cl_ord_id), f.qty, f.price);
       }
     }
+    // The order's hold follows the fill before the strategy runs: its on_fill can place an order in
+    // the pool slot a last fill just freed, and the holds are kept by slot.
+    if (FASTMM_UNLIKELY(balances_live_) && u.changed && u.slot.valid())
+      update_hold(u, f.hdr.exch_ts);
     if constexpr (has_hook(Hook::Fill)) {
       if (FASTMM_LIKELY(known_instrument)) {
         Fill fill;
@@ -1409,7 +1415,7 @@ class Engine {
         strategy_.on_fill(ctx_, fill);
       }
     }
-    after_oms_update(u, f.hdr);
+    after_oms_update(u, f.hdr, true);
   }
 
   // A funding payment is realized PnL of its instrument, in the settlement currency it names, and

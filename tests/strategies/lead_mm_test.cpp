@@ -282,6 +282,15 @@ struct LeadCtx {
     return own_in_feed && s == Side::Buy && p == own_bid.price ? own_bid.qty : Qty{};
   }
   TimerId every(Duration, std::uint64_t) { return TimerId{1}; }
+  // What the account's balance covers per side (Qty::max(): not reported), and our resting sells.
+  Qty room_buy = Qty::max();
+  Qty room_sell = Qty::max();
+  Qty resting_sell{};
+  bool balances_live() const { return room_buy != Qty::max() || room_sell != Qty::max(); }
+  Qty balance_room(InstrumentId, Side s, Price) const {
+    return s == Side::Buy ? room_buy : room_sell;
+  }
+  Qty open_qty(InstrumentId, Side s) const { return s == Side::Sell ? resting_sell : Qty{}; }
   bool set_quotes(InstrumentId id, const DesiredQuotes& q) {
     CHECK(id == InstrumentId{0});
     ++set_calls;
@@ -372,6 +381,46 @@ TEST_CASE("strategies.lead_mm: a stale or invalid leader or fx book pulls the ta
     n.on_book(c, InstrumentId{2}, c.books[2]);
     CHECK(c.set_calls == 0);
   }
+}
+
+TEST_CASE("strategies.lead_mm: each side is cut to what the account's balance covers") {
+  LeadMM s = make();
+  LeadCtx ctx;
+  s.on_start(ctx);
+  ctx.touch_all();
+  ctx.room_sell = qt("0.02");  // base held: 0.02 of the 0.05 quote_qty
+  s.on_book(ctx, InstrumentId{1}, ctx.books[1]);
+  REQUIRE(ctx.last.bids.size() == 1);
+  CHECK(ctx.last.bids[0].qty == qt("0.05"));
+  REQUIRE(ctx.last.asks.size() == 1);
+  CHECK(ctx.last.asks[0].qty == qt("0.02"));
+  // A balance report requotes; the resting sell's hold counts, as it is replaced.
+  ctx.resting_sell = qt("0.02");
+  ctx.room_sell = Qty{};
+  BalanceMsg m{};
+  const int calls = ctx.set_calls;
+  s.on_balance(ctx, m);
+  CHECK(ctx.set_calls == calls + 1);
+  REQUIRE(ctx.last.asks.size() == 1);
+  CHECK(ctx.last.asks[0].qty == qt("0.02"));
+  // Nothing to sell: the ask is pulled, the bid stays.
+  ctx.resting_sell = Qty{};
+  s.on_balance(ctx, m);
+  CHECK(ctx.last.asks.empty());
+  CHECK(ctx.last.bids.size() == 1);
+  CHECK(ctx.pulls == 0);
+  // Another venue's balance does not requote.
+  m.hdr.venue = VenueId{3};
+  s.on_balance(ctx, m);
+  CHECK(ctx.set_calls == calls + 2);
+  // What is left is under the venue's minimum notional (0.02 x 150.20 < 5): no ask.
+  m.hdr.venue = VenueId{};
+  ctx.list[0].min_notional = Notional::from_decimal("5").value();
+  ctx.room_sell = qt("0.02");
+  s.on_balance(ctx, m);
+  CHECK(ctx.last.asks.empty());
+  REQUIRE(ctx.last.bids.size() == 1);
+  CHECK(ctx.last.bids[0].qty == qt("0.05"));  // 7.5 of notional
 }
 
 TEST_CASE("strategies.lead_mm: roles are checked against the instrument table") {

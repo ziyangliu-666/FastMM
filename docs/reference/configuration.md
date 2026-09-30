@@ -528,6 +528,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `latency_md_us` | int | `0` | Fixed market-data latency, µs |
 | `latency_md_jitter_us` | int | `0` | Market-data latency jitter, µs |
 | `md_arrival` | string | `"venue"` | When recorded market data reaches the strategy: `venue` at its venue time plus `latency_md_us`, `recorded` at the `recv_ts` it was recorded with plus `latency_md_us`, which replays the feed lag of a live journal (`[risk] max_feed_lag_ms` reads it); a message keeps its place behind the one before it |
+| `reorder_window_ms` | int | `1000` | Recorded data reaches the simulated venues in venue-time order, assuming no event was received more than this long after its venue time; the strategy still gets it in recorded order. `0` keeps the recorded order ([Backtesting](../explanation/backtesting.md#venue-time)) |
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
 | `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
 | `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |

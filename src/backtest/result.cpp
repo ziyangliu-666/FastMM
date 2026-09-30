@@ -150,6 +150,8 @@ std::string BacktestResult::summary_table() const {
       fmt::format("{} / {} ns", m.virtual_tick_to_order_p50_ns, m.virtual_tick_to_order_p99_ns));
   row("tick-to-order wall p50/p99",
       fmt::format("{} / {} ns", m.wall_tick_to_order_p50_ns, m.wall_tick_to_order_p99_ns));
+  if (md_reordered != 0 || md_late != 0)
+    row("recorded events reordered / late", fmt::format("{} / {}", md_reordered, md_late));
   row("outbound messages / sha256", fmt::format("{} / {}", outbound_messages, outbound_sha256));
 
   const PnlDecomposition& d = m.decomposition;
@@ -386,6 +388,8 @@ std::string BacktestResult::summary_json() const {
   }
   s += m.markouts.empty() ? "],\n" : "\n  ],\n";
   u64("md_events", md_events);
+  u64("md_reordered", md_reordered);
+  u64("md_late", md_late);
   u64("engine_steps", engine_steps);
   u64("outbound_messages", outbound_messages);
   str("outbound_sha256", outbound_sha256);

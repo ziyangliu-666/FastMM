@@ -85,7 +85,8 @@ inline void keep_passive(DesiredQuotes& q, Price best_bid, Price best_ask, Price
 }
 
 // Cuts one side of a ladder to `room` in total, keeping the levels closest to the mid: each level
-// is rounded down to the lot, and one left under the lot or the instrument's min_qty ends the side.
+// is rounded down to the lot, and one left under the lot, the instrument's min_qty or its
+// min_notional ends the side (the venue would refuse it).
 inline void fit_side(StaticVector<Level, kMaxQuoteLevels>& levels,
                      Qty room,
                      const Instrument& inst) noexcept {
@@ -95,6 +96,7 @@ inline void fit_side(StaticVector<Level, kMaxQuoteLevels>& levels,
     Level& l = levels[keep];
     if (l.qty > left) l.qty = inst.round_qty(left);
     if (!l.qty.is_positive() || l.qty < inst.min_qty) break;
+    if (inst.min_notional.is_positive() && inst.notional(l.price, l.qty) < inst.min_notional) break;
     left = left - l.qty;
   }
   while (levels.size() > keep) levels.pop_back();

@@ -105,6 +105,10 @@ struct BacktestResult {
   std::string outbound_sha256;
   std::uint64_t outbound_messages = 0;
   std::uint64_t md_events = 0;  // market-data messages delivered to the engine
+  // Recorded events the venue took ahead of one recorded before them (venue-time order), and those
+  // that still came after a later-stamped one (received more than reorder_window_ms late).
+  std::uint64_t md_reordered = 0;
+  std::uint64_t md_late = 0;
   std::uint64_t engine_steps = 0;
   std::int64_t start_ts = 0;
   std::int64_t end_ts = 0;

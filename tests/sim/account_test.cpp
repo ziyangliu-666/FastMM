@@ -155,6 +155,36 @@ TEST_CASE("sim.account: a derivative holds initial margin and realises PnL into 
   CHECK(a.locked(VenueId{0}, "USDT") == nt("100"));
 }
 
+TEST_CASE("sim.account: a derivative's unrealised PnL counts in its free margin and equity") {
+  const InstrumentTable t = table();
+  const auto cfg = one_account("0", "1000");
+  std::vector<Ratio> im(t.size());
+  im[kPerp.value] = Ratio::from_decimal("0.1").value();
+  sim::SimAccounts a(t, cfg, im);
+  REQUIRE(a.admit(ClientOrderId{1}, kPerp, Side::Buy, px("100"), qt("50"), false));
+  a.fill(ClientOrderId{1}, px("100"), qt("50"), Qty{}, Notional{});
+  CHECK(a.free(VenueId{0}, "USDT") == nt("500"));  // 1000 - 500 of position margin
+  // No mark yet: nothing unrealised. The book's mid at 90: long 50 is 500 down.
+  a.mark(kPerp, px("90"), false);
+  CHECK(a.unrealized(VenueId{0}, "USDT") == nt("-500"));
+  CHECK(a.free(VenueId{0}, "USDT").is_zero());
+  CHECK_FALSE(a.admit(ClientOrderId{2}, kPerp, Side::Buy, px("90"), qt("0.1"), false));
+  // The venue's mark takes over from the mid, and a later mid does not replace it.
+  a.mark(kPerp, px("104"), true);
+  a.mark(kPerp, px("80"), false);
+  CHECK(a.unrealized(VenueId{0}, "USDT") == nt("200"));
+  CHECK(a.free(VenueId{0}, "USDT") == nt("700"));
+  REQUIRE(a.admit(ClientOrderId{3}, kPerp, Side::Buy, px("104"), qt("60"), false));  // 624
+  std::vector<BalanceMsg> r = published(a);
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].total == nt("1000"));
+  CHECK(r[0].equity == nt("1200"));
+  CHECK(r[0].locked == nt("1124"));
+  CHECK(r[0].free == nt("76"));
+  // Spot rows have none.
+  CHECK(a.unrealized(VenueId{0}, "BTC").is_zero());
+}
+
 TEST_CASE("sim.account: reports: a snapshot of every row, then only the rows that moved") {
   const InstrumentTable t = table();
   std::vector<sim::SimAccountConfig> cfg = one_account("1", "1000");
@@ -249,9 +279,10 @@ Wire drain(sim::SimTransport& v, SimClock& clock, InlineFeed& feed, Timestamp un
   return w;
 }
 
-OutNewOrderMsg new_order(std::uint64_t id, Side side, const char* p, const char* q) {
+OutNewOrderMsg new_order(
+    std::uint64_t id, Side side, const char* p, const char* q, InstrumentId inst = kSpot) {
   OutNewOrderMsg m{};
-  init_header(m, EventType::OutNewOrder, kSpot, VenueId{0});
+  init_header(m, EventType::OutNewOrder, inst, VenueId{0});
   m.cl_ord_id = ClientOrderId{id};
   m.side = side;
   m.type = OrderType::PostOnly;
@@ -261,10 +292,14 @@ OutNewOrderMsg new_order(std::uint64_t id, Side side, const char* p, const char*
   return m;
 }
 
-void book(sim::SimTransport& v, Timestamp ts, const char* bid, const char* ask) {
+void book(sim::SimTransport& v,
+          Timestamp ts,
+          const char* bid,
+          const char* ask,
+          InstrumentId inst = kSpot) {
   alignas(64) std::byte buf[BookDeltaMsg::size_for(1, 1)] = {};
   auto* d = reinterpret_cast<BookDeltaMsg*>(buf);
-  init_header(*d, EventType::BookSnapshot, kSpot, VenueId{0}, sizeof buf);
+  init_header(*d, EventType::BookSnapshot, inst, VenueId{0}, sizeof buf);
   d->hdr.flags |= EventHeader::kSnapshot;
   d->hdr.exch_ts = ts;
   d->hdr.recv_ts = ts;
@@ -274,9 +309,14 @@ void book(sim::SimTransport& v, Timestamp ts, const char* bid, const char* ask) 
   v.on_source_event(d->hdr);
 }
 
-void trade(sim::SimTransport& v, Timestamp ts, const char* p, const char* q, Side aggressor) {
+void trade(sim::SimTransport& v,
+           Timestamp ts,
+           const char* p,
+           const char* q,
+           Side aggressor,
+           InstrumentId inst = kSpot) {
   TradeMsg m{};
-  init_header(m, EventType::Trade, kSpot, VenueId{0});
+  init_header(m, EventType::Trade, inst, VenueId{0});
   m.hdr.exch_ts = ts;
   m.hdr.recv_ts = ts;
   m.price = px(p);
@@ -363,4 +403,36 @@ TEST_CASE("sim.account: without accounts the venue sends no balances") {
   const Wire w = drain(v, clock, feed, at(10'000));
   REQUIRE(w.msgs.size() == 1);
   CHECK(w.type(0) == EventType::OrderAck);
+}
+
+TEST_CASE("sim.account: the venue marks a derivative at its mark price, else the book's mid") {
+  const InstrumentTable t = table();
+  SimClock clock{at(0)};
+  sim::SimTransportConfig tc;
+  tc.fill_model = sim::FillModel::L2Queue;
+  tc.order_out = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.ack_in = sim::LatencyParams{microseconds(100), Duration{}};
+  tc.accounts = one_account("0", "1000");
+  tc.initial_margin.assign(t.size(), Ratio{});
+  tc.initial_margin[kPerp.value] = Ratio::from_decimal("0.1").value();
+  sim::SimTransport v(clock, t, tc);
+  InlineFeed feed(1 << 20);
+  book(v, at(0), "99.00", "101.00", kPerp);
+  REQUIRE(v.send(new_order(1, Side::Buy, "99.00", "10", kPerp).hdr));
+  static_cast<void>(drain(v, clock, feed, at(1000)));
+  trade(v, at(1000), "98.00", "1", Side::Sell, kPerp);  // through 99: long 10 at 99
+  static_cast<void>(drain(v, clock, feed, at(2000)));
+  REQUIRE(v.accounts()->position(kPerp) == qt("10"));
+  book(v, at(2000), "89.00", "91.00", kPerp);
+  CHECK(v.accounts()->unrealized(VenueId{0}, "USDT") == nt("-90"));
+  PerpStateMsg p{};
+  init_header(p, EventType::PerpState, kPerp, VenueId{0});
+  p.hdr.exch_ts = at(3000);
+  p.hdr.recv_ts = at(3000);
+  p.mark_price = px("100");
+  p.fields = PerpStateMsg::kMark;
+  v.on_source_event(p.hdr);
+  book(v, at(4000), "79.00", "81.00", kPerp);
+  CHECK(v.accounts()->unrealized(VenueId{0}, "USDT") == nt("10"));
+  CHECK(v.accounts()->free(VenueId{0}, "USDT") == nt("911"));  // 1000 + 10 - 99 of margin
 }

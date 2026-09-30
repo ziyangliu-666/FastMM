@@ -277,14 +277,70 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
       default:
         break;
     }
+    // A derivative account's unrealised PnL: the venue's mark, else the book's mid.
+    if (accounts_ != nullptr && accounts_->derivative(id)) [[unlikely]] {
+      if (md.type == EventType::PerpState) {
+        const auto& p = msg_cast<PerpStateMsg>(&md);
+        if ((p.fields & PerpStateMsg::kMark) != 0) accounts_->mark(id, p.mark_price, true);
+      } else if (md.type != EventType::Trade) {
+        accounts_->mark(id, venue_mid(id), false);
+      }
+    }
   }
   // Coupled mode publishes its own view of the book; a venue's mark and funding go through as
   // recorded.
-  if (agg_ != nullptr && md.type != EventType::PerpState) return;
+  if (agg_ != nullptr && md.type != EventType::PerpState) {
+    if (md.seq != 0) forward_in_order(nullptr, md.seq, md.recv_ts, now);
+    return;
+  }
   const EventHeader& out =
       own_feed_ != nullptr && id.value < instruments_.size() ? with_own(md) : md;
-  forward(out, md.recv_ts, now);
+  if (md.seq != 0) {
+    forward_in_order(&out, md.seq, md.recv_ts, now);
+  } else {
+    forward(out, md.recv_ts, now);
+  }
   if (own_feed_ != nullptr) flush_own(now);
+}
+
+void SimTransport::forward_in_order(const EventHeader* md,
+                                    std::uint64_t seq,
+                                    Timestamp recorded,
+                                    Timestamp now) noexcept {
+  const auto after = [](const Waiting& a, const Waiting& b) { return a.seq > b.seq; };
+  if (seq > next_forward_) {
+    std::uint32_t slot = kNoSlot;
+    if (md != nullptr) {
+      if (waiting_free_.empty()) {
+        waiting_bytes_.emplace_back();
+        slot = static_cast<std::uint32_t>(waiting_bytes_.size() - 1);
+      } else {
+        slot = waiting_free_.back();
+        waiting_free_.pop_back();
+      }
+      std::vector<std::uint64_t>& b = waiting_bytes_[slot];
+      const std::size_t words = (md->len + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
+      if (b.size() < words) b.resize(words);
+      std::memcpy(b.data(), md, md->len);
+    }
+    waiting_.push_back(Waiting{seq, recorded, now, slot});
+    std::push_heap(waiting_.begin(), waiting_.end(), after);
+    return;
+  }
+  if (md != nullptr) forward(*md, recorded, now);
+  if (seq == next_forward_) ++next_forward_;
+  while (!waiting_.empty() && waiting_.front().seq <= next_forward_) {
+    std::pop_heap(waiting_.begin(), waiting_.end(), after);
+    const Waiting w = waiting_.back();
+    waiting_.pop_back();
+    if (w.slot != kNoSlot) {
+      forward(*reinterpret_cast<const EventHeader*>(waiting_bytes_[w.slot].data()),
+              w.recorded,
+              w.venue);
+      waiting_free_.push_back(w.slot);
+    }
+    if (w.seq == next_forward_) ++next_forward_;
+  }
 }
 
 void SimTransport::forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept {
@@ -434,9 +490,18 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);
     return;
   }
+  const QueueTouch& touch = touch_[id.value];
   const Qty ahead = queue_at_placement(
-      level_qty(book, n.side, n.price), n.side, n.price, book, touch_[id.value], &tape_[id.value]);
-  const auto h = queue_.place(n.cl_ord_id, order_id, id, n.side, n.price, n.qty, ahead);
+      level_qty(book, n.side, n.price), n.side, n.price, book, touch, &tape_[id.value]);
+  const auto h = queue_.place(n.cl_ord_id,
+                              order_id,
+                              id,
+                              n.side,
+                              n.price,
+                              n.qty,
+                              ahead,
+                              now,
+                              queue_view_ts(n.side, n.price, book, touch));
   if (!h.valid()) {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);  // queue table full
     return;
@@ -467,7 +532,7 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
   const QueuedOrder o = queue_.get(h);
   if (m.price == o.price && m.qty <= o.leaves()) {
     const std::uint64_t new_order_id = next_queue_order_id_++;
-    if (queue_.amend_keep_priority(h, m.cl_ord_id, new_order_id, m.qty)) {
+    if (queue_.amend_keep_priority(h, m.cl_ord_id, new_order_id, m.qty, now)) {
       note_own(o.instrument, o.side, o.price);
       emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
       emit_ack(m.cl_ord_id, new_order_id, o.instrument, now);
@@ -509,6 +574,7 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                   t.price,
                   t.qty,
                   t.aggressor,
+                  now,
                   [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
                     emit_fill(o.cl_ord_id,
                               o.order_id,
@@ -556,8 +622,13 @@ void SimTransport::on_cancel_reject(AccountId a,
   if (a == kStrategyAccount) emit_cancel_reject(id, inst, ts);
 }
 void SimTransport::on_fill(
-    const SimOrder& maker, const SimOrder& taker, Price px, Qty qty, Timestamp ts) {
+    const SimOrder& maker, const SimOrder& taker, Price px, Qty qty, Timestamp now) {
   const std::uint64_t exec = next_exec_id_++;
+  // A recorded level processed after our order reached the venue can carry an earlier venue time
+  // (the streams are not monotone): the two orders met when the later of them arrived.
+  Timestamp ts = now;
+  if (maker.created > ts) ts = maker.created;
+  if (taker.created > ts) ts = taker.created;
   if (maker.account == kStrategyAccount) {
     note_own(maker.instrument, maker.side, maker.price);
     emit_fill(maker.cl_ord_id,

@@ -106,14 +106,24 @@ struct Transport {
   }
 };
 
-// Records what on_balance saw and what the context said at that moment.
+// Records what on_balance saw and what the context said at that moment; with sell_on_fill, sells
+// 0.001 BTC at 51000 from every on_fill.
 struct Watcher {
   std::vector<BalanceMsg> seen;
   Balance usdt_at_hook;
+  bool sell_on_fill = false;
+  std::vector<ClientOrderId> sent;
   template <class Ctx>
   void on_balance(Ctx& ctx, const BalanceMsg& m) {
     seen.push_back(m);
     usdt_at_hook = ctx.balance(kSpotVenue, "USDT");
+  }
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const Fill&) {
+    if (!sell_on_fill) return;
+    auto id = ctx.send(NewOrderRequest::limit(kSpot, Side::Sell, px("51000"), qt("0.001")));
+    REQUIRE(id.has_value());
+    sent.push_back(*id);
   }
 };
 
@@ -474,4 +484,30 @@ TEST_CASE("core.balance: an order in flight holds on top of a report until its a
   CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.009"));
   r.ack(kSpot, *s1, 131);
   CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.009"));
+}
+
+TEST_CASE("core.balance: an order sent from on_fill into the slot the fill freed keeps its hold") {
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  r.balance(report(kSpotVenue, "BTC", "0.01", "0", 100));
+  auto b1 = r.send(kSpot, Side::Buy, "50000", "0.001");
+  REQUIRE(b1.has_value());
+  r.ack(kSpot, *b1, 110);
+  r.strategy.sell_on_fill = true;
+  // The last fill ends the buy and frees its slot; the strategy's sell takes it.
+  r.fill(kSpot, *b1, Side::Buy, "50000", "0.001", "0.001", "0", "0", FeeAsset::Quote, 120);
+  REQUIRE(r.strategy.sent.size() == 1);
+  r.strategy.sell_on_fill = false;
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.001"));
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.01"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked.is_zero());
+  // Acknowledged, then a report that has it: held once.
+  r.ack(kSpot, r.strategy.sent[0], 130);
+  r.balance(report(kSpotVenue, "BTC", "0.01", "0.001", 131));
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.001"));
+  // Its cancel releases it.
+  REQUIRE(r.engine->cancel_order(r.strategy.sent[0]).has_value());
+  r.cancel_ack(kSpot, r.strategy.sent[0], 140);
+  CHECK(r.bal(kSpotVenue, "BTC").locked.is_zero());
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.011"));
 }
