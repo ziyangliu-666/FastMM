@@ -1,6 +1,8 @@
 #pragma once
 // BasicMM (8.6): symmetric quotes around mid, half_spread_bps wide, skewed by inventory,
-// with a per-side inventory cap. Integer math throughout: bps parameters are Ratios (0.0001 bp
+// with a per-side inventory cap. Each side is cut to what the account's balance on the venue
+// covers (fit_to_balance): a spot sell to the base held, a buy to the quote, and a side the balance
+// cannot cover at all is not quoted. Integer math throughout: bps parameters are Ratios (0.0001 bp
 // resolution) and quantities are parsed exactly.
 #include "fastmm/core/book/book_view.hpp"
 #include "fastmm/core/fixed_point.hpp"
@@ -105,6 +107,16 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     }
   }
 
+  // The venue reported a balance: the sides are sized to it again.
+  template <class Ctx>
+  void on_balance(Ctx& ctx, const BalanceMsg& m) noexcept {
+    for (const Instrument& inst : ctx.instruments()) {
+      if (inst.venue != m.hdr.venue) continue;
+      const auto& book = ctx.book(inst.id);
+      if (book.is_valid()) requote(ctx, inst.id, book, inst);
+    }
+  }
+
   // Quoting was paused or resumed (control pull, kill switch, reconciliation). Forget the quoted
   // mids, and when quoting is back requote at once, even if the mid has not moved.
   template <class Ctx>
@@ -146,6 +158,7 @@ class BasicMM : public StrategyBase<BasicMMParams> {
     const Price mid = book.mid();
     DesiredQuotes q = compute_quotes(mid, ctx.position(id).qty, inst);
     keep_passive(q, book.best_bid().price, book.best_ask().price, inst.tick);
+    fit_to_balance(ctx, id, inst, q);
     // Remember the mid only if the quotes were taken; while quoting is disabled they are ignored.
     last_mid_[id.value] = ctx.set_quotes(id, q) ? mid : Price{};
   }

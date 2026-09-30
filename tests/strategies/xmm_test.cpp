@@ -76,6 +76,8 @@ struct Ctx {
   // Quote venue maker 0, hedge venue taker 4 bps.
   std::array<FeeRates, 2> fee_rates{FeeRates{0, 0}, FeeRates{0, 400}};
   std::array<bool, 2> gated{};
+  // What each instrument's balance covers per side (Qty::max(): not reported).
+  std::array<std::array<Qty, 2>, 2> room{{{Qty::max(), Qty::max()}, {Qty::max(), Qty::max()}}};
 
   explicit Ctx(const char* hedge_mult = "0.01", const char* hedge_lot = "0.01") {
     REQUIRE(table.add(linear("BTCUSDT", 0, "1", "0.001")));
@@ -118,6 +120,9 @@ struct Ctx {
     const ClientOrderId id{0x0001'0000'0000ULL + sent.size() + 1};
     sent.push_back(Sent{r, id, true});
     return id;
+  }
+  [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price) const {
+    return room[id.value][static_cast<std::size_t>(side)];
   }
   [[nodiscard]] Qty open_qty(InstrumentId id, Side side) const {
     Qty q{};
@@ -646,6 +651,65 @@ TEST_CASE("strategies.xmm: max_unhedged drops the side that would grow the gap")
   CHECK(c.last().asks.size() == 1);
   hedge_fill(s, c, 0, "0.01", true);
   hedge_end(s, c, 0, OrderState::Filled, "0.01");
+  CHECK(c.last().bids.size() == 1);
+  CHECK(c.last().asks.size() == 1);
+}
+
+BalanceMsg balance_on(std::uint8_t venue) {
+  BalanceMsg m{};
+  init_header(m, EventType::Balance, InstrumentId{}, VenueId{venue});
+  return m;
+}
+
+TEST_CASE("strategies.xmm: a side the quote venue's balance cannot fill is not quoted") {
+  Xmm s = make();
+  Ctx c;
+  start(s, c);
+  CHECK(c.last().bids.size() == 1);
+  CHECK(c.last().asks.size() == 1);
+  // The base runs out on the quote venue: the ask goes, the bid stays.
+  c.room[0][static_cast<std::size_t>(Side::Sell)] = qt("0.009");
+  s.on_balance(c, balance_on(0));
+  CHECK(c.last().bids.size() == 1);
+  CHECK(c.last().asks.empty());
+  // Enough again (what our resting ask holds counts): both sides.
+  c.room[0][static_cast<std::size_t>(Side::Sell)] = qt("0.01");
+  s.on_balance(c, balance_on(0));
+  CHECK(c.last().asks.size() == 1);
+  // The quote currency runs out: the bid goes.
+  c.room[0][static_cast<std::size_t>(Side::Buy)] = Qty{};
+  s.on_balance(c, balance_on(0));
+  CHECK(c.last().bids.empty());
+  CHECK(c.last().asks.size() == 1);
+}
+
+TEST_CASE("strategies.xmm: a hedge the hedge venue's margin cannot cover is held") {
+  Xmm s = make();
+  Ctx c;
+  start(s, c);
+  // The hedge venue's margin covers half a hedge.
+  c.room[1][static_cast<std::size_t>(Side::Sell)] = qt("0.5");
+  maker_fill(s, c, Side::Buy, "0.01");
+  CHECK(c.sent.empty());
+  CHECK(s.hedge_held());
+  CHECK(s.stats().hedges_held == 1);
+  CHECK(s.stats().hedge_failures == 0);
+  // Held: only the side that brings the gap back is quoted, as at max_unhedged.
+  CHECK(c.last().bids.empty());
+  CHECK(c.last().asks.size() == 1);
+  // Timers and books look again, the episode is counted once, nothing halts.
+  for (int i = 0; i < 10; ++i) s.on_timer(c, TimerId{1}, Xmm::kTimer);
+  CHECK(c.sent.empty());
+  CHECK(s.stats().hedges_held == 1);
+  CHECK_FALSE(s.halted());
+  // The venue reports margin enough: the hedge goes and both sides are quoted after it.
+  c.room[1][static_cast<std::size_t>(Side::Sell)] = qt("10");
+  s.on_balance(c, balance_on(1));
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.qty == qt("1"));
+  CHECK_FALSE(s.hedge_held());
+  hedge_fill(s, c, 0, "1", true);
+  hedge_end(s, c, 0, OrderState::Filled, "1");
   CHECK(c.last().bids.size() == 1);
   CHECK(c.last().asks.size() == 1);
 }

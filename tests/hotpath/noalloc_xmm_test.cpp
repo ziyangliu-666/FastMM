@@ -54,6 +54,8 @@ struct Ctx {
     return ClientOrderId{sends};
   }
   [[nodiscard]] Qty open_qty(InstrumentId id, Side) const { return id.value == 1 ? open : Qty{}; }
+  // Both venues report balances: the quote and hedge checks run on every requote and hedge.
+  [[nodiscard]] Qty balance_room(InstrumentId, Side, Price) const { return Qty::from_int(1000); }
 };
 
 Instrument linear(const char* sym, std::uint8_t venue, const char* mult) {

@@ -39,6 +39,11 @@
 // such as a REST timeout) holds hedging for uncertain_hold_ms, so a fill that is still on its way
 // is booked before the positions are trusted again.
 //
+// Balances (ctx.balance_room): a side whose fill the quote venue's balance cannot cover is not
+// quoted. A hedge the hedge venue's balance or margin cannot cover is not sent: it is held, logged
+// and counted (Stats::hedges_held, once per episode), and while it is held only the side that
+// reduces |unhedged| is quoted, as at max_unhedged. The next balance report or fill looks again.
+//
 // Linear contracts only (spot, linear perpetuals and futures); an inverse instrument leaves the
 // strategy idle with an error at start. The instrument indices are read at start. The basis is
 // tracked in double (EWMA of price differences) and rounded back to raw price units; everything
@@ -153,6 +158,7 @@ class Xmm : public StrategyBase<XmmParams> {
     std::uint64_t hedge_failures = 0;  // ended with nothing filled, or refused by the engine
     std::uint64_t uncertain_ends = 0;  // ended without the venue saying how
     std::uint64_t halts = 0;
+    std::uint64_t hedges_held = 0;  // episodes of a hedge the hedge venue's balance cannot cover
   };
 
   // ---- hooks --------------------------------------------------------------------------------
@@ -167,6 +173,7 @@ class Xmm : public StrategyBase<XmmParams> {
     next_hedge_ns_ = 0;
     failures_ = 0;
     halted_ = false;
+    hedge_held_ = false;
     quoted_ = false;
     quoted_fair_ = Price{};
     const XmmParams& p = params();
@@ -274,6 +281,15 @@ class Xmm : public StrategyBase<XmmParams> {
     requote(ctx, true);
   }
 
+  // A venue reported a balance: a held hedge may fit now, and a side may be quotable again.
+  template <class Ctx>
+  void on_balance(Ctx& ctx, const BalanceMsg& m) noexcept {
+    if (!ready_) return;
+    if (m.hdr.venue != ctx.instrument(q_).venue && m.hdr.venue != ctx.instrument(h_).venue) return;
+    maybe_hedge(ctx);
+    requote(ctx, true);
+  }
+
   // A new value of `restart` clears a halt. (Reconciliations pause and resume quoting on their
   // own, so on_quoting cannot tell an operator's resume from theirs, and a publisher may repeat
   // unchanged parameters.)
@@ -358,6 +374,7 @@ class Xmm : public StrategyBase<XmmParams> {
 
   [[nodiscard]] bool ready() const noexcept { return ready_; }
   [[nodiscard]] bool halted() const noexcept { return halted_; }
+  [[nodiscard]] bool hedge_held() const noexcept { return hedge_held_; }
   [[nodiscard]] bool have_basis() const noexcept { return have_basis_; }
   [[nodiscard]] Price basis() const noexcept {
     return Price::from_raw(static_cast<std::int64_t>(std::llround(basis_raw_)));
@@ -440,6 +457,26 @@ class Xmm : public StrategyBase<XmmParams> {
                                                            hb.best_ask().price,
                                                            params().hedge_tolerance_bps);
     if (!req) return;
+    const Qty room = ctx.balance_room(h_, req->side, req->price);
+    if (room < req->qty) {
+      if (!hedge_held_) {
+        hedge_held_ = true;
+        ++stats_.hedges_held;
+        FASTMM_LOG_WARN(
+            "xmm: hedge {} {} @ {} held: the hedge venue's balance covers {}; quoting only the "
+            "side that reduces {} unhedged until it does",
+            req->side,
+            req->qty,
+            req->price,
+            room,
+            unhedged(ctx));
+      }
+      return;
+    }
+    if (hedge_held_) {
+      hedge_held_ = false;
+      FASTMM_LOG_INFO("xmm: the hedge venue's balance covers the hedge again");
+    }
     const auto sent = ctx.send(*req);
     if (!sent) {
       FASTMM_LOG_WARN(
@@ -497,8 +534,20 @@ class Xmm : public StrategyBase<XmmParams> {
         (fair - quoted_fair_).abs() < qi.ticks(params().requote_threshold_ticks))
       return;
     const Ratio fees = cbps_ratio(ctx.fees(q_).maker_cbps) + cbps_ratio(ctx.fees(h_).taker_cbps);
-    DesiredQuotes q = compute_quotes(qi, fair, unhedged(ctx), fees);
+    const Qty open = unhedged(ctx);
+    DesiredQuotes q = compute_quotes(qi, fair, open, fees);
     keep_passive(q, qb.best_bid().price, qb.best_ask().price, qi.tick);
+    // A held hedge: only the side that brings |unhedged| back is quoted.
+    if (hedge_held_ && open.is_positive()) q.bids.clear();
+    if (hedge_held_ && open.is_negative()) q.asks.clear();
+    // A side the quote venue's balance cannot cover in full is not quoted; our resting quote on
+    // that side counts, it is replaced.
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      auto& levels = side == Side::Buy ? q.bids : q.asks;
+      if (levels.empty()) continue;
+      const Qty room = ctx.balance_room(q_, side, levels[0].price);
+      if (room != Qty::max() && room + ctx.open_qty(q_, side) < levels[0].qty) levels.clear();
+    }
     if (ctx.set_quotes(q_, q)) {
       quoted_ = true;
       quoted_fair_ = fair;
@@ -529,6 +578,7 @@ class Xmm : public StrategyBase<XmmParams> {
   bool ready_ = false;
   bool have_basis_ = false;
   bool halted_ = false;
+  bool hedge_held_ = false;  // the last hedge the positions asked for did not fit the balance
   bool quoted_ = false;
   int restart_at_halt_ = 0;
 };
