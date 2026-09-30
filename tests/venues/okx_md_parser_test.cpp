@@ -53,10 +53,10 @@ const std::string kSnapshot = books("snapshot",
                                     10);
 
 Qty qty(const char* s) {
-  return Qty::from_decimal(s).value();
+  return Qty::from_decimal(s).value_or(Qty{});
 }
 Price px(const char* s) {
-  return Price::from_decimal(s).value();
+  return Price::from_decimal(s).value_or(Price{});
 }
 
 MdDecodeResult decode(OkxMdParser& p, const std::string& frame, Scratch& s) {
@@ -228,7 +228,7 @@ TEST_CASE("okx.book_sync: a seqId gap resyncs and resubscribes, a heartbeat and 
   Resubscribes resub;
   OkxMdFeed feed(u.symbols, kOkx, sink.sink, ResubscribeRequester{&Resubscribes::fn, &resub});
   REQUIRE(feed.add_instrument(InstrumentId{0}));
-  REQUIRE(feed.subscription_payloads().size() == 1);
+  REQUIRE(feed.subscription_payloads().size() == 2);  // the book, then the swap's perp channels
   CHECK(
       feed.subscription_payloads()[0] ==
       R"({"id":"md","op":"subscribe","args":[{"channel":"books","instId":"BTC-USDT-SWAP"},{"channel":"bbo-tbt","instId":"BTC-USDT-SWAP"},{"channel":"trades","instId":"BTC-USDT-SWAP"}]})");

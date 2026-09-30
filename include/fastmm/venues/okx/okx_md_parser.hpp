@@ -12,9 +12,23 @@
 //                                     -> one TradeMsg per trade (aggressor = side, the taker's)
 //   {"event":"subscribe"|"unsubscribe"|"error",..} and the text "pong" -> control
 //
+// A swap's mark, index and funding: one PerpStateMsg (venues/perp_state.hpp) per push with the
+// fields its channel carries, exch_ts = the item's ts:
+//   {"arg":{"channel":"mark-price",..},"data":[{"instId","markPx","ts"}]}   -> kMark
+//   {"arg":{"channel":"index-tickers","instId":"BTC-USDT"},"data":[{"idxPx","ts",..}]}
+//                                     -> kIndex, one message per swap on that index (add_index)
+//   {"arg":{"channel":"funding-rate",..},"data":[{"fundingRate","fundingTime","nextFundingTime",
+//     "ts",..}]}                      -> kFunding: fundingRate is the rate predicted for
+//     fundingTime,
+//                                        the interval is nextFundingTime - fundingTime (8 h by
+//                                        default; OKX shortens it per contract to 6, 4, 2 or 1 h)
+//   {"arg":{"channel":"open-interest",..},"data":[{"oi","ts",..}]}   -> kOpenInterest (contracts)
+//
 // Field meanings: https://www.okx.com/docs-v5/en/#order-book-trading-market-data-ws-order-book-
-// channel, ...-ws-trades-channel (read 2026-09-26). Sizes of a SWAP are in contracts, which is the
-// engine's unit for it (Instrument::contract_multiplier = ctVal * ctMult).
+// channel, ...-ws-trades-channel (read 2026-09-26), #public-data-websocket-mark-price-channel,
+// ...-index-tickers-channel, ...-funding-rate-channel, ...-open-interest-channel and
+// #public-data-rest-api-get-funding-rate (read 2026-09-30). Sizes of a SWAP are in contracts, which
+// is the engine's unit for it (Instrument::contract_multiplier = ctVal * ctMult).
 //
 // A books frame also leaves the text of every level it carried in book_texts(), views into the
 // frame, for the checksum (okx_book_sync.hpp); they are valid until the next decode().
@@ -31,7 +45,9 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace fastmm::venues::okx {
 
@@ -41,6 +57,7 @@ struct MdParserStats {
   std::uint64_t book_deltas = 0;
   std::uint64_t book_tickers = 0;
   std::uint64_t trades = 0;
+  std::uint64_t perp_states = 0;  // PerpStateMsgs written
   std::uint64_t control = 0;
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;
@@ -89,6 +106,12 @@ enum class OkxDepthChannel : std::uint8_t { Books = 0, Books50L2Tbt = 1, BooksL2
   return "books";
 }
 
+// A swap and the index its index-tickers pushes carry (OkxMdParser::add_index).
+struct OkxIndexOf {
+  std::string index;
+  InstrumentId swap;
+};
+
 class OkxMdParser {
  public:
   static constexpr std::size_t kDefaultCapacity = 4U << 20;
@@ -105,6 +128,10 @@ class OkxMdParser {
                         Cycles t0,
                         std::span<std::byte> out) noexcept;
 
+  // Control path: index-tickers pushes of `index` (the swap's uly, BTC-USDT for BTC-USDT-SWAP)
+  // carry the index price of `swap`. An index may serve several swaps.
+  void add_index(std::string_view index, InstrumentId swap);
+
   // The levels of the last books frame: bids first (book_bid_count() of them), then asks.
   [[nodiscard]] std::span<const OkxLevelText> book_texts() const noexcept {
     return {texts_.data(), text_count_};
@@ -114,6 +141,8 @@ class OkxMdParser {
   [[nodiscard]] const MdParserStats& stats() const noexcept { return stats_; }
 
  private:
+  [[nodiscard]] bool has_index(std::string_view index) const noexcept;
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
   const SymbolTable& symbols_;
@@ -122,6 +151,7 @@ class OkxMdParser {
   std::array<OkxLevelText, kMaxLevelTexts> texts_{};
   std::uint32_t text_count_ = 0;
   std::uint32_t text_bids_ = 0;
+  std::vector<OkxIndexOf> indices_;
 };
 
 }  // namespace fastmm::venues::okx

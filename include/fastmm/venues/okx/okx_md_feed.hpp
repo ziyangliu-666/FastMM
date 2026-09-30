@@ -10,6 +10,15 @@
 // `books-l2-tbt` every 10 ms need VIP4 and a login), `bbo-tbt` (top of book every 10 ms) and
 // `trades` (aggregated per taker order and price; `side` is the taker's).
 //
+// A swap also gets its mark, index and funding (PerpStateMsg), in a second request on the same
+// connection: `mark-price` (every 200 ms when it changes, every 10 s otherwise), `funding-rate`
+// (every 30 to 90 s), `open-interest` (every 3 s when it changes) and `index-tickers` of its uly
+// (BTC-USDT for BTC-USDT-SWAP; every 100 ms when it changes, once a minute otherwise), all on
+// /ws/v5/public (read 2026-09-30). Seen on production on 2026-09-30: a mark every 200 ms and an
+// index every 0.2 to 2 s whether or not they changed, funding every 20 to 73 s, open interest
+// every 5 to 10 s. A separate request, so a refused perp channel costs the book nothing. Spot
+// pairs get none.
+//
 // Book integrity is the seqId chain (okx_book_sync.hpp). The checksum was deprecated on
 // 2026-06-23 and has been 0 since; when a snapshot carries a non-zero one the feed keeps the book's
 // text and checks every push against it until the next snapshot, and when it is 0 the book costs
@@ -21,6 +30,7 @@
 #include "fastmm/venues/okx/okx_md_parser.hpp"
 #include "fastmm/venues/symbology.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -29,6 +39,18 @@
 #include <vector>
 
 namespace fastmm::venues::okx {
+
+// An OKX instrument id naming a perpetual swap (BTC-USDT-SWAP); anything else is taken as spot.
+[[nodiscard]] constexpr bool is_swap_symbol(std::string_view inst_id) noexcept {
+  constexpr std::string_view kSuffix = "-SWAP";
+  return inst_id.size() > kSuffix.size() &&
+         iequals_symbol(inst_id.substr(inst_id.size() - kSuffix.size()), kSuffix);
+}
+// The index a swap follows, its uly: the id without "-SWAP" (BTC-USDT-SWAP -> BTC-USDT). Empty for
+// anything else.
+[[nodiscard]] constexpr std::string_view swap_index(std::string_view inst_id) noexcept {
+  return is_swap_symbol(inst_id) ? inst_id.substr(0, inst_id.size() - 5) : std::string_view{};
+}
 
 struct MdFeedStats {
   std::uint64_t messages = 0;
@@ -68,6 +90,8 @@ class OkxMdFeed {
     books_.push_back(std::make_unique<Book>(id, venue_, sink_, requester_, min_interval_));
     books_.back()->sync.set_log_names(log_name_, symbols_.venue_symbol(id));
     ids_.push_back(id);
+    const std::string_view index = swap_index(symbols_.venue_symbol(id));
+    if (!index.empty()) parser_.add_index(index, id);
     rebuild_payloads();
     return true;
   }
@@ -257,6 +281,34 @@ class OkxMdFeed {
     }
     p += "]}";
     payloads_.push_back(std::move(p));
+
+    std::string perp = R"({"id":"perp","op":"subscribe","args":[)";
+    std::vector<std::string_view> indices;
+    indices.reserve(ids_.size());
+    first = true;
+    auto arg = [&](std::string_view ch, std::string_view inst) {
+      if (!first) perp += ',';
+      first = false;
+      perp += R"({"channel":")";
+      perp += ch;
+      perp += R"(","instId":")";
+      perp += inst;
+      perp += R"("})";
+    };
+    for (InstrumentId id : ids_) {
+      const std::string_view sym = symbols_.venue_symbol(id);
+      const std::string_view index = swap_index(sym);
+      if (index.empty()) continue;
+      arg("mark-price", sym);
+      arg("funding-rate", sym);
+      arg("open-interest", sym);
+      if (std::find(indices.begin(), indices.end(), index) != indices.end()) continue;
+      indices.push_back(index);
+      arg("index-tickers", index);
+    }
+    if (first) return;  // no swap
+    perp += "]}";
+    payloads_.push_back(std::move(perp));
   }
 
   const SymbolTable& symbols_;
