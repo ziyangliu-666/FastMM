@@ -148,11 +148,11 @@ TEST_CASE("hotpath.noalloc: Xmm prices funding and the mark basis") {
     for (int i = 0; i < 2000; ++i) {
       ctx.t = ctx.t + milliseconds(1);
       const Price mid = Price::from_int(100000 + (i % 50));
-      ctx.books[1] = Book{mid - Price::from_decimal("0.1").value(), mid, ctx.t};
+      ctx.books[1] = Book{mid - Price::from_decimal("0.1").value_or(Price{}), mid, ctx.t};
       ctx.books[0] = Book{mid - Price::from_int(10), mid + Price::from_int(10), ctx.t};
       ctx.mark_now = RefPrice{mid, ctx.t, false};
       ctx.index_now = RefPrice{mid - Price::from_int(i % 7), ctx.t, false};
-      ctx.funding_now = FundingView{0.0001 * (i % 3), seconds(8 * 3600), Timestamp{}, ctx.t, false};
+      ctx.funding_now = FundingView{0.0001 * (i % 3), seconds(std::int64_t{8} * 3600), Timestamp{}, ctx.t, false};
       s->on_book(ctx, InstrumentId{1}, ctx.books[1]);
       s->on_perp_state(ctx, InstrumentId{1}, msg);
       s->on_perp_state(ctx, InstrumentId{0}, msg);

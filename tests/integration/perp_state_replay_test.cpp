@@ -26,7 +26,7 @@ std::string fresh_journal(const char* name) {
 void mark(LiveEngine& live, const char* price) {
   PerpStateMsg m{};
   init_header(m, EventType::PerpState, InstrumentId{0}, VenueId{0});
-  m.mark_price = Price::from_decimal(price).value();
+  m.mark_price = Price::from_decimal(price).value_or(Price{});
   m.fields = PerpStateMsg::kMark;
   m.hdr.exch_ts = wall_now();
   m.hdr.recv_ts = wall_now();

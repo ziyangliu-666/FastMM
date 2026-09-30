@@ -306,7 +306,7 @@ TEST_CASE("strategies.xmm: carry is the hedged pair's funding over the horizon")
 TEST_CASE("strategies.xmm: the perpetual legs' funding over funding_horizon_s shifts fair value") {
   Xmm s = make({{"funding_horizon_s", "3600"}});
   Ctx c;
-  const Duration eight_hours = seconds(8 * 3600);
+  const Duration eight_hours = seconds(std::int64_t{8} * 3600);
   c.fundings[0] = FundingView{0.0, eight_hours, Timestamp{}, c.t, false};
   c.fundings[1] = FundingView{0.0008, eight_hours, Timestamp{}, c.t, false};
   start(s, c);

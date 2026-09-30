@@ -510,7 +510,7 @@ TEST_CASE("hotpath.noalloc: engine step with venue marks and funding") {
     m.fields = PerpStateMsg::kMark | PerpStateMsg::kIndex;
     if (funding) {
       m.funding_rate = 0.0001;
-      m.funding_interval = seconds(8 * 3600);
+      m.funding_interval = seconds(std::int64_t{8} * 3600);
       m.fields |= PerpStateMsg::kFunding;
     }
     m.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};

@@ -584,7 +584,7 @@ TEST_CASE(
                                         socket,
                                         "--no-control"}));
   }
-  const std::int64_t venue = Qty::from_decimal("-0.015").value().raw;
+  const std::int64_t venue = Qty::from_decimal("-0.015").value_or(Qty{}).raw;
   REQUIRE_MESSAGE(wait_until(
                       [&] {
                         const auto s = read_status(gw.status);
@@ -596,8 +596,8 @@ TEST_CASE(
 
   // The mark values the account's short: -0.015 * (60000 - 60123.45) = 1.85175.
   bybit.srv.send_to("/v5/public/linear", tickers_frame("60000.00", "59990.00", "0.0001"));
-  const std::int64_t up = Notional::from_decimal("1.85175").value().raw;
-  const std::int64_t mark = Price::from_decimal("60000").value().raw;
+  const std::int64_t up = Notional::from_decimal("1.85175").value_or(Notional{}).raw;
+  const std::int64_t mark = Price::from_decimal("60000").value_or(Price{}).raw;
   REQUIRE_MESSAGE(wait_until(
                       [&] {
                         const auto s = read_status(gw.status);
@@ -607,15 +607,14 @@ TEST_CASE(
                       },
                       20000),
                   "the account did not value it at the mark: " << fastmm::test::read_file(gw_log));
-  const auto s = read_status(gw.status);
-  REQUIRE(s.has_value());
-  CHECK(std::string_view(s->perps[0].symbol) == "BTCUSDT");
-  CHECK(s->perps[0].index_raw == Price::from_decimal("59990").value().raw);
-  CHECK(s->perps[0].funding_rate == doctest::Approx(0.0001));
+  const StatusSnapshot s = read_status(gw.status).value_or(StatusSnapshot{});
+  CHECK(std::string_view(s.perps[0].symbol) == "BTCUSDT");
+  CHECK(s.perps[0].index_raw == Price::from_decimal("59990").value_or(Price{}).raw);
+  CHECK(s.perps[0].funding_rate == doctest::Approx(0.0001));
   // A second mark: -0.015 * (60200 - 60123.45) = -1.14825.
   bybit.srv.send_to("/v5/public/linear", tickers_frame("60200.00", "60190.00", "0.0001"));
-  const std::int64_t down = Notional::from_decimal("-1.14825").value().raw;
-  const std::int64_t last = Price::from_decimal("60200").value().raw;
+  const std::int64_t down = Notional::from_decimal("-1.14825").value_or(Notional{}).raw;
+  const std::int64_t last = Price::from_decimal("60200").value_or(Price{}).raw;
   REQUIRE(wait_until(
       [&] {
         const auto st = read_status(gw.status);

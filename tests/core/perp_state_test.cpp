@@ -16,13 +16,13 @@ using namespace fastmm;
 namespace {
 
 Price px(const char* s) {
-  return Price::from_decimal(s).value();
+  return Price::from_decimal(s).value_or(Price{});
 }
 Qty qt(const char* s) {
-  return Qty::from_decimal(s).value();
+  return Qty::from_decimal(s).value_or(Qty{});
 }
 Notional nt(const char* s) {
-  return Notional::from_decimal(s).value();
+  return Notional::from_decimal(s).value_or(Notional{});
 }
 
 constexpr InstrumentId kSpot{0};  // BTCUSDT spot, venue 0
