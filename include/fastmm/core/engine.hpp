@@ -1437,8 +1437,14 @@ class Engine {
       if (!instruments_.contains(o.instrument)) return;
       const std::int64_t amount = order_hold(o);
       holds_[h.idx] = amount;
-      balances_->move_hold(o.instrument, o.side, 0, amount, Timestamp{});
+      unacked_[h.idx] = !acknowledged(o);
+      balances_->move_hold(o.instrument, o.side, 0, amount, Timestamp{}, unacked_[h.idx]);
     });
+  }
+  // The venue has taken the order (its ack, or a fill of it, came).
+  [[nodiscard]] static bool acknowledged(const Order& o) noexcept {
+    return o.state != OrderState::PendingNew &&
+           (o.state != OrderState::PendingCancel || !o.venue_order_id.empty());
   }
   // The price an order holds at: its own, or the book's mid for a market order.
   [[nodiscard]] Price hold_price(InstrumentId id, OrderType type, Price px) const noexcept {
@@ -1455,13 +1461,20 @@ class Engine {
                            o.has(Order::kReduceOnly));
   }
   // An order changed: its hold follows (zero once it is terminal), at the venue time of the event.
+  // Its first ack (or fill) tells the balances the venue has it.
   FASTMM_NOINLINE void update_hold(const OmsUpdate& u, Timestamp venue_ts) noexcept {
     if (!instruments_.contains(u.order.instrument)) return;
     const std::int64_t now_hold = u.terminal ? 0 : order_hold(u.order);
     std::int64_t& held = holds_[u.slot.idx];
-    if (now_hold == held) return;
-    balances_->move_hold(u.order.instrument, u.order.side, held, now_hold, venue_ts);
+    bool& unacked = unacked_[u.slot.idx];
+    if (unacked && !u.terminal && acknowledged(u.order)) {
+      balances_->acknowledge(u.order.instrument, u.order.side, held, venue_ts);
+      unacked = false;
+    }
+    if (now_hold != held)
+      balances_->move_hold(u.order.instrument, u.order.side, held, now_hold, venue_ts, unacked);
     held = now_hold;
+    if (u.terminal) unacked = false;
   }
   // [risk] check_balance for an order of `qty` at `px`; `replaced`: what the order it replaces
   // holds. False: the balance does not cover it.
@@ -2077,7 +2090,8 @@ class Engine {
     if (FASTMM_UNLIKELY(balances_live_)) {
       const std::int64_t amount = order_hold(oms_.get(*h));
       holds_[h->idx] = amount;
-      balances_->move_hold(req.instrument, req.side, 0, amount, Timestamp{});
+      unacked_[h->idx] = true;
+      balances_->move_hold(req.instrument, req.side, 0, amount, Timestamp{}, true);
     }
     OutNewOrderMsg m{};
     init_header(m, EventType::OutNewOrder, req.instrument, inst.venue);
@@ -2525,6 +2539,7 @@ class Engine {
   // venue has reported: balances_live_).
   std::unique_ptr<BalanceBook> balances_ = std::make_unique<BalanceBook>();
   std::unique_ptr<std::int64_t[]> holds_ = std::make_unique<std::int64_t[]>(kMaxOpenOrders);
+  std::unique_ptr<bool[]> unacked_ = std::make_unique<bool[]>(kMaxOpenOrders);  // no ack yet
   QueueTracker queue_{cfg_.queue_conservatism_bps};
 };
 

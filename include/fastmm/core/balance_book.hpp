@@ -8,9 +8,12 @@
 // (BalanceMsg::kAccount). A report for
 // another asset is not kept (counted). Nothing here allocates after build().
 //
-// The estimate. A venue report is the account as of its venue time (hdr.exch_ts), and it counts
-// every order the engine had sent when it arrived. From there each of our own events moves it,
-// unless the venue stamped that event at or before the report's time (the report has it already):
+// The estimate. A venue report is the account as of its venue time (hdr.exch_ts). It counts the
+// orders the venue had acknowledged; an order still waiting for its ack keeps its hold on top of
+// the report, until its ack says whether the report had it (stamped at or before the report's
+// time). From there each of our own events moves the estimate, unless the venue stamped the event
+// at or before the report's time (the report has it already); the events of an order the venue has
+// not acknowledged always count:
 //   * an order holds part of a row: a spot buy its notional plus the taker fee in the quote asset,
 //     a spot sell its quantity in the base asset, a derivative its initial margin (notional times
 //     [[instruments]] initial_margin; reduce-only orders hold nothing) in its margin row. A
@@ -19,10 +22,9 @@
 //   * a fill moves the assets: a spot buy adds the base (less a base-asset fee) and takes the
 //     notional (and a quote-asset fee) from the quote; a sell the reverse. A derivative fill moves
 //     the position's initial margin at the fill price into locked, and takes the fee.
-// The next report replaces the estimate. What it can miss: an order the venue had not taken when
-// it reported, until the venue's next update (push venues send one after every order change), and
-// an event that reaches the engine after a report that already counted it and carries no venue
-// time.
+// The next report replaces the estimate. What it can miss: an event that reaches the engine after a
+// report that already counted it and carries no venue time, and an ack without a venue time (its
+// hold stays counted twice until the next report).
 //
 // The pre-trade check (covers): what the order adds to its row's holds (its hold less what the
 // order it replaces held; for a derivative, what it adds to the larger side) must not exceed the
@@ -176,6 +178,7 @@ class BalanceBook {
         row.asset = m.asset;
         if (!vs.account_reported) use_account(m.hdr.venue, r);
       }
+      add_in_flight(r);
     } else if (!m.asset.empty()) {
       ++stats_.untracked;
     }
@@ -201,16 +204,19 @@ class BalanceBook {
   }
 
   // An order's hold went from `before` to `after` (hold()) at venue time `venue_ts` (invalid: not
-  // stamped). An event the row's last report already counted changes nothing.
+  // stamped). `unacked`: the venue has not acknowledged the order, so no report has its hold. An
+  // event of an acknowledged order that the row's last report already counted changes nothing.
   void move_hold(InstrumentId id,
                  Side side,
                  std::int64_t before,
                  std::int64_t after,
-                 Timestamp venue_ts) noexcept {
+                 Timestamp venue_ts,
+                 bool unacked) noexcept {
     if (id.value >= kMaxInstruments || before == after) return;
     Inst& in = inst_[id.value];
     std::uint16_t r = kNone;
     std::int64_t delta = after - before;
+    if (unacked) in.unacked[static_cast<std::size_t>(side)] += delta;
     if (!in.derivative) {
       r = side == Side::Buy ? in.quote : in.base;
     } else {
@@ -221,9 +227,24 @@ class BalanceBook {
     }
     if (r == kNone || delta == 0) return;
     Row& row = rows_[r];
-    if (counted(row, venue_ts)) return;
+    if (!unacked && counted(row, venue_ts)) return;
     row.free -= delta;
     row.locked += delta;
+  }
+
+  // The venue acknowledged an order holding `amount`, at venue time `venue_ts`. Its hold was kept
+  // on top of the reports since it was sent; one stamped at or before the row's last report had it,
+  // and the estimate gives the extra back.
+  void acknowledge(InstrumentId id, Side side, std::int64_t amount, Timestamp venue_ts) noexcept {
+    if (id.value >= kMaxInstruments || amount == 0) return;
+    Inst& in = inst_[id.value];
+    const std::uint16_t r = row_of(in, side);
+    const std::int64_t before = r == kNone ? 0 : in_flight(in, side, r);
+    in.unacked[static_cast<std::size_t>(side)] -= amount;
+    if (r == kNone || !counted(rows_[r], venue_ts)) return;
+    const std::int64_t back = before - in_flight(in, side, r);
+    rows_[r].free += back;
+    rows_[r].locked -= back;
   }
 
   // A fill of `qty` at `px` and what it moved. `pos_before` / `pos_after`: the instrument's
@@ -391,6 +412,7 @@ class BalanceBook {
     std::uint16_t settle = kNone;
     std::uint16_t margin = kNone;  // the settlement asset's row, or the account row once reported
     std::array<std::int64_t, 2> side_hold{};  // derivative: sum of its orders' holds per side
+    std::array<std::int64_t, 2> unacked{};    // ... of the orders the venue has not acknowledged
   };
   struct VenueState {
     std::uint16_t account_row = kNone;
@@ -400,6 +422,33 @@ class BalanceBook {
     bool account_reported = false;
   };
 
+  // The row an order of `in` on `side` holds from.
+  [[nodiscard]] static std::uint16_t row_of(const Inst& in, Side side) noexcept {
+    if (in.derivative) return in.margin;
+    return side == Side::Buy ? in.quote : in.base;
+  }
+  // What the unacknowledged orders of `in` hold of row `r` on top of a report: a spot side's own
+  // holds; for a derivative, what they add to the larger side.
+  [[nodiscard]] static std::int64_t in_flight(const Inst& in, Side side, std::uint16_t r) noexcept {
+    if (row_of(in, side) != r) return 0;
+    if (!in.derivative) return in.unacked[static_cast<std::size_t>(side)];
+    return std::max(in.side_hold[0], in.side_hold[1]) -
+           std::max(in.side_hold[0] - in.unacked[0], in.side_hold[1] - in.unacked[1]);
+  }
+  // A report set row `r`: the orders the venue has not acknowledged hold on top of it.
+  void add_in_flight(std::uint16_t r) noexcept {
+    std::int64_t extra = 0;
+    for (const Inst& in : inst_) {
+      if (in.venue != rows_[r].venue) continue;
+      if (in.derivative) {
+        extra += in_flight(in, Side::Buy, r);
+      } else {
+        extra += in_flight(in, Side::Buy, r) + in_flight(in, Side::Sell, r);
+      }
+    }
+    rows_[r].free -= extra;
+    rows_[r].locked += extra;
+  }
   // An event the report already counted: the venue stamped it at or before the report's time.
   [[nodiscard]] static bool counted(const Row& row, Timestamp venue_ts) noexcept {
     return row.reported && venue_ts.valid() && row.as_of.valid() && venue_ts <= row.as_of;
@@ -465,6 +514,7 @@ class BalanceBook {
       r.as_of = ts;
       r.reported = true;
       r.gen = vs.gen;
+      add_in_flight(static_cast<std::uint16_t>(&r - rows_.data()));
     }
   }
 

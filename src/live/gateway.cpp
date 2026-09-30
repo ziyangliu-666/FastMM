@@ -293,6 +293,7 @@ struct GwOrder {
   static constexpr std::uint8_t kCancelSent = 1U << 0;
   static constexpr std::uint8_t kRests = 1U << 1;  // it can rest in the book (not IOC, FOK, market)
   static constexpr std::uint8_t kReduceOnly = 1U << 2;
+  static constexpr std::uint8_t kAcked = 1U << 3;  // the venue acknowledged it (or filled it)
   InstrumentId inst{};
   std::uint16_t epoch = 0;
   std::uint8_t flags = 0;
@@ -810,8 +811,15 @@ void sync_hold(VenueRouter& v, GwOrder& o, Timestamp at) noexcept {
   const std::int64_t h = v.balances->hold(
       o.inst, v.insts->get(o.inst), o.side, px, o.leaves, (o.flags & GwOrder::kReduceOnly) != 0);
   if (h == o.hold) return;
-  v.balances->move_hold(o.inst, o.side, o.hold, h, at);
+  v.balances->move_hold(o.inst, o.side, o.hold, h, at, (o.flags & GwOrder::kAcked) == 0);
   o.hold = h;
+}
+
+// The venue has taken the order: the balances stop keeping its hold on top of their reports.
+void acknowledge(VenueRouter& v, GwOrder& o, Timestamp at) noexcept {
+  if ((o.flags & GwOrder::kAcked) != 0) return;
+  o.flags |= GwOrder::kAcked;
+  v.balances->acknowledge(o.inst, o.side, o.hold, at);
 }
 
 void set_leaves(VenueRouter& v, GwOrder& o, Qty leaves, Timestamp at = {}) noexcept {
@@ -839,7 +847,8 @@ void untrack(VenueRouter& v, ClientOrderId id, Timestamp at = {}) noexcept {
     drop_resting(v, id, *o);
     v.open_notional -= o->notional;
     add_leaves(v, *o, -o->leaves.raw);
-    if (o->hold != 0) v.balances->move_hold(o->inst, o->side, o->hold, 0, at);
+    if (o->hold != 0)
+      v.balances->move_hold(o->inst, o->side, o->hold, 0, at, (o->flags & GwOrder::kAcked) == 0);
     v.orders.erase(id);
   }
 }
@@ -923,7 +932,7 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
           o.g = 1;
           o.gen = v.gen;
           o.venue_order_id = m.venue_order_id;
-          o.flags = GwOrder::kRests;
+          o.flags = GwOrder::kRests | GwOrder::kAcked;
           if (v.orders.insert(m.cl_ord_id, o).second) {
             v.open_notional += o.notional;
             add_leaves(v, o, o.leaves.raw);
@@ -1129,6 +1138,7 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
   const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
   if (!replayed) {
     if (GwOrder* o = v.orders.find(m.cl_ord_id)) {
+      acknowledge(v, *o, m.hdr.exch_ts);
       if (m.leaves_qty.is_zero()) {
         untrack(v, m.cl_ord_id, m.hdr.exch_ts);
       } else if (v.insts->contains(o->inst)) {
@@ -1184,6 +1194,7 @@ void route_order(VenueRouter& v, const EventHeader& h) {
       bool cancel_sent = false;
       if (GwOrder* o = v.orders.find(m.cl_ord_id)) {
         o->venue_order_id = m.venue_order_id;
+        acknowledge(v, *o, m.hdr.exch_ts);
         cancel_sent = (o->flags & GwOrder::kCancelSent) != 0;
         if (o->replaces.valid()) {
           untrack(v, o->replaces, m.hdr.exch_ts);

@@ -435,3 +435,43 @@ TEST_CASE("core.balance: replacing an order checks only what it adds") {
   CHECK(r.engine->replace_order(*b2, px("50000"), qt("0.003")).error() ==
         RejectReason::BalanceShort);
 }
+
+// Found on the OKX demo: a report the venue sent while a post-only order was on its way held none
+// of it, and the post-only's reject then released a hold the estimate no longer had (locked went to
+// -1.69 USDT). An order the venue has not acknowledged keeps its hold on top of every report.
+TEST_CASE("core.balance: an order in flight holds on top of a report until its ack") {
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  auto b1 = r.send(kSpot, Side::Buy, "50000", "0.01");  // holds 500.5, not acknowledged
+  REQUIRE(b1.has_value());
+  // A report the venue made before it took the order.
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 105));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("499.5"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked == nt("500.5"));
+  // The venue refuses it (post-only would cross), stamped before the report: its hold goes all
+  // the same, since no report had it.
+  OrderRejectMsg rej{};
+  init_header(rej, EventType::OrderReject, kSpot, kSpotVenue);
+  rej.cl_ord_id = *b1;
+  rej.reason = RejectReason::PostOnlyWouldCross;
+  rej.hdr.exch_ts = Timestamp{104LL * 1'000'000};
+  r.push(rej);
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("1000"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked.is_zero());
+
+  // An ack stamped at or before a report that has the order gives the extra back.
+  auto b2 = r.send(kSpot, Side::Buy, "50000", "0.01");
+  REQUIRE(b2.has_value());
+  r.balance(report(kSpotVenue, "USDT", "499.5", "500.5", 120));  // the venue has it
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("-1"));             // counted twice meanwhile
+  r.ack(kSpot, *b2, 118);
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("499.5"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked == nt("500.5"));
+  // One stamped after the report keeps it: the report did not have the order.
+  auto s1 = r.send(kSpot, Side::Sell, "51000", "0.001");
+  REQUIRE(s1.has_value());
+  r.balance(report(kSpotVenue, "BTC", "0.01", "0", 130));
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.009"));
+  r.ack(kSpot, *s1, 131);
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.009"));
+}
