@@ -52,9 +52,10 @@ def test_every_hook_name_and_order_matches_the_cpp_table():
         def on_timer(self, ctx, timer_id, tag): ...
         def on_connection(self, ctx, msg): ...
         def on_balance(self, ctx, msg): ...
+        def on_perp_state(self, ctx, inst, msg): ...
 
     assert All.hooks() == tuple(fastmm.strategy.HOOKS)
-    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_balance"
+    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_perp_state"
 
 
 def test_hook_signatures_and_near_misses_are_checked(example_config):
@@ -563,3 +564,41 @@ def test_execution_view(example_config):
     ahead, ahead_raw, sent, venue_ack, ordered, same_venue, same_local = s.live
     assert ahead_raw >= 0 and ahead == ahead_raw / 1e8 and ahead_raw <= s.level_raw
     assert sent == s.sent_at and venue_ack and ordered and same_venue and same_local
+
+
+def test_on_perp_state_and_the_venue_mark(example_config):
+    t0 = 1_700_000_000_000_000_000  # the fixture's first event
+    hour = 3_600_000_000_000
+    perp_states = [(t0, 0, 50_100.0, None, None, 0.0, 0),
+                   (t0 + 1, 0, None, 50_050.0, 0.0001, 8 * 3600.0, t0 + 8 * hour)]
+
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            self.start = (ctx.mark(0).usable, ctx.mark(0).stale, ctx.funding(0).usable)
+            self.msgs = []
+
+        def on_perp_state(self, ctx, inst, msg):
+            self.view = msg
+            self.msgs.append((inst, msg.instrument, msg.has_mark, msg.has_index, msg.has_funding,
+                              msg.mark_price, msg.index_price, msg.funding_rate,
+                              msg.funding_interval_ns, msg.next_funding_ns, msg.exch_ts_ns))
+            m, i, f = ctx.mark(inst), ctx.index(inst), ctx.funding(inst)
+            self.seen = (m.price, m.usable, i.price, i.usable, f.rate, f.interval_ns, f.next_ns,
+                         f.usable, f.over(3600.0))
+
+    s = Probe()
+    s.configure({})
+    result, error = fastmm._core._run_strategy(_cfg(example_config), FIXTURE_FMJ, s, "probe",
+                                               list(Probe.hooks()), s.param_values(),
+                                               perp_states=perp_states)
+    assert error is None and result.engine_stats()["events"] > 0
+    assert s.start == (False, True, False)
+    assert s.msgs == [(0, 0, True, False, False, 50_100.0, 0.0, 0.0, 0, 0, t0),
+                      (0, 0, False, True, True, 0.0, 50_050.0, 0.0001, 8 * hour, t0 + 8 * hour,
+                       t0 + 1)]
+    price, usable, index, index_usable, rate, interval, nxt, funding_usable, over = s.seen
+    assert (price, usable, index, index_usable) == (50_100.0, True, 50_050.0, True)
+    assert (rate, interval, nxt, funding_usable) == (0.0001, 8 * hour, t0 + 8 * hour, True)
+    assert over == pytest.approx(0.0001 / 8)
+    with pytest.raises(fastmm.StaleViewError):
+        s.view.mark_price

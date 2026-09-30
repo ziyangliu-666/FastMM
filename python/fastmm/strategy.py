@@ -83,6 +83,7 @@ HOOKS: Dict[str, Tuple[str, ...]] = {
     "on_connection": ("ctx", "msg"),
     "on_quoting": ("ctx", "enabled"),
     "on_balance": ("ctx", "msg"),
+    "on_perp_state": ("ctx", "inst", "msg"),
 }
 
 # Likely misspellings, as in the C++ checker: a warning, because a helper may use such a name.
@@ -107,6 +108,9 @@ _NEAR_MISSES: Dict[str, str] = {
     "on_shutdown": "on_stop",
     "on_quote": "on_quoting",
     "on_balances": "on_balance",
+    "on_perp": "on_perp_state",
+    "on_funding": "on_perp_state",
+    "on_mark": "on_perp_state",
     "onBook": "on_book",
     "OnBook": "on_book",
     "onTrade": "on_trade",

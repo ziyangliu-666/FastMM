@@ -100,6 +100,7 @@ using BookTickerView = View<BookTickerMsg>;
 using OptionTickerView = View<OptionTickerMsg>;
 using ConnectionView = View<ConnectionStateMsg>;
 using BalanceView = View<BalanceMsg>;
+using PerpStateView = View<PerpStateMsg>;
 using OrderUpdateView = View<OmsUpdate>;
 struct FillView : View<Fill> {
   PyObject* update = nullptr;  // the run's OrderUpdateView object (borrowed; read after get())
@@ -131,6 +132,12 @@ struct BalanceInfo {
 };
 struct MarginInfo {
   Margin m;
+};
+struct RefPriceInfo {
+  RefPrice r;
+};
+struct FundingInfo {
+  FundingView f;
 };
 
 double to_f(std::int64_t raw) noexcept {
@@ -208,12 +215,14 @@ class PyRun {
   std::vector<BookView*> book_views_;
   std::vector<py::object> pos_objs_;
   std::vector<PositionView*> pos_views_;
-  py::object trade_obj_, ticker_obj_, option_obj_, conn_obj_, balance_obj_, fill_obj_, update_obj_;
+  py::object trade_obj_, ticker_obj_, option_obj_, conn_obj_, balance_obj_, perp_obj_, fill_obj_,
+      update_obj_;
   TradeView* trade_ = nullptr;
   BookTickerView* ticker_ = nullptr;
   OptionTickerView* option_ = nullptr;
   ConnectionView* conn_ = nullptr;
   BalanceView* balance_ = nullptr;
+  PerpStateView* perp_ = nullptr;
   FillView* fill_ = nullptr;
   OrderUpdateView* update_ = nullptr;
   std::uint64_t calls_ = 0;
@@ -276,6 +285,8 @@ PyRun::PyRun(PySimEngine& engine,
   conn_ = conn_obj_.cast<ConnectionView*>();
   balance_obj_ = py::cast(BalanceView{guard_, 0, nullptr, InstrumentId{}});
   balance_ = balance_obj_.cast<BalanceView*>();
+  perp_obj_ = py::cast(PerpStateView{guard_, 0, nullptr, InstrumentId{}});
+  perp_ = perp_obj_.cast<PerpStateView*>();
   update_obj_ = py::cast(OrderUpdateView{guard_, 0, nullptr, InstrumentId{}});
   update_ = update_obj_.cast<OrderUpdateView*>();
   FillView fv;
@@ -453,6 +464,14 @@ void py_on_balance(PyRun& r, const BalanceMsg& m) noexcept {
   r.balance_->point(m);
   PyObject* args[3] = {nullptr, r.ctx_.ptr(), r.balance_obj_.ptr()};
   r.call(Hook::Balance, args, 2);
+}
+
+void py_on_perp_state(PyRun& r, InstrumentId id, const PerpStateMsg& m) noexcept {
+  const PyRun::Scope scope(r);
+  r.perp_->point(m);
+  r.perp_->id = id;
+  PyObject* args[4] = {nullptr, r.ctx_.ptr(), r.inst_objs_[id.value].ptr(), r.perp_obj_.ptr()};
+  r.call(Hook::PerpState, args, 3);
 }
 
 void py_on_driver_steps(PyRun& r) noexcept {
@@ -946,6 +965,28 @@ void bind_strategy_api(py::module_& m) {
   FASTMM_PY_FIELD(bal, BalanceView, "exch_ts_ns", x.hdr.exch_ts.ns);
   FASTMM_PY_FIELD(bal, BalanceView, "recv_ts_ns", x.hdr.recv_ts.ns);
 
+  py::class_<PerpStateView> perp(
+      m,
+      "PerpStateView",
+      "A venue's mark, index and funding of one derivative (valid inside on_perp_state). has_mark, "
+      "has_index, has_funding and has_open_interest name the fields this message carries.",
+      py::is_final());
+  perp.def_property_readonly("instrument", [](const PerpStateView& v) { return v.id.value; });
+  FASTMM_PY_FIELD(perp, PerpStateView, "venue", x.hdr.venue.value);
+  FASTMM_PY_FIELD(perp, PerpStateView, "exch_ts_ns", x.hdr.exch_ts.ns);
+  FASTMM_PY_FIELD(perp, PerpStateView, "recv_ts_ns", x.hdr.recv_ts.ns);
+  FASTMM_PY_FIELD(perp, PerpStateView, "has_mark", (x.fields & PerpStateMsg::kMark) != 0);
+  FASTMM_PY_FIELD(perp, PerpStateView, "has_index", (x.fields & PerpStateMsg::kIndex) != 0);
+  FASTMM_PY_FIELD(perp, PerpStateView, "has_funding", (x.fields & PerpStateMsg::kFunding) != 0);
+  FASTMM_PY_FIELD(
+      perp, PerpStateView, "has_open_interest", (x.fields & PerpStateMsg::kOpenInterest) != 0);
+  FASTMM_PY_FIXED(perp, PerpStateView, "mark_price", x.mark_price);
+  FASTMM_PY_FIXED(perp, PerpStateView, "index_price", x.index_price);
+  FASTMM_PY_FIELD(perp, PerpStateView, "funding_rate", x.funding_rate);
+  FASTMM_PY_FIELD(perp, PerpStateView, "funding_interval_ns", x.funding_interval.ns);
+  FASTMM_PY_FIELD(perp, PerpStateView, "next_funding_ns", x.next_funding.ns);
+  FASTMM_PY_FIXED(perp, PerpStateView, "open_interest", x.open_interest);
+
   py::class_<OrderUpdateView> upd(
       m,
       "OrderUpdateView",
@@ -1433,6 +1474,46 @@ void bind_strategy_api(py::module_& m) {
                std::to_string(x.m.available.to_double()) + ", initial " +
                std::to_string(x.m.initial.to_double()) + ">";
       });
+  py::class_<RefPriceInfo> ref_cls(
+      m,
+      "RefPrice",
+      "A venue's mark or index price of a derivative now (a copy). stale: older than "
+      "[accounting] stale_mark_ms, or never reported; usable: reported and not stale.",
+      py::is_final());
+  FASTMM_PY_VALUE_FIXED(ref_cls, RefPriceInfo, "price", x.r.price);
+  ref_cls.def_property_readonly("at_ns", [](const RefPriceInfo& x) { return x.r.at.ns; })
+      .def_property_readonly("stale", [](const RefPriceInfo& x) { return x.r.stale; })
+      .def_property_readonly("usable", [](const RefPriceInfo& x) { return x.r.usable(); })
+      .def("__repr__", [](const RefPriceInfo& x) {
+        if (!x.r.at.valid()) return std::string("<RefPrice unknown>");
+        return "<RefPrice " + std::to_string(x.r.price.to_double()) + (x.r.stale ? " stale>" : ">");
+      });
+  py::class_<FundingInfo> funding_cls(
+      m,
+      "Funding",
+      "A venue's funding of a perpetual now (a copy): the rate per interval it will apply at "
+      "next_ns (0: continuous); positive: longs pay shorts. stale: older than [accounting] "
+      "stale_funding_ms, or never reported.",
+      py::is_final());
+  funding_cls.def_property_readonly("rate", [](const FundingInfo& x) { return x.f.rate; })
+      .def_property_readonly("interval_ns", [](const FundingInfo& x) { return x.f.interval.ns; })
+      .def_property_readonly("next_ns", [](const FundingInfo& x) { return x.f.next.ns; })
+      .def_property_readonly("at_ns", [](const FundingInfo& x) { return x.f.at.ns; })
+      .def_property_readonly("stale", [](const FundingInfo& x) { return x.f.stale; })
+      .def_property_readonly("usable", [](const FundingInfo& x) { return x.f.usable(); })
+      .def(
+          "over",
+          [](const FundingInfo& x, double seconds) {
+            return x.f.over(Duration{static_cast<std::int64_t>(seconds * 1e9)});
+          },
+          py::arg("seconds"),
+          "The rate over a holding time of `seconds`: rate * seconds / interval.")
+      .def("__repr__", [](const FundingInfo& x) {
+        if (!x.f.at.valid()) return std::string("<Funding unknown>");
+        return "<Funding " + std::to_string(x.f.rate) + " per " +
+               std::to_string(x.f.interval.ns / 1'000'000'000) + " s" +
+               (x.f.stale ? " stale>" : ">");
+      });
   ctx.def(
          "fees",
          [](const ContextHandle& c, py::handle inst) {
@@ -1458,6 +1539,27 @@ void bind_strategy_api(py::module_& m) {
           },
           py::arg("venue") = 0,
           "Feed lag, order round trip and the feed-lag gate of a venue.")
+      .def(
+          "mark",
+          [](const ContextHandle& c, py::handle inst) {
+            return RefPriceInfo{c.engine().context().mark(c.run->resolve(inst))};
+          },
+          py::arg("inst"),
+          "The venue's mark price of a derivative (on_perp_state), with its age.")
+      .def(
+          "index",
+          [](const ContextHandle& c, py::handle inst) {
+            return RefPriceInfo{c.engine().context().index(c.run->resolve(inst))};
+          },
+          py::arg("inst"),
+          "The venue's index price of a derivative (on_perp_state), with its age.")
+      .def(
+          "funding",
+          [](const ContextHandle& c, py::handle inst) {
+            return FundingInfo{c.engine().context().funding(c.run->resolve(inst))};
+          },
+          py::arg("inst"),
+          "The venue's funding of a perpetual (on_perp_state), with its age.")
       .def(
           "balance",
           [](const ContextHandle& c, std::uint32_t venue, const std::string& asset) {

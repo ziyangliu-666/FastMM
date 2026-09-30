@@ -412,11 +412,13 @@ std::unique_ptr<bt::MdSource> open_spec(const DataSpec& spec, const BacktestConf
   return nullptr;
 }
 
-// BalanceMsg events in time order, merged into a run's market data by _run_strategy (the
-// simulator reports no balances; tests of on_balance and ctx.balance feed them this way).
-class BalanceListSource final : public bt::MdSource {
+// Events in time order, merged into a run's market data by _run_strategy: BalanceMsg (the
+// simulator reports no balances; tests of on_balance and ctx.balance feed them this way) and
+// PerpStateMsg (a venue's mark and funding, for on_perp_state and ctx.mark / ctx.funding).
+template <class M>
+class ListSource final : public bt::MdSource {
  public:
-  explicit BalanceListSource(std::vector<BalanceMsg> msgs) : msgs_(std::move(msgs)) {}
+  explicit ListSource(std::vector<M> msgs) : msgs_(std::move(msgs)) {}
   const EventHeader* next() override { return at_ < msgs_.size() ? &msgs_[at_++].hdr : nullptr; }
   void reset() override { at_ = 0; }
   [[nodiscard]] Timestamp start_ts() const override {
@@ -424,9 +426,46 @@ class BalanceListSource final : public bt::MdSource {
   }
 
  private:
-  std::vector<BalanceMsg> msgs_;
+  std::vector<M> msgs_;
   std::size_t at_ = 0;
 };
+
+// (ts_ns, inst, mark, index, funding_rate, funding_interval_s, next_funding_ns) tuples; a field
+// that is None is not carried.
+std::vector<PerpStateMsg> parse_perp_states(const py::object& rows) {
+  std::vector<PerpStateMsg> out;
+  if (rows.is_none()) return out;
+  for (const py::handle row : rows) {
+    const auto t = row.cast<std::tuple<std::int64_t,
+                                       std::uint32_t,
+                                       std::optional<double>,
+                                       std::optional<double>,
+                                       std::optional<double>,
+                                       double,
+                                       std::int64_t>>();
+    PerpStateMsg m{};
+    init_header(m, EventType::PerpState, InstrumentId{std::get<1>(t)}, VenueId{});
+    m.hdr.exch_ts = m.hdr.recv_ts = Timestamp{std::get<0>(t)};
+    if (const auto& mark = std::get<2>(t)) {
+      m.mark_price = Price::from_double(*mark);
+      m.fields |= PerpStateMsg::kMark;
+    }
+    if (const auto& index = std::get<3>(t)) {
+      m.index_price = Price::from_double(*index);
+      m.fields |= PerpStateMsg::kIndex;
+    }
+    if (const auto& rate = std::get<4>(t)) {
+      m.funding_rate = *rate;
+      m.funding_interval = Duration{static_cast<std::int64_t>(std::get<5>(t) * 1e9)};
+      m.next_funding = Timestamp{std::get<6>(t)};
+      m.fields |= PerpStateMsg::kFunding;
+    }
+    if (!out.empty() && m.hdr.exch_ts < out.back().hdr.exch_ts)
+      throw py::value_error("perp_states: rows must be in time order");
+    out.push_back(m);
+  }
+  return out;
+}
 
 // (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) tuples, amounts as floats.
 std::vector<BalanceMsg> parse_balances(const py::object& rows) {
@@ -718,9 +757,11 @@ void bind_backtest(py::module_& m) {
          const std::string& name,
          const std::vector<std::string>& hooks,
          const py::dict& params,
-         const py::object& balances) {
+         const py::object& balances,
+         const py::object& perp_states) {
         DataSpec spec = parse_data(data);
-        BalanceListSource balance_source(parse_balances(balances));
+        ListSource<BalanceMsg> balance_source(parse_balances(balances));
+        ListSource<PerpStateMsg> perp_source(parse_perp_states(perp_states));
         BacktestConfig cfg = config;
         cfg.strategy = name;  // journal header (truncated to its field) and result name
         ParamMap effective;
@@ -732,9 +773,9 @@ void bind_backtest(py::module_& m) {
           py::gil_scoped_release release;
           source = open_spec(spec, cfg);
         }
-        if (balances.is_none())
+        if (balances.is_none() && perp_states.is_none())
           return run_python_strategy(cfg, source.get(), instance, name, hooks);
-        std::vector<bt::MdSource*> parts{&balance_source};
+        std::vector<bt::MdSource*> parts{&balance_source, &perp_source};
         if (source) parts.push_back(source.get());
         bt::MergedSource merged(std::move(parts));
         return run_python_strategy(cfg, &merged, instance, name, hooks);
@@ -746,10 +787,12 @@ void bind_backtest(py::module_& m) {
       py::arg("hooks"),
       py::arg("params"),
       py::arg("balances") = py::none(),
+      py::arg("perp_states") = py::none(),
       "Internal: backtest of a fastmm.Strategy instance with the GIL held; use "
       "fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows "
       "(ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the "
-      "data by time.");
+      "data by time. `perp_states`: PerpStateMsg rows (ts_ns, inst, mark, index, funding_rate, "
+      "funding_interval_s, next_funding_ns), a None field not carried.");
 
   m.def(
       "_run_hot_strategy",
