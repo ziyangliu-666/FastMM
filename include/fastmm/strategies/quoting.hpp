@@ -13,6 +13,7 @@
 //
 // Together with Instrument::ticks(n), DesiredQuotes::bid/ask/uncross and the Ratio operators and
 // literals in core/fixed_point.hpp.
+#include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
@@ -102,9 +103,12 @@ inline void fit_side(StaticVector<Level, kMaxQuoteLevels>& levels,
 // Cuts both sides of a ladder to what the account's balance on the instrument's venue covers
 // (StrategyContext::balance_room, priced at the side's dearest level). What the side's resting
 // orders hold counts as room: the ladder replaces them. A side whose balance the venue has not
-// reported is left as it is.
+// reported is left as it is. Before any venue reports balances it is one test.
 template <class Ctx>
-void fit_to_balance(Ctx& ctx, InstrumentId id, const Instrument& inst, DesiredQuotes& q) noexcept {
+FASTMM_NOINLINE void fit_to_reported(Ctx& ctx,
+                                     InstrumentId id,
+                                     const Instrument& inst,
+                                     DesiredQuotes& q) noexcept {
   for (const Side side : {Side::Buy, Side::Sell}) {
     auto& levels = side == Side::Buy ? q.bids : q.asks;
     if (levels.empty()) continue;
@@ -113,6 +117,13 @@ void fit_to_balance(Ctx& ctx, InstrumentId id, const Instrument& inst, DesiredQu
     if (room == Qty::max()) continue;
     fit_side(levels, room + ctx.open_qty(id, side), inst);
   }
+}
+template <class Ctx>
+FASTMM_FORCE_INLINE void fit_to_balance(Ctx& ctx,
+                                        InstrumentId id,
+                                        const Instrument& inst,
+                                        DesiredQuotes& q) noexcept {
+  if (FASTMM_UNLIKELY(ctx.balances_live())) fit_to_reported(ctx, id, inst, q);
 }
 
 }  // namespace fastmm

@@ -398,7 +398,7 @@ class Engine {
   [[nodiscard]] const Seqlocked<LatencySnapshot>& latency_snapshot() const noexcept {
     return latency_pub_;
   }
-  [[nodiscard]] EngineLiveStats live_stats() const noexcept { return live_pub_.load(); }
+  [[nodiscard]] EngineLiveStats live_stats() const noexcept { return live_pub_->load(); }
   [[nodiscard]] bool quoting_enabled() const noexcept {
     return quoting_enabled_ && !reconciling() && !params_stale_ && !risk_.killed();
   }
@@ -479,6 +479,8 @@ class Engine {
     return balances_->room(id, instruments_.get(id), side, px);
   }
   [[nodiscard]] const BalanceBook& balances() const noexcept { return *balances_; }
+  // A venue has reported balances: the estimate and the check run from here on.
+  [[nodiscard]] bool balances_live() const noexcept { return balances_live_; }
 
   // ---- execution view -------------------------------------------------------------------------
 
@@ -2427,7 +2429,7 @@ class Engine {
       b.as_of_ns = r.as_of.ns;
     }
     live.latency = latency;
-    live_pub_.store(live);
+    live_pub_->store(live);
   }
 
   // ---- members ----------------------------------------------------------------------------------
@@ -2456,7 +2458,9 @@ class Engine {
   RejectLogLimiter reject_log_;
   EngineStats stats_{};
   Seqlocked<LatencySnapshot> latency_pub_;
-  Seqlocked<EngineLiveStats> live_pub_;
+  // Off the engine object: the publication is read by other threads once a second.
+  std::unique_ptr<Seqlocked<EngineLiveStats>> live_pub_ =
+      std::make_unique<Seqlocked<EngineLiveStats>>();
   Timestamp last_publish_{};
   Timestamp now_{};  // valid while latched_
 

@@ -105,6 +105,7 @@ struct QuoteCtx {
     return s == Side::Buy ? room_buy : room_sell;
   }
   Qty open_qty(InstrumentId, Side s) const { return s == Side::Sell ? resting_sell : Qty{}; }
+  bool balances_live() const { return room_buy != Qty::max() || room_sell != Qty::max(); }
   const std::array<Instrument, 1>& instruments() const { return list; }
   const Instrument& instrument(InstrumentId) const { return list[0]; }
   const FakeBook& book(InstrumentId) const { return b; }

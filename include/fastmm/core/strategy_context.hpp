@@ -198,6 +198,8 @@ class StrategyContext {
   // The venue's margin: its account-wide margin where it reports one, else the settlement asset of
   // its first derivative.
   [[nodiscard]] Margin margin(VenueId v) const noexcept { return e_->margin(v); }
+  // A venue has reported balances (before that, balance() is unknown everywhere).
+  [[nodiscard]] bool balances_live() const noexcept { return e_->balances_live(); }
   // Largest quantity of `id` on `side` at `px` the balance covers (a spot buy's quote with the
   // taker fee, a spot sell's base, a derivative's initial margin), rounded down to the lot.
   // Qty::max() while the venue has not reported the balance that side draws on.
