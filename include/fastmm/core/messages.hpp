@@ -337,7 +337,7 @@ static_assert(sizeof(BalanceMsg) == 128 && offsetof(BalanceMsg, asset) == 104 &&
 //   funding_rate      kFunding: the rate the venue will apply at next_funding, per funding
 //                     interval, as a decimal (0.0001 = 1 bp); positive: longs pay shorts
 //   funding_interval  kFunding: how often funding is paid (a continuous venue reports the rate
-//                     over this interval: Deribit's funding_8h, 8 h)
+//                     over this interval: Deribit's current_funding, 8 h)
 //   next_funding      kFunding: venue time of the next payment; zero when funding is continuous
 //   open_interest     kOpenInterest: contracts open
 struct PerpStateMsg {

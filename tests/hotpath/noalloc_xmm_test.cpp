@@ -152,7 +152,8 @@ TEST_CASE("hotpath.noalloc: Xmm prices funding and the mark basis") {
       ctx.books[0] = Book{mid - Price::from_int(10), mid + Price::from_int(10), ctx.t};
       ctx.mark_now = RefPrice{mid, ctx.t, false};
       ctx.index_now = RefPrice{mid - Price::from_int(i % 7), ctx.t, false};
-      ctx.funding_now = FundingView{0.0001 * (i % 3), seconds(std::int64_t{8} * 3600), Timestamp{}, ctx.t, false};
+      ctx.funding_now =
+          FundingView{0.0001 * (i % 3), seconds(std::int64_t{8} * 3600), Timestamp{}, ctx.t, false};
       s->on_book(ctx, InstrumentId{1}, ctx.books[1]);
       s->on_perp_state(ctx, InstrumentId{1}, msg);
       s->on_perp_state(ctx, InstrumentId{0}, msg);
