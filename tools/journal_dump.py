@@ -35,7 +35,7 @@ EVENT_TYPES = [
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
-    "EngineTime", "ParamUpdate", "Funding",
+    "EngineTime", "ParamUpdate", "Funding", "Balance",
 ]
 PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
@@ -221,6 +221,12 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         replayed = " replayed" if body[58] & 1 else ""
         return (f"amount={dec(q(0))} asset={fixed_string(body[49:58], 8)} "
                 f"funding_id={fixed_string(body[8:49], 40)}{replayed}")
+    if type_name == "Balance":
+        flags = body[49]
+        kinds = [n for bit, n in ((1, "snapshot"), (2, "snapshot_end"), (4, "account")) if flags & bit]
+        return (f"asset={fixed_string(body[40:49], 8)} free={dec(q(0))} locked={dec(q(8))} "
+                f"total={dec(q(16))} equity={dec(q(24))} maintenance={dec(q(32))}"
+                + (f" {'|'.join(kinds)}" if kinds else ""))
     if type_name == "PositionUpdate":
         return f"qty={dec(q(0))} avg_px={dec(q(8))} realized={dec(q(16))} unrealized={dec(q(24))} fees={dec(q(32))}"
     return f"({len(body)} body bytes)"
