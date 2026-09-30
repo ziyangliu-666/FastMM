@@ -63,6 +63,8 @@ struct BenchCtx {
   [[nodiscard]] TimerId once(Duration, std::uint64_t) noexcept { return TimerId{}; }
   [[nodiscard]] bool killed() const noexcept { return false; }
   [[nodiscard]] Qty open_qty(InstrumentId, Side) const noexcept { return Qty{}; }
+  [[nodiscard]] bool balances_live() const noexcept { return false; }
+  [[nodiscard]] Qty balance_room(InstrumentId, Side, Price) const noexcept { return Qty::max(); }
 };
 
 // BTCUSDT (tick 0.01, lot 0.00001), four touches with 20 levels a side, four positions.
