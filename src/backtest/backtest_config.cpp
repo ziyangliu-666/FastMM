@@ -242,7 +242,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 21> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 22> kBacktestKeys = {"markout_horizons_s",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -262,7 +262,8 @@ constexpr std::array<std::string_view, 21> kBacktestKeys = {"markout_horizons_s"
                                                             "latency_md_jitter_us",
                                                             "md_arrival",
                                                             "balances_from_journal",
-                                                            "own_orders_in_feed"};
+                                                            "own_orders_in_feed",
+                                                            "reorder_window_ms"};
 
 void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
   for (const auto& [key, value] : bt.values) {
@@ -344,6 +345,9 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.accounts = read_accounts(cfg, bt);
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
+  const std::int64_t window = bt.get_int("reorder_window_ms", 1000);
+  if (window < 0) throw ConfigError("backtest.reorder_window_ms must be >= 0");
+  b.reorder_window = milliseconds(window);
   t.md.interval = milliseconds(positive(sm, "depth_update_ms", 100));
   t.md.book_ticker = sm.get_bool("book_ticker", true);
   t.venue = VenueId{0};

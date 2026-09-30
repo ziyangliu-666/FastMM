@@ -22,7 +22,10 @@
 //     included, fills are real matches);
 //   * source data: on_source_event() applies each historical event to the venue-side
 //     state (mirror book + queue model, or account-0 liquidity in the matching engine so
-//     the book trades through resting strategy orders) and forwards it to the engine. With
+//     the book trades through resting strategy orders) and forwards it to the engine. Events
+//     from VenueOrderSource come in venue-time order with their recorded position in hdr.seq;
+//     the engine still gets them in recorded order: one that came ahead of an earlier-recorded
+//     event waits for it before going onto the wire (the venue side has applied it already). With
 //     own_orders_in_feed the forwarded feed shows the strategy's resting orders, as a live
 //     venue's does: each depth level and book ticker carries our quantity at its price, the next
 //     depth update also carries our levels that changed since the last one, and a book ticker
@@ -205,7 +208,8 @@ class SimTransport final : public MatchingSink {
   // Each account's balances as one snapshot per venue, at `now` (SimDriver::start).
   void publish_balances(Timestamp now) noexcept;
   // Historical event at venue time (hdr.exch_ts, falling back to recv_ts): updates the
-  // venue-side fill model and forwards the event to the engine after md_in latency.
+  // venue-side fill model and forwards the event to the engine after md_in latency, in recorded
+  // order when hdr.seq gives it (from 1, VenueOrderSource), else at once.
   void on_source_event(const EventHeader& md) noexcept;
 
   // ---- engine side --------------------------------------------------------------------------
@@ -247,7 +251,7 @@ class SimTransport final : public MatchingSink {
   void on_cancel(const SimOrder& o, CancelReason r, Timestamp ts) override;
   void on_cancel_reject(AccountId a, ClientOrderId id, InstrumentId inst, Timestamp ts) override;
   void on_fill(
-      const SimOrder& maker, const SimOrder& taker, Price px, Qty qty, Timestamp ts) override;
+      const SimOrder& maker, const SimOrder& taker, Price px, Qty qty, Timestamp now) override;
   void on_book_change(InstrumentId id, Side s, Price px, Qty qty, std::uint64_t uid) override;
   void on_trade(
       InstrumentId id, Price px, Qty qty, Side aggr, std::uint64_t tid, Timestamp ts) override;
@@ -327,6 +331,12 @@ class SimTransport final : public MatchingSink {
   // A recorded market-data event onto its venue's wire; `recorded`: its recv_ts, for md_arrival
   // = recorded.
   void forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept;
+  // forward() in recorded order: the event at position `seq` (`md` null: nothing to send) goes
+  // out once every earlier position has, those after it that were waiting with it.
+  void forward_in_order(const EventHeader* md,
+                        std::uint64_t seq,
+                        Timestamp recorded,
+                        Timestamp now) noexcept;
   // Our orders in the recorded feed (own_orders_in_feed): note_own() marks a level of ours that
   // changed, with_own() gives a recorded depth update or ticker with our quantity in it, and
   // flush_own() sends a ticker for each instrument whose top of book our orders moved.
@@ -400,6 +410,19 @@ class SimTransport final : public MatchingSink {
   // Brings `f.levels` up to date with the fill model.
   void refresh_own(InstrumentId id, OwnFeed& f) noexcept;
   std::unique_ptr<OwnFeed[]> own_feed_;
+  // Recorded events applied ahead of an earlier-recorded one, waiting to be forwarded
+  // (forward_in_order): a min-heap on the position, their bytes in `waiting_bytes_`.
+  struct Waiting {
+    std::uint64_t seq;
+    Timestamp recorded;
+    Timestamp venue;
+    std::uint32_t slot;  // kNoSlot: nothing to forward
+  };
+  static constexpr std::uint32_t kNoSlot = 0xFFFF'FFFF;
+  std::vector<Waiting> waiting_;
+  std::vector<std::vector<std::uint64_t>> waiting_bytes_;
+  std::vector<std::uint32_t> waiting_free_;
+  std::uint64_t next_forward_ = 1;
   std::vector<InstrumentId> own_pending_;
   std::unique_ptr<EventBuf> own_buf_;
   SimObserver* observer_ = nullptr;

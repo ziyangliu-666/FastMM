@@ -6,6 +6,7 @@
 #include "fastmm/backtest/pnl.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/sim/venue_order.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -281,7 +282,14 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   sim::SimDriver driver(b.clock, b.transport, b.feed, hooks);
   driver.set_measure_wall_clock(cfg_.measure_wall_clock);
   if (generator_ != nullptr) driver.set_generator(generator_.get(), cfg_.generator_seed_levels);
-  if (source_ != nullptr) driver.set_source(source_);
+  // Recorded streams are not monotone in venue time: the venue takes them in its own order.
+  std::unique_ptr<sim::VenueOrderSource> ordered;
+  if (source_ != nullptr && cfg_.reorder_window.ns > 0) {
+    ordered = std::make_unique<sim::VenueOrderSource>(*source_, cfg_.reorder_window);
+    driver.set_source(ordered.get());
+  } else if (source_ != nullptr) {
+    driver.set_source(source_);
+  }
   if (impl_->journal_file) driver.set_journal_writer(impl_->journal_file.get());
   driver.set_param_schedule(params_);
   driver.set_slow_hooks(slow_);
@@ -330,6 +338,10 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   r.outbound_sha256 = b.transport.outbound_hash().hex();
   r.outbound_messages = b.transport.outbound_hash().count();
   r.md_events = driver.stats().md_delivered;
+  if (ordered) {
+    r.md_reordered = ordered->reordered();
+    r.md_late = ordered->late();
+  }
   r.engine_steps = driver.stats().engine_steps;
   r.start_ts = start.ns;
   r.end_ts = b.clock.now().ns;

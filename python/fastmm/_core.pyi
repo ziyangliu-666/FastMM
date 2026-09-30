@@ -365,6 +365,16 @@ class BacktestResult:
         Market-data messages delivered to the engine.
         """
     @property
+    def md_late(self) -> int:
+        """
+        Recorded events that came after a later-stamped one (beyond reorder_window_ms).
+        """
+    @property
+    def md_reordered(self) -> int:
+        """
+        Recorded events the simulated venue took ahead of one recorded before them.
+        """
+    @property
     def orders(self) -> dict:
         """
         Order columns (zero-copy numpy views).

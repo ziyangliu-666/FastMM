@@ -19,6 +19,11 @@
 //                quantity from its levels before the next update shows it (TradeTape): at
 //                placement, for the old quantity of a level change, and under a touch's cap
 //   own orders   a level of a live feed shows ours too; others_shown() takes them out
+//   arrival      a trade fills only orders that were at the venue at its time (placed at or
+//                before it). Recorded streams are not monotone in venue time, so a trade can be
+//                processed after an order that reached the venue later: it does not fill that
+//                order, and when it printed after the view the order's queue was taken from, it
+//                takes its quantity from the queue as the trade tape would have at placement
 //
 // Orders live in a Pool; iteration is in handle order for determinism. queue_after_level_change()
 // and queue_after_trade() are the two steps for one order; the engine's live estimate
@@ -211,13 +216,15 @@ struct QueuedOrder {
   Price price;
   Qty qty;
   Qty cum_qty;
-  Qty ahead;  // displayed quantity still ahead of us in the queue
+  Qty ahead;         // displayed quantity still ahead of us in the queue
+  Timestamp placed;  // venue time the order entered the queue (its arrival, or an amend's)
+  Timestamp view;    // venue time of the book view `ahead` was first taken from
   InstrumentId instrument;
   Side side;
   std::uint8_t pad_[3];
   [[nodiscard]] constexpr Qty leaves() const noexcept { return qty - cum_qty; }
 };
-static_assert(sizeof(QueuedOrder) == 56 && std::is_trivially_copyable_v<QueuedOrder>);
+static_assert(sizeof(QueuedOrder) == 72 && std::is_trivially_copyable_v<QueuedOrder>);
 
 class QueuePositionModel {
  public:
@@ -234,14 +241,17 @@ class QueuePositionModel {
   [[nodiscard]] std::int64_t conservatism_bps() const noexcept { return conservatism_bps_; }
   [[nodiscard]] std::size_t size() const noexcept { return pool_.size(); }
 
-  // Rests an order behind `level_qty` displayed at its price. Invalid handle when full/dup.
+  // Rests an order behind `level_qty` displayed at its price, at venue time `placed`; `view`: the
+  // venue time of the book `level_qty` came from (queue_view_ts). Invalid handle when full/dup.
   Handle32 place(ClientOrderId id,
                  std::uint64_t order_id,
                  InstrumentId inst,
                  Side side,
                  Price px,
                  Qty qty,
-                 Qty level_qty) noexcept {
+                 Qty level_qty,
+                 Timestamp placed,
+                 Timestamp view) noexcept {
     if (by_id_.contains(id)) return Handle32{};
     const Handle32 h = pool_.allocate();
     if (!h.valid()) return Handle32{};
@@ -252,6 +262,8 @@ class QueuePositionModel {
     o.price = px;
     o.qty = qty;
     o.ahead = level_qty;
+    o.placed = placed;
+    o.view = view;
     o.instrument = inst;
     o.side = side;
     by_id_.insert(id, h);
@@ -268,11 +280,10 @@ class QueuePositionModel {
     by_id_.erase(pool_.get(h).cl_ord_id);
     pool_.free(h);
   }
-  // Same price and qty <= leaves: keep the queue position (ahead unchanged).
-  bool amend_keep_priority(Handle32 h,
-                           ClientOrderId new_id,
-                           std::uint64_t order_id,
-                           Qty qty) noexcept {
+  // Same price and qty <= leaves: keep the queue position (ahead unchanged). The amended order
+  // counts as placed at `at`: trades before it do not fill the new id.
+  bool amend_keep_priority(
+      Handle32 h, ClientOrderId new_id, std::uint64_t order_id, Qty qty, Timestamp at) noexcept {
     QueuedOrder& o = pool_.get(h);
     if (qty.is_zero() || qty > o.leaves() || by_id_.contains(new_id)) return false;
     by_id_.erase(o.cl_ord_id);
@@ -280,6 +291,7 @@ class QueuePositionModel {
     o.order_id = order_id;
     o.qty = qty;
     o.cum_qty = Qty{};
+    if (at > o.placed) o.placed = at;
     by_id_.insert(new_id, h);
     return true;
   }
@@ -301,15 +313,20 @@ class QueuePositionModel {
     });
   }
 
-  // A trade printed at px with the given aggressor side. F(Handle32, QueuedOrder&, Qty fill,
-  // Qty ahead_before) is called for every order that executes; the order's cum_qty is already
-  // advanced and `ahead_before` is the displayed quantity that was still ahead of it (its queue
-  // position at the fill). Fully filled orders must be removed by the caller (after emitting the
-  // fill).
+  // A trade printed at px with the given aggressor side at venue time `ts`. F(Handle32,
+  // QueuedOrder&, Qty fill, Qty ahead_before) is called for every order that executes; the order's
+  // cum_qty is already advanced and `ahead_before` is the displayed quantity that was still ahead
+  // of it (its queue position at the fill). Fully filled orders must be removed by the caller
+  // (after emitting the fill). An order placed after `ts` is not filled (see arrival above).
   template <class F>
-  void on_trade(InstrumentId inst, Price px, Qty qty, Side aggressor, F&& f) noexcept {
+  void on_trade(
+      InstrumentId inst, Price px, Qty qty, Side aggressor, Timestamp ts, F&& f) noexcept {
     pool_.for_each([&](Handle32 h, QueuedOrder& o) {
       if (o.instrument != inst) return;
+      if (ts < o.placed) {
+        if (ts > o.view) o.ahead = level_after_print(o.ahead, o.side, o.price, px, qty, aggressor);
+        return;
+      }
       const Qty ahead_before = o.ahead;
       const Qty fill = queue_after_trade(o.ahead, o.side, o.price, o.leaves(), px, qty, aggressor);
       if (fill.is_positive()) {
@@ -398,6 +415,16 @@ inline void queue_apply_book(L2Book<256>& book,
   const Price touch = t.px(side);
   const Qty shown = tape != nullptr ? tape->after(side, touch, t.qty(side), t.ts) : t.qty(side);
   return queue_join(depth_ahead, side, px, touch, shown);
+}
+
+// The venue time of the view queue_at_placement() takes an order's queue from: a newer touch's when
+// it is at the order's price, else the depth book's.
+[[nodiscard]] inline Timestamp queue_view_ts(Side side,
+                                             Price px,
+                                             const L2Book<256>& book,
+                                             const QueueTouch& t) noexcept {
+  if (t.valid() && t.newer_than(book.seq(), book.last_update()) && t.px(side) == px) return t.ts;
+  return book.last_update();
 }
 
 // A touch newer than `book` moves the queue of every order of `models` on instrument `id`, its

@@ -99,7 +99,15 @@ TEST_CASE("sim.scheduler: pops in (fire_ts, insertion) order, fixed capacity") {
 TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade-through") {
   QueuePositionModel q(10'000);  // fully conservative: cancels never help
   const InstrumentId inst{0};
-  auto h = q.place(ClientOrderId{1}, 100, inst, Side::Buy, px("100"), qt("2"), qt("10"));
+  auto h = q.place(ClientOrderId{1},
+                   100,
+                   inst,
+                   Side::Buy,
+                   px("100"),
+                   qt("2"),
+                   qt("10"),
+                   Timestamp{},
+                   Timestamp{});
   REQUIRE(h.valid());
   CHECK(q.get(h).ahead == qt("10"));
   // level shrinks from 10 to 6 by cancellations: conservative model ignores it
@@ -112,20 +120,20 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
     fills.push_back(f);
     ahead_at_fill.push_back(ahead);
   };
-  q.on_trade(inst, px("100"), qt("4"), Side::Sell, sink);
+  q.on_trade(inst, px("100"), qt("4"), Side::Sell, Timestamp{}, sink);
   CHECK(fills.empty());
   CHECK(q.get(h).ahead == qt("6"));
   // trade at a different price: nothing
-  q.on_trade(inst, px("100.5"), qt("4"), Side::Buy, sink);
+  q.on_trade(inst, px("100.5"), qt("4"), Side::Buy, Timestamp{}, sink);
   CHECK(fills.empty());
   // 7 more: 6 clear the queue, 1 fills us partially
-  q.on_trade(inst, px("100"), qt("7"), Side::Sell, sink);
+  q.on_trade(inst, px("100"), qt("7"), Side::Sell, Timestamp{}, sink);
   REQUIRE(fills.size() == 1);
   CHECK(fills[0] == qt("1"));
   CHECK(ahead_at_fill[0] == qt("6"));  // queue position at the fill
   CHECK(q.get(h).leaves() == qt("1"));
   // trade through (sell at 99.5): remainder fills entirely
-  q.on_trade(inst, px("99.5"), qt("0.001"), Side::Sell, sink);
+  q.on_trade(inst, px("99.5"), qt("0.001"), Side::Sell, Timestamp{}, sink);
   REQUIRE(fills.size() == 2);
   CHECK(fills[1] == qt("1"));
   CHECK(q.get(h).leaves().is_zero());
@@ -135,7 +143,15 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
 
   SUBCASE("proportional cancels with conservatism 0 and level disappearing") {
     QueuePositionModel p(0);
-    auto g = p.place(ClientOrderId{2}, 101, inst, Side::Sell, px("101"), qt("1"), qt("8"));
+    auto g = p.place(ClientOrderId{2},
+                     101,
+                     inst,
+                     Side::Sell,
+                     px("101"),
+                     qt("1"),
+                     qt("8"),
+                     Timestamp{},
+                     Timestamp{});
     p.on_level_change(inst, Side::Sell, px("101"), qt("8"), qt("4"));  // half cancelled
     CHECK(p.get(g).ahead == qt("4"));
     p.on_level_change(inst, Side::Sell, px("101"), qt("4"), qt("0"));  // level gone
@@ -147,19 +163,60 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
                px("101"),
                qt("0.4"),
                Side::Buy,
+               Timestamp{},
                [&](QueuePositionModel::Handle32, QueuedOrder&, Qty f, Qty) { f2.push_back(f); });
     REQUIRE(f2.size() == 1);
     CHECK(f2[0] == qt("0.4"));
   }
   SUBCASE("amend keeps priority only when qty <= leaves") {
-    auto g = q.place(ClientOrderId{3}, 102, inst, Side::Buy, px("99"), qt("5"), qt("3"));
-    CHECK_FALSE(q.amend_keep_priority(g, ClientOrderId{4}, 103, qt("6")));
-    CHECK(q.amend_keep_priority(g, ClientOrderId{4}, 103, qt("2")));
+    auto g = q.place(ClientOrderId{3},
+                     102,
+                     inst,
+                     Side::Buy,
+                     px("99"),
+                     qt("5"),
+                     qt("3"),
+                     Timestamp{},
+                     Timestamp{});
+    CHECK_FALSE(q.amend_keep_priority(g, ClientOrderId{4}, 103, qt("6"), Timestamp{}));
+    CHECK(q.amend_keep_priority(g, ClientOrderId{4}, 103, qt("2"), Timestamp{}));
     CHECK(q.get(g).ahead == qt("3"));
     CHECK(q.get(g).qty == qt("2"));
     CHECK(q.find(ClientOrderId{4}) == g);
     CHECK_FALSE(q.find(ClientOrderId{3}).valid());
   }
+}
+
+TEST_CASE("sim.queue_model: a trade before the order's arrival does not fill it") {
+  QueuePositionModel q(10'000);
+  const InstrumentId inst{0};
+  const Timestamp view{100};
+  const Timestamp placed{200};
+  auto h = q.place(ClientOrderId{1}, 1, inst, Side::Buy, px("100"), qt("1"), qt("3"), placed, view);
+  REQUIRE(h.valid());
+  std::vector<Qty> fills;
+  auto sink = [&](QueuePositionModel::Handle32, QueuedOrder&, Qty f, Qty) { fills.push_back(f); };
+  // Printed before the view the queue came from: that view already shows it.
+  q.on_trade(inst, px("100"), qt("5"), Side::Sell, Timestamp{50}, sink);
+  CHECK(fills.empty());
+  CHECK(q.get(h).ahead == qt("3"));
+  // After the view, before the arrival: it takes from the queue and fills nothing.
+  q.on_trade(inst, px("100"), qt("2"), Side::Sell, Timestamp{150}, sink);
+  CHECK(fills.empty());
+  CHECK(q.get(h).ahead == qt("1"));
+  q.on_trade(inst, px("99"), qt("1"), Side::Sell, Timestamp{199}, sink);  // through: level gone
+  CHECK(fills.empty());
+  CHECK(q.get(h).ahead.is_zero());
+  // At the arrival's time it fills.
+  q.on_trade(inst, px("100"), qt("0.4"), Side::Sell, placed, sink);
+  REQUIRE(fills.size() == 1);
+  CHECK(fills[0] == qt("0.4"));
+  // An amend counts from its own time.
+  REQUIRE(q.amend_keep_priority(h, ClientOrderId{2}, 2, qt("0.5"), Timestamp{300}));
+  q.on_trade(inst, px("100"), qt("0.1"), Side::Sell, Timestamp{250}, sink);
+  CHECK(fills.size() == 1);
+  q.on_trade(inst, px("100"), qt("0.1"), Side::Sell, Timestamp{300}, sink);
+  CHECK(fills.size() == 2);
 }
 
 TEST_CASE("sim.sha256: FIPS test vectors and streaming equivalence") {

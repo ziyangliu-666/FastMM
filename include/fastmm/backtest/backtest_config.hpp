@@ -13,7 +13,7 @@
 //   latency_fixed_us, latency_jitter_us,          market_qty_median_lots, regimes,
 //   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
-//   md_arrival = "venue" | "recorded"
+//   md_arrival = "venue" | "recorded", reorder_window_ms = 1000
 //   balances_from_journal = false, own_orders_in_feed = true
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   equity_bar_s = 1, initial_capital = 0
@@ -71,6 +71,9 @@ struct BacktestConfig {
   // Start each venue's account (transport.accounts) from the first balance snapshot the journal
   // source recorded for it; a venue it has none for keeps the configured balances.
   bool balances_from_journal = false;
+  // Recorded data reaches the simulated venue in venue-time order (sim/venue_order.hpp), assuming
+  // no event was received more than this after its venue time; zero keeps the recorded order.
+  Duration reorder_window = milliseconds(1000);
 
   // Throws ConfigError on invalid values.
   [[nodiscard]] static BacktestConfig from_config(const Config& cfg);
