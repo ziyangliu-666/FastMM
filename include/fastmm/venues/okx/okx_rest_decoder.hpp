@@ -2,10 +2,11 @@
 // Control-path decoders for OKX v5 REST bodies (allocation allowed). Every reply is
 // {"code":"0","msg":"","data":[...]}, numbers as strings unless noted
 // (https://www.okx.com/docs-v5/en/, read 2026-09-26):
-//   GET /api/v5/public/instruments?instType=SWAP&instId=I
+//   GET /api/v5/public/instruments?instType=SWAP|SPOT&instId=I
 //       data[] {instId, instIdCode (integer, may be null), instType, ctType linear | inverse,
-//               ctVal, ctMult, ctValCcy, settleCcy, tickSz, lotSz, minSz, maxLmtSz, state live |
-//               suspend | preopen | test | rebase | post_only}
+//               ctVal, ctMult, ctValCcy, settleCcy (SWAP), baseCcy, quoteCcy (SPOT), tickSz,
+//               lotSz, minSz, maxLmtSz, state live | suspend | preopen | test | rebase |
+//               post_only}
 //   GET /api/v5/public/time            data[0].ts (ms)
 //   GET /api/v5/account/config         data[0] {posMode net_mode | long_short_mode, acctLv}
 //   GET /api/v5/account/positions      data[] {instId, posSide net | long | short, pos, avgPx}
@@ -28,12 +29,14 @@ namespace fastmm::venues::okx {
 struct InstrumentInfo {
   std::string inst_id;
   std::int64_t inst_id_code = -1;  // null: none
-  std::string inst_type;           // SWAP
-  std::string ct_type;             // linear | inverse
+  std::string inst_type;           // SWAP | SPOT
+  std::string ct_type;             // linear | inverse; SPOT: empty
   std::string ct_val_ccy;          // BTC
-  std::string settle_ccy;          // USDT
+  std::string settle_ccy;          // USDT; SPOT: empty
+  std::string base_ccy;            // SPOT: BTC
+  std::string quote_ccy;           // SPOT: USDT
   std::string state;               // live
-  Qty ct_val{};
+  Qty ct_val{};                    // SPOT: 0
   Qty ct_mult{};
   Price tick{};
   Qty lot{};

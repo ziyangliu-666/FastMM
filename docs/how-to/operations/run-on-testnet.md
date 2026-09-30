@@ -82,11 +82,12 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 ### OKX demo trading
 
 - Keys: on okx.com switch to Demo trading and create a demo API key (Personal center, Demo trading API) with trade permission. OKX asks for a passphrase when the key is made: it is the third credential, `api_passphrase`. Live-trading keys are refused by the demo hosts (50101).
-- Account: net position mode, not the spot account mode, USDT in the trading account. Long/short mode or the spot mode make `fastmm-live` exit 3 at start-up.
+- Account (swaps, `configs/okx-demo.toml`): net position mode, not the spot account mode, USDT in the trading account. Long/short mode or the spot mode make `fastmm-live` exit 3 at start-up.
 - Endpoints (from `configs/okx-demo.toml`): public `wss://wspap.okx.com:8443/ws/v5/public`, private and orders `wss://wspap.okx.com:8443/ws/v5/private` (derived), REST `https://www.okx.com` with `x-simulated-trading: 1` (`testnet = true`). Production is `wss://ws.okx.com:8443` with `testnet = false`; the connector refuses a demo host with `testnet = false` and the reverse.
 - Units: quantities are contracts. One BTC-USDT-SWAP contract is 0.01 BTC; the config quotes 0.1 contracts (0.001 BTC). On demo the tick is 0.01 and `instIdCode` differs from production; both come from `GET /api/v5/public/instruments` with the demo header.
 - Config: `supports_replace = false` until amend has been seen on the demo; `dead_mans_switch_s = 60` arms `cancel-all-after` (whether demo trading honours it is not documented).
-- Status: the public stream was run against the demo and production hosts (book synced, no resync); orders, the private channels and REST account calls are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues.md#okx-v5-usdt-margined-swaps)).
+- Spot: `configs/okx-spot-demo.toml` quotes BTC-USDT at the minimum size (0.00002 BTC) for an account registered on my.okx.com (`region = "eea"`: REST `https://eea.okx.com`, WebSocket `wss://wseeapap.okx.com:8443`). Any account mode trades spot, the spot mode included; keys only work on the domain of the site they were made on. Quantities are BTC.
+- Status: spot ran on the demo (orders, fills, a kill -9 and restart, a clean stop; 2026-09-30). For swaps the public stream was run against the demo and production hosts; orders and the private channels are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues.md#okx-v5-usdt-margined-swaps-and-spot)).
 
 ### Deribit testnet
 

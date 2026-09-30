@@ -1,0 +1,95 @@
+# FastMM: BasicMM on OKX demo trading, BTC-USDT spot, for an account registered on my.okx.com.
+#   ./build/release/bin/fastmm-live --config configs/okx-spot-demo.toml --dry-run --duration 60s
+# Keys from OKX demo trading (Trade > Demo trading > Personal center > Demo trading API): the
+# key, its secret and the passphrase chosen with it. Any account mode trades spot, the spot mode
+# (acctLv 1) included; orders go with tdMode cash, against the account's BTC and USDT:
+#   export FASTMM_OKX_API_KEY=... FASTMM_OKX_API_SECRET=... FASTMM_OKX_API_PASSPHRASE=...
+#   ./build/release/bin/fastmm-live --config configs/okx-spot-demo.toml
+# Endpoints: keys work only on the domain of the site the account is registered on
+# (https://www.okx.com/docs-v5/en/#overview, "Regional API Domain Requirement"). region = "eea"
+# (or "my") is my.okx.com's: REST https://eea.okx.com with "x-simulated-trading: 1" (testnet =
+# true), public wss://wseeapap.okx.com:8443/ws/v5/public, private .../ws/v5/private
+# (https://my.okx.com/docs-v5/en/#overview-demo-trading-services). A www.okx.com account leaves
+# region out (global), an app.okx.com one sets region = "us".
+# Quantities are BTC. The engine's position is the strategy's inventory, not the account's
+# balance: it starts at zero, or where the previous session's store left it, and a buy's
+# commission, paid in BTC, is taken off what it adds.
+[engine]
+name = "okx-spot-demo"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 20
+min_requote_interval_ms = 1000
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.okx]
+kind = "okx"
+region = "eea"               # my.okx.com: eea.okx.com and wseeapap.okx.com
+api_key = "${FASTMM_OKX_API_KEY}"
+api_secret = "${FASTMM_OKX_API_SECRET}"
+api_passphrase = "${FASTMM_OKX_API_PASSPHRASE}"
+testnet = true               # demo trading: x-simulated-trading: 1, the wseeapap host
+supports_replace = false
+depth_channel = "books"
+stale_ms = 10000
+dead_mans_switch_s = 60      # cancel-all-after (spot included), refreshed every 20 s
+
+[venues.okx.fees]
+maker_bps = 10.0             # the demo account's spot rates (account/trade-fee): 0.1 % maker,
+taker_bps = 20.0             # 0.2 % taker
+
+# Tick, lot and minimum size are overwritten from GET /api/v5/public/instruments at startup; on
+# demo BTC-USDT the tick is 0.1, the lot 0.00000001 and the minimum 0.00002 BTC.
+[[instruments]]
+venue = "okx"
+symbol = "BTC-USDT"
+base = "BTC"
+quote = "USDT"
+asset_class = "spot"
+tick = "0.1"
+lot = "0.00000001"
+min_qty = "0.00002"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 1.0
+skew_bps_per_unit = 1.0
+quote_qty = 0.00002          # the minimum size
+max_inventory = 0.0001
+requote_threshold_ticks = 300
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.0001"
+max_order_notional = "20"
+max_position = "0.00015"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "5"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

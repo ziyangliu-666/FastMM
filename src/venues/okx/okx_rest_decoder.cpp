@@ -72,10 +72,14 @@ std::string decode_instruments(std::string_view json, std::vector<InstrumentInfo
     i.ct_type = text(e, "ctType");
     i.ct_val_ccy = text(e, "ctValCcy");
     i.settle_ccy = text(e, "settleCcy");
+    i.base_ccy = text(e, "baseCcy");
+    i.quote_ccy = text(e, "quoteCcy");
     i.state = text(e, "state");
     if (!fixed(e, "tickSz", i.tick)) return "instruments: bad tickSz for " + i.inst_id;
     if (!fixed(e, "lotSz", i.lot)) return "instruments: bad lotSz for " + i.inst_id;
-    if (!fixed(e, "ctVal", i.ct_val)) return "instruments: bad ctVal for " + i.inst_id;
+    // Contracts have a size (ctVal of ctValCcy); a spot pair has none, its unit is the base coin.
+    if (i.inst_type != "SPOT" && !fixed(e, "ctVal", i.ct_val))
+      return "instruments: bad ctVal for " + i.inst_id;
     if (!fixed(e, "ctMult", i.ct_mult)) i.ct_mult = Qty::from_int(1);
     static_cast<void>(fixed(e, "minSz", i.min_sz));
     static_cast<void>(fixed(e, "maxLmtSz", i.max_limit_sz));

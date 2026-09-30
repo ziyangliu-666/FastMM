@@ -1,5 +1,5 @@
-// OKX v5 USDT-margined perpetual swaps: the registry entry, the keys the connector owns and its
-// factory.
+// OKX v5 USDT-margined perpetual swaps and spot pairs: the registry entry, the keys the connector
+// owns and its factory.
 #include "fastmm/venues/okx/okx_venue.hpp"
 #include "fastmm/venues/registry.hpp"
 
@@ -8,11 +8,20 @@ namespace fastmm::venues {
 namespace {
 
 constexpr VenueKeySpec kOkxKeys[] = {
+    {"region",
+     KeyType::String,
+     false,
+     "the site the account is registered on, which sets ws_url and rest_url when they are empty: "
+     "global (default; www.okx.com) | eea or my (my.okx.com: eea.okx.com, wseea / wseeapap) | us "
+     "or app (app.okx.com: us.okx.com, wsus / wsuspap)"},
     {"ws_private_url",
      KeyType::String,
      false,
      "private WebSocket URL (login, orders, positions); empty = ws_url's host + /ws/v5/private"},
-    {"td_mode", KeyType::String, false, "margin mode of every order: cross (default) | isolated"},
+    {"td_mode",
+     KeyType::String,
+     false,
+     "margin mode of every swap order: cross (default) | isolated; spot orders go with cash"},
     {"depth_channel",
      KeyType::String,
      false,
@@ -72,18 +81,20 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
 }  // namespace
 
 void register_okx_venue(VenueRegistry& r) {
-  static_cast<void>(r.add({.name = "okx",
-                           .summary = "OKX v5 USDT-margined perpetual swaps (demo trading)",
-                           .keys = kOkxKeys,
-                           .caps = {.credentials = true,
-                                    .order_entry = true,
-                                    .replace = true,
-                                    // account/positions and the positions channel
-                                    .positions = true,
-                                    .polls = false,
-                                    // GET /api/v5/trade/fills
-                                    .executions = true},
-                           .make = &make}));
+  static_cast<void>(
+      r.add({.name = "okx",
+             .summary = "OKX v5 USDT-margined perpetual swaps and spot (demo trading)",
+             .keys = kOkxKeys,
+             .caps = {.credentials = true,
+                      .order_entry = true,
+                      .replace = true,
+                      // swaps: account/positions and the positions
+                      // channel; spot: the engine's own, from the fills
+                      .positions = true,
+                      .polls = false,
+                      // GET /api/v5/trade/fills
+                      .executions = true},
+             .make = &make}));
 }
 
 }  // namespace fastmm::venues

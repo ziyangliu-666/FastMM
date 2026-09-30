@@ -1,5 +1,6 @@
 #pragma once
-// OKX v5 order encoding and response decoding, USDT-margined perpetual swaps (instType SWAP).
+// OKX v5 order encoding and response decoding: USDT-margined perpetual swaps (instType SWAP) and
+// spot pairs (instType SPOT).
 //
 // Primary path: WebSocket order operations on wss://ws.okx.com:8443/ws/v5/private after `op:
 // login` (https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-place-order, ...-ws-amend-
@@ -10,10 +11,14 @@
 // `id`: "alphanumerics ... up to 32 characters"; FastMM's is 15. The instrument is `instIdCode`
 // (an integer from GET /api/v5/public/instruments): since 2026-03-26 `order` ignores `instId`, and
 // since 2026-04-07 so do `amend-order` and `cancel-order`.
-// Order args: instIdCode, tdMode (cross | isolated), clOrdId (up to 32 alphanumerics, unique among
-// the account's pending orders; FastMM's is 14), side buy | sell, ordType limit | post_only | ioc
-// | fok | market, px (not for market), sz (contracts), reduceOnly (boolean, net mode). posSide is
-// left out: net mode takes "net" or nothing, and the connector refuses long/short mode.
+// Order args: instIdCode, tdMode (swap: cross | isolated; spot: cash, the non-margin mode, which
+// every account mode takes and the only one the spot mode has), clOrdId (up to 32 alphanumerics,
+// unique among the account's pending orders; FastMM's is 14), side buy | sell, ordType limit |
+// post_only | ioc | fok | market, px (not for market), sz (swap: contracts; spot: the base coin),
+// reduceOnly (boolean; "only applicable to MARGIN orders, and FUTURES/SWAP orders in net mode", so
+// never on spot), tgtCcy base_ccy on a spot market order (a market buy is sized in the quote coin
+// otherwise). posSide is left out: net mode takes "net" or nothing, the connector refuses
+// long/short mode, and "do not send this field for SPOT".
 // Amend: instIdCode, ordId | clOrdId, reqId (the engine's new id), newSz ("the amount that has
 // been filled" included, so the total, as the engine's replace qty is), newPx.
 // Cancel: instIdCode, ordId | clOrdId.
@@ -22,11 +27,12 @@
 //   POST /api/v5/trade/order | amend-order | cancel-order    order-entry fallback
 //   POST /api/v5/trade/cancel-batch-orders                    at most 20 orders per request
 //   POST /api/v5/trade/cancel-all-after                       {"timeOut":"<0 | 10..120>"}
-//   GET  /api/v5/trade/orders-pending?instType=SWAP&limit=100[&after=<ordId>]
-//   GET  /api/v5/trade/fills |
-//   fills-history?instType=SWAP&begin=..[&end=..][&after=<billId>]&limit=100 GET
-//   /api/v5/account/bills | bills-archive?instType=SWAP&type=8&begin=..[&after=..]&limit=100 GET
-//   /api/v5/account/positions?instType=SWAP GET  /api/v5/account/config
+//   GET  /api/v5/trade/orders-pending?[instType=SWAP|SPOT&]limit=100[&after=<ordId>]
+//   GET  /api/v5/trade/fills | fills-history?instType=SWAP|SPOT&begin=..[&end=..][&after=<billId>]
+//        &limit=100 (fills-history requires instType)
+//   GET  /api/v5/account/bills | bills-archive?instType=SWAP&type=8&begin=..[&after=..]&limit=100
+//   GET  /api/v5/account/positions?instType=SWAP (no SPOT: a spot holding is a balance)
+//   GET  /api/v5/account/config
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/venues/feed.hpp"
@@ -89,6 +95,13 @@ class OkxOrderEncoder {
   void set_inst_id_code(InstrumentId id, std::int64_t code) noexcept {
     if (id.value < codes_.size()) codes_[id.value] = code;
   }
+  // A spot pair: tdMode cash, no reduceOnly, a market order sized in the base coin.
+  void set_spot(InstrumentId id, bool spot) noexcept {
+    if (id.value < spot_.size()) spot_[id.value] = spot;
+  }
+  [[nodiscard]] bool spot(InstrumentId id) const noexcept {
+    return id.value < spot_.size() && spot_[id.value];
+  }
   [[nodiscard]] std::int64_t inst_id_code(InstrumentId id) const noexcept {
     return id.value < codes_.size() ? codes_[id.value] : -1;
   }
@@ -102,9 +115,11 @@ class OkxOrderEncoder {
   static std::size_t encode_login(const Signer& signer,
                                   std::int64_t unix_s,
                                   std::span<char> out) noexcept;
-  // {"id":id,"op":"subscribe","args":[{"channel":C,"instType":"SWAP"},..]}
+  // {"id":id,"op":"subscribe","args":[{"channel":C,"instType":T},..]}: `orders_type` for the
+  // orders channel (SWAP, SPOT or ANY), SWAP for positions, none for balance_and_position.
   static std::size_t encode_private_subscribe(std::string_view id,
                                               std::span<const std::string_view> channels,
+                                              std::string_view orders_type,
                                               std::span<char> out) noexcept;
 
   // ---- REST --------------------------------------------------------------------------------
@@ -115,11 +130,16 @@ class OkxOrderEncoder {
   };
   static bool encode_rest_cancel_batch(std::span<const CancelEntry> orders, RestRequest& out);
   static bool encode_rest_cancel_all_after(int timeout_s, RestRequest& out);
-  // `after`: the ordId of the previous page's last order (empty for the first).
-  static void encode_rest_orders_pending(std::string_view after, RestRequest& out);
-  // GET /api/v5/trade/fills (the last 3 days) or fills-history (3 months), newest first. `begin_ms`
-  // and `end_ms` (0 = open) filter on `ts`; `after` is the previous page's last billId.
+  // `inst_type`: SWAP, SPOT, or empty for every type; `after`: the ordId of the previous page's
+  // last order (empty for the first).
+  static void encode_rest_orders_pending(std::string_view inst_type,
+                                         std::string_view after,
+                                         RestRequest& out);
+  // GET /api/v5/trade/fills (the last 3 days) or fills-history (3 months) of `inst_type`, newest
+  // first. `begin_ms` and `end_ms` (0 = open) filter on `ts`; `after` is the previous page's last
+  // billId.
   static void encode_rest_fills(bool history,
+                                std::string_view inst_type,
                                 std::int64_t begin_ms,
                                 std::int64_t end_ms,
                                 std::string_view after,
@@ -164,6 +184,7 @@ class OkxOrderEncoder {
   const SymbolTable& symbols_;
   TdMode td_mode_;
   std::array<std::int64_t, kMaxInstruments> codes_{};
+  std::array<bool, kMaxInstruments> spot_{};
 };
 
 // ---- responses -------------------------------------------------------------------------------

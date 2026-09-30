@@ -73,7 +73,61 @@ BlockingRetry okx_blocking_retry() {
   return r;
 }
 
+// A spot pair from public/instruments?instType=SPOT: sized in baseCcy, priced in quoteCcy, no
+// contract, no reduce-only, no minimum notional (minSz is the floor).
+std::string apply_spot_info(std::string_view venue, const InstrumentInfo& f, Instrument& inst) {
+  const std::string_view sym = inst.symbol.view();
+  if (f.inst_type != "SPOT")
+    return fmt::format("{}: {} is a {} instrument, not SPOT", venue, sym, f.inst_type);
+  if (!f.tick.is_positive() || !f.lot.is_positive())
+    return fmt::format("{}: {} has an invalid tickSz or lotSz", venue, sym);
+  if (f.base_ccy.empty() || f.quote_ccy.empty())
+    return fmt::format("{}: {} has no baseCcy or quoteCcy", venue, sym);
+  if (inst.tick != f.tick || inst.lot != f.lot)
+    FASTMM_LOG_WARN("{}: {} tick/lot from public/instruments override config ({} / {} -> {} / {})",
+                    venue,
+                    sym,
+                    inst.tick,
+                    inst.lot,
+                    f.tick,
+                    f.lot);
+  inst.tick = f.tick;
+  inst.lot = f.lot;
+  inst.min_qty = f.min_sz.is_positive() ? f.min_sz : f.lot;
+  inst.max_qty = f.max_limit_sz;
+  inst.min_notional = Notional{};
+  inst.max_notional = Notional{};
+  inst.contract_multiplier = Qty::from_int(1);
+  inst.expiry_ns = 0;
+  inst.flags = static_cast<std::uint8_t>(
+      inst.flags & ~(Instrument::kReduceOnlySupported | Instrument::kInverse));
+  if (inst.asset_class != AssetClass::Spot) {
+    FASTMM_LOG_WARN("{}: {} is a spot pair; asset_class set to spot", venue, sym);
+    inst.asset_class = AssetClass::Spot;
+  }
+  if ((!inst.base.empty() && !iequals_symbol(inst.base.view(), f.base_ccy)) ||
+      (!inst.quote.empty() && !iequals_symbol(inst.quote.view(), f.quote_ccy)))
+    FASTMM_LOG_WARN("{}: {} is {}/{}, not the configured {}/{}; using {}/{}",
+                    venue,
+                    sym,
+                    f.base_ccy,
+                    f.quote_ccy,
+                    inst.base.view(),
+                    inst.quote.view(),
+                    f.base_ccy,
+                    f.quote_ccy);
+  if (!inst.base.assign(f.base_ccy) || !inst.quote.assign(f.quote_ccy))
+    return fmt::format("{}: {} currency names too long", venue, sym);
+  return {};
+}
+
 }  // namespace
+
+bool is_swap_symbol(std::string_view inst_id) noexcept {
+  constexpr std::string_view kSuffix = "-SWAP";
+  return inst_id.size() > kSuffix.size() &&
+         iequals_symbol(inst_id.substr(inst_id.size() - kSuffix.size()), kSuffix);
+}
 
 // ---- construction ---------------------------------------------------------------------------
 
@@ -189,8 +243,11 @@ Result<void, std::string> OkxVenue::load_reference_data(InstrumentTable& instrum
       }
     }
     for (Instrument* inst : mine) {
+      const bool spot = !is_swap_symbol(inst->symbol.view());
+      const std::string_view inst_type = spot ? "SPOT" : "SWAP";
       const HttpReply reply = http.get(
-          fmt::format("/api/v5/public/instruments?instType=SWAP&instId={}", inst->symbol.view()),
+          fmt::format(
+              "/api/v5/public/instruments?instType={}&instId={}", inst_type, inst->symbol.view()),
           public_headers);
       if (!reply.ok()) {
         if (!cfg_.allow_offline_reference_data)
@@ -208,65 +265,75 @@ Result<void, std::string> OkxVenue::load_reference_data(InstrumentTable& instrum
         if (iequals_symbol(i.inst_id, inst->symbol.view())) f = &i;
       }
       if (f == nullptr)
-        return fail(fmt::format(
-            "{}: {} not in public/instruments?instType=SWAP", cfg_.name, inst->symbol.view()));
-      if (f->inst_type != "SWAP" || f->ct_type != "linear")
-        return fail(fmt::format(
-            "{}: {} is a {} {} contract; only linear (USDT-margined) swaps are supported",
-            cfg_.name,
-            inst->symbol.view(),
-            f->ct_type.empty() ? "?" : f->ct_type,
-            f->inst_type));
-      if (!f->tick.is_positive() || !f->lot.is_positive() || !f->ct_val.is_positive() ||
-          !f->ct_mult.is_positive())
-        return fail(fmt::format("{}: {} has an invalid tickSz, lotSz, ctVal or ctMult",
+        return fail(fmt::format("{}: {} not in public/instruments?instType={}",
                                 cfg_.name,
-                                inst->symbol.view()));
-      if (f->settle_ccy.empty() || f->ct_val_ccy.empty())
-        return fail(
-            fmt::format("{}: {} has no settleCcy or ctValCcy", cfg_.name, inst->symbol.view()));
-      // Contracts are the unit: one is ctVal * ctMult of ctValCcy (0.01 BTC for BTC-USDT-SWAP).
-      const Qty mult = f->ct_mult == Qty::from_int(1)
-                           ? f->ct_val
-                           : Qty::from_raw(mul_raw(f->ct_val, f->ct_mult));
-      if (inst->tick != f->tick || inst->lot != f->lot || inst->contract_multiplier != mult) {
-        FASTMM_LOG_WARN(
-            "{}: {} tick/lot/multiplier from public/instruments override config ({} / {} / {} -> "
-            "{} / {} / {}); quantities are contracts",
-            cfg_.name,
-            inst->symbol.view(),
-            inst->tick,
-            inst->lot,
-            inst->contract_multiplier,
-            f->tick,
-            f->lot,
-            mult);
+                                inst->symbol.view(),
+                                inst_type));
+      if (spot) {
+        if (std::string err = apply_spot_info(cfg_.name, *f, *inst); !err.empty())
+          return fail(std::move(err));
+      } else {
+        if (f->inst_type != "SWAP" || f->ct_type != "linear")
+          return fail(fmt::format(
+              "{}: {} is a {} {} contract; only linear (USDT-margined) swaps are supported",
+              cfg_.name,
+              inst->symbol.view(),
+              f->ct_type.empty() ? "?" : f->ct_type,
+              f->inst_type));
+        if (!f->tick.is_positive() || !f->lot.is_positive() || !f->ct_val.is_positive() ||
+            !f->ct_mult.is_positive())
+          return fail(fmt::format("{}: {} has an invalid tickSz, lotSz, ctVal or ctMult",
+                                  cfg_.name,
+                                  inst->symbol.view()));
+        if (f->settle_ccy.empty() || f->ct_val_ccy.empty())
+          return fail(
+              fmt::format("{}: {} has no settleCcy or ctValCcy", cfg_.name, inst->symbol.view()));
+        // Contracts are the unit: one is ctVal * ctMult of ctValCcy (0.01 BTC for BTC-USDT-SWAP).
+        const Qty mult = f->ct_mult == Qty::from_int(1)
+                             ? f->ct_val
+                             : Qty::from_raw(mul_raw(f->ct_val, f->ct_mult));
+        if (inst->tick != f->tick || inst->lot != f->lot || inst->contract_multiplier != mult) {
+          FASTMM_LOG_WARN(
+              "{}: {} tick/lot/multiplier from public/instruments override config ({} / {} / {} -> "
+              "{} / {} / {}); quantities are contracts",
+              cfg_.name,
+              inst->symbol.view(),
+              inst->tick,
+              inst->lot,
+              inst->contract_multiplier,
+              f->tick,
+              f->lot,
+              mult);
+        }
+        inst->tick = f->tick;
+        inst->lot = f->lot;
+        inst->min_qty = f->min_sz.is_positive() ? f->min_sz : f->lot;
+        inst->max_qty = f->max_limit_sz;
+        inst->min_notional = Notional{};  // OKX sets none for swaps: minSz is the floor
+        inst->max_notional = Notional{};
+        inst->contract_multiplier = mult;
+        inst->expiry_ns = 0;
+        inst->flags = static_cast<std::uint8_t>((inst->flags | Instrument::kReduceOnlySupported) &
+                                                ~Instrument::kInverse);
+        if (inst->asset_class != AssetClass::Perpetual) {
+          FASTMM_LOG_WARN("{}: {} is a perpetual; asset_class set to perpetual",
+                          cfg_.name,
+                          inst->symbol.view());
+          inst->asset_class = AssetClass::Perpetual;
+        }
+        // [accounting] settles a linear instrument in its quote: that has to be settleCcy.
+        if (!inst->quote.empty() && !iequals_symbol(inst->quote.view(), f->settle_ccy))
+          FASTMM_LOG_WARN("{}: {} settles in {}, not the configured quote {}; using {}",
+                          cfg_.name,
+                          inst->symbol.view(),
+                          f->settle_ccy,
+                          inst->quote.view(),
+                          f->settle_ccy);
+        if (!inst->quote.assign(f->settle_ccy) || !inst->base.assign(f->ct_val_ccy))
+          return fail(
+              fmt::format("{}: {} currency names too long", cfg_.name, inst->symbol.view()));
       }
-      inst->tick = f->tick;
-      inst->lot = f->lot;
-      inst->min_qty = f->min_sz.is_positive() ? f->min_sz : f->lot;
-      inst->max_qty = f->max_limit_sz;
-      inst->min_notional = Notional{};  // OKX sets none for swaps: minSz is the floor
-      inst->max_notional = Notional{};
-      inst->contract_multiplier = mult;
-      inst->expiry_ns = 0;
-      inst->flags = static_cast<std::uint8_t>((inst->flags | Instrument::kReduceOnlySupported) &
-                                              ~Instrument::kInverse);
-      if (inst->asset_class != AssetClass::Perpetual) {
-        FASTMM_LOG_WARN(
-            "{}: {} is a perpetual; asset_class set to perpetual", cfg_.name, inst->symbol.view());
-        inst->asset_class = AssetClass::Perpetual;
-      }
-      // [accounting] settles a linear instrument in its quote: that has to be settleCcy.
-      if (!inst->quote.empty() && !iequals_symbol(inst->quote.view(), f->settle_ccy))
-        FASTMM_LOG_WARN("{}: {} settles in {}, not the configured quote {}; using {}",
-                        cfg_.name,
-                        inst->symbol.view(),
-                        f->settle_ccy,
-                        inst->quote.view(),
-                        f->settle_ccy);
-      if (!inst->quote.assign(f->settle_ccy) || !inst->base.assign(f->ct_val_ccy))
-        return fail(fmt::format("{}: {} currency names too long", cfg_.name, inst->symbol.view()));
+      spot_[inst->id.value] = spot;
       inst_codes_[inst->id.value] = f->inst_id_code;
       if (f->inst_id_code < 0)
         FASTMM_LOG_WARN(
@@ -294,18 +361,21 @@ Result<void, std::string> OkxVenue::load_reference_data(InstrumentTable& instrum
   publish_status();  // the offset is known before the venue connects (fastmm-gateway reads it)
   if (off > 1000 || off < -1000)
     FASTMM_LOG_WARN("{}: clock offset to venue is {} ms", cfg_.name, off);
-  FASTMM_LOG_INFO("{}: reference data loaded for {} swaps", cfg_.name, mine.size());
+  bool swaps = false;
+  for (const Instrument* inst : mine) swaps = swaps || is_swap_symbol(inst->symbol.view());
+  FASTMM_LOG_INFO("{}: reference data loaded for {} instrument(s)", cfg_.name, mine.size());
   if (!cfg_.dry_run && signer_.usable()) {
-    if (std::string err = check_account(); !err.empty()) return fail(std::move(err));
+    if (std::string err = check_account(swaps); !err.empty()) return fail(std::move(err));
   }
   return {};
 }
 
 // GET /api/v5/account/config: posMode (net_mode | long_short_mode) and acctLv (1 spot, 2 futures,
-// 3 multi-currency margin, 4 portfolio margin). Orders without posSide are refused in long/short
-// mode, and the spot mode trades no swaps: both are settings a retry does not change, and so is a
-// key the venue refuses. A failure to reach the venue is not.
-std::string OkxVenue::check_account() {
+// 3 multi-currency margin, 4 portfolio margin). With swaps configured: orders without posSide are
+// refused in long/short mode, and the spot mode trades no swaps. Both are settings a retry does
+// not change, and so is a key the venue refuses. A failure to reach the venue is not. Spot pairs
+// trade in every mode (tdMode cash).
+std::string OkxVenue::check_account(bool swaps) {
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
   opts.insecure_tls = cfg_.insecure_tls;
@@ -326,7 +396,7 @@ std::string OkxVenue::check_account() {
     AccountConfig ac;
     if (std::string err = decode_account_config(reply.body, ac); !err.empty())
       return fmt::format("{}: {}", cfg_.name, err);
-    if (ac.pos_mode != "net_mode") {
+    if (swaps && ac.pos_mode != "net_mode") {
       refused_account_settings_ = true;
       return fmt::format(
           "{}: the account is in {} (posMode); the okx connector trades net mode only: switch it "
@@ -334,18 +404,19 @@ std::string OkxVenue::check_account() {
           cfg_.name,
           ac.pos_mode);
     }
-    if (ac.acct_lv == "1") {
+    if (swaps && ac.acct_lv == "1") {
       refused_account_settings_ = true;
       return fmt::format(
           "{}: the account is in spot mode (acctLv 1), which cannot trade swaps: switch it to "
           "futures, multi-currency or portfolio margin mode",
           cfg_.name);
     }
-    FASTMM_LOG_INFO("{}: account mode acctLv {}, posMode {}, tdMode {}",
+    FASTMM_LOG_INFO("{}: account mode acctLv {}, posMode {}, tdMode {}{}",
                     cfg_.name,
                     ac.acct_lv,
                     ac.pos_mode,
-                    to_string(cfg_.td_mode));
+                    swaps ? to_string(cfg_.td_mode) : std::string_view("cash"),
+                    swaps && ac.acct_lv != "1" ? " (spot: cash)" : "");
   } catch (const std::exception& e) {
     return fmt::format("{}: account config failed: {}", cfg_.name, std::string_view(e.what()));
   }
@@ -373,9 +444,21 @@ void OkxVenue::attach(const SymbolTable& symbols,
   md_feed_->set_log_name(cfg_.name);
   private_parser_ = std::make_unique<OkxPrivateParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<OkxOrderEncoder>(symbols, cfg_.td_mode);
+  has_swap_ = false;
+  has_spot_ = false;
   for (const Instrument& in : instruments) {
-    if (in.venue == id_) encoder_->set_inst_id_code(in.id, inst_codes_[in.id.value]);
+    if (in.venue != id_) continue;
+    // Also without reference data (allow_offline_reference_data): the id says which it is.
+    spot_[in.id.value] = !is_swap_symbol(in.symbol.view());
+    (spot_[in.id.value] ? has_spot_ : has_swap_) = true;
+    encoder_->set_inst_id_code(in.id, inst_codes_[in.id.value]);
+    encoder_->set_spot(in.id, spot_[in.id.value]);
   }
+  // One execution-replay stream per instType: fills-history takes one at a time.
+  fill_types_.clear();
+  if (has_swap_ || !has_spot_) fill_types_.emplace_back("SWAP");
+  if (has_spot_) fill_types_.emplace_back("SPOT");
+  exec_replay_.set_streams(fill_types_.size());
   decoder_ = std::make_unique<OkxResponseDecoder>();
   reconcile_.attach(cfg_.name, id_, order_sink_);
 }
@@ -414,7 +497,7 @@ void OkxVenue::connect(net::Reactor& reactor) {
   exec_replay_.start_at(venue_time_ms());
   exec_replay_.open(!cfg_.dry_run && signer_.usable());
   funding_replay_.start_at(venue_time_ms());
-  funding_replay_.open(!cfg_.dry_run && signer_.usable());
+  funding_replay_.open(!cfg_.dry_run && signer_.usable() && has_swap_);  // spot pays none
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
     if (!cfg_.dry_run) {
@@ -436,13 +519,16 @@ void OkxVenue::connect(net::Reactor& reactor) {
     housekeeping_timer_ = net::kInvalidTimer;
     on_timer(now_ns());
   });
-  FASTMM_LOG_INFO("{}: connecting (dry_run={}, private={}, ws_orders={}, demo={}, depth={})",
-                  cfg_.name,
-                  cfg_.dry_run,
-                  !cfg_.dry_run && signer_.usable(),
-                  cfg_.ws_order_api,
-                  cfg_.simulated,
-                  to_string(cfg_.depth_channel));
+  FASTMM_LOG_INFO(
+      "{}: connecting (dry_run={}, private={}, ws_orders={}, demo={}, depth={}, rest={}, ws={})",
+      cfg_.name,
+      cfg_.dry_run,
+      !cfg_.dry_run && signer_.usable(),
+      cfg_.ws_order_api,
+      cfg_.simulated,
+      to_string(cfg_.depth_channel),
+      cfg_.rest_url,
+      cfg_.ws_public_url);
 }
 
 void OkxVenue::disconnect() {
@@ -630,9 +716,16 @@ void OkxVenue::on_private_state(net::ConnState s) {
 }
 
 void OkxVenue::on_private_open() {
+  // Positions and funding exist for swaps only.
   constexpr std::string_view kChannels[] = {"orders", "positions", "balance_and_position"};
+  const std::span<const std::string_view> channels =
+      has_swap_ ? std::span<const std::string_view>(kChannels)
+                : std::span<const std::string_view>(kChannels, 1);
+  // orders-pending's filter, which is empty for both; the channel names that ANY.
+  std::string_view orders_type = pending_type();
+  if (orders_type.empty()) orders_type = "ANY";
   const std::size_t n =
-      OkxOrderEncoder::encode_private_subscribe("private", kChannels, request_buf_);
+      OkxOrderEncoder::encode_private_subscribe("private", channels, orders_type, request_buf_);
   if (n == 0 || !private_conn_.send_text(std::string_view(request_buf_, n)))
     FASTMM_LOG_ERROR("{}: could not subscribe the private channels", cfg_.name);
 }
@@ -1190,7 +1283,7 @@ bool OkxVenue::fetch_snapshot(std::uint64_t generation) {
 bool OkxVenue::request_open_orders_page(std::uint64_t generation, const std::string& after) {
   if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
-  OkxOrderEncoder::encode_rest_orders_pending(after, rr);
+  OkxOrderEncoder::encode_rest_orders_pending(pending_type(), after, rr);
   std::weak_ptr<int> alive = alive_;
   return rest_->request(
       "GET", rr.path, rest_headers(rr), {}, [this, alive, generation](const net::HttpResponse& r) {
@@ -1236,8 +1329,11 @@ bool OkxVenue::request_open_orders_page(std::uint64_t generation, const std::str
           } else {
             sent = request_open_orders_page(generation, rows.back().ord_id);
           }
-        } else {
+        } else if (has_swap_) {
           sent = request_positions(generation);
+        } else {
+          finish_snapshot(generation);  // spot pairs have no position to read
+          return;
         }
         if (!sent) reconcile_.fetched(generation, false);
       });
@@ -1273,6 +1369,8 @@ void OkxVenue::finish_snapshot(std::uint64_t generation) {
   // Only open positions are listed: a subscribed instrument absent from the list is flat.
   bool long_short = false;
   for (InstrumentId id : subscribed_) {
+    // A spot holding is a balance, not a position: the engine keeps its own (see the header).
+    if (is_spot(id)) continue;
     const std::string_view sym = symbols_->venue_symbol(id);
     Qty qty{};
     Price avg{};
@@ -1301,6 +1399,11 @@ void OkxVenue::finish_snapshot(std::uint64_t generation) {
   }
 }
 
+std::string_view OkxVenue::pending_type() const noexcept {
+  if (has_swap_ && has_spot_) return {};
+  return has_spot_ ? "SPOT" : "SWAP";
+}
+
 void OkxVenue::shadow_ids(std::vector<SentShadow>& out) {
   shadows_.for_each(
       [&](ClientOrderId id, const OrderShadow& s) { out.push_back(SentShadow{id, s.sent_seq}); });
@@ -1313,7 +1416,8 @@ void OkxVenue::drop_shadow(ClientOrderId id) {
 // ---- execution replay -------------------------------------------------------------------------
 //
 // GET /api/v5/trade/fills (the last 3 days; fills-history, 3 months, for an older watermark),
-// account-wide for instType SWAP, before every open-order snapshot and once a minute
+// account-wide, one stream per instType (SWAP, SPOT), before every open-order snapshot and once a
+// minute
 // (ReplayScheduler). Each row on a subscribed instrument is emitted as an ordinary fill carrying
 // its tradeId, so the OMS keeps the ones it never saw; that recovers a fill that finished an order,
 // which the snapshot no longer mentions. Rows come newest first and are paged with `after` = the
@@ -1342,8 +1446,15 @@ bool OkxVenue::replay_ready() const noexcept {
 bool OkxVenue::query_fills(const ReplayQuery& q) {
   if (rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
-  OkxOrderEncoder::encode_rest_fills(
-      q.history, q.start_ms - 1, q.end_ms > 0 ? q.end_ms + 1 : 0, q.page, kPageLimit, rr);
+  const std::string_view inst_type =
+      q.stream < fill_types_.size() ? fill_types_[q.stream] : std::string_view("SWAP");
+  OkxOrderEncoder::encode_rest_fills(q.history,
+                                     inst_type,
+                                     q.start_ms - 1,
+                                     q.end_ms > 0 ? q.end_ms + 1 : 0,
+                                     q.page,
+                                     kPageLimit,
+                                     rr);
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", rr.path, rest_headers(rr), {}, [this, alive, q](const net::HttpResponse& r) {
@@ -1576,7 +1687,7 @@ void OkxVenue::cancel_all_async() {
 // No rest_hard_stopped_ check: cancelling is what a hard stop asks for.
 void OkxVenue::cancel_pending_async(const std::string& after, std::size_t pages) {
   RestRequest rr;
-  OkxOrderEncoder::encode_rest_orders_pending(after, rr);
+  OkxOrderEncoder::encode_rest_orders_pending(pending_type(), after, rr);
   std::weak_ptr<int> alive = alive_;
   const std::uint64_t gen = generation_;
   static_cast<void>(rest_->request(
@@ -1636,7 +1747,7 @@ bool OkxVenue::cancel_all() {
   for (std::size_t page = 0; page < kMaxReconcilePages; ++page) {
     const HttpReply reply = control.send("kill-switch orders-pending", [&](BlockingRequest& q) {
       RestRequest rr;
-      OkxOrderEncoder::encode_rest_orders_pending(after, rr);
+      OkxOrderEncoder::encode_rest_orders_pending(pending_type(), after, rr);
       q.method = "GET";
       q.target = rr.path;
       q.headers = rest_headers(rr);
@@ -1823,6 +1934,22 @@ OkxVenueConfig make_okx_config(const VenueSection& v, bool dry_run) {
     return std::invalid_argument(
         fmt::format("venues.{}.{}: {} (\"{}\")", v.name, key, why, x.get(key)));
   };
+  // The region's hosts for the URLs left empty ("Regional API Domain Requirement"): an account
+  // registered on my.okx.com (EEA) or app.okx.com (US, AU) is served only by its own domain.
+  const std::string region = x.get("region");
+  std::string_view region_rest = "https://openapi.okx.com";
+  std::string_view region_ws = c.simulated ? "wss://wspap.okx.com:8443" : "wss://ws.okx.com:8443";
+  if (region == "eea" || region == "my") {
+    region_rest = "https://eea.okx.com";
+    region_ws = c.simulated ? "wss://wseeapap.okx.com:8443" : "wss://wseea.okx.com:8443";
+  } else if (region == "us" || region == "app") {
+    region_rest = "https://us.okx.com";
+    region_ws = c.simulated ? "wss://wsuspap.okx.com:8443" : "wss://wsus.okx.com:8443";
+  } else if (!region.empty() && region != "global") {
+    throw bad("region", R"(expected "global", "eea" (or "my") or "us" (or "app"))");
+  }
+  if (c.ws_public_url.empty()) c.ws_public_url = std::string(region_ws) + "/ws/v5/public";
+  if (c.rest_url.empty()) c.rest_url = region_rest;
   c.ws_private_url = x.get("ws_private_url");
   if (c.ws_private_url.empty()) c.ws_private_url = with_path(c.ws_public_url, "/ws/v5/private");
   if (c.ws_trade_url.empty()) c.ws_trade_url = c.ws_private_url;
@@ -1877,9 +2004,11 @@ OkxVenueConfig make_okx_config(const VenueSection& v, bool dry_run) {
     c.depth_channel = OkxDepthChannel::Books;
   }
   // Demo keys work only against the demo hosts and the reverse (50101): refuse the mix here.
+  // The demo hosts are wspap, wseeapap and wsuspap; the production ones ws, wsaws, wseea, wsus.
   if (const auto u = net::Url::parse(c.ws_public_url)) {
-    const bool demo_host = u->host.find("wspap.") != std::string_view::npos;
-    const bool live_host = u->host == "ws.okx.com" || u->host == "wsaws.okx.com";
+    const bool demo_host = u->host.find("pap.okx.com") != std::string_view::npos;
+    const bool live_host = u->host == "ws.okx.com" || u->host == "wsaws.okx.com" ||
+                           u->host == "wseea.okx.com" || u->host == "wsus.okx.com";
     if (demo_host && !c.simulated)
       throw std::invalid_argument(fmt::format(
           "venues.{}.testnet: false with the demo host {}; demo trading needs testnet = true",

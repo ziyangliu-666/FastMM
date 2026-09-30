@@ -3,6 +3,39 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## OKX spot and regional hosts, run on the demo (2026-09-30)
+
+The OKX connector trades spot pairs (`BTC-USDT`) next to or instead of swaps, and `region` picks the hosts. `configs/okx-spot-demo.toml` ran on the demo of the user's spot-mode my.okx.com account.
+
+API facts, read 2026-09-30 from <https://www.okx.com/docs-v5/en/> (Overview, "Regional API Domain Requirement"; Trade: place order, fills, fills-history, cancel-all-after; WS order channel; Account: positions), <https://my.okx.com/docs-v5/en/> (Overview: production and demo trading services) and <https://app.okx.com/docs-v5/en/>:
+
+* Hosts. my.okx.com accounts use REST `https://eea.okx.com`, WebSocket `wss://wseea.okx.com:8443` and, for demo, `wss://wseeapap.okx.com:8443`; app.okx.com accounts `us.okx.com`, `wsus`, `wsuspap`; global REST is now documented as `https://openapi.okx.com` (`ws`, `wspap`). Demo REST is the production host with `x-simulated-trading: 1`. Measured: the demo key works on `my.okx.com` and `eea.okx.com`, and `www.okx.com` and `openapi.okx.com` answer 401 50119. Python's default User-Agent gets Cloudflare 403 1010 on all of them.
+* Spot orders: `tdMode` `cash` (the non-margin mode; every account mode takes it); `sz` in the base coin; `reduceOnly` only for margin and net-mode futures and swaps; `posSide` "do not send" for spot; a market buy is sized in the quote coin unless `tgtCcy` is `base_ccy`. The WebSocket order takes `instIdCode` (demo BTC-USDT: 3; tick 0.1, lot 1e-8, `minSz` 0.00002).
+* Fees: `fee` and `fillFee` are negative when charged. The fee currency is `feeCcy`: a buy pays in the base coin and a sell in the quote coin (measured). A fee is the fill times the rate, so it often has more than 8 decimals: 0.001680388 USDT on a 0.00002 BTC sell, and the docs' example is -0.00000192834 BTC.
+* Balances and positions: `account/positions` takes MARGIN, SWAP, FUTURES and OPTION, but not SPOT. A spot holding is a balance (`account/balance`). As on Binance Spot, the engine's position is the strategy's: it is restored from the store (`restore_position`), then the execution replay from the store's last fill books what is missing. Reconciliation reports no position for a spot pair. The engine has no balance input, and the demo account started with 1 BTC and 5000 USDT, so the balance is not read into it.
+* Replays: `fills-history` requires `instType` (and `fills` does not), so there is one replay stream per `instType` traded. `orders-pending` without `instType` returns every type.
+* cancel-all-after applies to "all trading symbols through order book (except Spread trading)", spot included. Measured: a resting spot order was cancelled 10 s after arming, with `cancelSource` 20 "Cancel all after triggered", and `triggerTime` is in ms.
+* `orders-history` with `begin` and no `end` returns rows oldest first, and `after` then pages backwards over the same rows. `fills` with `begin` is newest first, as the connector expects. The connector does not read `orders-history`.
+
+Bugs found and fixed:
+
+* A fee with more than 8 decimals made the whole `orders` push Malformed (`parse_notional`), so the fill was lost from the stream. On the demo this happens on every spot sell. The REST replay dropped the same fee silently (fee 0). Now `parse_fee` rounds half away from zero to 8 decimals in both paths. Tests: `okx.private_parser: a spot fill with a base-coin fee past 8 decimals is booked` (fails without the fix), a recorded sell frame, `okx.rest_decoder` spot fill, `venues.decimal: parse_fee`.
+
+Demo verification (my.okx.com demo, spot mode, BTC-USDT at 0.00002 BTC, `basic_mm`, cancel-all-after 60 s), against OKX's `fills`, `orders-history`, `orders-pending` and `account/balance`:
+
+| step | what happened | result |
+|---|---|---|
+| a. read-only | `account/config` acctLv 1 net_mode; balance 1 BTC, 5000 USDT; 0 open orders, 0 fills; private and order WebSocket login on `wseeapap` | ok |
+| b. 10 min run | 183 orders, 38 fills, 145 cancels; clean stop, `cancel_all ok` | 38/38 tradeIds in the store once; 0 open; position -0.00000038 = OKX net fills less BTC fees = BTC balance change |
+| c. kill -9 with 2 resting orders, restart 5 s later | position restored from the store; start-up sweep found the 2 earlier-epoch orders and cancelled them | 0 open after the sweep |
+| c'. kill -9, one resting order filled while down, restart 48 s later | cancel-all-after cancelled the other (`cancelSource` 20); the replay booked the fill before the sweep; sweep found 0 | fill booked once |
+| d. SIGTERM, and the end of `--duration` | `kill-switch cancel-all ok`, `cancel-all-after stopped`, exit 0 | 0 open |
+| all 5 sessions | 327 orders, 86 fills | no duplicate clOrdId or tradeId; store position -0.00008082 = OKX net fills less base fees (exact; the 8-decimal rounding did not bite at minimum size) = BTC balance change |
+
+Every cancel that races a fill gets 51400 "filled, canceled or does not exist", which is mapped to `VenueAction::Reconcile`, as Bybit 110001 and Binance -2011 are. Each race costs a fill replay and an `orders-pending` read, and the engine pulls its quotes between Begin and End. This is not wrong, but it is expensive when quoting at the touch (about once a minute here). A cancel reject for an order whose fill is already on its way needs no snapshot. Not changed: it is shared behaviour across the connectors.
+
+Next: swaps on a futures-mode demo account (positions, balance_and_position, amend, bills are still docs-only); the `openapi.okx.com` default for `region = "global"` is from the docs and has not been run with keys.
+
 **End to end over veth is slower on this host today (2026-09-29).** `scripts/bench-e2e.sh`, kernel, busy, 3 x 60 s: wire to wire p50 51 to 74 µs, T0 to T5 p50 7 to 20 µs, against 23.6 to 25.6 and 2.4 to 2.6 on 2026-09-23. The 2026-09-23 `release-native` build and the 2026-09-26 `release` build measure the same today (57 and 51 µs, one 30 s run each), so it is the host, not the code; `BM_TickToOrder_Sim` (release) is unchanged at 151 ns p50. The published e2e numbers stay those of 2026-09-23.
 
 ## Benchmark history, moved from bench/README.md (2026-09-29)

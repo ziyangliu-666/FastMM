@@ -1,8 +1,8 @@
 // OkxVenue against a scripted fake OKX v5: config mapping, reference data in contracts, the
 // account-mode check at start-up, the start-up sweep, order entry over the WebSocket, amends, the
 // fill and funding replays, cancel-all-after, the retry of a failed replay, an engine-requested
-// reconciliation and a book gap. Wire formats as in the okx_* unit tests (OKX v5 docs read
-// 2026-09-26); only the public market data has met the real venue.
+// reconciliation and a book gap; and spot pairs, alone and next to a swap. Wire formats as in the
+// okx_* unit tests (OKX v5 docs read 2026-09-26 and 2026-09-30).
 #include "fastmm/venues/okx/okx_venue.hpp"
 
 #include "fake_venue_util.hpp"
@@ -88,6 +88,22 @@ std::string bill_row(const char* inst, const char* id, const char* chg, long lon
          chg + R"(","fee":"0"})";
 }
 
+// A push or row for BTC-USDT-SWAP made one for the spot pair BTC-USDT: the instrument, tdMode cash,
+// and a fee in the base coin with more decimals than 8 (a buy's, fillSz times the rate).
+std::string spot_push(std::string f) {
+  auto swap_all = [&f](std::string_view from, std::string_view to) {
+    for (std::size_t p = f.find(from); p != std::string::npos; p = f.find(from, p + to.size()))
+      f.replace(p, from.size(), to);
+  };
+  swap_all(R"("instType":"SWAP")", R"("instType":"SPOT")");
+  swap_all(R"("instId":"BTC-USDT-SWAP")", R"("instId":"BTC-USDT")");
+  swap_all(R"("tdMode":"cross")", R"("tdMode":"cash")");
+  swap_all(R"("fillFee":"0.006","fillFeeCcy":"USDT")",
+           R"("fillFee":"-0.00100000345","fillFeeCcy":"BTC")");
+  swap_all(R"("feeCcy":"USDT","fee":"0.012")", R"("feeCcy":"BTC","fee":"-0.00200000345")");
+  return f;
+}
+
 const std::string kSnapshot =
     R"({"arg":{"channel":"books","instId":"BTC-USDT-SWAP"},"action":"snapshot","data":[{"asks":[["60000.2","5","0","1"]],"bids":[["60000.1","3","0","1"]],"ts":"1789299703000","checksum":0,"prevSeqId":-1,"seqId":100}]})";
 
@@ -95,6 +111,9 @@ struct Harness {
   FakeVenueServer srv;
   std::mutex mu;  // guards the replies below, which tests change while the server runs
   std::string instruments = fastmm::test::fixture("okx/instruments_btc_usdt_swap.json");
+  std::string spot_instruments = fastmm::test::fixture("okx/instruments_btc_usdt_spot_demo.json");
+  // The orders channel speaks of the spot pair BTC-USDT, whose buys pay in BTC.
+  std::atomic<bool> spot{false};
   std::string server_time = fastmm::test::fixture("okx/server_time.json");
   std::string account_config =
       ok_data(R"({"acctLv":"2","posMode":"net_mode","uid":"77","perm":"read_only,trade"})");
@@ -131,7 +150,8 @@ struct Harness {
     srv.route("GET", "/api/v5/public/instruments", [this](const net::HttpRequest& r) {
       srv.record("instruments", std::string(r.query));
       srv.record("sim_header", std::string(r.header("x-simulated-trading")));
-      return net::HttpServerResponse::json(200, reply(instruments));
+      const bool spot_query = r.query.find("instType=SPOT") != std::string_view::npos;
+      return net::HttpServerResponse::json(200, reply(spot_query ? spot_instruments : instruments));
     });
     srv.route("GET", "/api/v5/account/config", [this](const net::HttpRequest& r) {
       count(r);
@@ -198,7 +218,10 @@ struct Harness {
       if (json_str(t, "op") != "subscribe") return;
       s.send_text(
           R"({"id":"md","event":"subscribe","arg":{"channel":"books","instId":"BTC-USDT-SWAP"},"connId":"m1"})");
-      if (t.find(R"("channel":"books")") != std::string_view::npos) s.send_text(kSnapshot);
+      if (t.find(R"("channel":"books")") == std::string_view::npos) return;
+      if (t.find(R"("instId":"BTC-USDT-SWAP")") != std::string_view::npos) s.send_text(kSnapshot);
+      if (t.find(R"("instId":"BTC-USDT")") != std::string_view::npos)
+        s.send_text(spot_push(kSnapshot));
     });
     srv.on_ws_text("/ws/v5/private", [this](net::WsSession& s, std::string_view t) {
       const std::string op = json_str(t, "op");
@@ -237,28 +260,25 @@ struct Harness {
       }
       const std::string id = json_str(t, "id");
       const std::string req = json_str(t, "reqId");
+      auto send_push = [this](const std::string& push) {
+        private_session->send_text(spot.load() ? spot_push(push) : push);
+      };
       s.send_text(
           R"({"id":")" + id + R"(","op":")" + op +
           R"(","data":[{"clOrdId":"fm000100000001","ordId":"312","tag":"","reqId":")" + req +
           R"(","ts":"1789299700444","sCode":"0","sMsg":""}],"code":"0","msg":"","inTime":"1","outTime":"2"})");
       if (private_session == nullptr) return;
       if (op == "order" && ioc_end_first.load()) {
-        private_session->send_text(
-            order_push("fm000100000001", "canceled", "2", "0", "", "", "", "14"));
-        private_session->send_text(
-            order_push("fm000100000001", "partially_filled", "1", "1", "4463701411"));
-        private_session->send_text(
-            order_push("fm000100000001", "partially_filled", "2", "1", "4463701412"));
+        send_push(order_push("fm000100000001", "canceled", "2", "0", "", "", "", "14"));
+        send_push(order_push("fm000100000001", "partially_filled", "1", "1", "4463701411"));
+        send_push(order_push("fm000100000001", "partially_filled", "2", "1", "4463701412"));
       } else if (op == "order") {
-        private_session->send_text(order_push("fm000100000001", "live", "0", "0", ""));
-        private_session->send_text(
-            order_push("fm000100000001", "partially_filled", "1", "1", "4463701411"));
+        send_push(order_push("fm000100000001", "live", "0", "0", ""));
+        send_push(order_push("fm000100000001", "partially_filled", "1", "1", "4463701411"));
       } else if (op == "amend-order") {
-        private_session->send_text(
-            order_push("fm000100000001", "partially_filled", "1", "0", "", req.c_str(), "0"));
+        send_push(order_push("fm000100000001", "partially_filled", "1", "0", "", req.c_str(), "0"));
       } else {
-        private_session->send_text(
-            order_push("fm000100000001", "canceled", "1", "0", "", "", "", "1"));
+        send_push(order_push("fm000100000001", "canceled", "1", "0", "", "", "", "1"));
       }
     });
     srv.start();
@@ -294,6 +314,13 @@ Instrument configured_swap() {
   return i;
 }
 
+// BTC-USDT configured with a tick of 1: reference data makes it the demo's spot pair.
+Instrument configured_spot() {
+  Instrument i = make_instrument("BTC-USDT", 1, "BTC", "USDT");
+  i.tick = Price::from_int(1);
+  return i;
+}
+
 struct Live {
   InstrumentTable instruments;
   RecordingSink md{8U << 20};
@@ -305,13 +332,20 @@ struct Live {
   Collected oc;
   Collected mc;
 
-  Live(const VenueSection& section, const std::function<void(Live&)>& before_connect = {}) {
-    REQUIRE(instruments.add(configured_swap()));
+  Live(const VenueSection& section, const std::function<void(Live&)>& before_connect = {})
+      : Live(section, {configured_swap()}, before_connect) {}
+  Live(const VenueSection& section,
+       const std::vector<Instrument>& insts,
+       const std::function<void(Live&)>& before_connect = {}) {
+    std::vector<InstrumentId> ids;
+    for (const Instrument& i : insts) {
+      REQUIRE(instruments.add(i));
+      ids.push_back(InstrumentId{static_cast<std::uint32_t>(ids.size())});
+    }
     venue = std::make_unique<OkxVenue>(kVenue, make_okx_config(section, false));
     REQUIRE(venue->load_reference_data(instruments));
     REQUIRE(symbols.build(instruments));
     venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
-    const InstrumentId ids[] = {kBtc};
     venue->subscribe(ids);
     if (before_connect) before_connect(*this);
     venue->connect(reactor);
@@ -1123,5 +1157,210 @@ TEST_CASE("okx.venue: with the order table full an order or amend is refused, no
     CHECK(amends == 0);
     l.venue->on_timer(net::Reactor::now_ns());
     CHECK(l.venue->status().shadows_refused == 2);
+  }
+}
+
+// ---- spot ---------------------------------------------------------------------------------------
+
+TEST_CASE("okx.venue: region sets the hosts the section leaves empty") {
+  VenueSection s;
+  s.name = "okx";
+  s.kind = "okx";
+  s.extra["region"] = "my";  // an account registered on my.okx.com (EEA)
+  OkxVenueConfig c = make_okx_config(s, true);
+  CHECK(c.simulated);
+  CHECK(c.ws_public_url == "wss://wseeapap.okx.com:8443/ws/v5/public");
+  CHECK(c.ws_private_url == "wss://wseeapap.okx.com:8443/ws/v5/private");
+  CHECK(c.rest_url == "https://eea.okx.com");
+  s.testnet = false;
+  c = make_okx_config(s, true);
+  CHECK(c.ws_public_url == "wss://wseea.okx.com:8443/ws/v5/public");
+  CHECK(c.rest_url == "https://eea.okx.com");
+  s.extra["region"] = "us";
+  s.testnet = true;
+  c = make_okx_config(s, true);
+  CHECK(c.ws_public_url == "wss://wsuspap.okx.com:8443/ws/v5/public");
+  CHECK(c.rest_url == "https://us.okx.com");
+  s.extra.erase("region");
+  c = make_okx_config(s, true);
+  CHECK(c.ws_public_url == "wss://wspap.okx.com:8443/ws/v5/public");
+  CHECK(c.rest_url == "https://openapi.okx.com");
+  // Explicit URLs win.
+  s.extra["region"] = "eea";
+  s.rest_url = "https://my.okx.com";
+  CHECK(make_okx_config(s, true).rest_url == "https://my.okx.com");
+  s.extra["region"] = "sg";
+  CHECK_THROWS_AS(static_cast<void>(make_okx_config(s, true)), std::invalid_argument);
+  // The regional demo host with the production flag, and the reverse, are refused too.
+  s.extra.erase("region");
+  s.ws_url = "wss://wseeapap.okx.com:8443/ws/v5/public";
+  s.testnet = false;
+  CHECK_THROWS_AS(static_cast<void>(make_okx_config(s, true)), std::invalid_argument);
+  s.ws_url = "wss://wseea.okx.com:8443/ws/v5/public";
+  s.testnet = true;
+  CHECK_THROWS_AS(static_cast<void>(make_okx_config(s, true)), std::invalid_argument);
+  CHECK(is_swap_symbol("BTC-USDT-SWAP"));
+  CHECK_FALSE(is_swap_symbol("BTC-USDT"));
+  CHECK_FALSE(is_swap_symbol("-SWAP"));
+}
+
+TEST_CASE("okx.venue: a spot pair is read as SPOT, in the base coin, and trades in spot mode") {
+  Harness h;
+  h.account_config = ok_data(R"({"acctLv":"1","posMode":"net_mode","uid":"77"})");
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(configured_spot()));
+  OkxVenue venue(kVenue, make_okx_config(h.section(), false));
+  REQUIRE(venue.load_reference_data(instruments));
+  const Instrument& in = instruments.get(kBtc);
+  CHECK(in.asset_class == AssetClass::Spot);
+  CHECK(in.contract_multiplier == Qty::from_int(1));
+  CHECK((in.flags & Instrument::kReduceOnlySupported) == 0);
+  CHECK(in.enabled());
+  CHECK(in.tick == Price::from_decimal("0.1").value());
+  CHECK(in.lot == Qty::from_decimal("0.00000001").value());
+  CHECK(in.min_qty == Qty::from_decimal("0.00002").value());
+  CHECK(in.min_notional.is_zero());
+  CHECK(in.base.view() == "BTC");
+  CHECK(in.quote.view() == "USDT");
+  CHECK(in.notional(Price::from_int(60000), Qty::from_decimal("0.001").value()) ==
+        Notional::from_int(60));
+  CHECK(venue.inst_id_code(kBtc) == 3);
+  CHECK(h.srv.frames("instruments") == std::vector<std::string>{"instType=SPOT&instId=BTC-USDT"});
+  CHECK_FALSE(venue.refused_account_settings());  // the spot mode trades spot
+
+  // With a swap next to it the spot mode is refused, as before.
+  InstrumentTable both;
+  REQUIRE(both.add(configured_spot()));
+  Instrument swap = configured_swap();
+  REQUIRE(both.add(swap));
+  OkxVenue mixed(kVenue, make_okx_config(h.section(), false));
+  const auto r = mixed.load_reference_data(both);
+  REQUIRE_FALSE(r);
+  CHECK(r.error().find("spot mode") != std::string::npos);
+  CHECK(mixed.refused_account_settings());
+}
+
+TEST_CASE("okx.venue: spot sweep, a cash order, a base-coin fee, the cancel and cancel-all") {
+  Harness h;
+  h.spot = true;
+  h.account_config = ok_data(R"({"acctLv":"1","posMode":"net_mode","uid":"77"})");
+  // Left resting by an earlier session: the sweep reports it, and no position.
+  h.open_orders = ok_data(
+      R"({"instId":"BTC-USDT","ordId":"311","clOrdId":"fm000000000007","px":"59990","sz":"0.0002","side":"buy","state":"live","accFillSz":"0","ordType":"post_only"})");
+  h.positions = ok_data(R"({"instId":"BTC-USDT-SWAP","posSide":"net","pos":"-3.5","avgPx":"1"})");
+  {
+    Live l(h.section(), {configured_spot()});
+    l.wait_for_sweep();
+    const auto oo = l.reconcile(ReconcileMsg::Kind::OpenOrder);
+    REQUIRE(oo.size() == 1);
+    CHECK(oo[0]->cl_ord_id == decode_cl_ord_id("fm000000000007").value());
+    CHECK(oo[0]->orig_qty == Qty::from_decimal("0.0002").value());
+    // A spot holding is a balance: the engine keeps its own position (restored, then the fills).
+    CHECK(l.reconcile(ReconcileMsg::Kind::Position).empty());
+    const auto rest = h.rest();
+    REQUIRE(rest.size() >= 3);
+    CHECK(rest[0] == "config");
+    CHECK(rest[1].rfind("fills?instType=SPOT&begin=", 0) == 0);
+    CHECK(rest[2] == "orders-pending?instType=SPOT&limit=100");
+    for (const std::string& q : rest) CHECK(q.rfind("positions", 0) != 0);
+    const auto subs = h.srv.frames("private_subscribe");
+    REQUIRE(subs.size() == 1);
+    CHECK(subs[0] ==
+          R"({"id":"private","op":"subscribe","args":[{"channel":"orders","instType":"SPOT"}]})");
+    // The spot book arrives like the swap's.
+    REQUIRE(pump_until(l.reactor, [&] { return l.venue->md_feed()->synced_count() == 1; }));
+
+    OutNewOrderMsg n = new_order();
+    n.qty = Qty::from_decimal("0.0003").value();
+    n.reduce_only = 1;  // the engine may ask; spot takes no reduceOnly
+    l.push(n.hdr);
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderFill) == 1;
+    }));
+    CHECK(
+        h.srv.frames("trade")[0] ==
+        R"({"id":"nfm000100000001","op":"order","args":[{"instIdCode":3,"tdMode":"cash","clOrdId":"fm000100000001","side":"sell","ordType":"post_only","px":"60000.1","sz":"0.0003"}]})");
+    const auto* f = l.oc.last<OrderFillMsg>(EventType::OrderFill);
+    CHECK(f->hdr.instrument == kBtc);
+    CHECK(f->qty == Qty::from_int(1));
+    CHECK(f->fee == Notional::from_decimal("0.001").value());  // paid, rounded to 8 decimals
+    CHECK(f->fee_asset == FeeAsset::Base);
+
+    OutCancelMsg c{};
+    init_header(c, EventType::OutCancel, kBtc, kVenue);
+    c.cl_ord_id = n.cl_ord_id;
+    c.venue_order_id.assign("312");
+    l.push(c.hdr);
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return l.oc.count(EventType::OrderCancelAck) == 1;
+    }));
+    {
+      const std::lock_guard lock(h.mu);
+      h.open_orders = ok_data(
+          R"({"instId":"BTC-USDT","ordId":"312","clOrdId":"fm000100000001","px":"60000.1","sz":"0.0003","side":"sell","state":"live","accFillSz":"0"})");
+    }
+    CHECK(l.venue->cancel_all());
+    const auto cb = h.srv.frames("cancel_batch");
+    REQUIRE(cb.size() == 1);
+    CHECK(cb[0] == R"([{"instId":"BTC-USDT","ordId":"312"}])");
+    CHECK(h.signed_bad.load() == 0);
+    CHECK(h.srv.frames("bills").empty());  // spot pays no funding
+    CHECK_FALSE(l.venue->fatal());
+  }
+}
+
+TEST_CASE("okx.venue: a spot fill the stream missed is replayed from fills-history SPOT") {
+  Harness h;
+  h.spot = true;
+  h.account_config = ok_data(R"({"acctLv":"1","posMode":"net_mode","uid":"77"})");
+  h.fills = ok_data(spot_push(fill_row("5550001", "fm000100000001", kT)));
+  {
+    Live l(h.section(), {configured_spot()}, [](Live& live) {
+      live.venue->resume_executions(kT - 1'000, {});
+    });
+    l.wait_for_sweep();
+    const auto fills = l.all<OrderFillMsg>(EventType::OrderFill);
+    REQUIRE(fills.size() == 1);
+    CHECK((fills[0]->flags & OrderFillMsg::kReplayed) != 0);
+    CHECK(fills[0]->exec_id.view() == "5550001");
+    CHECK(fills[0]->qty == Qty::from_int(2));
+    CHECK(fills[0]->fee == Notional::from_decimal("0.002").value());
+    CHECK(fills[0]->fee_asset == FeeAsset::Base);
+    CHECK(h.srv.frames("fills")[0] ==
+          "instType=SPOT&begin=" + std::to_string(kT - 1'001) + "&limit=100");
+    CHECK(h.rest()[1].rfind("fills-history?", 0) == 0);
+    CHECK((l.reconcile(ReconcileMsg::Kind::Begin)[0]->flags & ReconcileMsg::kExecutionsExact) != 0);
+    CHECK(l.reconcile(ReconcileMsg::Kind::Position).empty());
+  }
+}
+
+TEST_CASE("okx.venue: a spot pair next to a swap reads both instTypes") {
+  Harness h;
+  h.positions = ok_data(
+      R"({"instId":"BTC-USDT-SWAP","posSide":"net","pos":"2","avgPx":"60000","mgnMode":"cross","uTime":"1"})");
+  const InstrumentId swap_id{1};
+  {
+    Live l(h.section(), {configured_spot(), configured_swap()});
+    l.wait_for_sweep();
+    CHECK(l.instruments.get(kBtc).asset_class == AssetClass::Spot);
+    CHECK(l.instruments.get(swap_id).asset_class == AssetClass::Perpetual);
+    // One replay stream per instType, orders of every type, positions for the swap only.
+    std::vector<std::string> fills;
+    for (const std::string& q : h.rest()) {
+      if (q.rfind("fills", 0) == 0) fills.push_back(q.substr(0, q.find('&')));
+    }
+    CHECK(fills == std::vector<std::string>{"fills?instType=SWAP", "fills?instType=SPOT"});
+    const auto rest = h.rest();
+    CHECK(std::find(rest.begin(), rest.end(), "orders-pending?limit=100") != rest.end());
+    const auto pos = l.reconcile(ReconcileMsg::Kind::Position);
+    REQUIRE(pos.size() == 1);
+    CHECK(pos[0]->hdr.instrument == swap_id);
+    CHECK(pos[0]->position_qty == Qty::from_int(2));
+    const auto subs = h.srv.frames("private_subscribe");
+    REQUIRE(subs.size() == 1);
+    CHECK(subs[0].find(R"({"channel":"orders","instType":"ANY"})") != std::string::npos);
+    CHECK(subs[0].find(R"({"channel":"positions","instType":"SWAP")") != std::string::npos);
   }
 }
