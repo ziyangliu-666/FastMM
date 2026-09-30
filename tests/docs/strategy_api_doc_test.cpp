@@ -188,6 +188,7 @@ static_assert(
 static_assert(std::same_as<decltype(Balance::free), Notional>);
 static_assert(std::same_as<decltype(Balance::known), bool>);
 static_assert(std::same_as<decltype(Margin::available), Notional>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 // [end:balances]
 
 // ---- the book a hook receives -------------------------------------------------------------------

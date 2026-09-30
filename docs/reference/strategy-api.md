@@ -216,6 +216,7 @@ static_assert(
 static_assert(std::same_as<decltype(Balance::free), Notional>);
 static_assert(std::same_as<decltype(Balance::known), bool>);
 static_assert(std::same_as<decltype(Margin::available), Notional>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 ```
 
 | Method | Returns |
@@ -223,6 +224,7 @@ static_assert(std::same_as<decltype(Margin::available), Notional>);
 | `balance(venue, asset)` | `Balance`: `free`, `locked`, `total` (the venue's last report moved by this engine's orders and fills since; [Balance check](../explanation/risk-model.md#balance-check)), `equity` and `maintenance` as reported, `as_of` (the report's venue time), `known` (false until the venue reports the asset, and for an asset no instrument of the venue uses). Amounts are in the asset |
 | `margin(venue)` | `Margin`: `available`, `initial`, `maintenance`, `equity`, `wallet`, `asset`: the venue's account-wide margin where it reports one (`account` true, usually valued in USD), else the settlement asset of its first derivative |
 | `balance_room(id, side, px)` | the largest quantity of `id` on `side` at `px` the balance covers, rounded down to the lot: a spot buy's quote with the taker fee, a spot sell's base, a derivative's initial margin; `Qty::max()` while the venue has not reported that balance. What this instrument's open orders on that side hold is not counted as room |
+| `balances_live()` | a venue has reported balances; before that nothing is estimated or checked |
 
 `RiskHeadroom::balance_buy_qty` / `balance_sell_qty` are `balance_room` at the book's mid. `fit_to_balance(ctx, id, inst, q)` (`strategies/quoting.hpp`) cuts a `DesiredQuotes` ladder to what the balance covers, the side's resting orders counted as room; `basic_mm` uses it.
 
