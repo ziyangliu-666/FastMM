@@ -36,7 +36,7 @@ The build needs gcc 13+ or clang 16+, CMake 3.25+, Ninja and OpenSSL 3. Releases
 
 ## Write a strategy
 
-A strategy says which quotes it wants. The engine diffs them against the resting orders, checks risk and sends the difference.
+A strategy says which quotes it wants. The engine diffs them against the resting orders, checks risk and the account's balance on the venue, and sends the difference. `ctx.balance` and `ctx.margin` give the strategy each venue's balances and margin as the venue reports them.
 
 <!-- snippet: examples/python/strategies/touch_mm.py#example -->
 ```python
