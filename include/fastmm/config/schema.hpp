@@ -247,7 +247,7 @@ inline constexpr KeySpec kConfigSchema[] = {
      "api_passphrase",
      KeyType::String,
      false,
-     "API key passphrase where the venue has one (OKX), written as \"${VARIABLE}\""},
+     "API key passphrase where the venue has one (OKX, Coinbase), written as \"${VARIABLE}\""},
     {"venues.*",
      "testnet",
      KeyType::Bool,
