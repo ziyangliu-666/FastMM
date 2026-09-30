@@ -4,6 +4,7 @@
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
@@ -68,6 +69,9 @@ struct EngineConfig {
   // [risk] check_balance and the initial margin rates ([[instruments]] initial_margin) the balance
   // check and the estimate use (core/balance_book.hpp).
   BalanceConfig balance;
+  // [accounting] mark, stale_mark_ms, stale_funding_ms: what a derivative's position is valued at
+  // and when the venue's mark, index and funding are stale (core/perp_book.hpp).
+  PerpConfig perp;
 };
 
 }  // namespace fastmm

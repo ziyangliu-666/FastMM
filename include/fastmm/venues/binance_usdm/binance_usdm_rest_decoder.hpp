@@ -12,6 +12,8 @@
 //   GET /fapi/v1/income            [{symbol,incomeType,income,asset,info,time,tranId,tradeId}]
 //   GET /fapi/v3/account           totals and assets[] ("Account Information V3")
 //   GET /fapi/v1/multiAssetsMargin {"multiAssetsMargin":bool} ("Get Current Multi-Assets Mode")
+//   GET /fapi/v1/fundingInfo       [{symbol,adjustedFundingRateCap,adjustedFundingRateFloor,
+//                                  fundingIntervalHours,disclaimer,updateTime}]
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
 
@@ -109,5 +111,17 @@ struct IncomeRecord {
   std::int64_t tran_id = 0;
 };
 std::string decode_income(std::string_view json, std::vector<IncomeRecord>& out);
+
+// GET /fapi/v1/fundingInfo ("Get Funding Rate Info"): the symbols whose funding rate cap, floor or
+// interval was adjusted; every other symbol pays every 8 hours. Public, IP weight 0, sharing a
+// 500 per 5 minutes per IP limit with GET /fapi/v1/fundingRate.
+struct FundingInfoRecord {
+  std::string symbol;
+  std::int64_t interval_hours = 0;  // fundingIntervalHours
+};
+// Only the symbols in `wanted` (case-insensitive); all of them when `wanted` is empty.
+std::string decode_funding_info(std::string_view json,
+                                std::vector<FundingInfoRecord>& out,
+                                std::span<const std::string> wanted = {});
 
 }  // namespace fastmm::venues::binance_usdm

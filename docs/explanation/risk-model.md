@@ -108,6 +108,12 @@ The average entry price of an inverse position is the size-weighted harmonic mea
 
 `Instrument::kInverse` is set from Deribit reference data, not from the configuration. An inverse contract on another connector is booked as a linear one.
 
+## Valuation at the venue mark
+
+A derivative's venue publishes a mark price (`PerpStateMsg`, [Venues](../reference/venues.md#mark-index-and-funding)); liquidations and the venue's own unrealized PnL use it. With `[accounting] mark = "venue"` (the default) a position whose instrument has a mark younger than `stale_mark_ms` (default 15 s) is valued at it: its unrealized PnL, the net PnL `max_loss` measures and the exposure the notional caps sum (`include/fastmm/core/perp_book.hpp`). A new mark revalues the position and checks `max_loss` at once; book updates do not move it. When the mark goes stale the next book update values the position at the mid again, logged and counted, until a fresh mark arrives. An instrument without marks (spot) is valued at its mid. `mark = "mid"` values every position at its mid, as before the marks existed.
+
+The decision runs on the engine clock, which the journal records, so a replay values and trips at the same events. `fastmm-gateway`'s account follows the same setting with its own clock, so `[gateway] max_loss` and the exposure caps see the same values as the strategies'. The price collar, the fat-finger check, `[risk.underlying]` and the FX rates keep the mid.
+
 ## The kill switch
 
 The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, bit 1 + v is venue v. While a bit is set, checks 1 and 2 refuse every new order and replace. Tripping the global bit also turns quoting off (`on_quoting(false)`), pulls every quote and cancels every working order; tripping a venue's bit does that for that venue's instruments only. The engine records why each bit was first set (a `KillReason`, shown by `fastmm-top`).
@@ -115,7 +121,7 @@ The kill switch is a 32-bit flag word that any thread can set: bit 0 is global, 
 The global switch trips when:
 
 - the session shuts down: Ctrl-C, SIGTERM, `--duration` or an order ring overflow (the control thread requests it, then cancels all orders on every venue over a separate REST connection);
-- `[risk] max_loss` is reached: net PnL (realised plus unrealised, marked at the mid, minus fees) plus the PnL carried over from earlier sessions is re-evaluated on every book update, fill, funding payment and position snapshot;
+- `[risk] max_loss` is reached: net PnL (realised plus unrealised, valued at the venue's mark or the mid ([Valuation](#valuation-at-the-venue-mark)), minus fees) plus the PnL carried over from earlier sessions is re-evaluated on every book update, venue mark, fill, funding payment and position snapshot;
 - the outbound ring to a venue or the journal ring is full, because the engine can no longer guarantee that what it sends is what it records;
 - every venue with instruments has been killed;
 - a strategy hook reports an error (`StrategyError`, Python hot hooks);

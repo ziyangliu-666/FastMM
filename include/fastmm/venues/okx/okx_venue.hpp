@@ -386,7 +386,4 @@ class OkxVenue final : public Venue, private ReconcileHooks {
 // api_passphrase outside a dry run, and for a demo host with testnet = false or the reverse.
 OkxVenueConfig make_okx_config(const VenueSection& section, bool dry_run);
 
-// An OKX instrument id naming a perpetual swap (BTC-USDT-SWAP); anything else is taken as spot.
-[[nodiscard]] bool is_swap_symbol(std::string_view inst_id) noexcept;
-
 }  // namespace fastmm::venues::okx

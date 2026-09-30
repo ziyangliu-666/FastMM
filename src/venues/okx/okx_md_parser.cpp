@@ -2,9 +2,11 @@
 
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/level_spill.hpp"
+#include "fastmm/venues/perp_state.hpp"
 
 #include <simdjson.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace fastmm::venues::okx {
@@ -171,11 +173,16 @@ struct DecodeCtx {
   std::uint32_t* text_bids;
 };
 
-[[nodiscard]] std::int64_t ts_field(od::object& o) noexcept {
+// A Unix ms time sent as a string; 0 when absent or not a number.
+[[nodiscard]] std::int64_t ms_field(od::object& o, std::string_view key) noexcept {
   std::string_view s;
-  if (o["ts"].get_string().get(s) != sj::SUCCESS) return 0;
+  if (o[key].get_string().get(s) != sj::SUCCESS) return 0;
   const auto v = parse_int64(s);
   return v ? *v : 0;
+}
+
+[[nodiscard]] std::int64_t ts_field(od::object& o) noexcept {
+  return ms_field(o, "ts");
 }
 
 // The first (only) element of `data`.
@@ -366,7 +373,113 @@ struct DecodeCtx {
   return r;
 }
 
+enum class PerpChannel : std::uint8_t { Mark, Funding, OpenInterest };
+
+MdDecodeResult perp_written(MdParserStats& stats, MdDecodeResult r, std::uint32_t n) noexcept {
+  stats.perp_states += n;
+  r.status = ParseStatus::Ok;
+  r.kind = MdKind::PerpState;
+  r.len = n * static_cast<std::uint32_t>(sizeof(PerpStateMsg));
+  r.count = n;
+  return r;
+}
+
+// mark-price, funding-rate and open-interest: one item on the subscribed swap.
+[[gnu::noinline]] MdDecodeResult decode_perp(const DecodeCtx& c,
+                                             PerpChannel ch,
+                                             od::value data,
+                                             MdDecodeResult r) noexcept {
+  MdParserStats& stats = *c.stats;
+  od::object item;
+  if (!first_data(data, item)) return malformed(stats, r);
+  auto* m = reinterpret_cast<PerpStateMsg*>(c.out.data());
+  PerpStateBuilder b(*m, c.inst, c.venue, ts_field(item), c.recv_ts, c.t0);
+  std::string_view s;
+  switch (ch) {
+    case PerpChannel::Mark: {
+      if (item["markPx"].get_string().get(s) != sj::SUCCESS) return malformed(stats, r);
+      const auto p = parse_price(s);
+      if (!p) return malformed(stats, r);
+      b.mark(*p);
+      break;
+    }
+    case PerpChannel::Funding: {
+      // fundingRate: the predicted rate of the settlement at fundingTime (positive: longs pay
+      // shorts). The interval is nextFundingTime - fundingTime, which OKX documents as the way
+      // to read it.
+      double rate = 0.0;
+      if (item["fundingRate"].get_double_in_string().get(rate) != sj::SUCCESS)
+        return malformed(stats, r);
+      const std::int64_t at = ms_field(item, "fundingTime");
+      const std::int64_t next = ms_field(item, "nextFundingTime");
+      if (at <= 0) return malformed(stats, r);
+      const Duration interval = next > at ? milliseconds(next - at) : Duration{};
+      b.funding(rate, interval, at);
+      break;
+    }
+    case PerpChannel::OpenInterest: {
+      // "2216113.01000000309": a computed value with more decimals than the fixed point holds.
+      if (item["oi"].get_string().get(s) != sj::SUCCESS) return malformed(stats, r);
+      const auto oi = parse_rounded<Qty>(s);
+      if (!oi) return malformed(stats, r);
+      b.open_interest(*oi);
+      break;
+    }
+  }
+  if (!b.any()) {  // a mark of 0: nothing to report
+    ++stats.ignored;
+    r.status = ParseStatus::Ignored;
+    return r;
+  }
+  return perp_written(stats, r, 1);
+}
+
+// index-tickers: the index price of every swap on that index.
+[[gnu::noinline]] MdDecodeResult decode_index(const DecodeCtx& c,
+                                              std::string_view index,
+                                              std::span<const OkxIndexOf> indices,
+                                              od::value data,
+                                              MdDecodeResult r) noexcept {
+  MdParserStats& stats = *c.stats;
+  od::object item;
+  if (!first_data(data, item)) return malformed(stats, r);
+  std::string_view s;
+  if (item["idxPx"].get_string().get(s) != sj::SUCCESS) return malformed(stats, r);
+  const auto p = parse_price(s);
+  if (!p) return malformed(stats, r);
+  const std::int64_t ts = ts_field(item);
+  std::uint32_t n = 0;
+  for (const OkxIndexOf& e : indices) {
+    if (!iequals_symbol(e.index, index)) continue;
+    if ((n + 1) * sizeof(PerpStateMsg) > c.out.size()) {
+      ++stats.overflow;
+      break;
+    }
+    auto* m = reinterpret_cast<PerpStateMsg*>(c.out.data() + n * sizeof(PerpStateMsg));
+    if (!PerpStateBuilder(*m, e.swap, c.venue, ts, c.recv_ts, c.t0).index(*p).any()) break;
+    ++n;
+  }
+  if (n == 0) {
+    ++stats.ignored;
+    r.status = ParseStatus::Ignored;
+    return r;
+  }
+  return perp_written(stats, r, n);
+}
+
 }  // namespace
+
+void OkxMdParser::add_index(std::string_view index, InstrumentId swap) {
+  for (const OkxIndexOf& e : indices_) {
+    if (e.swap == swap) return;
+  }
+  indices_.push_back(OkxIndexOf{std::string(index), swap});
+}
+
+bool OkxMdParser::has_index(std::string_view index) const noexcept {
+  return std::ranges::any_of(
+      indices_, [index](const OkxIndexOf& e) { return iequals_symbol(e.index, index); });
+}
 
 MdDecodeResult OkxMdParser::decode(std::string_view json,
                                    Timestamp recv_ts,
@@ -399,7 +512,16 @@ MdDecodeResult OkxMdParser::decode(std::string_view json,
   std::string_view channel;
   std::string_view inst_id;
   std::string_view action;
-  enum class Kind : std::uint8_t { None, Books, Bbo, Trades } kind = Kind::None;
+  enum class Kind : std::uint8_t {
+    None,
+    Books,
+    Bbo,
+    Trades,
+    Mark,
+    Index,
+    Funding,
+    OpenInterest
+  } kind = Kind::None;
   InstrumentId inst{};
   for (auto field : root) {
     std::string_view key;
@@ -428,13 +550,22 @@ MdDecodeResult OkxMdParser::decode(std::string_view json,
       kind = Kind::Bbo;
     } else if (channel == "trades") {
       kind = Kind::Trades;
+    } else if (channel == "mark-price") {
+      kind = Kind::Mark;
+    } else if (channel == "index-tickers") {
+      kind = Kind::Index;
+    } else if (channel == "funding-rate") {
+      kind = Kind::Funding;
+    } else if (channel == "open-interest") {
+      kind = Kind::OpenInterest;
     } else {
       ++stats_.ignored;
       r.status = ParseStatus::Ignored;
       return r;
     }
-    inst = symbols_.find(venue_, inst_id);
-    if (!inst.valid()) {
+    // index-tickers names the index, not an instrument: add_index() maps it to the swaps.
+    if (kind != Kind::Index) inst = symbols_.find(venue_, inst_id);
+    if (kind == Kind::Index ? !has_index(inst_id) : !inst.valid()) {
       ++stats_.unknown_symbol;
       r.status = ParseStatus::UnknownSymbol;
       return r;
@@ -457,6 +588,14 @@ MdDecodeResult OkxMdParser::decode(std::string_view json,
         return decode_bbo(c, field.value(), r);
       case Kind::Trades:
         return decode_trades(c, field.value(), r);
+      case Kind::Mark:
+        return decode_perp(c, PerpChannel::Mark, field.value(), r);
+      case Kind::Funding:
+        return decode_perp(c, PerpChannel::Funding, field.value(), r);
+      case Kind::OpenInterest:
+        return decode_perp(c, PerpChannel::OpenInterest, field.value(), r);
+      case Kind::Index:
+        return decode_index(c, inst_id, indices_, field.value(), r);
       case Kind::None:
         break;
     }

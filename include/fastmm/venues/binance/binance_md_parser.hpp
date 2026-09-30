@@ -32,6 +32,8 @@ struct MdParserStats {
   std::uint64_t book_deltas = 0;
   std::uint64_t book_tickers = 0;
   std::uint64_t trades = 0;
+  std::uint64_t perp_states = 0;        // USDⓈ-M markPriceUpdate -> PerpStateMsg
+  std::uint64_t funding_rollovers = 0;  // a rollover that changed a funding interval (USDⓈ-M)
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;
   std::uint64_t unknown_symbol = 0;

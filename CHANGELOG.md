@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Mark, index and funding of perpetuals: `PerpStateMsg` (`EventType::PerpState`, market data,
+  journaled) carries a venue's mark price, index price, funding rate per interval, the interval,
+  the next funding time and open interest, from Binance USD-M `markPrice@1s` (the interval from
+  `fundingInfo`), OKX `mark-price` / `index-tickers` / `funding-rate` / `open-interest`, Bybit
+  `tickers`, Deribit `ticker` and Gemini `@markPrice` / `@fundingAmount`. The engine keeps a per-instrument table with the time
+  each field arrived (`core/perp_book.hpp`): `ctx.mark`, `ctx.index`, `ctx.funding`,
+  `ctx.perp_state`, `on_perp_state` (C++ and Python), stale after `[accounting] stale_mark_ms` /
+  `stale_funding_ms`. `[accounting] mark = "venue"` (default) values a derivative's position at
+  its venue's fresh mark for the unrealized PnL, `max_loss` and the exposure caps, in the engine
+  and in `fastmm-gateway`'s account; `"mid"` keeps the mid. `xmm`: `funding_horizon_s` (the
+  perpetual legs' funding over the expected holding time shifts fair value) and `mark_basis`.
+  Status segment version 14 (the perp table), `fastmm_perp_*` metrics, `journal_dump.py`.
 - Balances, margin and collateral: `BalanceMsg` (`EventType::Balance`, journaled) reports one asset
   of a venue's account; every connector sends a snapshot after each reconciliation
   (`ReconcileDriver`'s balance leg) and its private stream's updates (Binance Spot

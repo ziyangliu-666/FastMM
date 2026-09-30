@@ -1,8 +1,10 @@
 #pragma once
 // AccountBook: the positions of an account on one venue, as fastmm-gateway sees them. Every
 // execution that passes through is booked once (keyed like the OMS dedupe: venue execution id,
-// instrument, side) into a PositionTracker, marked at the mid of the venue's books as the engine
-// marks its own; so is every funding payment (keyed like the engine's: venue id, instrument).
+// instrument, side) into a PositionTracker, valued as the engine values its own: at the venue's
+// mark while it is fresh with [accounting] mark = "venue" (a PerpBook, core/perp_book.hpp), else at
+// the mid of the venue's books; so is every funding payment (keyed like the engine's: venue id,
+// instrument).
 // check_exposure() is the account's version of RiskEngine's portfolio check. Single-threaded: it
 // belongs to the venue's network thread.
 #include "fastmm/core/book/l2_book.hpp"
@@ -12,7 +14,9 @@
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/position.hpp"
+#include "fastmm/core/time.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -33,12 +37,16 @@ class AccountBook {
 
   // With an active FxPlan the positions also keep their totals per currency
   // (PositionTracker::native), which the gateway converts at its rates.
-  AccountBook(const InstrumentTable& insts, VenueId venue, const FxPlan& fx = {})
+  AccountBook(const InstrumentTable& insts,
+              VenueId venue,
+              const FxPlan& fx = {},
+              const PerpConfig& perp = {})
       : insts_(&insts), seen_(std::make_unique<Seen>()), books_(kMaxInstruments) {
     for (const Instrument& i : insts) {
       if (i.venue == venue) books_[i.id.value] = std::make_unique<Book>();
     }
     pos_.set_accounting(fx);
+    perp_.configure(perp);
   }
 
   [[nodiscard]] const PositionTracker& positions() const noexcept { return pos_; }
@@ -138,15 +146,57 @@ class AccountBook {
     pos_.set(id, Qty::from_raw(q), avg, insts_->get(id));
   }
 
-  // Market data: the book, and the mark when it is valid. Returns true when it marked.
-  bool on_book(const BookDeltaMsg& d) noexcept {
+  // Market data: the book, and the mid values the position when it is valid and no fresh venue
+  // mark does (`now`: the clock the venue marks are aged on). Returns true when the book is valid.
+  bool on_book(const BookDeltaMsg& d, Timestamp now = {}) noexcept {
     const InstrumentId id = d.hdr.instrument;
     if (id.value >= kMaxInstruments || books_[id.value] == nullptr) return false;
     Book& b = *books_[id.value];
     b.apply_delta(d);
     if (!b.is_valid()) return false;
-    pos_.mark(id, b.mid(), insts_->get(id));
+    if (!perp_.marking() || perp_.mid_marks(id, now)) pos_.mark(id, b.mid(), insts_->get(id));
     return true;
+  }
+  // A venue's mark, index and funding of one of its derivatives, arrived at `now`. Returns true
+  // when its mark values the position from now on.
+  bool on_perp_state(const PerpStateMsg& m, Timestamp now) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (id.value >= kMaxInstruments || books_[id.value] == nullptr) return false;
+    if (!perp_.on_report(m, now)) return false;
+    pos_.mark(id, m.mark_price, insts_->get(id));
+    return true;
+  }
+  [[nodiscard]] const PerpBook& perps() const noexcept { return perp_; }
+  // The fields of `id` that are fresh at `now`, as one message stamped with the venue time of the
+  // last report (an attaching strategy's engine starts its table from it). False when none is.
+  bool perp_snapshot(InstrumentId id,
+                     VenueId venue,
+                     Timestamp now,
+                     PerpStateMsg& out) const noexcept {
+    const PerpRow& r = perp_.row(id);
+    if (r.reports == 0) return false;
+    init_header(out, EventType::PerpState, id, venue);
+    out.hdr.exch_ts = r.venue_ts;
+    out.fields = 0;
+    if (perp_.mark(id, now).usable()) {
+      out.mark_price = r.mark;
+      out.fields |= PerpStateMsg::kMark;
+    }
+    if (perp_.index(id, now).usable()) {
+      out.index_price = r.index;
+      out.fields |= PerpStateMsg::kIndex;
+    }
+    if (r.funding_at.valid() && !perp_.funding(id, now).stale) {
+      out.funding_rate = r.funding_rate;
+      out.funding_interval = r.funding_interval;
+      out.next_funding = r.next_funding;
+      out.fields |= PerpStateMsg::kFunding;
+    }
+    if (r.open_interest_at.valid() && now - r.open_interest_at <= perp_.config().stale_funding) {
+      out.open_interest = r.open_interest;
+      out.fields |= PerpStateMsg::kOpenInterest;
+    }
+    return out.fields != 0;
   }
   // The book of an instrument of this venue; nullptr for another venue's.
   [[nodiscard]] const Book* book(InstrumentId id) const noexcept {
@@ -175,6 +225,7 @@ class AccountBook {
   }
   using Seen = RecentMap<std::uint64_t, std::uint8_t, kExecWindow>;
   PositionTracker pos_;
+  PerpBook perp_;
   const InstrumentTable* insts_;
   std::unique_ptr<Seen> seen_;
   std::vector<std::unique_ptr<Book>> books_;

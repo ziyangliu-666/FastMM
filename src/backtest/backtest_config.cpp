@@ -280,6 +280,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.fees = fee_table(cfg);
   b.engine.fees = t.fees;
   b.engine.balance = balance_config(cfg);
+  b.engine.perp = perp_config(cfg);
 
   sim::MarketGeneratorParams& g = b.generator;
   const Instrument& inst = b.instruments.get(InstrumentId{0});

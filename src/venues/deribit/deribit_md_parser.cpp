@@ -2,6 +2,7 @@
 
 #include "fastmm/venues/deribit/deribit_json.hpp"
 #include "fastmm/venues/level_spill.hpp"
+#include "fastmm/venues/perp_state.hpp"
 
 #include <simdjson.h>
 
@@ -37,6 +38,9 @@ DeribitMdParser::~DeribitMdParser() = default;
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+// current_funding is an 8-hour rate (Deribit support, "Inverse Perpetual": "The funding rate is
+// expressed as an 8-hour interest rate"), paid continuously.
+constexpr Duration kFundingInterval = seconds(std::int64_t{8} * 3600);
 
 [[nodiscard]] inline sj::padded_string_view padded(std::string_view s) noexcept {
   return sj::padded_string_view(s.data(), s.size(), s.size() + sj::SIMDJSON_PADDING);
@@ -255,6 +259,9 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
   std::int64_t ts = 0;
   if (data["timestamp"].get_int64().get(ts) != sj::SUCCESS) return malformed(stats, r);
   const bool option = c.ins->asset_class == AssetClass::Option;
+  // Perpetuals and dated futures: mark, index and open interest, plus funding for perpetuals.
+  const bool perp_state =
+      c.ins->asset_class == AssetClass::Perpetual || c.ins->asset_class == AssetClass::Future;
   double delta = kNaN;
   double gamma = kNaN;
   double vega = kNaN;
@@ -279,15 +286,26 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
   Price underlying_px{};
   Qty bid_amount{};
   Qty ask_amount{};
+  // Lookups follow the recorded field order (a missed key costs a pass over the object).
   if (fixed_of(data["index_price"], index_px) == Num::Malformed) return malformed(stats, r);
+  Qty open_interest{};
+  Num oi = Num::Missing;
+  if (perp_state) {
+    oi = fixed_of(data["open_interest"], open_interest);
+    if (oi == Num::Malformed) return malformed(stats, r);
+  }
   if (fixed_of(data["mark_price"], mark_px) == Num::Malformed) return malformed(stats, r);
-  const double rate = double_or_nan(data["interest_rate"]);
+  const double funding =
+      c.ins->asset_class == AssetClass::Perpetual ? double_or_nan(data["current_funding"]) : kNaN;
+  // The option fields are looked up for option tickers only.
+  const bool option_msg = option || has_greeks;
+  const double rate = option_msg ? double_or_nan(data["interest_rate"]) : kNaN;
   if (fixed_of(data["best_ask_price"], ask_px) == Num::Malformed) return malformed(stats, r);
   if (fixed_of(data["best_bid_price"], bid_px) == Num::Malformed) return malformed(stats, r);
-  const double mark_iv = double_or_nan(data["mark_iv"]);
-  const double bid_iv = double_or_nan(data["bid_iv"]);
-  const double ask_iv = double_or_nan(data["ask_iv"]);
-  if (fixed_of(data["underlying_price"], underlying_px) == Num::Malformed)
+  const double mark_iv = option_msg ? double_or_nan(data["mark_iv"]) : kNaN;
+  const double bid_iv = option_msg ? double_or_nan(data["bid_iv"]) : kNaN;
+  const double ask_iv = option_msg ? double_or_nan(data["ask_iv"]) : kNaN;
+  if (option_msg && fixed_of(data["underlying_price"], underlying_px) == Num::Malformed)
     return malformed(stats, r);
   if (fixed_of(data["best_ask_amount"], ask_amount) == Num::Malformed) return malformed(stats, r);
   if (fixed_of(data["best_bid_amount"], bid_amount) == Num::Malformed) return malformed(stats, r);
@@ -304,7 +322,7 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
   ++stats.book_tickers;
   std::uint32_t written = sizeof(BookTickerMsg);
   r.count = 1;
-  if (option || has_greeks) {
+  if (option_msg) {
     auto* ot = reinterpret_cast<OptionTickerMsg*>(c.out.data() + written);
     init_header(*ot, EventType::OptionTicker, c.inst, c.venue);
     ot->mark_price = mark_px;
@@ -325,6 +343,16 @@ MdDecodeResult malformed(MdParserStats& stats, MdDecodeResult r) noexcept {
     written += sizeof(OptionTickerMsg);
     ++r.count;
     ++stats.option_tickers;
+  } else if (perp_state) {
+    auto* ps = reinterpret_cast<PerpStateMsg*>(c.out.data() + written);
+    PerpStateBuilder b(*ps, c.inst, c.venue, ts, c.recv_ts, c.t0);
+    b.mark(mark_px).index(index_px).funding(funding, kFundingInterval, 0);
+    if (oi == Num::Ok) b.open_interest(amount_to_contracts(open_interest, csize));
+    if (b.any()) {
+      written += sizeof(PerpStateMsg);
+      ++r.count;
+      ++stats.perp_states;
+    }
   }
   r.status = ParseStatus::Ok;
   r.kind = MdKind::BookTicker;

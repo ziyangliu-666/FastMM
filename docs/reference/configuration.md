@@ -494,6 +494,9 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 |---|---|---|---|
 | `reporting_currency` | string |  | currency the PnL totals, [risk] max_loss and the exposure caps (and fastmm-gateway's) are in when instruments settle in more than one; every other settlement currency needs a source in [accounting.fx] (default unset: no conversion) |
 | `fx` | table |  | [accounting.fx] table: one entry per other settlement currency, the instrument whose mid prices it in reporting_currency (BTC = "binance:BTCUSDT"; a pair quoted the other way round, USDTBTC, is inverted) |
+| `mark` | string |  | what a derivative's position is valued at for the unrealized PnL, max_loss and the exposure caps (fastmm-gateway's too): venue (its venue's mark price while it is fresh, else the book's mid) \| mid (default venue) |
+| `stale_mark_ms` | integer |  | a venue's mark or index price older than this is stale: ctx.mark and ctx.index flag it and the position is valued at the mid, ms (default 15000) |
+| `stale_funding_ms` | integer |  | a venue's funding rate older than this is stale (ctx.funding flags it), ms (default 180000) |
 <!-- END config-keys -->
 
 ## `[logging]`

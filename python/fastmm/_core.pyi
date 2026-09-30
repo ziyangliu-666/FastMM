@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'RiskHeadroom', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Funding', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'PerpStateView', 'Portfolio', 'PositionView', 'RefPrice', 'RiskHeadroom', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -659,11 +659,23 @@ class Context:
         """
         Maker and taker rates of the instrument: the ones the simulated venue charges.
         """
+    def funding(self, inst: typing.Any) -> Funding:
+        """
+        The venue's funding of a perpetual (on_perp_state), with its age.
+        """
+    def index(self, inst: typing.Any) -> RefPrice:
+        """
+        The venue's index price of a derivative (on_perp_state), with its age.
+        """
     def instrument(self, inst: typing.Any) -> typing.Any:
         ...
     def margin(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> Margin:
         """
         The venue's margin: its account-wide margin where it reports one, else the settlement asset of its first derivative.
+        """
+    def mark(self, inst: typing.Any) -> RefPrice:
+        """
+        The venue's mark price of a derivative (on_perp_state), with its age.
         """
     def once(self, delay_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         """
@@ -886,6 +898,34 @@ class FillView:
         ...
     @property
     def update(self) -> typing.Any:
+        ...
+class Funding:
+    """
+    A venue's funding of a perpetual now (a copy): the rate per interval it will apply at next_ns (0: continuous); positive: longs pay shorts. stale: older than [accounting] stale_funding_ms, or never reported.
+    """
+    def __repr__(self) -> str:
+        ...
+    def over(self, seconds: typing.SupportsFloat | typing.SupportsIndex) -> float:
+        """
+        The rate over a holding time of `seconds`: rate * seconds / interval.
+        """
+    @property
+    def at_ns(self) -> int:
+        ...
+    @property
+    def interval_ns(self) -> int:
+        ...
+    @property
+    def next_ns(self) -> int:
+        ...
+    @property
+    def rate(self) -> float:
+        ...
+    @property
+    def stale(self) -> bool:
+        ...
+    @property
+    def usable(self) -> bool:
         ...
 class Instrument:
     """
@@ -1287,6 +1327,61 @@ class OrderUpdateView:
     @property
     def venue_ack_ns(self) -> int:
         ...
+class PerpStateView:
+    """
+    A venue's mark, index and funding of one derivative (valid inside on_perp_state). has_mark, has_index, has_funding and has_open_interest name the fields this message carries.
+    """
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def funding_interval_ns(self) -> int:
+        ...
+    @property
+    def funding_rate(self) -> float:
+        ...
+    @property
+    def has_funding(self) -> bool:
+        ...
+    @property
+    def has_index(self) -> bool:
+        ...
+    @property
+    def has_mark(self) -> bool:
+        ...
+    @property
+    def has_open_interest(self) -> bool:
+        ...
+    @property
+    def index_price(self) -> float:
+        ...
+    @property
+    def index_price_raw(self) -> int:
+        ...
+    @property
+    def instrument(self) -> int:
+        ...
+    @property
+    def mark_price(self) -> float:
+        ...
+    @property
+    def mark_price_raw(self) -> int:
+        ...
+    @property
+    def next_funding_ns(self) -> int:
+        ...
+    @property
+    def open_interest(self) -> float:
+        ...
+    @property
+    def open_interest_raw(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def venue(self) -> int:
+        ...
 class Portfolio:
     """
     PnL totals over every instrument (a copy).
@@ -1360,6 +1455,27 @@ class PositionView:
         ...
     @property
     def unrealized_raw(self) -> int:
+        ...
+class RefPrice:
+    """
+    A venue's mark or index price of a derivative now (a copy). stale: older than [accounting] stale_mark_ms, or never reported; usable: reported and not stale.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def at_ns(self) -> int:
+        ...
+    @property
+    def price(self) -> float:
+        ...
+    @property
+    def price_raw(self) -> int:
+        ...
+    @property
+    def stale(self) -> bool:
+        ...
+    @property
+    def usable(self) -> bool:
         ...
 class RiskHeadroom:
     """
@@ -1617,9 +1733,9 @@ def _run_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, param
     """
     Internal: backtest of a compiled hot strategy with the GIL released; use fastmm.run_backtest(config, data, strategy=MyStrategy).
     """
-def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any, name: str, hooks: collections.abc.Sequence[str], params: dict, balances: typing.Any = None) -> tuple:
+def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any, name: str, hooks: collections.abc.Sequence[str], params: dict, balances: typing.Any = None, perp_states: typing.Any = None) -> tuple:
     """
-    Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the data by time.
+    Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the data by time. `perp_states`: PerpStateMsg rows (ts_ns, inst, mark, index, funding_rate, funding_interval_s, next_funding_ns), a None field not carried.
     """
 def _slow_abi() -> dict:
     """

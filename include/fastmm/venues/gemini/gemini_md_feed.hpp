@@ -6,7 +6,12 @@
 // Subscriptions (https://developer.gemini.com/websocket/streams.md, read 2026-09-30), one request
 // {"id":"md","method":"subscribe","params":[..]} with three streams per symbol:
 // `{symbol}@depth@100ms` (differential depth, the snapshot first: the connection URL carries
-// `snapshot=-1`), `{symbol}@bookTicker` (real time) and `{symbol}@trade`.
+// `snapshot=-1`), `{symbol}@bookTicker` (real time) and `{symbol}@trade`. Perpetuals add
+// `{symbol}@markPrice` and `{symbol}@fundingAmount` (PerpStateMsg; undocumented streams, see
+// gemini_md_parser.hpp) in a request of their own, {"id":"perp",..}: the venue refuses a whole
+// request when one stream name is unknown (400, -1013 "Invalid stream name", nothing subscribed;
+// production 2026-09-30), so should these streams go away the books still stream and the venue
+// logs the refusal.
 //
 // Which depth frame is the snapshot (gemini_book_sync.hpp): the first of a symbol after the
 // connection opens, and after a resubscription the first after the unsubscribe's reply. Measured
@@ -57,13 +62,15 @@ class GeminiMdFeed {
     index_.fill(-1);
   }
 
-  bool add_instrument(InstrumentId id) {
+  // `perpetual`: also subscribe the instrument's mark and funding streams.
+  bool add_instrument(InstrumentId id, bool perpetual = false) {
     if (!symbols_.contains(id) || id.value >= kMaxInstruments || index_[id.value] >= 0)
       return false;
     index_[id.value] = static_cast<std::int16_t>(books_.size());
     books_.push_back(std::make_unique<Book>(id, venue_, sink_, requester_, min_interval_));
     books_.back()->sync.set_log_names(log_name_, symbols_.venue_symbol(id));
     ids_.push_back(id);
+    if (perpetual) perps_.push_back(id);
     rebuild_payloads();
     return true;
   }
@@ -230,6 +237,22 @@ class GeminiMdFeed {
     }
     p += "]}";
     payloads_.push_back(std::move(p));
+    if (perps_.empty()) return;
+    std::string q = R"({"id":"perp","method":"subscribe","params":[)";
+    first = true;
+    for (InstrumentId id : perps_) {
+      const std::string sym(symbols_.lower_symbol(id));
+      for (std::string_view suffix : {"@markPrice", "@fundingAmount"}) {
+        if (!first) q += ',';
+        first = false;
+        q += '"';
+        q += sym;
+        q += suffix;
+        q += '"';
+      }
+    }
+    q += "]}";
+    payloads_.push_back(std::move(q));
   }
 
   const SymbolTable& symbols_;
@@ -242,6 +265,7 @@ class GeminiMdFeed {
   std::array<std::int16_t, kMaxInstruments> index_{};
   std::vector<std::unique_ptr<Book>> books_;
   std::vector<InstrumentId> ids_;
+  std::vector<InstrumentId> perps_;
   std::vector<std::string> payloads_;
   alignas(64) std::byte scratch_[kDecoderScratchBytes];
   MdFeedStats stats_;

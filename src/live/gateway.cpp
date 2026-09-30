@@ -369,6 +369,13 @@ struct VenueRouter {
   };
   Seqlocked<BalancePub> balance_pub;
   std::int64_t balance_pub_ns = 0;
+  // The account's perp table rows of this venue (AccountBook::perps), for the status file.
+  struct PerpPub {
+    std::uint32_t count = 0;
+    std::array<LivePerp, kMaxLivePerps> rows{};
+  };
+  Seqlocked<PerpPub> perp_pub;
+  std::int64_t perp_pub_ns = 0;
 
   // Shared instruments. The live attachment of each slot. Per instrument: each slot that seeded
   // the account's position with its store, and the history that seed holds (its replay start and
@@ -648,13 +655,18 @@ std::size_t mark_account(VenueRouter& v) noexcept {
   bool marked = false;
   MsgRing& ring = *v.acct_md;
   Account& a = *v.acct;
+  // The clock the venue marks are aged on, read once per batch.
+  Timestamp now{};
   while (const std::byte* p = ring.try_peek()) {
     const auto& h = *reinterpret_cast<const EventHeader*>(p);
+    if (!now.valid()) now = steady_now();
     if (h.type == EventType::ConnectionState) {
       v.book->on_connection_state(msg_cast<ConnectionStateMsg>(&h));
       if (a.fx.active()) publish_rates(v);
+    } else if (h.type == EventType::PerpState) {
+      marked = v.book->on_perp_state(msg_cast<PerpStateMsg>(&h), now) || marked;
     } else {
-      const bool valid = v.book->on_book(msg_cast<BookDeltaMsg>(&h));
+      const bool valid = v.book->on_book(msg_cast<BookDeltaMsg>(&h), now);
       marked = valid || marked;
       if (valid && a.und.underlying_of(h.instrument) >= 0) {
         a.mark[h.instrument.value].store(v.book->book(h.instrument)->mid().raw,
@@ -771,7 +783,7 @@ void drain_md(void* ctx) noexcept {
       for (Route* r : v.routes) push_md(*r, h);
     }
     if (h.type == EventType::BookDelta || h.type == EventType::BookSnapshot ||
-        h.type == EventType::ConnectionState) {
+        h.type == EventType::ConnectionState || h.type == EventType::PerpState) {
       if (!v.acct_md_lost && !v.acct_md->try_push(&h, h.len)) v.acct_md_lost = true;
     }
     ring.release();
@@ -1591,6 +1603,17 @@ bool push_books(VenueRouter& v, Route& r) noexcept {
     r.md->commit();
     r.dirty = true;
   }
+  // The venue's marks, indices and funding that are fresh: a strategy that attaches between two
+  // funding-rate pushes (OKX: a minute apart) has them at once.
+  const Timestamp steady = steady_now();
+  for (const Instrument& inst : *v.insts) {
+    if (inst.venue != v.vid) continue;
+    PerpStateMsg m{};
+    if (!v.book->perp_snapshot(inst.id, v.vid, steady, m)) continue;
+    m.hdr.recv_ts = now;
+    if (!r.md->try_push(&m, m.hdr.len)) return false;
+    r.dirty = true;
+  }
   return true;
 }
 
@@ -1677,6 +1700,22 @@ void publish_balances(VenueRouter& v) noexcept {
   v.balance_pub.store(p);
 }
 
+// The venue's rows of the account's perp table, for the status file (every 200 ms at most).
+void publish_perps(VenueRouter& v) noexcept {
+  const PerpBook& pb = v.book->perps();
+  if (pb.instruments() == 0) return;
+  const Timestamp now = steady_now();
+  if (now.ns - v.perp_pub_ns < 200'000'000) return;
+  v.perp_pub_ns = now.ns;
+  VenueRouter::PerpPub p;
+  for (const Instrument& inst : *v.insts) {
+    if (inst.venue != v.vid || pb.row(inst.id).reports == 0) continue;
+    if (p.count == kMaxLivePerps) break;
+    fill_live_perp(p.rows[p.count++], pb, inst.id, v.vid, now);
+  }
+  v.perp_pub.store(p);
+}
+
 std::size_t gateway_hook(void* ctx) noexcept {
   auto& v = *static_cast<VenueRouter*>(ctx);
   if (FASTMM_UNLIKELY(v.acct->tripped.load(std::memory_order_relaxed)) && !v.killed) kill_venue(v);
@@ -1693,6 +1732,7 @@ std::size_t gateway_hook(void* ctx) noexcept {
   }
   n += mark_account(v);
   publish_balances(v);
+  publish_perps(v);
   return n;
 }
 
@@ -1856,7 +1896,7 @@ class Gateway {
       v->max_open_notional = max_notional;
       v->dry_run = opts.dry_run;
       v->acct = &acct;
-      v->book = std::make_unique<AccountBook>(insts, v->vid, acct.fx);
+      v->book = std::make_unique<AccountBook>(insts, v->vid, acct.fx, perp_config(cfg));
       v->balances->build(insts, fees, balance);
       v->acct_md = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
       // Before any strategy seeded an instrument, a replayed execution from before the gateway
@@ -2550,6 +2590,14 @@ class Gateway {
         sb.equity_raw = lb.equity_raw;
         sb.maintenance_raw = lb.maintenance_raw;
         sb.as_of_ns = lb.as_of_ns;
+      }
+      const VenueRouter::PerpPub pp = v.perp_pub.load();
+      for (std::uint32_t k = 0; k < pp.count && s.perp_count < kStatusMaxPerps; ++k) {
+        const LivePerp& lp = pp.rows[k];
+        const InstrumentId id{lp.instrument};
+        to_status_perp(s.perps[s.perp_count++],
+                       lp,
+                       instruments_.contains(id) ? instruments_.get(id).symbol.view() : "?");
       }
       const Account::Sum t = acct_.venue_sum(i);
       gv.realized_raw = t.realized;

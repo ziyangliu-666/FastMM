@@ -85,9 +85,14 @@ struct FxPlan {
 };
 
 // [accounting]: the reporting currency and, per other currency, its source as "venue:symbol".
+// Also what a derivative's position is valued at (core/perp_book.hpp): "venue" (its venue's mark
+// while fresh) or "mid", and when the venues' mark, index and funding are stale.
 struct AccountingSpec {
   std::string reporting_currency;         // empty: no accounting (one currency, as before)
   std::map<std::string, std::string> fx;  // currency -> "venue:symbol"
+  std::string mark = "venue";             // "venue" | "mid"
+  int stale_mark_ms = 15'000;
+  int stale_funding_ms = 180'000;
   [[nodiscard]] bool configured() const noexcept { return !reporting_currency.empty(); }
 };
 

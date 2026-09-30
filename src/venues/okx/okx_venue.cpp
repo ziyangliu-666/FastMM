@@ -123,12 +123,6 @@ std::string apply_spot_info(std::string_view venue, const InstrumentInfo& f, Ins
 
 }  // namespace
 
-bool is_swap_symbol(std::string_view inst_id) noexcept {
-  constexpr std::string_view kSuffix = "-SWAP";
-  return inst_id.size() > kSuffix.size() &&
-         iequals_symbol(inst_id.substr(inst_id.size() - kSuffix.size()), kSuffix);
-}
-
 // ---- construction ---------------------------------------------------------------------------
 
 OkxVenue::OkxVenue(VenueId id, OkxVenueConfig cfg)

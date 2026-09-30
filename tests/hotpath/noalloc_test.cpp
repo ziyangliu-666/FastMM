@@ -463,3 +463,110 @@ TEST_CASE(
   CHECK(engine->stats().param_expiries == 1);
   CHECK_FALSE(engine->params_stale());
 }
+
+namespace {
+// BasicMM that reads the perp table in its hook.
+struct PerpMM : BasicMM {
+  std::uint64_t seen = 0;
+  template <class Ctx>
+  void on_perp_state(Ctx& ctx, InstrumentId id, const PerpStateMsg&) noexcept {
+    const RefPrice m = ctx.mark(id);
+    const FundingView f = ctx.funding(id);
+    if (m.usable() || f.usable()) ++seen;
+  }
+};
+}  // namespace
+
+// Perpetuals: the venue's marks (valuing the position), indices and funding, their staleness
+// (the position falls back to the mid), the hook and the published table, without allocating.
+TEST_CASE("hotpath.noalloc: engine step with venue marks and funding") {
+  InstrumentTable table;
+  Instrument perp = make_inst();
+  perp.asset_class = AssetClass::Perpetual;
+  REQUIRE(table.add(perp));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 22};
+  PerpMM strategy;
+  REQUIRE_FALSE(strategy.configure(
+      {{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"max_inventory", "0.05"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.risk.max_loss = Notional::from_int(1000);
+  cfg.quotes.min_requote_interval = Duration{};
+  cfg.perp.stale_mark = seconds(1);
+  using E = Engine<PerpMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::int64_t venue_ms = 1'789'000'000'000;
+  auto push_perp = [&](const char* mark, bool funding) {
+    PerpStateMsg m{};
+    init_header(m, EventType::PerpState, InstrumentId{0}, VenueId{0});
+    m.mark_price = px(mark);
+    m.index_price = px(mark);
+    m.fields = PerpStateMsg::kMark | PerpStateMsg::kIndex;
+    if (funding) {
+      m.funding_rate = 0.0001;
+      m.funding_interval = seconds(std::int64_t{8} * 3600);
+      m.fields |= PerpStateMsg::kFunding;
+    }
+    m.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  auto push_book = [&](const char* bid, const char* ask, std::uint64_t seq) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(*d,
+                EventType::BookSnapshot,  // each one whole: the book stays valid
+                InstrumentId{0},
+                VenueId{0},
+                BookDeltaMsg::size_for(1, 1));
+    d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->hdr.t0_cycles = clock.cycles();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = seq;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  auto push_fill = [&](std::uint64_t n) {
+    OrderFillMsg f{};
+    init_header(f, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+    f.cl_ord_id = ClientOrderId{0xBEEF};
+    f.exec_id.assign("p");
+    f.exec_id.push_back(static_cast<char>('a' + n % 26));
+    f.side = Side::Buy;
+    f.price = px("100.00");
+    f.qty = qt("0.001");
+    f.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    f.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(f.hdr));
+  };
+  push_book("100.00", "100.02", 1);
+  push_perp("100.05", true);
+  {
+    NoAllocScope guard(true);
+    std::size_t n = 0;
+    while (engine->step() > 0) ++n;
+    for (std::uint64_t i = 0; i < 20; ++i) {
+      push_book(i % 2 == 0 ? "100.10" : "100.00", i % 2 == 0 ? "100.12" : "100.02", 2 + i);
+      push_fill(i);
+      push_perp(i % 2 == 0 ? "100.07" : "100.03", i % 4 == 0);
+      while (engine->step() > 0) ++n;
+      // Every fifth round the mark goes stale before the next book update.
+      clock.advance(i % 5 == 4 ? milliseconds(1500) : milliseconds(100));
+    }
+    engine->step();  // the latency publication, which copies the perp table
+    CHECK(n > 0);
+  }
+  CHECK(engine->perps().stats().reports == 21);
+  CHECK(engine->perps().stats().mark_fallbacks >= 3);
+  CHECK(strategy.seen == 21);
+  CHECK(engine->live_stats().perp_count == 1);
+}

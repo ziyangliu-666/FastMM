@@ -9,6 +9,7 @@
   "raw_md_stream.jsonl": "recorded, one frame per line (receive stamp, tab, frame): the first 200 frames of the session (the three snapshots, the btcusd one with 2564 bids and 2094 asks including asks at 1e10 and above, diffs, bookTickers, the subscribe, time and ping replies) and the next 5 trade frames",
   "private payloads (tests/venues/gemini_*_test.cpp)": "docs-example (https://developer.gemini.com/websocket/streams.md, specs/openapi/rest.yaml, specs/asyncapi/websocket.yaml, read 2026-09-30) with FastMM client order ids; not recorded (no keys)",
   "balances_sandbox.json": "recorded (sandbox exchange account, POST /v1/balances, 2026-09-30T04:42Z, read-only; the reply carries no account id)",
-  "balance_update_sandbox.json": "recorded (sandbox, wss://ws.sandbox.gemini.com balances@account, 2026-09-30T04:42Z): the balanceUpdate of every asset sent on subscribe, before the subscribe reply; USD in cents (99966.89) where /v1/balances says 99966.89444"
+  "balance_update_sandbox.json": "recorded (sandbox, wss://ws.sandbox.gemini.com balances@account, 2026-09-30T04:42Z): the balanceUpdate of every asset sent on subscribe, before the subscribe reply; USD in cents (99966.89) where /v1/balances says 99966.89444",
+  "raw_perp_stream.jsonl": "recorded on production (wss://ws.gemini.com?snapshot=-1, fastmm-live --dry-run --record-raw with configs/gemini-sandbox.toml pointed at production, no keys, btcgusdperp, 2026-09-30T08:35:48Z to 08:38:45Z; receive stamp, tab, frame): the md, perp and time replies and every btcgusdperp@markPrice (37, one per 5 s) and @fundingAmount frame (3, one per minute) of the session; depth, bookTicker and ping frames left out"
  }
 }

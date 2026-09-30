@@ -27,6 +27,10 @@ using namespace fastmm::venues::test;
 
 namespace {
 
+Duration hours(std::int64_t h) {
+  return seconds(h * 3600);
+}
+
 constexpr const char* kKey = "fake-key";
 constexpr const char* kSecret = "fake-secret";
 constexpr const char* kPrivatePath = "/private/ws/lk-test-0001";
@@ -110,6 +114,9 @@ struct Harness {
   std::atomic<int> cancel_all_limited{0};        // the next N allOpenOrders answer 429
   std::atomic<int> cancel_all_requests{0};
   std::atomic<bool> exchange_info_down{false};  // exchangeInfo answers 503
+  // GET /fapi/v1/fundingInfo answer (set before load_reference_data); empty: 503.
+  std::string funding_info = fastmm::test::fixture("binance_usdm/funding_info.json");
+  std::atomic<bool> mark_price{false};  // the market stream sends a recorded markPriceUpdate
   std::atomic<int> user_trades_queries{0};
   std::atomic<int> user_trades_failures{0};  // the next N userTrades queries answer 503
   std::mutex trades_mu;
@@ -162,6 +169,11 @@ struct Harness {
       if (exchange_info_down.load())
         return net::HttpServerResponse::text(503, "Service Unavailable");
       return net::HttpServerResponse::json(200, exchange_info);
+    });
+    srv.route("GET", "/fapi/v1/fundingInfo", [this](const net::HttpRequest& r) {
+      srv.record("fundingInfo", std::string(r.query));
+      if (funding_info.empty()) return net::HttpServerResponse::text(503, "Service Unavailable");
+      return net::HttpServerResponse::json(200, funding_info);
     });
     srv.route("GET", "/fapi/v1/time", [](const net::HttpRequest&) {
       return net::HttpServerResponse::json(
@@ -301,9 +313,10 @@ struct Harness {
       s.send_text(depth_frame(97, 104, 95, "69999.00"));    // brackets 100
       s.send_text(depth_frame(110, 112, 104, "70000.00"));  // pu == previous u
     });
-    srv.on_ws_open("/market/stream", [](net::WsSession& s) {
+    srv.on_ws_open("/market/stream", [this](net::WsSession& s) {
       s.send_text(
           R"({"stream":"btcusdt@aggTrade","data":{"e":"aggTrade","E":1789469122045,"a":309896910,"s":"BTCUSDT","p":"70000.10","q":"0.010","nq":"0.010","f":1,"l":2,"T":1789469121938,"m":true,"st":1}})");
+      if (mark_price.load()) s.send_text(fastmm::test::fixture("binance_usdm/mark_price.json"));
     });
     srv.on_ws_text("/ws-fapi/v1", [](net::WsSession& s, std::string_view t) {
       const std::string method = json_str(t, "method");
@@ -959,6 +972,89 @@ TEST_CASE("binance_usdm.venue: offline reference data still runs the account che
   REQUIRE(venue2.load_reference_data(instruments2));
   CHECK(h2.srv.frames("/fapi/v1/positionSide/dual").size() == 1);
   h2.srv.stop();
+}
+
+TEST_CASE("binance_usdm.venue: markPrice on the market connection with fundingInfo's interval") {
+  Harness h;
+  h.mark_price = true;
+  // BTCUSDT's interval adjusted to 4 h; ETHUSDT listed at 8 h.
+  const std::string btc8 =
+      R"("symbol":"BTCUSDT","adjustedFundingRateCap":"0.00300","adjustedFundingRateFloor":"-0.00300","fundingIntervalHours":8)";
+  const std::size_t at = h.funding_info.find(btc8);
+  REQUIRE(at != std::string::npos);
+  h.funding_info.replace(at + btc8.size() - 1, 1, "4");
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  REQUIRE(instruments.add(make_instrument("ETHUSDT", 0, "ETH", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  BinanceUsdmVenue venue(VenueId{0}, h.config(true));
+  REQUIRE(venue.load_reference_data(instruments));
+  CHECK(h.srv.frames("fundingInfo").size() == 1);
+  CHECK(instruments.get(InstrumentId{0}).asset_class == AssetClass::Perpetual);
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
+  venue.subscribe(ids);
+  CHECK(venue.md_feed()->funding_interval(InstrumentId{0}) == hours(4));
+  CHECK(venue.md_feed()->funding_interval(InstrumentId{1}) == hours(8));
+  venue.connect(reactor);
+  Collected mc;
+  REQUIRE(pump_until(reactor, [&] {
+    mc.take(md);
+    return mc.count(EventType::PerpState) == 1 && mc.count(EventType::Trade) == 1 &&
+           h.srv.frames("upgrade:/public/stream").size() == 1;
+  }));
+  // The mark price streams ride the /market connection with aggTrade, not /public.
+  const auto market = h.srv.frames("upgrade:/market/stream");
+  REQUIRE(market.size() == 1);
+  CHECK(market[0] ==
+        "streams=btcusdt@aggTrade/ethusdt@aggTrade/btcusdt@markPrice@1s/ethusdt@markPrice@1s");
+  const auto pub = h.srv.frames("upgrade:/public/stream");
+  REQUIRE(pub.size() == 1);
+  CHECK(pub[0].find("markPrice") == std::string::npos);
+  const auto* m = mc.last<PerpStateMsg>(EventType::PerpState);
+  REQUIRE(m != nullptr);
+  CHECK(m->hdr.instrument == InstrumentId{0});
+  CHECK(m->fields == (PerpStateMsg::kMark | PerpStateMsg::kIndex | PerpStateMsg::kFunding));
+  CHECK(m->funding_interval == hours(4));
+  venue.disconnect();
+  reactor.run_once(0);
+  h.srv.stop();
+}
+
+TEST_CASE("binance_usdm.venue: without fundingInfo the interval is 8 h, spot gets no markPrice") {
+  // exchangeInfo and fundingInfo both down, offline reference data allowed: the instrument keeps
+  // its configured asset class (spot here), which subscribes no mark price stream.
+  Harness h;
+  h.exchange_info_down = true;
+  h.funding_info.clear();
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  Instrument eth = make_instrument("ETHUSDT", 0, "ETH", "USDT");
+  eth.asset_class = AssetClass::Perpetual;
+  REQUIRE(instruments.add(eth));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  SymbolTable symbols;
+  BinanceUsdmVenueConfig cfg = h.config(true);
+  cfg.allow_offline_reference_data = true;
+  BinanceUsdmVenue venue(VenueId{0}, std::move(cfg));
+  REQUIRE(venue.load_reference_data(instruments));
+  CHECK(h.srv.frames("fundingInfo").size() == 1);
+  CHECK(instruments.get(InstrumentId{0}).asset_class == AssetClass::Spot);
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
+  venue.subscribe(ids);
+  CHECK(venue.md_feed()->market_target() ==
+        "/market/stream?streams=btcusdt@aggTrade/ethusdt@aggTrade/ethusdt@markPrice@1s");
+  CHECK(venue.md_feed()->funding_interval(InstrumentId{1}) == hours(8));
+  h.srv.stop();
 }
 
 TEST_CASE("binance_usdm.venue: a quote is charged what the endpoint costs, not one of everything") {

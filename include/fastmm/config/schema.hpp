@@ -517,6 +517,25 @@ inline constexpr KeySpec kConfigSchema[] = {
      "prices it in reporting_currency (BTC = \"binance:BTCUSDT\"; a pair quoted the other way "
      "round, USDTBTC, is inverted)"},
     {"accounting.fx", "*", KeyType::String, false, "FX source of one settlement currency"},
+    {"accounting",
+     "mark",
+     KeyType::String,
+     false,
+     "what a derivative's position is valued at for the unrealized PnL, max_loss and the "
+     "exposure caps (fastmm-gateway's too): venue (its venue's mark price while it is fresh, else "
+     "the book's mid) | mid (default venue)"},
+    {"accounting",
+     "stale_mark_ms",
+     KeyType::Int,
+     false,
+     "a venue's mark or index price older than this is stale: ctx.mark and ctx.index flag it and "
+     "the position is valued at the mid, ms (default 15000)"},
+    {"accounting",
+     "stale_funding_ms",
+     KeyType::Int,
+     false,
+     "a venue's funding rate older than this is stale (ctx.funding flags it), ms (default "
+     "180000)"},
     // [logging]
     {"logging",
      "level",

@@ -70,13 +70,24 @@ Both instruments must be linear (spot, linear perpetuals or futures). Contract s
 ```text
 ref   = hedge mid (use_microprice: the touch microprice)
 basis = EWMA of (quote mid - ref), half-life basis_halflife_s; 0 turns it off
-fair  = ref + basis
+        mark_basis: (quote mark - quote index) - (hedge mark - hedge index)
+carry = ref * (hedge funding - quote funding) over funding_horizon_s; 0 turns it off
+fair  = ref + basis + carry
 half  = fair * (edge_bps + quote maker fee + hedge taker fee + slippage_bps)
 bid   = fair - half, rounded down; ask = fair + half, rounded up
 size  = one level of quote_qty, base units
 ```
 
 Quotes never cross the quote venue's touch. A fair value move under `requote_threshold_ticks` does not requote.
+
+### Perpetual legs
+
+The mark, index and funding come from the venues ([`ctx.mark`, `ctx.funding`](../../reference/strategy-api.md#perpetuals)); a leg that is not a perpetual counts 0 in both terms.
+
+- `carry`: a bid that fills is hedged by a sell, so the pair holds a short hedge and a long quote. Over the expected holding time `funding_horizon_s` the short receives the hedge's funding and the long pays the quote's, each `ctx.funding(id).over(horizon)` (the rate per interval scaled to the horizon; positive: longs pay). An ask that fills holds the opposite pair and pays the same amount, so both sides shift by the same `carry`. Example: spot quoted on Binance, hedged on a perpetual paying 0.01 % per 8 h, horizon 1 h: fair moves up by 0.00125 % of the hedge mid.
+- `mark_basis`: the venues' own premia replace the EWMA of the mids, on the assumption that both indices price the same underlying. It follows the funding-driven premium without the EWMA's lag and ignores the noise of two books.
+
+A mark, index or funding rate a term needs that is stale (`[accounting] stale_mark_ms`, `stale_funding_ms`) or has not arrived pulls the quotes, as a stale book does. Every `PerpState` of either instrument requotes while one of the two is on.
 
 ## Hedging
 
@@ -92,6 +103,7 @@ Quotes never cross the quote venue's touch. A fair value move under `requote_thr
 | Condition | Effect |
 |---|---|
 | Either book invalid or older than `stale_ms` | quotes pulled |
+| `mark_basis` or `funding_horizon_s` on, and a mark, index or funding rate it needs stale or missing | quotes pulled |
 | Hedge venue market data or order channel down | quotes pulled, no hedges |
 | Hedge venue held by the feed-lag gate (`[risk] max_feed_lag_ms`) | quotes pulled |
 | A fill would take the unhedged position past `max_unhedged` | that side not quoted |

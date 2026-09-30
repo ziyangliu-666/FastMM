@@ -125,6 +125,7 @@ The frame has the account (net PnL, realized, unrealized, fees, carried, gross a
 | `fastmm_account_position{venue,instrument}` | gauge | base units |
 | `fastmm_account_underlying_net{underlying}`, `_underlying_max_net{underlying}` | gauge | `[gateway.underlying]`, base units; the net is absent while an inverse contract has no mark |
 | `fastmm_balance_free`, `_locked`, `_total`, `_equity`, `_maintenance` `{venue,asset,account}` | gauge | the account's balances over every strategy, asset units |
+| `fastmm_perp_mark`, `_index`, `_funding_rate`, ... `{venue,symbol}` | gauge | the venues' mark, index and funding, as for `fastmm-live`; the account's positions are valued at the mark while it is fresh |
 | `fastmm_gateway_instrument_owner{venue,instrument}` | gauge | the owner's epoch; absent while nobody trades it, and for a shared instrument |
 | `fastmm_gateway_instrument_traders{venue,instrument}` | gauge | attachments trading it |
 | `fastmm_account_unattributed{venue,instrument}`, `_unexplained{venue,instrument}` | gauge | a shared instrument's parts, base units ([Shared instruments](#shared-instruments)); alert on `_unexplained != 0` |

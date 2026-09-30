@@ -250,4 +250,24 @@ std::string decode_income(std::string_view json, std::vector<IncomeRecord>& out)
   return {};
 }
 
+std::string decode_funding_info(std::string_view json,
+                                std::vector<FundingInfoRecord>& out,
+                                std::span<const std::string> wanted) {
+  dom::parser parser;
+  dom::array arr;
+  if (parser.parse(sj::padded_string(json)).get(arr) != sj::SUCCESS)
+    return "fundingInfo: expected an array";
+  for (dom::element e : arr) {
+    std::string_view symbol;
+    if (e["symbol"].get(symbol) != sj::SUCCESS) return "fundingInfo: a row without a symbol";
+    if (!is_wanted(symbol, wanted)) continue;
+    FundingInfoRecord r;
+    r.symbol = std::string(symbol);
+    if (e["fundingIntervalHours"].get(r.interval_hours) != sj::SUCCESS || r.interval_hours <= 0)
+      return "fundingInfo: " + r.symbol + " without a fundingIntervalHours";
+    out.push_back(std::move(r));
+  }
+  return {};
+}
+
 }  // namespace fastmm::venues::binance_usdm

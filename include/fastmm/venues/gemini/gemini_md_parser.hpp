@@ -11,12 +11,35 @@
 //                         -> BookTickerMsg
 //   {"E":ns,"s":sym,"t":id,"p":px,"q":qty,"m":buyer_is_maker}          (`@trade`)
 //                         -> TradeMsg, aggressor Sell when the buyer made, Buy otherwise
+//   {"e":"markPrice","E":ns,"s":sym,"p":mark,"i":scaled index}          (`@markPrice`)
+//                         -> PerpStateMsg kMark, exch_ts = E; `i` is left out (below)
+//   {"e":"fundingAmount","E":T,"s":sym,"T":ns,"i":minutes,"f":amount,"r":pct,"p":mark,"R":bool}
+//                         (`@fundingAmount`) -> PerpStateMsg kFunding: rate f / p per `i`
+//                            minutes, next_funding T; a realized one (R true) is ignored
 //   {"id":..,"status":200[,"result":{..}]} and {"id","status","error":{"code","msg"}}
 //                         -> control: the request id, the status, the error, `serverTime` of a
 //                            `time` reply
 //
-// Only depthUpdate carries an `e`; a bookTicker has `B`, a trade has `t` and `m`. Symbols are
-// lowercase on this API ("btcgusdperp"); the symbol table matches without regard to case.
+// markPrice and fundingAmount are not in the docs or the AsyncAPI spec (read 2026-09-30); the
+// revision history lists a "Mark Price WebSocket API" update on 2025-10-31. Their fields were read
+// off production frames (btcgusdperp, ethgusdperp, 2026-09-30) and match the archived v2 market
+// data's mark_price and funding_amount (developer.gemini.com/websocket/archived/v2.md) and REST
+// /v1/riskstats and /v1/fundingamount:
+//   markPrice      every 5 s. p = REST mark_price exactly. i = the index times a factor that
+//                  differs per symbol (x100 btcgusdperp, x10 ethgusdperp, x100 solgusdperp) and
+//                  is documented nowhere, so the index is not reported.
+//   fundingAmount  every minute, on the minute, no snapshot on subscribe. f is the estimated
+//                  funding for 1 contract long over the period ending at T, in the quote currency
+//                  (support.gemini.com "How is the Funding Amount calculated?": TWAP(perp -
+//                  spot) / 24 over the hour; positive: longs pay shorts), so f / p is the rate per
+//                  period. r is that rate in percent cut to 3 decimals, too coarse to use. E
+//                  equals T (the funding time), not the time of the estimate: exch_ts is left
+//                  zero. i is 60: funding is hourly.
+// Open interest is on REST /v1/riskstats only (not polled).
+//
+// Of the book and trade frames only depthUpdate carries an `e`; a bookTicker has `B`, a trade has
+// `t` and `m`. Symbols are lowercase on this API ("btcgusdperp"); the symbol table matches without
+// regard to case.
 // Quantities are base units (1 BTC per perpetual contract): the engine's unit.
 //
 // simdjson On-Demand lives in the .cpp. Frames need kJsonPadding readable bytes behind them.
@@ -38,6 +61,9 @@ struct MdParserStats {
   std::uint64_t book_deltas = 0;
   std::uint64_t book_tickers = 0;
   std::uint64_t trades = 0;
+  std::uint64_t marks = 0;             // markPrice frames
+  std::uint64_t fundings = 0;          // fundingAmount estimates
+  std::uint64_t funding_realized = 0;  // fundingAmount frames with R true, ignored
   std::uint64_t control = 0;
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;

@@ -259,6 +259,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
   } else if (auto applied = apply_exchange_info(reply, mine, wanted); !applied) {
     return applied;
   }
+  load_funding_intervals(mine, wanted);
   // exchangeInfo.serverTime is cached (5 days old on Demo, observed 2026-09-15): the clock offset
   // comes from GET /fapi/v1/time.
   try {
@@ -281,6 +282,53 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
     if (std::string err = account_checks(mine); !err.empty()) return fail(std::move(err));
   }
   return {};
+}
+
+// GET /fapi/v1/fundingInfo: the funding interval of each configured symbol it lists; the others
+// keep the parser's 8 hours. Not fatal: the interval only scales the rate for the strategy.
+void BinanceUsdmVenue::load_funding_intervals(const std::vector<Instrument*>& mine,
+                                              const std::vector<std::string>& wanted) {
+  funding_intervals_.clear();
+  BlockingHttpOptions opts;
+  opts.ca_file = cfg_.ca_file;
+  opts.insecure_tls = cfg_.insecure_tls;
+  opts.timeout_ms = cfg_.http_timeout_ms;
+  HttpReply reply;
+  try {
+    BlockingHttp http(cfg_.rest_url, opts);
+    reply = http.get("/fapi/v1/fundingInfo");
+  } catch (const std::exception& e) {
+    reply.error = e.what();
+  }
+  std::vector<FundingInfoRecord> rows;
+  std::string err;
+  if (!reply.ok()) {
+    err = reply.error.empty() ? fmt::format("HTTP {} {}", reply.status, reply.body.substr(0, 200))
+                              : reply.error;
+  } else {
+    err = decode_funding_info(reply.body, rows, wanted);
+  }
+  if (!err.empty()) {
+    FASTMM_LOG_WARN(
+        "{}: fundingInfo failed ({}); funding interval 8 h for every symbol", cfg_.name, err);
+    return;
+  }
+  funding_intervals_.reserve(rows.size());
+  for (const FundingInfoRecord& row : rows) {
+    for (const Instrument* inst : mine) {
+      if (!iequals_symbol(row.symbol, inst->symbol.view())) continue;
+      funding_intervals_.emplace_back(inst->id, seconds(row.interval_hours * 3600));
+      FASTMM_LOG_INFO(
+          "{}: {} funding every {} h", cfg_.name, inst->symbol.view(), row.interval_hours);
+    }
+  }
+}
+
+Duration BinanceUsdmVenue::funding_interval_of(InstrumentId id) const noexcept {
+  for (const auto& [inst, interval] : funding_intervals_) {
+    if (inst == id) return interval;
+  }
+  return BinanceUsdmMdParser::kDefaultFundingInterval;
 }
 
 // Read-only account settings: position mode (hedge mode is refused), leverage and margin type per
@@ -407,7 +455,9 @@ void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (symbols_ == nullptr || symbols_->venue_of(id) != id_) continue;
     if (std::find(subscribed_.begin(), subscribed_.end(), id) != subscribed_.end()) continue;
     subscribed_.push_back(id);
-    if (md_feed_) md_feed_->add_instrument(id);
+    if (md_feed_ && md_feed_->add_instrument(id) && instruments_ != nullptr &&
+        instruments_->get(id).asset_class == AssetClass::Perpetual)
+      md_feed_->add_perpetual(id, funding_interval_of(id));
   }
   exec_replay_.set_streams(subscribed_.size());
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
@@ -594,8 +644,9 @@ void BinanceUsdmVenue::resync_books() {
   }
 }
 
-// Trades are informational for the engine: their connection state is logged, not reported, so a
-// quiet aggTrade stream never clears the books.
+// Trades and mark prices are informational for the engine: their connection state is logged, not
+// reported, so a quiet aggTrade stream never clears the books. A mark that stops arriving goes
+// stale in the engine's perp table (core/perp_book.hpp).
 void BinanceUsdmVenue::on_trades_state(net::ConnState s) {
   const ConnState mapped = map_conn_state(s);
   if (mapped == trades_state_ || mapped == ConnState::Stale) return;

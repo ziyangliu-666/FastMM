@@ -15,6 +15,7 @@
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/instrument.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/risk.hpp"
 #include "fastmm/core/thread_utils.hpp"
@@ -294,5 +295,8 @@ FeeTable fee_table(const Config& cfg,
 BalanceConfig balance_config(const Config& cfg,
                              const InstrumentTable* table = nullptr,
                              const std::vector<std::string>* venue_names = nullptr);
+
+// [accounting] mark, stale_mark_ms and stale_funding_ms.
+PerpConfig perp_config(const Config& cfg);
 
 }  // namespace fastmm

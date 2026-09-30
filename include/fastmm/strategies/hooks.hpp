@@ -6,7 +6,7 @@
 //   on_start(ctx)  on_stop(ctx)  on_book(ctx, id, book)  on_book_ticker(ctx, id, m)
 //   on_trade(ctx, id, m)  on_option_ticker(ctx, id, m)  on_fill(ctx, fill)
 //   on_order_update(ctx, u)  on_timer(ctx, timer_id, tag)  on_connection(ctx, m)
-//   on_quoting(ctx, enabled)  on_params(ctx)  on_balance(ctx, m)
+//   on_quoting(ctx, enabled)  on_params(ctx)  on_balance(ctx, m)  on_perp_state(ctx, id, m)
 //
 // The engine checks every hook name when it is instantiated. If the strategy has a member with a
 // hook's name (function, template, data member, static, inherited or private) and the engine's
@@ -132,7 +132,13 @@ struct Fill {
     "balance",                                                                     \
     (Ctx & ctx, const BalanceMsg& m),                                              \
     (ctx, m),                                                                      \
-    "void on_balance(auto& ctx, const BalanceMsg& m)")
+    "void on_balance(auto& ctx, const BalanceMsg& m)")                             \
+  X(PerpState,                                                                     \
+    on_perp_state,                                                                 \
+    "perp_state",                                                                  \
+    (Ctx & ctx, InstrumentId id, const PerpStateMsg& m),                           \
+    (ctx, id, m),                                                                  \
+    "void on_perp_state(auto& ctx, InstrumentId id, const PerpStateMsg& m)")
 
 // Y(misspelling, hook): names that produce a "did you mean" warning.
 #define FASTMM_STRATEGY_HOOK_NEAR_MISSES(Y) \
@@ -158,6 +164,9 @@ struct Fill {
   Y(on_param, on_params)                    \
   Y(on_parameters, on_params)               \
   Y(on_balances, on_balance)                \
+  Y(on_perp, on_perp_state)                 \
+  Y(on_funding, on_perp_state)              \
+  Y(on_mark, on_perp_state)                 \
   Y(onBook, on_book)                        \
   Y(OnBook, on_book)                        \
   Y(onTrade, on_trade)                      \
@@ -286,7 +295,7 @@ template <class S,
 
 namespace detail::hooks {
 struct HookSetText {
-  std::array<char, 128> chars{};
+  std::array<char, 160> chars{};
   std::size_t size = 0;
 };
 template <class S, class Ctx, class Book>

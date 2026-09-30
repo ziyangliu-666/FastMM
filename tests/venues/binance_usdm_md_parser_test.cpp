@@ -13,12 +13,17 @@
 using namespace fastmm;
 using namespace fastmm::venues;
 using namespace fastmm::venues::binance_usdm;
+using fastmm::venues::test::make_instrument;
 using fastmm::venues::test::padded_fixture;
 using fastmm::venues::test::RecordingSink;
 using fastmm::venues::test::Scratch;
 using fastmm::venues::test::TestUniverse;
 
 namespace {
+
+Duration hours(std::int64_t h) {
+  return seconds(h * 3600);
+}
 const Timestamp kRecv{1'700'000'000'000'000'000LL};
 const Cycles kT0{7};
 Price px(const char* s) {
@@ -107,13 +112,10 @@ TEST_CASE("binance_usdm.md: recorded bookTicker and aggTrade") {
   CHECK(p.stats().trades == 1);
 }
 
-TEST_CASE("binance_usdm.md: markPrice, acks, raw payloads, unknown symbol and malformed frames") {
+TEST_CASE("binance_usdm.md: acks, raw payloads, unknown symbol and malformed frames") {
   TestUniverse u;
   BinanceUsdmMdParser p(u.symbols, VenueId{0});
   Scratch s;
-  const PaddedJson mark(
-      R"({"stream":"btcusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":1789467508000,"s":"BTCUSDT","p":"76986.40000000","ap":"76986.40000000","P":"76996.91044964","i":"77014.72500000","r":"0.00010000","T":1789488000000,"st":1}})");
-  CHECK(p.decode(mark.view(), kRecv, kT0, s.span()).status == ParseStatus::Ignored);
   const PaddedJson ack(R"({"result":null,"id":1})");
   CHECK(p.decode(ack.view(), kRecv, kT0, s.span()).status == ParseStatus::Ignored);
   // /ws/<stream> payloads carry no wrapper: the event type decides.
@@ -134,6 +136,161 @@ TEST_CASE("binance_usdm.md: markPrice, acks, raw payloads, unknown symbol and ma
   CHECK(p.decode(bad_level.view(), kRecv, kT0, s.span()).status == ParseStatus::Malformed);
   const PaddedJson truncated(R"({"stream":"btcusdt@bookTicker","data":{"e":"bookT)");
   CHECK(p.decode(truncated.view(), kRecv, kT0, s.span()).status == ParseStatus::Malformed);
+}
+
+// Production, 2026-09-30T08:31:54Z (fastmm-live --dry-run --record-raw on
+// wss://fstream.binance.com/market/stream?streams=...btcusdt@markPrice@1s/ethusdt@markPrice@1s).
+TEST_CASE("binance_usdm.md: recorded markPriceUpdate -> PerpStateMsg") {
+  TestUniverse u;
+  BinanceUsdmMdParser p(u.symbols, VenueId{0});
+  Scratch s;
+  CHECK(p.funding_interval(InstrumentId{0}) == hours(8));  // before fundingInfo
+  const auto fx = padded_fixture("binance_usdm/mark_price.json");
+  const DecodeResult r = p.decode(fx.view(), kRecv, kT0, s.span());
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK(r.kind == MdKind::PerpState);
+  CHECK(r.len == sizeof(PerpStateMsg));
+  const auto& m = s.as<PerpStateMsg>();
+  CHECK(m.hdr.type == EventType::PerpState);
+  CHECK(m.hdr.len == sizeof(PerpStateMsg));
+  CHECK(m.hdr.instrument == InstrumentId{0});
+  CHECK(m.hdr.venue == VenueId{0});
+  CHECK(m.hdr.recv_ts == kRecv);
+  CHECK(m.hdr.t0_cycles == kT0);
+  CHECK(m.hdr.exch_ts.ns == 1790757114000LL * 1'000'000);  // E
+  CHECK(m.fields == (PerpStateMsg::kMark | PerpStateMsg::kIndex | PerpStateMsg::kFunding));
+  CHECK(m.mark_price == px("83018.14569565"));   // p, not ap
+  CHECK(m.index_price == px("83062.53108696"));  // i, not P
+  CHECK(m.funding_rate == doctest::Approx(-0.00001012).epsilon(1e-12));
+  CHECK(m.funding_interval == hours(8));
+  CHECK(m.next_funding.ns == 1790784000000LL * 1'000'000);  // T, 16:00 UTC
+  CHECK(m.open_interest == Qty{});
+  CHECK(p.stats().perp_states == 1);
+
+  // The interval the connector set (GET /fapi/v1/fundingInfo) goes with the rate.
+  p.set_funding_interval(InstrumentId{0}, hours(4));
+  REQUIRE(p.decode(fx.view(), kRecv, kT0, s.span()).ok());
+  CHECK(s.as<PerpStateMsg>().funding_interval == hours(4));
+  p.set_funding_interval(InstrumentId{0}, Duration{});  // ignored
+  CHECK(p.funding_interval(InstrumentId{0}) == hours(4));
+}
+
+TEST_CASE("binance_usdm.md: recorded markPrice stream, both symbols and a rate update") {
+  TestUniverse u;
+  BinanceUsdmMdParser p(u.symbols, VenueId{0});
+  Scratch s;
+  const std::vector<std::string> frames =
+      lines(fastmm::test::fixture("binance_usdm/mark_price_stream.jsonl"));
+  REQUIRE(frames.size() == 20);
+  std::vector<double> btc_rates;
+  std::int64_t last_ms = 0;
+  for (const std::string& f : frames) {
+    const PaddedJson j(f);
+    REQUIRE(p.decode(j.view(), kRecv, kT0, s.span()).ok());
+    const auto& m = s.as<PerpStateMsg>();
+    CHECK(m.hdr.exch_ts.ns / 1'000'000 >= last_ms);
+    last_ms = m.hdr.exch_ts.ns / 1'000'000;
+    CHECK(m.next_funding.ns == 1790784000000LL * 1'000'000);
+    if (m.hdr.instrument == InstrumentId{0}) btc_rates.push_back(m.funding_rate);
+  }
+  CHECK(p.stats().perp_states == 20);
+  CHECK(p.stats().funding_rollovers == 0);
+  REQUIRE(btc_rates.size() == 10);
+  // The predicted rate moved once, at 08:33:01 UTC.
+  CHECK(btc_rates.front() == doctest::Approx(-0.00001012).epsilon(1e-12));
+  CHECK(btc_rates.back() == doctest::Approx(-0.00001067).epsilon(1e-12));
+}
+
+// Production, 2026-09-30 around the 08:00 UTC funding (Python websockets client on
+// wss://fstream.binance.com/market/stream): BTCUSDT and ETHUSDT (8 h) and LPTUSDT (4 h in
+// GET /fapi/v1/fundingInfo). The frame at E = 08:00:00.000 still names T = 08:00; the next one
+// names the next funding.
+TEST_CASE("binance_usdm.md: the next funding time rolling over corrects the interval") {
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));  // id 0
+  REQUIRE(instruments.add(make_instrument("ETHUSDT", 0, "ETH", "USDT")));  // id 1
+  REQUIRE(instruments.add(make_instrument("LPTUSDT", 0, "LPT", "USDT")));  // id 2
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  BinanceUsdmMdParser p(symbols, VenueId{0});
+  Scratch s;
+  const std::vector<std::string> frames =
+      lines(fastmm::test::fixture("binance_usdm/mark_price_rollover.jsonl"));
+  REQUIRE(frames.size() == 12);
+  const std::int64_t funding_ms = 1790755200000LL;  // 2026-09-30T08:00:00Z
+  std::vector<PerpStateMsg> lpt;
+  for (const std::string& f : frames) {
+    const PaddedJson j(f);
+    REQUIRE(p.decode(j.view(), kRecv, kT0, s.span()).ok());
+    if (s.as<PerpStateMsg>().hdr.instrument == InstrumentId{2}) lpt.push_back(s.as<PerpStateMsg>());
+  }
+  REQUIRE(lpt.size() == 4);
+  // Until the rollover LPTUSDT reports the 8 h default (as if fundingInfo had failed).
+  CHECK(lpt[1].hdr.exch_ts.ns == funding_ms * 1'000'000);
+  CHECK(lpt[1].next_funding.ns == funding_ms * 1'000'000);
+  CHECK(lpt[1].funding_interval == hours(8));
+  // 08:00:01: T moved to 12:00, the interval in force is 4 h.
+  CHECK(lpt[2].next_funding.ns == (funding_ms + 4 * 3'600'000LL) * 1'000'000);
+  CHECK(lpt[2].funding_interval == hours(4));
+  CHECK(lpt[3].funding_interval == hours(4));
+  CHECK(p.funding_interval(InstrumentId{2}) == hours(4));
+  // BTCUSDT and ETHUSDT stepped by their 8 h: no change.
+  CHECK(p.funding_interval(InstrumentId{0}) == hours(8));
+  CHECK(p.funding_interval(InstrumentId{1}) == hours(8));
+  CHECK(p.stats().funding_rollovers == 1);
+
+  // A T that moves after a gap longer than the rollover window proves nothing: fundings may have
+  // been missed (16 h here is two 8 h periods).
+  BinanceUsdmMdParser q(symbols, VenueId{0});
+  auto frame = [](std::int64_t e, std::int64_t t) {
+    return R"({"stream":"btcusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":)" +
+           std::to_string(e) +
+           R"(,"s":"BTCUSDT","p":"83018.1","ap":"83018.1","P":"83205.5","i":"83062.5","r":"0.0001","T":)" +
+           std::to_string(t) + R"(,"st":1}})";
+  };
+  const PaddedJson before(frame(funding_ms - 1000, funding_ms));
+  REQUIRE(q.decode(before.view(), kRecv, kT0, s.span()).ok());
+  const PaddedJson late(frame(funding_ms + 3'600'000, funding_ms + 16 * 3'600'000LL));
+  REQUIRE(q.decode(late.view(), kRecv, kT0, s.span()).ok());
+  CHECK(s.as<PerpStateMsg>().funding_interval == hours(8));
+  CHECK(q.stats().funding_rollovers == 0);
+  // A step that is not a whole number of hours is not an interval either.
+  const PaddedJson odd(
+      frame(funding_ms + 16 * 3'600'000LL + 1000, funding_ms + 17 * 3'600'000LL + 1));
+  REQUIRE(q.decode(odd.view(), kRecv, kT0, s.span()).ok());
+  CHECK(q.funding_interval(InstrumentId{0}) == hours(8));
+}
+
+TEST_CASE("binance_usdm.md: markPrice stream names, no funding, and malformed mark frames") {
+  TestUniverse u;
+  BinanceUsdmMdParser p(u.symbols, VenueId{0});
+  Scratch s;
+  // The 3 s stream and a raw /ws payload decode alike.
+  const PaddedJson slow(
+      R"({"stream":"ethusdt@markPrice","data":{"e":"markPriceUpdate","E":1790757114000,"s":"ETHUSDT","p":"2664.40","ap":"2664.40","P":"2665.00","i":"2665.10","r":"0.00004780","T":1790784000000,"st":1}})");
+  REQUIRE(p.decode(slow.view(), kRecv, kT0, s.span()).ok());
+  CHECK(s.as<PerpStateMsg>().hdr.instrument == InstrumentId{1});
+  const PaddedJson raw(
+      R"({"e":"markPriceUpdate","E":1790757114000,"s":"ETHUSDT","p":"2664.40","ap":"2664.40","P":"2665.00","i":"2665.10","r":"0.00004780","T":1790784000000,"st":1})");
+  const DecodeResult rr = p.decode(raw.view(), kRecv, kT0, s.span());
+  REQUIRE(rr.ok());
+  CHECK(rr.kind == MdKind::PerpState);
+  // A contract without funding: r "" and T 0 -> mark and index only.
+  const PaddedJson no_funding(
+      R"({"stream":"btcusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":1790757114000,"s":"BTCUSDT","p":"83100.0","ap":"83100.0","P":"83101.0","i":"83062.5","r":"","T":0,"st":1}})");
+  REQUIRE(p.decode(no_funding.view(), kRecv, kT0, s.span()).ok());
+  CHECK(s.as<PerpStateMsg>().fields == (PerpStateMsg::kMark | PerpStateMsg::kIndex));
+  CHECK(s.as<PerpStateMsg>().next_funding == Timestamp{});
+  const PaddedJson bad_rate(
+      R"({"stream":"btcusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":1,"s":"BTCUSDT","p":"83100.0","ap":"83100.0","P":"1","i":"83062.5","r":"0.0001x","T":1,"st":1}})");
+  CHECK(p.decode(bad_rate.view(), kRecv, kT0, s.span()).status == ParseStatus::Malformed);
+  const PaddedJson no_index(
+      R"({"stream":"btcusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":1,"s":"BTCUSDT","p":"83100.0","r":"0.0001","T":1,"st":1}})");
+  CHECK(p.decode(no_index.view(), kRecv, kT0, s.span()).status == ParseStatus::Malformed);
+  const PaddedJson unknown(
+      R"({"stream":"xrpusdt@markPrice@1s","data":{"e":"markPriceUpdate","E":1,"s":"XRPUSDT","p":"0.5","ap":"0.5","P":"0.5","i":"0.5","r":"0.0001","T":1,"st":1}})");
+  CHECK(p.decode(unknown.view(), kRecv, kT0, s.span()).status == ParseStatus::UnknownSymbol);
+  CHECK(p.stats().perp_states == 3);
 }
 
 TEST_CASE("binance_usdm.md: REST depth snapshot -> BookSnapshotMsg") {
@@ -172,6 +329,45 @@ TEST_CASE("binance_usdm.md_feed: public and market stream targets") {
         "ethusdt@bookTicker");
   CHECK(feed.market_target() == "/market/stream?streams=btcusdt@aggTrade/ethusdt@aggTrade");
   CHECK(feed.subscription_payloads().empty());
+  // Mark price streams for the perpetuals only, on the market connection.
+  CHECK_FALSE(feed.add_perpetual(InstrumentId{2}, hours(8)));  // not added
+  REQUIRE(feed.add_perpetual(InstrumentId{1}, hours(4)));
+  REQUIRE(feed.add_perpetual(InstrumentId{1}, hours(4)));  // once
+  CHECK(feed.market_target() ==
+        "/market/stream?streams=btcusdt@aggTrade/ethusdt@aggTrade/ethusdt@markPrice@1s");
+  CHECK(feed.public_target().find("markPrice") == std::string::npos);
+  CHECK(feed.funding_interval(InstrumentId{1}) == hours(4));
+  CHECK(feed.funding_interval(InstrumentId{0}) == hours(8));
+}
+
+TEST_CASE("binance_usdm.md_feed: recorded mark prices reach the market-data sink") {
+  TestUniverse u;
+  RecordingSink rs;
+  Requests req;
+  BinanceUsdmMdFeed feed(u.symbols, VenueId{0}, rs.sink, {&Requests::on_request, &req});
+  REQUIRE(feed.add_instrument(InstrumentId{0}));
+  REQUIRE(feed.add_instrument(InstrumentId{1}));
+  REQUIRE(feed.add_perpetual(InstrumentId{0}, hours(8)));
+  REQUIRE(feed.add_perpetual(InstrumentId{1}, hours(8)));
+  const std::vector<std::string> frames =
+      lines(fastmm::test::fixture("binance_usdm/mark_price_stream.jsonl"));
+  for (const std::string& f : frames) {
+    const PaddedJson j(f);
+    CHECK(feed.on_message(j.view(), 1) == ParseStatus::Ok);
+  }
+  CHECK(feed.stats().pushed == frames.size());
+  CHECK(req.count == 0);  // mark prices do not touch the book syncs
+  std::size_t btc = 0;
+  std::size_t eth = 0;
+  for (const auto& m : rs.drain()) {
+    REQUIRE(RecordingSink::type_of(m) == EventType::PerpState);
+    const auto& ps = RecordingSink::as<PerpStateMsg>(m);
+    CHECK(ps.hdr.t1_delta > 0);
+    btc += ps.hdr.instrument == InstrumentId{0} ? 1U : 0U;
+    eth += ps.hdr.instrument == InstrumentId{1} ? 1U : 0U;
+  }
+  CHECK(btc == 10);
+  CHECK(eth == 10);
 }
 
 TEST_CASE("binance_usdm.md_feed: recorded session syncs the book with no resync") {

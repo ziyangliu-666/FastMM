@@ -78,6 +78,10 @@ struct Ctx {
   std::array<bool, 2> gated{};
   // What each instrument's balance covers per side (Qty::max(): not reported).
   std::array<std::array<Qty, 2>, 2> room{{{Qty::max(), Qty::max()}, {Qty::max(), Qty::max()}}};
+  // The venues' marks, indices and funding (ctx.mark, ctx.index, ctx.funding); never reported.
+  std::array<RefPrice, 2> marks{};
+  std::array<RefPrice, 2> indices{};
+  std::array<FundingView, 2> fundings{};
 
   explicit Ctx(const char* hedge_mult = "0.01", const char* hedge_lot = "0.01") {
     REQUIRE(table.add(linear("BTCUSDT", 0, "1", "0.001")));
@@ -121,6 +125,9 @@ struct Ctx {
     sent.push_back(Sent{r, id, true});
     return id;
   }
+  [[nodiscard]] RefPrice mark(InstrumentId id) const { return marks[id.value]; }
+  [[nodiscard]] RefPrice index(InstrumentId id) const { return indices[id.value]; }
+  [[nodiscard]] FundingView funding(InstrumentId id) const { return fundings[id.value]; }
   [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price) const {
     return room[id.value][static_cast<std::size_t>(side)];
   }
@@ -288,6 +295,62 @@ TEST_CASE("strategies.xmm: the basis is an EWMA of quote mid minus hedge mid") {
   REQUIRE(c.last().bids.size() == 1);
   CHECK(c.last().bids[0].price < px("100300.2"));
   CHECK(c.last().asks[0].price > px("100300"));
+}
+
+TEST_CASE("strategies.xmm: carry is the hedged pair's funding over the horizon") {
+  CHECK(Xmm::carry(px("100000"), 0.0001, 0.0) == px("10"));
+  CHECK(Xmm::carry(px("100000"), 0.0001, 0.0003) == px("-20"));
+  CHECK(Xmm::carry(px("100000"), 0.0, 0.0) == Price{});
+}
+
+TEST_CASE("strategies.xmm: the perpetual legs' funding over funding_horizon_s shifts fair value") {
+  Xmm s = make({{"funding_horizon_s", "3600"}});
+  Ctx c;
+  const Duration eight_hours = seconds(std::int64_t{8} * 3600);
+  c.fundings[0] = FundingView{0.0, eight_hours, Timestamp{}, c.t, false};
+  c.fundings[1] = FundingView{0.0008, eight_hours, Timestamp{}, c.t, false};
+  start(s, c);
+  // The hedge (a short after a bid fills) earns 0.0008 per 8 h for an hour: 1 bp of 100000.1.
+  CHECK(s.fair_value(c) == px("100010.10001"));
+  REQUIRE(c.last().bids.size() == 1);
+  CHECK(c.last().bids[0].price == px("99940.0"));   // fair - 70.00707 rounded down
+  CHECK(c.last().asks[0].price == px("100080.2"));  // fair + 70.00707 rounded up
+  // The quote leg's funding counts the other way.
+  c.fundings[0] = FundingView{0.0008, eight_hours, Timestamp{}, c.t, false};
+  CHECK(s.fair_value(c) == px("100000.1"));
+  // A PerpState of either instrument requotes.
+  const std::size_t sets = c.sets.size();
+  c.fundings[0] = FundingView{-0.0008, eight_hours, Timestamp{}, c.t, false};
+  s.on_perp_state(c, InstrumentId{0}, PerpStateMsg{});
+  CHECK(c.sets.size() == sets + 1);
+  CHECK(s.fair_value(c) == px("100020.10002"));
+  // A stale (or missing) funding rate pulls the quotes.
+  c.fundings[1].stale = true;
+  s.on_perp_state(c, InstrumentId{1}, PerpStateMsg{});
+  CHECK(c.pulls == 1);
+  CHECK(s.fair_value(c) == Price{});
+}
+
+TEST_CASE("strategies.xmm: mark_basis prices the venues' premia instead of the EWMA") {
+  Xmm s = make({{"mark_basis", "true"}, {"basis_halflife_s", "60"}});
+  Ctx c;
+  c.quote_book("100040", "100060.2");  // the mids would say +50
+  c.marks[0] = RefPrice{px("100010"), c.t, false};
+  c.indices[0] = RefPrice{px("100005"), c.t, false};
+  c.marks[1] = RefPrice{px("99998"), c.t, false};
+  c.indices[1] = RefPrice{px("100001"), c.t, false};
+  start(s, c);
+  // (100010 - 100005) - (99998 - 100001) = 8 on top of the hedge mid.
+  CHECK(s.fair_value(c) == px("100008.1"));
+  c.indices[1].stale = true;
+  CHECK(s.fair_value(c) == Price{});
+  // Without the parameters a PerpState changes nothing.
+  Xmm plain = make();
+  Ctx c2;
+  start(plain, c2);
+  const std::size_t sets = c2.sets.size();
+  plain.on_perp_state(c2, InstrumentId{1}, PerpStateMsg{});
+  CHECK(c2.sets.size() == sets);
 }
 
 TEST_CASE("strategies.xmm: hedge size and price across contract multipliers") {

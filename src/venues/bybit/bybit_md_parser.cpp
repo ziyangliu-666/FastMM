@@ -1,10 +1,13 @@
 #include "fastmm/venues/bybit/bybit_md_parser.hpp"
 
 #include "fastmm/venues/decimal.hpp"
+#include "fastmm/venues/perp_state.hpp"
 
 #include <simdjson.h>
 
+#include <charconv>
 #include <cstdlib>
+#include <system_error>
 
 namespace fastmm::venues::bybit {
 
@@ -26,6 +29,11 @@ BybitMdParser::~BybitMdParser() = default;
 
 void BybitMdParser::reset_tickers() noexcept {
   for (Top& t : tops_) t = Top{};
+  for (Perp& p : perps_) p = Perp{};
+}
+
+void BybitMdParser::set_funding_interval(InstrumentId inst, Duration interval) noexcept {
+  if (inst.value < kMaxInstruments) ref_interval_[inst.value] = interval;
 }
 
 namespace {
@@ -225,6 +233,110 @@ struct TopFrame {
   return true;
 }
 
+// Tickers fields (TickerFrame::present, BybitMdParser::Perp::known).
+constexpr std::uint8_t kTkMark = 1U << 0;
+constexpr std::uint8_t kTkIndex = 1U << 1;
+constexpr std::uint8_t kTkRate = 1U << 2;
+constexpr std::uint8_t kTkNext = 1U << 3;
+constexpr std::uint8_t kTkInterval = 1U << 4;
+constexpr std::uint8_t kTkOiSingle = 1U << 5;
+constexpr std::uint8_t kTkOiBoth = 1U << 6;
+
+// The fields one tickers frame carries: `present` names them, `cleared` those sent with an empty
+// value.
+struct TickerFrame {
+  Price mark{};
+  Price index{};
+  double rate = 0.0;
+  std::int64_t next_ms = 0;
+  Duration interval{};
+  Qty oi_single{};
+  Qty oi_both{};
+  std::uint8_t present = 0;
+  std::uint8_t cleared = 0;
+  std::uint64_t cs = 0;
+};
+
+// False if the frame is malformed. One pass over data's fields in the order Bybit sends them.
+[[gnu::noinline]] bool read_tickers(od::object& root, TickerFrame& f) noexcept {
+  od::object data;
+  if (root["data"].get_object().get(data) != sj::SUCCESS) return false;
+  for (auto field : data) {
+    std::string_view key;
+    if (field.unescaped_key().get(key) != sj::SUCCESS) return false;
+    std::uint8_t bit = 0;
+    if (key == "markPrice") {
+      bit = kTkMark;
+    } else if (key == "indexPrice") {
+      bit = kTkIndex;
+    } else if (key == "fundingRate") {
+      bit = kTkRate;
+    } else if (key == "nextFundingTime") {
+      bit = kTkNext;
+    } else if (key == "fundingIntervalHour") {
+      bit = kTkInterval;
+    } else if (key == "singleOpenInterest") {
+      bit = kTkOiSingle;
+    } else if (key == "openInterest") {
+      bit = kTkOiBoth;
+    } else {
+      continue;
+    }
+    std::string_view v;
+    if (field.value().get_string().get(v) != sj::SUCCESS) return false;
+    if (v.empty()) {
+      f.cleared |= bit;
+      continue;
+    }
+    switch (bit) {
+      case kTkMark: {
+        const auto p = parse_rounded<Price>(v);
+        if (!p) return false;
+        f.mark = *p;
+        break;
+      }
+      case kTkIndex: {
+        const auto p = parse_rounded<Price>(v);
+        if (!p) return false;
+        f.index = *p;
+        break;
+      }
+      case kTkRate: {
+        const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), f.rate);
+        if (ec != std::errc{} || end != v.data() + v.size()) return false;
+        break;
+      }
+      case kTkNext: {
+        const auto t = parse_int64(v);
+        if (!t) return false;
+        f.next_ms = *t;
+        break;
+      }
+      case kTkInterval: {
+        const auto h = parse_int64(v);
+        if (!h || *h <= 0) return false;
+        f.interval = Duration{*h * 3'600'000'000'000LL};
+        break;
+      }
+      case kTkOiSingle: {
+        const auto q = parse_rounded<Qty>(v);
+        if (!q) return false;
+        f.oi_single = *q;
+        break;
+      }
+      default: {
+        const auto q = parse_rounded<Qty>(v);
+        if (!q) return false;
+        f.oi_both = *q;
+        break;
+      }
+    }
+    f.present |= bit;
+  }
+  if (root["cs"].get_uint64().get(f.cs) != sj::SUCCESS) f.cs = 0;
+  return true;
+}
+
 [[gnu::noinline]] MdDecodeResult decode_trades(const DecodeCtx& c,
                                                od::object& root,
                                                MdDecodeResult r) noexcept {
@@ -306,7 +418,8 @@ MdDecodeResult BybitMdParser::decode(std::string_view json,
 
   constexpr std::string_view kBook = "orderbook.";
   constexpr std::string_view kTrade = "publicTrade.";
-  enum class Kind { Depth, TopOfBook, Trades } kind;
+  constexpr std::string_view kTickers = "tickers.";
+  enum class Kind { Depth, TopOfBook, Trades, Tickers } kind;
   std::string_view symbol;
   if (topic.starts_with(kBook)) {
     const std::string_view rest = topic.substr(kBook.size());
@@ -317,6 +430,9 @@ MdDecodeResult BybitMdParser::decode(std::string_view json,
   } else if (topic.starts_with(kTrade)) {
     kind = Kind::Trades;
     symbol = topic.substr(kTrade.size());
+  } else if (topic.starts_with(kTickers)) {
+    kind = Kind::Tickers;
+    symbol = topic.substr(kTickers.size());
   } else {
     ++stats_.ignored;
     r.status = ParseStatus::Ignored;
@@ -371,6 +487,53 @@ MdDecodeResult BybitMdParser::decode(std::string_view json,
     }
     case Kind::Trades:
       return decode_trades(c, root, r);
+    case Kind::Tickers: {
+      Perp& p = perps_[inst.value];
+      if (!snapshot && !p.live) {  // the cache starts at the next snapshot
+        ++stats_.ignored;
+        r.status = ParseStatus::Ignored;
+        return r;
+      }
+      TickerFrame f;
+      if (!read_tickers(root, f)) return malformed(stats_, r);
+      if (snapshot) p = Perp{};
+      p.live = true;
+      if ((f.present & kTkMark) != 0) p.mark = f.mark;
+      if ((f.present & kTkIndex) != 0) p.index = f.index;
+      if ((f.present & kTkRate) != 0) p.rate = f.rate;
+      if ((f.present & kTkNext) != 0) p.next_ms = f.next_ms;
+      if ((f.present & kTkInterval) != 0) p.interval = f.interval;
+      if ((f.present & kTkOiSingle) != 0) p.oi_single = f.oi_single;
+      if ((f.present & kTkOiBoth) != 0) p.oi_both = f.oi_both;
+      p.known = static_cast<std::uint8_t>((p.known | f.present) & ~f.cleared);
+
+      auto* m = reinterpret_cast<PerpStateMsg*>(out.data());
+      PerpStateBuilder b(*m, inst, venue_, ts, recv_ts, t0);
+      if ((p.known & kTkMark) != 0) b.mark(p.mark);
+      if ((p.known & kTkIndex) != 0) b.index(p.index);
+      if ((p.known & kTkRate) != 0) {
+        const Duration interval =
+            (p.known & kTkInterval) != 0 ? p.interval : ref_interval_[inst.value];
+        b.funding(p.rate, interval, (p.known & kTkNext) != 0 ? p.next_ms : 0);
+      }
+      if ((p.known & kTkOiSingle) != 0) {
+        b.open_interest(p.oi_single);
+      } else if ((p.known & kTkOiBoth) != 0) {
+        b.open_interest(p.oi_both / 2);
+      }
+      if (!b.any()) {
+        ++stats_.ignored;
+        r.status = ParseStatus::Ignored;
+        return r;
+      }
+      m->hdr.venue_seq = f.cs;
+      ++stats_.perp_states;
+      r.status = ParseStatus::Ok;
+      r.kind = MdKind::PerpState;
+      r.len = sizeof(PerpStateMsg);
+      r.count = 1;
+      return r;
+    }
   }
   return malformed(stats_, r);
 }

@@ -54,6 +54,7 @@ enum class MdKind : std::uint8_t {
   BookSnapshot = 2,
   BookTicker = 3,
   Trade = 4,
+  PerpState = 5,  // PerpStateMsg (venues/perp_state.hpp)
 };
 
 enum class OrderEventKind : std::uint8_t {

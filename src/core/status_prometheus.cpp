@@ -95,6 +95,7 @@ void underlying_metrics(Exposition& e,
 void gateway_metrics(Exposition& e, const StatusSnapshot& s);
 void venue_metrics(Exposition& e, const StatusSnapshot& s);
 void balance_metrics(Exposition& e, const StatusSnapshot& s);
+void perp_metrics(Exposition& e, const StatusSnapshot& s);
 
 }  // namespace
 
@@ -138,6 +139,7 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
   }
   venue_metrics(e, s);
   balance_metrics(e, s);
+  perp_metrics(e, s);
   return e.take();
 }
 
@@ -213,6 +215,63 @@ void balance_metrics(Exposition& e, const StatusSnapshot& s) {
       const StatusBalance& b = s.balances[i];
       if (b.known != 0) e.value_of(f.name, labels(b), static_cast<double>(b.*f.raw) * kRawToQuote);
     }
+  }
+}
+
+// fastmm_perp_{mark,index,funding_rate,funding_interval_seconds,next_funding_seconds,
+// open_interest,mark_age_seconds,funding_age_seconds,valued_at_mark}{venue,symbol}: the perp table,
+// one series per derivative that has reported. Nothing before one does.
+void perp_metrics(Exposition& e, const StatusSnapshot& s) {
+  const std::size_t n = std::min<std::size_t>(s.perp_count, kStatusMaxPerps);
+  if (n == 0) return;
+  const auto labels = [&](const StatusPerp& p) {
+    const std::string_view venue = p.venue < kStatusMaxVenues
+                                       ? name_of(s.venues[p.venue].name, sizeof s.venues[0].name)
+                                       : std::string_view("?");
+    return fmt::format(
+        "venue=\"{}\",symbol=\"{}\"", label(venue), label(name_of(p.symbol, sizeof p.symbol)));
+  };
+  struct Field {
+    const char* name;
+    const char* help;
+    double (*value)(const StatusPerp&);
+  };
+  static constexpr Field kFields[] = {
+      {"fastmm_perp_mark",
+       "the venue's mark price",
+       [](const StatusPerp& p) { return static_cast<double>(p.mark_raw) * kRawToQuote; }},
+      {"fastmm_perp_index",
+       "the venue's index price",
+       [](const StatusPerp& p) { return static_cast<double>(p.index_raw) * kRawToQuote; }},
+      {"fastmm_perp_funding_rate",
+       "the funding rate the venue will apply next, per funding interval (positive: longs pay)",
+       [](const StatusPerp& p) { return p.funding_rate; }},
+      {"fastmm_perp_funding_interval_seconds",
+       "the funding interval",
+       [](const StatusPerp& p) { return static_cast<double>(p.funding_interval_ns) / 1e9; }},
+      {"fastmm_perp_next_funding_seconds",
+       "venue time of the next funding, Unix seconds; 0 when continuous",
+       [](const StatusPerp& p) { return static_cast<double>(p.next_funding_ns) / 1e9; }},
+      {"fastmm_perp_open_interest",
+       "open interest, contracts",
+       [](const StatusPerp& p) { return static_cast<double>(p.open_interest_raw) * kRawToQuote; }},
+      {"fastmm_perp_mark_age_seconds",
+       "time since the mark arrived; -1 never",
+       [](const StatusPerp& p) {
+         return p.mark_age_ns < 0 ? -1.0 : static_cast<double>(p.mark_age_ns) / 1e9;
+       }},
+      {"fastmm_perp_funding_age_seconds",
+       "time since the funding rate arrived; -1 never",
+       [](const StatusPerp& p) {
+         return p.funding_age_ns < 0 ? -1.0 : static_cast<double>(p.funding_age_ns) / 1e9;
+       }},
+      {"fastmm_perp_valued_at_mark",
+       "1 while the position is valued at the venue's mark ([accounting] mark = venue)",
+       [](const StatusPerp& p) { return p.valued_at_mark != 0 ? 1.0 : 0.0; }},
+  };
+  for (const Field& f : kFields) {
+    e.family(f.name, "gauge", f.help);
+    for (std::size_t i = 0; i < n; ++i) e.value_of(f.name, labels(s.perps[i]), f.value(s.perps[i]));
   }
 }
 

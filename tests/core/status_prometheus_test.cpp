@@ -286,3 +286,25 @@ TEST_CASE("core.status_prometheus: balances per venue and asset, once reported")
   const StatusSnapshot none = sample();
   CHECK_FALSE(has(format_status_prometheus(none, none.updated_ns), "fastmm_balance"));
 }
+
+TEST_CASE("core.status_prometheus: the perp table per venue and symbol") {
+  StatusSnapshot s = sample();
+  s.perp_count = 1;
+  StatusPerp& p = s.perps[0];
+  set_status_name(p.symbol, "BTCUSDT");
+  p.mark_raw = 6'400'000'000'000;  // 64000
+  p.funding_rate = -0.0002;
+  p.funding_interval_ns = 8 * 3'600'000'000'000;
+  p.mark_age_ns = 500'000'000;
+  p.valued_at_mark = 1;
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_perp_mark{venue=\"binance\",symbol=\"BTCUSDT\"} 64000\n"));
+  CHECK(has(text, "fastmm_perp_funding_rate{venue=\"binance\",symbol=\"BTCUSDT\"} -0.0002\n"));
+  CHECK(has(text,
+            "fastmm_perp_funding_interval_seconds{venue=\"binance\",symbol=\"BTCUSDT\"} 28800\n"));
+  CHECK(has(text, "fastmm_perp_mark_age_seconds{venue=\"binance\",symbol=\"BTCUSDT\"} 0.5\n"));
+  CHECK(has(text, "fastmm_perp_funding_age_seconds{venue=\"binance\",symbol=\"BTCUSDT\"} -1\n"));
+  CHECK(has(text, "fastmm_perp_valued_at_mark{venue=\"binance\",symbol=\"BTCUSDT\"} 1\n"));
+  const StatusSnapshot none = sample();
+  CHECK_FALSE(has(format_status_prometheus(none, none.updated_ns), "fastmm_perp"));
+}

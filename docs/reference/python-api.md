@@ -64,6 +64,7 @@ Hook names and argument order match the C++ hooks. Define any subset; a hook the
 | `on_connection(self, ctx, msg)` | a venue connection state change (not produced by the simulator) |
 | `on_quoting(self, ctx, enabled)` | `ctx.quoting_enabled` changed (kill switch, operator pull, reconciliation) |
 | `on_balance(self, ctx, msg)` | a venue reported one asset of the account; `ctx.balance` already holds it |
+| `on_perp_state(self, ctx, inst, msg)` | a venue's mark, index or funding of a derivative arrived; `ctx.mark` and `ctx.funding` already hold it |
 
 `inst` is an `Instrument`; `book`, `msg`, `trade`, `fill` and `update` are views (below).
 
@@ -95,6 +96,7 @@ An unbounded side prints as `-inf` or `inf`. Override `validate(self) -> Optiona
 | Control | `quoting_enabled`, `killed`, `request_stop()` (the run ends after the current event) |
 | Venue state | `fees(inst)` -> `Fees` (`maker_bps`, `taker_bps`, `maker_cbps`, `taker_cbps`), `risk_headroom(inst)` -> `RiskHeadroom`, `venue_health(venue=0)` -> `VenueHealth` ([Strategy API](strategy-api.md#fees-risk-headroom-and-venue-health)) |
 | Balances | `balance(venue, asset)` -> `Balance`, `margin(venue=0)` -> `Margin`, `balance_room(inst, side, price)` -> float or `None`, `balance_room_raw(inst, side, price_raw)` -> int or `None`, `balances_live()` ([Balances](strategy-api.md#balances)) |
+| Perpetuals | `mark(inst)`, `index(inst)` -> `RefPrice`, `funding(inst)` -> `Funding` ([Perpetuals](strategy-api.md#perpetuals)) |
 | Randomness | `random()` in [0, 1), `randint(lo, hi)` inclusive, from the engine's seeded RNG |
 
 `set_quotes` takes sequences of `(price, qty)` pairs, level 0 first, at most 8 per side (`None` is an empty side). It returns `False`, and the quotes are ignored, while quoting is disabled. More than 8 levels, a non-finite price or quantity, or a negative quantity raise `ValueError` before the engine is touched; a non-positive price or a zero quantity drops the level, as `DesiredQuotes::bid/ask` do in C++.
@@ -102,6 +104,8 @@ An unbounded side prints as `-inf` or `inf`. Override `validate(self) -> Optiona
 `RiskHeadroom` has `order_tokens`, `open_orders` (int), `max_order_qty`, `max_order_notional`, `buy_qty`, `sell_qty`, `underlying_buy_qty`, `underlying_sell_qty`, `gross_notional`, `net_buy_notional`, `net_sell_notional`, `loss_budget`, `balance_buy_qty`, `balance_sell_qty` (float, each with a `_raw` int); a limit that is off is `None`. `VenueHealth` has `feed_lag_ns`, `feed_lag_base_ns`, `feed_lag_excess_ns`, `ack_rtt_ns`, `ack_rtt_smoothed_ns`, `md_updated_ns`, `ack_updated_ns`, `md_samples`, `ack_samples`, `gate_engagements` and `gated`. Hot hooks (`@fastmm.hot`) do not see these.
 
 `Balance` has `free`, `locked`, `total` (the venue's last report moved by this engine's orders and fills since), `equity`, `maintenance` (as reported; each float with a `_raw` int), `as_of_ns` and `known` (`False` until the venue reports the asset). `Margin` has `available`, `initial`, `maintenance`, `equity`, `wallet` (float and `_raw`), `asset`, `as_of_ns`, `account` (the account-wide margin) and `known`. `balance_room` is `None` while the venue has not reported the balance the side draws on.
+
+`RefPrice` has `price` (float and `price_raw`), `at_ns`, `stale` and `usable`. `Funding` has `rate` (per interval; positive: longs pay), `interval_ns`, `next_ns` (0: continuous), `at_ns`, `stale`, `usable` and `over(seconds)`, the rate over a holding time.
 
 `send` and `replace` raise `fastmm.OrderRejected` with `.reason`, the `RejectReason` name (`"InvalidTag"` for a tag in the quote manager's range, `"UnknownOrder"`, risk reasons such as `"MaxPosition"`). `cancel` returns `False` for an unknown or terminal order.
 
@@ -117,6 +121,7 @@ Views are reused between hooks. A view is valid only inside the hook that receiv
 | `BookTickerView` | `instrument`, `bid_price`, `bid_qty`, `ask_price`, `ask_qty`, `exch_ts_ns`, `recv_ts_ns` |
 | `OptionTickerView` | `instrument`, `mark_price`, `underlying_price`, `index_price`, `mark_iv`, `bid_iv`, `ask_iv`, `delta`, `gamma`, `vega`, `theta`, `rho`, `interest_rate`, `exch_ts_ns`, `recv_ts_ns` |
 | `BalanceView` | `venue`, `asset`, `free`, `locked`, `total`, `equity`, `maintenance`, `snapshot`, `snapshot_end`, `account`, `exch_ts_ns`, `recv_ts_ns` |
+| `PerpStateView` | `instrument`, `venue`, `has_mark`, `has_index`, `has_funding`, `has_open_interest`, `mark_price`, `index_price`, `funding_rate`, `funding_interval_ns`, `next_funding_ns`, `open_interest`, `exch_ts_ns`, `recv_ts_ns` |
 | `ConnectionView` | `venue`, `state` (`"Live"`, `"Disconnected"`, ...), `live`, `channel`, `reason_code`, `recv_ts_ns` |
 | `FillView` | `instrument`, `side`, `price`, `qty`, `position_delta`, `fee`, `fee_converted`, `liquidity` (`fastmm.MAKER`, `fastmm.TAKER`), `known`, `late`, `order_done`, `order_id`, `exch_ts_ns`, `update` (`OrderUpdateView` or `None`) |
 | `OrderUpdateView` | `order_id`, `instrument`, `side`, `state`, `prev_state`, `reject_reason`, `user_tag`, `known`, `changed`, `terminal`, `price`, `qty`, `filled`, `leaves`, `fill_price`, `fill_qty`, `sent_ns`, `venue_ack_ns`, `local_ack_ns` |
@@ -174,7 +179,7 @@ The end-to-end numbers include the synthetic market and the simulated venue, whi
 ## Limits
 
 - `fastmm.sweep` takes registered C++ strategy names only; `fastmm-live` never links Python.
-- The simulator produces no connection state changes and the numpy source no option tickers, so `on_connection` and `on_option_ticker` fire only with data sources that contain them. No backtest source carries balances: `on_balance` does not fire and `ctx.balance` stays unknown.
+- The simulator produces no connection state changes and the numpy source no option tickers, so `on_connection` and `on_option_ticker` fire only with data sources that contain them. No backtest source carries balances: `on_balance` does not fire and `ctx.balance` stays unknown. A journal recorded by `fastmm-live` carries the venues' marks and funding (`on_perp_state`); the CSV, Tardis, Binance and numpy sources do not.
 - One thread: a hook must not start threads that call the context.
 
 ## Hot hooks

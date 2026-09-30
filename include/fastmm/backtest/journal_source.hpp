@@ -36,7 +36,7 @@ class JournalSource final : public MdSource {
 
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {
     return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
-           t == EventType::BookTicker || t == EventType::OptionTicker;
+           t == EventType::BookTicker || t == EventType::OptionTicker || t == EventType::PerpState;
   }
 
  private:

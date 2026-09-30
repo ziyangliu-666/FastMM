@@ -14,6 +14,8 @@
   "account_balance_docs.json": "docs-example, verbatim (https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-balance, Response Example, read 2026-09-30)",
   "private_account_docs.json": "docs-example (https://www.okx.com/docs-v5/en/#trading-account-websocket-account-channel, Push Data Example, read 2026-09-30), verbatim but for the JavaScript comment after collateralRestrict, which is not JSON",
   "account_balance_spot_demo.json": "recorded 2026-09-30 from https://eea.okx.com/api/v5/account/balance with x-simulated-trading: 1 (the demo account, spot mode acctLv 1; the reply carries no account id)",
-  "private_account_spot_demo.json": "recorded 2026-09-30 on wss://wseeapap.okx.com:8443/ws/v5/private (tests/venues/live_okx_test.cpp with FASTMM_OKX_RECORD_DIR): the account channel snapshot push after subscribing; uid replaced by 77"
+  "private_account_spot_demo.json": "recorded 2026-09-30 on wss://wseeapap.okx.com:8443/ws/v5/private (tests/venues/live_okx_test.cpp with FASTMM_OKX_RECORD_DIR): the account channel snapshot push after subscribing; uid replaced by 77",
+  "raw_perp_stream.jsonl": "recorded on production 2026-09-30T08:33:20Z-08:36:28Z on wss://ws.okx.com:8443/ws/v5/public (fastmm-live --dry-run --record-raw --duration 180s, configs/okx-demo.toml pointed at production without keys, BTC-USDT-SWAP and ETH-USDT-SWAP): the perp subscribe acks, then the first 3 mark-price, 3 index-tickers, 2 funding-rate and 3 open-interest pushes of each swap, in recorded order (lines picked from the stream, unmodified)",
+  "raw_perp_4h.jsonl": "recorded on production 2026-09-30T08:37:05Z-08:44:20Z the same way (--duration 420s, BTC-USDT-SWAP and BIGTIME-USDT-SWAP): the BIGTIME-USDT-SWAP lines only, a swap with a 4 h funding interval (fundingTime 12:00 UTC, nextFundingTime 16:00 UTC)"
  }
 }

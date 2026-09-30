@@ -84,6 +84,82 @@ undocumented; the leverage per symbol is configuration (`initial_margin`), not r
 REST snapshots stamped with the connector's venue clock can precede a stream event they contain by
 a few ms (counted twice until the next report); backtests carry no balances.
 
+**Item 2 done: mark, index and funding reach the strategy (2026-09-30).** One event, `PerpStateMsg`
+(`EventType::PerpState`, 128 bytes, market data: the md ring, journaled, replayed): a derivative's
+mark, index, funding rate per interval (decimal, positive: longs pay), the interval, the next
+funding time and open interest at the venue's time, with a `fields` mask. A venue with separate
+channels (OKX) sends one message per channel; Bybit's deltas are merged in the connector and every
+push carries all fields. Engine (`core/perp_book.hpp`): each field kept with its arrival time on the
+journaled engine clock; `ctx.mark` / `ctx.index` (`RefPrice`: price, at, stale, usable),
+`ctx.funding` (`FundingView`: rate, interval, next, `over(d)`), `ctx.perp_state`, `on_perp_state`
+(C++ and Python). `[accounting] stale_mark_ms` 15 s (mark and index), `stale_funding_ms` 180 s.
+Valuation, decided: `[accounting] mark = "venue"` (default) values a position at its venue's
+fresh mark (unrealized PnL, `max_loss`, the exposure caps); a new mark checks `max_loss` at once;
+book updates stop moving it; a stale mark falls back to the mid at the next book update (logged,
+`PerpStats::mark_fallbacks`). `"mid"` keeps the mid. Spot has no marks, so nothing changes there;
+the collar, fat finger, `[risk.underlying]` and FX rates keep the mid. The gateway's `AccountBook`
+runs the same `PerpBook` on its steady clock, so `[gateway] max_loss` sees the strategies' values;
+PerpState goes to every attachment (the md drain) and an attaching strategy gets the fresh fields
+with the books. xmm: `funding_horizon_s` (default 0): fair += hedge ref * (hedge funding - quote
+funding) over the horizon (a filled bid is hedged by a short that earns the hedge's funding; the
+ask side pays the same, so one shift); `mark_basis`: basis = (quote mark - index) - (hedge mark -
+index) instead of the EWMA; a non-perpetual leg counts 0; stale inputs pull the quotes. Status v14
+`perps`, `fastmm_perp_*`, `journal_dump.py`, JournalSource and the sim driver carry it (multi-venue
+backtests from recorded journals); CSV, Tardis, Binance archive and numpy sources do not (Tardis
+`derivative_ticker` has mark, index, funding and OI but no interval: not done).
+Sources per venue, read 2026-09-30, detail in docs/reference/venues.md "Mark, index and funding";
+connectors done by four parallel agents on the core commit, each recording production public frames
+with `fastmm-live --dry-run --record-raw` for its fixtures:
+* Binance USD-M: `<sym>@markPrice@1s` on `/market` (the change notice lists markPrice there):
+  `p`, `i`, `r`, `T`, `E`. Interval: `GET /fapi/v1/fundingInfo` at start (803 rows: 469 4 h, 333
+  8 h, 1 1 h; unlisted = 8 h), corrected when `T` steps by whole hours within 5 min after a funding
+  (captured across 08:00: LPTUSDT 4 h, BTC/ETH 8 h). 1.00/s per symbol.
+* OKX: `mark-price`, `index-tickers` (index = swap id less `-SWAP`), `funding-rate`,
+  `open-interest` on `/ws/v5/public`, in their own subscribe request (a refusal leaves the books).
+  `fundingRate` is the predicted rate for `fundingTime`; interval = `nextFundingTime -
+  fundingTime` (397 swaps 8 h, 320 4 h). Docs say mark every 10 s and index once a minute without a
+  change; production pushes mark every 200 ms and index every 0.2-2 s regardless.
+* Bybit: `tickers.<sym>` (linear perpetuals), snapshot + deltas of changed fields, cache cleared on
+  reconnect; `fundingIntervalHour` (else instruments-info `fundingInterval`); OI from
+  `singleOpenInterest` (one side; not in the docs table, present in every frame).
+* Deribit: the subscribed `ticker.<name>.100ms`, perpetuals and futures: funding =
+  `current_funding` per 8 h, next 0 (continuous; support article "Inverse Perpetual"; on production
+  830/862 tickers matched (mark - index)/index clamped, `funding_8h` is the trailing 8 h); OI in
+  contracts (USD / contract size).
+* Gemini: the new WebSocket has `{sym}@markPrice` (every 5 s) and `{sym}@fundingAmount` (each
+  minute: `f` = estimated funding of one long contract over the hour, rate f/p per 60 min, `T` next),
+  neither in streams.md nor the AsyncAPI spec (only the 2025-10-31 revision history names "Mark
+  Price WebSocket API"); `i` of markPrice is the index times an undocumented per-symbol factor, not
+  used. The earlier note that these were v2-only was wrong. No funding snapshot on subscribe.
+* Coinbase: none (spot).
+Tests: core.perp_state (6), status/Prometheus (2), per-connector parser/feed tests on recorded
+frames (binance_usdm md parser + fake venue, okx_perp 8, bybit_perp 7, deribit_perp_state 6,
+gemini_perp_state 4), strategies.xmm (3: carry, the funding shift and requote, mark basis),
+hotpath.noalloc (engine with marks and funding; Xmm with both terms; one per connector),
+`perp_state_replay_test` (a live sim session whose position a venue mark takes past `max_loss`
+replays to the identical outbound hash), `gateway perp state` (two strategies on a shared Bybit
+perpetual both journal the marks; the account's venue position is valued at them:
+-0.015 x (60000 - 60123.45) = 1.85175), python `test_on_perp_state_and_the_venue_mark`, the strategy
+API doc test. Golden hashes unchanged (no PerpState in them). Full ctest (werror) 1587 passed; clang
+werror build clean; clang-tidy-18: no bugprone/performance finding in the changed src files. Found on
+the way: the Python hot-bench module did not build with FASTMM_BUILD_PYTHON (fixed).
+Bench (`bench_tick_to_order`, werror release, main at a path of the same length, taskset -c 2, 8 x 2
+interleaved runs of 3, load < 1, medians of 24): `BM_TickToOrder_Sim` 158.7 -> 158.7 ns,
+`BM_EngineStep_Sim` 2317.7 -> 2323.9 ns. The book path adds one flag test (`PerpBook::marking`).
+Dry run on production public data, 15 min, one fastmm-live with all five perp venues (10
+instruments; 36059 PerpState events in 927 s; 0 resyncs, 0 malformed, 0 dropped, no ERROR). The
+table filled 0.4-0.8 s after start for every instrument except Gemini (mark +3.2 s, funding +46 s).
+Per symbol: Binance mark/index/funding 1.00/s, longest gap 2.7 s; OKX mark 4.9/s (1.9 s), index
+2.8-3.6/s (2.8 s), funding 16 pushes (82.5 s), OI 0.12/s (16.9 s); Bybit all fields 6.9-7.1/s
+(2.1 s); Deribit perps 2.0-2.7/s (5.0 s), the future 1.4/s (7.6 s); Gemini mark 0.17/s with gaps
+of 69.5, 45.7 and 35.0 s in the first 4 min (the other Gemini streams kept flowing), so the mark
+went stale three times and the position fell back to the mid as designed; funding 14 in 15 min
+(one minute missed). A separate 10 min websocket probe right after (Python, same streams) saw none: 121 marks, longest gap 7.0 s, funding every 59-61 s; whether the gaps were the venue's or the connector's is not settled (no raw frames were recorded in that run).
+Open: Gemini index and OI (REST `/v1/riskstats` polling, lagging the socket by up to ~6 s) and a
+REST funding fetch at connect; Gemini's markPrice gaps; OKX around a settlement (`settState`
+processing) unverified; Bybit inverse category; Tardis `derivative_ticker` mapping; demo/testnet
+hosts serving the new streams not checked (production only).
+
 **Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
 contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
 docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs

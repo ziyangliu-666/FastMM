@@ -334,7 +334,7 @@ void GeminiVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (symbols_ == nullptr || symbols_->venue_of(id) != id_) continue;
     if (std::find(subscribed_.begin(), subscribed_.end(), id) != subscribed_.end()) continue;
     subscribed_.push_back(id);
-    if (md_feed_) md_feed_->add_instrument(id);
+    if (md_feed_) md_feed_->add_instrument(id, is_perpetual(id));
   }
   exec_replay_.set_streams(subscribed_.size());
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
@@ -354,11 +354,14 @@ InstrumentId GeminiVenue::subscribed_instrument(std::string_view symbol) const n
   return id;
 }
 
+bool GeminiVenue::is_perpetual(InstrumentId id) const noexcept {
+  return instruments_ != nullptr && instruments_->contains(id) &&
+         instruments_->get(id).asset_class == AssetClass::Perpetual;
+}
+
 bool GeminiVenue::any_perpetual() const noexcept {
-  if (instruments_ == nullptr) return false;
-  return std::any_of(subscribed_.begin(), subscribed_.end(), [this](InstrumentId id) {
-    return instruments_->get(id).asset_class == AssetClass::Perpetual;
-  });
+  return std::any_of(
+      subscribed_.begin(), subscribed_.end(), [this](InstrumentId id) { return is_perpetual(id); });
 }
 
 void GeminiVenue::connect(net::Reactor& reactor) {

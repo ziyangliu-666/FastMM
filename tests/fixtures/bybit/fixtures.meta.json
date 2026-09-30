@@ -26,6 +26,8 @@
   "wallet_balance_docs.json": "docs-example, verbatim (https://bybit-exchange.github.io/docs/v5/account/wallet-balance, Response Example, read 2026-09-30)",
   "private_wallet_docs.json": "docs-example, verbatim (https://bybit-exchange.github.io/docs/v5/websocket/private/wallet, Stream Example, read 2026-09-30)",
   "account_info_docs.json": "docs-example, verbatim (https://bybit-exchange.github.io/docs/v5/account/account-info, Response Example, read 2026-09-30)",
-  "wallet_balance_unified.json": "synthesised in the shape of wallet_balance_docs.json: BTC, USDT with order and position margin, ETH (no instrument), and the account-level fields"
+  "wallet_balance_unified.json": "synthesised in the shape of wallet_balance_docs.json: BTC, USDT with order and position margin, ETH (no instrument), and the account-level fields",
+  "raw_tickers_stream.jsonl": "recorded on production (wss://stream.bybit.com/v5/public/linear), 2026-09-30T08:31:22Z to 08:34:29Z, by fastmm-live --dry-run --record-raw --duration 180s with configs/bybit-linear-testnet.toml pointed at the production public endpoints (no keys), BTCUSDT and ETHUSDT: the subscribe ack and every tickers frame of the first 60 s (963 frames from the two snapshots on, one funding-rate update per symbol), `<rx_ns>\\t<json>` per line as RawRecorder writes it",
+  "tickers_snapshot.json, tickers_delta_index.json, tickers_delta_mark.json, tickers_delta_funding.json": "recorded, same session as raw_tickers_stream.jsonl: the tickers.BTCUSDT snapshot, the first delta with indexPrice and no markPrice, the next with markPrice and no indexPrice, the first with fundingRate"
  }
 }

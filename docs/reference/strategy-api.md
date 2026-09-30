@@ -55,6 +55,9 @@ void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hi
 void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
 void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
 void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance); }
+void on_perp_state(auto& /*ctx*/, InstrumentId /*id*/, const PerpStateMsg& /*m*/) noexcept {
+  hit(kPerpState);
+}
 ```
 
 | Hook | Called |
@@ -72,11 +75,12 @@ void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance)
 | `on_quoting(ctx, enabled)` | `ctx.quoting_enabled()` changed ([below](#on_quoting)) |
 | `on_params(ctx)` | a parameter update was applied; `params()` holds the new values ([Parameter updates](#parameter-updates)) |
 | `on_balance(ctx, m)` | a venue reported one asset of the account ([Balances](#balances)); `ctx.balance` already holds it |
+| `on_perp_state(ctx, id, m)` | a venue's mark, index or funding of a derivative arrived ([Perpetuals](#perpetuals)); `ctx.mark` and `ctx.funding` already hold it |
 
 Rules:
 
 - Hooks return `void`. `auto& ctx` and `template <class Ctx> void on_x(Ctx& ctx, ...)` are the same. Hooks run inside `noexcept` engine code; declare them `noexcept`.
-- Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_fill`) fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in them.
+- Instrument-scoped hooks (`on_book`, `on_book_ticker`, `on_trade`, `on_option_ticker`, `on_perp_state`, `on_fill`) fire only for instruments in the table, so `ctx.book(id)` and `ctx.instrument(id)` are valid in them.
 - `on_fill` fires for every execution on an instrument in the table, including late fills (the order was already terminal) and fills for ids the OMS does not know. Fills on other instruments are counted in `EngineStats::unknown_instrument_fills`.
 - Hooks must not block, allocate on every event or read anything that is not an engine input (the system clock, `std::random_device`, files); see [Determinism](../explanation/determinism.md).
 
@@ -226,7 +230,30 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 | `balance_room(id, side, px)` | the largest quantity of `id` on `side` at `px` the balance covers, rounded down to the lot: a spot buy's quote with the taker fee, a spot sell's base, a derivative's initial margin; `Qty::max()` while the venue has not reported that balance. What this instrument's open orders on that side hold is not counted as room |
 | `balances_live()` | a venue has reported balances; before that nothing is estimated or checked |
 
-`RiskHeadroom::balance_buy_qty` / `balance_sell_qty` are `balance_room` at the book's mid. `fit_to_balance(ctx, id, inst, q)` (`strategies/quoting.hpp`) cuts a `DesiredQuotes` ladder to what the balance covers, the side's resting orders counted as room; `basic_mm` uses it.
+`RiskHeadroom::balance_buy_qty` / `balance_sell_qty` are `balance_room` at the book's mid.
+
+### Perpetuals
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#perps -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<Ctx>().mark(InstrumentId{})), RefPrice>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().index(InstrumentId{})), RefPrice>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().funding(InstrumentId{})), FundingView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().perp_state(InstrumentId{})), const PerpRow&>);
+static_assert(std::same_as<decltype(RefPrice::price), Price>);
+static_assert(std::same_as<decltype(RefPrice::stale), bool>);
+static_assert(std::same_as<decltype(FundingView::rate), double>);
+static_assert(std::same_as<decltype(FundingView::interval), Duration>);
+static_assert(std::same_as<decltype(lvalue<const FundingView>().over(Duration{})), double>);
+```
+
+| Method | Returns |
+|---|---|
+| `mark(id)`, `index(id)` | `RefPrice`: the venue's mark or index price of a derivative (`PerpStateMsg`, [venues](venues.md#mark-index-and-funding)), `at` (engine time it arrived), `stale` (older than `[accounting] stale_mark_ms`, or never reported), `usable()` (reported and not stale) |
+| `funding(id)` | `FundingView`: `rate` (per `interval`, a decimal; positive: longs pay shorts), `interval`, `next` (venue time of the next payment; zero when funding is continuous), `at`, `stale` (against `stale_funding_ms`), `usable()`, `over(d)` (the rate over a holding time `d`: `rate * d / interval`) |
+| `perp_state(id)` | `const PerpRow&`: every field as last reported, open interest included, with the time each arrived and no staleness applied |
+
+A venue that publishes mark, index and funding on separate channels (OKX) sends one message per channel; `PerpStateMsg::fields` names what a message carries and the table keeps the rest. With `[accounting] mark = "venue"` (the default) a position whose instrument has a fresh mark is valued at it ([Valuation](../explanation/risk-model.md#valuation-at-the-venue-mark)); `on_book` then no longer moves its unrealized PnL. `fit_to_balance(ctx, id, inst, q)` (`strategies/quoting.hpp`) cuts a `DesiredQuotes` ladder to what the balance covers, the side's resting orders counted as room; `basic_mm` uses it.
 
 ## Execution view
 
@@ -336,6 +363,10 @@ static_assert(std::same_as<decltype(OmsUpdate::prev), OrderState>);
 static_assert(std::same_as<decltype(OmsUpdate::terminal), bool>);
 static_assert(std::same_as<decltype(BalanceMsg::free), Notional>);
 static_assert(std::same_as<decltype(BalanceMsg::asset), FixedString<8>>);
+static_assert(std::same_as<decltype(PerpStateMsg::mark_price), Price>);
+static_assert(std::same_as<decltype(PerpStateMsg::funding_rate), double>);
+static_assert(std::same_as<decltype(PerpStateMsg::next_funding), Timestamp>);
+static_assert(std::same_as<decltype(PerpStateMsg::fields), std::uint8_t>);
 ```
 
 - Every message starts with an `EventHeader`: `type`, `venue`, `instrument`, `exch_ts` (venue event time) and `recv_ts` (receive time), plus `seq` and flags.
@@ -459,7 +490,12 @@ BalanceMsg usdt{};
 init_header(usdt, EventType::Balance, InstrumentId::invalid(), VenueId{0});
 usdt.asset.assign("USDT");
 usdt.free = Notional::from_int(1000);
-h.push(usdt.hdr);     // on_balance
+h.push(usdt.hdr);  // on_balance
+PerpStateMsg perp{};
+init_header(perp, EventType::PerpState, h.instrument(), VenueId{0});
+perp.mark_price = 100.01_px;
+perp.fields = PerpStateMsg::kMark;
+h.push(perp.hdr);     // on_perp_state
 h.engine().finish();  // on_stop
 ```
 
