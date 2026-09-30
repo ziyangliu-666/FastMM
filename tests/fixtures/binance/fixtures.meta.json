@@ -14,6 +14,10 @@
   "raw_md_stream.jsonl": "recorded, one frame per line",
   "exec_report_*.json, outbound_account_position.json, ws_api_*.json, open_orders.json, listen_key.json, error_*.json": "docs-example (hand-written following https://github.com/binance/binance-spot-api-docs user-data-stream.md / web-socket-api.md, with FastMM client ids)",
   "sbe/*.hex": "built from the schema (sbe/make_fixtures.py, stream_1_0.xml): SBE streams need an Ed25519 API key, the stream host answers 400 'No X-MBX-APIKEY header' without one (checked 2026-09-22)",
-  "ed25519-test-*.pem": "test-only Ed25519 key pair (openssl genpkey -algorithm ed25519), also used by tests/net/crypto_test.cpp"
+  "ed25519-test-*.pem": "test-only Ed25519 key pair (openssl genpkey -algorithm ed25519), also used by tests/net/crypto_test.cpp",
+  "account_rest.json": "docs-example, verbatim: the response of rest-api.md \"Account information (USER_DATA)\" (https://github.com/binance/binance-spot-api-docs, read 2026-09-30)",
+  "ws_api_account_status.json": "docs-example, verbatim: the response of web-socket-api.md \"Account information (USER_DATA)\" (account.status, read 2026-09-30)",
+  "demo_account_status.json": "recorded on Demo Mode (wss://demo-ws-api.binance.com/ws-api/v3, account.status with omitZeroBalances=true, the connector's balance leg, 2026-09-30T04:52Z), uid replaced by 0",
+  "demo_outbound_account_position.json": "recorded on Demo Mode (the WebSocket API user stream, 2026-09-30T04:52Z): the event after a post-only BTCUSDT buy of 0.00009 at 66584 was placed; u equals the order's executionReport T"
  }
 }

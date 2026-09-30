@@ -334,7 +334,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   OpResult op_my_trades(Account& a, const ParamList& p);
   OpResult op_commission(const ParamList& p);
   OpResult op_cancel_all(Account& a, const ParamList& p);
-  OpResult op_account(Account& a);
+  OpResult op_account(Account& a, const ParamList& p);
   OpResult op_exchange_info(const ParamList& p);
   OpResult op_depth(const ParamList& p);
   OpResult op_book_ticker(const ParamList& p);

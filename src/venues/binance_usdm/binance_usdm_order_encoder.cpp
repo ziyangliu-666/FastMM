@@ -245,6 +245,11 @@ bool BinanceUsdmOrderEncoder::encode_rest_position_risk(std::string_view symbol,
       signer_, recv_window_ms_, "/fapi/v3/positionRisk", symbol, timestamp_ms, 5, out);
 }
 
+bool BinanceUsdmOrderEncoder::encode_rest_account(std::int64_t timestamp_ms, RestRequest& out) {
+  return encode_rest_signed_get(
+      signer_, recv_window_ms_, "/fapi/v3/account", {}, timestamp_ms, 5, out);
+}
+
 bool BinanceUsdmOrderEncoder::encode_rest_user_trades(std::string_view symbol,
                                                       std::int64_t from_id,
                                                       std::int64_t start_ms,

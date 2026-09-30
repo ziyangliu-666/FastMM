@@ -10,6 +10,8 @@
 //   GET /fapi/v1/positionSide/dual {"dualSidePosition":bool}
 //   GET /fapi/v1/symbolConfig      [{symbol,marginType,isAutoAddMargin,leverage,maxNotionalValue}]
 //   GET /fapi/v1/income            [{symbol,incomeType,income,asset,info,time,tranId,tradeId}]
+//   GET /fapi/v3/account           totals and assets[] ("Account Information V3")
+//   GET /fapi/v1/multiAssetsMargin {"multiAssetsMargin":bool} ("Get Current Multi-Assets Mode")
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
 
@@ -71,6 +73,30 @@ struct BalanceRecord {
   Notional available{};
 };
 std::string decode_balance(std::string_view json, std::vector<BalanceRecord>& out);
+
+// GET /fapi/v3/account: the margin of each asset and of the account. Field names and meaning from
+// "Account Information V3" (read 2026-09-30). The totals are USDT only in single-asset mode and
+// USD in multi-assets mode, where an asset's availableBalance is the account's (in USD) too.
+struct FuturesMargin {
+  Notional available{};     // availableBalance
+  Notional max_withdraw{};  // maxWithdrawAmount (what can be transferred out)
+  Notional initial{};       // initialMargin / totalInitialMargin (positions and open orders)
+  Notional wallet{};        // walletBalance / totalWalletBalance
+  Notional margin{};        // marginBalance / totalMarginBalance (wallet + unrealised PnL)
+  Notional maintenance{};   // maintMargin / totalMaintMargin
+};
+struct FuturesAssetMargin {
+  std::string asset;
+  FuturesMargin m;
+  std::int64_t update_time_ms = 0;  // updateTime
+};
+struct FuturesAccount {
+  FuturesMargin total;
+  std::vector<FuturesAssetMargin> assets;
+};
+std::string decode_account(std::string_view json, FuturesAccount& out);
+
+std::string decode_multi_assets_mode(std::string_view json, bool& multi_assets);
 
 // GET /fapi/v1/income: one row per income entry ("Get Income History"). tranId is "unique in the
 // same incomeType for a user"; income is signed (negative paid).

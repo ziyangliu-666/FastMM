@@ -285,10 +285,15 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
   if (type == "outboundAccountPosition") {
     std::int64_t ev_time = 0;
     if (ev["E"].get_int64().get(ev_time) != sj::SUCCESS) return malformed();
+    // u, the time of the account update the balances are as of: the executionReport of the trade
+    // that moved them carries the same transaction time (T), and a later one is not in them.
+    std::int64_t update_time = 0;
+    if (ev["u"].get_int64().get(update_time) != sj::SUCCESS) update_time = ev_time;
     od::array balances;
     if (ev["B"].get_array().get(balances) != sj::SUCCESS) return malformed();
     std::uint32_t written = 0;
     std::uint32_t count = 0;
+    std::uint32_t positions = 0;
     for (auto bal_res : balances) {
       od::object bal;
       if (bal_res.get_object().get(bal) != sj::SUCCESS) return malformed();
@@ -301,6 +306,21 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
       const auto f = parse_qty(free_s);
       const auto l = parse_qty(locked_s);
       if (!f || !l) return malformed();
+      // Every amount is absolute: the asset's balance replaces the engine's.
+      const std::string_view name = assets_ != nullptr ? assets_->find(asset) : std::string_view{};
+      if (!name.empty() && written + sizeof(BalanceMsg) <= out.size()) {
+        const auto nf = parse_notional(free_s);
+        const auto nl = parse_notional(locked_s);
+        if (!nf || !nl) return malformed();
+        auto* m = reinterpret_cast<BalanceMsg*>(out.data() + written);
+        *m = BalanceMsg{};
+        fill_balance(*m, venue_, name, BalanceFields::spot(*nf, *nl), update_time, 0);
+        m->hdr.recv_ts = recv_ts;
+        m->hdr.t0_cycles = t0;
+        written += sizeof(BalanceMsg);
+        ++count;
+        ++stats_.balances;
+      }
       for (const Instrument& inst : instruments_) {
         if (inst.venue != venue_ || !iequals_symbol(inst.base.view(), asset)) continue;
         if (written + sizeof(PositionUpdateMsg) > out.size()) break;
@@ -311,9 +331,10 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
         stamp(*m, recv_ts, t0, ev_time);
         written += sizeof(PositionUpdateMsg);
         ++count;
+        ++positions;
       }
     }
-    ++stats_.positions;
+    if (positions > 0) ++stats_.positions;
     r.status = count > 0 ? ParseStatus::Ok : ParseStatus::Ignored;
     r.order_kind = OrderEventKind::Position;
     r.len = written;

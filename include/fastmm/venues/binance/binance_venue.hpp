@@ -14,7 +14,11 @@
 //   order wss://<ws-api>/ws-api/v3                   order.place / order.cancel /
 //         order.cancelReplace / openOrders.cancelAll / openOrders.status, REST fallback
 //   rest  https://<rest>                             exchangeInfo, depth snapshots, time,
-//         openOrders, listenKey keepalive (RestChannel on the reactor)
+//         openOrders, account, listenKey keepalive (RestChannel on the reactor)
+//
+// Balances: after every open-order snapshot, account.status on the order connection (else GET
+// /api/v3/account), omitZeroBalances=true, is the balance snapshot (ReconcileDriver's balance
+// leg); the user stream's outboundAccountPosition updates it (BinanceUserParser).
 // cancel_all() uses an independent BlockingHttp connection so the kill switch works even if
 // the reactor thread is wedged (6.7).
 //
@@ -228,6 +232,10 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   void cancel_all_async();
   // ReconcileHooks: openOrders.status on the order connection, else GET /api/v3/openOrders.
   bool fetch_snapshot(std::uint64_t generation) override;
+  // ReconcileHooks: account.status on the order connection, else GET /api/v3/account.
+  bool fetch_balances(std::uint64_t generation) override;
+  // The account reply (either envelope) into the driver's balance rows.
+  void on_account(std::uint64_t generation, std::string_view json);
   bool replay_executions() override;
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
@@ -318,6 +326,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   ReconcileDriver reconcile_{*this, sent_};
   // The generation of the openOrders.status request on the order connection (0: none).
   std::uint64_t oo_ws_generation_ = 0;
+  // The generation of the account.status request on the order connection (0: none).
+  std::uint64_t bal_ws_generation_ = 0;
   net::TimerId housekeeping_timer_ = net::kInvalidTimer;
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
 

@@ -16,6 +16,11 @@
 //                  a.m      FUNDING_FEE           -> `funding` set: the connector books the
 //                                                    payment from GET /fapi/v1/income (the event
 //                                                    has no id to deduplicate it by)
+//                  a.B[]    non-empty             -> `balances` set: B carries the wallet balance
+//                                                    (wb, cw, bc) but not the available balance or
+//                                                    the margin, so the connector asks for the
+//                                                    account (GET /fapi/v3/account)
+//   ACCOUNT_CONFIG_UPDATE ai.j                    -> `multi_assets` (Multi-Assets Mode on or off)
 //   listenKeyExpired                              -> Ignored with listen_key_expired set
 //
 // Client ids that FastMM did not mint are ignored, except fills (liquidations "autoclose-*", ADL,
@@ -50,12 +55,15 @@ struct UserParserStats {
   std::uint64_t foreign_ids = 0;
   std::uint64_t listen_key_expired = 0;
   std::uint64_t funding_events = 0;  // ACCOUNT_UPDATE with reason FUNDING_FEE
+  std::uint64_t balance_events = 0;  // ACCOUNT_UPDATE with a non-empty B[]
 };
 
 struct UserDecodeResult : DecodeResult {
   std::uint32_t count = 0;          // messages written back to back in `out`
   bool listen_key_expired = false;  // the stream stops until a new listenKey is used
   bool funding = false;             // an ACCOUNT_UPDATE for a funding payment
+  bool balances = false;            // an ACCOUNT_UPDATE naming balances (a.B[])
+  std::int8_t multi_assets = -1;    // ACCOUNT_CONFIG_UPDATE ai.j: 1 on, 0 off, -1 not said
 };
 
 class BinanceUsdmUserParser {
