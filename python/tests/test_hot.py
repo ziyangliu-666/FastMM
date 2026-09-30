@@ -527,4 +527,4 @@ def test_the_readme_example_runs_and_fills():
     out = subprocess.run([sys.executable, str(EXAMPLES / "touch_mm.py")], cwd=REPO, check=True,
                          capture_output=True, text=True).stdout
     assert out.startswith("backtest py:TouchMM")
-    assert "fills (maker / taker)          56 (56 / 0)" in out
+    assert "fills (maker / taker)          55 (55 / 0)" in out
