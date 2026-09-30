@@ -479,9 +479,14 @@ bool EcdsaP256Key::verify(std::string_view data,
   if (!sig) return false;
   std::unique_ptr<BIGNUM, BnDeleter> r(BN_bin2bn(signature.data(), 32, nullptr));
   std::unique_ptr<BIGNUM, BnDeleter> s(BN_bin2bn(signature.data() + 32, 32, nullptr));
-  if (!r || !s || ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) return false;
-  static_cast<void>(r.release());  // owned by sig now
-  static_cast<void>(s.release());
+  if (!r || !s) return false;
+  BIGNUM* const r_raw = r.release();
+  BIGNUM* const s_raw = s.release();
+  if (ECDSA_SIG_set0(sig.get(), r_raw, s_raw) != 1) {  // takes ownership only on success
+    BN_free(r_raw);
+    BN_free(s_raw);
+    return false;
+  }
   unsigned char* der = nullptr;
   const int der_len = i2d_ECDSA_SIG(sig.get(), &der);
   if (der_len <= 0) return false;
