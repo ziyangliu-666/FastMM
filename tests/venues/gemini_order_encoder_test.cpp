@@ -121,7 +121,7 @@ TEST_CASE("gemini.encoder: order.place, order.cancel, no amend") {
   len = enc.encode_ws(*OrderCommand::from(c.hdr), "73797746498585286", buf);
   CHECK(
       std::string_view(buf, len) ==
-      R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":73797746498585286}})");
+      R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":"73797746498585286"}})");
   CHECK(enc.encode_ws(*OrderCommand::from(c.hdr), {}, buf) == 0);  // no venue id
   CHECK(enc.encode_ws(*OrderCommand::from(c.hdr), "12a", buf) == 0);
 

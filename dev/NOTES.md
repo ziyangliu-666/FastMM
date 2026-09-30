@@ -61,7 +61,7 @@ marking the side cut.
 Tests: `gemini.md_parser`/`md_feed` (4, on 205 recorded frames: every frame decodes, three books sync
 with no resync, snapshot marking, overlap, stale drop, gap and resubscribe), `gemini.auth`/
 `encoder`/`error_map`/`rest_decoder`/`private_parser` (7, RFC 4231 vector, documented payloads),
-`gemini.venue` (11, fake server: config, reference data, key refusal exits 3, signed upgrade with
+`gemini.venue` (11, fake server: config, reference data, key and account refusal exit 3, signed upgrade with
 `cancelOnDisconnect=true` and a fresh nonce on reconnect, start-up sweep, order lifecycle with reject,
 post-only expiry and cancel before the ack, a fill made while the order connection was down booked
 once, funding once, heartbeat lapse kills, kill-path cancel-all through a 429, book gap resync),
@@ -70,12 +70,36 @@ Dry run on production public data, 15 min (btcgusdperp, ethgusdperp, btcusd): bo
 after start, 25587 md messages, 0 resyncs, 0 malformed, 0 dropped, 0 reconnects, no ERROR; an
 independent check of the recorded frames found no `U`/`u` gap and no stale frame; clock offset
 -624 ms (the WSL clock). Not run: anything with keys.
-Open: the signed upgrade and every private payload are untested against Gemini; the `order.place`
-result fields; whether a REST nonce may repeat within a second; `fundingPayment` query vs payload;
-`mytrades` paging direction (desc list, forward walk-through); fee on PARTIALLY_FILLED and its
-currency; how fast `cancelOnDisconnect` acts without a FIN; whether `orders@account` covers REST
-orders; `btcusdcperp` and `btcgusdperp` looked like one book; the sandbox's fee schedule
-(`configs/gemini-sandbox.toml` sets none).
+Sandbox, with the user's sandbox keys (exchange account "primary", Singapore, test funds), spot
+btcusd only. Found and fixed: (a) a time-based nonce must also increase: two REST requests in one
+second got `InvalidNonce` ("Nonce '1790735176' has not increased since your last call"), which
+failed the snapshot and the shutdown cancel-all; milliseconds are taken, so every nonce (REST and
+the upgrade) is now venue-time ms, strictly increasing (one atomic counter). (b) `order.cancel`
+refuses a numeric `orderId` (`-1013 Invalid parameters`; 183 cancel rejects in 40 s, the engine's
+retry loop); it is sent as a string. (c) A refused placement comes back twice, a 400 reply and a
+`REJECTED` event: one reject now (test fails without it). (d) With a perpetual configured, start-up
+asks `/v1/positions`: an exchange account answers `AccountNotOfTypeRequired` and `fastmm-live` exits 3
+("orders need the assessment": perpetuals need a derivatives account, opened after the Derivatives
+Knowledge Assessment, support.gemini.com "How do I open a Gemini derivatives account?"; a perpetual
+`order.place` from the exchange account is refused `-2010 InsufficientFunds` plus a `REJECTED`
+event; `/v1/positions`, `/v1/margin` and `fundingPayment` answer `AccountNotOfTypeRequired`).
+Verified: signed upgrade with `cancelOnDisconnect=true` and `orders@account`; `live.gemini`
+(opt-in, `FASTMM_LIVE_TESTS=1`, sandbox hosts only): post-only placed and cancelled, an IOC buy of
+0.0001 filled, a second connector's sweep and replay, the order's trades per `/v1/order/status`
+equal to the fills booked. `fastmm-live` basic_mm: 24 orders / 24 cancels, clean stop; 180 s near
+the touch, 3 maker fills (one partial); a restart restored -0.000124 BTC and `fastmm-ctl flatten`
+sent one IOC that filled; kill -9 with two quotes resting and `cancelOnDisconnect` on: the sandbox
+had cancelled both within 2 s; with it off they stayed, and the restart's start-up sweep reported
+2 open orders of the earlier session and the engine cancelled them. Against the sandbox's own
+record (`/tmp/gem/verify.py`, order status per order): 257 orders, no client id twice, 4 fills,
+each equal to the venue's trades, nothing open; the account's BTC moved by exactly the fills.
+Sandbox gaps: `/v1/mytrades` and `/v1/orders/history` return `[]` for this account (5 min polling,
+also a REST-placed order), so the replay finds nothing there; the stream's fee `n` was 0 on every
+WebSocket fill (a REST IOC was charged 0.033 USD). Replies are not ordered with the subscribe ack.
+Open: perpetual order entry (no derivatives account yet); production `mytrades` paging (desc list,
+forward walk-through); `fundingPayment` query vs payload; how fast `cancelOnDisconnect` acts without
+a FIN; whether `orders@account` covers REST orders; `btcusdcperp` and `btcgusdperp` looked like one
+book; the fee schedule (`configs/gemini-sandbox.toml` sets none).
 
 **End to end over veth is slower on this host today (2026-09-29).** `scripts/bench-e2e.sh`, kernel, busy, 3 x 60 s: wire to wire p50 51 to 74 µs, T0 to T5 p50 7 to 20 µs, against 23.6 to 25.6 and 2.4 to 2.6 on 2026-09-23. The 2026-09-23 `release-native` build and the 2026-09-26 `release` build measure the same today (57 and 51 µs, one 30 s run each), so it is the host, not the code; `BM_TickToOrder_Sim` (release) is unchanged at 151 ns p50. The published e2e numbers stay those of 2026-09-23.
 

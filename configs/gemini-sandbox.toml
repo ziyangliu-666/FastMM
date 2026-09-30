@@ -1,8 +1,10 @@
 # FastMM: BasicMM on the Gemini sandbox, BTCGUSDPERP (linear perpetual, 1 BTC per contract).
 #   ./build/release/bin/fastmm-live --config configs/gemini-sandbox.toml --dry-run --duration 60s
-# Keys from https://exchange.sandbox.gemini.com (Settings > API): an account-scoped key for the
-# derivatives account, "Uses a time-based nonce" and the Trading role (the WebSocket API refuses
-# master keys and counter nonces):
+# Keys from https://exchange.sandbox.gemini.com (Settings > API): an account-scoped key with "Uses
+# a time-based nonce" and the Trading role (the WebSocket API refuses master keys and counter
+# nonces). Perpetuals need a derivatives account (opened after the Derivatives Knowledge
+# Assessment) and a key scoped to it; with an exchange account's key fastmm-live exits 3. Spot
+# (symbol "btcusd", quote "USD", asset_class "spot") trades from the exchange account:
 #   export GEMINI_SANDBOX_API_KEY=... GEMINI_SANDBOX_API_SECRET=...
 #   ./build/release/bin/fastmm-live --config configs/gemini-sandbox.toml
 # Endpoints (https://developer.gemini.com/get-started/sandbox.md): REST

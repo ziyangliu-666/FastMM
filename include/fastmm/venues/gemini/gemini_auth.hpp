@@ -12,10 +12,11 @@
 //   hex(HMAC_SHA384(payload, secret)); a connection cannot authenticate after it is open.
 //
 // Nonces. The WebSocket takes only account-scoped keys with a time-based nonce, so the key is one:
-// "Unix epoch timestamps in seconds ... within +/- 30 seconds of server time". The trading-docs
-// copy of the WebSocket page adds that "the value must increase across connections for the same
-// key": the upgrade nonce is kept strictly above the last one sent. Master keys (and their
-// `account` payload field) are refused by the WebSocket and are not supported.
+// "Unix epoch timestamps in seconds ... within +/- 30 seconds of server time". On the sandbox
+// (2026-09-30) a time-based nonce must also increase ("Nonce '1790735176' has not increased since
+// your last call"), and milliseconds are taken: the connector sends Unix milliseconds, each above
+// the last, on REST and on the upgrade. Master keys (and their `account` payload field) are refused
+// by the WebSocket and are not supported.
 #include "fastmm/core/log.hpp"
 #include "fastmm/net/crypto.hpp"
 
@@ -57,9 +58,9 @@ class Signer {
     return h;
   }
 
-  // The headers of an authenticated WebSocket upgrade with nonce `nonce_s` (Unix seconds).
-  [[nodiscard]] std::string ws_headers(std::int64_t nonce_s) const {
-    const std::string nonce = std::to_string(nonce_s);
+  // The headers of an authenticated WebSocket upgrade with nonce `n`.
+  [[nodiscard]] std::string ws_headers(std::int64_t n) const {
+    const std::string nonce = std::to_string(n);
     const std::string b64 = net::base64_encode(nonce);
     std::string h;
     h.reserve(256);

@@ -244,8 +244,10 @@ struct Harness {
         const std::string cl = json_str(t, "clientOrderId");
         const std::string mode = place_mode.contains(cl) ? place_mode[cl] : "";
         if (mode == "reject") {
+          // Both answer it, as on the sandbox (2026-09-30): the reply and a REJECTED event.
           s.send_text(R"({"id":")" + id +
                       R"(","status":400,"error":{"code":-2010,"msg":"InsufficientFunds"}})");
+          s.send_text(order_event("REJECTED", next_order_id++, cl, R"(,"r":"InsufficientFunds")"));
           return;
         }
         const long long oid = next_order_id++;
@@ -263,7 +265,7 @@ struct Harness {
         return;
       }
       if (method == "order.cancel") {
-        const long long oid = std::stoll(json_int(t, "orderId"));
+        const long long oid = std::stoll(json_str(t, "orderId"));
         s.send_text(R"({"id":")" + id + R"(","status":200,"result":{}})");
         const std::string cum = filled.contains(oid) ? "0.000" + std::to_string(filled[oid]) : "";
         s.send_text(order_event("CANCELED",
@@ -468,9 +470,9 @@ TEST_CASE("gemini.venue: reference data, a linear perpetual of 1 BTC per contrac
   CHECK(in.quote.view() == "GUSD");  // quote_currency, not the configured USD
   CHECK(in.notional(Price::from_int(80000), Qty::from_decimal("0.01").value()) ==
         Notional::from_int(800));
-  // With keys the key is checked, signed.
-  CHECK(h.rest() == std::vector<std::string>{"orders"});
-  CHECK(h.signed_ok.load() == 1);
+  // With keys the key is checked, and with a perpetual the account's type, signed.
+  CHECK(h.rest() == (std::vector<std::string>{"orders", "positions"}));
+  CHECK(h.signed_ok.load() == 2);
   CHECK(h.signed_bad.load() == 0);
 
   // An inverse perpetual is refused, a closed market disabled, a refused key exits 3.
@@ -535,6 +537,30 @@ TEST_CASE("gemini.venue: a refused key exits 3, an unreachable venue does not") 
   REQUIRE_FALSE(unreachable.load_reference_data(i2));
   CHECK_FALSE(unreachable.refused_account_settings());
   down.stop();
+  // A perpetual on an exchange (not derivatives) account: the sandbox's answer on 2026-09-30.
+  FakeVenueServer spot_only;
+  spot_only.route("GET", "/v1/symbols/details/btcgusdperp", [](const net::HttpRequest&) {
+    return net::HttpServerResponse::json(
+        200, fastmm::test::fixture("gemini/symbol_details_btcgusdperp.json"));
+  });
+  spot_only.route("POST", "/v1/orders", [](const net::HttpRequest&) {
+    return net::HttpServerResponse::json(200, "[]");
+  });
+  spot_only.route("POST", "/v1/positions", [](const net::HttpRequest&) {
+    return net::HttpServerResponse::json(
+        400,
+        R"({"result":"error","reason":"AccountNotOfTypeRequired","message":"Account  is not of required type: derivatives"})");
+  });
+  spot_only.start();
+  s.rest_url = spot_only.http_base();
+  InstrumentTable i3;
+  REQUIRE(i3.add(configured_perp()));
+  GeminiVenue exchange_account(kVenue, make_gemini_config(s, false));
+  const auto r3 = exchange_account.load_reference_data(i3);
+  REQUIRE_FALSE(r3);
+  CHECK(r3.error().find("not a derivatives account") != std::string::npos);
+  CHECK(exchange_account.refused_account_settings());
+  spot_only.stop();
 }
 
 TEST_CASE("gemini.venue: signed upgrade with cancelOnDisconnect, then the start-up sweep") {
@@ -646,7 +672,7 @@ TEST_CASE("gemini.venue: order lifecycle: ack, fill, cancel, reject, post-only t
     l.until([&] { return l.oc.count(EventType::OrderCancelAck) == 1; });
     CHECK(
         h.srv.frames("orders")[2] ==
-        R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":73797746498585000}})");
+        R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":"73797746498585000"}})");
     CHECK(l.oc.last<OrderCancelAckMsg>(EventType::OrderCancelAck)->cum_qty ==
           Qty::from_decimal("0.0004").value());
     CHECK(l.venue->shadow_count() == 0);
@@ -655,6 +681,12 @@ TEST_CASE("gemini.venue: order lifecycle: ack, fill, cancel, reject, post-only t
     book.submit(n2.cl_ord_id, kBtc, kVenue, n2.side, n2.price, n2.qty);
     l.push(n2.hdr);
     l.until([&] { return l.oc.count(EventType::OrderReject) == 1; });
+    // The REJECTED event that follows the reply is not a second reject.
+    REQUIRE(pump_until(l.reactor, [&] {
+      return h.srv.frames("orders").size() >= 4 && l.venue->shadow_count() == 0;
+    }));
+    l.pump();
+    CHECK(l.oc.count(EventType::OrderReject) == 1);
     const auto* rej = l.oc.last<OrderRejectMsg>(EventType::OrderReject);
     CHECK(rej->cl_ord_id == n2.cl_ord_id);
     CHECK(rej->reason == RejectReason::InsufficientBalance);
@@ -698,7 +730,7 @@ TEST_CASE("gemini.venue: a cancel sent before the venue named the order goes out
     l.until([&] { return l.oc.count(EventType::OrderCancelAck) == 1; });
     CHECK(
         h.srv.frames("orders")[2] ==
-        R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":73797746498585000}})");
+        R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":"73797746498585000"}})");
   }
 }
 

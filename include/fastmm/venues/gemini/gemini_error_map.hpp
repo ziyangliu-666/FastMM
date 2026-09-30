@@ -28,7 +28,7 @@ namespace fastmm::venues::gemini {
   if (r == "InvalidSignature" || r == "InvalidApiKey" || r == "MissingRole" ||
       r == "MissingApikeyHeader" || r == "MissingPayloadHeader" || r == "MissingSignatureHeader" ||
       r == "AmbiguousAuthentication" || r == "NotGroupApiCompatible" || r == "AccountClosed" ||
-      r == "EndpointMismatch")
+      r == "EndpointMismatch" || r == "AccountNotOfTypeRequired")
     return {RejectReason::VenueReject, VenueAction::Fatal, true};
   if (r == "RemoteAddressForbidden" || r == "ApiKeyIpFilteringFailure")
     return {RejectReason::VenueReject, VenueAction::HardStop, true};

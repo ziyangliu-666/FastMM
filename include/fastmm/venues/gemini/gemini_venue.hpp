@@ -174,7 +174,8 @@ class GeminiVenue final : public Venue, private ReconcileHooks {
   void on_order_reply(const PrivateControl& c);
 
   [[nodiscard]] net::ConnectionConfig ws_config(const std::string& url) const;
-  [[nodiscard]] std::int64_t nonce_s() const noexcept { return venue_time_ms() / 1000; }
+  // Venue time in ms, strictly above every nonce sent before (any thread: cancel_all).
+  [[nodiscard]] std::int64_t next_nonce() noexcept;
   [[nodiscard]] std::string ws_auth_headers();
   // Queues a signed REST request; `done` gets the reply unless the connector went away.
   bool rest_post(const RestRequest& rr, std::function<void(const net::HttpResponse&)> done);
@@ -192,7 +193,7 @@ class GeminiVenue final : public Venue, private ReconcileHooks {
   void request_server_time();
   void cancel_session_async();
   void send_heartbeat();
-  std::string check_key();
+  std::string check_key(bool perpetuals);
   // ReconcileHooks: /v1/orders, then /v1/positions, then the snapshot.
   bool fetch_snapshot(std::uint64_t generation) override;
   bool replay_executions() override;
@@ -245,7 +246,7 @@ class GeminiVenue final : public Venue, private ReconcileHooks {
   std::atomic<std::int64_t> clock_offset_ms_{0};
   std::int64_t clock_sync_ns_ = 0;
   std::int64_t last_ping_ns_ = 0;
-  std::int64_t last_ws_nonce_s_ = 0;
+  std::atomic<std::int64_t> last_nonce_{0};
   bool time_request_pending_ = false;
   bool fatal_ = false;
   bool venue_kill_sent_ = false;

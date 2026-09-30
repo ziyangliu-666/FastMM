@@ -15,19 +15,19 @@ bool all_digits(std::string_view s) noexcept {
   return true;
 }
 
-std::string payload_start(std::string_view path, std::int64_t nonce_s) {
+std::string payload_start(std::string_view path, std::int64_t nonce) {
   std::string p = R"({"request":")";
   p += path;
   p += R"(","nonce":)";
-  p += std::to_string(nonce_s);
+  p += std::to_string(nonce);
   return p;
 }
 
-RestRequest simple(std::string_view path, std::int64_t nonce_s) {
+RestRequest simple(std::string_view path, std::int64_t nonce) {
   RestRequest r;
   r.path = path;
   r.target = path;
-  r.payload = payload_start(path, nonce_s) + "}";
+  r.payload = payload_start(path, nonce) + "}";
   return r;
 }
 
@@ -63,7 +63,8 @@ std::size_t GeminiOrderEncoder::encode_ws(const OrderCommand& cmd,
       if (!all_digits(venue_order_id)) return 0;
       const RequestId rid = make_request_id(RequestKind::Cancel, cmd.cl_ord_id);
       w.begin_object().key("id").string(rid.view()).key("method").string("order.cancel");
-      w.key("params").begin_object().key("orderId").raw_value(venue_order_id);
+      // A number is refused (-1013 "Invalid parameters", sandbox 2026-09-30); a string is taken.
+      w.key("params").begin_object().key("orderId").string(venue_order_id);
       w.end_object().end_object();
       break;
     }
@@ -92,22 +93,22 @@ std::size_t GeminiOrderEncoder::encode_method(std::string_view id,
   return w.ok() ? w.size() : 0;
 }
 
-RestRequest GeminiOrderEncoder::active_orders(std::int64_t nonce_s) {
-  return simple("/v1/orders", nonce_s);
+RestRequest GeminiOrderEncoder::active_orders(std::int64_t nonce) {
+  return simple("/v1/orders", nonce);
 }
 
-RestRequest GeminiOrderEncoder::positions(std::int64_t nonce_s) {
-  return simple("/v1/positions", nonce_s);
+RestRequest GeminiOrderEncoder::positions(std::int64_t nonce) {
+  return simple("/v1/positions", nonce);
 }
 
-RestRequest GeminiOrderEncoder::my_trades(std::int64_t nonce_s,
+RestRequest GeminiOrderEncoder::my_trades(std::int64_t nonce,
                                           std::string_view symbol,
                                           std::int64_t since_ms,
                                           int limit) {
   RestRequest r;
   r.path = "/v1/mytrades";
   r.target = r.path;
-  r.payload = payload_start(r.path, nonce_s);
+  r.payload = payload_start(r.path, nonce);
   r.payload += R"(,"symbol":")";
   r.payload += symbol;
   r.payload += R"(","timestamp":)";
@@ -118,34 +119,34 @@ RestRequest GeminiOrderEncoder::my_trades(std::int64_t nonce_s,
   return r;
 }
 
-RestRequest GeminiOrderEncoder::funding_payments(std::int64_t nonce_s,
+RestRequest GeminiOrderEncoder::funding_payments(std::int64_t nonce,
                                                  std::int64_t since_ms,
                                                  std::int64_t to_ms) {
   RestRequest r;
   r.path = "/v1/perpetuals/fundingPayment";
   r.target = r.path + "?since=" + std::to_string(since_ms);
   if (to_ms > 0) r.target += "&to=" + std::to_string(to_ms);
-  r.payload = payload_start(r.path, nonce_s) + "}";
+  r.payload = payload_start(r.path, nonce) + "}";
   return r;
 }
 
-RestRequest GeminiOrderEncoder::cancel_session(std::int64_t nonce_s) {
-  return simple("/v1/order/cancel/session", nonce_s);
+RestRequest GeminiOrderEncoder::cancel_session(std::int64_t nonce) {
+  return simple("/v1/order/cancel/session", nonce);
 }
 
-RestRequest GeminiOrderEncoder::cancel_order(std::int64_t nonce_s, std::string_view order_id) {
+RestRequest GeminiOrderEncoder::cancel_order(std::int64_t nonce, std::string_view order_id) {
   RestRequest r;
   r.path = "/v1/order/cancel";
   r.target = r.path;
-  r.payload = payload_start(r.path, nonce_s);
+  r.payload = payload_start(r.path, nonce);
   r.payload += R"(,"order_id":)";
   r.payload += all_digits(order_id) ? std::string(order_id) : std::string("0");
   r.payload += '}';
   return r;
 }
 
-RestRequest GeminiOrderEncoder::heartbeat(std::int64_t nonce_s) {
-  return simple("/v1/heartbeat", nonce_s);
+RestRequest GeminiOrderEncoder::heartbeat(std::int64_t nonce) {
+  return simple("/v1/heartbeat", nonce);
 }
 
 }  // namespace fastmm::venues::gemini

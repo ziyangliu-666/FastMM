@@ -126,11 +126,19 @@ std::string GeminiVenue::order_url() const {
   return with_param(cfg_.ws_order_url, cfg_.cancel_on_disconnect ? "cancelOnDisconnect=true" : "");
 }
 
-// A fresh nonce for every upgrade, strictly above the last one: "the value must increase across
-// connections for the same key".
+std::int64_t GeminiVenue::next_nonce() noexcept {
+  const std::int64_t now = venue_time_ms();
+  std::int64_t last = last_nonce_.load(std::memory_order_relaxed);
+  std::int64_t next = 0;
+  do {
+    next = std::max(now, last + 1);
+  } while (!last_nonce_.compare_exchange_weak(last, next, std::memory_order_relaxed));
+  return next;
+}
+
+// A fresh nonce for every upgrade: "the value must increase across connections for the same key".
 std::string GeminiVenue::ws_auth_headers() {
-  last_ws_nonce_s_ = std::max(nonce_s(), last_ws_nonce_s_ + 1);
-  return signer_.ws_headers(last_ws_nonce_s_);
+  return signer_.ws_headers(next_nonce());
 }
 
 net::ConnectionConfig GeminiVenue::ws_config(const std::string& url) const {
@@ -245,26 +253,55 @@ Result<void, std::string> GeminiVenue::load_reference_data(InstrumentTable& inst
   publish_status();
   FASTMM_LOG_INFO("{}: reference data loaded for {} instruments", cfg_.name, mine.size());
   if (!cfg_.dry_run && signer_.usable()) {
-    if (std::string err = check_key(); !err.empty()) return fail(std::move(err));
+    const bool perpetuals = std::any_of(mine.begin(), mine.end(), [](const Instrument* i) {
+      return i->asset_class == AssetClass::Perpetual;
+    });
+    if (std::string err = check_key(perpetuals); !err.empty()) return fail(std::move(err));
   }
   return {};
 }
 
-// POST /v1/orders with the key: a key the venue refuses (signature, role, IP allowlist) is a
-// setting a retry does not change; a venue that cannot be reached is not.
-std::string GeminiVenue::check_key() {
+// POST /v1/orders with the key, and POST /v1/positions when a perpetual is configured: a key the
+// venue refuses (signature, role, IP allowlist) and an account that is not a derivatives account
+// ("AccountNotOfTypeRequired": "Account is not of required type: derivatives", the sandbox's
+// Primary exchange account, 2026-09-30) are settings a retry does not change; a venue that cannot
+// be reached is not.
+std::string GeminiVenue::check_key(bool perpetuals) {
   try {
     BlockingHttp http(cfg_.rest_url, blocking_options(cfg_));
-    const RestRequest rr = GeminiOrderEncoder::active_orders(nonce_s());
-    const HttpReply reply = http.request("POST", rr.target, signer_.rest_headers(rr.payload));
-    std::string reason;
-    std::string message;
-    if (reply.status > 0 && !reply.ok() && decode_error(reply.body, reason, message)) {
-      const VenueAction a = map_reason(reason).action;
-      refused_account_settings_ = a == VenueAction::Fatal || a == VenueAction::HardStop;
-      return fmt::format("{}: the API key was refused: {} {}", cfg_.name, reason, message);
+    const auto refused = [&](const HttpReply& reply, std::string_view what) -> std::string {
+      std::string reason;
+      std::string message;
+      if (reply.status > 0 && !reply.ok() && decode_error(reply.body, reason, message)) {
+        if (reason == "AccountNotOfTypeRequired") {
+          refused_account_settings_ = true;
+          return fmt::format(
+              "{}: the API key's account is not a derivatives account ({}: {}); perpetuals trade "
+              "in a derivatives account, with a key scoped to it",
+              cfg_.name,
+              reason,
+              message);
+        }
+        const VenueAction a = map_reason(reason).action;
+        refused_account_settings_ = a == VenueAction::Fatal || a == VenueAction::HardStop;
+        return fmt::format("{}: {} refused: {} {}", cfg_.name, what, reason, message);
+      }
+      if (!reply.ok()) return fmt::format("{}: {} failed: {}", cfg_.name, what, reply_error(reply));
+      return {};
+    };
+    const RestRequest orders = GeminiOrderEncoder::active_orders(next_nonce());
+    if (std::string err =
+            refused(http.request("POST", orders.target, signer_.rest_headers(orders.payload)),
+                    "the API key");
+        !err.empty())
+      return err;
+    if (perpetuals) {
+      const RestRequest pos = GeminiOrderEncoder::positions(next_nonce());
+      if (std::string err = refused(
+              http.request("POST", pos.target, signer_.rest_headers(pos.payload)), "positions");
+          !err.empty())
+        return err;
     }
-    if (!reply.ok()) return fmt::format("{}: key check failed: {}", cfg_.name, reply_error(reply));
     FASTMM_LOG_INFO("{}: API key accepted", cfg_.name);
   } catch (const std::exception& e) {
     return fmt::format("{}: key check failed: {}", cfg_.name, std::string_view(e.what()));
@@ -639,6 +676,11 @@ void GeminiVenue::on_order_event(EventHeader& h) {
       break;
     }
     case EventType::OrderReject:
+      // A rejected placement is answered twice, by a 400 reply and by a REJECTED event (sandbox,
+      // 2026-09-30): the first one ends the shadow, the second is dropped.
+      if (shadow == nullptr) return;
+      terminal = true;
+      break;
     case EventType::OrderCancelAck:
     case EventType::OrderExpired:
       terminal = true;
@@ -687,6 +729,8 @@ void GeminiVenue::on_order_reply(const PrivateControl& c) {
         shadow->venue_id.assign(c.order_id);
       return;  // the orders@account NEW event is the ack
     }
+    // The REJECTED event may have come first (both name the order): one reject.
+    if (shadow == nullptr) return;
     const RejectReason reason = c.status == 429 ? RejectReason::VenueRateLimit : m.reason;
     emit_order_reject(*order_sink_, id_, inst, id, reason, c.error_code, c.msg);
     shadows_.erase(id);
@@ -860,7 +904,7 @@ void GeminiVenue::send_cancel(const OrderCommand& cmd, std::string_view venue_id
 // POST /v1/order/cancel: the reply is the order's status; is_cancelled true is the cancel ack
 // (the orders@account event is on the connection that is down).
 void GeminiVenue::send_cancel_rest(InstrumentId inst, ClientOrderId id, std::string_view venue_id) {
-  const RestRequest rr = GeminiOrderEncoder::cancel_order(nonce_s(), venue_id);
+  const RestRequest rr = GeminiOrderEncoder::cancel_order(next_nonce(), venue_id);
   const std::string vid(venue_id);
   const bool queued = rest_post(rr, [this, inst, id, vid](const net::HttpResponse& r) {
     std::string_view body = r.body;
@@ -964,7 +1008,8 @@ bool GeminiVenue::replay_executions() {
 bool GeminiVenue::fetch_snapshot(std::uint64_t generation) {
   if (!connected_ || rest_hard_stopped_) return false;
   return rest_post(
-      GeminiOrderEncoder::active_orders(nonce_s()), [this, generation](const net::HttpResponse& r) {
+      GeminiOrderEncoder::active_orders(next_nonce()),
+      [this, generation](const net::HttpResponse& r) {
         if (!reconcile_.current(generation)) return;
         std::vector<ActiveOrder> rows;
         const std::string err = r.ok() ? decode_active_orders(r.body, rows) : response_error(r);
@@ -1000,7 +1045,7 @@ bool GeminiVenue::fetch_snapshot(std::uint64_t generation) {
 
 bool GeminiVenue::request_positions(std::uint64_t generation) {
   return rest_post(
-      GeminiOrderEncoder::positions(nonce_s()), [this, generation](const net::HttpResponse& r) {
+      GeminiOrderEncoder::positions(next_nonce()), [this, generation](const net::HttpResponse& r) {
         if (!reconcile_.current(generation)) return;
         std::vector<PositionRow> rows;
         const std::string err = r.ok() ? decode_positions(r.body, rows) : response_error(r);
@@ -1073,7 +1118,7 @@ bool GeminiVenue::query_trades(const ReplayQuery& q) {
   if (rest_hard_stopped_ || q.stream >= subscribed_.size()) return false;
   const std::string_view sym = symbols_->lower_symbol(subscribed_[q.stream]);
   const RestRequest rr =
-      GeminiOrderEncoder::my_trades(nonce_s(), sym, q.start_ms, kTradesPageLimit);
+      GeminiOrderEncoder::my_trades(next_nonce(), sym, q.start_ms, kTradesPageLimit);
   const bool queued = rest_post(rr, [this, q](const net::HttpResponse& r) {
     if (!exec_replay_.expects(q)) return;
     std::vector<TradeRow> rows;
@@ -1148,7 +1193,7 @@ bool GeminiVenue::emit_trade(std::size_t stream, const TradeRow& t) {
 
 bool GeminiVenue::query_funding(const ReplayQuery& q) {
   if (rest_hard_stopped_) return false;
-  const RestRequest rr = GeminiOrderEncoder::funding_payments(nonce_s(), q.start_ms, q.end_ms);
+  const RestRequest rr = GeminiOrderEncoder::funding_payments(next_nonce(), q.start_ms, q.end_ms);
   return rest_post(rr, [this, q](const net::HttpResponse& r) {
     if (!funding_replay_.expects(q)) return;
     std::vector<FundingRow> rows;
@@ -1199,8 +1244,8 @@ bool GeminiVenue::emit_funding_row(const FundingRow& f) {
 
 // Order-channel loss: POST /v1/order/cancel/session, this key's orders on every symbol.
 void GeminiVenue::cancel_session_async() {
-  static_cast<void>(
-      rest_post(GeminiOrderEncoder::cancel_session(nonce_s()), [this](const net::HttpResponse& r) {
+  static_cast<void>(rest_post(
+      GeminiOrderEncoder::cancel_session(next_nonce()), [this](const net::HttpResponse& r) {
         std::size_t n = 0;
         std::vector<std::string> rejects;
         const std::string err =
@@ -1221,7 +1266,7 @@ void GeminiVenue::cancel_session_async() {
 void GeminiVenue::send_heartbeat() {
   const std::uint32_t round = heartbeat_.begin_round(now_ns(), 1);
   const bool queued = rest_post(
-      GeminiOrderEncoder::heartbeat(nonce_s()), [this, round](const net::HttpResponse& r) {
+      GeminiOrderEncoder::heartbeat(next_nonce()), [this, round](const net::HttpResponse& r) {
         if (r.ok() && std::string_view(r.body).find("\"ok\"") != std::string_view::npos) {
           if (!heartbeat_.ever_armed()) FASTMM_LOG_INFO("{}: heartbeat accepted", cfg_.name);
           heartbeat_.confirmed(round);
@@ -1240,7 +1285,7 @@ bool GeminiVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable()) return true;
   BlockingControl control(cfg_, gemini_blocking_retry());
   const HttpReply reply = control.send("kill-switch cancel/session", [&](BlockingRequest& q) {
-    const RestRequest rr = GeminiOrderEncoder::cancel_session(nonce_s());
+    const RestRequest rr = GeminiOrderEncoder::cancel_session(next_nonce());
     q.method = "POST";
     q.target = rr.target;
     q.headers = signer_.rest_headers(rr.payload);

@@ -10,11 +10,11 @@
 //     MOC is maker-or-cancel (post-only). No reduce-only and no position side exist; a
 //     reduce_only order goes out as a plain one. clientOrderId must match [:\-_\.#a-zA-Z0-9]{1,36}
 //     (https://developer.gemini.com/client-order-id.md): FastMM's is 14 alphanumerics.
-//   {"id":"c<cl>","method":"order.cancel","params":{"orderId":<venue id>}}
+//   {"id":"c<cl>","method":"order.cancel","params":{"orderId":"<venue id>"}}
 //     by the venue's id only: an order is cancelled once its NEW event named it.
 //   No amend or replace exists: the connector refuses Replace (caps.supports_replace = false).
 //
-// REST payloads: {"request":path,"nonce":<unix s>, ..}, all POST.
+// REST payloads: {"request":path,"nonce":<n>, ..}, all POST.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/venues/order_commands.hpp"
 #include "fastmm/venues/request_id.hpp"
@@ -58,20 +58,20 @@ class GeminiOrderEncoder {
                                    std::span<char> out) noexcept;
 
   // ---- REST payloads -------------------------------------------------------------------
-  static RestRequest active_orders(std::int64_t nonce_s);
-  static RestRequest positions(std::int64_t nonce_s);
+  static RestRequest active_orders(std::int64_t nonce);
+  static RestRequest positions(std::int64_t nonce);
   // Trades of `symbol` at or after `since_ms`, at most `limit`.
-  static RestRequest my_trades(std::int64_t nonce_s,
+  static RestRequest my_trades(std::int64_t nonce,
                                std::string_view symbol,
                                std::int64_t since_ms,
                                int limit);
   // Funding payments after `since_ms`, until `to_ms` (0: now).
-  static RestRequest funding_payments(std::int64_t nonce_s,
+  static RestRequest funding_payments(std::int64_t nonce,
                                       std::int64_t since_ms,
                                       std::int64_t to_ms);
-  static RestRequest cancel_session(std::int64_t nonce_s);
-  static RestRequest cancel_order(std::int64_t nonce_s, std::string_view order_id);
-  static RestRequest heartbeat(std::int64_t nonce_s);
+  static RestRequest cancel_session(std::int64_t nonce);
+  static RestRequest cancel_order(std::int64_t nonce, std::string_view order_id);
+  static RestRequest heartbeat(std::int64_t nonce);
 
   [[nodiscard]] static std::string_view side_text(Side s) noexcept {
     return s == Side::Buy ? "BUY" : "SELL";
