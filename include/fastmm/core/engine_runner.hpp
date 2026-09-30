@@ -4,6 +4,7 @@
 // hot path. EngineRunner<E> adapts a concrete Engine instantiation.
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/latency.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/reject_counters.hpp"
 #include "fastmm/core/underlying.hpp"
 
@@ -57,6 +58,50 @@ struct LiveBalance {
 static_assert(sizeof(LiveBalance) == 64);
 inline constexpr std::size_t kMaxLiveBalances = 32;
 
+// One instrument of the perp table (core/perp_book.hpp) as the monitors see it: the venue's last
+// mark, index and funding, and their ages at the time of publication (-1: never reported).
+struct LivePerp {
+  std::int64_t mark_raw = 0;
+  std::int64_t index_raw = 0;
+  double funding_rate = 0.0;  // per funding_interval
+  std::int64_t funding_interval_ns = 0;
+  std::int64_t next_funding_ns = 0;  // venue time; 0: continuous or not reported
+  std::int64_t open_interest_raw = 0;
+  std::int64_t mark_age_ns = -1;
+  std::int64_t index_age_ns = -1;
+  std::int64_t funding_age_ns = -1;
+  std::uint64_t reports = 0;
+  std::uint32_t instrument = 0;
+  std::uint8_t venue = 0;
+  std::uint8_t valued_at_mark = 0;  // the position is valued at `mark` now
+  std::uint8_t mark_stale = 0;
+  std::uint8_t funding_stale = 0;
+};
+static_assert(sizeof(LivePerp) == 88);
+inline constexpr std::size_t kMaxLivePerps = 32;
+
+// Fills `out` from one row of a PerpBook at `now`.
+inline void fill_live_perp(
+    LivePerp& out, const PerpBook& book, InstrumentId id, VenueId venue, Timestamp now) noexcept {
+  const PerpRow& r = book.row(id);
+  const auto age = [&](Timestamp at) { return at.valid() ? (now - at).ns : std::int64_t{-1}; };
+  out.mark_raw = r.mark.raw;
+  out.index_raw = r.index.raw;
+  out.funding_rate = r.funding_rate;
+  out.funding_interval_ns = r.funding_interval.ns;
+  out.next_funding_ns = r.next_funding.ns;
+  out.open_interest_raw = r.open_interest.raw;
+  out.mark_age_ns = age(r.mark_at);
+  out.index_age_ns = age(r.index_at);
+  out.funding_age_ns = age(r.funding_at);
+  out.reports = r.reports;
+  out.instrument = id.value;
+  out.venue = venue.value;
+  out.valued_at_mark = r.marking ? 1 : 0;
+  out.mark_stale = book.mark(id, now).stale ? 1 : 0;
+  out.funding_stale = book.funding(id, now).stale ? 1 : 0;
+}
+
 // What a running engine publishes for other threads (monitors, fastmm-live's control loop): the
 // runner stats, kill-switch state and the latency snapshot, refreshed with the latency publication
 // (every second) and immediately whenever a kill switch trips or is reset.
@@ -91,6 +136,9 @@ struct EngineLiveStats {
   // The balance table, in its order (the first kMaxLiveBalances rows).
   std::uint32_t balance_count = 0;
   std::array<LiveBalance, kMaxLiveBalances> balances{};
+  // The perp table: the instruments that have reported, in id order (the first kMaxLivePerps).
+  std::uint32_t perp_count = 0;
+  std::array<LivePerp, kMaxLivePerps> perps{};
   LatencySnapshot latency;
 };
 

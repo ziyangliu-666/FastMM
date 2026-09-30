@@ -72,9 +72,8 @@ struct FundingView {
   [[nodiscard]] bool usable() const noexcept { return at.valid() && !stale && interval.ns > 0; }
   // The rate over `d` of holding the position: rate * d / interval (0 without an interval).
   [[nodiscard]] double over(Duration d) const noexcept {
-    return interval.ns > 0
-               ? rate * static_cast<double>(d.ns) / static_cast<double>(interval.ns)
-               : 0.0;
+    return interval.ns > 0 ? rate * static_cast<double>(d.ns) / static_cast<double>(interval.ns)
+                           : 0.0;
   }
 };
 

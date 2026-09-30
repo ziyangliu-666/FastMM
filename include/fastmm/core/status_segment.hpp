@@ -35,11 +35,13 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 12: shared instruments (the position's traders, unattributed and unexplained parts, each
 //     attachment's instruments), GatewaySelfTrade.
 // 13: balances per venue and asset; GatewayBalanceShort.
-inline constexpr std::uint32_t kStatusVersion = 13;
+// 14: the venues' mark, index and funding per derivative.
+inline constexpr std::uint32_t kStatusVersion = 14;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
 inline constexpr std::size_t kStatusMaxBalances = 32;      // kMaxLiveBalances
+inline constexpr std::size_t kStatusMaxPerps = 32;         // kMaxLivePerps
 
 enum class StatusRunState : std::uint8_t { Starting = 0, Running = 1, Stopping = 2, Stopped = 3 };
 [[nodiscard]] std::string_view to_string(StatusRunState s) noexcept;
@@ -145,6 +147,27 @@ struct StatusBalance {
   std::int64_t as_of_ns = 0;  // venue time of the last report
 };
 static_assert(sizeof(StatusBalance) == 64);
+
+// One derivative's venue mark, index and funding (core/perp_book.hpp) as the engine (or the
+// gateway's account) last received them; ages at the time of the snapshot, -1: never reported.
+struct StatusPerp {
+  char symbol[24] = {};
+  std::uint8_t venue = 0;           // index into venues
+  std::uint8_t valued_at_mark = 0;  // the position is valued at the mark now
+  std::uint8_t mark_stale = 0;      // older than [accounting] stale_mark_ms
+  std::uint8_t funding_stale = 0;   // older than stale_funding_ms
+  std::uint32_t pad_ = 0;
+  std::int64_t mark_raw = 0;
+  std::int64_t index_raw = 0;
+  double funding_rate = 0.0;  // per funding interval, decimal
+  std::int64_t funding_interval_ns = 0;
+  std::int64_t next_funding_ns = 0;  // venue time; 0: continuous or not reported
+  std::int64_t open_interest_raw = 0;
+  std::int64_t mark_age_ns = -1;
+  std::int64_t funding_age_ns = -1;
+  std::uint64_t reports = 0;
+};
+static_assert(sizeof(StatusPerp) == 104);
 
 // ---- fastmm-gateway ---------------------------------------------------------------------------
 
@@ -302,6 +325,10 @@ struct StatusSnapshot {
   std::uint32_t balance_count = 0;
   std::uint32_t pad1_ = 0;
   StatusBalance balances[kStatusMaxBalances];
+  // The perp table: the engine's, or the gateway's accounts over every venue.
+  std::uint32_t perp_count = 0;
+  std::uint32_t pad2_ = 0;
+  StatusPerp perps[kStatusMaxPerps];
   // kind Gateway only, zero in an engine's segment. A gateway fills the header (pid, times, state,
   // dry_run, engine_name, venue_count, venues), kill_reason, kill_latched, kill_flags (bit 0 while
   // the account is killed) and the PnL fields with the account's, and leaves the rest zero.
@@ -318,6 +345,9 @@ void set_status_name(char (&dst)[N], std::string_view s) noexcept {
   set_status_name(dst, N, s);
 }
 [[nodiscard]] StatusLatency to_status_latency(const LatencyStats& s) noexcept;
+struct LivePerp;
+// A row of a live perp table as the status file shows it, named `symbol`.
+void to_status_perp(StatusPerp& out, const LivePerp& p, std::string_view symbol) noexcept;
 // Fills `dst` with the kStatusMaxRejectReasons most frequent non-zero reasons of `c`.
 void set_status_rejects(StatusRejectCount* dst, const RejectCounts& c);
 // "MaxPosition 12, RateLimit 5" from the entries, plus "other <n>" for rejects of reasons that did

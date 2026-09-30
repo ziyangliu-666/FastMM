@@ -302,7 +302,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 13,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 14,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -441,7 +441,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 13,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 14,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -507,4 +507,33 @@ TEST_CASE("core.status_segment: balances in the frame and the JSON form") {
                   R"("known": true, "free": 40, "locked": 60, "total": 100, "equity": 100, )"
                   R"("maintenance": 0, "as_of_ns": 1790000000000000000}, {"venue": "okx", )"
                   R"("asset": "BTC", "account": false, "known": false)") != std::string::npos);
+}
+
+TEST_CASE("core.status_segment: the perp table in the frame and the JSON form") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  s.venue_count = 1;
+  set_status_name(s.venues[0].name, "okx");
+  s.perp_count = 1;
+  StatusPerp& p = s.perps[0];
+  set_status_name(p.symbol, "BTC-USDT-SWAP");
+  p.mark_raw = 6'400'010'000'000;   // 64000.1
+  p.index_raw = 6'400'050'000'000;  // 64000.5
+  p.funding_rate = 0.0001;
+  p.funding_interval_ns = 8 * 3'600'000'000'000;
+  p.next_funding_ns = 1'790'000'000'000'000'000;
+  p.mark_age_ns = 200'000'000;
+  p.funding_age_ns = 30'000'000'000;
+  p.valued_at_mark = 1;
+  p.reports = 7;
+  const std::string frame = format_status(s, 0, false);
+  CHECK(frame.find("perp       okx BTC-USDT-SWAP mark=64000.1 (valued) index=64000.5 "
+                   "funding=1.0000bp/8h\n") != std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("perps": [{"venue": "okx", "symbol": "BTC-USDT-SWAP", "mark": 64000.1, )"
+                  R"("index": 64000.5, "funding_rate": 0.0001, "funding_interval_ns": )"
+                  R"(28800000000000, "next_funding_ns": 1790000000000000000, "open_interest": 0, )"
+                  R"("mark_age_ns": 200000000, "funding_age_ns": 30000000000, "mark_stale": )"
+                  R"(false, "funding_stale": false, "valued_at_mark": true, "reports": 7}])") !=
+        std::string::npos);
 }

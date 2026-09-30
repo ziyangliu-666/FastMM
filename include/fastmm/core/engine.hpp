@@ -2477,6 +2477,13 @@ class Engine {
       b.maintenance_raw = r.maintenance;
       b.as_of_ns = r.as_of.ns;
     }
+    if (perp_.instruments() != 0) {
+      for (const Instrument& inst : instruments_) {
+        if (live.perp_count == kMaxLivePerps) break;
+        if (perp_.row(inst.id).reports == 0) continue;
+        fill_live_perp(live.perps[live.perp_count++], perp_, inst.id, inst.venue, now_);
+      }
+    }
     live.latency = latency;
     live_pub_->store(live);
   }

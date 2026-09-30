@@ -1,5 +1,6 @@
 #include "fastmm/core/status_segment.hpp"
 
+#include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
 
@@ -129,6 +130,8 @@ void append_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMax
 void json_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
 void append_balances(std::string& out, const StatusSnapshot& s);
 void json_balances(std::string& out, const StatusSnapshot& s);
+void append_perps(std::string& out, const StatusSnapshot& s);
+void json_perps(std::string& out, const StatusSnapshot& s);
 void json_venues(std::string& out, const StatusSnapshot& s);
 std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, bool color);
 std::string format_gateway_json(const StatusSnapshot& s);
@@ -180,6 +183,23 @@ void set_status_name(char* dst, std::size_t capacity, std::string_view s) noexce
 
 StatusLatency to_status_latency(const LatencyStats& s) noexcept {
   return StatusLatency{s.count, s.p50, s.p99, s.p999, s.max};
+}
+
+void to_status_perp(StatusPerp& out, const LivePerp& p, std::string_view symbol) noexcept {
+  set_status_name(out.symbol, symbol);
+  out.venue = p.venue;
+  out.valued_at_mark = p.valued_at_mark;
+  out.mark_stale = p.mark_stale;
+  out.funding_stale = p.funding_stale;
+  out.mark_raw = p.mark_raw;
+  out.index_raw = p.index_raw;
+  out.funding_rate = p.funding_rate;
+  out.funding_interval_ns = p.funding_interval_ns;
+  out.next_funding_ns = p.next_funding_ns;
+  out.open_interest_raw = p.open_interest_raw;
+  out.mark_age_ns = p.mark_age_ns;
+  out.funding_age_ns = p.funding_age_ns;
+  out.reports = p.reports;
 }
 
 std::string status_version_mismatch(std::uint32_t version) {
@@ -422,6 +442,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
   append_underlyings(out, s.underlyings);
   append_balances(out, s);
+  append_perps(out, s);
   fmt::format_to(std::back_inserter(out),
                  "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
                  "latency",
@@ -664,6 +685,72 @@ void json_balances(std::string& out, const StatusSnapshot& s) {
   out += "]";
 }
 
+// One line per derivative in the perp table, followed by a blank line; nothing without any.
+void append_perps(std::string& out, const StatusSnapshot& s) {
+  const std::size_t n = std::min<std::size_t>(s.perp_count, kStatusMaxPerps);
+  if (n == 0) return;
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusPerp& p = s.perps[i];
+    const std::string_view venue = p.venue < kStatusMaxVenues
+                                       ? name_of(s.venues[p.venue].name, sizeof s.venues[0].name)
+                                       : std::string_view("?");
+    fmt::format_to(std::back_inserter(out),
+                   "perp       {} {} mark={}{}{} index={}",
+                   venue,
+                   name_of(p.symbol, sizeof p.symbol),
+                   qty_text(p.mark_raw),
+                   p.mark_stale != 0 ? " (stale)" : "",
+                   p.valued_at_mark != 0 ? " (valued)" : "",
+                   qty_text(p.index_raw));
+    if (p.funding_age_ns >= 0) {
+      fmt::format_to(std::back_inserter(out),
+                     " funding={:.4f}bp/{}h{}",
+                     p.funding_rate * 1e4,
+                     p.funding_interval_ns / 3'600'000'000'000,
+                     p.funding_stale != 0 ? " (stale)" : "");
+    }
+    out += "\n";
+  }
+  out += "\n";
+}
+
+// "perps": [{"venue": "okx", "symbol": "BTC-USDT-SWAP", "mark": 64000.1, "index": 64010.2,
+// "funding_rate": 0.0001, "funding_interval_ns": ..., "next_funding_ns": ..., "open_interest": ..,
+// "mark_age_ns": .., "funding_age_ns": .., "mark_stale": false, "funding_stale": false,
+// "valued_at_mark": true, "reports": ..}]
+void json_perps(std::string& out, const StatusSnapshot& s) {
+  out += "\"perps\": [";
+  const std::size_t n = std::min<std::size_t>(s.perp_count, kStatusMaxPerps);
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusPerp& p = s.perps[i];
+    const std::string_view venue = p.venue < kStatusMaxVenues
+                                       ? name_of(s.venues[p.venue].name, sizeof s.venues[0].name)
+                                       : std::string_view("?");
+    fmt::format_to(std::back_inserter(out),
+                   "{}{{\"venue\": {}, \"symbol\": {}, \"mark\": {}, \"index\": {}, "
+                   "\"funding_rate\": {}, \"funding_interval_ns\": {}, \"next_funding_ns\": {}, "
+                   "\"open_interest\": {}, \"mark_age_ns\": {}, \"funding_age_ns\": {}, "
+                   "\"mark_stale\": {}, \"funding_stale\": {}, \"valued_at_mark\": {}, "
+                   "\"reports\": {}}}",
+                   i == 0 ? "" : ", ",
+                   json_string(venue),
+                   json_string(name_of(p.symbol, sizeof p.symbol)),
+                   qty_text(p.mark_raw),
+                   qty_text(p.index_raw),
+                   p.funding_rate,
+                   p.funding_interval_ns,
+                   p.next_funding_ns,
+                   qty_text(p.open_interest_raw),
+                   p.mark_age_ns,
+                   p.funding_age_ns,
+                   p.mark_stale != 0,
+                   p.funding_stale != 0,
+                   p.valued_at_mark != 0,
+                   p.reports);
+  }
+  out += "]";
+}
+
 // "0", or "5 (GatewayRateLimit 3, GatewayOpenNotional 2)".
 std::string refusals_text(const std::uint64_t (&r)[kStatusGatewayRefusals]) {
   std::uint64_t total = 0;
@@ -749,6 +836,7 @@ std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, 
                  limit_text(g.max_open_notional_raw));
   append_underlyings(out, g.underlyings);
   append_balances(out, s);
+  append_perps(out, s);
 
   const std::size_t na = std::min<std::size_t>(g.attachment_count, kStatusMaxAttachments);
   fmt::format_to(it,
@@ -882,6 +970,8 @@ std::string format_status_json(const StatusSnapshot& s) {
   json_underlyings(out, s.underlyings);
   out += ", ";
   json_balances(out, s);
+  out += ", ";
+  json_perps(out, s);
   out += ", ";
   json_venues(out, s);
   out += "}\n";
@@ -1085,6 +1175,8 @@ std::string format_gateway_json(const StatusSnapshot& s) {
   json_underlyings(out, g.underlyings);
   out += ", ";
   json_balances(out, s);
+  out += ", ";
+  json_perps(out, s);
   out += ", ";
   json_venues(out, s);
   out += "}\n";

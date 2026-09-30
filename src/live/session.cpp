@@ -1317,6 +1317,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       sb.maintenance_raw = lb.maintenance_raw;
       sb.as_of_ns = lb.as_of_ns;
     }
+    snap.perp_count = std::min<std::uint32_t>(live.perp_count, kStatusMaxPerps);
+    for (std::size_t i = 0; i < snap.perp_count; ++i) {
+      const LivePerp& lp = live.perps[i];
+      const InstrumentId id{lp.instrument};
+      to_status_perp(
+          snap.perps[i], lp, instruments.contains(id) ? instruments.get(id).symbol.view() : "?");
+    }
     for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i)
       snap.latency[i] = to_status_latency(live.latency.interval[i]);
     for (std::size_t i = 0; i < snap.venue_count; ++i) {
