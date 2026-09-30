@@ -256,7 +256,9 @@ RunResult run_on_source(const std::vector<std::vector<std::byte>>& msgs, FillMod
   driver.run_all();
   driver.finish();
   CHECK(driver.stats().source_events == msgs.size());
-  CHECK(transport.stats().md_forwarded == msgs.size());
+  // Every recorded message, and a book ticker each time our orders moved the top of book.
+  CHECK(transport.stats().own_tickers > 0);
+  CHECK(transport.stats().md_forwarded == msgs.size() + transport.stats().own_tickers);
   CHECK(engine->stats().book_updates > 10);
   CHECK(engine->stats().orders_sent > 0);
   CHECK(transport.stats().wire_full == 0);

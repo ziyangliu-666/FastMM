@@ -46,6 +46,12 @@ enum class OrderEnd : std::uint8_t {
 [[nodiscard]] std::string_view to_string(OrderEnd e) noexcept;
 
 // Venue time of a market-data message: its exch_ts, else its receive time.
+// A live session's journal (it carries a TSC calibration) or a backtest's whose simulated feed
+// showed its orders (kHeaderOwnInFeed).
+[[nodiscard]] inline bool feed_shows_own(const JournalFileHeader& h) noexcept {
+  return h.tsc0 != 0 || (h.header_flags & kHeaderOwnInFeed) != 0;
+}
+
 [[nodiscard]] inline Timestamp venue_ts(const EventHeader& h) noexcept {
   return h.exch_ts.valid() ? h.exch_ts : h.recv_ts;
 }
@@ -94,8 +100,7 @@ struct OwnOrderLog {
   // Every venue order time is a whole millisecond (Binance transactTime): an order may have
   // entered or left anywhere in that millisecond.
   bool ms_order_times = false;
-  // The journal carries a TSC calibration: recorded by a live session, whose venue feed shows our
-  // own orders. A backtest's simulated feed does not.
+  // The journal's venue feed shows our own orders (feed_shows_own()).
   bool live = false;
   Timestamp last_ts;  // latest venue time of any event
 
@@ -132,7 +137,8 @@ class OwnOrderStripper {
 
   // `h` with our quantity taken out: `h` itself when nothing changes, a copy in `buf`, or nullptr
   // for a BookTicker whose best bid or ask was only ours (the ticker alone cannot tell the next
-  // level; the depth book carries the top instead). Trades and other messages pass unchanged.
+  // level; the depth book carries the top instead) or that a backtest's simulated venue sent for
+  // our orders (kSynthetic). Trades and other messages pass unchanged.
   const EventHeader* strip(const EventHeader& h, sim::EventBuf& buf) noexcept;
 
   [[nodiscard]] const Stats& stats() const noexcept { return stats_; }

@@ -22,7 +22,11 @@
 //     included, fills are real matches);
 //   * source data: on_source_event() applies each historical event to the venue-side
 //     state (mirror book + queue model, or account-0 liquidity in the matching engine so
-//     the book trades through resting strategy orders) and forwards it to the engine.
+//     the book trades through resting strategy orders) and forwards it to the engine. With
+//     own_orders_in_feed the forwarded feed shows the strategy's resting orders, as a live
+//     venue's does: each depth level and book ticker carries our quantity at its price, the next
+//     depth update also carries our levels that changed since the last one, and a book ticker
+//     goes out when our orders move the top of book (data with book tickers only).
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
@@ -34,6 +38,7 @@
 #include "fastmm/sim/latency_model.hpp"
 #include "fastmm/sim/matching_engine.hpp"
 #include "fastmm/sim/md_aggregator.hpp"
+#include "fastmm/sim/md_source.hpp"
 #include "fastmm/sim/outbound_hash.hpp"
 #include "fastmm/sim/queue_model.hpp"
 #include "fastmm/sim/sim_account.hpp"
@@ -94,6 +99,10 @@ struct SimTransportConfig {
   // Per instrument id, a derivative's initial margin rate ([[instruments]] initial_margin), for the
   // accounts.
   std::vector<Ratio> initial_margin;
+  // The venues' public feed shows the strategy's resting orders (see the top of this file), and
+  // the engine follows our quantity in it (own_in_feed(), ctx.own_qty). The coupled generator's
+  // book always holds them.
+  bool own_orders_in_feed = true;
 
   // The settings `v` runs with: its entry in `venues`, or the fields above.
   [[nodiscard]] SimVenueConfig venue_config(VenueId v) const noexcept {
@@ -136,6 +145,8 @@ struct SimTransportStats {
   std::uint64_t expired = 0;
   std::uint64_t md_forwarded = 0;
   std::uint64_t md_delivered = 0;
+  std::uint64_t own_tickers = 0;  // book tickers sent because our orders moved the top of book
+  std::uint64_t own_levels = 0;   // depth levels forwarded with our quantity in them
   std::uint64_t order_events_delivered = 0;
   Notional fees_charged{};
 };
@@ -176,6 +187,9 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] std::size_t send(std::span<const EventHeader* const> batch) noexcept;
   [[nodiscard]] bool supports_replace(VenueId v) const noexcept {
     return v.value < kMaxVenues ? replace_[v.value] : cfg_.supports_replace;
+  }
+  [[nodiscard]] bool own_in_feed(VenueId v) const noexcept {
+    return cfg_.own_orders_in_feed && v.value < kMaxVenues;
   }
 
   // ---- venue side (driven by SimDriver in virtual-time order) -------------------------------
@@ -310,6 +324,25 @@ class SimTransport final : public MatchingSink {
   void publish_account(Link& l, Timestamp venue_ts) noexcept;
   void push_balance(Link& l, BalanceMsg& m) noexcept;
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
+  // A recorded market-data event onto its venue's wire; `recorded`: its recv_ts, for md_arrival
+  // = recorded.
+  void forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept;
+  // Our orders in the recorded feed (own_orders_in_feed): note_own() marks a level of ours that
+  // changed, with_own() gives a recorded depth update or ticker with our quantity in it, and
+  // flush_own() sends a ticker for each instrument whose top of book our orders moved.
+  void note_own(InstrumentId id, Side side, Price px) noexcept;
+  [[nodiscard]] const EventHeader& with_own(const EventHeader& md) noexcept;
+  void flush_own(Timestamp now) noexcept;
+  // Our resting quantity at a price, from the fill model.
+  [[nodiscard]] Qty model_own_at(InstrumentId id, Side side, Price px) const noexcept;
+  // The recorded top of book on `side`: the last recorded ticker when it is newer than the depth,
+  // else the mirror's.
+  [[nodiscard]] Level recorded_top(InstrumentId id, Side side) const noexcept;
+  // Our quantity at `px` that the feed shows: none at or through the recorded opposite touch (a
+  // live venue would have matched the order there; the fill model waits for a trade).
+  [[nodiscard]] Qty shown_own(InstrumentId id, Side side, Price px) const noexcept;
+  // The top of book the feed shows now on `side`: the recorded one with our best order shown.
+  [[nodiscard]] Level shown_top(InstrumentId id, Side side) const noexcept;
   // Venue of an instrument; an unknown one (a cancel of an order the venue never saw) goes
   // through the first venue.
   [[nodiscard]] Link& link(InstrumentId id) noexcept {
@@ -351,6 +384,24 @@ class SimTransport final : public MatchingSink {
   std::unique_ptr<TradeTape[]> tape_;    // L2Queue: trades since the mirror's last update
   std::unique_ptr<MdAggregator> agg_;
   std::unique_ptr<SimAccounts> accounts_;
+  // Per instrument, recorded data with own_orders_in_feed (null otherwise and in coupled mode).
+  struct OwnFeed {
+    std::vector<Level> levels[2];               // our resting quantity by price, per Side
+    std::vector<std::pair<Side, Price>> stale;  // levels of `levels` to recompute
+    std::vector<std::pair<Side, Price>> dirty;  // our levels changed since the last depth update
+    bool pending = false;                       // our orders changed since the last flush_own()
+    bool tickers = false;                       // the recorded feed has book tickers
+    bool ticker_newer = false;                  // the last recorded top came in a ticker
+    Level recorded_bid{};                       // the last recorded ticker's top
+    Level recorded_ask{};
+    Level sent_bid{};  // the top of the last ticker forwarded
+    Level sent_ask{};
+  };
+  // Brings `f.levels` up to date with the fill model.
+  void refresh_own(InstrumentId id, OwnFeed& f) noexcept;
+  std::unique_ptr<OwnFeed[]> own_feed_;
+  std::vector<InstrumentId> own_pending_;
+  std::unique_ptr<EventBuf> own_buf_;
   SimObserver* observer_ = nullptr;
   OutboundHasher hasher_;
   SimTransportStats stats_{};

@@ -798,7 +798,7 @@ std::vector<BacktestGap> compare_backtests(const Calibration& c,
                                " does not embed its configuration; pass the one it ran with");
     }
     const std::string source_name = config.empty() ? fmt::format("{} (embedded)", s.path) : config;
-    const bool live = reader.header().tsc0 != 0;
+    const bool live = feed_shows_own(reader.header());
     const OwnOrderLog log = collect_own_orders(reader);
     const Mids mids(reader);
     BacktestGap g;

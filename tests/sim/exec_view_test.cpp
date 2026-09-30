@@ -702,60 +702,68 @@ void print(ListSource& src, std::int64_t ms, const char* p, const char* q, Side 
 }  // namespace
 
 TEST_CASE("exec_view.sim: the strategy's queue estimate equals the l2_queue fill model's") {
-  for (const std::int64_t bps : {std::int64_t{0}, std::int64_t{3'000}, std::int64_t{10'000}}) {
-    CAPTURE(bps);
-    const InstrumentTable table = make_table();
-    SimClock clock{at(0)};
-    sim::SimTransportConfig tc;
-    tc.fill_model = sim::FillModel::L2Queue;
-    tc.queue_conservatism_bps = bps;
-    tc.order_out = sim::LatencyParams{Duration{}, Duration{}};
-    tc.ack_in = sim::LatencyParams{Duration{}, Duration{}};
-    sim::SimTransport venue(clock, table, tc);
-    InlineFeed feed(1 << 20);
-    Twin twin;
-    twin.venue = &venue;
-    EngineConfig cfg;
-    cfg.risk.max_order_qty = qt("100");
-    cfg.risk.max_position = qt("100");
-    cfg.risk.max_open_orders = 16;
-    cfg.risk.price_collar_bps = 5000;
-    cfg.risk.stale_md = seconds(60);
-    cfg.queue_conservatism_bps = bps;
-    TwinEngine engine(cfg, table, clock, venue, feed, twin);
+  // The feed as recorded, and with our orders in it: the engine takes ours out again. Our orders
+  // reach the venue 0.1 ms after the market data they answer, as they would live (at the same
+  // nanosecond, a depth update would be taken to show them).
+  for (const bool own_in_feed : {false, true}) {
+    for (const std::int64_t bps : {std::int64_t{0}, std::int64_t{3'000}, std::int64_t{10'000}}) {
+      CAPTURE(bps);
+      CAPTURE(own_in_feed);
+      const InstrumentTable table = make_table();
+      SimClock clock{at(0)};
+      sim::SimTransportConfig tc;
+      tc.fill_model = sim::FillModel::L2Queue;
+      tc.queue_conservatism_bps = bps;
+      tc.own_orders_in_feed = own_in_feed;
+      const Duration hop = own_in_feed ? microseconds(100) : Duration{};
+      tc.order_out = sim::LatencyParams{hop, Duration{}};
+      tc.ack_in = sim::LatencyParams{Duration{}, Duration{}};
+      sim::SimTransport venue(clock, table, tc);
+      InlineFeed feed(1 << 20);
+      Twin twin;
+      twin.venue = &venue;
+      EngineConfig cfg;
+      cfg.risk.max_order_qty = qt("100");
+      cfg.risk.max_position = qt("100");
+      cfg.risk.max_open_orders = 16;
+      cfg.risk.price_collar_bps = 5000;
+      cfg.risk.stale_md = seconds(60);
+      cfg.queue_conservatism_bps = bps;
+      TwinEngine engine(cfg, table, clock, venue, feed, twin);
 
-    ListSource src;
-    delta(src,
-          1,
-          {{px("100.00"), qt("5")}, {px("99.99"), qt("8")}, {px("99.98"), qt("2")}},
-          {{px("100.02"), qt("4")}, {px("100.03"), qt("6")}},
-          true);
-    std::int64_t ms = 2;
-    // Levels shrink, grow and go; trades consume and go through.
-    delta(src, ms++, {{px("100.00"), qt("3")}}, {});
-    top(src, ms++, "100.00", "2.5", "100.02", "4");  // newer than the depth: caps 100.00
-    delta(src, ms++, {{px("99.99"), qt("11")}}, {{px("100.03"), qt("2")}});
-    print(src, ms++, "100.00", "1", Side::Sell);
-    delta(src, ms++, {{px("100.00"), qt("2")}, {px("99.99"), qt("5")}}, {});
-    print(src, ms++, "100.03", "1", Side::Buy);
-    delta(src, ms++, {{px("99.98"), Qty{}}}, {{px("100.03"), qt("1")}});
-    delta(src, ms++, {{px("99.98"), qt("4")}}, {});
-    print(src, ms++, "99.99", "2", Side::Sell);
-    top(src, ms++, "99.99", "1", "100.03", "1");  // the touch below the 100.00 bid
-    delta(src,
-          ms++,
-          {{px("100.00"), qt("2")}, {px("99.99"), qt("2")}, {px("99.98"), qt("3")}},
-          {{px("100.02"), qt("4")}, {px("100.03"), qt("1")}},
-          true);
-    delta(src, ms++, {{px("99.98"), qt("1")}}, {});
-    print(src, ms++, "99.98", "1", Side::Sell);
+      ListSource src;
+      delta(src,
+            1,
+            {{px("100.00"), qt("5")}, {px("99.99"), qt("8")}, {px("99.98"), qt("2")}},
+            {{px("100.02"), qt("4")}, {px("100.03"), qt("6")}},
+            true);
+      std::int64_t ms = 2;
+      // Levels shrink, grow and go; trades consume and go through.
+      delta(src, ms++, {{px("100.00"), qt("3")}}, {});
+      top(src, ms++, "100.00", "2.5", "100.02", "4");  // newer than the depth: caps 100.00
+      delta(src, ms++, {{px("99.99"), qt("11")}}, {{px("100.03"), qt("2")}});
+      print(src, ms++, "100.00", "1", Side::Sell);
+      delta(src, ms++, {{px("100.00"), qt("2")}, {px("99.99"), qt("5")}}, {});
+      print(src, ms++, "100.03", "1", Side::Buy);
+      delta(src, ms++, {{px("99.98"), Qty{}}}, {{px("100.03"), qt("1")}});
+      delta(src, ms++, {{px("99.98"), qt("4")}}, {});
+      print(src, ms++, "99.99", "2", Side::Sell);
+      top(src, ms++, "99.99", "1", "100.03", "1");  // the touch below the 100.00 bid
+      delta(src,
+            ms++,
+            {{px("100.00"), qt("2")}, {px("99.99"), qt("2")}, {px("99.98"), qt("3")}},
+            {{px("100.02"), qt("4")}, {px("100.03"), qt("1")}},
+            true);
+      delta(src, ms++, {{px("99.98"), qt("1")}}, {});
+      print(src, ms++, "99.98", "1", Side::Sell);
 
-    sim::SimDriver driver(clock, venue, feed, sim::EngineHooks::for_engine(engine));
-    driver.set_source(&src);
-    driver.run_all();
-    driver.finish();
-    CHECK(twin.ids.size() == 4);
-    CHECK(twin.compared > 40);
-    CHECK(twin.differed == 0);
+      sim::SimDriver driver(clock, venue, feed, sim::EngineHooks::for_engine(engine));
+      driver.set_source(&src);
+      driver.run_all();
+      driver.finish();
+      CHECK(twin.ids.size() == 4);
+      CHECK(twin.compared > 40);
+      CHECK(twin.differed == 0);
+    }
   }
 }

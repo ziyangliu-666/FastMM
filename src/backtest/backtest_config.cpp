@@ -242,7 +242,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 20> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 21> kBacktestKeys = {"markout_horizons_s",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -261,7 +261,8 @@ constexpr std::array<std::string_view, 20> kBacktestKeys = {"markout_horizons_s"
                                                             "latency_md_us",
                                                             "latency_md_jitter_us",
                                                             "md_arrival",
-                                                            "balances_from_journal"};
+                                                            "balances_from_journal",
+                                                            "own_orders_in_feed"};
 
 void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
   for (const auto& [key, value] : bt.values) {
@@ -341,6 +342,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   defaults.stp = t.stp;
   t.venues = read_venues(cfg, bt, defaults);
   t.accounts = read_accounts(cfg, bt);
+  t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   t.md.interval = milliseconds(positive(sm, "depth_update_ms", 100));
   t.md.book_ticker = sm.get_bool("book_ticker", true);

@@ -244,6 +244,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     info.session_epoch = cfg_.engine.session_epoch;
     info.quoting_enabled = cfg_.engine.quoting_enabled;
     info.replace_venues = cfg_.transport.replace_mask();
+    info.own_in_feed = cfg_.transport.own_orders_in_feed;
     info.config_toml = cfg_.config_toml;
     info.params = schema;
     info.strategy_meta = strategy_meta;

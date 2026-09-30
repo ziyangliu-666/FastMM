@@ -262,7 +262,7 @@ class Collector {
 }  // namespace
 
 OwnOrderLog collect_own_orders(JournalReader& reader) {
-  Collector c(reader.header().tsc0 != 0);
+  Collector c(feed_shows_own(reader.header()));
   reader.for_each([&](const EventHeader* h) { c.on_event(*h); });
   reader.reset();
   return c.finish();
@@ -281,6 +281,11 @@ OwnOrderStripper::OwnOrderStripper(JournalReader& reader) {
 }
 
 const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& buf) noexcept {
+  // A ticker the simulator sent because our orders moved the top of book.
+  if (h.type == EventType::BookTicker && (h.flags & EventHeader::kSynthetic) != 0) {
+    ++stats_.tickers_dropped;
+    return nullptr;
+  }
   if (own_.empty()) return &h;
   const Timestamp t = venue_ts(h);
   switch (h.type) {

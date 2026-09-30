@@ -534,6 +534,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `markout_horizons_s` | string | `"1,10,60"` | Post-fill markout horizons in seconds, comma separated (`"0.5,5"` is allowed); `""` turns markouts off. The run stops the simulated clock at every fill time plus horizon to read the venue mid there, so the shortest horizon also bounds how often the run loop is entered ([Backtesting](../explanation/backtesting.md#markouts)) |
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
+| `own_orders_in_feed` | bool | `true` | The simulated venues' market data shows the strategy's resting orders, as a live venue's does, and the engine takes them out where it needs to (`ctx.own_qty`, `ctx.best_ex_self`, `ctx.queue_ahead`); `false` forwards recorded data as recorded ([Backtesting](../explanation/backtesting.md#our-orders-in-the-feed)) |
 | `balances_from_journal` | bool | `false` | Each venue's account starts from the first balance snapshot the journal source recorded for it (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. The data source must be one journal |
 
 Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`, `--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).

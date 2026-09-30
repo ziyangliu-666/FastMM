@@ -174,12 +174,13 @@ TEST_CASE("hotpath.noalloc: two-venue sim run on merged recorded feeds (L2 queue
   SimDriver driver(clock, *transport, *feed, EngineHooks::for_engine(*engine));
   driver.set_source(merged.get());
 
-  REQUIRE(driver.run_until(start + seconds(2)));  // warm: pools, rings, logger, pages
+  // Warm: pools, rings, logger, pages, and our quantity in the feed (OwnQuantity keeps 5 s).
+  REQUIRE(driver.run_until(start + seconds(6)));
   const std::uint64_t orders_before = engine->stats().orders_sent;
   const std::uint64_t fills_before = engine->stats().fills;
   {
     NoAllocScope guard;
-    REQUIRE(driver.run_until(start + seconds(10)));
+    REQUIRE(driver.run_until(start + seconds(11)));
     CHECK(guard.allocations_so_far() == 0);
   }
   CHECK(engine->stats().orders_sent > orders_before);

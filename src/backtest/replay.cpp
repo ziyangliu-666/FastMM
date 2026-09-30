@@ -201,8 +201,9 @@ ReplayResult replay_impl(const std::string& path,
     for (std::uint8_t v = 0; v < kMaxVenues; ++v)
       backend.transport.set_supports_replace(VenueId{v}, ((header.replace_venues >> v) & 1U) != 0);
   }
-  // A live session's feed showed its own orders (a journal with a TSC calibration is live).
-  backend.transport.set_own_in_feed(header.tsc0 != 0);
+  // A live session's feed showed its own orders (a journal with a TSC calibration is live), and a
+  // backtest's with own_orders_in_feed.
+  backend.transport.set_own_in_feed(feed_shows_own(header));
   backend.transport.set_dropped(std::move(dropped));
   const std::size_t expected_count = expected.size();
   if (opt.verify) backend.transport.set_expected(std::move(expected));

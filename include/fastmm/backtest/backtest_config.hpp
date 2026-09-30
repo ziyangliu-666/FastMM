@@ -14,7 +14,7 @@
 //   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
 //   md_arrival = "venue" | "recorded"
-//   balances_from_journal = false
+//   balances_from_journal = false, own_orders_in_feed = true
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"

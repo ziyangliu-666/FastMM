@@ -114,6 +114,7 @@ JournalFileWriter::JournalFileWriter(MsgRing& ring,
     h.replace_venues = info.replace_venues;
     h.await_reconcile = info.await_reconcile;
   }
+  if (info.own_in_feed) h.header_flags |= kHeaderOwnInFeed;
   h.config_bytes = static_cast<std::uint32_t>(config_bytes);
   h.config_crc32c = crc32c(info.config_toml.data(), config_bytes);
   h.param_count = info.params == nullptr ? 0 : static_cast<std::uint32_t>(info.params->size());

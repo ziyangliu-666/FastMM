@@ -58,6 +58,9 @@ inline constexpr std::uint8_t kHeaderSession = 1U << 0;  // v2 session settings 
 // The engine replaced quotes per venue (replace_venues bit of the instrument's venue). Without it
 // a session journal comes from an engine that replaced only if every traded venue could.
 inline constexpr std::uint8_t kHeaderReplacePerVenue = 1U << 1;
+// The session's venue feeds showed its own resting orders: a backtest with
+// [backtest] own_orders_in_feed (a live session's always do; it has a TSC calibration).
+inline constexpr std::uint8_t kHeaderOwnInFeed = 1U << 2;
 inline constexpr std::size_t kJournalMaxParams = 32;  // parameter table entries (kMaxParams)
 
 class ParamSchema;
@@ -80,7 +83,7 @@ struct JournalFileHeader {
   // ---- v2 (zero in v1 files) ----
   std::uint16_t session_epoch;   // client order id epoch (kHeaderSession)
   std::uint8_t quoting_enabled;  // 0 for a dry run (kHeaderSession)
-  std::uint8_t header_flags;     // kHeaderSession, kHeaderReplacePerVenue
+  std::uint8_t header_flags;     // kHeaderSession, kHeaderReplacePerVenue, kHeaderOwnInFeed
   std::uint32_t config_bytes;    // effective config TOML after the instrument table (0 = none)
   std::uint64_t replace_venues;  // bit v: venue v used cancel-replace (kHeaderSession)
   std::uint32_t config_crc32c;   // of the config text
@@ -258,6 +261,7 @@ struct JournalSessionInfo {
   bool quoting_enabled = true;
   std::uint64_t replace_venues = 0;     // bit v: venue v used cancel-replace
   std::uint32_t await_reconcile = 0;    // EngineConfig::await_reconcile
+  bool own_in_feed = false;             // kHeaderOwnInFeed
   std::string_view config_toml;         // effective configuration (Config::effective_toml())
   const ParamSchema* params = nullptr;  // the strategy's parameter schema (v3 parameter table)
   std::string_view strategy_meta;       // `key=value` lines (v3 metadata; empty = none)
