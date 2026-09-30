@@ -217,6 +217,64 @@ ties); the round trip's tail; balances in backtests; the extra backtest orders; 
 just before a sweep; the ticker's venue time can run up to ~1 ms ahead of what it shows (B: a
 ticker stamped 30 us after a trade showed the book before it).
 
+**Item 4 done: a reusable hedge executor (2026-09-30).** `HedgeExecutor`
+(`strategies/hedge_executor.hpp`, in `fastmm/strategy.hpp`, tier 1): a member a strategy owns,
+configured in `on_start` with up to 4 source instruments (the exposure), up to 4 hedge instruments
+in preference order with their own tolerance, and a target in base units; the strategy forwards
+`on_fill`, `on_order_update`, `on_book`, `on_timer`, `on_connection`, `on_balance` (the bool ones
+say whether the event was the executor's). No timer of its own: the waits end at the strategy's next
+call. Decisions:
+* Residual = sources + hedges - target, base units via the contract multiplier; inverse legs refused
+  at start (not handled).
+* One order in flight overall, not per instrument: the residual is one number, two orders sized from
+  it on two venues can both fill; per-instrument would mean sizing from positions plus open orders,
+  which an unreported outcome breaks. An open order on any hedge instrument (a dead session's, once
+  reconciliation adopts it) blocks the next; `max_qty` pieces go one after the other.
+* Failover: the first usable instrument takes the hedge. Unusable: an order channel down, venue
+  killed, book invalid or older than `stale`, feed-lag gate, benched (`max_failures` in
+  `failure_window`, for `bench`). Balance short: the next usable one that covers it; none: held, as
+  xmm did. The last instrument not benched failing halts, `restart()` clears. A residual under the
+  first usable instrument's minimum waits there and is not moved to a venue with a smaller minimum.
+* De-risk: the executor sends it rather than signalling the strategy, because it needs the same
+  sizing, in-flight rule and holds (an uncertain de-risk end holds hedges too). After `derisk_after`
+  with no instrument taking the residual (unusable, held or halted): reduce-only IOC on a source whose
+  position has the residual's sign, at most `derisk_step`, `derisk_interval` apart, `derisk_tolerance`
+  through its touch; stops when a hedge goes out, the residual is under the minimum, or flat. The
+  strategy keeps off its side by pulling quotes while `!can_hedge()` and quoting the reducing side
+  while `held()`.
+* Monitoring: `status()` (state, residual, active instrument, in flight, held, halted, de-risking,
+  hold end), `stats()` (+ failovers, benches, de-risk episodes and orders), `why(i)`; each transition
+  logged once.
+xmm is its quoting plus the executor (-75 lines), with `fallback_instrument`,
+`fallback_tolerance_bps`, `failover_bench_ms`, `derisk_after_ms` (0: off), `derisk_step_qty`,
+`derisk_interval_ms`, `derisk_tolerance_bps`. Equivalence: a first commit pins, on main's xmm, the
+FNV hash of every strategy call over three 20000-event seeded sessions on a fake context (every kind
+of hedge end, reconciles, channel drops, balance shortfalls, halts and restarts) and the outbound
+SHA-256 of a 3000-step engine session; the rewrite gives the same four values with gcc and clang. No
+golden or replay hash involves xmm. Deliberate differences: no hedge to a killed or gated hedge
+venue or on a book older than `stale_ms` (main sent it, priced from that book, or had it refused by
+risk, counting towards a halt), and the quotes come off while the hedge venue is killed.
+`examples/cpp/hedged_mm.cpp`: a one-level quoter on A hedged on B then C, run through
+StrategyHarness (fill hedged on B; B killed, next on C; both killed, a fill de-risked on A; B back).
+Tests: hedge_executor (14: sizing, pieces, minimums, in flight, uncertain hold, failover on each
+trigger and back, held, halt and restart, de-risk caps and spacing, halted de-risk, and xmm through
+the engine with three venues: B's kill switch, C hedges, B back), xmm_equivalence (2), hotpath
+noalloc (the executor with logging on through failover, benches, halts, holds, de-risk), integration
+`xmm failover` (fastmm-live on three simulators, B refusing every order: two refusals, C; SIGKILL
+with C holding the hedge's reply; the restart books it, sends nothing, and fails over again for the
+next fill; one accepted hedge per maker fill, venues net zero), the strategy API doc test. Full ctest
+(werror) 1623 passed; xmm and executor tests (52, 7 integration) 6 runs green; clang werror clean
+and the pinned values equal; clang-tidy-18 (tidy.sh) no error, the two headers clean under every
+check; lint ok. Bench (`bench_tick_to_order`, werror release, main at a path of the same length,
+taskset -c 2, 8 x 2 interleaved runs of 3, load < 1.4, medians of 24): `BM_TickToOrder_Sim` 157.0 ->
+158.1 ns, `BM_EngineStep_Sim` 2293.1 -> 2302.3 ns; the two binaries' `.text` are byte-identical
+(basic_mm does not use the executor), so that is noise.
+Open: the fair value stays on the hedge instrument's book, so xmm pulls its quotes when that
+instrument's market data dies even with the fallback usable; `[risk] max_order_qty` is not a
+splitting limit (only `max_qty`); benches and halts are in memory (a restart relearns them: two
+refusals in the test); a residual held in a hedge leg (an overshoot) is not de-risked; C++ only (no
+Python binding); executor state is not in the status file or metrics; verified on simulators only.
+
 **Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
 contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
 docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs

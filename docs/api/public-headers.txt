@@ -17,6 +17,7 @@ tier1 fastmm/strategies/hooks.hpp
 tier1 fastmm/strategies/params.hpp
 tier1 fastmm/strategies/param_publisher.hpp
 tier1 fastmm/strategies/quoting.hpp
+tier1 fastmm/strategies/hedge_executor.hpp
 tier1 fastmm/strategies/registry.hpp
 tier1 fastmm/strategies/module.hpp
 tier1 fastmm/strategies/factories.hpp

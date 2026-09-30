@@ -5,6 +5,17 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `HedgeExecutor` (`strategies/hedge_executor.hpp`, in `fastmm/strategy.hpp`): a component a
+  strategy owns to hedge the base position of source instruments on one or more hedge instruments
+  in preference order. Sizing from positions, one order in flight across all of them, IOC limits
+  through the touch capped at `max_qty` and held under the lot, `min_qty` or `min_notional`, the
+  balance check, the retry and the hold after an unreported outcome; failover while a hedge venue
+  is down, killed, gated, its book invalid or stale, its balance short, or after `max_failures`
+  (benched), and back; a halt when the last one fails; optional stepwise de-risking of the sources
+  with reduce-only IOC orders; `status()` and `stats()`. `xmm` is rebuilt on it and gains
+  `fallback_instrument`, `fallback_tolerance_bps`, `failover_bench_ms`, `derisk_after_ms`,
+  `derisk_step_qty`, `derisk_interval_ms` and `derisk_tolerance_bps`. `examples/cpp/hedged_mm.cpp`
+  uses it for a quoter hedged on two venues.
 - `fastmm-data calibrate <journal>...`: the `l2_queue` fill model and the simulated latencies
   fitted to live sessions. Per session, fill-check over a grid of `queue_conservatism` and without
   the book ticker, the trade tape or both; hit, miss and false-fill rates, time to fill, the
@@ -176,6 +187,11 @@ All notable changes are recorded here (Keep a Changelog format).
   `own_in_feed(venue)`.
 
 ### Changed
+- `xmm` sends no hedge to a hedge venue whose kill switch is on, whose feed-lag gate holds it or
+  whose book is older than `stale_ms` (before, the hedge went out priced from that book, or was
+  refused by risk and counted towards a halt); its quotes come off while the hedge venue's kill
+  switch is on. Otherwise the same: two seeded sessions hash to the same values
+  before and after (`tests/strategies/xmm_equivalence_test.cpp`).
 - The queue model (`l2_queue`, `ctx.queue_ahead`, fill-check): an order at the touch of a book
   ticker newer than the depth joins behind the touch's quantity instead of the lesser of it and
   the depth's (a throttled depth update can predate the level); trades printed after the depth

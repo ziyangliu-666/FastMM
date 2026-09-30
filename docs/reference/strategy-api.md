@@ -280,6 +280,42 @@ Whether a venue's feed shows our orders is a transport property (`own_in_feed(ve
 
 A level that shows less than we have resting at its price was published before our order reached it, and all of it counts as others' quantity. The engine tracks queues from the strategy's first `queue_ahead` call, so a strategy that never calls it pays one load per book update and trade; an order already resting at that call starts at the back of its level as the book then shows it. Call it in `on_start` to cover every order from its ack. With `fill_model = "l2_queue"` and no latency the value equals the fill model's ([`tests/sim/exec_view_test.cpp`](../../tests/sim/exec_view_test.cpp)); with latency the simulated venue sees the market before the strategy does. A replay handles events in arrival order, `fastmm-data fill-check` in venue-time order: on a 3 h Binance Spot session the replayed estimate at the ack equals fill-check's for 2077 of 2079 orders, on a session that joined existing levels for 1639 of 1726.
 
+## Hedge executor
+
+`HedgeExecutor` (`strategies/hedge_executor.hpp`, in `fastmm/strategy.hpp`) is a member a strategy owns: it hedges the positions of source instruments with IOC orders on hedge instruments, fails over between them and de-risks ([Hedge with HedgeExecutor](../how-to/strategies/hedge-executor.md)).
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#hedge -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<HedgeExecutor>().add_source(InstrumentId{})), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<HedgeExecutor>().add_hedge(InstrumentId{}, Ratio{})), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<HedgeExecutor>().start(lvalue<Ctx>(), HedgeExecutor::Config{})),
+                 bool>);
+static_assert(std::same_as<decltype(lvalue<HedgeExecutor>().on_fill(lvalue<Ctx>(), Fill{})), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<HedgeExecutor>().on_order_update(lvalue<Ctx>(), OmsUpdate{})),
+                 bool>);
+static_assert(
+    std::same_as<decltype(lvalue<const HedgeExecutor>().residual(lvalue<const Ctx>())), Qty>);
+static_assert(
+    std::same_as<decltype(lvalue<const HedgeExecutor>().can_hedge(lvalue<const Ctx>())), bool>);
+static_assert(std::same_as<decltype(lvalue<const HedgeExecutor>().status(lvalue<const Ctx>())),
+                           HedgeExecutor::Status>);
+```
+
+| Method | Does |
+|---|---|
+| `reset()`, `add_source(id)`, `add_hedge(id, tolerance)` | name the legs (at most 4 of each), hedges in order of preference; false when full |
+| `start(ctx, config)` | checks the legs (configured, linear, each once) and starts; false, logged, otherwise |
+| `set_config(config)`, `set_tolerance(i, tolerance)`, `set_target(qty)`, `restart()` | new parameters, a new net target in base units, a halt cleared |
+| `on_fill`, `on_order_update`, `on_book`, `on_timer`, `on_connection`, `on_balance`, `update` | the strategy's hooks forwarded; the `bool` ones return whether the event concerned a leg or one of its orders |
+| `residual(ctx)` | sources plus hedges minus the target, base units |
+| `can_hedge(ctx)` | some hedge instrument can take a hedge now and hedging is not halted |
+| `why(ctx, i, now)` | `Reason` hedge instrument `i` is not usable: `Down`, `Killed`, `NoBook`, `Stale`, `Gated`, `Benched`, or `Usable` |
+| `held()`, `halted()`, `derisking()`, `state()`, `status(ctx)`, `stats()` | monitoring ([Monitor it](../how-to/strategies/hedge-executor.md#monitor-it)) |
+| `hedge_order(inst, residual, bid, ask, tolerance, tag)` | static: the IOC that brings `residual` towards zero on `inst`, or none under its lot, `min_qty` or `min_notional` |
+
 ## Book
 
 `on_book` receives the engine's `L2Book`; any type modelling `BookView` has the same read API:

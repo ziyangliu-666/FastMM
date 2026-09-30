@@ -8,6 +8,7 @@
 //   orders                     NewOrderRequest, OmsUpdate, Order
 //   parameters                 FASTMM_PARAMS, FASTMM_PARAM, FASTMM_PARAM_BPS, FASTMM_PARAM_MS
 //   hooks                      Fill, verify_strategy, StrategyBase, StrategyLike
+//   hedging                    HedgeExecutor
 //   logging                    FASTMM_LOG_INFO, FASTMM_LOG_WARN, ...
 //
 //   #include "fastmm/strategy.hpp"
@@ -21,6 +22,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/strategies/hedge_executor.hpp"
 #include "fastmm/strategies/hooks.hpp"
 #include "fastmm/strategies/params.hpp"
 #include "fastmm/strategies/quoting.hpp"

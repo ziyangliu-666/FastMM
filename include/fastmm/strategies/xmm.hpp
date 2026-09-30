@@ -16,37 +16,32 @@
 //   bid    = fair - half rounded down, ask = fair + half rounded up, one level, never crossing the
 //            quote venue's touch
 //
-// Hedging is derived from positions, never from a count of fills:
+// Hedging is a HedgeExecutor (strategies/hedge_executor.hpp) with the quote instrument as its
+// source and the hedge instrument, then fallback_instrument when set, as its hedges:
 //
-//   unhedged = quote position * multiplier + hedge position * multiplier   (base units)
+//   unhedged = quote position * multiplier + hedge positions * multipliers   (base units)
 //
-// When |unhedged| rounds to at least one hedge lot (and min_qty and min_notional) and no order is
-// open on the hedge instrument, one IOC limit goes out: -unhedged / hedge multiplier rounded down
-// to the lot, priced hedge_tolerance_bps through the hedge touch. When it ends the strategy looks
-// at the positions again. A restart, a replayed or duplicated fill and an order whose outcome
-// arrives late all end in the same place, and an order the OMS still holds (sent, not acknowledged,
-// venue down) blocks the next hedge until an ack, a fill or reconciliation ends it. A hedge the
-// venue reports ended before its executions arrive (Bybit's order and execution topics are not
-// ordered) is booked by the engine from the reported cumulative quantity before this strategy hears
-// of the end, and the executions that follow name that quantity instead of adding it
-// (Oms::on_fill). No hedge goes out while a venue reconciles or, after a start, before every venue
-// has replayed its executions and reconciled (ctx.reconciling()): until then one venue's position
-// may lack a fill the other's already shows.
+// When |unhedged| rounds to at least one hedge lot (and min_qty and min_notional) and no hedge is
+// open, one IOC limit goes out, priced hedge_tolerance_bps (fallback_tolerance_bps) through the
+// touch; when it ends the positions are looked at again. Sizing from positions, the one hedge in
+// flight, the uncertain hold, the retry and the halt after max_hedge_failures within
+// failure_window_ms are the executor's, described there. With a fallback, the hedge goes to it
+// while the hedge instrument's venue is down, killed or gated, its book is invalid or older than
+// stale_ms, its balance cannot cover the hedge, or it failed max_hedge_failures times (benched for
+// failover_bench_ms); it comes back to the hedge instrument as soon as that can take it. The
+// strategy halts only when every hedge instrument failed. With derisk_after_ms, a residual no hedge
+// instrument took for that long is reduced on the quote instrument instead: reduce-only IOC orders
+// of at most derisk_step_qty, derisk_interval_ms apart.
 //
-// Guards: the quotes come off when either book is invalid or older than stale_ms, when the hedge
-// venue's market data or order channel is down or its feed-lag gate holds it, and while the
-// strategy is halted. The side that would take |unhedged| past max_unhedged is not quoted. A hedge
-// that ends with nothing filled is a failure: the next one waits hedge_retry_ms, and
-// max_hedge_failures within failure_window_ms halt the strategy (quotes pulled, no more hedges,
-// logged) until `restart` gets a new value. A hedge the venue never reported on (cancelled by the
-// ack timeout, dropped by reconciliation with quantity unaccounted for, or a generic VenueReject
-// such as a REST timeout) holds hedging for uncertain_hold_ms, so a fill that is still on its way
-// is booked before the positions are trusted again.
+// Guards: the quotes come off when either book the fair value needs is invalid or older than
+// stale_ms, when the hedge instrument's venue is gated, when no hedge instrument can take a hedge
+// (the executor's can_hedge), and while hedging is halted. The side that would take |unhedged| past
+// max_unhedged is not quoted. `restart` set to a new value clears a halt.
 //
 // Balances (ctx.balance_room): a side whose fill the quote venue's balance cannot cover is not
-// quoted. A hedge the hedge venue's balance or margin cannot cover is not sent: it is held, logged
-// and counted (Stats::hedges_held, once per episode), and while it is held only the side that
-// reduces |unhedged| is quoted, as at max_unhedged. The next balance report or fill looks again.
+// quoted. A hedge no hedge venue's balance or margin can cover is held (Stats::hedges_held, once
+// per episode), and while it is held only the side that reduces |unhedged| is quoted, as at
+// max_unhedged.
 //
 // Perpetual legs (ctx.mark, ctx.index, ctx.funding): a bid that fills is hedged by a sell, so
 // holding it earns the hedge leg's funding and pays the quote leg's; carry prices that in over the
@@ -70,6 +65,7 @@
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/venue_health.hpp"
+#include "fastmm/strategies/hedge_executor.hpp"
 #include "fastmm/strategies/quoting.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
@@ -161,12 +157,52 @@ struct XmmParams {
                   milliseconds(600000),
                   "after a hedge with an unreported outcome, wait this long before the next")
   FASTMM_PARAM(int, restart, 0, 0, 1000000000, "set to a new value to clear a halt")
+  FASTMM_PARAM(int,
+               fallback_instrument,
+               -1,
+               -1,
+               255,
+               "index in [[instruments]] of a second hedge instrument, used while the first cannot "
+               "take the hedge (-1 = none; read at start)")
+  FASTMM_PARAM_BPS(fallback_tolerance_bps,
+                   5_bps,
+                   0_bps,
+                   1000_bps,
+                   "hedge IOC limit on the fallback: this far through its touch")
+  FASTMM_PARAM_MS(failover_bench_ms,
+                  milliseconds(60000),
+                  milliseconds(0),
+                  milliseconds(86400000),
+                  "a hedge instrument that failed max_hedge_failures times sits out this long "
+                  "while the other can hedge")
+  FASTMM_PARAM_MS(derisk_after_ms,
+                  milliseconds(0),
+                  milliseconds(0),
+                  milliseconds(86400000),
+                  "reduce the quote position when no hedge instrument took the residual for this "
+                  "long (0 = never)")
+  FASTMM_PARAM(
+      Qty, derisk_step_qty, 0.001_qty, 0_qty, 1000000000_qty, "largest de-risk order, base units")
+  FASTMM_PARAM_MS(derisk_interval_ms,
+                  milliseconds(1000),
+                  milliseconds(0),
+                  milliseconds(3600000),
+                  "wait between de-risk orders")
+  FASTMM_PARAM_BPS(derisk_tolerance_bps,
+                   10_bps,
+                   0_bps,
+                   1000_bps,
+                   "de-risk IOC limit: this far through the quote venue's touch")
 
   std::optional<std::string> validate() const {
     if (quote_instrument == hedge_instrument)
       return "quote_instrument and hedge_instrument must differ";
+    if (fallback_instrument == quote_instrument || fallback_instrument == hedge_instrument)
+      return "fallback_instrument must differ from quote_instrument and hedge_instrument";
     if (!max_unhedged.is_zero() && max_unhedged < quote_qty)
       return "max_unhedged must be 0 or at least quote_qty";
+    if (derisk_after_ms > Duration{} && !derisk_step_qty.is_positive())
+      return "derisk_step_qty must be positive when derisk_after_ms is set";
     return std::nullopt;
   }
 };
@@ -174,17 +210,12 @@ struct XmmParams {
 class Xmm : public StrategyBase<XmmParams> {
  public:
   static constexpr std::string_view name() noexcept { return "xmm"; }
-  static constexpr std::uint64_t kTimer = 0x584d'4d54;     // "XMMT"
-  static constexpr std::uint32_t kHedgeTag = 0x584d'4d48;  // "XMMH", outside the quote tag range
+  static constexpr std::uint64_t kTimer = 0x584d'4d54;      // "XMMT"
+  static constexpr std::uint32_t kHedgeTag = 0x584d'4d48;   // "XMMH", outside the quote tag range
+  static constexpr std::uint32_t kDeriskTag = 0x584d'4d44;  // "XMMD"
   static constexpr Duration kTimerPeriod = milliseconds(100);
 
-  struct Stats {
-    std::uint64_t hedges_sent = 0;
-    std::uint64_t hedge_failures = 0;  // ended with nothing filled, or refused by the engine
-    std::uint64_t uncertain_ends = 0;  // ended without the venue saying how
-    std::uint64_t halts = 0;
-    std::uint64_t hedges_held = 0;  // episodes of a hedge the hedge venue's balance cannot cover
-  };
+  using Stats = HedgeExecutor::Stats;
 
   // ---- hooks --------------------------------------------------------------------------------
 
@@ -194,21 +225,20 @@ class Xmm : public StrategyBase<XmmParams> {
     have_basis_ = false;
     basis_raw_ = 0.0;
     basis_ns_ = 0;
-    hedge_down_mask_ = 0;
-    next_hedge_ns_ = 0;
-    failures_ = 0;
-    halted_ = false;
-    hedge_held_ = false;
     quoted_ = false;
     quoted_fair_ = Price{};
+    hedge_.reset();
     const XmmParams& p = params();
+    restart_seen_ = p.restart;
     const auto n = static_cast<std::int64_t>(ctx.instruments().size());
-    if (p.quote_instrument >= n || p.hedge_instrument >= n) {
+    if (p.quote_instrument >= n || p.hedge_instrument >= n || p.fallback_instrument >= n) {
       FASTMM_LOG_ERROR(
-          "xmm: quote_instrument {} or hedge_instrument {} is not in the {} configured "
-          "instruments; not trading",
+          "xmm: quote_instrument {}, hedge_instrument {} or fallback_instrument {} is not in the "
+          "{} "
+          "configured instruments; not trading",
           p.quote_instrument,
           p.hedge_instrument,
+          p.fallback_instrument,
           n);
       return;
     }
@@ -223,74 +253,49 @@ class Xmm : public StrategyBase<XmmParams> {
                        hi.symbol.view());
       return;
     }
+    static_cast<void>(hedge_.add_source(q_));
+    static_cast<void>(hedge_.add_hedge(h_, p.hedge_tolerance_bps));
+    if (p.fallback_instrument >= 0) {
+      static_cast<void>(
+          hedge_.add_hedge(InstrumentId{static_cast<std::uint32_t>(p.fallback_instrument)},
+                           p.fallback_tolerance_bps));
+    }
+    if (!hedge_.start(ctx, hedge_config())) return;
     ready_ = true;
     timer_ = ctx.every(kTimerPeriod, kTimer);
   }
 
   template <class Ctx, class Book>
   void on_book(Ctx& ctx, InstrumentId id, const Book&) noexcept {
-    if (!ready_ || (id != q_ && id != h_)) return;
-    update_basis(ctx);
-    if (id == h_) maybe_hedge(ctx);
+    if (!ready_ || (id != q_ && !hedge_.is_hedge(id))) return;
+    if (id == q_ || id == h_) update_basis(ctx);
+    hedge_.on_book(ctx, id);
     requote(ctx, false);
   }
 
   template <class Ctx>
   void on_fill(Ctx& ctx, const Fill& fill) noexcept {
-    if (!ready_ || (fill.instrument != q_ && fill.instrument != h_)) return;
-    maybe_hedge(ctx);
+    if (!ready_ || !hedge_.on_fill(ctx, fill)) return;
     requote(ctx, true);
   }
 
   template <class Ctx>
   void on_order_update(Ctx& ctx, const OmsUpdate& u) noexcept {
-    if (!ready_ || u.order.instrument != h_ || !u.terminal) return;
-    const Order& o = u.order;
-    const std::int64_t now = ctx.now().ns;
-    if (o.cum_qty.is_zero()) hedge_failed(ctx, now);
-    // The venue did not say how it ended: the ack timeout cancelled an order the venue never
-    // acknowledged, reconciliation found it gone with quantity unaccounted for, or a connector
-    // turned a request whose outcome it does not know into a generic reject (a REST timeout). A
-    // fill may still be on its way, so the positions are not trusted for a while.
-    const bool uncertain =
-        u.unresolved_qty.is_positive() ||
-        (o.state == OrderState::Canceled && o.venue_order_id.empty() && o.cum_qty.is_zero()) ||
-        (o.state == OrderState::Rejected && o.reject_reason == RejectReason::VenueReject);
-    if (uncertain) {
-      ++stats_.uncertain_ends;
-      const std::int64_t until = now + params().uncertain_hold_ms.ns;
-      if (until > next_hedge_ns_) next_hedge_ns_ = until;
-      FASTMM_LOG_WARN(
-          "xmm: hedge {} ended without the venue saying how; next hedge in {} ms at the earliest",
-          encode_cl_ord_id(o.cl_ord_id),
-          params().uncertain_hold_ms.millis());
-    }
-    maybe_hedge(ctx);
+    if (!ready_ || !hedge_.on_order_update(ctx, u)) return;
     requote(ctx, true);
   }
 
   template <class Ctx>
   void on_timer(Ctx& ctx, TimerId, std::uint64_t tag) noexcept {
     if (!ready_ || tag != kTimer) return;
-    maybe_hedge(ctx);
+    hedge_.on_timer(ctx);
     requote(ctx, false);
   }
 
   template <class Ctx>
   void on_connection(Ctx& ctx, const ConnectionStateMsg& m) noexcept {
     if (!ready_) return;
-    // Market data (channel 0) is covered by the hedge book's validity: the engine clears the books
-    // when the channel drops. A book resync (one symbol's, or the gateway's after an attachment's
-    // ring dropped) is a Resyncing followed by snapshots and no Live, so counting channel 0 here
-    // stopped hedging for good.
-    if (m.hdr.venue == ctx.instrument(h_).venue && m.channel != 0) {
-      const std::uint32_t bit = 1U << (m.channel & 31U);
-      if (m.state == ConnState::Live) {
-        hedge_down_mask_ &= ~bit;
-      } else {
-        hedge_down_mask_ |= bit;
-      }
-    }
+    hedge_.on_connection(ctx, m);
     // The engine pulls the quotes of a venue that drops; requote from scratch either way.
     quoted_fair_ = Price{};
     requote(ctx, true);
@@ -302,7 +307,7 @@ class Xmm : public StrategyBase<XmmParams> {
     quoted_ = false;
     quoted_fair_ = Price{};
     if (!enabled) return;
-    maybe_hedge(ctx);
+    hedge_.update(ctx);
     requote(ctx, true);
   }
 
@@ -317,67 +322,46 @@ class Xmm : public StrategyBase<XmmParams> {
   // A venue reported a balance: a held hedge may fit now, and a side may be quotable again.
   template <class Ctx>
   void on_balance(Ctx& ctx, const BalanceMsg& m) noexcept {
-    if (!ready_) return;
-    if (m.hdr.venue != ctx.instrument(q_).venue && m.hdr.venue != ctx.instrument(h_).venue) return;
-    maybe_hedge(ctx);
+    if (!ready_ || !hedge_.on_balance(ctx, m)) return;
     requote(ctx, true);
   }
 
-  // A new value of `restart` clears a halt. (Reconciliations pause and resume quoting on their
-  // own, so on_quoting cannot tell an operator's resume from theirs, and a publisher may repeat
-  // unchanged parameters.)
+  // New parameters reach the executor. A new value of `restart` clears a halt. (Reconciliations
+  // pause and resume quoting on their own, so on_quoting cannot tell an operator's resume from
+  // theirs, and a publisher may repeat unchanged parameters.)
   template <class Ctx>
   void on_params(Ctx& ctx) noexcept {
     if (!ready_) return;
-    if (halted_ && params().restart != restart_at_halt_) {
-      FASTMM_LOG_WARN("xmm: restart={}; hedging and quoting restart", params().restart);
-      halted_ = false;
-      failures_ = 0;
-      next_hedge_ns_ = 0;
+    hedge_.set_config(hedge_config());
+    hedge_.set_tolerance(0, params().hedge_tolerance_bps);
+    hedge_.set_tolerance(1, params().fallback_tolerance_bps);
+    if (params().restart != restart_seen_) {
+      restart_seen_ = params().restart;
+      if (hedge_.halted()) {
+        FASTMM_LOG_WARN("xmm: restart={}; hedging and quoting restart", params().restart);
+        hedge_.restart();
+      }
     }
-    maybe_hedge(ctx);
+    hedge_.update(ctx);
     requote(ctx, true);
   }
 
   // ---- pure functions (deterministic tests) ----------------------------------------------------
 
-  // Contracts to base units and back (linear: qty * multiplier).
   [[nodiscard]] static constexpr Qty to_base(const Instrument& inst, Qty contracts) noexcept {
-    return Qty::from_raw(mul_raw(contracts, inst.contract_multiplier));
+    return HedgeExecutor::to_base(inst, contracts);
   }
   [[nodiscard]] static constexpr Qty to_contracts(const Instrument& inst, Qty base) noexcept {
-    if (!inst.contract_multiplier.is_positive()) return Qty{};
-    return Qty::from_raw(detail::mul_div(base.raw, kFixedScale, inst.contract_multiplier.raw));
+    return HedgeExecutor::to_contracts(inst, base);
   }
 
-  // The hedge that brings `unhedged` (base units) back towards zero: an IOC on the hedge
-  // instrument, its quantity rounded down to the lot and capped at max_qty, priced `tolerance`
-  // through the touch and rounded towards the touch. None when it rounds below the lot or min_qty,
-  // its notional is below the hedge instrument's min_notional, or the touch it needs is empty: a
-  // hedge the venue (or the risk check) must refuse would only count as a failure and, repeated,
-  // halt the strategy. The remainder waits for the next fill, as one under a lot does.
+  // The hedge that brings `unhedged` (base units) back towards zero (HedgeExecutor::hedge_order).
   [[nodiscard]] static std::optional<NewOrderRequest> hedge_order(const Instrument& hi,
                                                                   Qty unhedged,
                                                                   Price best_bid,
                                                                   Price best_ask,
                                                                   Ratio tolerance) noexcept {
-    if (unhedged.is_zero()) return std::nullopt;
-    const Side side = unhedged.is_negative() ? Side::Buy : Side::Sell;
-    Qty qty = hi.round_qty(to_contracts(hi, unhedged.abs()));
-    if (hi.max_qty.is_positive() && qty > hi.max_qty) qty = hi.round_qty(hi.max_qty);
-    if (!qty.is_positive() || qty < hi.min_qty) return std::nullopt;
-    Price px;
-    if (side == Side::Buy) {
-      if (!best_ask.is_positive()) return std::nullopt;
-      px = hi.round_price(best_ask + best_ask * tolerance, Side::Buy);
-    } else {
-      if (!best_bid.is_positive()) return std::nullopt;
-      px = hi.round_price(best_bid - best_bid * tolerance, Side::Sell);
-    }
-    if (!px.is_positive()) return std::nullopt;
-    if (hi.min_notional.is_positive() && hi.notional(px, qty) < hi.min_notional)
-      return std::nullopt;
-    return NewOrderRequest::limit(hi.id, side, px, qty).ioc().tag(kHedgeTag);
+    return HedgeExecutor::hedge_order(hi, unhedged, best_bid, best_ask, tolerance, kHedgeTag);
   }
 
   // One level each side around `fair`; a side is left out when a fill of it would take |unhedged|
@@ -406,21 +390,21 @@ class Xmm : public StrategyBase<XmmParams> {
   // ---- state (tests, diagnostics) ----------------------------------------------------------
 
   [[nodiscard]] bool ready() const noexcept { return ready_; }
-  [[nodiscard]] bool halted() const noexcept { return halted_; }
-  [[nodiscard]] bool hedge_held() const noexcept { return hedge_held_; }
+  [[nodiscard]] bool halted() const noexcept { return hedge_.halted(); }
+  [[nodiscard]] bool hedge_held() const noexcept { return hedge_.held(); }
   [[nodiscard]] bool have_basis() const noexcept { return have_basis_; }
   [[nodiscard]] Price basis() const noexcept {
     return Price::from_raw(static_cast<std::int64_t>(std::llround(basis_raw_)));
   }
-  [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
+  [[nodiscard]] const Stats& stats() const noexcept { return hedge_.stats(); }
+  [[nodiscard]] const HedgeExecutor& hedger() const noexcept { return hedge_; }
   [[nodiscard]] InstrumentId quote_id() const noexcept { return q_; }
   [[nodiscard]] InstrumentId hedge_id() const noexcept { return h_; }
 
-  // Quote position plus hedge position in base units.
+  // Quote position plus hedge positions in base units.
   template <class Ctx>
   [[nodiscard]] Qty unhedged(const Ctx& ctx) const noexcept {
-    return to_base(ctx.instrument(q_), ctx.position(q_).qty) +
-           to_base(ctx.instrument(h_), ctx.position(h_).qty);
+    return hedge_.residual(ctx);
   }
 
   // The hedge reference plus the basis and the funding carry; zero while one of them is unknown
@@ -457,6 +441,25 @@ class Xmm : public StrategyBase<XmmParams> {
   }
 
  private:
+  [[nodiscard]] HedgeExecutor::Config hedge_config() const noexcept {
+    const XmmParams& p = params();
+    HedgeExecutor::Config c;
+    c.name = "xmm";
+    c.tag = kHedgeTag;
+    c.derisk_tag = kDeriskTag;
+    c.retry = p.hedge_retry_ms;
+    c.max_failures = p.max_hedge_failures;
+    c.failure_window = p.failure_window_ms;
+    c.uncertain_hold = p.uncertain_hold_ms;
+    c.stale = p.stale_ms;
+    c.bench = p.failover_bench_ms;
+    c.derisk_after = p.derisk_after_ms;
+    c.derisk_step = p.derisk_step_qty;
+    c.derisk_interval = p.derisk_interval_ms;
+    c.derisk_tolerance = p.derisk_tolerance_bps;
+    return c;
+  }
+
   template <class Book>
   [[nodiscard]] Price reference(const Book& b) const noexcept {
     if (!b.is_valid()) return Price{};
@@ -496,11 +499,6 @@ class Xmm : public StrategyBase<XmmParams> {
   }
 
   template <class Ctx>
-  [[nodiscard]] bool hedge_in_flight(const Ctx& ctx) const noexcept {
-    return ctx.open_qty(h_, Side::Buy).is_positive() || ctx.open_qty(h_, Side::Sell).is_positive();
-  }
-
-  template <class Ctx>
   void update_basis(Ctx& ctx) noexcept {
     const auto& qb = ctx.book(q_);
     const Price ref = reference(ctx.book(h_));
@@ -525,73 +523,6 @@ class Xmm : public StrategyBase<XmmParams> {
   }
 
   template <class Ctx>
-  void maybe_hedge(Ctx& ctx) noexcept {
-    // While a venue reconciles (and, after a start, until each has), a position may still be
-    // missing an execution the replay is about to book: a hedge now could be a second one.
-    if (halted_ || hedge_down_mask_ != 0 || ctx.reconciling() || hedge_in_flight(ctx)) return;
-    const std::int64_t now = ctx.now().ns;
-    if (now < next_hedge_ns_) return;
-    const auto& hb = ctx.book(h_);
-    if (!hb.is_valid()) return;
-    const std::optional<NewOrderRequest> req = hedge_order(ctx.instrument(h_),
-                                                           unhedged(ctx),
-                                                           hb.best_bid().price,
-                                                           hb.best_ask().price,
-                                                           params().hedge_tolerance_bps);
-    if (!req) return;
-    const Qty room = ctx.balance_room(h_, req->side, req->price);
-    if (room < req->qty) {
-      if (!hedge_held_) {
-        hedge_held_ = true;
-        ++stats_.hedges_held;
-        FASTMM_LOG_WARN(
-            "xmm: hedge {} {} @ {} held: the hedge venue's balance covers {}; quoting only the "
-            "side that reduces {} unhedged until it does",
-            req->side,
-            req->qty,
-            req->price,
-            room,
-            unhedged(ctx));
-      }
-      return;
-    }
-    if (hedge_held_) {
-      hedge_held_ = false;
-      FASTMM_LOG_INFO("xmm: the hedge venue's balance covers the hedge again");
-    }
-    const auto sent = ctx.send(*req);
-    if (!sent) {
-      FASTMM_LOG_WARN(
-          "xmm: hedge {} {} @ {} refused: {}", req->side, req->qty, req->price, sent.error());
-      hedge_failed(ctx, now);
-      return;
-    }
-    ++stats_.hedges_sent;
-  }
-
-  template <class Ctx>
-  void hedge_failed(Ctx& ctx, std::int64_t now) noexcept {
-    ++stats_.hedge_failures;
-    next_hedge_ns_ = now + params().hedge_retry_ms.ns;
-    const auto n = static_cast<std::size_t>(params().max_hedge_failures);
-    failure_ns_[failures_ % kMaxFailures] = now;
-    ++failures_;
-    if (halted_ || failures_ < n) return;
-    const std::int64_t oldest = failure_ns_[(failures_ - n) % kMaxFailures];
-    if (now - oldest > params().failure_window_ms.ns) return;
-    halted_ = true;
-    restart_at_halt_ = params().restart;
-    ++stats_.halts;
-    FASTMM_LOG_ERROR(
-        "xmm: {} hedges filled nothing within {} ms: quotes pulled and hedging stopped with {} "
-        "unhedged; set restart to a new value to resume",
-        n,
-        params().failure_window_ms.millis(),
-        unhedged(ctx));
-    pull(ctx);
-  }
-
-  template <class Ctx>
   void pull(Ctx& ctx) noexcept {
     if (quoted_) ctx.pull_quotes(q_);
     quoted_ = false;
@@ -601,7 +532,9 @@ class Xmm : public StrategyBase<XmmParams> {
   template <class Ctx>
   void requote(Ctx& ctx, bool force) noexcept {
     const auto& qb = ctx.book(q_);
-    if (halted_ || hedge_down_mask_ != 0 || !qb.is_valid() || stale(ctx, q_) || stale(ctx, h_) ||
+    // Off while no hedge instrument can take a fill's hedge (or a de-risk order may be working),
+    // and while the fair value's inputs are missing or late.
+    if (!hedge_.can_hedge(ctx) || !qb.is_valid() || stale(ctx, q_) || stale(ctx, h_) ||
         ctx.venue_health(ctx.instrument(h_).venue).gated) {
       pull(ctx);
       return;
@@ -620,8 +553,8 @@ class Xmm : public StrategyBase<XmmParams> {
     DesiredQuotes q = compute_quotes(qi, fair, open, fees);
     keep_passive(q, qb.best_bid().price, qb.best_ask().price, qi.tick);
     // A held hedge: only the side that brings |unhedged| back is quoted.
-    if (hedge_held_ && open.is_positive()) q.bids.clear();
-    if (hedge_held_ && open.is_negative()) q.asks.clear();
+    if (hedge_.held() && open.is_positive()) q.bids.clear();
+    if (hedge_.held() && open.is_negative()) q.asks.clear();
     // A side the quote venue's balance cannot cover in full is not quoted; our resting quote on
     // that side counts, it is replaced.
     for (const Side side : {Side::Buy, Side::Sell}) {
@@ -639,30 +572,22 @@ class Xmm : public StrategyBase<XmmParams> {
     }
   }
 
-  static constexpr std::size_t kMaxFailures = 16;
-
   // A fee rate in centi-bps (FeeRates) as a Ratio.
   [[nodiscard]] static constexpr Ratio cbps_ratio(std::int32_t cbps) noexcept {
     return Ratio::from_raw(static_cast<std::int64_t>(cbps) * (kRatioPerBp / 100));
   }
 
+  HedgeExecutor hedge_;
   InstrumentId q_{};
   InstrumentId h_{};
   TimerId timer_{};
   double basis_raw_ = 0.0;  // quote mid - hedge reference, raw price units
   std::int64_t basis_ns_ = 0;
-  std::int64_t next_hedge_ns_ = 0;
-  std::int64_t failure_ns_[kMaxFailures] = {};
-  std::size_t failures_ = 0;
-  std::uint32_t hedge_down_mask_ = 0;  // bit per channel of the hedge venue that is not Live
   Price quoted_fair_{};
-  Stats stats_{};
   bool ready_ = false;
   bool have_basis_ = false;
-  bool halted_ = false;
-  bool hedge_held_ = false;  // the last hedge the positions asked for did not fit the balance
   bool quoted_ = false;
-  int restart_at_halt_ = 0;
+  int restart_seen_ = 0;
 };
 
 static_assert(StrategyLike<Xmm>);
