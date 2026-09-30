@@ -49,6 +49,12 @@ class WsSessionHandler {
   virtual bool accept_upgrade(std::string_view /*path*/, std::string_view /*query*/) {
     return true;
   }
+  // The same with the request's headers (a venue that authenticates the upgrade itself).
+  virtual bool accept_upgrade_with_headers(std::string_view path,
+                                           std::string_view query,
+                                           const HttpHeaders& /*headers*/) {
+    return accept_upgrade(path, query);
+  }
   virtual void on_open(WsSession&) {}
   virtual void on_text(WsSession&, std::string_view) {}
   virtual void on_binary(WsSession&, std::span<const std::byte>) {}

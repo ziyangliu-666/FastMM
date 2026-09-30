@@ -32,9 +32,9 @@ VenueSection section(std::string kind) {
 
 TEST_CASE("venues.registry: every shipped connector resolves through its kind and aliases") {
   const VenueRegistry r = builtins();
-  CHECK(r.entries().size() == 6);
+  CHECK(r.entries().size() == 7);
   for (const char* kind :
-       {"binance_spot", "binance_usdm", "bybit", "deribit", "nasdaq_itch", "okx"})
+       {"binance_spot", "binance_usdm", "bybit", "deribit", "gemini", "nasdaq_itch", "okx"})
     CHECK(r.find(kind) != nullptr);
   // Aliases select the same entry, so `kind = "sim"` is the Binance connector.
   CHECK(r.find("sim") == r.find("binance_spot"));
@@ -58,6 +58,11 @@ TEST_CASE("venues.registry: a connector declares whether it needs credentials") 
     CHECK(r.find(kind)->caps.positions);
     CHECK_FALSE(r.find(kind)->caps.polls);
   }
+  // Gemini has no amend.
+  CHECK(r.find("gemini")->caps.credentials);
+  CHECK(r.find("gemini")->caps.order_entry);
+  CHECK(r.find("gemini")->caps.positions);
+  CHECK_FALSE(r.find("gemini")->caps.replace);
 }
 
 TEST_CASE("venues.registry: a venue validates the keys it owns") {

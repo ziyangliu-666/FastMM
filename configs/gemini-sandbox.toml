@@ -1,0 +1,89 @@
+# FastMM: BasicMM on the Gemini sandbox, BTCGUSDPERP (linear perpetual, 1 BTC per contract).
+#   ./build/release/bin/fastmm-live --config configs/gemini-sandbox.toml --dry-run --duration 60s
+# Keys from https://exchange.sandbox.gemini.com (Settings > API): an account-scoped key with "Uses
+# a time-based nonce" and the Trading role (the WebSocket API refuses master keys and counter
+# nonces). Perpetuals need a derivatives account (opened after the Derivatives Knowledge
+# Assessment) and a key scoped to it; with an exchange account's key fastmm-live exits 3. Spot
+# (symbol "btcusd", quote "USD", asset_class "spot") trades from the exchange account:
+#   export GEMINI_SANDBOX_API_KEY=... GEMINI_SANDBOX_API_SECRET=...
+#   ./build/release/bin/fastmm-live --config configs/gemini-sandbox.toml
+# Endpoints (https://developer.gemini.com/get-started/sandbox.md): REST
+#   https://api.sandbox.gemini.com, WebSocket API wss://ws.sandbox.gemini.com (market data, and a
+#   second authenticated connection for orders). Production: https://api.gemini.com and
+#   wss://ws.gemini.com with testnet = false.
+[engine]
+name = "gemini-sandbox"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 4194304
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 2
+min_requote_interval_ms = 250
+min_qty_bps = 8000
+post_only = true
+supports_replace = false
+
+[venues.gemini]
+kind = "gemini"
+ws_url = "wss://ws.sandbox.gemini.com"
+rest_url = "https://api.sandbox.gemini.com"
+api_key = "${GEMINI_SANDBOX_API_KEY}"
+api_secret = "${GEMINI_SANDBOX_API_SECRET}"
+testnet = true
+supports_replace = false     # Gemini has no amend
+stale_ms = 10000
+cancel_on_disconnect = true  # the venue cancels the order connection's orders when it closes
+heartbeat = false            # true when the key has "Requires Heartbeat"
+
+# Tick (quote_increment), lot (tick_size), minimum size, base and quote are overwritten from
+# GET /v1/symbols/details at startup.
+[[instruments]]
+venue = "gemini"
+symbol = "btcgusdperp"
+base = "BTC"
+quote = "GUSD"
+asset_class = "perpetual"
+tick = "0.5"
+lot = "0.0001"
+min_qty = "0.0001"
+contract_multiplier = "1"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 3.0
+skew_bps_per_unit = 5.0
+quote_qty = 0.001
+max_inventory = 0.003
+requote_threshold_ticks = 20
+pull_on_stale_ms = 2000
+levels = 1
+
+[risk]
+max_order_qty = "0.002"
+max_order_notional = "300"
+max_position = "0.003"
+max_open_orders = 4
+price_collar_bps = 50
+fat_finger_bps = 200
+stale_md_ms = 2000
+max_loss = "20"
+orders_per_sec = 5
+burst = 5
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

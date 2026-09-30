@@ -1,8 +1,8 @@
 #pragma once
 // Cryptographic primitives needed by the venue connectors: HMAC-SHA256 (REST/WS signing),
-// SHA-1 (WebSocket accept key), SHA-256, base64 (own implementation), CSPRNG bytes and Ed25519
-// (Binance session logon / Ed25519 API keys). OpenSSL 3 underneath; the header keeps OpenSSL out
-// of the public interface.
+// HMAC-SHA384 (Gemini), SHA-1 (WebSocket accept key), SHA-256, base64 (own implementation), CSPRNG
+// bytes and Ed25519 (Binance session logon / Ed25519 API keys). OpenSSL 3 underneath; the header
+// keeps OpenSSL out of the public interface.
 //
 // HmacSha256Key hashes the key pads once and keeps the inner/outer SHA-256 midstates, so a
 // signature costs the message blocks plus two compressions, with no allocation and no provider
@@ -18,6 +18,7 @@ namespace fastmm::net {
 
 inline constexpr std::size_t kSha1Size = 20;
 inline constexpr std::size_t kSha256Size = 32;
+inline constexpr std::size_t kSha384Size = 48;
 
 using Sha1Digest = std::array<std::uint8_t, kSha1Size>;
 using Sha256Digest = std::array<std::uint8_t, kSha256Size>;
@@ -50,6 +51,7 @@ class FixedHexString {
 };
 
 using HexSha256 = FixedHexString<kSha256Size>;
+using HexSha384 = FixedHexString<kSha384Size>;
 
 // HMAC-SHA256(key, data). `out` receives 32 bytes. Never throws; returns false on OpenSSL
 // failure (should not happen for valid inputs).
@@ -57,6 +59,9 @@ bool hmac_sha256(std::string_view key,
                  std::string_view data,
                  std::span<std::uint8_t, kSha256Size> out) noexcept;
 HexSha256 hmac_sha256_hex(std::string_view key, std::string_view data) noexcept;
+// HMAC-SHA384(key, data) as lowercase hex (Gemini signs its requests and the WebSocket upgrade
+// with it). Control path: the key schedule is not kept. Never fails for valid inputs.
+HexSha384 hmac_sha384_hex(std::string_view key, std::string_view data) noexcept;
 
 // HMAC-SHA256 with the key schedule precomputed (see the header comment). Copyable; a
 // default-constructed key signs with the empty key.

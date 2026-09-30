@@ -5,6 +5,7 @@
 
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <openssl/hmac.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -105,6 +106,21 @@ bool hmac_sha256(std::string_view key,
 
 HexSha256 hmac_sha256_hex(std::string_view key, std::string_view data) noexcept {
   return HmacSha256Key(key).sign_hex(data);
+}
+
+HexSha384 hmac_sha384_hex(std::string_view key, std::string_view data) noexcept {
+  std::array<std::uint8_t, kSha384Size> mac{};
+  unsigned int len = 0;
+  if (HMAC(EVP_sha384(),
+           key.data(),
+           static_cast<int>(key.size()),
+           reinterpret_cast<const unsigned char*>(data.data()),
+           data.size(),
+           mac.data(),
+           &len) == nullptr ||
+      len != kSha384Size)
+    return HexSha384{};
+  return HexSha384(std::span<const std::uint8_t, kSha384Size>(mac));
 }
 
 bool sha1(std::string_view data, std::span<std::uint8_t, kSha1Size> out) noexcept {

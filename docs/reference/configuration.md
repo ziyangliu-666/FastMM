@@ -106,6 +106,7 @@ knows only the generic keys above. A project can register its own connector and 
 | `binance_usdm` |  | Binance USDⓈ-M perpetual futures (Demo Trading) | yes | yes | yes | yes |
 | `bybit` | `bybit_spot` | Bybit v5 spot and linear perpetuals (testnet) | yes | yes | yes | yes |
 | `deribit` |  | Deribit options and futures (testnet) | yes | yes | yes | yes |
+| `gemini` |  | Gemini perpetuals and spot (sandbox) | yes | yes | no | yes |
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
 | `okx` |  | OKX v5 USDT-margined perpetual swaps (demo trading) | yes | yes | yes | yes |
 <!-- END config-keys -->
@@ -222,6 +223,23 @@ USDT-margined swaps; quantities are contracts. The third credential is the gener
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge new orders from the request response, not the orders channel (default true) |
+<!-- END config-keys -->
+
+#### `gemini`
+
+Perpetuals and spot on the WebSocket API. The URLs default to the sandbox hosts and `testnet` must match the hosts; `api_key` is an account-scoped key with a time-based nonce ([Venue connectors](venues.md#gemini-perpetuals-and-spot)).
+
+<!-- BEGIN config-keys venue:gemini -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `cancel_on_disconnect` | boolean |  | cancelOnDisconnect=true on the order connection: the venue cancels the orders placed on it when it closes (default true) |
+| `heartbeat` | boolean |  | the API key has "Requires Heartbeat": POST /v1/heartbeat every 15 s; the venue cancels the key's orders after 30 s without one (default false) |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least twice ping_interval_ms plus 5000 |
+| `ping_interval_ms` | integer |  | `ping` interval on both connections, ms, 1000 to 60000 (default 10000; the venue sends no heartbeats) |
+| `orders_per_second` | integer |  | client-side cap on new orders, per second (default 20) |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel this key's orders over REST (order/cancel/session) when the order connection drops (default true) |
 <!-- END config-keys -->
 
 #### `nasdaq_itch`
