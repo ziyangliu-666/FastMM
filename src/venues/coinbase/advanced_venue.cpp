@@ -123,6 +123,7 @@ net::ConnectionConfig CoinbaseAdvancedVenue::ws_config(const std::string& url,
 
 std::vector<std::string> CoinbaseAdvancedVenue::products() const {
   std::vector<std::string> out;
+  out.reserve(subscribed_.size());
   for (InstrumentId id : subscribed_) out.emplace_back(symbols_->venue_symbol(id));
   return out;
 }

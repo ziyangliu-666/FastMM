@@ -297,8 +297,8 @@ PrivateDecodeResult CoinbasePrivateParser::decode(std::string_view json,
   } else if (f.type == "done") {
     ++stats_.done;
     const auto key = order_key(f.order_id);
-    TrackedOrder* o = key ? orders_.find(*key) : nullptr;
-    if (o == nullptr) {
+    TrackedOrder* o = key.has_value() ? orders_.find(*key) : nullptr;
+    if (!key.has_value() || o == nullptr) {
       ++stats_.foreign;
       r.status = ParseStatus::Ignored;
       return r;
