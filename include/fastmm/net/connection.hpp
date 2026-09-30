@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -71,6 +72,9 @@ struct ConnectionConfig {
   bool manual_auth = false;       // handler calls auth_done()
   bool manual_subscribe = false;  // handler calls subscribe_done()
   std::string extra_headers;      // "Name: value\r\n" block for the upgrade request
+  // Called before every upgrade request and used instead of extra_headers when set: headers
+  // signed with a fresh nonce (Gemini authenticates the upgrade itself).
+  std::function<std::string()> make_headers;
   // Venue handlers parse text with simdjson, whose first stage rejects invalid UTF-8; the
   // WebSocket-level check would scan every message a second time.
   WsClientConfig ws{.validate_utf8 = false};
@@ -308,7 +312,8 @@ class Connection {
     (rollover ? pending_ : active_) = std::move(session);
     if (!rollover) set_state(ConnState::Connecting);
     arm_connect_timer();
-    if (!raw->ws.start(host_, url_.port, kTls, target_, cfg_.extra_headers)) {
+    const std::string headers = cfg_.make_headers ? cfg_.make_headers() : cfg_.extra_headers;
+    if (!raw->ws.start(host_, url_.port, kTls, target_, headers)) {
       on_session_end(*raw);
     }
   }

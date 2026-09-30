@@ -3,6 +3,80 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
+contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
+docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs
+`specs/openapi/rest.yaml` and `specs/asyncapi/websocket.yaml` (0.10.7); copies in `/tmp/gem` (not
+kept). Facts the connector follows, with their page:
+* WebSocket API `wss://ws.gemini.com` (`websocket/introduction.md`): the archived `v2/marketdata`
+  and `v1/order/events` "have been replaced"; connection parameters `snapshot=-1` (full book on
+  subscribe) and `cancelOnDisconnect=true` ("all open orders placed via the WebSocket session will
+  be cancelled upon disconnection"). No heartbeats from the venue; `ping`, `time`, `conninfo`.
+* Book (`websocket/streams.md`, AsyncAPI `DepthUpdate`): `{sym}@depth@100ms`, "the FIRST frame after
+  subscribing is the snapshot ... no separate snapshot message ... if a frame's U skips ahead of the
+  last applied u, discard the book and resubscribe". Production: diffs overlap at `U` = previous `u`,
+  the snapshot has `U` = `u`, ids sparse; a resubscribe's replies came before its snapshot, a fresh
+  connection's snapshot before its reply (checked with a script, `/tmp/gem/resub.py`). v2 `l2` has no
+  sequence number at all.
+* Auth (`authentication/api-key.md`, `websocket/authentication.md`): REST payload base64 in
+  `X-GEMINI-PAYLOAD`, `X-GEMINI-SIGNATURE` = hex HMAC-SHA384 of it, empty body; the WebSocket signs
+  the upgrade (`X-GEMINI-NONCE`, payload = base64(nonce)), "Only account-scoped keys with time-based
+  nonces", seconds within +/- 30 s. Master keys refused.
+* Orders (AsyncAPI `OrderPlaceParams`): `order.place` {symbol, side, type LIMIT|MARKET, timeInForce
+  GTC|IOC|FOK|MOC, price, quantity, clientOrderId}, `order.cancel` {orderId} (venue id only),
+  `order.cancel_all`, `order.cancel_session`; no amend, no reduce-only (REST `order/new` has neither
+  either). Result fields "not enumerated". MOC/IOC/FOK are "accepted, then cancelled — never
+  REJECTED".
+* Events (`streams.md`): `orders@account` `orderUpdate` X NEW/OPEN/PARTIALLY_FILLED/FILLED/
+  CANCELED/REJECTED/MODIFIED, `Z` = last execution on fills and cumulative on CANCELED, `n` fee on
+  FILLED only, no sequence number.
+* History: `POST /v1/mytrades` per symbol, `timestamp` (ms), limit 500, newest first, `tid` and
+  `client_order_id`; `/v1/orders`; `/v1/positions` (`openPositions` in the schema, a bare array in
+  its example); `/v1/perpetuals/fundingPayment?since&to` (hourly transfers, no id).
+* Dead man's switch: `cancelOnDisconnect`, and the key setting "Requires Heartbeat" (30 s without
+  an authenticated request cancels the session's orders; `POST /v1/heartbeat` every 15 s).
+  `order/cancel/session` cancels the key's orders; there is no per-symbol cancel-all.
+* Rate limits (`rate-limit.md`): private REST 600/min, 5/s recommended, a burst of 5 queued, then
+  429; `conninfo` on production: ORDERS 3500 per 10 s, REQUEST_WEIGHT 7000 per 10 s.
+* Specs (`symbols/details`): `tick_size` is the quantity step, `quote_increment` the price step;
+  `product_type` swap, `contract_type` linear; "Each contract has an underlying of 1 BTC"
+  (gemini.com/artemis/legal/contract-specifications). Sandbox: `api.sandbox.gemini.com`,
+  `ws.sandbox.gemini.com`, 53 perpetuals against 13 on production, same BTCGUSDPERP details.
+  Singapore: derivatives are Gemini Artemis Pte. Ltd.; eligibility (retail vs accredited) not
+  confirmed (support page 403). Irrelevant to the code.
+Design, on the shared machinery: `ReconcileDriver` (orders + positions, sweep on the first live order
+connection), `ReplayScheduler` twice (mytrades, one stream per symbol, ascending pages from the
+newest row; funding, one stream, key symbol:time), `BlockingControl` (kill-path
+`order/cancel/session`, 429 and `RateLimit` waited out), `SentWatermark` (`connection_lost` on the
+order connection; no REST order entry, so nothing `sent_over_rest`), `StreamBookSync` with
+`GeminiSyncTraits` (overlap rule) and the feed marking the snapshot frame, `LevelSpill` for deep
+snapshots, `CountdownDriver` for the heartbeat (window 30 s, refresh 1/2). `cancelOnDisconnect` is
+wired like Deribit's cancel-on-disconnect: a URL parameter, nothing to refresh. One order connection
+carries order entry and `orders@account`. Shared changes: `net::ConnectionConfig::make_headers`
+(headers built for every upgrade, a fresh nonce), `WsSessionHandler::accept_upgrade_with_headers`
+(the fake checks the signed upgrade), `net::hmac_sha384_hex`, `FakeVenueServer::on_upgrade`.
+Found on production: the btcusd book has asks at 1e10 to 9e12, past the 8-decimal fixed point; the
+first version refused the snapshot as malformed. Such levels are now left out (`out_of_range`) without
+marking the side cut.
+Tests: `gemini.md_parser`/`md_feed` (4, on 205 recorded frames: every frame decodes, three books sync
+with no resync, snapshot marking, overlap, stale drop, gap and resubscribe), `gemini.auth`/
+`encoder`/`error_map`/`rest_decoder`/`private_parser` (7, RFC 4231 vector, documented payloads),
+`gemini.venue` (11, fake server: config, reference data, key refusal exits 3, signed upgrade with
+`cancelOnDisconnect=true` and a fresh nonce on reconnect, start-up sweep, order lifecycle with reject,
+post-only expiry and cancel before the ack, a fill made while the order connection was down booked
+once, funding once, heartbeat lapse kills, kill-path cancel-all through a 429, book gap resync),
+`hotpath.noalloc: Gemini ...`.
+Dry run on production public data, 15 min (btcgusdperp, ethgusdperp, btcusd): books 3/3 synced 2 s
+after start, 25587 md messages, 0 resyncs, 0 malformed, 0 dropped, 0 reconnects, no ERROR; an
+independent check of the recorded frames found no `U`/`u` gap and no stale frame; clock offset
+-624 ms (the WSL clock). Not run: anything with keys.
+Open: the signed upgrade and every private payload are untested against Gemini; the `order.place`
+result fields; whether a REST nonce may repeat within a second; `fundingPayment` query vs payload;
+`mytrades` paging direction (desc list, forward walk-through); fee on PARTIALLY_FILLED and its
+currency; how fast `cancelOnDisconnect` acts without a FIN; whether `orders@account` covers REST
+orders; `btcusdcperp` and `btcgusdperp` looked like one book; the sandbox's fee schedule
+(`configs/gemini-sandbox.toml` sets none).
+
 **End to end over veth is slower on this host today (2026-09-29).** `scripts/bench-e2e.sh`, kernel, busy, 3 x 60 s: wire to wire p50 51 to 74 µs, T0 to T5 p50 7 to 20 µs, against 23.6 to 25.6 and 2.4 to 2.6 on 2026-09-23. The 2026-09-23 `release-native` build and the 2026-09-26 `release` build measure the same today (57 and 51 µs, one 30 s run each), so it is the host, not the code; `BM_TickToOrder_Sim` (release) is unchanged at 151 ns p50. The published e2e numbers stay those of 2026-09-23.
 
 ## Benchmark history, moved from bench/README.md (2026-09-29)

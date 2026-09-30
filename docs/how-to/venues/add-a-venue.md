@@ -118,6 +118,7 @@ The sink receives `on_snapshot()`, `on_delta()`, `on_resync(SyncReason)` and `re
 | `BybitSyncTraits` (`book_syncer.hpp`) | Snapshot in the stream; `u` strictly increasing; `u == 1` is a reset marker |
 | `DeribitSyncTraits` (`include/fastmm/venues/deribit/deribit_book_sync.hpp`) | First notification is the snapshot; `prev_change_id` equals the previous `change_id` |
 | `OkxSyncTraits` (`include/fastmm/venues/okx/okx_book_sync.hpp`) | Snapshot in the stream; `prevSeqId` equals the previous `seqId` (a heartbeat repeats it, a reset lowers it) |
+| `GeminiSyncTraits` (`include/fastmm/venues/gemini/gemini_book_sync.hpp`) | Snapshot in the stream, not marked: the first frame after subscribing; `U` ≤ the last `u` < `u` |
 
 On a gap, the connector emits `ConnectionStateMsg` with `ConnState::Resyncing` on channel 0 (`emit_connection_state()` in `include/fastmm/venues/order_events.hpp`) and fetches a new snapshot, rate limited: Bybit, Deribit and OKX resubscribe at most once every 2 s per instrument and again when no snapshot arrives within 10 s. Any state other than `Live` on channel 0 makes the engine clear the book and pull the quotes of that venue's instruments.
 

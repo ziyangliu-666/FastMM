@@ -1,0 +1,12 @@
+{
+ "_source": "mixed",
+ "_recorded_from": "https://api.gemini.com/v1/symbols/details/{btcgusdperp,btcusd}, https://api.sandbox.gemini.com/v1/symbols/details/btcgusdperp and wss://ws.gemini.com?snapshot=-1 (fastmm-live --dry-run --record-raw with configs/gemini-sandbox.toml pointed at production: btcgusdperp, ethgusdperp, btcusd; @depth@100ms, @bookTicker, @trade)",
+ "_recorded_at": "2026-09-30T01:43Z",
+ "files": {
+  "symbol_details_btcgusdperp.json": "recorded (production)",
+  "symbol_details_btcgusdperp_sandbox.json": "recorded (sandbox; identical)",
+  "symbol_details_btcusd.json": "recorded (production spot; tick_size is the JSON number 1e-08)",
+  "raw_md_stream.jsonl": "recorded, one frame per line (receive stamp, tab, frame): the first 200 frames of the session (the three snapshots, the btcusd one with 2564 bids and 2094 asks including asks at 1e10 and above, diffs, bookTickers, the subscribe, time and ping replies) and the next 5 trade frames",
+  "private payloads (tests/venues/gemini_*_test.cpp)": "docs-example (https://developer.gemini.com/websocket/streams.md, specs/openapi/rest.yaml, specs/asyncapi/websocket.yaml, read 2026-09-30) with FastMM client order ids; not recorded (no keys)"
+ }
+}

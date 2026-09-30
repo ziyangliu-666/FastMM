@@ -31,6 +31,9 @@ class FakeVenueServer final : public net::WsSessionHandler {
  public:
   using TextFn = std::function<void(net::WsSession&, std::string_view)>;
   using OpenFn = std::function<void(net::WsSession&)>;
+  // Decides a WebSocket upgrade from its path, query and headers (server thread).
+  using UpgradeFn = std::function<bool(
+      std::string_view path, std::string_view query, const net::HttpHeaders& headers)>;
 
   FakeVenueServer()
       : server_(
@@ -54,6 +57,8 @@ class FakeVenueServer final : public net::WsSessionHandler {
   }
   void on_ws_open(const std::string& path, OpenFn fn) { open_fns_[path] = std::move(fn); }
   void on_ws_text(const std::string& path, TextFn fn) { text_fns_[path] = std::move(fn); }
+  // Every upgrade's query is recorded under "upgrade:<path>"; `fn` may refuse it (404).
+  void on_upgrade(UpgradeFn fn) { upgrade_fn_ = std::move(fn); }
 
   void start() {
     REQUIRE(server_.listen(net::SockAddr::loopback_v4(0)));
@@ -119,6 +124,12 @@ class FakeVenueServer final : public net::WsSessionHandler {
   }
 
   // ---- WsSessionHandler (server thread) --------------------------------------------------
+  bool accept_upgrade_with_headers(std::string_view path,
+                                   std::string_view query,
+                                   const net::HttpHeaders& headers) override {
+    record("upgrade:" + std::string(path), std::string(query));
+    return !upgrade_fn_ || upgrade_fn_(path, query, headers);
+  }
   void on_open(net::WsSession& s) override {
     const std::string path(s.path());
     sessions_[path].push_back(&s);
@@ -148,6 +159,7 @@ class FakeVenueServer final : public net::WsSessionHandler {
   std::uint16_t port_ = 0;
   std::map<std::string, OpenFn> open_fns_;
   std::map<std::string, TextFn> text_fns_;
+  UpgradeFn upgrade_fn_;
   std::map<std::string, std::vector<net::WsSession*>> sessions_;
   std::mutex mu_;
   std::map<std::string, std::vector<std::string>> received_;

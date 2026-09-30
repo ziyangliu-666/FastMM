@@ -405,7 +405,8 @@ class HttpServer {
       conn.respond_and_close(400, "bad websocket upgrade");
       return;
     }
-    if (ws_handler_ == nullptr || !ws_handler_->accept_upgrade(head.path, head.query)) {
+    if (ws_handler_ == nullptr ||
+        !ws_handler_->accept_upgrade_with_headers(head.path, head.query, head.headers)) {
       conn.respond_and_close(404, "no websocket endpoint");
       return;
     }
