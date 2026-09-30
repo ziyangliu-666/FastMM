@@ -1174,6 +1174,7 @@ bool CoinbaseExchangeVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr) return true;
   BlockingControl control(cfg_, coinbase_blocking_retry());
   std::vector<std::string> products;
+  products.reserve(subscribed_.size());
   for (InstrumentId id : subscribed_) products.emplace_back(symbols_->venue_symbol(id));
   bool all_ok = true;
   for (const std::string& product : products) {
