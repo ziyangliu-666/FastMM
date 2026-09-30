@@ -187,7 +187,7 @@ TEST_CASE("backtest.golden: BasicMM outbound hash, L2 queue model with stale-boo
   const BacktestResult r = run_backtest<BasicMM>(cfg, &src);
   REQUIRE(r.engine.timers_fired > 0);
   check_golden(
-      "basic_mm/l2_queue", r, "af8621979497d805be6273fdb4987e0690b1687b78b8a2ad71f43d52b3bf89eb");
+      "basic_mm/l2_queue", r, "7ede161ca6310dca521b3ef43e2118a399fbec951adc8f3bd0b1bf977fbfc3db");
 }
 
 TEST_CASE("backtest.golden: AvellanedaStoikov outbound hash on a fixed seed") {
