@@ -170,7 +170,14 @@ std::string decode_fills(std::string_view json, std::vector<FillRecord>& out) {
       return "fills: entry without instId, tradeId or billId";
     if (!fixed(e, "fillPx", f.px) || !fixed(e, "fillSz", f.sz))
       return "fills: bad fillPx or fillSz for trade " + f.trade_id;
-    static_cast<void>(fixed(e, "fee", f.fee));
+    // A spot fee in the base coin can have more than 8 decimals ("-0.00000192834"): rounded,
+    // never dropped.
+    std::string_view fee;
+    if (e["fee"].get(fee) == sj::SUCCESS && !fee.empty()) {
+      const auto v = parse_fee(fee);
+      if (!v) return "fills: bad fee for trade " + f.trade_id;
+      f.fee = *v;
+    }
     if (!millis(e, "ts", f.ts_ms)) return "fills: bad ts for trade " + f.trade_id;
     if (!millis(e, "fillTime", f.fill_time_ms)) f.fill_time_ms = f.ts_ms;
     out.push_back(std::move(f));

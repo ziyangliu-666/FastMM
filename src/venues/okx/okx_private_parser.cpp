@@ -255,10 +255,11 @@ struct OrderItem {
     m->cum_qty = acc;
     const Qty total = qty_or_zero(it.sz);
     m->leaves_qty = total > acc ? total - acc : Qty{};
-    // fillFee: negative is charged, positive a rebate; the engine's fee is positive when paid.
+    // fillFee: negative is charged, positive a rebate; the engine's fee is positive when paid. A
+    // spot fee in the base coin is fillSz times the rate and can have more than 8 decimals.
     Notional fee{};
     if (!it.fill_fee.empty()) {
-      const auto f = parse_notional(it.fill_fee);
+      const auto f = parse_fee(it.fill_fee);
       if (!f) return Item::Malformed;
       fee = Notional{} - *f;
     }

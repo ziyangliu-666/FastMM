@@ -237,3 +237,50 @@ TEST_CASE("okx.private_parser: positions, funding events and control frames") {
   CHECK(decode(p, R"({"arg":{"channel":"orders"},"data":[{"instId":1}]})", s).status ==
         ParseStatus::Malformed);
 }
+
+// A spot buy pays its commission in the base coin, fillSz times the rate: 0.00002345 BTC at 0.1 %
+// is 0.00000002345, 11 decimals. The fill must be booked with the fee rounded to 8, not dropped
+// with the rest of the frame as malformed.
+TEST_CASE("okx.private_parser: a spot fill with a base-coin fee past 8 decimals is booked") {
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTC-USDT", 1, "BTC", "USDT")));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  OkxPrivateParser p(symbols, instruments, kOkx);
+  Scratch s;
+  std::string f = order("partially_filled", "fm000100000001", "0.00002345", "0.00002345", "91");
+  f = with(f, "instType", "SPOT");
+  f = with(f, "instId", "BTC-USDT");
+  f = with(f, "tdMode", "cash");
+  f = with(f, "side", "buy");
+  f = with(f, "sz", "0.0001");
+  f = with(f, "fillFee", "-0.00000002345");
+  f = with(f, "fillFeeCcy", "BTC");
+  const PrivateDecodeResult r = decode(p, f, s);
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 1);
+  const auto& m = nth<OrderFillMsg>(s, 0);
+  CHECK(m.hdr.type == EventType::OrderFill);
+  CHECK(m.side == Side::Buy);
+  CHECK(m.qty == Qty::from_decimal("0.00002345").value());
+  CHECK(m.leaves_qty == Qty::from_decimal("0.00007655").value());
+  CHECK(m.fee == Notional::from_decimal("0.00000002").value());  // paid: positive, rounded
+  CHECK(m.fee_asset == FeeAsset::Base);
+  CHECK(p.stats().malformed == 0);
+
+  // Recorded on the demo (2026-09-30): a minimum-size sell pays 0.001680388 USDT, 9 decimals.
+  const PrivateDecodeResult sell =
+      decode(p, fastmm::test::fixture("okx/private_spot_sell_fill_demo.json"), s);
+  REQUIRE(sell.status == ParseStatus::Ok);
+  REQUIRE(sell.count == 1);
+  const auto& rec = nth<OrderFillMsg>(s, 0);
+  CHECK(rec.side == Side::Sell);
+  CHECK(rec.cl_ord_id == decode_cl_ord_id("fm000500000025").value());
+  CHECK(rec.exec_id.view() == "1413632420");
+  CHECK(rec.qty == Qty::from_decimal("0.00002").value());
+  CHECK(rec.leaves_qty.is_zero());
+  CHECK(rec.fee == Notional::from_decimal("0.00168039").value());
+  CHECK(rec.fee_asset == FeeAsset::Quote);
+  CHECK(rec.liquidity == Liquidity::Maker);
+  CHECK(p.stats().malformed == 0);
+}

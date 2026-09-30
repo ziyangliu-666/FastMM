@@ -24,6 +24,15 @@ TEST_CASE("venues.decimal: exact parse of venue price/qty strings") {
   CHECK(parse_price(" 1").error() == DecimalError::Malformed);
 }
 
+// An OKX commission is the fill times the rate: often more than 8 fraction digits.
+TEST_CASE("venues.decimal: parse_fee rounds a commission to 8 decimals") {
+  CHECK(parse_fee("-0.001680388")->raw == -168'039LL);  // OKX spot sell, USDT
+  CHECK(parse_fee("-0.00000192834")->raw == -193LL);    // OKX docs' spot buy, BTC
+  CHECK(parse_fee("-0.00000002345")->raw == -2LL);
+  CHECK(parse_fee("0.012")->raw == 1'200'000LL);
+  CHECK(parse_fee("x").error() == DecimalError::Malformed);
+}
+
 // Binance USD-M's positionRisk and ACCOUNT_UPDATE give an entry price with more than 8 fraction
 // digits; parse_price refuses it, and the position was then valued at an average of 0.
 TEST_CASE("venues.decimal: parse_avg_price rounds an average to 8 decimals") {
