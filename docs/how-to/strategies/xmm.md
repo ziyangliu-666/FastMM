@@ -1,6 +1,6 @@
 # Quote on one venue, hedge on another (xmm)
 
-`xmm` is a built-in strategy: it quotes one instrument as a maker and hedges every fill with a taker IOC on a second instrument, usually the same underlying on another venue. Source: `include/fastmm/strategies/xmm.hpp`.
+`xmm` is a built-in strategy: it quotes one instrument as a maker and hedges every fill with a taker IOC on a second instrument, usually the same underlying on another venue, optionally falling back to a third. The hedging is a [`HedgeExecutor`](hedge-executor.md). Source: `include/fastmm/strategies/xmm.hpp`.
 
 ## Run it
 
@@ -59,7 +59,7 @@ A script checked the stores against the venue's own order, trade and position re
 ## Set it up
 
 1. Configure both venues under `[venues.*]` and both instruments under `[[instruments]]`. One session trades both (`threading = "split"`, the default).
-2. Name the two instruments by their position in `[[instruments]]` (from 0): `quote_instrument` and `hedge_instrument`. They are read at start.
+2. Name the instruments by their position in `[[instruments]]` (from 0): `quote_instrument`, `hedge_instrument` and, for a second hedge venue, `fallback_instrument` (-1: none). They are read at start.
 3. Set each venue's fees under `[venues.<name>.fees]` (or per instrument in `[[instruments]]`). The quotes price in the quote venue's maker fee (negative for a rebate) and the hedge venue's taker fee.
 4. Keep `[engine] ack_timeout_ms = 0`, or well above the venues' round trip: an order the ack timeout cancels is an unknown outcome and holds hedging for `uncertain_hold_ms`.
 
@@ -91,12 +91,20 @@ A mark, index or funding rate a term needs that is stale (`[accounting] stale_ma
 
 ## Hedging
 
-- `unhedged = quote position + hedge position`, in base units.
-- When `|unhedged|` rounds down to at least one hedge lot (and the hedge instrument's `min_qty` and `min_notional`), one IOC limit goes out on the hedge instrument, `hedge_tolerance_bps` through the touch. A smaller remainder waits for the next fill: a partial maker fill under the hedge venue's minimum notional (Binance USDⓈ-M: 50 USDT) stays unhedged, within `max_unhedged`.
-- While any order is open on the hedge instrument, including one sent but not acknowledged, no other hedge is sent. When it ends, the positions are read again: a partial fill is followed by a hedge for the rest.
+- `unhedged = quote position + hedge position + fallback position`, in base units.
+- When `|unhedged|` rounds down to at least one lot of the hedge instrument (and its `min_qty` and `min_notional`), one IOC limit goes out, `hedge_tolerance_bps` through the touch (`fallback_tolerance_bps` on the fallback). A smaller remainder waits for the next fill: a partial maker fill under the hedge venue's minimum notional (Binance USDⓈ-M: 50 USDT) stays unhedged, within `max_unhedged`.
+- While any order is open on a hedge instrument, including one sent but not acknowledged, no other hedge is sent. When it ends, the positions are read again: a partial fill is followed by a hedge for the rest.
 - Hedges follow positions, not fill counts. A restart, a replayed or duplicated execution and a fill booked late by reconciliation all lead to the same hedge.
 - No hedge goes out while a venue reconciles (`ctx.reconciling()`), nor after a start until every venue has replayed its executions and reconciled, so a quote fill replayed before the hedge that covered it is not hedged twice. `tests/integration/xmm_restart_test.cpp` kills `fastmm-live` (and a strategy behind `fastmm-gateway`) with the hedge out and unanswered, and with a quote filled while it is down.
 - A hedge reported ended before its executions arrive (Bybit's `order` and `execution` topics are not ordered) is booked from the venue's cumulative quantity when the end arrives; the executions then correct its price and fee without adding quantity.
+
+The rules are the executor's ([What it sends](hedge-executor.md#what-it-sends)).
+
+## Fallback and de-risk
+
+With `fallback_instrument` set, the hedge goes to the fallback while the hedge instrument's venue has an order channel down or its kill switch on, its book is invalid or older than `stale_ms`, the feed-lag gate holds it, its balance or margin cannot cover the hedge, or it failed `max_hedge_failures` times within `failure_window_ms` (it then sits out `failover_bench_ms`). The next hedge goes back to the hedge instrument as soon as it can take it ([Failover](hedge-executor.md#failover)). The fair value stays on the hedge instrument's book, so its market data has to stay fresh for the quotes to stay up. `tests/integration/xmm_failover_test.cpp` runs a hedge venue that refuses every order, kills `fastmm-live` while the fallback holds the hedge's reply, and restarts it.
+
+With `derisk_after_ms` set, a residual that no hedge instrument has taken for that long is reduced on the quote instrument: reduce-only IOC orders of at most `derisk_step_qty`, `derisk_tolerance_bps` through the quote venue's touch, `derisk_interval_ms` apart ([De-risk](hedge-executor.md#de-risk)). The quotes are off meanwhile.
 
 ## Guards
 
@@ -104,18 +112,18 @@ A mark, index or funding rate a term needs that is stale (`[accounting] stale_ma
 |---|---|
 | Either book invalid or older than `stale_ms` | quotes pulled |
 | `mark_basis` or `funding_horizon_s` on, and a mark, index or funding rate it needs stale or missing | quotes pulled |
-| Hedge venue market data or order channel down | quotes pulled, no hedges |
-| Hedge venue held by the feed-lag gate (`[risk] max_feed_lag_ms`) | quotes pulled |
+| No hedge instrument can take a hedge: each has an order channel down, its venue killed, its book invalid or stale, its venue gated, or is benched | quotes pulled, no hedges |
+| Hedge instrument's venue held by the feed-lag gate (`[risk] max_feed_lag_ms`) | quotes pulled |
 | A fill would take the unhedged position past `max_unhedged` | that side not quoted |
 | The quote venue's balance cannot cover a fill of a side (`ctx.balance_room`: a spot bid's quote asset, an ask's base, a derivative's margin) | that side not quoted |
-| The hedge venue's balance or margin cannot cover the hedge | hedge held, logged and counted once per episode (`Stats::hedges_held`), no failure; only the side that reduces `\|unhedged\|` quoted, as at `max_unhedged`; the next balance report or fill looks again |
+| No hedge venue's balance or margin can cover the hedge | hedge held, logged and counted once per episode (`Stats::hedges_held`), no failure; only the side that reduces `\|unhedged\|` quoted, as at `max_unhedged`; the next balance report or fill looks again |
 | A hedge fills nothing (expired, rejected, refused by risk) | next hedge after `hedge_retry_ms` |
-| `max_hedge_failures` such hedges within `failure_window_ms` | halted: quotes pulled, no hedges, error logged |
+| `max_hedge_failures` such hedges within `failure_window_ms` on the last hedge instrument not sitting out | halted: quotes pulled, no hedges, error logged |
 | A hedge ends without the venue saying how (ack timeout, a reconciliation with quantity unaccounted for, a generic venue reject such as a REST timeout) | next hedge after `uncertain_hold_ms` |
 
 To clear a halt, give `restart` a new value (`fastmm-ctl param restart=1`, then 2, ...); hedging restarts from the positions. Pausing and resuming quoting does not clear it, because reconciliations do that on their own.
 
-`[risk] max_position` applies per instrument, and `max_unhedged` bounds the net of the two. For the net across strategies and venues, set `[risk.underlying]` or, behind a gateway, `[gateway.underlying.<BASE>] max_net`.
+`[risk] max_position` applies per instrument, and `max_unhedged` bounds the net of the legs. For the net across strategies and venues, set `[risk.underlying]` or, behind a gateway, `[gateway.underlying.<BASE>] max_net`.
 
 ## Test it offline
 

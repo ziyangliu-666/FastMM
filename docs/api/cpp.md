@@ -28,6 +28,7 @@ A strategy is a class template parameter, not a base class with virtual function
 | <a href="structfastmm_1_1FeeRates.html">`FeeRates`</a> | an instrument's maker and taker rates (`ctx.fees`) |
 | <a href="structfastmm_1_1RiskHeadroom.html">`RiskHeadroom`</a> | what each risk limit still admits (`ctx.risk_headroom`) |
 | <a href="structfastmm_1_1VenueHealthView.html">`VenueHealthView`</a> | a venue's feed lag and order round trip (`ctx.venue_health`) |
+| <a href="classfastmm_1_1HedgeExecutor.html">`HedgeExecutor`</a> | hedges a strategy's positions on other instruments, with failover and de-risking |
 | <a href="classfastmm_1_1StrategyRegistry.html">`StrategyRegistry`</a> | name to factory, for `fastmm-live` and `fastmm-backtest` |
 | <a href="structfastmm_1_1StrategyEntry.html">`StrategyEntry`</a> | one registry entry |
 | <a href="classfastmm_1_1ParamPublisher.html">`ParamPublisher`</a> | publishes parameters to the trading thread |
