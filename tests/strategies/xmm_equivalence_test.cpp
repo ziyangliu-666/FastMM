@@ -19,6 +19,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <deque>
 #include <random>
 #include <string>
 #include <vector>
@@ -80,7 +81,7 @@ struct TraceCtx {
   std::array<FakeBook, 2> books{};
   std::array<Qty, 2> pos{};
   Timestamp t{kT0};
-  std::vector<Sent> sent;
+  std::deque<Sent> sent;  // stable references: a hook can send while the test holds one
   bool refuse = false;
   bool quoting = true;
   bool reconciling_now = false;
