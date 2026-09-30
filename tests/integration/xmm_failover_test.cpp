@@ -270,8 +270,14 @@ TEST_CASE("xmm failover: B refuses, C takes the hedge, SIGKILL mid-hedge and a r
   CHECK(v.b.server.stats().orders_accepted == 0);
   CHECK(v.hedges() == 2);  // one per maker fill
   CHECK(v.net().is_zero());
-  CHECK(log_of(f).find("hedging moves from BTCUSDT (instrument 1) to BTCUSDT (instrument 2)") !=
-        std::string::npos);
+  // The log is written by the logger thread; wait for the line rather than read it once.
+  CHECK(wait_until(
+      [&] {
+        return log_of(f).find(
+                   "hedging moves from BTCUSDT (instrument 1) to BTCUSDT (instrument 2)") !=
+               std::string::npos;
+      },
+      10000));
 
   REQUIRE(::kill(second.pid, SIGTERM) == 0);
   CHECK(reap(second.pid) == live::kExitOk);
