@@ -74,7 +74,8 @@ TEST_CASE("backtest.own_orders: the order log is in venue time") {
   CHECK(o.ack.ts.ns == kV0 + kMs);
   CHECK(o.end.ts.ns == kV0 + 4 * kMs);
   CHECK(o.why == OrderEnd::Canceled);
-  CHECK(log.gone(o).ns == kV0 + 5 * kMs - 1);  // the rest of the cancel's millisecond
+  // No fill in the cancel's millisecond: a trade in it that the order did not get came after it.
+  CHECK(log.gone(o).ns == kV0 + 4 * kMs);
   const OwnOrderStripper s(r);
   CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0 + kMs - 1}).is_zero());
   CHECK(s.own_at(InstrumentId{0}, Side::Buy, px("100.00"), Timestamp{kV0 + kMs}) == qt("1"));

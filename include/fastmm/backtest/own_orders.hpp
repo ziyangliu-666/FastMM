@@ -11,7 +11,9 @@
 // session: the venue's feed shows our orders, a backtest over that feed would otherwise see them as
 // someone else's liquidity. Each level is stripped of what we had resting at that price at the
 // message's venue time, so a throttled depth update that still shows an order we have since
-// cancelled keeps the quantity it had when we stripped it (none of ours). The quantities come from
+// cancelled keeps the quantity it had when we stripped it (none of ours), and a level that shows
+// less than we had there was published before our order reached it and keeps all of its quantity
+// (others_shown, core/queue_model.hpp). The quantities come from
 // OwnQuantity (core/own_quantity.hpp), the object the engine answers StrategyContext::own_qty
 // with, fed the whole journal first.
 #include "fastmm/core/enums.hpp"
@@ -50,7 +52,12 @@ enum class OrderEnd : std::uint8_t {
 
 struct OwnFill {
   VenueTime at;
+  Price price;
   Qty qty;
+  Notional fee;  // in fee_asset units, >= 0 paid
+  FeeAsset fee_asset = FeeAsset::Quote;
+  Liquidity liquidity = Liquidity::Unknown;
+  ExecId exec_id;          // dedupe key
   std::uint64_t exec = 0;  // numeric exec id (Binance: the public trade id), 0 if not a number
 };
 
@@ -94,8 +101,10 @@ struct OwnOrderLog {
 
   [[nodiscard]] const OwnOrder* find(ClientOrderId id) const noexcept;
   // When the order stopped resting at the venue: its end, or its successor's ack when a replace
-  // took its place later, plus the rest of the end's millisecond with ms_order_times. Invalid
-  // while it is still open.
+  // took its place later. With ms_order_times, plus the rest of the end's millisecond when a live
+  // fill fell in it (the trades up to that fill's are the order's); an order with no fill in its
+  // end's millisecond left before any trade in it that it did not get. Invalid while it is still
+  // open.
   [[nodiscard]] Timestamp gone(const OwnOrder& o) const noexcept;
 
   std::unordered_map<std::uint64_t, std::size_t> index;

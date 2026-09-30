@@ -6,16 +6,18 @@
 // that no longer lists it; collect_own_orders, own_orders.hpp), and the journal's book and trade
 // messages are applied to a mirror book and to one QueuePositionModel per conservatism value in
 // venue time order (exch_ts), exactly as SimTransport does under fill_model = "l2_queue"
-// (queue_apply_book, QueuePositionModel::on_trade, and a BookTicker newer than the depth through
-// queue_apply_touch). Venue time matters: a venue's execution report reaches the session before
-// the public trade that filled the order, so by receive time the trade falls after the order's
-// end. An event without a venue time uses its receive time (counted).
+// (queue_apply_book, QueuePositionModel::on_trade, a BookTicker newer than the depth through
+// queue_apply_touch, the trades printed since either through a TradeTape; FillCheckInputs turns
+// the last two off, to measure what they contribute). Venue time matters: a venue's execution
+// report reaches the session before the public trade that filled the order, so by receive time the
+// trade falls after the order's end. An event without a venue time uses its receive time (counted).
 // A replace follows the new id; like the simulator, the same price at no more than the leaves keeps
 // the queue position.
 //
-// Millisecond order times (Binance transactTime, execution report T): a trade in the ack's or the
-// end's millisecond counts for the order (ack_ties, end_ties), except a trade after the last live
-// fill's trade id. The queue ahead is the book as of the ack's venue time, before the order was in
+// Millisecond order times (Binance transactTime, execution report T): a trade in the ack's
+// millisecond counts for the order (ack_ties); one in the end's millisecond only when the order had
+// a live fill in it, and only up to its last fill's trade id (end_ties; Binance's exec id is the
+// public trade id). The queue ahead is the book as of the ack's venue time, before the order was in
 // it; in a live session (the journal has a TSC calibration) the depth feed also shows our own
 // orders, and OwnOrderStripper takes them out first.
 //
@@ -45,8 +47,8 @@ struct FillCheckOrder {
   Side side = Side::Buy;
   Price price;
   Qty qty;
-  // Displayed quantity at the price at the ack's venue time (own excluded), capped by a newer
-  // BookTicker's touch (queue_at_placement).
+  // Displayed quantity at the price at the ack's venue time (own excluded), or a newer
+  // BookTicker's touch there, less the trades printed since (queue_at_placement).
   Qty queue_ahead;
   Timestamp ack_ts;  // venue time
   Timestamp end_ts;  // live end in venue time, or the last event of the journal when still open
@@ -56,6 +58,10 @@ struct FillCheckOrder {
   // One entry per conservatism value of the run.
   std::vector<Qty> model_filled;
   std::vector<Timestamp> model_first_fill_ts;  // 0: no model fill
+  // The model's queue ahead just before its first fill, and just before the first live fill
+  // (the order's queue position when the venue filled it); raw -1: none.
+  std::vector<Qty> model_ahead_at_fill;
+  std::vector<Qty> model_ahead_at_live_fill;
   [[nodiscard]] Duration resting() const noexcept { return end_ts - ack_ts; }
 };
 
@@ -100,12 +106,20 @@ struct FillCheckResult {
   [[nodiscard]] FillCheckSummary summary(std::size_t k) const;
 };
 
+// The model's inputs besides the depth book and the trades; both on is the l2_queue fill model.
+struct FillCheckInputs {
+  bool touch = true;  // a BookTicker newer than the depth moves the queues
+  bool tape = true;   // trades printed since a view took their quantity from its levels
+};
+
 // Walks the journal once. `conservatism` values are in [0, 1] (queue_conservatism).
 [[nodiscard]] FillCheckResult fill_check(JournalReader& reader,
-                                         std::span<const double> conservatism);
+                                         std::span<const double> conservatism,
+                                         const FillCheckInputs& in = {});
 // Throws std::runtime_error if the file cannot be opened.
 [[nodiscard]] FillCheckResult fill_check(const std::string& path,
-                                         std::span<const double> conservatism);
+                                         std::span<const double> conservatism,
+                                         const FillCheckInputs& in = {});
 
 // The report fastmm-data fill-check prints, and the per-order CSV of --csv.
 [[nodiscard]] std::string format_fill_check(const FillCheckResult& r);

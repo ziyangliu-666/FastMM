@@ -842,7 +842,7 @@ class Engine {
     b.apply_delta(d);
     ++stats_.book_updates;
     track_feed_lag(d.hdr);
-    if (FASTMM_UNLIKELY(queue_on_) && queue_.any(id)) queue_on_book(d, b);
+    if (FASTMM_UNLIKELY(queue_on_)) queue_on_book(d, b);
     const Cycles t2 = clock_.cycles();
     record_md_hops(t2);
     const Timestamp now = now_;
@@ -916,7 +916,7 @@ class Engine {
     const bool known_instrument = instruments_.contains(id);
     if (known_instrument) {
       risk_.on_trade(id, t.price);
-      if (FASTMM_UNLIKELY(queue_on_) && queue_.any(id)) queue_on_trade(t);
+      if (FASTMM_UNLIKELY(queue_on_)) queue_on_trade(t);
     }
     track_feed_lag(t.hdr);
     const Cycles t2 = clock_.cycles();
@@ -1174,7 +1174,9 @@ class Engine {
     const InstrumentId id = d.hdr.instrument;
     queue_.on_book(d, b, [&](Side s, Price px) { return own_qty(id, s, px, b.last_update()); });
   }
-  FASTMM_NOINLINE void queue_on_trade(const TradeMsg& t) noexcept { queue_.on_trade(t, oms_); }
+  FASTMM_NOINLINE void queue_on_trade(const TradeMsg& t) noexcept {
+    queue_.on_trade(t, oms_, books_[t.hdr.instrument.value]);
+  }
   FASTMM_NOINLINE void queue_on_ticker(const BookTickerMsg& m) noexcept {
     const InstrumentId id = m.hdr.instrument;
     if (!instruments_.contains(id)) return;
@@ -1182,15 +1184,14 @@ class Engine {
         m, books_[id.value], [&](Side s, Price p, Timestamp t) { return own_qty(id, s, p, t); });
   }
   // What the queue model places an order behind: the displayed quantity at its price less our
-  // own, capped by a BookTicker newer than the depth book.
+  // own, or the touch of a BookTicker newer than the depth book.
   [[nodiscard]] Qty queue_shown(const Order& o) const noexcept {
     const Book& b = books_[o.instrument.value];
     const Qty shown = level_qty(b, o.side, o.price);
     const Qty own = own_qty(o.instrument, o.side, o.price);
-    return queue_.at_placement(
-        own >= shown ? Qty{} : shown - own, o, b, [&](Side s, Price p, Timestamp t) {
-          return own_qty(o.instrument, s, p, t);
-        });
+    return queue_.at_placement(others_shown(shown, own), o, b, [&](Side s, Price p, Timestamp t) {
+      return own_qty(o.instrument, s, p, t);
+    });
   }
   // Queue position and own quantity after an OMS update: a resting order enters the queue model,
   // a terminal one leaves it.

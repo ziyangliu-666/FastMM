@@ -28,8 +28,9 @@ struct Placed {
   bool active = false;    // in the models
 };
 
-// One step of the venue-time replay.
-enum class Step : std::uint8_t { Depth = 0, Place = 1, Trade = 2, Remove = 3 };
+// One step of the venue-time replay. A live fill's step reads the model's queue before the trade
+// of the same time that caused it.
+enum class Step : std::uint8_t { Depth = 0, Place = 1, LiveFill = 2, Trade = 3, Remove = 4 };
 struct Item {
   std::int64_t ts;
   Step step;
@@ -44,8 +45,11 @@ struct Item {
 // fall after the order's end. In a live session the depth is first stripped of our own orders.
 class Walker {
  public:
-  Walker(std::span<const double> conservatism, JournalReader& reader, const OwnOrderLog& log)
-      : books_(reader.instruments().size()), log_(log), placed_(log.orders.size()) {
+  Walker(std::span<const double> conservatism,
+         const FillCheckInputs& in,
+         JournalReader& reader,
+         const OwnOrderLog& log)
+      : in_(in), books_(reader.instruments().size()), log_(log), placed_(log.orders.size()) {
     for (const double c : conservatism) {
       const auto bps = static_cast<std::int64_t>(std::llround(std::clamp(c, 0.0, 1.0) * 10'000));
       models_.push_back(std::make_unique<QueuePositionModel>(bps));
@@ -116,6 +120,8 @@ class Walker {
       }
       items_.push_back(Item{ack.ns, Step::Place, next_seq_++, nullptr, i});
       for (const OwnFill& f : s.fills) static_cast<void>(time_of(f.at));
+      if (!s.fills.empty())
+        items_.push_back(Item{first_fill(s).ns, Step::LiveFill, next_seq_++, nullptr, i});
       if (!s.ended) continue;
       static_cast<void>(time_of(s.end));
       // Millisecond venue times: the end may lie anywhere in its millisecond, so trades up to its
@@ -133,17 +139,28 @@ class Walker {
     if (id.value >= touches_.size()) touches_.resize(id.value + 1);
     return touches_[id.value];
   }
+  TradeTape* tape(InstrumentId id) {
+    if (!in_.tape) return nullptr;
+    if (id.value >= tapes_.size()) tapes_.resize(id.value + 1);
+    return &tapes_[id.value];
+  }
+  static Timestamp first_fill(const OwnOrder& s) {
+    Timestamp t = s.fills.front().at.ts;
+    for (const OwnFill& f : s.fills) t = std::min(t, f.at.ts);
+    return t;
+  }
 
   // The freshest top of book: without our own quantity at its venue time, it moves the queues
   // when it is newer than the mirrored depth.
   void on_ticker(const BookTickerMsg& m) {
     ++res_.tickers;
+    if (!in_.touch) return;
     const InstrumentId id = m.hdr.instrument;
     const Timestamp t = venue_ts(m.hdr);
     QueueTouch& tt = touch(id);
     tt = queue_touch(
         m, [&](Side s, Price p) { return stripper_ ? stripper_->own_at(id, s, p, t) : Qty{}; });
-    if (queue_apply_touch(book(id), id, tt, model_ptrs_)) ++res_.tickers_used;
+    if (queue_apply_touch(book(id), id, tt, tape(id), model_ptrs_)) ++res_.tickers_used;
   }
   FillCheckOrder* row(const OwnOrder& s) {
     const Placed& p = placed_[index_of(s)];
@@ -160,10 +177,16 @@ class Walker {
         ++res_.md_events;
         const EventHeader* h = stripper_ ? stripper_->strip(*it.md, buf_) : it.md;
         if (h != nullptr)
-          queue_apply_book(
-              book(h->instrument), msg_cast<BookDeltaMsg>(h), Timestamp{it.ts}, model_ptrs_);
+          queue_apply_book(book(h->instrument),
+                           msg_cast<BookDeltaMsg>(h),
+                           Timestamp{it.ts},
+                           tape(h->instrument),
+                           model_ptrs_);
         break;
       }
+      case Step::LiveFill:
+        at_live_fill(log_.orders[it.order]);
+        break;
       case Step::Trade:
         ++res_.md_events;
         on_trade(msg_cast<TradeMsg>(it.md), Timestamp{it.ts});
@@ -195,8 +218,8 @@ class Walker {
     o.qty = s.qty;
     // The book as of the ack's venue time (stripped of our own orders in a live session): depth
     // at that time or later is applied after the order entered.
-    o.queue_ahead =
-        queue_at_placement(level_qty(b, s.side, s.price), s.side, s.price, b, touch(s.instrument));
+    o.queue_ahead = queue_at_placement(
+        level_qty(b, s.side, s.price), s.side, s.price, b, touch(s.instrument), tape(s.instrument));
     o.ack_ts = s.ack.ts;
     o.end = s.ended ? s.why : FillCheckEnd::Open;
     o.end_ts = s.ended ? s.end.ts : Timestamp{};
@@ -206,6 +229,8 @@ class Walker {
     }
     o.model_filled.assign(models_.size(), Qty{});
     o.model_first_fill_ts.assign(models_.size(), Timestamp{});
+    o.model_ahead_at_fill.assign(models_.size(), Qty::from_raw(-1));
+    o.model_ahead_at_live_fill.assign(models_.size(), Qty::from_raw(-1));
     for (QueuePositionModel* q : model_ptrs_) {
       // SimTransport::queue_replace: the same price at no more than the leaves keeps the place.
       if (orig != nullptr) {
@@ -242,6 +267,16 @@ class Walker {
     deactivate(s);
   }
 
+  // The queue each model has for the order as the venue fills it.
+  void at_live_fill(const OwnOrder& s) {
+    FillCheckOrder* r = row(s);
+    if (r == nullptr) return;
+    for (std::size_t k = 0; k < models_.size(); ++k) {
+      if (const auto h = models_[k]->find(s.id); h.valid())
+        r->model_ahead_at_live_fill[k] = models_[k]->get(h).ahead;
+    }
+  }
+
   void on_trade(const TradeMsg& t, Timestamp ts) {
     const bool ms = log_.ms_order_times;
     // Millisecond end times: a trade after the last fill's trade id did not fill the order, even
@@ -249,8 +284,8 @@ class Walker {
     if (ms) {
       for (std::size_t n = active_.size(); n-- > 0;) {
         const OwnOrder& s = log_.orders[active_[n]];
-        if (s.ended && s.why == FillCheckEnd::Filled && s.instrument == t.hdr.instrument &&
-            s.last_exec != 0 && t.trade_id > s.last_exec && ts > s.end.ts)
+        if (s.ended && s.instrument == t.hdr.instrument && s.last_exec != 0 &&
+            t.trade_id > s.last_exec && ts > s.end.ts)
           remove(s);
       }
     }
@@ -260,28 +295,33 @@ class Walker {
                  t.price,
                  t.qty,
                  t.aggressor,
-                 [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty) {
+                 [&](QueuePositionModel::Handle32 h, QueuedOrder& o, Qty fill, Qty ahead) {
                    if (const OwnOrder* s = log_.find(o.cl_ord_id)) {
                      if (FillCheckOrder* r = row(*s)) {
                        r->model_filled[k] += fill;
-                       if (!r->model_first_fill_ts[k].valid()) r->model_first_fill_ts[k] = ts;
+                       if (!r->model_first_fill_ts[k].valid()) {
+                         r->model_first_fill_ts[k] = ts;
+                         r->model_ahead_at_fill[k] = ahead;
+                       }
                        if (k == 0 && ms && !s->ack.from_recv && ts.ns < s->ack.ts.ns + kMs)
                          ++res_.ack_ties;
                        // After the end's millisecond start: a tie unless the trade id shows it is
                        // the fill's own trade or an earlier one.
                        if (k == 0 && ms && s->ended && !s->end.from_recv && ts > s->end.ts &&
-                           !(s->why == FillCheckEnd::Filled && s->last_exec != 0 &&
-                             t.trade_id <= s->last_exec))
+                           (s->last_exec == 0 || t.trade_id > s->last_exec))
                          ++res_.end_ties;
                      }
                    }
                    if (o.leaves().is_zero()) q.remove(h);
                  });
     }
+    if (TradeTape* tp = tape(t.hdr.instrument)) tp->add(t, ts);
   }
 
+  FillCheckInputs in_;
   std::vector<std::unique_ptr<Book>> books_;
   std::vector<QueueTouch> touches_;
+  std::vector<TradeTape> tapes_;
   std::vector<std::unique_ptr<QueuePositionModel>> models_;
   std::vector<QueuePositionModel*> model_ptrs_;
   const OwnOrderLog& log_;
@@ -340,20 +380,24 @@ FillCheckSummary FillCheckResult::summary(std::size_t k) const {
   return s;
 }
 
-FillCheckResult fill_check(JournalReader& reader, std::span<const double> conservatism) {
+FillCheckResult fill_check(JournalReader& reader,
+                           std::span<const double> conservatism,
+                           const FillCheckInputs& in) {
   const OwnOrderLog log = collect_own_orders(reader);
-  Walker w(conservatism, reader, log);
+  Walker w(conservatism, in, reader, log);
   reader.for_each([&](const EventHeader* h) { w.on_event(*h); });
   reader.reset();
   return w.finish();
 }
 
-FillCheckResult fill_check(const std::string& path, std::span<const double> conservatism) {
+FillCheckResult fill_check(const std::string& path,
+                           std::span<const double> conservatism,
+                           const FillCheckInputs& in) {
   JournalReader reader;
   if (auto r = reader.open(path); !r) {
     throw std::runtime_error("cannot open " + path + ": " + std::string(to_string(r.error())));
   }
-  return fill_check(reader, conservatism);
+  return fill_check(reader, conservatism, in);
 }
 
 std::string format_fill_check(const FillCheckResult& r) {
