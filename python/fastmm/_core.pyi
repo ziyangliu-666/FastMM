@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections.abc
 import numpy
 import typing
-__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Instrument', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'RiskHeadroom', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
+__all__: list[str] = ['BacktestConfig', 'BacktestResult', 'Balance', 'BalanceView', 'BookTickerView', 'BookView', 'ConfigError', 'ConnectionView', 'Context', 'FeatureTable', 'Fees', 'FillView', 'Instrument', 'Margin', 'OptionTickerView', 'Order', 'OrderBook', 'OrderRejected', 'OrderUpdateView', 'Portfolio', 'PositionView', 'RiskHeadroom', 'StaleViewError', 'TradeView', 'VenueHealth', 'build_info', 'convert_data', 'data_sources', 'disable_logging', 'enable_logging', 'evaluate_signal', 'features', 'inspect_journal', 'run_backtest', 'strategies', 'sweep', 'walk_forward']
 class BacktestConfig:
     """
     Everything one backtest needs: engine, instruments, strategy and parameters, simulated venue (fill model, latency, fees) and the synthetic market. Build one with from_toml() or single_instrument().
@@ -401,6 +401,103 @@ class BacktestResult:
     @property
     def wall_seconds(self) -> float:
         ...
+class Balance:
+    """
+    One asset of a venue's account now (a copy): free, locked and total are the venue's last report moved by this engine's orders and fills since; equity and maintenance are the report's.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def as_of_ns(self) -> int:
+        ...
+    @property
+    def equity(self) -> float:
+        ...
+    @property
+    def equity_raw(self) -> int:
+        ...
+    @property
+    def free(self) -> float:
+        ...
+    @property
+    def free_raw(self) -> int:
+        ...
+    @property
+    def known(self) -> bool:
+        ...
+    @property
+    def locked(self) -> float:
+        ...
+    @property
+    def locked_raw(self) -> int:
+        ...
+    @property
+    def maintenance(self) -> float:
+        ...
+    @property
+    def maintenance_raw(self) -> int:
+        ...
+    @property
+    def total(self) -> float:
+        ...
+    @property
+    def total_raw(self) -> int:
+        ...
+class BalanceView:
+    """
+    The venue's report of one asset of the account (valid inside on_balance). Amounts are absolute, in the asset.
+    """
+    @property
+    def account(self) -> bool:
+        ...
+    @property
+    def asset(self) -> str:
+        ...
+    @property
+    def equity(self) -> float:
+        ...
+    @property
+    def equity_raw(self) -> int:
+        ...
+    @property
+    def exch_ts_ns(self) -> int:
+        ...
+    @property
+    def free(self) -> float:
+        ...
+    @property
+    def free_raw(self) -> int:
+        ...
+    @property
+    def locked(self) -> float:
+        ...
+    @property
+    def locked_raw(self) -> int:
+        ...
+    @property
+    def maintenance(self) -> float:
+        ...
+    @property
+    def maintenance_raw(self) -> int:
+        ...
+    @property
+    def recv_ts_ns(self) -> int:
+        ...
+    @property
+    def snapshot(self) -> bool:
+        ...
+    @property
+    def snapshot_end(self) -> bool:
+        ...
+    @property
+    def total(self) -> float:
+        ...
+    @property
+    def total_raw(self) -> int:
+        ...
+    @property
+    def venue(self) -> int:
+        ...
 class BookTickerView:
     """
     Best bid and ask update (valid inside on_book_ticker).
@@ -522,6 +619,20 @@ class Context:
     """
     What a Python strategy sees (mirrors the C++ StrategyContext). Usable only inside a hook.
     """
+    def balance(self, venue: typing.SupportsInt | typing.SupportsIndex, asset: str) -> Balance:
+        """
+        One asset of a venue's account: the venue's last report (on_balance) moved by this engine's orders and fills since. known is False until the venue reports it.
+        """
+    def balance_room(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price: typing.Any) -> float | None:
+        """
+        Largest quantity of the instrument on `side` at `price` the balance covers, rounded down to the lot; None while the venue has not reported the balance that side draws on.
+        """
+    def balance_room_raw(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, price_raw: typing.Any) -> int | None:
+        ...
+    def balances_live(self) -> bool:
+        """
+        A venue has reported balances (before that, balance() is unknown everywhere).
+        """
     def best_ex_self(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex) -> tuple:
         """
         (price, qty) of the book's best level on one side after own_qty is taken out; a level that was only ours is skipped. (0.0, 0.0) when none is left.
@@ -550,6 +661,10 @@ class Context:
         """
     def instrument(self, inst: typing.Any) -> typing.Any:
         ...
+    def margin(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> Margin:
+        """
+        The venue's margin: its account-wide margin where it reports one, else the settlement asset of its first derivative.
+        """
     def once(self, delay_ns: typing.SupportsInt | typing.SupportsIndex, tag: typing.SupportsInt | typing.SupportsIndex = 0) -> int:
         """
         One-shot timer after delay_ns. Returns the id.
@@ -845,6 +960,54 @@ class Instrument:
         ...
     @property
     def venue(self) -> int:
+        ...
+class Margin:
+    """
+    A venue's margin (a copy): its account-wide margin where it reports one, else the settlement asset of its first derivative.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def account(self) -> bool:
+        ...
+    @property
+    def as_of_ns(self) -> int:
+        ...
+    @property
+    def asset(self) -> str:
+        ...
+    @property
+    def available(self) -> float:
+        ...
+    @property
+    def available_raw(self) -> int:
+        ...
+    @property
+    def equity(self) -> float:
+        ...
+    @property
+    def equity_raw(self) -> int:
+        ...
+    @property
+    def initial(self) -> float:
+        ...
+    @property
+    def initial_raw(self) -> int:
+        ...
+    @property
+    def known(self) -> bool:
+        ...
+    @property
+    def maintenance(self) -> float:
+        ...
+    @property
+    def maintenance_raw(self) -> int:
+        ...
+    @property
+    def wallet(self) -> float:
+        ...
+    @property
+    def wallet_raw(self) -> int:
         ...
 class OptionTickerView:
     """
@@ -1203,6 +1366,18 @@ class RiskHeadroom:
     What each [risk] limit still admits on one instrument (a copy). None where the limit is off.
     """
     @property
+    def balance_buy_qty(self) -> float | None:
+        ...
+    @property
+    def balance_buy_qty_raw(self) -> int | None:
+        ...
+    @property
+    def balance_sell_qty(self) -> float | None:
+        ...
+    @property
+    def balance_sell_qty_raw(self) -> int | None:
+        ...
+    @property
     def buy_qty(self) -> float | None:
         ...
     @property
@@ -1442,9 +1617,9 @@ def _run_hot_strategy(config: BacktestConfig, data: typing.Any, name: str, param
     """
     Internal: backtest of a compiled hot strategy with the GIL released; use fastmm.run_backtest(config, data, strategy=MyStrategy).
     """
-def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any, name: str, hooks: collections.abc.Sequence[str], params: dict) -> tuple:
+def _run_strategy(config: BacktestConfig, data: typing.Any, instance: typing.Any, name: str, hooks: collections.abc.Sequence[str], params: dict, balances: typing.Any = None) -> tuple:
     """
-    Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy).
+    Internal: backtest of a fastmm.Strategy instance with the GIL held; use fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the data by time.
     """
 def _slow_abi() -> dict:
     """

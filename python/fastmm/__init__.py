@@ -21,6 +21,7 @@ A class with plain fastmm.Strategy hooks (no @fastmm.hot) runs in backtests only
 from ._core import (
     BacktestConfig,
     BacktestResult,
+    BalanceView,
     BookTickerView,
     BookView,
     ConfigError,
@@ -81,6 +82,7 @@ __all__ = [
     "TAKER",
     "BacktestConfig",
     "BacktestResult",
+    "BalanceView",
     "BookTickerView",
     "BookView",
     "ConfigError",

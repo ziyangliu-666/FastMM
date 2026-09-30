@@ -45,6 +45,7 @@ void py_on_order_update(PyRun& run, const OmsUpdate& u) noexcept;
 void py_on_timer(PyRun& run, TimerId id, std::uint64_t tag) noexcept;
 void py_on_connection(PyRun& run, const ConnectionStateMsg& m) noexcept;
 void py_on_quoting(PyRun& run, bool enabled) noexcept;
+void py_on_balance(PyRun& run, const BalanceMsg& m) noexcept;
 // Called every kDriverStepsPerCheck driver steps: signal check and a brief GIL release, so Ctrl-C
 // also works for a strategy whose hooks rarely run.
 void py_on_driver_steps(PyRun& run) noexcept;
@@ -117,6 +118,10 @@ class PyStrategy {
   template <class Ctx>
   void on_quoting(Ctx&, bool enabled) noexcept {
     if (on(Hook::Quoting)) py_on_quoting(*run_, enabled);
+  }
+  template <class Ctx>
+  void on_balance(Ctx&, const BalanceMsg& m) noexcept {
+    if (on(Hook::Balance)) py_on_balance(*run_, m);
   }
 
   // SimDriver calls this through EngineHooks::stopped after every engine step.
