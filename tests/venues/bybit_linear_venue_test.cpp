@@ -826,11 +826,10 @@ TEST_CASE("bybit_linear.venue: the balances carry the account's USD margin") {
     }));
     CHECK(h.srv.frames("account_info").size() == 1);  // read at start-up: REGULAR_MARGIN
     const auto bal = balances(l.oc);
-    REQUIRE(bal.size() == 3);  // BTC, USDT, the account
-    CHECK(bal[0]->asset.view() == "BTC");
-    CHECK(bal[1]->asset.view() == "USDT");
-    CHECK(bal[1]->maintenance == Notional::from_decimal("5").value());
-    const BalanceMsg* acct = bal[2];
+    REQUIRE(bal.size() == 2);  // USDT (the perpetual settles in it), the account
+    CHECK(bal[0]->asset.view() == "USDT");
+    CHECK(bal[0]->maintenance == Notional::from_decimal("5").value());
+    const BalanceMsg* acct = bal[1];
     CHECK(acct->asset.view() == "USD");
     CHECK(acct->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
     CHECK(acct->free == Notional::from_decimal("99990").value());
@@ -841,7 +840,8 @@ TEST_CASE("bybit_linear.venue: the balances carry the account's USD margin") {
     CHECK(acct->hdr.exch_ts.ns == 1789299704000LL * 1'000'000);
     CHECK(h.signed_bad.load() == 0);
 
-    // The documented wallet push: BTC and the account row, no position from it.
+    // The documented wallet push: the account row (its BTC is no asset of a linear perpetual), no
+    // position from it.
     const std::size_t positions_before = l.oc.count(EventType::PositionUpdate);
     h.srv.send_to("/v5/private", fastmm::test::fixture("bybit/private_wallet_docs.json"));
     const auto pushed_account = [&] {
@@ -869,9 +869,9 @@ TEST_CASE("bybit_linear.venue: an isolated-margin account sends no account row")
       return balances_ended(l.oc);
     }));
     const auto bal = balances(l.oc);
-    REQUIRE(bal.size() == 2);  // BTC, USDT: the derivatives draw on USDT
-    CHECK(bal[1]->asset.view() == "USDT");
-    CHECK(bal[1]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    REQUIRE(bal.size() == 1);  // USDT: the derivatives draw on it
+    CHECK(bal[0]->asset.view() == "USDT");
+    CHECK(bal[0]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
     for (const BalanceMsg* m : bal) CHECK((m->flags & BalanceMsg::kAccount) == 0);
   }
   h.srv.stop();

@@ -987,26 +987,20 @@ TEST_CASE("gemini.venue: the start-up balance snapshot, with the derivatives mar
     l.wait_for_sweep();
     l.until([&] { return !balance_snapshots(l.oc).empty(); });
     const auto snap = balance_snapshots(l.oc)[0];
-    // BTC and GUSD (the perpetual's base and quote), ETH left out, then the account row.
-    REQUIRE(snap.size() == 3);
-    CHECK(snap[0]->asset.view() == "BTC");
-    CHECK(snap[0]->free == nt("0.5"));
-    CHECK(snap[0]->locked == nt("0.25"));
-    CHECK(snap[0]->total == nt("0.75"));
-    CHECK(snap[0]->equity == nt("0.75"));
+    // GUSD (the perpetual settles in it; BTC and ETH left out), then the account row.
+    REQUIRE(snap.size() == 2);
+    CHECK(snap[0]->asset.view() == "GUSD");
+    CHECK(snap[0]->free == nt("5000"));
+    CHECK(snap[0]->locked == nt("10000"));
     CHECK(snap[0]->maintenance.is_zero());
-    CHECK(snap[1]->asset.view() == "GUSD");
-    CHECK(snap[1]->free == nt("5000"));
-    CHECK(snap[1]->locked == nt("10000"));
-    CHECK(snap[2]->asset.view() == "USD");
-    CHECK(snap[2]->free == nt("3800"));
-    CHECK(snap[2]->locked == nt("6000"));
-    CHECK(snap[2]->total == nt("9800"));
-    CHECK(snap[2]->equity == nt("9800"));
-    CHECK(snap[2]->maintenance == nt("5800"));
+    CHECK(snap[1]->asset.view() == "USD");
+    CHECK(snap[1]->free == nt("3800"));
+    CHECK(snap[1]->locked == nt("6000"));
+    CHECK(snap[1]->total == nt("9800"));
+    CHECK(snap[1]->equity == nt("9800"));
+    CHECK(snap[1]->maintenance == nt("5800"));
     CHECK(snap[0]->flags == BalanceMsg::kSnapshot);
-    CHECK(snap[1]->flags == BalanceMsg::kSnapshot);
-    CHECK(snap[2]->flags ==
+    CHECK(snap[1]->flags ==
           (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
     // Stamped with the reply's latest _timestamp (2026-09-30T08:00:02Z).
     for (const BalanceMsg* b : snap)
@@ -1032,15 +1026,14 @@ TEST_CASE("gemini.venue: an exchange account has no margin, and its balances sti
     l.wait_for_sweep();
     l.until([&] { return !balance_snapshots(l.oc).empty(); });
     const auto snap = balance_snapshots(l.oc)[0];
-    REQUIRE(snap.size() == 2);
-    CHECK(snap[0]->asset.view() == "BTC");
-    CHECK(snap[1]->asset.view() == "GUSD");
-    CHECK(snap[1]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    REQUIRE(snap.size() == 1);
+    CHECK(snap[0]->asset.view() == "GUSD");
+    CHECK(snap[0]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
     CHECK_FALSE(l.venue->fatal());
     // Not asked again: the next reconciliation's balances go without it.
     l.venue->request_open_orders();
     l.until([&] { return balance_snapshots(l.oc).size() == 2; });
-    CHECK(balance_snapshots(l.oc)[1].size() == 2);
+    CHECK(balance_snapshots(l.oc)[1].size() == 1);
     CHECK(h.count_rest("margin") == 1);
     CHECK(h.count_rest("balances") == 2);
   }
@@ -1124,6 +1117,6 @@ TEST_CASE("gemini.venue: a failed balance fetch does not hold up the order snaps
       h.balances_fail = false;
     }
     l.until([&] { return !balance_snapshots(l.oc).empty(); }, 9000);
-    CHECK(balance_snapshots(l.oc)[0].size() == 3);
+    CHECK(balance_snapshots(l.oc)[0].size() == 2);
   }
 }
