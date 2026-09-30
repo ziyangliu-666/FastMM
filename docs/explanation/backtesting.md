@@ -64,6 +64,20 @@ Recorded feeds of the venues are merged by event time: `--data "binance:BTCUSDT,
 
 `equity.csv` gains `pnl_<id>`, `position_<id>`, `mid_<id>` and `quoted_<id>` per instrument when there is more than one (`result.equity_by_instrument` in Python); `pnl` is in the instrument's settlement currency. The `position` and `mid` columns stay the sum over instruments and instrument 0's mid. The synthetic market drives instrument 0 only.
 
+## Balances
+
+With `[backtest.balances]` ([Configuration](../reference/configuration.md#backtestbalances)) each simulated venue keeps the strategy's account (`src/sim/sim_account.cpp`):
+
+| Instrument | Held by an order | A fill |
+|---|---|---|
+| spot buy | notional at the order price, in the quote asset (a market buy at the opposite touch) | adds the base, takes the notional at the fill price and the fee from the quote |
+| spot sell | quantity, in the base asset | takes the base, adds the notional less the fee to the quote |
+| derivative | notional x `[[instruments]] initial_margin` of the larger side of the instrument's orders, in the settlement asset; nothing for an order that only reduces the position | moves the position's margin at its entry price into locked; closing realises PnL into the wallet; the fee comes out of it |
+
+An order that holds more than the free balance is refused with `InsufficientBalance` (venue code `-2010`); a replace whose new leg does not fit cancels the order and refuses the new one. Unrealised PnL is not counted in a derivative's free margin. The venue reports a snapshot at the start and, after each acknowledgement, fill, cancel, expiry or reject that moved an asset, that asset's row behind the order event, on the same connection. The engine's estimate, `[risk] check_balance` (`BalanceShort` before an order leaves), `ctx.balance`, `basic_mm`'s sizing and `xmm`'s side pulling work on those reports as on a live venue's ([Risk model](risk-model.md#balance-check)). With `check_balance = false` the order goes out and the venue refuses it, which is what a session without a balance table got live.
+
+`balances_from_journal = true` starts each venue's account from the first balance snapshot of the journal the backtest runs over, so a live session replayed as a `strip_own` backtest starts from the balances it had.
+
 ## Reading the summary
 
 The decomposition is exact:
@@ -113,7 +127,7 @@ latency_ack_jitter_us = 817
 
 `md_arrival = "recorded"` is for backtests over journals like these: market data reaches the strategy when the session received it.
 
-`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--csv` writes the fill-check grid.
+`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--csv` writes the fill-check grid.
 
 ## Reference example
 

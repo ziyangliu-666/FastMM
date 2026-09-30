@@ -59,7 +59,7 @@ Binance Spot BTCU (session of 2026-09-26, 3 h, SBE market data): the excess lag 
 
 ## Balance check
 
-Connectors report the account's balances as `BalanceMsg` events on the order ring: a snapshot after every reconciliation (and at start-up), and the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)). The engine keeps one row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for a venue that reports account-wide margin (`include/fastmm/core/balance_book.hpp`). The events are journaled; a replay rebuilds the same rows.
+Connectors report the account's balances as `BalanceMsg` events on the order ring: a snapshot after every reconciliation (and at start-up), and the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)); in a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The engine keeps one row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for a venue that reports account-wide margin (`include/fastmm/core/balance_book.hpp`). The events are journaled; a replay rebuilds the same rows.
 
 A report is the account as of its venue time and counts the orders the venue had acknowledged. An order still waiting for its ack keeps its hold on top of the report until the ack says whether the report had it (stamped at or before the report's time). Until the next report the engine moves the row with its own events, except those the venue stamped at or before the report's time (the report has them); the events of an order the venue has not acknowledged always count:
 

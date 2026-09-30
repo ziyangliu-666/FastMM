@@ -73,6 +73,8 @@ SimTransport::SimTransport(const SimClock& clock,
     index_of[v] = static_cast<std::uint8_t>(n_links_);
     links_[n_links_++].emplace(VenueId{v}, vc, seed, cfg);
   }
+  if (!cfg.accounts.empty())
+    accounts_ = std::make_unique<SimAccounts>(instruments, cfg.accounts, cfg.initial_margin);
   me_.set_stp(kStrategyAccount, cfg.stp);
   for (Link*& l : link_of_inst_) l = &at(0);
   for (const Instrument& i : instruments) {
@@ -165,6 +167,15 @@ void SimTransport::process_order_arrival() noexcept {
 }
 
 void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
+  if (accounts_ != nullptr) {
+    const Price px =
+        m.type == OrderType::Market ? venue_best(m.hdr.instrument, opposite(m.side)) : m.price;
+    if (!accounts_->admit(m.cl_ord_id, m.hdr.instrument, m.side, px, m.qty, m.reduce_only != 0)) {
+      accounts_->count_refused();
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
+      return;
+    }
+  }
   NewOrder n;
   n.account = kStrategyAccount;
   n.cl_ord_id = m.cl_ord_id;
@@ -190,6 +201,18 @@ void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
 }
 
 void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept {
+  if (accounts_ != nullptr &&
+      !accounts_->admit_replace(m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty)) {
+    // The venue cancels the order and refuses its replacement (Binance cancelReplace).
+    accounts_->count_refused();
+    if (cfg_.fill_model == FillModel::L2Queue) {
+      queue_cancel(m.orig_cl_ord_id, m.hdr.instrument, now);
+    } else {
+      static_cast<void>(me_.cancel(kStrategyAccount, m.orig_cl_ord_id, now));
+    }
+    emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
+    return;
+  }
   if (cfg_.fill_model == FillModel::L2Queue) {
     queue_replace(m, now);
   } else {
@@ -204,6 +227,15 @@ void SimTransport::flush_md(Timestamp now) noexcept {
 
 void SimTransport::emit_md_thunk(void* ctx, EventHeader& m, Timestamp venue_ts) noexcept {
   static_cast<SimTransport*>(ctx)->push_md_wire(m, venue_ts);
+}
+
+void SimTransport::publish_balances(Timestamp now) noexcept {
+  if (accounts_ == nullptr) return;
+  for (std::size_t k = 0; k < n_links_; ++k) {
+    Link& l = at(k);
+    if (!accounts_->enabled(l.id)) continue;
+    accounts_->snapshot(l.id, now, [&](BalanceMsg& m) { push_balance(l, m); });
+  }
 }
 
 void SimTransport::on_source_event(const EventHeader& md) noexcept {
@@ -552,6 +584,7 @@ void SimTransport::emit_ack(ClientOrderId id,
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_reject(ClientOrderId id,
                                InstrumentId inst,
@@ -573,6 +606,9 @@ void SimTransport::emit_reject(ClientOrderId id,
     case RejectReason::DuplicateId:
       ++stats_.rejects_duplicate;
       break;
+    case RejectReason::InsufficientBalance:
+      ++stats_.rejects_balance;
+      break;
     default:
       ++stats_.rejects_other;
       break;
@@ -582,9 +618,17 @@ void SimTransport::emit_reject(ClientOrderId id,
   init_header(m, EventType::OrderReject, inst, l.id);
   m.cl_ord_id = id;
   m.reason = r;
-  m.venue_code = -static_cast<std::int32_t>(r);
-  m.text = to_string(r);
+  if (r == RejectReason::InsufficientBalance) {
+    m.venue_code = -2010;  // Binance: NEW_ORDER_REJECTED, "Account has insufficient balance ..."
+    m.text = "Account has insufficient balance";
+  } else {
+    m.venue_code = -static_cast<std::int32_t>(r);
+    m.text = to_string(r);
+  }
+  // A duplicate id names another order, whose hold stays.
+  if (accounts_ != nullptr && r != RejectReason::DuplicateId) accounts_->close(id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_cancel_ack(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {
@@ -595,7 +639,9 @@ void SimTransport::emit_cancel_ack(
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
+  if (accounts_ != nullptr) accounts_->close(id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_cancel_reject(ClientOrderId id,
                                       InstrumentId inst,
@@ -619,7 +665,9 @@ void SimTransport::emit_expired(
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
+  if (accounts_ != nullptr) accounts_->close(id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_fill(ClientOrderId id,
                              std::uint64_t order_id,
@@ -659,7 +707,9 @@ void SimTransport::emit_fill(ClientOrderId id,
     ctx.queue_known = queue_known;
     observer_->on_fill(m, ts, ctx);
   }
+  if (accounts_ != nullptr) accounts_->fill(id, px, qty, leaves, m.fee);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 
 void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept {
@@ -674,6 +724,19 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
   if (observer_ != nullptr && h.type != EventType::OrderFill)
     observer_->on_order_event(h, venue_ts);
   if (!l.order_wire.try_push(&h, h.len)) ++stats_.wire_full;
+}
+
+void SimTransport::publish_account(Link& l, Timestamp venue_ts) noexcept {
+  if (accounts_ != nullptr)
+    accounts_->publish(l.id, venue_ts, [&](BalanceMsg& m) { push_balance(l, m); });
+}
+
+void SimTransport::push_balance(Link& l, BalanceMsg& m) noexcept {
+  const Timestamp arrival = std::max(l.last_order_arrival, m.hdr.exch_ts);
+  l.last_order_arrival = arrival;
+  m.hdr.recv_ts = arrival;
+  m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+  if (!l.order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
 }
 
 void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {

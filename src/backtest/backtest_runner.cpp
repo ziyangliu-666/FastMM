@@ -7,6 +7,7 @@
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
@@ -196,6 +197,30 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     } else {
       synthetic_ = std::make_unique<SyntheticSource>(synthetic_source_config(cfg_));
       source_ = synthetic_.get();
+    }
+  }
+  if (cfg_.balances_from_journal) {
+    const std::vector<sim::SimAccountConfig>* snapshots =
+        source_ != nullptr ? source_->balance_snapshots() : nullptr;
+    if (snapshots == nullptr) {
+      throw std::invalid_argument(
+          "backtest: balances_from_journal needs one journal as the data source");
+    }
+    std::vector<sim::SimAccountConfig>& accounts = cfg_.transport.accounts;
+    for (const sim::SimAccountConfig& a : *snapshots) {
+      const bool traded = std::any_of(cfg_.instruments.begin(),
+                                      cfg_.instruments.end(),
+                                      [&](const Instrument& i) { return i.venue == a.venue; });
+      if (!traded) continue;
+      const auto it =
+          std::find_if(accounts.begin(), accounts.end(), [&](const sim::SimAccountConfig& c) {
+            return c.venue == a.venue;
+          });
+      if (it != accounts.end()) {
+        *it = a;
+      } else {
+        accounts.push_back(a);
+      }
     }
   }
   Timestamp start = cfg_.start;

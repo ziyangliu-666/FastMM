@@ -14,6 +14,8 @@
 //   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
 //   md_arrival = "venue" | "recorded"
+//   balances_from_journal = false
+//   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
 //   output_dir = "runs/backtest", journal_out = ""
@@ -66,6 +68,9 @@ struct BacktestConfig {
   // simulated clock at every fill time + horizon to read the venue mid there, so the shortest
   // horizon also bounds how often the run loop is entered.
   std::vector<Duration> markout_horizons = {seconds(1), seconds(10), seconds(60)};
+  // Start each venue's account (transport.accounts) from the first balance snapshot the journal
+  // source recorded for it; a venue it has none for keeps the configured balances.
+  bool balances_from_journal = false;
 
   // Throws ConfigError on invalid values.
   [[nodiscard]] static BacktestConfig from_config(const Config& cfg);

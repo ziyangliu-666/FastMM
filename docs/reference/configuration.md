@@ -534,6 +534,7 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `markout_horizons_s` | string | `"1,10,60"` | Post-fill markout horizons in seconds, comma separated (`"0.5,5"` is allowed); `""` turns markouts off. The run stops the simulated clock at every fill time plus horizon to read the venue mid there, so the shortest horizon also bounds how often the run loop is entered ([Backtesting](../explanation/backtesting.md#markouts)) |
 | `output_dir` | string | `"runs/backtest"` | Where `equity.csv`, `fills.csv`, `orders.csv` and `summary.json` are written |
 | `journal_out` | string | `""` | When set, the backtest session is also recorded as a `.fmj` journal |
+| `balances_from_journal` | bool | `false` | Each venue's account starts from the first balance snapshot the journal source recorded for it (every asset at its total; account-wide margin rows are left out); a venue without one keeps `[backtest.balances]`. The data source must be one journal |
 
 Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=value`, `--seed`, `--duration`, `--out`, `--journal-out`) override these values ([Command lines](cli.md#fastmm-backtest)).
 
@@ -553,6 +554,21 @@ One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument tra
 | `p_drop` | number | `[backtest]` | Probability that an outbound order message to this venue is lost |
 | `supports_replace` | bool | `[engine] supports_replace` | In-place replace on this venue: the engine replaces quotes on its instruments if `[engine] supports_replace` is true, cancel and new otherwise |
 | `stp` | bool | `[risk] stp` | Self-trade prevention (cancel the taker) on this venue |
+
+### `[backtest.balances]`
+
+The account the simulated venue keeps: `<ASSET> = "<amount>"`, one line per asset (a decimal string, at least 0). Without the table, and without `balances_from_journal`, the venues take every order whatever it costs and send no balances. With it, every venue an instrument trades on starts with these amounts, and an asset its instruments use that is not listed starts at 0; `[backtest.venues.<name>.balances]` replaces the table for one venue.
+
+```toml
+[backtest.balances]
+BTC = "0.5"
+USDT = "20000"
+
+[backtest.venues.okx.balances]
+USDT = "5000"
+```
+
+The venue holds each order's amount and refuses an order its free balance cannot cover with `InsufficientBalance` (venue code `-2010`, as Binance), and reports its balances as a live venue does: a snapshot at the start and an update after every order event that moved one. The engine's balance table, `[risk] check_balance`, `ctx.balance` and the strategies read those reports as they read a live venue's ([Backtesting](../explanation/backtesting.md#balances)).
 
 ## `[sim]`
 

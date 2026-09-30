@@ -36,6 +36,7 @@
 #include "fastmm/sim/md_aggregator.hpp"
 #include "fastmm/sim/outbound_hash.hpp"
 #include "fastmm/sim/queue_model.hpp"
+#include "fastmm/sim/sim_account.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +87,13 @@ struct SimTransportConfig {
   std::size_t order_wire_bytes = 1U << 20;
   VenueId venue{0};  // venue of the instruments that name none (and of an empty table)
   std::vector<SimVenueConfig> venues;
+  // The strategy's account on each venue listed (sim_account.hpp): the venue refuses an order the
+  // account cannot cover and reports its balances. A venue not listed takes every order and sends
+  // no BalanceMsg.
+  std::vector<SimAccountConfig> accounts;
+  // Per instrument id, a derivative's initial margin rate ([[instruments]] initial_margin), for the
+  // accounts.
+  std::vector<Ratio> initial_margin;
 
   // The settings `v` runs with: its entry in `venues`, or the fields above.
   [[nodiscard]] SimVenueConfig venue_config(VenueId v) const noexcept {
@@ -115,11 +123,12 @@ struct SimTransportStats {
   std::uint64_t wire_full = 0;       // venue -> engine message dropped (should be 0)
   std::uint64_t acks = 0;
   std::uint64_t rejects = 0;
-  // Rejects broken down by cause; these five always sum to `rejects`.
+  // Rejects broken down by cause; these six always sum to `rejects`.
   std::uint64_t rejects_post_only = 0;   // PostOnlyWouldCross: crossed the live book on arrival
   std::uint64_t rejects_level_full = 0;  // VenueReject: simulated price-level table full
   std::uint64_t rejects_invalid = 0;     // InvalidTick / InvalidLot / InstrumentDisabled
   std::uint64_t rejects_duplicate = 0;   // DuplicateId
+  std::uint64_t rejects_balance = 0;     // InsufficientBalance: the account (sim_account.hpp)
   std::uint64_t rejects_other = 0;
   std::uint64_t fills = 0;
   std::uint64_t cancel_acks = 0;
@@ -179,6 +188,8 @@ class SimTransport final : public MatchingSink {
     return agg_ == nullptr ? Timestamp::max() : agg_->next_flush_ts();
   }
   void flush_md(Timestamp now) noexcept;  // aggregator flush (coupled mode)
+  // Each account's balances as one snapshot per venue, at `now` (SimDriver::start).
+  void publish_balances(Timestamp now) noexcept;
   // Historical event at venue time (hdr.exch_ts, falling back to recv_ts): updates the
   // venue-side fill model and forwards the event to the engine after md_in latency.
   void on_source_event(const EventHeader& md) noexcept;
@@ -212,6 +223,8 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] LatencyModel& latency() noexcept { return at(0).lat; }
   [[nodiscard]] const OutboundHasher& outbound_hash() const noexcept { return hasher_; }
   [[nodiscard]] const QueuePositionModel& queue() const noexcept { return queue_; }
+  // The strategy's accounts; null when no venue has one.
+  [[nodiscard]] const SimAccounts* accounts() const noexcept { return accounts_.get(); }
   void set_observer(SimObserver* o) noexcept { observer_ = o; }
 
   // ---- MatchingSink (venue events for account 1 become engine messages) -------------------
@@ -292,11 +305,21 @@ class SimTransport final : public MatchingSink {
                  Qty queue_ahead = Qty{},
                  bool queue_known = false) noexcept;
   void push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept;
+  // The balances of the account on `l`'s venue that moved, right behind the order event at
+  // `venue_ts` that moved them (the same connection: no latency draw of their own).
+  void publish_account(Link& l, Timestamp venue_ts) noexcept;
+  void push_balance(Link& l, BalanceMsg& m) noexcept;
   void push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept;
   // Venue of an instrument; an unknown one (a cancel of an order the venue never saw) goes
   // through the first venue.
   [[nodiscard]] Link& link(InstrumentId id) noexcept {
     return id.value < kMaxInstruments ? *link_of_inst_[id.value] : at(0);
+  }
+  [[nodiscard]] Link* link_of_venue(VenueId v) noexcept {
+    for (std::size_t k = 0; k < n_links_; ++k) {
+      if (at(k).id == v) return &at(k);
+    }
+    return nullptr;
   }
   // links_[k] for k < n_links_, which the constructor engaged; [0] always is.
   [[nodiscard]] Link& at(std::size_t k) noexcept {
@@ -327,6 +350,7 @@ class SimTransport final : public MatchingSink {
   std::unique_ptr<QueueTouch[]> touch_;  // L2Queue: the latest BookTicker per instrument
   std::unique_ptr<TradeTape[]> tape_;    // L2Queue: trades since the mirror's last update
   std::unique_ptr<MdAggregator> agg_;
+  std::unique_ptr<SimAccounts> accounts_;
   SimObserver* observer_ = nullptr;
   OutboundHasher hasher_;
   SimTransportStats stats_{};

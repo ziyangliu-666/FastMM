@@ -134,7 +134,8 @@ struct Calibration {
 
 // What a session traded, marked against the journal's mids.
 struct TradeSummary {
-  std::uint64_t orders = 0;  // new orders sent
+  std::uint64_t orders = 0;   // new orders sent
+  std::uint64_t rejects = 0;  // of them, refused by the venue (post-only, balance, ...)
   std::uint64_t fills = 0;
   std::uint64_t buys = 0;
   double qty = 0;       // base units

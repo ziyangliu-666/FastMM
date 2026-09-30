@@ -19,7 +19,29 @@ JournalSource::JournalSource(const std::string& path, bool strip_own) {
     orders_ = log.orders.size();
     stripper_ = std::make_unique<OwnOrderStripper>(reader_);
   }
+  // Per venue: no snapshot seen yet, in the first one, done.
+  constexpr std::uint8_t kNotYet = 0;
+  constexpr std::uint8_t kIn = 1;
+  constexpr std::uint8_t kDone = 2;
+  std::uint8_t state[kMaxVenues] = {};
+  std::size_t index[kMaxVenues] = {};
   reader_.for_each([&](const EventHeader* h) {
+    if (h->type == EventType::Balance && h->venue.value < kMaxVenues &&
+        state[h->venue.value] != kDone) {
+      const auto& m = msg_cast<BalanceMsg>(h);
+      if ((m.flags & (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd)) == 0) return;
+      std::uint8_t& st = state[h->venue.value];
+      if (st == kNotYet) {
+        st = kIn;
+        index[h->venue.value] = balances_.size();
+        balances_.push_back(sim::SimAccountConfig{h->venue, {}});
+      }
+      sim::SimAccountConfig& a = balances_[index[h->venue.value]];
+      if ((m.flags & BalanceMsg::kAccount) == 0 && !m.asset.empty())
+        a.balances.push_back(sim::SimBalance{m.asset, m.total});
+      if ((m.flags & BalanceMsg::kSnapshotEnd) != 0) st = kDone;
+      return;
+    }
     if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) return;
     if (md_events_ == 0) first_ts_ = h->exch_ts.valid() ? h->exch_ts : h->recv_ts;
     ++md_events_;

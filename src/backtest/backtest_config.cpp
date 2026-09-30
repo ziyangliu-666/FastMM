@@ -72,6 +72,33 @@ constexpr std::array<std::string_view, 10> kVenueKeys = {"latency_fixed_us",
                                                          "supports_replace",
                                                          "stp"};
 constexpr std::string_view kVenuesPrefix = "venues.";
+constexpr std::string_view kBalancesPrefix = "balances.";
+
+// One `<ASSET> = "<amount>"` of [backtest.balances] or [backtest.venues.<name>.balances].
+sim::SimBalance read_balance(const GenericSection& bt,
+                             const std::string& key,
+                             std::string_view asset) {
+  const auto line = bt.lines.find(key);
+  const std::string where =
+      line == bt.lines.end() ? std::string() : fmt::format(" (line {})", line->second);
+  if (asset.empty() || asset.size() > 8 || asset.find('.') != std::string_view::npos) {
+    throw ConfigError(
+        fmt::format("backtest.{}: expected an asset name of 1 to 8 characters{}", key, where));
+  }
+  const std::string text = bt.get_string(key, "");
+  const auto amount = Notional::from_decimal(text);
+  if (!amount || amount->raw < 0) {
+    throw ConfigError(fmt::format(
+        "backtest.{}: '{}' is not a decimal amount >= 0 (write it as a string: \"0.5\"){}",
+        key,
+        text,
+        where));
+  }
+  sim::SimBalance b;
+  b.asset = FixedString<8>(asset);
+  b.amount = *amount;
+  return b;
+}
 
 // [backtest.venues.<name>]: one venue's own latency, cancel-replace and STP, over the [backtest]
 // values. A name that is not in [venues] or a key that is not one of kVenueKeys is an error.
@@ -82,7 +109,7 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
   for (const auto& [key, value] : bt.values) {
     if (!key.starts_with(kVenuesPrefix)) continue;
     const std::string rest = key.substr(kVenuesPrefix.size());
-    const std::size_t dot = rest.rfind('.');
+    const std::size_t dot = rest.find('.');
     const auto line = bt.lines.find(key);
     const std::string where =
         line == bt.lines.end() ? std::string() : fmt::format(" (line {})", line->second);
@@ -108,11 +135,15 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
       throw ConfigError(fmt::format(
           "backtest.venues.{0}: no [[instruments]] trade on venue '{0}'{1}", name, where));
     }
-    if (std::find(kVenueKeys.begin(), kVenueKeys.end(), field) == kVenueKeys.end()) {
+    if (field.starts_with(kBalancesPrefix)) {
+      static_cast<void>(
+          read_balance(bt, key, std::string_view(field).substr(kBalancesPrefix.size())));
+    } else if (std::find(kVenueKeys.begin(), kVenueKeys.end(), field) == kVenueKeys.end()) {
       throw ConfigError(
           fmt::format("backtest.{}: unknown key (latency_fixed_us, latency_jitter_us, "
                       "latency_ack_us, latency_ack_jitter_us, latency_md_us, "
-                      "latency_md_jitter_us, md_arrival, p_drop, supports_replace, stp){}",
+                      "latency_md_jitter_us, md_arrival, p_drop, supports_replace, stp, "
+                      "balances.<ASSET>){}",
                       key,
                       where));
     }
@@ -135,6 +166,42 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
   });
   return out;
 }
+// The strategy's account per simulated venue: [backtest.venues.<name>.balances] for that venue,
+// else [backtest.balances] for every venue an instrument trades on. Neither: no accounts.
+std::vector<sim::SimAccountConfig> read_accounts(const Config& cfg, const GenericSection& bt) {
+  std::vector<sim::SimBalance> defaults;
+  for (const auto& [key, value] : bt.values) {
+    if (key.starts_with(kBalancesPrefix)) {
+      defaults.push_back(
+          read_balance(bt, key, std::string_view(key).substr(kBalancesPrefix.size())));
+    }
+  }
+  std::vector<sim::SimAccountConfig> out;
+  for (const VenueSection& venue : cfg.venues) {
+    const std::string& name = venue.name;
+    const bool traded = std::any_of(cfg.instruments.begin(),
+                                    cfg.instruments.end(),
+                                    [&](const InstrumentSection& i) { return i.venue == name; });
+    if (!traded) continue;
+    const std::string prefix =
+        std::string(kVenuesPrefix) + name + "." + std::string(kBalancesPrefix);
+    sim::SimAccountConfig a;
+    a.venue = cfg.venue_id(name);
+    bool own = false;
+    for (const auto& [key, value] : bt.values) {
+      if (!key.starts_with(prefix)) continue;
+      own = true;
+      a.balances.push_back(read_balance(bt, key, std::string_view(key).substr(prefix.size())));
+    }
+    if (!own) {
+      if (defaults.empty()) continue;
+      a.balances = defaults;
+    }
+    out.push_back(std::move(a));
+  }
+  return out;
+}
+
 std::int64_t positive(const GenericSection& s, std::string_view key, std::int64_t def) {
   const std::int64_t v = s.get_int(key, def);
   if (v <= 0) throw ConfigError(std::string(key) + " must be > 0");
@@ -175,7 +242,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 19> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 20> kBacktestKeys = {"markout_horizons_s",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -193,12 +260,14 @@ constexpr std::array<std::string_view, 19> kBacktestKeys = {"markout_horizons_s"
                                                             "latency_ack_jitter_us",
                                                             "latency_md_us",
                                                             "latency_md_jitter_us",
-                                                            "md_arrival"};
+                                                            "md_arrival",
+                                                            "balances_from_journal"};
 
 void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
   for (const auto& [key, value] : bt.values) {
     if (std::find(kBacktestKeys.begin(), kBacktestKeys.end(), key) != kBacktestKeys.end()) continue;
-    if (key.starts_with(kVenuesPrefix)) continue;  // read_venues() checks those
+    if (key.starts_with(kVenuesPrefix)) continue;    // read_venues() checks those
+    if (key.starts_with(kBalancesPrefix)) continue;  // read_accounts() checks those
     const auto line = bt.lines.find(key);
     warnings.push_back(
         "unknown key 'backtest." + key + "' ignored" +
@@ -271,6 +340,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   defaults.supports_replace = t.supports_replace;
   defaults.stp = t.stp;
   t.venues = read_venues(cfg, bt, defaults);
+  t.accounts = read_accounts(cfg, bt);
+  b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   t.md.interval = milliseconds(positive(sm, "depth_update_ms", 100));
   t.md.book_ticker = sm.get_bool("book_ticker", true);
   t.venue = VenueId{0};
@@ -280,6 +351,9 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.fees = fee_table(cfg);
   b.engine.fees = t.fees;
   b.engine.balance = balance_config(cfg);
+  t.initial_margin.assign(
+      b.engine.balance.initial_margin.begin(),
+      b.engine.balance.initial_margin.begin() + static_cast<std::ptrdiff_t>(b.instruments.size()));
   b.engine.perp = perp_config(cfg);
 
   sim::MarketGeneratorParams& g = b.generator;
