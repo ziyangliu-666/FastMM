@@ -275,6 +275,53 @@ splitting limit (only `max_qty`); benches and halts are in memory (a restart rel
 refusals in the test); a residual held in a hedge leg (an overshoot) is not de-risked; C++ only (no
 Python binding); executor state is not in the status file or metrics; verified on simulators only.
 
+**Backtest vs live: balances and the extra orders (2026-10-01).** The two gaps item 3 left.
+Balances: `SimAccounts` (`sim/sim_account.hpp`), one account per simulated venue from
+`[backtest.balances]` / `[backtest.venues.<name>.balances]` or the journal's first balance snapshot
+(`balances_from_journal`). Spot orders hold notional (buy, quote) or quantity (sell, base), a
+derivative its initial margin on the larger side (reducing orders nothing); fills move the assets,
+realise a derivative's PnL and pay the fee. Refused: `InsufficientBalance` (-2010); a replace that
+does not fit cancels the order and refuses the new leg. `BalanceMsg`: a snapshot at the start, an
+update behind each order event that moved an asset, on the order wire with no latency draw of its
+own. No keys: no account, no message, golden hashes unchanged. `calibrate --backtest` prints the
+venue rejects. V's starting BTC is not in its journal (it predates `BalanceMsg`): 0.00024, from the
+sells (all 304 balance rejects were sells): none refused needed less, 4 of 3410 accepted needed more
+(in flight). With `[risk] check_balance = false`, as V's engine had, and the fitted keys: fills 824
+-> 587 (live 628), venue rejects 0 -> 294 (309), orders 6256 -> 4601 (4094).
+The extra orders: the simulated feed did not show our own resting orders; a live one does. lead_mm
+never improves on its own order (live books show it as the touch); when the level it had improved on
+went, the backtest's book showed the next level as the touch and lead_mm moved its quote down to it,
+and back when the level returned: a cancel and a new order each time. A's orders by what ended the
+previous one on that side and where the next went, live / backtest: cancel then a worse price within
+10 ms 100 / 296, cancel then the same price within 10 ms 517 / 690 (369 of the 422 extra). Fix:
+`[backtest] own_orders_in_feed` (default on). Recorded depth levels and tickers are forwarded with
+our resting quantity added, the next depth update carries our levels that changed since the last (0
+for a level that was only ours), and a book ticker goes out when our orders move the top of book
+(flagged synthetic, update id 0, so lead_mm compares it with the depth by time; `strip_own` drops it
+from a backtest journal). Orders at or through the recorded opposite touch are not shown (a live
+venue would have matched them). The engine's own-quantity view is on for simulated venues; header
+bit `kHeaderOwnInFeed` tells replay and `strip_own` that a backtest journal's feed shows its orders.
+Orders, live / main / now (fitted keys; V with its balances): A 2088 / 2510 / 2138, B 1726 / 2031 /
+1822, V 4094 / 4601 / 4157; fills 234 / 237 / 232, 161 / 160 / 170, 628 / 587 / 595. Golden hashes:
+`basic_mm/l2_queue` (1169 -> 1143 fills) and `sample_1000` (54 messages both) change, in their own
+commit: `basic_mm` prices off the book's mid, which now holds its own quotes; the coupled goldens,
+`options_mm/scripted` and A-S are unchanged.
+Tests: sim.account (7), backtest.balances (5: BalanceShort vs the venue's refusal, basic_mm sized,
+xmm's ask pulled on the quote venue, configuration, replay with balances and the journal's snapshot
+as the next start), sim.own_feed (2), backtest.own_feed (2: lead_mm keeps a bid that became the
+touch, 1 buy and no cancel, against 2 and 1 without; replay), the queue-estimate equality now with
+our orders in the feed too. Full ctest (werror) 1639 passed; clang werror build clean, its sim,
+backtest and hotpath tests pass; clang-tidy-18 (tidy.sh) no error and no finding in the new .cpp
+code; the new tests pass under ASan; python 162 passed.
+Open: lead_mm does not size to the balance: V with `check_balance` on (fitted keys) refuses about
+460000 sells (`BalanceShort`, one per requote) and fills 48 times. About 10 % of the backtests'
+first fills are stamped before their order reached the venue (A 33 of 232, B 18 of 159, V 56 of
+591): the recorded streams' venue times are not monotone, and a trade processed after an order
+arrived fills it at its earlier time; the backtest's time-to-fill p50 excludes those and reads 15.5
+/ 29.5 / 52.8 ms against live 11 / 13 / 32 (from the ack, the journals give 8.1 / 11.0 / 38.1).
+Unrealised PnL is not in a simulated derivative account's free margin; account-wide margin rows of a
+journal snapshot are not used.
+
 **Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
 contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
 docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs
