@@ -3,8 +3,9 @@
 // orders and fills did to them since the venue last reported. The engine keeps one for its own
 // orders; fastmm-gateway keeps one per venue for the orders of every attached strategy.
 //
-// Rows: one per (venue, asset) that an instrument names as base or quote, resolved when the table
-// is built, and one account row per venue with derivatives (BalanceMsg::kAccount). A report for
+// Rows: one per (venue, asset) a spot instrument names as base or quote or a derivative settles
+// in, resolved when the table is built, and one account row per venue with derivatives
+// (BalanceMsg::kAccount). A report for
 // another asset is not kept (counted). Nothing here allocates after build().
 //
 // The estimate. A venue report is the account as of its venue time (hdr.exch_ts), and it counts
@@ -23,10 +24,12 @@
 // an event that reaches the engine after a report that already counted it and carries no venue
 // time.
 //
-// The pre-trade check (covers): the order's hold, less what the order it replaces held, must not
-// exceed the row's free estimate. A derivative order that reduces its position passes; one on an
-// instrument without an initial margin rate passes while the available margin is positive. A row
-// the venue has not reported yet does not refuse anything.
+// The pre-trade check (covers): what the order adds to its row's holds (its hold less what the
+// order it replaces held; for a derivative, what it adds to the larger side) must not exceed the
+// row's free estimate, and a derivative needs a free estimate of zero or more. A derivative order
+// that is reduce-only or reduces its position passes; one on an instrument without an initial
+// margin rate passes while the available margin is positive. A row the venue has not reported
+// does not refuse anything.
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
@@ -124,10 +127,11 @@ class BalanceBook {
       in.derivative = i.is_derivative();
       in.taker_cbps = std::max<std::int32_t>(fees.schedule(i.id).taker_cbps, 0);
       in.im_raw = cfg.initial_margin[i.id.value].raw > 0 ? cfg.initial_margin[i.id.value].raw : 0;
-      in.base = row_for(i.venue, i.base.view(), false);
-      in.quote = row_for(i.venue, i.quote.view(), false);
-      if (in.derivative) {
-        in.settle = i.inverse() ? in.base : in.quote;
+      if (!in.derivative) {
+        in.base = row_for(i.venue, i.base.view(), false);
+        in.quote = row_for(i.venue, i.quote.view(), false);
+      } else {
+        in.settle = row_for(i.venue, i.settlement_ccy(), false);
         in.margin = in.settle;
         VenueState& vs = venues_[i.venue.value];
         if (vs.account_row == kNone) vs.account_row = add_row(i.venue, "", true);
@@ -280,10 +284,18 @@ class BalanceBook {
     const std::uint16_t r = in.derivative ? in.margin : side == Side::Buy ? in.quote : in.base;
     if (r == kNone || !rows_[r].reported) return true;
     if (in.derivative && (reduce_only || reduces)) return true;
-    const std::int64_t need = hold(id, inst, side, px, qty, false) - replaced_hold;
     const std::int64_t free = rows_[r].free;
-    if (in.derivative && in.im_raw == 0) return free > 0;
-    return need <= 0 || need <= free;
+    if (!in.derivative) {
+      const std::int64_t need = hold(id, inst, side, px, qty, false) - replaced_hold;
+      return need <= 0 || need <= free;
+    }
+    if (in.im_raw == 0) return free > 0;
+    // What the instrument's larger side would add.
+    std::array<std::int64_t, 2> sides = in.side_hold;
+    sides[static_cast<std::size_t>(side)] += hold(id, inst, side, px, qty, false) - replaced_hold;
+    const std::int64_t need =
+        std::max(sides[0], sides[1]) - std::max(in.side_hold[0], in.side_hold[1]);
+    return need < 0 || (free >= 0 && need <= free);
   }
 
   // The largest quantity of `id` on `side` at `px` the balance covers, rounded down to the lot;

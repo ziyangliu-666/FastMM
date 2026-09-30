@@ -1,8 +1,8 @@
 #pragma once
 // What a connector needs to report the account's balances (BalanceMsg, core/messages.hpp):
-//   * VenueAssets: the assets the engine keeps for one venue (the base and quote of its
-//     instruments; core/balance_book.hpp), so a connector forwards those and not the hundreds a
-//     venue account lists;
+//   * VenueAssets: the assets the engine keeps for one venue (the base and quote of its spot
+//     instruments, the settlement asset of its derivatives; core/balance_book.hpp), so a connector
+//     forwards those and not the hundreds a venue account lists;
 //   * BalanceFields and emit_balance(): one asset from the private stream, on the order sink.
 // A snapshot (every asset at once, from REST) goes through ReconcileDriver's balance leg instead,
 // which marks it kSnapshot / kSnapshotEnd.
@@ -54,8 +54,12 @@ class VenueAssets {
     names_.clear();
     for (const Instrument& i : insts) {
       if (i.venue != venue) continue;
-      add(i.base.view());
-      add(i.quote.view());
+      if (i.is_derivative()) {
+        add(i.settlement_ccy());
+      } else {
+        add(i.base.view());
+        add(i.quote.view());
+      }
     }
   }
   // The engine's name of `asset` (its instruments' spelling), or empty when it keeps no such asset.

@@ -298,6 +298,100 @@ TEST_CASE("hotpath.noalloc: engine step with a net limit per underlying") {
   CHECK(engine->stats().risk_rejects == 0);
 }
 
+// Balances: the venue's reports (a snapshot and single updates), the holds BasicMM's quotes take,
+// fills moving the assets and the balance check on every order, without allocating.
+TEST_CASE("hotpath.noalloc: engine step with balances, holds and the balance check") {
+  InstrumentTable table;
+  Instrument btc = make_inst();
+  btc.base = "BTC";
+  btc.quote = "USDT";
+  REQUIRE(table.add(btc));
+  SimClock clock{Timestamp{seconds(1000).ns}};
+  NullTransport transport;
+  InlineFeed feed{1 << 20};
+  MsgRing journal_ring{1 << 20};
+  BasicMM strategy;
+  REQUIRE_FALSE(strategy.configure({{"half_spread_bps", "10"},
+                                    {"quote_qty", "0.01"},
+                                    {"max_inventory", "0.05"},
+                                    {"levels", "2"}}));
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_open_orders = 8;
+  cfg.quotes.min_requote_interval = Duration{};
+  cfg.fees = FeeTable::from_bps(0, 10);
+  using E = Engine<BasicMM, SimClock, NullTransport, InlineFeed>;
+  auto engine = std::make_unique<E>(cfg, table, clock, transport, feed, strategy, &journal_ring);
+  engine->warm_up();
+  engine->start();
+  std::int64_t venue_ms = 1'789'000'000'000;
+  auto push_balance = [&](const char* asset, const char* free, std::uint8_t flags) {
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId::invalid(), VenueId{0});
+    m.asset.assign(asset);
+    m.free = Notional::from_decimal(free).value();
+    m.total = m.free;
+    m.equity = m.free;
+    m.flags = flags;
+    m.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    m.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(m.hdr));
+  };
+  auto push_book = [&](const char* bid, const char* ask, std::uint64_t seq) {
+    std::byte* p = feed.reserve(BookDeltaMsg::size_for(1, 1));
+    REQUIRE(p != nullptr);
+    auto* d = reinterpret_cast<BookDeltaMsg*>(p);
+    init_header(*d,
+                seq == 1 ? EventType::BookSnapshot : EventType::BookDelta,
+                InstrumentId{0},
+                VenueId{0},
+                BookDeltaMsg::size_for(1, 1));
+    if (seq == 1) d->hdr.flags |= EventHeader::kSnapshot;
+    d->hdr.recv_ts = clock.now();
+    d->hdr.t0_cycles = clock.cycles();
+    d->bid_count = d->ask_count = 1;
+    d->last_update_id = seq;
+    d->levels()[0] = Level{px(bid), qt("5")};
+    d->levels()[1] = Level{px(ask), qt("5")};
+    feed.commit();
+  };
+  auto push_fill = [&](std::uint64_t n) {
+    OrderFillMsg f{};
+    init_header(f, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+    f.cl_ord_id = ClientOrderId{0xBEEF};
+    f.exec_id.assign("x");
+    f.exec_id.push_back(static_cast<char>('a' + n % 26));
+    f.side = n % 2 == 0 ? Side::Buy : Side::Sell;
+    f.price = px("100.00");
+    f.qty = qt("0.001");
+    f.fee = Notional::from_decimal("0.0001").value();
+    f.fee_asset = FeeAsset::Quote;
+    f.hdr.exch_ts = Timestamp{++venue_ms * 1'000'000};
+    f.hdr.recv_ts = clock.now();
+    REQUIRE(feed.push(f.hdr));
+  };
+  push_balance("USDT", "1.5", BalanceMsg::kSnapshot);
+  push_balance("BTC", "0.015", BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd);
+  push_book("100.00", "100.02", 1);
+  {
+    NoAllocScope guard(true);
+    std::size_t n = 0;
+    while (engine->step() > 0) ++n;
+    for (std::uint64_t i = 0; i < 20; ++i) {
+      push_book(i % 2 == 0 ? "100.10" : "100.00", i % 2 == 0 ? "100.12" : "100.02", 2 + i);
+      push_fill(i);
+      push_balance(i % 2 == 0 ? "USDT" : "BTC", i % 2 == 0 ? "1.5" : "0.015", 0);
+      while (engine->step() > 0) ++n;
+    }
+    CHECK(n > 0);
+  }
+  CHECK(engine->balances().live());
+  CHECK(engine->balances().stats().reports == 22);
+  CHECK(engine->stats().orders_sent >= 2);
+  // 1.5 USDT covers one 0.01 bid, 0.015 BTC one 0.01 ask: the second levels are cut.
+  CHECK(engine->stats().risk_rejects == 0);
+}
+
 namespace {
 // BasicMM that requotes when its parameters change.
 struct ParamsMM : BasicMM {
