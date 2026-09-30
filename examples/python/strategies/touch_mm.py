@@ -11,10 +11,10 @@ from fastmm import Param
 
 
 class TouchMM(fastmm.Strategy):
-    half_spread_bps = Param(0.01, min=0.0, doc="half spread around the mid, bps")
+    half_spread_bps = Param(0.01, min=0.0, doc="distance of each quote from the mid, bps")
     quote_qty = Param(0.002, min=0.0, doc="size per side, base units")
 
-    @fastmm.hot  # compiled with Numba, called on the engine thread without the GIL
+    @fastmm.hot  # compiled to machine code with Numba
     def on_book(self, ctx, book):
         if not book.valid:
             ctx.pull()
@@ -23,11 +23,11 @@ class TouchMM(fastmm.Strategy):
         ctx.clear()
         ctx.bid(book.mid - half, self.quote_qty)
         ctx.ask(book.mid + half, self.quote_qty)
-        ctx.keep_passive()  # leave a resting order alone while its price is still right
+        ctx.keep_passive()  # leave an order in place while its price is still right
+# --8<-- [end:example]
 
 
 cfg = fastmm.BacktestConfig.from_toml("configs/backtest-example.toml")
 cfg.params = {}  # the file's [strategy.params] are basic_mm's
 result = fastmm.run_backtest(cfg, data="synthetic", strategy=TouchMM)
 print(result.summary_table())
-# --8<-- [end:example]

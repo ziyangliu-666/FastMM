@@ -5,16 +5,15 @@
 [![PyPI](https://img.shields.io/pypi/v/fastmm-engine)](https://pypi.org/project/fastmm-engine/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-FastMM is a low-latency market-making engine in C++20: it quotes on one venue and hedges every fill on another, with strategies in C++ or Python.
+FastMM is an open-source engine for running market-making strategies on crypto exchanges. You write the quoting logic in Python or C++; FastMM connects to the exchanges, keeps your orders in sync with them, checks risk, and picks up where it left off after a crash or a dropped connection.
 
-- `xmm` quotes one instrument and hedges each fill with an IOC on a second venue. `basic_mm`, `avellaneda_stoikov`, `options_mm` and `lead_mm` ship beside it.
-- One engine thread owns the books, orders and positions. It takes no locks and allocates nothing after start-up; Python hooks are compiled with Numba and run on that thread without the GIL.
-- `fastmm-gateway` holds the venue connections, so several strategy processes share one account and one can crash and restart while the others keep trading.
-- A restarted session replays the venue's executions and reconciles before it sends an order. Every session is journaled, and replaying the journal sends the same orders byte for byte.
+A market maker keeps a buy order just below the market price and a sell order just above it, and earns the difference when both fill. Doing that well means reacting to every price change within microseconds and always knowing which orders are live, which have filled, and what you hold. FastMM takes care of those parts, so a strategy only has to decide where to quote.
+
+The same strategy code runs in a backtest on recorded market data, against a simulated exchange, and live.
 
 ## Quickstart
 
-With the wheel (Linux x86-64, CPython 3.10+), no keys and no build:
+The quickest way to try it is the Python package, on Linux x86-64 with Python 3.10 or newer. It runs a backtest on a simulated market, with no exchange account and no API keys:
 
 ```bash
 pip install "fastmm-engine[hot]"
@@ -22,21 +21,21 @@ fastmm init my-mm && cd my-mm
 python backtest.py
 ```
 
-`fastmm init` writes a strategy, a config for a simulated market and a backtest that prints PnL, fills and markouts. For a day of real Binance data, run `python -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27` ([Backtest on real data](docs/how-to/backtesting/binance-public-data.md)).
+`fastmm init` creates `strategy.py`, `config.toml` and `backtest.py`. The backtest trades two minutes of simulated market and prints a summary that starts like this:
 
-From source, the live engine against a local exchange that speaks Binance's API:
-
-```bash
-git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
-cmake --preset release && cmake --build --preset release -j
-./scripts/run-sim.sh --duration 30s
+```text
+backtest py:MyMm  seed=1  md_events=43735  steps=47181  wall=0.02s
+  net pnl                        -100.1066
+  realized / unrealized / fees   0.0688 / 0.0003 / 100.1757
+  fills (maker / taker)          952 (952 / 0)
+  time to fill p50/p90/p99       26.1 / 96.3 / 335.1 ms
 ```
 
-The build needs gcc 13+ or clang 16+, CMake 3.25+, Ninja and OpenSSL 3. Releases also ship as a tarball and as `ghcr.io/ziyangliu-666/fastmm` ([Deploy a release](docs/how-to/operations/deploy.md)).
+The strategy earns a little on each fill, and the exchange fee of 0.10% a trade takes more than that. `python backtest.py --sweep half_spread_bps=0.005,0.01,0.02,0.05` runs it again at four spreads so you can see how the width of the quotes changes the result. To backtest on a day of real Binance data, see [Backtest on real data](docs/how-to/backtesting/binance-public-data.md).
 
 ## Write a strategy
 
-A strategy says which quotes it wants. The engine diffs them against the resting orders, checks risk and the account's balance on the venue, and sends the difference. `ctx.balance` and `ctx.margin` give the strategy each venue's balances and margin as the venue reports them.
+A strategy describes the quotes it wants, and FastMM works out which orders to place, move or cancel to get there. This one keeps a bid and an ask at a fixed distance from the mid, the price halfway between the best bid and the best ask. The distance is in basis points (1 bp = 0.01%):
 
 <!-- snippet: examples/python/strategies/touch_mm.py#example -->
 ```python
@@ -45,10 +44,10 @@ from fastmm import Param
 
 
 class TouchMM(fastmm.Strategy):
-    half_spread_bps = Param(0.01, min=0.0, doc="half spread around the mid, bps")
+    half_spread_bps = Param(0.01, min=0.0, doc="distance of each quote from the mid, bps")
     quote_qty = Param(0.002, min=0.0, doc="size per side, base units")
 
-    @fastmm.hot  # compiled with Numba, called on the engine thread without the GIL
+    @fastmm.hot  # compiled to machine code with Numba
     def on_book(self, ctx, book):
         if not book.valid:
             ctx.pull()
@@ -57,65 +56,74 @@ class TouchMM(fastmm.Strategy):
         ctx.clear()
         ctx.bid(book.mid - half, self.quote_qty)
         ctx.ask(book.mid + half, self.quote_qty)
-        ctx.keep_passive()  # leave a resting order alone while its price is still right
-
-
-cfg = fastmm.BacktestConfig.from_toml("configs/backtest-example.toml")
-cfg.params = {}  # the file's [strategy.params] are basic_mm's
-result = fastmm.run_backtest(cfg, data="synthetic", strategy=TouchMM)
-print(result.summary_table())
+        ctx.keep_passive()  # leave an order in place while its price is still right
 ```
 
-The same quoter in C++ is [`examples/quickstart/my_mm.hpp`](examples/quickstart/my_mm.hpp). The [tutorial](docs/tutorials/first-strategy/README.md) takes a C++ strategy from its header to Binance Demo.
+`on_book` runs on every change to the order book. When the book can't be trusted, for example while it reconnects, the strategy pulls its quotes; otherwise it asks for one bid and one ask. Before any order goes out, FastMM checks it against your risk limits and the balance you hold on that exchange. [Write a Python strategy](docs/how-to/strategies/python-live.md) goes further, and the [tutorial](docs/tutorials/first-strategy/README.md) builds the same kind of strategy in C++ and takes it to a demo account.
 
-## Quote on one venue, hedge on another
+## Exchanges
 
-`xmm` prices its quotes from the hedge venue's mid, plus both venues' fees and an edge. When a quote fills, the hedge goes out in the same engine step:
+When a strategy works in backtests, the next step is an exchange's test environment, where it trades with fake money against the exchange's real systems. These are the exchanges FastMM trades on, and where you can test each one:
+
+| Exchange | Markets | Test environment |
+|---|---|---|
+| Binance | spot, perpetual futures | Binance Demo |
+| OKX | spot, perpetual futures | OKX Demo |
+| Bybit | spot, perpetual futures | Bybit testnet |
+| Deribit | options, futures | Deribit testnet |
+| Gemini | spot, perpetual futures | Gemini sandbox |
+| Coinbase Advanced Trade | spot | none (production only) |
+| Coinbase Exchange | spot | Coinbase Exchange sandbox |
+
+[Run on a testnet or Binance Demo](docs/how-to/operations/run-on-testnet.md) walks through the keys, a dry run and a first session. To support another exchange, you can [add a venue](docs/how-to/venues/add-a-venue.md) from your own project.
+
+## Quote on one exchange, hedge on another
+
+With more than one exchange connected, a strategy can avoid holding a position at all. It quotes on one exchange and, whenever a quote fills, takes the opposite side right away on a second exchange where trading is cheaper. FastMM ships a strategy that does this, `xmm`:
 
 ```mermaid
 sequenceDiagram
-    participant Q as Quote venue
-    participant X as xmm
-    participant H as Hedge venue
-    Q->>X: quote filled
-    X->>H: IOC for the unhedged quantity
-    X->>Q: requote from the new position
+    participant Q as Exchange A (quotes)
+    participant X as FastMM
+    participant H as Exchange B (hedge)
+    Q->>X: your quote filled
+    X->>H: order to offset it
+    X->>Q: new quotes
     H->>X: hedge filled
 ```
 
-Hedges follow positions, not fill counts, so a restart, a replayed execution or a late fill never hedges twice. `configs/xmm-binance-demo.toml` quotes Binance Spot and hedges on Binance USDⓈ-M; it has run on Binance Demo behind `fastmm-gateway` through `kill -9` of the strategy mid-hedge and of the gateway, checked against the venue's own records ([Run xmm](docs/how-to/strategies/xmm.md)).
+The hedge is sized from what you hold rather than from a count of fills, so a restart or a delayed message does not hedge the same fill twice. You can give it a backup exchange for when the first one is down or refuses the order, and have it reduce the position step by step if no exchange can take the hedge. Your own strategies can use the same hedging logic ([Hedge with HedgeExecutor](docs/how-to/strategies/hedge-executor.md), [Run xmm](docs/how-to/strategies/xmm.md)).
 
-## Venues
+## Running it for real
 
-| Venue | Markets | Orders | Environment |
-|---|---|---|---|
-| Binance Spot | spot | WebSocket API | Binance Demo, Spot testnet |
-| Binance USDⓈ-M | perpetuals | WebSocket API | Binance Demo |
-| Bybit v5 | spot, linear perpetuals | WebSocket | Bybit testnet |
-| OKX v5 | spot, USDT swaps | WebSocket | OKX Demo |
-| Deribit | options, futures | WebSocket | Deribit testnet |
-| Gemini | spot, perpetuals | WebSocket | Gemini sandbox |
-| Coinbase Advanced Trade | spot | REST | production |
-| Coinbase Exchange | spot | REST | Coinbase Exchange sandbox |
-
-Nasdaq TotalView-ITCH is supported as well: MoldUDP64 multicast market data, with OUCH 5.0 order entry against the bundled `fastmm-sim-itch`. [Add a venue](docs/how-to/venues/add-a-venue.md) from your own project without changing FastMM.
+Several strategies can share one exchange account through `fastmm-gateway`, which holds the connections. One strategy can crash and restart while the others keep trading, and account-wide limits on position and loss apply across all of them. Every session is recorded, and replaying a recording sends the same orders again, so any past decision can be examined step by step. [Run in production](docs/how-to/operations/running-in-production.md) and [the runbook](docs/how-to/operations/runbook.md) cover deployment, monitoring and what to do when something goes wrong.
 
 ## How it works
 
+For each exchange, a network thread decodes messages and keeps the order book in sync. A single engine thread runs the strategy, the risk checks and order management, and hands orders back to the network thread to send. The threads pass messages through lock-free queues, and the engine thread never waits on the network or allocates memory while trading.
+
 ```mermaid
 flowchart LR
-    V[Venue] --> N[Network thread<br/>decode, book sync]
-    N -- ring --> E[Engine thread<br/>book, strategy, quote diff,<br/>risk, OMS]
-    E -- ring --> O[Network thread<br/>encode, sign, send]
+    V[Exchange] --> N[Network thread<br/>decode, book sync]
+    N --> E[Engine thread<br/>strategy, risk,<br/>order management]
+    E --> O[Network thread<br/>sign, send]
     O --> V
-    E --> J[Journal]
+    E --> J[Recording]
 ```
 
-Each venue has its own network thread, joined to the engine thread by single-producer rings. The engine records every event in the journal before it acts on it. Backtests, replays and live sessions run the same `Engine` template with a different clock, feed and transport ([How FastMM works](docs/explanation/how-it-works.md), [Benchmarks](docs/explanation/benchmarks.md)).
+Building from source gives you the C++ programs, including the live engine and a local exchange simulator (gcc 13+ or clang 16+, CMake 3.25+, Ninja, OpenSSL 3):
+
+```bash
+git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
+cmake --preset release && cmake --build --preset release -j
+./scripts/run-sim.sh --duration 30s
+```
+
+[How FastMM works](docs/explanation/how-it-works.md) explains the design, and [Benchmarks](docs/explanation/benchmarks.md) has the latency measurements.
 
 ## Documentation
 
-<https://ziy.bio/FastMM/>: [quickstart](docs/getting-started/quickstart.md), [Binance Demo and testnets](docs/how-to/operations/run-on-testnet.md), [run in production](docs/how-to/operations/running-in-production.md), [configuration](docs/reference/configuration.md).
+The full documentation is at <https://ziy.bio/FastMM/>.
 
 ## License
 
