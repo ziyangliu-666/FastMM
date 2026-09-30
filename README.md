@@ -87,15 +87,18 @@ Hedges follow positions, not fill counts, so a restart, a replayed execution or 
 
 ## Venues
 
-| Venue | Markets | Orders | Tested on |
+| Venue | Markets | Orders | Environment |
 |---|---|---|---|
-| Binance Spot | spot | WebSocket API | Binance Demo |
+| Binance Spot | spot | WebSocket API | Binance Demo, Spot testnet |
 | Binance USDⓈ-M | perpetuals | WebSocket API | Binance Demo |
-| Bybit v5 | spot, linear perpetuals | WebSocket | fake exchange |
-| OKX v5 | USDT swaps | WebSocket | fake exchange |
-| Deribit | options, futures | WebSocket | fake exchange |
+| Bybit v5 | spot, linear perpetuals | WebSocket | Bybit testnet |
+| OKX v5 | spot, USDT swaps | WebSocket | OKX Demo |
+| Deribit | options, futures | WebSocket | Deribit testnet |
+| Gemini | spot, perpetuals | WebSocket | Gemini sandbox |
+| Coinbase Advanced Trade | spot | REST | production |
+| Coinbase Exchange | spot | REST | Coinbase Exchange sandbox |
 
-A fake exchange plays the venue's documented messages in the tests. Nasdaq TotalView-ITCH is supported as well: MoldUDP64 multicast market data, with OUCH 5.0 order entry against the bundled `fastmm-sim-itch`. [Add a venue](docs/how-to/venues/add-a-venue.md) from your own project without changing FastMM.
+Nasdaq TotalView-ITCH is supported as well: MoldUDP64 multicast market data, with OUCH 5.0 order entry against the bundled `fastmm-sim-itch`. [Add a venue](docs/how-to/venues/add-a-venue.md) from your own project without changing FastMM.
 
 ## How it works
 
