@@ -74,7 +74,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `rest_url` | string |  | REST base URL |
 | `api_key` | string |  | API key, written as "${VARIABLE}" |
 | `api_secret` | string |  | API secret, written as "${VARIABLE}" |
-| `api_passphrase` | string |  | API key passphrase where the venue has one (OKX, Coinbase), written as "${VARIABLE}" |
+| `api_passphrase` | string |  | API key passphrase where the venue has one (OKX, Coinbase Exchange), written as "${VARIABLE}" |
 | `testnet` | boolean |  | the endpoints are a testnet or demo environment (default true) |
 | `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
@@ -105,6 +105,7 @@ knows only the generic keys above. A project can register its own connector and 
 | `binance_spot` | `binance`, `sim` | Binance Spot (testnet, Demo Mode, or the Binance-compatible simulator with kind = "sim") | yes | yes | yes | yes |
 | `binance_usdm` |  | Binance USDⓈ-M perpetual futures (Demo Trading) | yes | yes | yes | yes |
 | `bybit` | `bybit_spot` | Bybit v5 spot and linear perpetuals (testnet) | yes | yes | yes | yes |
+| `coinbase_advanced` |  | Coinbase Advanced Trade spot (production, CDP API key) | yes | yes | no | no |
 | `coinbase_exchange` |  | Coinbase Exchange spot (sandbox) | yes | yes | no | no |
 | `deribit` |  | Deribit options and futures (testnet) | yes | yes | yes | yes |
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
@@ -177,6 +178,23 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `orders_per_second` | integer |  | client-side order rate cap, orders/s |
 | `position_from_wallet` | boolean |  | spot: derive positions from the wallet |
 | `position_from_stream` | boolean |  | linear: correct the engine position from the position topic when it differs from the fills (default true) |
+<!-- END config-keys -->
+
+#### `coinbase_advanced`
+
+Coinbase Advanced Trade spot, production only (`testnet = false`): `api_key` is the CDP key name and `api_secret` its EC private key ([Venue connectors](venues.md#coinbase-advanced-trade-spot)).
+
+<!-- BEGIN config-keys venue:coinbase_advanced -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `ws_private_url` | string |  | WebSocket URL of the user channel (order states); empty = wss://advanced-trade-ws-user.coinbase.com |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms (default 10000; heartbeats come every second) |
+| `orders_per_second` | integer |  | client-side cap on new orders, per second (default 8) |
+| `cancel_batch` | integer |  | orders one batch_cancel request names in cancel-all, 1 to 100 (default 50) |
+| `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when the user channel drops (default true) |
+| `emit_ack_from_response` | boolean |  | acknowledge new orders from the POST orders reply as well as the user channel (default true) |
 <!-- END config-keys -->
 
 #### `coinbase_exchange`

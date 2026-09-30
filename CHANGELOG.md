@@ -5,6 +5,20 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Coinbase Advanced Trade connector (`kind = "coinbase_advanced"`), spot, production with a CDP
+  API key: ES256 JWTs (`net::EcdsaP256Key`, `net::base64url_encode`), `level2` with the
+  connection's `sequence_num` as the loss check, `market_trades`; REST orders and
+  `batch_cancel`; order states from the `user` channel, and each order's executions read with
+  their trade ids when its cumulative quantity grows; fill replay with order lookups, the
+  start-up sweep, the kill-path cancel-all. No venue-side dead man's switch exists.
+  `configs/coinbase-advanced.toml`; the public feed and the read-only private calls were run
+  against production, orders only against a scripted fake exchange.
+- Coinbase Exchange connector (`kind = "coinbase_exchange"`), spot, sandbox: HMAC signing with a
+  passphrase, `level2_batch` (or signed `level2`) with trade-id loss checks, `matches`; REST
+  orders with UUID client ids, the signed `user` channel, fill replay with order lookups,
+  `DELETE /orders` for the kill switch. `configs/coinbase-sandbox.toml`; the public feed was run
+  against production and the sandbox, the private side only against a scripted fake exchange.
+- `kMaxHttpHeaders` 64 (was 32): `api.coinbase.com` answers with more than 32 headers.
 - `[gateway.shared."<venue>:<symbol>"]`: several strategies attached to `fastmm-gateway` trade one
   instrument. Fills of earlier sessions go to their strategy by `[engine] name` (the epochs the
   gateway gave it and, protocol 6, those its store lists); events naming no order and funding to

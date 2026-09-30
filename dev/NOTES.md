@@ -3,6 +3,60 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+**Coinbase: Advanced Trade and Exchange spot connectors (2026-09-30).** Two kinds, both spot, on
+the shared machinery (ReconcileDriver, ReplayScheduler with order lookups, BlockingControl,
+SentWatermark, StreamBookSync with LevelSpill). Choice, from the official docs read today:
+(a) Advanced Trade (`coinbase_advanced`) is the API a Singapore individual gets (Coinbase
+Singapore Pte. Ltd., MAS MPI licence; the SG user agreement covers "Advanced Trading" and "the
+Coinbase API for Advanced Trading"), CDP keys with ES256 JWTs; its sandbox
+(https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/sandbox) returns "static and
+pre-defined" responses, so it runs against production only. (b) The Exchange
+(`coinbase_exchange`) "allow[s] institutions to place orders" (individuals only through HNWI
+onboarding) but has the only self-serve sandbox with real matching (subset of books, fake funds;
+https://docs.cdp.coinbase.com/exchange/introduction/sandbox). (c) International Exchange: "Only
+non-US based institutions"; its API stops trading on 2026-10-01. The Deribit claim holds:
+"On October 1, 2026, Advanced Trade is moving international derivatives from INTX onto a
+Deribit-powered gateway" (drb.coinbase.com, JSON-RPC 2.0, BTC_USDC-PERPETUAL, hard cutover,
+open orders cancelled; https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/guides/
+derivatives/overview). Whether a Singapore account may trade those perpetuals is not published
+(no country list; coinbase.com/en-sg/derivatives-trading is a 404): check in the app. I built the
+Exchange first for its sandbox; the user then supplied a live CDP key (EC, ES256) and asked for
+Advanced Trade, which is now the primary. Neither has a venue-side dead man's switch on the path
+used (Exchange: only FIX Logon 8013; Advanced spot: none).
+Protocol facts found on the way: Exchange `level2_batch` is acknowledged as `level2_50` and sends
+the whole book (22662 bids, 1.3 MB for BTC-USD), with no sequence number: the feed numbers book
+messages itself and treats a skipped `match` trade_id, or a heartbeat `last_trade_id` still unseen
+a heartbeat later, as loss (resync). Advanced `level2` snapshots are 4.6 MB (recv buffer 32 MB);
+`sequence_num` counts every message of the connection, a gap resyncs every book. The Advanced
+`user` channel reports order states with `cumulative_quantity` and no executions: the connector
+reads `fills?order_ids=` when it grows and forwards each trade_id once (a fill arrives one REST
+round trip late). `api.coinbase.com` sends more than 32 response headers (kMaxHttpHeaders now 64)
+and both hosts refuse requests without User-Agent. A snapshot still arriving made the md
+connection Stale (> 2 s silent) and the Stale handler resubscribed, fetching the book twice: an
+unsynced book now keeps waiting. Found by the round-trip test: two executions in the same
+millisecond, listed newest first, were sorted into the wrong order and one went out twice; now
+dedupe by trade id.
+Live, read only (`tests/venues/live_coinbase_test.cpp`, the user's key from
+`~/crypto_quant/.env`, FASTMM_LIVE_TESTS=1): JWT accepted; `/accounts` 200 (2 accounts,
+`{"accounts":[..],"has_next":false,..}`), open orders 200 (`{"orders":[],"sequence":"0",
+"has_next":false,"cursor":"",..}`), fills 200 (`{"fills":[],"cursor":"",..}`), user channel
+subscribed (snapshot with empty orders, then `subscriptions {"user":[<user id>]}` and heartbeats),
+the connector's start-up sweep complete with 0 REST errors. Nothing placed, amended or cancelled.
+Once, before any key was involved, I sent one unauthenticated POST to the Advanced *static*
+sandbox (api-sandbox.coinbase.com) to see whether it echoes input; it returned its canned order.
+Dry runs on production public data, `fastmm-live --dry-run --record-raw`, 15 min each, BTC-USD +
+ETH-USD: Exchange 35990 md messages, books 2/2, 0 resyncs, 0 malformed, 0 dropped, 0 reconnects,
+0 trade-id or heartbeat gaps; Advanced 35608 messages (31528 l2_data, 3178 market_trades, 899
+heartbeats), books 2/2, 0 resyncs, 0 sequence gaps, 0 malformed/dropped/reconnects. Tests: crypto
+(base64url RFC 4648, ES256 against the RFC 6979 A.2.5 vector and a PyJWT token), 7 Advanced unit
+cases, 8 Advanced fake-exchange cases, 29 Exchange cases (unit, book sync, fake exchange), both in
+the no-allocation suite, registry. Mutations: parked cancel not sent, per-order read not retried,
+a read forwarding rows twice: each fails its test. Left: Exchange private side unrun (no sandbox
+key yet); Advanced order payloads unrecorded (no funds, no orders allowed); Advanced REST rate
+limits undocumented (client cap 8 new orders/s); `batch_cancel` maximum undocumented (50 used);
+perpetual hedging on Coinbase needs the drb.coinbase.com JSON-RPC gateway (close to the Deribit
+connector) once Singapore eligibility is known.
+
 **End to end over veth is slower on this host today (2026-09-29).** `scripts/bench-e2e.sh`, kernel, busy, 3 x 60 s: wire to wire p50 51 to 74 µs, T0 to T5 p50 7 to 20 µs, against 23.6 to 25.6 and 2.4 to 2.6 on 2026-09-23. The 2026-09-23 `release-native` build and the 2026-09-26 `release` build measure the same today (57 and 51 µs, one 30 s run each), so it is the host, not the code; `BM_TickToOrder_Sim` (release) is unchanged at 151 ns p50. The published e2e numbers stay those of 2026-09-23.
 
 ## Benchmark history, moved from bench/README.md (2026-09-29)
