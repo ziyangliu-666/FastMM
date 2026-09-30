@@ -1,6 +1,6 @@
 # Run on a testnet or Binance Demo
 
-FastMM ships configs for seven practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading and the Deribit testnet. Two more run `xmm` across two of them. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
+FastMM ships configs for eight practice environments: Binance Spot Demo Mode, Binance USDⓈ-M futures Demo Trading, the Binance Spot testnet, the Bybit v5 testnet (spot and linear perpetuals), OKX demo trading, the Coinbase Exchange sandbox and the Deribit testnet. Coinbase Advanced Trade, the API of individual Coinbase accounts, has no practice environment ([Venue connectors](../../reference/venues.md#coinbase-advanced-trade-spot)). Two more run `xmm` across two of them. The two Binance Demo environments share one set of keys; each other environment has its own. None of them accepts live-exchange keys.
 
 Before a longer session, read [Kill switch and shutdown](kill-switch-and-shutdown.md).
 
@@ -30,6 +30,7 @@ set -a && . ./.env && set +a
 | Bybit testnet | `configs/bybit-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
 | Bybit testnet, linear perpetuals | `configs/bybit-linear-testnet.toml` | `FASTMM_BYBIT_API_KEY`, `FASTMM_BYBIT_API_SECRET` |
 | OKX demo trading | `configs/okx-demo.toml` | `FASTMM_OKX_API_KEY`, `FASTMM_OKX_API_SECRET`, `FASTMM_OKX_API_PASSPHRASE` |
+| Coinbase Exchange sandbox | `configs/coinbase-sandbox.toml` | `FASTMM_COINBASE_API_KEY`, `FASTMM_COINBASE_API_SECRET`, `FASTMM_COINBASE_API_PASSPHRASE` |
 | Deribit testnet | `configs/deribit-testnet.toml` | `FASTMM_DERIBIT_CLIENT_ID`, `FASTMM_DERIBIT_CLIENT_SECRET` |
 | `xmm`: Spot Demo quotes, USDⓈ-M Demo hedges | `configs/xmm-binance-demo.toml` | `FASTMM_BINANCE_API_KEY`, `FASTMM_BINANCE_API_SECRET` |
 | `xmm`: USDⓈ-M Demo quotes, Bybit testnet hedges | `configs/xmm-demo.toml` | the Binance and the Bybit variables |
@@ -89,6 +90,13 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Spot: `configs/okx-spot-demo.toml` quotes BTC-USDT at the minimum size (0.00002 BTC) for an account registered on my.okx.com (`region = "eea"`: REST `https://eea.okx.com`, WebSocket `wss://wseeapap.okx.com:8443`). Any account mode trades spot, the spot mode included; keys only work on the domain of the site they were made on. Quantities are BTC.
 - Status: spot ran on the demo (orders, fills, a kill -9 and restart, a clean stop; 2026-09-30). For swaps the public stream was run against the demo and production hosts; orders and the private channels are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues.md#okx-v5-usdt-margined-swaps-and-spot)).
 
+### Coinbase Exchange sandbox
+
+- Keys: sign up at <https://public.sandbox.exchange.coinbase.com> (an account of its own; a coinbase.com login does not work there), then create an API key with the View and Trade permissions. The sandbox shows the secret once and asks for a passphrase: key, secret and passphrase are the three credentials. Add fake funds to the profile in the same interface.
+- Endpoints (from `configs/coinbase-sandbox.toml`): feed `wss://ws-feed-public.sandbox.exchange.coinbase.com` (market data, and the user channel on a second connection), REST `https://api-public.sandbox.exchange.coinbase.com` (`testnet = true`). The connector refuses a sandbox host with `testnet = false` and a production host with `testnet = true`.
+- The sandbox lists a subset of the production products; its books are thin and do not follow production prices, so the config quotes 50 bps from the mid.
+- Status: the public feed ran against the sandbox and production; orders and the user channel are covered by a scripted fake exchange only ([Venue connectors](../../reference/venues.md#coinbase-exchange-spot)).
+
 ### Deribit testnet
 
 - Keys: create an account on <https://test.deribit.com> and an API key under Account, API. The key's client id and client secret go into `FASTMM_DERIBIT_CLIENT_ID` and `FASTMM_DERIBIT_CLIENT_SECRET` (`api_key` and `api_secret` in the config).
@@ -135,7 +143,7 @@ Press Ctrl-C or let `--duration` elapse, then read the last log lines ([Reading 
 
 ## 7. Opt-in live connector tests
 
-The `live.*` test cases in `tests/venues/live_binance_test.cpp`, `live_binance_usdm_test.cpp`, `live_bybit_test.cpp` and `live_deribit_test.cpp` run each connector against its testnet or Demo environment: book sync, then a far post-only order placed and cancelled. They carry the ctest label `live`, which the test presets exclude; a plain `ctest` runs them, but they skip unless `FASTMM_LIVE_TESTS=1` is set, and the order steps need the key variables above. `FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode instead of the testnet.
+The `live.*` test cases in `tests/venues/live_binance_test.cpp`, `live_binance_usdm_test.cpp`, `live_bybit_test.cpp` and `live_deribit_test.cpp` run each connector against its testnet or Demo environment: book sync, then a far post-only order placed and cancelled. `live_coinbase_test.cpp` runs Coinbase Advanced Trade against production read only (accounts, open orders, fills, the user channel, the start-up sweep) with `COINBASE_API_KEY_NAME` and `COINBASE_API_PRIVATE_KEY`; it places nothing. They carry the ctest label `live`, which the test presets exclude; a plain `ctest` runs them, but they skip unless `FASTMM_LIVE_TESTS=1` is set, and the order steps need the key variables above. `FASTMM_BINANCE_ENV=demo` points the Binance test at Demo Mode instead of the testnet.
 
 ```bash
 cmake --build --preset release -j --target fastmm_venues_tests

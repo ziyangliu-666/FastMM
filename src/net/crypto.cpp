@@ -4,6 +4,9 @@
 #include "fastmm/net/crypto.hpp"
 
 #include <openssl/bio.h>
+#include <openssl/bn.h>
+#include <openssl/core_names.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/pem.h>
@@ -224,6 +227,54 @@ bool base64_decode(std::string_view in, std::string& out) {
   return true;
 }
 
+std::size_t base64url_encode(std::span<const std::uint8_t> in, std::span<char> out) noexcept {
+  // Standard base64 in place, then the URL alphabet and no padding.
+  const std::size_t need = base64url_encoded_size(in.size());
+  if (out.size() < need) return 0;
+  std::size_t o = 0;
+  std::size_t i = 0;
+  auto put = [&](std::uint32_t v, int chars) {
+    for (int k = 0; k < chars; ++k) {
+      char c = kB64Alphabet[(v >> (18 - 6 * k)) & 63];
+      if (c == '+') c = '-';
+      if (c == '/') c = '_';
+      out[o++] = c;
+    }
+  };
+  for (; i + 3 <= in.size(); i += 3)
+    put((static_cast<std::uint32_t>(in[i]) << 16) | (static_cast<std::uint32_t>(in[i + 1]) << 8) |
+            static_cast<std::uint32_t>(in[i + 2]),
+        4);
+  const std::size_t rem = in.size() - i;
+  if (rem == 1) put(static_cast<std::uint32_t>(in[i]) << 16, 2);
+  if (rem == 2)
+    put((static_cast<std::uint32_t>(in[i]) << 16) | (static_cast<std::uint32_t>(in[i + 1]) << 8),
+        3);
+  return o;
+}
+
+std::string base64url_encode(std::string_view in) {
+  std::string s(base64url_encoded_size(in.size()), '\0');
+  const std::size_t n = base64url_encode(
+      std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(in.data()), in.size()),
+      std::span<char>(s));
+  s.resize(n);
+  return s;
+}
+
+std::size_t base64url_decode(std::string_view in, std::span<std::uint8_t> out) noexcept {
+  constexpr std::size_t kBad = std::numeric_limits<std::size_t>::max();
+  if (in.size() % 4 == 1 || in.size() > 4096) return kBad;
+  char buf[4100];
+  std::size_t n = 0;
+  for (const char c : in) {
+    if (c == '=' || c == '+' || c == '/') return kBad;
+    buf[n++] = c == '-' ? '+' : c == '_' ? '/' : c;
+  }
+  while (n % 4 != 0) buf[n++] = '=';
+  return base64_decode(std::string_view(buf, n), out);
+}
+
 bool random_bytes(std::span<std::uint8_t> out) noexcept {
   if (out.empty()) return true;
   return RAND_bytes(out.data(), static_cast<int>(out.size())) == 1;
@@ -330,6 +381,123 @@ bool Ed25519Key::verify_base64(std::string_view data, std::string_view signature
 }
 
 std::string Ed25519Key::public_pem() const {
+  if (pkey_ == nullptr) return {};
+  std::unique_ptr<BIO, BioDeleter> bio(BIO_new(BIO_s_mem()));
+  if (!bio || PEM_write_bio_PUBKEY(bio.get(), as_pkey(pkey_)) != 1) return {};
+  char* data = nullptr;
+  const long len = BIO_get_mem_data(bio.get(), &data);
+  return len > 0 ? std::string(data, static_cast<std::size_t>(len)) : std::string{};
+}
+
+// ---- EcdsaP256Key -----------------------------------------------------------------------------
+
+namespace {
+struct EcdsaSigDeleter {
+  void operator()(ECDSA_SIG* p) const noexcept { ECDSA_SIG_free(p); }
+};
+struct BnDeleter {
+  void operator()(BIGNUM* p) const noexcept { BN_free(p); }
+};
+// A P-256 key from PEM, or nullptr.
+EVP_PKEY* read_p256_pem(std::string_view pem, bool priv) noexcept {
+  if (pem.empty() || pem.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    return nullptr;
+  std::unique_ptr<BIO, BioDeleter> bio(BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
+  if (!bio) return nullptr;
+  EVP_PKEY* k = priv ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr)
+                     : PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr);
+  if (k == nullptr) return nullptr;
+  char group[64] = {};
+  std::size_t len = 0;
+  if (EVP_PKEY_id(k) != EVP_PKEY_EC ||
+      EVP_PKEY_get_utf8_string_param(k, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof group, &len) !=
+          1 ||
+      std::string_view(group, len) != "prime256v1") {
+    EVP_PKEY_free(k);
+    return nullptr;
+  }
+  return k;
+}
+}  // namespace
+
+EcdsaP256Key::~EcdsaP256Key() {
+  EVP_PKEY_free(as_pkey(pkey_));
+}
+
+EcdsaP256Key& EcdsaP256Key::operator=(EcdsaP256Key&& o) noexcept {
+  if (this != &o) {
+    EVP_PKEY_free(as_pkey(pkey_));
+    pkey_ = o.pkey_;
+    private_ = o.private_;
+    o.pkey_ = nullptr;
+  }
+  return *this;
+}
+
+EcdsaP256Key EcdsaP256Key::from_private_pem(std::string_view pem) {
+  EcdsaP256Key k;
+  k.pkey_ = read_p256_pem(pem, true);
+  k.private_ = k.pkey_ != nullptr;
+  return k;
+}
+
+EcdsaP256Key EcdsaP256Key::from_public_pem(std::string_view pem) {
+  EcdsaP256Key k;
+  k.pkey_ = read_p256_pem(pem, false);
+  return k;
+}
+
+bool EcdsaP256Key::sign(std::string_view data,
+                        std::span<std::uint8_t, kEs256SignatureSize> out) const noexcept {
+  if (!has_private()) return false;
+  std::unique_ptr<EVP_MD_CTX, MdCtxDeleter> ctx(EVP_MD_CTX_new());
+  if (!ctx) return false;
+  if (EVP_DigestSignInit(ctx.get(), nullptr, EVP_sha256(), nullptr, as_pkey(pkey_)) != 1)
+    return false;
+  // A DER ECDSA-Sig-Value of P-256 is at most 72 bytes.
+  std::array<unsigned char, 80> der{};
+  std::size_t len = der.size();
+  if (EVP_DigestSign(ctx.get(),
+                     der.data(),
+                     &len,
+                     reinterpret_cast<const unsigned char*>(data.data()),
+                     data.size()) != 1)
+    return false;
+  const unsigned char* p = der.data();
+  std::unique_ptr<ECDSA_SIG, EcdsaSigDeleter> sig(
+      d2i_ECDSA_SIG(nullptr, &p, static_cast<long>(len)));
+  if (!sig) return false;
+  const BIGNUM* r = ECDSA_SIG_get0_r(sig.get());
+  const BIGNUM* s = ECDSA_SIG_get0_s(sig.get());
+  return BN_bn2binpad(r, out.data(), 32) == 32 && BN_bn2binpad(s, out.data() + 32, 32) == 32;
+}
+
+bool EcdsaP256Key::verify(std::string_view data,
+                          std::span<const std::uint8_t> signature) const noexcept {
+  if (pkey_ == nullptr || signature.size() != kEs256SignatureSize) return false;
+  std::unique_ptr<ECDSA_SIG, EcdsaSigDeleter> sig(ECDSA_SIG_new());
+  if (!sig) return false;
+  std::unique_ptr<BIGNUM, BnDeleter> r(BN_bin2bn(signature.data(), 32, nullptr));
+  std::unique_ptr<BIGNUM, BnDeleter> s(BN_bin2bn(signature.data() + 32, 32, nullptr));
+  if (!r || !s || ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) return false;
+  static_cast<void>(r.release());  // owned by sig now
+  static_cast<void>(s.release());
+  unsigned char* der = nullptr;
+  const int der_len = i2d_ECDSA_SIG(sig.get(), &der);
+  if (der_len <= 0) return false;
+  std::unique_ptr<EVP_MD_CTX, MdCtxDeleter> ctx(EVP_MD_CTX_new());
+  bool ok = ctx != nullptr &&
+            EVP_DigestVerifyInit(ctx.get(), nullptr, EVP_sha256(), nullptr, as_pkey(pkey_)) == 1 &&
+            EVP_DigestVerify(ctx.get(),
+                             der,
+                             static_cast<std::size_t>(der_len),
+                             reinterpret_cast<const unsigned char*>(data.data()),
+                             data.size()) == 1;
+  OPENSSL_free(der);
+  return ok;
+}
+
+std::string EcdsaP256Key::public_pem() const {
   if (pkey_ == nullptr) return {};
   std::unique_ptr<BIO, BioDeleter> bio(BIO_new(BIO_s_mem()));
   if (!bio || PEM_write_bio_PUBKEY(bio.get(), as_pkey(pkey_)) != 1) return {};

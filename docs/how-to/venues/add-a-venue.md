@@ -41,6 +41,7 @@ Differences in the other connectors:
 - Binance names its private parser `binance_user_parser.hpp` and its book sync `binance_depth_sync.hpp` (the snapshot comes from REST).
 - OKX needs a third credential (the generic `api_passphrase`), names instruments by `instIdCode` in WebSocket order operations, counts swaps in contracts (`contract_multiplier` = `ctVal`) and keeps each book level's text for the (now deprecated) checksum in `okx_book_sync.hpp`.
 - Deribit adds `deribit_json.hpp` (exact parsing of JSON numbers with exponents) and `deribit_credits.hpp` (`CreditBucket`, the matching-engine request credits).
+- The two Coinbase connectors (`include/fastmm/venues/coinbase/`) enter orders over REST and take their order events from a WebSocket user channel; their book streams carry no update ids, so the feeds number the messages themselves (`coinbase_book_sync.hpp`). Advanced Trade signs with ES256 JWTs (`advanced_auth.hpp`) and reads each order's executions when its cumulative quantity grows; the Exchange maps client ids to UUIDs (`coinbase_wire.hpp`).
 - Binance USDⓈ-M is the same exchange as Binance Spot, so it reuses the Spot signing, feed and depth-sync code and holds only the futures protocol itself; `include/fastmm/venues/binance_usdm/binance_usdm_venue.hpp` lists what is shared and what is not.
 
 Do not copy a connector's plumbing: the pieces that are the same for every venue already exist.
@@ -139,7 +140,7 @@ Record encode and send latency in `VenueStatus::order_encode` and `order_send` (
 
 ## 6. Authentication
 
-Use `include/fastmm/net/crypto.hpp` for HMAC-SHA256 and Ed25519 (Binance `key_type = "ed25519"`). Sign the exact bytes you send: Bybit signs timestamp, key, receive window and the query string or body. Signed requests carry a timestamp and a receive window (`recv_window_ms`), so measure the clock offset from the venue's server-time endpoint at startup and whenever the venue reports a timestamp error, and log it when it exceeds 1000 ms.
+Use `include/fastmm/net/crypto.hpp` for HMAC-SHA256, Ed25519 (Binance `key_type = "ed25519"`) and ECDSA P-256 with base64url (ES256 JWTs, Coinbase Advanced Trade). Sign the exact bytes you send: Bybit signs timestamp, key, receive window and the query string or body. Signed requests carry a timestamp and a receive window (`recv_window_ms`), so measure the clock offset from the venue's server-time endpoint at startup and whenever the venue reports a timestamp error, and log it when it exceeds 1000 ms.
 
 ## 7. Error map
 

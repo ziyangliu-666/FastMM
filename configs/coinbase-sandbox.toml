@@ -1,0 +1,92 @@
+# FastMM: BasicMM on the Coinbase Exchange sandbox, BTC-USD spot.
+#   ./build/release/bin/fastmm-live --config configs/coinbase-sandbox.toml --dry-run --duration 60s
+# Keys from the sandbox web interface, https://public.sandbox.exchange.coinbase.com (an account of
+# its own, not a coinbase.com login): profile menu > API > New API Key, with the View and Trade
+# permissions. The key, its secret (shown once) and the passphrase typed when creating it:
+#   export FASTMM_COINBASE_API_KEY=... FASTMM_COINBASE_API_SECRET=... FASTMM_COINBASE_API_PASSPHRASE=...
+#   ./build/release/bin/fastmm-live --config configs/coinbase-sandbox.toml
+# Add fake USD and BTC to the sandbox profile first (its web interface deposits any amount).
+# Endpoints (https://docs.cdp.coinbase.com/exchange/introduction/sandbox): REST
+#   https://api-public.sandbox.exchange.coinbase.com, feed
+#   wss://ws-feed-public.sandbox.exchange.coinbase.com (market data, and the user channel on a
+#   second connection). The sandbox books are thin and do not follow production prices.
+[engine]
+name = "coinbase-sandbox"
+cpu = -1
+net_cpus = []
+spin_mode = "adaptive"
+journal = true
+journal_dir = "runs"
+epoch_file = "runs/session_epoch"
+rng_seed = 42
+md_ring_bytes = 16777216     # a snapshot carries 1024 levels a side
+order_ring_bytes = 1048576
+journal_ring_bytes = 16777216
+max_events_per_step = 64
+crossed_grace_ms = 100
+latency_publish_ms = 1000
+min_requote_ticks = 50
+min_requote_interval_ms = 1000
+min_qty_bps = 8000
+post_only = true
+supports_replace = false     # the Exchange has no replace for REST orders: cancel and new
+
+[venues.coinbase]
+kind = "coinbase_exchange"
+ws_url = "wss://ws-feed-public.sandbox.exchange.coinbase.com"
+rest_url = "https://api-public.sandbox.exchange.coinbase.com"
+api_key = "${FASTMM_COINBASE_API_KEY}"
+api_secret = "${FASTMM_COINBASE_API_SECRET}"
+api_passphrase = "${FASTMM_COINBASE_API_PASSPHRASE}"
+testnet = true               # the sandbox hosts
+supports_replace = false
+depth_channel = "level2_batch"
+# The sandbox's trades are sparse: its feed can be quiet for more than 2 s.
+stale_ms = 10000
+
+[venues.coinbase.fees]
+maker_bps = 40.0             # the lowest tier; GET /fees gives the account's own
+taker_bps = 60.0
+
+# Tick, lot, minimum size and minimum notional are overwritten from GET /products/BTC-USD.
+[[instruments]]
+venue = "coinbase"
+symbol = "BTC-USD"
+base = "BTC"
+quote = "USD"
+asset_class = "spot"
+tick = "0.01"
+lot = "0.00000001"
+min_qty = "0.00000001"
+min_notional = "1"
+enabled = true
+
+[strategy]
+name = "basic_mm"
+
+[strategy.params]
+half_spread_bps = 50.0
+skew_bps_per_unit = 5.0
+quote_qty = 0.001
+max_inventory = 0.005
+requote_threshold_ticks = 500
+pull_on_stale_ms = 10000
+levels = 1
+
+[risk]
+max_order_qty = "0.002"
+max_order_notional = "300"
+max_position = "0.006"
+max_open_orders = 4
+price_collar_bps = 200
+fat_finger_bps = 500
+stale_md_ms = 10000
+max_loss = "50"
+orders_per_sec = 4
+burst = 4
+stp = true
+
+[logging]
+level = "info"
+file = ""
+mirror_level = "warn"

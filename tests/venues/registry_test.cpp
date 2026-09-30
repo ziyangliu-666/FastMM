@@ -32,9 +32,16 @@ VenueSection section(std::string kind) {
 
 TEST_CASE("venues.registry: every shipped connector resolves through its kind and aliases") {
   const VenueRegistry r = builtins();
-  CHECK(r.entries().size() == 7);
-  for (const char* kind :
-       {"binance_spot", "binance_usdm", "bybit", "deribit", "gemini", "nasdaq_itch", "okx"})
+  CHECK(r.entries().size() == 9);
+  for (const char* kind : {"binance_spot",
+                           "binance_usdm",
+                           "bybit",
+                           "coinbase_advanced",
+                           "coinbase_exchange",
+                           "deribit",
+                           "gemini",
+                           "nasdaq_itch",
+                           "okx"})
     CHECK(r.find(kind) != nullptr);
   // Aliases select the same entry, so `kind = "sim"` is the Binance connector.
   CHECK(r.find("sim") == r.find("binance_spot"));
@@ -63,6 +70,16 @@ TEST_CASE("venues.registry: a connector declares whether it needs credentials") 
   CHECK(r.find("gemini")->caps.order_entry);
   CHECK(r.find("gemini")->caps.positions);
   CHECK_FALSE(r.find("gemini")->caps.replace);
+  // Coinbase spot, both APIs: REST orders with no replace, and no positions to report.
+  for (const char* kind : {"coinbase_advanced", "coinbase_exchange"}) {
+    CAPTURE(kind);
+    const VenueEntry* cb = r.find(kind);
+    CHECK(cb->caps.credentials);
+    CHECK(cb->caps.order_entry);
+    CHECK(cb->caps.executions);
+    CHECK_FALSE(cb->caps.replace);
+    CHECK_FALSE(cb->caps.positions);
+  }
 }
 
 TEST_CASE("venues.registry: a venue validates the keys it owns") {

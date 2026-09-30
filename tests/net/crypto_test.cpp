@@ -178,3 +178,92 @@ TEST_CASE("crypto: Ed25519Key signs, verifies and exports the public key") {
   target = std::move(moved);
   CHECK(target.has_private());
 }
+
+TEST_CASE("crypto: base64url without padding, RFC 4648 section 5") {
+  CHECK(base64url_encode("").empty());
+  CHECK(base64url_encode("f") == "Zg");
+  CHECK(base64url_encode("fo") == "Zm8");
+  CHECK(base64url_encode("foo") == "Zm9v");
+  CHECK(base64url_encode("foob") == "Zm9vYg");
+  CHECK(base64url_encode(std::string("\xfb\xff\xfe", 3)) == "-__-");  // "+//+" in base64
+  std::array<std::uint8_t, 8> out{};
+  CHECK(base64url_decode("-__-", out) == 3);
+  CHECK(out[0] == 0xfb);
+  CHECK(out[2] == 0xfe);
+  CHECK(base64url_decode("Zm9vYg", out) == 4);
+  CHECK(base64url_decode("Zm9vYg==", out) == SIZE_MAX);  // padding is not base64url's
+  CHECK(base64url_decode("+//+", out) == SIZE_MAX);
+  CHECK(base64url_decode("Z", out) == SIZE_MAX);
+}
+
+namespace {
+
+// RFC 6979 A.2.5, the P-256 key, as SEC 1 and SubjectPublicKeyInfo PEM.
+constexpr const char* kP256Private =
+    "-----BEGIN EC PRIVATE KEY-----\n"
+    "MHcCAQEEIMmvqdhFunUWa1whV2ex1pNOUMPbNuibEnuKYisSD2choAoGCCqGSM49\n"
+    "AwEHoUQDQgAEYP7UuiVanTHJYet0xjVtaMBJuJI7Yfps5mliLmDyn7Z5A/4QCLi8\n"
+    "maQa6elWKLxk8vGyDC1+n1F3o8KU1EYimQ==\n"
+    "-----END EC PRIVATE KEY-----\n";
+constexpr const char* kP256Public =
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEYP7UuiVanTHJYet0xjVtaMBJuJI7\n"
+    "Yfps5mliLmDyn7Z5A/4QCLi8maQa6elWKLxk8vGyDC1+n1F3o8KU1EYimQ==\n"
+    "-----END PUBLIC KEY-----\n";
+
+std::vector<std::uint8_t> unhex(std::string_view h) {
+  std::vector<std::uint8_t> out;
+  for (std::size_t i = 0; i + 1 < h.size(); i += 2)
+    out.push_back(static_cast<std::uint8_t>(std::stoi(std::string(h.substr(i, 2)), nullptr, 16)));
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("crypto: EcdsaP256Key verifies RFC 6979 and PyJWT signatures and its own") {
+  const EcdsaP256Key key = EcdsaP256Key::from_private_pem(kP256Private);
+  REQUIRE(key.has_private());
+  CHECK(key.public_pem() == kP256Public);
+  const EcdsaP256Key pub = EcdsaP256Key::from_public_pem(kP256Public);
+  REQUIRE(pub.valid());
+  CHECK_FALSE(pub.has_private());
+  // RFC 6979 A.2.5, SHA-256, message "sample": r || s.
+  const std::vector<std::uint8_t> rfc = unhex(
+      "EFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716"
+      "F7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8");
+  CHECK(pub.verify("sample", rfc));
+  CHECK_FALSE(pub.verify("samples", rfc));
+  // An ES256 JWT made by PyJWT 2.10.1 with this key: the signature over "header.payload".
+  const std::string jwt =
+      "eyJhbGciOiJFUzI1NiIsImtpZCI6Im9yZ2FuaXphdGlvbnMvby9hcGlLZXlzL2siLCJub25jZSI6IjAwMTEyMjMzND"
+      "Q1NTY2Nzc4ODk5YWFiYmNjZGRlZWZmIiwidHlwIjoiSldUIn0.eyJzdWIiOiJvcmdhbml6YXRpb25zL28vYXBpS2V5"
+      "cy9rIiwiaXNzIjoiY2RwIiwibmJmIjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDAxMjAsInVyaSI6IkdFVCBhcGkuY29p"
+      "bmJhc2UuY29tL2FwaS92My9icm9rZXJhZ2UvYWNjb3VudHMifQ.QQvhyJgPTEnf_PyddxmFW4QBTlEhXDwfKfIsjYog_"
+      "EqTNUqeAg7qcDeW7MaSEpfLvBKrwBeztt42OoZ0fDge7Q";
+  const std::size_t dot = jwt.rfind('.');
+  std::array<std::uint8_t, 70> sig{};
+  REQUIRE(base64url_decode(std::string_view(jwt).substr(dot + 1), sig) == kEs256SignatureSize);
+  CHECK(pub.verify(std::string_view(jwt).substr(0, dot),
+                   std::span<const std::uint8_t>(sig.data(), kEs256SignatureSize)));
+  // Its own: random nonces, so two signatures differ and both verify.
+  std::array<std::uint8_t, kEs256SignatureSize> a{};
+  std::array<std::uint8_t, kEs256SignatureSize> b{};
+  REQUIRE(key.sign("header.payload", a));
+  REQUIRE(key.sign("header.payload", b));
+  CHECK(a != b);
+  CHECK(pub.verify("header.payload", a));
+  CHECK(pub.verify("header.payload", b));
+  a[5] ^= 1;
+  CHECK_FALSE(pub.verify("header.payload", a));
+  CHECK_FALSE(pub.sign("x", b));  // no private key
+  // Not P-256: an Ed25519 key, junk, a public key read as a private one.
+  CHECK_FALSE(
+      EcdsaP256Key::from_private_pem(fastmm::test::fixture("binance/ed25519-test-private.pem"))
+          .valid());
+  CHECK_FALSE(EcdsaP256Key::from_private_pem("junk").valid());
+  CHECK_FALSE(EcdsaP256Key::from_private_pem(kP256Public).valid());
+  EcdsaP256Key moved = EcdsaP256Key::from_private_pem(kP256Private);
+  EcdsaP256Key target;
+  target = std::move(moved);
+  CHECK(target.has_private());
+}
