@@ -47,6 +47,21 @@ MatchingEngine::SideExposure MatchingEngine::exposure(AccountId account,
   return e;
 }
 
+Level MatchingEngine::best_of(AccountId account, InstrumentId id, Side side) const noexcept {
+  if (id.value >= instrument_count_) return Level{};
+  const SimBook::Levels& levels = books_[id.value].levels(side);
+  for (std::size_t i = levels.size(); i > 0; --i) {
+    Qty sum{};
+    for (std::uint32_t idx = levels[i - 1].head; idx != kNullHandle;) {
+      const SimOrder& o = pool_.get(Handle32{idx});
+      if (o.account == account) sum += o.leaves();
+      idx = o.next;
+    }
+    if (sum.is_positive()) return Level{levels[i - 1].price, sum};
+  }
+  return Level{};
+}
+
 Qty MatchingEngine::account_qty_at(AccountId account,
                                    InstrumentId id,
                                    Side side,

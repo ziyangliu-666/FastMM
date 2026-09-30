@@ -126,9 +126,11 @@ class SimDriver {
   }
   void set_measure_wall_clock(bool v) noexcept { measure_ = v; }
 
-  // warm_up + on_start; seeds the book and publishes the first snapshot in coupled mode.
+  // warm_up + on_start; seeds the book and publishes the first snapshot in coupled mode. The
+  // venues' accounts send their first balance snapshot, delivered at the first step.
   void start() {
     hooks_.warm_up(hooks_.ctx);
+    transport_.publish_balances(clock_.now());
     if (generator_ != nullptr) {
       transport_.enable_aggregator(clock_.now());
       generator_->seed_book(transport_.matching_engine(), seed_levels_, clock_.now());

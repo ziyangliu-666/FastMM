@@ -9,8 +9,11 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace fastmm::sim {
+
+struct SimAccountConfig;
 
 // Largest event a source may yield: a full L2Book<256> snapshot.
 inline constexpr std::uint32_t kMaxSourceEventBytes = BookDeltaMsg::size_for(256, 256);
@@ -38,6 +41,11 @@ class MdSource {
   virtual const EventHeader* next() = 0;
   // Rewind to the first event (sweeps run one cursor per worker).
   virtual void reset() = 0;
+  // The first balance snapshot the source recorded for each venue (sim_account.hpp); null for a
+  // source that cannot carry balances (anything but a journal).
+  [[nodiscard]] virtual const std::vector<SimAccountConfig>* balance_snapshots() const {
+    return nullptr;
+  }
   // Time of the first event if known (invalid Timestamp otherwise); lets the driver start
   // the virtual clock at the data.
   [[nodiscard]] virtual Timestamp start_ts() const { return Timestamp{}; }

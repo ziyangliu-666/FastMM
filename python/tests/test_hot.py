@@ -55,7 +55,8 @@ def test_hot_basic_mm_reproduces_the_committed_fixture_hash(example_config):
     for cls in (BasicMMHot, BasicMMHotFloat):
         r = fastmm.run_backtest(example_config, data=FIXTURE_FMJ, strategy=cls)
         assert r.outbound_sha256 == expected, cls.__name__
-        assert r.outbound_messages > 0 and r.md_events == 1000
+        assert r.outbound_messages > 0
+        assert r.md_events == 1000 + r.transport_stats()["own_tickers"]
         assert r.strategy == "py:" + cls.__name__
     assert r.params["quote_qty"] == "0.002"
 

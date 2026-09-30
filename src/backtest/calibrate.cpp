@@ -710,6 +710,7 @@ TradeSummary live_summary(const OwnOrderLog& log,
   std::sort(fills.begin(), fills.end(), [](const Fill& a, const Fill& b) { return a.ts < b.ts; });
   TradeSummary t = summarize(fills, mids, horizons);
   t.orders = log.orders_sent;
+  t.rejects = log.rejected;
   t.time_to_fill_p50_ms = Quantiles::of(std::move(ttf)).p50 / 1e6;
   return t;
 }
@@ -731,6 +732,7 @@ TradeSummary backtest_summary(const BacktestResult& r,
   }
   TradeSummary t = summarize(fills, mids, horizons);
   t.orders = r.metrics.orders;
+  t.rejects = r.transport.rejects;
   t.time_to_fill_p50_ms = static_cast<double>(r.metrics.fill_quality.time_to_fill_p50_ns) / 1e6;
   return t;
 }
@@ -796,7 +798,7 @@ std::vector<BacktestGap> compare_backtests(const Calibration& c,
                                " does not embed its configuration; pass the one it ran with");
     }
     const std::string source_name = config.empty() ? fmt::format("{} (embedded)", s.path) : config;
-    const bool live = reader.header().tsc0 != 0;
+    const bool live = feed_shows_own(reader.header());
     const OwnOrderLog log = collect_own_orders(reader);
     const Mids mids(reader);
     BacktestGap g;
@@ -843,6 +845,7 @@ std::string format_backtest_gaps(std::span<const BacktestGap> gaps) {
     const TradeSummary& a = g.after;
     auto d = [](std::uint64_t v) { return static_cast<double>(v); };
     row("orders", d(l.orders), d(b.orders), d(a.orders), 0);
+    row("venue rejects", d(l.rejects), d(b.rejects), d(a.rejects), 0);
     row("fills", d(l.fills), d(b.fills), d(a.fills), 0);
     row("buys", d(l.buys), d(b.buys), d(a.buys), 0);
     row("qty", l.qty, b.qty, a.qty, 5);

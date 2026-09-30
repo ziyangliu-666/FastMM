@@ -184,6 +184,8 @@ class MatchingEngine {
     Price best{};
   };
   [[nodiscard]] SideExposure exposure(AccountId account, InstrumentId id, Side side) const noexcept;
+  // The best price on `side` at which `account` rests, with its leaves there; Level{} when none.
+  [[nodiscard]] Level best_of(AccountId account, InstrumentId id, Side side) const noexcept;
   // Leaves of `account`'s orders resting at exactly (id, side, px).
   [[nodiscard]] Qty account_qty_at(AccountId account,
                                    InstrumentId id,

@@ -120,10 +120,10 @@ python examples/python/strategies/basic_mm_hot.py
 ```
 
 ```text
-C++ basic_mm        482b01d7194101894d9492627ea2aa455b53a6ee99fa6bb10914a2169828c186  (54 messages)
-py:BasicMMHot       482b01d7194101894d9492627ea2aa455b53a6ee99fa6bb10914a2169828c186  (54 messages)
-py:BasicMMHotFloat  482b01d7194101894d9492627ea2aa455b53a6ee99fa6bb10914a2169828c186  (54 messages)
-committed           482b01d7194101894d9492627ea2aa455b53a6ee99fa6bb10914a2169828c186
+C++ basic_mm        80f569c438e93c58f6b3df30c2462b9190c6b56862f73eeb18e04f0182cda153  (54 messages)
+py:BasicMMHot       80f569c438e93c58f6b3df30c2462b9190c6b56862f73eeb18e04f0182cda153  (54 messages)
+py:BasicMMHotFloat  80f569c438e93c58f6b3df30c2462b9190c6b56862f73eeb18e04f0182cda153  (54 messages)
+committed           80f569c438e93c58f6b3df30c2462b9190c6b56862f73eeb18e04f0182cda153
 identical
 ```
 

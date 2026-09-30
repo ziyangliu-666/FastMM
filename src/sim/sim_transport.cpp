@@ -73,6 +73,20 @@ SimTransport::SimTransport(const SimClock& clock,
     index_of[v] = static_cast<std::uint8_t>(n_links_);
     links_[n_links_++].emplace(VenueId{v}, vc, seed, cfg);
   }
+  if (!cfg.accounts.empty())
+    accounts_ = std::make_unique<SimAccounts>(instruments, cfg.accounts, cfg.initial_margin);
+  if (cfg.own_orders_in_feed) {
+    const std::size_t n = instruments.size() == 0 ? 1 : instruments.size();
+    own_feed_ = std::make_unique<OwnFeed[]>(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      OwnFeed& f = own_feed_[i];
+      for (std::vector<Level>& v : f.levels) v.reserve(16);
+      f.stale.reserve(16);
+      f.dirty.reserve(16);
+    }
+    own_pending_.reserve(n);
+    own_buf_ = std::make_unique<EventBuf>();
+  }
   me_.set_stp(kStrategyAccount, cfg.stp);
   for (Link*& l : link_of_inst_) l = &at(0);
   for (const Instrument& i : instruments) {
@@ -93,6 +107,8 @@ void SimTransport::enable_aggregator(Timestamp start) noexcept {
   MdAggregatorConfig mc = cfg_.md;
   mc.venue = link(InstrumentId{0}).id;
   agg_ = std::make_unique<MdAggregator>(instruments_.size(), me_, mc, start);
+  own_feed_.reset();  // the aggregated book holds our orders
+  own_pending_.clear();
 }
 
 // ---- TransportLike ---------------------------------------------------------------------------
@@ -162,9 +178,19 @@ void SimTransport::process_order_arrival() noexcept {
     default:
       break;
   }
+  if (own_feed_ != nullptr) flush_own(now);
 }
 
 void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
+  if (accounts_ != nullptr) {
+    const Price px =
+        m.type == OrderType::Market ? venue_best(m.hdr.instrument, opposite(m.side)) : m.price;
+    if (!accounts_->admit(m.cl_ord_id, m.hdr.instrument, m.side, px, m.qty, m.reduce_only != 0)) {
+      accounts_->count_refused();
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
+      return;
+    }
+  }
   NewOrder n;
   n.account = kStrategyAccount;
   n.cl_ord_id = m.cl_ord_id;
@@ -190,6 +216,18 @@ void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
 }
 
 void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept {
+  if (accounts_ != nullptr &&
+      !accounts_->admit_replace(m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty)) {
+    // The venue cancels the order and refuses its replacement (Binance cancelReplace).
+    accounts_->count_refused();
+    if (cfg_.fill_model == FillModel::L2Queue) {
+      queue_cancel(m.orig_cl_ord_id, m.hdr.instrument, now);
+    } else {
+      static_cast<void>(me_.cancel(kStrategyAccount, m.orig_cl_ord_id, now));
+    }
+    emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
+    return;
+  }
   if (cfg_.fill_model == FillModel::L2Queue) {
     queue_replace(m, now);
   } else {
@@ -204,6 +242,15 @@ void SimTransport::flush_md(Timestamp now) noexcept {
 
 void SimTransport::emit_md_thunk(void* ctx, EventHeader& m, Timestamp venue_ts) noexcept {
   static_cast<SimTransport*>(ctx)->push_md_wire(m, venue_ts);
+}
+
+void SimTransport::publish_balances(Timestamp now) noexcept {
+  if (accounts_ == nullptr) return;
+  for (std::size_t k = 0; k < n_links_; ++k) {
+    Link& l = at(k);
+    if (!accounts_->enabled(l.id)) continue;
+    accounts_->snapshot(l.id, now, [&](BalanceMsg& m) { push_balance(l, m); });
+  }
 }
 
 void SimTransport::on_source_event(const EventHeader& md) noexcept {
@@ -234,8 +281,15 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
   // Coupled mode publishes its own view of the book; a venue's mark and funding go through as
   // recorded.
   if (agg_ != nullptr && md.type != EventType::PerpState) return;
+  const EventHeader& out =
+      own_feed_ != nullptr && id.value < instruments_.size() ? with_own(md) : md;
+  forward(out, md.recv_ts, now);
+  if (own_feed_ != nullptr) flush_own(now);
+}
+
+void SimTransport::forward(const EventHeader& md, Timestamp recorded, Timestamp now) noexcept {
   // Forward a copy with the arrival stamp, on the wire of the instrument's venue.
-  Link& l = link(id);
+  Link& l = link(md.instrument);
   std::byte* p = l.md_wire.try_reserve(md.len);
   if (p == nullptr) {
     ++stats_.wire_full;
@@ -245,7 +299,7 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
   auto* h = reinterpret_cast<EventHeader*>(p);
   h->exch_ts = now;
   Timestamp arrival = now + l.lat.md_in();
-  if (l.md_recorded_arrival && md.recv_ts > now) arrival = arrival + (md.recv_ts - now);
+  if (l.md_recorded_arrival && recorded > now) arrival = arrival + (recorded - now);
   if (arrival < l.last_md_arrival) arrival = l.last_md_arrival;
   l.last_md_arrival = arrival;
   h->recv_ts = arrival;
@@ -388,6 +442,7 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     return;
   }
   queue_.get(h).cum_qty = cum;
+  note_own(id, n.side, n.price);
 }
 
 void SimTransport::queue_cancel(ClientOrderId id, InstrumentId route, Timestamp now) noexcept {
@@ -398,6 +453,7 @@ void SimTransport::queue_cancel(ClientOrderId id, InstrumentId route, Timestamp 
   }
   const QueuedOrder o = queue_.get(h);
   queue_.remove(h);
+  note_own(o.instrument, o.side, o.price);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
 }
 
@@ -412,12 +468,14 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
   if (m.price == o.price && m.qty <= o.leaves()) {
     const std::uint64_t new_order_id = next_queue_order_id_++;
     if (queue_.amend_keep_priority(h, m.cl_ord_id, new_order_id, m.qty)) {
+      note_own(o.instrument, o.side, o.price);
       emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
       emit_ack(m.cl_ord_id, new_order_id, o.instrument, now);
       return;
     }
   }
   queue_.remove(h);
+  note_own(o.instrument, o.side, o.price);
   emit_cancel_ack(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, now);
   NewOrder n;
   n.account = kStrategyAccount;
@@ -465,6 +523,7 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                               now,
                               ahead,
                               true);
+                    note_own(id, o.side, o.price);
                     if (o.leaves().is_zero()) queue_.remove(h);
                   });
   tape_[id.value].add(t, now);
@@ -473,13 +532,16 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
 // ---- MatchingSink ------------------------------------------------------------------------------
 
 void SimTransport::on_ack(const SimOrder& o, Timestamp ts) {
-  if (o.account == kStrategyAccount) emit_ack(o.cl_ord_id, o.order_id, o.instrument, ts);
+  if (o.account != kStrategyAccount) return;
+  note_own(o.instrument, o.side, o.price);
+  emit_ack(o.cl_ord_id, o.order_id, o.instrument, ts);
 }
 void SimTransport::on_reject(const NewOrder& o, RejectReason r, Timestamp ts) {
   if (o.account == kStrategyAccount) emit_reject(o.cl_ord_id, o.instrument, r, ts);
 }
 void SimTransport::on_cancel(const SimOrder& o, CancelReason r, Timestamp ts) {
   if (o.account != kStrategyAccount) return;
+  note_own(o.instrument, o.side, o.price);
   if (is_expiry(r)) {
     ++stats_.expired;
     emit_expired(o.cl_ord_id, o.order_id, o.instrument, o.cum_qty, ts);
@@ -497,6 +559,7 @@ void SimTransport::on_fill(
     const SimOrder& maker, const SimOrder& taker, Price px, Qty qty, Timestamp ts) {
   const std::uint64_t exec = next_exec_id_++;
   if (maker.account == kStrategyAccount) {
+    note_own(maker.instrument, maker.side, maker.price);
     emit_fill(maker.cl_ord_id,
               maker.order_id,
               maker.instrument,
@@ -552,6 +615,7 @@ void SimTransport::emit_ack(ClientOrderId id,
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_reject(ClientOrderId id,
                                InstrumentId inst,
@@ -573,6 +637,9 @@ void SimTransport::emit_reject(ClientOrderId id,
     case RejectReason::DuplicateId:
       ++stats_.rejects_duplicate;
       break;
+    case RejectReason::InsufficientBalance:
+      ++stats_.rejects_balance;
+      break;
     default:
       ++stats_.rejects_other;
       break;
@@ -582,9 +649,17 @@ void SimTransport::emit_reject(ClientOrderId id,
   init_header(m, EventType::OrderReject, inst, l.id);
   m.cl_ord_id = id;
   m.reason = r;
-  m.venue_code = -static_cast<std::int32_t>(r);
-  m.text = to_string(r);
+  if (r == RejectReason::InsufficientBalance) {
+    m.venue_code = -2010;  // Binance: NEW_ORDER_REJECTED, "Account has insufficient balance ..."
+    m.text = "Account has insufficient balance";
+  } else {
+    m.venue_code = -static_cast<std::int32_t>(r);
+    m.text = to_string(r);
+  }
+  // A duplicate id names another order, whose hold stays.
+  if (accounts_ != nullptr && r != RejectReason::DuplicateId) accounts_->close(id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_cancel_ack(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {
@@ -595,7 +670,9 @@ void SimTransport::emit_cancel_ack(
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
+  if (accounts_ != nullptr) accounts_->close(id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_cancel_reject(ClientOrderId id,
                                       InstrumentId inst,
@@ -619,7 +696,9 @@ void SimTransport::emit_expired(
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
+  if (accounts_ != nullptr) accounts_->close(id);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 void SimTransport::emit_fill(ClientOrderId id,
                              std::uint64_t order_id,
@@ -659,7 +738,9 @@ void SimTransport::emit_fill(ClientOrderId id,
     ctx.queue_known = queue_known;
     observer_->on_fill(m, ts, ctx);
   }
+  if (accounts_ != nullptr) accounts_->fill(id, px, qty, leaves, m.fee);
   push_order_wire(l, m.hdr, ts);
+  publish_account(l, ts);
 }
 
 void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) noexcept {
@@ -674,6 +755,19 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
   if (observer_ != nullptr && h.type != EventType::OrderFill)
     observer_->on_order_event(h, venue_ts);
   if (!l.order_wire.try_push(&h, h.len)) ++stats_.wire_full;
+}
+
+void SimTransport::publish_account(Link& l, Timestamp venue_ts) noexcept {
+  if (accounts_ != nullptr)
+    accounts_->publish(l.id, venue_ts, [&](BalanceMsg& m) { push_balance(l, m); });
+}
+
+void SimTransport::push_balance(Link& l, BalanceMsg& m) noexcept {
+  const Timestamp arrival = std::max(l.last_order_arrival, m.hdr.exch_ts);
+  l.last_order_arrival = arrival;
+  m.hdr.recv_ts = arrival;
+  m.hdr.t0_cycles = Cycles{static_cast<std::uint64_t>(arrival.ns)};
+  if (!l.order_wire.try_push(&m.hdr, m.hdr.len)) ++stats_.wire_full;
 }
 
 void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {
@@ -691,6 +785,204 @@ void SimTransport::push_md_wire(EventHeader& h, Timestamp venue_ts) noexcept {
     return;
   }
   ++stats_.md_forwarded;
+}
+
+// ---- our orders in the recorded feed -----------------------------------------------------------
+
+void SimTransport::note_own(InstrumentId id, Side side, Price px) noexcept {
+  if (own_feed_ == nullptr || id.value >= instruments_.size() || !px.is_positive()) return;
+  OwnFeed& f = own_feed_[id.value];
+  const std::pair<Side, Price> key{side, px};
+  if (std::find(f.stale.begin(), f.stale.end(), key) == f.stale.end()) f.stale.push_back(key);
+  if (std::find(f.dirty.begin(), f.dirty.end(), key) == f.dirty.end()) f.dirty.push_back(key);
+  if (!f.pending) {
+    f.pending = true;
+    own_pending_.push_back(id);
+  }
+}
+
+Qty SimTransport::model_own_at(InstrumentId id, Side side, Price px) const noexcept {
+  if (cfg_.fill_model == FillModel::Matching)
+    return me_.account_qty_at(kStrategyAccount, id, side, px);
+  Qty sum{};
+  queue_.for_each([&](QueuePositionModel::Handle32, const QueuedOrder& o) {
+    if (o.instrument == id && o.side == side && o.price == px) sum += o.leaves();
+  });
+  return sum;
+}
+
+void SimTransport::refresh_own(InstrumentId id, OwnFeed& f) noexcept {
+  for (const auto& [side, px] : f.stale) {
+    std::vector<Level>& v = f.levels[static_cast<std::size_t>(side)];
+    const Qty q = model_own_at(id, side, px);
+    auto it = std::find_if(v.begin(), v.end(), [&](const Level& l) { return l.price == px; });
+    if (it != v.end()) {
+      if (q.is_positive()) {
+        it->qty = q;
+      } else {
+        v.erase(it);
+      }
+    } else if (q.is_positive()) {
+      v.push_back(Level{px, q});
+    }
+  }
+  f.stale.clear();
+}
+
+namespace {
+Qty qty_at(const std::vector<Level>& v, Price px) noexcept {
+  for (const Level& l : v) {
+    if (l.price == px) return l.qty;
+  }
+  return Qty{};
+}
+Level best_level(const std::vector<Level>& v, Side side) noexcept {
+  Level b{};
+  for (const Level& l : v) {
+    if (b.qty.is_zero() || better(side, l.price, b.price)) b = l;
+  }
+  return b;
+}
+}  // namespace
+
+Level SimTransport::recorded_top(InstrumentId id, Side side) const noexcept {
+  const OwnFeed& f = own_feed_[id.value];
+  const L2Book<256>& book = mirror_[id.value];
+  const bool buy = side == Side::Buy;
+  if (f.tickers && f.ticker_newer) return buy ? f.recorded_bid : f.recorded_ask;
+  return buy ? book.best_bid() : book.best_ask();
+}
+
+Qty SimTransport::shown_own(InstrumentId id, Side side, Price px) const noexcept {
+  const Level opp = recorded_top(id, opposite(side));
+  if (opp.qty.is_positive() && (side == Side::Buy ? px >= opp.price : px <= opp.price))
+    return Qty{};
+  return qty_at(own_feed_[id.value].levels[static_cast<std::size_t>(side)], px);
+}
+
+Level SimTransport::shown_top(InstrumentId id, Side side) const noexcept {
+  const OwnFeed& f = own_feed_[id.value];
+  Level top = recorded_top(id, side);
+  Level own{};
+  for (const Level& l : f.levels[static_cast<std::size_t>(side)]) {
+    if (!shown_own(id, side, l.price).is_positive()) continue;
+    if (own.qty.is_zero() || better(side, l.price, own.price)) own = l;
+  }
+  if (own.qty.is_zero()) return top;
+  if (top.qty.is_zero() || better(side, own.price, top.price)) return own;
+  if (own.price == top.price) top.qty += own.qty;
+  return top;
+}
+
+const EventHeader& SimTransport::with_own(const EventHeader& md) noexcept {
+  const InstrumentId id = md.instrument;
+  OwnFeed& f = own_feed_[id.value];
+  switch (md.type) {
+    case EventType::BookTicker: {
+      const auto& m = msg_cast<BookTickerMsg>(&md);
+      f.tickers = true;
+      f.ticker_newer = true;
+      f.recorded_bid = Level{m.bid_px, m.bid_qty};
+      f.recorded_ask = Level{m.ask_px, m.ask_qty};
+      refresh_own(id, f);
+      auto& out = own_buf_->as<BookTickerMsg>();
+      std::memcpy(&out, &m, sizeof m);
+      const Level bid = shown_top(id, Side::Buy);
+      const Level ask = shown_top(id, Side::Sell);
+      out.bid_px = bid.price;
+      out.bid_qty = bid.qty;
+      out.ask_px = ask.price;
+      out.ask_qty = ask.qty;
+      f.sent_bid = bid;
+      f.sent_ask = ask;
+      return out.hdr;
+    }
+    case EventType::BookDelta:
+    case EventType::BookSnapshot: {
+      f.ticker_newer = false;
+      refresh_own(id, f);
+      const auto& d = msg_cast<BookDeltaMsg>(&md);
+      const bool snapshot = d.is_snapshot();
+      if (f.dirty.empty() && f.levels[0].empty() && f.levels[1].empty()) return md;
+      auto& out = own_buf_->as<BookDeltaMsg>();
+      std::memcpy(&out, &d, sizeof(BookDeltaMsg));
+      constexpr std::size_t kCap = (kMaxSourceEventBytes - sizeof(BookDeltaMsg)) / sizeof(Level);
+      Level* lv = out.levels();
+      std::uint32_t count[2] = {0, 0};
+      std::size_t n = 0;
+      for (const Side side : {Side::Buy, Side::Sell}) {
+        const auto k = static_cast<std::size_t>(side);
+        const std::vector<Level>& own = f.levels[k];
+        const std::size_t first = n;
+        for (const Level& l : side == Side::Buy ? d.bids() : d.asks()) {
+          Level x = l;
+          const Qty q = shown_own(id, side, l.price);
+          if (q.is_positive()) {
+            x.qty += q;
+            ++stats_.own_levels;
+          }
+          if (n < kCap) lv[n++] = x;
+        }
+        const auto listed = [&](Price px) {
+          for (std::size_t i = first; i < n; ++i) {
+            if (lv[i].price == px) return true;
+          }
+          return false;
+        };
+        const auto add = [&](Price px) {
+          if (listed(px) || n >= kCap) return;
+          const Qty total = level_qty(mirror_[id.value], side, px) + shown_own(id, side, px);
+          if (snapshot && total.is_zero()) return;
+          lv[n++] = Level{px, total};
+          ++stats_.own_levels;
+        };
+        // Our levels that changed since the last depth update; a snapshot lists all of ours.
+        for (const auto& [s, px] : f.dirty) {
+          if (s == side) add(px);
+        }
+        if (snapshot) {
+          for (const Level& l : own) add(l.price);
+        }
+        count[k] = static_cast<std::uint32_t>(n - first);
+      }
+      f.dirty.clear();
+      out.bid_count = count[0];
+      out.ask_count = count[1];
+      out.hdr.len = BookDeltaMsg::size_for(count[0], count[1]);
+      return out.hdr;
+    }
+    default:
+      return md;
+  }
+}
+
+void SimTransport::flush_own(Timestamp now) noexcept {
+  for (const InstrumentId id : own_pending_) {
+    OwnFeed& f = own_feed_[id.value];
+    f.pending = false;
+    refresh_own(id, f);
+    if (!f.tickers) continue;
+    const Level bid = shown_top(id, Side::Buy);
+    const Level ask = shown_top(id, Side::Sell);
+    if (bid.price == f.sent_bid.price && bid.qty == f.sent_bid.qty &&
+        ask.price == f.sent_ask.price && ask.qty == f.sent_ask.qty)
+      continue;
+    // The venue's real-time top of book changed with our order: its ticker stream says so. No
+    // update id of the venue's own: a strategy compares it with the depth book by time. Flagged
+    // synthetic: strip_own drops it from this run's journal.
+    BookTickerMsg m{};
+    init_header(m, EventType::BookTicker, id, link(id).id);
+    m.hdr.flags |= EventHeader::kSynthetic;
+    m.bid_px = bid.price;
+    m.bid_qty = bid.qty;
+    m.ask_px = ask.price;
+    m.ask_qty = ask.qty;
+    f.sent_bid = bid;
+    f.sent_ask = ask;
+    ++stats_.own_tickers;
+    push_md_wire(m.hdr, now);
+  }
+  own_pending_.clear();
 }
 
 // ---- engine side -------------------------------------------------------------------------------

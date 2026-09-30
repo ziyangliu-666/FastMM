@@ -13,11 +13,13 @@
 #include "fastmm/backtest/own_orders.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/sim/sim_account.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fastmm::bt {
 
@@ -33,6 +35,12 @@ class JournalSource final : public MdSource {
   // Null unless strip_own.
   [[nodiscard]] const OwnOrderStripper* stripper() const noexcept { return stripper_.get(); }
   [[nodiscard]] std::string note() const override;
+  // The first balance snapshot the journal recorded for each venue (the BalanceMsg rows from its
+  // first kSnapshot message to the kSnapshotEnd), each asset at its total; account rows
+  // (kAccount) are left out. Empty when the journal has none.
+  [[nodiscard]] const std::vector<sim::SimAccountConfig>* balance_snapshots() const override {
+    return &balances_;
+  }
 
   [[nodiscard]] static bool is_market_data(EventType t) noexcept {
     return t == EventType::BookDelta || t == EventType::BookSnapshot || t == EventType::Trade ||
@@ -46,6 +54,7 @@ class JournalSource final : public MdSource {
   std::unique_ptr<OwnOrderStripper> stripper_;
   std::size_t orders_ = 0;
   EventBuf buf_;
+  std::vector<sim::SimAccountConfig> balances_;
 };
 
 // Writes the events of `source` (all, or the first `max_events` when non-zero) to a fresh

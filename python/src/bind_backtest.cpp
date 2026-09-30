@@ -249,6 +249,7 @@ py::dict transport_dict(const sim::SimTransportStats& s) {
   d["rejects_level_full"] = s.rejects_level_full;
   d["rejects_invalid"] = s.rejects_invalid;
   d["rejects_duplicate"] = s.rejects_duplicate;
+  d["rejects_balance"] = s.rejects_balance;
   d["rejects_other"] = s.rejects_other;
   d["fills"] = s.fills;
   d["cancel_acks"] = s.cancel_acks;
@@ -256,6 +257,8 @@ py::dict transport_dict(const sim::SimTransportStats& s) {
   d["expired"] = s.expired;
   d["md_forwarded"] = s.md_forwarded;
   d["md_delivered"] = s.md_delivered;
+  d["own_tickers"] = s.own_tickers;
+  d["own_levels"] = s.own_levels;
   d["order_events_delivered"] = s.order_events_delivered;
   d["fees_charged"] = raw_to_float(s.fees_charged.raw);
   return d;

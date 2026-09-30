@@ -7,6 +7,7 @@
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <stdexcept>
@@ -198,6 +199,30 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
       source_ = synthetic_.get();
     }
   }
+  if (cfg_.balances_from_journal) {
+    const std::vector<sim::SimAccountConfig>* snapshots =
+        source_ != nullptr ? source_->balance_snapshots() : nullptr;
+    if (snapshots == nullptr) {
+      throw std::invalid_argument(
+          "backtest: balances_from_journal needs one journal as the data source");
+    }
+    std::vector<sim::SimAccountConfig>& accounts = cfg_.transport.accounts;
+    for (const sim::SimAccountConfig& a : *snapshots) {
+      const bool traded = std::any_of(cfg_.instruments.begin(),
+                                      cfg_.instruments.end(),
+                                      [&](const Instrument& i) { return i.venue == a.venue; });
+      if (!traded) continue;
+      const auto it =
+          std::find_if(accounts.begin(), accounts.end(), [&](const sim::SimAccountConfig& c) {
+            return c.venue == a.venue;
+          });
+      if (it != accounts.end()) {
+        *it = a;
+      } else {
+        accounts.push_back(a);
+      }
+    }
+  }
   Timestamp start = cfg_.start;
   if (source_ != nullptr && source_->start_ts().valid()) start = source_->start_ts();
   backend_ = std::make_unique<sim::SimBackend>(cfg_.instruments, cfg_.transport, start);
@@ -219,6 +244,7 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
     info.session_epoch = cfg_.engine.session_epoch;
     info.quoting_enabled = cfg_.engine.quoting_enabled;
     info.replace_venues = cfg_.transport.replace_mask();
+    info.own_in_feed = cfg_.transport.own_orders_in_feed;
     info.config_toml = cfg_.config_toml;
     info.params = schema;
     info.strategy_meta = strategy_meta;

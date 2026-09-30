@@ -18,7 +18,8 @@ def test_parity_with_cpp_golden_fixture(example_config):
     result = fastmm.run_backtest(example_config, data=str(FIXTURE_FMJ))
     expected = FIXTURE_SHA.read_text().strip()
     assert result.outbound_sha256 == expected
-    assert result.md_events == 1000
+    # the recorded events and a book ticker each time our orders moved the top of book
+    assert result.md_events == 1000 + result.transport_stats()["own_tickers"]
     assert result.strategy == "basic_mm"
 
 

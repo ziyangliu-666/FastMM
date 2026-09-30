@@ -15,6 +15,12 @@ The simulated venue ([Simulated exchange](../reference/sim-exchange.md)) and the
 
 The synthetic market's touch sits `base_spread_ticks` from its mid, so at a mid of 60,000 USDT and a tick of 0.01 USDT the whole spread is about 0.003 bps: no passive strategy in that market can capture more than a fraction of a basis point, whatever it quotes. And `fill_model = "l2_queue"` replays recorded levels with no counterparties at all, so it checks post-only orders against the same book the strategy saw and never produces the post-only rejects that stale market data causes live ([Configuration](../reference/configuration.md#backtest)). Its queue position starts at the displayed quantity at the order's price, or the touch's of a book ticker newer than the depth, less what the trades printed since took, and is capped by the ticker; `ctx.queue_ahead` runs the same model on the data the strategy sees ([Strategy API](../reference/strategy-api.md#execution-view)). [Calibrating against live sessions](#calibrating-against-live-sessions) measures how close it comes.
 
+## Our orders in the feed
+
+A live venue's depth and book ticker streams show our resting orders; a strategy that reads the touch sees its own quote there. With recorded data (`[backtest] own_orders_in_feed`, on by default) the simulated venue does the same (`SimTransport::with_own`): each forwarded depth level and ticker carries our resting quantity at its price, the next depth update also carries our levels that changed since the last one (quantity 0 for one that was only ours), and a book ticker goes out when one of our orders moves the top of book, flagged synthetic and with no update id, so a strategy comparing it with the depth book goes by time. Our orders at or through the recorded opposite touch are not shown: a live venue would have matched them, and the fill model waits for a trade. The synthetic market's book holds our orders in any case. The engine follows our quantity in the feed as on a live venue.
+
+Without it a strategy acts on a book a live venue never showed. `lead_mm` never improves on its own order (a live book shows it at the touch); when the level it had improved on goes, a feed without our order shows the next level as the touch, and the strategy moves its quote down to it and back, a cancel and a new order each time. On two live BTCU sessions the `strip_own` backtests sent 18 and 20 % more orders than the sessions with the same fills; with our orders in the feed, 6 and 2 % more.
+
 ## Markouts
 
 A market maker's fill is worth the spread it captured minus what the mid took back afterwards. For a fill of signed quantity `s` (positive bought, negative sold) at price `p` and time `t`, with the venue mid `m`:
@@ -63,6 +69,20 @@ A run can hold instruments on several venues: quote one on venue A and hedge ano
 Recorded feeds of the venues are merged by event time: `--data "binance:BTCUSDT,2024-03-27,venue=0; csv:other.csv,venue=1"`, or a list in Python (`data=[...]`). Each source's `venue=` must be the venue of its instruments in `[venues]` order. The venues' clocks are taken as they are: a feed stamped with local receive time and one stamped with venue time interleave wrongly by the difference.
 
 `equity.csv` gains `pnl_<id>`, `position_<id>`, `mid_<id>` and `quoted_<id>` per instrument when there is more than one (`result.equity_by_instrument` in Python); `pnl` is in the instrument's settlement currency. The `position` and `mid` columns stay the sum over instruments and instrument 0's mid. The synthetic market drives instrument 0 only.
+
+## Balances
+
+With `[backtest.balances]` ([Configuration](../reference/configuration.md#backtestbalances)) each simulated venue keeps the strategy's account (`src/sim/sim_account.cpp`):
+
+| Instrument | Held by an order | A fill |
+|---|---|---|
+| spot buy | notional at the order price, in the quote asset (a market buy at the opposite touch) | adds the base, takes the notional at the fill price and the fee from the quote |
+| spot sell | quantity, in the base asset | takes the base, adds the notional less the fee to the quote |
+| derivative | notional x `[[instruments]] initial_margin` of the larger side of the instrument's orders, in the settlement asset; nothing for an order that only reduces the position | moves the position's margin at its entry price into locked; closing realises PnL into the wallet; the fee comes out of it |
+
+An order that holds more than the free balance is refused with `InsufficientBalance` (venue code `-2010`); a replace whose new leg does not fit cancels the order and refuses the new one. Unrealised PnL is not counted in a derivative's free margin. The venue reports a snapshot at the start and, after each acknowledgement, fill, cancel, expiry or reject that moved an asset, that asset's row behind the order event, on the same connection. The engine's estimate, `[risk] check_balance` (`BalanceShort` before an order leaves), `ctx.balance`, `basic_mm`'s sizing and `xmm`'s side pulling work on those reports as on a live venue's ([Risk model](risk-model.md#balance-check)). With `check_balance = false` the order goes out and the venue refuses it, which is what a session without a balance table got live.
+
+`balances_from_journal = true` starts each venue's account from the first balance snapshot of the journal the backtest runs over, so a live session replayed as a `strip_own` backtest starts from the balances it had.
 
 ## Reading the summary
 
@@ -113,7 +133,7 @@ latency_ack_jitter_us = 817
 
 `md_arrival = "recorded"` is for backtests over journals like these: market data reaches the strategy when the session received it.
 
-`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--csv` writes the fill-check grid.
+`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, the venue's rejects, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--csv` writes the fill-check grid.
 
 ## Reference example
 
