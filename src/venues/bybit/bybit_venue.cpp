@@ -210,6 +210,10 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
       if (linear) {
         // qty is in the base coin and priced in the settle coin: notional = price * qty.
         inst->contract_multiplier = Qty::from_int(1);
+        // The tickers topic states the interval too (fundingIntervalHour); this covers a frame
+        // without it.
+        if (inst->id.value < kMaxInstruments)
+          funding_interval_[inst->id.value] = Duration{f->funding_interval_min * 60'000'000'000LL};
         inst->expiry_ns = 0;
         inst->flags = static_cast<std::uint8_t>((inst->flags | Instrument::kReduceOnlySupported) &
                                                 ~Instrument::kInverse);
@@ -384,7 +388,12 @@ void BybitVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (symbols_ == nullptr || symbols_->venue_of(id) != id_) continue;
     if (std::find(subscribed_.begin(), subscribed_.end(), id) != subscribed_.end()) continue;
     subscribed_.push_back(id);
-    if (md_feed_) md_feed_->add_instrument(id);
+    if (md_feed_) {
+      // Linear instruments are LinearPerpetual (load_reference_data): their tickers are read.
+      md_feed_->add_instrument(id, cfg_.category == BybitCategory::Linear);
+      if (id.value < kMaxInstruments)
+        md_feed_->set_funding_interval(id, funding_interval_[id.value]);
+    }
     if (cfg_.category == BybitCategory::Linear && instruments_ != nullptr) {
       const std::string coin(instruments_->get(id).quote.view());
       if (!coin.empty() &&

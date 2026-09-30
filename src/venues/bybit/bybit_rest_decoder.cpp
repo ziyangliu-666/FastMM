@@ -46,6 +46,7 @@ std::string decode_instruments(std::string_view json, std::vector<InstrumentInfo
     if (e["status"].get(s) == sj::SUCCESS) i.status = std::string(s);
     if (e["settleCoin"].get(s) == sj::SUCCESS) i.settle_coin = std::string(s);
     if (e["contractType"].get(s) == sj::SUCCESS) i.contract_type = std::string(s);
+    if (e["fundingInterval"].get(i.funding_interval_min) != sj::SUCCESS) i.funding_interval_min = 0;
     dom::element lot;
     dom::element price;
     if (e["lotSizeFilter"].get(lot) != sj::SUCCESS || e["priceFilter"].get(price) != sj::SUCCESS)

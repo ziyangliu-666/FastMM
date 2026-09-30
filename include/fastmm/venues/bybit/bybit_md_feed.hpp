@@ -1,11 +1,14 @@
 #pragma once
-// BybitMdFeed: the MarketDataFeed (feed.hpp) for Bybit v5 spot. Owns the decoder, one
+// BybitMdFeed: the MarketDataFeed (feed.hpp) for Bybit v5 spot and linear. Owns the decoder, one
 // BybitBookSync per subscribed instrument and the market-data EventSink; runs on the venue's
 // reactor thread and allocates nothing after add_instrument().
 //
 // Subscriptions (https://bybit-exchange.github.io/docs/v5/ws/connect, "How to Subscribe to
 // Topics"): {"req_id":..,"op":"subscribe","args":[...]}, at most 10 args per request on
-// spot. Topics per instrument: orderbook.<depth>.SYM, orderbook.1.SYM, publicTrade.SYM.
+// spot. Topics per instrument: orderbook.<depth>.SYM, orderbook.1.SYM, publicTrade.SYM, and
+// tickers.SYM for a perpetual (mark, index, funding, open interest -> PerpStateMsg; the parser
+// keeps the fields the deltas omit). The feed's on_connected() clears that cache: a reconnect
+// starts from the next tickers snapshot.
 #include "fastmm/core/time.hpp"
 #include "fastmm/venues/bybit/bybit_book_sync.hpp"
 #include "fastmm/venues/bybit/bybit_md_parser.hpp"
@@ -53,10 +56,12 @@ class BybitMdFeed {
     index_.fill(-1);
   }
 
-  bool add_instrument(InstrumentId id) {
+  // `perp`: the instrument is a perpetual, its tickers topic is subscribed.
+  bool add_instrument(InstrumentId id, bool perp = false) {
     if (!symbols_.contains(id) || id.value >= kMaxInstruments || index_[id.value] >= 0)
       return false;
     index_[id.value] = static_cast<std::int16_t>(syncs_.size());
+    perp_[id.value] = perp;
     syncs_.push_back(std::make_unique<BybitBookSync>(id, venue_, sink_, requester_, min_interval_));
     syncs_.back()->set_log_names(log_name_, symbols_.venue_symbol(id));
     ids_.push_back(id);
@@ -72,11 +77,18 @@ class BybitMdFeed {
   [[nodiscard]] std::span<const InstrumentId> instruments() const noexcept { return ids_; }
   [[nodiscard]] int depth() const noexcept { return depth_; }
 
+  // The instrument's funding interval from reference data (BybitMdParser::set_funding_interval).
+  void set_funding_interval(InstrumentId id, Duration interval) noexcept {
+    parser_.set_funding_interval(id, interval);
+  }
+
   [[nodiscard]] std::vector<std::string> topics(InstrumentId id) const {
     const std::string sym(symbols_.venue_symbol(id));
-    return {"orderbook." + std::to_string(depth_) + "." + sym,
-            "orderbook.1." + sym,
-            "publicTrade." + sym};
+    std::vector<std::string> t{"orderbook." + std::to_string(depth_) + "." + sym,
+                               "orderbook.1." + sym,
+                               "publicTrade." + sym};
+    if (id.value < kMaxInstruments && perp_[id.value]) t.push_back("tickers." + sym);
+    return t;
   }
   // Control path (rare): unsubscribe + subscribe the depth topic to obtain a new snapshot.
   [[nodiscard]] std::vector<std::string> resubscribe_payloads(InstrumentId id) const {
@@ -192,6 +204,7 @@ class BybitMdFeed {
   std::int64_t min_interval_;
   BybitMdParser parser_;
   std::array<std::int16_t, kMaxInstruments> index_{};
+  std::array<bool, kMaxInstruments> perp_{};
   std::vector<std::unique_ptr<BybitBookSync>> syncs_;
   std::vector<InstrumentId> ids_;
   std::vector<std::string> payloads_;

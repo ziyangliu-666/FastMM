@@ -5,6 +5,7 @@
 //       spot:   result.list[] {symbol, baseCoin, quoteCoin, status, lotSizeFilter{basePrecision,
 //               minOrderQty, maxOrderQty, minOrderAmt, maxOrderAmt}, priceFilter{tickSize}}
 //       linear: result.list[] {symbol, contractType, status, baseCoin, quoteCoin, settleCoin,
+//               fundingInterval (minutes; 0 for dated futures),
 //               lotSizeFilter{qtyStep, minOrderQty, maxOrderQty, minNotionalValue},
 //               priceFilter{tickSize}}; qty is in the base coin, so the multiplier is 1
 //   GET /v5/market/time -> result.timeNano / top-level `time` (ms)
@@ -42,6 +43,7 @@ struct InstrumentInfo {
   Qty max_qty{};
   Notional min_amount{};  // minOrderAmt (spot) or minNotionalValue (linear)
   Notional max_amount{};
+  std::int64_t funding_interval_min = 0;  // linear: fundingInterval
 };
 
 // One row of GET /v5/position/list.

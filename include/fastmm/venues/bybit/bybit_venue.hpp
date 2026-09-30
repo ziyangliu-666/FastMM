@@ -4,7 +4,8 @@
 //
 // Channels on one reactor thread (URLs: https://bybit-exchange.github.io/docs/v5/ws/connect):
 //   md       wss://stream-testnet.bybit.com/v5/public/spot   orderbook.<depth> / orderbook.1 /
-//            (.../v5/public/linear)                          publicTrade (BybitMdFeed)
+//            (.../v5/public/linear)                          publicTrade (BybitMdFeed); linear:
+//                                                            tickers
 //   private  wss://stream-testnet.bybit.com/v5/private       op auth, then order / execution /
 //            wallet (and position for linear) topics, and dcp.spot / dcp.future when armed
 //   trade    wss://stream-testnet.bybit.com/v5/trade         op auth, then order.create /
@@ -24,8 +25,9 @@
 // End, a subscribed symbol absent from the list being flat. Between reconciliations the `position`
 // topic is compared, as Binance USD-M compares ACCOUNT_UPDATE, with the connector's sum of the
 // fills it forwarded once neither has changed for kPositionSettleMs, and a PositionUpdateMsg
-// corrects the engine only when they differ (liquidation, ADL, another client). The ticker topic
-// (mark price, funding) is not subscribed: no engine message carries it, and funding is not booked.
+// corrects the engine only when they differ (liquidation, ADL, another client). The md channel
+// also subscribes tickers.SYM: mark, index, funding rate and open interest go to the engine as
+// PerpStateMsg (bybit_md_parser.hpp).
 //
 // Balances (bybit_balance.hpp for the mapping): after every snapshot the driver's balance leg
 // reads GET /v5/account/wallet-balance?accountType=UNIFIED, stamped with the reply's `time`; the
@@ -315,6 +317,8 @@ class BybitVenue final : public Venue, private ReconcileHooks {
     bool pending = false;  // a position-topic value has not been compared yet
   };
   std::array<PositionCheck, kMaxInstruments> positions_{};
+  // Linear: instruments-info fundingInterval per instrument (the feed's fallback interval).
+  std::array<Duration, kMaxInstruments> funding_interval_{};
 
   // A row of GET /v5/execution/list. Bybit's history has no ascending id: the replay's watermark is
   // a time, and the rows read at or after it are known by execId.
