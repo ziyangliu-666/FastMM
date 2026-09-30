@@ -325,6 +325,7 @@ class SimTransport final : public MatchingSink {
   std::unique_ptr<L2Book<256>[]> mirror_;
   QueuePositionModel queue_;
   std::unique_ptr<QueueTouch[]> touch_;  // L2Queue: the latest BookTicker per instrument
+  std::unique_ptr<TradeTape[]> tape_;    // L2Queue: trades since the mirror's last update
   std::unique_ptr<MdAggregator> agg_;
   SimObserver* observer_ = nullptr;
   OutboundHasher hasher_;

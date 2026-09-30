@@ -5,6 +5,14 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `fastmm-data calibrate <journal>...`: the `l2_queue` fill model and the simulated latencies
+  fitted to live sessions. Per session, fill-check over a grid of `queue_conservatism` and without
+  the book ticker, the trade tape or both; hit, miss and false-fill rates, time to fill, the
+  model's queue ahead at the live fills, and each venue's order round trips. The conservatism is
+  cross-validated (fitted on each session, scored on the others) and printed with the latency keys
+  as a `[backtest]` snippet; `--backtest` re-runs each session as a `strip_own` backtest as
+  configured and with the fitted keys, beside the live session (fills, time to fill, PnL
+  decomposition, markouts, all marked against the journal's ticker mids).
 - Mark, index and funding of perpetuals: `PerpStateMsg` (`EventType::PerpState`, market data,
   journaled) carries a venue's mark price, index price, funding rate per interval, the interval,
   the next funding time and open interest, from Binance USD-M `markPrice@1s` (the interval from
@@ -168,6 +176,13 @@ All notable changes are recorded here (Keep a Changelog format).
   `own_in_feed(venue)`.
 
 ### Changed
+- The queue model (`l2_queue`, `ctx.queue_ahead`, fill-check): an order at the touch of a book
+  ticker newer than the depth joins behind the touch's quantity instead of the lesser of it and
+  the depth's (a throttled depth update can predate the level); trades printed after the depth
+  update or the ticker take their quantity from its levels (`TradeTape`), at placement, in a delta's
+  old quantity (no longer counted as cancels ahead as well) and under the ticker's cap; a level
+  that shows less than we have resting there predates our order and counts as others' quantity.
+  The `basic_mm/l2_queue` golden hash is re-baselined (1014 -> 1169 fills).
 - The command lines of all nine programs (`fastmm::cli::live`, `backtest`, `replay`, `data`, and
   `fastmm-pnl`, `fastmm-sim-exchange`, `fastmm-sim-itch`, `fastmm-ctl`, `fastmm-top`) are parsed
   by CLI11 2.7.2, header-only, fetched by CPM and private to the programs. The hand-written argv
@@ -208,6 +223,10 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- Fill-check dropped a live fill reported after its order's end (Binance's API cancel response
+  can arrive before the user stream's execution report; a reconciliation can miss an order that
+  just filled) and counted a trade in a cancelled order's last millisecond that the venue did not
+  fill it with.
 - After a `fastmm-gateway` restart, a fill of an earlier session's order made while the gateway
   was down never reached its strategy: Binance's trade history names the venue's order id alone,
   which the new gateway had never seen, so a shared instrument's account booked it for nobody (or

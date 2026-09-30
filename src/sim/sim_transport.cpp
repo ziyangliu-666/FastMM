@@ -42,7 +42,8 @@ SimTransport::SimTransport(const SimClock& clock,
       me_(instruments.size(), this),
       mirror_(new L2Book<256>[instruments.size() == 0 ? 1 : instruments.size()]),
       queue_(cfg.queue_conservatism_bps),
-      touch_(new QueueTouch[instruments.size() == 0 ? 1 : instruments.size()]) {
+      touch_(new QueueTouch[instruments.size() == 0 ? 1 : instruments.size()]),
+      tape_(new TradeTape[instruments.size() == 0 ? 1 : instruments.size()]) {
   if (!cfg.venue.valid() || cfg.venue.value >= kMaxVenues)
     throw std::invalid_argument("sim: default venue id out of range");
   const auto venue_of = [&](const Instrument& i) { return i.venue.valid() ? i.venue : cfg.venue; };
@@ -379,8 +380,8 @@ void SimTransport::queue_new(const NewOrder& n, Timestamp now) noexcept {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);
     return;
   }
-  const Qty ahead =
-      queue_at_placement(level_qty(book, n.side, n.price), n.side, n.price, book, touch_[id.value]);
+  const Qty ahead = queue_at_placement(
+      level_qty(book, n.side, n.price), n.side, n.price, book, touch_[id.value], &tape_[id.value]);
   const auto h = queue_.place(n.cl_ord_id, order_id, id, n.side, n.price, n.qty, ahead);
   if (!h.valid()) {
     emit_expired(n.cl_ord_id, order_id, id, cum, now);  // queue table full
@@ -432,7 +433,8 @@ void SimTransport::queue_replace(const OutReplaceMsg& m, Timestamp now) noexcept
 
 void SimTransport::queue_on_delta(const BookDeltaMsg& d, Timestamp now) noexcept {
   QueuePositionModel* const models[] = {&queue_};
-  queue_apply_book(mirror_[d.hdr.instrument.value], d, now, models);
+  const std::size_t i = d.hdr.instrument.value;
+  queue_apply_book(mirror_[i], d, now, &tape_[i], models);
 }
 
 void SimTransport::queue_on_ticker(const BookTickerMsg& m) noexcept {
@@ -440,7 +442,7 @@ void SimTransport::queue_on_ticker(const BookTickerMsg& m) noexcept {
   QueueTouch& t = touch_[id.value];
   t = queue_touch(m, [](Side, Price) { return Qty{}; });  // the replayed feed has none of ours
   QueuePositionModel* const models[] = {&queue_};
-  static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, models));
+  static_cast<void>(queue_apply_touch(mirror_[id.value], id, t, &tape_[id.value], models));
 }
 
 void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
@@ -465,6 +467,7 @@ void SimTransport::queue_on_trade(const TradeMsg& t, Timestamp now) noexcept {
                               true);
                     if (o.leaves().is_zero()) queue_.remove(h);
                   });
+  tape_[id.value].add(t, now);
 }
 
 // ---- MatchingSink ------------------------------------------------------------------------------

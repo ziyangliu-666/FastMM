@@ -178,7 +178,7 @@ The flags override `[backtest]` ([Configuration](configuration.md#backtest)).
 
 ## fastmm-data
 
-Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`. `fill-check` compares a live session's fills with the `l2_queue` fill model ([Check the fill model against live fills](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)).
+Lists the market-data sources a backtest can read and packs any of them into a journal ([Market-data sources](data-sources.md)). Downloading the files a source reads is `python3 -m fastmm.data fetch`. `fill-check` compares a live session's fills with the `l2_queue` fill model ([Check the fill model against live fills](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)); `calibrate` fits its conservatism and the simulated latencies to several sessions and prints the `[backtest]` keys ([Calibrating against live sessions](../explanation/backtesting.md#calibrating-against-live-sessions)).
 
 <!-- BEGIN cli-help fastmm-data -->
 ```text
@@ -190,12 +190,15 @@ OPTIONS:
   -h, --help                  print this help and exit
   --version                   print the version and exit
   --data <spec>               convert: source, e.g. binance:BTCUSDT,2024-03-27
-  --config <file.toml>        convert: backtest config supplying the instruments
+  --config <file.toml>        convert: backtest config supplying the instruments; calibrate
+                              --backtest: the configuration to run instead of the journals'
+                              own, one for all or one per journal
   --out <file.fmj>            convert: output journal
   --seed <n>                  convert: session id stamped in the journal (default 1)
-  --conservatism <c,...>      fill-check: queue_conservatism values to compare (default
-                              0,0.5,1)
-  --csv <file.csv>            fill-check: also write one row per order
+  --conservatism <c,...>      fill-check, calibrate: queue_conservatism values to compare
+                              (default 0,0.5,1; calibrate 0,0.25,0.5,0.75,1)
+  --csv <file.csv>            fill-check: also write one row per order; calibrate: one row
+                              per session, inputs and conservatism
 
 SUBCOMMANDS:
   list                        registered data sources, their options and what each one
@@ -204,6 +207,8 @@ SUBCOMMANDS:
                               replays fastest
   fill-check                  how many of a live session's resting orders the l2_queue fill
                               model would have filled
+  calibrate                   fit queue_conservatism and the latencies to live sessions,
+                              cross-validated, and print the [backtest] keys
 
 Downloading what a source reads: python3 -m fastmm.data fetch --help
 ```
@@ -213,9 +218,9 @@ Downloading what a source reads: python3 -m fastmm.data fetch --help
 |---:|---|
 | 0 | the command ran |
 | 2 | bad command line |
-| 3 | bad configuration |
-| 4 | the source is unknown, its options are wrong, or its files are missing; the journal given to `fill-check` cannot be read |
-| 5 | the journal, or the `--csv` file of `fill-check`, could not be written |
+| 3 | bad configuration (`convert`, `calibrate --backtest`) |
+| 4 | the source is unknown, its options are wrong, or its files are missing; a journal given to `fill-check` or `calibrate` cannot be read; a `calibrate --backtest` run failed |
+| 5 | the journal, or the `--csv` file of `fill-check` or `calibrate`, could not be written |
 
 ## fastmm-replay
 

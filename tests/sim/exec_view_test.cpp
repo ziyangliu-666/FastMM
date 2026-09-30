@@ -521,6 +521,40 @@ TEST_CASE("exec_view.engine: a BookTicker newer than the depth book caps the que
   CHECK(*r.ahead(b) == qt("7"));  // at the touch: 8 shown, 1 of them ours
 }
 
+TEST_CASE("exec_view.engine: at a newer ticker's touch the order joins behind the touch") {
+  Rig r(true, true, 10'000);
+  // The depth has nothing at 100.00 yet; the ticker has 4 there.
+  r.book(at(0), {{px("99.99"), qt("7")}}, {{px("100.02"), qt("3")}}, true);
+  r.ticker(at(1), 0, "100.00", "4", "100.02", "3");
+  const ClientOrderId a = r.buy("100.00", "1");
+  r.in(ack(a.value, at(2)));
+  CHECK(*r.ahead(a) == qt("4"));
+  // A ticker stamped after the ack that does not show our order yet: 0.5 at our price is less
+  // than our 1, so all of it is someone else's.
+  r.ticker(at(3), 0, "100.00", "0.5", "100.02", "3");
+  CHECK(*r.ahead(a) == qt("0.5"));
+}
+
+TEST_CASE("exec_view.engine: trades newer than the depth take their quantity from the level") {
+  Rig r(false, true, 0);
+  r.book(at(0), {{px("100.00"), qt("5")}, {px("99.99"), qt("2")}}, {{px("100.02"), qt("3")}}, true);
+  const ClientOrderId a = r.buy("100.00", "1");
+  r.in(ack(a.value, at(1)));
+  CHECK(*r.ahead(a) == qt("5"));
+  r.trade(at(2), "100.00", "2", Side::Sell);
+  CHECK(*r.ahead(a) == qt("3"));
+  // The next delta shows the 3 the trade left: no cancels, even at conservatism 0.
+  r.book(at(3), {{px("100.00"), qt("3")}}, {});
+  CHECK(*r.ahead(a) == qt("3"));
+  // A sell through 99.99 empties that level before the depth says so; an order placed there
+  // after it has nothing ahead.
+  r.trade(at(4), "99.98", "3", Side::Sell);
+  CHECK(r.ahead(a)->is_zero());
+  const ClientOrderId b = r.buy("99.99", "1");
+  r.in(ack(b.value, at(5)));
+  CHECK(r.ahead(b)->is_zero());
+}
+
 TEST_CASE("exec_view.engine: tracking starts at the first queue_ahead call") {
   Rig r(false, /*track=*/false, 10'000);
   r.book(at(0), {{px("100.00"), qt("10")}}, {{px("100.02"), qt("3")}}, true);

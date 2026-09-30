@@ -11,7 +11,14 @@
 //   trade through (better than our price for the aggressor) fills us completely
 //   touch        a BookTicker newer than the depth book (venue update id when both carry one,
 //                else venue time): an order priced better than the ticker's touch on its side has
-//                nothing ahead, one at the touch at most the touch's quantity; at placement too
+//                nothing ahead, one at the touch at most the touch's quantity
+//   placement    behind the depth book's quantity at the price, or, when a newer BookTicker has
+//                the price as its touch, behind the touch's quantity: a throttled depth update
+//                can be older than the level itself (queue_join)
+//   trade tape   trades printed after the depth book's or the touch's venue time took their
+//                quantity from its levels before the next update shows it (TradeTape): at
+//                placement, for the old quantity of a level change, and under a touch's cap
+//   own orders   a level of a live feed shows ours too; others_shown() takes them out
 //
 // Orders live in a Pool; iteration is in handle order for determinism. queue_after_level_change()
 // and queue_after_trade() are the two steps for one order; the engine's live estimate
@@ -26,9 +33,11 @@
 #include "fastmm/core/containers/pool.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/core/messages.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -73,6 +82,15 @@ inline constexpr std::size_t kMaxQueuedOrders = 4096;
   return Qty{};
 }
 
+// Others' quantity in a displayed level that may include `own` of ours: the difference; nothing
+// when the level is exactly ours; the whole level when it shows less than we have resting there,
+// because then it was published before our order reached it (Binance stamps a bookTicker up to a
+// millisecond after an order's transactTime that it does not yet show).
+[[nodiscard]] constexpr Qty others_shown(Qty displayed, Qty own) noexcept {
+  if (own < displayed) return displayed - own;
+  return own == displayed ? Qty{} : displayed;
+}
+
 // A BookTicker's touch, without our own quantity: the freshest top of book when the depth stream
 // is throttled.
 struct QueueTouch {
@@ -98,10 +116,8 @@ template <class Own>
   QueueTouch t;
   t.bid_px = m.bid_px;
   t.ask_px = m.ask_px;
-  const Qty ob = own(Side::Buy, m.bid_px);
-  const Qty oa = own(Side::Sell, m.ask_px);
-  t.bid_qty = ob >= m.bid_qty ? Qty{} : m.bid_qty - ob;
-  t.ask_qty = oa >= m.ask_qty ? Qty{} : m.ask_qty - oa;
+  t.bid_qty = others_shown(m.bid_qty, own(Side::Buy, m.bid_px));
+  t.ask_qty = others_shown(m.ask_qty, own(Side::Sell, m.ask_px));
   t.id = m.hdr.venue_seq;
   t.ts = m.hdr.exch_ts.valid() ? m.hdr.exch_ts : m.hdr.recv_ts;
   return t;
@@ -116,6 +132,78 @@ template <class Own>
   if (price == touch && shown < ahead) return shown;
   return ahead;
 }
+
+// The quantity ahead of an order joining its level: `depth_ahead` from the depth book, or all of
+// `shown` when the touch on its side (newer than the depth book) is at its price; nothing when it
+// improves on the touch.
+[[nodiscard]] constexpr Qty queue_join(
+    Qty depth_ahead, Side side, Price price, Price touch, Qty shown) noexcept {
+  if (!touch.is_positive()) return depth_ahead;
+  if (better(side, price, touch)) return Qty{};
+  return price == touch ? shown : depth_ahead;
+}
+
+// What a trade print leaves of `shown` at (side, px): less its quantity at px on that side (the
+// maker's), nothing when it printed through px (a better price for its aggressor: the level was
+// swept), all of it otherwise.
+[[nodiscard]] constexpr Qty level_after_print(
+    Qty shown, Side side, Price px, Price print_px, Qty print_qty, Side aggressor) noexcept {
+  if (aggressor == side) return shown;
+  if (better(aggressor, print_px, px)) return Qty{};
+  if (print_px != px) return shown;
+  return print_qty >= shown ? Qty{} : shown - print_qty;
+}
+
+// The trades printed after a view of the book (the depth book, a BookTicker) was published: what
+// they took from its levels until a newer view shows it. A throttled depth stream lags the trade
+// stream by up to its interval, so a level can be gone before the depth says so. Fixed capacity:
+// the oldest print is dropped first, and a view older than every print kept may then show more
+// than is left (the conservative side).
+class TradeTape {
+ public:
+  static constexpr std::size_t kCapacity = 64;
+
+  void add(const TradeMsg& t, Timestamp ts) noexcept {
+    Print& p = prints_[(first_ + n_) % kCapacity];
+    p = Print{t.price, t.qty, ts, t.aggressor};
+    if (n_ < kCapacity) {
+      ++n_;
+    } else {
+      first_ = (first_ + 1) % kCapacity;
+    }
+  }
+  // A view as of `ts` shows the prints at or before it: they are no longer needed.
+  void forget_through(Timestamp ts) noexcept {
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < n_; ++i) {
+      const Print& p = prints_[(first_ + i) % kCapacity];
+      if (p.ts > ts) prints_[(first_ + kept++) % kCapacity] = p;
+    }
+    n_ = kept;
+  }
+  // `shown` at (side, px) in a view as of `since`, less what later prints took from it; nothing
+  // when one printed through px (a better price for its aggressor: the level was swept).
+  [[nodiscard]] Qty after(Side side, Price px, Qty shown, Timestamp since) const noexcept {
+    Qty left = shown;
+    for (std::size_t i = 0; i < n_ && left.is_positive(); ++i) {
+      const Print& p = prints_[(first_ + i) % kCapacity];
+      if (p.ts > since) left = level_after_print(left, side, px, p.px, p.qty, p.aggressor);
+    }
+    return left;
+  }
+  [[nodiscard]] std::size_t size() const noexcept { return n_; }
+
+ private:
+  struct Print {
+    Price px;
+    Qty qty;
+    Timestamp ts;
+    Side aggressor = Side::Buy;
+  };
+  std::array<Print, kCapacity> prints_{};
+  std::size_t first_ = 0;
+  std::size_t n_ = 0;
+};
 
 struct QueuedOrder {
   ClientOrderId cl_ord_id;
@@ -260,11 +348,15 @@ class QueuePositionModel {
 }
 
 // Applies a book message to `book` and moves the queue position of every order of `models` on
-// that instrument. A delta shrinks `ahead` level by level (on_level_change); a snapshot carries
-// no per-level history, so it only clamps `ahead` to what the new book shows.
+// that instrument. A delta shrinks `ahead` level by level (on_level_change) from the level's
+// quantity less what the trades printed since the book's last update took (`tape`, may be null):
+// those were queue ahead that on_trade already consumed, not cancels. A snapshot carries no
+// per-level history, so it only clamps `ahead` to what the new book shows. The tape then forgets
+// the prints the book now shows.
 inline void queue_apply_book(L2Book<256>& book,
                              const BookDeltaMsg& d,
                              Timestamp now,
+                             TradeTape* tape,
                              std::span<QueuePositionModel* const> models) noexcept {
   const InstrumentId id = d.hdr.instrument;
   if (d.is_snapshot()) {
@@ -276,34 +368,51 @@ inline void queue_apply_book(L2Book<256>& book,
         if (shown < o.ahead) q->get(h).ahead = shown;
       });
     }
-    return;
-  }
-  for (Side s : {Side::Buy, Side::Sell}) {
-    for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
-      const Qty old = level_qty(book, s, l.price);
-      book.apply_level(s, l.price, l.qty);
-      for (QueuePositionModel* q : models) q->on_level_change(id, s, l.price, old, l.qty);
+  } else {
+    const Timestamp since = book.last_update();
+    for (Side s : {Side::Buy, Side::Sell}) {
+      for (const Level& l : (s == Side::Buy ? d.bids() : d.asks())) {
+        Qty old = level_qty(book, s, l.price);
+        if (tape != nullptr && tape->size() != 0) old = tape->after(s, l.price, old, since);
+        book.apply_level(s, l.price, l.qty);
+        for (QueuePositionModel* q : models) q->on_level_change(id, s, l.price, old, l.qty);
+      }
     }
+    book.set_seq(d.last_update_id);
+    book.set_last_update(now);
   }
-  book.set_seq(d.last_update_id);
-  book.set_last_update(now);
+  if (tape != nullptr) tape->forget_through(now);
 }
 
-// The quantity ahead of an order at placement: `depth_ahead` from the depth book, capped by the
-// latest touch when that is newer than the book.
-[[nodiscard]] inline Qty queue_at_placement(
-    Qty depth_ahead, Side side, Price px, const L2Book<256>& book, const QueueTouch& t) noexcept {
+// The quantity ahead of an order at placement: `depth_ahead` from the depth book, or what the
+// latest touch shows when that is newer than the book (queue_join), each less what the trades
+// printed since took from it (`tape`, may be null).
+[[nodiscard]] inline Qty queue_at_placement(Qty depth_ahead,
+                                            Side side,
+                                            Price px,
+                                            const L2Book<256>& book,
+                                            const QueueTouch& t,
+                                            const TradeTape* tape) noexcept {
+  if (tape != nullptr) depth_ahead = tape->after(side, px, depth_ahead, book.last_update());
   if (!t.valid() || !t.newer_than(book.seq(), book.last_update())) return depth_ahead;
-  return queue_after_touch(depth_ahead, side, px, t.px(side), t.qty(side));
+  const Price touch = t.px(side);
+  const Qty shown = tape != nullptr ? tape->after(side, touch, t.qty(side), t.ts) : t.qty(side);
+  return queue_join(depth_ahead, side, px, touch, shown);
 }
 
-// A touch newer than `book` moves the queue of every order of `models` on instrument `id`. Returns
-// false when the depth book is as new or newer (the touch is not used).
+// A touch newer than `book` moves the queue of every order of `models` on instrument `id`, its
+// sides less what the trades printed since took (`tape`, may be null). Returns false when the
+// depth book is as new or newer (the touch is not used).
 inline bool queue_apply_touch(const L2Book<256>& book,
                               InstrumentId id,
-                              const QueueTouch& t,
+                              QueueTouch t,
+                              const TradeTape* tape,
                               std::span<QueuePositionModel* const> models) noexcept {
   if (!t.newer_than(book.seq(), book.last_update())) return false;
+  if (tape != nullptr) {
+    t.bid_qty = tape->after(Side::Buy, t.bid_px, t.bid_qty, t.ts);
+    t.ask_qty = tape->after(Side::Sell, t.ask_px, t.ask_qty, t.ts);
+  }
   for (QueuePositionModel* q : models) q->on_touch(id, t);
   return true;
 }

@@ -160,6 +160,63 @@ REST funding fetch at connect; Gemini's markPrice gaps; OKX around a settlement 
 processing) unverified; Bybit inverse category; Tardis `derivative_ticker` mapping; demo/testnet
 hosts serving the new streams not checked (production only).
 
+**Item 3 done: fill-model calibration (2026-09-30).** `fastmm-data calibrate <journal>...`
+(`backtest/calibrate.hpp`): per session fill-check over a `queue_conservatism` grid and without
+the ticker, the trade tape or both; hit / miss / false rates, time to fill, the model's queue at
+the live fills, each venue's round trips; the conservatism cross-validated (fit on one session,
+score on the others), the latency fitted to the round trip's p5 and p50 (the simulator's lognormal
+shape), a `[backtest]` snippet; `--backtest` re-runs each session as a `strip_own` backtest as
+configured and with the fitted keys, beside the live session, all marked against the journal's
+ticker mids. Method: docs/explanation/backtesting.md "Calibrating against live sessions".
+Data: the three real-money Binance BTCU sessions (A improve, 3 h; B join the touch, 3 h; V, 1 h).
+Fill-check found four systematic errors, each traced to single orders in the journals:
+* The ticker cap only lowered the queue. An order at a newer ticker's touch took
+  min(depth, ticker), and when the throttled depth had no level there yet, 0: filled at once by the
+  model. Now it joins behind the touch's quantity (`queue_join`).
+* A ticker stamped up to ~1.6 ms after an order's transactTime did not show it yet; stripping our 1
+  from its 0.8 left 0 ahead. A level showing less than our resting quantity predates our order and
+  keeps all of it (`others_shown`; engine, fill-check, `strip_own`).
+* Trades between depth updates: a level traded away before our ack still showed in the depth
+  (B: 0.02377 swept 6 ms before the ack; live filled 1 ms after it). `TradeTape`: prints after the
+  depth's (or ticker's) venue time take their quantity from its levels, at placement, in the old
+  quantity of the next delta (no longer also counted as cancels ahead when conservatism < 1) and
+  under the ticker's cap; in the simulator, fill-check and `ctx.queue_ahead` alike.
+* Measurement: fills reported after the order's end were dropped (Binance's cancel response
+  arrives before the execution report; a reconciliation missed an order that had just filled: 3 V
+  orders), and a trade in a cancelled order's last millisecond counted (6 false fills; the venue
+  did not fill the order with it, so it came after the cancel).
+Fill-check (both / live only / model only), main -> now: A 233/0/6 -> 233/0/3, B 151/2/3 -> 151/2/0,
+V 621/0/7 -> 624/0/2; error (live only + model only over filled either way) 0.025 -> 0.013,
+0.032 -> 0.013, 0.011 -> 0.003. The 5 false fills left are trades in the ack's millisecond
+(ms order times cannot order them); B's 2 misses are 0.00595 ahead (one bot's size) cancelled in
+the ~1 ms before a sweep, shown by no update before the trade. B at the fit: without the ticker
+144/9/1, without the tape 150/3/0, without both 127/26/1 (the 25 misses reported on 09-26).
+Conservatism: every value 0..1 scores the same on every session (A and V improve the touch, B's
+queues are set by the ticker), so it is not identified and 1 is kept; cross-validated held-out
+error 0.005 (fit A, test B+V), 0.006 (fit B), 0.013 (fit V). Time to fill p50 live / model:
+11.0 / 10.9, 13.0 / 13.3, 32.5 / 32.6 ms. Latency: send to transactTime p50 0.91 / 0.95 / 0.71 ms
+(+0.5 ms for the ms truncation), round trip p50 1.39 / 1.44 / 1.64 ms, p99 41 / 39 / 25 ms;
+fitted `latency_fixed_us = 792`, `latency_ack_us = 0`, `latency_ack_jitter_us = 817` (the round
+trip's fixed part is below the one-way median, so the one-way leg is capped at it).
+Backtest vs live (fills, net U, markout 10 s bps; before = the hand-set 400/100/1100/300 us on
+main's model, after = fitted keys on this one): A live 234, -0.122, -0.30; before 235, -0.102,
+-0.36; after 237, -0.101, -0.34. B live 161, -0.037, -0.01; before 167, -0.026, -0.03; after 160,
+-0.035, -0.10. V live 628, -0.146, -0.22; before 814, -0.151, -0.20; after 824, -0.150, -0.19.
+The fill model is no longer the gap. V's is balances: live got 309 venue rejects (-2010,
+insufficient balance) from minute 20, a backtest has none. A and B send 17-19 % more orders in
+the backtest with the same fills; not explained yet (the latency model has no 40 ms tail).
+Tests: fill-check (7, each fails on main's model: run through main's fastmm-data), engine queue
+estimate (2), calibrate (pick rule, a 0.5-generated grid fitted to 0.5 in both folds, latency on
+us and ms venue times and a two-quantile solve, a flat grid kept at 1, a backtest journal
+re-run through `--backtest` to identical orders, fills and net), `apps.fastmm-data.calibrate` on
+two committed synthetic fixtures (`FASTMM_REGEN_GOLDEN=1` rewrites them). Golden
+`basic_mm/l2_queue` re-baselined in its own commit: the tape alone moves it (1014 -> 1169 fills;
+without the tape the old hash comes back); the other golden hashes and sample_1000's are unchanged.
+Open: ms order times on Binance (the ws-api `timeUnit=MICROSECOND` parameter would remove the ack
+ties); the round trip's tail; balances in backtests; the extra backtest orders; queue ahead cancelled
+just before a sweep; the ticker's venue time can run up to ~1 ms ahead of what it shows (B: a
+ticker stamped 30 us after a trade showed the book before it).
+
 **Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
 contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
 docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs

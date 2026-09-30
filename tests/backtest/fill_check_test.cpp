@@ -133,8 +133,10 @@ TEST_CASE("backtest.fill_check: a replace at the same price keeps the queue posi
     j.trade("100.00", "4", Side::Sell);  // 1 left ahead of order 1
     j.trade("100.01", "4", Side::Buy);   // 1 left ahead of order 10
     j.now += 1000;
-    j.out_replace(1, 2, "100.00", "1");    // same price, same size: keeps its place
-    j.out_replace(10, 11, "100.01", "2");  // larger: back of the queue, 5 ahead
+    j.out_replace(1, 2, "100.00", "1");  // same price, same size: keeps its place
+    // Larger: back of the queue, behind the 1 of the 5 others the buy of 4 left (the depth still
+    // shows 5).
+    j.out_replace(10, 11, "100.01", "2");
     j.now += 1000;
     j.cancel_ack(1);
     j.ack(2);
@@ -142,7 +144,7 @@ TEST_CASE("backtest.fill_check: a replace at the same price keeps the queue posi
     j.ack(2);   // a second ack of the same order changes nothing
     j.now += 1000;
     j.trade("100.00", "1.5", Side::Sell);  // fills 0.5 of order 2
-    j.trade("100.01", "4", Side::Buy);     // does not reach order 11
+    j.trade("100.01", "2.5", Side::Buy);   // 1 ahead of order 11: fills 1.5 of it
     j.now += 1000;
   }
   const FillCheckResult r = fill_check(path, kC);
@@ -152,7 +154,7 @@ TEST_CASE("backtest.fill_check: a replace at the same price keeps the queue posi
   for (std::size_t k = 0; k < kC.size(); ++k) {
     CHECK(order(r, 1).model_filled[k].is_zero());
     CHECK(order(r, 2).model_filled[k] == qt("0.5"));
-    CHECK(order(r, 11).model_filled[k].is_zero());
+    CHECK(order(r, 11).model_filled[k] == qt("1.5"));
   }
   CHECK(order(r, 2).end == FillCheckEnd::Open);
 }
@@ -349,4 +351,209 @@ TEST_CASE("backtest.fill_check: a BookTicker newer than the depth caps the queue
   CHECK(order(r, 1).queue_ahead == qt("2"));
   CHECK(order(r, 2).queue_ahead == qt("3"));
   for (std::size_t k = 0; k < kC.size(); ++k) CHECK(order(r, 1).model_filled[k] == qt("0.5"));
+}
+
+TEST_CASE("backtest.fill_check: an order at a newer ticker's touch queues behind the touch") {
+  // The depth has no level at 100.00 yet; the ticker shows 2 there. The order joins behind the
+  // ticker's 2, not behind the depth's nothing, and a sell of 1.5 does not reach it.
+  const std::string path = tmp_path("fill_check_touch_join.fmj");
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"99.99", "3"}}, {{"100.02", "1"}});
+    j.now += 1000;
+    j.ticker("100.00", "2", "100.02", "1");
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += 1000;
+    j.ack(1);
+    j.now += 1000;
+    j.trade("100.00", "1.5", Side::Sell);
+    j.now += 1000;
+    j.out_cancel(1);
+    j.cancel_ack(1);
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 1);
+  CHECK(order(r, 1).queue_ahead == qt("2"));
+  for (std::size_t k = 0; k < kC.size(); ++k) {
+    CHECK(order(r, 1).model_filled[k].is_zero());
+    CHECK(order(r, 1).model_ahead_at_fill[k].raw == -1);
+  }
+}
+
+TEST_CASE("backtest.fill_check: a ticker that shows less than our order was published before it") {
+  // Binance stamps a bookTicker after an order's transactTime that it does not show yet: 0.8 at
+  // our price while our 1 rests there. The 0.8 is someone else's, not our order partly gone.
+  const std::string path = tmp_path("fill_check_ticker_predates.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"100.00", "0.8"}, {"99.99", "3"}}, {{"100.02", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += kMs;
+    j.venue = kV0 + 2 * kMs;
+    j.ack(1);
+    j.venue = kV0 + 2 * kMs + 600'000;
+    j.ticker("100.00", "0.8", "100.02", "1");
+    j.now += kMs;
+    j.venue = kV0 + 3 * kMs + 100'000;
+    j.trade("100.00", "0.8", Side::Sell, 900);
+    j.now += kMs;
+    j.venue = kV0 + 5 * kMs;
+    j.out_cancel(1);
+    j.cancel_ack(1);
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 1);
+  const FillCheckOrder& o = order(r, 1);
+  CHECK(o.queue_ahead == qt("0.8"));
+  for (std::size_t k = 0; k < kC.size(); ++k) CHECK(o.model_filled[k].is_zero());
+}
+
+TEST_CASE("backtest.fill_check: trades since the depth update take their quantity from the level") {
+  // A sell of 2 empties the 2 the depth shows at 100.00 before the order is acknowledged; the
+  // throttled depth still says 2. The order has nothing ahead and the next sell fills it.
+  const std::string path = tmp_path("fill_check_tape_placement.fmj");
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"100.00", "2"}, {"99.99", "3"}}, {{"100.02", "1"}});
+    j.now += 1000;
+    j.trade("100.00", "2", Side::Sell, 1);
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += 1000;
+    j.ack(1);
+    j.now += 1000;
+    j.trade("100.00", "0.5", Side::Sell, 2);
+    j.fill(1, "100.00", "0.5", "0.5");
+    j.now += 1000;
+  }
+  const FillCheckResult with = fill_check(path, kC);
+  const FillCheckResult without = fill_check(path, kC, {.touch = true, .tape = false});
+  REQUIRE(with.orders.size() == 1);
+  CHECK(order(with, 1).queue_ahead.is_zero());
+  CHECK(order(without, 1).queue_ahead == qt("2"));
+  for (std::size_t k = 0; k < kC.size(); ++k) {
+    CHECK(order(with, 1).model_filled[k] == qt("0.5"));
+    CHECK(order(with, 1).model_ahead_at_live_fill[k].is_zero());
+    CHECK(order(without, 1).model_filled[k].is_zero());
+  }
+}
+
+TEST_CASE("backtest.fill_check: a traded level's next update is not counted as cancels ahead") {
+  // 5 ahead; a sell of 2 at our price leaves 3; the next delta shows the 3. At conservatism 0 the
+  // 2 are not also cancels ahead: 3 stay ahead, and a sell of 3.5 fills 0.5 of the order.
+  const std::string path = tmp_path("fill_check_tape_delta.fmj");
+  {
+    JournalBuilder j(path);
+    j.book(true, {{"100.00", "5"}}, {{"100.02", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += 1000;
+    j.ack(1);
+    j.now += 1000;
+    j.trade("100.00", "2", Side::Sell, 1);
+    j.now += 1000;
+    j.book(false, {{"100.00", "3"}}, {});
+    j.now += 1000;
+    j.trade("100.00", "3.5", Side::Sell, 2);
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 1);
+  for (std::size_t k = 0; k < kC.size(); ++k) {
+    CAPTURE(k);
+    CHECK(order(r, 1).model_filled[k] == qt("0.5"));
+    CHECK(order(r, 1).model_ahead_at_fill[k] == qt("3"));
+  }
+}
+
+TEST_CASE("backtest.fill_check: a fill reported after the cancel response is a live fill") {
+  // The API's cancel response (no venue time) arrives before the user stream's execution report.
+  const std::string path = tmp_path("fill_check_fill_after_end.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"99.99", "1"}}, {{"100.02", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += kMs;
+    j.venue = kV0 + 1 * kMs;
+    j.ack(1);
+    j.venue = kV0 + 3 * kMs + 200'000;
+    j.trade("100.00", "0.4", Side::Sell, 950);
+    j.now += kMs;
+    j.out_cancel(1);
+    j.venue = 0;
+    j.cancel_ack(1);
+    j.now += kMs;
+    j.venue = kV0 + 3 * kMs;
+    j.fill(1, "100.00", "0.4", "0.6", "950");
+    j.venue = kV0 + 4 * kMs;
+    j.cancel_ack(1);
+    j.now += kMs;
+    j.fill(1, "100.00", "0.4", "0.6", "950");  // a replayed copy
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 1);
+  const FillCheckOrder& o = order(r, 1);
+  CHECK(o.end == FillCheckEnd::Canceled);
+  CHECK(o.end_ts.ns == kV0 + 4 * kMs);
+  CHECK(o.live_filled == qt("0.4"));
+  CHECK(o.live_first_fill_ts.ns == kV0 + 3 * kMs);
+  for (std::size_t k = 0; k < kC.size(); ++k) CHECK(o.model_filled[k] == qt("0.4"));
+}
+
+TEST_CASE("backtest.fill_check: a trade in a cancelled order's last millisecond came after it") {
+  // Nothing ahead, cancelled at 4 ms (transactTime), a sell at 4.3 ms: had it come first, the
+  // venue would have filled the order. It did not, so the trade was after the cancel.
+  const std::string path = tmp_path("fill_check_end_ms.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"99.99", "1"}}, {{"100.02", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += kMs;
+    j.venue = kV0 + 1 * kMs;
+    j.ack(1);
+    j.now += kMs;
+    j.out_cancel(1);
+    j.venue = kV0 + 4 * kMs;
+    j.cancel_ack(1);
+    j.venue = kV0 + 4 * kMs + 300'000;
+    j.trade("100.00", "1", Side::Sell, 960);
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 1);
+  for (std::size_t k = 0; k < kC.size(); ++k) CHECK(order(r, 1).model_filled[k].is_zero());
+  CHECK(r.end_ties == 0);
+}
+
+TEST_CASE("backtest.fill_check: a fill after a reconciliation ended the order makes it filled") {
+  const std::string path = tmp_path("fill_check_reconciled_then_filled.fmj");
+  {
+    JournalBuilder j(path, true);
+    j.venue = kV0;
+    j.book(true, {{"99.99", "1"}}, {{"100.02", "1"}});
+    j.out_new(1, Side::Buy, "100.00", "1");
+    j.now += kMs;
+    j.venue = kV0 + 1 * kMs;
+    j.ack(1);
+    j.venue = kV0 + 2 * kMs + 100'000;
+    j.trade("100.00", "1", Side::Sell, 970);
+    j.now += 3 * kMs;
+    j.venue = 0;
+    j.reconcile({});  // the snapshot no longer lists the order
+    j.now += kMs;
+    j.venue = kV0 + 2 * kMs;
+    j.fill(1, "100.00", "1", "0", "970");
+    j.now += 1000;
+  }
+  const FillCheckResult r = fill_check(path, kC);
+  REQUIRE(r.orders.size() == 1);
+  const FillCheckOrder& o = order(r, 1);
+  CHECK(o.end == FillCheckEnd::Filled);
+  CHECK(o.end_ts.ns == kV0 + 2 * kMs);
+  CHECK(o.live_filled == qt("1"));
+  for (std::size_t k = 0; k < kC.size(); ++k) CHECK(o.model_filled[k] == qt("1"));
 }

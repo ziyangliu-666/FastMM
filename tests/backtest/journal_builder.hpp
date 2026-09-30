@@ -24,6 +24,7 @@ class JournalBuilder {
     i.tick = px("0.01");
     i.lot = qt("0.001");
     i.flags = Instrument::kEnabled;
+    i.venue = VenueId{0};
     REQUIRE(table_.add(i));
     JournalSessionInfo info;
     info.session_id = 1;
@@ -140,6 +141,22 @@ class JournalBuilder {
     m.qty = qt(q);
     m.leaves_qty = qt(leaves);
     m.liquidity = Liquidity::Maker;
+    put(m.hdr);
+  }
+
+  // A reconciliation snapshot listing `open` as the venue's open orders.
+  void reconcile(std::vector<std::uint64_t> open) {
+    ReconcileMsg m{};
+    init_header(m, EventType::Reconcile, InstrumentId{0});
+    m.kind = ReconcileMsg::Kind::Begin;
+    put(m.hdr);
+    for (const std::uint64_t id : open) {
+      m.kind = ReconcileMsg::Kind::OpenOrder;
+      m.cl_ord_id = ClientOrderId{id};
+      put(m.hdr);
+    }
+    m.kind = ReconcileMsg::Kind::End;
+    m.cl_ord_id = ClientOrderId{};
     put(m.hdr);
   }
 

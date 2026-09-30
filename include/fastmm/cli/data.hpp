@@ -4,7 +4,8 @@
 //
 // It lists the registered market-data sources (backtest/data_registry.hpp) and converts any of
 // them into an .fmj journal, which is what a backtest replays fastest; `fill-check` compares a live
-// journal's fills with the l2_queue fill model (backtest/fill_check.hpp). Downloading the files a
+// journal's fills with the l2_queue fill model (backtest/fill_check.hpp), `calibrate` fits it and
+// the latencies to several (backtest/calibrate.hpp). Downloading the files a
 // source reads is `python3 -m fastmm.data fetch`. Run `--help` for the flags and exit codes.
 
 namespace fastmm::cli {

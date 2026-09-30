@@ -4,20 +4,25 @@
 // the engine sees.
 //
 //   ack          ahead = displayed quantity at the price, less our own (OwnQuantity), as of the
-//                book's last update
+//                book's last update; the touch's quantity instead when a newer BookTicker has the
+//                price as its touch (queue_join)
 //   replace ack  same price and a quantity no larger than the leaves keeps `ahead` (as the
 //                simulator does); anything else joins the back again
 //   depth delta  each level at one of our prices: queue_after_level_change(ahead, old, new) with
 //                old and new displayed quantities less our own
 //   snapshot     ahead is capped at what the level now shows
-//   trade        queue_after_trade: consumed ahead first, a trade through our price empties it
+//   trade        queue_after_trade: consumed ahead first, a trade through our price empties it;
+//                one newer than the depth book takes its quantity from the level as the next
+//                delta's old quantity, and from the depth book and the touch at placement
+//                (TradeTape)
 //   ticker       a BookTicker newer than the depth book (update id, else venue time), less our
-//                own quantity at its venue time: queue_after_touch, at the ack as well
+//                own quantity at its venue time: queue_after_touch
+//   own quantity others_shown(): a level showing less than ours there predates our order
 //
-// Off until enable() (the strategy's first queue_ahead). State is a side array by OMS slot and one
-// list per instrument. An instrument with no tracked order costs one load per book update and per
-// trade; otherwise a delta costs, for each of our orders on the instrument, a price compare per
-// level on its side, and a trade one step per order.
+// Off until enable() (the strategy's first queue_ahead). State is a side array by OMS slot, one
+// list and one trade tape per instrument. A trade newer than the depth book goes on the tape, and a
+// book update drops what it now shows; a delta also costs, for each of our orders on the
+// instrument, a price compare per level on its side, and a trade one step per order.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
@@ -42,7 +47,8 @@ class QueueTracker {
              : conservatism_bps > 10'000 ? 10'000
                                          : conservatism_bps),
         slots_(std::make_unique<Slot[]>(kMaxOpenOrders)),
-        touch_(std::make_unique<QueueTouch[]>(kMaxInstruments)) {
+        touch_(std::make_unique<QueueTouch[]>(kMaxInstruments)),
+        tape_(std::make_unique<TradeTape[]>(kMaxInstruments)) {
     head_.fill(kNone);
   }
 
@@ -82,18 +88,20 @@ class QueueTracker {
     s.next = s.prev = kNone;
   }
 
-  // `depth_ahead` capped by the latest BookTicker when it is newer than the depth book `b`.
-  // own(side, px, t): our quantity in the feed at venue time t.
+  // `depth_ahead`, or the latest BookTicker's side when it is newer than the depth book `b`
+  // (queue_join). own(side, px, t): our quantity in the feed at venue time t.
   template <class Own>
   [[nodiscard]] Qty at_placement(Qty depth_ahead,
                                  const Order& o,
                                  const L2Book<256>& b,
                                  Own&& own) const noexcept {
     const QueueTouch& t = touch_[o.instrument.value];
+    const TradeTape& tape = tape_[o.instrument.value];
+    depth_ahead = tape.after(o.side, o.price, depth_ahead, b.last_update());
     if (!t.valid() || !t.newer_than(b.seq(), b.last_update())) return depth_ahead;
     const Price touch = t.px(o.side);
-    return queue_after_touch(
-        depth_ahead, o.side, o.price, touch, less(t.qty(o.side), own(o.side, touch, t.ts)));
+    const Qty shown = others_shown(t.qty(o.side), own(o.side, touch, t.ts));
+    return queue_join(depth_ahead, o.side, o.price, touch, tape.after(o.side, touch, shown, t.ts));
   }
 
   // A BookTicker: kept for placements, and applied to the instrument's orders when it is newer
@@ -104,8 +112,12 @@ class QueueTracker {
     QueueTouch& t = touch_[id.value];
     t = queue_touch(m, [](Side, Price) { return Qty{}; });
     if (head_[id.value] == kNone || !t.newer_than(b.seq(), b.last_update())) return;
-    const Qty shown[2] = {less(t.bid_qty, own(Side::Buy, t.bid_px, t.ts)),
-                          less(t.ask_qty, own(Side::Sell, t.ask_px, t.ts))};
+    const TradeTape& tape = tape_[id.value];
+    const Qty shown[2] = {
+        tape.after(
+            Side::Buy, t.bid_px, others_shown(t.bid_qty, own(Side::Buy, t.bid_px, t.ts)), t.ts),
+        tape.after(
+            Side::Sell, t.ask_px, others_shown(t.ask_qty, own(Side::Sell, t.ask_px, t.ts)), t.ts)};
     for (std::uint32_t i = head_[id.value]; i != kNone; i = slots_[i].next) {
       Slot& s = slots_[i];
       const bool buy = s.side == Side::Buy;
@@ -118,10 +130,11 @@ class QueueTracker {
   template <class Own>
   void on_book(const BookDeltaMsg& d, const L2Book<256>& b, Own&& own) noexcept {
     const InstrumentId id = d.hdr.instrument;
+    tape_[id.value].forget_through(b.last_update());
     if (d.is_snapshot()) {
       for (std::uint32_t i = head_[id.value]; i != kNone; i = slots_[i].next) {
         Slot& s = slots_[i];
-        const Qty shown = less(level_qty(b, s.side, s.px), own(s.side, s.px));
+        const Qty shown = others_shown(level_qty(b, s.side, s.px), own(s.side, s.px));
         if (shown < s.ahead) s.ahead = shown;
         s.level = shown;
       }
@@ -135,19 +148,25 @@ class QueueTracker {
       const std::uint32_t end = buy ? d.bid_count : d.bid_count + d.ask_count;
       for (std::uint32_t k = buy ? 0 : d.bid_count; k < end; ++k) {
         if (lv[k].price != s.px) continue;
-        const Qty shown = less(lv[k].qty, own(s.side, s.px));
+        const Qty shown = others_shown(lv[k].qty, own(s.side, s.px));
         s.ahead = queue_after_level_change(s.ahead, s.level, shown, bps_);
         s.level = shown;
       }
     }
   }
 
-  void on_trade(const TradeMsg& t, const Oms& oms) noexcept {
-    for (std::uint32_t i = head_[t.hdr.instrument.value]; i != kNone; i = slots_[i].next) {
+  // A trade on an instrument whose depth book is `b`.
+  void on_trade(const TradeMsg& t, const Oms& oms, const L2Book<256>& b) noexcept {
+    const InstrumentId id = t.hdr.instrument;
+    const Timestamp ts = t.hdr.exch_ts.valid() ? t.hdr.exch_ts : t.hdr.recv_ts;
+    const bool newer = ts > b.last_update();
+    if (newer) tape_[id.value].add(t, ts);
+    for (std::uint32_t i = head_[id.value]; i != kNone; i = slots_[i].next) {
       Slot& s = slots_[i];
       const Qty leaves = oms.get(Handle<Order>{i}).leaves_qty();
       static_cast<void>(
           queue_after_trade(s.ahead, s.side, s.px, leaves, t.price, t.qty, t.aggressor));
+      if (newer) s.level = level_after_print(s.level, s.side, s.px, t.price, t.qty, t.aggressor);
     }
   }
 
@@ -163,8 +182,6 @@ class QueueTracker {
     std::uint32_t prev = kNone;
   };
 
-  static Qty less(Qty a, Qty b) noexcept { return b >= a ? Qty{} : a - b; }
-
   void link(std::uint32_t idx, InstrumentId id) noexcept {
     Slot& s = slots_[idx];
     s.on = true;
@@ -179,6 +196,7 @@ class QueueTracker {
   std::array<std::uint32_t, kMaxInstruments> head_{};
   std::unique_ptr<Slot[]> slots_;
   std::unique_ptr<QueueTouch[]> touch_;  // the latest BookTicker per instrument, as published
+  std::unique_ptr<TradeTape[]> tape_;    // trades newer than the depth book, per instrument
 };
 
 }  // namespace fastmm

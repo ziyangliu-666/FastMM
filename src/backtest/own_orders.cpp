@@ -1,5 +1,7 @@
 #include "fastmm/backtest/own_orders.hpp"
 
+#include "fastmm/core/queue_model.hpp"
+
 #include <algorithm>
 #include <charconv>
 #include <cstring>
@@ -39,7 +41,11 @@ Timestamp OwnOrderLog::gone(const OwnOrder& o) const noexcept {
   if (const OwnOrder* next = o.replaced_by.valid() ? find(o.replaced_by) : nullptr;
       next != nullptr && next->acked && next->ack.ts > t)
     t = next->ack.ts;
-  if (ms_order_times && !o.end.from_recv) t = Timestamp{t.ns + 1'000'000 - 1};
+  if (ms_order_times && !o.end.from_recv &&
+      std::any_of(o.fills.begin(), o.fills.end(), [&](const OwnFill& f) {
+        return f.at.ts.ns / 1'000'000 == o.end.ts.ns / 1'000'000;
+      }))
+    t = Timestamp{t.ns + 1'000'000 - 1};
   return t;
 }
 
@@ -159,27 +165,42 @@ class Collector {
       end(*orig, h, OrderEnd::Replaced);
   }
 
+  // A fill may arrive after the order's end: the API's cancel response can come before the user
+  // stream's execution report, and a reconciliation can miss an order that had just filled. It is
+  // booked once per exec id; a fill without one only before the end (a replayed copy of it would
+  // be booked again). The last fill of an order a reconciliation had ended makes it Filled.
   void on_fill(const EventHeader& h, const OrderFillMsg& m) {
     OwnOrder* s = find(m.cl_ord_id);
     if (s == nullptr) return;
     Qty filled;
     for (const OwnFill& f : s->fills) filled += f.qty;
-    const std::uint64_t exec = numeric_exec_id(m.exec_id);
-    const bool seen = exec != 0 && std::any_of(s->fills.begin(),
-                                               s->fills.end(),
-                                               [&](const OwnFill& f) { return f.exec == exec; });
-    if (!s->ended && !seen) {
+    const bool has_id = !m.exec_id.empty();
+    const bool seen =
+        has_id && std::any_of(s->fills.begin(), s->fills.end(), [&](const OwnFill& f) {
+          return f.exec_id == m.exec_id;
+        });
+    if (!seen && (has_id || !s->ended) && filled < s->qty) {
       OwnFill f;
-      f.exec = exec;
+      f.exec_id = m.exec_id;
+      f.exec = numeric_exec_id(m.exec_id);
       f.at.offer(h);
+      f.price = m.price;
       f.qty = m.qty;
+      f.fee = m.fee;
+      f.fee_asset = m.fee_asset;
+      f.liquidity = m.liquidity;
       s->fills.push_back(f);
       filled += m.qty;
-      if (exec != 0) s->last_exec = exec;
+      s->last_exec = std::max(s->last_exec, f.exec);
     }
     const bool last =
         (m.flags & OrderFillMsg::kReplayed) == 0 ? m.leaves_qty.is_zero() : m.cum_qty >= s->qty;
-    if (last || filled >= s->qty) end(*s, h, OrderEnd::Filled);
+    if (!(last || filled >= s->qty)) return;
+    if (s->ended && s->why == OrderEnd::Reconciled) {
+      s->ended = false;
+      s->end = VenueTime{};
+    }
+    end(*s, h, OrderEnd::Filled);
   }
 
   void on_cancel_ack(const EventHeader& h, ClientOrderId id) {
@@ -238,10 +259,6 @@ class Collector {
   ClientOrderId watermark_;
 };
 
-Qty less(Qty a, Qty b) noexcept {
-  return b >= a ? Qty{} : a - b;
-}
-
 }  // namespace
 
 OwnOrderLog collect_own_orders(JournalReader& reader) {
@@ -290,7 +307,7 @@ const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& 
         if (l.qty.is_positive()) {
           const Qty own = own_at(h.instrument, s, l.price, t);
           if (own.is_positive()) {
-            l.qty = less(l.qty, own);
+            l.qty = others_shown(l.qty, own);
             ++(l.qty.is_zero() ? stats_.levels_removed : stats_.levels_adjusted);
           }
         }
@@ -308,15 +325,15 @@ const EventHeader* OwnOrderStripper::strip(const EventHeader& h, sim::EventBuf& 
       const Qty own_bid = own_at(h.instrument, Side::Buy, m.bid_px, t);
       const Qty own_ask = own_at(h.instrument, Side::Sell, m.ask_px, t);
       if (!own_bid.is_positive() && !own_ask.is_positive()) return &h;
-      if ((own_bid.is_positive() && own_bid >= m.bid_qty) ||
-          (own_ask.is_positive() && own_ask >= m.ask_qty)) {
+      if ((own_bid.is_positive() && own_bid == m.bid_qty) ||
+          (own_ask.is_positive() && own_ask == m.ask_qty)) {
         ++stats_.tickers_dropped;
         return nullptr;
       }
       std::memcpy(buf.bytes, &h, sizeof(BookTickerMsg));
       auto& out = buf.as<BookTickerMsg>();
-      out.bid_qty = less(m.bid_qty, own_bid);
-      out.ask_qty = less(m.ask_qty, own_ask);
+      out.bid_qty = others_shown(m.bid_qty, own_bid);
+      out.ask_qty = others_shown(m.ask_qty, own_ask);
       ++stats_.tickers_adjusted;
       return &out.hdr;
     }

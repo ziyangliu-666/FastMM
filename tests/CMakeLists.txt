@@ -373,6 +373,16 @@ if(TARGET fastmm-data)
   fastmm_cli_test(apps.fastmm-data.fill_check_bad_conservatism EXPECT_RC 2
     CMD $<TARGET_FILE:fastmm-data> fill-check x.fmj --conservatism 0,2
     EXPECT_REGEX "fastmm-data: .*--conservatism")
+  # Synthetic sessions whose fills follow conservatism 0.5 and whose acks come 400 us after the
+  # send at the venue, 1500 us at the session (tests/backtest/calibrate_test.cpp writes them).
+  fastmm_cli_test(apps.fastmm-data.calibrate EXPECT_RC 0
+    CMD $<TARGET_FILE:fastmm-data> calibrate
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/calibrate_a.fmj
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/journals/calibrate_b.fmj
+    EXPECT_REGEX "cross-validation.*queue_conservatism 0.50, fitted on 2 sessions.*fill_model = .l2_queue..queue_conservatism = 0.50.md_arrival = .recorded..latency_fixed_us = 400.latency_jitter_us = 0.latency_ack_us = 1100")
+  fastmm_cli_test(apps.fastmm-data.calibrate_missing EXPECT_RC 4
+    CMD $<TARGET_FILE:fastmm-data> calibrate /nonexistent/session.fmj
+    EXPECT_REGEX "fastmm-data: cannot open /nonexistent/session.fmj")
 endif()
 
 set(_json_builtin ".name.: .options_mm., .transports.: \\[.sim., .replay., .live.\\]")
