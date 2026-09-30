@@ -21,6 +21,69 @@ done one at a time, each verified before the next:
 4. A reusable hedge executor out of xmm: sizing from positions, one-in-flight, splitting across
    the hedge venue's size limits, failing over to a second hedge venue, stepwise de-risking.
 
+**Item 1 done: balances, margin and collateral (2026-09-30).** One event, `BalanceMsg`
+(`EventType::Balance`, 128 bytes, on the order ring, so journaled and replayed): one asset of a
+venue's account, absolute free / locked / total / equity / maintenance at the venue's time,
+`kSnapshot` / `kSnapshotEnd` (an asset a snapshot does not name holds nothing), `kAccount` (the
+account-wide margin in USD). Absolute amounts only: a delta would turn one lost message into a
+lasting error. Connectors: `ReconcileDriver` runs a balance leg after every snapshot it emits
+(`fetch_balances`, rows filtered by `VenueAssets`: spot base and quote, a derivative's settlement
+asset), `request_balances()` (at most 1/s) for venues without a stream or with partial updates, and
+`emit_balance()` for stream updates. Sources per venue with the docs read: docs/reference/venues.md
+"Balances" (Binance Spot `outboundAccountPosition` + `account.status`; USD-M `/fapi/v3/account`,
+`ACCOUNT_UPDATE` triggers a refresh because `B` has the wallet only, multi-assets mode an account
+row; OKX `account` channel + `/account/balance` per `acctLv`; Bybit `wallet` + wallet-balance, an
+account row unless isolated margin; Deribit `user.portfolio` + `get_account_summaries`; Gemini
+`balances@account` (it exists) + `/v1/balances`, `/v1/margin` as the account row; Coinbase Advanced
+`/accounts` paged, refreshed after every execution; Coinbase Exchange `/accounts` + the `balance`
+channel; Nasdaq none). The connectors were done by four parallel agents on the core commit.
+Engine (`core/balance_book.hpp`): rows per venue and asset, resolved at start; nothing runs until
+the first report (`balances_live`). The estimate rule: a report is the account at its venue time
+and counts the orders the venue had acknowledged; an unacknowledged order holds on top of every
+report until its ack (stamped at or before the report: the report had it, the extra comes back);
+after a report the engine's own events move the row unless the venue stamped them at or before it.
+Holds: spot buy notional + taker fee (quote), spot sell qty (base), derivative notional x
+`[[instruments]] initial_margin`, larger side of the instrument; fills move the assets (derivative:
+position margin at the fill price, the fee). Check (`[risk] check_balance`, default on,
+`BalanceShort`, before the rate limit): what the order adds to its row's holds <= free; a reducing
+or reduce-only derivative passes; no `initial_margin`: passes while available > 0; unreported rows
+refuse nothing. `ctx.balance`, `ctx.margin`, `ctx.balance_room`, `ctx.balances_live`, `on_balance`
+(C++ and Python), `RiskHeadroom::balance_{buy,sell}_qty`. Gateway: each router keeps the account's
+BalanceBook over every strategy's orders and fills (`[gateway] check_balance`,
+`GatewayBalanceShort`); balances go to every attachment. basic_mm cuts its ladder
+(`fit_to_balance`); xmm drops a side the quote venue cannot fill and holds a hedge the hedge venue
+cannot cover (logged, `Stats::hedges_held` per episode, only the reducing side quoted). Status v13
+balances, `fastmm_balance_*` metrics, `journal_dump.py` decodes the event.
+Found on the OKX demo and fixed: a balance push made while a post-only order was in flight held
+none of it, and the post-only's reject released a hold the estimate no longer had (USDT locked
+-1.69); the unacknowledged-order rule above (test `core.balance: an order in flight holds on top of
+a report until its ack`, fails without it). Found by the benchmark: `fit_to_balance` on every
+requote cost +4.7 % on `BM_EngineStep_Sim` (every book event of a step reaches requote); it is one
+flag test until a venue reports.
+Tests: core.balance (12), hotpath.noalloc engine with balances, strategies basic_mm / xmm (side
+pulled, hedge held), reconcile_driver balance leg (4), per-connector parser and fake-venue tests,
+`sim_exchange: BinanceVenue reports the simulator's balances`, `balance_replay_test` (a sim session
+with balances replays to the identical outbound hash), `gateway_balance_test` (a's bid and b's bid on
+one USDT balance, b's refused by the gateway, no venue reject), status/Prometheus, python. Golden
+hashes unchanged (no balance events in them). Full ctest (werror) 1533 passed; gateway_*, xmm_* and
+the balance integration cases (51) green 3 times; clang-tidy-18: no bugprone or performance finding
+in the changed src files. Bench (`bench_tick_to_order`, werror release, base main at a path of the
+same length, taskset -c 2, 8 x 2 interleaved runs of 3, load < 1.5, medians of 24):
+`BM_TickToOrder_Sim` 168.1 -> 159.8 ns, `BM_EngineStep_Sim` 2305.7 -> 2315.4 ns.
+Demo verification, the engine's status-file balances against a raw REST query of the same moment (scripts in /tmp, not kept):
+Binance Spot demo (75 s basic_mm, 30 replaces): BTC and USDT free / locked equal to the digit at
+all 5 samples (e.g. USDT 3664.36157846 / 24.978654). USD-M demo (60 s): without `initial_margin` the
+engine's free ignores the resting orders' margin (4.17 USDT at the venue); with 0.05 it tracked
+the venue within 0.0006 USDT after 4 fills. OKX demo spot (75 s): BTC 0.99989918 / 0.00002 equal;
+USDT equal (the demo refuses these bids with 51137). Gemini sandbox btcusd (60 s): equal at all 4
+samples except USD's stream in cents (99884.66 vs REST 99884.66092). Coinbase Advanced live:
+read-only fetch through the connector equal to the raw reply (USD 0 / 0; no BTC account).
+Open: USD-M and OKX multi-currency / Bybit UTA account rows and Deribit are from documented frames
+only; Gemini `/v1/margin` with a derivatives account; Coinbase Advanced `hold` for open orders is
+undocumented; the leverage per symbol is configuration (`initial_margin`), not read from the venue;
+REST snapshots stamped with the connector's venue clock can precede a stream event they contain by
+a few ms (counted twice until the next report); backtests carry no balances.
+
 **Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
 contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
 docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs
