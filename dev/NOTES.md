@@ -21,6 +21,50 @@ done one at a time, each verified before the next:
 4. A reusable hedge executor out of xmm: sizing from positions, one-in-flight, splitting across
    the hedge venue's size limits, failing over to a second hedge venue, stepwise de-risking.
 
+**Fill causality, lead_mm sizing, simulated margin (2026-10-01).** The open items of "Backtest vs
+live: balances and the extra orders" below.
+Fill causality. A recording is in receive order and its streams arrive with different delays: in
+A, 46 % of trades come after a book ticker stamped later (p50 0.5 ms, p99 40 ms, max 72 ms). The
+simulated venue took them in that order, so an order that arrived in between was filled by a
+trade printed before it (first fills before arrival: A 33 of 232, B 18 of 159, V 58 of 595), and
+cancelled before a trade printed while it rested. The rule: the venue sees recorded events in venue
+time. `VenueOrderSource` (`sim/venue_order.hpp`) holds events until none unread can be earlier,
+assuming none was received more than `[backtest] reorder_window_ms` (1000) after its venue time;
+`SimTransport` forwards them to the engine in recorded order (`hdr.seq`), so the strategy's feed
+and its recorded arrival times are what they were. For an event later than the window, an order
+counts from its arrival: a trade stamped before it does not fill it (its print still takes from
+the queue if it came after the book view the queue was taken from: what the tape would have done
+at placement), and under `matching` a crossing recorded level fills at the later of the two
+arrivals. The three sessions have no event later than the window (23874 / 22417 / 51756
+reordered). fill-check already sorted by venue time; the backtest now agrees with it on its own
+orders (fill-check over the backtest's journal, orders filled one way only: A 11 -> 1, B 8 -> 2).
+The 8.1 / 11.0 / 38.1 ms were the backtests measured from the ack with the early fills in; live
+from the ack is 11 / 13 / 32 (calibrate prints it).
+`calibrate --backtest` (A, B embedded config, V with its balances and check_balance off; before =
+main, after = this branch, fitted keys; live first): orders A 2088 / 2138 / 2071, B 1726 / 1822 /
+1729, V 4094 / 4157 / 4262 (V before the lead_mm change); fills 234 / 232 / 231, 161 / 170 / 159,
+628 / 595 / 613; time to fill p50 11.0 / 15.5 / 13.7, 13.0 / 29.5 / 17.4, 32.0 / 52.8 / 45.0 ms;
+net A -0.122 / -0.119 / -0.122, B -0.037 / -0.040 / -0.033. The extra orders went with the
+reordering: the feed keeps its recorded order and times; the fills, and our orders in the feed,
+moved. Golden hashes unchanged: their sources are synthetic, in venue-time order, with no
+fill before its order's arrival (sample_1000 0 of 5, synthetic l2_queue 0 of 103).
+lead_mm sizing. `requote` runs the shared `fit_to_balance` (basic_mm's) and a balance report
+requotes; `fit_side` also drops a level under `min_notional`. That surfaced an engine bug: on a
+last fill the strategy's `on_fill` ran before the order's hold update, and the holds are kept by
+pool slot, so an order placed from `on_fill` into the freed slot lost its hold state and the
+estimate leaked (V: 0.0005 BTC locked with no order open). The hold now moves before the hook.
+V with `check_balance = true`: BalanceShort about 464500 -> 0, fills 52 -> 666, orders 500 -> 4480,
+venue rejects 0 -> 2 (live 309: that strategy did not size), the same as with the check off.
+Simulated margin: a derivative row's free and equity count unrealised PnL at the recorded mark
+(`PerpState`), else the book's mid.
+Tests: sim.arrival (3), sim.venue_order (2), sim.queue_model arrival (1), sim.account (2),
+core.balance slot reuse (fails on main), strategies.lead_mm sizing (1). Full ctest (werror) 1649
+passed.
+Open: account-wide margin rows of a journal snapshot are not used (the simulated account has no
+cross-asset margin to put them in); time to fill p50 is still 3-13 ms above live, while
+fill-check on the live orders matches it (the backtests' own orders and times differ); the latency
+model has no 40 ms tail.
+
 **Item 1 done: balances, margin and collateral (2026-09-30).** One event, `BalanceMsg`
 (`EventType::Balance`, 128 bytes, on the order ring, so journaled and replayed): one asset of a
 venue's account, absolute free / locked / total / equity / maintenance at the venue's time,
