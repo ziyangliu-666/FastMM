@@ -94,6 +94,7 @@ void underlying_metrics(Exposition& e,
                         const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
 void gateway_metrics(Exposition& e, const StatusSnapshot& s);
 void venue_metrics(Exposition& e, const StatusSnapshot& s);
+void balance_metrics(Exposition& e, const StatusSnapshot& s);
 
 }  // namespace
 
@@ -136,6 +137,7 @@ std::string format_status_prometheus(const StatusSnapshot& s, std::int64_t now_n
     engine_metrics(e, s);
   }
   venue_metrics(e, s);
+  balance_metrics(e, s);
   return e.take();
 }
 
@@ -162,6 +164,55 @@ void underlying_metrics(Exposition& e,
   for (const StatusUnderlying& x : u) {
     if (x.name[0] != '\0')
       e.value_of(max, labels(x), static_cast<double>(x.max_net_raw) * kRawToQuote);
+  }
+}
+
+// fastmm_balance_{free,locked,total,equity,maintenance}{venue,asset,account}: the balance table's
+// reported rows, in the asset's units; account="1" marks a venue's account-wide margin. Nothing
+// before a venue reports.
+void balance_metrics(Exposition& e, const StatusSnapshot& s) {
+  const std::size_t n = std::min<std::size_t>(s.balance_count, kStatusMaxBalances);
+  bool any = false;
+  for (std::size_t i = 0; i < n; ++i) any = any || s.balances[i].known != 0;
+  if (!any) return;
+  const auto labels = [&](const StatusBalance& b) {
+    const std::string_view venue = b.venue < kStatusMaxVenues
+                                       ? name_of(s.venues[b.venue].name, sizeof s.venues[0].name)
+                                       : std::string_view("?");
+    return fmt::format("venue=\"{}\",asset=\"{}\",account=\"{}\"",
+                       label(venue),
+                       label(name_of(b.asset, sizeof b.asset)),
+                       b.account != 0 ? 1 : 0);
+  };
+  struct Field {
+    const char* name;
+    const char* help;
+    std::int64_t StatusBalance::*raw;
+  };
+  static constexpr Field kFields[] = {
+      {"fastmm_balance_free",
+       "spendable now (derivatives: available margin): the venue's report less this process's "
+       "orders and fills since, asset units",
+       &StatusBalance::free_raw},
+      {"fastmm_balance_locked",
+       "held by open orders (derivatives: initial margin in use), asset units",
+       &StatusBalance::locked_raw},
+      {"fastmm_balance_total",
+       "free + locked (derivatives: wallet balance), asset units",
+       &StatusBalance::total_raw},
+      {"fastmm_balance_equity",
+       "the venue's equity (wallet + unrealized PnL), asset units",
+       &StatusBalance::equity_raw},
+      {"fastmm_balance_maintenance",
+       "the venue's maintenance margin, asset units",
+       &StatusBalance::maintenance_raw},
+  };
+  for (const Field& f : kFields) {
+    e.family(f.name, "gauge", f.help);
+    for (std::size_t i = 0; i < n; ++i) {
+      const StatusBalance& b = s.balances[i];
+      if (b.known != 0) e.value_of(f.name, labels(b), static_cast<double>(b.*f.raw) * kRawToQuote);
+    }
   }
 }
 

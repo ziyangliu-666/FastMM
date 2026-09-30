@@ -127,6 +127,8 @@ std::string json_string(std::string_view v) {
 void append_venues(std::string& out, const StatusSnapshot& s, bool color);
 void append_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
 void json_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUnderlyings]);
+void append_balances(std::string& out, const StatusSnapshot& s);
+void json_balances(std::string& out, const StatusSnapshot& s);
 void json_venues(std::string& out, const StatusSnapshot& s);
 std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, bool color);
 std::string format_gateway_json(const StatusSnapshot& s);
@@ -419,6 +421,7 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                  money(s.pnl_carry_raw),
                  money(s.pnl_carry_raw + s.realized_pnl_raw + s.unrealized_pnl_raw - s.fees_raw));
   append_underlyings(out, s.underlyings);
+  append_balances(out, s);
   fmt::format_to(std::back_inserter(out),
                  "{:<12} {:>10} {:>10} {:>10} {:>10} {:>10}\n",
                  "latency",
@@ -604,6 +607,63 @@ void json_underlyings(std::string& out, const StatusUnderlying (&u)[kStatusMaxUn
   out += "]";
 }
 
+std::string_view balance_venue(const StatusSnapshot& s, const StatusBalance& b) {
+  return b.venue < kStatusMaxVenues ? name_of(s.venues[b.venue].name, sizeof s.venues[0].name)
+                                    : std::string_view("?");
+}
+
+// One line per reported balance, followed by a blank line; nothing without any.
+void append_balances(std::string& out, const StatusSnapshot& s) {
+  bool any = false;
+  const std::size_t n = std::min<std::size_t>(s.balance_count, kStatusMaxBalances);
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusBalance& b = s.balances[i];
+    if (b.known == 0) continue;
+    any = true;
+    fmt::format_to(std::back_inserter(out),
+                   "balance    {} {}{} free={} locked={} total={}",
+                   balance_venue(s, b),
+                   name_of(b.asset, sizeof b.asset),
+                   b.account != 0 ? " (account)" : "",
+                   qty_text(b.free_raw),
+                   qty_text(b.locked_raw),
+                   qty_text(b.total_raw));
+    if (b.equity_raw != b.total_raw || b.maintenance_raw != 0)
+      fmt::format_to(std::back_inserter(out),
+                     " equity={} maintenance={}",
+                     qty_text(b.equity_raw),
+                     qty_text(b.maintenance_raw));
+    out += "\n";
+  }
+  if (any) out += "\n";
+}
+
+// "balances": [{"venue": "binance", "asset": "USDT", "account": false, "known": true,
+// "free": 10.5, "locked": 0, "total": 10.5, "equity": 10.5, "maintenance": 0, "as_of_ns": ...}]
+void json_balances(std::string& out, const StatusSnapshot& s) {
+  out += "\"balances\": [";
+  const std::size_t n = std::min<std::size_t>(s.balance_count, kStatusMaxBalances);
+  for (std::size_t i = 0; i < n; ++i) {
+    const StatusBalance& b = s.balances[i];
+    fmt::format_to(std::back_inserter(out),
+                   "{}{{\"venue\": {}, \"asset\": {}, \"account\": {}, \"known\": {}, "
+                   "\"free\": {}, \"locked\": {}, \"total\": {}, \"equity\": {}, "
+                   "\"maintenance\": {}, \"as_of_ns\": {}}}",
+                   i == 0 ? "" : ", ",
+                   json_string(balance_venue(s, b)),
+                   json_string(name_of(b.asset, sizeof b.asset)),
+                   b.account != 0,
+                   b.known != 0,
+                   qty_text(b.free_raw),
+                   qty_text(b.locked_raw),
+                   qty_text(b.total_raw),
+                   qty_text(b.equity_raw),
+                   qty_text(b.maintenance_raw),
+                   b.as_of_ns);
+  }
+  out += "]";
+}
+
 // "0", or "5 (GatewayRateLimit 3, GatewayOpenNotional 2)".
 std::string refusals_text(const std::uint64_t (&r)[kStatusGatewayRefusals]) {
   std::uint64_t total = 0;
@@ -688,6 +748,7 @@ std::string format_gateway_status(const StatusSnapshot& s, std::int64_t now_ns, 
                  limit_text(g.max_net_raw),
                  limit_text(g.max_open_notional_raw));
   append_underlyings(out, g.underlyings);
+  append_balances(out, s);
 
   const std::size_t na = std::min<std::size_t>(g.attachment_count, kStatusMaxAttachments);
   fmt::format_to(it,
@@ -819,6 +880,8 @@ std::string format_status_json(const StatusSnapshot& s) {
   }
   out += "}, ";
   json_underlyings(out, s.underlyings);
+  out += ", ";
+  json_balances(out, s);
   out += ", ";
   json_venues(out, s);
   out += "}\n";
@@ -1020,6 +1083,8 @@ std::string format_gateway_json(const StatusSnapshot& s) {
   }
   out += "], ";
   json_underlyings(out, g.underlyings);
+  out += ", ";
+  json_balances(out, s);
   out += ", ";
   json_venues(out, s);
   out += "}\n";
