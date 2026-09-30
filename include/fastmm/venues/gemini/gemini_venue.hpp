@@ -224,6 +224,7 @@ class GeminiVenue final : public Venue, private ReconcileHooks {
   void publish_status() noexcept;
   void refuse_untracked(const OrderCommand& cmd);
   [[nodiscard]] InstrumentId subscribed_instrument(std::string_view symbol) const noexcept;
+  [[nodiscard]] bool is_perpetual(InstrumentId id) const noexcept;
   [[nodiscard]] bool any_perpetual() const noexcept;
   [[nodiscard]] std::int64_t now_ns() const noexcept { return net::Reactor::now_ns(); }
   static void resubscribe_requester(void* ctx, InstrumentId id) noexcept {

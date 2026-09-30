@@ -2,6 +2,7 @@
 
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/level_spill.hpp"
+#include "fastmm/venues/perp_state.hpp"
 
 #include <simdjson.h>
 
@@ -149,6 +150,10 @@ MdDecodeResult GeminiMdParser::decode(std::string_view json,
   bool have_maker = false;
   bool buyer_maker = false;
   bool overflow = false;
+  std::string_view funding_amount;  // fundingAmount: f, i (minutes), T, R; the mark is `p`
+  std::int64_t funding_minutes = 0;
+  std::uint64_t next_funding_ns = 0;
+  bool realized = false;
 
   for (auto field : root) {
     std::string_view key;
@@ -258,6 +263,27 @@ MdDecodeResult GeminiMdParser::decode(std::string_view json,
         if (field.value().get_bool().get(buyer_maker) != sj::SUCCESS) return malformed(stats_, r);
         have_maker = true;
         break;
+      case 'f':
+        if (field.value().get_string().get(funding_amount) != sj::SUCCESS)
+          return malformed(stats_, r);
+        break;
+      case 'i': {
+        // fundingAmount: the interval in minutes (a number); markPrice: a scaled index (a
+        // string, not used).
+        od::value v = field.value();
+        od::json_type t{};
+        if (v.type().get(t) == sj::SUCCESS && t == od::json_type::number &&
+            v.get_int64().get(funding_minutes) != sj::SUCCESS)
+          return malformed(stats_, r);
+        break;
+      }
+      case 'T':
+        if (field.value().get_uint64().get(next_funding_ns) != sj::SUCCESS)
+          return malformed(stats_, r);
+        break;
+      case 'R':
+        if (field.value().get_bool().get(realized) != sj::SUCCESS) return malformed(stats_, r);
+        break;
       default:
         break;
     }
@@ -276,7 +302,15 @@ MdDecodeResult GeminiMdParser::decode(std::string_view json,
   const bool depth = event == "depthUpdate";
   const bool ticker = event.empty() && !bid_qty.empty() && !ask_qty.empty();
   const bool trade = event.empty() && have_trade_id && have_maker;
-  if (!depth && !ticker && !trade) {
+  const bool mark = event == "markPrice";
+  const bool funding = event == "fundingAmount";
+  if (funding && realized) {
+    // The amount paid at T, not the estimate of the next payment.
+    ++stats_.funding_realized;
+    r.status = ParseStatus::Ignored;
+    return r;
+  }
+  if (!depth && !ticker && !trade && !mark && !funding) {
     ++stats_.ignored;
     r.status = ParseStatus::Ignored;
     return r;
@@ -288,6 +322,34 @@ MdDecodeResult GeminiMdParser::decode(std::string_view json,
     return r;
   }
   const Timestamp exch_ts{static_cast<std::int64_t>(exch_ns)};
+
+  if (mark || funding) {
+    const auto px = parse_price(trade_px);
+    if (!px) return malformed(stats_, r);
+    auto* ps = reinterpret_cast<PerpStateMsg*>(out.data());
+    PerpStateBuilder b(*ps, inst, venue_, 0, recv_ts, t0);
+    if (mark) {
+      b.mark(*px);
+      ps->hdr.exch_ts = exch_ts;
+      ++stats_.marks;
+    } else {
+      // f is the quote paid per contract long over the interval, so f / p is the rate. E is the
+      // funding time (= T), not when the estimate was made: exch_ts stays unknown.
+      const auto amount = parse_price(funding_amount);
+      if (!amount || !px->is_positive() || funding_minutes <= 0 || next_funding_ns == 0)
+        return malformed(stats_, r);
+      b.funding(amount->to_double() / px->to_double(),
+                seconds(funding_minutes * 60),
+                static_cast<std::int64_t>(next_funding_ns / 1'000'000));
+      ++stats_.fundings;
+    }
+    if (!b.any()) return malformed(stats_, r);  // a non-positive mark
+    r.status = ParseStatus::Ok;
+    r.kind = MdKind::PerpState;
+    r.len = sizeof(PerpStateMsg);
+    r.count = 1;
+    return r;
+  }
 
   if (depth) {
     if (!have_first || !have_last || bid_count < 0 || ask_count < 0) return malformed(stats_, r);
