@@ -95,6 +95,8 @@ Quotes never cross the quote venue's touch. A fair value move under `requote_thr
 | Hedge venue market data or order channel down | quotes pulled, no hedges |
 | Hedge venue held by the feed-lag gate (`[risk] max_feed_lag_ms`) | quotes pulled |
 | A fill would take the unhedged position past `max_unhedged` | that side not quoted |
+| The quote venue's balance cannot cover a fill of a side (`ctx.balance_room`: a spot bid's quote asset, an ask's base, a derivative's margin) | that side not quoted |
+| The hedge venue's balance or margin cannot cover the hedge | hedge held, logged and counted once per episode (`Stats::hedges_held`), no failure; only the side that reduces `\|unhedged\|` quoted, as at `max_unhedged`; the next balance report or fill looks again |
 | A hedge fills nothing (expired, rejected, refused by risk) | next hedge after `hedge_retry_ms` |
 | `max_hedge_failures` such hedges within `failure_window_ms` | halted: quotes pulled, no hedges, error logged |
 | A hedge ends without the venue saying how (ack timeout, a reconciliation with quantity unaccounted for, a generic venue reject such as a REST timeout) | next hedge after `uncertain_hold_ms` |

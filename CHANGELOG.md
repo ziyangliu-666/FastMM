@@ -5,6 +5,20 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Balances, margin and collateral: `BalanceMsg` (`EventType::Balance`, journaled) reports one asset
+  of a venue's account; every connector sends a snapshot after each reconciliation
+  (`ReconcileDriver`'s balance leg) and its private stream's updates (Binance Spot
+  `outboundAccountPosition`, USD-M `ACCOUNT_UPDATE` via a refresh, OKX `account`, Bybit `wallet`,
+  Deribit `user.portfolio`, Gemini `balances@account`, Coinbase Exchange `balance`; Coinbase
+  Advanced refreshes after fills). The engine keeps a per-venue table moved by its own orders and
+  fills until the next report (`core/balance_book.hpp`): `ctx.balance`, `ctx.margin`,
+  `ctx.balance_room`, `on_balance`, `RiskHeadroom::balance_buy_qty` / `balance_sell_qty`.
+  `[risk] check_balance` (default on) refuses what the balance cannot cover (`BalanceShort`);
+  `[[instruments]] initial_margin` sizes a derivative's margin. `fastmm-gateway` checks the
+  account's balance over every strategy (`[gateway] check_balance`, `GatewayBalanceShort`) and
+  routes balances to every attachment. `basic_mm` cuts its ladder to the balance; `xmm` drops a side
+  the quote venue cannot fill and holds a hedge the hedge venue cannot cover. Status segment
+  version 13 (balances; eleven gateway refusal counters), `fastmm_balance_*` metrics.
 - Coinbase Advanced Trade connector (`kind = "coinbase_advanced"`), spot, production with a CDP
   API key: ES256 JWTs (`net::EcdsaP256Key`, `net::base64url_encode`), `level2` with the
   connection's `sequence_num` as the loss check, `market_trades`; REST orders and

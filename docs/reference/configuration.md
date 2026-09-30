@@ -351,6 +351,7 @@ Line and recovery keys apply to the multicast feed; `rx_backend` selects how it 
 | `option_type` | string |  | call \| put |
 | `maker_bps` | number |  | maker fee of this instrument, bps; negative = rebate. Overrides the venue's fees table |
 | `taker_bps` | number |  | taker fee of this instrument, bps. Overrides the venue's fees table |
+| `initial_margin` | any |  | initial margin of a derivative, fraction of the notional (0.1 at 10x leverage), decimal; the balance check and estimate use it (default: none, an order passes while the venue reports margin available) |
 <!-- END config-keys -->
 
 Live connectors replace `tick`, `lot` and the size bounds with the venue's reference data when they connect; the configured values are used by backtests and the simulator.
@@ -403,6 +404,7 @@ Every limit is off when it is `0` or omitted. [Risk model](../explanation/risk-m
 | `burst` | integer |  | token-bucket capacity, orders (default orders_per_sec) |
 | `stp` | boolean |  | self-trade prevention against our own resting orders (default true) |
 | `max_feed_lag_ms` | integer |  | pull a venue's quotes and refuse orders that could rest there without reducing the position while its market data arrives this much later than its baseline, ms; resumes 100 ms after the last message over it (default 0: off) |
+| `check_balance` | boolean |  | refuse an order the venue's reported balance, less this session's orders and fills since, cannot cover; off for a venue until it reports balances (default true) |
 | `underlying` | table |  | one [risk.underlying.BTC] table per base asset: a net position limit over every instrument and venue that trades it |
 <!-- END config-keys -->
 
@@ -439,6 +441,7 @@ Read by `fastmm-gateway` only: account guards over every attached strategy, chec
 | `max_gross_notional` | any |  | fastmm-gateway: refuse an order that would take the sum of the account's \|position\| at the marks past this, unless it reduces its instrument's position; decimal |
 | `max_net_notional` | any |  | fastmm-gateway: refuse an order that would take the account's net position at the marks further past this, unless it reduces its instrument's position; decimal |
 | `underlying` | table |  | fastmm-gateway: one [gateway.underlying.BTC] table per base asset: the account's net limit, over every strategy and venue |
+| `check_balance` | boolean |  | fastmm-gateway: refuse an order the venue's reported balance, less the orders and fills of every attached strategy since, cannot cover (default true) |
 | `shared` | table |  | fastmm-gateway: one [gateway.shared."venue:symbol"] table per instrument that several strategies may trade at once (default: one strategy per instrument) |
 <!-- END config-keys -->
 

@@ -54,6 +54,7 @@ void on_timer(auto& /*ctx*/, TimerId /*id*/, std::uint64_t tag) noexcept {
 void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hit(kConnection); }
 void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
 void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
+void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance); }
 ```
 
 | Hook | Called |
@@ -70,6 +71,7 @@ void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
 | `on_connection(ctx, m)` | a venue channel changed state; for any state other than `Live` the engine has already pulled that venue's quotes and, on the market-data channel, cleared its books |
 | `on_quoting(ctx, enabled)` | `ctx.quoting_enabled()` changed ([below](#on_quoting)) |
 | `on_params(ctx)` | a parameter update was applied; `params()` holds the new values ([Parameter updates](#parameter-updates)) |
+| `on_balance(ctx, m)` | a venue reported one asset of the account ([Balances](#balances)); `ctx.balance` already holds it |
 
 Rules:
 
@@ -203,6 +205,27 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), Venu
 
 The three are computed from journaled inputs, so replay returns the same values. `venue_health` costs one lookup; `risk_headroom` does the work of a risk check. While the feed-lag gate holds a venue, `set_quotes` on its instruments returns false.
 
+### Balances
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#balances -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<Ctx>().balance(VenueId{}, "USDT")), Balance>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().margin(VenueId{})), Margin>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().balance_room(InstrumentId{}, Side::Buy, Price{})), Qty>);
+static_assert(std::same_as<decltype(Balance::free), Notional>);
+static_assert(std::same_as<decltype(Balance::known), bool>);
+static_assert(std::same_as<decltype(Margin::available), Notional>);
+```
+
+| Method | Returns |
+|---|---|
+| `balance(venue, asset)` | `Balance`: `free`, `locked`, `total` (the venue's last report moved by this engine's orders and fills since; [Balance check](../explanation/risk-model.md#balance-check)), `equity` and `maintenance` as reported, `as_of` (the report's venue time), `known` (false until the venue reports the asset, and for an asset no instrument of the venue uses). Amounts are in the asset |
+| `margin(venue)` | `Margin`: `available`, `initial`, `maintenance`, `equity`, `wallet`, `asset`: the venue's account-wide margin where it reports one (`account` true, usually valued in USD), else the settlement asset of its first derivative |
+| `balance_room(id, side, px)` | the largest quantity of `id` on `side` at `px` the balance covers, rounded down to the lot: a spot buy's quote with the taker fee, a spot sell's base, a derivative's initial margin; `Qty::max()` while the venue has not reported that balance. What this instrument's open orders on that side hold is not counted as room |
+
+`RiskHeadroom::balance_buy_qty` / `balance_sell_qty` are `balance_room` at the book's mid. `fit_to_balance(ctx, id, inst, q)` (`strategies/quoting.hpp`) cuts a `DesiredQuotes` ladder to what the balance covers, the side's resting orders counted as room; `basic_mm` uses it.
+
 ## Execution view
 
 The engine derives these from the order events and the market data it journals, so a replay reproduces them.
@@ -309,6 +332,8 @@ static_assert(std::same_as<decltype(EventHeader::exch_ts), Timestamp>);
 static_assert(std::same_as<decltype(OmsUpdate::order), Order>);
 static_assert(std::same_as<decltype(OmsUpdate::prev), OrderState>);
 static_assert(std::same_as<decltype(OmsUpdate::terminal), bool>);
+static_assert(std::same_as<decltype(BalanceMsg::free), Notional>);
+static_assert(std::same_as<decltype(BalanceMsg::asset), FixedString<8>>);
 ```
 
 - Every message starts with an `EventHeader`: `type`, `venue`, `instrument`, `exch_ts` (venue event time) and `recv_ts` (receive time), plus `seq` and flags.
@@ -316,6 +341,7 @@ static_assert(std::same_as<decltype(OmsUpdate::terminal), bool>);
 - `OptionTickerMsg`: `mark_price` is in the instrument's price unit, `underlying_price` and `index_price` in the underlying's quote currency, implied volatilities are annualised decimals (0.312 is 31.2 %), greeks are the venue's; NaN marks a field the venue did not send.
 - `ConnectionStateMsg::state` is `Disconnected`, `Connecting`, `Live`, `Stale`, `Resyncing` or `Dead`; `channel` is 0 for market data and 1 for the order and user stream; `reason_code` is venue-specific.
 - `OmsUpdate` carries the order snapshot after the transition (`order`), the previous state (`prev`), and `known`, `changed` and `terminal` flags.
+- `BalanceMsg`: one asset of a venue's account as the venue reports it, absolute amounts in `asset` at `exch_ts`: `free`, `locked`, `total`, `equity`, `maintenance` (for a derivative: available margin, initial margin in use, wallet balance, wallet plus unrealised PnL, maintenance margin). Flags: `kSnapshot` (part of a full snapshot), `kSnapshotEnd` (its last message; an asset it did not name holds nothing), `kAccount` (the account-wide margin).
 
 ## Parameters
 
@@ -427,7 +453,12 @@ h.reconnect();                            // on_connection (live again)
 h.pull_quotes();                          // on_quoting(false)
 h.resume_quotes();                        // on_quoting(true)
 h.publish({{"half_spread_bps", "7.5"}});  // on_params
-h.engine().finish();                      // on_stop
+BalanceMsg usdt{};
+init_header(usdt, EventType::Balance, InstrumentId::invalid(), VenueId{0});
+usdt.asset.assign("USDT");
+usdt.free = Notional::from_int(1000);
+h.push(usdt.hdr);     // on_balance
+h.engine().finish();  // on_stop
 ```
 
 | Call | Effect |

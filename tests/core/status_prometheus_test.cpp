@@ -261,3 +261,28 @@ TEST_CASE("core.status_prometheus: every metric the shipped alert rules use is e
     CHECK(has(exported, "# TYPE " + n + " "));
   }
 }
+
+TEST_CASE("core.status_prometheus: balances per venue and asset, once reported") {
+  StatusSnapshot s = sample();
+  s.balance_count = 3;
+  set_status_name(s.balances[0].asset, "USDT");
+  s.balances[0].known = 1;
+  s.balances[0].free_raw = 90'000'000'000;    // 900
+  s.balances[0].locked_raw = 10'000'000'000;  // 100
+  s.balances[0].total_raw = 100'000'000'000;
+  s.balances[0].equity_raw = 100'000'000'000;
+  set_status_name(s.balances[1].asset, "BTC");  // not reported yet
+  set_status_name(s.balances[2].asset, "USD");
+  s.balances[2].account = 1;
+  s.balances[2].known = 1;
+  s.balances[2].maintenance_raw = 5'000'000'000;  // 50
+  const std::string text = format_status_prometheus(s, s.updated_ns);
+  CHECK(has(text, "fastmm_balance_free{venue=\"binance\",asset=\"USDT\",account=\"0\"} 900\n"));
+  CHECK(has(text, "fastmm_balance_locked{venue=\"binance\",asset=\"USDT\",account=\"0\"} 100\n"));
+  CHECK(has(text, "fastmm_balance_total{venue=\"binance\",asset=\"USDT\",account=\"0\"} 1000\n"));
+  CHECK(
+      has(text, "fastmm_balance_maintenance{venue=\"binance\",asset=\"USD\",account=\"1\"} 50\n"));
+  CHECK_FALSE(has(text, "asset=\"BTC\""));
+  const StatusSnapshot none = sample();
+  CHECK_FALSE(has(format_status_prometheus(none, none.updated_ns), "fastmm_balance"));
+}

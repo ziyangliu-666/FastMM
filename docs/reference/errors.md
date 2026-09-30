@@ -65,6 +65,7 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
 | 22 | `UnderlyingMarkUnknown` | `[risk.underlying]` | every inverse contract of the underlying with a position or open orders (and the order's own, if inverse) has a valid book no older than `stale_md_ms` |
 | 21 | `MaxUnderlyingNet` | `[risk.underlying.<BASE>] max_net` | the underlying's position or same-side open orders shrink, or the order brings the net towards zero |
+| 23 | `BalanceShort` | `[risk] check_balance` | the venue reports more free balance, or our orders on that asset end or fill ([Balance check](../explanation/risk-model.md#balance-check)) |
 | 13 | `MaxOpenOrders` | `[risk] max_open_orders` | an order of that instrument terminates |
 | 14 | `SelfTradePrevention` | `[risk] stp` | our resting order on the other side moves or is cancelled |
 | 15 | `RateLimit` | `[risk] orders_per_sec`, `burst` | the token bucket refills |
@@ -101,6 +102,7 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net position in the base asset over every venue, with the orders working on the order's side and this one, would move further past the limit |
 | 56 | `GatewayUnderlyingMarkUnknown` | `[gateway.underlying]`: an inverse contract of the underlying with a position or working orders has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
 | 57 | `GatewaySelfTrade` | `[gateway.shared]`: the order would trade with a resting order of another attached strategy on the same instrument |
+| 58 | `GatewayBalanceShort` | `[gateway] check_balance`: the account's balance on the venue, less the orders of every attached strategy, does not cover the order |
 
 ### Venue-originated
 
