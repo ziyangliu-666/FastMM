@@ -56,6 +56,13 @@ struct Ctx {
   [[nodiscard]] Qty open_qty(InstrumentId id, Side) const { return id.value == 1 ? open : Qty{}; }
   // Both venues report balances: the quote and hedge checks run on every requote and hedge.
   [[nodiscard]] Qty balance_room(InstrumentId, Side, Price) const { return Qty::from_int(1000); }
+  // The venues' marks, indices and funding, the same for both legs (never reported by default).
+  RefPrice mark_now;
+  RefPrice index_now;
+  FundingView funding_now;
+  [[nodiscard]] RefPrice mark(InstrumentId) const { return mark_now; }
+  [[nodiscard]] RefPrice index(InstrumentId) const { return index_now; }
+  [[nodiscard]] FundingView funding(InstrumentId) const { return funding_now; }
 };
 
 Instrument linear(const char* sym, std::uint8_t venue, const char* mult) {
@@ -117,4 +124,39 @@ TEST_CASE("hotpath.noalloc: Xmm requotes, hedges and ends hedges") {
   }
   CHECK(ctx.sends == 2000);
   CHECK(ctx.quotes >= 2000);
+}
+
+// The perpetual legs: the funding carry and the venues' premia priced on every requote, and a
+// PerpState of either instrument requoting.
+TEST_CASE("hotpath.noalloc: Xmm prices funding and the mark basis") {
+  auto table = std::make_unique<InstrumentTable>();
+  REQUIRE(table->add(linear("BTCUSDT", 0, "1")));
+  REQUIRE(table->add(linear("BTCUSDT", 1, "1")));
+  auto s = std::make_unique<Xmm>();
+  REQUIRE_FALSE(s->configure({{"quote_qty", "0.01"},
+                              {"requote_threshold_ticks", "0"},
+                              {"mark_basis", "true"},
+                              {"funding_horizon_s", "3600"},
+                              {"max_unhedged", "0.05"}}));
+  Ctx ctx;
+  ctx.table = table.get();
+  s->on_start(ctx);
+  REQUIRE(s->ready());
+  const PerpStateMsg msg{};
+  {
+    NoAllocScope guard(true);
+    for (int i = 0; i < 2000; ++i) {
+      ctx.t = ctx.t + milliseconds(1);
+      const Price mid = Price::from_int(100000 + (i % 50));
+      ctx.books[1] = Book{mid - Price::from_decimal("0.1").value(), mid, ctx.t};
+      ctx.books[0] = Book{mid - Price::from_int(10), mid + Price::from_int(10), ctx.t};
+      ctx.mark_now = RefPrice{mid, ctx.t, false};
+      ctx.index_now = RefPrice{mid - Price::from_int(i % 7), ctx.t, false};
+      ctx.funding_now = FundingView{0.0001 * (i % 3), seconds(8 * 3600), Timestamp{}, ctx.t, false};
+      s->on_book(ctx, InstrumentId{1}, ctx.books[1]);
+      s->on_perp_state(ctx, InstrumentId{1}, msg);
+      s->on_perp_state(ctx, InstrumentId{0}, msg);
+    }
+  }
+  CHECK(ctx.quotes >= 4000);
 }

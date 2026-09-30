@@ -5,8 +5,12 @@
 // and the hedge instrument (taker IOC orders), usually the same underlying on two venues.
 //
 //   ref    = hedge book mid (or microprice)
-//   basis  = EWMA of (quote book mid - ref), half-life basis_halflife_s (0: no basis)
-//   fair   = ref + basis
+//   basis  = EWMA of (quote book mid - ref), half-life basis_halflife_s (0: no basis); with
+//            mark_basis, the venues' premia instead: (quote mark - quote index) - (hedge mark -
+//            hedge index), a leg that is not a perpetual counting 0
+//   carry  = ref * (hedge funding - quote funding) over funding_horizon_s, each perpetual leg's
+//            rate from ctx.funding (a spot leg pays none); 0 while funding_horizon_s is 0
+//   fair   = ref + basis + carry
 //   half   = fair * (edge + quote maker fee + hedge taker fee + slippage), the fees from
 //            ctx.fees: [venues.<x>.fees], [[instruments]] overrides, or the account's own
 //   bid    = fair - half rounded down, ask = fair + half rounded up, one level, never crossing the
@@ -44,6 +48,12 @@
 // and counted (Stats::hedges_held, once per episode), and while it is held only the side that
 // reduces |unhedged| is quoted, as at max_unhedged. The next balance report or fill looks again.
 //
+// Perpetual legs (ctx.mark, ctx.index, ctx.funding): a bid that fills is hedged by a sell, so
+// holding it earns the hedge leg's funding and pays the quote leg's; carry prices that in over the
+// expected holding time, the same shift for both sides. A mark, index or funding rate the strategy
+// needs that is stale (or never came) pulls the quotes, as a stale book does. A PerpState of either
+// instrument requotes.
+//
 // Linear contracts only (spot, linear perpetuals and futures); an inverse instrument leaves the
 // strategy idle with an error at start. The instrument indices are read at start. The basis is
 // tracked in double (EWMA of price differences) and rounded back to raw price units; everything
@@ -56,6 +66,7 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/order.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/venue_health.hpp"
@@ -101,6 +112,20 @@ struct XmmParams {
                86400.0,
                "half-life of the basis EWMA, seconds (0 = no basis)")
   FASTMM_PARAM(bool, use_microprice, false, 0, 1, "hedge reference is the touch microprice")
+  FASTMM_PARAM(bool,
+               mark_basis,
+               false,
+               0,
+               1,
+               "basis from the venues' mark and index prices of the perpetual legs instead of the "
+               "EWMA of the mids")
+  FASTMM_PARAM(double,
+               funding_horizon_s,
+               0.0,
+               0.0,
+               2592000.0,
+               "expected holding time of a position, seconds: the perpetual legs' funding over it "
+               "shifts fair value (0 = off)")
   FASTMM_PARAM(Qty,
                max_unhedged,
                0.005_qty,
@@ -281,6 +306,14 @@ class Xmm : public StrategyBase<XmmParams> {
     requote(ctx, true);
   }
 
+  // A venue's mark, index or funding of either instrument: fair value may have moved.
+  template <class Ctx>
+  void on_perp_state(Ctx& ctx, InstrumentId id, const PerpStateMsg&) noexcept {
+    if (!ready_ || (id != q_ && id != h_)) return;
+    if (!params().mark_basis && !(params().funding_horizon_s > 0.0)) return;
+    requote(ctx, false);
+  }
+
   // A venue reported a balance: a held hedge may fit now, and a side may be quotable again.
   template <class Ctx>
   void on_balance(Ctx& ctx, const BalanceMsg& m) noexcept {
@@ -390,12 +423,37 @@ class Xmm : public StrategyBase<XmmParams> {
            to_base(ctx.instrument(h_), ctx.position(h_).qty);
   }
 
-  // The hedge reference plus the basis; zero while either is unknown.
+  // The hedge reference plus the basis and the funding carry; zero while one of them is unknown
+  // or stale.
   template <class Ctx>
   [[nodiscard]] Price fair_value(const Ctx& ctx) const noexcept {
     const Price ref = reference(ctx.book(h_));
-    if (!ref.is_positive() || !have_basis_) return Price{};
-    return ref + basis();
+    if (!ref.is_positive()) return Price{};
+    Price fair = ref;
+    if (params().mark_basis) {
+      Price quote_premium;
+      Price hedge_premium;
+      if (!premium(ctx, q_, quote_premium) || !premium(ctx, h_, hedge_premium)) return Price{};
+      fair += quote_premium - hedge_premium;
+    } else {
+      if (!have_basis_) return Price{};
+      fair += basis();
+    }
+    if (params().funding_horizon_s > 0.0) {
+      double quote_rate = 0.0;
+      double hedge_rate = 0.0;
+      if (!funding_over(ctx, q_, quote_rate) || !funding_over(ctx, h_, hedge_rate)) return Price{};
+      fair += carry(ref, hedge_rate, quote_rate);
+    }
+    return fair;
+  }
+
+  // What holding the hedged pair for the horizon earns per unit, in price: a bid that fills is
+  // hedged by a sell, which receives the hedge leg's funding (positive rate: longs pay shorts) and
+  // pays the quote leg's. `hedge_rate` and `quote_rate` are the rates over the horizon.
+  [[nodiscard]] static Price carry(Price ref, double hedge_rate, double quote_rate) noexcept {
+    return Price::from_raw(static_cast<std::int64_t>(
+        std::llround(static_cast<double>(ref.raw) * (hedge_rate - quote_rate))));
   }
 
  private:
@@ -411,6 +469,30 @@ class Xmm : public StrategyBase<XmmParams> {
     if (limit <= Duration{}) return false;
     const Timestamp t = ctx.book(id).last_update();
     return t.valid() && ctx.now() - t > limit;
+  }
+
+  // A perpetual leg's premium, mark - index, from its venue; 0 for another leg. False when a mark
+  // or index it needs is stale or unknown.
+  template <class Ctx>
+  [[nodiscard]] static bool premium(const Ctx& ctx, InstrumentId id, Price& out) noexcept {
+    out = Price{};
+    if (ctx.instrument(id).asset_class != AssetClass::Perpetual) return true;
+    const RefPrice mark = ctx.mark(id);
+    const RefPrice index = ctx.index(id);
+    if (!mark.usable() || !index.usable()) return false;
+    out = mark.price - index.price;
+    return true;
+  }
+  // A perpetual leg's funding rate over funding_horizon_s; 0 for another leg. False when the rate
+  // is stale or unknown.
+  template <class Ctx>
+  [[nodiscard]] bool funding_over(const Ctx& ctx, InstrumentId id, double& out) const noexcept {
+    out = 0.0;
+    if (ctx.instrument(id).asset_class != AssetClass::Perpetual) return true;
+    const FundingView f = ctx.funding(id);
+    if (!f.usable()) return false;
+    out = f.over(Duration{std::llround(params().funding_horizon_s * 1e9)});
+    return true;
   }
 
   template <class Ctx>
