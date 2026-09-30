@@ -372,9 +372,11 @@ void CoinbaseExchangeVenue::on_md_state(net::ConnState s) {
     case ConnState::Stale:
       // The engine clears books on any non-Live md state: resubscribe for fresh snapshots.
       emit_connection_state(*md_sink_, id_, 0, ConnState::Stale);
+      // A book still waiting for its snapshot (the whole book: seconds of transfer) keeps
+      // waiting; a synced one may have missed updates and starts over.
       for (InstrumentId id : subscribed_) {
-        if (CoinbaseBookSync* sync = md_feed_->sync(id))
-          sync->resync(SyncReason::Explicit, now_ns());
+        CoinbaseBookSync* sync = md_feed_->sync(id);
+        if (sync != nullptr && sync->synced()) sync->resync(SyncReason::Explicit, now_ns());
       }
       break;
     case ConnState::Disconnected:

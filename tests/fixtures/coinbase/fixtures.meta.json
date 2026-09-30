@@ -1,12 +1,16 @@
 {
  "_source": "mixed",
- "_recorded_from": "https://api.exchange.coinbase.com/{products/BTC-USD,time}, https://api-public.sandbox.exchange.coinbase.com/products/BTC-USD and wss://ws-feed.exchange.coinbase.com (fastmm-live --dry-run --record-raw with configs/coinbase-sandbox.toml pointed at production: level2_batch, matches and heartbeat on BTC-USD and ETH-USD)",
+ "_recorded_from": "https://api.exchange.coinbase.com/{products/BTC-USD,time}, https://api-public.sandbox.exchange.coinbase.com/products/BTC-USD and wss://ws-feed.exchange.coinbase.com (fastmm-live --dry-run --record-raw with configs/coinbase-sandbox.toml pointed at production: level2_batch, matches and heartbeat on BTC-USD and ETH-USD); https://api.coinbase.com/api/v3/brokerage/{market/products/BTC-USD,time} and wss://advanced-trade-ws.coinbase.com (fastmm-live --dry-run --record-raw with configs/coinbase-advanced.toml: level2, market_trades and heartbeats on BTC-USD and ETH-USD)",
  "_recorded_at": "2026-09-30T02:03Z",
  "files": {
   "product_btc_usd.json": "recorded (production)",
   "product_btc_usd_sandbox.json": "recorded (sandbox)",
   "server_time.json": "recorded",
   "raw_md_stream.jsonl": "recorded, one frame per line: the first 400 frames of a session (subscriptions, two snapshots, l2update, match, last_match, heartbeat); the two snapshots cut to their best 150 levels a side (the venue sent 22662 and 8507 bids) and written back with the same keys and strings",
-  "private payloads (tests/venues/coinbase_*_test.cpp)": "docs-example (https://docs.cdp.coinbase.com/exchange/websocket-feed/channels, .../api-reference/exchange-api/rest-api/orders/*, read 2026-09-30) with FastMM client_oids; not recorded (no keys)"
+  "private payloads (tests/venues/coinbase_*_test.cpp)": "docs-example (https://docs.cdp.coinbase.com/exchange/websocket-feed/channels, .../api-reference/exchange-api/rest-api/orders/*, read 2026-09-30) with FastMM client_oids; not recorded (no keys)",
+  "advanced_product_btc_usd.json": "recorded (Advanced Trade public product)",
+  "advanced_time.json": "recorded",
+  "advanced_md_stream.jsonl": "recorded, one frame per line: the first 250 frames of a session; the two level2 snapshots cut to their best 150 levels a side (the venue sent 22677 and 8485 bids) and written back with the same keys and strings",
+  "advanced user channel (tests/venues/coinbase_advanced_test.cpp)": "the snapshot, subscriptions and heartbeat envelopes recorded from the live account on 2026-09-30 (the user id replaced by zeros); the order updates follow the AsyncAPI Order schema (https://docs.cdp.coinbase.com/api-reference/advanced-trade-api/advanced-trade-asyncapi.json, read 2026-09-30), not recorded (no orders placed)"
  }
 }

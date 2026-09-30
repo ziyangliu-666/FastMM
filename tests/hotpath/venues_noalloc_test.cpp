@@ -1,9 +1,8 @@
 // Venue connector hot paths do not allocate after warm-up: the market-data parser, the private
-// (user stream) parser and the order encoder of Binance, Bybit, OKX, Deribit and Coinbase, on the
-// recorded
-// fixtures in tests/fixtures/<venue>/. The first pass over the frames is the warm-up (parser
-// buffers reach their working size); the measured rounds must then decode and encode everything
-// without a single allocation.
+// (user stream) parser and the order encoder of Binance, Bybit, OKX, Deribit and Coinbase (both
+// APIs), on the recorded fixtures in tests/fixtures/<venue>/. The first pass over the frames is
+// the warm-up (parser buffers reach their working size); the measured rounds must then decode and
+// encode everything without a single allocation.
 #if defined(FASTMM_HOTPATH_VENUES)
 
 #include "../venues/venue_test_util.hpp"
@@ -21,6 +20,10 @@
 #include "fastmm/venues/bybit/bybit_md_parser.hpp"
 #include "fastmm/venues/bybit/bybit_order_encoder.hpp"
 #include "fastmm/venues/bybit/bybit_private_parser.hpp"
+#include "fastmm/venues/coinbase/advanced_md_feed.hpp"
+#include "fastmm/venues/coinbase/advanced_md_parser.hpp"
+#include "fastmm/venues/coinbase/advanced_rest.hpp"
+#include "fastmm/venues/coinbase/advanced_user_parser.hpp"
 #include "fastmm/venues/coinbase/coinbase_md_feed.hpp"
 #include "fastmm/venues/coinbase/coinbase_md_parser.hpp"
 #include "fastmm/venues/coinbase/coinbase_order_encoder.hpp"
@@ -478,6 +481,106 @@ TEST_CASE("hotpath.noalloc: Coinbase market-data parser and feed, user parser an
     for (int round = 0; round < kRounds; ++round) {
       if (!enc.encode_new(all[0], rq) || rq.body_n == 0) ++failed;
       if (!enc.encode_cancel(all[1], rq) || rq.path_n == 0) ++failed;
+    }
+  }
+  CHECK(failed == 0);
+}
+
+TEST_CASE("hotpath.noalloc: Coinbase Advanced market-data parser and feed, user parser, encoder") {
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTC-USD", 1, "BTC", "USD")));
+  REQUIRE(instruments.add(make_instrument("ETH-USD", 1, "ETH", "USD")));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  // The recorded production session's level2 and market_trades updates (snapshots included).
+  std::vector<PaddedJson> md_frames;
+  {
+    const std::string raw = fastmm::test::fixture("coinbase/advanced_md_stream.jsonl");
+    std::size_t pos = 0;
+    while (pos < raw.size()) {
+      std::size_t end = raw.find('\n', pos);
+      if (end == std::string::npos) end = raw.size();
+      const std::string line = raw.substr(pos, end - pos);
+      pos = end + 1;
+      const std::size_t tab = line.find('\t');
+      if (tab == std::string::npos) continue;
+      const std::string frame = line.substr(tab + 1);
+      if (frame.find(R"("channel":"l2_data")") != std::string::npos ||
+          (frame.find(R"("channel":"market_trades")") != std::string::npos &&
+           frame.find(R"("type":"update")") != std::string::npos))
+        md_frames.emplace_back(frame);
+    }
+  }
+  REQUIRE(md_frames.size() > 200);
+  {
+    coinbase::AdvancedMdParser md(symbols, VenueId{1});
+    check_decoder_noalloc(md, md_frames);
+  }
+  {
+    fastmm::venues::test::RecordingSink sink(32U << 20);
+    coinbase::AdvancedMdFeed feed(symbols, VenueId{1}, sink.sink, coinbase::ResubscribeRequester{});
+    REQUIRE(feed.add_instrument(InstrumentId{0}));
+    REQUIRE(feed.add_instrument(InstrumentId{1}));
+    feed.on_connected();
+    for (const PaddedJson& f : md_frames) REQUIRE(feed.on_message(f.view(), 1) == ParseStatus::Ok);
+    while (sink.ring.try_peek() != nullptr) sink.ring.release();
+    int failed = 0;
+    {
+      NoAllocScope guard;
+      for (int round = 0; round < 20; ++round) {
+        for (const PaddedJson& f : md_frames) {
+          if (feed.on_message(f.view(), 1) != ParseStatus::Ok) ++failed;
+          while (sink.ring.try_peek() != nullptr) sink.ring.release();
+        }
+      }
+    }
+    CHECK(failed == 0);
+  }
+  {
+    // One order's life on the user channel: open, a fill shown as cumulative quantity, cancelled.
+    coinbase::AdvancedUserParser user(symbols, VenueId{1});
+    auto order = [](const char* status, const char* cum) {
+      return PaddedJson(
+          std::string(
+              R"({"channel":"user","client_id":"","timestamp":"2026-09-30T02:37:14Z","sequence_num":7,"events":[{"type":"update","orders":[{"avg_price":"60000.1","client_order_id":"fm000100000001","cumulative_quantity":")") +
+          cum +
+          R"(","leaves_quantity":"0.2","order_id":"11111111-2222-4333-8444-555555555555","order_side":"SELL","order_type":"LIMIT","product_id":"BTC-USD","reject_reason":"","status":")" +
+          status +
+          R"(","time_in_force":"GOOD_UNTIL_CANCELLED","total_fees":"0"}],"positions":{}}]})");
+    };
+    const PaddedJson open = order("OPEN", "0");
+    const PaddedJson filled = order("OPEN", "0.1");
+    const PaddedJson cancelled = order("CANCELLED", "0.1");
+    Scratch s;
+    coinbase::AdvancedUserResult r;
+    int failed = 0;
+    auto round = [&] {
+      user.decode(open.view(), Timestamp{1}, Cycles{1}, s.span(), r);
+      if (r.count != 1) ++failed;
+      user.decode(filled.view(), Timestamp{1}, Cycles{1}, s.span(), r);
+      if (r.due_count != 1) ++failed;
+      user.decode(cancelled.view(), Timestamp{1}, Cycles{1}, s.span(), r);
+      if (r.count != 1) ++failed;
+    };
+    round();
+    {
+      NoAllocScope guard;
+      for (int k = 0; k < kRounds; ++k) round();
+    }
+    CHECK(failed == 0);
+  }
+  // Orders go over REST with a JWT per request (OpenSSL allocates there); the order body is
+  // written into fixed buffers.
+  const coinbase::AdvancedOrderEncoder enc(symbols);
+  const Commands cmds(InstrumentId{0}, VenueId{1}, "60000.1", "0.3");
+  const std::array<OrderCommand, 3> all = cmds.all();
+  coinbase::OrderRequest rq;
+  REQUIRE(enc.encode_new(all[0], rq));
+  int failed = 0;
+  {
+    NoAllocScope guard;
+    for (int k = 0; k < kRounds; ++k) {
+      if (!enc.encode_new(all[0], rq) || rq.body_n == 0) ++failed;
     }
   }
   CHECK(failed == 0);

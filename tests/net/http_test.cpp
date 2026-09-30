@@ -101,7 +101,7 @@ TEST_CASE("http_message: request and response head parsing") {
   CHECK(parse_request_head("GET /\r\n\r\n", req) == HttpParseStatus::Invalid);
   CHECK(parse_request_head("GET / HTTP/1.1\r\nNoColon\r\n\r\n", req) == HttpParseStatus::Invalid);
   std::string many = "GET / HTTP/1.1\r\n";
-  for (int i = 0; i < 40; ++i) many += "H" + std::to_string(i) + ": v\r\n";
+  for (std::size_t i = 0; i <= kMaxHttpHeaders; ++i) many += "H" + std::to_string(i) + ": v\r\n";
   many += "\r\n";
   CHECK(parse_request_head(many, req) == HttpParseStatus::TooManyHeaders);
 

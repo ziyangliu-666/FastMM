@@ -21,7 +21,7 @@
 // venue's documentation says the level2 channel "guarantees delivery of all updates"; the check
 // is for a connection that loses messages without closing.
 #include "fastmm/core/time.hpp"
-#include "fastmm/venues/book_sync.hpp"
+#include "fastmm/venues/coinbase/coinbase_book_sync.hpp"
 #include "fastmm/venues/coinbase/coinbase_md_parser.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/feed.hpp"
@@ -35,24 +35,6 @@
 #include <vector>
 
 namespace fastmm::venues::coinbase {
-
-// The update ids are the feed's own numbering (see above): a message applies when it follows the
-// last one applied.
-struct CoinbaseSyncTraits {
-  static constexpr bool kNeedsRestSnapshot = false;
-  static constexpr bool kBuffersDeltas = false;
-  static constexpr bool is_stale(const BookDeltaMsg&, std::uint64_t) noexcept { return false; }
-  static constexpr bool first_applies(const BookDeltaMsg& d, std::uint64_t snap) noexcept {
-    return d.prev_update_id == snap;
-  }
-  static constexpr bool next_applies(const BookDeltaMsg& d, std::uint64_t prev) noexcept {
-    return d.prev_update_id == prev;
-  }
-  static constexpr bool is_snapshot_marker(const BookDeltaMsg&) noexcept { return false; }
-};
-
-using CoinbaseBookSync = StreamBookSync<CoinbaseSyncTraits>;
-using ResubscribeRequester = InstrumentCallback;
 
 enum class DepthChannel : std::uint8_t { Level2Batch = 0, Level2 = 1 };
 [[nodiscard]] constexpr std::string_view to_string(DepthChannel c) noexcept {
@@ -161,14 +143,7 @@ class CoinbaseMdFeed {
       return ParseStatus::Ok;
     }
     auto* d = reinterpret_cast<BookDeltaMsg*>(scratch_);
-    if (d->is_snapshot()) {
-      d->first_update_id = d->last_update_id = ++b->counter;
-      d->prev_update_id = 0;
-    } else {
-      d->prev_update_id = b->counter;
-      d->first_update_id = d->last_update_id = ++b->counter;
-    }
-    d->hdr.venue_seq = d->last_update_id;
+    number_book_message(*d, b->counter);
     b->sync.on_book(*d, rx_ts);
     ++stats_.pushed;
     return ParseStatus::Ok;
