@@ -27,6 +27,10 @@
 // feed (ctx.own_qty at the ticker's or the book's venue time; zero in the simulator) is taken out
 // of each level first; a side left empty makes imb +-1 toward the other side, both empty 0.
 //
+// Balance: each side is cut to what the account's balance on the target's venue covers
+// (fit_to_balance, as basic_mm): a spot sell to the base held, a buy to the quote; a side it cannot
+// cover at all is not quoted. A balance report requotes.
+//
 // Hysteresis: a resting quote whose price is still the one the rule picks keeps its side while its
 // edge is at least the threshold minus hysteresis_bps. The strategy never improves on its own
 // resting order (live books include it), and never quotes a bid at or above the best ask or an ask
@@ -161,6 +165,12 @@ class LeadMM : public StrategyBase<LeadMMParams> {
   template <class Ctx>
   void on_fill(Ctx& ctx, const Fill& fill) noexcept {
     if (fill.instrument == target_) requote(ctx);  // inventory changed: re-gate and re-skew
+  }
+
+  // The target's venue reported a balance: the sides are sized to it again.
+  template <class Ctx>
+  void on_balance(Ctx& ctx, const BalanceMsg& m) noexcept {
+    if (m.hdr.venue == ctx.instrument(target_).venue) requote(ctx);
   }
 
   // A leader that stops updating sends no book events: the timer is what pulls the quotes then.
@@ -393,13 +403,10 @@ class LeadMM : public StrategyBase<LeadMMParams> {
     };
     Price used = *f;
     if (params().imb_bps.raw != 0) used = shift_fair(used, target_imbalance(ctx, book));
-    const DesiredQuotes q = compute_quotes(used,
-                                           book.bid,
-                                           book.ask,
-                                           own(Side::Buy),
-                                           own(Side::Sell),
-                                           ctx.position(target_).qty,
-                                           ctx.instrument(target_));
+    const Instrument& inst = ctx.instrument(target_);
+    DesiredQuotes q = compute_quotes(
+        used, book.bid, book.ask, own(Side::Buy), own(Side::Sell), ctx.position(target_).qty, inst);
+    fit_to_balance(ctx, target_, inst, q);
     // Remember a pull only while the quotes are ignored (quoting disabled): the engine has pulled.
     pulled_ = !ctx.set_quotes(target_, q);
   }
