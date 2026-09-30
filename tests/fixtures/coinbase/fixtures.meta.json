@@ -10,6 +10,7 @@
   "private payloads (tests/venues/coinbase_*_test.cpp)": "docs-example (https://docs.cdp.coinbase.com/exchange/websocket-feed/channels, .../api-reference/exchange-api/rest-api/orders/*, read 2026-09-30) with FastMM client_oids; not recorded (no keys)",
   "advanced_product_btc_usd.json": "recorded (Advanced Trade public product)",
   "advanced_time.json": "recorded",
+  "advanced_accounts.json": "recorded (GET /api/v3/brokerage/accounts?limit=250 on the live account, read only, 2026-09-30T08:33Z, through tests/venues/live_coinbase_test.cpp); the account uuids and retail_portfolio_id replaced by zeros, nothing else changed",
   "advanced_md_stream.jsonl": "recorded, one frame per line: the first 250 frames of a session; the two level2 snapshots cut to their best 150 levels a side (the venue sent 22677 and 8485 bids) and written back with the same keys and strings",
   "advanced user channel (tests/venues/coinbase_advanced_test.cpp)": "the snapshot, subscriptions and heartbeat envelopes recorded from the live account on 2026-09-30 (the user id replaced by zeros); the order updates follow the AsyncAPI Order schema (https://docs.cdp.coinbase.com/api-reference/advanced-trade-api/advanced-trade-asyncapi.json, read 2026-09-30), not recorded (no orders placed)"
  }

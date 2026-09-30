@@ -19,6 +19,14 @@
 //   change    (STP, modify)               -> the tracked size becomes new_size
 //   heartbeat, subscriptions, error       -> control
 //
+// and the `balance` channel's messages (same page, "Balance Channel"; subscribed by account_ids):
+//   balance   {account_id, currency, holds, available, updated, timestamp}
+//                                         -> BalanceMsg for `currency` as the venue spells it:
+//                                            free = available, locked = holds; the venue time is
+//                                            `updated` ("when last balance change is observed"),
+//                                            else `timestamp`. The connector keeps only the assets
+//                                            the engine tracks.
+//
 // Events about orders that are not tracked are counted and dropped (orders placed by hand or by
 // other software on the same profile).
 #include "fastmm/core/containers/open_hash_map.hpp"
@@ -44,6 +52,7 @@ struct PrivateParserStats {
   std::uint64_t fills = 0;
   std::uint64_t done = 0;
   std::uint64_t changes = 0;
+  std::uint64_t balances = 0;
   std::uint64_t control = 0;
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;

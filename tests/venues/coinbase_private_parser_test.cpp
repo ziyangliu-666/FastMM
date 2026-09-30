@@ -186,3 +186,44 @@ TEST_CASE("coinbase.private_parser: change, learn, sweep, foreign orders and con
   CHECK(f.decode(R"({"type":"match","trade_id":0,"side":"buy","size":"1","price":"1"})").status ==
         ParseStatus::Malformed);
 }
+
+TEST_CASE("coinbase.private_parser: the balance channel, the documented message") {
+  Fixture f;
+  // The Balance Channel example (https://docs.cdp.coinbase.com/exchange/websocket-feed/channels,
+  // read 2026-09-30), its // comments removed.
+  const PrivateDecodeResult r = f.decode(
+      R"({"type":"balance","account_id":"d50ec984-77a8-460a-b958-66f114b0de9b","currency":"USD","holds":"1000.23","available":"102030.99","updated":"2023-10-10T20:42:27.265Z","timestamp":"2023-10-10T20:42:29.265Z"})");
+  REQUIRE(r.status == ParseStatus::Ok);
+  REQUIRE(r.count == 1);
+  const auto& b = f.at<BalanceMsg>(0);
+  CHECK(b.hdr.type == EventType::Balance);
+  CHECK(b.hdr.venue == kVenue);
+  CHECK_FALSE(b.hdr.instrument.valid());
+  CHECK(b.asset.view() == "USD");
+  CHECK(b.free == Notional::from_decimal("102030.99").value());
+  CHECK(b.locked == Notional::from_decimal("1000.23").value());
+  CHECK(b.total == Notional::from_decimal("103031.22").value());
+  CHECK(b.equity == b.total);
+  CHECK(b.maintenance.is_zero());
+  CHECK(b.flags == 0);  // an update, not a snapshot
+  // The venue time is when it saw the change ("updated"), not when it sent the message.
+  CHECK(b.hdr.exch_ts.ns == 1696970547265000000);
+  CHECK(b.hdr.recv_ts.ns == 1);
+  CHECK(f.p->stats().balances == 1);
+  // Without "updated", the send time.
+  REQUIRE(
+      f.decode(
+           R"({"type":"balance","account_id":"a","currency":"BTC","holds":"0","available":"0.5000000000000001","timestamp":"2023-10-10T20:42:29.265Z"})")
+          .count == 1);
+  CHECK(f.at<BalanceMsg>(0).hdr.exch_ts.ns == 1696970549265000000);
+  CHECK(f.at<BalanceMsg>(0).free == Notional::from_decimal("0.5").value());
+  // A currency no FixedString<8> holds is no asset the engine keeps; a bad amount is malformed.
+  CHECK(
+      f.decode(
+           R"({"type":"balance","account_id":"a","currency":"LONGNAMECOIN","holds":"0","available":"1","updated":"2023-10-10T20:42:27.265Z"})")
+          .status == ParseStatus::Ignored);
+  CHECK(
+      f.decode(
+           R"({"type":"balance","account_id":"a","currency":"USD","holds":"x","available":"1","updated":"2023-10-10T20:42:27.265Z"})")
+          .status == ParseStatus::Malformed);
+}

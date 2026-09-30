@@ -22,6 +22,8 @@ constexpr std::int64_t kClockResyncNs = 30LL * 60 * 1'000'000'000;
 constexpr std::int64_t kRateLimitCooldownNs = 1'000'000'000;
 constexpr std::int64_t kDayMs = 24LL * 3600 * 1000;
 constexpr std::size_t kMaxReconcilePages = 20;
+// GET /accounts: 250 a page; a retail account lists one per currency it has held.
+constexpr std::size_t kMaxAccountPages = 20;
 constexpr int kFillsPageRows = 100;
 constexpr std::size_t kMaxFillPagesPerWindow = 20;
 constexpr std::size_t kMaxFillPages = 100;
@@ -233,7 +235,7 @@ void CoinbaseAdvancedVenue::attach(const SymbolTable& symbols,
   md_feed_->set_log_name(cfg_.name);
   user_parser_ = std::make_unique<AdvancedUserParser>(symbols, id_);
   encoder_ = std::make_unique<AdvancedOrderEncoder>(symbols);
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
 }
 
 void CoinbaseAdvancedVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -600,12 +602,16 @@ void CoinbaseAdvancedVenue::fetch_fills(ClientOrderId id) {
             return a.time_ms < b.time_ms;
           });
           // A row goes out once, by its trade id, whatever order the venue lists them in.
+          bool filled = false;
           for (const AdvFillRow& f : rows) {
             if (f.order_id != sh->venue_id.view() || !note_live_trade(f.trade_id)) continue;
             const Qty cum = sh->emitted + f.size;
             emit_fill(*sh, id, f, cum);
             sh->emitted = cum;
+            filled = true;
           }
+          // No channel reports balances: the executions moved them.
+          if (filled) reconcile_.request_balances();
         }
         if (sh->emitted < sh->wanted) {
           // Not listed yet: again shortly, a few times, then the next replay.
@@ -1034,6 +1040,76 @@ void CoinbaseAdvancedVenue::drop_shadow(ClientOrderId id) {
   shadows_.erase(id);
 }
 
+// ---- balances -----------------------------------------------------------------------------------
+
+bool CoinbaseAdvancedVenue::fetch_balances(std::uint64_t generation) {
+  account_pages_ = 0;
+  balance_rows_.clear();
+  return request_accounts_page(generation, {});
+}
+
+bool CoinbaseAdvancedVenue::request_accounts_page(std::uint64_t generation,
+                                                  const std::string& cursor) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
+  const std::string target = AdvancedOrderEncoder::accounts_path(cursor);
+  std::weak_ptr<int> alive = alive_;
+  return rest_->request(
+      "GET",
+      target,
+      rest_headers("GET", target, false),
+      {},
+      [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.balances_current(generation)) return;
+        ++stats_.rest_requests;
+        std::vector<AdvBalanceRow> rows;
+        std::string next;
+        bool has_next = false;
+        const std::string err = r.ok() ? decode_adv_balances(r.body, rows, next, has_next)
+                                       : fmt::format("status={} err={} {}",
+                                                     r.status,
+                                                     net::to_string(r.error),
+                                                     adv_error_message(r.body));
+        if (!err.empty()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: accounts failed ({})", cfg_.name, err);
+          if (r.error == net::NetError::None) {
+            const std::string msg = adv_error_message(r.body);
+            const VenueAction a = map_http(r.status, msg).action;
+            if (a != VenueAction::Reconcile) apply_action(a, r.status, msg);
+          }
+          reconcile_.balances_fetched(generation, false, 0);
+          return;
+        }
+        // One row a currency: two spot accounts of one currency add up.
+        for (AdvBalanceRow& b : rows) {
+          const auto same =
+              std::find_if(balance_rows_.begin(), balance_rows_.end(), [&](const AdvBalanceRow& x) {
+                return x.currency == b.currency;
+              });
+          if (same == balance_rows_.end()) {
+            balance_rows_.push_back(std::move(b));
+          } else {
+            same->available = same->available + b.available;
+            same->hold = same->hold + b.hold;
+          }
+        }
+        if (has_next && !next.empty()) {
+          if (++account_pages_ >= kMaxAccountPages) {
+            FASTMM_LOG_WARN("{}: more than {} pages of accounts", cfg_.name, kMaxAccountPages);
+            reconcile_.balances_fetched(generation, false, 0);
+          } else if (!request_accounts_page(generation, next)) {
+            reconcile_.balances_fetched(generation, false, 0);
+          }
+          return;
+        }
+        for (const AdvBalanceRow& b : balance_rows_)
+          reconcile_.add_balance(b.currency, BalanceFields::spot(b.available, b.hold));
+        balance_rows_.clear();
+        // The reply carries no time: the venue's clock as it arrived.
+        reconcile_.balances_fetched(generation, true, venue_time_ms());
+      });
+}
+
 // ---- execution replay -------------------------------------------------------------------------
 
 void CoinbaseAdvancedVenue::resume_executions(std::int64_t since_venue_ms,
@@ -1124,6 +1200,7 @@ bool CoinbaseAdvancedVenue::emit_replayed(const AdvFillRow& f) {
                      exec_replay_.emitting_unresolved() ? OrderFillMsg::kUnresolved : 0);
   ++stats_.order_events;
   ++stats_.executions_fetched;
+  reconcile_.request_balances();  // at most one fetch a second, however many rows
   return true;
 }
 

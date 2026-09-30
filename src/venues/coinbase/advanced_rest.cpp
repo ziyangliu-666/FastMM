@@ -112,6 +112,12 @@ std::string AdvancedOrderEncoder::product_path(std::string_view product) {
   return std::string(kAdvancedPrefix) + "/market/products/" + std::string(product);
 }
 
+std::string AdvancedOrderEncoder::accounts_path(std::string_view cursor) {
+  std::string p = std::string(kAdvancedPrefix) + "/accounts?limit=250";
+  if (!cursor.empty()) p.append("&cursor=").append(cursor);
+  return p;
+}
+
 // ---- replies ---------------------------------------------------------------------------------
 
 namespace {
@@ -329,6 +335,51 @@ std::string decode_adv_accounts(std::string_view json, std::size_t& accounts, bo
   dom::array arr;
   if (root["accounts"].get(arr) != sj::SUCCESS) return not_expected(root, "accounts");
   accounts = arr.size();
+  has_next = flag(root, "has_next");
+  return {};
+}
+
+namespace {
+
+// {"value": "1.23", "currency": "BTC"}
+bool amount(const dom::element& account, const char* key, Notional& out) {
+  dom::element a;
+  std::string_view v;
+  if (account[key].get(a) != sj::SUCCESS || a["value"].get(v) != sj::SUCCESS) return false;
+  const auto n = parse_balance(v);
+  if (!n) return false;
+  out = *n;
+  return true;
+}
+
+}  // namespace
+
+std::string decode_adv_balances(std::string_view json,
+                                std::vector<AdvBalanceRow>& out,
+                                std::string& cursor,
+                                bool& has_next) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "accounts: invalid JSON";
+  dom::array arr;
+  if (root["accounts"].get(arr) != sj::SUCCESS) return not_expected(root, "accounts");
+  for (dom::element e : arr) {
+    const std::string platform = text(e, "platform");
+    const std::string type = text(e, "type");
+    if (platform == "ACCOUNT_PLATFORM_CFM_CONSUMER" || platform == "ACCOUNT_PLATFORM_INTX" ||
+        type == "ACCOUNT_TYPE_VAULT" || type == "ACCOUNT_TYPE_PERP_FUTURES")
+      continue;
+    AdvBalanceRow b;
+    b.currency = text(e, "currency");
+    if (b.currency.empty()) return "accounts: account without currency";
+    // No hold object: nothing held.
+    const bool has_hold = e["hold"].error() == sj::SUCCESS;
+    if (!amount(e, "available_balance", b.available) || (has_hold && !amount(e, "hold", b.hold)))
+      return "accounts: bad available_balance or hold for " + b.currency;
+    out.push_back(std::move(b));
+  }
+  cursor = text(root, "cursor");
   has_next = flag(root, "has_next");
   return {};
 }

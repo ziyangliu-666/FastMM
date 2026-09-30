@@ -13,6 +13,10 @@
 //   GET /fills          [{trade_id (number), order_id, product_id, price, size, fee, side,
 //                         liquidity M | T | O, created_at}], newest first
 //   DELETE /orders      ["<order id>", ..]; DELETE /orders/<id> "<order id>"
+//   GET /accounts       [{id, currency, balance, hold, available, profile_id, trading_enabled
+//                        (boolean), pending_deposit, display_name}], one per currency of the
+//                        key's profile, not paged; amounts with 16 decimals
+//                        (.../rest-api/accounts/get-all-account-profile)
 //   an error            {"message": "..."}
 #include "fastmm/core/fixed_point.hpp"
 
@@ -63,7 +67,20 @@ struct FillRow {
   std::int64_t time_ms = 0;
 };
 
+// A trading account of the profile: available is free, hold is locked ("Holds are placed on an
+// account for any active orders or pending withdraw requests"), balance = available + hold.
+// Amounts truncated to 8 decimals.
+struct AccountRow {
+  std::string id;
+  std::string currency;
+  Notional balance{};
+  Notional available{};
+  Notional hold{};
+  bool trading_enabled = false;
+};
+
 // Empty string on success, else an error description.
+std::string decode_accounts(std::string_view json, std::vector<AccountRow>& out);
 std::string decode_product(std::string_view json, ProductInfo& out);
 std::string decode_server_time(std::string_view json, std::int64_t& epoch_ms);
 std::string decode_orders(std::string_view json, std::vector<OrderRow>& out);

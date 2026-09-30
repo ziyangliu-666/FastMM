@@ -255,7 +255,7 @@ void CoinbaseExchangeVenue::attach(const SymbolTable& symbols,
   md_feed_->set_log_name(cfg_.name);
   private_parser_ = std::make_unique<CoinbasePrivateParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<CoinbaseOrderEncoder>(symbols, cfg_.stp);
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
 }
 
 void CoinbaseExchangeVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -456,6 +456,7 @@ void CoinbaseExchangeVenue::on_user_open() {
   p += R"(],"channels":["user","heartbeat"]})";
   if (!user_conn_.send_text(signed_payload(p)))
     FASTMM_LOG_ERROR("{}: could not subscribe the user channel", cfg_.name);
+  balance_subscribed_.clear();  // a new connection: the balance channel follows once it is Live
 }
 
 void CoinbaseExchangeVenue::on_user_state(net::ConnState s) {
@@ -476,6 +477,7 @@ void CoinbaseExchangeVenue::on_user_state(net::ConnState s) {
       reconcile_.request();
     }
     user_was_live_ = true;
+    subscribe_balances();
     return;
   }
   if (mapped == ConnState::Stale) return;
@@ -513,7 +515,17 @@ void CoinbaseExchangeVenue::on_user_text(std::string_view t, std::int64_t ts) {
         case EventType::OrderFill: {
           const auto* m = reinterpret_cast<const OrderFillMsg*>(h);
           if (m->leaves_qty.raw <= 0) forget_order(m->cl_ord_id);
+          balances_after_fill_ = true;
           break;
+        }
+        case EventType::Balance: {
+          // In the engine's spelling, and only an asset it keeps.
+          auto* m = reinterpret_cast<BalanceMsg*>(h);
+          const std::string_view name = reconcile_.assets().find(m->asset.view());
+          if (name.empty()) continue;
+          m->asset.assign(name);
+          static_cast<void>(order_sink_->push(*h));
+          continue;
         }
         default:
           break;
@@ -896,6 +908,68 @@ void CoinbaseExchangeVenue::drop_shadow(ClientOrderId id) {
   forget_order(id);
 }
 
+// ---- balances -----------------------------------------------------------------------------------
+
+bool CoinbaseExchangeVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
+  const std::string target = "/accounts";
+  std::weak_ptr<int> alive = alive_;
+  return rest_->request("GET",
+                        target,
+                        rest_headers("GET", target, {}),
+                        {},
+                        [this, alive, generation](const net::HttpResponse& r) {
+                          if (alive.expired() || !reconcile_.balances_current(generation)) return;
+                          ++stats_.rest_requests;
+                          std::vector<AccountRow> rows;
+                          const std::string err = r.ok() ? decode_accounts(r.body, rows)
+                                                         : fmt::format("status={} err={} {}",
+                                                                       r.status,
+                                                                       net::to_string(r.error),
+                                                                       error_message(r.body));
+                          if (!err.empty()) {
+                            ++stats_.rest_errors;
+                            FASTMM_LOG_WARN("{}: GET /accounts failed ({})", cfg_.name, err);
+                            if (r.error == net::NetError::None) {
+                              const std::string msg = error_message(r.body);
+                              const VenueAction a = map_error(r.status, msg).action;
+                              if (a != VenueAction::Reconcile) apply_action(a, r.status, msg);
+                            }
+                            reconcile_.balances_fetched(generation, false, 0);
+                            return;
+                          }
+                          balance_accounts_.clear();
+                          for (const AccountRow& a : rows) {
+                            if (reconcile_.assets().tracks(a.currency))
+                              balance_accounts_.push_back(a.id);
+                            reconcile_.add_balance(a.currency,
+                                                   BalanceFields::spot(a.available, a.hold));
+                          }
+                          // The reply carries no time: the venue's clock as it arrived.
+                          reconcile_.balances_fetched(generation, true, venue_time_ms());
+                          subscribe_balances();
+                        });
+}
+
+void CoinbaseExchangeVenue::subscribe_balances() {
+  if (!user_conn_.is_live() || balance_accounts_.empty() ||
+      balance_accounts_ == balance_subscribed_)
+    return;
+  std::string p = R"({"type":"subscribe","channels":[{"name":"balance","account_ids":[)";
+  for (std::size_t i = 0; i < balance_accounts_.size(); ++i) {
+    if (i != 0) p += ',';
+    p += '"';
+    p += balance_accounts_[i];
+    p += '"';
+  }
+  p += "]}]}";
+  if (user_conn_.send_text(signed_payload(p))) {
+    balance_subscribed_ = balance_accounts_;
+  } else {
+    FASTMM_LOG_WARN("{}: could not subscribe the balance channel", cfg_.name);
+  }
+}
+
 // ---- execution replay -------------------------------------------------------------------------
 //
 // GET /fills per product (product_id or order_id is required), newest first by trade_id, from the
@@ -997,6 +1071,7 @@ bool CoinbaseExchangeVenue::emit_fill(std::size_t stream, const FillRow& f) {
                      exec_replay_.emitting_unresolved() ? OrderFillMsg::kUnresolved : 0);
   ++stats_.order_events;
   ++stats_.executions_fetched;
+  balances_after_fill_ = true;
   return true;
 }
 
@@ -1140,6 +1215,10 @@ void CoinbaseExchangeVenue::on_timer(std::int64_t now) {
   if (!connected_) return;
   md_feed_->on_timer(now);
   if (clock_resync_wanted_ || now - clock_sync_ns_ >= kClockResyncNs) request_server_time();
+  if (balances_after_fill_) {
+    balances_after_fill_ = false;
+    reconcile_.request_balances();
+  }
   reconcile_.on_timer(now);
   if (!cfg_.dry_run && signer_.usable()) exec_replay_.on_timer(now);
   shadow_overflow_.check(cfg_.name, shadows_.size(), decltype(shadows_)::kMaxSize);

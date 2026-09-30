@@ -23,6 +23,13 @@
 // then GET /orders (open, pending, active) becomes one Begin / OpenOrder* / End. A fill names its
 // order by the venue's order id: the connector maps the ones it knows and asks GET /orders/<id>
 // for the others (ReplayScheduler lookups). Spot has no positions to report.
+//
+// Balances: GET /accounts after every snapshot (ReconcileDriver's balance leg), stamped with the
+// venue clock when it arrived (the reply carries no time). Its account ids of the tracked assets
+// subscribe the `balance` channel on the user connection, whose updates go out as they come,
+// stamped with their `updated` time. The channel "does not track every update"
+// (websocket-feed/channels, Balance Channel), so a fill also asks for GET /accounts again, from
+// the housekeeping timer (at most once a second).
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/seqlock.hpp"
@@ -182,6 +189,10 @@ class CoinbaseExchangeVenue final : public Venue, private ReconcileHooks {
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   bool request_open_orders_page(std::uint64_t generation, const std::string& after);
+  // ReconcileHooks: GET /accounts, then the balance snapshot.
+  bool fetch_balances(std::uint64_t generation) override;
+  // The balance channel for the accounts of the tracked assets, on the user connection.
+  void subscribe_balances();
   // Execution replay (ReplayScheduler over GET /fills, one stream per product).
   [[nodiscard]] bool replay_ready() const noexcept;
   bool query_fills(const ReplayQuery& q);
@@ -237,7 +248,10 @@ class CoinbaseExchangeVenue final : public Venue, private ReconcileHooks {
 
   ReconcileDriver reconcile_{*this, sent_};
   std::size_t reconcile_pages_ = 0;
-  std::vector<ClientOrderId> snapshot_ids_;  // the client ids of the snapshot being fetched
+  std::vector<ClientOrderId> snapshot_ids_;    // the client ids of the snapshot being fetched
+  std::vector<std::string> balance_accounts_;  // account ids of the tracked assets (GET /accounts)
+  std::vector<std::string> balance_subscribed_;  // those the user connection has subscribed
+  bool balances_after_fill_ = false;             // a fill came: the housekeeping timer refreshes
 
   ReplayScheduler<FillRow> exec_replay_;
   ConnState md_state_ = ConnState::Disconnected;

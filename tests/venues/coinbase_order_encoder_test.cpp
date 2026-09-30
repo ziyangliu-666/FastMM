@@ -257,3 +257,38 @@ TEST_CASE("coinbase.rest: recorded products and time, orders, fills, ids and err
   CHECK(error_message(R"({"message":"Invalid Price"})") == "Invalid Price");
   CHECK(error_message("<html>").empty());
 }
+
+TEST_CASE("coinbase.wire: balances with 16 decimals are truncated to 8") {
+  CHECK(parse_balance("0.0000000000000000") == Notional{});
+  CHECK(parse_balance("1.2345678999999999") == Notional::from_decimal("1.23456789").value());
+  CHECK(parse_balance("102030.99") == Notional::from_decimal("102030.99").value());
+  CHECK(parse_balance("0") == Notional{});
+  CHECK_FALSE(parse_balance("1.23456789x"));
+  CHECK_FALSE(parse_balance("1.2345678900000000x"));
+  CHECK_FALSE(parse_balance(""));
+}
+
+TEST_CASE("coinbase.rest: accounts, the documented example") {
+  // The example of apiAccount, GET /accounts (https://docs.cdp.coinbase.com/api-reference/
+  // exchange-api/rest-api/accounts/get-all-account-profile, read 2026-09-30), and a BTC account
+  // holding for an order in the same shape.
+  std::vector<AccountRow> rows;
+  REQUIRE(
+      decode_accounts(
+          R"([{"id":"7fd0abc0-e5ad-4cbb-8d54-f2b3f43364da","currency":"USD","balance":"0.0000000000000000","hold":"0.0000000000000000","available":"0","profile_id":"8058d771-2d88-4f0f-ab6e-299c153d4308","trading_enabled":true},{"id":"d50ec984-77a8-460a-b958-66f114b0de9b","currency":"BTC","balance":"1.2500000000000000","hold":"0.3000000000000001","available":"0.9499999999999999","profile_id":"8058d771-2d88-4f0f-ab6e-299c153d4308","trading_enabled":true,"pending_deposit":"0","display_name":"BTC"}])",
+          rows)
+          .empty());
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].id == "7fd0abc0-e5ad-4cbb-8d54-f2b3f43364da");
+  CHECK(rows[0].currency == "USD");
+  CHECK(rows[0].available.is_zero());
+  CHECK(rows[0].hold.is_zero());
+  CHECK(rows[0].trading_enabled);
+  CHECK(rows[1].currency == "BTC");
+  CHECK(rows[1].balance == Notional::from_decimal("1.25").value());
+  CHECK(rows[1].hold == Notional::from_decimal("0.3").value());
+  CHECK(rows[1].available == Notional::from_decimal("0.94999999").value());
+  CHECK(decode_accounts(R"({"message":"Unauthorized."})", rows) == "accounts: Unauthorized.");
+  CHECK(decode_accounts(R"([{"id":"x","currency":"BTC","hold":"1","available":"abc"}])", rows) ==
+        "accounts: bad available or hold for BTC");
+}
