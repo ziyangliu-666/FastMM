@@ -11,8 +11,8 @@ from fastmm import Param
 
 
 class TouchMM(fastmm.Strategy):
-    half_spread_bps = Param(0.01, min=0.0, doc="distance of each quote from the mid, bps")
-    quote_qty = Param(0.002, min=0.0, doc="size per side, base units")
+    half_spread_bps = Param(0.01, min=0.0, doc="half spread, bps")
+    quote_qty = Param(0.002, min=0.0, doc="size per side")
 
     @fastmm.hot  # compiled to machine code with Numba
     def on_book(self, ctx, book):
@@ -23,7 +23,7 @@ class TouchMM(fastmm.Strategy):
         ctx.clear()
         ctx.bid(book.mid - half, self.quote_qty)
         ctx.ask(book.mid + half, self.quote_qty)
-        ctx.keep_passive()  # leave an order in place while its price is still right
+        ctx.keep_passive()
 # --8<-- [end:example]
 
 
