@@ -12,7 +12,9 @@
 //     ticker.NAME.INTERVAL  D {best_bid_price|null, best_bid_amount, best_ask_price|null,
 //                           best_ask_amount, mark_price, underlying_price, index_price, mark_iv,
 //                           bid_iv, ask_iv, interest_rate, greeks {delta, gamma, vega, theta,
-//                           rho}, timestamp} -> BookTickerMsg, plus OptionTickerMsg for options
+//                           rho}, open_interest, current_funding, funding_8h, timestamp}
+//                           -> BookTickerMsg, plus OptionTickerMsg for options, or PerpStateMsg
+//                           for perpetuals and futures
 //     trades.NAME.INTERVAL  D [{trade_id, trade_seq, timestamp, price, amount, direction}]
 //                           -> one TradeMsg per trade
 //   {"method":"heartbeat","params":{"type":"test_request"|"heartbeat"}}   (public/set_heartbeat)
@@ -28,6 +30,19 @@
 // the instrument's contract_multiplier (Deribit contract_size: 10 USD for BTC-PERPETUAL, 1 BTC
 // for BTC options). IVs arrive in percent and are stored as decimals. The trade `direction` is
 // taken as the taker (aggressor) side; the current docs only say "Direction: buy, or sell".
+//
+// PerpStateMsg (perpetuals and dated futures; MdKind stays BookTicker, the first message): mark =
+// mark_price, index = index_price, open interest = open_interest (USD for perpetuals and inverse
+// futures, the base coin for linear ones: to contracts like the book amounts), exch_ts = timestamp.
+// Perpetuals add funding = current_funding per 8 h, next_funding zero. Deribit funds continuously
+// ("Funding payments are calculated every millisecond"): current_funding is the rate it applies
+// now, the premium (mark - index) / index moved 0.025 % toward zero (the dampener) and capped, as a
+// decimal per 8 h (support.deribit.com "Inverse Perpetual", read 2026-09-30; 830 of 862 BTC- and
+// ETH-PERPETUAL tickers recorded on production 2026-09-30 match it within 2e-7, all within 7e-6).
+// funding_8h (docs: "Funding 8h") is not used: it moves slowly and differs from the rate mark and
+// index give (-3.1e-6 against -2.17e-4 on BTC-PERPETUAL, 2026-09-30), so it reads as the funding of
+// the past 8 h, not the rate being applied. Futures carry no funding. A ticker without
+// current_funding carries no kFunding.
 //
 // Snapshots carry every price level (no depth limit; BTC-PERPETUAL had 1210 bids on 2026-09-28),
 // and a change can too. A side with more than kMaxBookLevelsPerMsg levels keeps the ones nearest
@@ -54,6 +69,7 @@ struct MdParserStats {
   std::uint64_t book_changes = 0;
   std::uint64_t book_tickers = 0;
   std::uint64_t option_tickers = 0;
+  std::uint64_t perp_states = 0;
   std::uint64_t trades = 0;
   std::uint64_t responses = 0;
   std::uint64_t heartbeats = 0;

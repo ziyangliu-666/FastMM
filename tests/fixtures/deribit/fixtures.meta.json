@@ -43,6 +43,11 @@
   "user_trades.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials",
   "open_orders.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials",
   "user_portfolio_btc.json": "docs: AsyncAPI deribit_asyncapi.json channel user.portfolio.(currency), example \"repeated\" (data verbatim, in the subscription envelope), read 2026-09-30",
-  "account_summaries.json": "docs: OpenAPI deribit_openapi.json /private/get_account_summaries, response example verbatim (no usIn/usOut in the example), read 2026-09-30"
+  "account_summaries.json": "docs: OpenAPI deribit_openapi.json /private/get_account_summaries, response example verbatim (no usIn/usOut in the example), read 2026-09-30",
+  "ticker_perp_btc_prod.json": "recorded on production (wss://www.deribit.com/ws/api/v2, public connection without keys, fastmm-live --dry-run --record-raw, 2026-09-30T08:00:18Z to 08:03:17Z, 100ms channels of BTC-PERPETUAL, ETH-PERPETUAL, BTC-25DEC26, BTC-25DEC26-76000-C): the first BTC-PERPETUAL ticker, current_funding -2.1714e-4",
+  "ticker_perp_eth_prod.json": "recorded on production (same session): the first ETH-PERPETUAL ticker, current_funding 0 (premium inside the dampener)",
+  "ticker_future_prod.json": "recorded on production (same session): the first BTC-25DEC26 ticker (no funding fields)",
+  "ticker_option_prod.json": "recorded on production (same session): the first BTC-25DEC26-76000-C ticker",
+  "raw_perp_ticker_stream.jsonl": "recorded on production (same session): every ticker notification of the four instruments in the first 8 s, 63 frames (books and trades left out)"
  }
 }

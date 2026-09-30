@@ -10,6 +10,11 @@
 // channels actually subscribed; a shorter list means some were refused (docs, error 11052 note).
 // public/subscribe costs 3,000 credits from a 30,000 pool (~3.3 requests/s, burst 10: rate-limits
 // article), so channels are batched kInstrumentsPerSubscribe instruments per request.
+// The ticker also carries each perpetual's and future's mark, index, funding and open interest
+// (PerpStateMsg, deribit_md_parser.hpp), pushed like the book ticker. 100ms is ample for them: the
+// engine calls a mark stale after 15 s and funding after 180 s. On production (2026-09-30, 180 s)
+// the 100ms ticker of BTC-PERPETUAL and ETH-PERPETUAL arrived 2.4 times a second each (a frame when
+// something changed), never more than 3.4 s apart.
 // A book gap re-subscribes only that book channel: public/unsubscribe then public/subscribe, after
 // which the venue sends a new snapshot.
 #include "fastmm/core/log.hpp"

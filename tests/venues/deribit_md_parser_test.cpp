@@ -26,10 +26,10 @@ namespace {
 constexpr VenueId kVenue{2};
 
 Price px(const char* s) {
-  return Price::from_decimal(s).value();
+  return Price::from_decimal(s).value_or(Price{});
 }
 Qty qt(const char* s) {
-  return Qty::from_decimal(s).value();
+  return Qty::from_decimal(s).value_or(Qty{});
 }
 
 // Ids: 0 BTC-15SEP26-77000-C (option), 1 BTC-PERPETUAL (10 USD contracts).
@@ -160,7 +160,7 @@ TEST_CASE("deribit.md_parser: perpetual ticker has no greeks and keeps exponent 
   Scratch s;
   const MdDecodeResult r = decode(p, "deribit/ticker_perp.json", s);
   REQUIRE(r.ok());
-  CHECK(r.count == 1);
+  CHECK(r.count == 2);  // BookTicker, PerpState (deribit_perp_state_test.cpp)
   const auto& bt = s.as<BookTickerMsg>();
   CHECK(bt.bid_px == px("76914"));
   CHECK(bt.bid_qty == qt("100020"));  // "best_bid_amount":1.0002e6 on the wire
@@ -419,14 +419,15 @@ TEST_CASE("deribit.rest: get_instruments decoding and the reference data mapping
   // Linear in the premium, in BTC: one contract at 0.0065 is 0.0065 BTC, and 0.0065 -> 0.0075 on
   // two contracts gains 0.002 BTC.
   CHECK(inst.settlement_ccy() == "BTC");
-  CHECK(inst.notional(px("0.0065"), qt("1")) == Notional::from_decimal("0.0065").value());
+  CHECK(inst.notional(px("0.0065"), qt("1")) ==
+        Notional::from_decimal("0.0065").value_or(Notional{}));
   {
     Instrument opt = inst;
     opt.id = InstrumentId{0};
     PositionTracker book;
     book.on_fill(opt.id, Side::Buy, px("0.0065"), qt("2"), Notional{}, opt);
     book.mark(opt.id, px("0.0075"), opt);
-    CHECK(book.get(opt.id).unrealized == Notional::from_decimal("0.002").value());
+    CHECK(book.get(opt.id).unrealized == Notional::from_decimal("0.002").value_or(Notional{}));
   }
   CHECK(inst.enabled());
   CHECK(inst.price_decimals == 4);
