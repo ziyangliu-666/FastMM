@@ -1,7 +1,8 @@
 #pragma once
 // Cryptographic primitives needed by the venue connectors: HMAC-SHA256 (REST/WS signing),
-// SHA-1 (WebSocket accept key), SHA-256, base64 (own implementation), CSPRNG bytes and Ed25519
-// (Binance session logon / Ed25519 API keys). OpenSSL 3 underneath; the header keeps OpenSSL out
+// SHA-1 (WebSocket accept key), SHA-256, base64 and base64url (own implementation), CSPRNG bytes,
+// Ed25519 (Binance session logon / Ed25519 API keys) and ECDSA P-256 (ES256 JWTs of Coinbase CDP
+// keys). OpenSSL 3 underneath; the header keeps OpenSSL out
 // of the public interface.
 //
 // HmacSha256Key hashes the key pads once and keeps the inner/outer SHA-256 midstates, so a
@@ -96,6 +97,16 @@ std::size_t base64_encode(std::span<const std::uint8_t> in, std::span<char> out)
 std::string base64_encode(std::span<const std::uint8_t> in);
 std::string base64_encode(std::string_view in);
 
+// RFC 4648 §5 base64url without padding, the encoding of JWS/JWT segments. Writes into `out`
+// (>= base64url_encoded_size(in.size())); returns bytes written, 0 if `out` is too small.
+constexpr std::size_t base64url_encoded_size(std::size_t n) noexcept {
+  return (n * 4 + 2) / 3;
+}
+std::size_t base64url_encode(std::span<const std::uint8_t> in, std::span<char> out) noexcept;
+std::string base64url_encode(std::string_view in);
+// Unpadded base64url; SIZE_MAX on malformed input or insufficient output space.
+std::size_t base64url_decode(std::string_view in, std::span<std::uint8_t> out) noexcept;
+
 // Decodes standard base64 (padding required, no whitespace). Returns bytes written or
 // SIZE_MAX on malformed input / insufficient output space.
 std::size_t base64_decode(std::string_view in, std::span<std::uint8_t> out) noexcept;
@@ -141,6 +152,43 @@ class Ed25519Key {
   // Verifies a base64 signature (Binance's `signature` parameter).
   [[nodiscard]] bool verify_base64(std::string_view data,
                                    std::string_view signature) const noexcept;
+  // "-----BEGIN PUBLIC KEY-----" PEM of the key (empty when invalid).
+  [[nodiscard]] std::string public_pem() const;
+
+ private:
+  void* pkey_ = nullptr;  // EVP_PKEY*
+  bool private_ = false;
+};
+
+// ECDSA on P-256 with SHA-256 (JWS "ES256", RFC 7518 §3.4): the signature is r || s, 32 bytes
+// each, big-endian. Coinbase CDP API keys are such keys ("-----BEGIN EC PRIVATE KEY-----").
+// Signing draws a fresh random nonce (OpenSSL), so two signatures of the same data differ.
+// Move-only; control path (OpenSSL allocates per signature).
+inline constexpr std::size_t kEs256SignatureSize = 64;
+
+class EcdsaP256Key {
+ public:
+  EcdsaP256Key() noexcept = default;
+  ~EcdsaP256Key();
+  EcdsaP256Key(EcdsaP256Key&& o) noexcept : pkey_(o.pkey_), private_(o.private_) {
+    o.pkey_ = nullptr;
+  }
+  EcdsaP256Key& operator=(EcdsaP256Key&& o) noexcept;
+  EcdsaP256Key(const EcdsaP256Key&) = delete;
+  EcdsaP256Key& operator=(const EcdsaP256Key&) = delete;
+
+  // SEC 1 "EC PRIVATE KEY" or PKCS#8 "PRIVATE KEY" PEM. Not valid() unless it is a P-256 key.
+  [[nodiscard]] static EcdsaP256Key from_private_pem(std::string_view pem);
+  // SubjectPublicKeyInfo "PUBLIC KEY" PEM.
+  [[nodiscard]] static EcdsaP256Key from_public_pem(std::string_view pem);
+
+  [[nodiscard]] bool valid() const noexcept { return pkey_ != nullptr; }
+  [[nodiscard]] bool has_private() const noexcept { return pkey_ != nullptr && private_; }
+
+  // r || s of SHA-256(data); false without a private key.
+  bool sign(std::string_view data, std::span<std::uint8_t, kEs256SignatureSize> out) const noexcept;
+  [[nodiscard]] bool verify(std::string_view data,
+                            std::span<const std::uint8_t> signature) const noexcept;
   // "-----BEGIN PUBLIC KEY-----" PEM of the key (empty when invalid).
   [[nodiscard]] std::string public_pem() const;
 

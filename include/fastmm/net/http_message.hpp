@@ -9,7 +9,9 @@
 
 namespace fastmm::net {
 
-inline constexpr std::size_t kMaxHttpHeaders = 32;
+// api.coinbase.com answers an authenticated request with more than 32 (Cloudflare, CORS and
+// security headers, 2026-09-30).
+inline constexpr std::size_t kMaxHttpHeaders = 64;
 
 constexpr char ascii_lower(char c) noexcept {
   return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
