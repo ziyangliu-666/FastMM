@@ -4,10 +4,10 @@ FastMM is a low-latency market-making engine in C++20: it quotes on one venue an
 
 ## Quickstart
 
-```console
-$ pip install "fastmm-engine[hot]"
-$ fastmm init my-mm && cd my-mm
-$ python backtest.py
+```bash
+pip install "fastmm-engine[hot]"
+fastmm init my-mm && cd my-mm
+python backtest.py
 ```
 
 The wheel needs Linux x86-64 and CPython 3.10 or later, and no keys. To build the C++ programs, see [Install](getting-started/install.md).

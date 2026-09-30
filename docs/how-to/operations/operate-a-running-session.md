@@ -2,12 +2,10 @@
 
 A running `fastmm-live` session listens on a control socket. `fastmm-ctl` sends it one command and prints the reply:
 
-```console
-$ fastmm-ctl --name sim-local status
-$ fastmm-ctl --name sim-local pull --instrument BTCUSDT
-ok pull queued (instrument BTCUSDT)
-$ fastmm-ctl --name sim-local flatten --max-slippage-bps 30
-ok flatten queued (every instrument)
+```bash
+fastmm-ctl --name sim-local status
+fastmm-ctl --name sim-local pull --instrument BTCUSDT
+fastmm-ctl --name sim-local flatten --max-slippage-bps 30
 ```
 
 Every command except `param`, `status` and `stop` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too.
@@ -20,8 +18,8 @@ Authorisation is the file system: nothing but the socket's mode is checked. Keep
 
 One datagram is the request, one datagram is the reply; any `SOCK_SEQPACKET` client works:
 
-```console
-$ echo status | socat - UNIX-CONNECT:runs/mm.ctl,socktype=5
+```bash
+echo status | socat - UNIX-CONNECT:runs/mm.ctl,socktype=5
 ```
 
 (`socktype=5` is `SOCK_SEQPACKET`; `nc -U` speaks stream and datagram sockets only.)
@@ -47,10 +45,19 @@ The control thread reads the socket every 50 ms. A command reaches the engine at
 
 Replies start with `ok` or `error` (`fastmm-ctl` exit code 0 or 1), except `status` and `help`.
 
-```console
-$ fastmm-ctl --name mm param half_spread_bps=99999
+```bash
+fastmm-ctl --name mm param half_spread_bps=99999
+```
+
+```text
 error parameter 'half_spread_bps': value 99999 outside [0, 10000]
-$ fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
+```
+
+```bash
+fastmm-ctl --name mm limits max_position=0.5 orders_per_sec=10
+```
+
+```text
 ok limits queued (2 key(s))
 ```
 

@@ -38,7 +38,7 @@ A new page gets an entry in the `nav` of [`mkdocs.yml`](../../mkdocs.yml); the s
 10. No disclaimers or "what it is not" framing: no "has not been used with real money", no "at your own risk", no defence against questions nobody asked. Limits are facts with a file reference, on the page that owns them.
 11. Second person and present tense in tutorials and how-tos; sentence-case headings; British spelling; no emojis.
 12. Units on every number (bps, ms, s, ticks, base or quote currency, raw fixed-point integers).
-13. Commands run from the repository root and copy as they are; code longer than three lines is a snippet; relative links only.
+13. Commands run from the repository root and copy as they are: no `$` prompt, in a `bash` block, with their output in a separate `text` block after it; code longer than three lines is a snippet; relative links only.
 14. Write each paragraph and list item on one line; do not wrap prose at a column.
 
 ## Snippets

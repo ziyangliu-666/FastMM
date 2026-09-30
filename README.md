@@ -16,20 +16,20 @@ FastMM is a low-latency market-making engine in C++20: it quotes on one venue an
 
 With the wheel (Linux x86-64, CPython 3.10+), no keys and no build:
 
-```console
-$ pip install "fastmm-engine[hot]"
-$ fastmm init my-mm && cd my-mm
-$ python backtest.py
+```bash
+pip install "fastmm-engine[hot]"
+fastmm init my-mm && cd my-mm
+python backtest.py
 ```
 
 `fastmm init` writes a strategy, a config for a simulated market and a backtest that prints PnL, fills and markouts. For a day of real Binance data, run `python -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27` ([Backtest on real data](docs/how-to/backtesting/binance-public-data.md)).
 
 From source, the live engine against a local exchange that speaks Binance's API:
 
-```console
-$ git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
-$ cmake --preset release && cmake --build --preset release -j
-$ ./scripts/run-sim.sh --duration 30s
+```bash
+git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
+cmake --preset release && cmake --build --preset release -j
+./scripts/run-sim.sh --duration 30s
 ```
 
 The build needs gcc 13+ or clang 16+, CMake 3.25+, Ninja and OpenSSL 3. Releases also ship as a tarball and as `ghcr.io/ziyangliu-666/fastmm` ([Deploy a release](docs/how-to/operations/deploy.md)).
