@@ -411,6 +411,7 @@ std::string OkxVenue::check_account(bool swaps) {
           "futures, multi-currency or portfolio margin mode",
           cfg_.name);
     }
+    acct_mode_ = parse_account_mode(ac.acct_lv);
     FASTMM_LOG_INFO("{}: account mode acctLv {}, posMode {}, tdMode {}{}",
                     cfg_.name,
                     ac.acct_lv,
@@ -460,7 +461,8 @@ void OkxVenue::attach(const SymbolTable& symbols,
   if (has_spot_) fill_types_.emplace_back("SPOT");
   exec_replay_.set_streams(fill_types_.size());
   decoder_ = std::make_unique<OkxResponseDecoder>();
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
+  private_parser_->set_balances(&reconcile_.assets(), acct_mode_);
 }
 
 void OkxVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -717,10 +719,11 @@ void OkxVenue::on_private_state(net::ConnState s) {
 
 void OkxVenue::on_private_open() {
   // Positions and funding exist for swaps only.
-  constexpr std::string_view kChannels[] = {"orders", "positions", "balance_and_position"};
+  constexpr std::string_view kChannels[] = {
+      "orders", "account", "positions", "balance_and_position"};
   const std::span<const std::string_view> channels =
       has_swap_ ? std::span<const std::string_view>(kChannels)
-                : std::span<const std::string_view>(kChannels, 1);
+                : std::span<const std::string_view>(kChannels, 2);
   // orders-pending's filter, which is empty for both; the channel names that ANY.
   std::string_view orders_type = pending_type();
   if (orders_type.empty()) orders_type = "ANY";
@@ -1397,6 +1400,50 @@ void OkxVenue::finish_snapshot(std::uint64_t generation) {
     FASTMM_LOG_ERROR("{}: account/positions reports a long/short-mode position", cfg_.name);
     apply_action(VenueAction::Fatal, 0, "long/short-mode position");
   }
+}
+
+// The balance leg (ReconcileDriver): one GET /api/v5/account/balance. Its rows are the currencies
+// with a balance; the driver keeps those of the instruments, and a kept one the reply does not name
+// holds nothing. Stamped with the account-level uTime, when OKX read the account.
+bool OkxVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
+  RestRequest rr;
+  OkxOrderEncoder::encode_rest_balance(rr);
+  std::weak_ptr<int> alive = alive_;
+  const bool queued = rest_->request(
+      "GET", rr.path, rest_headers(rr), {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.balances_current(generation)) return;
+        ++stats_.rest_requests;
+        AccountBalance b;
+        std::string err;
+        if (!r.ok()) {
+          err = fmt::format("status={} err={}", r.status, net::to_string(r.error));
+        } else {
+          err = decode_balance(r.body, acct_mode_, b);
+        }
+        if (!err.empty()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: account/balance failed ({})", cfg_.name, err);
+          // A dead key or a clock error is the venue's; a rate limit of this endpoint (10 per
+          // 2 s, its own) is not the order path's, and the retry covers it.
+          int code = -1;
+          std::string msg;
+          if (decode_envelope(r.body, code, msg)) {
+            const VenueAction a = map_error(code, msg).action;
+            if (a == VenueAction::Fatal || a == VenueAction::ResyncClock)
+              apply_action(a, code, msg);
+          }
+          reconcile_.balances_fetched(generation, false, 0);
+          return;
+        }
+        for (const BalanceRow& row : b.rows) reconcile_.add_balance(row.ccy, row.fields);
+        if (b.has_account) reconcile_.add_balance("USD", b.account, BalanceMsg::kAccount);
+        reconcile_.balances_fetched(
+            generation, true, b.u_time_ms > 0 ? b.u_time_ms : venue_time_ms());
+      });
+  // Not queued now: the driver asks again after its retry delay.
+  if (!queued) reconcile_.balances_fetched(generation, false, 0);
+  return true;
 }
 
 std::string_view OkxVenue::pending_type() const noexcept {

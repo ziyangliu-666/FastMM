@@ -1,5 +1,6 @@
 #include "fastmm/venues/bybit/bybit_private_parser.hpp"
 
+#include "fastmm/venues/bybit/bybit_balance.hpp"
 #include "fastmm/venues/bybit/bybit_error_map.hpp"
 #include "fastmm/venues/decimal.hpp"
 
@@ -127,6 +128,8 @@ struct ItemCtx {
   std::span<std::byte> out;
   std::uint32_t written;
   std::uint32_t count;
+  const VenueAssets* assets;
+  bool account_row;
 
   bool room(std::size_t n) noexcept {
     if (written + n <= out.size()) return true;
@@ -147,40 +150,118 @@ struct ItemCtx {
 // Next: go on with the following item; Stop: out of room; Malformed: reject the frame.
 enum class Item : std::uint8_t { Next, Stop, Malformed };
 
-[[gnu::noinline]] Item decode_wallet(ItemCtx& c, od::object& o) noexcept {
-  ++c.stats->wallets;
-  od::array coins;
-  if (o["coin"].get_array().get(coins) != sj::SUCCESS) return Item::Malformed;
-  for (auto coin_val : coins) {
-    od::object co;
-    if (coin_val.get_object().get(co) != sj::SUCCESS) return Item::Malformed;
-    std::string_view coin;
-    std::string_view balance;
-    if (co["coin"].get_string().get(coin) != sj::SUCCESS) return Item::Malformed;
-    if (co["walletBalance"].get_string().get(balance) != sj::SUCCESS) return Item::Malformed;
-    auto bal = parse_qty(balance);
-    if (!bal) return Item::Malformed;
-    // walletBalance is the gross coin balance: `locked` (open spot orders) is part of it and
-    // reported separately, and coin equity is walletBalance - spotBorrow + UPL (wallet page,
-    // checked 2026-09-14). The position is the net holding, so spot borrows are deducted.
-    std::string_view borrow;
-    if (co["spotBorrow"].get_string().get(borrow) == sj::SUCCESS && !borrow.empty()) {
-      const auto b = parse_qty(borrow);
-      if (!b) return Item::Malformed;
-      bal = *bal - *b;
-    }
-    for (const Instrument& inst : *c.instruments) {
-      if (inst.venue != c.venue || !iequals_symbol(inst.base.view(), coin)) continue;
-      if (!c.room(sizeof(PositionUpdateMsg))) break;
-      auto* m = reinterpret_cast<PositionUpdateMsg*>(c.out.data() + c.written);
-      init_header(*m, EventType::PositionUpdate, inst.id, c.venue);
-      m->qty = *bal;
-      stamp(*m, c.recv_ts, c.t0, c.creation);
-      c.written += sizeof(PositionUpdateMsg);
-      ++c.count;
-    }
+Item put_balance(ItemCtx& c,
+                 std::string_view asset,
+                 const BalanceFields& f,
+                 std::uint8_t flags) noexcept {
+  if (!c.room(sizeof(BalanceMsg))) return Item::Stop;
+  auto* m = c.place<BalanceMsg>();
+  init_header(*m, EventType::Balance, InstrumentId::invalid(), c.venue);
+  m->free = f.free;
+  m->locked = f.locked;
+  m->total = f.total;
+  m->equity = f.equity;
+  m->maintenance = f.maintenance;
+  m->asset.assign(asset);
+  m->flags = flags;
+  stamp(*m, c.recv_ts, c.t0, c.creation);
+  c.written += sizeof(BalanceMsg);
+  ++c.count;
+  ++c.stats->balances;
+  return Item::Next;
+}
+
+// One coin[] entry, read in one pass.
+[[gnu::noinline]] bool read_coin(od::object& o, BybitCoinFields& f) noexcept {
+  for (auto field : o) {
+    std::string_view key;
+    if (field.unescaped_key().get(key) != sj::SUCCESS) return false;
+    std::string_view* dst = nullptr;
+    if (key == "coin") dst = &f.coin;
+    if (key == "walletBalance") dst = &f.wallet_balance;
+    if (key == "locked") dst = &f.locked;
+    if (key == "equity") dst = &f.equity;
+    if (key == "totalOrderIM") dst = &f.total_order_im;
+    if (key == "totalPositionIM") dst = &f.total_position_im;
+    if (key == "totalPositionMM") dst = &f.total_position_mm;
+    if (key == "bonus") dst = &f.bonus;
+    if (key == "spotBorrow") dst = &f.spot_borrow;
+    if (dst == nullptr) continue;
+    if (field.value().get_string().get(*dst) != sj::SUCCESS) return false;
+  }
+  return true;
+}
+
+// Spot: the position of each instrument whose base is `coin`. walletBalance is the gross coin
+// balance: `locked` (open spot orders) is part of it and reported separately, and coin equity is
+// walletBalance - spotBorrow + UPL (wallet page, checked 2026-09-14). The position is the net
+// holding, so spot borrows are deducted.
+Item put_positions(ItemCtx& c, const BybitCoinFields& f) noexcept {
+  auto bal = parse_qty(f.wallet_balance);
+  if (!bal) return Item::Malformed;
+  if (!f.spot_borrow.empty()) {
+    const auto b = parse_qty(f.spot_borrow);
+    if (!b) return Item::Malformed;
+    bal = *bal - *b;
+  }
+  for (const Instrument& inst : *c.instruments) {
+    if (inst.venue != c.venue || !iequals_symbol(inst.base.view(), f.coin)) continue;
+    if (!c.room(sizeof(PositionUpdateMsg))) return Item::Stop;
+    auto* m = c.place<PositionUpdateMsg>();
+    init_header(*m, EventType::PositionUpdate, inst.id, c.venue);
+    m->qty = *bal;
+    stamp(*m, c.recv_ts, c.t0, c.creation);
+    c.written += sizeof(PositionUpdateMsg);
+    ++c.count;
   }
   return Item::Next;
+}
+
+// A wallet item: the coins (spot positions, balances of the kept assets), then the account row.
+[[gnu::noinline]] Item decode_wallet(ItemCtx& c, od::object& o) noexcept {
+  ++c.stats->wallets;
+  const bool spot = c.category == BybitCategory::Spot;
+  BybitAccountFields a;
+  bool coins_seen = false;
+  for (auto field : o) {
+    std::string_view key;
+    if (field.unescaped_key().get(key) != sj::SUCCESS) return Item::Malformed;
+    if (key == "coin") {
+      coins_seen = true;
+      od::array coins;
+      if (field.value().get_array().get(coins) != sj::SUCCESS) return Item::Malformed;
+      for (auto coin_val : coins) {
+        od::object co;
+        BybitCoinFields f;
+        if (coin_val.get_object().get(co) != sj::SUCCESS || !read_coin(co, f) || f.coin.empty() ||
+            f.wallet_balance.empty())
+          return Item::Malformed;
+        if (spot) {
+          if (const Item r = put_positions(c, f); r != Item::Next) return r;
+        }
+        if (c.assets == nullptr) continue;
+        const std::string_view name = c.assets->find(f.coin);
+        if (name.empty()) continue;
+        BalanceFields b;
+        if (!bybit_coin_balance(f, b)) return Item::Malformed;
+        if (put_balance(c, name, b, 0) == Item::Stop) return Item::Stop;
+      }
+      continue;
+    }
+    std::string_view* dst = nullptr;
+    if (key == "totalEquity") dst = &a.total_equity;
+    if (key == "totalWalletBalance") dst = &a.total_wallet_balance;
+    if (key == "totalAvailableBalance") dst = &a.total_available_balance;
+    if (key == "totalInitialMargin") dst = &a.total_initial_margin;
+    if (key == "totalMaintenanceMargin") dst = &a.total_maintenance_margin;
+    if (dst == nullptr) continue;
+    if (field.value().get_string().get(*dst) != sj::SUCCESS) return Item::Malformed;
+  }
+  if (!coins_seen) return Item::Malformed;
+  if (c.assets == nullptr || !c.account_row) return Item::Next;
+  BalanceFields b;
+  if (!bybit_account_balance(a, b)) return Item::Malformed;
+  return put_balance(c, "USD", b, BalanceMsg::kAccount);
 }
 
 // Fields common to execution and order items.
@@ -477,7 +558,19 @@ MdDecodeResult BybitPrivateParser::decode(std::string_view json,
   od::array data;
   if (root["data"].get_array().get(data) != sj::SUCCESS) return malformed(stats_, r);
 
-  ItemCtx c{&stats_, &symbols_, &instruments_, venue_, category_, recv_ts, t0, creation, out, 0, 0};
+  ItemCtx c{&stats_,
+            &symbols_,
+            &instruments_,
+            venue_,
+            category_,
+            recv_ts,
+            t0,
+            creation,
+            out,
+            0,
+            0,
+            assets_,
+            account_row_};
   for (auto item : data) {
     od::object o;
     if (item.get_object().get(o) != sj::SUCCESS) return malformed(stats_, r);

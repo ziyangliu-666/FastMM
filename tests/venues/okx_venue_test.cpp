@@ -1,7 +1,8 @@
 // OkxVenue against a scripted fake OKX v5: config mapping, reference data in contracts, the
 // account-mode check at start-up, the start-up sweep, order entry over the WebSocket, amends, the
 // fill and funding replays, cancel-all-after, the retry of a failed replay, an engine-requested
-// reconciliation and a book gap; and spot pairs, alone and next to a swap. Wire formats as in the
+// reconciliation and a book gap; spot pairs, alone and next to a swap; and the balances (the
+// balance leg after each snapshot, the account channel). Wire formats as in the
 // okx_* unit tests (OKX v5 docs read 2026-09-26 and 2026-09-30).
 #include "fastmm/venues/okx/okx_venue.hpp"
 
@@ -124,6 +125,9 @@ struct Harness {
   std::string cancel_after_reply =
       R"({"code":"0","msg":"","data":[{"triggerTime":"1","tag":"","ts":"1"}]})";
   int fills_failures = 0;  // the next fills queries answer 50011
+  // GET /api/v5/account/balance: recorded on the demo (spot mode; BTC, USDT and four others).
+  std::string balance = fastmm::test::fixture("okx/account_balance_spot_demo.json");
+  int balance_failures = 0;  // the next balance queries answer HTTP 503
   std::atomic<int> signed_ok{0};
   std::atomic<int> signed_bad{0};
   std::atomic<int> login_failures{0};
@@ -162,6 +166,17 @@ struct Harness {
       count(r);
       srv.record("rest", "orders-pending?" + std::string(r.query));
       return net::HttpServerResponse::json(200, reply(open_orders));
+    });
+    // Recorded apart from "rest": the tests above compare that list whole.
+    srv.route("GET", "/api/v5/account/balance", [this](const net::HttpRequest& r) {
+      count(r);
+      srv.record("balance", std::string(r.header("x-simulated-trading")));
+      const std::lock_guard lock(mu);
+      if (balance_failures > 0) {
+        --balance_failures;
+        return net::HttpServerResponse::text(503, "Service Unavailable");
+      }
+      return net::HttpServerResponse::json(200, balance);
     });
     srv.route("GET", "/api/v5/account/positions", [this](const net::HttpRequest& r) {
       count(r);
@@ -392,6 +407,21 @@ struct Live {
   void push(const EventHeader& h) {
     REQUIRE(outbound.try_push(&h, h.len));
     venue->on_wake();
+  }
+  // A balance snapshot has ended (kSnapshotEnd).
+  bool balances_ended() {
+    oc.take(orders);
+    for (const BalanceMsg* m : all<BalanceMsg>(EventType::Balance)) {
+      if ((m->flags & BalanceMsg::kSnapshotEnd) != 0) return true;
+    }
+    return false;
+  }
+  // Index in oc.all of the first message of `type`, or oc.all.size().
+  std::size_t first_index(EventType type) const {
+    for (std::size_t i = 0; i < oc.all.size(); ++i) {
+      if (RecordingSink::type_of(oc.all[i]) == type) return i;
+    }
+    return oc.all.size();
   }
 };
 
@@ -1265,8 +1295,9 @@ TEST_CASE("okx.venue: spot sweep, a cash order, a base-coin fee, the cancel and 
     for (const std::string& q : rest) CHECK(q.rfind("positions", 0) != 0);
     const auto subs = h.srv.frames("private_subscribe");
     REQUIRE(subs.size() == 1);
-    CHECK(subs[0] ==
-          R"({"id":"private","op":"subscribe","args":[{"channel":"orders","instType":"SPOT"}]})");
+    CHECK(
+        subs[0] ==
+        R"({"id":"private","op":"subscribe","args":[{"channel":"orders","instType":"SPOT"},{"channel":"account","extraParams":"{\"updateInterval\":\"0\"}"}]})");
     // The spot book arrives like the swap's.
     REQUIRE(pump_until(l.reactor, [&] { return l.venue->md_feed()->synced_count() == 1; }));
 
@@ -1362,5 +1393,87 @@ TEST_CASE("okx.venue: a spot pair next to a swap reads both instTypes") {
     REQUIRE(subs.size() == 1);
     CHECK(subs[0].find(R"({"channel":"orders","instType":"ANY"})") != std::string::npos);
     CHECK(subs[0].find(R"({"channel":"positions","instType":"SWAP")") != std::string::npos);
+  }
+}
+
+TEST_CASE("okx.venue: the start-up snapshot sends the balances, then the account channel updates") {
+  Harness h;
+  {
+    Live l(h.section(), {configured_spot()});
+    REQUIRE(pump_until(l.reactor, [&] { return l.ends() >= 1 && l.balances_ended(); }));
+    // After the order snapshot: the currencies of BTC-USDT only, as one snapshot stamped with the
+    // reply's account-level uTime.
+    CHECK(l.first_index(EventType::Reconcile) < l.first_index(EventType::Balance));
+    const auto bal = l.all<BalanceMsg>(EventType::Balance);
+    REQUIRE(bal.size() == 2);
+    CHECK(bal[0]->asset.view() == "BTC");
+    CHECK(bal[0]->flags == BalanceMsg::kSnapshot);
+    CHECK(bal[0]->free == Notional::from_decimal("0.99991918").value());
+    CHECK(bal[0]->total == Notional::from_decimal("0.99991918").value());
+    CHECK(bal[1]->asset.view() == "USDT");
+    CHECK(bal[1]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    CHECK(bal[1]->free == Notional::from_decimal("5006.64453598").value());
+    for (const BalanceMsg* m : bal) {
+      CHECK(m->hdr.venue == kVenue);
+      CHECK(m->hdr.exch_ts.ns == 1790742198676LL * 1'000'000);
+    }
+    CHECK(h.srv.frames("balance") == std::vector<std::string>{"1"});  // the demo header
+    CHECK(h.signed_bad.load() == 0);
+
+    // An event_update of USDT: an order holds part of it now.
+    h.srv.send_to(
+        "/ws/v5/private",
+        R"({"arg":{"channel":"account","uid":"77"},"eventType":"event_update","data":[{"adjEq":"","details":[{"availBal":"4990","cashBal":"5006.644535984","ccy":"USDT","eq":"5006.644535984","frozenBal":"16.644535984","uTime":"1790742200000"}],"totalEq":"106102.5","uTime":"1790742200001"}]})");
+    const auto update = [&] {
+      l.oc.take(l.orders);
+      return l.oc.last_if<BalanceMsg>(EventType::Balance,
+                                      [](const BalanceMsg& m) { return m.flags == 0; });
+    };
+    REQUIRE(pump_until(l.reactor, [&] { return update() != nullptr; }));
+    const BalanceMsg* u = update();
+    CHECK(u->asset.view() == "USDT");
+    CHECK(u->free == Notional::from_decimal("4990").value());
+    CHECK(u->locked == Notional::from_decimal("16.64453598").value());
+    CHECK(u->total == Notional::from_decimal("5006.64453598").value());
+    CHECK(u->hdr.exch_ts.ns == 1790742200000LL * 1'000'000);
+  }
+}
+
+TEST_CASE("okx.venue: a failed balance fetch does not hold up the reconciliation") {
+  Harness h;
+  h.balance_failures = 1;
+  {
+    Live l(h.section(), {configured_spot()});
+    REQUIRE(
+        pump_until(l.reactor, [&] { return l.ends() >= 1 && !h.srv.frames("balance").empty(); }));
+    l.pump();
+    CHECK(l.all<BalanceMsg>(EventType::Balance).empty());
+    CHECK(l.reconcile(ReconcileMsg::Kind::End).size() == 1);
+    // Asked again after the driver's retry delay (5 s).
+    REQUIRE(pump_until(l.reactor, [&] { return l.balances_ended(); }, 10'000));
+    CHECK(h.srv.frames("balance").size() == 2);
+    CHECK(l.all<BalanceMsg>(EventType::Balance).size() == 2);
+  }
+}
+
+TEST_CASE("okx.venue: in multi-currency margin mode the snapshot carries the account's margin") {
+  Harness h;
+  h.account_config =
+      ok_data(R"({"acctLv":"3","posMode":"net_mode","uid":"77","perm":"read_only,trade"})");
+  h.balance = fastmm::test::fixture("okx/account_balance_docs.json");
+  {
+    Live l(h.section());  // BTC-USDT-SWAP: BTC and USDT
+    REQUIRE(pump_until(l.reactor, [&] { return l.ends() >= 1 && l.balances_ended(); }));
+    const auto bal = l.all<BalanceMsg>(EventType::Balance);
+    REQUIRE(bal.size() == 2);  // the reply names USDT only: BTC holds nothing
+    CHECK(bal[0]->asset.view() == "USDT");
+    CHECK(bal[0]->flags == BalanceMsg::kSnapshot);
+    CHECK(bal[0]->free == Notional::from_decimal("4834.31709362").value());  // availBal
+    CHECK(bal[1]->asset.view() == "USD");
+    CHECK(bal[1]->flags ==
+          (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
+    CHECK(bal[1]->free == Notional::from_decimal("55415.62471983").value());
+    CHECK(bal[1]->total == Notional::from_decimal("55837.43556135").value());
+    CHECK(bal[1]->hdr.exch_ts.ns == 1705474164160LL * 1'000'000);
   }
 }

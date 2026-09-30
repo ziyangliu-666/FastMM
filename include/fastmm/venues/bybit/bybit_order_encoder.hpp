@@ -120,6 +120,10 @@ class BybitOrderEncoder {
                                     std::string_view settle_coin,
                                     std::string_view cursor,
                                     RestRequest& out);
+  // GET /v5/account/wallet-balance?accountType=UNIFIED (every coin with a balance).
+  static void encode_rest_wallet_balance(RestRequest& out);
+  // GET /v5/account/info.
+  static void encode_rest_account_info(RestRequest& out);
   // GET /v5/execution/list?category=..&startTime=..[&endTime=..]&limit=..[&cursor=..]: the
   // account's executions from `start_ms` (inclusive), newest first. `end_ms` <= 0 leaves the end
   // open (the venue then answers startTime + 7 days).

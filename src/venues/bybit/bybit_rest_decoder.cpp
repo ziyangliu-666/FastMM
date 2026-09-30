@@ -124,6 +124,82 @@ std::string decode_server_time(std::string_view json, std::int64_t& server_time_
   return "time: missing result.timeNano/time";
 }
 
+namespace {
+// result of a reply with retCode 0; an error text otherwise.
+std::string open_result(dom::parser& parser,
+                        std::string_view json,
+                        std::string_view what,
+                        dom::element& root,
+                        dom::element& result) {
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return std::string(what) + ": invalid JSON";
+  std::int64_t code = -1;
+  if (root["retCode"].get(code) != sj::SUCCESS) return std::string(what) + ": missing retCode";
+  if (code != 0) {
+    std::string_view msg;
+    if (root["retMsg"].get(msg) != sj::SUCCESS) msg = {};
+    return std::string(what) + ": retCode " + std::to_string(code) + " " + std::string(msg);
+  }
+  if (root["result"].get(result) != sj::SUCCESS) return std::string(what) + ": missing result";
+  return {};
+}
+
+std::string_view view_of(const dom::element& e, const char* key) {
+  std::string_view s;
+  return e[key].get(s) == sj::SUCCESS ? s : std::string_view{};
+}
+}  // namespace
+
+std::string decode_wallet_balance(std::string_view json, WalletBalance& out) {
+  dom::parser parser;
+  dom::element root;
+  dom::element result;
+  if (std::string err = open_result(parser, json, "wallet-balance", root, result); !err.empty())
+    return err;
+  if (root["time"].get(out.time_ms) != sj::SUCCESS) out.time_ms = 0;
+  dom::array list;
+  if (result["list"].get(list) != sj::SUCCESS) return "wallet-balance: missing result.list";
+  for (dom::element e : list) {
+    const BybitAccountFields a{view_of(e, "totalEquity"),
+                               view_of(e, "totalWalletBalance"),
+                               view_of(e, "totalAvailableBalance"),
+                               view_of(e, "totalInitialMargin"),
+                               view_of(e, "totalMaintenanceMargin")};
+    if (!bybit_account_balance(a, out.account)) return "wallet-balance: bad account-level amount";
+    dom::array coins;
+    if (e["coin"].get(coins) != sj::SUCCESS) return "wallet-balance: missing coin";
+    for (dom::element c : coins) {
+      const BybitCoinFields f{view_of(c, "coin"),
+                              view_of(c, "walletBalance"),
+                              view_of(c, "locked"),
+                              view_of(c, "equity"),
+                              view_of(c, "totalOrderIM"),
+                              view_of(c, "totalPositionIM"),
+                              view_of(c, "totalPositionMM"),
+                              view_of(c, "bonus"),
+                              view_of(c, "spotBorrow")};
+      if (f.coin.empty()) return "wallet-balance: entry without coin";
+      WalletCoin w;
+      w.coin = std::string(f.coin);
+      if (!bybit_coin_balance(f, w.fields)) return "wallet-balance: bad amount for " + w.coin;
+      out.coins.push_back(std::move(w));
+    }
+    return {};  // accountType UNIFIED: one account
+  }
+  return "wallet-balance: empty list";
+}
+
+std::string decode_margin_mode(std::string_view json, std::string& margin_mode) {
+  dom::parser parser;
+  dom::element root;
+  dom::element result;
+  if (std::string err = open_result(parser, json, "account info", root, result); !err.empty())
+    return err;
+  margin_mode = std::string(view_of(result, "marginMode"));
+  if (margin_mode.empty()) return "account info: missing marginMode";
+  return {};
+}
+
 bool decode_envelope(std::string_view json, int& ret_code, std::string& ret_msg) {
   dom::parser parser;
   dom::element root;

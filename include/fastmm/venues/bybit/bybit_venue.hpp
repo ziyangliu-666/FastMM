@@ -6,11 +6,12 @@
 //   md       wss://stream-testnet.bybit.com/v5/public/spot   orderbook.<depth> / orderbook.1 /
 //            (.../v5/public/linear)                          publicTrade (BybitMdFeed)
 //   private  wss://stream-testnet.bybit.com/v5/private       op auth, then order / execution /
-//            wallet (spot) or position (linear) topics, and dcp.spot / dcp.future when armed
+//            wallet (and position for linear) topics, and dcp.spot / dcp.future when armed
 //   trade    wss://stream-testnet.bybit.com/v5/trade         op auth, then order.create /
 //            order.amend / order.cancel; REST fallback
 //   rest     https://api-testnet.bybit.com                   market/time, order/realtime,
-//            order/cancel-all, execution/list, position/list, REST order entry (RestChannel)
+//            order/cancel-all, execution/list, position/list, account/wallet-balance,
+//            account/info, REST order entry (RestChannel)
 // Every WebSocket channel sends {"op":"ping"} every 20 s (connect page, "How to Send the
 // Heartbeat Packet"). cancel_all() uses an independent BlockingHttp connection (6.7).
 //
@@ -25,6 +26,12 @@
 // fills it forwarded once neither has changed for kPositionSettleMs, and a PositionUpdateMsg
 // corrects the engine only when they differ (liquidation, ADL, another client). The ticker topic
 // (mark price, funding) is not subscribed: no engine message carries it, and funding is not booked.
+//
+// Balances (bybit_balance.hpp for the mapping): after every snapshot the driver's balance leg
+// reads GET /v5/account/wallet-balance?accountType=UNIFIED, stamped with the reply's `time`; the
+// wallet topic sends each coin that changed between snapshots, stamped with its creationTime. The
+// coins of the instruments are forwarded, and for linear the account's USD margin
+// (BalanceMsg::kAccount) unless GET /v5/account/info says ISOLATED_MARGIN, read at start-up.
 //
 // Amend (Replace) keeps the venue's orderLinkId: the engine gets an ack for its new client
 // id and later order/execution events for the original orderLinkId are translated to it.
@@ -209,11 +216,16 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   // Linear, start-up: GET /v5/position/list per symbol; an error when a symbol is in hedge mode or
   // its mode cannot be read.
   std::string check_position_mode(const std::vector<Instrument*>& mine);
+  // Linear, start-up: GET /v5/account/info; an isolated-margin account has no account row. Not
+  // fatal: without an answer the account is taken as cross margin.
+  void check_margin_mode();
   // Linear: compares the position topic with the forwarded fills (see the header comment).
   void check_positions(std::int64_t now);
   void note_fill(const OrderFillMsg& f) noexcept;
   // ReconcileHooks: the open-order pages (per settle coin), then (linear) the position pages.
   bool fetch_snapshot(std::uint64_t generation) override;
+  // ReconcileHooks: GET /v5/account/wallet-balance.
+  bool fetch_balances(std::uint64_t generation) override;
   bool replay_executions() override;
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
@@ -290,6 +302,8 @@ class BybitVenue final : public Venue, private ReconcileHooks {
   std::size_t reconcile_coin_ = 0;
   std::vector<PositionRecord> reconcile_positions_;
   bool refused_account_settings_ = false;
+  // The derivatives draw on the account's USD margin: linear, not isolated margin.
+  bool account_row_ = false;
 
   // Linear: per instrument, the position the engine holds from the fills forwarded and the last
   // one the position topic reported.

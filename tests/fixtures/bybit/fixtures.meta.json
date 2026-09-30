@@ -22,6 +22,10 @@
   "linear_instruments_info.json": "docs-example (https://bybit-exchange.github.io/docs/v5/market/instrument, linear BTCUSDT response, read 2026-09-26)",
   "linear_position_list.json, linear_position_list_hedge.json": "docs-example (https://bybit-exchange.github.io/docs/v5/position, read 2026-09-26) rewritten for linear BTCUSDT: a one-way short, and the two empty rows (positionIdx 1 and 2) of a symbol in hedge mode",
   "linear_private_position.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/position, read 2026-09-26) with a one-way long, plus an inverse row the linear parser skips",
-  "linear_private_execution.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/execution, read 2026-09-26) with FastMM orderLinkIds, plus a maker rebate row (negative execFee, no feeCurrency) and a spot row the linear parser skips"
+  "linear_private_execution.json": "docs-example (https://bybit-exchange.github.io/docs/v5/websocket/private/execution, read 2026-09-26) with FastMM orderLinkIds, plus a maker rebate row (negative execFee, no feeCurrency) and a spot row the linear parser skips",
+  "wallet_balance_docs.json": "docs-example, verbatim (https://bybit-exchange.github.io/docs/v5/account/wallet-balance, Response Example, read 2026-09-30)",
+  "private_wallet_docs.json": "docs-example, verbatim (https://bybit-exchange.github.io/docs/v5/websocket/private/wallet, Stream Example, read 2026-09-30)",
+  "account_info_docs.json": "docs-example, verbatim (https://bybit-exchange.github.io/docs/v5/account/account-info, Response Example, read 2026-09-30)",
+  "wallet_balance_unified.json": "synthesised in the shape of wallet_balance_docs.json: BTC, USDT with order and position margin, ETH (no instrument), and the account-level fields"
  }
 }

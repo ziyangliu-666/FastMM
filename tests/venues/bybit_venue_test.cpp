@@ -2,7 +2,8 @@
 // WebSockets): reference data, subscribe + snapshot/delta sync, u == 1 resubscribe, auth
 // signatures on both private channels, order.create -> ack + order New, order.amend with the
 // orderLinkId alias, execution fill, order.cancel -> Cancelled, open-order reconciliation
-// the blocking kill-switch cancel_all and the execution replay (GET /v5/execution/list).
+// the blocking kill-switch cancel_all, the execution replay (GET /v5/execution/list) and the
+// balances (GET /v5/account/wallet-balance after each snapshot, the wallet topic).
 #include "fastmm/venues/bybit/bybit_venue.hpp"
 
 #include "fake_venue_util.hpp"
@@ -119,7 +120,11 @@ struct Harness {
   std::atomic<int> executions_failing{0};
   std::atomic<int> executions_calls{0};
   std::atomic<int> executions_ok{0};
-  std::atomic<bool> dcp_refused{false};       // "DCP feature is only available for Ins clients"
+  std::atomic<bool> dcp_refused{false};  // "DCP feature is only available for Ins clients"
+  // GET /v5/account/wallet-balance; the next `wallet_failures` requests answer HTTP 503.
+  std::string wallet_balance = fastmm::test::fixture("bybit/wallet_balance_unified.json");
+  std::atomic<int> wallet_failures{0};
+  std::atomic<int> wallet_ok{0};
   net::WsSession* private_session = nullptr;  // server thread only
 
   // The server thread reads this harness's members: stop it before they go.
@@ -153,6 +158,15 @@ struct Harness {
       const std::lock_guard lock(exec_mu);
       const std::size_t i = std::min(execution_served++, execution_pages.size() - 1);
       return net::HttpServerResponse::json(200, execution_pages[i]);
+    });
+    srv.route("GET", "/v5/account/wallet-balance", [this](const net::HttpRequest& r) {
+      if (rest_signed(r, r.query)) ++wallet_ok;
+      srv.record("wallet", std::string(r.query));
+      if (wallet_failures.load() > 0) {
+        --wallet_failures;
+        return net::HttpServerResponse::text(503, "Service Unavailable");
+      }
+      return net::HttpServerResponse::json(200, wallet_balance);
     });
     srv.route("POST", "/v5/order/cancel", [this](const net::HttpRequest&) {
       ++rest_cancels;
@@ -588,6 +602,27 @@ struct Live {
   void spin(int iterations) {
     for (int i = 0; i < iterations; ++i) reactor.run_once(5);
     oc.take(orders);
+  }
+  std::vector<const BalanceMsg*> balances() const {
+    std::vector<const BalanceMsg*> out;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::Balance)
+        out.push_back(&RecordingSink::as<BalanceMsg>(m));
+    }
+    return out;
+  }
+  bool balances_ended() {
+    oc.take(orders);
+    for (const BalanceMsg* m : balances()) {
+      if ((m->flags & BalanceMsg::kSnapshotEnd) != 0) return true;
+    }
+    return false;
+  }
+  bool reconciled() {
+    oc.take(orders);
+    return oc.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+      return m.kind == ReconcileMsg::Kind::End;
+    }) != nullptr;
   }
 };
 
@@ -1160,6 +1195,67 @@ TEST_CASE("bybit.venue: with the order table full an order or amend is refused, 
     CHECK(h.rest_cancels.load() == 0);
     l.venue->on_timer(net::Reactor::now_ns());
     CHECK(l.venue->status().shadows_refused == 2);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: the start-up snapshot sends the balances, then the wallet topic updates") {
+  Harness h;
+  {
+    Live l(h, h.section(true));
+    REQUIRE(pump_until(l.reactor, [&] { return l.reconciled() && l.balances_ended(); }));
+    // The coins of BTCUSDT (ETH is dropped), one snapshot stamped with the reply's `time`; spot
+    // sends no account row.
+    const auto bal = l.balances();
+    REQUIRE(bal.size() == 2);
+    CHECK(bal[0]->asset.view() == "BTC");
+    CHECK(bal[0]->flags == BalanceMsg::kSnapshot);
+    CHECK(bal[0]->free == Notional::from_decimal("1").value());
+    CHECK(bal[0]->locked == Notional::from_decimal("0.001").value());
+    CHECK(bal[0]->total == Notional::from_decimal("1.001").value());
+    CHECK(bal[1]->asset.view() == "USDT");
+    CHECK(bal[1]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    CHECK(bal[1]->free == Notional::from_decimal("9852.7999").value());
+    CHECK(bal[1]->locked == Notional::from_decimal("70.0001").value());
+    for (const BalanceMsg* m : bal) CHECK(m->hdr.exch_ts.ns == 1789299704000LL * 1'000'000);
+    CHECK(h.srv.frames("wallet") == std::vector<std::string>{"accountType=UNIFIED"});
+    CHECK(h.wallet_ok.load() == 1);  // signed
+
+    // A wallet push: absolute values per coin, stamped with its creationTime.
+    h.srv.send_to("/v5/private", fastmm::test::fixture("bybit/private_wallet.json"));
+    const auto pushed = [&] {
+      l.oc.take(l.orders);
+      std::size_t k = 0;
+      for (const BalanceMsg* m : l.balances()) k += m->flags == 0 ? 1U : 0U;
+      return k;
+    };
+    REQUIRE(pump_until(l.reactor, [&] { return pushed() == 2; }));
+    const BalanceMsg* usdt = l.oc.last_if<BalanceMsg>(EventType::Balance, [](const BalanceMsg& m) {
+      return m.flags == 0 && m.asset.view() == "USDT";
+    });
+    REQUIRE(usdt != nullptr);
+    CHECK(usdt->free == Notional::from_decimal("9862.7999").value());
+    CHECK(usdt->locked == Notional::from_decimal("60.0001").value());
+    CHECK(usdt->hdr.exch_ts.ns == 1789299703470LL * 1'000'000);
+    // position_from_wallet is off: no position from it.
+    CHECK(l.oc.count(EventType::PositionUpdate) == 0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit.venue: a failed balance fetch does not hold up the reconciliation") {
+  Harness h;
+  h.wallet_failures = 1;
+  {
+    Live l(h, h.section(true));
+    REQUIRE(
+        pump_until(l.reactor, [&] { return l.reconciled() && !h.srv.frames("wallet").empty(); }));
+    l.spin(20);
+    CHECK(l.balances().empty());
+    // Asked again after the driver's retry delay (5 s).
+    REQUIRE(pump_until(l.reactor, [&] { return l.balances_ended(); }, 10'000));
+    CHECK(h.srv.frames("wallet").size() == 2);
+    CHECK(l.balances().size() == 2);
   }
   h.srv.stop();
 }

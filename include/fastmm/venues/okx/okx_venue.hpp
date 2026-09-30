@@ -21,13 +21,14 @@
 //   md       wss://ws.okx.com:8443/ws/v5/public     books (or books50-l2-tbt / books-l2-tbt, which
 //            (demo wss://wspap.okx.com:8443/...)     need VIP4 and a login) / bbo-tbt / trades
 //   private  wss://ws.okx.com:8443/ws/v5/private    op login, then orders (instType SWAP, SPOT
-//                                                   or ANY), and with swaps positions and
-//                                                   balance_and_position
+//                                                   or ANY), account, and with swaps positions
+//                                                   and balance_and_position
 //   trade    wss://ws.okx.com:8443/ws/v5/private    op login, then order / amend-order /
 //            (a second connection)                  cancel-order; REST fallback
 //   rest     https://www.okx.com                    public/instruments, public/time, account/
 //                                                   config, trade/orders-pending, trade/fills[-
-//                                                   history], account/positions, account/bills[-
+//                                                   history], account/positions, account/
+//                                                   balance, account/bills[-
 //                                                   archive], trade/cancel-batch-orders, trade/
 //                                                   cancel-all-after, REST order entry
 // Demo trading uses the same REST host with the header "x-simulated-trading: 1", sent when the
@@ -64,6 +65,12 @@
 // Position* / End, a subscribed swap absent from the positions being flat. Funding: GET
 // /api/v5/account/bills type 8 (funding fee), one FundingMsg per bill (billId, balChg in ccy), with
 // every execution replay and a second after a balance_and_position push with eventType funding_fee.
+//
+// Balances (okx_balance.hpp for the mapping per account mode): after every snapshot the driver's
+// balance leg reads GET /api/v5/account/balance, the currencies of the instruments (and, in
+// multi-currency and portfolio margin mode, the account's USD margin) stamped with the reply's
+// account-level uTime; between snapshots the account channel ("updateInterval": "0", events only)
+// sends each currency that changed, stamped with its own uTime.
 //
 // Amend (Replace) keeps the venue's clOrdId and names the engine's new id in reqId: the orders
 // channel reports the result (amendResult) under it, which becomes the ack or reject of the new id;
@@ -245,6 +252,8 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   void stop_cancel_all_after();
   // ReconcileHooks: orders-pending (paged), then positions, then the snapshot.
   bool fetch_snapshot(std::uint64_t generation) override;
+  // ReconcileHooks: GET /api/v5/account/balance.
+  bool fetch_balances(std::uint64_t generation) override;
   bool replay_executions() override;
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
@@ -331,6 +340,7 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   bool private_was_live_ = false;
   bool trade_was_live_ = false;
   bool refused_account_settings_ = false;
+  OkxAccountMode acct_mode_ = OkxAccountMode::Unknown;  // acctLv of account/config
   SentWatermark sent_;
   BatchedOrders batch_;
 

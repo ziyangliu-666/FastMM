@@ -1,7 +1,8 @@
 // BybitVenue with category = "linear" against a scripted fake Bybit v5: reference data for a
 // perpetual, the position-mode check at start-up, the start-up sweep's positions, an order round
 // trip, a fill missed on the private stream booked from execution/list, funding payments from both,
-// the position topic correcting the engine, and disconnect-cancel-all armed for derivatives. Wire
+// the position topic correcting the engine, disconnect-cancel-all armed for derivatives, and the
+// balances with the account's USD margin. Wire
 // formats as in bybit_linear_test.cpp (Bybit v5 docs read 2026-09-26); nothing here has met the
 // real venue.
 #include "fake_venue_util.hpp"
@@ -105,6 +106,8 @@ struct Harness {
   std::string mode_reply = fastmm::test::fixture("bybit/linear_position_list.json");
   std::string positions_reply = fastmm::test::fixture("bybit/linear_position_list.json");
   std::string open_orders = kNoOpenOrders;
+  std::string wallet_balance = fastmm::test::fixture("bybit/wallet_balance_unified.json");
+  std::string account_info = fastmm::test::fixture("bybit/account_info_docs.json");
   std::mutex mu;
   std::string execution_page = exec_page({});
   std::atomic<int> signed_ok{0};
@@ -130,6 +133,16 @@ struct Harness {
     srv.route("GET", "/v5/market/instruments-info", [this](const net::HttpRequest& r) {
       srv.record("instruments", std::string(r.query));
       return net::HttpServerResponse::json(200, instruments_info);
+    });
+    srv.route("GET", "/v5/account/wallet-balance", [this](const net::HttpRequest& r) {
+      count_signature(r, r.query);
+      srv.record("wallet", std::string(r.query));
+      return net::HttpServerResponse::json(200, wallet_balance);
+    });
+    srv.route("GET", "/v5/account/info", [this](const net::HttpRequest& r) {
+      count_signature(r, r.query);
+      srv.record("account_info", std::string(r.query));
+      return net::HttpServerResponse::json(200, account_info);
     });
     srv.route("GET", "/v5/position/list", [this](const net::HttpRequest& r) {
       count_signature(r, r.query);
@@ -335,7 +348,9 @@ TEST_CASE("bybit_linear.venue: reference data makes a USDT-settled perpetual") {
     const auto p = h.srv.frames("positions");
     REQUIRE(p.size() == 1);
     CHECK(p[0] == "category=linear&symbol=BTCUSDT&limit=200");
-    CHECK(h.signed_ok.load() == 1);
+    // And the margin mode, for the balances' account row.
+    CHECK(h.srv.frames("account_info").size() == 1);
+    CHECK(h.signed_ok.load() == 2);
     CHECK(h.signed_bad.load() == 0);
     CHECK_FALSE(venue.refused_account_settings());
   }
@@ -669,18 +684,19 @@ TEST_CASE("bybit_linear.venue: disconnect-cancel-all is armed for derivatives") 
     REQUIRE_FALSE(subs.empty());
     CHECK(
         subs[0] ==
-        R"({"req_id":"private","op":"subscribe","args":["order","execution","position","dcp.future"]})");
+        R"({"req_id":"private","op":"subscribe","args":["order","execution","position","wallet","dcp.future"]})");
   }
   h.srv.stop();
-  // Without the switch: no dcp topic and no wallet, the position topic instead.
+  // Without the switch: no dcp topic; the position topic, and the wallet for the balances.
   Harness h2;
   {
     Live l(h2, h2.section());
     l.wait_for_sweep();
     const auto subs = h2.srv.frames("private_subscribe");
     REQUIRE_FALSE(subs.empty());
-    CHECK(subs[0] ==
-          R"({"req_id":"private","op":"subscribe","args":["order","execution","position"]})");
+    CHECK(
+        subs[0] ==
+        R"({"req_id":"private","op":"subscribe","args":["order","execution","position","wallet"]})");
     CHECK(h2.srv.frames("dcp").empty());
   }
   h2.srv.stop();
@@ -776,6 +792,87 @@ TEST_CASE("bybit_linear.venue: a restart skips the funding its store holds") {
     const auto got = funding_of(l.oc);
     REQUIRE(got.size() == 1);
     CHECK(got[0]->funding_id.view() == "fund-3");
+  }
+  h.srv.stop();
+}
+
+namespace {
+
+bool balances_ended(const Collected& oc) {
+  return oc.first_if<BalanceMsg>(EventType::Balance, [](const BalanceMsg& m) {
+    return (m.flags & BalanceMsg::kSnapshotEnd) != 0;
+  }) != nullptr;
+}
+
+std::vector<const BalanceMsg*> balances(const Collected& oc) {
+  std::vector<const BalanceMsg*> out;
+  for (const auto& m : oc.all) {
+    if (RecordingSink::type_of(m) == EventType::Balance)
+      out.push_back(&RecordingSink::as<BalanceMsg>(m));
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("bybit_linear.venue: the balances carry the account's USD margin") {
+  Harness h;
+  {
+    Live l(h, h.section());
+    l.wait_for_sweep();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return balances_ended(l.oc);
+    }));
+    CHECK(h.srv.frames("account_info").size() == 1);  // read at start-up: REGULAR_MARGIN
+    const auto bal = balances(l.oc);
+    REQUIRE(bal.size() == 3);  // BTC, USDT, the account
+    CHECK(bal[0]->asset.view() == "BTC");
+    CHECK(bal[1]->asset.view() == "USDT");
+    CHECK(bal[1]->maintenance == Notional::from_decimal("5").value());
+    const BalanceMsg* acct = bal[2];
+    CHECK(acct->asset.view() == "USD");
+    CHECK(acct->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
+    CHECK(acct->free == Notional::from_decimal("99990").value());
+    CHECK(acct->locked == Notional::from_decimal("10").value());
+    CHECK(acct->total == Notional::from_decimal("100000").value());
+    CHECK(acct->equity == Notional::from_decimal("100000").value());
+    CHECK(acct->maintenance == Notional::from_decimal("5").value());
+    CHECK(acct->hdr.exch_ts.ns == 1789299704000LL * 1'000'000);
+    CHECK(h.signed_bad.load() == 0);
+
+    // The documented wallet push: BTC and the account row, no position from it.
+    const std::size_t positions_before = l.oc.count(EventType::PositionUpdate);
+    h.srv.send_to("/v5/private", fastmm::test::fixture("bybit/private_wallet_docs.json"));
+    const auto pushed_account = [&] {
+      l.oc.take(l.orders);
+      return l.oc.last_if<BalanceMsg>(
+          EventType::Balance, [](const BalanceMsg& m) { return m.flags == BalanceMsg::kAccount; });
+    };
+    REQUIRE(pump_until(l.reactor, [&] { return pushed_account() != nullptr; }));
+    CHECK(pushed_account()->free == Notional::from_decimal("9556.6056555").value());
+    CHECK(pushed_account()->hdr.exch_ts.ns == 1700034722104LL * 1'000'000);
+    CHECK(l.oc.count(EventType::PositionUpdate) == positions_before);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("bybit_linear.venue: an isolated-margin account sends no account row") {
+  Harness h;
+  h.account_info =
+      R"({"retCode":0,"retMsg":"OK","result":{"marginMode":"ISOLATED_MARGIN","updatedTime":"1697078946000","unifiedMarginStatus":4,"dcpStatus":"OFF","timeWindow":10,"smpGroup":0,"isMasterTrader":false,"spotHedgingStatus":"OFF"}})";
+  {
+    Live l(h, h.section());
+    l.wait_for_sweep();
+    REQUIRE(pump_until(l.reactor, [&] {
+      l.oc.take(l.orders);
+      return balances_ended(l.oc);
+    }));
+    const auto bal = balances(l.oc);
+    REQUIRE(bal.size() == 2);  // BTC, USDT: the derivatives draw on USDT
+    CHECK(bal[1]->asset.view() == "USDT");
+    CHECK(bal[1]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    for (const BalanceMsg* m : bal) CHECK((m->flags & BalanceMsg::kAccount) == 0);
   }
   h.srv.stop();
 }

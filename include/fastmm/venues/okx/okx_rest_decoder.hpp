@@ -9,6 +9,9 @@
 //               post_only}
 //   GET /api/v5/public/time            data[0].ts (ms)
 //   GET /api/v5/account/config         data[0] {posMode net_mode | long_short_mode, acctLv}
+//   GET /api/v5/account/balance        data[0] {totalEq, adjEq, availEq, imr, mmr, uTime,
+//                                      details[] {ccy, availBal, frozenBal, cashBal, eq, availEq,
+//                                      mmr, uTime}} (read 2026-09-30; okx_balance.hpp)
 //   GET /api/v5/account/positions      data[] {instId, posSide net | long | short, pos, avgPx}
 //   GET /api/v5/trade/orders-pending   data[] {instId, ordId, clOrdId, px, sz, side, state,
 //                                      accFillSz}
@@ -18,6 +21,7 @@
 //   POST /api/v5/trade/cancel-batch-orders  data[] {ordId, sCode, sMsg}
 //   POST /api/v5/trade/cancel-all-after     data[0] {triggerTime, ts}
 #include "fastmm/core/fixed_point.hpp"
+#include "fastmm/venues/okx/okx_balance.hpp"
 
 #include <cstdint>
 #include <string>
@@ -47,6 +51,18 @@ struct InstrumentInfo {
 struct AccountConfig {
   std::string pos_mode;  // net_mode | long_short_mode
   std::string acct_lv;   // 1 spot, 2 futures, 3 multi-currency margin, 4 portfolio margin
+};
+
+// GET /api/v5/account/balance mapped for the account mode (okx_balance.hpp).
+struct BalanceRow {
+  std::string ccy;
+  BalanceFields fields;
+};
+struct AccountBalance {
+  std::vector<BalanceRow> rows;
+  BalanceFields account{};  // the kAccount row (USD), when has_account
+  bool has_account = false;
+  std::int64_t u_time_ms = 0;  // the account-level uTime: when the venue read the account
 };
 
 struct PositionRecord {
@@ -97,6 +113,7 @@ struct BillRecord {
 std::string decode_instruments(std::string_view json, std::vector<InstrumentInfo>& out);
 std::string decode_server_time(std::string_view json, std::int64_t& server_time_ms);
 std::string decode_account_config(std::string_view json, AccountConfig& out);
+std::string decode_balance(std::string_view json, OkxAccountMode mode, AccountBalance& out);
 std::string decode_positions(std::string_view json, std::vector<PositionRecord>& out);
 std::string decode_pending_orders(std::string_view json, std::vector<PendingOrder>& out);
 std::string decode_fills(std::string_view json, std::vector<FillRecord>& out);
