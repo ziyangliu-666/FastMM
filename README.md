@@ -16,27 +16,27 @@ FastMM is a low-latency market-making engine in C++20: it quotes on one venue an
 
 With the wheel (Linux x86-64, CPython 3.10+), no keys and no build:
 
-```console
-$ pip install "fastmm-engine[hot]"
-$ fastmm init my-mm && cd my-mm
-$ python backtest.py
+```bash
+pip install "fastmm-engine[hot]"
+fastmm init my-mm && cd my-mm
+python backtest.py
 ```
 
 `fastmm init` writes a strategy, a config for a simulated market and a backtest that prints PnL, fills and markouts. For a day of real Binance data, run `python -m fastmm.data fetch --symbol BTCUSDT --date 2024-03-27` ([Backtest on real data](docs/how-to/backtesting/binance-public-data.md)).
 
 From source, the live engine against a local exchange that speaks Binance's API:
 
-```console
-$ git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
-$ cmake --preset release && cmake --build --preset release -j
-$ ./scripts/run-sim.sh --duration 30s
+```bash
+git clone https://github.com/ziyangliu-666/FastMM && cd FastMM
+cmake --preset release && cmake --build --preset release -j
+./scripts/run-sim.sh --duration 30s
 ```
 
 The build needs gcc 13+ or clang 16+, CMake 3.25+, Ninja and OpenSSL 3. Releases also ship as a tarball and as `ghcr.io/ziyangliu-666/fastmm` ([Deploy a release](docs/how-to/operations/deploy.md)).
 
 ## Write a strategy
 
-A strategy says which quotes it wants. The engine diffs them against the resting orders, checks risk and sends the difference.
+A strategy says which quotes it wants. The engine diffs them against the resting orders, checks risk and the account's balance on the venue, and sends the difference. `ctx.balance` and `ctx.margin` give the strategy each venue's balances and margin as the venue reports them.
 
 <!-- snippet: examples/python/strategies/touch_mm.py#example -->
 ```python
@@ -87,15 +87,18 @@ Hedges follow positions, not fill counts, so a restart, a replayed execution or 
 
 ## Venues
 
-| Venue | Markets | Orders | Tested on |
+| Venue | Markets | Orders | Environment |
 |---|---|---|---|
-| Binance Spot | spot | WebSocket API | Binance Demo |
+| Binance Spot | spot | WebSocket API | Binance Demo, Spot testnet |
 | Binance USDⓈ-M | perpetuals | WebSocket API | Binance Demo |
-| Bybit v5 | spot, linear perpetuals | WebSocket | fake exchange |
-| OKX v5 | USDT swaps | WebSocket | fake exchange |
-| Deribit | options, futures | WebSocket | fake exchange |
+| Bybit v5 | spot, linear perpetuals | WebSocket | Bybit testnet |
+| OKX v5 | spot, USDT swaps | WebSocket | OKX Demo |
+| Deribit | options, futures | WebSocket | Deribit testnet |
+| Gemini | spot, perpetuals | WebSocket | Gemini sandbox |
+| Coinbase Advanced Trade | spot | REST | production |
+| Coinbase Exchange | spot | REST | Coinbase Exchange sandbox |
 
-A fake exchange plays the venue's documented messages in the tests. Nasdaq TotalView-ITCH is supported as well: MoldUDP64 multicast market data, with OUCH 5.0 order entry against the bundled `fastmm-sim-itch`. [Add a venue](docs/how-to/venues/add-a-venue.md) from your own project without changing FastMM.
+Nasdaq TotalView-ITCH is supported as well: MoldUDP64 multicast market data, with OUCH 5.0 order entry against the bundled `fastmm-sim-itch`. [Add a venue](docs/how-to/venues/add-a-venue.md) from your own project without changing FastMM.
 
 ## How it works
 

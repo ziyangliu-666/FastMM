@@ -1,6 +1,21 @@
 # Venue connectors
 
-FastMM ships nine connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`): Binance Spot (testnet, Demo Mode or the local Binance-compatible simulator), Binance USDⓈ-M perpetual futures (Demo Trading), Bybit v5 spot and linear perpetuals (testnet), OKX v5 USDT-margined swaps and spot (demo trading), Gemini perpetuals and spot (sandbox), Coinbase Advanced Trade spot (production), Coinbase Exchange spot (sandbox), Deribit options and futures (testnet) and Nasdaq TotalView-ITCH market data (with order entry to fastmm-sim-itch). Each registers itself in the venue registry (`include/fastmm/venues/registry.hpp`) under the `kind` a `[venues.<name>]` section names, and `make_venue()` resolves through it:
+FastMM ships nine connectors behind the control-path `fastmm::venues::Venue` interface (`include/fastmm/venues/venue.hpp`). Eight are crypto venues:
+
+| Venue | Markets | Orders | Environment |
+|---|---|---|---|
+| Binance Spot | spot | WebSocket API | Binance Demo, Spot testnet |
+| Binance USDⓈ-M | perpetuals | WebSocket API | Binance Demo |
+| Bybit v5 | spot, linear perpetuals | WebSocket | Bybit testnet |
+| OKX v5 | spot, USDT swaps | WebSocket | OKX Demo |
+| Deribit | options, futures | WebSocket | Deribit testnet |
+| Gemini | spot, perpetuals | WebSocket | Gemini sandbox |
+| Coinbase Advanced Trade | spot | REST | production |
+| Coinbase Exchange | spot | REST | Coinbase Exchange sandbox |
+
+The ninth reads Nasdaq TotalView-ITCH market data and enters orders over OUCH 5.0 to `fastmm-sim-itch` ([below](#nasdaq-totalview-itch-nasdaq_itch)); Binance Spot also runs against the local simulator `fastmm-sim-exchange`.
+
+Each connector registers itself in the venue registry (`include/fastmm/venues/registry.hpp`) under the `kind` a `[venues.<name>]` section names, and `make_venue()` resolves through it:
 
 | kind | connector |
 |---|---|

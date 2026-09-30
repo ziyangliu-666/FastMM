@@ -2,11 +2,11 @@
 
 `fastmm-gateway` holds the venue connections. Strategy processes, `fastmm-live --gateway`, attach to it, several at once, each trading instruments no other attached strategy trades, or instruments `[gateway.shared]` lets several trade ([Shared instruments](#shared-instruments)). A strategy can stop, crash or be replaced without the venue sessions dropping or the others noticing. When a strategy process goes away, `kill -9` included, the gateway cancels its orders at once.
 
-```console
-$ fastmm-sim-exchange --config configs/sim.toml &
-$ export FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret
-$ fastmm-gateway --config configs/sim-local.toml &
-$ fastmm-live --config configs/sim-local.toml --gateway runs/sim-local.gw
+```bash
+fastmm-sim-exchange --config configs/sim.toml &
+export FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret
+fastmm-gateway --config configs/sim-local.toml &
+fastmm-live --config configs/sim-local.toml --gateway runs/sim-local.gw
 ```
 
 The gateway uses `[engine]` (`name`, `journal_dir`, `epoch_file`, `kill_file`, `spin_mode`, `net_cpus`, `net_backend`, the ring sizes), `[venues.*]`, `[[instruments]]` (every instrument any strategy trades) and `[gateway]`; it needs the API keys. A strategy uses everything else and needs no keys. Its `[[instruments]]` name what it trades there (venue and symbol); its venues, their ids and the instrument table (tick, lot, limits from the venue's reference data) come from the gateway. Give each strategy its own `[engine] name`, so each has its own store, journal and kill file.
@@ -106,9 +106,9 @@ gateway: account position bybit:BTCUSDT 0.005 does not match its strategies' (sh
 
 The gateway publishes its state in a status file, `/dev/shm/fastmm-<name>.gw.status` (`--status <path>` moves it, `--no-status` turns it off), every 250 ms from its main thread; the network threads only keep the counters and totals they had. The `.gw` keeps it apart from a strategy that runs with the same configuration.
 
-```console
-$ fastmm-top --gateway sim-local
-$ fastmm-top --gateway sim-local --metrics 9110
+```bash
+fastmm-top --gateway sim-local
+fastmm-top --gateway sim-local --metrics 9110
 ```
 
 The frame has the account (net PnL, realized, unrealized, fees, carried, gross and net exposure, the `[gateway]` limits, `ACCOUNT KILLED (<reason>)` and `LATCHED`), one line per attachment (id, epoch, engine name, pid, uptime, market data it dropped, orders the gateway refused it by reason, what it trades), the account's position per instrument with its owner's epoch (a shared one: how many trade it, its unattributed part and, in red, an unexplained one), the account's balances per venue and asset, the venue table `fastmm-live` shows (channel states, books, counters) and per venue what the gateway discarded, could not route, cancelled itself and refused. `--json` prints it with `"kind": "gateway"`. The layout: [Status file](../../reference/status-file.md#gateway-block).
@@ -142,10 +142,19 @@ An epoch is unique per attachment for the gateway's life, so it keys a strategy'
 
 The control socket is the attach socket's path plus `.ctl` (`<journal_dir>/<name>.gw.ctl`; `--control <path>` moves it, `--no-control` leaves it out), mode 0600, the same listener and wire format as `fastmm-live`'s ([Operating a running session](operate-a-running-session.md#the-socket)). `fastmm-ctl --gateway <name>` talks to it (`--dir` as for `--name`; `--path` for a moved socket):
 
-```console
-$ fastmm-ctl --gateway sim-local attachments
+```bash
+fastmm-ctl --gateway sim-local attachments
+```
+
+```text
 attachment=1 epoch=7 engine=mm-btc pid=4121 up=310s instruments=sim:BTCUSDT md_dropped=0 refused=0
-$ fastmm-ctl --gateway sim-local pull --venue sim
+```
+
+```bash
+fastmm-ctl --gateway sim-local pull --venue sim
+```
+
+```text
 ok pull queued (venue 0), sent to 2 strategies
 ```
 
