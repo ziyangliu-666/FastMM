@@ -11,6 +11,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/order.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
 #include "fastmm/core/result.hpp"
@@ -205,6 +206,21 @@ class StrategyContext {
   // Qty::max() while the venue has not reported the balance that side draws on.
   [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price px) const noexcept {
     return e_->balance_room(id, side, px);
+  }
+
+  // ---- perpetuals (core/perp_book.hpp)
+  // -----------------------------------------------------------
+
+  // The venue's mark and index price of a derivative (on_perp_state), with the time each arrived.
+  // `stale`: older than [accounting] stale_mark_ms, or never reported; usable() is neither.
+  [[nodiscard]] RefPrice mark(InstrumentId id) const noexcept { return e_->mark(id); }
+  [[nodiscard]] RefPrice index(InstrumentId id) const noexcept { return e_->index(id); }
+  // The venue's funding of a perpetual: the rate it will apply at `next`, per `interval`, and
+  // over(d), the rate over a holding time d. `stale` against [accounting] stale_funding_ms.
+  [[nodiscard]] FundingView funding(InstrumentId id) const noexcept { return e_->funding(id); }
+  // Every field as last reported, open interest included, without the staleness applied.
+  [[nodiscard]] const PerpRow& perp_state(InstrumentId id) const noexcept {
+    return e_->perps().row(id);
   }
 
   // ---- randomness: seeded from EngineConfig::rng_seed, replay-deterministic --------------------

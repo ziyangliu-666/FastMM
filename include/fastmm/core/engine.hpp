@@ -28,6 +28,11 @@
 // the first report nothing of it runs; after it, every order event updates the order's hold and
 // [risk] check_balance refuses an order the estimate does not cover (BalanceShort).
 //
+// Perpetuals: PerpState events (a venue's mark, index and funding of one derivative) feed a
+// PerpBook (core/perp_book.hpp) the strategy reads through ctx.mark, ctx.index and ctx.funding.
+// With [accounting] mark = "venue" a position with a fresh venue mark is valued at it instead of
+// the book's mid, for the unrealized PnL, max_loss and the exposure limits.
+//
 // Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
 // (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
 // before the first ParamUpdate and whenever none was applied for that long; the engine checks the
@@ -47,6 +52,7 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/own_quantity.hpp"
+#include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/queue_tracker.hpp"
 #include "fastmm/core/quote_manager.hpp"
@@ -201,6 +207,7 @@ class Engine {
     }
     risk_.set_underlying(cfg.underlying);
     balances_->build(instruments_, cfg.fees, cfg.balance);
+    perp_.configure(cfg.perp);
     // Venues whose positions wait for their first reconciliation: only those an instrument trades.
     for (const Instrument& inst : instruments_) {
       if (inst.venue.value < 32U && ((cfg.await_reconcile >> inst.venue.value) & 1U) != 0)
@@ -481,6 +488,17 @@ class Engine {
   [[nodiscard]] const BalanceBook& balances() const noexcept { return *balances_; }
   // A venue has reported balances: the estimate and the check run from here on.
   [[nodiscard]] bool balances_live() const noexcept { return balances_live_; }
+
+  // ---- perpetuals (core/perp_book.hpp) ---------------------------------------------------------
+
+  // The venue's mark and index price of `id`, and its funding, with their age against [accounting]
+  // stale_mark_ms / stale_funding_ms at the engine clock.
+  [[nodiscard]] RefPrice mark(InstrumentId id) const noexcept { return perp_.mark(id, now()); }
+  [[nodiscard]] RefPrice index(InstrumentId id) const noexcept { return perp_.index(id, now()); }
+  [[nodiscard]] FundingView funding(InstrumentId id) const noexcept {
+    return perp_.funding(id, now());
+  }
+  [[nodiscard]] const PerpBook& perps() const noexcept { return perp_; }
 
   // ---- execution view -------------------------------------------------------------------------
 
@@ -772,6 +790,9 @@ class Engine {
       case EventType::Balance:
         on_balance(msg_cast<BalanceMsg>(h));
         break;
+      case EventType::PerpState:
+        on_perp_state(msg_cast<PerpStateMsg>(h));
+        break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
         if (t.engine == kAckSweepTimer) {
@@ -831,7 +852,8 @@ class Engine {
       // The engine clock, which the stale check compares against: recv_ts is the network thread's
       // wall clock, and a host clock step moves it relative to the engine's TscClock.
       risk_.on_book(id, mid, now);
-      positions_.mark(id, mid, inst);
+      if (FASTMM_LIKELY(!perp_.marking()) || perp_.mid_marks(id, now))
+        positions_.mark(id, mid, inst);
       if (FASTMM_UNLIKELY(fx_on_) && cfg_.fx.prices[id.value] != 0) on_fx_mid(id, mid);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else {
@@ -934,6 +956,19 @@ class Engine {
         record_strategy_hop(t2);
       }
     }
+    flush_out();
+  }
+
+  // A venue's mark, index and funding of one derivative. With [accounting] mark = "venue" a mark
+  // values the position from now on (PerpBook::on_report), and counts against max_loss at once.
+  FASTMM_NOINLINE void on_perp_state(const PerpStateMsg& m) noexcept {
+    const InstrumentId id = m.hdr.instrument;
+    if (FASTMM_UNLIKELY(!instruments_.contains(id))) return;
+    if (perp_.on_report(m, now_)) {
+      positions_.mark(id, m.mark_price, instruments_.get(id));
+      if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+    }
+    if constexpr (has_hook(Hook::PerpState)) strategy_.on_perp_state(ctx_, id, m);
     flush_out();
   }
 
@@ -2538,6 +2573,8 @@ class Engine {
   // Balances per venue and asset, and the hold of each open order by its OMS slot (valid once a
   // venue has reported: balances_live_).
   std::unique_ptr<BalanceBook> balances_ = std::make_unique<BalanceBook>();
+  // The venues' marks, indices and funding per instrument (on_perp_state).
+  PerpBook perp_;
   std::unique_ptr<std::int64_t[]> holds_ = std::make_unique<std::int64_t[]>(kMaxOpenOrders);
   std::unique_ptr<bool[]> unacked_ = std::make_unique<bool[]>(kMaxOpenOrders);  // no ack yet
   QueueTracker queue_{cfg_.queue_conservatism_bps};

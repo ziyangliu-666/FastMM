@@ -177,4 +177,12 @@ BalanceConfig balance_config(const Config& cfg,
   return b;
 }
 
+PerpConfig perp_config(const Config& cfg) {
+  PerpConfig p;
+  p.venue_mark = cfg.accounting.mark != "mid";
+  p.stale_mark = milliseconds(cfg.accounting.stale_mark_ms);
+  p.stale_funding = milliseconds(cfg.accounting.stale_funding_ms);
+  return p;
+}
+
 }  // namespace fastmm

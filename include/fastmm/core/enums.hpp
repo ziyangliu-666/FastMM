@@ -320,7 +320,8 @@ enum class EventType : std::uint8_t {
   ParamUpdate = 26,   // new strategy parameter values (ParamUpdateMsg)
   Funding = 27,       // a perpetual funding payment booked by the venue (FundingMsg)
   Balance = 28,       // the account's holding of one asset on one venue (BalanceMsg)
-  Count = 29,
+  PerpState = 29,     // mark, index and funding of one derivative (PerpStateMsg)
+  Count = 30,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -382,6 +383,8 @@ enum class EventType : std::uint8_t {
       return "Funding";
     case EventType::Balance:
       return "Balance";
+    case EventType::PerpState:
+      return "PerpState";
     case EventType::Count:
       return "Count";
   }

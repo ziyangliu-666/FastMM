@@ -1008,6 +1008,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.fx = fx_plan;
   deps.engine.fees = fees;
   deps.engine.balance = balance_config(cfg, &instruments, &venue_names);
+  deps.engine.perp = perp_config(cfg);
   deps.engine.underlying = underlying_plan;
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.engine.await_reconcile = await_venues;

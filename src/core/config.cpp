@@ -613,6 +613,14 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     validate_table(*t, "accounting", cfg.warnings);
     AccountingSpec& a = cfg.accounting;
     get(*t, "reporting_currency", a.reporting_currency);
+    get(*t, "mark", a.mark);
+    if (a.mark != "venue" && a.mark != "mid")
+      fail_at(*t->get("mark"), "accounting.mark must be \"venue\" or \"mid\"");
+    get(*t, "stale_mark_ms", a.stale_mark_ms);
+    if (a.stale_mark_ms <= 0) fail_at(*t->get("stale_mark_ms"), "stale_mark_ms must be > 0");
+    get(*t, "stale_funding_ms", a.stale_funding_ms);
+    if (a.stale_funding_ms <= 0)
+      fail_at(*t->get("stale_funding_ms"), "stale_funding_ms must be > 0");
     const auto valid_ccy = [](std::string_view c) {
       if (c.empty() || c.size() > Currency::kCapacity) return false;
       for (const char ch : c) {
@@ -867,9 +875,18 @@ std::string Config::redacted() const {
       if (!v.empty()) kq("primary", v);
     }
   }
-  if (accounting.configured()) {
+  const AccountingSpec kAccountingDefaults;
+  const bool perp_keys = accounting.mark != kAccountingDefaults.mark ||
+                         accounting.stale_mark_ms != kAccountingDefaults.stale_mark_ms ||
+                         accounting.stale_funding_ms != kAccountingDefaults.stale_funding_ms;
+  if (accounting.configured() || perp_keys) {
     out += "\n[accounting]\n";
-    kq("reporting_currency", accounting.reporting_currency);
+    if (accounting.configured()) kq("reporting_currency", accounting.reporting_currency);
+    if (perp_keys) {
+      kq("mark", accounting.mark);
+      kv("stale_mark_ms", accounting.stale_mark_ms);
+      kv("stale_funding_ms", accounting.stale_funding_ms);
+    }
     if (!accounting.fx.empty()) {
       out += "\n[accounting.fx]\n";
       for (const auto& [k, v] : accounting.fx) kq(k, v);
@@ -1080,13 +1097,24 @@ std::string Config::effective_toml() const {
     root.insert("gateway", std::move(g));
   }
 
-  // Only when set, like [gateway]: a replay converts as the recorded session did.
-  if (accounting.configured()) {
+  // Only when set, like [gateway]: a replay converts and values as the recorded session did.
+  const AccountingSpec kAccountingDefaults;
+  const bool perp_keys = accounting.mark != kAccountingDefaults.mark ||
+                         accounting.stale_mark_ms != kAccountingDefaults.stale_mark_ms ||
+                         accounting.stale_funding_ms != kAccountingDefaults.stale_funding_ms;
+  if (accounting.configured() || perp_keys) {
     toml::table a;
-    a.insert("reporting_currency", accounting.reporting_currency);
-    toml::table fx;
-    for (const auto& [k, v] : accounting.fx) fx.insert(k, v);
-    a.insert("fx", std::move(fx));
+    if (accounting.configured()) {
+      a.insert("reporting_currency", accounting.reporting_currency);
+      toml::table fx;
+      for (const auto& [k, v] : accounting.fx) fx.insert(k, v);
+      a.insert("fx", std::move(fx));
+    }
+    if (perp_keys) {
+      a.insert("mark", accounting.mark);
+      a.insert("stale_mark_ms", static_cast<std::int64_t>(accounting.stale_mark_ms));
+      a.insert("stale_funding_ms", static_cast<std::int64_t>(accounting.stale_funding_ms));
+    }
     root.insert("accounting", std::move(a));
   }
 

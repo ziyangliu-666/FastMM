@@ -326,6 +326,38 @@ struct BalanceMsg {
 static_assert(sizeof(BalanceMsg) == 128 && offsetof(BalanceMsg, asset) == 104 &&
               offsetof(BalanceMsg, flags) == 113);
 
+// The venue's reference prices and funding of one derivative (EventType::PerpState), from its
+// public market data. Market data: it rides the market-data ring and the journal, so a replay sees
+// the same values at the same engine times. hdr.exch_ts is the venue's time of the values.
+// `fields` names what the message carries; the engine keeps the last value of each field with the
+// time it arrived (core/perp_book.hpp), so a venue that publishes mark, index and funding on
+// separate channels sends one message per channel.
+//   mark_price        kMark: the price the venue values positions and liquidations at
+//   index_price       kIndex: the spot index the mark and the funding follow
+//   funding_rate      kFunding: the rate the venue will apply at next_funding, per funding
+//                     interval, as a decimal (0.0001 = 1 bp); positive: longs pay shorts
+//   funding_interval  kFunding: how often funding is paid (a continuous venue reports the rate
+//                     over this interval: Deribit's funding_8h, 8 h)
+//   next_funding      kFunding: venue time of the next payment; zero when funding is continuous
+//   open_interest     kOpenInterest: contracts open
+struct PerpStateMsg {
+  static constexpr std::uint8_t kMark = 1U << 0;
+  static constexpr std::uint8_t kIndex = 1U << 1;
+  static constexpr std::uint8_t kFunding = 1U << 2;
+  static constexpr std::uint8_t kOpenInterest = 1U << 3;
+  EventHeader hdr;
+  Price mark_price;           // 64
+  Price index_price;          // 72
+  double funding_rate;        // 80
+  Duration funding_interval;  // 88
+  Timestamp next_funding;     // 96
+  Qty open_interest;          // 104
+  std::uint8_t fields;        // 112
+  std::uint8_t pad_[15];      // -> 128
+};
+static_assert(sizeof(PerpStateMsg) == 128 && offsetof(PerpStateMsg, funding_rate) == 80 &&
+              offsetof(PerpStateMsg, fields) == 112);
+
 // A funding id in the list of venue ids a restarted session's store already holds
 // (store::Recovery::VenueResume::known_exec_ids, next to the trade ids): the prefix keeps the two
 // id spaces apart.
@@ -582,13 +614,13 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<OrderRejectMsg> && FixedSizeMessage<OrderCancelAckMsg> &&
               FixedSizeMessage<OrderCancelRejectMsg> && FixedSizeMessage<OrderExpiredMsg> &&
               FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<FundingMsg> &&
-              FixedSizeMessage<BalanceMsg> && FixedSizeMessage<TimerMsg> &&
-              FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
-              FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
-              FixedSizeMessage<EngineTimeMsg> && FixedSizeMessage<OutNewOrderMsg> &&
-              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
-              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
-              FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<BalanceMsg> && FixedSizeMessage<PerpStateMsg> &&
+              FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
+              FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
+              FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<EngineTimeMsg> &&
+              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
+              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
+              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {
