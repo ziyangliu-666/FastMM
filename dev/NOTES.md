@@ -3,6 +3,24 @@
 A running record of what was found, what changed, the evidence, and what is next. Newest first.
 This file is for whoever picks the work up, including me after a restart. Keep entries short.
 
+## Next direction (chosen 2026-09-30): what a multi-venue desk needs from the engine
+
+The user's list for running real cross-venue market making on Binance, OKX, Gemini and Coinbase,
+done one at a time, each verified before the next:
+
+1. Balances, margin and collateral reach the engine, risk and the strategy. Spot inventory and
+   perp margin are the usual limit of cross-venue market making; today only `max_position` stands
+   in for them. Each connector's balance and margin updates become journaled events, the engine
+   keeps a per-venue table (`ctx.balance`, `ctx.margin`), risk refuses an order the account cannot
+   cover, xmm stops quoting a side it cannot fill, and the gateway serves the account's balances
+   to every strategy.
+2. Funding rate, mark and index prices reach the strategy (ticker/funding streams of Binance
+   USD-M, OKX, Bybit, Gemini, Deribit), journaled, so xmm prices basis and funding into a perp leg.
+3. Fill-model calibration from real fills: `fastmm-data fill-check` over the real-money soak's
+   journals, the queue model's parameters fitted, the backtest compared with the session.
+4. A reusable hedge executor out of xmm: sizing from positions, one-in-flight, splitting across
+   the hedge venue's size limits, failing over to a second hedge venue, stepwise de-risking.
+
 **Gemini connector, `kind = "gemini"` (2026-09-30).** Perpetuals (`btcgusdperp`, linear, 1 BTC a
 contract) and spot (`btcusd`) on one API, for the sandbox as a third venue. Docs read 2026-09-30:
 docs.gemini.com now redirects to developer.gemini.com, which serves markdown pages and the specs
