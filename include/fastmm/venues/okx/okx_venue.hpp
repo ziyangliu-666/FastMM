@@ -1,13 +1,28 @@
 #pragma once
 // OkxVenue: the OKX v5 connector for USDT-margined perpetual swaps (instType SWAP, ctType
-// linear, e.g. BTC-USDT-SWAP), net position mode only.
+// linear, e.g. BTC-USDT-SWAP), net position mode only, and spot pairs (instType SPOT, e.g.
+// BTC-USDT), one instance trading either or both. An instrument whose id ends in -SWAP is a swap,
+// any other a spot pair.
+//
+// Hosts. OKX serves its regions from separate domains, and an account's keys work on its own only
+// (https://www.okx.com/docs-v5/en/#overview "Regional API Domain Requirement", read 2026-09-30):
+// `region` picks the defaults for the URLs the section leaves empty.
+//   global  REST https://openapi.okx.com  ws wss://ws.okx.com:8443     demo
+//   wss://wspap.okx.com:8443 eea     REST https://eea.okx.com      ws wss://wseea.okx.com:8443 demo
+//   wss://wseeapap.okx.com:8443
+//           (accounts registered on my.okx.com; https://my.okx.com/docs-v5/en/)
+//   us      REST https://us.okx.com       ws wss://wsus.okx.com:8443   demo
+//   wss://wsuspap.okx.com:8443
+//           (accounts registered on app.okx.com; https://app.okx.com/docs-v5/en/)
+// Demo trading uses the production REST host with "x-simulated-trading: 1".
 //
 // Channels on one reactor thread (https://www.okx.com/docs-v5/en/#overview-production-trading-
 // services and #overview-demo-trading-services, read 2026-09-26):
 //   md       wss://ws.okx.com:8443/ws/v5/public     books (or books50-l2-tbt / books-l2-tbt, which
 //            (demo wss://wspap.okx.com:8443/...)     need VIP4 and a login) / bbo-tbt / trades
-//   private  wss://ws.okx.com:8443/ws/v5/private    op login, then orders, positions and
-//                                                   balance_and_position (instType SWAP)
+//   private  wss://ws.okx.com:8443/ws/v5/private    op login, then orders (instType SWAP, SPOT
+//                                                   or ANY), and with swaps positions and
+//                                                   balance_and_position
 //   trade    wss://ws.okx.com:8443/ws/v5/private    op login, then order / amend-order /
 //            (a second connection)                  cancel-order; REST fallback
 //   rest     https://www.okx.com                    public/instruments, public/time, account/
@@ -25,20 +40,30 @@
 // trade sizes, order sz, fills, positions. Instrument::contract_multiplier = ctVal * ctMult, so
 // notional = px * qty * multiplier in the settlement currency (USDT) and PnL is linear in it;
 // base = ctValCcy, quote = settleCcy, which is what [accounting] settles it in. tick = tickSz,
-// lot = lotSz, min_qty = minSz, max_qty = maxLmtSz; OKX has no minimum notional for swaps.
+// lot = lotSz, min_qty = minSz, max_qty = maxLmtSz; OKX has no minimum notional for swaps. A spot
+// pair is sized in its base coin (baseCcy), priced in quoteCcy, multiplier 1, no minimum notional
+// either (minSz is the floor); its orders go with tdMode cash and without reduceOnly.
 //
-// Position mode. With keys, load_reference_data() reads GET /api/v5/account/config and refuses
-// long/short mode (posMode long_short_mode) and the spot account mode (acctLv 1, which cannot
-// trade swaps): refused_account_settings(), fastmm-live exits 3. A long/short position seen later
-// (positions channel or reconciliation) is fatal for the venue. tdMode is the `td_mode` key,
-// cross by default; leverage and margin are account settings the connector does not touch.
+// Spot holdings. OKX has no position for a spot pair: what the account holds is its balance, of
+// which the strategy's inventory is a part. As on Binance Spot, the engine's position is the
+// strategy's: it starts at zero, or at what the store carries over ([engine] restore_position),
+// and moves with the fills, a commission in the base coin included (fillFeeCcy BTC on a buy);
+// reconciliation reports no position for a spot pair, and the execution replay books the fills
+// the stream missed. A spot-only instance accepts the spot account mode (acctLv 1).
+//
+// Position mode. With keys, load_reference_data() reads GET /api/v5/account/config and, when swaps
+// are configured, refuses long/short mode (posMode long_short_mode) and the spot account mode
+// (acctLv 1, which cannot trade swaps): refused_account_settings(), fastmm-live exits 3. A
+// long/short position seen later (positions channel or reconciliation) is fatal for the venue.
+// tdMode is the `td_mode` key, cross by default; leverage and margin are account settings the
+// connector does not touch.
 //
 // Reconciliation: the fills since the watermark (GET /api/v5/trade/fills, fills-history beyond 3
-// days) are replayed as fills with the tradeId as execution id; then orders-pending and
-// account/positions become one Begin / OpenOrder* / Position* / End, a subscribed instrument absent
-// from the positions being flat. Funding: GET /api/v5/account/bills type 8 (funding fee), one
-// FundingMsg per bill (billId, balChg in ccy), with every execution replay and a second after a
-// balance_and_position push with eventType funding_fee.
+// days; one replay stream per instType traded) are replayed as fills with the tradeId as
+// execution id; then orders-pending and account/positions become one Begin / OpenOrder* /
+// Position* / End, a subscribed swap absent from the positions being flat. Funding: GET
+// /api/v5/account/bills type 8 (funding fee), one FundingMsg per bill (billId, balChg in ccy), with
+// every execution replay and a second after a balance_and_position push with eventType funding_fee.
 //
 // Amend (Replace) keeps the venue's clOrdId and names the engine's new id in reqId: the orders
 // channel reports the result (amendResult) under it, which becomes the ack or reject of the new id;
@@ -46,7 +71,8 @@
 //
 // Dead man's switch: POST /api/v5/trade/cancel-all-after {"timeOut":"<s>"}, a countdown for every
 // pending order of the account, refreshed from the housekeeping timer every window/3 (the same
-// shape as Binance USD-M countdownCancelAll); timeOut "0" on disconnect().
+// shape as Binance USD-M countdownCancelAll); timeOut "0" on disconnect(). It covers "all trading
+// symbols through order book (except Spread trading)", spot included.
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/seqlock.hpp"
@@ -228,7 +254,12 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   // Every reply is in: the position rows, then the driver emits the snapshot.
   void finish_snapshot(std::uint64_t generation);
   // Start-up: GET /api/v5/account/config; an error when the account cannot trade here.
-  std::string check_account();
+  std::string check_account(bool swaps);
+  // instType filter of orders-pending: SWAP, SPOT, or empty with both.
+  [[nodiscard]] std::string_view pending_type() const noexcept;
+  [[nodiscard]] bool is_spot(InstrumentId id) const noexcept {
+    return id.value < spot_.size() && spot_[id.value];
+  }
   void check_positions(std::int64_t now);
   void note_fill(const OrderFillMsg& f) noexcept;
   // Execution replay (ReplayScheduler over fills / fills-history) and funding (bills type 8, its
@@ -259,6 +290,11 @@ class OkxVenue final : public Venue, private ReconcileHooks {
   MsgRing* outbound_ = nullptr;
   net::Reactor* reactor_ = nullptr;
   std::array<std::int64_t, kMaxInstruments> inst_codes_{};  // instIdCode, -1 unknown
+  std::array<bool, kMaxInstruments> spot_{};                // a spot pair (instType SPOT)
+  bool has_swap_ = false;
+  bool has_spot_ = false;
+  // The instType of each execution-replay stream (fills-history requires one).
+  std::vector<std::string_view> fill_types_{"SWAP"};
 
   std::unique_ptr<OkxMdFeed> md_feed_;
   std::unique_ptr<OkxPrivateParser> private_parser_;
@@ -331,12 +367,16 @@ class OkxVenue final : public Venue, private ReconcileHooks {
 
 // [venues.<name>] -> OkxVenueConfig. ws_url = public stream, ws_api_url = the order connection
 // (default: the private URL), api_key / api_secret / api_passphrase the three credentials, testnet
-// = demo trading (the x-simulated-trading header). Extra keys: ws_private_url, td_mode ("cross" |
-// "isolated"), depth_channel ("books" | "books50-l2-tbt" | "books-l2-tbt"), order_api ("ws" |
+// = demo trading (the x-simulated-trading header). Extra keys: region ("global" | "eea" or "my" |
+// "us" or "app": the defaults of ws_url and rest_url when empty), ws_private_url, td_mode ("cross"
+// | "isolated"), depth_channel ("books" | "books50-l2-tbt" | "books-l2-tbt"), order_api ("ws" |
 // "rest"), stale_ms, dead_ms, ping_interval_ms, orders_per_second, dead_mans_switch_s,
 // position_from_stream, allow_offline_reference_data, cancel_on_order_channel_loss,
 // emit_ack_from_response. Throws std::invalid_argument for a bad value, for api_key without
 // api_passphrase outside a dry run, and for a demo host with testnet = false or the reverse.
 OkxVenueConfig make_okx_config(const VenueSection& section, bool dry_run);
+
+// An OKX instrument id naming a perpetual swap (BTC-USDT-SWAP); anything else is taken as spot.
+[[nodiscard]] bool is_swap_symbol(std::string_view inst_id) noexcept;
 
 }  // namespace fastmm::venues::okx

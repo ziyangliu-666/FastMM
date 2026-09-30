@@ -108,7 +108,7 @@ knows only the generic keys above. A project can register its own connector and 
 | `deribit` |  | Deribit options and futures (testnet) | yes | yes | yes | yes |
 | `gemini` |  | Gemini perpetuals and spot (sandbox) | yes | yes | no | yes |
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
-| `okx` |  | OKX v5 USDT-margined perpetual swaps (demo trading) | yes | yes | yes | yes |
+| `okx` |  | OKX v5 USDT-margined perpetual swaps and spot (demo trading) | yes | yes | yes | yes |
 <!-- END config-keys -->
 
 `Replace` and `Order entry` are what the connector can do; a session may not, depending on its
@@ -203,15 +203,17 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 
 #### `okx`
 
-USDT-margined swaps; quantities are contracts. The third credential is the generic
-`api_passphrase`, and `testnet = true` (the default) selects demo trading
-([Venue connectors](venues.md#okx-v5-usdt-margined-swaps)).
+USDT-margined swaps, quantities in contracts, and spot pairs, quantities in the base coin. The
+third credential is the generic `api_passphrase`, `testnet = true` (the default) selects demo
+trading, and `region` the site the account is registered on
+([Venue connectors](venues.md#okx-v5-usdt-margined-swaps-and-spot)).
 
 <!-- BEGIN config-keys venue:okx -->
 | Key | Type | Required | Meaning |
 |---|---|---|---|
+| `region` | string |  | the site the account is registered on, which sets ws_url and rest_url when they are empty: global (default; www.okx.com) \| eea or my (my.okx.com: eea.okx.com, wseea / wseeapap) \| us or app (app.okx.com: us.okx.com, wsus / wsuspap) |
 | `ws_private_url` | string |  | private WebSocket URL (login, orders, positions); empty = ws_url's host + /ws/v5/private |
-| `td_mode` | string |  | margin mode of every order: cross (default) \| isolated |
+| `td_mode` | string |  | margin mode of every swap order: cross (default) \| isolated; spot orders go with cash |
 | `depth_channel` | string |  | order book channel: books (default; 400 levels, 100 ms) \| books50-l2-tbt \| books-l2-tbt (10 ms; VIP4 and a login) |
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `dead_mans_switch_s` | integer |  | cancel-all-after countdown, seconds, 10 to 120, refreshed every third of it; the venue cancels every pending order of the account when it runs out. 0 disables it (default 60) |

@@ -178,6 +178,34 @@ TEST_CASE("okx.encoder: order, amend-order and cancel-order frames with instIdCo
   CHECK(rr.body == R"({"instId":"BTC-USDT-SWAP","ordId":"1234567890"})");
 }
 
+TEST_CASE("okx.encoder: a spot order goes with tdMode cash and never reduceOnly") {
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTC-USDT", 1, "BTC", "USDT")));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  // The margin mode configured for swaps does not reach a spot order.
+  OkxOrderEncoder enc(symbols, TdMode::Isolated);
+  enc.set_inst_id_code(kBtc, 3);
+  enc.set_spot(kBtc, true);
+  OutNewOrderMsg post = new_order(OrderType::PostOnly, TimeInForce::Gtc);
+  post.qty = Qty::from_decimal("0.00002").value();  // base coin
+  post.reduce_only = 1;  // "only applicable to MARGIN orders, and FUTURES/SWAP orders in net mode"
+  CHECK(
+      encode(enc, post.hdr, nullptr) ==
+      R"({"id":"nfm000100000001","op":"order","args":[{"instIdCode":3,"tdMode":"cash","clOrdId":"fm000100000001","side":"sell","ordType":"post_only","px":"60000.1","sz":"0.00002"}]})");
+  // A market buy is sized in the quote coin unless tgtCcy says otherwise.
+  OutNewOrderMsg mkt = new_order(OrderType::Market, TimeInForce::Ioc);
+  mkt.side = Side::Buy;
+  CHECK(
+      encode(enc, mkt.hdr, nullptr).find(R"("ordType":"market","sz":"2.5","tgtCcy":"base_ccy"})") !=
+      std::string::npos);
+  RestRequest rr;
+  REQUIRE(enc.encode_rest(*OrderCommand::from(post.hdr), nullptr, rr));
+  CHECK(
+      rr.body ==
+      R"({"instId":"BTC-USDT","tdMode":"cash","clOrdId":"fm000100000001","side":"sell","ordType":"post_only","px":"60000.1","sz":"0.00002"})");
+}
+
 TEST_CASE("okx.encoder: REST paths and bodies of the control requests") {
   RestRequest rr;
   const OkxOrderEncoder::CancelEntry batch[] = {{"BTC-USDT-SWAP", "1"}, {"BTC-USDT-SWAP", "2"}};
@@ -194,14 +222,18 @@ TEST_CASE("okx.encoder: REST paths and bodies of the control requests") {
   CHECK(rr.body == R"({"timeOut":"0"})");
   CHECK_FALSE(OkxOrderEncoder::encode_rest_cancel_all_after(5, rr));    // 10..120
   CHECK_FALSE(OkxOrderEncoder::encode_rest_cancel_all_after(121, rr));  // 10..120
-  OkxOrderEncoder::encode_rest_orders_pending("", rr);
+  OkxOrderEncoder::encode_rest_orders_pending("SWAP", "", rr);
   CHECK(rr.path == "/api/v5/trade/orders-pending?instType=SWAP&limit=100");
-  OkxOrderEncoder::encode_rest_orders_pending("123", rr);
+  OkxOrderEncoder::encode_rest_orders_pending("SWAP", "123", rr);
   CHECK(rr.path == "/api/v5/trade/orders-pending?instType=SWAP&limit=100&after=123");
-  OkxOrderEncoder::encode_rest_fills(false, 1789299700000, 0, "", 100, rr);
+  OkxOrderEncoder::encode_rest_orders_pending("", "", rr);  // swaps and spot: every type
+  CHECK(rr.path == "/api/v5/trade/orders-pending?limit=100");
+  OkxOrderEncoder::encode_rest_fills(false, "SWAP", 1789299700000, 0, "", 100, rr);
   CHECK(rr.method == "GET");
   CHECK(rr.path == "/api/v5/trade/fills?instType=SWAP&begin=1789299700000&limit=100");
-  OkxOrderEncoder::encode_rest_fills(true, 1789299700000, 1789299800000, "77", 100, rr);
+  OkxOrderEncoder::encode_rest_fills(true, "SPOT", 1789299700000, 0, "", 100, rr);
+  CHECK(rr.path == "/api/v5/trade/fills-history?instType=SPOT&begin=1789299700000&limit=100");
+  OkxOrderEncoder::encode_rest_fills(true, "SWAP", 1789299700000, 1789299800000, "77", 100, rr);
   CHECK(rr.path ==
         "/api/v5/trade/fills-history?instType=SWAP&after=77&begin=1789299700000&end=1789299800000&"
         "limit=100");
@@ -217,10 +249,15 @@ TEST_CASE("okx.encoder: REST paths and bodies of the control requests") {
   CHECK(rr.path == "/api/v5/account/config");
   char buf[kMaxRequestBytes];
   constexpr std::string_view kChannels[] = {"orders", "positions", "balance_and_position"};
-  const std::size_t n = OkxOrderEncoder::encode_private_subscribe("private", kChannels, buf);
+  std::size_t n = OkxOrderEncoder::encode_private_subscribe("private", kChannels, "SWAP", buf);
   CHECK(
       std::string_view(buf, n) ==
       R"({"id":"private","op":"subscribe","args":[{"channel":"orders","instType":"SWAP"},{"channel":"positions","instType":"SWAP","extraParams":"{\"updateInterval\":\"0\"}"},{"channel":"balance_and_position"}]})");
+  // Spot only: the orders channel alone.
+  n = OkxOrderEncoder::encode_private_subscribe(
+      "private", std::span<const std::string_view>(kChannels, 1), "SPOT", buf);
+  CHECK(std::string_view(buf, n) ==
+        R"({"id":"private","op":"subscribe","args":[{"channel":"orders","instType":"SPOT"}]})");
 }
 
 TEST_CASE("okx.decoder: order-operation replies, events and REST replies") {
@@ -292,6 +329,21 @@ TEST_CASE("okx.rest_decoder: instruments, time, account, positions, orders, fill
       decode_instruments(R"({"code":"51001","msg":"Instrument ID doesn't exist","data":[]})", infos)
           .empty());
 
+  // A spot pair, recorded from the demo: no contract, base and quote coins.
+  infos.clear();
+  REQUIRE(
+      decode_instruments(fastmm::test::fixture("okx/instruments_btc_usdt_spot_demo.json"), infos)
+          .empty());
+  REQUIRE(infos.size() == 1);
+  CHECK(infos[0].inst_type == "SPOT");
+  CHECK(infos[0].inst_id_code == 3);
+  CHECK(infos[0].base_ccy == "BTC");
+  CHECK(infos[0].quote_ccy == "USDT");
+  CHECK(infos[0].ct_val.is_zero());
+  CHECK(infos[0].tick == Price::from_decimal("0.1").value());
+  CHECK(infos[0].lot == Qty::from_decimal("0.00000001").value());
+  CHECK(infos[0].min_sz == Qty::from_decimal("0.00002").value());
+
   std::int64_t ms = 0;
   REQUIRE(decode_server_time(fastmm::test::fixture("okx/server_time.json"), ms).empty());
   CHECK(ms == 1790439440699);
@@ -336,6 +388,18 @@ TEST_CASE("okx.rest_decoder: instruments, time, account, positions, orders, fill
   CHECK(fills[0].fill_time_ms == 1789299703453);
   CHECK(fills[0].ts_ms == 1789299703460);
   CHECK(fills[0].bill_id == "9001");
+  // A spot buy pays in the base coin, fillSz times the rate: more decimals than 8 (the docs'
+  // example). Rounded, not dropped: the fee changes what the account holds.
+  fills.clear();
+  REQUIRE(
+      decode_fills(
+          R"({"code":"0","msg":"","data":[{"side":"buy","fillSz":"0.00192834","fillPx":"51858","fee":"-0.00000192834","ordId":"680800019749904384","feeRate":"-0.001","instType":"SPOT","instId":"BTC-USDT","clOrdId":"","posSide":"net","billId":"680800019754098688","subType":"1","fillTime":"1708587373361","execType":"T","tradeId":"744876980","feeCcy":"BTC","ts":"1708587373362"}]})",
+          fills)
+          .empty());
+  REQUIRE(fills.size() == 1);
+  CHECK(fills[0].fee == Notional::from_decimal("-0.00000193").value());
+  CHECK(fills[0].fee_ccy == "BTC");
+  CHECK(fills[0].sz == Qty::from_decimal("0.00192834").value());
 
   std::vector<BillRecord> bills;
   REQUIRE(

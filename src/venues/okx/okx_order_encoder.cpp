@@ -31,9 +31,10 @@ std::size_t OkxOrderEncoder::write_args(const OrderCommand& cmd,
     w.key("instId").string(inst);
   }
   const bool have_venue_id = cmd.venue_order_id != nullptr && !cmd.venue_order_id->empty();
+  const bool is_spot = spot(cmd.instrument);
   switch (cmd.kind) {
     case OrderCommandKind::New: {
-      w.key("tdMode").string(to_string(td_mode_));
+      w.key("tdMode").string(is_spot ? std::string_view("cash") : to_string(td_mode_));
       w.key("clOrdId").string(encode_cl_ord_id(cmd.cl_ord_id).view());
       w.key("side").string(side_text(cmd.side));
       w.key("ordType").string(ord_type_text(cmd.type, cmd.tif));
@@ -43,7 +44,11 @@ std::size_t OkxOrderEncoder::write_args(const OrderCommand& cmd,
       }
       DecimalText sz(cmd.qty);
       w.key("sz").string(sz.view());
-      if (cmd.reduce_only) w.key("reduceOnly").boolean(true);
+      if (is_spot) {
+        if (cmd.type == OrderType::Market) w.key("tgtCcy").string("base_ccy");
+      } else if (cmd.reduce_only) {
+        w.key("reduceOnly").boolean(true);
+      }
       break;
     }
     case OrderCommandKind::Cancel: {
@@ -118,6 +123,7 @@ std::size_t OkxOrderEncoder::encode_login(const Signer& signer,
 
 std::size_t OkxOrderEncoder::encode_private_subscribe(std::string_view id,
                                                       std::span<const std::string_view> channels,
+                                                      std::string_view orders_type,
                                                       std::span<char> out) noexcept {
   JsonWriter w(out);
   w.begin_object().key("id").string(id).key("op").string("subscribe").key("args").begin_array();
@@ -125,7 +131,11 @@ std::size_t OkxOrderEncoder::encode_private_subscribe(std::string_view id,
     w.begin_object().key("channel").string(ch);
     // balance_and_position takes no instType; the positions channel is asked for events only,
     // "updateInterval": "0" (extraParams is a JSON string).
-    if (ch != "balance_and_position") w.key("instType").string("SWAP");
+    if (ch == "orders") {
+      w.key("instType").string(orders_type);
+    } else if (ch != "balance_and_position") {
+      w.key("instType").string("SWAP");
+    }
     if (ch == "positions") w.key("extraParams").string(R"({"updateInterval":"0"})");
     w.end_object();
   }
@@ -188,9 +198,17 @@ bool OkxOrderEncoder::encode_rest_cancel_all_after(int timeout_s, RestRequest& o
   return true;
 }
 
-void OkxOrderEncoder::encode_rest_orders_pending(std::string_view after, RestRequest& out) {
+void OkxOrderEncoder::encode_rest_orders_pending(std::string_view inst_type,
+                                                 std::string_view after,
+                                                 RestRequest& out) {
   out.method = "GET";
-  out.path = "/api/v5/trade/orders-pending?instType=SWAP&limit=100";
+  out.path = "/api/v5/trade/orders-pending?";
+  if (!inst_type.empty()) {
+    out.path += "instType=";
+    out.path += inst_type;
+    out.path += '&';
+  }
+  out.path += "limit=100";
   if (!after.empty()) {
     out.path += "&after=";
     out.path += after;
@@ -200,14 +218,15 @@ void OkxOrderEncoder::encode_rest_orders_pending(std::string_view after, RestReq
 }
 
 void OkxOrderEncoder::encode_rest_fills(bool history,
+                                        std::string_view inst_type,
                                         std::int64_t begin_ms,
                                         std::int64_t end_ms,
                                         std::string_view after,
                                         int limit,
                                         RestRequest& out) {
   out.method = "GET";
-  out.path =
-      history ? "/api/v5/trade/fills-history?instType=SWAP" : "/api/v5/trade/fills?instType=SWAP";
+  out.path = history ? "/api/v5/trade/fills-history?instType=" : "/api/v5/trade/fills?instType=";
+  out.path += inst_type;
   if (!after.empty()) {
     out.path += "&after=";
     out.path += after;
