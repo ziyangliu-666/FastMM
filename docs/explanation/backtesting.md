@@ -13,7 +13,7 @@ The simulated venue ([Simulated exchange](../reference/sim-exchange.md)) and the
 | The counterparty side of each synthetic order is a coin flip | Order flow carries no information, so a strategy that predicts flow measures as worthless here and a strategy that ignores it measures as fine |
 | There is no informed flow and no toxic counterparty | The markouts you measure here are a floor on the adverse selection you will see live, not an estimate of it |
 
-The synthetic market's touch sits `base_spread_ticks` from its mid, so at a mid of 60,000 USDT and a tick of 0.01 USDT the whole spread is about 0.003 bps: no passive strategy in that market can capture more than a fraction of a basis point, whatever it quotes. And `fill_model = "l2_queue"` replays recorded levels with no counterparties at all, so it checks post-only orders against the same book the strategy saw and never produces the post-only rejects that stale market data causes live ([Configuration](../reference/configuration.md#backtest)). Its queue position starts at the displayed quantity at the order's price and is capped by a book ticker newer than the depth; `ctx.queue_ahead` runs the same model on the data the strategy sees ([Strategy API](../reference/strategy-api.md#execution-view)).
+The synthetic market's touch sits `base_spread_ticks` from its mid, so at a mid of 60,000 USDT and a tick of 0.01 USDT the whole spread is about 0.003 bps: no passive strategy in that market can capture more than a fraction of a basis point, whatever it quotes. And `fill_model = "l2_queue"` replays recorded levels with no counterparties at all, so it checks post-only orders against the same book the strategy saw and never produces the post-only rejects that stale market data causes live ([Configuration](../reference/configuration.md#backtest)). Its queue position starts at the displayed quantity at the order's price, or the touch's of a book ticker newer than the depth, less what the trades printed since took, and is capped by the ticker; `ctx.queue_ahead` runs the same model on the data the strategy sees ([Strategy API](../reference/strategy-api.md#execution-view)). [Calibrating against live sessions](#calibrating-against-live-sessions) measures how close it comes.
 
 ## Markouts
 
@@ -73,6 +73,47 @@ net = gross spread capture + mid drift after the fills − fees paid + rebates r
 ```
 
 `mid drift` is `signed qty * (final mid − mid at fill)` summed over the fills: the adverse selection over the whole run plus the mark-to-market of whatever inventory is still open at the end. `unexplained` is the difference from the ledger's own net PnL: fixed-point rounding on a healthy run; anything larger means the split, not the ledger, is wrong.
+
+## Calibrating against live sessions
+
+`fastmm-data calibrate` fits the `l2_queue` fill model and the simulated latency to journals recorded by `fastmm-live`, and prints the `[backtest]` keys to use:
+
+```bash
+./build/release/bin/fastmm-data calibrate sessA.fmj sessB.fmj sessV.fmj --backtest
+```
+
+For each session it replays the orders that rested, from ack to end in venue time, through the queue model on the journal's own market data (the [fill check](../how-to/operations/journals-replay-pnl.md#check-the-fill-model-against-live-fills)), once per `queue_conservatism` of `--conservatism` (default `0,0.25,0.5,0.75,1`), and counts orders by whether they filled live and in the model:
+
+```text
+  conservatism     both   live  model   none    hit   miss  false  error model/live
+  0.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
+  ...
+  1.00              151      2      0   1573  0.987  0.013  0.000  0.013      0.987
+  no ticker         144      9      1   1572  0.941  0.059  0.001  0.065      0.940
+  no tape           150      3      0   1573  0.980  0.020  0.000  0.020      0.981
+  neither           127     26      1   1572  0.830  0.170  0.001  0.175      0.795
+```
+
+`hit` is the share of live fills the model also fills, `miss` the rest, `false` the share of orders not filled live that the model fills. `error` is (live only + model only) over the orders filled either way; the fit minimises it, then `model/live` (filled quantity) nearest 1, then prefers the larger conservatism. `no ticker`, `no tape` and `neither` repeat the fitted value without the book ticker, without the trades printed since the depth update, or both: what each input is worth on this data. The session is followed by the time from ack to first fill, live and in the model, and the model's queue ahead at the live fills; zero there is agreement.
+
+The conservatism is cross-validated: fitted on each session alone and scored on the others (`best c` is the best value on those sessions themselves); the snippet's value is fitted on all of them. When every value scores the same on every session, the data does not identify it and 1 is kept: the queues of orders at or inside the touch are set by the book ticker, where the conservatism does not act.
+
+Latency comes from each order's send time, the venue's time on its ack and the ack's arrival. The simulated venue draws each leg as a fixed part plus a lognormal excess (mean `jitter`); the fit solves fixed and jitter for the measured 5th and 50th percentiles of the round trip. Binance stamps orders in whole milliseconds, so the one-way leg is taken at its median (plus the half millisecond the truncation takes off, at most the round trip's fixed part) and the ack leg gets the rest. The tail of the round trip (a p99 of 40 ms on Binance Spot from AWS Tokyo) is beyond this model.
+
+```text
+[backtest]
+fill_model = "l2_queue"
+queue_conservatism = 1.00
+md_arrival = "recorded"
+latency_fixed_us = 792
+latency_jitter_us = 0
+latency_ack_us = 0
+latency_ack_jitter_us = 817
+```
+
+`md_arrival = "recorded"` is for backtests over journals like these: market data reaches the strategy when the session received it.
+
+`--backtest` then re-runs each session with its own recorded strategy configuration (or `--config`, one for all or one per journal) over its journal with our orders stripped (`journal:<file>,strip_own=1`), once with the configuration's `[backtest]` and once with the fitted keys (`l2_queue` and recorded arrival in both), and prints both beside the live session: orders, fills, time to fill, the PnL decomposition and markouts, all three marked against the journal's book ticker mids. The fill check isolates the fill model; this comparison adds everything else a backtest re-decides, such as how often the strategy requotes and what the account's balances allowed. `--csv` writes the fill-check grid.
 
 ## Reference example
 
