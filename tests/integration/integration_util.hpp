@@ -417,6 +417,7 @@ class LiveEngine {
     ec.spin_mode = cfg_.spin_mode();
     ec.risk = cfg_.risk_limits();
     ec.quotes = cfg_.quote_params();
+    ec.perp = perp_config(cfg_);
     ec.quoting_enabled = true;
     const auto err = strategy_.configure(cfg_.strategy.params);
     REQUIRE_MESSAGE(!err, (err ? *err : std::string()));

@@ -35,7 +35,7 @@ EVENT_TYPES = [
     "OrderCancelAck", "OrderCancelReject", "OrderFill", "OrderExpired", "PositionUpdate", "Timer",
     "Control", "ConnectionState", "Reconcile", "LatencySample", "OutNewOrder", "OutCancel",
     "OutReplace", "OrderAddL3", "OrderExecL3", "OrderCancelL3", "OrderReplaceL3", "OptionTicker",
-    "EngineTime", "ParamUpdate", "Funding", "Balance",
+    "EngineTime", "ParamUpdate", "Funding", "Balance", "PerpState",
 ]
 PARAM_TYPES = {0: "int", 1: "double", 2: "bool", 3: "decimal", 4: "bps", 5: "ms"}
 ENGINE_TIME_KINDS = {0: "sync", 1: "start", 2: "finish"}
@@ -227,6 +227,19 @@ def decode_body(type_name: str, body: bytes, params=()) -> str:
         return (f"asset={fixed_string(body[40:49], 8)} free={dec(q(0))} locked={dec(q(8))} "
                 f"total={dec(q(16))} equity={dec(q(24))} maintenance={dec(q(32))}"
                 + (f" {'|'.join(kinds)}" if kinds else ""))
+    if type_name == "PerpState":
+        fields = body[48]
+        out = []
+        if fields & 1:
+            out.append(f"mark={dec(q(0))}")
+        if fields & 2:
+            out.append(f"index={dec(q(8))}")
+        if fields & 4:
+            rate = struct.unpack_from("<d", body, 16)[0]
+            out.append(f"funding={rate:.8g}/{q(24) // 1_000_000_000}s next={q(32)}")
+        if fields & 8:
+            out.append(f"open_interest={dec(q(40))}")
+        return " ".join(out) if out else "(no fields)"
     if type_name == "PositionUpdate":
         return f"qty={dec(q(0))} avg_px={dec(q(8))} realized={dec(q(16))} unrealized={dec(q(24))} fees={dec(q(32))}"
     return f"({len(body)} body bytes)"

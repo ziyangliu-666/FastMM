@@ -58,6 +58,7 @@ enum HookIndex : std::uint8_t {
   kQuoting,
   kParams,
   kBalance,
+  kPerpState,
   kHookCount
 };
 
@@ -95,6 +96,9 @@ class AllHooks : public StrategyBase<AllHooksParams> {
   void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
   void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
   void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance); }
+  void on_perp_state(auto& /*ctx*/, InstrumentId /*id*/, const PerpStateMsg& /*m*/) noexcept {
+    hit(kPerpState);
+  }
   // [end:hooks]
 
   [[nodiscard]] int count(HookIndex h) const noexcept { return counts_[h]; }
@@ -191,6 +195,21 @@ static_assert(std::same_as<decltype(Margin::available), Notional>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 // [end:balances]
 
+// ---- perpetuals: the venue's mark, index and funding
+// ----------------------------------------------
+
+// [start:perps]
+static_assert(std::same_as<decltype(lvalue<Ctx>().mark(InstrumentId{})), RefPrice>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().index(InstrumentId{})), RefPrice>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().funding(InstrumentId{})), FundingView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().perp_state(InstrumentId{})), const PerpRow&>);
+static_assert(std::same_as<decltype(RefPrice::price), Price>);
+static_assert(std::same_as<decltype(RefPrice::stale), bool>);
+static_assert(std::same_as<decltype(FundingView::rate), double>);
+static_assert(std::same_as<decltype(FundingView::interval), Duration>);
+static_assert(std::same_as<decltype(lvalue<const FundingView>().over(Duration{})), double>);
+// [end:perps]
+
 // ---- the book a hook receives -------------------------------------------------------------------
 
 // [start:book]
@@ -242,6 +261,10 @@ static_assert(std::same_as<decltype(OmsUpdate::prev), OrderState>);
 static_assert(std::same_as<decltype(OmsUpdate::terminal), bool>);
 static_assert(std::same_as<decltype(BalanceMsg::free), Notional>);
 static_assert(std::same_as<decltype(BalanceMsg::asset), FixedString<8>>);
+static_assert(std::same_as<decltype(PerpStateMsg::mark_price), Price>);
+static_assert(std::same_as<decltype(PerpStateMsg::funding_rate), double>);
+static_assert(std::same_as<decltype(PerpStateMsg::next_funding), Timestamp>);
+static_assert(std::same_as<decltype(PerpStateMsg::fields), std::uint8_t>);
 // [end:messages]
 
 // ---- fixed-point helpers ------------------------------------------------------------------------
@@ -311,7 +334,12 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   init_header(usdt, EventType::Balance, InstrumentId::invalid(), VenueId{0});
   usdt.asset.assign("USDT");
   usdt.free = Notional::from_int(1000);
-  h.push(usdt.hdr);     // on_balance
+  h.push(usdt.hdr);  // on_balance
+  PerpStateMsg perp{};
+  init_header(perp, EventType::PerpState, h.instrument(), VenueId{0});
+  perp.mark_price = 100.01_px;
+  perp.fields = PerpStateMsg::kMark;
+  h.push(perp.hdr);     // on_perp_state
   h.engine().finish();  // on_stop
   // [end:harness]
 
@@ -329,6 +357,7 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   CHECK(s.count(docs::kQuoting) == 2);
   CHECK(s.count(docs::kParams) == 1);
   CHECK(s.count(docs::kBalance) == 1);
+  CHECK(s.count(docs::kPerpState) == 1);
   CHECK(s.params().half_spread_bps == 7.5_bps);
   for (int i = 0; i < docs::kHookCount; ++i) {
     INFO("hook index " << i);

@@ -230,7 +230,9 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
         break;
     }
   }
-  if (agg_ != nullptr) return;  // coupled mode publishes its own view of the book
+  // Coupled mode publishes its own view of the book; a venue's mark and funding go through as
+  // recorded.
+  if (agg_ != nullptr && md.type != EventType::PerpState) return;
   // Forward a copy with the arrival stamp, on the wire of the instrument's venue.
   Link& l = link(id);
   std::byte* p = l.md_wire.try_reserve(md.len);
