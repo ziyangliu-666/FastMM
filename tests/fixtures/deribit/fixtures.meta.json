@@ -41,6 +41,8 @@
   "user_orders_filled.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials",
   "user_orders_foreign_label.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials",
   "user_trades.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials",
-  "open_orders.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials"
+  "open_orders.json": "docs-schema example (deribit_openapi.json / deribit_asyncapi.json field names, https://docs.deribit.com): private data cannot be recorded without testnet credentials",
+  "user_portfolio_btc.json": "docs: AsyncAPI deribit_asyncapi.json channel user.portfolio.(currency), example \"repeated\" (data verbatim, in the subscription envelope), read 2026-09-30",
+  "account_summaries.json": "docs: OpenAPI deribit_openapi.json /private/get_account_summaries, response example verbatim (no usIn/usOut in the example), read 2026-09-30"
  }
 }

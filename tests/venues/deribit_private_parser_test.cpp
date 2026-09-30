@@ -190,7 +190,7 @@ TEST_CASE("deribit.private_parser: order, auth, subscribe and error responses") 
 
   // Notifications for other channels and unknown instruments are ignored.
   const PaddedJson other(
-      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.portfolio.btc","data":{"equity":1.0}}})");
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.mmp_trigger.btc","data":{"frozen_until":0}}})");
   CHECK(p.decode(other.view(), Timestamp{}, Cycles{}, s.span()).status == ParseStatus::Ignored);
   const PaddedJson unknown(
       R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.orders.future.ETH.raw","data":{"order_id":"1","order_state":"open","label":"fm000100000001","instrument_name":"ETH-PERPETUAL"}}})");
@@ -221,4 +221,86 @@ TEST_CASE("deribit.private_parser: get_open_orders_by_currency records") {
   CHECK(recs[1].filled_amount == qt("20"));
   const PaddedJson err = padded_fixture("deribit/rpc_unauthorized.json");
   CHECK(p.decode_open_orders(err.view(), [](const OpenOrderRecord&) {}) == ParseStatus::Error);
+}
+
+namespace {
+Notional nt(const char* s) {
+  return Notional::from_decimal(s).value();
+}
+}  // namespace
+
+TEST_CASE("deribit.private_parser: user.portfolio is the currency's balance") {
+  // The AsyncAPI example of user.portfolio.(currency) (deribit_asyncapi.json, read 2026-09-30).
+  Universe u;
+  DeribitPrivateParser p(u.symbols, u.instruments, kVenue);
+  Scratch s;
+  const PrivateDecodeResult r = decode(p, "deribit/user_portfolio_btc.json", s);
+  CHECK(r.status == ParseStatus::Ok);
+  CHECK(r.count == 0);  // no order event
+  REQUIRE(r.portfolio.present);
+  CHECK(r.portfolio.currency == "BTC");
+  CHECK(r.portfolio.fields.free == nt("301.38036328"));      // available_funds
+  CHECK(r.portfolio.fields.locked == nt("1.24639592"));      // initial_margin
+  CHECK(r.portfolio.fields.total == nt("302.60065765"));     // balance
+  CHECK(r.portfolio.fields.equity == nt("302.6188592"));     // equity
+  CHECK(r.portfolio.fields.maintenance == nt("0.8854841"));  // maintenance_margin
+  CHECK_FALSE(r.portfolio.has_account);                      // cross_collateral_enabled false
+
+  // Cross collateral on: the total_*_usd fields value the whole account in USD (the fields as the
+  // channel documents them; the example has cross collateral off).
+  const PaddedJson cross(
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.portfolio.btc","data":{"currency":"BTC","balance":1.5,"equity":1.52,"available_funds":1.2,"initial_margin":0.3,"maintenance_margin":0.2,"margin_balance":1.5,"cross_collateral_enabled":true,"total_equity_usd":171000.5,"total_initial_margin_usd":30000,"total_maintenance_margin_usd":20000,"total_margin_balance_usd":170000.25,"delta_total_map":{"btc_usd":0.1}}}})");
+  const PrivateDecodeResult c = p.decode(cross.view(), Timestamp{}, Cycles{}, s.span());
+  REQUIRE(c.portfolio.present);
+  REQUIRE(c.portfolio.has_account);
+  CHECK(c.portfolio.account.free == nt("140000.25"));
+  CHECK(c.portfolio.account.locked == nt("30000"));
+  CHECK(c.portfolio.account.total == nt("170000.25"));
+  CHECK(c.portfolio.account.equity == nt("171000.5"));
+  CHECK(c.portfolio.account.maintenance == nt("20000"));
+
+  // Without the fields the mapping needs it is malformed, not a zero balance.
+  const PaddedJson partial(
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.portfolio.btc","data":{"currency":"BTC","equity":1.0}}})");
+  const PrivateDecodeResult m = p.decode(partial.view(), Timestamp{}, Cycles{}, s.span());
+  CHECK(m.status == ParseStatus::Malformed);
+  CHECK_FALSE(m.portfolio.present);
+}
+
+TEST_CASE("deribit.private_parser: get_account_summaries rows and usOut") {
+  // The OpenAPI example of /private/get_account_summaries (deribit_openapi.json, read
+  // 2026-09-30); it carries no usIn/usOut.
+  Universe u;
+  DeribitPrivateParser p(u.symbols, u.instruments, kVenue);
+  std::vector<PortfolioRecord> rows;
+  std::vector<std::string> names;
+  std::int64_t us_out = -1;
+  const PaddedJson j = padded_fixture("deribit/account_summaries.json");
+  REQUIRE(p.decode_account_summaries(j.view(), us_out, [&](const PortfolioRecord& r) {
+    rows.push_back(r);
+    names.emplace_back(r.currency);
+  }) == ParseStatus::Ok);
+  CHECK(us_out == 0);
+  REQUIRE(rows.size() == 2);
+  CHECK(names == std::vector<std::string>{"BTC", "ETH"});
+  CHECK(rows[0].fields.free == nt("301.38059622"));
+  CHECK(rows[0].fields.locked == nt("1.24669592"));
+  CHECK(rows[0].fields.total == nt("302.60065765"));
+  CHECK(rows[0].fields.equity == nt("302.61869214"));
+  CHECK(rows[0].fields.maintenance == nt("0.8857841"));
+  CHECK(rows[1].fields.free == nt("99.999598"));
+  CHECK(rows[1].fields.locked == nt("0.000402"));
+  CHECK(rows[1].fields.total == nt("100"));
+  CHECK(rows[1].fields.equity == nt("100"));
+  CHECK(rows[1].fields.maintenance.is_zero());
+
+  // usOut stands in the JSON-RPC envelope (json-rpc-overview article), after the result here.
+  const PaddedJson stamped(
+      R"({"jsonrpc":"2.0","id":8,"result":{"summaries":[{"currency":"BTC","balance":1,"equity":1,"available_funds":1,"initial_margin":0,"maintenance_margin":0}]},"usIn":1790730000000100,"usOut":1790730000000450,"usDiff":350,"testnet":true})");
+  CHECK(p.decode_account_summaries(stamped.view(), us_out, [](const PortfolioRecord&) {}) ==
+        ParseStatus::Ok);
+  CHECK(us_out == 1790730000000450);
+  const PaddedJson err = padded_fixture("deribit/rpc_unauthorized.json");
+  CHECK(p.decode_account_summaries(err.view(), us_out, [](const PortfolioRecord&) {}) ==
+        ParseStatus::Error);
 }

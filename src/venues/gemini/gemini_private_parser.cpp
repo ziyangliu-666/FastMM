@@ -56,6 +56,18 @@ std::string_view scalar_text(od::value v) noexcept {
   return raw.substr(0, n);
 }
 
+// A string, or a number's token as written (the spec's DecimalString may arrive as a number).
+std::string_view scalar_text_or_decimal(od::value v) noexcept {
+  od::json_type t{};
+  if (v.type().get(t) != sj::SUCCESS) return {};
+  if (t != od::json_type::number) return scalar_text(v);
+  std::string_view raw = v.raw_json_token();
+  while (!raw.empty() &&
+         (raw.back() == ' ' || raw.back() == '\n' || raw.back() == '\r' || raw.back() == '\t'))
+    raw.remove_suffix(1);
+  return raw;
+}
+
 [[nodiscard]] Qty qty_or_zero(std::string_view s) noexcept {
   if (s.empty()) return Qty{};
   const auto q = parse_qty(s);
@@ -79,6 +91,46 @@ struct OrderEvent {
   std::int64_t event_ns = 0;
   std::int64_t update_ns = 0;
 };
+
+// A balanceUpdate's `B` into `rows`; a row without an asset or a readable f and c is left out and
+// marks the update truncated, as rows past the table's size do.
+[[gnu::noinline]] void read_balance_rows(od::value v,
+                                         std::span<BalanceUpdateRow> rows,
+                                         BalanceUpdate& b) noexcept {
+  od::array arr;
+  if (v.get_array().get(arr) != sj::SUCCESS) {
+    b.truncated = true;
+    return;
+  }
+  for (auto item : arr) {
+    od::object o;
+    if (item.get_object().get(o) != sj::SUCCESS) {
+      b.truncated = true;
+      continue;
+    }
+    BalanceUpdateRow row;
+    unsigned seen = 0;
+    for (auto field : o) {
+      std::string_view key;
+      if (field.unescaped_key().get(key) != sj::SUCCESS || key.size() != 1) continue;
+      const std::string_view s = scalar_text_or_decimal(field.value());
+      if (key[0] == 'a') {
+        row.asset = s;
+        seen |= row.asset.empty() ? 0U : 1U;
+      } else if (key[0] == 'f' || key[0] == 'c') {
+        const auto n = parse_rounded<Notional>(s);
+        if (!n) continue;
+        (key[0] == 'f' ? row.available : row.confirmed) = *n;
+        seen |= key[0] == 'f' ? 2U : 4U;
+      }
+    }
+    if (seen != 7U || b.rows >= rows.size()) {
+      b.truncated = true;
+      continue;
+    }
+    rows[b.rows++] = row;
+  }
+}
 
 template <class M>
 M* place(std::span<std::byte> out) noexcept {
@@ -106,6 +158,7 @@ PrivateDecodeResult GeminiPrivateParser::decode(std::string_view json,
 
   std::string_view event;
   OrderEvent ev;
+  std::int64_t account_update_ns = 0;  // `u` of a balanceUpdate
   for (auto field : root) {
     std::string_view key;
     if (field.unescaped_key().get(key) != sj::SUCCESS) return malformed(stats_, r);
@@ -204,6 +257,13 @@ PrivateDecodeResult GeminiPrivateParser::decode(std::string_view json,
         if (v.get_bool().get(b) == sj::SUCCESS) ev.maker = b;
         break;
       }
+      case 'u':
+        if (v.get_int64().get(account_update_ns) != sj::SUCCESS) account_update_ns = 0;
+        break;
+      case 'B':
+        r.balance.present = true;
+        read_balance_rows(v, balance_rows_, r.balance);
+        break;
       default:
         break;
     }
@@ -214,6 +274,14 @@ PrivateDecodeResult GeminiPrivateParser::decode(std::string_view json,
     r.status = r.control.status == 200 ? ParseStatus::Ignored : ParseStatus::Error;
     return r;
   }
+  if (event == "balanceUpdate") {
+    if (!r.balance.present) return malformed(stats_, r);
+    ++stats_.balances;
+    r.balance.time_ns = account_update_ns != 0 ? account_update_ns : ev.event_ns;
+    r.status = ParseStatus::Ok;
+    return r;
+  }
+  r.balance = BalanceUpdate{};
   if (event != "orderUpdate") {
     ++stats_.ignored;
     r.status = ParseStatus::Ignored;

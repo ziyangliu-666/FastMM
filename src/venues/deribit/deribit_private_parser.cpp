@@ -230,6 +230,101 @@ struct ItemIds {
   return is_trades ? decode_trade_item(c, o, ids) : decode_order_item(c, o, ids);
 }
 
+// One user.portfolio data object or account summary, in one pass over its fields (the objects
+// carry some forty, among them nested maps). False if a required field is missing.
+[[gnu::noinline]] bool read_portfolio(od::object& o, PortfolioRecord& rec) noexcept {
+  rec = PortfolioRecord{};
+  enum : unsigned {
+    kCurrency = 1U << 0,
+    kBalance = 1U << 1,
+    kEquity = 1U << 2,
+    kAvailable = 1U << 3,
+    kInitial = 1U << 4,
+    kMaintenance = 1U << 5,
+    kRequired = (1U << 6) - 1,
+    kUsdEquity = 1U << 6,
+    kUsdInitial = 1U << 7,
+    kUsdMaintenance = 1U << 8,
+    kUsdMarginBalance = 1U << 9,
+  };
+  unsigned seen = 0;
+  bool cross = false;
+  Notional usd_equity{};
+  Notional usd_initial{};
+  Notional usd_maintenance{};
+  Notional usd_margin_balance{};
+  for (auto field : o) {
+    std::string_view key;
+    if (field.unescaped_key().get(key) != sj::SUCCESS) return false;
+    Notional* dst = nullptr;
+    unsigned bit = 0;
+    if (key == "currency") {
+      if (field.value().get_string().get(rec.currency) == sj::SUCCESS) seen |= kCurrency;
+      continue;
+    }
+    if (key == "cross_collateral_enabled") {
+      if (field.value().get_bool().get(cross) != sj::SUCCESS) cross = false;
+      continue;
+    }
+    if (key == "balance") {
+      dst = &rec.fields.total;
+      bit = kBalance;
+    } else if (key == "equity") {
+      dst = &rec.fields.equity;
+      bit = kEquity;
+    } else if (key == "available_funds") {
+      dst = &rec.fields.free;
+      bit = kAvailable;
+    } else if (key == "initial_margin") {
+      dst = &rec.fields.locked;
+      bit = kInitial;
+    } else if (key == "maintenance_margin") {
+      dst = &rec.fields.maintenance;
+      bit = kMaintenance;
+    } else if (key == "total_equity_usd") {
+      dst = &usd_equity;
+      bit = kUsdEquity;
+    } else if (key == "total_initial_margin_usd") {
+      dst = &usd_initial;
+      bit = kUsdInitial;
+    } else if (key == "total_maintenance_margin_usd") {
+      dst = &usd_maintenance;
+      bit = kUsdMaintenance;
+    } else if (key == "total_margin_balance_usd") {
+      dst = &usd_margin_balance;
+      bit = kUsdMarginBalance;
+    } else {
+      continue;
+    }
+    if (fixed_of(field.value(), *dst)) seen |= bit;
+  }
+  if ((seen & kRequired) != kRequired || rec.currency.empty()) return false;
+  rec.present = true;
+  if (cross && (seen & kUsdMarginBalance) != 0 && (seen & kUsdInitial) != 0) {
+    rec.has_account = true;
+    const Notional avail = usd_margin_balance - usd_initial;
+    rec.account.free = avail.is_negative() ? Notional{} : avail;
+    rec.account.locked = usd_initial;
+    rec.account.total = usd_margin_balance;
+    rec.account.equity = (seen & kUsdEquity) != 0 ? usd_equity : usd_margin_balance;
+    rec.account.maintenance = usd_maintenance;
+  }
+  return true;
+}
+
+[[gnu::noinline]] PrivateDecodeResult decode_portfolio(PrivateParserStats& stats,
+                                                       od::object& params,
+                                                       PrivateDecodeResult r) noexcept {
+  params.reset();
+  od::object data;
+  if (params["data"].get_object().get(data) != sj::SUCCESS || !read_portfolio(data, r.portfolio)) {
+    r.portfolio = PortfolioRecord{};
+    return malformed(stats, r);
+  }
+  r.status = ParseStatus::Ok;
+  return r;
+}
+
 [[gnu::noinline]] PrivateDecodeResult decode_notification(ItemCtx& c,
                                                           od::object& root,
                                                           PrivateDecodeResult r) noexcept {
@@ -240,6 +335,7 @@ struct ItemIds {
   if (root["params"].get_object().get(params) != sj::SUCCESS) return malformed(stats, r);
   std::string_view channel;
   if (params["channel"].get_string().get(channel) != sj::SUCCESS) return malformed(stats, r);
+  if (channel.starts_with("user.portfolio.")) return decode_portfolio(stats, params, r);
   const bool is_orders = channel.starts_with("user.orders.");
   const bool is_trades = channel.starts_with("user.trades.");
   if (!is_orders && !is_trades) {
@@ -565,6 +661,38 @@ ParseStatus DeribitPrivateParser::decode_user_trades(
   bool more = false;
   if (result["has_more"].get_bool().get(more) != sj::SUCCESS) return ParseStatus::Malformed;
   page.has_more = more;
+  return ParseStatus::Ok;
+}
+
+ParseStatus DeribitPrivateParser::decode_account_summaries(
+    std::string_view json,
+    std::int64_t& us_out,
+    const std::function<void(const PortfolioRecord&)>& fn) noexcept {
+  us_out = 0;
+  od::document doc;
+  od::object root;
+  if (impl_->parser.iterate(padded(json)).get(doc) != sj::SUCCESS ||
+      doc.get_object().get(root) != sj::SUCCESS)
+    return ParseStatus::Malformed;
+  {
+    od::value err;
+    if (root["error"].get(err) == sj::SUCCESS) return ParseStatus::Error;
+  }
+  root.reset();
+  if (root["usOut"].get_int64().get(us_out) != sj::SUCCESS) us_out = 0;
+  root.reset();
+  od::object result;
+  od::array list;
+  if (root["result"].get_object().get(result) != sj::SUCCESS ||
+      result["summaries"].get_array().get(list) != sj::SUCCESS)
+    return ParseStatus::Malformed;
+  for (auto item : list) {
+    od::object o;
+    PortfolioRecord rec;
+    if (item.get_object().get(o) != sj::SUCCESS || !read_portfolio(o, rec))
+      return ParseStatus::Malformed;
+    fn(rec);
+  }
   return ParseStatus::Ok;
 }
 

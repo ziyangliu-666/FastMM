@@ -196,6 +196,14 @@ std::size_t DeribitOrderEncoder::encode_positions(std::int64_t id,
   return end_request(w, access_token);
 }
 
+std::size_t DeribitOrderEncoder::encode_account_summaries(std::int64_t id,
+                                                          std::string_view access_token,
+                                                          std::span<char> out) noexcept {
+  JsonWriter w(out);
+  begin_request(w, id, "private/get_account_summaries");
+  return end_request(w, access_token);
+}
+
 std::size_t DeribitOrderEncoder::encode_user_trades(std::int64_t id,
                                                     std::string_view currency,
                                                     std::int64_t start_ms,

@@ -6,10 +6,12 @@
 //            public/subscribe book/ticker/trades per instrument (DeribitMdFeed)
 //   private  ws_private_url (default: ws_url), a second connection: public/auth
 //            (client_credentials), then public/set_heartbeat, private/enable_cancel_on_disconnect
-//            (optional), private/subscribe user.orders.KIND.CURRENCY.raw and
-//            user.trades.KIND.CURRENCY.raw; order entry (private/buy, sell, edit, cancel,
-//            cancel_by_label) and reconciliation (private/get_user_trades_by_currency_and_time,
-//            then private/get_open_orders_by_currency and private/get_positions) run here too
+//            (optional), private/subscribe user.orders.KIND.CURRENCY.raw,
+//            user.trades.KIND.CURRENCY.raw and user.portfolio.CURRENCY; order entry (private/buy,
+//            sell, edit, cancel, cancel_by_label) and reconciliation
+//            (private/get_user_trades_by_currency_and_time, then
+//            private/get_open_orders_by_currency and private/get_positions, then the balances with
+//            private/get_account_summaries) run here too
 //   rest     rest_url (https://test.deribit.com/api/v2): public/get_instruments and public/get_time
 //            at startup; private/cancel_all_by_instrument with HTTP Basic credentials for the
 //            kill switch (independent BlockingHttp) and after the private channel drops
@@ -24,6 +26,11 @@
 //
 // Edits keep the venue's label (the first client id): the engine gets an ack for its new client
 // id and later user.orders / user.trades events for the old label are translated to it.
+//
+// Balances: every user.portfolio notification is the currency's whole summary, emitted as one
+// BalanceMsg (and the kAccount row in USD with cross collateral on; PortfolioRecord has the
+// mapping), stamped with the venue clock on arrival (the notification carries no time). The
+// reconciliation's balance leg is private/get_account_summaries, stamped with the reply's usOut.
 //
 // Rate limits: matching-engine requests (buy/sell/edit) are refused locally when the
 // CreditBucket (matching_engine_rate / _burst, Tier 4 defaults) is empty; cancels are always
@@ -91,6 +98,7 @@ inline constexpr std::int64_t kIdTest = 4;
 inline constexpr std::int64_t kIdCancelOnDisconnect = 5;
 inline constexpr std::int64_t kIdPrivateSubscribe = 6;
 inline constexpr std::int64_t kIdReauth = 7;
+inline constexpr std::int64_t kIdAccountSummaries = 8;
 inline constexpr std::int64_t kIdOpenOrdersBase = 100;  // + currency index
 inline constexpr std::int64_t kIdPositionsBase = 200;   // + currency index
 // + currency index + currencies * the query's number: a reply names the query it answers, so a
@@ -176,6 +184,11 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   void handle_open_orders_response(std::string_view json, bool error);
   void handle_positions_response(std::string_view json, bool error);
   void finish_snapshot_reply();
+  // The balance leg: private/get_account_summaries on the private connection.
+  bool fetch_balances(std::uint64_t generation) override;
+  void handle_account_summaries_response(std::string_view json, bool error);
+  // A user.portfolio notification: the currency's balance (and the account row) now.
+  void on_portfolio(const PortfolioRecord& p);
   // Execution replay (ReplayScheduler, see deribit_venue.cpp): one query per currency at a time,
   // paged; a row forwarded as a replayed fill.
   [[nodiscard]] bool replay_ready() const noexcept;
@@ -246,6 +259,9 @@ class DeribitVenue final : public Venue, private ReconcileHooks {
   bool snapshot_failed_ = false;
   std::array<Qty, kMaxInstruments> snapshot_qty_{};
   std::array<Price, kMaxInstruments> snapshot_avg_{};
+  // The balance fetch in flight (get_account_summaries sent, not answered).
+  std::uint64_t balance_generation_ = 0;
+  bool balance_pending_ = false;
 
   // Execution replay, one stream per configured currency, the query each has out and its request
   // id (the reply names the query by its id only).

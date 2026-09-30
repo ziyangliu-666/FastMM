@@ -607,7 +607,8 @@ TEST_CASE("hotpath.noalloc: Deribit market-data parser, private parser and order
     check_decoder_noalloc(priv,
                           frames({"deribit/user_orders_open.json",
                                   "deribit/user_orders_cancelled.json",
-                                  "deribit/user_trades.json"}));
+                                  "deribit/user_trades.json",
+                                  "deribit/user_portfolio_btc.json"}));
   }
   const deribit::DeribitOrderEncoder enc(u.symbols, u.instruments, u.ticks, true);
   const Commands cmds(InstrumentId{0}, VenueId{2}, "0.0065", "0.5");

@@ -1,5 +1,6 @@
 #include "fastmm/venues/gemini/gemini_rest_decoder.hpp"
 
+#include "fastmm/venues/coinbase/coinbase_wire.hpp"  // parse_time_ns (RFC 3339)
 #include "fastmm/venues/decimal.hpp"
 
 #include <simdjson.h>
@@ -55,6 +56,18 @@ bool fixed(const dom::element& e, const char* key, F& out) {
   if (!v) return false;
   out = *v;
   return true;
+}
+
+// An amount the venue computed, with more decimals than 8 possibly: rounded to 8.
+bool rounded(const dom::element& e, const char* key, Notional& out) {
+  std::string_view s;
+  if (e[key].get(s) == sj::SUCCESS) {
+    const auto v = parse_rounded<Notional>(s);
+    if (!v) return false;
+    out = *v;
+    return true;
+  }
+  return fixed(e, key, out);
 }
 
 bool integer(const dom::element& e, const char* key, std::int64_t& out) {
@@ -213,6 +226,40 @@ std::string decode_funding(std::string_view json, std::vector<FundingRow>& out) 
     }
     out.push_back(std::move(f));
   }
+  return {};
+}
+
+std::string decode_balances(std::string_view json, std::vector<BalanceRow>& out) {
+  dom::parser parser;
+  dom::array data;
+  if (std::string err = open_array(parser, json, "balances", data); !err.empty()) return err;
+  for (dom::element e : data) {
+    BalanceRow b;
+    b.currency = text(e, "currency");
+    if (b.currency.empty()) return "balances: entry without currency";
+    if (!rounded(e, "amount", b.amount)) return "balances: bad amount for " + b.currency;
+    if (!rounded(e, "available", b.available)) return "balances: bad available for " + b.currency;
+    std::string_view ts;
+    if (e["_timestamp"].get(ts) == sj::SUCCESS) {
+      const std::int64_t ns = coinbase::parse_time_ns(ts);
+      if (ns > 0) b.time_ms = ns / 1'000'000;
+    }
+    out.push_back(std::move(b));
+  }
+  return {};
+}
+
+std::string decode_margin(std::string_view json, MarginRow& out) {
+  dom::parser parser;
+  dom::element root;
+  if (std::string err = parse(parser, json, root); !err.empty()) return "margin: " + err;
+  if (std::string err = error_text(root); !err.empty()) return "margin: " + err;
+  if (!root.is_object()) return "margin: not an object";
+  if (!rounded(root, "margin_assets_value", out.assets_value) ||
+      !rounded(root, "initial_margin", out.initial) ||
+      !rounded(root, "available_margin", out.available))
+    return "margin: bad margin_assets_value, initial_margin or available_margin";
+  static_cast<void>(rounded(root, "margin_maintenance_limit", out.maintenance));
   return {};
 }
 
