@@ -210,6 +210,27 @@ static_assert(std::same_as<decltype(FundingView::interval), Duration>);
 static_assert(std::same_as<decltype(lvalue<const FundingView>().over(Duration{})), double>);
 // [end:perps]
 
+// ---- the hedge executor a strategy owns ---------------------------------------------------------
+
+// [start:hedge]
+static_assert(std::same_as<decltype(lvalue<HedgeExecutor>().add_source(InstrumentId{})), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<HedgeExecutor>().add_hedge(InstrumentId{}, Ratio{})), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<HedgeExecutor>().start(lvalue<Ctx>(), HedgeExecutor::Config{})),
+                 bool>);
+static_assert(std::same_as<decltype(lvalue<HedgeExecutor>().on_fill(lvalue<Ctx>(), Fill{})), bool>);
+static_assert(
+    std::same_as<decltype(lvalue<HedgeExecutor>().on_order_update(lvalue<Ctx>(), OmsUpdate{})),
+                 bool>);
+static_assert(
+    std::same_as<decltype(lvalue<const HedgeExecutor>().residual(lvalue<const Ctx>())), Qty>);
+static_assert(
+    std::same_as<decltype(lvalue<const HedgeExecutor>().can_hedge(lvalue<const Ctx>())), bool>);
+static_assert(std::same_as<decltype(lvalue<const HedgeExecutor>().status(lvalue<const Ctx>())),
+                           HedgeExecutor::Status>);
+// [end:hedge]
+
 // ---- the book a hook receives -------------------------------------------------------------------
 
 // [start:book]

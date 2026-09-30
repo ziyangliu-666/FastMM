@@ -103,6 +103,7 @@ struct Ctx {
   [[nodiscard]] Timestamp now() const { return t; }
   [[nodiscard]] const FeeRates& fees(InstrumentId id) const { return fee_rates[id.value]; }
   [[nodiscard]] bool reconciling() const { return reconciling_now; }
+  [[nodiscard]] bool venue_killed(VenueId) const { return false; }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const {
     VenueHealthView h;
     h.gated = gated[v.value];
