@@ -40,7 +40,6 @@ const InstrumentId kBtc{0};
 // An order of an earlier session, and one of another client on the same profile.
 constexpr const char* kOldOrder = "aaaaaaaa-77a8-460a-b958-000000000007";
 constexpr const char* kForeignOrder = "bbbbbbbb-77a8-460a-b958-000000000009";
-constexpr long long kT = 1790000000000;  // 2026-09-21, older than the connect time
 
 std::string b64_hmac(std::string_view data) {
   std::string key;

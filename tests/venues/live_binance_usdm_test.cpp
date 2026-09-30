@@ -286,7 +286,8 @@ TEST_CASE("live.binance_usdm: the balance snapshot equals the account reply") {
   }
   if (multi) {
     REQUIRE(account != nullptr);
-    const std::string_view totals = raw.body.substr(0, raw.body.find("\"assets\""));
+    const std::string_view totals =
+        std::string_view(raw.body).substr(0, raw.body.find("\"assets\""));
     MESSAGE("USD (account) | " << raw_field(totals, "availableBalance") << " / "
                                << raw_field(totals, "totalInitialMargin") << " / "
                                << raw_field(totals, "totalWalletBalance") << " / "
