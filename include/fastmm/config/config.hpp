@@ -10,6 +10,7 @@
 // Rules: ${VAR} is substituted only inside [venues.*] strings; a value that looks like an
 // inline secret (> 32 chars, no ${) is rejected unless allow_inline_secrets; redacted()
 // prints the config with secrets masked; validation errors carry line:col.
+#include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
@@ -147,6 +148,8 @@ struct InstrumentSection {
   // Positive == a fee, negative == a rebate.
   std::optional<double> maker_bps;
   std::optional<double> taker_bps;
+  // A derivative's initial margin, fraction of the notional, decimal; empty: none configured.
+  std::string initial_margin;
 };
 
 struct StrategySection {
@@ -169,7 +172,8 @@ struct RiskSection {
   int orders_per_sec = 0;
   int burst = 0;
   bool stp = true;
-  int max_feed_lag_ms = 0;  // 0 = off
+  int max_feed_lag_ms = 0;    // 0 = off
+  bool check_balance = true;  // refuse what the venue's balance cannot cover
   // [risk.underlying.<BASE>] max_net: net position per base asset over every instrument, base
   // units.
   UnderlyingSpec underlying;
@@ -190,11 +194,12 @@ struct GatewaySection {
   // the [engine] name of its primary strategy (empty: none), which books the events naming no
   // order.
   std::map<std::string, std::string> shared;
+  bool check_balance = true;  // the account's balance covers every strategy's orders
 
   [[nodiscard]] bool any() const noexcept {
     return orders_per_sec != 0 || burst != 0 || !max_open_notional.empty() || !max_loss.empty() ||
            !max_gross_notional.empty() || !max_net_notional.empty() || underlying.configured() ||
-           !shared.empty();
+           !shared.empty() || !check_balance;
   }
 };
 
@@ -283,5 +288,11 @@ InstrumentTable load_instruments(const Config& cfg);
 FeeTable fee_table(const Config& cfg,
                    const InstrumentTable* table = nullptr,
                    const std::vector<std::string>* venue_names = nullptr);
+
+// [risk] check_balance and each instrument's [[instruments]] initial_margin, the instruments mapped
+// as fee_table() maps them.
+BalanceConfig balance_config(const Config& cfg,
+                             const InstrumentTable* table = nullptr,
+                             const std::vector<std::string>* venue_names = nullptr);
 
 }  // namespace fastmm

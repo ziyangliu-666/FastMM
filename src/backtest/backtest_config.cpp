@@ -279,6 +279,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   // reports the same table to the strategy (the runner copies transport.fees at the start).
   t.fees = fee_table(cfg);
   b.engine.fees = t.fees;
+  b.engine.balance = balance_config(cfg);
 
   sim::MarketGeneratorParams& g = b.generator;
   const Instrument& inst = b.instruments.get(InstrumentId{0});

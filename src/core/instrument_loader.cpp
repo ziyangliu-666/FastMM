@@ -139,4 +139,42 @@ FeeTable fee_table(const Config& cfg,
   return t;
 }
 
+BalanceConfig balance_config(const Config& cfg,
+                             const InstrumentTable* table,
+                             const std::vector<std::string>* venue_names) {
+  BalanceConfig b;
+  b.check = cfg.risk.check_balance;
+  const auto rate = [](const InstrumentSection& is) {
+    if (is.initial_margin.empty()) return Ratio{};
+    const auto r = Ratio::from_decimal(is.initial_margin);
+    if (!r || r->raw < 0 || r->raw > kFixedScale)
+      throw ConfigError(
+          fmt::format("instrument {}@{}: initial_margin '{}' must be a decimal in [0, 1]",
+                      is.symbol,
+                      is.venue,
+                      is.initial_margin));
+    return *r;
+  };
+  if (table == nullptr) {
+    for (std::size_t k = 0; k < cfg.instruments.size() && k < kMaxInstruments; ++k)
+      b.initial_margin[k] = rate(cfg.instruments[k]);
+    return b;
+  }
+  for (const Instrument& inst : *table) {
+    std::string_view venue;
+    if (venue_names != nullptr && inst.venue.value < venue_names->size()) {
+      venue = (*venue_names)[inst.venue.value];
+    } else if (inst.venue.value < cfg.venues.size()) {
+      venue = cfg.venues[inst.venue.value].name;
+    }
+    for (const InstrumentSection& is : cfg.instruments) {
+      if (is.venue == venue && is.symbol == inst.symbol.view()) {
+        b.initial_margin[inst.id.value] = rate(is);
+        break;
+      }
+    }
+  }
+  return b;
+}
+
 }  // namespace fastmm

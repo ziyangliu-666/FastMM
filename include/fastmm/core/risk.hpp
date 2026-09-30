@@ -115,6 +115,9 @@ struct RiskInputs {
   Price best_own_opposite{};      // best price of our own resting orders on the other side
   bool feed_lagged = false;       // the venue's feed-lag gate holds (VenueHealth::gated)
   UnderlyingInputs underlying{};  // [risk.underlying]; the engine fills it when underlying_on()
+  // [risk] check_balance: the account's balance on the venue does not cover the order
+  // (BalanceBook::covers); the engine sets it once a venue has reported balances.
+  bool balance_short = false;
 };
 
 struct RiskStats {
@@ -533,6 +536,7 @@ class RiskEngine {
         at_or_better_cross(o.side, o.price, in.best_own_opposite)) {
       return RejectReason::SelfTradePrevention;
     }
+    if (FASTMM_UNLIKELY(in.balance_short)) return RejectReason::BalanceShort;
     if (!bucket_.try_take(in.now)) return RejectReason::RateLimit;
     return RejectReason::None;
   }

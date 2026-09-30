@@ -2,6 +2,7 @@
 // StrategyContext: the API a strategy sees (ADR-0012, section 2). A thin, non-owning facade over
 // the Engine, so strategies never include engine.hpp and cannot reach into internals. Every
 // order-API call marks the strategy's decision time for the serialize latency interval.
+#include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
@@ -21,6 +22,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 namespace fastmm {
 
@@ -183,6 +185,24 @@ class StrategyContext {
   // gate ([risk] max_feed_lag_ms) holds it now.
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return e_->venue_health(v);
+  }
+
+  // ---- balances (core/balance_book.hpp) ---------------------------------------------------------
+
+  // One asset of a venue's account: the venue's last report (on_balance) less what this engine's
+  // orders hold and its fills moved since. Balance::known is false until the venue reports it, and
+  // for an asset no instrument of the venue names.
+  [[nodiscard]] Balance balance(VenueId v, std::string_view asset) const noexcept {
+    return e_->balance(v, asset);
+  }
+  // The venue's margin: its account-wide margin where it reports one, else the settlement asset of
+  // its first derivative.
+  [[nodiscard]] Margin margin(VenueId v) const noexcept { return e_->margin(v); }
+  // Largest quantity of `id` on `side` at `px` the balance covers (a spot buy's quote with the
+  // taker fee, a spot sell's base, a derivative's initial margin), rounded down to the lot.
+  // Qty::max() while the venue has not reported the balance that side draws on.
+  [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price px) const noexcept {
+    return e_->balance_room(id, side, px);
   }
 
   // ---- randomness: seeded from EngineConfig::rng_seed, replay-deterministic --------------------

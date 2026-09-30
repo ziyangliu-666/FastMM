@@ -151,6 +151,11 @@ enum class RejectReason : std::uint8_t {
   // The underlying cannot be measured: an inverse contract in it has a position or open orders (or
   // is the order's instrument) and no current mark.
   UnderlyingMarkUnknown = 22,
+  // The account's balance on the venue, as the venue last reported it less what the engine's own
+  // orders and fills took since (core/balance_book.hpp), does not cover the order: a spot sell
+  // above the free base asset, a spot buy whose notional plus taker fee is above the free quote
+  // asset, a derivative whose initial margin is above the available margin ([risk] check_balance).
+  BalanceShort = 23,
   // OMS / transport
   PoolExhausted = 32,
   UnknownOrder = 33,
@@ -173,6 +178,7 @@ enum class RejectReason : std::uint8_t {
   GatewayUnderlyingNet = 55,  // [gateway.underlying.<BASE>] max_net, over every strategy and venue
   GatewayUnderlyingMarkUnknown = 56,  // an inverse contract of the underlying has no current mark
   GatewaySelfTrade = 57,              // it would cross another attached strategy's resting order
+  GatewayBalanceShort = 58,  // the account's balance, less every attached strategy's orders
   // Venue-originated
   VenueReject = 64,
   PostOnlyWouldCross = 65,
@@ -228,6 +234,8 @@ enum class RejectReason : std::uint8_t {
       return "MaxUnderlyingNet";
     case RejectReason::UnderlyingMarkUnknown:
       return "UnderlyingMarkUnknown";
+    case RejectReason::BalanceShort:
+      return "BalanceShort";
     case RejectReason::PoolExhausted:
       return "PoolExhausted";
     case RejectReason::UnknownOrder:
@@ -264,6 +272,8 @@ enum class RejectReason : std::uint8_t {
       return "GatewayUnderlyingMarkUnknown";
     case RejectReason::GatewaySelfTrade:
       return "GatewaySelfTrade";
+    case RejectReason::GatewayBalanceShort:
+      return "GatewayBalanceShort";
     case RejectReason::VenueReject:
       return "VenueReject";
     case RejectReason::PostOnlyWouldCross:
@@ -309,7 +319,8 @@ enum class EventType : std::uint8_t {
   EngineTime = 25,    // journal only: the engine clock at start / finish / a delta overflow
   ParamUpdate = 26,   // new strategy parameter values (ParamUpdateMsg)
   Funding = 27,       // a perpetual funding payment booked by the venue (FundingMsg)
-  Count = 28,
+  Balance = 28,       // the account's holding of one asset on one venue (BalanceMsg)
+  Count = 29,
 };
 [[nodiscard]] constexpr std::string_view to_string(EventType t) noexcept {
   switch (t) {
@@ -369,6 +380,8 @@ enum class EventType : std::uint8_t {
       return "ParamUpdate";
     case EventType::Funding:
       return "Funding";
+    case EventType::Balance:
+      return "Balance";
     case EventType::Count:
       return "Count";
   }

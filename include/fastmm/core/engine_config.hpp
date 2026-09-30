@@ -1,6 +1,7 @@
 #pragma once
 // EngineConfig: the per-session settings an Engine is constructed with. Separate from engine.hpp so
 // the strategy registry and registration files do not parse the Engine template.
+#include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
 #include "fastmm/core/quote_manager.hpp"
@@ -64,6 +65,9 @@ struct EngineConfig {
   // [risk.underlying]: the underlyings with a net position limit and their instruments (inactive:
   // none).
   UnderlyingPlan underlying;
+  // [risk] check_balance and the initial margin rates ([[instruments]] initial_margin) the balance
+  // check and the estimate use (core/balance_book.hpp).
+  BalanceConfig balance;
 };
 
 }  // namespace fastmm

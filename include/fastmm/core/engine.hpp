@@ -23,11 +23,17 @@
 // book update and trade on an instrument without one) and each order's send and ack times
 // (Oms::times). StrategyContext reads them: own_qty, best_ex_self, queue_ahead, order_times.
 //
+// Balances: BalanceMsg events (a venue's report of one asset) feed a BalanceBook, which the engine
+// moves with its own orders and fills until the venue's next report (core/balance_book.hpp). Until
+// the first report nothing of it runs; after it, every order event updates the order's hold and
+// [risk] check_balance refuses an order the estimate does not cover (BalanceShort).
+//
 // Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
 // (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
 // before the first ParamUpdate and whenever none was applied for that long; the engine checks the
 // deadline before each event and timer and with a one-shot timer of its own, all on the journaled
 // engine clock.
+#include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/containers/recent_map.hpp"
@@ -58,6 +64,7 @@
 #include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/hooks.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <concepts>
@@ -193,6 +200,7 @@ class Engine {
       own_->prepare(instruments_.size());
     }
     risk_.set_underlying(cfg.underlying);
+    balances_->build(instruments_, cfg.fees, cfg.balance);
     // Venues whose positions wait for their first reconciliation: only those an instrument trades.
     for (const Instrument& inst : instruments_) {
       if (inst.venue.value < 32U && ((cfg.await_reconcile >> inst.venue.value) & 1U) != 0)
@@ -445,11 +453,32 @@ class Engine {
       buy.underlying = underlying_inputs(id, Side::Buy);
       sell.underlying = underlying_inputs(id, Side::Sell);
     }
-    return risk_.headroom(instruments_.get(id), buy, sell, net_pnl());
+    RiskHeadroom h = risk_.headroom(instruments_.get(id), buy, sell, net_pnl());
+    if (balances_live_ && books_[id.value].is_valid()) {
+      const Price mid = books_[id.value].mid();
+      h.balance_buy_qty = balance_room(id, Side::Buy, mid);
+      h.balance_sell_qty = balance_room(id, Side::Sell, mid);
+    }
+    return h;
   }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return health_.view(v, now());
   }
+
+  // ---- balances (core/balance_book.hpp) -------------------------------------------------------
+
+  // One asset of a venue: the venue's last report moved by the engine's own orders and fills since.
+  [[nodiscard]] Balance balance(VenueId v, std::string_view asset) const noexcept {
+    return balances_->balance(v, asset);
+  }
+  [[nodiscard]] Margin margin(VenueId v) const noexcept { return balances_->margin(v); }
+  // Largest quantity of `id` on `side` at `px` the balance covers; Qty::max() while the venue has
+  // not reported the balance the side draws on.
+  [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price px) const noexcept {
+    if (!balances_live_ || !instruments_.contains(id)) return Qty::max();
+    return balances_->room(id, instruments_.get(id), side, px);
+  }
+  [[nodiscard]] const BalanceBook& balances() const noexcept { return *balances_; }
 
   // ---- execution view -------------------------------------------------------------------------
 
@@ -737,6 +766,9 @@ class Engine {
         break;
       case EventType::Funding:
         on_funding(msg_cast<FundingMsg>(h));
+        break;
+      case EventType::Balance:
+        on_balance(msg_cast<BalanceMsg>(h));
         break;
       case EventType::Timer: {
         const auto& t = msg_cast<TimerMsg>(h);
@@ -1051,8 +1083,20 @@ class Engine {
         inst.symbol,
         u.missed_qty,
         u.order.price);
+    const std::int64_t pos_before = positions_.get(u.order.instrument).qty.raw;
     positions_.on_fill(
         u.order.instrument, u.order.side, u.order.price, u.missed_qty, Notional{}, inst);
+    if (balances_live_)
+      balances_->on_fill(u.order.instrument,
+                         inst,
+                         u.order.side,
+                         u.order.price,
+                         u.missed_qty,
+                         Notional{},
+                         FeeAsset::Quote,
+                         pos_before,
+                         positions_.get(u.order.instrument).qty.raw,
+                         Timestamp{});
     emit_fill(u.order.instrument,
               u.order.side,
               u.order.price,
@@ -1148,6 +1192,7 @@ class Engine {
   }
 
   void after_oms_update(const OmsUpdate& u, const EventHeader& h) noexcept {
+    if (FASTMM_UNLIKELY(balances_live_) && u.changed && u.slot.valid()) update_hold(u, h.exch_ts);
     if (u.known) {
       const int delta =
           static_cast<int>(resting(u.order.state)) - static_cast<int>(resting(u.prev));
@@ -1275,7 +1320,19 @@ class Engine {
         booked = booked - corrected;
         fee = Notional{};
       }
+      const std::int64_t pos_before = positions_.get(id).qty.raw;
       if (booked.is_positive()) positions_.on_fill(id, side, f.price, booked, fee, inst);
+      if (FASTMM_UNLIKELY(balances_live_))
+        balances_->on_fill(id,
+                           inst,
+                           side,
+                           f.price,
+                           f.qty,
+                           f.fee,
+                           fee_asset,
+                           pos_before,
+                           positions_.get(id).qty.raw,
+                           f.hdr.exch_ts);
       emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
@@ -1360,6 +1417,65 @@ class Engine {
     positions_.set(m.hdr.instrument, m.qty, m.avg_px, instruments_.get(m.hdr.instrument));
     emit_position(m.hdr.instrument);
     if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+  }
+
+  // ---- balances -------------------------------------------------------------------------------
+
+  // A venue's report of one asset. The first one starts the estimate: from here on every open
+  // order's hold is known (holds_) and moves with the order.
+  FASTMM_NOINLINE void on_balance(const BalanceMsg& m) noexcept {
+    if (!balances_live_) start_balances();
+    balances_->on_report(m);
+    if constexpr (has_hook(Hook::Balance)) strategy_.on_balance(ctx_, m);
+    flush_out();
+  }
+  FASTMM_NOINLINE void start_balances() noexcept {
+    balances_live_ = true;
+    oms_.for_each_open_order([&](Handle<Order> h, const Order& o) {
+      if (!instruments_.contains(o.instrument)) return;
+      const std::int64_t amount = order_hold(o);
+      holds_[h.idx] = amount;
+      balances_->move_hold(o.instrument, o.side, 0, amount, Timestamp{});
+    });
+  }
+  // The price an order holds at: its own, or the book's mid for a market order.
+  [[nodiscard]] Price hold_price(InstrumentId id, OrderType type, Price px) const noexcept {
+    if (type != OrderType::Market) return px;
+    const Book& b = books_[id.value];
+    return b.is_valid() ? b.mid() : Price{};
+  }
+  [[nodiscard]] std::int64_t order_hold(const Order& o) const noexcept {
+    return balances_->hold(o.instrument,
+                           instruments_.get(o.instrument),
+                           o.side,
+                           hold_price(o.instrument, o.type, o.price),
+                           o.leaves_qty(),
+                           o.has(Order::kReduceOnly));
+  }
+  // An order changed: its hold follows (zero once it is terminal), at the venue time of the event.
+  FASTMM_NOINLINE void update_hold(const OmsUpdate& u, Timestamp venue_ts) noexcept {
+    if (!instruments_.contains(u.order.instrument)) return;
+    const std::int64_t now_hold = u.terminal ? 0 : order_hold(u.order);
+    std::int64_t& held = holds_[u.slot.idx];
+    if (now_hold == held) return;
+    balances_->move_hold(u.order.instrument, u.order.side, held, now_hold, venue_ts);
+    held = now_hold;
+  }
+  // [risk] check_balance for an order of `qty` at `px`; `replaced`: what the order it replaces
+  // holds. False: the balance does not cover it.
+  FASTMM_NOINLINE bool balance_covers(const Instrument& inst,
+                                      Side side,
+                                      OrderType type,
+                                      Price px,
+                                      Qty qty,
+                                      std::int64_t replaced,
+                                      bool reduce_only,
+                                      Qty open_same_side) const noexcept {
+    const std::int64_t q = positions_.get(inst.id).qty.raw;
+    const bool reduces = q != 0 && (q > 0) != (side == Side::Buy) &&
+                         open_same_side.raw + qty.raw <= (q < 0 ? -q : q);
+    return balances_->covers(
+        inst.id, inst, side, hold_price(inst.id, type, px), qty, replaced, reduce_only, reduces);
   }
 
   // ---- parameters -----------------------------------------------------------------------------
@@ -1940,6 +2056,9 @@ class Engine {
                   health_.gated(inst.venue, now)};
     if (FASTMM_UNLIKELY(risk_.underlying_on()) && !flatten)
       in.underlying = underlying_inputs(req.instrument, req.side);
+    if (FASTMM_UNLIKELY(balances_live_) && balances_->check_enabled())
+      in.balance_short = !balance_covers(
+          inst, req.side, req.type, req.price, req.qty, 0, req.reduce_only, in.open_same_side);
     const RejectReason rr = risk_.check_new(oi, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -1953,6 +2072,11 @@ class Engine {
     r.venue = inst.venue;
     auto h = oms_.submit(r, id, now);
     if (FASTMM_UNLIKELY(!h)) return fail(h.error());
+    if (FASTMM_UNLIKELY(balances_live_)) {
+      const std::int64_t amount = order_hold(oms_.get(*h));
+      holds_[h->idx] = amount;
+      balances_->move_hold(req.instrument, req.side, 0, amount, Timestamp{});
+    }
     OutNewOrderMsg m{};
     init_header(m, EventType::OutNewOrder, req.instrument, inst.venue);
     m.hdr.recv_ts = now;
@@ -2012,6 +2136,15 @@ class Engine {
                   health_.gated(o.venue, now)};
     if (FASTMM_UNLIKELY(risk_.underlying_on()))
       in.underlying = underlying_inputs(o.instrument, o.side);
+    if (FASTMM_UNLIKELY(balances_live_) && balances_->check_enabled())
+      in.balance_short = !balance_covers(inst,
+                                         o.side,
+                                         o.type,
+                                         px,
+                                         qty,
+                                         holds_[h.idx],
+                                         o.has(Order::kReduceOnly),
+                                         in.open_same_side - o.leaves_qty());
     const RejectReason rr = risk_.check_replace(oi, o, inst, in);
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
@@ -2277,6 +2410,22 @@ class Engine {
           e.net_raw);
       e.max_net_raw = risk_.underlying_limit(u).raw;
     }
+    const std::size_t rows = std::min(balances_->size(), kMaxLiveBalances);
+    live.balance_count = static_cast<std::uint32_t>(rows);
+    for (std::size_t i = 0; i < rows; ++i) {
+      const BalanceBook::Row& r = balances_->row(i);
+      LiveBalance& b = live.balances[i];
+      b.venue = r.venue.value;
+      b.account = r.account ? 1 : 0;
+      b.known = r.reported ? 1 : 0;
+      std::memcpy(b.asset, r.asset.data(), r.asset.size());
+      b.free_raw = r.free;
+      b.locked_raw = r.locked;
+      b.total_raw = r.total;
+      b.equity_raw = r.equity;
+      b.maintenance_raw = r.maintenance;
+      b.as_of_ns = r.as_of.ns;
+    }
     live.latency = latency;
     live_pub_.store(live);
   }
@@ -2325,6 +2474,8 @@ class Engine {
   // queue_.enabled(), next to the flags every event reads: without queue tracking the market-data
   // handlers do not touch the tracker's lines.
   bool queue_on_ = false;
+  // A venue has reported balances: orders update their holds and check_balance applies.
+  bool balances_live_ = false;
   std::uint32_t reconciling_ = 0;  // bit per venue between its reconciliation's Begin and End
   // Bit per venue whose first reconciliation since the start has not ended (await_reconcile): its
   // position is the store's plus whatever the execution replay has booked so far, so no order is
@@ -2366,6 +2517,10 @@ class Engine {
   // Venues whose feed shows our orders (bit v), and our quantity there; null when there are none.
   std::uint32_t own_venues_ = 0;
   std::unique_ptr<OwnQuantity> own_;
+  // Balances per venue and asset, and the hold of each open order by its OMS slot (valid once a
+  // venue has reported: balances_live_).
+  std::unique_ptr<BalanceBook> balances_ = std::make_unique<BalanceBook>();
+  std::unique_ptr<std::int64_t[]> holds_ = std::make_unique<std::int64_t[]>(kMaxOpenOrders);
   QueueTracker queue_{cfg_.queue_conservatism_bps};
 };
 
