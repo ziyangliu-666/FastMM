@@ -289,7 +289,8 @@ void BinanceVenue::attach(const SymbolTable& symbols,
   user_parser_ = std::make_unique<BinanceUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<BinanceWsApiDecoder>();
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
+  user_parser_->set_balance_assets(&reconcile_.assets());
 }
 
 void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -365,6 +366,7 @@ void BinanceVenue::disconnect() {
   reconcile_.close();
   exec_replay_.close();
   oo_ws_generation_ = 0;
+  bal_ws_generation_ = 0;
   if (housekeeping_timer_ != net::kInvalidTimer && reactor_ != nullptr) {
     reactor_->cancel_timer(housekeeping_timer_);
     housekeeping_timer_ = net::kInvalidTimer;
@@ -665,6 +667,9 @@ void BinanceVenue::on_order_state(net::ConnState s) {
     if (oo_ws_generation_ != 0 && reconcile_.current(oo_ws_generation_))
       reconcile_.transport_lost();
     oo_ws_generation_ = 0;
+    // Nor does an account.status: asked again after the driver's retry delay.
+    if (bal_ws_generation_ != 0) reconcile_.balances_fetched(bal_ws_generation_, false, 0);
+    bal_ws_generation_ = 0;
     // 6.7 "order channel down": cancel everything through REST immediately.
     // disconnect() clears connected_ before closing the channels: a requested shutdown already
     // runs the synchronous cancel_all(), and an async request would only be aborted.
@@ -743,6 +748,17 @@ void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_vi
       return;
     }
     on_open_orders(gen, raw, /*rest_array=*/false);
+    return;
+  }
+  if (r.id == "bal") {
+    const std::uint64_t gen = bal_ws_generation_;
+    bal_ws_generation_ = 0;
+    if (r.is_error) {
+      FASTMM_LOG_WARN("{}: account.status failed: {} {}", cfg_.name, r.code, r.msg);
+      reconcile_.balances_fetched(gen, false, 0);
+      return;
+    }
+    on_account(gen, raw);
     return;
   }
   if (r.id == "ca") {
@@ -1335,6 +1351,57 @@ bool BinanceVenue::fetch_snapshot(std::uint64_t generation) {
       });
   if (queued) rate_.on_sent(rr.weight, now_ns());
   return queued;
+}
+
+// The balance leg. The reply carries no server time (updateTime is when the account last changed,
+// not when it was read), so the snapshot is stamped with the venue clock when it arrived.
+bool BinanceVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_) return false;
+  if (cfg_.ws_order_api && order_conn_.is_live() && bal_ws_generation_ == 0) {
+    const std::size_t n = encoder_->encode_ws_account_status("bal", venue_time_ms(), request_buf_);
+    if (n > 0 && order_conn_.send_text(std::string_view(request_buf_, n))) {
+      rate_.on_sent(20, now_ns());
+      bal_ws_generation_ = generation;
+      return true;
+    }
+  }
+  if (rest_ == nullptr || rest_hard_stopped_) return false;
+  RestRequest rr;
+  if (!encoder_->encode_rest_account(venue_time_ms(), rr)) return false;
+  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  std::weak_ptr<int> alive = alive_;
+  const bool queued = rest_->request(
+      "GET", target, api_headers(), {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired()) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        if (!r.ok()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: GET account failed: status={} err={}",
+                          cfg_.name,
+                          r.status,
+                          net::to_string(r.error));
+          reconcile_.balances_fetched(generation, false, 0);
+          return;
+        }
+        on_account(generation, r.body);
+      });
+  if (queued) rate_.on_sent(rr.weight, now_ns());
+  return queued;
+}
+
+void BinanceVenue::on_account(std::uint64_t generation, std::string_view json) {
+  if (!reconcile_.balances_current(generation)) return;
+  std::vector<AccountBalance> rows;
+  std::int64_t update_ms = 0;
+  if (const std::string err = decode_account_balances(json, rows, update_ms); !err.empty()) {
+    FASTMM_LOG_WARN("{}: {}", cfg_.name, err);
+    reconcile_.balances_fetched(generation, false, 0);
+    return;
+  }
+  for (const AccountBalance& b : rows)
+    reconcile_.add_balance(b.asset, BalanceFields::spot(b.free, b.locked));
+  reconcile_.balances_fetched(generation, true, venue_time_ms());
 }
 
 // ---- execution replay -------------------------------------------------------------------------

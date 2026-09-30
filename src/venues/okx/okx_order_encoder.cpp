@@ -129,14 +129,15 @@ std::size_t OkxOrderEncoder::encode_private_subscribe(std::string_view id,
   w.begin_object().key("id").string(id).key("op").string("subscribe").key("args").begin_array();
   for (std::string_view ch : channels) {
     w.begin_object().key("channel").string(ch);
-    // balance_and_position takes no instType; the positions channel is asked for events only,
-    // "updateInterval": "0" (extraParams is a JSON string).
+    // balance_and_position and account take no instType; positions and account are asked for
+    // events only, "updateInterval": "0" (extraParams is a JSON string).
     if (ch == "orders") {
       w.key("instType").string(orders_type);
-    } else if (ch != "balance_and_position") {
+    } else if (ch == "positions") {
       w.key("instType").string("SWAP");
     }
-    if (ch == "positions") w.key("extraParams").string(R"({"updateInterval":"0"})");
+    if (ch == "positions" || ch == "account")
+      w.key("extraParams").string(R"({"updateInterval":"0"})");
     w.end_object();
   }
   w.end_array().end_object();
@@ -268,6 +269,13 @@ void OkxOrderEncoder::encode_rest_positions(RestRequest& out) {
 void OkxOrderEncoder::encode_rest_account_config(RestRequest& out) {
   out.method = "GET";
   out.path = "/api/v5/account/config";
+  out.body.clear();
+  out.is_order = false;
+}
+
+void OkxOrderEncoder::encode_rest_balance(RestRequest& out) {
+  out.method = "GET";
+  out.path = "/api/v5/account/balance";
   out.body.clear();
   out.is_order = false;
 }

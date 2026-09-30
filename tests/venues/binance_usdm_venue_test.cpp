@@ -132,6 +132,14 @@ struct Harness {
     const std::lock_guard<std::mutex> lock(trades_mu);
     income = std::move(body);
   }
+  std::atomic<bool> multi_assets{false};   // GET /fapi/v1/multiAssetsMargin
+  std::atomic<bool> account_fails{false};  // GET /fapi/v3/account answers 500
+  std::atomic<int> account_requests{0};
+  std::string account = fastmm::test::fixture("binance_usdm/account_v3_single.json");  // trades_mu
+  void set_account(std::string body) {
+    const std::lock_guard<std::mutex> lock(trades_mu);
+    account = std::move(body);
+  }
   std::string order_reply;  // GET /fapi/v1/order answer; empty: -2013 (trades_mu)
   void set_order_reply(std::string body) {
     const std::lock_guard<std::mutex> lock(trades_mu);
@@ -185,6 +193,20 @@ struct Harness {
         "GET",
         "/fapi/v3/balance",
         R"([{"accountAlias":"x","asset":"USDT","balance":"5000","availableBalance":"5000"}])");
+    srv.route("GET", "/fapi/v1/multiAssetsMargin", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      return net::HttpServerResponse::json(
+          200,
+          multi_assets.load() ? R"({"multiAssetsMargin":true})" : R"({"multiAssetsMargin":false})");
+    });
+    srv.route("GET", "/fapi/v3/account", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      ++account_requests;
+      if (account_fails.load())
+        return net::HttpServerResponse::json(500, R"({"code":-1001,"msg":"Internal error."})");
+      const std::lock_guard<std::mutex> lock(trades_mu);
+      return net::HttpServerResponse::json(200, account);
+    });
     srv.route("GET", "/fapi/v1/openOrders", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
       srv.record("/fapi/v1/openOrders", std::string(r.query));
@@ -1491,4 +1513,172 @@ TEST_CASE("binance_usdm.venue: with the order table full an order or modify is r
     return m.cl_ord_id == modified;
   }) == nullptr);
   CHECK(f.venue->status().shadows_refused == 2);
+}
+
+namespace {
+
+std::vector<BalanceMsg> balances_of(const Collected& c) {
+  std::vector<BalanceMsg> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) == EventType::Balance)
+      out.push_back(RecordingSink::as<BalanceMsg>(m));
+  }
+  return out;
+}
+
+std::size_t balance_snapshots(const Collected& c) {
+  std::size_t n = 0;
+  for (const BalanceMsg& b : balances_of(c)) n += (b.flags & BalanceMsg::kSnapshotEnd) != 0 ? 1 : 0;
+  return n;
+}
+
+// The rows of the last complete balance snapshot.
+std::vector<BalanceMsg> last_snapshot(const Collected& c) {
+  const std::vector<BalanceMsg> all = balances_of(c);
+  std::vector<BalanceMsg> out;
+  for (const BalanceMsg& b : all) {
+    if ((b.flags & BalanceMsg::kSnapshot) == 0) continue;
+    if (!out.empty() && (out.back().flags & BalanceMsg::kSnapshotEnd) != 0) out.clear();
+    out.push_back(b);
+  }
+  return out;
+}
+
+Notional notional(const char* s) {
+  return Notional::from_decimal(s).value();
+}
+
+// A connected BTCUSDT venue on `h`.
+struct UsdmSession {
+  InstrumentTable instruments;
+  RecordingSink md{8U << 20};
+  RecordingSink orders{1U << 20, SinkPolicy::Spin};
+  MsgRing outbound{1U << 16};
+  net::Reactor reactor;
+  SymbolTable symbols;
+  std::unique_ptr<BinanceUsdmVenue> venue;
+  Collected oc;
+  std::int64_t connected_ms = 0;
+
+  explicit UsdmSession(Harness& h) {
+    REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+    venue = std::make_unique<BinanceUsdmVenue>(VenueId{0}, h.config(false));
+    REQUIRE(venue->load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue->subscribe(ids);
+    connected_ms = venue->venue_time_ms();
+    venue->connect(reactor);
+  }
+  ~UsdmSession() {
+    venue->disconnect();
+    reactor.run_once(0);
+  }
+  UsdmSession(const UsdmSession&) = delete;
+  UsdmSession& operator=(const UsdmSession&) = delete;
+
+  template <class Pred>
+  bool pump(Pred pred, int timeout_ms = 5000) {
+    return pump_until(
+        reactor,
+        [&] {
+          md.drain();
+          oc.take(orders);
+          return pred();
+        },
+        timeout_ms);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("binance_usdm.venue: the start-up balance snapshot and an ACCOUNT_UPDATE refresh") {
+  Harness h;
+  UsdmSession s(h);
+  // Order and user channels live, the reconciliation, then GET /fapi/v3/account: the documented
+  // single-asset reply lists USDT and USDC; the engine keeps USDT (and BTC, which it lacks).
+  REQUIRE(s.pump([&] {
+    return live_states(s.oc) >= 2 && reconcile_ends(s.oc) == 1 && balance_snapshots(s.oc) == 1;
+  }));
+  const std::int64_t after_ms = s.venue->venue_time_ms();
+  CHECK(h.account_requests.load() == 1);
+  CHECK(h.unsigned_requests.load() == 0);
+  std::vector<BalanceMsg> snap = last_snapshot(s.oc);
+  REQUIRE(snap.size() == 1);
+  const BalanceMsg& usdt = snap[0];
+  CHECK(usdt.asset.view() == "USDT");
+  CHECK(usdt.flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+  CHECK(usdt.free == notional("23.72469206"));    // availableBalance
+  CHECK(usdt.locked.is_zero());                   // initialMargin
+  CHECK(usdt.total == notional("23.72469206"));   // walletBalance
+  CHECK(usdt.equity == notional("23.72469206"));  // marginBalance
+  CHECK(usdt.maintenance.is_zero());              // maintMargin
+  CHECK(usdt.hdr.exch_ts.ns >= s.connected_ms * 1'000'000);
+  CHECK(usdt.hdr.exch_ts.ns <= after_ms * 1'000'000);
+
+  // A fill moved the wallet: ACCOUNT_UPDATE B[] has no available balance or margin, so the
+  // account is asked again (at most once a second) and its answer is the new snapshot.
+  std::string after = fastmm::test::fixture("binance_usdm/account_v3_single.json");
+  const std::string wallet = R"("walletBalance": "23.72469206")";
+  after.replace(after.find(wallet), wallet.size(), R"("walletBalance": "23.70000000")");
+  const std::string avail = R"("availableBalance": "23.72469206")";
+  after.replace(after.find(avail), avail.size(), R"("availableBalance": "9.70000000")");
+  const std::string im = R"("initialMargin": "0.00000000")";
+  after.replace(after.find(im), im.size(), R"("initialMargin": "14.00000000")");
+  h.set_account(after);
+  h.srv.send_to(kPrivatePath, account_update("0.002"));
+  REQUIRE(s.pump([&] { return balance_snapshots(s.oc) == 2; }));
+  CHECK(h.account_requests.load() == 2);
+  snap = last_snapshot(s.oc);
+  REQUIRE(snap.size() == 1);
+  CHECK(snap[0].free == notional("9.7"));
+  CHECK(snap[0].locked == notional("14"));
+  CHECK(snap[0].total == notional("23.7"));
+  // Nothing forwarded from B[] itself: every BalanceMsg is a snapshot row.
+  for (const BalanceMsg& b : balances_of(s.oc)) CHECK((b.flags & BalanceMsg::kSnapshot) != 0);
+}
+
+TEST_CASE("binance_usdm.venue: multi-assets mode reports the account row in USD") {
+  Harness h;
+  h.multi_assets = true;
+  h.set_account(fastmm::test::fixture("binance_usdm/account_v3_multi.json"));
+  UsdmSession s(h);
+  REQUIRE(s.pump([&] { return reconcile_ends(s.oc) == 1 && balance_snapshots(s.oc) == 1; }));
+  std::vector<BalanceMsg> snap = last_snapshot(s.oc);
+  REQUIRE(snap.size() == 2);
+  CHECK(snap[0].asset.view() == "USDT");
+  CHECK(snap[0].flags == BalanceMsg::kSnapshot);
+  CHECK(snap[0].free == notional("23.72469206"));  // maxWithdrawAmount, in USDT
+  CHECK(snap[0].total == notional("23.72469206"));
+  CHECK(snap[1].asset.view() == "USD");
+  CHECK(snap[1].flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
+  CHECK(snap[1].free == notional("126.72469206"));    // availableBalance
+  CHECK(snap[1].total == notional("126.72469206"));   // totalWalletBalance
+  CHECK(snap[1].equity == notional("126.72469206"));  // totalMarginBalance
+  CHECK(snap[1].locked.is_zero());                    // totalInitialMargin
+  CHECK(snap[1].hdr.exch_ts == snap[0].hdr.exch_ts);
+
+  // Switched to single-asset mode: the next snapshot has no account row.
+  REQUIRE(s.pump([&] { return live_states(s.oc) >= 2; }));
+  h.set_account(fastmm::test::fixture("binance_usdm/account_v3_single.json"));
+  h.srv.send_to(kPrivatePath, R"({"e":"ACCOUNT_CONFIG_UPDATE","E":2,"T":1,"ai":{"j":false}})");
+  REQUIRE(s.pump([&] { return balance_snapshots(s.oc) == 2; }));
+  snap = last_snapshot(s.oc);
+  REQUIRE(snap.size() == 1);
+  CHECK(snap[0].asset.view() == "USDT");
+  CHECK(snap[0].free == notional("23.72469206"));
+}
+
+TEST_CASE("binance_usdm.venue: a failed balance fetch does not hold up the order snapshot") {
+  Harness h;
+  h.account_fails = true;
+  UsdmSession s(h);
+  REQUIRE(s.pump([&] { return reconcile_ends(s.oc) == 1 && h.account_requests.load() >= 1; }));
+  CHECK(balances_of(s.oc).empty());
+  // Asked again after ReconcileDriver::kRetryNs (5 s).
+  h.account_fails = false;
+  REQUIRE(s.pump([&] { return balance_snapshots(s.oc) == 1; }, 10'000));
+  CHECK(h.account_requests.load() >= 2);
+  CHECK(last_snapshot(s.oc).size() == 1);
 }

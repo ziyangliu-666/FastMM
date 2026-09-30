@@ -15,6 +15,10 @@
 //                                  direction, price, amount, contracts?, fee, liquidity M|T,
 //                                  state, timestamp}] -> OrderFillMsg (exec_id = trade_id; cum_qty
 //                                  and leaves_qty 0: DeribitVenue fills them from its shadow)
+//   user.portfolio.CURRENCY        data: the currency's account summary -> PrivateDecodeResult::
+//                                  portfolio (PortfolioRecord); DeribitVenue emits the BalanceMsg
+// Account summaries (private/get_account_summaries): result {summaries: [...]}, each the object
+// user.portfolio carries -> PortfolioRecord per summary, and the reply's usOut.
 // Trade history (private/get_user_trades_by_currency_and_time): result {trades: [...], has_more}
 //   -> UserTradeRecord per row of a known instrument, same field mapping as user.trades.
 // Responses: result.order (private/buy, private/sell, private/edit), result = order
@@ -26,6 +30,7 @@
 // contract_multiplier (Deribit contract_size); `contracts` is used when present.
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
+#include "fastmm/venues/balances.hpp"
 #include "fastmm/venues/deribit/deribit_md_parser.hpp"
 #include "fastmm/venues/feed.hpp"
 #include "fastmm/venues/symbology.hpp"
@@ -70,12 +75,34 @@ struct AuthResult {
   std::int64_t expires_in = 0;  // seconds
 };
 
+// One currency of the account (user.portfolio.{currency} data, or one summary of
+// private/get_account_summaries; both carry the same object, docs.deribit.com AsyncAPI channel
+// user.portfolio.(currency) and OpenAPI /private/get_account_summaries, read 2026-09-30). Amounts
+// in the currency, mapped as BalanceMsg documents a derivatives account:
+//   free = available_funds ("margin_balance - initial_margin, floored at 0"), locked =
+//   initial_margin (positions and open orders), total = balance (cash: no futures PnL, no options
+//   value), equity = equity (balance + futures session PnL + options value), maintenance =
+//   maintenance_margin.
+// With cross collateral on (cross_collateral_enabled) the margins above are the whole account's,
+// converted to the currency, and total_*_usd value it in USD -> `account` (BalanceMsg::kAccount,
+// asset USD): free = total_margin_balance_usd - total_initial_margin_usd (floored at 0, as
+// available_funds), locked = total_initial_margin_usd, total = total_margin_balance_usd, equity =
+// total_equity_usd, maintenance = total_maintenance_margin_usd.
+struct PortfolioRecord {
+  bool present = false;
+  std::string_view currency;
+  BalanceFields fields;
+  bool has_account = false;  // cross collateral on and the total_*_usd fields present
+  BalanceFields account;
+};
+
 struct PrivateDecodeResult : DecodeResult {
   std::uint32_t count = 0;  // order events written back to back
   FrameKind frame = FrameKind::Other;
   RpcHeader rpc;
   OrderResult order;
   AuthResult auth;
+  PortfolioRecord portfolio;       // a user.portfolio notification (status Ok, count 0)
   std::uint32_t result_items = 0;  // array result length
   std::int64_t result_int = -1;    // integer result (cancel_all_*), -1 otherwise
 };
@@ -155,6 +182,15 @@ class DeribitPrivateParser {
   ParseStatus decode_user_trades(std::string_view json,
                                  UserTradesPage& page,
                                  const std::function<void(const UserTradeRecord&)>& fn) noexcept;
+
+  // private/get_account_summaries response (control path): every summary, and the reply's usOut
+  // (the venue's time it answered, microseconds; 0 if absent). Error for an error response,
+  // Malformed when a summary lacks currency, balance, equity, available_funds, initial_margin or
+  // maintenance_margin.
+  ParseStatus decode_account_summaries(
+      std::string_view json,
+      std::int64_t& us_out,
+      const std::function<void(const PortfolioRecord&)>& fn) noexcept;
 
   [[nodiscard]] const PrivateParserStats& stats() const noexcept { return stats_; }
 

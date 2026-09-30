@@ -3,6 +3,8 @@
 //   GET /api/v3/exchangeInfo  -> per-symbol filters (rest-api.md "Exchange information",
 //                                filters.md PRICE_FILTER / LOT_SIZE / NOTIONAL / MIN_NOTIONAL)
 //   GET /api/v3/time          -> serverTime
+//   GET /api/v3/account / account.status -> balances[]{asset,free,locked}, updateTime
+//                                (rest-api.md / web-socket-api.md "Account information")
 //   GET /api/v3/account/commission -> the account's fee rates on one symbol (rest-api.md
 //                                "Query Commission Rates", faqs/commission_faq.md)
 //   {"code":..,"msg":..}      -> error envelope (errors.md)
@@ -63,9 +65,21 @@ struct CommissionRates {
   bool side_dependent = false;
 };
 
+// One asset of the account: free (spendable) and locked (held by open orders), in the asset.
+struct AccountBalance {
+  std::string asset;
+  Notional free{};
+  Notional locked{};
+};
+
 // Returns an error description or empty on success.
 std::string decode_exchange_info(std::string_view json, ExchangeInfo& out);
 std::string decode_commission(std::string_view json, CommissionRates& out);
+// The balances of GET /api/v3/account (the bare object) or of an account.status response (the
+// object under "result"). `update_time_ms`: updateTime, 0 when absent.
+std::string decode_account_balances(std::string_view json,
+                                    std::vector<AccountBalance>& out,
+                                    std::int64_t& update_time_ms);
 std::string decode_server_time(std::string_view json, std::int64_t& server_time_ms);
 // True when the body is a {"code":..,"msg":..} error envelope.
 bool decode_rest_error(std::string_view json, int& code, std::string& msg);

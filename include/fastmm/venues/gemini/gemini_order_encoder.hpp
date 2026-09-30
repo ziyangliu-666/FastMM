@@ -60,6 +60,9 @@ class GeminiOrderEncoder {
   // ---- REST payloads -------------------------------------------------------------------
   static RestRequest active_orders(std::int64_t nonce);
   static RestRequest positions(std::int64_t nonce);
+  static RestRequest balances(std::int64_t nonce);
+  // The derivatives account's margin; the venue asks for a symbol (a perpetual).
+  static RestRequest margin(std::int64_t nonce, std::string_view symbol);
   // Trades of `symbol` at or after `since_ms`, at most `limit`.
   static RestRequest my_trades(std::int64_t nonce,
                                std::string_view symbol,

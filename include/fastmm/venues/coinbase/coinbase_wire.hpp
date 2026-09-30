@@ -15,6 +15,10 @@
 // 16 hex digits: those are random in a UUIDv4, so two live orders do not share one in practice.
 //
 // Times are RFC 3339 with up to nine fraction digits ("2026-09-30T01:41:50.644756Z").
+//
+// Balances carry up to 16 fraction digits on the Exchange ("0.0000000000000000"): parse_balance()
+// truncates them to FastMM's 8, so a balance never reads as more than the venue holds.
+#include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/strong_id.hpp"
 
 #include <array>
@@ -182,6 +186,19 @@ struct TimeText {
   put(20, ms, 3);
   out.text[23] = 'Z';
   return out;
+}
+
+// A balance amount truncated to 8 decimals; nullopt when it is not a plain decimal.
+[[nodiscard]] constexpr std::optional<Notional> parse_balance(std::string_view s) noexcept {
+  const std::size_t dot = s.find('.');
+  constexpr auto kKeep = static_cast<std::size_t>(kFixedDecimals);
+  if (dot != std::string_view::npos && s.size() - dot - 1 > kKeep) {
+    for (std::size_t i = dot + 1 + kKeep; i < s.size(); ++i) {
+      if (s[i] < '0' || s[i] > '9') return std::nullopt;
+    }
+    s = s.substr(0, dot + 1 + kKeep);
+  }
+  return Notional::from_decimal(s);
 }
 
 }  // namespace fastmm::venues::coinbase

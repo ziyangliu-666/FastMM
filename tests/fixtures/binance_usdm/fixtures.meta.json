@@ -12,6 +12,10 @@
   "raw_md_stream.jsonl": "recorded, the first 400 public frames of the session, one frame per line",
   "depth_burst.jsonl": "recorded on production (wss://fstream.binance.com/public/stream?streams=btcusdt@depth@100ms/..., fastmm-live --dry-run --record-raw, 2026-09-28T00:18:37Z): three consecutive BTCUSDT depth frames, the second changing 1035 bids and 1224 asks",
   "order_update_*.json, account_update.json, listen_key_expired.json": "docs-example (hand-written from https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams event descriptions and the field names of the official connector models, binance-connector-python derivatives_trading_usds_futures websocket_streams OrderTradeUpdateO / AccountUpdateAPInner; FastMM client ids; the Demo account had no margin balance, so no private events could be recorded)",
-  "position_risk.json": "docs-example (field names of binance-connector-python PositionInformationV3ResponseInner)"
+  "position_risk.json": "docs-example (field names of binance-connector-python PositionInformationV3ResponseInner)",
+  "account_v3_single.json, account_v3_multi.json": "docs-example: the two response examples of https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/account/rest-api/Account-Information-V3 (read 2026-09-30), values as published, the // comments removed, the two commas the examples lack added and the trailing one dropped",
+  "account_update_docs.json": "docs-example: the response example of https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/user-data-streams/Event-Balance-and-Position-Update (read 2026-09-30), comments removed, the full-width comma after the first P entry made ASCII",
+  "account_config_update_multi_assets.json": "docs-example: the second payload of https://developers.binance.com/legacy-docs/derivatives/usds-margined-futures/user-data-streams/Event-Account-Configuration-Update-previous-Leverage-Update (read 2026-09-30), comments removed",
+  "demo_account_v3.json": "recorded on Demo Trading (GET https://demo-fapi.binance.com/fapi/v3/account, single-asset mode, 2026-09-30T04:56Z); the reply carries no account id"
  }
 }

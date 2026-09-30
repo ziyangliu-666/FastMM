@@ -222,6 +222,18 @@ std::size_t BinanceOrderEncoder::encode_ws_open_orders(std::string_view symbol,
   return finish_ws(p, "openOrders.status", request_id, out);
 }
 
+std::size_t BinanceOrderEncoder::encode_ws_account_status(std::string_view request_id,
+                                                          std::int64_t timestamp_ms,
+                                                          std::span<char> out) noexcept {
+  ParamList p;
+  add_auth(p, signer_, session_auth_);
+  // Only the assets the account holds: an asset the snapshot does not name holds nothing.
+  p.add("omitZeroBalances", "true", /*numeric=*/true);
+  p.add_int("recvWindow", recv_window_ms_);
+  p.add_int("timestamp", timestamp_ms);
+  return finish_ws(p, "account.status", request_id, out);
+}
+
 std::size_t BinanceOrderEncoder::encode_ws_logon(std::string_view request_id,
                                                  std::int64_t timestamp_ms,
                                                  std::span<char> out) {
@@ -371,6 +383,17 @@ bool BinanceOrderEncoder::encode_rest_query_order(std::string_view symbol,
   out.method = "GET";
   out.path = "/api/v3/order";
   out.weight = 4;  // rest-api.md "Query order"
+  return finish_rest(p, out);
+}
+
+bool BinanceOrderEncoder::encode_rest_account(std::int64_t timestamp_ms, RestRequest& out) {
+  ParamList p;  // sorted by name
+  p.add("omitZeroBalances", "true");
+  p.add_int("recvWindow", recv_window_ms_);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "GET";
+  out.path = "/api/v3/account";
+  out.weight = 20;  // rest-api.md "Account information"
   return finish_rest(p, out);
 }
 

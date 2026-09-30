@@ -30,6 +30,14 @@
 // second after an ACCOUNT_UPDATE with reason FUNDING_FEE: that event names the symbol but has no
 // id, so the income history is what is booked, once, whichever path found it first.
 //
+// Balances: after every open-order snapshot, and at most once a second after an ACCOUNT_UPDATE that
+// names balances, GET /fapi/v3/account becomes one BalanceMsg snapshot: a row per asset (available,
+// initial margin, wallet, margin balance, maintenance margin) and, in Multi-Assets Mode, the
+// account row in USD (kAccount) from the totals. ACCOUNT_UPDATE B[] alone is not forwarded: it has
+// the wallet balance but not the available balance or the margin, and a BalanceMsg replaces every
+// amount. The mode comes from GET /fapi/v1/multiAssetsMargin at start-up and from
+// ACCOUNT_CONFIG_UPDATE ai.j after that.
+//
 // Leverage and margin mode are not managed: load_reference_data() logs the position mode,
 // leverage, margin type and balances, and refuses to start in hedge mode.
 //
@@ -258,6 +266,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   void on_reconcile_reply(std::uint64_t generation, bool orders, const net::HttpResponse& r);
+  // ReconcileHooks: GET /fapi/v3/account.
+  bool fetch_balances(std::uint64_t generation) override;
+  void on_account(std::uint64_t generation, const net::HttpResponse& r);
   // Execution replay (ReplayScheduler): GET /fapi/v1/userTrades for one subscribed instrument,
   // and a row of it forwarded as a replayed fill.
   [[nodiscard]] bool replay_ready() const noexcept;
@@ -366,6 +377,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   bool venue_kill_sent_ = false;
   bool connected_ = false;
   bool rest_hard_stopped_ = false;
+  // Multi-Assets Mode: the margin is the account's, in USD (the kAccount balance row).
+  bool multi_assets_ = false;
   ConnState md_state_ = ConnState::Disconnected;
   ConnState trades_state_ = ConnState::Disconnected;
   ConnState user_state_ = ConnState::Disconnected;

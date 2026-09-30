@@ -121,6 +121,10 @@ class BinanceOrderEncoder {
                                     std::string_view request_id,
                                     std::int64_t timestamp_ms,
                                     std::span<char> out) noexcept;
+  // account.status with omitZeroBalances=true (web-socket-api.md "Account information"). Weight 20.
+  std::size_t encode_ws_account_status(std::string_view request_id,
+                                       std::int64_t timestamp_ms,
+                                       std::span<char> out) noexcept;
   std::size_t encode_ws_logon(std::string_view request_id,
                               std::int64_t timestamp_ms,
                               std::span<char> out);
@@ -158,6 +162,10 @@ class BinanceOrderEncoder {
                                std::int64_t order_id,
                                std::int64_t timestamp_ms,
                                RestRequest& out);
+
+  // GET /api/v3/account?omitZeroBalances=true: the account's balances (rest-api.md "Account
+  // information"). Weight 20.
+  bool encode_rest_account(std::int64_t timestamp_ms, RestRequest& out);
 
   // GET /api/v3/account/commission: the account's fee rates on `symbol`. Weight 20.
   bool encode_rest_commission(std::string_view symbol, std::int64_t timestamp_ms, RestRequest& out);

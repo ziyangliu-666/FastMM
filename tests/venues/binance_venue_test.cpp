@@ -71,6 +71,10 @@ struct Harness {
   // (trades_mu).
   std::vector<std::pair<int, std::string>> order_replies;
   net::WsSession* user_session = nullptr;  // server thread only
+  std::atomic<bool> account_fails{false};  // account.status and GET /api/v3/account answer errors
+  std::atomic<int> account_requests{0};    // account.status + GET /api/v3/account seen
+  std::string account_ws = fastmm::test::fixture("binance/ws_api_account_status.json");
+  std::string account_rest = fastmm::test::fixture("binance/account_rest.json");
 
   // The server thread reads this harness's members: stop it before they go.
   ~Harness() { srv.stop(); }
@@ -127,6 +131,13 @@ struct Harness {
       return status == 200 ? net::HttpServerResponse::json(200, body)
                            : net::HttpServerResponse::text(status, body);
     });
+    srv.route("GET", "/api/v3/account", [this](const net::HttpRequest& r) {
+      ++account_requests;
+      srv.record("account", std::string(r.query));
+      if (account_fails.load())
+        return net::HttpServerResponse::json(500, R"({"code":-1001,"msg":"Internal error."})");
+      return net::HttpServerResponse::json(200, account_rest);
+    });
     srv.route("GET", "/api/v3/openOrders", [this](const net::HttpRequest&) {
       ++rest_open_orders;
       return net::HttpServerResponse::json(200, "[]");
@@ -180,6 +191,17 @@ struct Harness {
             R"(","status":200,"result":{"symbol":"BTCUSDT","origClientOrderId":"fm000100000001","orderId":4293153,"orderListId":-1,"clientOrderId":"x1","transactTime":1789295200100,"price":"70000.00000000","origQty":"0.00100000","executedQty":"0.00040000","cummulativeQuoteQty":"28.00000000","status":"CANCELED","timeInForce":"GTC","type":"LIMIT_MAKER","side":"BUY"}})");
       } else if (method == "openOrders.status") {
         s.send_text(R"({"id":")" + id + R"(","status":200,"result":[]})");
+      } else if (method == "account.status") {
+        ++account_requests;
+        if (account_fails.load()) {
+          s.send_text(R"({"id":")" + id +
+                      R"(","status":500,"error":{"code":-1001,"msg":"Internal error."}})");
+          return;
+        }
+        std::string reply = account_ws;
+        const std::string doc_id = "605a6d20-6588-4cb9-afa0-b0ab087507ba";
+        reply.replace(reply.find(doc_id), doc_id.size(), id);
+        s.send_text(reply);
       }
     });
   }
@@ -1058,6 +1080,158 @@ TEST_CASE("binance.venue: with the order table full an order or replace is refus
     CHECK(replaces == 0);
     venue.on_timer(net::Reactor::now_ns());
     CHECK(venue.status().shadows_refused == 2);
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
+namespace {
+
+// The BalanceMsg records among `c`, in order.
+std::vector<BalanceMsg> balances_of(const Collected& c) {
+  std::vector<BalanceMsg> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) == EventType::Balance)
+      out.push_back(RecordingSink::as<BalanceMsg>(m));
+  }
+  return out;
+}
+
+bool reconcile_ended(const Collected& c) {
+  return c.first_if<ReconcileMsg>(EventType::Reconcile, [](const ReconcileMsg& m) {
+    return m.kind == ReconcileMsg::Kind::End;
+  }) != nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("binance.venue: the start-up balance snapshot and a stream update") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenue venue(VenueId{0}, h.config(false));
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    const std::int64_t before_ms = venue.venue_time_ms();
+    venue.connect(reactor);
+    Collected oc;
+    // After the start-up sweep, account.status on the order connection: the documented reply
+    // lists BNB, BTC and USDT; the engine keeps BTC and USDT.
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      const auto b = balances_of(oc);
+      return reconcile_ended(oc) && !b.empty() && (b.back().flags & BalanceMsg::kSnapshotEnd) != 0;
+    }));
+    const std::int64_t after_ms = venue.venue_time_ms();
+    CHECK(h.account_requests.load() == 1);
+    CHECK(h.srv.frames("account").empty());  // the WS API, not REST
+    const std::vector<BalanceMsg> snap = balances_of(oc);
+    REQUIRE(snap.size() == 2);
+    CHECK(snap[0].asset.view() == "BTC");
+    CHECK(snap[0].free == Notional::from_decimal("1.3447112").value());
+    CHECK(snap[0].locked == Notional::from_decimal("0.086").value());
+    CHECK(snap[0].total == Notional::from_decimal("1.4307112").value());
+    CHECK(snap[1].asset.view() == "USDT");
+    CHECK(snap[1].free == Notional::from_decimal("1021.21").value());
+    for (const BalanceMsg& b : snap) {
+      CHECK((b.flags & BalanceMsg::kSnapshot) != 0);
+      CHECK((b.flags & BalanceMsg::kAccount) == 0);
+      CHECK(b.hdr.venue == VenueId{0});
+      // The venue clock when the reply arrived.
+      CHECK(b.hdr.exch_ts.ns >= before_ms * 1'000'000);
+      CHECK(b.hdr.exch_ts.ns <= after_ms * 1'000'000);
+    }
+    CHECK((snap[0].flags & BalanceMsg::kSnapshotEnd) == 0);
+    CHECK((snap[1].flags & BalanceMsg::kSnapshotEnd) != 0);
+
+    // outboundAccountPosition: an update of the kept assets it names, stamped with u.
+    h.srv.run_on_server([&] {
+      if (h.user_session == nullptr) return;
+      h.user_session->send_text(
+          R"({"subscriptionId":0,"event":{"e":"outboundAccountPosition","E":1789295201001,"u":1789295200990,"B":[{"a":"USDT","f":"950.00000000","l":"71.21000000"},{"a":"BNB","f":"1.00000000","l":"0.00000000"}]}})");
+    });
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return balances_of(oc).size() == 3;
+    }));
+    const BalanceMsg upd = balances_of(oc).back();
+    CHECK(upd.asset.view() == "USDT");
+    CHECK(upd.flags == 0);
+    CHECK(upd.free == Notional::from_decimal("950").value());
+    CHECK(upd.locked == Notional::from_decimal("71.21").value());
+    CHECK(upd.total == Notional::from_decimal("1021.21").value());
+    CHECK(upd.hdr.exch_ts.ns == 1789295200990LL * 1'000'000);
+    // position_from_balance is off: no PositionUpdate reaches the engine.
+    CHECK(oc.count(EventType::PositionUpdate) == 0);
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a failed balance fetch does not hold up the order snapshot") {
+  // REST order entry: the snapshot and the balances go over REST (GET /api/v3/account).
+  Harness h;
+  h.account_fails = true;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenueConfig cfg = h.config(false);
+    cfg.ws_order_api = false;
+    BinanceVenue venue(VenueId{0}, cfg);
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    const auto snapshot_ended = [&] {
+      const auto b = balances_of(oc);
+      return !b.empty() && (b.back().flags & BalanceMsg::kSnapshotEnd) != 0;
+    };
+    // No order connection, so no start-up sweep: the engine asks.
+    venue.request_open_orders();
+    // The open orders are reconciled; the balance request after it fails.
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return reconcile_ended(oc) && h.account_requests.load() >= 1;
+    }));
+    CHECK(h.rest_open_orders.load() >= 1);
+    CHECK(balances_of(oc).empty());
+    const std::vector<std::string> queries = h.srv.frames("account");
+    REQUIRE_FALSE(queries.empty());
+    CHECK(queries[0].starts_with("omitZeroBalances=true&recvWindow="));
+    // Asked again after ReconcileDriver::kRetryNs (5 s); now it answers: BTC (LTC is not kept).
+    h.account_fails = false;
+    REQUIRE(pump_until(
+        reactor,
+        [&] {
+          oc.take(orders);
+          return snapshot_ended();
+        },
+        10'000));
+    CHECK(h.account_requests.load() >= 2);
+    const std::vector<BalanceMsg> snap = balances_of(oc);
+    REQUIRE(snap.size() == 1);
+    CHECK(snap[0].asset.view() == "BTC");
+    CHECK(snap[0].free == Notional::from_decimal("4723846.89208129").value());
+    CHECK(snap[0].flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
     venue.disconnect();
     reactor.run_once(0);
   }

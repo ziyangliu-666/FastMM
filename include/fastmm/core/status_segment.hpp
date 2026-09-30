@@ -34,10 +34,12 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     refusal reasons.
 // 12: shared instruments (the position's traders, unattributed and unexplained parts, each
 //     attachment's instruments), GatewaySelfTrade.
-inline constexpr std::uint32_t kStatusVersion = 12;
+// 13: balances per venue and asset; GatewayBalanceShort.
+inline constexpr std::uint32_t kStatusVersion = 13;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
+inline constexpr std::size_t kStatusMaxBalances = 32;      // kMaxLiveBalances
 
 enum class StatusRunState : std::uint8_t { Starting = 0, Running = 1, Stopping = 2, Stopped = 3 };
 [[nodiscard]] std::string_view to_string(StatusRunState s) noexcept;
@@ -126,12 +128,30 @@ struct StatusUnderlying {
   std::int64_t max_net_raw = 0;  // the limit applied now; 0: none
 };
 
+// One asset of a venue's account (core/balance_book.hpp): the engine's estimate of free, locked
+// and total (the gateway's over every attached strategy), the venue's equity and maintenance
+// margin, raw amounts in the asset. An unused entry has an empty asset and account 0.
+struct StatusBalance {
+  char asset[12] = {};
+  std::uint8_t venue = 0;    // index into venues
+  std::uint8_t account = 0;  // the venue's account-wide margin, valued in `asset`
+  std::uint8_t known = 0;    // the venue has reported it
+  std::uint8_t pad_ = 0;
+  std::int64_t free_raw = 0;
+  std::int64_t locked_raw = 0;
+  std::int64_t total_raw = 0;
+  std::int64_t equity_raw = 0;
+  std::int64_t maintenance_raw = 0;
+  std::int64_t as_of_ns = 0;  // venue time of the last report
+};
+static_assert(sizeof(StatusBalance) == 64);
+
 // ---- fastmm-gateway ---------------------------------------------------------------------------
 
 inline constexpr std::size_t kStatusMaxAttachments = 16;  // gw::kMaxAttachments
 inline constexpr std::size_t kStatusMaxPositions = 256;   // kMaxInstruments
 // The gateway's refusals, counted per attachment and per venue in this order.
-inline constexpr std::size_t kStatusGatewayRefusals = 10;
+inline constexpr std::size_t kStatusGatewayRefusals = 11;
 inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusals] = {
     RejectReason::GatewayNotOwner,
     RejectReason::GatewayAccountKilled,
@@ -142,7 +162,8 @@ inline constexpr RejectReason kStatusGatewayRefusalReasons[kStatusGatewayRefusal
     RejectReason::GatewayFxRateUnknown,
     RejectReason::GatewayUnderlyingNet,
     RejectReason::GatewayUnderlyingMarkUnknown,
-    RejectReason::GatewaySelfTrade};
+    RejectReason::GatewaySelfTrade,
+    RejectReason::GatewayBalanceShort};
 
 // One attached strategy.
 struct StatusAttachment {
@@ -277,6 +298,10 @@ struct StatusSnapshot {
   StatusVenue venues[kStatusMaxVenues];
   // [risk.underlying]: the session's net position per underlying (kind Engine).
   StatusUnderlying underlyings[kStatusMaxUnderlyings];
+  // The balance table: the engine's, or the gateway's accounts over every venue.
+  std::uint32_t balance_count = 0;
+  std::uint32_t pad1_ = 0;
+  StatusBalance balances[kStatusMaxBalances];
   // kind Gateway only, zero in an engine's segment. A gateway fills the header (pid, times, state,
   // dry_run, engine_name, venue_count, venues), kill_reason, kill_latched, kill_flags (bit 0 while
   // the account is killed) and the PnL fields with the account's, and leaves the rest zero.

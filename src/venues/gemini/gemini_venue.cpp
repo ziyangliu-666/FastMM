@@ -326,7 +326,7 @@ void GeminiVenue::attach(const SymbolTable& symbols,
   md_feed_->set_log_name(cfg_.name);
   private_parser_ = std::make_unique<GeminiPrivateParser>(symbols, id_);
   encoder_ = std::make_unique<GeminiOrderEncoder>(symbols);
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
 }
 
 void GeminiVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -573,6 +573,11 @@ void GeminiVenue::on_order_open() {
   const std::size_t n = GeminiOrderEncoder::encode_subscribe("orders", kStreams, request_buf_);
   if (n == 0 || !order_conn_.send_text(std::string_view(request_buf_, n)))
     FASTMM_LOG_ERROR("{}: could not subscribe orders@account", cfg_.name);
+  // A request of its own: a refusal leaves order entry alone (fills then ask for the balances).
+  constexpr std::string_view kBalances[] = {"balances@account"};
+  const std::size_t m = GeminiOrderEncoder::encode_subscribe("balances", kBalances, request_buf_);
+  if (m == 0 || !order_conn_.send_text(std::string_view(request_buf_, m)))
+    FASTMM_LOG_WARN("{}: could not subscribe balances@account", cfg_.name);
 }
 
 void GeminiVenue::on_order_state(net::ConnState s) {
@@ -603,6 +608,7 @@ void GeminiVenue::on_order_state(net::ConnState s) {
   if (prev == ConnState::Live || prev == ConnState::Stale) {
     emit_connection_state(*order_sink_, id_, 1, ConnState::Disconnected);
     FASTMM_LOG_WARN("{}: order channel lost", cfg_.name);
+    balance_stream_ = false;
     // A replay or snapshot over REST is not affected. cancelOnDisconnect has the venue cancel the
     // orders placed on the connection; the session cancel also takes those it could not see go.
     // disconnect() clears connected_ first: a requested shutdown runs cancel_all() itself.
@@ -614,6 +620,10 @@ void GeminiVenue::on_order_text(std::string_view t, std::int64_t ts) {
   if (raw_order_.enabled()) raw_order_.record(ts, t);
   const Cycles t0 = rdtscp();
   const PrivateDecodeResult r = private_parser_->decode(t, wall_now(), t0, scratch_);
+  if (r.status == ParseStatus::Ok && r.balance.present) {
+    on_balance_update(r.balance);
+    return;
+  }
   if (r.status == ParseStatus::Ok) {
     auto* h = reinterpret_cast<EventHeader*>(scratch_);
     h->t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
@@ -673,6 +683,11 @@ void GeminiVenue::on_order_event(EventHeader& h) {
       auto& m = reinterpret_cast<OrderFillMsg&>(h);
       if (shadow != nullptr) m.side = shadow->side;
       terminal = m.leaves_qty.raw <= 0;  // `z` is left out when zero
+      // What no stream reports after a fill: the derivatives margin, or every balance while
+      // balances@account is not subscribed. The driver asks at most once a second.
+      const bool perpetual = h.instrument.valid() && instruments_->contains(h.instrument) &&
+                             instruments_->get(h.instrument).asset_class == AssetClass::Perpetual;
+      if (!balance_stream_ || (perpetual && !no_margin_account_)) reconcile_.request_balances();
       break;
     }
     case EventType::OrderReject:
@@ -705,6 +720,19 @@ void GeminiVenue::on_order_reply(const PrivateControl& c) {
         "{}: orders@account refused: {} {} {}", cfg_.name, c.status, c.error_code, c.msg);
     const VenueAction a = map_ws_code(c.error_code).action;
     apply_action(a == VenueAction::None ? VenueAction::Fatal : a, c.error_code, c.msg);
+    return;
+  }
+  if (c.id == "balances") {
+    balance_stream_ = c.status == 200;
+    if (balance_stream_) {
+      FASTMM_LOG_INFO("{}: balances@account subscribed", cfg_.name);
+    } else {
+      FASTMM_LOG_WARN("{}: balances@account refused: {} {} {}; balances are asked for after fills",
+                      cfg_.name,
+                      c.status,
+                      c.error_code,
+                      c.msg);
+    }
     return;
   }
   if (c.id == "ping") return;
@@ -1076,6 +1104,118 @@ bool GeminiVenue::request_positions(std::uint64_t generation) {
         }
         reconcile_.fetched(generation, true);
       });
+}
+
+// ---- balances -----------------------------------------------------------------------------------
+//
+// The balance leg (ReconcileDriver): /v1/balances lists every currency of the exchange account;
+// the driver keeps those the instruments name. Its venue time is the latest `_timestamp` of the
+// rows ("server-side monotonically increasing clock value ... to detect and filter out stale
+// responses"; the sandbox stamps every row with the time of the reply), else the venue clock when
+// the reply came. The balance fetch never touches the order snapshot: a failure is retried by the
+// driver alone.
+
+namespace {
+// Nanoseconds to ms, rounded up: an event the venue stamped within the report's millisecond is
+// taken as already in the report.
+constexpr std::int64_t ceil_ms(std::int64_t ns) noexcept {
+  return (ns + kNsPerMs - 1) / kNsPerMs;
+}
+}  // namespace
+
+bool GeminiVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_ || rest_hard_stopped_) return false;
+  return rest_post(
+      GeminiOrderEncoder::balances(next_nonce()), [this, generation](const net::HttpResponse& r) {
+        if (!reconcile_.balances_current(generation)) return;
+        std::vector<BalanceRow> rows;
+        const std::string err = r.ok() ? decode_balances(r.body, rows) : response_error(r);
+        if (!err.empty()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: balances failed ({})", cfg_.name, err);
+          reconcile_.balances_fetched(generation, false, 0);
+          return;
+        }
+        std::int64_t venue_ms = 0;
+        for (const BalanceRow& b : rows) {
+          const Notional held = b.amount - b.available;
+          reconcile_.add_balance(
+              b.currency, BalanceFields::spot(b.available, held.is_negative() ? Notional{} : held));
+          venue_ms = std::max(venue_ms, b.time_ms);
+        }
+        if (venue_ms == 0) venue_ms = venue_time_ms();
+        if (!any_perpetual() || no_margin_account_) {
+          reconcile_.balances_fetched(generation, true, venue_ms);
+          return;
+        }
+        request_margin(generation, venue_ms);
+      });
+}
+
+// The derivatives account's margin, valued in USD, as the account row. It names a symbol (the
+// first perpetual subscribed); the figures are the account's.
+void GeminiVenue::request_margin(std::uint64_t generation, std::int64_t venue_ms) {
+  std::string_view symbol;
+  for (InstrumentId id : subscribed_) {
+    if (instruments_->get(id).asset_class == AssetClass::Perpetual) {
+      symbol = symbols_->lower_symbol(id);
+      break;
+    }
+  }
+  const bool queued = rest_post(
+      GeminiOrderEncoder::margin(next_nonce(), symbol),
+      [this, generation, venue_ms](const net::HttpResponse& r) {
+        if (!reconcile_.balances_current(generation)) return;
+        std::string reason;
+        std::string message;
+        if (!r.ok() && r.error == net::NetError::None && decode_error(r.body, reason, message) &&
+            reason == "AccountNotOfTypeRequired") {
+          // An exchange account: no derivatives margin. The spot rows stand; not asked again.
+          no_margin_account_ = true;
+          FASTMM_LOG_WARN("{}: no derivatives account ({}: {}); balances without margin",
+                          cfg_.name,
+                          reason,
+                          message);
+          reconcile_.balances_fetched(generation, true, venue_ms);
+          return;
+        }
+        MarginRow m;
+        const std::string err = r.ok() ? decode_margin(r.body, m) : response_error(r);
+        if (!err.empty()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: margin failed ({})", cfg_.name, err);
+          reconcile_.balances_fetched(generation, false, 0);
+          return;
+        }
+        BalanceFields f;
+        f.free = m.available;
+        f.locked = m.initial;
+        f.total = m.assets_value;
+        f.equity = m.assets_value;
+        f.maintenance = m.maintenance;
+        reconcile_.add_balance("USD", f, BalanceMsg::kAccount);
+        reconcile_.balances_fetched(generation, true, venue_ms);
+      });
+  if (!queued) reconcile_.balances_fetched(generation, false, 0);
+}
+
+// balances@account: each row is the asset's whole balance now (f available, c confirmed), so it
+// replaces the row; an asset the update leaves out did not change. A row the parser could not keep
+// (unreadable, or past its table) leaves that asset stale: the balance leg is asked for then.
+void GeminiVenue::on_balance_update(const BalanceUpdate& b) {
+  const std::int64_t venue_ms = b.time_ns > 0 ? ceil_ms(b.time_ns) : venue_time_ms();
+  const VenueAssets& assets = reconcile_.assets();
+  for (const BalanceUpdateRow& row : private_parser_->balance_rows(b)) {
+    const Notional held = row.confirmed - row.available;
+    if (emit_balance(*order_sink_,
+                     assets,
+                     id_,
+                     row.asset,
+                     BalanceFields::spot(row.available, held.is_negative() ? Notional{} : held),
+                     venue_ms))
+      ++stats_.order_events;
+  }
+  if (b.truncated) reconcile_.request_balances();
 }
 
 void GeminiVenue::shadow_ids(std::vector<SentShadow>& out) {

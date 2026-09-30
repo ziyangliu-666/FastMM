@@ -26,6 +26,9 @@ struct FakeHooks final : ReconcileHooks {
   bool can_fetch = true;
   int replays = 0;
   bool replay_runs = false;  // the replay answers later (ReconcileDriver::replay_done)
+  int balance_fetches = 0;
+  std::uint64_t balance_generation = 0;  // of the last balance fetch
+  bool has_balances = false;             // the venue has a balance query
   std::vector<SentShadow> shadows;
   std::vector<ClientOrderId> dropped;
 
@@ -33,6 +36,12 @@ struct FakeHooks final : ReconcileHooks {
     ++fetches;
     generation = g;
     return can_fetch;
+  }
+  bool fetch_balances(std::uint64_t g) override {
+    if (!has_balances) return false;
+    ++balance_fetches;
+    balance_generation = g;
+    return true;
   }
   bool replay_executions() override {
     ++replays;
@@ -364,4 +373,144 @@ TEST_CASE("reconcile_driver: positions follow the open orders between Begin and 
   CHECK(pos.hdr.venue == VenueId{0});
   CHECK(pos.position_qty == Qty::from_int(3));
   CHECK(pos.avg_px == Price::from_int(100));
+}
+
+namespace {
+
+// A venue with a BTCUSDT spot market and a balance query.
+struct BalanceRig : Rig {
+  InstrumentTable table;
+  BalanceRig() {
+    Instrument i{};
+    i.symbol = "BTCUSDT";
+    i.base = "BTC";
+    i.quote = "USDT";
+    i.venue = VenueId{0};
+    i.flags = Instrument::kEnabled;
+    i.tick = Price::from_decimal("0.01").value();
+    i.lot = Qty::from_decimal("0.001").value();
+    REQUIRE(table.add(i));
+    driver.attach("fake", VenueId{0}, &rs.sink, &table);
+    hooks.has_balances = true;
+  }
+  std::vector<const BalanceMsg*> balances() {
+    oc.take(rs);
+    std::vector<const BalanceMsg*> out;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::Balance)
+        out.push_back(&RecordingSink::as<BalanceMsg>(m));
+    }
+    return out;
+  }
+};
+
+Notional nt(const char* s) {
+  return Notional::from_decimal(s).value();
+}
+
+}  // namespace
+
+TEST_CASE("reconcile_driver: the balance leg follows each snapshot, tracked assets only") {
+  BalanceRig r;
+  r.driver.request();
+  CHECK(r.hooks.balance_fetches == 0);  // not before the orders
+  r.answer();
+  REQUIRE(r.hooks.balance_fetches == 1);
+  CHECK(r.driver.balances_current(r.hooks.balance_generation));
+  r.driver.add_balance("usdt", BalanceFields::spot(nt("90"), nt("10")));
+  r.driver.add_balance("DOGE", BalanceFields::spot(nt("5"), nt("0")));  // no instrument
+  r.driver.add_balance("BTC", BalanceFields::spot(nt("0.5"), nt("0")));
+  r.driver.balances_fetched(r.hooks.balance_generation, true, 1'790'000'000'123);
+  const auto b = r.balances();
+  REQUIRE(b.size() == 2);
+  CHECK(b[0]->asset.view() == "USDT");  // the instruments' spelling
+  CHECK(b[0]->free == nt("90"));
+  CHECK(b[0]->locked == nt("10"));
+  CHECK(b[0]->total == nt("100"));
+  CHECK(b[0]->flags == BalanceMsg::kSnapshot);
+  CHECK(b[1]->asset.view() == "BTC");
+  CHECK(b[1]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+  for (const BalanceMsg* m : b) {
+    CHECK(m->hdr.exch_ts == Timestamp{1'790'000'000'123LL * 1'000'000});
+    CHECK(m->hdr.venue == VenueId{0});
+  }
+  CHECK(r.driver.balance_snapshots() == 1);
+  // The orders came first.
+  CHECK(r.begins() == 1);
+}
+
+TEST_CASE("reconcile_driver: an account holding none of the assets is one empty snapshot") {
+  BalanceRig r;
+  r.driver.request();
+  r.answer();
+  r.driver.add_balance("SGD", BalanceFields::spot(nt("5"), nt("0")));
+  r.driver.balances_fetched(r.hooks.balance_generation, true, 0);
+  const auto b = r.balances();
+  REQUIRE(b.size() == 1);
+  CHECK(b[0]->asset.empty());
+  CHECK(b[0]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+  CHECK_FALSE(b[0]->hdr.exch_ts.valid());
+}
+
+TEST_CASE("reconcile_driver: a failed balance fetch is asked again, the orders go on") {
+  BalanceRig r;
+  r.driver.request();
+  r.answer();
+  const std::uint64_t failed = r.hooks.balance_generation;
+  r.driver.balances_fetched(failed, false, 0);
+  CHECK(r.balances().empty());
+  CHECK(r.driver.balance_failures() == 1);
+  // A reconciliation meanwhile is not held up by it, and asks for the balances itself.
+  r.driver.request();
+  r.answer();
+  CHECK(r.begins() == 2);
+  CHECK(r.hooks.balance_fetches == 2);
+  r.driver.balances_fetched(failed, true, 0);  // a late answer to the failed one: ignored
+  CHECK(r.balances().empty());
+  r.driver.balances_fetched(r.hooks.balance_generation, false, 0);
+  const std::int64_t now = net::Reactor::now_ns();
+  r.driver.on_timer(now);
+  CHECK(r.hooks.balance_fetches == 2);  // not yet
+  r.driver.on_timer(now + ReconcileDriver::kRetryNs + 1'000'000'000);
+  CHECK(r.hooks.balance_fetches == 3);
+  r.driver.add_balance("BTC", BalanceFields::spot(nt("1"), nt("0")));
+  r.driver.balances_fetched(r.hooks.balance_generation, true, 5);
+  CHECK(r.balances().size() == 1);
+  // One that never answers is given up and asked again.
+  r.driver.request_balances();
+  r.driver.on_timer(net::Reactor::now_ns() + ReconcileDriver::kBalanceIntervalNs + 1);
+  REQUIRE(r.hooks.balance_fetches == 4);
+  r.driver.on_timer(net::Reactor::now_ns() + ReconcileDriver::kFetchTimeoutNs + 1);
+  CHECK(r.driver.balance_failures() == 3);
+}
+
+TEST_CASE("reconcile_driver: request_balances runs the leg alone, at most once a second") {
+  BalanceRig r;
+  r.driver.request_balances();
+  REQUIRE(r.hooks.balance_fetches == 1);
+  CHECK(r.hooks.fetches == 0);  // no order snapshot
+  r.driver.request_balances();  // in flight: served after it
+  r.driver.balances_fetched(r.hooks.balance_generation, true, 1);
+  r.driver.request_balances();
+  CHECK(r.hooks.balance_fetches == 1);
+  const std::int64_t now = net::Reactor::now_ns();
+  r.driver.on_timer(now);
+  CHECK(r.hooks.balance_fetches == 1);
+  r.driver.on_timer(now + ReconcileDriver::kBalanceIntervalNs + 1);
+  CHECK(r.hooks.balance_fetches == 2);
+  // A venue without a balance query sends nothing.
+  r.driver.balances_fetched(r.hooks.balance_generation, true, 2);
+  r.hooks.has_balances = false;
+  r.driver.request();
+  r.answer();
+  CHECK(r.hooks.balance_fetches == 2);
+  // After close() a late reply counts for nothing.
+  r.hooks.has_balances = true;
+  r.driver.request();
+  r.answer();
+  const std::uint64_t open_gen = r.hooks.balance_generation;
+  const std::size_t before = r.balances().size();
+  r.driver.close();
+  r.driver.balances_fetched(open_gen, true, 3);
+  CHECK(r.balances().size() == before);
 }

@@ -111,6 +111,48 @@ std::string decode_account_config(std::string_view json, AccountConfig& out) {
   return "account config: empty data";
 }
 
+std::string decode_balance(std::string_view json, OkxAccountMode mode, AccountBalance& out) {
+  dom::parser parser;
+  dom::array data;
+  if (std::string err = open_data(parser, json, "balance", data); !err.empty()) return err;
+  const auto view = [](const dom::element& e, const char* key) {
+    std::string_view s;
+    return e[key].get(s) == sj::SUCCESS ? s : std::string_view{};
+  };
+  for (dom::element e : data) {
+    const OkxAccountFields a{view(e, "totalEq"),
+                             view(e, "adjEq"),
+                             view(e, "availEq"),
+                             view(e, "imr"),
+                             view(e, "mmr"),
+                             view(e, "uTime")};
+    if (!millis(e, "uTime", out.u_time_ms)) return "balance: bad uTime";
+    if (has_account_row(mode)) {
+      if (!okx_account_balance(a, out.account)) return "balance: bad account-level amount";
+      out.has_account = true;
+    }
+    dom::array details;
+    if (e["details"].get(details) != sj::SUCCESS) return "balance: missing details";
+    for (dom::element d : details) {
+      const OkxCcyFields c{view(d, "ccy"),
+                           view(d, "availBal"),
+                           view(d, "frozenBal"),
+                           view(d, "cashBal"),
+                           view(d, "eq"),
+                           view(d, "availEq"),
+                           view(d, "mmr"),
+                           view(d, "uTime")};
+      if (c.ccy.empty()) return "balance: entry without ccy";
+      BalanceRow row;
+      row.ccy = std::string(c.ccy);
+      if (!okx_ccy_balance(c, mode, row.fields)) return "balance: bad amount for " + row.ccy;
+      out.rows.push_back(std::move(row));
+    }
+    return {};  // one account
+  }
+  return "balance: empty data";
+}
+
 std::string decode_positions(std::string_view json, std::vector<PositionRecord>& out) {
   dom::parser parser;
   dom::array data;

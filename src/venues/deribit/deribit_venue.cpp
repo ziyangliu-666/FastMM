@@ -300,7 +300,7 @@ void DeribitVenue::attach(const SymbolTable& symbols,
   private_parser_ = std::make_unique<DeribitPrivateParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<DeribitOrderEncoder>(
       symbols, instruments, std::span<const TickSchedule>(ticks_), cfg_.reject_post_only);
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
 }
 
 std::vector<std::string> DeribitVenue::private_channels() const {
@@ -317,6 +317,7 @@ std::vector<std::string> DeribitVenue::private_channels() const {
       out.push_back(fmt::format("user.orders.{}.{}.raw", k, currency));
       out.push_back(fmt::format("user.trades.{}.{}.raw", k, currency));
     }
+    out.push_back(fmt::format("user.portfolio.{}", currency));
   }
   return out;
 }
@@ -558,6 +559,11 @@ void DeribitVenue::on_private_state(net::ConnState s) {
     exec_replay_.abort();
     snapshot_pending_ = 0;
     reconcile_.transport_lost();
+    // The balance fetch sent on the lost connection is never answered: the driver asks again.
+    if (balance_pending_) {
+      balance_pending_ = false;
+      reconcile_.balances_fetched(balance_generation_, false, 0);
+    }
     // disconnect() clears connected_ before closing: a requested shutdown runs cancel_all().
     if (cfg_.cancel_on_order_channel_loss && !cfg_.dry_run && connected_) cancel_all_async();
   }
@@ -600,6 +606,10 @@ void DeribitVenue::on_private_text(std::string_view t, std::int64_t ts) {
   }
   const Cycles t0 = rdtscp();
   const PrivateDecodeResult r = private_parser_->decode(t, wall_now(), t0, scratch_);
+  if (r.portfolio.present) {
+    on_portfolio(r.portfolio);
+    return;
+  }
   if (r.status == ParseStatus::Ok) {
     std::uint32_t off = 0;
     for (std::uint32_t i = 0; i < r.count; ++i) {
@@ -680,6 +690,15 @@ void DeribitVenue::on_private_text(std::string_view t, std::int64_t ts) {
           FASTMM_LOG_WARN(
               "{}: get_positions failed: {} {}", cfg_.name, r.rpc.error_code, r.rpc.error_message);
         handle_positions_response(t, r.rpc.is_error);
+        return;
+      }
+      if (id == kIdAccountSummaries) {
+        if (r.rpc.is_error)
+          FASTMM_LOG_WARN("{}: get_account_summaries failed: {} {}",
+                          cfg_.name,
+                          r.rpc.error_code,
+                          r.rpc.error_message);
+        handle_account_summaries_response(t, r.rpc.is_error);
         return;
       }
       if (id >= kIdExecutionsBase && !cfg_.currencies.empty()) {
@@ -1195,6 +1214,64 @@ void DeribitVenue::finish_snapshot_reply() {
     reconcile_.add_position(id, snapshot_qty_[id.value], snapshot_avg_[id.value]);
   }
   reconcile_.fetched(snapshot_generation_, true);
+}
+
+// ---- balances ----------------------------------------------------------------------------------
+//
+// One private/get_account_summaries answers every currency (its description: "Prefer this method
+// over looping private/get_account_summary per currency"); the driver keeps the currencies the
+// instruments name. The reply's usOut (microseconds, "when response was sent",
+// json-rpc-overview article) is the venue time of the snapshot.
+
+bool DeribitVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_ || !private_conn_.is_live() || access_token_.empty()) return false;
+  const std::size_t n = DeribitOrderEncoder::encode_account_summaries(
+      kIdAccountSummaries, access_token_, request_buf_);
+  if (n == 0 || !private_conn_.send_text(std::string_view(request_buf_, n))) {
+    FASTMM_LOG_WARN("{}: could not ask for the account summaries", cfg_.name);
+    return false;
+  }
+  balance_generation_ = generation;
+  balance_pending_ = true;
+  return true;
+}
+
+void DeribitVenue::handle_account_summaries_response(std::string_view json, bool error) {
+  if (!balance_pending_) return;
+  balance_pending_ = false;
+  if (!reconcile_.balances_current(balance_generation_)) return;
+  std::int64_t us_out = 0;
+  bool with_account = false;
+  const ParseStatus st =
+      error
+          ? ParseStatus::Error
+          : private_parser_->decode_account_summaries(json, us_out, [&](const PortfolioRecord& p) {
+              reconcile_.add_balance(p.currency, p.fields);
+              // Every summary carries the account's USD totals: one row.
+              if (p.has_account && !with_account) {
+                with_account = true;
+                reconcile_.add_balance("USD", p.account, BalanceMsg::kAccount);
+              }
+            });
+  if (st == ParseStatus::Malformed)
+    FASTMM_LOG_WARN("{}: get_account_summaries reply could not be parsed", cfg_.name);
+  // Rounded up: a trade Deribit stamped (ms) within the reply's millisecond is in the reply.
+  const std::int64_t venue_ms = us_out > 0 ? (us_out + 999) / 1000 : venue_now_ms();
+  reconcile_.balances_fetched(balance_generation_, st == ParseStatus::Ok, venue_ms);
+}
+
+// A user.portfolio notification is the currency's whole summary (the AsyncAPI example carries
+// every field), so it replaces the row as it stands: nothing partial to merge. One lacking a
+// required field is read as malformed and dropped; the next notification or snapshot sets the row.
+// It carries no time: the venue clock at arrival stamps it.
+void DeribitVenue::on_portfolio(const PortfolioRecord& p) {
+  const std::int64_t venue_ms = venue_now_ms();
+  const VenueAssets& assets = reconcile_.assets();
+  if (emit_balance(*order_sink_, assets, id_, p.currency, p.fields, venue_ms))
+    ++stats_.order_events;
+  if (p.has_account &&
+      emit_balance(*order_sink_, assets, id_, "USD", p.account, venue_ms, BalanceMsg::kAccount))
+    ++stats_.order_events;
 }
 
 void DeribitVenue::shadow_ids(std::vector<SentShadow>& out) {

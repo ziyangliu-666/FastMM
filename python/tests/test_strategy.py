@@ -51,9 +51,10 @@ def test_every_hook_name_and_order_matches_the_cpp_table():
         def on_order_update(self, ctx, update): ...
         def on_timer(self, ctx, timer_id, tag): ...
         def on_connection(self, ctx, msg): ...
+        def on_balance(self, ctx, msg): ...
 
     assert All.hooks() == tuple(fastmm.strategy.HOOKS)
-    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_quoting"
+    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_balance"
 
 
 def test_hook_signatures_and_near_misses_are_checked(example_config):
@@ -434,6 +435,61 @@ def test_fees_risk_headroom_and_venue_health(example_config):
     assert (gated, engagements, lag_ok, stamped) == (False, 0, True, True)
     with pytest.raises(fastmm.StrategyError, match="venue id out of range"):
         fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=_VenueOutOfRange())
+
+
+def test_on_balance_and_the_balance_estimate(example_config):
+    t0 = 1_700_000_000_000_000_000  # the fixture's first event
+    snapshot, end = 1, 2  # BalanceMsg::kSnapshot, kSnapshotEnd
+    balances = [(t0, 0, "USDT", 1000.0, 0.0, 1000.0, 1000.0, 0.0, snapshot),
+                (t0, 0, "BTC", 0.01, 0.0, 0.01, 0.01, 0.0, snapshot | end)]
+
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            self.start = (ctx.balances_live(), ctx.balance(0, "USDT").known, ctx.margin().known,
+                          ctx.balance_room(0, BUY, 50_000.0))
+            self.msgs = []
+
+        def on_balance(self, ctx, msg):
+            self.view = msg
+            self.msgs.append((msg.venue, msg.asset, msg.free, msg.free_raw, msg.locked, msg.total,
+                              msg.equity, msg.maintenance, msg.snapshot, msg.snapshot_end,
+                              msg.account, msg.exch_ts_ns))
+            self.live = ctx.balances_live()
+
+        def on_book(self, ctx, inst, book):
+            if hasattr(self, "order_id") or not book.valid or not ctx.balances_live():
+                return
+            px = book.best_bid[0] - 5.0
+            self.px = px
+            self.rooms = (ctx.balance_room(inst, BUY, px), ctx.balance_room(inst, SELL, px),
+                          ctx.risk_headroom(inst).balance_sell_qty)
+            self.order_id = ctx.send(inst, BUY, px, 0.002, post_only=True)
+            usdt = ctx.balance(0, "USDT")
+            self.usdt = (usdt.known, usdt.free, usdt.locked, usdt.total, usdt.free_raw,
+                         usdt.as_of_ns)
+            self.unknown = ctx.balance(0, "ETH").known
+
+    s = Probe()
+    s.configure({})
+    result, error = fastmm._core._run_strategy(_cfg(example_config), FIXTURE_FMJ, s, "probe",
+                                               list(Probe.hooks()), s.param_values(),
+                                               balances=balances)
+    assert error is None and result.engine_stats()["events"] > 0
+    assert s.start == (False, False, False, None)
+    assert s.live
+    assert s.msgs == [(0, "USDT", 1000.0, 100_000_000_000, 0.0, 1000.0, 1000.0, 0.0,
+                       True, False, False, t0),
+                      (0, "BTC", 0.01, 1_000_000, 0.0, 0.01, 0.01, 0.0, True, True, False, t0)]
+    buy, sell, headroom_sell = s.rooms
+    assert 0.0 < buy <= 1000.0 / s.px and sell == pytest.approx(0.01)
+    assert headroom_sell == pytest.approx(0.01)
+    known, free, locked, total, free_raw, as_of = s.usdt
+    assert known and total == pytest.approx(1000.0) and as_of == t0
+    assert locked >= 0.002 * s.px and free == pytest.approx(total - locked)
+    assert free_raw == round(free * 1e8)
+    assert s.unknown is False
+    with pytest.raises(fastmm.StaleViewError):
+        s.view.free
 
 
 class _VenueOutOfRange(Strategy):

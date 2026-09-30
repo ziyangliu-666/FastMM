@@ -101,6 +101,21 @@ RestRequest GeminiOrderEncoder::positions(std::int64_t nonce) {
   return simple("/v1/positions", nonce);
 }
 
+RestRequest GeminiOrderEncoder::balances(std::int64_t nonce) {
+  return simple("/v1/balances", nonce);
+}
+
+RestRequest GeminiOrderEncoder::margin(std::int64_t nonce, std::string_view symbol) {
+  RestRequest r;
+  r.path = "/v1/margin";
+  r.target = r.path;
+  r.payload = payload_start(r.path, nonce);
+  r.payload += R"(,"symbol":")";
+  r.payload += symbol;
+  r.payload += R"("})";
+  return r;
+}
+
 RestRequest GeminiOrderEncoder::my_trades(std::int64_t nonce,
                                           std::string_view symbol,
                                           std::int64_t since_ms,

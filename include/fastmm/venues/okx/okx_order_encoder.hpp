@@ -116,7 +116,8 @@ class OkxOrderEncoder {
                                   std::int64_t unix_s,
                                   std::span<char> out) noexcept;
   // {"id":id,"op":"subscribe","args":[{"channel":C,"instType":T},..]}: `orders_type` for the
-  // orders channel (SWAP, SPOT or ANY), SWAP for positions, none for balance_and_position.
+  // orders channel (SWAP, SPOT or ANY), SWAP for positions, none for balance_and_position and
+  // account. positions and account are asked for events only ("updateInterval": "0").
   static std::size_t encode_private_subscribe(std::string_view id,
                                               std::span<const std::string_view> channels,
                                               std::string_view orders_type,
@@ -155,6 +156,7 @@ class OkxOrderEncoder {
                                         RestRequest& out);
   static void encode_rest_positions(RestRequest& out);
   static void encode_rest_account_config(RestRequest& out);
+  static void encode_rest_balance(RestRequest& out);
 
   [[nodiscard]] static std::string_view side_text(Side s) noexcept {
     return s == Side::Buy ? "buy" : "sell";

@@ -177,6 +177,34 @@ std::string decode_ids(std::string_view json, std::vector<std::string>& out) {
   return {};
 }
 
+std::string decode_accounts(std::string_view json, std::vector<AccountRow>& out) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "accounts: invalid JSON";
+  dom::array arr;
+  if (root.get(arr) != sj::SUCCESS) return not_expected(root, "accounts");
+  for (dom::element e : arr) {
+    AccountRow a;
+    a.id = text(e, "id");
+    a.currency = text(e, "currency");
+    if (a.id.empty() || a.currency.empty()) return "accounts: account without id or currency";
+    std::string_view s;
+    auto amount = [&](const char* key, Notional& v) {
+      if (e[key].get(s) != sj::SUCCESS) return false;
+      const auto n = parse_balance(s);
+      if (n) v = *n;
+      return n.has_value();
+    };
+    if (!amount("available", a.available) || !amount("hold", a.hold))
+      return "accounts: bad available or hold for " + a.currency;
+    static_cast<void>(amount("balance", a.balance));
+    a.trading_enabled = flag(e, "trading_enabled");
+    out.push_back(std::move(a));
+  }
+  return {};
+}
+
 std::string error_message(std::string_view json) {
   dom::parser parser;
   dom::element root;

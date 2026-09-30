@@ -10,6 +10,7 @@
 #include "fastmm/backtest/array_source.hpp"
 #include "fastmm/backtest/backtest_runner.hpp"
 #include "fastmm/backtest/data_registry.hpp"
+#include "fastmm/backtest/data_source.hpp"
 #include "fastmm/backtest/replay.hpp"
 #include "fastmm/backtest/result.hpp"
 #include "fastmm/backtest/sweep.hpp"
@@ -411,6 +412,53 @@ std::unique_ptr<bt::MdSource> open_spec(const DataSpec& spec, const BacktestConf
   return nullptr;
 }
 
+// BalanceMsg events in time order, merged into a run's market data by _run_strategy (the
+// simulator reports no balances; tests of on_balance and ctx.balance feed them this way).
+class BalanceListSource final : public bt::MdSource {
+ public:
+  explicit BalanceListSource(std::vector<BalanceMsg> msgs) : msgs_(std::move(msgs)) {}
+  const EventHeader* next() override { return at_ < msgs_.size() ? &msgs_[at_++].hdr : nullptr; }
+  void reset() override { at_ = 0; }
+  [[nodiscard]] Timestamp start_ts() const override {
+    return msgs_.empty() ? Timestamp{} : msgs_.front().hdr.exch_ts;
+  }
+
+ private:
+  std::vector<BalanceMsg> msgs_;
+  std::size_t at_ = 0;
+};
+
+// (ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) tuples, amounts as floats.
+std::vector<BalanceMsg> parse_balances(const py::object& rows) {
+  std::vector<BalanceMsg> out;
+  if (rows.is_none()) return out;
+  for (const py::handle row : rows) {
+    const auto t = row.cast<std::tuple<std::int64_t,
+                                       std::uint8_t,
+                                       std::string,
+                                       double,
+                                       double,
+                                       double,
+                                       double,
+                                       double,
+                                       std::uint8_t>>();
+    BalanceMsg m{};
+    init_header(m, EventType::Balance, InstrumentId{}, VenueId{std::get<1>(t)});
+    m.hdr.exch_ts = m.hdr.recv_ts = Timestamp{std::get<0>(t)};
+    m.asset = FixedString<8>(std::get<2>(t));
+    m.free = Notional::from_double(std::get<3>(t));
+    m.locked = Notional::from_double(std::get<4>(t));
+    m.total = Notional::from_double(std::get<5>(t));
+    m.equity = Notional::from_double(std::get<6>(t));
+    m.maintenance = Notional::from_double(std::get<7>(t));
+    m.flags = std::get<8>(t);
+    if (!out.empty() && m.hdr.exch_ts < out.back().hdr.exch_ts)
+      throw py::value_error("balances: rows must be in time order");
+    out.push_back(m);
+  }
+  return out;
+}
+
 std::string resolve_strategy(const BacktestConfig& cfg, const std::optional<std::string>& s) {
   std::string name = s ? *s : cfg.strategy;
   if (name.empty()) {
@@ -669,8 +717,10 @@ void bind_backtest(py::module_& m) {
          const py::object& instance,
          const std::string& name,
          const std::vector<std::string>& hooks,
-         const py::dict& params) {
+         const py::dict& params,
+         const py::object& balances) {
         DataSpec spec = parse_data(data);
+        BalanceListSource balance_source(parse_balances(balances));
         BacktestConfig cfg = config;
         cfg.strategy = name;  // journal header (truncated to its field) and result name
         ParamMap effective;
@@ -682,7 +732,12 @@ void bind_backtest(py::module_& m) {
           py::gil_scoped_release release;
           source = open_spec(spec, cfg);
         }
-        return run_python_strategy(cfg, source.get(), instance, name, hooks);
+        if (balances.is_none())
+          return run_python_strategy(cfg, source.get(), instance, name, hooks);
+        std::vector<bt::MdSource*> parts{&balance_source};
+        if (source) parts.push_back(source.get());
+        bt::MergedSource merged(std::move(parts));
+        return run_python_strategy(cfg, &merged, instance, name, hooks);
       },
       py::arg("config"),
       py::arg("data"),
@@ -690,8 +745,11 @@ void bind_backtest(py::module_& m) {
       py::arg("name"),
       py::arg("hooks"),
       py::arg("params"),
+      py::arg("balances") = py::none(),
       "Internal: backtest of a fastmm.Strategy instance with the GIL held; use "
-      "fastmm.run_backtest(config, data, strategy=MyStrategy).");
+      "fastmm.run_backtest(config, data, strategy=MyStrategy). `balances`: BalanceMsg rows "
+      "(ts_ns, venue, asset, free, locked, total, equity, maintenance, flags) merged into the "
+      "data by time.");
 
   m.def(
       "_run_hot_strategy",

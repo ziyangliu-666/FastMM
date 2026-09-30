@@ -226,6 +226,22 @@ bool BybitOrderEncoder::encode_rest_open_orders(std::string_view symbol,
   return true;
 }
 
+void BybitOrderEncoder::encode_rest_wallet_balance(RestRequest& out) {
+  out.method = "GET";
+  out.path = "/v5/account/wallet-balance";
+  out.query = "accountType=UNIFIED";
+  out.body.clear();
+  out.is_order = false;
+}
+
+void BybitOrderEncoder::encode_rest_account_info(RestRequest& out) {
+  out.method = "GET";
+  out.path = "/v5/account/info";
+  out.query.clear();
+  out.body.clear();
+  out.is_order = false;
+}
+
 bool BybitOrderEncoder::encode_rest_positions(BybitCategory category,
                                               std::string_view symbol,
                                               std::string_view settle_coin,

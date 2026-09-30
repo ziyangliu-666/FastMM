@@ -57,6 +57,7 @@ enum HookIndex : std::uint8_t {
   kConnection,
   kQuoting,
   kParams,
+  kBalance,
   kHookCount
 };
 
@@ -93,6 +94,7 @@ class AllHooks : public StrategyBase<AllHooksParams> {
   void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hit(kConnection); }
   void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
   void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
+  void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance); }
   // [end:hooks]
 
   [[nodiscard]] int count(HookIndex h) const noexcept { return counts_[h]; }
@@ -176,6 +178,19 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{}))
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
 // [end:venue_state]
 
+// ---- balances ----------------------------------------------------------------------------------
+
+// [start:balances]
+static_assert(std::same_as<decltype(lvalue<Ctx>().balance(VenueId{}, "USDT")), Balance>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().margin(VenueId{})), Margin>);
+static_assert(
+    std::same_as<decltype(lvalue<Ctx>().balance_room(InstrumentId{}, Side::Buy, Price{})), Qty>);
+static_assert(std::same_as<decltype(Balance::free), Notional>);
+static_assert(std::same_as<decltype(Balance::known), bool>);
+static_assert(std::same_as<decltype(Margin::available), Notional>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
+// [end:balances]
+
 // ---- the book a hook receives -------------------------------------------------------------------
 
 // [start:book]
@@ -225,6 +240,8 @@ static_assert(std::same_as<decltype(EventHeader::exch_ts), Timestamp>);
 static_assert(std::same_as<decltype(OmsUpdate::order), Order>);
 static_assert(std::same_as<decltype(OmsUpdate::prev), OrderState>);
 static_assert(std::same_as<decltype(OmsUpdate::terminal), bool>);
+static_assert(std::same_as<decltype(BalanceMsg::free), Notional>);
+static_assert(std::same_as<decltype(BalanceMsg::asset), FixedString<8>>);
 // [end:messages]
 
 // ---- fixed-point helpers ------------------------------------------------------------------------
@@ -290,7 +307,12 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   h.pull_quotes();                          // on_quoting(false)
   h.resume_quotes();                        // on_quoting(true)
   h.publish({{"half_spread_bps", "7.5"}});  // on_params
-  h.engine().finish();                      // on_stop
+  BalanceMsg usdt{};
+  init_header(usdt, EventType::Balance, InstrumentId::invalid(), VenueId{0});
+  usdt.asset.assign("USDT");
+  usdt.free = Notional::from_int(1000);
+  h.push(usdt.hdr);     // on_balance
+  h.engine().finish();  // on_stop
   // [end:harness]
 
   const AllHooks& s = h.strategy();
@@ -306,6 +328,7 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   CHECK(s.count(docs::kConnection) == 2);
   CHECK(s.count(docs::kQuoting) == 2);
   CHECK(s.count(docs::kParams) == 1);
+  CHECK(s.count(docs::kBalance) == 1);
   CHECK(s.params().half_spread_bps == 7.5_bps);
   for (int i = 0; i < docs::kHookCount; ++i) {
     INFO("hook index " << i);

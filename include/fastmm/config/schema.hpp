@@ -329,6 +329,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      KeyType::Float,
      false,
      "taker fee of this instrument, bps. Overrides the venue's fees table"},
+    {"instruments[]",
+     "initial_margin",
+     KeyType::Any,
+     false,
+     "initial margin of a derivative, fraction of the notional (0.1 at 10x leverage), decimal; the "
+     "balance check and estimate use it (default: none, an order passes while the venue reports "
+     "margin available)"},
     // [strategy]
     {"strategy", "name", KeyType::String, true, "registered strategy name (see --list-strategies)"},
     {"strategy",
@@ -408,6 +415,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      "position while its market data arrives this much later than its baseline, ms; resumes "
      "100 ms after the last message over it (default 0: off)"},
     {"risk",
+     "check_balance",
+     KeyType::Bool,
+     false,
+     "refuse an order the venue's reported balance, less this session's orders and fills since, "
+     "cannot cover; off for a venue until it reports balances (default true)"},
+    {"risk",
      "underlying",
      KeyType::Table,
      false,
@@ -463,6 +476,12 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "fastmm-gateway: one [gateway.underlying.BTC] table per base asset: the account's net limit, "
      "over every strategy and venue"},
+    {"gateway",
+     "check_balance",
+     KeyType::Bool,
+     false,
+     "fastmm-gateway: refuse an order the venue's reported balance, less the orders and fills of "
+     "every attached strategy since, cannot cover (default true)"},
     {"gateway.underlying.*",
      "max_net",
      KeyType::Any,

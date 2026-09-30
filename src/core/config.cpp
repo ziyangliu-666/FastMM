@@ -545,6 +545,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       get(*t, "option_type", i.option_type);
       get_optional(*t, "maker_bps", i.maker_bps);
       get_optional(*t, "taker_bps", i.taker_bps);
+      get_decimal(*t, "initial_margin", i.initial_margin);
       if (cfg.venue(i.venue) == nullptr)
         fail_at(*t->get("venue"),
                 fmt::format("instrument '{}' references unknown venue '{}'", i.symbol, i.venue));
@@ -589,6 +590,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "stp", r.stp);
     get(*t, "max_feed_lag_ms", r.max_feed_lag_ms);
     if (r.max_feed_lag_ms < 0) throw ConfigError("risk.max_feed_lag_ms must be >= 0");
+    get(*t, "check_balance", r.check_balance);
     get_underlying(*t, "risk", cfg.warnings, r.underlying);
   }
 
@@ -603,6 +605,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get_decimal(*t, "max_net_notional", cfg.gateway.max_net_notional);
     get_underlying(*t, "gateway", cfg.warnings, cfg.gateway.underlying);
     get_shared(*t, cfg);
+    get(*t, "check_balance", cfg.gateway.check_balance);
   }
 
   // [accounting]: after [[instruments]], whose entries the FX sources must name.
@@ -817,6 +820,7 @@ std::string Config::redacted() const {
     kv("enabled", i.enabled);
     if (i.maker_bps) kv("maker_bps", *i.maker_bps);
     if (i.taker_bps) kv("taker_bps", *i.taker_bps);
+    if (!i.initial_margin.empty()) kq("initial_margin", i.initial_margin);
   }
   out += "\n[strategy]\n";
   kq("name", strategy.name);
@@ -840,6 +844,7 @@ std::string Config::redacted() const {
   kv("burst", risk.burst);
   kv("stp", risk.stp);
   if (risk.max_feed_lag_ms != 0) kv("max_feed_lag_ms", risk.max_feed_lag_ms);
+  if (!risk.check_balance) kv("check_balance", risk.check_balance);
   for (const auto& [k, v] : risk.underlying.max_net) {
     fmt::format_to(std::back_inserter(out), "\n[risk.underlying.{}]\n", k);
     kq("max_net", v);
@@ -852,6 +857,7 @@ std::string Config::redacted() const {
     if (!gateway.max_loss.empty()) kq("max_loss", gateway.max_loss);
     if (!gateway.max_gross_notional.empty()) kq("max_gross_notional", gateway.max_gross_notional);
     if (!gateway.max_net_notional.empty()) kq("max_net_notional", gateway.max_net_notional);
+    if (!gateway.check_balance) kv("check_balance", gateway.check_balance);
     for (const auto& [k, v] : gateway.underlying.max_net) {
       fmt::format_to(std::back_inserter(out), "\n[gateway.underlying.{}]\n", k);
       kq("max_net", v);
@@ -1012,6 +1018,8 @@ std::string Config::effective_toml() const {
       t.insert("option_type", i.option_type);
       if (i.maker_bps) t.insert("maker_bps", *i.maker_bps);
       if (i.taker_bps) t.insert("taker_bps", *i.taker_bps);
+      // Only when set, so a configuration without it keeps its effective text and hash.
+      if (!i.initial_margin.empty()) t.insert("initial_margin", i.initial_margin);
       arr.push_back(std::move(t));
     }
     root.insert("instruments", std::move(arr));
@@ -1044,6 +1052,7 @@ std::string Config::effective_toml() const {
   // Only when set, so a configuration without it keeps its effective text and hash.
   if (risk.max_feed_lag_ms != 0)
     r.insert("max_feed_lag_ms", static_cast<std::int64_t>(risk.max_feed_lag_ms));
+  if (!risk.check_balance) r.insert("check_balance", false);
   if (risk.underlying.configured()) r.insert("underlying", underlying_table(risk.underlying));
   root.insert("risk", std::move(r));
 
@@ -1056,6 +1065,7 @@ std::string Config::effective_toml() const {
     g.insert("max_loss", gateway.max_loss);
     g.insert("max_gross_notional", gateway.max_gross_notional);
     g.insert("max_net_notional", gateway.max_net_notional);
+    if (!gateway.check_balance) g.insert("check_balance", false);
     if (gateway.underlying.configured())
       g.insert("underlying", underlying_table(gateway.underlying));
     if (!gateway.shared.empty()) {

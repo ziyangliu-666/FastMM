@@ -12,12 +12,16 @@
 //   x=REPLACED  -> OrderAckMsg          (amend-keep-priority; same client id)
 //   x=TRADE     -> OrderFillMsg         (t = trade id as exec id, L/l/z, n fee, m maker)
 //   x=EXPIRED / TRADE_PREVENTION -> OrderExpiredMsg
-//   outboundAccountPosition -> one PositionUpdateMsg per instrument whose base asset
-//                              appears in B[] (qty = free + locked, avg_px unknown = 0)
+//   outboundAccountPosition -> one BalanceMsg per asset of B[] the engine keeps
+//                              (set_balance_assets(); a = asset, f = free, l = locked, stamped
+//                              with u, the time of the account update), then one
+//                              PositionUpdateMsg per instrument whose base asset appears in B[]
+//                              (qty = free + locked, avg_px unknown = 0)
 // Client ids that do not decode as FastMM ids (manual orders) are reported with an invalid
 // ClientOrderId so the OMS classifies them as unknown.
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
+#include "fastmm/venues/balances.hpp"
 #include "fastmm/venues/feed.hpp"
 #include "fastmm/venues/symbology.hpp"
 
@@ -33,6 +37,7 @@ struct UserParserStats {
   std::uint64_t frames = 0;
   std::uint64_t exec_reports = 0;
   std::uint64_t positions = 0;
+  std::uint64_t balances = 0;  // BalanceMsg written
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;
   std::uint64_t unknown_symbol = 0;
@@ -59,6 +64,10 @@ class BinanceUserParser {
                           Cycles t0,
                           std::span<std::byte> out) noexcept;
 
+  // The assets outboundAccountPosition reports as BalanceMsg (none while unset). Must outlive
+  // the parser.
+  void set_balance_assets(const VenueAssets* assets) noexcept { assets_ = assets; }
+
   [[nodiscard]] const UserParserStats& stats() const noexcept { return stats_; }
 
  private:
@@ -67,6 +76,7 @@ class BinanceUserParser {
   const SymbolTable& symbols_;
   const InstrumentTable& instruments_;
   VenueId venue_;
+  const VenueAssets* assets_ = nullptr;
   UserParserStats stats_;
 };
 

@@ -8,8 +8,10 @@
 //                                                   {sym}@trade; `time` for the clock offset
 //   order  wss://ws.gemini.com?cancelOnDisconnect=true
 //                                                   authenticated at the upgrade (signed headers);
-//                                                   orders@account, order.place, order.cancel
+//                                                   orders@account, balances@account,
+//                                                   order.place, order.cancel
 //   rest   https://api.gemini.com                   symbols/details (public), orders, positions,
+//                                                   balances, margin,
 //                                                   mytrades, perpetuals/fundingPayment,
 //                                                   order/cancel, order/cancel/session, heartbeat
 // The WebSocket API sends no heartbeats: the connector sends `ping` on both connections every
@@ -36,6 +38,14 @@
 // the tid as execution id; then /v1/orders and, with a perpetual subscribed, /v1/positions become
 // one Begin / OpenOrder* / Position* / End (a perpetual absent from the positions is flat; spot has
 // no position rows). Funding: /v1/perpetuals/fundingPayment, one FundingMsg per hourly transfer.
+//
+// Balances: balances@account on the order connection (every change, the assets that changed, each
+// absolute) as BalanceMsg stamped with its `u`; the reconciliation's balance leg is /v1/balances
+// (spot rows: free = available, locked = amount - available) and, with a perpetual subscribed,
+// /v1/margin as the account row (kAccount, USD). The margin has no stream: a perpetual fill asks
+// for the balance leg again (at most once a second), as does any fill while balances@account is
+// not subscribed. An exchange account answers /v1/margin AccountNotOfTypeRequired: no account row,
+// and the leg goes on without it.
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/seqlock.hpp"
@@ -200,6 +210,11 @@ class GeminiVenue final : public Venue, private ReconcileHooks {
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   bool request_positions(std::uint64_t generation);
+  // The balance leg: /v1/balances, then /v1/margin with a perpetual subscribed.
+  bool fetch_balances(std::uint64_t generation) override;
+  void request_margin(std::uint64_t generation, std::int64_t venue_ms);
+  // A balanceUpdate of balances@account.
+  void on_balance_update(const BalanceUpdate& b);
   // Execution replay (mytrades per symbol) and funding (fundingPayment).
   [[nodiscard]] bool replay_ready() const noexcept;
   bool query_trades(const ReplayQuery& q);
@@ -254,6 +269,8 @@ class GeminiVenue final : public Venue, private ReconcileHooks {
   bool rest_hard_stopped_ = false;
   bool order_was_live_ = false;
   bool refused_account_settings_ = false;
+  bool balance_stream_ = false;     // balances@account subscribed on the order connection
+  bool no_margin_account_ = false;  // /v1/margin answered AccountNotOfTypeRequired
   SentWatermark sent_;
   BatchedOrders batch_;
 

@@ -99,6 +99,7 @@ using TradeView = View<TradeMsg>;
 using BookTickerView = View<BookTickerMsg>;
 using OptionTickerView = View<OptionTickerMsg>;
 using ConnectionView = View<ConnectionStateMsg>;
+using BalanceView = View<BalanceMsg>;
 using OrderUpdateView = View<OmsUpdate>;
 struct FillView : View<Fill> {
   PyObject* update = nullptr;  // the run's OrderUpdateView object (borrowed; read after get())
@@ -115,7 +116,7 @@ struct OrderInfo {
 struct PortfolioInfo {
   Portfolio p;
 };
-// Venue state (ctx.fees, ctx.risk_headroom, ctx.venue_health): copies.
+// Venue state (ctx.fees, ctx.risk_headroom, ctx.venue_health, ctx.balance, ctx.margin): copies.
 struct FeesInfo {
   FeeRates f;
 };
@@ -124,6 +125,12 @@ struct HeadroomInfo {
 };
 struct VenueHealthInfo {
   VenueHealthView v;
+};
+struct BalanceInfo {
+  Balance b;
+};
+struct MarginInfo {
+  Margin m;
 };
 
 double to_f(std::int64_t raw) noexcept {
@@ -201,11 +208,12 @@ class PyRun {
   std::vector<BookView*> book_views_;
   std::vector<py::object> pos_objs_;
   std::vector<PositionView*> pos_views_;
-  py::object trade_obj_, ticker_obj_, option_obj_, conn_obj_, fill_obj_, update_obj_;
+  py::object trade_obj_, ticker_obj_, option_obj_, conn_obj_, balance_obj_, fill_obj_, update_obj_;
   TradeView* trade_ = nullptr;
   BookTickerView* ticker_ = nullptr;
   OptionTickerView* option_ = nullptr;
   ConnectionView* conn_ = nullptr;
+  BalanceView* balance_ = nullptr;
   FillView* fill_ = nullptr;
   OrderUpdateView* update_ = nullptr;
   std::uint64_t calls_ = 0;
@@ -266,6 +274,8 @@ PyRun::PyRun(PySimEngine& engine,
   option_ = option_obj_.cast<OptionTickerView*>();
   conn_obj_ = py::cast(ConnectionView{guard_, 0, nullptr, InstrumentId{}});
   conn_ = conn_obj_.cast<ConnectionView*>();
+  balance_obj_ = py::cast(BalanceView{guard_, 0, nullptr, InstrumentId{}});
+  balance_ = balance_obj_.cast<BalanceView*>();
   update_obj_ = py::cast(OrderUpdateView{guard_, 0, nullptr, InstrumentId{}});
   update_ = update_obj_.cast<OrderUpdateView*>();
   FillView fv;
@@ -438,6 +448,13 @@ void py_on_quoting(PyRun& r, bool enabled) noexcept {
   r.call(Hook::Quoting, args, 2);
 }
 
+void py_on_balance(PyRun& r, const BalanceMsg& m) noexcept {
+  const PyRun::Scope scope(r);
+  r.balance_->point(m);
+  PyObject* args[3] = {nullptr, r.ctx_.ptr(), r.balance_obj_.ptr()};
+  r.call(Hook::Balance, args, 2);
+}
+
 void py_on_driver_steps(PyRun& r) noexcept {
   r.periodic();
 }
@@ -451,6 +468,11 @@ Side side_from(int side) {
   if (side == 1) return Side::Sell;
   throw py::value_error("fastmm: side must be fastmm.BUY (0) or fastmm.SELL (1), got " +
                         std::to_string(side));
+}
+
+VenueId venue_arg(std::uint32_t venue) {
+  if (venue >= kMaxVenues) throw py::value_error("fastmm: venue id out of range");
+  return VenueId{static_cast<std::uint8_t>(venue)};
 }
 
 std::string where(const char* what, Py_ssize_t i, const char* field) {
@@ -905,6 +927,25 @@ void bind_strategy_api(py::module_& m) {
   FASTMM_PY_FIELD(conn, ConnectionView, "reason_code", x.reason_code);
   FASTMM_PY_FIELD(conn, ConnectionView, "recv_ts_ns", x.hdr.recv_ts.ns);
 
+  py::class_<BalanceView> bal(
+      m,
+      "BalanceView",
+      "The venue's report of one asset of the account (valid inside on_balance). Amounts are "
+      "absolute, in the asset.",
+      py::is_final());
+  FASTMM_PY_FIELD(bal, BalanceView, "venue", x.hdr.venue.value);
+  FASTMM_PY_FIELD(bal, BalanceView, "asset", std::string(x.asset.view()));
+  FASTMM_PY_FIXED(bal, BalanceView, "free", x.free);
+  FASTMM_PY_FIXED(bal, BalanceView, "locked", x.locked);
+  FASTMM_PY_FIXED(bal, BalanceView, "total", x.total);
+  FASTMM_PY_FIXED(bal, BalanceView, "equity", x.equity);
+  FASTMM_PY_FIXED(bal, BalanceView, "maintenance", x.maintenance);
+  FASTMM_PY_FIELD(bal, BalanceView, "snapshot", (x.flags & BalanceMsg::kSnapshot) != 0);
+  FASTMM_PY_FIELD(bal, BalanceView, "snapshot_end", (x.flags & BalanceMsg::kSnapshotEnd) != 0);
+  FASTMM_PY_FIELD(bal, BalanceView, "account", (x.flags & BalanceMsg::kAccount) != 0);
+  FASTMM_PY_FIELD(bal, BalanceView, "exch_ts_ns", x.hdr.exch_ts.ns);
+  FASTMM_PY_FIELD(bal, BalanceView, "recv_ts_ns", x.hdr.recv_ts.ns);
+
   py::class_<OrderUpdateView> upd(
       m,
       "OrderUpdateView",
@@ -1317,6 +1358,8 @@ void bind_strategy_api(py::module_& m) {
   fixed_room("net_buy_notional", [](const RiskHeadroom& h) { return h.net_buy_notional; });
   fixed_room("net_sell_notional", [](const RiskHeadroom& h) { return h.net_sell_notional; });
   fixed_room("loss_budget", [](const RiskHeadroom& h) { return h.loss_budget; });
+  fixed_room("balance_buy_qty", [](const RiskHeadroom& h) { return h.balance_buy_qty; });
+  fixed_room("balance_sell_qty", [](const RiskHeadroom& h) { return h.balance_sell_qty; });
   py::class_<VenueHealthInfo> health_cls(
       m,
       "VenueHealth",
@@ -1348,6 +1391,48 @@ void bind_strategy_api(py::module_& m) {
                " ns, ack_rtt_smoothed " + std::to_string(x.v.ack_rtt_smoothed.ns) + " ns" +
                (x.v.gated ? ", gated>" : ">");
       });
+  py::class_<BalanceInfo> balance_cls(
+      m,
+      "Balance",
+      "One asset of a venue's account now (a copy): free, locked and total are the venue's last "
+      "report moved by this engine's orders and fills since; equity and maintenance are the "
+      "report's.",
+      py::is_final());
+  FASTMM_PY_VALUE_FIXED(balance_cls, BalanceInfo, "free", x.b.free);
+  FASTMM_PY_VALUE_FIXED(balance_cls, BalanceInfo, "locked", x.b.locked);
+  FASTMM_PY_VALUE_FIXED(balance_cls, BalanceInfo, "total", x.b.total);
+  FASTMM_PY_VALUE_FIXED(balance_cls, BalanceInfo, "equity", x.b.equity);
+  FASTMM_PY_VALUE_FIXED(balance_cls, BalanceInfo, "maintenance", x.b.maintenance);
+  balance_cls.def_property_readonly("as_of_ns", [](const BalanceInfo& x) { return x.b.as_of.ns; })
+      .def_property_readonly("known", [](const BalanceInfo& x) { return x.b.known; })
+      .def("__repr__", [](const BalanceInfo& x) {
+        if (!x.b.known) return std::string("<Balance unknown>");
+        return "<Balance free " + std::to_string(x.b.free.to_double()) + ", locked " +
+               std::to_string(x.b.locked.to_double()) + ">";
+      });
+  py::class_<MarginInfo> margin_cls(
+      m,
+      "Margin",
+      "A venue's margin (a copy): its account-wide margin where it reports one, else the "
+      "settlement asset of its first derivative.",
+      py::is_final());
+  FASTMM_PY_VALUE_FIXED(margin_cls, MarginInfo, "available", x.m.available);
+  FASTMM_PY_VALUE_FIXED(margin_cls, MarginInfo, "initial", x.m.initial);
+  FASTMM_PY_VALUE_FIXED(margin_cls, MarginInfo, "maintenance", x.m.maintenance);
+  FASTMM_PY_VALUE_FIXED(margin_cls, MarginInfo, "equity", x.m.equity);
+  FASTMM_PY_VALUE_FIXED(margin_cls, MarginInfo, "wallet", x.m.wallet);
+  margin_cls
+      .def_property_readonly("asset",
+                             [](const MarginInfo& x) { return std::string(x.m.asset.view()); })
+      .def_property_readonly("as_of_ns", [](const MarginInfo& x) { return x.m.as_of.ns; })
+      .def_property_readonly("account", [](const MarginInfo& x) { return x.m.account; })
+      .def_property_readonly("known", [](const MarginInfo& x) { return x.m.known; })
+      .def("__repr__", [](const MarginInfo& x) {
+        if (!x.m.known) return std::string("<Margin unknown>");
+        return "<Margin " + std::string(x.m.asset.view()) + " available " +
+               std::to_string(x.m.available.to_double()) + ", initial " +
+               std::to_string(x.m.initial.to_double()) + ">";
+      });
   ctx.def(
          "fees",
          [](const ContextHandle& c, py::handle inst) {
@@ -1369,12 +1454,62 @@ void bind_strategy_api(py::module_& m) {
           "venue_health",
           [](const ContextHandle& c, std::uint32_t venue) {
             PySimEngine& e = c.engine();
-            if (venue >= kMaxVenues) throw py::value_error("fastmm: venue id out of range");
-            return VenueHealthInfo{
-                e.context().venue_health(VenueId{static_cast<std::uint8_t>(venue)})};
+            return VenueHealthInfo{e.context().venue_health(venue_arg(venue))};
           },
           py::arg("venue") = 0,
-          "Feed lag, order round trip and the feed-lag gate of a venue.");
+          "Feed lag, order round trip and the feed-lag gate of a venue.")
+      .def(
+          "balance",
+          [](const ContextHandle& c, std::uint32_t venue, const std::string& asset) {
+            PySimEngine& e = c.engine();
+            return BalanceInfo{e.context().balance(venue_arg(venue), asset)};
+          },
+          py::arg("venue"),
+          py::arg("asset"),
+          "One asset of a venue's account: the venue's last report (on_balance) moved by this "
+          "engine's orders and fills since. known is False until the venue reports it.")
+      .def(
+          "margin",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            PySimEngine& e = c.engine();
+            return MarginInfo{e.context().margin(venue_arg(venue))};
+          },
+          py::arg("venue") = 0,
+          "The venue's margin: its account-wide margin where it reports one, else the settlement "
+          "asset of its first derivative.")
+      .def(
+          "balances_live",
+          [](const ContextHandle& c) { return c.engine().context().balances_live(); },
+          "A venue has reported balances (before that, balance() is unknown everywhere).")
+      .def(
+          "balance_room",
+          [room](const ContextHandle& c, py::handle inst, int side, py::handle price) {
+            PySimEngine& e = c.engine();
+            const InstrumentId id = c.run->resolve(inst);
+            const Side s = side_from(side);
+            return room(
+                e.context().balance_room(id, s, price_arg(e.instrument(id), s, price, false)).raw);
+          },
+          py::arg("inst"),
+          py::arg("side"),
+          py::arg("price"),
+          "Largest quantity of the instrument on `side` at `price` the balance covers, rounded "
+          "down to the lot; None while the venue has not reported the balance that side draws "
+          "on.")
+      .def(
+          "balance_room_raw",
+          [room_raw](const ContextHandle& c, py::handle inst, int side, py::handle price_raw) {
+            PySimEngine& e = c.engine();
+            const InstrumentId id = c.run->resolve(inst);
+            const Side s = side_from(side);
+            return room_raw(
+                e.context()
+                    .balance_room(id, s, price_arg(e.instrument(id), s, price_raw, true))
+                    .raw);
+          },
+          py::arg("inst"),
+          py::arg("side"),
+          py::arg("price_raw"));
 }
 
 #undef FASTMM_PY_FIXED

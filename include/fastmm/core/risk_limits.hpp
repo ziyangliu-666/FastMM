@@ -67,6 +67,11 @@ struct RiskHeadroom {
   Notional net_sell_notional = Notional::max();
   // max_loss plus the net PnL it is measured against; the kill switch trips at zero or below.
   Notional loss_budget = Notional::max();
+  // Largest buy / sell at the book's mid the account's balance on the venue covers ([risk]
+  // check_balance, core/balance_book.hpp), rounded down to the lot; unlimited until the venue
+  // reports the balance the side draws on.
+  Qty balance_buy_qty = Qty::max();
+  Qty balance_sell_qty = Qty::max();
 };
 
 }  // namespace fastmm

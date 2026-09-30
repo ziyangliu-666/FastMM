@@ -295,6 +295,37 @@ struct FundingMsg {
 };
 static_assert(sizeof(FundingMsg) == 128 && offsetof(FundingMsg, funding_id) == 72 &&
               offsetof(FundingMsg, flags) == 122);
+// The account's holding of one asset on one venue (EventType::Balance), as the venue reports it at
+// its time hdr.exch_ts. Every amount is absolute, in `asset`: a venue update replaces the last one
+// (a delta would turn one lost message into a lasting error). hdr.instrument is invalid.
+//   spot         free (spendable now) and locked (held by open orders); total = free + locked;
+//                equity = total; maintenance 0.
+//   derivatives  free = available for new orders, locked = initial margin in use (positions and
+//                orders), total = wallet balance, equity = wallet + unrealised PnL, maintenance =
+//                maintenance margin.
+// kAccount: the account's cross-collateral margin (Bybit's unified account, OKX's multi-currency
+// modes, Binance USD-M multi-assets mode) valued in `asset`, usually USD; the derivatives of the
+// venue draw on it instead of their settlement asset.
+// A snapshot (the balance leg of a reconciliation, a REST refresh) is a run of messages flagged
+// kSnapshot whose last one also carries kSnapshotEnd: an asset of the venue it did not name holds
+// nothing. A snapshot naming no asset is one message with an empty `asset`.
+struct BalanceMsg {
+  static constexpr std::uint8_t kSnapshot = 1U << 0;
+  static constexpr std::uint8_t kSnapshotEnd = 1U << 1;
+  static constexpr std::uint8_t kAccount = 1U << 2;
+  EventHeader hdr;
+  Notional free;          // 64
+  Notional locked;        // 72
+  Notional total;         // 80
+  Notional equity;        // 88
+  Notional maintenance;   // 96
+  FixedString<8> asset;   // 104 -> 113
+  std::uint8_t flags;     // 113
+  std::uint8_t pad_[14];  // -> 128
+};
+static_assert(sizeof(BalanceMsg) == 128 && offsetof(BalanceMsg, asset) == 104 &&
+              offsetof(BalanceMsg, flags) == 113);
+
 // A funding id in the list of venue ids a restarted session's store already holds
 // (store::Recovery::VenueResume::known_exec_ids, next to the trade ids): the prefix keeps the two
 // id spaces apart.
@@ -551,12 +582,13 @@ static_assert(FixedSizeMessage<TradeMsg> && FixedSizeMessage<BookTickerMsg> &&
               FixedSizeMessage<OrderRejectMsg> && FixedSizeMessage<OrderCancelAckMsg> &&
               FixedSizeMessage<OrderCancelRejectMsg> && FixedSizeMessage<OrderExpiredMsg> &&
               FixedSizeMessage<PositionUpdateMsg> && FixedSizeMessage<FundingMsg> &&
-              FixedSizeMessage<TimerMsg> && FixedSizeMessage<ControlMsg> &&
-              FixedSizeMessage<ConnectionStateMsg> && FixedSizeMessage<ReconcileMsg> &&
-              FixedSizeMessage<LatencySampleMsg> && FixedSizeMessage<EngineTimeMsg> &&
-              FixedSizeMessage<OutNewOrderMsg> && FixedSizeMessage<OutCancelMsg> &&
-              FixedSizeMessage<OrderAddL3Msg> && FixedSizeMessage<OrderExecL3Msg> &&
-              FixedSizeMessage<OrderCancelL3Msg> && FixedSizeMessage<OrderReplaceL3Msg>);
+              FixedSizeMessage<BalanceMsg> && FixedSizeMessage<TimerMsg> &&
+              FixedSizeMessage<ControlMsg> && FixedSizeMessage<ConnectionStateMsg> &&
+              FixedSizeMessage<ReconcileMsg> && FixedSizeMessage<LatencySampleMsg> &&
+              FixedSizeMessage<EngineTimeMsg> && FixedSizeMessage<OutNewOrderMsg> &&
+              FixedSizeMessage<OutCancelMsg> && FixedSizeMessage<OrderAddL3Msg> &&
+              FixedSizeMessage<OrderExecL3Msg> && FixedSizeMessage<OrderCancelL3Msg> &&
+              FixedSizeMessage<OrderReplaceL3Msg>);
 
 template <MessageLike M>
 [[nodiscard]] FASTMM_FORCE_INLINE const M& msg_cast(const EventHeader* h) noexcept {

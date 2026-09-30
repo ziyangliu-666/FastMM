@@ -265,10 +265,22 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
       ++stats_.funding_events;
       r.funding = true;
     }
+    // B[]: the assets whose wallet balance changed. The connector asks for the account (their
+    // available balance and margin are not in the event).
+    bool balances = false;
+    {
+      od::array b;
+      bool empty = true;
+      if (a["B"].get_array().get(b) == sj::SUCCESS && b.is_empty().get(empty) == sj::SUCCESS)
+        balances = !empty;
+    }
+    if (balances) ++stats_.balance_events;
+    r.balances = balances;
     od::array positions;
     if (a["P"].get_array().get(positions) != sj::SUCCESS) {  // balance only
       UserDecodeResult out_r = ignored();
       out_r.funding = funding;
+      out_r.balances = balances;
       return out_r;
     }
     std::uint32_t written = 0;
@@ -302,13 +314,31 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
       written += sizeof(PositionUpdateMsg);
       ++count;
     }
-    if (count == 0) return ignored();
+    if (count == 0) {
+      UserDecodeResult out_r = ignored();
+      out_r.funding = funding;
+      out_r.balances = balances;
+      return out_r;
+    }
     stats_.positions += count;
     r.status = ParseStatus::Ok;
     r.order_kind = OrderEventKind::Position;
     r.len = written;
     r.count = count;
     return r;
+  }
+
+  if (type == "ACCOUNT_CONFIG_UPDATE") {
+    // ai.j: the account's Multi-Assets Mode changed (ac, a symbol's leverage, is not read).
+    od::object ai;
+    bool multi = false;
+    if (ev["ai"].get_object().get(ai) == sj::SUCCESS &&
+        ai["j"].get_bool().get(multi) == sj::SUCCESS) {
+      UserDecodeResult out_r = ignored();
+      out_r.multi_assets = multi ? 1 : 0;
+      return out_r;
+    }
+    return ignored();
   }
 
   if (type == "listenKeyExpired") {

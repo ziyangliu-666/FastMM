@@ -235,7 +235,7 @@ OpResult Impl::dispatch_rest(const net::HttpRequest& req,
     return *err;
   switch (ep) {
     case RestEndpoint::AccountInfo:
-      return op_account(*acct);
+      return op_account(*acct, params);
     case RestEndpoint::NewOrder:
       return op_place(*acct, params, false);
     case RestEndpoint::TestOrder:
@@ -399,7 +399,7 @@ OpResult Impl::dispatch_ws_api(net::WsSession& s, const WsApiRequest& req, std::
   if (m == "order.status") return op_query_order(*acct, p);
   if (m == "openOrders.status") return op_open_orders(*acct, p);
   if (m == "openOrders.cancelAll") return op_cancel_all(*acct, p);
-  return op_account(*acct);  // account.status
+  return op_account(*acct, p);  // account.status
 }
 
 // session.logon / session.status / session.logout (web-socket-api "Session Authentication").

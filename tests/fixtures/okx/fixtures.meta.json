@@ -10,6 +10,10 @@
   "raw_md_stream.jsonl": "recorded, one frame per line: the subscribe acks, the 400-level books snapshot and 24 updates (checksum 0: deprecated 2026-06-23), bbo-tbt and trades",
   "private payloads (tests/venues/okx_*_test.cpp)": "docs-example (https://www.okx.com/docs-v5/en/#order-book-trading-trade-ws-order-channel, #trading-account-websocket-positions-channel, #trading-account-websocket-balance-and-position-channel, #order-book-trading-trade-ws-place-order, read 2026-09-26) with FastMM clOrdIds; the swap ones not recorded (no swap account)",
   "instruments_btc_usdt_spot_demo.json": "recorded 2026-09-30 from https://eea.okx.com/api/v5/public/instruments?instType=SPOT&instId=BTC-USDT with x-simulated-trading: 1 (demo spot: instIdCode 3, tickSz 0.1, lotSz 0.00000001, minSz 0.00002)",
-  "private_spot_sell_fill_demo.json": "recorded 2026-09-30 on wss://wseeapap.okx.com:8443/ws/v5/private (fastmm-live --record-raw, configs/okx-spot-demo.toml); uid replaced by 77. A spot sell fill whose fillFee has 9 decimals"
+  "private_spot_sell_fill_demo.json": "recorded 2026-09-30 on wss://wseeapap.okx.com:8443/ws/v5/private (fastmm-live --record-raw, configs/okx-spot-demo.toml); uid replaced by 77. A spot sell fill whose fillFee has 9 decimals",
+  "account_balance_docs.json": "docs-example, verbatim (https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-balance, Response Example, read 2026-09-30)",
+  "private_account_docs.json": "docs-example (https://www.okx.com/docs-v5/en/#trading-account-websocket-account-channel, Push Data Example, read 2026-09-30), verbatim but for the JavaScript comment after collateralRestrict, which is not JSON",
+  "account_balance_spot_demo.json": "recorded 2026-09-30 from https://eea.okx.com/api/v5/account/balance with x-simulated-trading: 1 (the demo account, spot mode acctLv 1; the reply carries no account id)",
+  "private_account_spot_demo.json": "recorded 2026-09-30 on wss://wseeapap.okx.com:8443/ws/v5/private (tests/venues/live_okx_test.cpp with FASTMM_OKX_RECORD_DIR): the account channel snapshot push after subscribing; uid replaced by 77"
  }
 }

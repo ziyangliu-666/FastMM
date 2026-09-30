@@ -15,8 +15,12 @@
 //        &start_sequence_timestamp=&end_sequence_timestamp=&limit=&cursor= -> {"fills":[..],
 //        "cursor"}
 //   GET  /api/v3/brokerage/orders/historical/<order_id> -> {"order":{..}}
-//   GET  /api/v3/brokerage/market/products/<id> (public), /api/v3/brokerage/time (public),
-//        /api/v3/brokerage/accounts
+//   GET  /api/v3/brokerage/market/products/<id> (public), /api/v3/brokerage/time (public)
+//   GET  /api/v3/brokerage/accounts?limit=&cursor= -> {"accounts":[{"uuid","currency",
+//        "available_balance":{"value","currency"},"hold":{"value","currency"},"type","platform",
+//        ..}],"has_next","cursor","size"} (List Accounts; default 49 a page, max 250). There is
+//        no balance stream for spot: the user channel carries orders and futures positions,
+//        futures_balance_summary US futures only.
 // FastMM's client order id ("fm" + 12 hex digits) is the client_order_id as it is. There is no
 // cancel by client id and no cancel-all: a cancel names the venue's order_id.
 // encode_new() writes into fixed buffers and does not allocate; the rest builds std::strings.
@@ -57,6 +61,7 @@ class AdvancedOrderEncoder {
   static std::string order_fills_path(std::string_view order_id);
   static std::string order_path(std::string_view order_id);
   static std::string product_path(std::string_view product);
+  static std::string accounts_path(std::string_view cursor);
 
  private:
   const SymbolTable& symbols_;
@@ -98,6 +103,16 @@ struct AdvFillRow {
   std::int64_t time_ms = 0;  // trade_time
 };
 
+// One spot account: available_balance.value is free, hold.value is locked. The spec describes hold
+// as "Amount that is being held for pending transfers against the available balance" and says
+// nothing of open orders; that they move available into hold is not verified (no order has been
+// placed on the live account).
+struct AdvBalanceRow {
+  std::string currency;
+  Notional available{};
+  Notional hold{};
+};
+
 // Empty string on success, else an error description.
 std::string decode_adv_product(std::string_view json, ProductInfo& out);
 std::string decode_adv_time(std::string_view json, std::int64_t& epoch_ms);
@@ -113,6 +128,13 @@ std::string decode_adv_fills(std::string_view json,
                              std::string& cursor);
 // GET /accounts: the number of accounts and whether the reply had the documented shape.
 std::string decode_adv_accounts(std::string_view json, std::size_t& accounts, bool& has_next);
+// GET /accounts: a page of spot balances, appended to `out`. Accounts of another platform
+// (ACCOUNT_PLATFORM_CFM_CONSUMER, ACCOUNT_PLATFORM_INTX) or type (ACCOUNT_TYPE_VAULT,
+// ACCOUNT_TYPE_PERP_FUTURES) are skipped: spot orders cannot draw on them.
+std::string decode_adv_balances(std::string_view json,
+                                std::vector<AdvBalanceRow>& out,
+                                std::string& cursor,
+                                bool& has_next);
 // {"error","code","message"} (or {"message"}); empty when the body is not one.
 std::string adv_error_message(std::string_view json);
 

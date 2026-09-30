@@ -42,6 +42,7 @@ struct AllHooks {
   template <class Ctx>
   void on_quoting(Ctx&, bool) noexcept {}
   void on_params(auto&) noexcept {}
+  void on_balance(auto&, const BalanceMsg&) noexcept {}
 };
 static_assert(verify_strategy<AllHooks>());
 
@@ -125,8 +126,8 @@ TEST_CASE("strategies.hooks: implemented hook sets, table and built-in strategie
   CHECK(words<NoHooks>().empty());
   CHECK(words<AllHooks>() ==
         "start stop book book_ticker trade option_ticker fill order_update "
-        "timer connection quoting params");
-  CHECK(words<BasicMM>() == "start book fill timer connection quoting");
+        "timer connection quoting params balance");
+  CHECK(words<BasicMM>() == "start book fill timer connection quoting balance");
   CHECK(words<AvellanedaStoikov>() == "start book trade fill connection quoting");
   CHECK(words<OptionsMM>() == "start book option_ticker fill timer connection quoting");
   REQUIRE(kHooks.size() == static_cast<std::size_t>(Hook::Count));

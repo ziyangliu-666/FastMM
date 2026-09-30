@@ -265,8 +265,37 @@ Result<void, std::string> BybitVenue::load_reference_data(InstrumentTable& instr
       refused_account_settings_ = true;
       return fail(std::move(err));
     }
+    check_margin_mode();
   }
   return {};
+}
+
+void BybitVenue::check_margin_mode() {
+  account_row_ = true;
+  BlockingHttpOptions opts;
+  opts.ca_file = cfg_.ca_file;
+  opts.insecure_tls = cfg_.insecure_tls;
+  opts.timeout_ms = cfg_.http_timeout_ms;
+  std::string err;
+  std::string mode;
+  try {
+    BlockingHttp http(cfg_.rest_url, opts);
+    RestRequest rr;
+    BybitOrderEncoder::encode_rest_account_info(rr);
+    const std::string headers =
+        signer_.rest_headers(venue_time_ms(), cfg_.recv_window_ms, rr.payload(), false);
+    const HttpReply reply = http.request("GET", rr.target(), headers);
+    err = reply.ok() ? decode_margin_mode(reply.body, mode)
+                     : fmt::format("HTTP {} {}", reply.status, reply.error);
+  } catch (const std::exception& e) {
+    err = e.what();
+  }
+  if (!err.empty()) {
+    FASTMM_LOG_WARN("{}: margin mode unknown ({}); taken as cross margin", cfg_.name, err);
+    return;
+  }
+  account_row_ = mode != "ISOLATED_MARGIN";
+  FASTMM_LOG_INFO("{}: margin mode {}", cfg_.name, mode);
 }
 
 // Bybit has no "get position mode": the mode is per symbol (symbol > coin > default, "Switch
@@ -346,7 +375,8 @@ void BybitVenue::attach(const SymbolTable& symbols,
   encoder_ =
       std::make_unique<BybitOrderEncoder>(signer_, symbols, cfg_.recv_window_ms, cfg_.category);
   decoder_ = std::make_unique<BybitResponseDecoder>();
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
+  private_parser_->set_balances(&reconcile_.assets(), account_row_);
 }
 
 void BybitVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -565,11 +595,13 @@ void BybitVenue::on_private_open() {
   // DCP only fires for connections that subscribed a `dcp.*` topic: "for those private
   // connections subscribing 'dcp' topic are all dead, then DCP will be triggered". Without the
   // subscription the account setting exists and does nothing.
-  // Spot keeps the wallet (position_from_wallet); linear takes the position topic instead.
+  // The wallet carries the balances (and spot's position_from_wallet); linear adds the position
+  // topic.
   const bool dcp = cfg_.dead_mans_switch_s > 0;
-  std::string_view topics[4] = {"order", "execution", "wallet", {}};
-  if (cfg_.category == BybitCategory::Linear) topics[2] = "position";
-  std::size_t count = 3;
+  std::string_view topics[5] = {"order", "execution", {}, {}, {}};
+  std::size_t count = 2;
+  if (cfg_.category == BybitCategory::Linear) topics[count++] = "position";
+  topics[count++] = "wallet";
   if (dcp) topics[count++] = dcp_topic(cfg_.category);
   const std::size_t n = BybitOrderEncoder::encode_subscribe(
       "private", std::span<const std::string_view>(topics, count), request_buf_);
@@ -1355,6 +1387,42 @@ void BybitVenue::finish_snapshot(std::uint64_t generation) {
     FASTMM_LOG_ERROR("{}: position/list reports a hedge-mode position", cfg_.name);
     apply_action(VenueAction::Fatal, 0, "hedge-mode position", 0);
   }
+}
+
+// The balance leg (ReconcileDriver): one GET /v5/account/wallet-balance. Its coins are those with a
+// balance; the driver keeps the ones of the instruments, and a kept one the reply does not name
+// holds nothing. Stamped with the reply's `time`.
+bool BybitVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
+  RestRequest rr;
+  BybitOrderEncoder::encode_rest_wallet_balance(rr);
+  const std::string headers = encoder_->rest_headers(rr, venue_time_ms());
+  std::weak_ptr<int> alive = alive_;
+  const bool queued = rest_->request(
+      "GET", rr.target(), headers, {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (alive.expired() || !reconcile_.balances_current(generation)) return;
+        ++stats_.rest_requests;
+        note_rate_headers(r);
+        WalletBalance w;
+        std::string err;
+        if (!r.ok()) {
+          err = fmt::format("status={} err={}", r.status, net::to_string(r.error));
+        } else {
+          err = decode_wallet_balance(r.body, w);
+        }
+        if (!err.empty()) {
+          ++stats_.rest_errors;
+          FASTMM_LOG_WARN("{}: GET account/wallet-balance failed ({})", cfg_.name, err);
+          reconcile_.balances_fetched(generation, false, 0);
+          return;
+        }
+        for (const WalletCoin& c : w.coins) reconcile_.add_balance(c.coin, c.fields);
+        if (account_row_) reconcile_.add_balance("USD", w.account, BalanceMsg::kAccount);
+        reconcile_.balances_fetched(generation, true, w.time_ms > 0 ? w.time_ms : venue_time_ms());
+      });
+  // Not queued now: the driver asks again after its retry delay.
+  if (!queued) reconcile_.balances_fetched(generation, false, 0);
+  return true;
 }
 
 void BybitVenue::shadow_ids(std::vector<SentShadow>& out) {

@@ -38,6 +38,25 @@ struct RunnerStats {
   std::int64_t funding_raw = 0;          // part of realized_pnl_raw
 };
 
+// One row of the engine's balance table (core/balance_book.hpp) as the monitors see it: the
+// estimate of free, locked and total, the venue's equity and maintenance margin, raw amounts in the
+// asset. `account`: the venue's account-wide margin row.
+struct LiveBalance {
+  std::int64_t free_raw = 0;
+  std::int64_t locked_raw = 0;
+  std::int64_t total_raw = 0;
+  std::int64_t equity_raw = 0;
+  std::int64_t maintenance_raw = 0;
+  std::int64_t as_of_ns = 0;  // venue time of the last report
+  char asset[9] = {};
+  std::uint8_t venue = 0;
+  std::uint8_t account = 0;
+  std::uint8_t known = 0;  // the venue has reported it
+  std::uint8_t pad_[4] = {};
+};
+static_assert(sizeof(LiveBalance) == 64);
+inline constexpr std::size_t kMaxLiveBalances = 32;
+
 // What a running engine publishes for other threads (monitors, fastmm-live's control loop): the
 // runner stats, kill-switch state and the latency snapshot, refreshed with the latency publication
 // (every second) and immediately whenever a kill switch trips or is reset.
@@ -69,6 +88,9 @@ struct EngineLiveStats {
     bool known = true;
   };
   std::array<Underlying, kMaxUnderlyings> underlyings{};
+  // The balance table, in its order (the first kMaxLiveBalances rows).
+  std::uint32_t balance_count = 0;
+  std::array<LiveBalance, kMaxLiveBalances> balances{};
   LatencySnapshot latency;
 };
 

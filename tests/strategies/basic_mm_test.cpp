@@ -96,13 +96,24 @@ struct QuoteCtx {
   FakeBook b{px("100.00"), px("100.10")};
   int set_quotes_calls = 0;
   bool quoting = true;
+  // What the account's balance covers per side (Qty::max(): not reported), and the last quotes.
+  Qty room_buy = Qty::max();
+  Qty room_sell = Qty::max();
+  Qty resting_sell{};
+  DesiredQuotes last;
+  Qty balance_room(InstrumentId, Side s, Price) const {
+    return s == Side::Buy ? room_buy : room_sell;
+  }
+  Qty open_qty(InstrumentId, Side s) const { return s == Side::Sell ? resting_sell : Qty{}; }
+  bool balances_live() const { return room_buy != Qty::max() || room_sell != Qty::max(); }
   const std::array<Instrument, 1>& instruments() const { return list; }
   const Instrument& instrument(InstrumentId) const { return list[0]; }
   const FakeBook& book(InstrumentId) const { return b; }
   Timestamp now() const { return Timestamp{}; }
   FakePosition position(InstrumentId) const { return {}; }
-  bool set_quotes(InstrumentId, const DesiredQuotes&) {
+  bool set_quotes(InstrumentId, const DesiredQuotes& q) {
     ++set_quotes_calls;
+    last = q;
     return quoting;
   }
   void pull_quotes(InstrumentId) {}
@@ -261,4 +272,26 @@ TEST_CASE("strategies.basic_mm: bps keep four decimals and quantities parse exac
   CHECK(BasicMM::schema().find("half_spread_bps")->type == ParamType::Bps);
   CHECK(BasicMM::schema().find("quote_qty")->type == ParamType::Decimal);
   CHECK(BasicMM::schema().find("pull_on_stale_ms")->type == ParamType::Millis);
+}
+
+TEST_CASE("strategies.basic_mm: each side is cut to what the balance covers") {
+  BasicMM s;
+  REQUIRE_FALSE(s.configure({{"half_spread_bps", "10"}, {"quote_qty", "0.01"}, {"levels", "3"}}));
+  QuoteCtx ctx;
+  const InstrumentId id{0};
+  s.on_book(ctx, id, ctx.b);
+  CHECK(ctx.last.bids.size() == 3);
+  CHECK(ctx.last.asks.size() == 3);
+  // The venue reports: no quote to buy with, 0.0155 of the base, 0.01 of it resting on our asks.
+  ctx.room_buy = Qty{};
+  ctx.room_sell = qt("0.0055");
+  ctx.resting_sell = qt("0.01");
+  BalanceMsg m{};
+  m.hdr.venue = VenueId{0};
+  s.on_balance(ctx, m);
+  CHECK(ctx.set_quotes_calls == 2);
+  CHECK(ctx.last.bids.empty());
+  REQUIRE(ctx.last.asks.size() == 2);
+  CHECK(ctx.last.asks[0].qty == qt("0.01"));
+  CHECK(ctx.last.asks[1].qty == qt("0.005"));  // rounded down to the lot
 }

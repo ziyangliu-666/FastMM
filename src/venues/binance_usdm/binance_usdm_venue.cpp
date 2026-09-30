@@ -322,6 +322,15 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
                       mode.status,
                       mode.error.empty() ? mode.body.substr(0, 120) : mode.error);
     }
+    // "Get Current Multi-Assets Mode": IP weight 30.
+    const HttpReply multi = signed_get("/fapi/v1/multiAssetsMargin", {}, 30);
+    if (multi.ok() && decode_multi_assets_mode(multi.body, multi_assets_).empty()) {
+      FASTMM_LOG_INFO("{}: {} mode", cfg_.name, multi_assets_ ? "multi-assets" : "single-asset");
+    } else {
+      FASTMM_LOG_WARN("{}: multi-assets mode unknown (HTTP {}); taken as single-asset",
+                      cfg_.name,
+                      multi.status);
+    }
     for (const Instrument* inst : mine) {
       // "Symbol Configuration": IP weight 5.
       const HttpReply sc = signed_get("/fapi/v1/symbolConfig", inst->symbol.view(), 5);
@@ -390,7 +399,7 @@ void BinanceUsdmVenue::attach(const SymbolTable& symbols,
   user_parser_ = std::make_unique<BinanceUsdmUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceUsdmOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<binance::BinanceWsApiDecoder>();
-  reconcile_.attach(cfg_.name, id_, order_sink_);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
 }
 
 void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
@@ -708,6 +717,15 @@ void BinanceUsdmVenue::on_user_text(std::string_view t, std::int64_t ts) {
   // A funding payment: booked from the income history, where it has an id, a moment later (every
   // symbol's event arrives at once, and one query covers them all).
   if (r.funding) funding_replay_.due_in(kFundingQueryDelayNs);
+  if (r.multi_assets >= 0 && multi_assets_ != (r.multi_assets == 1)) {
+    multi_assets_ = r.multi_assets == 1;
+    FASTMM_LOG_INFO(
+        "{}: switched to {} mode", cfg_.name, multi_assets_ ? "multi-assets" : "single-asset");
+    reconcile_.request_balances();
+  }
+  // B[] has the wallet balance only: the account (available, margin) is asked for, at most once a
+  // second however many updates arrive.
+  if (r.balances) reconcile_.request_balances();
   if (r.listen_key_expired) {
     FASTMM_LOG_WARN("{}: listenKey expired; requesting a new one", cfg_.name);
     // Not from inside the connection's own callback (net contract): post the close.
@@ -1400,6 +1418,63 @@ void BinanceUsdmVenue::on_reconcile_reply(std::uint64_t generation,
   }
   if (snapshot_replies_ < 2) return;
   reconcile_.fetched(generation, !snapshot_failed_ && snapshot_rows());
+}
+
+// The balance leg. The reply carries no server time (updateTime is per asset, when it last
+// changed), so the snapshot is stamped with the venue clock when it arrived.
+bool BinanceUsdmVenue::fetch_balances(std::uint64_t generation) {
+  if (!connected_ || rest_ == nullptr || rest_hard_stopped_) return false;
+  RestRequest rr;
+  if (!encoder_->encode_rest_account(venue_time_ms(), rr)) return false;
+  std::weak_ptr<int> alive = alive_;
+  const bool queued = rest_->request("GET",
+                                     std::string(rr.path) + "?" + std::string(rr.query.view()),
+                                     api_headers(),
+                                     {},
+                                     [this, alive, generation](const net::HttpResponse& r) {
+                                       if (!alive.expired()) on_account(generation, r);
+                                     });
+  if (queued) rate_.on_sent(rr.weight, now_ns());
+  return queued;
+}
+
+void BinanceUsdmVenue::on_account(std::uint64_t generation, const net::HttpResponse& r) {
+  if (!reconcile_.balances_current(generation)) return;
+  ++stats_.rest_requests;
+  note_rate_headers(r);
+  FuturesAccount acct;
+  std::string err;
+  if (!r.ok()) {
+    ++stats_.rest_errors;
+    err = fmt::format("GET account failed: status={} err={} {}",
+                      r.status,
+                      net::to_string(r.error),
+                      r.body.substr(0, 120));
+  } else {
+    err = decode_account(r.body, acct);
+  }
+  if (!err.empty()) {
+    FASTMM_LOG_WARN("{}: {}", cfg_.name, err);
+    reconcile_.balances_fetched(generation, false, 0);
+    return;
+  }
+  // Available is the asset's availableBalance in single-asset mode. In multi-assets mode that
+  // field is the account's available margin in USD on every asset, so an asset's row takes what
+  // can leave it (maxWithdrawAmount) and the account row, from the totals, is the margin.
+  const auto fields = [](const FuturesMargin& m, bool available) {
+    BalanceFields f;
+    f.free = available ? m.available : m.max_withdraw;
+    f.locked = m.initial;
+    f.total = m.wallet;
+    f.equity = m.margin;
+    f.maintenance = m.maintenance;
+    return f;
+  };
+  for (const FuturesAssetMargin& a : acct.assets)
+    reconcile_.add_balance(a.asset, fields(a.m, !multi_assets_));
+  // The totals are the USDT row again in single-asset mode.
+  if (multi_assets_) reconcile_.add_balance("USD", fields(acct.total, true), BalanceMsg::kAccount);
+  reconcile_.balances_fetched(generation, true, venue_time_ms());
 }
 
 // Decodes the whole snapshot before anything reaches the engine: Oms::reconcile_end() cancels

@@ -156,6 +156,10 @@ TEST_CASE("gemini.encoder: REST payloads name their path and nonce") {
   CHECK(GeminiOrderEncoder::heartbeat(5).payload == R"({"request":"/v1/heartbeat","nonce":5})");
   CHECK(GeminiOrderEncoder::positions(5).target == "/v1/positions");
   CHECK(GeminiOrderEncoder::active_orders(5).target == "/v1/orders");
+  CHECK(GeminiOrderEncoder::balances(5).payload == R"({"request":"/v1/balances","nonce":5})");
+  r = GeminiOrderEncoder::margin(5, "btcgusdperp");
+  CHECK(r.target == "/v1/margin");
+  CHECK(r.payload == R"({"request":"/v1/margin","nonce":5,"symbol":"btcgusdperp"})");
 }
 
 TEST_CASE("gemini.error_map: reasons, WebSocket codes and statuses") {
@@ -278,6 +282,71 @@ TEST_CASE("gemini.rest_decoder: orders, positions, trades, funding, cancel resul
   CHECK_FALSE(decode_error(R"({"result":"ok"})", reason, message));
 }
 
+TEST_CASE("gemini.rest_decoder: balances and margin") {
+  // /v1/balances, the spec's multipleBalances example (specs/openapi/rest.yaml, read 2026-09-30).
+  std::vector<BalanceRow> rows;
+  REQUIRE(
+      decode_balances(
+          R"([{"type":"exchange","currency":"BTC","amount":"5.0","available":"4.5","availableForWithdrawal":"4.5","_timestamp":"2024-03-16T00:00:00.000000Z"},{"type":"exchange","currency":"USD","amount":"15000.00","available":"5000.00","availableForWithdrawal":"5000.00","_timestamp":"2024-03-16T00:00:00.000000Z"},{"type":"exchange","currency":"ETH","amount":"10.0","available":"10.0","availableForWithdrawal":"10.0","_timestamp":"2024-03-16T00:00:00.000000Z"}])",
+          rows)
+          .empty());
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[0].currency == "BTC");
+  CHECK(rows[0].amount == Notional::from_decimal("5").value());
+  CHECK(rows[0].available == Notional::from_decimal("4.5").value());
+  CHECK(rows[0].time_ms == 1710547200000);
+  CHECK(rows[1].currency == "USD");
+  CHECK(rows[1].amount == Notional::from_decimal("15000").value());
+  CHECK(rows[1].available == Notional::from_decimal("5000").value());
+  // The schema's numbers, 19 decimals ("truncated to ... 19 decimal places"), no _timestamp.
+  rows.clear();
+  REQUIRE(
+      decode_balances(
+          R"([{"type":"exchange","currency":"BTC","amount":10.5,"available":"0.1234567890123456789","availableForWithdrawal":9.0}])",
+          rows)
+          .empty());
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].amount == Notional::from_decimal("10.5").value());
+  CHECK(rows[0].available == Notional::from_decimal("0.12345679").value());
+  CHECK(rows[0].time_ms == 0);
+  // Recorded on the sandbox (exchange account, 2026-09-30): strings, _timestamp in nanoseconds,
+  // the same for every row (the reply's time: it moves with every request).
+  rows.clear();
+  REQUIRE(decode_balances(fastmm::test::fixture("gemini/balances_sandbox.json"), rows).empty());
+  REQUIRE(rows.size() == 6);
+  CHECK(rows[0].currency == "USD");
+  CHECK(rows[0].amount == Notional::from_decimal("99966.89444").value());
+  CHECK(rows[0].available == Notional::from_decimal("99966.89444").value());
+  CHECK(rows[0].time_ms == 1790743323506);
+  CHECK(rows[1].currency == "BTC");
+  CHECK(rows[1].amount == Notional::from_decimal("1000.0004").value());
+  for (const BalanceRow& b : rows) CHECK(b.time_ms == 1790743323506);
+  rows.clear();
+  CHECK(decode_balances("[]", rows).empty());
+  CHECK_FALSE(
+      decode_balances(R"([{"currency":"BTC","amount":"x","available":"1"}])", rows).empty());
+
+  // /v1/margin, the spec's example.
+  MarginRow m;
+  REQUIRE(
+      decode_margin(
+          R"({"margin_assets_value":"9800","initial_margin":"6000","available_margin":"3800","margin_maintenance_limit":"5800","leverage":"12.34567","notional_value":"1300","estimated_liquidation_price":"1300","initial_margin_positions":"3500","reserved_margin":"2500","reserved_margin_buys":"1800","reserved_margin_sells":"700","buying_power":"0.19","selling_power":"0.19"})",
+          m)
+          .empty());
+  CHECK(m.assets_value == Notional::from_int(9800));
+  CHECK(m.initial == Notional::from_int(6000));
+  CHECK(m.available == Notional::from_int(3800));
+  CHECK(m.maintenance == Notional::from_int(5800));
+  // What the sandbox's exchange account answers (dev/NOTES.md, Gemini sandbox 2026-09-30).
+  const std::string not_derivatives =
+      R"({"result":"error","reason":"AccountNotOfTypeRequired","message":"Account is not of required type: derivatives"})";
+  CHECK(decode_margin(not_derivatives, m).find("AccountNotOfTypeRequired") != std::string::npos);
+  std::string reason;
+  std::string message;
+  REQUIRE(decode_error(not_derivatives, reason, message));
+  CHECK(reason == "AccountNotOfTypeRequired");
+}
+
 TEST_CASE("gemini.private_parser: the documented order events and replies") {
   Universe u;
   GeminiPrivateParser p(u.symbols, kGemini);
@@ -369,7 +438,69 @@ TEST_CASE("gemini.private_parser: the documented order events and replies") {
   CHECK(r.control.status == 400);
   CHECK(r.control.error_code == -2010);
   CHECK(r.control.msg == "InsufficientFunds");
-  // A balance update is not an order event.
-  CHECK(decode(p, R"({"e":"balanceUpdate","E":1,"u":1,"B":[{"a":"GUSD","f":"1","c":"1"}]})", s)
-            .status == ParseStatus::Ignored);
+}
+
+TEST_CASE("gemini.private_parser: balances@account updates") {
+  Universe u;
+  GeminiPrivateParser p(u.symbols, kGemini);
+  Scratch s;
+  // The documented example (websocket/streams.md "Balance Updates", read 2026-09-30).
+  PrivateDecodeResult r = decode(p,
+                                 R"({
+  "e": "balanceUpdate",
+  "E": 1768250434780000000,
+  "u": 1768250421600000000,
+  "B": [
+    {
+      "a": "USD",
+      "f": "207.39",
+      "c": "207.39"
+    }
+  ]
+})",
+                                 s);
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK(r.count == 0);  // no order event
+  REQUIRE(r.balance.present);
+  CHECK_FALSE(r.balance.truncated);
+  CHECK(r.balance.time_ns == 1768250421600000000);  // u, the account's last update
+  auto rows = p.balance_rows(r.balance);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].asset == "USD");
+  CHECK(rows[0].available == Notional::from_decimal("207.39").value());
+  CHECK(rows[0].confirmed == Notional::from_decimal("207.39").value());
+  // Several assets, one with funds on hold, more decimals than 8 (rounded), a number; one row
+  // without `c` is left out and marks the update truncated.
+  r = decode(
+      p,
+      R"({"e":"balanceUpdate","E":5,"B":[{"a":"BTC","f":"0.5","c":"0.75"},{"a":"GUSD","f":1.123456789,"c":"2.000000004"},{"a":"ETH","f":"1"}]})",
+      s);
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK(r.balance.time_ns == 5);  // no u: E
+  CHECK(r.balance.truncated);
+  rows = p.balance_rows(r.balance);
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].asset == "BTC");
+  CHECK(rows[0].available == Notional::from_decimal("0.5").value());
+  CHECK(rows[0].confirmed == Notional::from_decimal("0.75").value());
+  CHECK(rows[1].asset == "GUSD");
+  CHECK(rows[1].available == Notional::from_decimal("1.12345679").value());
+  CHECK(rows[1].confirmed == Notional::from_decimal("2").value());
+  // Recorded on the sandbox: what balances@account sends when it is subscribed, every asset.
+  r = decode(p, fastmm::test::fixture("gemini/balance_update_sandbox.json"), s);
+  REQUIRE(r.status == ParseStatus::Ok);
+  CHECK_FALSE(r.balance.truncated);
+  CHECK(r.balance.time_ns == 1790743321322462013);
+  rows = p.balance_rows(r.balance);
+  REQUIRE(rows.size() == 6);
+  CHECK(rows[3].asset == "USD");
+  CHECK(rows[3].available == Notional::from_decimal("99966.89").value());
+  CHECK(rows[3].confirmed == Notional::from_decimal("99966.89").value());
+  // An order event after it carries no balance.
+  r = decode(
+      p,
+      R"({"e":"orderUpdate","E":1759291847731455006,"s":"BTCGUSDPERP","i":73797746498585286,"c":"fm000100000001","X":"CANCELED","T":1759291847731455006})",
+      s);
+  CHECK_FALSE(r.balance.present);
+  CHECK(decode(p, R"({"e":"balanceUpdate","E":1})", s).status == ParseStatus::Malformed);
 }

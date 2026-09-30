@@ -26,11 +26,18 @@
 //     fastmm-gateway several engines' ids share the connector and are not in send order.
 //   * nothing while closed: disconnect() closes the driver first, so a reply aborted by the
 //     shutdown cannot start another request.
+//   * the balance leg: after every snapshot it has emitted, the account's balances
+//     (ReconcileHooks::fetch_balances), sent as one BalanceMsg snapshot (kSnapshot, the last one
+//     kSnapshotEnd) of the assets the engine keeps (VenueAssets). request_balances() asks for the
+//     balances alone, at most once per kBalanceIntervalNs (a venue without a balance stream after
+//     its fills). A failed or unanswered fetch is asked again after kRetryNs. It never holds up
+//     the order snapshot, and a venue without one (fetch_balances() false) sends none.
 //
 // Reactor thread only. Nothing here runs per order or per market-data message; the row buffers
 // are reserved up front.
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/venues/balances.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/order_commands.hpp"
 
@@ -84,6 +91,11 @@ class ReconcileHooks {
   // Asks the venue for its open orders (and positions) for `generation`. False: nothing could be
   // sent (no transport now); the driver retries.
   virtual bool fetch_snapshot(std::uint64_t generation) = 0;
+  // Asks the venue for the account's balances for `generation`: rows go into
+  // ReconcileDriver::add_balance and the fetch ends with ReconcileDriver::balances_fetched()
+  // exactly once, unless the driver moved on (balances_current() false). False: nothing was asked
+  // (the venue has no balance query, or no transport now).
+  virtual bool fetch_balances(std::uint64_t /*generation*/) { return false; }
   // Starts the execution replay, or joins the one running. True: the snapshot waits for
   // ReconcileDriver::replay_done(). False: none can run, the snapshot goes now, not exact.
   virtual bool replay_executions() { return false; }
@@ -100,10 +112,15 @@ class ReconcileDriver {
  public:
   static constexpr std::int64_t kRetryNs = 5'000'000'000;
   static constexpr std::int64_t kFetchTimeoutNs = 60'000'000'000;
+  static constexpr std::int64_t kBalanceIntervalNs = 1'000'000'000;
 
   ReconcileDriver(ReconcileHooks& hooks, SentWatermark& sent);
 
-  void attach(std::string_view name, VenueId venue, EventSink* sink);
+  // `instruments`: the assets the balance leg forwards are their base and quote on `venue`.
+  void attach(std::string_view name,
+              VenueId venue,
+              EventSink* sink,
+              const InstrumentTable* instruments = nullptr);
   // connect(): requests are served from now on, when `enabled` (not a dry run, keys usable).
   void open(bool enabled) noexcept;
   // disconnect(): everything in progress is dropped and nothing is asked until open().
@@ -132,6 +149,22 @@ class ReconcileDriver {
   // kRetryNs. Ignored for a generation the driver moved on from.
   void fetched(std::uint64_t generation, bool ok);
 
+  // ---- balance leg ----------------------------------------------------------------------------
+  // The balances alone, now or once kBalanceIntervalNs has passed since the last fetch started.
+  void request_balances();
+  [[nodiscard]] bool balances_current(std::uint64_t generation) const noexcept {
+    return bal_in_flight_ && generation == bal_generation_;
+  }
+  // One asset of the fetch in progress; an asset the engine does not keep is skipped. `flags`:
+  // BalanceMsg::kAccount for the account-wide margin row.
+  void add_balance(std::string_view asset, const BalanceFields& f, std::uint8_t flags = 0);
+  // The balance fetch for `generation` is over: `ok` emits the rows as one snapshot stamped with
+  // the venue's time `venue_ms` (Unix ms; 0: unknown), otherwise it is asked again after kRetryNs.
+  void balances_fetched(std::uint64_t generation, bool ok, std::int64_t venue_ms);
+  [[nodiscard]] const VenueAssets& assets() const noexcept { return assets_; }
+  [[nodiscard]] std::uint64_t balance_snapshots() const noexcept { return bal_snapshots_; }
+  [[nodiscard]] std::uint64_t balance_failures() const noexcept { return bal_failures_; }
+
   // The housekeeping timer: retries and fetch timeouts.
   void on_timer(std::int64_t now_ns);
 
@@ -152,6 +185,8 @@ class ReconcileDriver {
   void fail(std::string_view why);
   void emit();
   void sweep_shadows();
+  void start_balances();
+  void fail_balances(std::string_view why);
 
   ReconcileHooks& hooks_;
   SentWatermark& sent_;
@@ -176,6 +211,16 @@ class ReconcileDriver {
   std::vector<ReconcileMsg> positions_;
   std::vector<ClientOrderId> named_;  // the snapshot's client order ids, sorted
   std::vector<SentShadow> shadows_;   // shadow_ids() scratch
+
+  VenueAssets assets_;
+  bool bal_in_flight_ = false;
+  bool bal_pending_ = false;  // asked for while one was in flight or too soon after the last
+  std::uint64_t bal_generation_ = 0;
+  std::int64_t bal_started_ns_ = 0;
+  std::int64_t bal_retry_at_ns_ = 0;  // 0: none
+  std::uint64_t bal_snapshots_ = 0;
+  std::uint64_t bal_failures_ = 0;
+  std::vector<BalanceMsg> balances_;
 };
 
 }  // namespace fastmm::venues

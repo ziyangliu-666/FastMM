@@ -466,6 +466,9 @@ TEST_CASE("hotpath.noalloc: Coinbase market-data parser and feed, user parser an
         R"({"type":"match","trade_id":5001,"sequence":50,"maker_order_id":"d50ec984-77a8-460a-b958-66f114b0de9b","taker_order_id":"132fb6ae-456b-4654-b4e0-d681ac05cea1","time":"2026-09-30T01:41:51.000001Z","product_id":"BTC-USD","size":"0.1","price":"60000.1","side":"sell","user_id":"u","profile_id":"p","maker_fee_rate":"0.004"})");
     user_frames.emplace_back(
         R"({"type":"done","time":"2026-09-30T01:41:52Z","product_id":"BTC-USD","sequence":10,"price":"60000.1","order_id":"d50ec984-77a8-460a-b958-66f114b0de9b","reason":"canceled","side":"sell","remaining_size":"0.2"})");
+    // The balance channel (subscribed on the same connection).
+    user_frames.emplace_back(
+        R"({"type":"balance","account_id":"d50ec984-77a8-460a-b958-66f114b0de9b","currency":"USD","holds":"1000.23","available":"102030.9900000000000001","updated":"2023-10-10T20:42:27.265Z","timestamp":"2023-10-10T20:42:29.265Z"})");
     check_decoder_noalloc(priv, user_frames);
   }
   // Orders go over REST: the encoder fills fixed buffers (the REST transport is not measured).
@@ -604,7 +607,8 @@ TEST_CASE("hotpath.noalloc: Deribit market-data parser, private parser and order
     check_decoder_noalloc(priv,
                           frames({"deribit/user_orders_open.json",
                                   "deribit/user_orders_cancelled.json",
-                                  "deribit/user_trades.json"}));
+                                  "deribit/user_trades.json",
+                                  "deribit/user_portfolio_btc.json"}));
   }
   const deribit::DeribitOrderEncoder enc(u.symbols, u.instruments, u.ticks, true);
   const Commands cmds(InstrumentId{0}, VenueId{2}, "0.0065", "0.5");

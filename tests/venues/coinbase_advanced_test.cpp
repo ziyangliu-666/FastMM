@@ -301,6 +301,73 @@ TEST_CASE("coinbase_advanced.rest: recorded product and time, orders, fills, rep
         "Unauthorized");
 }
 
+TEST_CASE("coinbase_advanced.rest: accounts to spot balances, the spec's example and paging") {
+  CHECK(AdvancedOrderEncoder::accounts_path({}) == "/api/v3/brokerage/accounts?limit=250");
+  CHECK(AdvancedOrderEncoder::accounts_path("789100") ==
+        "/api/v3/brokerage/accounts?limit=250&cursor=789100");
+  // An account made of the field examples of the Account and GetAccountsResponse schemas (OpenAPI
+  // spec, List Accounts, read 2026-09-30), then a USD account of the same shape, and the accounts
+  // spot orders cannot draw on: a vault, a US derivatives and an INTX one.
+  std::vector<AdvBalanceRow> rows;
+  std::string cursor;
+  bool has_next = false;
+  REQUIRE(
+      decode_adv_balances(
+          R"({"accounts":[{"uuid":"8bfc20d7-f7c6-4422-bf07-8243ca4169fe","name":"BTC Wallet","currency":"BTC","available_balance":{"value":"1.23","currency":"BTC"},"default":false,"active":true,"created_at":"2021-05-31T09:59:59Z","updated_at":"2021-05-31T09:59:59Z","deleted_at":"2021-05-31T09:59:59Z","type":"FIAT","ready":true,"hold":{"value":"1.23","currency":"BTC"},"retail_portfolio_id":"b87a2d3f-8a1e-49b3-a4ea-402d8c389aca","platform":"ACCOUNT_PLATFORM_CONSUMER"},)"
+          R"({"uuid":"u-2","name":"USD Wallet","currency":"USD","available_balance":{"value":"250.1234567891","currency":"USD"},"default":true,"active":true,"type":"ACCOUNT_TYPE_FIAT","ready":true,"hold":{"value":"0","currency":"USD"},"platform":"ACCOUNT_PLATFORM_CONSUMER"},)"
+          R"({"uuid":"u-3","currency":"BTC","available_balance":{"value":"5","currency":"BTC"},"type":"ACCOUNT_TYPE_VAULT","hold":{"value":"0","currency":"BTC"},"platform":"ACCOUNT_PLATFORM_CONSUMER"},)"
+          R"({"uuid":"u-4","currency":"USD","available_balance":{"value":"7","currency":"USD"},"type":"ACCOUNT_TYPE_FIAT","hold":{"value":"0","currency":"USD"},"platform":"ACCOUNT_PLATFORM_CFM_CONSUMER"},)"
+          R"({"uuid":"u-5","currency":"USDC","available_balance":{"value":"9","currency":"USDC"},"type":"ACCOUNT_TYPE_CRYPTO","hold":{"value":"0","currency":"USDC"},"platform":"ACCOUNT_PLATFORM_INTX"}],"has_next":true,"cursor":"789100","size":5})",
+          rows,
+          cursor,
+          has_next)
+          .empty());
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].currency == "BTC");
+  CHECK(rows[0].available == Notional::from_decimal("1.23").value());
+  CHECK(rows[0].hold == Notional::from_decimal("1.23").value());
+  CHECK(rows[1].currency == "USD");
+  CHECK(rows[1].available == Notional::from_decimal("250.12345678").value());  // truncated
+  CHECK(rows[1].hold.is_zero());
+  CHECK(has_next);
+  CHECK(cursor == "789100");
+  // The last page appends; an account without a hold object holds nothing.
+  REQUIRE(
+      decode_adv_balances(
+          R"({"accounts":[{"uuid":"u-6","currency":"ETH","available_balance":{"value":"0.5","currency":"ETH"},"type":"ACCOUNT_TYPE_CRYPTO"}],"has_next":false,"cursor":"","size":1})",
+          rows,
+          cursor,
+          has_next)
+          .empty());
+  REQUIRE(rows.size() == 3);
+  CHECK(rows[2].currency == "ETH");
+  CHECK(rows[2].hold.is_zero());
+  CHECK_FALSE(has_next);
+  CHECK(decode_adv_balances(
+            R"({"error":"UNAUTHORIZED","message":"Unauthorized"})", rows, cursor, has_next) ==
+        "accounts: Unauthorized");
+  CHECK(
+      decode_adv_balances(
+          R"({"accounts":[{"uuid":"u","currency":"BTC","available_balance":{"value":"1e3"}}],"has_next":false})",
+          rows,
+          cursor,
+          has_next) == "accounts: bad available_balance or hold for BTC");
+
+  // The live account's reply (2026-09-30, read only; account and portfolio ids replaced): two
+  // empty fiat accounts, no crypto account at all.
+  rows.clear();
+  REQUIRE(decode_adv_balances(
+              fastmm::test::fixture("coinbase/advanced_accounts.json"), rows, cursor, has_next)
+              .empty());
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].currency == "SGD");
+  CHECK(rows[1].currency == "USD");
+  CHECK(rows[1].available.is_zero());
+  CHECK(rows[1].hold.is_zero());
+  CHECK_FALSE(has_next);
+  CHECK(cursor.empty());
+}
+
 TEST_CASE("coinbase_advanced.error_map: order, cancel and HTTP failures") {
   CHECK(map_order_failure("INSUFFICIENT_FUND").reason == RejectReason::InsufficientBalance);
   CHECK(map_order_failure("INVALID_LIMIT_PRICE_POST_ONLY").reason ==

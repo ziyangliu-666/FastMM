@@ -21,6 +21,17 @@
 //              posSide long / short           -> counted as a hedge-mode position, not decoded
 //   balance_and_position data[] eventType funding_fee -> no message; funding_event is set so the
 //              venue reads the bills (the push has the balance change but no id)
+//   account  data[0] (#trading-account-websocket-account-channel, read 2026-09-30), once
+//              set_balances() named the assets:
+//              details[] of a kept currency   -> BalanceMsg (okx_balance.hpp), stamped with its
+//                                                uTime (the account's uTime when it has none)
+//              multi-currency / PM mode       -> BalanceMsg kAccount, asset USD, the account's
+//                                                uTime
+//              Every amount is absolute. The initial push (eventType snapshot) lists every
+//              currency with a balance, an event_update only the currencies that changed: each
+//              is a full update of that currency. OKX pushes only currencies "with non-zero
+//              balance", so one that went to zero may never be named: its row then moves with
+//              the engine's own fills until the next REST snapshot (every reconciliation) sets it.
 //   {"event":"login"|"subscribe"|"error"|"channel-conn-count"|"notice",..}, "pong" -> control
 //
 // Client ids come from clOrdId; ids that are not FastMM ids yield an invalid ClientOrderId (the
@@ -32,7 +43,9 @@
 // longer pending and is ignored.
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
+#include "fastmm/venues/balances.hpp"
 #include "fastmm/venues/feed.hpp"
+#include "fastmm/venues/okx/okx_balance.hpp"
 #include "fastmm/venues/okx/okx_md_parser.hpp"
 #include "fastmm/venues/symbology.hpp"
 
@@ -52,6 +65,7 @@ struct PrivateParserStats {
   std::uint64_t positions = 0;
   std::uint64_t hedge_positions = 0;  // posSide long / short: not decoded
   std::uint64_t funding_events = 0;
+  std::uint64_t balances = 0;  // account-channel items decoded
   std::uint64_t control = 0;
   std::uint64_t ignored = 0;
   std::uint64_t malformed = 0;
@@ -81,6 +95,13 @@ class OkxPrivateParser {
                              Cycles t0,
                              std::span<std::byte> out) noexcept;
 
+  // The account channel is decoded for these assets (nullptr: ignored), mapped for `mode`.
+  // `assets` must outlive the parser.
+  void set_balances(const VenueAssets* assets, OkxAccountMode mode) noexcept {
+    assets_ = assets;
+    mode_ = mode;
+  }
+
   [[nodiscard]] const PrivateParserStats& stats() const noexcept { return stats_; }
 
  private:
@@ -89,6 +110,8 @@ class OkxPrivateParser {
   const SymbolTable& symbols_;
   const InstrumentTable& instruments_;
   VenueId venue_;
+  const VenueAssets* assets_ = nullptr;
+  OkxAccountMode mode_ = OkxAccountMode::Unknown;
   PrivateParserStats stats_;
 };
 

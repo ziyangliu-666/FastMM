@@ -107,6 +107,9 @@ class BinanceUsdmOrderEncoder {
                                  std::int64_t timestamp_ms,
                                  RestRequest& out);
 
+  // GET /fapi/v3/account (weight 5): the account's margin per asset and in total.
+  bool encode_rest_account(std::int64_t timestamp_ms, RestRequest& out);
+
   // GET /fapi/v1/userTrades (weight 5): the account's executions on `symbol`. `from_id` > 0 asks
   // from that trade id on; otherwise `start_ms` (and `end_ms` when > 0) bound the window, which the
   // venue caps at 7 days and 3 months back. fromId cannot be sent with a time range, so it wins.

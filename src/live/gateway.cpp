@@ -3,9 +3,11 @@
 #include "fastmm/live/gateway.hpp"
 
 #include "fastmm/core/account_book.hpp"
+#include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/book/book_snapshot.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
+#include "fastmm/core/engine_runner.hpp"
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/risk.hpp"
@@ -290,6 +292,8 @@ struct Route {
 struct GwOrder {
   static constexpr std::uint8_t kCancelSent = 1U << 0;
   static constexpr std::uint8_t kRests = 1U << 1;  // it can rest in the book (not IOC, FOK, market)
+  static constexpr std::uint8_t kReduceOnly = 1U << 2;
+  static constexpr std::uint8_t kAcked = 1U << 3;  // the venue acknowledged it (or filled it)
   InstrumentId inst{};
   std::uint16_t epoch = 0;
   std::uint8_t flags = 0;
@@ -299,6 +303,7 @@ struct GwOrder {
   std::int64_t replaced_notional = 0;  // of the order this one replaces, restored on a reject
   Qty leaves{};                        // working quantity ([gateway.underlying])
   Qty replaced_leaves{};               // of the order this one replaces, restored on a reject
+  std::int64_t hold = 0;               // what it holds of the account's balance (BalanceBook::hold)
   std::uint64_t g = 0;                 // 1-based forward index; 1 when learned from a snapshot
   std::uint32_t gen = 0;               // the last reconciliation that reported it
   ClientOrderId replaces{};
@@ -354,6 +359,17 @@ struct VenueRouter {
   std::array<std::shared_ptr<const std::unordered_set<std::string>>, kMaxInstruments> seed_known{};
   bool killed = false;  // it acted on the account's trip
 
+  // The account's balances on this venue (core/balance_book.hpp): the venue's reports moved by the
+  // orders and fills of every attached strategy, for the balance guard. Published for the status
+  // file every kBalancePubNs while the venue reports.
+  std::unique_ptr<BalanceBook> balances = std::make_unique<BalanceBook>();
+  struct BalancePub {
+    std::uint32_t count = 0;
+    std::array<LiveBalance, kMaxLiveBalances> rows{};
+  };
+  Seqlocked<BalancePub> balance_pub;
+  std::int64_t balance_pub_ns = 0;
+
   // Shared instruments. The live attachment of each slot. Per instrument: each slot that seeded
   // the account's position with its store, and the history that seed holds (its replay start and
   // the trade ids its store listed); the sum of every slot's share and the unattributed part; per
@@ -400,6 +416,7 @@ struct VenueRouter {
   std::atomic<std::uint64_t> refused_underlying{0};
   std::atomic<std::uint64_t> refused_underlying_mark{0};
   std::atomic<std::uint64_t> refused_self_trade{0};
+  std::atomic<std::uint64_t> refused_balance{0};
   std::atomic<std::uint64_t> account_skipped{0};  // replayed fills / funding its seed holds
   std::atomic<std::uint64_t> account_md_lost{0};  // times acct_md was full
   std::atomic<std::uint64_t> untracked{0};        // the order table was full
@@ -484,6 +501,24 @@ void set_account_position(VenueRouter& v, InstrumentId id, Qty qty, Price avg) n
   publish_account(v);
 }
 
+// An execution the account books for the first time moves the account's balances.
+void balance_fill(VenueRouter& v,
+                  const OrderFillMsg& m,
+                  std::int64_t before,
+                  std::int64_t after) noexcept {
+  const FeeAsset fee_asset = m.fee_asset > FeeAsset::Other ? FeeAsset::Quote : m.fee_asset;
+  v.balances->on_fill(m.hdr.instrument,
+                      v.insts->get(m.hdr.instrument),
+                      m.side,
+                      m.price,
+                      m.qty,
+                      m.fee,
+                      fee_asset,
+                      before,
+                      after,
+                      m.hdr.exch_ts);
+}
+
 // A strategy's store joins a shared instrument's account position, as its share.
 void seed_share(VenueRouter& v, InstrumentId id, std::uint8_t slot, Qty qty, Price avg) noexcept {
   v.book->add_position(id, qty, avg);
@@ -536,6 +571,7 @@ void account_fill_shared(VenueRouter& v, const OrderFillMsg& m, std::uint8_t tag
   if (!v.book->first_time(m, tag)) return;
   v.book->book(m);
   const std::int64_t after = v.book->positions().get(id).qty.raw;
+  balance_fill(v, m, before, after);
   add_share(v, id, tag, after - before);
   v.acct->qty[id.value].store(after, std::memory_order_relaxed);
   publish_unexplained(v, id);
@@ -554,9 +590,12 @@ void account_fill(VenueRouter& v, const OrderFillMsg& m) {
       return;
     }
   }
+  const std::int64_t before = v.book->positions().get(id).qty.raw;
   if (!v.book->first_time(m)) return;
   v.book->book(m);
-  v.acct->qty[id.value].store(v.book->positions().get(id).qty.raw, std::memory_order_relaxed);
+  const std::int64_t after = v.book->positions().get(id).qty.raw;
+  balance_fill(v, m, before, after);
+  v.acct->qty[id.value].store(after, std::memory_order_relaxed);
   publish_account(v);
 }
 
@@ -760,9 +799,33 @@ void add_leaves(VenueRouter& v, const GwOrder& o, std::int64_t d) noexcept {
                                                                          std::memory_order_relaxed);
 }
 
-void set_leaves(VenueRouter& v, GwOrder& o, Qty leaves) noexcept {
+// An order's hold on the account's balance follows its working quantity, at the venue time `at` of
+// the event that changed it (invalid: the gateway's own bookkeeping, always applied).
+void sync_hold(VenueRouter& v, GwOrder& o, Timestamp at) noexcept {
+  if (!v.insts->contains(o.inst)) return;
+  Price px = o.price;
+  if (!px.is_positive()) {
+    const AccountBook::Book* b = v.book->book(o.inst);
+    if (b != nullptr && b->is_valid()) px = b->mid();
+  }
+  const std::int64_t h = v.balances->hold(
+      o.inst, v.insts->get(o.inst), o.side, px, o.leaves, (o.flags & GwOrder::kReduceOnly) != 0);
+  if (h == o.hold) return;
+  v.balances->move_hold(o.inst, o.side, o.hold, h, at, (o.flags & GwOrder::kAcked) == 0);
+  o.hold = h;
+}
+
+// The venue has taken the order: the balances stop keeping its hold on top of their reports.
+void acknowledge(VenueRouter& v, GwOrder& o, Timestamp at) noexcept {
+  if ((o.flags & GwOrder::kAcked) != 0) return;
+  o.flags |= GwOrder::kAcked;
+  v.balances->acknowledge(o.inst, o.side, o.hold, at);
+}
+
+void set_leaves(VenueRouter& v, GwOrder& o, Qty leaves, Timestamp at = {}) noexcept {
   add_leaves(v, o, leaves.raw - o.leaves.raw);
   o.leaves = leaves;
+  sync_hold(v, o, at);
 }
 
 // A shared instrument's orders that can rest, for the self-trade check: `id` leaves the list of its
@@ -779,11 +842,13 @@ void sync_resting(VenueRouter& v, ClientOrderId id, const GwOrder& o) {
   }
 }
 
-void untrack(VenueRouter& v, ClientOrderId id) noexcept {
+void untrack(VenueRouter& v, ClientOrderId id, Timestamp at = {}) noexcept {
   if (const GwOrder* o = v.orders.find(id)) {
     drop_resting(v, id, *o);
     v.open_notional -= o->notional;
     add_leaves(v, *o, -o->leaves.raw);
+    if (o->hold != 0)
+      v.balances->move_hold(o->inst, o->side, o->hold, 0, at, (o->flags & GwOrder::kAcked) == 0);
     v.orders.erase(id);
   }
 }
@@ -867,11 +932,12 @@ void route_reconcile(VenueRouter& v, const ReconcileMsg& m) {
           o.g = 1;
           o.gen = v.gen;
           o.venue_order_id = m.venue_order_id;
-          o.flags = GwOrder::kRests;
+          o.flags = GwOrder::kRests | GwOrder::kAcked;
           if (v.orders.insert(m.cl_ord_id, o).second) {
             v.open_notional += o.notional;
             add_leaves(v, o, o.leaves.raw);
             sync_resting(v, m.cl_ord_id, o);
+            sync_hold(v, *v.orders.find(m.cl_ord_id), Timestamp{});
           }
         }
         if (r->in_snapshot) push_order(*r, m.hdr);
@@ -1072,13 +1138,14 @@ void route_fill(VenueRouter& v, const OrderFillMsg& m) {
   const bool replayed = (m.flags & OrderFillMsg::kReplayed) != 0;
   if (!replayed) {
     if (GwOrder* o = v.orders.find(m.cl_ord_id)) {
+      acknowledge(v, *o, m.hdr.exch_ts);
       if (m.leaves_qty.is_zero()) {
-        untrack(v, m.cl_ord_id);
+        untrack(v, m.cl_ord_id, m.hdr.exch_ts);
       } else if (v.insts->contains(o->inst)) {
         const std::int64_t n = v.insts->get(o->inst).notional(o->price, m.leaves_qty).raw;
         v.open_notional += n - o->notional;
         o->notional = n;
-        set_leaves(v, *o, m.leaves_qty);
+        set_leaves(v, *o, m.leaves_qty, m.hdr.exch_ts);
       }
     }
   }
@@ -1127,9 +1194,10 @@ void route_order(VenueRouter& v, const EventHeader& h) {
       bool cancel_sent = false;
       if (GwOrder* o = v.orders.find(m.cl_ord_id)) {
         o->venue_order_id = m.venue_order_id;
+        acknowledge(v, *o, m.hdr.exch_ts);
         cancel_sent = (o->flags & GwOrder::kCancelSent) != 0;
         if (o->replaces.valid()) {
-          untrack(v, o->replaces);
+          untrack(v, o->replaces, m.hdr.exch_ts);
           if (GwOrder* again = v.orders.find(m.cl_ord_id)) again->replaces = ClientOrderId{};
         }
       }
@@ -1159,7 +1227,7 @@ void route_order(VenueRouter& v, const EventHeader& h) {
     }
     case EventType::OrderCancelAck: {
       const auto& m = msg_cast<OrderCancelAckMsg>(&h);
-      untrack(v, m.cl_ord_id);
+      untrack(v, m.cl_ord_id, m.hdr.exch_ts);
       route_by_id(v, m);
       return;
     }
@@ -1171,7 +1239,7 @@ void route_order(VenueRouter& v, const EventHeader& h) {
     }
     case EventType::OrderExpired: {
       const auto& m = msg_cast<OrderExpiredMsg>(&h);
-      untrack(v, m.cl_ord_id);
+      untrack(v, m.cl_ord_id, m.hdr.exch_ts);
       route_by_id(v, m);
       return;
     }
@@ -1194,6 +1262,11 @@ void route_order(VenueRouter& v, const EventHeader& h) {
     }
     case EventType::Reconcile:
       route_reconcile(v, msg_cast<ReconcileMsg>(&h));
+      return;
+    case EventType::Balance:
+      // The account's, and every attachment's: each engine keeps the venue's balances too.
+      v.balances->on_report(msg_cast<BalanceMsg>(&h));
+      for (Route* r : v.routes) push_order(*r, h);
       return;
     default:
       // Connection states, a venue kill, latency samples: every attachment.
@@ -1259,6 +1332,9 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
     case RejectReason::GatewaySelfTrade:
       v.refused_self_trade.fetch_add(1, std::memory_order_relaxed);
       break;
+    case RejectReason::GatewayBalanceShort:
+      v.refused_balance.fetch_add(1, std::memory_order_relaxed);
+      break;
     default:
       v.refused_owner.fetch_add(1, std::memory_order_relaxed);
       break;
@@ -1268,9 +1344,10 @@ void refuse(VenueRouter& v, Route& r, const EventHeader& h, ClientOrderId id, Re
 // The account guards: the sender trades the instrument, the account's kill switch, on a shared
 // instrument no trade with another attachment's resting order, the notional working at the venue,
 // a current rate for the order's currency ([accounting], when it adds to exposure; an unknown side
-// counts as adding), the account's exposure (when the side is known), the venue's order rate.
-// `replaced` is the working notional of the order a replace takes over, `replaced_leaves` its
-// working quantity.
+// counts as adding), the account's exposure (when the side is known), the account's balance on the
+// venue ([gateway] check_balance, once the venue reports; when the side is known), the venue's
+// order rate. `replaced` is the working notional of the order a replace takes over,
+// `replaced_leaves` its working quantity and `replaced_hold` what it holds of the balance.
 RejectReason check_order(VenueRouter& v,
                          const Route& r,
                          InstrumentId inst,
@@ -1278,8 +1355,10 @@ RejectReason check_order(VenueRouter& v,
                          Price px,
                          Qty qty,
                          bool market,
+                         bool reduce_only,
                          std::int64_t replaced,
                          Qty replaced_leaves,
+                         std::int64_t replaced_hold,
                          std::int64_t* notional) {
   if (inst.value >= kMaxInstruments || !r.claims[inst.value] || !v.insts->contains(inst))
     return RejectReason::GatewayNotOwner;
@@ -1322,6 +1401,18 @@ RejectReason check_order(VenueRouter& v,
         return why;
     }
   }
+  if (side != nullptr && v.balances->live() && v.balances->check_enabled()) {
+    Price hold_px = px;
+    if (market) {
+      const AccountBook::Book* b = v.book->book(inst);
+      hold_px = b != nullptr && b->is_valid() ? b->mid() : Price{};
+    }
+    const std::int64_t q = v.book->positions().get(inst).qty.raw;
+    const bool reduces = q != 0 && (q > 0) != (*side == Side::Buy) && qty.raw <= (q < 0 ? -q : q);
+    if (!v.balances->covers(
+            inst, v.insts->get(inst), *side, hold_px, qty, replaced_hold, reduce_only, reduces))
+      return RejectReason::GatewayBalanceShort;
+  }
   if (!v.rate.try_take(steady_now())) return RejectReason::GatewayRateLimit;
   return RejectReason::None;
 }
@@ -1336,6 +1427,7 @@ void track(VenueRouter& v, ClientOrderId id, const GwOrder& o) noexcept {
     v.open_notional += o.notional;
     add_leaves(v, o, o.leaves.raw);
     sync_resting(v, id, o);
+    sync_hold(v, *v.orders.find(id), Timestamp{});
   } else {
     v.untracked.fetch_add(1, std::memory_order_relaxed);
   }
@@ -1355,8 +1447,18 @@ std::size_t forward(VenueRouter& v, Route& r) {
         const auto& m = msg_cast<OutNewOrderMsg>(&h);
         std::int64_t notional = 0;
         const bool market = m.type == OrderType::Market;
-        if (const RejectReason why = check_order(
-                v, r, h.instrument, &m.side, m.price, m.qty, market, 0, Qty{}, &notional);
+        if (const RejectReason why = check_order(v,
+                                                 r,
+                                                 h.instrument,
+                                                 &m.side,
+                                                 m.price,
+                                                 m.qty,
+                                                 market,
+                                                 m.reduce_only != 0,
+                                                 0,
+                                                 Qty{},
+                                                 0,
+                                                 &notional);
             why != RejectReason::None) {
           refuse(v, r, h, m.cl_ord_id, why);
           send = false;
@@ -1371,6 +1473,7 @@ std::size_t forward(VenueRouter& v, Route& r) {
         o.leaves = m.qty;
         if (!market && (m.tif == TimeInForce::Gtc || m.tif == TimeInForce::Day))
           o.flags = GwOrder::kRests;
+        if (m.reduce_only != 0) o.flags |= GwOrder::kReduceOnly;
         note_forwarded(v, m.cl_ord_id);
         o.g = v.forwarded;
         track(v, m.cl_ord_id, o);
@@ -1381,27 +1484,32 @@ std::size_t forward(VenueRouter& v, Route& r) {
         GwOrder* orig = v.orders.find(m.orig_cl_ord_id);
         const std::int64_t replaced = orig != nullptr ? orig->notional : 0;
         const Qty replaced_leaves = orig != nullptr ? orig->leaves : Qty{};
+        const std::int64_t replaced_hold = orig != nullptr ? orig->hold : 0;
         // A replace keeps its order's side; an order the gateway does not track has none here.
         const Side side = orig != nullptr ? orig->side : Side::Buy;
         std::int64_t notional = 0;
-        if (const RejectReason why = check_order(v,
-                                                 r,
-                                                 h.instrument,
-                                                 orig != nullptr ? &side : nullptr,
-                                                 m.price,
-                                                 m.qty,
-                                                 /*market=*/false,
-                                                 replaced,
-                                                 replaced_leaves,
-                                                 &notional);
+        if (const RejectReason why =
+                check_order(v,
+                            r,
+                            h.instrument,
+                            orig != nullptr ? &side : nullptr,
+                            m.price,
+                            m.qty,
+                            /*market=*/false,
+                            orig != nullptr && (orig->flags & GwOrder::kReduceOnly) != 0,
+                            replaced,
+                            replaced_leaves,
+                            replaced_hold,
+                            &notional);
             why != RejectReason::None) {
           refuse(v, r, h, m.cl_ord_id, why);
           send = false;
           break;
         }
-        const std::uint8_t rests = orig != nullptr
-                                       ? static_cast<std::uint8_t>(orig->flags & GwOrder::kRests)
-                                       : GwOrder::kRests;
+        const std::uint8_t rests =
+            orig != nullptr
+                ? static_cast<std::uint8_t>(orig->flags & (GwOrder::kRests | GwOrder::kReduceOnly))
+                : GwOrder::kRests;
         if (orig != nullptr) {
           v.open_notional -= orig->notional;
           orig->notional = 0;
@@ -1544,6 +1652,31 @@ void kill_venue(VenueRouter& v) {
 // VenueSlot::Hook, after every reactor iteration: the account's trip, the gateway's cancels, the
 // attachments' orders through the account guards into the venue, md recovery, then the engines'
 // wake-ups.
+// The venue's rows of the account's balance table, for the status file (every 200 ms at most).
+void publish_balances(VenueRouter& v) noexcept {
+  if (!v.balances->live()) return;
+  const std::int64_t now = steady_now().ns;
+  if (now - v.balance_pub_ns < 200'000'000) return;
+  v.balance_pub_ns = now;
+  VenueRouter::BalancePub p;
+  for (std::size_t i = 0; i < v.balances->size() && p.count < kMaxLiveBalances; ++i) {
+    const BalanceBook::Row& r = v.balances->row(i);
+    if (r.venue != v.vid) continue;
+    LiveBalance& b = p.rows[p.count++];
+    b.venue = r.venue.value;
+    b.account = r.account ? 1 : 0;
+    b.known = r.reported ? 1 : 0;
+    std::memcpy(b.asset, r.asset.data(), r.asset.size());
+    b.free_raw = r.free;
+    b.locked_raw = r.locked;
+    b.total_raw = r.total;
+    b.equity_raw = r.equity;
+    b.maintenance_raw = r.maintenance;
+    b.as_of_ns = r.as_of.ns;
+  }
+  v.balance_pub.store(p);
+}
+
 std::size_t gateway_hook(void* ctx) noexcept {
   auto& v = *static_cast<VenueRouter*>(ctx);
   if (FASTMM_UNLIKELY(v.acct->tripped.load(std::memory_order_relaxed)) && !v.killed) kill_venue(v);
@@ -1559,6 +1692,7 @@ std::size_t gateway_hook(void* ctx) noexcept {
     ++n;
   }
   n += mark_account(v);
+  publish_balances(v);
   return n;
 }
 
@@ -1701,6 +1835,11 @@ class Gateway {
         kill_path_(std::move(kill_path)),
         kill_(kill) {
     const std::int64_t start_ms = wall_now().ns / 1'000'000;
+    std::vector<std::string> venue_names;
+    for (const auto& s : slots) venue_names.emplace_back(s->venue->name());
+    const FeeTable fees = fee_table(cfg, &insts, &venue_names);
+    BalanceConfig balance = balance_config(cfg, &insts, &venue_names);
+    balance.check = cfg.gateway.check_balance;
     std::int64_t max_notional = 0;
     if (!cfg.gateway.max_open_notional.empty()) {
       if (const auto n = Notional::from_decimal(cfg.gateway.max_open_notional))
@@ -1718,6 +1857,7 @@ class Gateway {
       v->dry_run = opts.dry_run;
       v->acct = &acct;
       v->book = std::make_unique<AccountBook>(insts, v->vid, acct.fx);
+      v->balances->build(insts, fees, balance);
       v->acct_md = std::make_unique<MsgRing>(ring_size(cfg.engine.md_ring_bytes));
       // Before any strategy seeded an instrument, a replayed execution from before the gateway
       // started is none of the account's business: the positions start with the strategies'.
@@ -2395,6 +2535,22 @@ class Gateway {
       gv.refused[7] = v.refused_underlying.load(std::memory_order_relaxed);
       gv.refused[8] = v.refused_underlying_mark.load(std::memory_order_relaxed);
       gv.refused[9] = v.refused_self_trade.load(std::memory_order_relaxed);
+      gv.refused[10] = v.refused_balance.load(std::memory_order_relaxed);
+      const VenueRouter::BalancePub bp = v.balance_pub.load();
+      for (std::uint32_t k = 0; k < bp.count && s.balance_count < kStatusMaxBalances; ++k) {
+        const LiveBalance& lb = bp.rows[k];
+        StatusBalance& sb = s.balances[s.balance_count++];
+        set_status_name(sb.asset, std::string_view(lb.asset, ::strnlen(lb.asset, sizeof lb.asset)));
+        sb.venue = lb.venue;
+        sb.account = lb.account;
+        sb.known = lb.known;
+        sb.free_raw = lb.free_raw;
+        sb.locked_raw = lb.locked_raw;
+        sb.total_raw = lb.total_raw;
+        sb.equity_raw = lb.equity_raw;
+        sb.maintenance_raw = lb.maintenance_raw;
+        sb.as_of_ns = lb.as_of_ns;
+      }
       const Account::Sum t = acct_.venue_sum(i);
       gv.realized_raw = t.realized;
       gv.unrealized_raw = t.unrealized;

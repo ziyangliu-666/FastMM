@@ -36,7 +36,8 @@ The first failing check decides the reason.
 | 18 | `MaxUnderlyingNet` | the net position in the order's underlying, with the open orders on the order's side and this order, would move further past the limit | `[risk.underlying.<BASE>] max_net` |
 | 19 | `MaxOpenOrders` | the instrument already has this many open orders (new orders only) | `max_open_orders` |
 | 20 | `SelfTradePrevention` | a limit price would trade against one of our own resting orders | `stp` |
-| 21 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
+| 21 | `BalanceShort` | the account's balance on the venue does not cover the order ([Balance check](#balance-check)) | `check_balance` |
+| 22 | `RateLimit` | the token bucket is empty | `orders_per_sec`, `burst` |
 
 - A limit of 0 turns its check off; the checks against the instrument's reference data always run.
 - A replace excludes the existing order's remaining quantity from the position prediction and is not counted against `max_open_orders`.
@@ -55,6 +56,19 @@ The stale-market-data check (7) measures the time since the book last changed. D
 - Venue times of the WebSocket JSON streams are in milliseconds, so the lag has 1 ms steps there; SBE streams carry microseconds.
 
 Binance Spot BTCU (session of 2026-09-26, 3 h, SBE market data): the excess lag of each message rises from 0.2 ms to about 36 ms within 100 ms of a price burst and decays in about 300 ms; the ack latency of our orders regressed on it gives R² 0.41. A 2 ms limit held the gate for 1.4 % of the session, a 5 ms limit for 0.6 %. In backtests of that session (`configs/research/lead-mm-btcu-live-bt.toml`, `md_arrival = "recorded"`), 2 ms took the fills from 235 to 180 and 5 ms to 191, with 11 % and 2 % more orders; the 1 s markout moved from -0.08 bps to -0.05 and -0.04 bps, inside each other's 95 % intervals.
+
+## Balance check
+
+Connectors report the account's balances as `BalanceMsg` events on the order ring: a snapshot after every reconciliation (and at start-up), and the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)). The engine keeps one row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for a venue that reports account-wide margin (`include/fastmm/core/balance_book.hpp`). The events are journaled; a replay rebuilds the same rows.
+
+A report is the account as of its venue time and counts the orders the venue had acknowledged. An order still waiting for its ack keeps its hold on top of the report until the ack says whether the report had it (stamped at or before the report's time). Until the next report the engine moves the row with its own events, except those the venue stamped at or before the report's time (the report has them); the events of an order the venue has not acknowledged always count:
+
+- An order holds part of a row, moving it from free to locked: a spot buy its notional plus the taker fee (`fees(id)`) in the quote asset, a spot sell its quantity in the base asset, a derivative its notional times `[[instruments]] initial_margin` in its margin row, the larger of its instrument's buy and sell sides. Reduce-only derivative orders hold nothing. An order's end releases its hold; a fill releases the filled part and an amend changes it.
+- A fill moves the assets: a spot buy adds the base (less a base-asset fee) and takes the notional (and a quote-asset fee) from the quote, a sell the reverse. A derivative fill moves the position's initial margin at the fill price into locked and takes a fee in the settlement asset.
+
+The estimate counts twice an event that reaches the engine after a report that already had it and carries no venue time, and the hold of an order whose ack carries none, until the next report. Push venues send an update after every order change.
+
+Check 21 refuses an order whose hold, less what the order it replaces holds, exceeds the row's free estimate; for a derivative, what it adds to its instrument's larger side, and only while the available margin is zero or more. A derivative order that is reduce-only or reduces the position passes, and so does one without `initial_margin` while the available margin is positive. A row the venue has not reported refuses nothing, so a venue without balance reports is not checked. `[risk] check_balance = false` keeps the rows and turns the check off. `fastmm-gateway` checks the account's balance over every attached strategy's orders as well ([Account guards](../how-to/operations/run-behind-a-gateway.md#account-guards)).
 
 ## Currencies
 

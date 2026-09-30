@@ -24,6 +24,11 @@
 // (order_status=OPEN) become one Begin / OpenOrder* / End. A fill names its order by the venue's
 // order_id: the connector maps the ones it knows and asks GET /orders/historical/<id> for the
 // others. Spot has no positions to report.
+//
+// Balances: GET /accounts (paged) after every snapshot (ReconcileDriver's balance leg), stamped
+// with the venue clock when the last page arrived (the reply carries no time of its own). No
+// channel reports spot balances, so executions read or replayed ask for the balances again
+// (request_balances(), at most once a second).
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/seqlock.hpp"
@@ -190,6 +195,9 @@ class CoinbaseAdvancedVenue final : public Venue, private ReconcileHooks {
   void shadow_ids(std::vector<SentShadow>& out) override;
   void drop_shadow(ClientOrderId id) override;
   bool request_open_orders_page(std::uint64_t generation, const std::string& cursor);
+  // ReconcileHooks: GET /accounts (paged), then the balance snapshot.
+  bool fetch_balances(std::uint64_t generation) override;
+  bool request_accounts_page(std::uint64_t generation, const std::string& cursor);
   [[nodiscard]] bool replay_ready() const noexcept;
   bool query_fills(const ReplayQuery& q);
   bool emit_replayed(const AdvFillRow& f);
@@ -249,6 +257,8 @@ class CoinbaseAdvancedVenue final : public Venue, private ReconcileHooks {
   ReconcileDriver reconcile_{*this, sent_};
   std::size_t reconcile_pages_ = 0;
   std::vector<ClientOrderId> snapshot_ids_;
+  std::size_t account_pages_ = 0;
+  std::vector<AdvBalanceRow> balance_rows_;  // the pages of the balance fetch in progress
 
   ReplayScheduler<AdvFillRow> exec_replay_;
   ConnState md_state_ = ConnState::Disconnected;

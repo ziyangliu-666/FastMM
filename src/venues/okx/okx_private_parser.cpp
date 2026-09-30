@@ -110,6 +110,8 @@ struct ItemCtx {
   std::span<std::byte> out;
   std::uint32_t written;
   std::uint32_t count;
+  const VenueAssets* assets;
+  OkxAccountMode mode;
 
   bool room(std::size_t n) noexcept {
     if (written + n <= out.size()) return true;
@@ -391,6 +393,95 @@ struct OrderItem {
   return Item::Next;
 }
 
+// One BalanceMsg; `exch_ms` 0 leaves the venue time for the caller to set.
+Item put_balance(ItemCtx& c,
+                 std::string_view asset,
+                 const BalanceFields& f,
+                 std::int64_t exch_ms,
+                 std::uint8_t flags) noexcept {
+  if (!c.room(sizeof(BalanceMsg))) return Item::Stop;
+  auto* m = c.place<BalanceMsg>();
+  init_header(*m, EventType::Balance, InstrumentId::invalid(), c.venue);
+  m->free = f.free;
+  m->locked = f.locked;
+  m->total = f.total;
+  m->equity = f.equity;
+  m->maintenance = f.maintenance;
+  m->asset.assign(asset);
+  m->flags = flags;
+  stamp(*m, c.recv_ts, c.t0, exch_ms);
+  c.written += sizeof(BalanceMsg);
+  ++c.count;
+  return Item::Next;
+}
+
+// One details[] entry, read in one pass.
+[[gnu::noinline]] bool read_ccy(od::object& o, OkxCcyFields& f) noexcept {
+  for (auto field : o) {
+    std::string_view key;
+    if (field.unescaped_key().get(key) != sj::SUCCESS) return false;
+    std::string_view* dst = nullptr;
+    if (key == "ccy") dst = &f.ccy;
+    if (key == "availBal") dst = &f.avail_bal;
+    if (key == "frozenBal") dst = &f.frozen_bal;
+    if (key == "cashBal") dst = &f.cash_bal;
+    if (key == "eq") dst = &f.eq;
+    if (key == "availEq") dst = &f.avail_eq;
+    if (key == "mmr") dst = &f.mmr;
+    if (key == "uTime") dst = &f.u_time;
+    if (dst == nullptr) continue;
+    if (field.value().get_string().get(*dst) != sj::SUCCESS) return false;
+  }
+  return true;
+}
+
+// An account-channel item: the kept currencies of details[], then the account row. The
+// account-level fields may come before or after details[], so a currency without its own uTime is
+// stamped once the account's is known.
+[[gnu::noinline]] Item decode_account(ItemCtx& c, od::object& o) noexcept {
+  ++c.stats->balances;
+  const std::uint32_t first = c.written;
+  OkxAccountFields a;
+  for (auto field : o) {
+    std::string_view key;
+    if (field.unescaped_key().get(key) != sj::SUCCESS) return Item::Malformed;
+    if (key == "details") {
+      od::array details;
+      if (field.value().get_array().get(details) != sj::SUCCESS) return Item::Malformed;
+      for (auto d : details) {
+        od::object dobj;
+        OkxCcyFields f;
+        if (d.get_object().get(dobj) != sj::SUCCESS || !read_ccy(dobj, f) || f.ccy.empty())
+          return Item::Malformed;
+        const std::string_view name = c.assets->find(f.ccy);
+        if (name.empty()) continue;
+        BalanceFields b;
+        if (!okx_ccy_balance(f, c.mode, b)) return Item::Malformed;
+        if (put_balance(c, name, b, ms_or(f.u_time, 0), 0) == Item::Stop) return Item::Stop;
+      }
+      continue;
+    }
+    std::string_view* dst = nullptr;
+    if (key == "totalEq") dst = &a.total_eq;
+    if (key == "adjEq") dst = &a.adj_eq;
+    if (key == "availEq") dst = &a.avail_eq;
+    if (key == "imr") dst = &a.imr;
+    if (key == "mmr") dst = &a.mmr;
+    if (key == "uTime") dst = &a.u_time;
+    if (dst == nullptr) continue;
+    if (field.value().get_string().get(*dst) != sj::SUCCESS) return Item::Malformed;
+  }
+  const std::int64_t account_ms = ms_or(a.u_time, 0);
+  for (std::uint32_t off = first; off < c.written; off += sizeof(BalanceMsg)) {
+    auto* m = reinterpret_cast<BalanceMsg*>(c.out.data() + off);
+    if (m->hdr.exch_ts.ns == 0) m->hdr.exch_ts = ts_from_ms(account_ms);
+  }
+  if (!has_account_row(c.mode)) return Item::Next;
+  BalanceFields b;
+  if (!okx_account_balance(a, b)) return Item::Malformed;
+  return put_balance(c, "USD", b, account_ms, BalanceMsg::kAccount);
+}
+
 [[gnu::noinline]] PrivateDecodeResult decode_data(ItemCtx& c,
                                                   std::string_view channel,
                                                   od::value data_val,
@@ -399,7 +490,8 @@ struct OrderItem {
   const bool orders = channel == "orders";
   const bool positions = channel == "positions";
   const bool bal = channel == "balance_and_position";
-  if (!orders && !positions && !bal) {
+  const bool account = channel == "account" && c.assets != nullptr;
+  if (!orders && !positions && !bal && !account) {
     ++stats.ignored;
     r.status = ParseStatus::Ignored;
     r.positions_snapshot = false;
@@ -419,7 +511,9 @@ struct OrderItem {
       }
       continue;
     }
-    const Item res = positions ? decode_position(c, o) : decode_order(c, o);
+    const Item res = account     ? decode_account(c, o)
+                     : positions ? decode_position(c, o)
+                                 : decode_order(c, o);
     if (res == Item::Malformed) return malformed(stats, r);
     if (res == Item::Stop) break;
   }
@@ -428,7 +522,9 @@ struct OrderItem {
     return r;
   }
   r.status = ParseStatus::Ok;
-  r.order_kind = positions ? OrderEventKind::Position : OrderEventKind::Fill;
+  r.order_kind = account     ? OrderEventKind::None
+                 : positions ? OrderEventKind::Position
+                             : OrderEventKind::Fill;
   r.len = c.written;
   r.count = c.count;
   return r;
@@ -484,7 +580,7 @@ PrivateDecodeResult OkxPrivateParser::decode(std::string_view json,
       continue;
     }
     if (key != "data") continue;
-    ItemCtx c{&stats_, &symbols_, &instruments_, venue_, recv_ts, t0, out, 0, 0};
+    ItemCtx c{&stats_, &symbols_, &instruments_, venue_, recv_ts, t0, out, 0, 0, assets_, mode_};
     return decode_data(c, channel, field.value(), r);
   }
   ++stats_.ignored;

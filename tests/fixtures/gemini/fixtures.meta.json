@@ -7,6 +7,8 @@
   "symbol_details_btcgusdperp_sandbox.json": "recorded (sandbox; identical)",
   "symbol_details_btcusd.json": "recorded (production spot; tick_size is the JSON number 1e-08)",
   "raw_md_stream.jsonl": "recorded, one frame per line (receive stamp, tab, frame): the first 200 frames of the session (the three snapshots, the btcusd one with 2564 bids and 2094 asks including asks at 1e10 and above, diffs, bookTickers, the subscribe, time and ping replies) and the next 5 trade frames",
-  "private payloads (tests/venues/gemini_*_test.cpp)": "docs-example (https://developer.gemini.com/websocket/streams.md, specs/openapi/rest.yaml, specs/asyncapi/websocket.yaml, read 2026-09-30) with FastMM client order ids; not recorded (no keys)"
+  "private payloads (tests/venues/gemini_*_test.cpp)": "docs-example (https://developer.gemini.com/websocket/streams.md, specs/openapi/rest.yaml, specs/asyncapi/websocket.yaml, read 2026-09-30) with FastMM client order ids; not recorded (no keys)",
+  "balances_sandbox.json": "recorded (sandbox exchange account, POST /v1/balances, 2026-09-30T04:42Z, read-only; the reply carries no account id)",
+  "balance_update_sandbox.json": "recorded (sandbox, wss://ws.sandbox.gemini.com balances@account, 2026-09-30T04:42Z): the balanceUpdate of every asset sent on subscribe, before the subscribe reply; USD in cents (99966.89) where /v1/balances says 99966.89444"
  }
 }

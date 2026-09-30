@@ -302,7 +302,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 12,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 13,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -441,7 +441,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 12,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 13,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);
@@ -483,4 +483,28 @@ TEST_CASE("core.status_segment: a shared instrument shows its traders and what n
         std::string::npos);
   CHECK(json.find(R"("instruments": [{"venue": "sim", "symbol": "BTCUSDT"}, )"
                   R"({"venue": "sim", "symbol": "SOLUSDT"}])") != std::string::npos);
+}
+
+TEST_CASE("core.status_segment: balances in the frame and the JSON form") {
+  StatusSnapshot s;
+  s.state = StatusRunState::Running;
+  s.venue_count = 1;
+  set_status_name(s.venues[0].name, "okx");
+  s.balance_count = 2;
+  set_status_name(s.balances[0].asset, "USDT");
+  s.balances[0].known = 1;
+  s.balances[0].free_raw = 4'000'000'000;  // 40
+  s.balances[0].locked_raw = 6'000'000'000;
+  s.balances[0].total_raw = 10'000'000'000;
+  s.balances[0].equity_raw = 10'000'000'000;
+  s.balances[0].as_of_ns = 1'790'000'000'000'000'000;
+  set_status_name(s.balances[1].asset, "BTC");  // not reported: no line
+  const std::string frame = format_status(s, 0, false);
+  CHECK(frame.find("balance    okx USDT free=40 locked=60 total=100\n") != std::string::npos);
+  CHECK(frame.find("BTC") == std::string::npos);
+  const std::string json = format_status_json(s);
+  CHECK(json.find(R"("balances": [{"venue": "okx", "asset": "USDT", "account": false, )"
+                  R"("known": true, "free": 40, "locked": 60, "total": 100, "equity": 100, )"
+                  R"("maintenance": 0, "as_of_ns": 1790000000000000000}, {"venue": "okx", )"
+                  R"("asset": "BTC", "account": false, "known": false)") != std::string::npos);
 }

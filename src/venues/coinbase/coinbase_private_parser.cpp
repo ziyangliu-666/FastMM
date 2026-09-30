@@ -1,5 +1,6 @@
 #include "fastmm/venues/coinbase/coinbase_private_parser.hpp"
 
+#include "fastmm/venues/balances.hpp"
 #include "fastmm/venues/decimal.hpp"
 
 #include <simdjson.h>
@@ -89,6 +90,11 @@ struct Fields {
   std::string_view taker_fee_rate;
   std::string_view new_size;
   std::string_view message;
+  std::string_view currency;   // balance
+  std::string_view available;  // balance
+  std::string_view holds;      // balance
+  std::string_view updated;    // balance: when the venue saw the change
+  std::string_view timestamp;  // balance: when it was sent
   std::uint64_t trade_id = 0;
   std::int64_t cancel_code = -1;
 };
@@ -107,20 +113,27 @@ struct Fields {
         break;
       case 5:
         if (key == "price") dst = &f.price;
+        if (key == "holds") dst = &f.holds;
         break;
       case 6:
         if (key == "reason") dst = &f.reason;
         break;
       case 7:
         if (key == "message") dst = &f.message;
+        if (key == "updated") dst = &f.updated;
         break;
       case 8:
         if (key == "order_id") dst = &f.order_id;
         if (key == "new_size") dst = &f.new_size;
+        if (key == "currency") dst = &f.currency;
         if (key == "trade_id") {
           if (field.value().get_uint64().get(f.trade_id) != sj::SUCCESS) return false;
           continue;
         }
+        break;
+      case 9:
+        if (key == "available") dst = &f.available;
+        if (key == "timestamp") dst = &f.timestamp;
         break;
       case 10:
         if (key == "product_id") dst = &f.product_id;
@@ -315,6 +328,29 @@ PrivateDecodeResult CoinbasePrivateParser::decode(std::string_view json,
       written += sizeof(OrderCancelAckMsg);
       r.order_kind = OrderEventKind::CancelAck;
     }
+    r.count = 1;
+  } else if (f.type == "balance") {
+    ++stats_.balances;
+    const auto avail = parse_balance(f.available);
+    const auto holds = parse_balance(f.holds);
+    if (!avail || !holds || f.currency.empty()) return malformed(stats_, r);
+    if (f.currency.size() > FixedString<8>::kCapacity) {  // no instrument names it
+      r.status = ParseStatus::Ignored;
+      return r;
+    }
+    // The venue's time of the balance is when it saw the change, not when it sent the message.
+    std::int64_t at = f.updated.empty() ? -1 : parse_time_ns(f.updated);
+    if (at <= 0 && !f.timestamp.empty()) at = parse_time_ns(f.timestamp);
+    auto* m = place<BalanceMsg>(out, written);
+    fill_balance(*m,
+                 venue_,
+                 f.currency,
+                 BalanceFields::spot(*avail, *holds),
+                 at > 0 ? at / 1'000'000 : 0,
+                 0);
+    m->hdr.recv_ts = recv_ts;
+    m->hdr.t0_cycles = t0;
+    written += sizeof(BalanceMsg);
     r.count = 1;
   } else if (f.type == "change") {
     ++stats_.changes;

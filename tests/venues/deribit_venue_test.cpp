@@ -142,6 +142,10 @@ struct Harness {
   std::string trades = fastmm::test::fixture("deribit/user_trades.json");
   std::string open_orders = fastmm::test::fixture("deribit/open_orders.json");
   std::string unauthorized = fastmm::test::fixture("deribit/rpc_unauthorized.json");
+  // private/get_account_summaries: the documented example, with the envelope's usIn/usOut.
+  std::string summaries = fastmm::test::fixture("deribit/account_summaries.json");
+  std::atomic<int> summaries_requests{0};
+  std::atomic<bool> summaries_fail{false};  // answer get_account_summaries with an error
 
   std::atomic<int> auths{0};
   std::atomic<int> reauths{0};
@@ -281,6 +285,14 @@ struct Harness {
         }
         const std::lock_guard lock(mu);
         s.send_text(open_orders_reply.empty() ? open_orders : rpc_ok(id, open_orders_reply));
+      } else if (method == "private/get_account_summaries") {
+        ++summaries_requests;
+        s.send_text(summaries_fail.load()
+                        ? rpc_error(id, 10028, "too_many_requests")
+                        : replace_all(summaries,
+                                      R"("id":2515,)",
+                                      R"("id":)" + id +
+                                          R"(,"usIn":1790730000000100,"usOut":1790730000000450,)"));
       } else if (method == "private/get_positions") {
         ++positions_requests;
         const std::lock_guard lock(mu);
@@ -380,7 +392,8 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     CHECK(venue.private_channels() == std::vector<std::string>{"user.orders.option.BTC.raw",
                                                                "user.trades.option.BTC.raw",
                                                                "user.orders.future.BTC.raw",
-                                                               "user.trades.future.BTC.raw"});
+                                                               "user.trades.future.BTC.raw",
+                                                               "user.portfolio.BTC"});
     venue.connect(reactor);
 
     Collected mdc;
@@ -400,7 +413,7 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     const std::string sub = find_frame(h.srv, kPrivatePath, "private/subscribe");
     CHECK(
         sub.find(
-            R"("channels":["user.orders.option.BTC.raw","user.trades.option.BTC.raw","user.orders.future.BTC.raw","user.trades.future.BTC.raw"])") !=
+            R"("channels":["user.orders.option.BTC.raw","user.trades.option.BTC.raw","user.orders.future.BTC.raw","user.trades.future.BTC.raw","user.portfolio.BTC"])") !=
         std::string::npos);
     CHECK(sub.find(R"("access_token":"1789345400000.1MbQ-J_4.CBP-OqOwFakeAccessToken")") !=
           std::string::npos);
@@ -711,6 +724,7 @@ struct ReplaySession {
   SymbolTable symbols;
   std::unique_ptr<DeribitVenue> venue;
   Collected oc;
+  Collected startup;  // what came up to the start-up sweep's End
 
   explicit ReplaySession(const std::map<std::string, std::string>& extra = {}) {
     {
@@ -740,6 +754,7 @@ struct ReplaySession {
       oc.take(orders);
       return count_kind(ReconcileMsg::Kind::End) >= 1;
     }));
+    startup.all = std::move(oc.all);
     oc.all.clear();
     h.open_orders_requests = 0;
     const std::lock_guard lock(h.mu);
@@ -1214,4 +1229,143 @@ TEST_CASE("deribit.venue: with the order table full an order or edit is refused,
       pump_until(s.reactor, [&] { return s.h.buys.load() == buys + static_cast<int>(kRoom) + 1; }));
   CHECK(find_frame(s.h.srv, kPrivatePath, "private/edit").empty());
   CHECK(s.status().shadows_refused == 2);
+}
+
+namespace {
+
+// The rows of the first complete balance snapshot in `a` then `b`; empty until one ended.
+std::vector<const BalanceMsg*> first_balance_snapshot(const Collected& a, const Collected& b) {
+  std::vector<const BalanceMsg*> rows;
+  for (const Collected* c : {&a, &b}) {
+    for (const auto& m : c->all) {
+      if (RecordingSink::type_of(m) != EventType::Balance) continue;
+      const auto& bm = RecordingSink::as<BalanceMsg>(m);
+      if ((bm.flags & BalanceMsg::kSnapshot) == 0) continue;
+      rows.push_back(&bm);
+      if ((bm.flags & BalanceMsg::kSnapshotEnd) != 0) return rows;
+    }
+  }
+  return {};
+}
+
+std::vector<const BalanceMsg*> balance_msgs(const Collected& c, bool snapshot) {
+  std::vector<const BalanceMsg*> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) != EventType::Balance) continue;
+    const auto& bm = RecordingSink::as<BalanceMsg>(m);
+    if (((bm.flags & BalanceMsg::kSnapshot) != 0) == snapshot) out.push_back(&bm);
+  }
+  return out;
+}
+
+Notional notional(const char* s) {
+  return Notional::from_decimal(s).value();
+}
+
+}  // namespace
+
+TEST_CASE("deribit.venue: the start-up balance snapshot carries the tracked currencies") {
+  // After the start-up sweep's End: private/get_account_summaries (the documented example: BTC and
+  // ETH). The instruments name BTC and USD: the BTC row goes, ETH is nobody's, and USD is not a
+  // Deribit currency. Stamped with the reply's usOut (1790730000000450 us, rounded up to ms).
+  ReplaySession s;
+  std::vector<const BalanceMsg*> rows;
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    rows = first_balance_snapshot(s.startup, s.oc);
+    return !rows.empty();
+  }));
+  CHECK(s.h.summaries_requests.load() == 1);
+  const std::string req = find_frame(s.h.srv, kPrivatePath, "private/get_account_summaries");
+  CHECK(req.find(R"("params":{"access_token":"1789345400000.1MbQ-J_4.CBP-OqOwFakeAccessToken"})") !=
+        std::string::npos);
+  REQUIRE(rows.size() == 1);
+  const BalanceMsg& b = *rows[0];
+  CHECK(b.asset.view() == "BTC");
+  CHECK(b.flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+  CHECK(b.hdr.venue == kVenue);
+  CHECK(b.hdr.exch_ts == Timestamp{1790730000001LL * 1'000'000});
+  CHECK(b.free == notional("301.38059622"));
+  CHECK(b.locked == notional("1.24669592"));
+  CHECK(b.total == notional("302.60065765"));
+  CHECK(b.equity == notional("302.61869214"));
+  CHECK(b.maintenance == notional("0.8857841"));
+}
+
+TEST_CASE("deribit.venue: a user.portfolio notification updates the balance and the account") {
+  ReplaySession s;
+  CHECK(find_frame(s.h.srv, kPrivatePath, "private/subscribe").find("\"user.portfolio.BTC\"") !=
+        std::string::npos);
+  s.oc.all.clear();
+  // ETH is no instrument's currency: dropped. BTC with cross collateral: the currency and the
+  // account's USD row, stamped with the venue clock (the notification carries no time).
+  s.h.srv.send_to(
+      kPrivatePath,
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.portfolio.eth","data":{"currency":"ETH","balance":10,"equity":10,"available_funds":10,"initial_margin":0,"maintenance_margin":0,"cross_collateral_enabled":false}}})");
+  s.h.srv.send_to(
+      kPrivatePath,
+      R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.portfolio.btc","data":{"currency":"BTC","balance":1.5,"equity":1.52,"available_funds":1.2,"initial_margin":0.3,"maintenance_margin":0.2,"margin_balance":1.5,"cross_collateral_enabled":true,"total_equity_usd":171000.5,"total_initial_margin_usd":30000,"total_maintenance_margin_usd":20000,"total_margin_balance_usd":170000.25}}})");
+  std::vector<const BalanceMsg*> rows;
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    rows = balance_msgs(s.oc, false);
+    return rows.size() >= 2;
+  }));
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0]->asset.view() == "BTC");
+  CHECK(rows[0]->flags == 0);
+  CHECK(rows[0]->free == notional("1.2"));
+  CHECK(rows[0]->locked == notional("0.3"));
+  CHECK(rows[0]->total == notional("1.5"));
+  CHECK(rows[0]->equity == notional("1.52"));
+  CHECK(rows[0]->maintenance == notional("0.2"));
+  CHECK(rows[1]->asset.view() == "USD");
+  CHECK(rows[1]->flags == BalanceMsg::kAccount);
+  CHECK(rows[1]->free == notional("140000.25"));
+  CHECK(rows[1]->locked == notional("30000"));
+  CHECK(rows[1]->total == notional("170000.25"));
+  CHECK(rows[1]->equity == notional("171000.5"));
+  CHECK(rows[1]->maintenance == notional("20000"));
+  const std::int64_t venue_now_ms = wall_now().ns / 1'000'000 + s.venue->clock_offset_ms();
+  const std::int64_t stamped_ms = rows[0]->hdr.exch_ts.ns / 1'000'000;
+  CHECK(stamped_ms <= venue_now_ms);
+  CHECK(stamped_ms > venue_now_ms - 10'000);
+  CHECK(rows[1]->hdr.exch_ts == rows[0]->hdr.exch_ts);
+}
+
+TEST_CASE("deribit.venue: a failed balance fetch does not hold up the order snapshot") {
+  ReplaySession s;
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    return !first_balance_snapshot(s.startup, s.oc).empty();
+  }));
+  s.oc.all.clear();
+  s.h.summaries_fail = true;
+  const int asked = s.h.summaries_requests.load();
+  // The order snapshot ends as ever; the balance leg after it fails and sends nothing.
+  REQUIRE(s.reconcile() != nullptr);
+  REQUIRE(pump_until(s.reactor, [&] {
+    s.oc.take(s.orders);
+    return s.h.summaries_requests.load() == asked + 1;
+  }));
+  static_cast<void>(pump_until(s.reactor, [] { return false; }, 300));
+  s.oc.take(s.orders);
+  CHECK(s.oc.count(EventType::Balance) == 0);
+  // Another reconciliation while the balances fail: its orders still come.
+  REQUIRE(s.reconcile() != nullptr);
+  CHECK(s.count_kind(ReconcileMsg::Kind::End) == 2);
+  // The driver asks again after its retry delay; the venue answers now.
+  s.h.summaries_fail = false;
+  std::vector<const BalanceMsg*> rows;
+  REQUIRE(pump_until(
+      s.reactor,
+      [&] {
+        s.oc.take(s.orders);
+        rows = first_balance_snapshot(Collected{}, s.oc);
+        return !rows.empty();
+      },
+      9000));
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0]->asset.view() == "BTC");
+  CHECK(rows[0]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
 }

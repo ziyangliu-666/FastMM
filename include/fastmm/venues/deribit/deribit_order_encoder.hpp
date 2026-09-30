@@ -156,6 +156,10 @@ class DeribitOrderEncoder {
                                       std::string_view currency,
                                       std::string_view access_token,
                                       std::span<char> out) noexcept;
+  // private/get_account_summaries: every currency of the account in one reply.
+  static std::size_t encode_account_summaries(std::int64_t id,
+                                              std::string_view access_token,
+                                              std::span<char> out) noexcept;
   static std::size_t encode_user_trades(std::int64_t id,
                                         std::string_view currency,
                                         std::int64_t start_ms,

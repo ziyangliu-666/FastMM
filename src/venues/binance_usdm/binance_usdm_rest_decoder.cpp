@@ -182,6 +182,49 @@ std::string decode_balance(std::string_view json, std::vector<BalanceRecord>& ou
   return {};
 }
 
+namespace {
+
+// The five amounts of an assets[] entry, or of the account (`totals`).
+bool margin_fields(const dom::element& e, bool totals, FuturesMargin& m) {
+  return fixed_field(e, "availableBalance", m.available) &&
+         fixed_field(e, "maxWithdrawAmount", m.max_withdraw) &&
+         fixed_field(e, totals ? "totalInitialMargin" : "initialMargin", m.initial) &&
+         fixed_field(e, totals ? "totalWalletBalance" : "walletBalance", m.wallet) &&
+         fixed_field(e, totals ? "totalMarginBalance" : "marginBalance", m.margin) &&
+         fixed_field(e, totals ? "totalMaintMargin" : "maintMargin", m.maintenance);
+}
+
+}  // namespace
+
+std::string decode_account(std::string_view json, FuturesAccount& out) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "account: invalid JSON";
+  if (!margin_fields(root, true, out.total)) return "account: unreadable account totals";
+  dom::array assets;
+  if (root["assets"].get(assets) != sj::SUCCESS) return "account: missing assets[]";
+  for (dom::element e : assets) {
+    FuturesAssetMargin a;
+    a.asset = string_field(e, "asset");
+    if (a.asset.empty() || !margin_fields(e, false, a.m))
+      return "account: unreadable assets[] entry " + a.asset;
+    if (e["updateTime"].get(a.update_time_ms) != sj::SUCCESS) a.update_time_ms = 0;
+    out.assets.push_back(std::move(a));
+  }
+  return {};
+}
+
+std::string decode_multi_assets_mode(std::string_view json, bool& multi_assets) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "multiAssetsMargin: invalid JSON";
+  if (root["multiAssetsMargin"].get(multi_assets) != sj::SUCCESS)
+    return "multiAssetsMargin: missing multiAssetsMargin";
+  return {};
+}
+
 std::string decode_income(std::string_view json, std::vector<IncomeRecord>& out) {
   dom::parser parser;
   dom::array arr;

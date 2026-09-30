@@ -1007,6 +1007,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.quotes = cfg.quote_params();
   deps.engine.fx = fx_plan;
   deps.engine.fees = fees;
+  deps.engine.balance = balance_config(cfg, &instruments, &venue_names);
   deps.engine.underlying = underlying_plan;
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.engine.await_reconcile = await_venues;
@@ -1299,6 +1300,21 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       su.net_raw = live.underlyings[u].net_raw;
       su.max_net_raw = live.underlyings[u].max_net_raw;
       su.known = live.underlyings[u].known ? 1 : 0;
+    }
+    snap.balance_count = std::min<std::uint32_t>(live.balance_count, kStatusMaxBalances);
+    for (std::size_t i = 0; i < snap.balance_count; ++i) {
+      const LiveBalance& lb = live.balances[i];
+      StatusBalance& sb = snap.balances[i];
+      set_status_name(sb.asset, std::string_view(lb.asset, ::strnlen(lb.asset, sizeof lb.asset)));
+      sb.venue = lb.venue;
+      sb.account = lb.account;
+      sb.known = lb.known;
+      sb.free_raw = lb.free_raw;
+      sb.locked_raw = lb.locked_raw;
+      sb.total_raw = lb.total_raw;
+      sb.equity_raw = lb.equity_raw;
+      sb.maintenance_raw = lb.maintenance_raw;
+      sb.as_of_ns = lb.as_of_ns;
     }
     for (std::size_t i = 0; i < static_cast<std::size_t>(LatencyInterval::Count); ++i)
       snap.latency[i] = to_status_latency(live.latency.interval[i]);

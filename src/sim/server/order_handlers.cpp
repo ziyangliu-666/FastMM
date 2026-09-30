@@ -1103,10 +1103,16 @@ OpResult Impl::op_cancel_all(Account& a, const ParamList& p) {
   return OpResult::ok(std::move(body));
 }
 
-OpResult Impl::op_account(Account& a) {
+// GET /api/v3/account and account.status; omitZeroBalances=true lists only the assets with a
+// non-zero free or locked amount (rest-api.md "Account information").
+OpResult Impl::op_account(Account& a, const ParamList& p) {
+  const bool omit_zero = p.get("omitZeroBalances") == "true";
   std::vector<BalanceView> views;
   views.reserve(a.balances.size());
-  for (const auto& [asset, b] : a.balances) views.push_back(BalanceView{asset, b.free, b.locked});
+  for (const auto& [asset, b] : a.balances) {
+    if (omit_zero && b.free.is_zero() && b.locked.is_zero()) continue;
+    views.push_back(BalanceView{asset, b.free, b.locked});
+  }
   std::string body;
   append_account_info(body, server_ms(), fees_.maker_cbps() / 100, fees_.taker_cbps() / 100, views);
   return OpResult::ok(std::move(body));

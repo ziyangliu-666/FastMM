@@ -139,6 +139,30 @@ std::string decode_commission(std::string_view json, CommissionRates& out) {
   return {};
 }
 
+std::string decode_account_balances(std::string_view json,
+                                    std::vector<AccountBalance>& out,
+                                    std::int64_t& update_time_ms) {
+  dom::parser parser;
+  dom::element root;
+  if (parser.parse(sj::padded_string(json)).get(root) != sj::SUCCESS)
+    return "account: invalid JSON";
+  dom::element acct = root;
+  if (dom::element result; root["result"].get(result) == sj::SUCCESS) acct = result;
+  if (acct["updateTime"].get(update_time_ms) != sj::SUCCESS) update_time_ms = 0;
+  dom::array balances;
+  if (acct["balances"].get(balances) != sj::SUCCESS) return "account: missing balances[]";
+  for (dom::element e : balances) {
+    AccountBalance b;
+    std::string_view s;
+    if (e["asset"].get(s) != sj::SUCCESS) return "account: a balance without an asset";
+    b.asset = std::string(s);
+    if (!fixed_field(e, "free", b.free) || !fixed_field(e, "locked", b.locked))
+      return "account: unreadable free/locked for " + b.asset;
+    out.push_back(std::move(b));
+  }
+  return {};
+}
+
 std::string decode_server_time(std::string_view json, std::int64_t& server_time_ms) {
   dom::parser parser;
   dom::element root;

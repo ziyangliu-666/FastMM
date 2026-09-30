@@ -7,9 +7,13 @@
 #include "live_test_util.hpp"
 
 #include "fastmm/venues/blocking_http.hpp"
+#include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/gemini/gemini_rest_decoder.hpp"
 #include "fastmm/venues/gemini/gemini_venue.hpp"
 
+#include <fmt/format.h>
+
+#include <algorithm>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,6 +57,7 @@ struct Session {
     REQUIRE(instruments.add(spot));
     GeminiVenueConfig cfg = make_gemini_config(s, dry_run);
     cfg.cancel_on_order_channel_loss = false;
+    cfg.record_raw_dir = env_or_empty("FASTMM_LIVE_RAW_DIR");  // the frames, when asked for
     venue = std::make_unique<GeminiVenue>(VenueId{0}, cfg);
     const auto ref = venue->load_reference_data(instruments);
     REQUIRE_MESSAGE(ref, (ref ? std::string() : ref.error()));
@@ -242,4 +247,107 @@ TEST_CASE("live.gemini: sandbox btcusd book, then place, cancel, an IOC fill and
     }
     CHECK(replayed == listed);
   }
+}
+
+TEST_CASE("live.gemini: sandbox balances through the connector match /v1/balances") {
+  // Read-only: no order. The connector's start-up balance leg (/v1/balances) as BalanceMsg rows
+  // against the venue's own reply, fetched right after.
+  if (!live_tests_enabled()) {
+    MESSAGE("skipped: set FASTMM_LIVE_TESTS=1 to run against the Gemini sandbox");
+    return;
+  }
+  REQUIRE(std::string_view(kRest).find("sandbox.gemini.com") != std::string_view::npos);
+  const std::string key = env_or_empty("GEMINI_SANDBOX_API_KEY");
+  const std::string secret = env_or_empty("GEMINI_SANDBOX_API_SECRET");
+  if (key.empty() || secret.empty()) {
+    MESSAGE("skipped: no GEMINI_SANDBOX_API_KEY / GEMINI_SANDBOX_API_SECRET");
+    return;
+  }
+  std::vector<BalanceMsg> rows;
+  {
+    Session a(sandbox_section(key, secret), false);
+    REQUIRE(a.until(
+        [&] {
+          for (const auto& m : a.oc.all) {
+            if (RecordingSink::type_of(m) == EventType::Balance &&
+                (RecordingSink::as<BalanceMsg>(m).flags & BalanceMsg::kSnapshotEnd) != 0)
+              return true;
+          }
+          return false;
+        },
+        30'000));
+    for (const auto& m : a.oc.all) {
+      if (RecordingSink::type_of(m) == EventType::Balance)
+        rows.push_back(RecordingSink::as<BalanceMsg>(m));
+    }
+  }
+  BlockingHttp http(kRest);
+  Signer signer(Credentials{key, Secret<std::string>{secret}});
+  std::int64_t nonce = wall_now().ns / 1'000'000 + 10'000;
+  const std::string payload =
+      R"({"request":"/v1/balances","nonce":)" + std::to_string(++nonce) + "}";
+  const HttpReply r = http.request("POST", "/v1/balances", signer.rest_headers(payload));
+  REQUIRE_MESSAGE(r.ok(), r.status << " " << r.body.substr(0, 200));
+  MESSAGE("/v1/balances: " << r.body);
+  std::vector<BalanceRow> raw;
+  REQUIRE(decode_balances(r.body, raw).empty());
+  // The instrument is btcusd: BTC and USD are kept, one snapshot, the last row ends it.
+  // balances@account sends every asset when it is subscribed (sandbox, 2026-09-30): stream rows
+  // (flags 0) may come before the snapshot. The snapshot is /v1/balances as is; the stream gives
+  // USD in cents (99966.89 against 99966.89444), so its rows are within 0.01 below.
+  REQUIRE_FALSE(rows.empty());
+  CHECK((rows.back().flags & BalanceMsg::kSnapshotEnd) != 0);
+  const auto txt = [](Notional n) { return std::string(DecimalText(n).view()); };
+  std::int64_t latest_ms = 0;
+  for (const BalanceRow& b : raw) latest_ms = std::max(latest_ms, b.time_ms);
+  const Notional cent = Notional::from_decimal("0.01").value();
+  std::size_t snapshot_rows = 0;
+  for (const BalanceMsg& m : rows) {
+    const bool snapshot = (m.flags & BalanceMsg::kSnapshot) != 0;
+    const BalanceRow* v = nullptr;
+    for (const BalanceRow& b : raw) {
+      if (b.currency == m.asset.view()) v = &b;
+    }
+    REQUIRE_MESSAGE(v != nullptr, "no raw row for " << m.asset.view());
+    MESSAGE(fmt::format(
+        "{} {}: raw amount {} available {} _timestamp {} | BalanceMsg free {} locked {} total {} "
+        "equity {} exch_ts {}",
+        snapshot ? "snapshot" : "stream",
+        m.asset.view(),
+        txt(v->amount),
+        txt(v->available),
+        v->time_ms,
+        txt(m.free),
+        txt(m.locked),
+        txt(m.total),
+        txt(m.equity),
+        m.hdr.exch_ts.ns / 1'000'000));
+    CHECK(m.maintenance.is_zero());
+    CHECK(m.hdr.exch_ts.ns > 0);
+    if (latest_ms > 0) CHECK(m.hdr.exch_ts.ns / 1'000'000 <= latest_ms);
+    CHECK(m.locked == m.total - m.free);
+    CHECK(m.equity == m.total);
+    if (snapshot) {
+      ++snapshot_rows;
+      CHECK(m.free == v->available);
+      CHECK(m.total == v->amount);
+    } else {
+      CHECK(m.free <= v->available);
+      CHECK(v->available - m.free < cent);
+      CHECK(m.total <= v->amount);
+      CHECK(v->amount - m.total < cent);
+    }
+  }
+  CHECK(snapshot_rows == 2);
+  for (const BalanceRow& b : raw) {
+    const bool kept = b.currency == "BTC" || b.currency == "USD";
+    bool sent = false;
+    for (const BalanceMsg& m : rows) sent = sent || b.currency == m.asset.view();
+    CHECK(sent == kept);
+  }
+  // The exchange account has no derivatives margin.
+  const std::string mp = R"({"request":"/v1/margin","nonce":)" + std::to_string(++nonce) +
+                         R"(,"symbol":"btcgusdperp"})";
+  const HttpReply mr = http.request("POST", "/v1/margin", signer.rest_headers(mp));
+  MESSAGE("/v1/margin: " << mr.status << " " << mr.body.substr(0, 200));
 }

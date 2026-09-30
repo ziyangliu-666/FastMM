@@ -2,8 +2,10 @@
 // the start-up sweep (paged), order entry over REST with its events from the user channel,
 // rejects, cancels, fills, the fill replay after the user channel dropped (no fill booked twice,
 // an order named by lookup), an engine-requested reconciliation, the kill-path cancel-all through
-// a rate limit, a lost trade on the feed and a dry run. Wire formats as in the coinbase_* unit
-// tests (docs read 2026-09-30); only the public feed and public REST have met the real venue.
+// a rate limit, a lost trade on the feed, a dry run, and the balances (the snapshot after the
+// sweep, the balance channel, a refresh after a fill, a failed fetch). Wire formats as in the
+// coinbase_* unit tests (docs read 2026-09-30); only the public feed and public REST have met the
+// real venue.
 #include "fastmm/venues/coinbase/coinbase_venue.hpp"
 
 #include "fake_venue_util.hpp"
@@ -106,7 +108,9 @@ struct Harness {
   bool paged = false;
   std::string fills = "[]";
   std::vector<int> cancel_all_status;  // the next DELETE /orders answers, then 200 []
-  std::string new_reply;               // non-empty: POST /orders answers this (status 200)
+  std::string accounts = "[]";         // GET /accounts
+  int accounts_status = 200;
+  std::string new_reply;  // non-empty: POST /orders answers this (status 200)
   int new_status = 200;
   int cancel_status = 200;
   bool fill_on_new = true;  // a new order is matched for 0.1 at once
@@ -165,6 +169,14 @@ struct Harness {
       net::HttpServerResponse resp = net::HttpServerResponse::json(200, open_orders);
       if (paged) resp.headers.emplace_back("CB-AFTER", "page2");
       return resp;
+    });
+    srv.route("GET", "/accounts", [this](const net::HttpRequest& r) {
+      count(r);
+      srv.record("accounts", std::string(r.target));
+      const std::lock_guard lock(mu);
+      if (accounts_status != 200)
+        return net::HttpServerResponse::json(accounts_status, R"({"message":"Internal error"})");
+      return net::HttpServerResponse::json(200, accounts);
     });
     srv.route("GET", "/fills", [this](const net::HttpRequest& r) {
       count(r);
@@ -266,6 +278,10 @@ struct Harness {
         return;
       }
       user = &s;
+      if (t.find(R"("name":"balance")") != std::string_view::npos) {
+        srv.record("balance_sub", std::string(t));
+        return;
+      }
       s.send_text(
           R"({"type":"subscriptions","channels":[{"name":"user","product_ids":["BTC-USD"],"account_ids":null},{"name":"heartbeat","product_ids":["BTC-USD"],"account_ids":null}]})");
     });
@@ -367,11 +383,14 @@ struct Live {
     venue->on_wake();
   }
   template <class Pred>
-  void wait(Pred pred) {
-    REQUIRE(pump_until(reactor, [&] {
-      oc.take(orders);
-      return pred();
-    }));
+  void wait(Pred pred, int timeout_ms = 5000) {
+    REQUIRE(pump_until(
+        reactor,
+        [&] {
+          oc.take(orders);
+          return pred();
+        },
+        timeout_ms));
   }
 };
 
@@ -803,5 +822,167 @@ TEST_CASE("coinbase.venue: a dry run opens market data only and refuses orders")
     CHECK(h.srv.frames("new").empty());
     CHECK(l.venue->cancel_all());
     CHECK(h.srv.frames("cancel_all").empty());
+  }
+}
+
+namespace {
+
+constexpr const char* kUsdAccount = "7fd0abc0-e5ad-4cbb-8d54-f2b3f43364da";
+constexpr const char* kBtcAccount = "d50ec984-77a8-460a-b958-66f114b0de9b";
+constexpr const char* kEthAccount = "d50ec984-77a8-460a-b958-66f114b0de9a";
+
+// apiAccount rows as GET /accounts documents them (16 decimals).
+std::string accounts_reply(const char* btc_available, const char* btc_hold) {
+  auto row = [](const char* id, const char* cur, const char* avail, const char* hold) {
+    return R"({"id":")" + std::string(id) + R"(","currency":")" + cur +
+           R"(","balance":"0","hold":")" + hold + R"(","available":")" + avail +
+           R"(","profile_id":"8058d771-2d88-4f0f-ab6e-299c153d4308","trading_enabled":true})";
+  };
+  return "[" + row(kUsdAccount, "USD", "1000.5000000000000000", "20.0000000000000000") + "," +
+         row(kBtcAccount, "BTC", btc_available, btc_hold) + "," +
+         row(kEthAccount, "ETH", "3.0000000000000000", "0.0000000000000000") + "]";
+}
+
+std::string balance_push(const char* account, const char* currency, const char* available) {
+  return R"({"type":"balance","account_id":")" + std::string(account) + R"(","currency":")" +
+         currency + R"(","holds":"0.1","available":")" + available +
+         R"(","updated":"2026-09-30T01:41:51.250Z","timestamp":"2026-09-30T01:41:51.300Z"})";
+}
+
+// The BalanceMsg snapshots (kSnapshot) the connector sent, each as its rows.
+std::vector<std::vector<const BalanceMsg*>> balance_snapshots(const Collected& c) {
+  std::vector<std::vector<const BalanceMsg*>> out(1);
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) != EventType::Balance) continue;
+    const auto& b = RecordingSink::as<BalanceMsg>(m);
+    if ((b.flags & BalanceMsg::kSnapshot) == 0) continue;
+    out.back().push_back(&b);
+    if ((b.flags & BalanceMsg::kSnapshotEnd) != 0) out.emplace_back();
+  }
+  out.pop_back();  // the one not ended yet
+  return out;
+}
+
+std::vector<const BalanceMsg*> balance_updates(const Collected& c) {
+  std::vector<const BalanceMsg*> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) != EventType::Balance) continue;
+    const auto& b = RecordingSink::as<BalanceMsg>(m);
+    if ((b.flags & BalanceMsg::kSnapshot) == 0) out.push_back(&b);
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("coinbase.venue: the start-up balance snapshot, then the balance channel") {
+  Harness h;
+  h.accounts = accounts_reply("0.2500000000000001", "0.3000000000000000");
+  {
+    Live l(h.section());
+    // The fake's /time is a fixed instant: the clock offset measured again at connect moves the
+    // venue clock back by the time spent since load_reference_data (a few ms).
+    const std::int64_t before_ms = l.venue->venue_time_ms() - 1000;
+    l.wait([&] { return !balance_snapshots(l.oc).empty() && l.ends() >= 1; });
+    const std::int64_t after_ms = l.venue->venue_time_ms();
+    const auto snaps = balance_snapshots(l.oc);
+    REQUIRE(snaps.size() == 1);
+    const auto& rows = snaps[0];
+    REQUIRE(rows.size() == 2);  // ETH: no instrument names it
+    CHECK(rows[0]->asset.view() == "USD");
+    CHECK(rows[0]->free == Notional::from_decimal("1000.5").value());
+    CHECK(rows[0]->locked == Notional::from_int(20));
+    CHECK(rows[1]->asset.view() == "BTC");
+    CHECK(rows[1]->free == Notional::from_decimal("0.25").value());
+    CHECK(rows[1]->locked == Notional::from_decimal("0.3").value());
+    CHECK(rows[1]->total == Notional::from_decimal("0.55").value());
+    for (const BalanceMsg* b : rows) {
+      CHECK((b->flags & BalanceMsg::kSnapshot) != 0);
+      CHECK(b->hdr.exch_ts.ns >= before_ms * 1'000'000);
+      CHECK(b->hdr.exch_ts.ns <= after_ms * 1'000'000);
+    }
+    CHECK((rows[0]->flags & BalanceMsg::kSnapshotEnd) == 0);
+    CHECK((rows[1]->flags & BalanceMsg::kSnapshotEnd) != 0);
+    CHECK(h.srv.frames("accounts") == std::vector<std::string>{"/accounts"});
+
+    // The balance channel for the tracked assets' accounts, signed, on the user connection.
+    l.wait([&] { return !h.srv.frames("balance_sub").empty(); });
+    const std::string sub = h.srv.frames("balance_sub")[0];
+    CHECK(sub.rfind(
+              std::string(R"({"type":"subscribe","channels":[{"name":"balance","account_ids":[")") +
+                  kUsdAccount + R"(",")" + kBtcAccount + R"("]}],"signature":")",
+              0) == 0);
+    CHECK(ws_signed(sub));
+    // Its updates go out as they come, for the tracked assets only, at the venue's `updated`.
+    h.on_server([](Harness& hs) {
+      hs.push(balance_push(kEthAccount, "ETH", "2"));
+      hs.push(balance_push(kBtcAccount, "BTC", "0.4500000000000000"));
+    });
+    l.wait([&] { return balance_updates(l.oc).size() == 1; });
+    l.pump();
+    const auto updates = balance_updates(l.oc);
+    REQUIRE(updates.size() == 1);
+    CHECK(updates[0]->asset.view() == "BTC");
+    CHECK(updates[0]->free == Notional::from_decimal("0.45").value());
+    CHECK(updates[0]->locked == Notional::from_decimal("0.1").value());
+    CHECK(updates[0]->flags == 0);
+    CHECK(updates[0]->hdr.exch_ts.ns == parse_time_ns("2026-09-30T01:41:51.250Z"));
+
+    // A new user connection subscribes the channel again once it is live.
+    h.on_server([](Harness& hs) { hs.user = nullptr; });
+    h.srv.close_sessions("/user");
+    l.wait([&] { return h.srv.frames("balance_sub").size() == 2; }, 10'000);
+    CHECK(h.srv.frames("balance_sub")[1].find(kBtcAccount) != std::string::npos);
+    CHECK(h.signed_bad.load() == 0);
+    CHECK_FALSE(l.venue->fatal());
+  }
+}
+
+TEST_CASE("coinbase.venue: a fill asks for the balances again") {
+  Harness h;
+  h.accounts = accounts_reply("0.5000000000000000", "0.0000000000000000");
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.wait([&] { return balance_snapshots(l.oc).size() == 1; });
+    {
+      const std::lock_guard lock(h.mu);
+      h.accounts = accounts_reply("0.1000000000000000", "0.3000000000000000");
+    }
+    // The order is matched for 0.1 at once.
+    l.push(new_order().hdr);
+    l.wait([&] {
+      return l.oc.count(EventType::OrderFill) == 1 && balance_snapshots(l.oc).size() == 2;
+    });
+    const auto snaps = balance_snapshots(l.oc);
+    REQUIRE(snaps[1].size() == 2);
+    CHECK(snaps[1][1]->asset.view() == "BTC");
+    CHECK(snaps[1][1]->free == Notional::from_decimal("0.1").value());
+    CHECK(snaps[1][1]->locked == Notional::from_decimal("0.3").value());
+    CHECK(h.srv.frames("accounts").size() == 2);
+  }
+}
+
+TEST_CASE("coinbase.venue: a failed balance fetch does not hold up the order snapshot") {
+  Harness h;
+  h.accounts_status = 500;
+  h.accounts = accounts_reply("0.5000000000000000", "0.0000000000000000");
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.wait([&] { return !h.srv.frames("accounts").empty(); });
+    const std::size_t ends = l.ends();
+    l.venue->request_open_orders();
+    l.wait([&] { return l.ends() > ends; });
+    CHECK(l.oc.count(EventType::Balance) == 0);
+    CHECK(h.srv.frames("balance_sub").empty());  // no account ids yet
+    // Asked again after ReconcileDriver::kRetryNs, now answered.
+    {
+      const std::lock_guard lock(h.mu);
+      h.accounts_status = 200;
+    }
+    l.wait([&] { return balance_snapshots(l.oc).size() == 1; }, 10'000);
+    CHECK(balance_snapshots(l.oc)[0].size() == 2);
+    CHECK_FALSE(l.venue->fatal());
   }
 }

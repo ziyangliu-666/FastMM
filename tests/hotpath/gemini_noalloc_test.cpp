@@ -112,6 +112,8 @@ TEST_CASE("hotpath.noalloc: Gemini market-data parser and feed, order events and
         R"({"e":"orderUpdate","E":1759291847731455006,"s":"BTCGUSDPERP","i":73797746498585286,"c":"fm000100000001","X":"CANCELED","Z":"0.0004","T":1759291847731455006})");
     frames.emplace_back(
         R"({"id":"nfm000100000001","status":200,"result":{"orderId":"73797746498585286"}})");
+    frames.emplace_back(
+        R"({"e":"balanceUpdate","E":1768250434780000000,"u":1768250421600000000,"B":[{"a":"USD","f":"207.39","c":"207.39"},{"a":"BTC","f":"0.5","c":"0.75"}]})");
     check_decoder_noalloc(priv, frames);
   }
   const gemini::GeminiOrderEncoder enc(symbols);

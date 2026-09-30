@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace fastmm;
@@ -85,7 +86,17 @@ struct Harness {
   std::string funding = "[]";
   std::string orders_check_reply = "[]";                  // /v1/orders at start-up and in snapshots
   std::vector<std::pair<long long, std::string>> trades;  // time ms, row
-  int cancel_session_429 = 0;  // the next cancel/session requests answer 429
+  // /v1/balances (ETH is no instrument's asset) and /v1/margin (the spec's example).
+  std::string balances =
+      R"([{"type":"exchange","currency":"BTC","amount":"0.75","available":"0.5","availableForWithdrawal":"0.5","_timestamp":"2026-09-30T08:00:00.123456Z"},)"
+      R"({"type":"exchange","currency":"GUSD","amount":"15000.00","available":"5000.00","availableForWithdrawal":"5000.00","_timestamp":"2026-09-30T08:00:01.500000Z"},)"
+      R"({"type":"exchange","currency":"ETH","amount":"10.0","available":"10.0","availableForWithdrawal":"10.0","_timestamp":"2026-09-30T08:00:02.000000Z"}])";
+  std::string margin =
+      R"({"margin_assets_value":"9800","initial_margin":"6000","available_margin":"3800","margin_maintenance_limit":"5800","leverage":"12.34567","notional_value":"1300","estimated_liquidation_price":"1300","initial_margin_positions":"3500","reserved_margin":"2500","reserved_margin_buys":"1800","reserved_margin_sells":"700","buying_power":"0.19","selling_power":"0.19"})";
+  bool balances_fail = false;          // /v1/balances answers 500
+  bool exchange_account = false;       // /v1/margin answers AccountNotOfTypeRequired
+  bool refuse_balance_stream = false;  // subscribe balances@account answers an error
+  int cancel_session_429 = 0;          // the next cancel/session requests answer 429
   bool heartbeat_ok = true;
   // order.place behaviour, keyed by clientOrderId (server thread only).
   std::map<std::string, std::string> place_mode;  // "reject" | "take" | "fill" | "hold"
@@ -138,6 +149,26 @@ struct Harness {
       count(r);
       srv.record("rest", "positions");
       return net::HttpServerResponse::json(200, reply(positions));
+    });
+    srv.route("POST", "/v1/balances", [this](const net::HttpRequest& r) {
+      count(r);
+      srv.record("rest", "balances");
+      const std::lock_guard lock(mu);
+      if (balances_fail)
+        return net::HttpServerResponse::json(
+            500, R"({"result":"error","reason":"System","message":"down"})");
+      return net::HttpServerResponse::json(200, balances);
+    });
+    srv.route("POST", "/v1/margin", [this](const net::HttpRequest& r) {
+      count(r);
+      srv.record("rest", "margin");
+      srv.record("margin", payload_of(r));
+      const std::lock_guard lock(mu);
+      if (exchange_account)
+        return net::HttpServerResponse::json(
+            400,
+            R"({"result":"error","reason":"AccountNotOfTypeRequired","message":"Account is not of required type: derivatives"})");
+      return net::HttpServerResponse::json(200, margin);
     });
     srv.route("POST", "/v1/mytrades", [this](const net::HttpRequest& r) {
       count(r);
@@ -237,7 +268,12 @@ struct Harness {
       srv.record("orders", std::string(t));
       if (method == "subscribe") {
         order_session = &s;
-        s.send_text(R"({"id":")" + id + R"(","status":200})");
+        const std::lock_guard lock(mu);
+        s.send_text(
+            id == "balances" && refuse_balance_stream
+                ? std::string(
+                      R"({"id":"balances","status":400,"error":{"code":-1013,"msg":"Invalid parameters"}})")
+                : R"({"id":")" + id + R"(","status":200})");
         return;
       }
       if (method == "order.place") {
@@ -584,6 +620,8 @@ TEST_CASE("gemini.venue: signed upgrade with cancelOnDisconnect, then the start-
     CHECK(h.srv.frames("upgrade:/md") == std::vector<std::string>{"snapshot=-1"});
     CHECK(h.srv.frames("orders")[0] ==
           R"({"id":"orders","method":"subscribe","params":["orders@account"]})");
+    CHECK(h.srv.frames("orders")[1] ==
+          R"({"id":"balances","method":"subscribe","params":["balances@account"]})");
     const auto begins = l.reconcile(ReconcileMsg::Kind::Begin);
     REQUIRE(begins.size() == 1);
     // The sweep says nothing about this session's orders: an empty watermark.
@@ -608,8 +646,11 @@ TEST_CASE("gemini.venue: signed upgrade with cancelOnDisconnect, then the start-
     REQUIRE(rest.size() >= 4);
     CHECK(rest[0] == "orders");
     CHECK(std::find(rest.begin(), rest.end(), "mytrades") != rest.end());
-    CHECK(rest[rest.size() - 2] == "orders");
-    CHECK(rest.back() == "positions");
+    // The snapshot's orders then positions; the balance leg (balances, margin) after them.
+    const auto last_orders = std::find(rest.rbegin(), rest.rend(), "orders");
+    REQUIRE(last_orders != rest.rend());
+    REQUIRE(last_orders != rest.rbegin());
+    CHECK(*std::prev(last_orders) == "positions");
     CHECK(h.signed_bad.load() == 0);
     const std::string mt = h.srv.frames("mytrades")[0];
     CHECK(json_str(mt, "symbol") == "btcgusdperp");
@@ -654,7 +695,7 @@ TEST_CASE("gemini.venue: order lifecycle: ack, fill, cancel, reject, post-only t
       return l.oc.count(EventType::OrderAck) == 1 && l.oc.count(EventType::OrderFill) == 1;
     });
     CHECK(
-        h.srv.frames("orders")[1] ==
+        h.srv.frames("orders")[2] ==
         R"({"id":"nfm000100000001","method":"order.place","params":{"symbol":"btcgusdperp","side":"BUY","type":"LIMIT","timeInForce":"MOC","price":"83000.5","quantity":"0.001","clientOrderId":"fm000100000001"}})");
     const auto* ack = l.oc.last<OrderAckMsg>(EventType::OrderAck);
     CHECK(ack->cl_ord_id == n1.cl_ord_id);
@@ -671,7 +712,7 @@ TEST_CASE("gemini.venue: order lifecycle: ack, fill, cancel, reject, post-only t
     l.push(cancel_of("fm000100000001", "73797746498585000").hdr);
     l.until([&] { return l.oc.count(EventType::OrderCancelAck) == 1; });
     CHECK(
-        h.srv.frames("orders")[2] ==
+        h.srv.frames("orders")[3] ==
         R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":"73797746498585000"}})");
     CHECK(l.oc.last<OrderCancelAckMsg>(EventType::OrderCancelAck)->cum_qty ==
           Qty::from_decimal("0.0004").value());
@@ -683,7 +724,7 @@ TEST_CASE("gemini.venue: order lifecycle: ack, fill, cancel, reject, post-only t
     l.until([&] { return l.oc.count(EventType::OrderReject) == 1; });
     // The REJECTED event that follows the reply is not a second reject.
     REQUIRE(pump_until(l.reactor, [&] {
-      return h.srv.frames("orders").size() >= 4 && l.venue->shadow_count() == 0;
+      return h.srv.frames("orders").size() >= 5 && l.venue->shadow_count() == 0;
     }));
     l.pump();
     CHECK(l.oc.count(EventType::OrderReject) == 1);
@@ -721,15 +762,15 @@ TEST_CASE("gemini.venue: a cancel sent before the venue named the order goes out
     Live l(h.section());
     l.wait_for_sweep();
     l.push(new_order("fm000100000001").hdr);
-    REQUIRE(pump_until(l.reactor, [&] { return h.srv.frames("orders").size() == 2; }));
+    REQUIRE(pump_until(l.reactor, [&] { return h.srv.frames("orders").size() == 3; }));
     l.pump();
     l.push(cancel_of("fm000100000001").hdr);  // no venue id yet
     l.pump();
-    CHECK(h.srv.frames("orders").size() == 2);  // nothing to name it by: held
+    CHECK(h.srv.frames("orders").size() == 3);  // nothing to name it by: held
     h.release_held();
     l.until([&] { return l.oc.count(EventType::OrderCancelAck) == 1; });
     CHECK(
-        h.srv.frames("orders")[2] ==
+        h.srv.frames("orders")[3] ==
         R"({"id":"cfm000100000001","method":"order.cancel","params":{"orderId":"73797746498585000"}})");
   }
 }
@@ -904,5 +945,178 @@ TEST_CASE("gemini.venue: a book gap resubscribes the depth stream for a new snap
     // The clock offset came from the `time` method.
     CHECK(l.venue->clock_offset_ms() < 5000);
     CHECK(l.venue->clock_offset_ms() > -5000);
+  }
+}
+
+namespace {
+
+// Balance snapshots (runs of kSnapshot up to kSnapshotEnd) and stream updates collected so far.
+std::vector<std::vector<const BalanceMsg*>> balance_snapshots(const Collected& c) {
+  std::vector<std::vector<const BalanceMsg*>> out;
+  std::vector<const BalanceMsg*> cur;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) != EventType::Balance) continue;
+    const auto& b = RecordingSink::as<BalanceMsg>(m);
+    if ((b.flags & BalanceMsg::kSnapshot) == 0) continue;
+    cur.push_back(&b);
+    if ((b.flags & BalanceMsg::kSnapshotEnd) != 0) out.push_back(std::exchange(cur, {}));
+  }
+  return out;
+}
+
+std::vector<const BalanceMsg*> balance_updates(const Collected& c) {
+  std::vector<const BalanceMsg*> out;
+  for (const auto& m : c.all) {
+    if (RecordingSink::type_of(m) != EventType::Balance) continue;
+    const auto& b = RecordingSink::as<BalanceMsg>(m);
+    if ((b.flags & BalanceMsg::kSnapshot) == 0) out.push_back(&b);
+  }
+  return out;
+}
+
+Notional nt(const char* s) {
+  return Notional::from_decimal(s).value();
+}
+
+}  // namespace
+
+TEST_CASE("gemini.venue: the start-up balance snapshot, with the derivatives margin") {
+  Harness h;
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.until([&] { return !balance_snapshots(l.oc).empty(); });
+    const auto snap = balance_snapshots(l.oc)[0];
+    // GUSD (the perpetual settles in it; BTC and ETH left out), then the account row.
+    REQUIRE(snap.size() == 2);
+    CHECK(snap[0]->asset.view() == "GUSD");
+    CHECK(snap[0]->free == nt("5000"));
+    CHECK(snap[0]->locked == nt("10000"));
+    CHECK(snap[0]->maintenance.is_zero());
+    CHECK(snap[1]->asset.view() == "USD");
+    CHECK(snap[1]->free == nt("3800"));
+    CHECK(snap[1]->locked == nt("6000"));
+    CHECK(snap[1]->total == nt("9800"));
+    CHECK(snap[1]->equity == nt("9800"));
+    CHECK(snap[1]->maintenance == nt("5800"));
+    CHECK(snap[0]->flags == BalanceMsg::kSnapshot);
+    CHECK(snap[1]->flags ==
+          (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd | BalanceMsg::kAccount));
+    // Stamped with the reply's latest _timestamp (2026-09-30T08:00:02Z).
+    for (const BalanceMsg* b : snap)
+      CHECK(b->hdr.exch_ts == Timestamp{1790755202000LL * 1'000'000});
+    // The margin names the subscribed perpetual; the order snapshot came first.
+    CHECK(json_str(h.srv.frames("margin")[0], "symbol") == "btcgusdperp");
+    const auto rest = h.rest();
+    const auto orders_at = std::find(rest.begin(), rest.end(), "orders");
+    const auto balances_at = std::find(rest.begin(), rest.end(), "balances");
+    CHECK(orders_at < balances_at);
+    CHECK(h.signed_bad.load() == 0);
+  }
+}
+
+TEST_CASE("gemini.venue: an exchange account has no margin, and its balances still come") {
+  Harness h;
+  {
+    const std::lock_guard lock(h.mu);
+    h.exchange_account = true;
+  }
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.until([&] { return !balance_snapshots(l.oc).empty(); });
+    const auto snap = balance_snapshots(l.oc)[0];
+    REQUIRE(snap.size() == 1);
+    CHECK(snap[0]->asset.view() == "GUSD");
+    CHECK(snap[0]->flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    CHECK_FALSE(l.venue->fatal());
+    // Not asked again: the next reconciliation's balances go without it.
+    l.venue->request_open_orders();
+    l.until([&] { return balance_snapshots(l.oc).size() == 2; });
+    CHECK(balance_snapshots(l.oc)[1].size() == 1);
+    CHECK(h.count_rest("margin") == 1);
+    CHECK(h.count_rest("balances") == 2);
+  }
+}
+
+TEST_CASE("gemini.venue: a balances@account update is a BalanceMsg stamped with u") {
+  Harness h;
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.until([&] { return !balance_snapshots(l.oc).empty(); });
+    // ETH is no instrument's asset: left out.
+    h.srv.send_to(
+        "/orders",
+        R"({"e":"balanceUpdate","E":1790755300000000000,"u":1790755299999000001,"B":[{"a":"ETH","f":"1","c":"1"},{"a":"GUSD","f":"4000.5","c":"15000.25"}]})");
+    l.until([&] { return !balance_updates(l.oc).empty(); });
+    l.pump();
+    const auto up = balance_updates(l.oc);
+    REQUIRE(up.size() == 1);
+    CHECK(up[0]->asset.view() == "GUSD");
+    CHECK(up[0]->flags == 0);
+    CHECK(up[0]->free == nt("4000.5"));
+    CHECK(up[0]->locked == nt("10999.75"));
+    CHECK(up[0]->total == nt("15000.25"));
+    CHECK(up[0]->equity == nt("15000.25"));
+    // u in ms, rounded up.
+    CHECK(up[0]->hdr.exch_ts == Timestamp{1790755300000LL * 1'000'000});
+    CHECK(up[0]->hdr.venue == kVenue);
+  }
+}
+
+TEST_CASE("gemini.venue: a fill asks for the balances again") {
+  // The derivatives margin has no stream: a perpetual fill asks for the balance leg. Without
+  // balances@account (refused here) every fill does.
+  Harness h;
+  h.srv.run_on_server([&] { h.place_mode["fm000100000001"] = "fill"; });
+  {
+    const std::lock_guard lock(h.mu);
+    h.refuse_balance_stream = true;
+  }
+  {
+    Live l(h.section());
+    l.wait_for_sweep();
+    l.until([&] { return !balance_snapshots(l.oc).empty(); });
+    const std::size_t asked = h.count_rest("balances");
+    const std::size_t snapshots = balance_snapshots(l.oc).size();
+    l.push(new_order("fm000100000001").hdr);
+    l.until([&] {
+      return l.oc.count(EventType::OrderFill) == 1 &&
+             balance_snapshots(l.oc).size() == snapshots + 1;
+    });
+    CHECK(h.count_rest("balances") == asked + 1);
+    // The refresh follows the fill on the order sink.
+    std::size_t fill_at = 0;
+    std::size_t last_row_at = 0;
+    for (std::size_t i = 0; i < l.oc.all.size(); ++i) {
+      const EventType t = RecordingSink::type_of(l.oc.all[i]);
+      if (t == EventType::OrderFill) fill_at = i;
+      if (t == EventType::Balance) last_row_at = i;
+    }
+    CHECK(fill_at < last_row_at);
+  }
+}
+
+TEST_CASE("gemini.venue: a failed balance fetch does not hold up the order snapshot") {
+  Harness h;
+  {
+    const std::lock_guard lock(h.mu);
+    h.balances_fail = true;
+  }
+  {
+    Live l(h.section());
+    l.wait_for_sweep();  // the start-up sweep's orders came; its balances failed
+    REQUIRE(pump_until(l.reactor, [&] { return h.count_rest("balances") >= 1; }));
+    l.venue->request_open_orders();
+    l.until([&] { return l.ends() == 2; });
+    CHECK(l.oc.count(EventType::Balance) == 0);
+    // The driver asks again after its retry delay.
+    {
+      const std::lock_guard lock(h.mu);
+      h.balances_fail = false;
+    }
+    l.until([&] { return !balance_snapshots(l.oc).empty(); }, 9000);
+    CHECK(balance_snapshots(l.oc)[0].size() == 2);
   }
 }
