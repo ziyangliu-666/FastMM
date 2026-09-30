@@ -5,7 +5,8 @@
 //
 // Channels on one reactor thread:
 //   md      <ws_url>/public/stream?streams=<sym>@depth@100ms/<sym>@bookTicker   (BinanceUsdmMdFeed)
-//   trades  <ws_url>/market/stream?streams=<sym>@aggTrade
+//   trades  <ws_url>/market/stream?streams=<sym>@aggTrade/<sym>@markPrice@1s   (the mark price
+//           stream for perpetuals: mark, index and funding as PerpStateMsg)
 //   user    <ws_private_url>/ws/<listenKey>   ORDER_TRADE_UPDATE, ACCOUNT_UPDATE, listenKeyExpired;
 //           the listenKey comes from POST /fapi/v1/listenKey and is kept alive with PUT every
 //           30 minutes (valid 60 minutes, "User Data Streams")
@@ -38,6 +39,13 @@
 // amount. The mode comes from GET /fapi/v1/multiAssetsMargin at start-up and from
 // ACCOUNT_CONFIG_UPDATE ai.j after that.
 //
+// Funding interval: markPriceUpdate has the rate and the next funding time but not the interval.
+// load_reference_data() reads GET /fapi/v1/fundingInfo (public, weight 0) once, next to
+// exchangeInfo: it lists the symbols whose interval was adjusted (fundingIntervalHours, 1, 4 or 8
+// in 2026-09); every other symbol pays every 8 hours. A failed fetch logs a warning and leaves
+// 8 hours. During the session the parser follows the next funding time: the step it takes at a
+// funding is the interval in force (binance_usdm_md_parser.hpp).
+//
 // Leverage and margin mode are not managed: load_reference_data() logs the position mode,
 // leverage, margin type and balances, and refuses to start in hedge mode.
 //
@@ -52,7 +60,7 @@
 //   * endpoints and weights: /fapi/v1 and /fapi/v3 against /api/v3, a different depth-weight
 //     table, exchangeInfo with contractType and no symbol filter;
 //   * user stream: listenKey only (Spot picks between the WS API user stream and listenKey);
-//   * market data: two connections (public + aggTrade market) against Spot's one, and no SBE;
+//   * market data: two connections (public + aggTrade/markPrice market) against Spot's one, no SBE;
 //   * account: one-way position mode is checked at start-up, and ACCOUNT_UPDATE positions are
 //     reconciled against the connector's own sum of forwarded fills (see above);
 //   * reconciliation: openOrders *and* positionRisk, emitted as one snapshot when both replies
@@ -88,6 +96,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fastmm::venues::binance_usdm {
@@ -309,6 +318,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
                                                 const std::vector<Instrument*>& mine,
                                                 const std::vector<std::string>& wanted);
   std::string account_checks(const std::vector<Instrument*>& mine);
+  void load_funding_intervals(const std::vector<Instrument*>& mine,
+                              const std::vector<std::string>& wanted);
+  [[nodiscard]] Duration funding_interval_of(InstrumentId id) const noexcept;
 
   VenueId id_;
   BinanceUsdmVenueConfig cfg_;
@@ -345,6 +357,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
+  // GET /fapi/v1/fundingInfo's interval of each listed instrument (load_reference_data()).
+  std::vector<std::pair<InstrumentId, Duration>> funding_intervals_;
   CountdownDriver dms_;
   std::array<PositionCheck, kMaxInstruments> positions_{};
   // The snapshot's two REST replies, collected before anything is emitted.

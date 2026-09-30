@@ -2,19 +2,31 @@
 
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/level_spill.hpp"
+#include "fastmm/venues/perp_state.hpp"
 
 #include <simdjson.h>
 
+#include <array>
+#include <charconv>
 #include <cstdlib>
+#include <system_error>
 
 namespace fastmm::venues::binance_usdm {
 
 namespace sj = simdjson;
 namespace od = simdjson::ondemand;
 
+// Per instrument: the funding interval reported with its mark price, and the last next funding
+// time seen (Unix ms; 0: none yet).
+struct FundingState {
+  Duration interval = BinanceUsdmMdParser::kDefaultFundingInterval;
+  std::int64_t next_ms = 0;
+};
+
 struct BinanceUsdmMdParser::Impl {
   od::parser parser;
   LevelSpill spill;
+  std::array<FundingState, kMaxInstruments> funding{};
   explicit Impl(std::size_t capacity) {
     if (parser.allocate(capacity) != sj::SUCCESS) std::abort();
   }
@@ -25,6 +37,13 @@ BinanceUsdmMdParser::BinanceUsdmMdParser(const SymbolTable& symbols,
                                          std::size_t capacity)
     : impl_(std::make_unique<Impl>(capacity)), symbols_(symbols), venue_(venue) {}
 BinanceUsdmMdParser::~BinanceUsdmMdParser() = default;
+
+void BinanceUsdmMdParser::set_funding_interval(InstrumentId id, Duration interval) noexcept {
+  if (id.value < kMaxInstruments && interval.ns > 0) impl_->funding[id.value].interval = interval;
+}
+Duration BinanceUsdmMdParser::funding_interval(InstrumentId id) const noexcept {
+  return id.value < kMaxInstruments ? impl_->funding[id.value].interval : kDefaultFundingInterval;
+}
 
 namespace {
 
@@ -280,7 +299,76 @@ DecodeResult overflow(MdParserStats& stats, DecodeResult r) noexcept {
   return r;
 }
 
-enum class StreamKind : std::uint8_t { Depth, Ticker, AggTrade, Other };
+// A decimal funding rate ("0.00010000", "-0.00000189") as a double.
+bool parse_rate(std::string_view s, double& out) noexcept {
+  const char* end = s.data() + s.size();
+  const auto [ptr, ec] = std::from_chars(s.data(), end, out);
+  return ec == std::errc{} && ptr == end;
+}
+
+// The new next funding time `next_ms` seen at venue time `event_ms`: when it is the first frame
+// after the funding at `f.next_ms` (within kRolloverWindow) and T moved by a whole number of
+// hours up to 24, the move is the interval now in force. A frame after a gap longer than the
+// window proves nothing (fundings may have been missed) and only records T.
+bool note_next_funding(FundingState& f, std::int64_t event_ms, std::int64_t next_ms) noexcept {
+  constexpr std::int64_t kHourMs = 3'600'000;
+  bool changed = false;
+  if (f.next_ms > 0 && next_ms > f.next_ms && event_ms >= f.next_ms &&
+      event_ms - f.next_ms < BinanceUsdmMdParser::kRolloverWindow.millis()) {
+    const std::int64_t step = next_ms - f.next_ms;
+    if (step % kHourMs == 0 && step <= 24 * kHourMs && step != f.interval.millis()) {
+      f.interval = milliseconds(step);
+      changed = true;
+    }
+  }
+  f.next_ms = next_ms;
+  return changed;
+}
+
+[[gnu::noinline]] DecodeResult decode_mark_price(const DecodeCtx& c,
+                                                 std::array<FundingState, kMaxInstruments>& funding,
+                                                 od::object& data,
+                                                 DecodeResult r) noexcept {
+  MdParserStats& stats = *c.stats;
+  // Wire order: e, E, s, p, ap, P, i, r, T, st. E is the venue's time of the values; r is the
+  // rate that applies at T. An empty r (a contract without funding) gives mark and index only.
+  std::int64_t event_ms = 0;
+  std::string_view sym;
+  std::string_view mark;
+  std::string_view index;
+  std::string_view rate;
+  std::int64_t next_ms = 0;
+  if (data["E"].get_int64().get(event_ms) != sj::SUCCESS) return fail(stats, r);
+  if (data["s"].get_string().get(sym) != sj::SUCCESS) return fail(stats, r);
+  if (data["p"].get_string().get(mark) != sj::SUCCESS) return fail(stats, r);
+  if (data["i"].get_string().get(index) != sj::SUCCESS) return fail(stats, r);
+  if (data["r"].get_string().get(rate) != sj::SUCCESS) return fail(stats, r);
+  if (data["T"].get_int64().get(next_ms) != sj::SUCCESS) return fail(stats, r);
+  const InstrumentId inst = c.symbols->find(c.venue, sym);
+  if (!inst.valid()) return unknown(stats, r);
+  const auto mp = parse_price(mark);
+  const auto ip = parse_price(index);
+  if (!mp || !ip) return fail(stats, r);
+  double funding_rate = 0.0;
+  const bool has_rate = !rate.empty();
+  if (has_rate && !parse_rate(rate, funding_rate)) return fail(stats, r);
+  auto* m = reinterpret_cast<PerpStateMsg*>(c.out.data());
+  PerpStateBuilder b(*m, inst, c.venue, event_ms, c.recv_ts, c.t0);
+  b.mark(*mp).index(*ip);
+  if (has_rate && inst.value < kMaxInstruments) {
+    FundingState& f = funding[inst.value];
+    if (next_ms > 0 && note_next_funding(f, event_ms, next_ms)) ++stats.funding_rollovers;
+    b.funding(funding_rate, f.interval, next_ms);
+  }
+  if (!b.any()) return fail(stats, r);
+  ++stats.perp_states;
+  r.status = ParseStatus::Ok;
+  r.kind = MdKind::PerpState;
+  r.len = sizeof(PerpStateMsg);
+  return r;
+}
+
+enum class StreamKind : std::uint8_t { Depth, Ticker, AggTrade, MarkPrice, Other };
 
 StreamKind kind_of_stream(std::string_view stream) noexcept {
   const std::size_t at = stream.find('@');
@@ -290,6 +378,8 @@ StreamKind kind_of_stream(std::string_view stream) noexcept {
   if (suffix == "@depth" || suffix.starts_with("@depth@")) return StreamKind::Depth;
   if (suffix == "@bookTicker") return StreamKind::Ticker;
   if (suffix == "@aggTrade") return StreamKind::AggTrade;
+  // "@markPrice" (every 3 s) and "@markPrice@1s".
+  if (suffix == "@markPrice" || suffix.starts_with("@markPrice@")) return StreamKind::MarkPrice;
   return StreamKind::Other;
 }
 
@@ -297,6 +387,7 @@ StreamKind kind_of_event(std::string_view e) noexcept {
   if (e == "depthUpdate") return StreamKind::Depth;
   if (e == "bookTicker") return StreamKind::Ticker;
   if (e == "aggTrade") return StreamKind::AggTrade;
+  if (e == "markPriceUpdate") return StreamKind::MarkPrice;
   return StreamKind::Other;
 }
 
@@ -339,6 +430,8 @@ DecodeResult BinanceUsdmMdParser::decode(std::string_view json,
       return decode_ticker(c, data, r);
     case StreamKind::AggTrade:
       return decode_agg_trade(c, data, r);
+    case StreamKind::MarkPrice:
+      return decode_mark_price(c, impl_->funding, data, r);
     case StreamKind::Other:
       break;
   }
