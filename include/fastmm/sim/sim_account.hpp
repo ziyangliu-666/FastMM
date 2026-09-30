@@ -13,7 +13,9 @@
 //                (notional x [[instruments]] initial_margin): the open position at its entry price,
 //                plus the larger side of the instrument's orders. A reduce-only order, or one that
 //                only takes the position towards zero, holds nothing. Closing realises PnL into the
-//                wallet; fees come out of it. Unrealised PnL is not counted.
+//                wallet; fees come out of it. The open positions' unrealised PnL at their mark
+//                (mark()) counts in the row's free amount and equity, as on Binance USD-M
+//                (available balance = wallet + unrealised PnL - initial margin).
 //
 // admit() is the venue's balance check: an order whose hold (less what the order it replaces held)
 // is above the row's free amount is refused (RejectReason::InsufficientBalance). A derivative
@@ -98,6 +100,18 @@ class SimAccounts {
   void fill(ClientOrderId id, Price px, Qty qty, Qty leaves, Notional fee) noexcept;
   // The order ended (cancel, expiry, reject): its hold goes back to free.
   void close(ClientOrderId id) noexcept;
+  // A derivative's mark price: the venue's (`venue`: a mark price stream), or the book's mid, which
+  // is used only while the venue has sent none.
+  void mark(InstrumentId id, Price px, bool venue) noexcept {
+    if (!enabled(id) || !px.is_positive()) return;
+    Inst& in = inst_[id.value];
+    if (!in.derivative || (in.venue_mark && !venue)) return;
+    in.mark = px;
+    in.venue_mark = in.venue_mark || venue;
+  }
+  [[nodiscard]] bool derivative(InstrumentId id) const noexcept {
+    return enabled(id) && inst_[id.value].derivative;
+  }
 
   // Each row of `venue` as one snapshot (kSnapshot, the last one also kSnapshotEnd), stamped `ts`.
   template <class F>
@@ -135,6 +149,8 @@ class SimAccounts {
   [[nodiscard]] Notional free(VenueId venue, std::string_view asset) const noexcept;
   [[nodiscard]] Notional locked(VenueId venue, std::string_view asset) const noexcept;
   [[nodiscard]] Notional total(VenueId venue, std::string_view asset) const noexcept;
+  // The open positions' unrealised PnL at their marks, in the asset (zero for a spot asset).
+  [[nodiscard]] Notional unrealized(VenueId venue, std::string_view asset) const noexcept;
   // A derivative's position at the venue (contracts, signed).
   [[nodiscard]] Qty position(InstrumentId id) const noexcept;
   [[nodiscard]] std::size_t open_orders() const noexcept { return holds_.size(); }
@@ -163,6 +179,8 @@ class SimAccounts {
     Price entry{};              // average entry price of the position
     std::int64_t position_margin = 0;
     std::array<std::int64_t, 2> side_hold{};  // sum of the orders' holds per side (derivatives)
+    Price mark{};                             // zero: none yet (no unrealised PnL)
+    bool venue_mark = false;                  // `mark` is the venue's, not the book's mid
   };
   struct Hold {
     InstrumentId inst{};
@@ -181,6 +199,8 @@ class SimAccounts {
                                      bool reduces) const noexcept;
   // A derivative's row locked = sum over its instruments of position margin + larger order side.
   void relock(std::uint16_t row) noexcept;
+  // Unrealised PnL of the positions settling in `row` at their marks (raw, in the row's asset).
+  [[nodiscard]] std::int64_t upnl(std::uint16_t row) const noexcept;
   void touch(std::uint16_t row) noexcept;
   [[nodiscard]] std::uint16_t find(VenueId venue, std::string_view asset) const noexcept;
   std::uint16_t row_for(VenueId venue, std::string_view asset);

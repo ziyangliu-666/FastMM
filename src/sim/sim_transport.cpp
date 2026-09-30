@@ -277,6 +277,15 @@ void SimTransport::on_source_event(const EventHeader& md) noexcept {
       default:
         break;
     }
+    // A derivative account's unrealised PnL: the venue's mark, else the book's mid.
+    if (accounts_ != nullptr && accounts_->derivative(id)) [[unlikely]] {
+      if (md.type == EventType::PerpState) {
+        const auto& p = msg_cast<PerpStateMsg>(&md);
+        if ((p.fields & PerpStateMsg::kMark) != 0) accounts_->mark(id, p.mark_price, true);
+      } else if (md.type != EventType::Trade) {
+        accounts_->mark(id, venue_mid(id), false);
+      }
+    }
   }
   // Coupled mode publishes its own view of the book; a venue's mark and funding go through as
   // recorded.

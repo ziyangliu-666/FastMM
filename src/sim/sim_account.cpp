@@ -129,7 +129,7 @@ bool SimAccounts::admit(ClientOrderId id,
     }
   } else if (!reduces && in.settle != kNone) {
     const Row& row = rows_[in.settle];
-    const std::int64_t free = row.total - row.locked;
+    const std::int64_t free = row.total + upnl(in.settle) - row.locked;
     if (in.im_raw == 0) {
       if (free < 0) return false;
     } else {
@@ -266,6 +266,22 @@ void SimAccounts::relock(std::uint16_t row) noexcept {
   touch(row);
 }
 
+std::int64_t SimAccounts::upnl(std::uint16_t row) const noexcept {
+  std::int64_t sum = 0;
+  for (const Instrument& i : instruments_) {
+    const Inst& in = inst_[i.id.value];
+    if (!in.on || !in.derivative || in.settle != row || in.position == 0 || !in.mark.is_positive())
+      continue;
+    // As realised on closing (fill()): long N(mark) - N(entry), inverse N(entry) - N(mark).
+    const Qty size = Qty::from_raw(abs64(in.position));
+    const std::int64_t at_mark = i.notional(in.mark, size).raw;
+    const std::int64_t at_entry = i.notional(in.entry, size).raw;
+    const std::int64_t long_pnl = i.inverse() ? at_entry - at_mark : at_mark - at_entry;
+    sum += in.position > 0 ? long_pnl : -long_pnl;
+  }
+  return sum;
+}
+
 void SimAccounts::touch(std::uint16_t row) noexcept {
   if (row != kNone) dirty_[rows_[row].venue.value] = true;
 }
@@ -274,17 +290,23 @@ BalanceMsg SimAccounts::message(const Row& r, Timestamp ts) const noexcept {
   BalanceMsg m{};
   init_header(m, EventType::Balance, InstrumentId{}, r.venue);
   m.hdr.exch_ts = ts;
-  m.free = Notional::from_raw(r.total - r.locked);
+  const auto row = static_cast<std::uint16_t>(&r - rows_.data());
+  const std::int64_t u = upnl(row);
+  m.free = Notional::from_raw(r.total + u - r.locked);
   m.locked = Notional::from_raw(r.locked);
   m.total = Notional::from_raw(r.total);
-  m.equity = m.total;
+  m.equity = Notional::from_raw(r.total + u);
   m.asset = r.asset;
   return m;
 }
 
 Notional SimAccounts::free(VenueId venue, std::string_view asset) const noexcept {
   const std::uint16_t r = find(venue, asset);
-  return r == kNone ? Notional{} : Notional::from_raw(rows_[r].total - rows_[r].locked);
+  return r == kNone ? Notional{} : Notional::from_raw(rows_[r].total + upnl(r) - rows_[r].locked);
+}
+Notional SimAccounts::unrealized(VenueId venue, std::string_view asset) const noexcept {
+  const std::uint16_t r = find(venue, asset);
+  return r == kNone ? Notional{} : Notional::from_raw(upnl(r));
 }
 Notional SimAccounts::locked(VenueId venue, std::string_view asset) const noexcept {
   const std::uint16_t r = find(venue, asset);
