@@ -505,3 +505,144 @@ TEST_CASE(
 }
 
 #endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE
+
+#if defined(FASTMM_LIVE_EXE) && defined(FASTMM_GATEWAY_EXE)
+
+namespace {
+
+// Bybit's tickers snapshot (https://bybit-exchange.github.io/docs/v5/websocket/public/ticker).
+std::string tickers_frame(const char* mark, const char* index, const char* rate) {
+  return std::string(
+             R"({"topic":"tickers.BTCUSDT","type":"snapshot","data":{"symbol":"BTCUSDT","tickDirection":"PlusTick","lastPrice":"60010.00","markPrice":")") +
+         mark + R"(","indexPrice":")" + index +
+         R"(","openInterest":"68744.761","nextFundingTime":"1789315200000","fundingRate":")" +
+         rate +
+         R"(","fundingIntervalHour":"8","bid1Price":"60000.00","bid1Size":"1","ask1Price":"60010.00","ask1Size":"1"},"cs":24987956059,"ts":1789299710000})";
+}
+
+// The PerpState events a program's journals hold, as their mark prices.
+std::vector<std::int64_t> journal_marks(const Files& f) {
+  std::vector<std::int64_t> marks;
+  for (const auto& e : std::filesystem::directory_iterator(f.journal_dir)) {
+    if (e.path().extension() != ".fmj") continue;
+    JournalReader r;
+    REQUIRE(r.open(e.path().string()).has_value());
+    r.for_each([&](const EventHeader* h) {
+      if (h->type == EventType::PerpState)
+        marks.push_back(msg_cast<PerpStateMsg>(h).mark_price.raw);
+    });
+  }
+  return marks;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "gateway perp state: a venue's mark reaches every attachment and values the account's "
+    "position") {
+  FakeBybit bybit;
+  bybit.report_position = true;  // the account holds -0.015 at 60123.45
+  const Files gw = write_files(bybit, "gw-perp-gw");
+  {
+    std::ofstream out(gw.config, std::ios::app);
+    out << "\n[gateway.shared.\"bybit_linear:BTCUSDT\"]\n";
+  }
+  const Files a = write_files(bybit, "gw-perp-a");
+  const Files b = write_files(bybit, "gw-perp-b");
+  const std::string socket = gw.config + ".gw";
+  const std::string gw_log = gw.config + ".gw.log";
+  const pid_t gateway = spawn_process(FASTMM_GATEWAY_EXE,
+                                      {"--config",
+                                       gw.config,
+                                       "--socket",
+                                       socket,
+                                       "--log",
+                                       gw_log,
+                                       "--status",
+                                       gw.status,
+                                       "--duration",
+                                       "120s"});
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        return std::filesystem::exists(socket) &&
+                               !bybit.srv.frames("private_subscribe").empty();
+                      },
+                      20000),
+                  "the gateway did not come up: " << fastmm::test::read_file(gw_log));
+  std::vector<pid_t> strategies;
+  for (const Files* f : {&a, &b}) {
+    strategies.push_back(spawn_process(FASTMM_LIVE_EXE,
+                                       {"--config",
+                                        f->config,
+                                        "--duration",
+                                        "120s",
+                                        "--status",
+                                        f->status,
+                                        "--log",
+                                        f->log,
+                                        "--gateway",
+                                        socket,
+                                        "--no-control"}));
+  }
+  const std::int64_t venue = Qty::from_decimal("-0.015").value().raw;
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto s = read_status(gw.status);
+                        return s && s->gateway.positions[0].traders == 2 &&
+                               s->gateway.positions[0].qty_raw == venue;
+                      },
+                      20000),
+                  "gateway: " << fastmm::test::read_file(gw_log));
+
+  // The mark values the account's short: -0.015 * (60000 - 60123.45) = 1.85175.
+  bybit.srv.send_to("/v5/public/linear", tickers_frame("60000.00", "59990.00", "0.0001"));
+  const std::int64_t up = Notional::from_decimal("1.85175").value().raw;
+  const std::int64_t mark = Price::from_decimal("60000").value().raw;
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto s = read_status(gw.status);
+                        return s && s->gateway.venues[0].unrealized_raw == up &&
+                               s->perp_count == 1 && s->perps[0].valued_at_mark == 1 &&
+                               s->perps[0].mark_raw == mark;
+                      },
+                      20000),
+                  "the account did not value it at the mark: " << fastmm::test::read_file(gw_log));
+  const auto s = read_status(gw.status);
+  REQUIRE(s.has_value());
+  CHECK(std::string_view(s->perps[0].symbol) == "BTCUSDT");
+  CHECK(s->perps[0].index_raw == Price::from_decimal("59990").value().raw);
+  CHECK(s->perps[0].funding_rate == doctest::Approx(0.0001));
+  // A second mark: -0.015 * (60200 - 60123.45) = -1.14825.
+  bybit.srv.send_to("/v5/public/linear", tickers_frame("60200.00", "60190.00", "0.0001"));
+  const std::int64_t down = Notional::from_decimal("-1.14825").value().raw;
+  const std::int64_t last = Price::from_decimal("60200").value().raw;
+  REQUIRE(wait_until(
+      [&] {
+        const auto st = read_status(gw.status);
+        return st && st->gateway.venues[0].unrealized_raw == down;
+      },
+      20000));
+  // Every attached strategy's engine got both, and its own table holds the last.
+  REQUIRE(wait_until(
+      [&] {
+        const auto sa = read_status(a.status);
+        const auto sb = read_status(b.status);
+        return sa && sb && sa->perp_count == 1 && sb->perp_count == 1 &&
+               sa->perps[0].mark_raw == last && sb->perps[0].mark_raw == last;
+      },
+      20000));
+  for (const pid_t pid : strategies) {
+    REQUIRE(::kill(pid, SIGTERM) == 0);
+    CHECK(reap(pid) == live::kExitOk);
+  }
+  REQUIRE(::kill(gateway, SIGTERM) == 0);
+  CHECK(reap(gateway) == live::kExitOk);
+  for (const Files* f : {&a, &b}) {
+    INFO(f->config);
+    const std::vector<std::int64_t> marks = journal_marks(*f);
+    CHECK(std::count(marks.begin(), marks.end(), mark) >= 1);
+    CHECK(std::count(marks.begin(), marks.end(), last) >= 1);
+  }
+}
+
+#endif  // FASTMM_LIVE_EXE && FASTMM_GATEWAY_EXE
