@@ -21,6 +21,46 @@ done one at a time, each verified before the next:
 4. A reusable hedge executor out of xmm: sizing from positions, one-in-flight, splitting across
    the hedge venue's size limits, failing over to a second hedge venue, stepwise de-risking.
 
+**Real money, two exchanges, crash recovery (2026-10-01).** xmm on the Tokyo box (c7i.large):
+quotes on Binance spot BTCU (maker 0), hedges on Binance USD-M BTCUSDT (run 1) and on OKX
+BTC-USDT-SWAP, my.okx.com, 265 ms away (runs 2 to 4). Loss limit 10 USDT, the engine's at 8; the
+whole day cost about 2.2 USDT. Configs, `chaos.sh` (kill -9 after a fill and on a timer, restart
+2 s later) and `reconcile.py` (store against both venues' trade lists) are in `~/fastmm-aws/live/`.
+
+| Run | What | Result |
+|---|---|---|
+| 1 | Binance spot + USD-M, 1 h | 1 quote fill, hedged in the same second; both in Binance's records |
+| 2 | Binance + OKX, 1 h | 1 quote fill, the OKX hedge 208 ms later, in both records |
+| 3 | Binance + OKX, kill -9 x 8 | first 8 min clean; then three kills 5 s apart booked 3 OKX fills twice |
+| 4 | the same after the fixes, 31 min, kill -9 x 9 (5 after a fill) | 87 Binance trades, 95 OKX fills (83 orders), 10 sessions: every one in the store once |
+
+Found and fixed, in the order they showed:
+- An FX source that is quiet was stale after `[risk] stale_md_ms`: UUSDT goes more than 5 s without
+  an update, so BTCU orders were refused `FxRateUnknown` (217 in run 1). `[accounting] stale_fx_ms`.
+- USD-M (and spot) resynced the book once on every start: the snapshot was requested when the
+  stream opened and came back older than the stream's first event. Requested after the first event.
+- `BalanceShort` on a requote of a side the balance covers once: Binance's acks from order
+  responses had no venue time, so a balance report that arrived first left the order held twice.
+  The acks of Binance, OKX, Bybit, Deribit and Coinbase Exchange carry the venue's time.
+- OKX "channel -> Live" logged every 20 s (the return from Stale on a pong). Logged on transitions.
+- An OKX funding bill has 16 decimals in `balChg`; the bills request failed and funding was never
+  booked. Rounded.
+- Executions booked twice across consecutive crashes: the start-up replay knew only the newest
+  session's execution ids while its window reached older sessions. It knows every session's now,
+  and a session that died inside its replay does not move the start. `fastmm-pnl duplicates` and an
+  ERROR at start report a store that holds any (the test store keeps the three rows of run 3).
+- A hedge larger than `max_order_notional` was refused forever (84 USDT against a cap of 60;
+  0.001 BTC stayed open for 8 minutes and was closed by hand). The hedge executor cuts each order
+  to the risk headroom; run 4 sent 0.07 + 0.03 contracts.
+
+The engine corrected the position of run 3 from OKX's position report by itself; the phantom hedge
+it wanted in between was stopped only by the notional cap.
+
+Open after this: failover to a second hedge venue and stepwise de-risking have not run with real
+money (the spot inventory that feeds the asks is hedged outside the engine's view by the USD-M
+short, which the engine would count if USD-M were its fallback). Hedge orders share the quote
+orders' rate limit (2 hedges refused `RateLimit` in run 4, sent on the retry).
+
 **Fill causality, lead_mm sizing, simulated margin (2026-10-01).** The open items of "Backtest vs
 live: balances and the extra orders" below.
 Fill causality. A recording is in receive order and its streams arrive with different delays: in
