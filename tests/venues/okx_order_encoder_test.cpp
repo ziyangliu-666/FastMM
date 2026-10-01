@@ -412,6 +412,15 @@ TEST_CASE("okx.rest_decoder: instruments, time, account, positions, orders, fill
   REQUIRE(bills.size() == 1);
   CHECK(bills[0].bal_chg == Notional::from_decimal("-0.25").value());
   CHECK(bills[0].type == "8");
+  // A production funding bill (2026-10-01): 16 decimals, rounded to 8.
+  bills.clear();
+  REQUIRE(
+      decode_bills(
+          R"({"code":"0","msg":"","data":[{"billId":"3970804650873082094","instId":"BTC-USDT-SWAP","ccy":"USDT","balChg":"-0.0008785476995335","type":"8","subType":"173","ts":"1790841600343","pnl":"-0.0008785476995335","fee":"0"}]})",
+          bills)
+          .empty());
+  REQUIRE(bills.size() == 1);
+  CHECK(bills[0].bal_chg == Notional::from_decimal("-0.00087855").value());
 
   std::vector<std::string> failed;
   REQUIRE(

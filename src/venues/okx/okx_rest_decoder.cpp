@@ -243,7 +243,12 @@ std::string decode_bills(std::string_view json, std::vector<BillRecord>& out) {
     b.type = text(e, "type");
     b.sub_type = text(e, "subType");
     if (b.bill_id.empty()) return "bills: entry without billId";
-    if (!fixed(e, "balChg", b.bal_chg)) return "bills: bad balChg for bill " + b.bill_id;
+    // A funding payment has more than 8 decimals ("-0.0008785476995335"): rounded, never dropped.
+    std::string_view chg;
+    if (e["balChg"].get(chg) != sj::SUCCESS) return "bills: no balChg for bill " + b.bill_id;
+    const auto v = parse_rounded<Notional>(chg);
+    if (!v) return "bills: bad balChg for bill " + b.bill_id;
+    b.bal_chg = *v;
     if (!millis(e, "ts", b.ts_ms)) return "bills: bad ts for bill " + b.bill_id;
     out.push_back(std::move(b));
   }

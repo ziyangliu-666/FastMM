@@ -239,6 +239,9 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- OKX: a bill whose `balChg` has more than 8 decimals (a funding payment, `-0.0008785476995335`) is
+  rounded and booked; it failed the whole bills request before, so the funding was never booked and
+  the request was repeated.
 - OKX logged "trade channel -> Live" and "private channel -> Live" every 20 s through a session
   without a reconnect: a quiet private or trade channel goes Stale after `stale_ms` and back on
   the pong of the next ping, and the return was logged as a transition (it was already not
