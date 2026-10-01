@@ -1280,6 +1280,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     snap.replaces_sent = live.stats.replaces_sent;
     snap.fills = live.stats.fills;
     snap.risk_rejects = live.stats.risk_rejects;
+    snap.balance_withheld = live.stats.balance_withheld;
     snap.venue_rejects = live.stats.venue_rejects;
     set_status_rejects(snap.risk_reject_reasons, live.stats.risk_rejects_by_reason);
     set_status_rejects(snap.venue_reject_reasons, live.stats.venue_rejects_by_reason);
@@ -1681,6 +1682,9 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   }
   log_reject_breakdown("risk_rejects", rs.risk_rejects_by_reason);
   log_reject_breakdown("venue_rejects", rs.venue_rejects_by_reason);
+  if (rs.balance_withheld > 0)
+    FASTMM_LOG_INFO("fastmm-live: balance_withheld={} (quote orders the balance no longer covered)",
+                    rs.balance_withheld);
   FASTMM_LOG_INFO(
       "fastmm-live: realized_pnl={} unrealized_pnl={} fees={} tick_to_trade p50={} ns p99={} ns",
       Notional::from_raw(rs.realized_pnl_raw),

@@ -624,6 +624,7 @@ TEST_CASE("core.balance: a requote whose old order filled instead re-checks the 
     CHECK(sent.size() == (fits ? 1U : 0U));
     if (fits && !sent.empty()) CHECK(sent[0]->price == px("50200"));
     CHECK(r.engine->quote_manager().stats().kept_balance == (fits ? 0U : 1U));
+    CHECK(r.engine->runner_stats().balance_withheld == (fits ? 0U : 1U));  // status, metrics
     CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::BalanceShort] == 0);
     CHECK(r.bal(kSpotVenue, "BTC").free == (fits ? nt("0.001") : nt("0.00009")));
   }

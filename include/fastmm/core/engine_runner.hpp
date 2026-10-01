@@ -37,6 +37,9 @@ struct RunnerStats {
   RejectCounts risk_rejects_by_reason;   // sums to risk_rejects
   RejectCounts venue_rejects_by_reason;  // sums to venue_rejects
   std::int64_t funding_raw = 0;          // part of realized_pnl_raw
+  // Quote News held back after their old order ended: the balance no longer covered them
+  // (QuoteStats::kept_balance). A side that stays unquoted for this shows here, not in the rejects.
+  std::uint64_t balance_withheld = 0;
 };
 
 // One row of the engine's balance table (core/balance_book.hpp) as the monitors see it: the

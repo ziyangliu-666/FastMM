@@ -300,6 +300,10 @@ void engine_metrics(Exposition& e, const StatusSnapshot& s) {
   e.counter("fastmm_fills_total", "executions received", s.fills);
   e.counter("fastmm_risk_rejects_total", "orders refused by the pre-trade checks", s.risk_rejects);
   e.counter("fastmm_venue_rejects_total", "orders refused by a venue", s.venue_rejects);
+  e.counter(
+      "fastmm_quotes_withheld_balance_total",
+      "quote orders held back after their old order ended: the balance no longer covered them",
+      s.balance_withheld);
   e.gauge("fastmm_flatten_state",
           "FlattenState of the operator flatten: 0 off, 1 working, 2 flat, 3 timed out, 4 stopped",
           static_cast<double>(s.flatten_state));

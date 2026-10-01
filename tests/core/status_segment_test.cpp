@@ -120,7 +120,7 @@ TEST_CASE("core.status_segment: the dashboard shows state, engine, latency and v
 TEST_CASE("core.status_segment: reject reasons round trip and show on the dashboard") {
   StatusSnapshot s = sample();
   std::string frame = format_status(s, s.updated_ns, false);
-  CHECK(frame.find("risk_rejects=0 venue_rejects=0") != std::string::npos);
+  CHECK(frame.find("risk_rejects=0 venue_rejects=0 balance_withheld=0") != std::string::npos);
 
   RejectCounts risk;
   for (int i = 0; i < 5; ++i) risk.add(RejectReason::RateLimit);
@@ -131,6 +131,7 @@ TEST_CASE("core.status_segment: reject reasons round trip and show on the dashbo
   s.venue_rejects = venue.total();
   set_status_rejects(s.risk_reject_reasons, risk);
   set_status_rejects(s.venue_reject_reasons, venue);
+  s.balance_withheld = 2;
 
   const std::string path = tmp_path("rejects.status");
   StatusWriter w;
@@ -143,6 +144,7 @@ TEST_CASE("core.status_segment: reject reasons round trip and show on the dashbo
   REQUIRE(r.read(got));
   CHECK(got.risk_rejects == 17);
   CHECK(got.venue_rejects == 3);
+  CHECK(got.balance_withheld == 2);
   CHECK(got.risk_reject_reasons[0].reason == static_cast<std::uint8_t>(RejectReason::MaxPosition));
   CHECK(got.risk_reject_reasons[0].count == 12);
   CHECK(got.risk_reject_reasons[1].reason == static_cast<std::uint8_t>(RejectReason::RateLimit));
@@ -152,7 +154,8 @@ TEST_CASE("core.status_segment: reject reasons round trip and show on the dashbo
   frame = format_status(got, got.updated_ns, false);
   INFO(frame);
   CHECK(frame.find("risk_rejects=17 (MaxPosition 12, RateLimit 5) venue_rejects=3 "
-                   "(PostOnlyWouldCross 3)") != std::string::npos);
+                   "(PostOnlyWouldCross 3) balance_withheld=2") != std::string::npos);
+  CHECK(format_status_json(got).find("\"balance_withheld\": 2") != std::string::npos);
   w.close();
   std::remove(path.c_str());
 
@@ -302,7 +305,7 @@ TEST_CASE("core.status_segment: multicast feed line and the JSON form") {
   CHECK(frame.find("fallback=5") != std::string::npos);
 
   const std::string json = format_status_json(s);
-  CHECK(json.find(R"({"kind": "engine", "version": 14,)") == 0);
+  CHECK(json.find(R"({"kind": "engine", "version": 15,)") == 0);
   CHECK(json.find(R"("engine": "binance-demo")") != std::string::npos);
   CHECK(json.find(R"("tick_to_trade": {"count": 10, "p50_ns": 106495, "p99_ns": 216053, )"
                   R"("p999_ns": 250000, "max_ns": 300000})") != std::string::npos);
@@ -441,7 +444,7 @@ TEST_CASE("core.status_segment: a gateway's snapshot round trips and shows its a
 
   const std::string json = format_status_json(got);
   INFO(json);
-  CHECK(json.find(R"({"kind": "gateway", "version": 14,)") == 0);
+  CHECK(json.find(R"({"kind": "gateway", "version": 15,)") == 0);
   CHECK(json.find(R"("gateway": "gw")") != std::string::npos);
   CHECK(json.find(R"("net_pnl": -0.25, "realized": 1.5)") != std::string::npos);
   CHECK(json.find(R"("engine": "mm-a", "pid": 1001)") != std::string::npos);

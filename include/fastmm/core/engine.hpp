@@ -567,6 +567,7 @@ class Engine {
     r.venue_rejects = stats_.venue_rejects;
     r.risk_rejects_by_reason = stats_.risk_rejects_by_reason;
     r.venue_rejects_by_reason = stats_.venue_rejects_by_reason;
+    r.balance_withheld = quotes_.stats().kept_balance;
     return r;
   }
 

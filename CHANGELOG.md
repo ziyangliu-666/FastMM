@@ -257,7 +257,9 @@ All notable changes are recorded here (Keep a Changelog format).
 - The same unstamped response acks elsewhere: OKX (the order's `ts`), Bybit (`Timenow`, REST
   `time`), Deribit (`usOut`, rounded up to the ms), Coinbase Exchange (`created_at`) and Binance
   USDⓈ-M (`updateTime`) now stamp the acks and cancel acks they take from order responses. Coinbase
-  Advanced Trade's responses carry no time.
+  Advanced Trade's responses carry no time. Quote orders held back because the balance no longer
+  covered them are counted in the status (`balance_withheld` on the `rejects` line and in the JSON,
+  status version 15) and as `fastmm_quotes_withheld_balance_total`.
 - Binance USDⓈ-M (and Spot) books resynced on many starts ("book resync (sequence gap)" within
   half a second of connecting, the book back 2 s later). The depth snapshot was requested as the
   stream opened and could come back before the stream's first event and older than it; with

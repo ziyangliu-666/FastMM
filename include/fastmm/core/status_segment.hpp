@@ -36,7 +36,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 //     attachment's instruments), GatewaySelfTrade.
 // 13: balances per venue and asset; GatewayBalanceShort.
 // 14: the venues' mark, index and funding per derivative.
-inline constexpr std::uint32_t kStatusVersion = 14;
+// 15: balance_withheld.
+inline constexpr std::uint32_t kStatusVersion = 15;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -309,6 +310,8 @@ struct StatusSnapshot {
   // gateway.max_loss_raw).
   std::int64_t max_loss_raw = 0;
   std::uint64_t venue_rejects = 0;
+  // Quote News held back because the balance no longer covered them (RunnerStats).
+  std::uint64_t balance_withheld = 0;
   // The most frequent reasons, most frequent first; the totals above include reasons that did not
   // fit (set_status_rejects).
   StatusRejectCount risk_reject_reasons[kStatusMaxRejectReasons];

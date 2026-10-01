@@ -430,9 +430,10 @@ std::string format_status(const StatusSnapshot& s, std::int64_t now_ns, bool col
                       : fmt::format("{} ({})", total, format_status_rejects(entries, total));
   };
   fmt::format_to(std::back_inserter(out),
-                 "rejects    risk_rejects={} venue_rejects={}\n",
+                 "rejects    risk_rejects={} venue_rejects={} balance_withheld={}\n",
                  rejects(s.risk_rejects, s.risk_reject_reasons),
-                 rejects(s.venue_rejects, s.venue_reject_reasons));
+                 rejects(s.venue_rejects, s.venue_reject_reasons),
+                 s.balance_withheld);
   fmt::format_to(std::back_inserter(out),
                  "pnl        realized={} unrealized={} fees={} carried={} budget_used={}\n\n",
                  money(s.realized_pnl_raw),
@@ -937,7 +938,8 @@ std::string format_status_json(const StatusSnapshot& s) {
                  "\"state\": \"{}\", "
                  "\"engine\": {}, \"strategy\": {}, \"events\": {}, \"book_updates\": {}, "
                  "\"orders_sent\": {}, \"cancels_sent\": {}, \"replaces_sent\": {}, \"fills\": {}, "
-                 "\"risk_rejects\": {}, \"venue_rejects\": {}, \"kill_flags\": {}, "
+                 "\"risk_rejects\": {}, \"venue_rejects\": {}, \"balance_withheld\": {}, "
+                 "\"kill_flags\": {}, "
                  "\"kill_reason\": \"{}\", \"kill_latched\": {}, \"pnl_carry_raw\": {}, "
                  "\"flatten_state\": \"{}\", \"flatten_instruments_left\": {}, "
                  "\"flatten_orders\": {}, \"latency\": {{",
@@ -955,6 +957,7 @@ std::string format_status_json(const StatusSnapshot& s) {
                  s.fills,
                  s.risk_rejects,
                  s.venue_rejects,
+                 s.balance_withheld,
                  s.kill_flags,
                  to_string(static_cast<KillReason>(s.kill_reason)),
                  s.kill_latched != 0,

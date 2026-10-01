@@ -29,6 +29,7 @@ StatusSnapshot sample() {
   s.orders_sent = 7;
   s.fills = 2;
   s.risk_rejects = 5;
+  s.balance_withheld = 4;
   s.risk_reject_reasons[0] = {5, static_cast<std::uint8_t>(RejectReason::MaxPosition), {}};
   s.realized_pnl_raw = 150'000'000;  // 1.5
   s.fees_raw = -25'000'000;          // -0.25, a rebate
@@ -75,6 +76,7 @@ TEST_CASE("core.status_prometheus: the snapshot becomes metrics in base units") 
   CHECK(has(text, "fastmm_uptime_seconds 60\n"));
   CHECK(has(text, "fastmm_status_age_seconds 0.5\n"));
   CHECK(has(text, "fastmm_rejects_by_reason_total{kind=\"risk\",reason=\"MaxPosition\"} 5\n"));
+  CHECK(has(text, "fastmm_quotes_withheld_balance_total 4\n"));
   // Nanoseconds in the snapshot, seconds on the wire.
   CHECK(has(text,
             "fastmm_latency_quantile_seconds{interval=\"tick_to_trade\",quantile=\"0.5\"} "
