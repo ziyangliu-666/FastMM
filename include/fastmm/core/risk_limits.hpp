@@ -65,6 +65,13 @@ struct RiskHeadroom {
   Notional gross_notional = Notional::max();
   Notional net_buy_notional = Notional::max();
   Notional net_sell_notional = Notional::max();
+  // The same two caps as the notional of one order on this instrument, in its settlement
+  // currency (the engine converts with the rate the check uses): the largest buy / sell notional
+  // that passes both. max() when neither cap is on and for the side that reduces the position
+  // (the caps never refuse that); zero while the currency's rate is unknown, where an order that
+  // adds exposure is refused (FxRateUnknown).
+  Notional exposure_buy_notional = Notional::max();
+  Notional exposure_sell_notional = Notional::max();
   // max_loss plus the net PnL it is measured against; the kill switch trips at zero or below.
   Notional loss_budget = Notional::max();
   // Largest buy / sell at the book's mid the account's balance on the venue covers ([risk]

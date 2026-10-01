@@ -187,6 +187,11 @@ All notable changes are recorded here (Keep a Changelog format).
   `own_in_feed(venue)`.
 
 ### Changed
+- `HedgeExecutor` also cuts a hedge to what `max_gross_notional` and `max_net_notional` leave:
+  `RiskHeadroom` gains `exposure_buy_notional` / `exposure_sell_notional` (C++ and Python), the
+  two caps as the notional of one order on the instrument in its settlement currency, converted
+  by the risk engine at the rate its check uses; unlimited for the side that reduces the
+  position, zero while the currency's rate is unknown.
 - The check for executions stored by more than one session (run at every `fastmm-live` start and
   by every `fastmm-pnl` command) no longer groups the whole `fills` table: schema version 7 adds
   indexes on the venue ids (`fills_exec_any`, `funding_id_any`) and the check walks them in id

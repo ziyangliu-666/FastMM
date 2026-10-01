@@ -408,7 +408,8 @@ def test_fees_risk_headroom_and_venue_health(example_config):
             self.rooms = (before.buy_qty, after.buy_qty, after.buy_qty_raw, after.sell_qty,
                           before.open_orders, after.open_orders, after.order_tokens,
                           after.max_order_qty, after.max_order_notional, after.loss_budget,
-                          after.gross_notional, after.net_buy_notional)
+                          after.gross_notional, after.net_buy_notional,
+                          after.exposure_buy_notional, after.exposure_sell_notional_raw)
 
         def on_order_update(self, ctx, u):
             if u.order_id == getattr(self, "order_id", None) and u.state == "Live":
@@ -431,6 +432,7 @@ def test_fees_risk_headroom_and_venue_health(example_config):
     assert s.rooms[7] == pytest.approx(0.01) and s.rooms[8] == pytest.approx(2000.0)
     assert s.rooms[9] == pytest.approx(100.0, abs=1.0)
     assert s.rooms[10] is None and s.rooms[11] is None
+    assert s.rooms[12] is None and s.rooms[13] is None  # no exposure cap is set
     acks, rtt, srtt, md, gated, engagements, lag_ok, stamped = s.health
     assert acks == 1 and rtt > 0 and srtt == rtt and md > 0
     assert (gated, engagements, lag_ok, stamped) == (False, 0, True, True)

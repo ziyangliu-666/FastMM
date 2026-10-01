@@ -1398,6 +1398,10 @@ void bind_strategy_api(py::module_& m) {
   fixed_room("gross_notional", [](const RiskHeadroom& h) { return h.gross_notional; });
   fixed_room("net_buy_notional", [](const RiskHeadroom& h) { return h.net_buy_notional; });
   fixed_room("net_sell_notional", [](const RiskHeadroom& h) { return h.net_sell_notional; });
+  fixed_room("exposure_buy_notional",
+             [](const RiskHeadroom& h) { return h.exposure_buy_notional; });
+  fixed_room("exposure_sell_notional",
+             [](const RiskHeadroom& h) { return h.exposure_sell_notional; });
   fixed_room("loss_budget", [](const RiskHeadroom& h) { return h.loss_budget; });
   fixed_room("balance_buy_qty", [](const RiskHeadroom& h) { return h.balance_buy_qty; });
   fixed_room("balance_sell_qty", [](const RiskHeadroom& h) { return h.balance_sell_qty; });

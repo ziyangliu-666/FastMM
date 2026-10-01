@@ -139,6 +139,19 @@ TEST_CASE("core.venue_state: gross and net exposure rooms are what check_new adm
   CHECK(r.order(Side::Buy, qty_of(h.gross_notional)) == RejectReason::None);
   CHECK(r.order(Side::Buy, qty_of(h.gross_notional) + lot) == RejectReason::MaxGrossNotional);
 
+  // The two caps as one order's notional per side: the tighter of the two, and no bound for the
+  // side that reduces the position (the caps never refuse that).
+  CHECK(h.exposure_buy_notional == nt("500"));
+  CHECK(h.exposure_sell_notional == nt("400"));
+  r.pos.qty = qt("0.3");
+  CHECK(r.headroom().exposure_buy_notional == nt("500"));
+  CHECK(r.headroom().exposure_sell_notional == Notional::max());
+  CHECK(r.order(Side::Sell, qty_of(nt("5000"))) == RejectReason::None);
+  r.pos.qty = qt("-0.3");
+  CHECK(r.headroom().exposure_buy_notional == Notional::max());
+  CHECK(r.headroom().exposure_sell_notional == nt("400"));
+  r.pos.qty = Qty{};
+
   // Net already past the cap short (-700 against 600): a buy may take it through zero to +700,
   // where |net| has not grown.
   RiskLimits net_only;
@@ -192,6 +205,8 @@ TEST_CASE("core.venue_state: a limit that is off reports no bound") {
   CHECK(h.max_order_qty == Qty::max());
   CHECK(h.gross_notional == Notional::max());
   CHECK(h.net_buy_notional == Notional::max());
+  CHECK(h.exposure_buy_notional == Notional::max());
+  CHECK(h.exposure_sell_notional == Notional::max());
   CHECK(h.loss_budget == Notional::max());
   RiskLimits l;
   l.max_order_qty = qt("2");

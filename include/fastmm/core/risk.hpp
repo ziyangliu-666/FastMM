@@ -373,6 +373,24 @@ class RiskEngine {
       h.net_buy_notional = Notional::from_raw(b > 0 ? b : 0);
       h.net_sell_notional = Notional::from_raw(s > 0 ? s : 0);
     }
+    if (portfolio_ && buy.position != nullptr && inst.id.value < kMaxInstruments) {
+      const std::int64_t q = buy.position->qty.raw;
+      const std::uint8_t c = fx_ccy_[inst.id.value];
+      const auto room = [&](bool is_buy, Notional net) {
+        if (q != 0 && (q > 0) != is_buy) return Notional::max();  // reduces: never refused
+        Notional r = std::min(h.gross_notional, net);
+        if (!fx_gate_ || c == 0) return r;
+        const FxRate rate = fx_rate(c, buy.now);
+        if (!rate.known()) return Notional{};
+        if (r == Notional::max() || rate.num == rate.den) return r;
+        // Rounded down, so that converting it back stays inside the room.
+        const Int128 n = static_cast<Int128>(r.raw) * rate.den / rate.num;
+        return n >= Notional::max().raw ? Notional::max()
+                                        : Notional::from_raw(static_cast<std::int64_t>(n));
+      };
+      h.exposure_buy_notional = room(true, h.net_buy_notional);
+      h.exposure_sell_notional = room(false, h.net_sell_notional);
+    }
     if (limits_.max_loss.is_positive())
       h.loss_budget = Notional::from_raw(limits_.max_loss.raw + net_pnl.raw);
     if (buy.underlying.limited && inst.id.value < kMaxInstruments) {

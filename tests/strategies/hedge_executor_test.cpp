@@ -117,8 +117,10 @@ struct Ctx {
     const Instrument& inst = table.get(r.instrument);
     if (r.qty > HedgeExecutor::risk_room(h, inst, r.side, r.price)) {
       risk_refused.push_back(r);
-      return fail(inst.notional(r.price, r.qty) > h.max_order_notional
-                      ? RejectReason::MaxOrderNotional
+      const Notional n = inst.notional(r.price, r.qty);
+      return fail(n > h.max_order_notional ? RejectReason::MaxOrderNotional
+                  : n > (r.side == Side::Buy ? h.exposure_buy_notional : h.exposure_sell_notional)
+                      ? RejectReason::MaxGrossNotional
                       : RejectReason::MaxPosition);
     }
     const ClientOrderId id{0x0001'0000'0000ULL + sent.size() + 1};
@@ -337,6 +339,43 @@ TEST_CASE("strategies.hedge_executor: a hedge over max_order_notional goes out i
   REQUIRE(c.sent.size() == 3);
   CHECK(c.sent[2].req.side == Side::Buy);
   CHECK(c.sent[2].req.qty == qt("0.05"));
+}
+
+// max_gross_notional / max_net_notional: the engine gives what they leave for one order on each
+// side, in the instrument's currency.
+TEST_CASE("strategies.hedge_executor: a hedge over the exposure caps' room goes out in pieces") {
+  Ctx c;
+  c.risk[1].exposure_sell_notional = Notional::from_int(60);
+  HedgeExecutor h = make(c, false);
+  source_fill(h, c, "0.001");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.side == Side::Sell);
+  CHECK(c.sent[0].req.qty == qt("0.06"));
+  // The room is the engine's, each time: the first piece used some of it.
+  c.risk[1].exposure_sell_notional = Notional::from_int(25);
+  filled(h, c, 0);
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.qty == qt("0.02"));
+  c.risk[1].exposure_sell_notional = Notional::max();
+  filled(h, c, 1);
+  REQUIRE(c.sent.size() == 3);
+  CHECK(c.sent[2].req.qty == qt("0.02"));
+  filled(h, c, 2);
+  CHECK(h.residual(c).is_zero());
+  // The buy side has room of its own (it reduces the short hedge position: no bound).
+  c.risk[1].exposure_sell_notional = Notional{};
+  source_fill(h, c, "-0.002");
+  REQUIRE(c.sent.size() == 4);
+  CHECK(c.sent[3].req.side == Side::Buy);
+  CHECK(c.sent[3].req.qty == qt("0.2"));
+  CHECK(c.risk_refused.empty());
+  CHECK(h.stats().hedge_failures == 0);
+  // The tighter of the per-order cap and the exposure room decides.
+  RiskHeadroom both;
+  both.max_order_notional = Notional::from_int(60);
+  both.exposure_sell_notional = Notional::from_int(25);
+  CHECK(HedgeExecutor::risk_room(both, c.table.get(kB), Side::Sell, px("99950.0")) == qt("0.02"));
+  CHECK(HedgeExecutor::risk_room(both, c.table.get(kB), Side::Buy, px("100050.2")) == qt("0.05"));
 }
 
 TEST_CASE("strategies.hedge_executor: max_order_qty and the position room cut a hedge too") {

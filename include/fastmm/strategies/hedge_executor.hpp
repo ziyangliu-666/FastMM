@@ -30,7 +30,8 @@
 // one before it ends, instead of being refused whole every time. When the limits admit nothing the
 // instrument's minimums allow (the position room is used up), the order goes out whole: the engine
 // refuses it and that is a failure of the instrument, as before. The exposure caps
-// (max_gross_notional, max_net_notional) do not size an order; they refuse it.
+// (max_gross_notional, max_net_notional) size it the same way, through the room the engine gives
+// for one order in the instrument's own currency (RiskHeadroom::exposure_buy_notional).
 //
 // A hedge instrument is usable when its venue's order channel is up, its venue is not killed, its
 // book is valid, not older than Config::stale and not held by the feed-lag gate, and it is not
@@ -549,8 +550,9 @@ class HedgeExecutor {
   }
 
   // The largest order of `side` on `inst` at `price` that [risk] admits now: max_order_qty,
-  // max_order_notional at that price, and that side's room of max_position and of
-  // [risk.underlying] max_net. Qty::max() when none of them is set.
+  // max_order_notional at that price, that side's room of max_position and of [risk.underlying]
+  // max_net, and what max_gross_notional and max_net_notional leave for it at that price.
+  // Qty::max() when none of them is set.
   [[nodiscard]] static constexpr Qty risk_room(const RiskHeadroom& h,
                                                const Instrument& inst,
                                                Side side,
@@ -558,8 +560,10 @@ class HedgeExecutor {
     Qty room = h.max_order_qty;
     room = std::min(room, side == Side::Buy ? h.buy_qty : h.sell_qty);
     room = std::min(room, side == Side::Buy ? h.underlying_buy_qty : h.underlying_sell_qty);
-    if (h.max_order_notional != Notional::max())
-      room = std::min(room, qty_within(inst, price, h.max_order_notional));
+    Notional notional = h.max_order_notional;
+    notional =
+        std::min(notional, side == Side::Buy ? h.exposure_buy_notional : h.exposure_sell_notional);
+    if (notional != Notional::max()) room = std::min(room, qty_within(inst, price, notional));
     return room;
   }
 

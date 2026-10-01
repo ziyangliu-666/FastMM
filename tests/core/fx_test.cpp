@@ -270,6 +270,24 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
   OrderIntent big = buy;
   big.qty = qt("40");
   CHECK(risk.check_new(big, inv, in) == RejectReason::MaxGrossNotional);
+  // The room for one order, in the instrument's own currency: 3000 USDT is 0.06 BTC, 30
+  // contracts; exactly that passes and one more does not.
+  {
+    const RiskHeadroom h = risk.headroom(inv, in, in, Notional{});
+    CHECK(h.gross_notional == nt("3000"));
+    CHECK(h.exposure_buy_notional == nt("0.06"));
+    CHECK(h.exposure_sell_notional == nt("0.06"));
+    OrderIntent most = buy;
+    most.qty = qt("30");
+    CHECK(inv.notional(most.price, most.qty) == h.exposure_buy_notional);
+    CHECK(risk.check_new(most, inv, in) == RejectReason::None);
+    most.qty = qt("31");
+    CHECK(risk.check_new(most, inv, in) == RejectReason::MaxGrossNotional);
+    // The side that reduces a position has no bound.
+    const RiskHeadroom hr = risk.headroom(inv, reducing, reducing, Notional{});
+    CHECK(hr.exposure_sell_notional == Notional::max());
+    CHECK(hr.exposure_buy_notional == nt("0.06"));
+  }
 
   // A quiet source: its book is older than stale_md (the instrument's own is fresh) but younger
   // than [accounting] stale_fx_ms (60 s by default). The rate is current.
@@ -293,6 +311,9 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
   // The source's book is gone (disconnected, crossed).
   risk.on_fx_book(1, false);
   CHECK(risk.check_new(buy, inv, in) == RejectReason::FxRateUnknown);
+  CHECK(risk.headroom(inv, in, in, Notional{}).exposure_buy_notional == Notional{});
+  CHECK(risk.headroom(inv, reducing, reducing, Notional{}).exposure_sell_notional ==
+        Notional::max());
   CHECK(risk.check_new(sell, inv, reducing) == RejectReason::None);
 
   // stale_fx_ms = 0: any valid book prices, however old; an invalid one still does not.
