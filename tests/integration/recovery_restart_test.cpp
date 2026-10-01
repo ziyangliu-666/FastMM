@@ -275,7 +275,9 @@ void restart_across_clock_skew(std::int64_t venue_ahead_ms, const std::string& s
   CHECK(reap(second) == 0);
 
   const std::vector<std::string> twice = booked_twice(f, stem);
-  INFO("venue " << fx.server.stats().position.raw << ", engine " << store_position(f, stem).raw
+  // Read before the INFO: store_position asserts, which doctest cannot do while it reports.
+  const Qty stored_position = store_position(f, stem);
+  INFO("venue " << fx.server.stats().position.raw << ", engine " << stored_position.raw
                 << ", fills stored by the first session " << first_fills << ", booked twice "
                 << twice.size()
                 << (twice.empty() ? std::string() : " (" + twice.front() + " ...)"));

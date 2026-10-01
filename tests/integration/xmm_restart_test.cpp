@@ -454,14 +454,6 @@ std::size_t fills_in_store(const SessionFiles& f) {
   return rows.has_value() ? rows->rows.size() : 0;
 }
 
-// A log for an INFO: read without an assertion, which doctest cannot run while it reports one.
-std::string text_of(const std::string& path) {
-  std::ifstream in(path, std::ios::binary);
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  return ss.str();
-}
-
 // 5. Three kills in a row, each within seconds of the start, the way a supervisor restarts a
 // process that keeps dying. The first session stores a hedged round and, within the same second,
 // misses a second hedge (the hedge venue carries it out and holds its reply). The second session's
@@ -509,7 +501,7 @@ void three_kills(ServerFixture& qv, ServerFixture& hv, const SessionFiles& f, Sp
   Child fourth(spawn());
   const std::uint16_t e4 = wait_quoting(qv, hv, f, e3);
   observe_quiet_period();
-  INFO("sessions: " << text_of(f.config + ".log"));
+  INFO("sessions: " << log_of(f));
   CHECK(hv.server.stats().orders_accepted == 2);  // no hedge of a position that is not there
   CHECK(net_position(qv, hv).is_zero());
   CHECK(fills_in_store(f) == venue_fills);
@@ -565,7 +557,7 @@ TEST_CASE("xmm restart: behind fastmm-gateway, three kills in a row book every e
                       },
                       30000),
                   "the gateway did not come up: " << fastmm::test::read_file(g.log));
-  INFO("gateway: " << text_of(g.log));
+  INFO("gateway: " << fastmm::test::read_file(g.log));
   three_kills(qv, hv, f, [&] { return spawn_strategy(f, g, 300); });
 }
 
