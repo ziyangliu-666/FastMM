@@ -268,6 +268,7 @@ TEST_CASE("store.funding: a stored payment is a venue event a restart resumes fr
     const InstrumentTable table = fastmm::test::store_table();
     REQUIRE(b->instruments(5, std::span<const Instrument>(table.data(), table.size())));
     b->begin();
+    b->replayed(fastmm::test::store_replayed(5, 4, 0));  // it got past its start-up replay
     FillRecord fill =
         fastmm::test::store_fill(5, 1, (t0 - 60'000) * kMs, Side::Buy, 100, 1, 0, 0, "1001");
     fill.hdr.venue = VenueId{0};

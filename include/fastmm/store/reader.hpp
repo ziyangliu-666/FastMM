@@ -95,11 +95,14 @@ struct Recovery {
   // replay's window still reaches the executions the sessions before it stored. An execution the
   // store holds, in whichever session, is never handed to a replay as new.
   //
-  // The start goes back further when the newest sessions may have died inside their own replay
-  // (no order placed on the venue - a session sends none before the venue has reconciled - and no
-  // shutdown recorded): such a session can hold a fill newer than one its replay had not reached.
-  // It is then the earliest of the last fills of those sessions and of the first one before them
-  // that got past its replay.
+  // The start is where the record is known to be whole: the last fill stored up to the newest
+  // session that got past its own replay on the venue (the store records a reconciliation that
+  // began with the venue's executions complete, schema 6; a session from before that counts when it
+  // placed an order there - none goes out before the venue has reconciled - or shut down cleanly).
+  // A session after that one died while its replay was still reading, and can hold a fill newer
+  // than one the replay had not reached: its fills are known, and the start is not later than the
+  // earliest of their last ones. When no session at all got past its replay the start is no later
+  // than unbooked_since_ms.
   //
   // The overlap covers one thing: the order in which a venue publishes executions against their
   // trade times. Executions of different symbols (and a Bybit batch, a Deribit per-instrument
@@ -124,14 +127,17 @@ struct Recovery {
   };
   // One entry per venue that recorded a fill with a venue time.
   std::vector<VenueResume> venue_resume;
-  // The highest numeric trade id the store holds per (venue, symbol), over every session of the
-  // engine. Binance trade ids increase per symbol, so its replay can resume at the next one
-  // exactly (Venue::resume_trade_ids).
+  // The highest numeric trade id per (venue, symbol) the store holds up to the newest session that
+  // got past its replay on the venue (see above), and the ids above it that the sessions after
+  // that one stored. Binance trade ids increase per symbol, so its replay resumes at last_id + 1
+  // exactly and skips known_after (Venue::resume_trade_ids). No entry for a venue no session got
+  // past its replay on: it replays by time.
   struct TradeIdMark {
     std::uint8_t venue_id = 0;
     std::string venue;  // empty when the store predates schema 3
     std::string symbol;
     std::int64_t last_id = 0;
+    std::vector<std::int64_t> known_after;  // ascending
   };
   std::vector<TradeIdMark> last_trade_ids;
 

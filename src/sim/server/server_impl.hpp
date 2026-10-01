@@ -176,6 +176,7 @@ struct FaultState {
   bool user_stream_muted = false;
   bool timestamp_once = false;
   bool rest_unresponsive = false;
+  bool my_trades_unanswered = false;
   bool skip_depth = false;
   // one-shot schedule bookkeeping
   bool drop_md_done = false;

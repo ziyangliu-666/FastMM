@@ -310,6 +310,30 @@ TEST_CASE("replay_scheduler: id cursors per stream") {
   CHECK(r.queries[4].from_id == 501);
 }
 
+// A session that died inside its replay stored ids above the cursor's start; the replay reads from
+// the start and skips them, on their own stream only.
+TEST_CASE("replay_scheduler: known ids at or after a cursor are skipped on their stream") {
+  ReplayLimits l;
+  l.page_rows = 4;
+  Rig r(l, 2);
+  r.sched.set_cursor(0, 101);
+  r.sched.set_cursor(1, 101);
+  r.sched.set_known_ids(0, {105, 101});  // any order
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 2);
+  auto page = [&](const ReplayQuery& q, std::vector<std::pair<std::int64_t, std::string>> rows) {
+    ReplayPage<std::string> p;
+    for (auto& [seq, id] : rows) p.rows.push_back(ReplayRow<std::string>{kNow - kMin, seq, id, id});
+    r.sched.answer(q, std::move(p));
+  };
+  page(r.queries[0], {{101, "a101"}, {102, "a102"}, {105, "a105"}});
+  page(r.queries[1], {{101, "b101"}, {105, "b105"}});  // another symbol's ids: its own
+  CHECK(r.emitted == std::vector<std::string>{"a102", "b101", "b105"});
+  CHECK(r.sched.from_id(0) == 106);
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);
+}
+
 TEST_CASE("replay_scheduler: windows, the history split and the history floor") {
   ReplayLimits l;
   l.window_ms = 7 * kDay;

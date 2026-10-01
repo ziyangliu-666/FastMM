@@ -328,6 +328,13 @@ void BinanceVenue::connect(net::Reactor& reactor) {
       exec_replay_.set_cursor(static_cast<std::size_t>(it - subscribed_.begin()), next);
   }
   resume_from_ids_.clear();
+  for (auto& [id, ids] : resume_known_ids_) {
+    const auto it = std::find(subscribed_.begin(), subscribed_.end(), id);
+    if (it != subscribed_.end())
+      exec_replay_.set_known_ids(static_cast<std::size_t>(it - subscribed_.begin()),
+                                 std::move(ids));
+  }
+  resume_known_ids_.clear();
   exec_replay_.open(!cfg_.dry_run && signer_.usable());
   if (!cfg_.record_raw_dir.empty()) {
     raw_md_.open(cfg_.record_raw_dir, cfg_.name, "md");
@@ -1431,6 +1438,11 @@ void BinanceVenue::resume_executions(std::int64_t since_venue_ms,
 void BinanceVenue::resume_trade_ids(
     const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) {
   resume_from_ids_ = next_ids;
+}
+
+void BinanceVenue::resume_known_trade_ids(
+    const std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>>& known) {
+  resume_known_ids_ = known;
 }
 
 bool BinanceVenue::request_executions(std::int64_t since_venue_ms) {

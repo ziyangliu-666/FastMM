@@ -21,6 +21,9 @@ using fastmm::test::tmp_dir;
 
 namespace {
 
+// A session that died inside its start-up replay (Writer's last argument).
+constexpr bool kDiedInReplay = false;
+
 constexpr std::int64_t kMs = 1'000'000;
 // The engine clock of the fills below runs 30 s behind the venue's: nothing the resume point
 // is computed from may come from it.
@@ -65,7 +68,8 @@ struct Writer {
          std::uint64_t id,
          std::int64_t started_ns = kDay1Ns,
          const InstrumentTable& t = two_venues(),
-         std::vector<std::string> venues = {"binance", "bybit"})
+         std::vector<std::string> venues = {"binance", "bybit"},
+         bool reconciled = true)
       : session(id) {
     section.values["path"] = path;
     BackendOptions o;
@@ -77,6 +81,11 @@ struct Writer {
     REQUIRE(backend->session_open(s));
     REQUIRE(backend->instruments(id, std::span<const Instrument>(t.data(), t.size())));
     backend->begin();
+    // A session gets past its start-up replay on every venue, unless the test says it died there.
+    if (reconciled) {
+      for (std::uint8_t v = 0; v < 2; ++v)
+        backend->replayed(fastmm::test::store_replayed(session, ++seq, v));
+    }
   }
   // A position snapshot of instrument `inst`.
   void position(std::uint32_t inst, std::int64_t qty_raw) {
@@ -268,8 +277,8 @@ TEST_CASE("store.resume: a version 2 store opens and resumes from the engine clo
     REQUIRE(sqlite::exec(db,
                          "INSERT INTO sessions (session_id, engine, strategy, session_epoch,"
                          " started_ns, started_day, version, build, config_hash, dry_run,"
-                         " pnl_carry_raw) VALUES (3,'test','basic_mm',1,1,'2024-03-04','0.1.0',"
-                         "'b','0',0,0)"));
+                         " pnl_carry_raw, clean_shutdown) VALUES (3,'test','basic_mm',1,1,"
+                         "'2024-03-04','0.1.0','b','0',0,0,1)"));
     // Fills 25 s, 15 s, 5 s and 0 s before the last, in the engine's clock.
     std::string rows = "INSERT INTO fills VALUES";
     const std::int64_t back_s[] = {25, 15, 5, 0};
@@ -418,20 +427,19 @@ TEST_CASE("store.resume: the ids of every earlier session inside the window are 
   const std::int64_t minute = 60'000 * kMs;
   {
     Writer w(path, 5, kDay1Ns);
-    w.order(1);
     w.fill(1, kT1 - 30'000, "2966124001");  // long before: outside every window
     w.fill(1, kT1, "2966124872");
     w.fill(1, kT1, "2966124873");
   }
   {
-    Writer w(path, 6, kDay1Ns + minute);
+    Writer w(path, 6, kDay1Ns + minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
     w.fill(1, kT1 + 60, "2966124877");  // what session 5 missed, replayed, then killed
   }
   {
     const Recovery r = recover(path);
     const Recovery::VenueResume* y = venue(r, "bybit");
     REQUIRE(y != nullptr);
-    // Session 6 placed no order: it may have died inside its replay, so the start is session 5's.
+    // Session 6 did not get past its replay, so the start is session 5's.
     CHECK(y->last_fill_ms == kT1);
     CHECK(y->since_ms == kT1 - Recovery::kResumeOverlapMs);
     CHECK(sorted(y->known_exec_ids) ==
@@ -440,7 +448,7 @@ TEST_CASE("store.resume: the ids of every earlier session inside the window are 
   }
   // A third session that found nothing new and was killed, then a fourth: the same answer.
   {
-    Writer w(path, 7, kDay1Ns + 2 * minute);
+    Writer w(path, 7, kDay1Ns + 2 * minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
     w.position(1, 100'000);
   }
   {
@@ -451,11 +459,10 @@ TEST_CASE("store.resume: the ids of every earlier session inside the window are 
     CHECK(sorted(y->known_exec_ids) ==
           std::vector<std::string>{"2966124872", "2966124873", "2966124877"});
   }
-  // A session that got past its replay (it placed an order) and stored a later fill: the start
-  // moves to that fill, and the ids inside its overlap are still those of every session.
+  // A session that got past its replay and stored a later fill: the start moves to that fill, and
+  // the ids inside its overlap are still those of every session.
   {
     Writer w(path, 8, kDay1Ns + 3 * minute);
-    w.order(1);
     w.fill(1, kT1 + 500, "2966124900");
   }
   const Recovery r = recover(path);
@@ -479,11 +486,11 @@ TEST_CASE("store.resume: a session that died inside its replay does not move the
     w.fill(0, kT0, "E2");
   }
   {
-    Writer w(path, 6, kDay1Ns + minute);
+    Writer w(path, 6, kDay1Ns + minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
     w.fill(0, kT0 + 9'000, "E9");  // live, before the replay had read kT0 .. kT0 + 9 s
   }
   {
-    Writer w(path, 7, kDay1Ns + 2 * minute);
+    Writer w(path, 7, kDay1Ns + 2 * minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
     w.fill(0, kT0 + 4'000, "E5");  // replayed; killed before the rest
   }
   const Recovery r = recover(path);
@@ -494,14 +501,27 @@ TEST_CASE("store.resume: a session that died inside its replay does not move the
   CHECK_FALSE(b->shrunk);
   CHECK(sorted(b->known_exec_ids) == std::vector<std::string>{"E1", "E2", "E5", "E9"});
 
-  SUBCASE("a clean shutdown ends the walk as an order does") {
+  SUBCASE("sessions recorded before schema 6 are judged by their orders and their shutdown") {
+    {
+      sqlite3* db = nullptr;
+      REQUIRE(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+      REQUIRE(sqlite::exec(db, "UPDATE session_venues SET replayed_seq = NULL"));
+      sqlite3_close_v2(db);
+    }
+    // Session 5 placed an order on binance; 6 and 7 did not and recorded no shutdown.
+    const Recovery old = recover(path);
+    const Recovery::VenueResume* b0 = venue(old, "binance");
+    REQUIRE(b0 != nullptr);
+    CHECK(b0->last_fill_ms == kT0);
+    CHECK(sorted(b0->known_exec_ids) == std::vector<std::string>{"E1", "E2", "E5", "E9"});
+  }
+  SUBCASE("the next session that gets past its replay moves the start again") {
     {
       Writer w(path, 8, kDay1Ns + 3 * minute);
       w.fill(0, kT0 + 20'000, "E20");
-      w.close_cleanly();
     }
     {
-      Writer w(path, 9, kDay1Ns + 4 * minute);
+      Writer w(path, 9, kDay1Ns + 4 * minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
       w.fill(0, kT0 + 20'400, "E21");
     }
     const Recovery r2 = recover(path);
@@ -517,7 +537,6 @@ TEST_CASE("store.resume: the ids of a venue that had another id in an earlier se
   const std::string path = fresh("resume_venue_moved.db");
   {
     Writer w(path, 5);  // binance = 0, bybit = 1
-    w.order(1);
     w.fill(1, kT1, "a-1");
     w.fill(0, kT1, "771");
   }
@@ -538,7 +557,7 @@ TEST_CASE("store.resume: the ids of a venue that had another id in an earlier se
     i.base = "BTC";
     i.venue = VenueId{1};
     REQUIRE(t.add(i));
-    Writer w(path, 6, kDay1Ns + 60'000 * kMs, t, {"bybit", "okx"});
+    Writer w(path, 6, kDay1Ns + 60'000 * kMs, t, {"bybit", "okx"}, kDiedInReplay);
     w.fill(0, kT1 + 100, "a-2");
   }
   const Recovery r = recover(path);
@@ -550,6 +569,72 @@ TEST_CASE("store.resume: the ids of a venue that had another id in an earlier se
   const Recovery::VenueResume* b = venue(r, "binance");
   REQUIRE(b != nullptr);
   CHECK(b->known_exec_ids == std::vector<std::string>{"771"});
+}
+
+// Binance resumes at a trade id. A session that died inside its replay can hold an id above ones
+// that replay had not read (a resting order filled meanwhile): the start stays after the last
+// session that got past its replay, and what the dead one stored above it is listed to be skipped.
+TEST_CASE("store.resume: a session that died inside its replay does not move the trade id") {
+  const std::string path = fresh("resume_marks_mid_replay.db");
+  const std::int64_t minute = 60'000 * kMs;
+  {
+    Writer w(path, 5);
+    w.fill(0, kT0 - 100, "99");
+    w.fill(0, kT0, "100");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
+    w.fill(0, kT0 + 5'000, "105");  // live: 101 .. 104 traded while nothing ran
+    w.fill(0, kT0 + 1'000, "101");  // replayed, then it was killed
+  }
+  {
+    Writer w(path, 7, kDay1Ns + 2 * minute, two_venues(), {"binance", "bybit"}, kDiedInReplay);
+    w.fill(0, kT0 + 2'000, "102");
+  }
+  const Recovery r = recover(path);
+  REQUIRE(r.last_trade_ids.size() == 1);
+  CHECK(r.last_trade_ids[0].venue == "binance");
+  CHECK(r.last_trade_ids[0].symbol == "BTCUSDT");
+  CHECK(r.last_trade_ids[0].last_id == 100);
+  CHECK(r.last_trade_ids[0].known_after == std::vector<std::int64_t>{101, 102, 105});
+  // By time (behind a gateway) the same: from session 5's last fill, every id since known.
+  const Recovery::VenueResume* b = venue(r, "binance");
+  REQUIRE(b != nullptr);
+  CHECK(b->last_fill_ms == kT0);
+  CHECK(sorted(b->known_exec_ids) == std::vector<std::string>{"100", "101", "102", "105", "99"});
+
+  // The session that finishes the replay: 103 and 104 are in, and the start moves past 105.
+  {
+    Writer w(path, 8, kDay1Ns + 3 * minute);
+    w.fill(0, kT0 + 3'000, "103");
+    w.fill(0, kT0 + 4'000, "104");
+  }
+  const Recovery done = recover(path);
+  REQUIRE(done.last_trade_ids.size() == 1);
+  CHECK(done.last_trade_ids[0].last_id == 105);
+  CHECK(done.last_trade_ids[0].known_after.empty());
+  REQUIRE(venue(done, "binance") != nullptr);
+  CHECK(venue(done, "binance")->last_fill_ms == kT0 + 5'000);
+}
+
+// No session ever got past its replay: nothing says where the record is whole, so there is no
+// trade id to go on from and the replay starts where the sessions began.
+TEST_CASE("store.resume: a store whose sessions all died inside their replay starts at the first") {
+  const std::string path = fresh("resume_no_anchor.db");
+  const std::int64_t start5 = kDay1Ns + 3'000'000 * kMs;  // 50 min in: 10 min before kT0
+  {
+    Writer w(path, 5, start5, two_venues(), {"binance", "bybit"}, kDiedInReplay);
+    w.fill(0, kT0, "100");
+  }
+  { Writer w(path, 6, start5 + 60'000 * kMs, two_venues(), {"binance", "bybit"}, kDiedInReplay); }
+  const Recovery r = recover(path);
+  CHECK(r.last_trade_ids.empty());
+  const Recovery::VenueResume* b = venue(r, "binance");
+  REQUIRE(b != nullptr);
+  CHECK(b->last_fill_ms == kT0);
+  CHECK(r.unbooked_since_ms == (start5 - Recovery::kFallbackOverlapNs) / kMs);
+  CHECK(b->since_ms == r.unbooked_since_ms);
+  CHECK(b->known_exec_ids == std::vector<std::string>{"100"});
 }
 
 // Binance resumes at the trade id after the highest one stored, whichever session stored it.

@@ -47,6 +47,7 @@ The engine copies a trivially copyable record into an SPSC ring, as it writes th
 | `OrderRecord` (192 B) | every OMS state change | the whole `Order`: state, previous state, price, quantity, filled quantity, reject reason |
 | `PositionRecord` (192 B) | after every fill, after a venue position snapshot, and once per instrument at `finish()` | the instrument's position and the portfolio totals |
 | `FundingRecord` (192 B) | every funding payment the engine books | amount, asset, venue funding id, the venue's time, and the instrument's position, realized PnL and funding after it |
+| `ReplayedRecord` (64 B) | a reconciliation of a venue begins with the venue's executions complete (its execution replay ended whole) | the venue; every execution it made until then is in the records before this one |
 | `KillRecord` (128 B) | every kill switch trip, global or per venue | the reason, the flag word and the PnL at the time |
 
 Session metadata (`session_open`, `session_close`, the instrument table) is written by the control thread, not through the ring.
@@ -75,7 +76,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 5 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 6 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -104,7 +105,7 @@ One row per session, written at start and completed at shutdown.
 
 ### session_venues
 
-`(session_id, venue_id, name)`: the `[venues.<name>]` behind each `venue_id` of the session, so a restart finds its venues by name. Version 3; sessions recorded before it have none.
+`(session_id, venue_id, name, replayed_seq)`: the `[venues.<name>]` behind each `venue_id` of the session, so a restart finds its venues by name. Version 3; sessions recorded before it have none. `replayed_seq` (version 6) is the `seq` of the last `ReplayedRecord` of the venue: 0 while the session has not got past an execution replay there, null for a session recorded before version 6.
 
 ### instruments
 
@@ -198,9 +199,9 @@ With `[engine] restore_position` the session also carries the last position per 
 
 - In the venue's clock: From `exch_ns` of the venue's last stored fill or funding payment (in the newest session that stored one), less 1 s, skipping the trade ids and funding ids (as `funding:<id>`) stored from there on. The funding replay starts there too, so a payment made while nothing ran is booked by the next session and one the store holds is not booked again. Both ends are venue time, so the host's clock does not enter. The 1 s covers a venue publishing executions out of trade-time order (other symbols, a batch), which is milliseconds.
 - The ids skipped are those of every session of the engine, not of the session the start comes from: a session killed seconds after it started stores only what its own replay booked, and the next replay's window still reaches what the sessions before it stored.
-- A session that may have died inside its own replay does not move the start: one that placed no order on the venue (none goes out before the venue has reconciled) and recorded no shutdown. The start is then the earliest of the last fills of those sessions and of the first one before them that got further.
+- The start is where the record is known to be whole: the last fill stored up to the newest session that got past its own replay on the venue (`replayed_seq` > 0; a session recorded before version 6 counts when it placed an order there, which none does before the venue has reconciled, or shut down cleanly). A session after that one died while its replay was still reading and can hold a fill newer than one the replay had not reached (an order left resting filled meanwhile): its fills are skipped as known, and the start is no later than the earliest of their last ones. When no session ever got past its replay, the start is no later than where the sessions began (the last bullet).
 - At most 128 ids a venue: When more stored fills fall in that second, the start moves later, past the oldest millisecond that does not fit whole, and the session logs it: an id left out would be booked twice.
-- Binance Spot and USDⓈ-M resume each symbol at the trade id after the highest one stored by any session (`fromId`), with no overlap and no ids (`Venue::resume_trade_ids`). In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
+- Binance Spot and USDⓈ-M resume each symbol at the trade id after the highest one stored up to that same session (`fromId`, `Venue::resume_trade_ids`), with no overlap, and skip the ids above it that the sessions after it stored (`Venue::resume_known_trade_ids`). A venue no session got past its replay on has no such id and replays by time. In-process only: a gateway's venue is shared, and it filters another attachment's replay for this one by time and ids.
 - A store from before version 3 starts from the engine clock as before: 10 s before the session's last fill, skipping the ids of the 20 s before it.
 - A venue with no stored fill replays from the start of the newest session that shut down cleanly, else of the oldest session of the engine, less 10 s (engine clock): a fill of a session that died before storing it, or one made while nothing ran, is booked.
 

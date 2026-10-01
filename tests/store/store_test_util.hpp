@@ -173,6 +173,18 @@ inline FundingRecord store_funding(std::uint64_t session,
   return r;
 }
 
+// Venue `venue`'s execution replay ended complete: the session got past it.
+inline ReplayedRecord store_replayed(std::uint64_t session, std::uint64_t seq, std::uint8_t venue) {
+  ReplayedRecord r{};
+  r.hdr.len = sizeof(ReplayedRecord);
+  r.hdr.type = RecordType::Replayed;
+  r.hdr.version = kRecordVersion;
+  r.hdr.venue = VenueId{venue};
+  r.hdr.seq = seq;
+  r.hdr.session_id = session;
+  return r;
+}
+
 inline KillRecord store_kill(std::uint64_t session,
                              std::uint64_t seq,
                              std::int64_t ts_ns,

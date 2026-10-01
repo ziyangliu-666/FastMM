@@ -143,6 +143,9 @@ class SimExchangeServer {
   void reject_next_orders(std::uint32_t count);
   void fail_next_timestamp();
   void set_rest_unresponsive(bool unresponsive);
+  // GET /api/v3/myTrades is read and never answered (the rest of REST goes on): a client's
+  // execution replay hangs while its streams stay live.
+  void set_my_trades_unanswered(bool unanswered);
   void rate_limit_next_requests(std::uint32_t count);
   void set_clock_offset_ms(std::int64_t offset_ms);
   void expire_listen_keys();

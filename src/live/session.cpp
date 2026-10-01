@@ -321,6 +321,8 @@ struct ResumePlan {
   std::int64_t since_ms = 0;  // venue time, inclusive; 0: no replay
   std::vector<std::string> known;
   std::vector<std::pair<InstrumentId, std::int64_t>> next_ids;  // Venue::resume_trade_ids
+  // Venue::resume_known_trade_ids
+  std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>> known_after;
 };
 
 ResumePlan resume_plan(const store::Recovery& prev,
@@ -370,8 +372,9 @@ ResumePlan resume_plan(const store::Recovery& prev,
     for (const store::Recovery::TradeIdMark& m : prev.last_trade_ids) {
       if (!same(m.venue, m.venue_id)) continue;
       for (const Instrument& in : *instruments) {
-        if (in.venue == vid && in.symbol.view() == m.symbol)
-          p.next_ids.emplace_back(in.id, m.last_id + 1);
+        if (in.venue != vid || in.symbol.view() != m.symbol) continue;
+        p.next_ids.emplace_back(in.id, m.last_id + 1);
+        if (!m.known_after.empty()) p.known_after.emplace_back(in.id, m.known_after);
       }
     }
   }
@@ -976,6 +979,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
           [&](std::size_t i, const ResumePlan& plan) {
             slots[i]->venue->resume_executions(plan.since_ms, plan.known);
             if (!plan.next_ids.empty()) slots[i]->venue->resume_trade_ids(plan.next_ids);
+            if (!plan.known_after.empty())
+              slots[i]->venue->resume_known_trade_ids(plan.known_after);
           });
     }
     transport.set_wake_hook(&wake_venue, &wake_ctx);

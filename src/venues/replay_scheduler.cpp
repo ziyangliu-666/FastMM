@@ -118,6 +118,12 @@ void ReplaySchedulerBase::set_cursor(std::size_t stream, std::int64_t from_id) {
   if (stream < streams_.size() && from_id > 0) streams_[stream].from_id = from_id;
 }
 
+void ReplaySchedulerBase::set_known_ids(std::size_t stream, std::vector<std::int64_t> ids) {
+  if (stream >= streams_.size()) return;
+  std::sort(ids.begin(), ids.end());
+  streams_[stream].known_ids = std::move(ids);
+}
+
 std::int64_t ReplaySchedulerBase::since_ms(std::size_t stream) const noexcept {
   return stream < streams_.size() ? streams_[stream].since_ms : 0;
 }
@@ -344,6 +350,7 @@ bool ReplaySchedulerBase::ask_lookups(std::size_t i) {
   for (const Entry& e : s.rows) {
     if (q.from_id > 0 ? (e.seq > 0 && e.seq < q.from_id) : e.time_ms < q.start_ms) continue;
     if (s.read.contains(e.key) || known_.contains(e.key)) continue;
+    if (e.seq > 0 && std::binary_search(s.known_ids.begin(), s.known_ids.end(), e.seq)) continue;
     std::string order = unnamed_row(i, e.ref);
     if (order.empty()) continue;
     const bool is_new = !lookups_.contains(lookup_key(i, order));
@@ -495,6 +502,7 @@ void ReplaySchedulerBase::emit_window(std::size_t i, bool more) {
     if (q.from_id > 0 ? (e.seq > 0 && e.seq < q.from_id) : e.time_ms < q.start_ms) continue;
     if (!s.read.emplace(e.key, e.time_ms).second) continue;  // forwarded before
     if (known_.contains(e.key)) continue;                    // the earlier session booked it
+    if (e.seq > 0 && std::binary_search(s.known_ids.begin(), s.known_ids.end(), e.seq)) continue;
     std::string order = hooks_.lookup ? unnamed_row(i, e.ref) : std::string{};
     const bool retry = will_retry(i, e, order);
     if (!order.empty() && !retry && !not_ours_.contains(lookup_key(i, order)))
@@ -510,6 +518,8 @@ void ReplaySchedulerBase::emit_window(std::size_t i, bool more) {
   s.rows.clear();
   drop_rows(i);
   if (high_seq > 0) s.from_id = std::max(s.from_id, high_seq + 1);
+  // The ids the cursor has passed cannot come again.
+  if (!s.known_ids.empty() && s.from_id > s.known_ids.back()) s.known_ids.clear();
   if (more) {
     // Full: ask again from the newest row (its millisecond again: the rows there are known).
     const bool advanced = q.from_id > 0 ? s.from_id > q.from_id : had_rows && newest > q.start_ms;

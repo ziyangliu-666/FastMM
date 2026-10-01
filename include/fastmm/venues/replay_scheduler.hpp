@@ -182,6 +182,9 @@ class ReplaySchedulerBase {
   void restart_from(std::int64_t since_ms);
   // A stream's next id (Binance fromId), from a restart's store.
   void set_cursor(std::size_t stream, std::int64_t from_id);
+  // Ids of `stream` (Entry::seq) that are booked already, ascending: rows carrying one are not
+  // emitted. For ids at or after a cursor that an earlier session stored out of order.
+  void set_known_ids(std::size_t stream, std::vector<std::int64_t> ids);
 
   [[nodiscard]] bool active() const noexcept { return active_; }
   [[nodiscard]] bool retry_pending() const noexcept { return retry_at_ns_ != 0; }
@@ -225,6 +228,7 @@ class ReplaySchedulerBase {
     std::int64_t since_ms = 0;                           // the watermark
     std::unordered_map<std::string, std::int64_t> read;  // keys read at or after it -> time
     std::int64_t from_id = 0;                            // > 0: the next id to ask from
+    std::vector<std::int64_t> known_ids;                 // set_known_ids(), ascending
     // The replay in progress.
     bool running = false;
     bool awaiting = false;       // a query is out

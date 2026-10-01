@@ -342,8 +342,21 @@ CREATE UNIQUE INDEX fills_exec ON fills(session_id, instrument_id, side, exec_id
   WHERE exec_id <> '';
 )SQL";
 
-constexpr std::array<Migration, 5> kMigrations{
-    Migration{1, kV1}, Migration{2, kV2}, Migration{3, kV3}, Migration{4, kV4}, Migration{5, kV5}};
+// Version 6: whether a session got past its execution replay on a venue. replayed_seq is the
+// record seq of the last reconciliation of that venue that began with the venue's executions
+// complete; 0 while there has been none; NULL for a session recorded before this version, which a
+// restart judges by other signs (Recovery). A session without one may hold a fill newer than one
+// its replay had not reached, and the next replay starts before its fills.
+constexpr std::string_view kV6 = R"SQL(
+ALTER TABLE session_venues ADD COLUMN replayed_seq INTEGER;
+)SQL";
+
+constexpr std::array<Migration, 6> kMigrations{Migration{1, kV1},
+                                               Migration{2, kV2},
+                                               Migration{3, kV3},
+                                               Migration{4, kV4},
+                                               Migration{5, kV5},
+                                               Migration{6, kV6}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

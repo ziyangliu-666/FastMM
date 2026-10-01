@@ -40,6 +40,7 @@ enum class RecordType : std::uint8_t {
   Position = 3,
   Kill = 4,
   Funding = 5,
+  Replayed = 6,
 };
 [[nodiscard]] constexpr std::string_view to_string(RecordType t) noexcept {
   switch (t) {
@@ -53,6 +54,8 @@ enum class RecordType : std::uint8_t {
       return "Kill";
     case RecordType::Funding:
       return "Funding";
+    case RecordType::Replayed:
+      return "Replayed";
   }
   return "?";
 }
@@ -171,6 +174,16 @@ struct KillRecord {
   std::uint8_t pad_[8];       // -> 128
 };
 static_assert(sizeof(KillRecord) == 128 && std::is_trivially_copyable_v<KillRecord>);
+
+// A venue's execution replay ended complete (a reconciliation began with
+// ReconcileMsg::kExecutionsExact): every execution the venue made before it is in the records
+// before this one. hdr.venue is the venue. A restart reads it as "this session got past its replay
+// on that venue": the fills of a session without one may have a hole behind them (it died while
+// the replay was still reading), and the next replay starts before them (store/reader.hpp).
+struct ReplayedRecord {
+  RecordHeader hdr;
+};
+static_assert(sizeof(ReplayedRecord) == 64 && std::is_trivially_copyable_v<ReplayedRecord>);
 
 // Engine-side producer. Every method is allocation-free, wait-free and safe to call from the
 // trading thread; a full ring increments dropped() and returns false.

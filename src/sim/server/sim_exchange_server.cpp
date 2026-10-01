@@ -800,6 +800,9 @@ void SimExchangeServer::fail_next_timestamp() {
 void SimExchangeServer::set_rest_unresponsive(bool unresponsive) {
   impl_->call([this, unresponsive] { impl_->faults_.rest_unresponsive = unresponsive; });
 }
+void SimExchangeServer::set_my_trades_unanswered(bool unanswered) {
+  impl_->call([this, unanswered] { impl_->faults_.my_trades_unanswered = unanswered; });
+}
 void SimExchangeServer::rate_limit_next_requests(std::uint32_t count) {
   impl_->call([this, count] { impl_->faults_.rate_limit_next = count; });
 }

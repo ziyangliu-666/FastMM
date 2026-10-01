@@ -102,6 +102,9 @@ class Backend {
   // A funding payment. The default drops it: a backend written before funding was booked keeps
   // building (its positions still carry funding inside realized).
   virtual void funding(const FundingRecord& /*r*/) {}
+  // A venue's execution replay ended complete. The default drops it: a restart from such a store
+  // judges a session by whether it placed an order on the venue or shut down (Recovery).
+  virtual void replayed(const ReplayedRecord& /*r*/) {}
   virtual void commit() = 0;
 
   [[nodiscard]] virtual Result<void, std::string> session_close(const SessionClose& s) = 0;

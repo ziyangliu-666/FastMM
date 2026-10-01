@@ -521,6 +521,84 @@ void three_kills(ServerFixture& qv, ServerFixture& hv, const SessionFiles& f, Sp
 
 }  // namespace
 
+// 6. A kill inside the start-up replay, with a fill that arrived live before the replay had read
+// the one before it. The first session is killed with both quotes resting; one fills while nothing
+// runs. The second session's trade-history query gets no answer (the quote venue holds it), so its
+// replay hangs with the dead session's other quote still resting; that one fills too, reaches the
+// session on its user stream and is stored - and the session is killed. The store now holds the
+// later trade and not the earlier one. The third session must still book the earlier one (its
+// replay starts after the first session's last trade, not after the newest id stored) and must
+// not book the later one again; it is killed as well, and the fourth ends with the store holding
+// exactly the venues' trades.
+TEST_CASE("xmm restart: a kill inside the replay, after a later fill arrived live, loses nothing") {
+  ServerFixture qv(quiet(7));
+  ServerFixture hv(quiet(11));
+  const SessionFiles f = session_files("xmm-replay-kill");
+  write_xmm_config(f, qv, hv);
+
+  Child first(spawn_live(f, 300));
+  const std::uint16_t e1 = wait_quoting(qv, hv, f);
+  // A hedged round the store keeps: the trade the replays go on from.
+  REQUIRE(fill_resting(qv, e1).is_positive());
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        return hv.server.stats().orders_accepted == 1 &&
+                               net_position(qv, hv).is_zero() && fills_in_store(f) >= 2 &&
+                               resting_of(qv, e1).size() == 2;
+                      },
+                      10000),
+                  "the first round was not hedged and stored: " << log_of(f));
+  crash(first);
+  REQUIRE(resting_of(qv, e1).size() == 2);
+  REQUIRE(fill_resting(qv, e1, Side::Buy).is_positive());  // while nothing runs
+
+  qv.server.set_my_trades_unanswered(true);
+  const std::uint64_t unanswered = qv.server.stats().unanswered_rest;
+  Child second(spawn_live(f, 300));
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        return qv.server.stats().unanswered_rest > unanswered &&
+                               qv.server.stats().user_subscriptions >= 1;
+                      },
+                      30000),
+                  "the second session never asked for its trades: " << log_of(f));
+  // Its replay hangs; the dead session's other quote is still resting, and fills.
+  REQUIRE(resting_of(qv, e1).size() == 1);
+  REQUIRE(fill_resting(qv, e1, Side::Sell).is_positive());
+  REQUIRE_MESSAGE(wait_until([&] { return fills_in_store(f) >= 3; }, 10000),
+                  "the live fill was not stored: " << log_of(f));
+  CHECK(hv.server.stats().orders_accepted == 1);  // nothing is sent before the replay ends
+  crash(second);
+  qv.server.set_my_trades_unanswered(false);
+  REQUIRE(net_position(qv, hv).is_zero());  // a buy and a sell: nothing to hedge
+  const std::uint64_t venue_fills = qv.server.stats().fills + hv.server.stats().fills;
+  REQUIRE(venue_fills == 4);
+  REQUIRE(fills_in_store(f) == 3);  // the fill made while nothing ran is the one missing
+
+  // The third start books it, and only it.
+  Child third(spawn_live(f, 300));
+  const std::uint16_t e3 = wait_quoting(qv, hv, f, e1);
+  REQUIRE_MESSAGE(wait_until([&] { return fills_in_store(f) >= venue_fills; }, 10000),
+                  "the fill made while nothing ran was not booked: " << log_of(f));
+  crash(third);
+
+  Child fourth(spawn_live(f, 300));
+  const std::uint16_t e4 = wait_quoting(qv, hv, f, e3);
+  observe_quiet_period();
+  INFO("sessions: " << log_of(f));
+  CHECK(hv.server.stats().orders_accepted == 1);
+  CHECK(net_position(qv, hv).is_zero());
+  CHECK(fills_in_store(f) == venue_fills);
+
+  one_more_round(qv, hv, e4);
+  stop(fourth);
+  CHECK(booked_twice(f, engine_name(f)).empty());
+  CHECK(fills_in_store(f) == qv.server.stats().fills + hv.server.stats().fills);
+  const StoredPositions s = stored_positions(f);
+  CHECK(s.quote == qv.server.stats().position);
+  CHECK(s.hedge == hv.server.stats().position);
+}
+
 TEST_CASE("xmm restart: three kills in a row book every execution once") {
   ServerFixture qv(quiet(7));
   ServerFixture hv(quiet(11));

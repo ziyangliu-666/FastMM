@@ -262,6 +262,12 @@ class Venue {
   // the known ids, the others go on from `since_venue_ms`. Connectors without such ids ignore it.
   virtual void resume_trade_ids(
       const std::vector<std::pair<InstrumentId, std::int64_t>>& /*next_ids*/) {}
+  // The trade ids at or after an instrument's start (resume_trade_ids) that are booked already,
+  // ascending: a session that died inside its replay stored them, and the start stays before
+  // them because that replay had not read everything below them. Called after
+  // resume_trade_ids(); the replay skips them.
+  virtual void resume_known_trade_ids(
+      const std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>>& /*known*/) {}
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

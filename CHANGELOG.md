@@ -239,6 +239,15 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- A session killed inside its start-up execution replay could lose a fill for good. A fill that
+  reached it live (an order left resting by the dead session) was stored before the replay had
+  read the trades before it; the next start resumed after the newest stored trade - on Binance
+  in-process, after the highest trade id - and never asked for the earlier ones. The store now
+  records when a venue's replay ended whole (`ReplayedRecord`, `session_venues.replayed_seq`,
+  schema version 6), and a restart resumes from the last fill stored up to the newest session
+  that got that far: by time on every venue, and on Binance from the trade id after it, skipping
+  the ids the later sessions stored above it (`Venue::resume_known_trade_ids`). Sessions recorded
+  before version 6 are judged as before (an order placed on the venue, or a clean shutdown).
 - The store dropped a fill whose venue execution id another fill of the session already carried:
   the unique index was `(session_id, exec_id)`, so the same number on a second venue (OKX and
   Binance both count their trades), on a second symbol of a venue with per-symbol ids (Binance),

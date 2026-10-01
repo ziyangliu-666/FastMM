@@ -1039,6 +1039,15 @@ class Engine {
     account_record(records_.put(r.hdr));
   }
 
+  // The venue's execution replay ended complete: the records before this one hold every
+  // execution it made until now.
+  void emit_replayed(VenueId venue) noexcept {
+    if (!records_.enabled()) return;
+    ReplayedRecord r;
+    records_.init(r, RecordType::Replayed, InstrumentId{}, venue, now_, now_);
+    account_record(records_.put(r.hdr));
+  }
+
   // A fill the venue reported (msg != nullptr) or one the engine booked from a cum_qty jump.
   void emit_fill(InstrumentId id,
                  Side side,
@@ -1700,6 +1709,7 @@ class Engine {
         reconcile_exact_ = (m.flags & ReconcileMsg::kExecutionsExact) != 0;
         if (reconcile_exact_) {
           ++stats_.exact_reconciles;
+          emit_replayed(m.hdr.venue);
         } else {
           ++stats_.estimated_reconciles;
           FASTMM_LOG_WARN(

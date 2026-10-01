@@ -536,34 +536,86 @@ class SqliteReader final : public Reader {
     if (rows.size() > Recovery::kMaxKnownExecIds + 1) rows.resize(Recovery::kMaxKnownExecIds + 1);
   }
 
+  // Whether `session` got past its execution replay on its venue `venue`: it recorded a
+  // reconciliation that began with the venue's executions complete (schema 6, replayed_seq). A
+  // session recorded before that is judged by what such a session does afterwards: it placed an
+  // order there (none goes out before the venue has reconciled) or shut down cleanly.
+  bool got_past_replay(const ChainSession& session, std::int64_t venue) {
+    if (version_ >= 6) {
+      sqlite3_stmt* st = nullptr;
+      if (sqlite3_prepare_v2(db_,
+                             "SELECT replayed_seq FROM session_venues WHERE session_id = ?1 AND"
+                             " venue_id = ?2",
+                             -1,
+                             &st,
+                             nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session.id));
+        sqlite3_bind_int64(st, 2, venue);
+        const bool row = sqlite3_step(st) == SQLITE_ROW;
+        const bool recorded = row && sqlite3_column_type(st, 0) != SQLITE_NULL;
+        const std::int64_t seq = recorded ? sqlite3_column_int64(st, 0) : 0;
+        sqlite3_finalize(st);
+        if (recorded) return seq > 0;
+      }
+    }
+    return session.clean || placed_order(session.id, venue);
+  }
+
   // Recovery::venue_resume, last_trade_ids and the engine-clock fallbacks over `chain`, the
   // sessions of `engine` up to `started_ns`.
   //
   // The ids a replay skips are the ones any of those sessions stored, not the newest one's alone:
   // a session that died seconds after it started holds only what its own replay booked, while
   // the next replay's window still reaches the executions of the sessions before it.
+  //
+  // Where a replay starts is where the store's record of the venue is known to be whole: up to
+  // the newest session that got past its own replay (the anchor). The fills of the sessions after
+  // it are known, so they are not booked again, but they do not move the start: such a session
+  // died while its replay was still reading, and a fill that reached it live meanwhile is newer
+  // than the ones the replay had not got to.
   void resume_points(Recovery& rec,
                      const std::vector<ChainSession>& chain,
                      const std::string& engine,
                      std::int64_t started_ns) {
     const std::string limit = " LIMIT " + std::to_string(Recovery::kMaxKnownExecIds + 1);
+    constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+    // A venue with no stored fill in any of these sessions: whatever it executed since the newest
+    // session that shut down cleanly (its replay at connect saw everything before) is unbooked;
+    // with no clean one, since the oldest session.
+    std::int64_t from_ns = 0;
+    for (const ChainSession& c : chain) {
+      from_ns = c.started_ns;
+      if (c.clean) break;
+    }
+    if (from_ns > Recovery::kFallbackOverlapNs)
+      rec.unbooked_since_ms = (from_ns - Recovery::kFallbackOverlapNs) / 1'000'000;
+
     // A session's last stored fill or funding payment of one venue, venue time.
     struct Last {
       std::size_t session = 0;  // index in `chain`
       std::int64_t venue = 0;   // the venue's id in that session
       std::int64_t ms = 0;
     };
+    // A session's highest numeric trade id of one symbol of a venue.
+    struct Mark {
+      std::size_t session = 0;
+      std::int64_t venue = 0;
+      std::string symbol;
+      std::int64_t id = 0;
+    };
     // Per venue (venue_key), newest session first; `order` keeps the venues as first met.
     std::map<std::string, std::vector<Last>> lasts;
     std::vector<std::string> order;
-    std::map<std::pair<std::string, std::string>, std::size_t> marked;
+    std::map<std::pair<std::string, std::string>, std::vector<Mark>> marks;
+    std::vector<std::pair<std::string, std::string>> mark_order;
+    std::vector<std::vector<std::string>> names(chain.size());
     std::size_t fallback_session = chain.size();
     for (std::size_t k = 0; k < chain.size(); ++k) {
       const std::uint64_t session = chain[k].id;
-      const std::vector<std::string> names = venue_names(session);
+      names[k] = venue_names(session);
       const auto name_of = [&](std::int64_t v) {
-        return v >= 0 && static_cast<std::size_t>(v) < names.size()
-                   ? names[static_cast<std::size_t>(v)]
+        return v >= 0 && static_cast<std::size_t>(v) < names[k].size()
+                   ? names[k][static_cast<std::size_t>(v)]
                    : std::string();
       };
       if (version_ >= 3) {
@@ -589,33 +641,20 @@ class SqliteReader final : public Reader {
           of.push_back(l);
         }
       }
-      // Trade ids increase per symbol where they are numbers at all (Binance), so the highest one
-      // any session stored is the last one booked.
-      struct Mark {
-        std::int64_t venue = 0;
-        std::string symbol;
-        std::int64_t id = 0;
-      };
-      std::vector<Mark> marks;
-      collect(marks,
+      std::vector<Mark> found;
+      collect(found,
               "SELECT venue_id, symbol, MAX(CAST(exec_id AS INTEGER)) FROM fills WHERE"
               " session_id = ? AND exec_id <> '' AND exec_id NOT GLOB '*[^0-9]*'"
               " GROUP BY venue_id, symbol ORDER BY venue_id, symbol",
               session,
-              [](sqlite3_stmt* s) {
-                return Mark{sqlite3_column_int64(s, 0), text(s, 1), sqlite3_column_int64(s, 2)};
+              [k](sqlite3_stmt* s) {
+                return Mark{k, sqlite3_column_int64(s, 0), text(s, 1), sqlite3_column_int64(s, 2)};
               });
-      for (Mark& m : marks) {
-        std::string name = name_of(m.venue);
-        const auto [it, fresh] =
-            marked.try_emplace({venue_key(name, m.venue), m.symbol}, rec.last_trade_ids.size());
-        if (fresh) {
-          rec.last_trade_ids.push_back(Recovery::TradeIdMark{
-              static_cast<std::uint8_t>(m.venue), std::move(name), std::move(m.symbol), m.id});
-        } else {
-          Recovery::TradeIdMark& have = rec.last_trade_ids[it->second];
-          have.last_id = std::max(have.last_id, m.id);
-        }
+      for (Mark& m : found) {
+        std::pair<std::string, std::string> key{venue_key(name_of(m.venue), m.venue), m.symbol};
+        std::vector<Mark>& of = marks[key];
+        if (of.empty()) mark_order.push_back(key);
+        of.push_back(std::move(m));
       }
 
       if (rec.last_fill_ns != 0) continue;
@@ -628,22 +667,57 @@ class SqliteReader final : public Reader {
       if (rec.last_fill_ns > 0) fallback_session = k;
     }
 
+    // The anchor of a venue: the newest session (its index in `chain`) that got past its replay
+    // there, among the kMaxSessionEpochs newest. kNone: none of them did; `every` then says that
+    // those are all the sessions there are.
+    struct Anchor {
+      std::size_t session = kNone;
+      bool every = false;
+    };
+    std::map<std::string, Anchor> anchors;
+    const auto anchor_of = [&](const std::string& key) -> const Anchor& {
+      if (const auto it = anchors.find(key); it != anchors.end()) return it->second;
+      Anchor a;
+      const std::size_t n = std::min(chain.size(), Recovery::kMaxSessionEpochs);
+      a.every = n == chain.size();
+      for (std::size_t k = 0; k < n; ++k) {
+        std::int64_t venue = -1;
+        if (key.front() == '#') {
+          if (names[k].empty()) venue = std::strtoll(key.c_str() + 1, nullptr, 10);
+        } else if (const auto it = std::find(names[k].begin(), names[k].end(), key);
+                   it != names[k].end()) {
+          venue = it - names[k].begin();
+        }
+        if (venue >= 0 && got_past_replay(chain[k], venue)) {
+          a.session = k;
+          break;
+        }
+      }
+      return anchors.emplace(key, a).first->second;
+    };
+
     for (const std::string& key : order) {
       const std::vector<Last>& of = lasts[key];
+      const Anchor& anchor = anchor_of(key);
       Recovery::VenueResume v;
       v.venue_id = static_cast<std::uint8_t>(of.front().venue);
       if (key.front() != '#') v.venue = key;
-      // The store's record of the venue ends at the last fill of the newest session that stored
-      // one - when that session got past its own replay. One that may have died before (it placed
-      // no order there, which a session does only once the venue has reconciled, and recorded no
-      // shutdown) can hold a fill newer than one its replay had not reached: the start goes back
-      // to the earliest of the last fills, up to the first session that did get past it.
-      v.last_fill_ms = of.front().ms;
-      for (std::size_t i = 0; i < of.size() && i < Recovery::kMaxSessionEpochs; ++i) {
-        v.last_fill_ms = std::min(v.last_fill_ms, of[i].ms);
-        if (chain[of[i].session].clean || placed_order(chain[of[i].session].id, of[i].venue)) break;
+      // Whole up to the anchor: the latest fill it or a session before it stored. The sessions
+      // after it hold what they hold: the earliest of their last fills, if that is earlier.
+      std::int64_t whole = 0;
+      std::int64_t loose = 0;
+      for (const Last& l : of) {
+        if (anchor.session != kNone && l.session >= anchor.session) {
+          whole = std::max(whole, l.ms);
+        } else {
+          loose = loose == 0 ? l.ms : std::min(loose, l.ms);
+        }
       }
-      const std::int64_t want = v.last_fill_ms - Recovery::kResumeOverlapMs;
+      v.last_fill_ms = whole == 0 ? loose : loose == 0 ? whole : std::min(whole, loose);
+      std::int64_t want = v.last_fill_ms - Recovery::kResumeOverlapMs;
+      // No session ever got past its replay: the record is whole only up to where they began.
+      if (anchor.session == kNone && anchor.every && rec.unbooked_since_ms > 0)
+        want = std::min(want, rec.unbooked_since_ms);
       std::vector<Stamped> rows;
       if (!v.venue.empty()) {
         rows = stored_ids(engine, started_ns, v.venue, want);
@@ -672,6 +746,52 @@ class SqliteReader final : public Reader {
       rec.venue_resume.push_back(std::move(v));
     }
 
+    // Trade ids increase per symbol where they are numbers at all (Binance): the replay goes on
+    // after the highest one stored up to the anchor, and the ones the sessions after it stored
+    // above that are listed, to be skipped. Without an anchor there is no such id: the symbol
+    // replays by time, as the venue does.
+    for (const auto& key : mark_order) {
+      const std::vector<Mark>& of = marks[key];
+      const Anchor& anchor = anchor_of(key.first);
+      if (anchor.session == kNone) continue;
+      Recovery::TradeIdMark m;
+      bool any = false;
+      for (const Mark& x : of) {
+        if (x.session < anchor.session) continue;
+        if (!any) {
+          m.venue_id = static_cast<std::uint8_t>(x.venue);
+          any = true;
+        }
+        m.last_id = std::max(m.last_id, x.id);
+      }
+      if (!any) continue;
+      if (key.first.front() != '#') m.venue = key.first;
+      m.symbol = key.second;
+      for (const Mark& x : of) {
+        if (x.session >= anchor.session || x.id <= m.last_id) continue;
+        sqlite3_stmt* st = nullptr;
+        if (sqlite3_prepare_v2(db_,
+                               "SELECT CAST(exec_id AS INTEGER) FROM fills WHERE session_id = ?1"
+                               " AND venue_id = ?2 AND symbol = ?3 AND exec_id <> '' AND exec_id"
+                               " NOT GLOB '*[^0-9]*' AND CAST(exec_id AS INTEGER) > ?4",
+                               -1,
+                               &st,
+                               nullptr) != SQLITE_OK)
+          continue;
+        sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(chain[x.session].id));
+        sqlite3_bind_int64(st, 2, x.venue);
+        sqlite3_bind_text(
+            st, 3, x.symbol.data(), static_cast<int>(x.symbol.size()), SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 4, m.last_id);
+        while (sqlite3_step(st) == SQLITE_ROW) m.known_after.push_back(sqlite3_column_int64(st, 0));
+        sqlite3_finalize(st);
+      }
+      std::sort(m.known_after.begin(), m.known_after.end());
+      m.known_after.erase(std::unique(m.known_after.begin(), m.known_after.end()),
+                          m.known_after.end());
+      rec.last_trade_ids.push_back(std::move(m));
+    }
+
     if (fallback_session < chain.size()) {
       // The engine clock's ids, from every session that can hold a fill that late: one that had
       // ended (the next one had started) before the ids begin holds none.
@@ -695,16 +815,6 @@ class SqliteReader final : public Reader {
       const std::int64_t want = rec.last_fill_ns - Recovery::kFallbackOverlapNs;
       rec.fallback_since_ms = std::max(want, fit(rows, want, rec.fallback_exec_ids)) / 1'000'000;
     }
-    // A venue with no stored fill in any of these sessions: whatever it executed since the newest
-    // session that shut down cleanly (its replay at connect saw everything before) is unbooked;
-    // with no clean one, since the oldest session.
-    std::int64_t from_ns = 0;
-    for (const ChainSession& c : chain) {
-      from_ns = c.started_ns;
-      if (c.clean) break;
-    }
-    if (from_ns > Recovery::kFallbackOverlapNs)
-      rec.unbooked_since_ms = (from_ns - Recovery::kFallbackOverlapNs) / 1'000'000;
   }
 
   // Builds a WHERE clause and remembers the values to bind, in order.

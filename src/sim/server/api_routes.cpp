@@ -167,7 +167,7 @@ OpResult Impl::rate_limit_error(std::int64_t now_ms, bool ws_api) {
 
 net::HttpServerResponse Impl::handle_rest(const net::HttpRequest& req, RestEndpoint ep) {
   ++stats_.rest_requests;
-  if (faults_.rest_unresponsive) {
+  if (faults_.rest_unresponsive || (faults_.my_trades_unanswered && ep == RestEndpoint::MyTrades)) {
     ++stats_.unanswered_rest;
     return net::HttpServerResponse::none();
   }

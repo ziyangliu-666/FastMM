@@ -338,6 +338,15 @@ class SqliteBackend final : public Backend {
     step(ins_funding_.get(), "insert funding");
   }
 
+  void replayed(const ReplayedRecord& r) override {
+    if (db_ == nullptr) return;
+    Bind b(upd_replayed_.get());
+    b.u(r.hdr.seq);
+    b.u(r.hdr.session_id);
+    b.i(r.hdr.venue.value);
+    step(upd_replayed_.get(), "mark a venue replayed");
+  }
+
   void kill(const KillRecord& r) override {
     if (db_ == nullptr) return;
     const bool per_venue = (r.hdr.flags & RecordHeader::kVenue) != 0;
@@ -505,7 +514,11 @@ class SqliteBackend final : public Backend {
         {&ins_fill_,
          "INSERT OR IGNORE INTO fills VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
          "?,?,?,?,?,?,?)"},
-        {&ins_venue_, "INSERT OR REPLACE INTO session_venues VALUES (?,?,?)"},
+        {&ins_venue_,
+         "INSERT OR REPLACE INTO session_venues (session_id, venue_id, name, replayed_seq)"
+         " VALUES (?,?,?,0)"},
+        {&upd_replayed_,
+         "UPDATE session_venues SET replayed_seq=? WHERE session_id=? AND venue_id=?"},
         {&ins_order_,
          "INSERT INTO orders (session_id, cl_ord_id, instrument_id, venue_id, symbol,"
          " venue_order_id, side, type, tif, price_raw, qty_raw, cum_qty_raw, state, reject_reason,"
@@ -558,6 +571,7 @@ class SqliteBackend final : public Backend {
   Stmt ins_instrument_;
   Stmt ins_fill_;
   Stmt ins_venue_;
+  Stmt upd_replayed_;
   Stmt ins_order_;
   Stmt upd_replaced_;
   Stmt ins_position_;

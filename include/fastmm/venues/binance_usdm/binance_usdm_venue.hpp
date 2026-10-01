@@ -165,6 +165,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
                          const std::vector<std::string>& known) override;
   void resume_trade_ids(
       const std::vector<std::pair<InstrumentId, std::int64_t>>& next_ids) override;
+  void resume_known_trade_ids(
+      const std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>>& known) override;
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
 
@@ -378,6 +380,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed
   // to exec_replay_ at connect(), once subscribed_ gives the instruments their streams.
   std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;
+  // The trade ids at or after those starts that are booked already (resume_known_trade_ids).
+  std::vector<std::pair<InstrumentId, std::vector<std::int64_t>>> resume_known_ids_;
   std::string listen_key_;
   std::int64_t listen_key_refresh_ns_ = 0;
   std::int64_t listen_key_retry_ns_ = 0;
