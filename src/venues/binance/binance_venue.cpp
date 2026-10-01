@@ -814,7 +814,7 @@ void BinanceVenue::handle_order_response(RequestKind kind,
   switch (kind) {
     case RequestKind::New:
       if (!r.is_error) {
-        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id);
+        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id, r.transact_time_ms);
         return;
       }
       {
@@ -828,7 +828,7 @@ void BinanceVenue::handle_order_response(RequestKind kind,
       if (!r.is_error) {
         ClientOrderId target = id;
         if (const auto orig = decode_cl_ord_id(r.orig_client_order_id)) target = *orig;
-        emit_cancel_ack(inst, target, r.order_id, r.executed_qty);
+        emit_cancel_ack(inst, target, r.order_id, r.executed_qty, r.transact_time_ms);
         shadows_.erase(target);
         return;
       }
@@ -846,7 +846,7 @@ void BinanceVenue::handle_order_response(RequestKind kind,
         ClientOrderId orig{};
         if (const auto o = decode_cl_ord_id(r.orig_client_order_id)) orig = *o;
         if (orig.valid() && orig != id) shadows_.erase(orig);
-        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id, true);
+        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id, r.transact_time_ms, true);
         return;
       }
       // The amend was refused (-2038 quantity not below the current one, -2013 gone, a filter
@@ -865,16 +865,18 @@ void BinanceVenue::handle_order_response(RequestKind kind,
       if (const auto o = decode_cl_ord_id(r.cancel_client_order_id)) orig = *o;
       if (!r.is_error) {
         if (orig.valid()) {
-          emit_cancel_ack(inst, orig, r.cancel_order_id, r.cancel_executed_qty);
+          emit_cancel_ack(
+              inst, orig, r.cancel_order_id, r.cancel_executed_qty, r.cancel_transact_time_ms);
           shadows_.erase(orig);
         }
-        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id);
+        if (cfg_.emit_ack_from_response) emit_ack(inst, id, r.order_id, r.transact_time_ms);
         return;
       }
       // STOP_ON_FAILURE: cancel failed -> nothing changed; cancel ok, new failed -> the
       // original is gone and the replacement was rejected (-2021).
       if (r.cancel_result == "SUCCESS" && orig.valid()) {
-        emit_cancel_ack(inst, orig, r.cancel_order_id, r.cancel_executed_qty);
+        emit_cancel_ack(
+            inst, orig, r.cancel_order_id, r.cancel_executed_qty, r.cancel_transact_time_ms);
         shadows_.erase(orig);
       }
       const int code = r.new_order_code != 0 ? r.new_order_code : r.code;
@@ -1248,6 +1250,7 @@ void BinanceVenue::emit_cancel_reject(
 void BinanceVenue::emit_ack(InstrumentId inst,
                             ClientOrderId id,
                             std::int64_t order_id,
+                            std::int64_t venue_ms,
                             bool amended_in_place) {
   // GET /api/v3/myTrades names the order by orderId only, so the pairing has to be kept here.
   // An amend in place keeps the orderId under a new client id: the latest pairing wins.
@@ -1257,16 +1260,19 @@ void BinanceVenue::emit_ack(InstrumentId inst,
                  inst,
                  id,
                  IdText(order_id).view(),
-                 amended_in_place ? OrderAckMsg::kAmendedInPlace : 0);
+                 amended_in_place ? OrderAckMsg::kAmendedInPlace : 0,
+                 venue_ms);
   ++stats_.order_events;
 }
 
 void BinanceVenue::emit_cancel_ack(InstrumentId inst,
                                    ClientOrderId id,
                                    std::int64_t order_id,
-                                   std::string_view executed_qty) {
+                                   std::string_view executed_qty,
+                                   std::int64_t venue_ms) {
   const auto q = parse_qty(executed_qty);
-  venues::emit_cancel_ack(*order_sink_, id_, inst, id, IdText(order_id).view(), q ? *q : Qty{});
+  venues::emit_cancel_ack(
+      *order_sink_, id_, inst, id, IdText(order_id).view(), q ? *q : Qty{}, venue_ms);
   ++stats_.order_events;
 }
 

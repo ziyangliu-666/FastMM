@@ -50,7 +50,7 @@ The quote manager compares each desired level with the order in the same slot:
 
 - keep it when the price is within `min_requote_ticks` and the remaining quantity covers `min_qty_bps` of the desired one, or when the slot changed less than `min_requote_interval_ms` ago;
 - replace it when the venue and `supports_replace` allow;
-- otherwise cancel it and send a new order.
+- otherwise cancel it, and send the new order once the cancel's ack arrives (the balance check then sees the old order's hold released; if the old order filled instead and the balance no longer covers the new one, it is withheld).
 
 Orders waiting for a venue response are never touched until the response arrives, and a side that the venue rejected recently is paused (`reject_backoff_ms`). Direct orders from `ctx.send` skip this step.
 

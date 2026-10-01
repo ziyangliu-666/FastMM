@@ -2075,6 +2075,20 @@ class Engine {
         r.price = a.price;
         r.qty = a.qty;
         r.user_tag = QuoteManager::make_tag(a.side, a.level);
+        // A deferred New whose replaced order filled rather than cancelled: the balance it was
+        // decided against is gone. Withheld, not refused; the strategy's next quotes decide.
+        if (FASTMM_UNLIKELY(a.deferred && balances_live_) && balances_->check_enabled() &&
+            !balance_covers(inst,
+                            r.side,
+                            r.type,
+                            r.price,
+                            r.qty,
+                            0,
+                            false,
+                            oms_.open_qty(r.instrument, r.side))) {
+          a.withheld = true;
+          return false;
+        }
         auto res = submit_new(r);
         if (!res) return false;
         a.cl_ord_id = *res;

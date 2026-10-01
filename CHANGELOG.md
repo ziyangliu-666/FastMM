@@ -239,6 +239,16 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- Binance spot with `[risk] check_balance`: a requote of a side the balance covers once (0.00059
+  BTC, a resting ask of 0.0005) was refused `BalanceShort` after the cancel's ack, about 19 times
+  an hour live, the ask missing until the next requote. The acks taken from WS API responses
+  carried no venue time, so when the account's report reached the engine before the ack, the order
+  stayed held twice until the next report and the cancel released only one of the two. The
+  responses' `transactTime` now stamps those acks and cancel acks (cancelReplace's two legs, the
+  amend too). A New the quote manager sends after its old order ended is checked against the
+  balance first: if the old order filled instead of cancelling and the balance no longer covers
+  it, it is withheld (`QuoteStats::kept_balance`) rather than refused, and the strategy's next
+  quotes decide.
 - Binance USDⓈ-M (and Spot) books resynced on many starts ("book resync (sequence gap)" within
   half a second of connecting, the book back 2 s later). The depth snapshot was requested as the
   stream opened and could come back before the stream's first event and older than it; with

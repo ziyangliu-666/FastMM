@@ -438,6 +438,7 @@ namespace {
   if (o["origClientOrderId"].get_string().get(s) == sj::SUCCESS) r.orig_client_order_id = s;
   if (o["status"].get_string().get(s) == sj::SUCCESS) r.order_status = s;
   if (o["executedQty"].get_string().get(s) == sj::SUCCESS) r.executed_qty = s;
+  if (o["transactTime"].get_int64().get(i) == sj::SUCCESS) r.transact_time_ms = i;
 }
 
 // cancelReplace's cancelResponse, in a result or in error.data.
@@ -447,6 +448,7 @@ namespace {
   if (cr["orderId"].get_int64().get(i) == sj::SUCCESS) r.cancel_order_id = i;
   if (cr["origClientOrderId"].get_string().get(s) == sj::SUCCESS) r.cancel_client_order_id = s;
   if (cr["executedQty"].get_string().get(s) == sj::SUCCESS) r.cancel_executed_qty = s;
+  if (cr["transactTime"].get_int64().get(i) == sj::SUCCESS) r.cancel_transact_time_ms = i;
 }
 
 [[gnu::noinline]] void read_error_data(od::object& dobj, WsApiResponse& r) noexcept {
@@ -511,6 +513,8 @@ namespace {
       // amended order keeps the orderId and reports origClientOrderId + the new clientOrderId.
       r.amended = true;
       read_order_fields(amended, r);
+      o.reset();
+      if (o["transactTime"].get_int64().get(i) == sj::SUCCESS) r.transact_time_ms = i;
       return;
     }
     o.reset();

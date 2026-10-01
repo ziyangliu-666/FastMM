@@ -52,34 +52,41 @@ inline void emit_cancel_reject(EventSink& sink,
 }
 
 // `flags`: OrderAckMsg::kAmendedInPlace when the venue amended the resting order rather than
-// creating a new one.
+// creating a new one. `venue_ms`: the venue's time of the event (Unix ms) when the response names
+// it, stamped as hdr.exch_ts; 0 leaves the ack unstamped. The balance estimate needs it to tell
+// whether a balance report that came first already had the order (core/balance_book.hpp).
 inline void emit_order_ack(EventSink& sink,
                            VenueId venue,
                            InstrumentId inst,
                            ClientOrderId id,
                            std::string_view venue_order_id,
-                           std::uint8_t flags = 0) noexcept {
+                           std::uint8_t flags = 0,
+                           std::int64_t venue_ms = 0) noexcept {
   OrderAckMsg m{};
   init_header(m, EventType::OrderAck, inst, venue);
   m.cl_ord_id = id;
   m.venue_order_id.assign(venue_order_id);
   m.flags = flags;
+  if (venue_ms > 0) m.hdr.exch_ts = Timestamp{venue_ms * 1'000'000};
   m.hdr.recv_ts = wall_now();
   m.hdr.t0_cycles = rdtscp();
   static_cast<void>(sink.push(m.hdr));
 }
 
+// `venue_ms` as for emit_order_ack.
 inline void emit_cancel_ack(EventSink& sink,
                             VenueId venue,
                             InstrumentId inst,
                             ClientOrderId id,
                             std::string_view venue_order_id,
-                            Qty cum_qty) noexcept {
+                            Qty cum_qty,
+                            std::int64_t venue_ms = 0) noexcept {
   OrderCancelAckMsg m{};
   init_header(m, EventType::OrderCancelAck, inst, venue);
   m.cl_ord_id = id;
   m.venue_order_id.assign(venue_order_id);
   m.cum_qty = cum_qty;
+  if (venue_ms > 0) m.hdr.exch_ts = Timestamp{venue_ms * 1'000'000};
   m.hdr.recv_ts = wall_now();
   m.hdr.t0_cycles = rdtscp();
   static_cast<void>(sink.push(m.hdr));

@@ -336,6 +336,12 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
     const auto* ack = oc.last<OrderAckMsg>(EventType::OrderAck);
     CHECK(ack->cl_ord_id == n.cl_ord_id);
     CHECK(ack->venue_order_id.view() == "4293153");
+    // Both acks, the response's and the stream's, carry the venue's time of the placement: the
+    // balance estimate tells from it whether a report that came first already had the order.
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::OrderAck)
+        CHECK(RecordingSink::as<OrderAckMsg>(m).hdr.exch_ts.ns == 1789295199990LL * 1'000'000);
+    }
     const auto* fill = oc.last<OrderFillMsg>(EventType::OrderFill);
     CHECK(fill->qty == Qty::from_decimal("0.0004").value());
     CHECK(fill->leaves_qty == Qty::from_decimal("0.0006").value());
@@ -355,6 +361,7 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
     const auto* cx = oc.last<OrderCancelAckMsg>(EventType::OrderCancelAck);
     CHECK(cx->cl_ord_id == n.cl_ord_id);
     CHECK(cx->cum_qty == Qty::from_decimal("0.0004").value());
+    CHECK(cx->hdr.exch_ts.ns == 1789295200100LL * 1'000'000);  // the response's transactTime
 
     // Network-thread latency, published with the status: both messages were encoded and sent,
     // only the triggered order has a receive-to-wire sample, and it lies between the

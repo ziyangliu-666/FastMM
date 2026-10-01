@@ -20,7 +20,10 @@
 //   * an instrument whose venue supports replace (set_replace(), with supports_replace) gets a
 //     single Replace; otherwise Cancel now and New only once the cancel's terminal update arrives
 //     via on_order_update() (cancel-then-new keeps momentary exposure down and never double-quotes
-//     a level);
+//     a level, and the New is checked against the balance once the old order's hold is released);
+//   * such a deferred New (QuoteAction::deferred) that the balance no longer covers -- the order it
+//     replaced filled instead of cancelling -- is withheld (QuoteAction::withheld, kept_balance)
+//     rather than refused by risk: the target predates the fill, the strategy's next quotes decide;
 //   * pull_quotes(keep_desired) pauses an instrument (the engine during reconciliation): resume()
 //     re-applies the last desired quotes unless the instrument was pulled for good meanwhile.
 //
@@ -92,6 +95,10 @@ struct QuoteAction {
   Price price;
   Qty qty;
   bool post_only;
+  // New: the target was recorded while an earlier order held the slot and is placed now that it
+  // ended (on_order_update), so it was decided against a balance that order may have changed.
+  bool deferred;
+  bool withheld;  // New output: not sent, the balance does not cover it (deferred only)
 };
 
 struct QuoteStats {
@@ -104,6 +111,7 @@ struct QuoteStats {
   std::uint64_t rejected = 0;
   std::uint64_t reject_backoffs = 0;  // venue rejects that started or extended a side backoff
   std::uint64_t kept_backoff = 0;     // News withheld because their side was backing off
+  std::uint64_t kept_balance = 0;     // deferred News withheld: the balance no longer covers them
 };
 
 class QuoteManager {
@@ -250,7 +258,7 @@ class QuoteManager {
       ++stats_.kept_backoff;
       return;
     }
-    submit_new(inst, side, lvl, slot, slot.want, now, place);
+    submit_new(inst, side, lvl, slot, slot.want, now, place, /*deferred=*/true);
   }
 
   [[nodiscard]] Handle<Order> slot_handle(InstrumentId id,
@@ -341,7 +349,9 @@ class QuoteManager {
                       ClientOrderId{},
                       target.price,
                       target.qty,
-                      params_.post_only};
+                      params_.post_only,
+                      false,
+                      false};
         if (!place(a)) {
           ++stats_.rejected;
           return 0;
@@ -390,6 +400,8 @@ class QuoteManager {
                   ClientOrderId{},
                   Price{},
                   Qty{},
+                  false,
+                  false,
                   false};
     if (!place(a)) {
       ++stats_.rejected;
@@ -406,7 +418,8 @@ class QuoteManager {
                            Slot& slot,
                            Level target,
                            Timestamp now,
-                           Placer& place) noexcept {
+                           Placer& place,
+                           bool deferred = false) noexcept {
     QuoteAction a{QuoteActionKind::New,
                   inst.id,
                   side,
@@ -415,9 +428,15 @@ class QuoteManager {
                   ClientOrderId{},
                   target.price,
                   target.qty,
-                  params_.post_only};
+                  params_.post_only,
+                  deferred,
+                  false};
     if (!place(a) || !a.handle.valid()) {
-      ++stats_.rejected;
+      if (a.withheld) {
+        ++stats_.kept_balance;
+      } else {
+        ++stats_.rejected;
+      }
       return 0;
     }
     ++stats_.news;

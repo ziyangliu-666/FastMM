@@ -239,7 +239,9 @@ struct WsApiResponse {
   std::int64_t order_id = 0;
   std::string_view order_status;
   std::string_view executed_qty;
-  std::string_view transact_time_unused;
+  // transactTime (Unix ms; 0: absent): the venue's time of the placement or cancel, the T its
+  // executionReport carries. Stamped on the ack the response produces.
+  std::int64_t transact_time_ms = 0;
   // order.amend.keepPriority: the fields above come from result.amendedOrder.
   bool amended = false;
   // cancelReplace
@@ -248,6 +250,7 @@ struct WsApiResponse {
   std::string_view cancel_client_order_id;
   std::int64_t cancel_order_id = 0;
   std::string_view cancel_executed_qty;
+  std::int64_t cancel_transact_time_ms = 0;
   // session / user stream
   std::int64_t subscription_id = -1;
   bool result_is_array = false;  // openOrders.status / cancelAll

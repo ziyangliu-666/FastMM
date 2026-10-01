@@ -217,14 +217,17 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
       InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text);
   void emit_cancel_reject(
       InstrumentId inst, ClientOrderId id, RejectReason reason, int code, std::string_view text);
+  // `venue_ms`: the response's transactTime (0: none), stamped on the event.
   void emit_ack(InstrumentId inst,
                 ClientOrderId id,
                 std::int64_t order_id,
+                std::int64_t venue_ms,
                 bool amended_in_place = false);
   void emit_cancel_ack(InstrumentId inst,
                        ClientOrderId id,
                        std::int64_t order_id,
-                       std::string_view executed_qty);
+                       std::string_view executed_qty,
+                       std::int64_t venue_ms);
   void request_snapshot(InstrumentId id);
   void request_server_time();
   void request_listen_key();

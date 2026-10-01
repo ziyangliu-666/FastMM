@@ -6,9 +6,12 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace fastmm;
@@ -510,4 +513,118 @@ TEST_CASE("core.balance: an order sent from on_fill into the slot the fill freed
   r.cancel_ack(kSpot, r.strategy.sent[0], 140);
   CHECK(r.bal(kSpotVenue, "BTC").locked.is_zero());
   CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.011"));
+}
+
+namespace {
+
+// One ask of `qty` at `price`.
+DesiredQuotes ask(const char* price, const char* qty) {
+  DesiredQuotes q;
+  REQUIRE(q.ask(px(price), qt(qty)));
+  return q;
+}
+
+std::vector<const OutNewOrderMsg*> news_after(const Transport& t, std::size_t from) {
+  const auto all = t.news();
+  return {all.begin() + static_cast<std::ptrdiff_t>(std::min(from, all.size())), all.end()};
+}
+
+std::size_t cancels(const Transport& t) {
+  std::size_t n = 0;
+  for (const auto& b : t.out) {
+    if (reinterpret_cast<const EventHeader*>(b.data())->type == EventType::OutCancel) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+// Found live (Binance spot, supports_replace = false): 0.00059 BTC, a resting ask of 0.0005. A
+// requote cancels the ask and sends its New once the cancel's ack has released the hold; the
+// balance check sees the old order's hold gone and passes. No BalanceShort.
+TEST_CASE("core.balance: a requote on a balance-limited side waits for the cancel's ack") {
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  r.balance(report(kSpotVenue, "BTC", "0.00059", "0", 100));
+  REQUIRE(r.engine->set_quotes(kSpot, ask("50100", "0.0005")));
+  REQUIRE(r.transport.news().size() == 1);
+  const ClientOrderId first = r.transport.news()[0]->cl_ord_id;
+  r.ack(kSpot, first, 110);
+  r.balance(report(kSpotVenue, "BTC", "0.00009", "0.0005", 110));
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.00009"));
+
+  // The price moves: the cancel goes now, the New waits for its ack.
+  r.clock.set(r.clock.now() + milliseconds(100));
+  REQUIRE(r.engine->set_quotes(kSpot, ask("50200", "0.0005")));
+  CHECK(cancels(r.transport) == 1);
+  CHECK(r.transport.news().size() == 1);
+  r.cancel_ack(kSpot, first, 120);
+  const auto sent = news_after(r.transport, 1);
+  REQUIRE(sent.size() == 1);
+  CHECK(sent[0]->price == px("50200"));
+  CHECK(sent[0]->qty == qt("0.0005"));
+  CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::BalanceShort] == 0);
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.00009"));
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.0005"));
+  // The cancel's report, then the New's ack and report: the estimate stays where the venue is.
+  r.balance(report(kSpotVenue, "BTC", "0.00059", "0", 120));
+  r.ack(kSpot, sent[0]->cl_ord_id, 121);
+  r.balance(report(kSpotVenue, "BTC", "0.00009", "0.0005", 121));
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.00009"));
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.0005"));
+}
+
+// The incident's cause: the venue's report of the account came before the order's ack. An ack
+// stamped with the venue's time of the placement says the report had the order, and the estimate
+// gives the second hold back; the next requote then fits. Unstamped (Binance's WS API acks before
+// the fix), the order stayed held twice until the next report, and the New after the cancel was
+// refused.
+TEST_CASE("core.balance: a report before the ack, then a requote: a stamped ack keeps it right") {
+  for (const bool stamped : {true, false}) {
+    CAPTURE(stamped);
+    Rig r;
+    r.balance(report(kSpotVenue, "BTC", "0.00059", "0", 100));
+    REQUIRE(r.engine->set_quotes(kSpot, ask("50100", "0.0005")));
+    const ClientOrderId first = r.transport.news().at(0)->cl_ord_id;
+    r.balance(report(kSpotVenue, "BTC", "0.00009", "0.0005", 110));  // has the order
+    r.ack(kSpot, first, stamped ? 110 : 0);
+    CHECK(r.bal(kSpotVenue, "BTC").locked == (stamped ? nt("0.0005") : nt("0.001")));
+    r.clock.set(r.clock.now() + milliseconds(100));
+    REQUIRE(r.engine->set_quotes(kSpot, ask("50200", "0.0005")));
+    r.cancel_ack(kSpot, first, 120);
+    CHECK(news_after(r.transport, 1).size() == (stamped ? 1U : 0U));
+    CHECK(r.engine->quote_manager().stats().kept_balance == (stamped ? 0U : 1U));
+    CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::BalanceShort] == 0);
+  }
+}
+
+// The cancel lost the race: the ask filled. The New recorded for after the cancel was decided
+// against BTC the fill took, so it is withheld (not a risk reject) and the strategy's next quotes
+// decide; the cancel's reject changes nothing. With BTC to spare it goes out.
+TEST_CASE("core.balance: a requote whose old order filled instead re-checks the balance") {
+  for (const char* btc : {"0.00059", "0.002"}) {
+    CAPTURE(btc);
+    Rig r;
+    r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+    r.balance(report(kSpotVenue, "BTC", btc, "0", 100));
+    REQUIRE(r.engine->set_quotes(kSpot, ask("50100", "0.0005")));
+    const ClientOrderId first = r.transport.news().at(0)->cl_ord_id;
+    r.ack(kSpot, first, 110);
+    r.clock.set(r.clock.now() + milliseconds(100));
+    REQUIRE(r.engine->set_quotes(kSpot, ask("50200", "0.0005")));
+    REQUIRE(cancels(r.transport) == 1);
+    r.fill(kSpot, first, Side::Sell, "50100", "0.0005", "0.0005", "0", "0", FeeAsset::Quote, 115);
+    OrderCancelRejectMsg rej{};
+    init_header(rej, EventType::OrderCancelReject, kSpot, kSpotVenue);
+    rej.cl_ord_id = first;
+    rej.reason = RejectReason::VenueUnknownOrder;
+    r.push(rej);
+    const bool fits = std::string_view(btc) == "0.002";
+    const auto sent = news_after(r.transport, 1);
+    CHECK(sent.size() == (fits ? 1U : 0U));
+    if (fits && !sent.empty()) CHECK(sent[0]->price == px("50200"));
+    CHECK(r.engine->quote_manager().stats().kept_balance == (fits ? 0U : 1U));
+    CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::BalanceShort] == 0);
+    CHECK(r.bal(kSpotVenue, "BTC").free == (fits ? nt("0.001") : nt("0.00009")));
+  }
 }

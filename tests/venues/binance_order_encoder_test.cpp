@@ -239,6 +239,7 @@ TEST_CASE("binance.ws_api: response decoding (ok, cancel, cancelReplace, errors,
   CHECK_FALSE(r.is_error);
   CHECK(r.client_order_id == "fm000100000001");
   CHECK(r.order_id == 4293153);
+  CHECK(r.transact_time_ms == 1789295199990);  // stamped on the ack (balance estimate)
   CHECK(r.rate.used_weight == 12);
   CHECK(r.rate.weight_limit == 6000);
   CHECK(r.rate.order_count == 1);  // shortest ORDERS window (10 s)
@@ -250,6 +251,7 @@ TEST_CASE("binance.ws_api: response decoding (ok, cancel, cancelReplace, errors,
   CHECK(r.orig_client_order_id == "fm000100000001");
   CHECK(r.order_status == "CANCELED");
   CHECK(r.executed_qty == "0.00040000");
+  CHECK(r.transact_time_ms == 1789295201990);
 
   auto cr = padded_fixture("binance/ws_api_cancel_replace_ok.json");
   REQUIRE(d.decode(cr.view(), r) == ParseStatus::Ok);
@@ -258,8 +260,10 @@ TEST_CASE("binance.ws_api: response decoding (ok, cancel, cancelReplace, errors,
   CHECK(r.cancel_client_order_id == "fm000100000001");
   CHECK(r.cancel_order_id == 4293153);
   CHECK(r.cancel_executed_qty == "0.00040000");
+  CHECK(r.cancel_transact_time_ms == 1789295206000);
   CHECK(r.client_order_id == "fm000100000005");
   CHECK(r.order_id == 4293160);
+  CHECK(r.transact_time_ms == 1789295206001);
 
   auto err = padded_fixture("binance/ws_api_error.json");
   REQUIRE(d.decode(err.view(), r) == ParseStatus::Ok);
@@ -530,6 +534,7 @@ TEST_CASE("binance.decoder: order.amend.keepPriority response reads amendedOrder
   CHECK(r.client_order_id == "fm000100000005");
   CHECK(r.orig_client_order_id == "fm000100000001");
   CHECK(r.executed_qty == "0.001");
+  CHECK(r.transact_time_ms == 1741926410255);
   // -2038 is the amend's own rejection; the shape is the ordinary error envelope.
   const PaddedJson err(R"({"id":"afm000100000005","status":400,"error":{"code":-2038,)"
                        R"("msg":"Order amend (quantity increase) is not supported."}})");
