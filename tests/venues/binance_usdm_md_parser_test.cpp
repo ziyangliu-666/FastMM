@@ -390,7 +390,7 @@ TEST_CASE("binance_usdm.md_feed: recorded session syncs the book with no resync"
   snapshot.replace(at, snapshot.find(',', at) - at, std::to_string(first_u));
 
   feed.on_connected();
-  CHECK(req.count == 1);
+  CHECK(req.count == 0);  // requested with the stream's first depth update
   const std::int64_t now = 1'000'000'000;
   std::size_t i = 0;
   for (; i < 20; ++i) {
@@ -442,10 +442,12 @@ TEST_CASE(
   snapshot.replace(at, snapshot.find(',', at) - at, std::to_string(json_uint(frames[0], "U")));
   feed.on_connected();
   const PaddedJson snap(snapshot);
-  feed.on_snapshot_body(InstrumentId{0}, snap.view(), 1'000'000'000);
+  bool snapped = false;
   for (const std::string& f : frames) {
     const PaddedJson j(f);
     CHECK(feed.on_message(j.view(), 1'000'000'000) == ParseStatus::Ok);
+    if (!snapped) feed.on_snapshot_body(InstrumentId{0}, snap.view(), 1'000'000'000);
+    snapped = true;
   }
   UsdmDepthSync* sync = feed.sync(InstrumentId{0});
   REQUIRE(sync != nullptr);

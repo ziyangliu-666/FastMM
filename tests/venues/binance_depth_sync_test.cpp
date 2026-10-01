@@ -50,8 +50,9 @@ TEST_CASE("binance.depth_sync: buffer, snapshot, replay, then live deltas") {
   std::int64_t now = 100 * kSec;
   sync.start(now);
   CHECK(sync.state() == SyncState::Buffering);
-  REQUIRE(req.ids.size() == 1);
+  CHECK(req.ids.empty());  // the snapshot is requested once the stream has an event
   sync.on_delta(delta(5, 7), now);
+  REQUIRE(req.ids.size() == 1);
   sync.on_delta(delta(8, 10), now);
   sync.on_delta(delta(11, 12), now);
   CHECK(rs.drain().empty());                 // nothing reaches the engine before the snapshot
@@ -80,8 +81,9 @@ TEST_CASE("binance.depth_sync: gap -> Resyncing event + rate-limited re-snapshot
       InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req}, 2 * kSec);
   std::int64_t now = 100 * kSec;
   sync.start(now);
-  sync.on_snapshot(delta(9, 9, true), now);
   sync.on_delta(delta(10, 10), now);
+  sync.on_snapshot(delta(9, 9, true), now);
+  REQUIRE(sync.synced());
   static_cast<void>(rs.drain());
   now += 500'000'000;
   sync.on_delta(delta(12, 13), now);  // U != prev_u + 1
@@ -153,6 +155,8 @@ TEST_CASE("binance.depth_sync: a request that fails synchronously is retried by 
   BinanceDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Failing::on_request, &f}, 0);
   f.sync = &sync;
   sync.start(kSec);
+  CHECK(f.calls == 0);  // no event on the stream yet
+  sync.on_timer(kSec + BinanceDepthSync::kStreamWait);
   CHECK(f.calls == 1);
   sync.on_timer(2 * kSec);
   CHECK(f.calls == 2);
@@ -163,8 +167,8 @@ TEST_CASE("binance.depth_sync: full market-data ring forces a resync") {
   Requests req;
   BinanceDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req}, 0);
   sync.start(0);
-  sync.on_snapshot(delta(1, 1, true), 0);
   sync.on_delta(delta(2, 2), 0);
+  sync.on_snapshot(delta(1, 1, true), 0);
   CHECK(sync.synced());
   sync.on_delta(delta(3, 3), 0);  // ring full: dropped, resync
   CHECK_FALSE(sync.synced());

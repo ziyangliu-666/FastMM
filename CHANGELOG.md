@@ -239,6 +239,12 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- Binance USDⓈ-M (and Spot) books resynced on many starts ("book resync (sequence gap)" within
+  half a second of connecting, the book back 2 s later). The depth snapshot was requested as the
+  stream opened and could come back before the stream's first event and older than it; with
+  nothing buffered it was applied, and the first event, which did not bracket it, broke the
+  chain. A new stream's snapshot is requested once its first event is buffered, as the venue's
+  procedure says, or 0.5 s after the stream opens if none has come (a book that does not change).
 - An `[accounting.fx]` rate whose source is a quiet book (Binance sends a depth update only when
   the book changes) went unknown after `[risk] stale_md_ms` and refused orders that add exposure
   (`FxRateUnknown`, `GatewayFxRateUnknown`) on a healthy feed. FX rates have their own age limit,

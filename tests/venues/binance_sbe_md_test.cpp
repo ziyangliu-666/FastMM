@@ -442,10 +442,11 @@ TEST_CASE("binance.sbe: feed selects SBE streams and syncs the book like the JSO
   CHECK(feed.format() == MdFormat::Sbe);
   CHECK(feed.stream_target() == "/stream?streams=btcusdt@depth/btcusdt@bestBidAsk/btcusdt@trade");
   feed.on_connected();
-  REQUIRE(req.ids.size() == 1);
+  CHECK(req.ids.empty());  // requested with the stream's first event
 
   // Deltas before the snapshot are buffered; U <= L+1 <= u bridges the REST snapshot (L = 100).
   CHECK(feed.on_binary(depth_frame(95, 100, 6999900, 100000000).view(), 1) == ParseStatus::Ok);
+  REQUIRE(req.ids.size() == 1);
   CHECK(feed.on_binary(depth_frame(101, 102, 7000000, 150000000).view(), 2) == ParseStatus::Ok);
   CHECK(rs.drain().empty());
   feed.on_snapshot_body(

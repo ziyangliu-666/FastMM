@@ -14,6 +14,15 @@
 //
 // Every resync is logged with its reason and the update ids that caused it, and the book's return
 // with how long it was away (the engine pulls quotes for that long).
+//
+// On a new stream the snapshot is requested once the first event is buffered, as the venue's
+// procedure says (buffer the stream's events, then get a depth snapshot), not when the connection
+// opens. Requested at once, the snapshot could come back before the stream's first event and be
+// older than it: USDⓈ-M's first event arrives some 200 ms after the connection opens, and its
+// update range then started after the snapshot's lastUpdateId. With nothing buffered the snapshot
+// was applied, and that first event, which does not bracket it, resynced the book (the next
+// snapshot 2 s later, by the rate limit) on many starts. A book that does not change sends no
+// event: kStreamWait after start() without one, on_timer() requests the snapshot anyway.
 #include "fastmm/core/log.hpp"
 #include "fastmm/venues/book_sync.hpp"
 
@@ -29,6 +38,7 @@ template <class Traits>
 class BasicBinanceDepthSync {
  public:
   static constexpr std::int64_t kDefaultMinInterval = 2'000'000'000;  // 2 s
+  static constexpr std::int64_t kStreamWait = 500'000'000;            // 0.5 s
 
   BasicBinanceDepthSync(InstrumentId instrument,
                         VenueId venue,
@@ -44,16 +54,20 @@ class BasicBinanceDepthSync {
         inner_{this},
         syncer_(inner_, buffer_bytes) {}
 
-  // Begin synchronisation (stream connected / subscribed). Issues the snapshot request
-  // subject to the rate limit; on_timer() retries when it was deferred.
+  // Begin synchronisation (stream connected / subscribed). The snapshot request goes out with the
+  // stream's first event, or from on_timer() kStreamWait after this without one, subject to the
+  // rate limit; on_timer() retries when it was deferred.
   void start(std::int64_t now_ns) noexcept {
     now_ = now_ns;
+    stream_wait_since_ = now_ns;
+    awaiting_stream_ = true;
     syncer_.start();
     flush_request(now_ns);
   }
   // Stream lost: the book is unusable until start() again.
   void stop() noexcept {
     stopped_ = true;
+    awaiting_stream_ = false;
     want_request_ = false;
     pending_request_ = false;
     // BookSyncer has no explicit stop; a resync on the next start() rebuilds it.
@@ -64,6 +78,7 @@ class BasicBinanceDepthSync {
     overflowed_ = false;
     cause_ = &d;
     syncer_.on_delta(d);
+    awaiting_stream_ = false;
     if (overflowed_) syncer_.resync(SyncReason::Explicit);
     cause_ = nullptr;
     note_synced();
@@ -73,6 +88,7 @@ class BasicBinanceDepthSync {
   void on_snapshot(const BookDeltaMsg& snap, std::int64_t now_ns) noexcept {
     now_ = now_ns;
     pending_request_ = false;
+    want_request_ = false;  // this one answers it; the syncer asks again if it is too old
     overflowed_ = false;
     snapshot_id_ = snap.last_update_id;
     syncer_.on_snapshot(snap);
@@ -174,6 +190,10 @@ class BasicBinanceDepthSync {
     // A requester that fails synchronously calls on_snapshot_failed from inside requester_(); the
     // retry is left to the timer, or a zero interval would recurse until the stack runs out.
     if (!want_request_ || pending_request_ || requesting_) return;
+    if (awaiting_stream_) {
+      if (now_ns - stream_wait_since_ < kStreamWait) return;
+      awaiting_stream_ = false;
+    }
     if (last_request_ns_ != 0 && now_ns - last_request_ns_ < min_interval_ns_) {
       ++deferred_;
       return;
@@ -194,6 +214,7 @@ class BasicBinanceDepthSync {
   std::int64_t min_interval_ns_;
   std::int64_t now_ = 0;
   std::int64_t away_since_ = 0;          // since the last resync, until the book is synced again
+  std::int64_t stream_wait_since_ = 0;   // start(): the snapshot request waits for the stream
   const BookDeltaMsg* cause_ = nullptr;  // the delta being handled, for the log
   std::uint64_t snapshot_id_ = 0;        // the snapshot being handled, for the log
   std::string_view venue_name_ = "binance";
@@ -206,6 +227,7 @@ class BasicBinanceDepthSync {
   bool requesting_ = false;
   bool overflowed_ = false;
   bool stopped_ = false;
+  bool awaiting_stream_ = false;  // a new stream has delivered no event yet (see the top)
   Inner inner_;
   BookSyncer<Traits, Inner> syncer_;
 };

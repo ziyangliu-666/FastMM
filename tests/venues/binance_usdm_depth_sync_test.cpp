@@ -54,9 +54,10 @@ TEST_CASE("binance_usdm.depth_sync: buffered deltas bracket the snapshot, then p
   UsdmDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req});
   std::int64_t now = 100 * kSec;
   sync.start(now);
-  REQUIRE(req.ids.size() == 1);
+  CHECK(req.ids.empty());  // the snapshot is requested once the stream has an event
   // Futures update ids are not consecutive: U of the next event is not u + 1, only pu links them.
-  sync.on_delta(delta(90, 95, 80), now);   // u < lastUpdateId: dropped at replay
+  sync.on_delta(delta(90, 95, 80), now);  // u < lastUpdateId: dropped at replay
+  REQUIRE(req.ids.size() == 1);
   sync.on_delta(delta(97, 104, 95), now);  // U <= 100 <= u: the first applied delta
   sync.on_delta(delta(110, 120, 104), now);
   CHECK(rs.drain().empty());
@@ -80,8 +81,8 @@ TEST_CASE("binance_usdm.depth_sync: pu gap resyncs with a rate-limited snapshot 
   UsdmDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req}, 2 * kSec);
   std::int64_t now = 100 * kSec;
   sync.start(now);
+  sync.on_delta(delta(95, 105, 90), now);
   sync.on_snapshot(snapshot(100), now);
-  sync.on_delta(delta(95, 105, 90), now);  // first live delta after an empty buffer
   sync.on_delta(delta(106, 110, 105), now);
   CHECK(sync.synced());
   static_cast<void>(rs.drain());
@@ -122,4 +123,64 @@ TEST_CASE("binance_usdm.depth_sync: a snapshot older than the buffered stream is
   sync.on_delta(delta(200, 209, 190), kSec);
   CHECK(sync.synced());
   CHECK(sync.last_update_id() == 210);
+}
+
+// Production, 2026-10-01 (fastmm-live start, BTCUSDT): the snapshot was requested as the stream
+// opened and came back 80 ms later, 120 ms before the stream's first event. Its lastUpdateId lay
+// in the event before the first one this connection received (pu > lastUpdateId, U too), so with
+// nothing buffered the snapshot was applied and the first event resynced the book: "book resync
+// (sequence gap): book at update 11704574149738, next update U=11704574149894 u=11704574173288
+// pu=11704574149828", and the next snapshot 2 s later. The ids below are that session's.
+TEST_CASE("binance_usdm.depth_sync: a new stream's snapshot is requested after its first event") {
+  constexpr std::uint64_t kOld = 11704574149738ULL;  // the snapshot taken as the stream opened
+  RecordingSink rs;
+  Requests req;
+  UsdmDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req});
+  std::int64_t now = 100 * kSec;
+  sync.start(now);
+  CHECK(req.ids.empty());
+  sync.on_timer(now + kSec / 10);
+  CHECK(req.ids.empty());
+  // Requested at once, this is the snapshot that would have come back: it predates the stream.
+  // Applied with nothing buffered, the first event cannot bracket it.
+  CHECK(kOld < 11704574149828ULL);
+  now += kSec / 5;
+  sync.on_delta(delta(11704574149894ULL, 11704574173288ULL, 11704574149828ULL), now);
+  REQUIRE(req.ids.size() == 1);
+  CHECK_FALSE(sync.synced());
+  // The snapshot requested now is newer than that buffered event: it is dropped at replay and
+  // the next event brackets the snapshot.
+  sync.on_snapshot(snapshot(11704574180000ULL), now + kSec / 10);
+  CHECK(sync.synced());
+  sync.on_delta(delta(11704574173433ULL, 11704574188958ULL, 11704574173288ULL), now + kSec / 10);
+  sync.on_delta(delta(11704574188999ULL, 11704574198161ULL, 11704574188958ULL), now + kSec / 5);
+  CHECK(sync.synced());
+  CHECK(sync.resync_count() == 0);
+  CHECK(req.ids.size() == 1);
+  CHECK(sync.last_update_id() == 11704574198161ULL);
+}
+
+// A book that does not change sends no event: its snapshot is requested kStreamWait after start.
+TEST_CASE("binance_usdm.depth_sync: a quiet stream gets its snapshot after kStreamWait") {
+  RecordingSink rs;
+  Requests req;
+  UsdmDepthSync sync(InstrumentId{0}, VenueId{0}, rs.sink, {&Requests::on_request, &req});
+  const std::int64_t now = 100 * kSec;
+  sync.start(now);
+  sync.on_timer(now + UsdmDepthSync::kStreamWait - 1);
+  CHECK(req.ids.empty());
+  sync.on_timer(now + UsdmDepthSync::kStreamWait);
+  REQUIRE(req.ids.size() == 1);
+  sync.on_snapshot(snapshot(100), now + UsdmDepthSync::kStreamWait);
+  CHECK(sync.synced());
+  sync.on_delta(delta(95, 105, 90), now + 10 * kSec);
+  CHECK(sync.synced());
+  CHECK(sync.resync_count() == 0);
+  // A reconnect waits for the new stream again.
+  sync.stop();
+  sync.start(now + 20 * kSec);
+  sync.on_timer(now + 20 * kSec);
+  CHECK(req.ids.size() == 1);
+  sync.on_delta(delta(200, 210, 190), now + 20 * kSec);
+  CHECK(req.ids.size() == 2);
 }
