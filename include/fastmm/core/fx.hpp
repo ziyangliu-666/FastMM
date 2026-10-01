@@ -12,6 +12,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/result.hpp"
 #include "fastmm/core/strong_id.hpp"
+#include "fastmm/core/time.hpp"
 
 #include <array>
 #include <cstddef>
@@ -75,6 +76,9 @@ struct FxPlan {
   std::array<FxSource, kMaxCurrencies> sources{};
   std::array<std::uint8_t, kMaxInstruments> ccy{};     // each instrument's currency index
   std::array<std::uint8_t, kMaxInstruments> prices{};  // 1 + the currency it prices; 0: none
+  // [accounting] stale_fx_ms: a rate whose source's book is older than this is not current; 0: a
+  // valid book is enough.
+  Duration stale{};
 
   [[nodiscard]] bool active() const noexcept { return count > 1; }
   [[nodiscard]] std::string_view reporting() const noexcept { return names[0].view(); }
@@ -85,14 +89,16 @@ struct FxPlan {
 };
 
 // [accounting]: the reporting currency and, per other currency, its source as "venue:symbol".
-// Also what a derivative's position is valued at (core/perp_book.hpp): "venue" (its venue's mark
-// while fresh) or "mid", and when the venues' mark, index and funding are stale.
+// Also when a source's rate is too old to measure new exposure at (stale_fx_ms), what a
+// derivative's position is valued at (core/perp_book.hpp): "venue" (its venue's mark while fresh)
+// or "mid", and when the venues' mark, index and funding are stale.
 struct AccountingSpec {
   std::string reporting_currency;         // empty: no accounting (one currency, as before)
   std::map<std::string, std::string> fx;  // currency -> "venue:symbol"
   std::string mark = "venue";             // "venue" | "mid"
   int stale_mark_ms = 15'000;
   int stale_funding_ms = 180'000;
+  int stale_fx_ms = 60'000;  // 0: a valid source book is enough
   [[nodiscard]] bool configured() const noexcept { return !reporting_currency.empty(); }
 };
 

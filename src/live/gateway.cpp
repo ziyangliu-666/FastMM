@@ -143,7 +143,7 @@ struct Account {
     std::atomic<bool> valid{false};
   };
   FxPlan fx;                  // set before the network threads start
-  std::int64_t stale_ns = 0;  // [risk] stale_md_ms: a rate older than this is not current; 0: off
+  std::int64_t stale_ns = 0;  // [risk] stale_md_ms: a mark older than this is not current; 0: off
   std::array<Rate, kMaxCurrencies> rates;
   std::array<std::array<Totals, kMaxCurrencies>, 8> venues;      // per venue, per currency
   std::array<std::atomic<std::int64_t>, kMaxInstruments> qty{};  // raw Qty per instrument
@@ -180,12 +180,13 @@ struct Account {
                             fx.sources[c].invert);
   }
   // The rate new exposure is measured at: unknown while the source's book is not valid, or its
-  // last mark is older than stale_ns.
+  // last mark is older than fx.stale ([accounting] stale_fx_ms).
   [[nodiscard]] FxRate current_rate(std::size_t c, std::int64_t now_ns) const noexcept {
     if (c == 0) return FxRate::identity();
     const Rate& r = rates[c];
     if (!r.valid.load(std::memory_order_acquire)) return {};
-    if (stale_ns > 0 && now_ns - r.at_ns.load(std::memory_order_relaxed) > stale_ns) return {};
+    if (fx.stale.ns > 0 && now_ns - r.at_ns.load(std::memory_order_relaxed) > fx.stale.ns)
+      return {};
     return rate(c);
   }
   // The mark an inverse contract of an underlying is converted at: the last mid of a valid book,
@@ -3400,7 +3401,6 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     }
     if (!warning.empty()) FASTMM_LOG_WARN("gateway: [accounting]: {}", warning);
     acct->fx = *plan;
-    acct->stale_ns = milliseconds(cfg.risk.stale_md_ms).ns;
   }
   if (acct->fx.active()) {
     for (std::size_t c = 1; c < acct->fx.count; ++c) {

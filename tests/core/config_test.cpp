@@ -368,6 +368,26 @@ TEST_CASE("core.config: [accounting] parses, round-trips and prices each currenc
   CHECK(plan->active());
   CHECK(plan->ccy[1] == 1);  // ETHBTC in BTC
   CHECK(plan->sources[1].instrument == InstrumentId{0});
+  CHECK(plan->stale == seconds(60));  // stale_fx_ms by default
+}
+
+TEST_CASE("core.config: [accounting] stale_fx_ms sets the FX rates' age limit and round-trips") {
+  const std::string text = two_currencies(
+      "[accounting]\nreporting_currency = \"USDT\"\nstale_fx_ms = 0\n[accounting.fx]\nBTC = "
+      "\"sim:BTCUSDT\"\n");
+  const Config cfg = Config::parse(text);
+  CHECK(cfg.warnings.empty());
+  CHECK(cfg.accounting.stale_fx_ms == 0);
+  const Config again = Config::parse(cfg.effective_toml());
+  CHECK(again.accounting.stale_fx_ms == 0);
+  CHECK(again.effective_hash() == cfg.effective_hash());
+  const std::vector<std::string> venues{"sim"};
+  const auto plan = build_fx_plan(load_instruments(cfg), cfg.accounting, venues);
+  REQUIRE(plan.has_value());
+  CHECK(plan->stale.ns == 0);
+  CHECK_THROWS_AS(static_cast<void>(Config::parse(two_currencies(
+                      "[accounting]\nreporting_currency = \"USDT\"\nstale_fx_ms = -1\n"))),
+                  ConfigError);
 }
 
 TEST_CASE("core.config: a single-currency configuration needs no [accounting] and is unchanged") {

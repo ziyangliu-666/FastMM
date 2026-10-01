@@ -485,7 +485,7 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 - Positions, PnL and fees stay in each instrument's settlement currency. The PnL totals, `[risk] max_loss`, `max_gross_notional` and `max_net_notional` (and the `[gateway]` ones) are in `reporting_currency`, converted at the mid of each currency's source.
 - A source is `"venue:symbol"`, an instrument listed in `[[instruments]]` (`enabled = false` if it is not traded): its book is where the rate comes from, so the session must subscribe to it. It prices the currency in `reporting_currency` either way round: `BTCUSDT` gives BTC in USDT, `USDTBTC` is inverted.
 - Once the venues' reference data has loaded, every settlement currency of an enabled instrument (of every instrument, in `fastmm-gateway`) must be `reporting_currency` or have a source. Otherwise `fastmm-live` and `fastmm-gateway` exit with code 3 while `max_loss` or an exposure cap is set, and warn and convert nothing when none is.
-- A rate is unknown until its source's book is valid, and not current while that book is invalid or older than `[risk] stale_md_ms`. With no current rate, an order that adds to exposure in that currency is refused (`FxRateUnknown`, `GatewayFxRateUnknown` in the gateway) while `max_loss` or an exposure cap is set; one that reduces a position passes. PnL already booked stays measured at the last rate; a currency whose rate was never known counts as zero, and nothing can be traded in it until it is.
+- A rate is unknown until its source's book is valid, and not current while that book is invalid or has not updated for `stale_fx_ms` (default 60 s; 0: a valid book is enough). It is not `[risk] stale_md_ms`: a venue sends a book only when it changes, and a quiet FX pair can go seconds without one. With no current rate, an order that adds to exposure in that currency is refused (`FxRateUnknown`, `GatewayFxRateUnknown` in the gateway) while `max_loss` or an exposure cap is set; one that reduces a position passes. PnL already booked stays measured at the last rate; a currency whose rate was never known counts as zero, and nothing can be traded in it until it is.
 - Fees are booked in the settlement currency (a commission in the base asset is valued at the fill price); a commission in another asset is not booked, so it needs no source.
 - Without this section nothing is converted.
 
@@ -497,6 +497,7 @@ BTC = "binance:BTCUSDT"     # BTC in USDT: the mid of BTCUSDT
 | `mark` | string |  | what a derivative's position is valued at for the unrealized PnL, max_loss and the exposure caps (fastmm-gateway's too): venue (its venue's mark price while it is fresh, else the book's mid) \| mid (default venue) |
 | `stale_mark_ms` | integer |  | a venue's mark or index price older than this is stale: ctx.mark and ctx.index flag it and the position is valued at the mid, ms (default 15000) |
 | `stale_funding_ms` | integer |  | a venue's funding rate older than this is stale (ctx.funding flags it), ms (default 180000) |
+| `stale_fx_ms` | integer |  | an [accounting.fx] rate whose source's book has not updated for this long is not current: an order that adds exposure in that currency is refused; ms (default 60000; 0: a valid book is enough). Not [risk] stale_md_ms: a quiet FX book can go seconds without a change |
 <!-- END config-keys -->
 
 ## `[logging]`

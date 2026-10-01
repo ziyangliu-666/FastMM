@@ -78,7 +78,7 @@ Without `[accounting]`, instruments of one session must settle in the same curre
 
 With `[accounting]` ([Configuration](../reference/configuration.md#accounting)) they can mix. Positions, PnL and fees stay in each instrument's currency (`PositionTracker` also keeps them summed per currency); the totals, `max_loss` and the exposure caps are in the reporting currency, each other currency converted at the mid of its FX source's book (`core/fx.hpp`). The conversion runs where the totals change, on a fill, a mark or a new rate, not per order. The rules fail closed:
 
-- A rate is unknown until its source's book is valid. While it is invalid, or older than `stale_md_ms`, an order that adds to exposure in that currency is refused (`FxRateUnknown`); one that reduces a position passes, and so does a flatten.
+- A rate is unknown until its source's book is valid. While it is invalid, or has not updated for `[accounting] stale_fx_ms` (default 60 s), an order that adds to exposure in that currency is refused (`FxRateUnknown`); one that reduces a position passes, and so does a flatten.
 - PnL already booked stays converted at the last valid rate: a stale source does not hide a loss that was already measured, and `max_loss` keeps being evaluated on it. A currency whose rate was never known counts as zero; nothing can be traded in it before it is known, so only a restored or reconciled position can sit there.
 - With neither `max_loss` nor an exposure cap set, the rate refuses nothing: the conversion only feeds the reports.
 

@@ -205,10 +205,12 @@ TEST_CASE(
     "gateway fx: an ETHBTC order goes back as GatewayFxRateUnknown while the gateway's BTCUSDT "
     "book is stale") {
   ServerFixture fx(eth_btc_markets());
-  // BTCUSDT's book changes every 100 ms at the simulator; at 1 ms it is stale almost always.
+  // BTCUSDT's book changes every 100 ms at the simulator; at 1 ms it is stale almost always. The
+  // FX age limit is [accounting] stale_fx_ms, not [risk] stale_md_ms.
   Configs c = fx_configs(fx, "gw-fx-stale", "\n[gateway]\nmax_loss = \"1000000000\"\n");
-  rewrite(c.gw.config,
-          [](std::string& t) { replace_first(t, "stale_md_ms = 2000", "stale_md_ms = 1"); });
+  rewrite(c.gw.config, [](std::string& t) {
+    replace_first(t, "[accounting]\n", "[accounting]\nstale_fx_ms = 1\n");
+  });
   const GatewayProcess g = spawn_gateway(c.gw);
   wait_gateway_up(fx, g);
   const pid_t b = spawn_strategy(c.b, g);

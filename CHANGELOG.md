@@ -239,6 +239,11 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- An `[accounting.fx]` rate whose source is a quiet book (Binance sends a depth update only when
+  the book changes) went unknown after `[risk] stale_md_ms` and refused orders that add exposure
+  (`FxRateUnknown`, `GatewayFxRateUnknown`) on a healthy feed. FX rates have their own age limit,
+  `[accounting] stale_fx_ms` (default 60000; 0: a valid book is enough); an invalid book still
+  makes the rate unknown.
 - Fill-check dropped a live fill reported after its order's end (Binance's API cancel response
   can arrive before the user stream's execution report; a reconciliation can miss an order that
   just filled) and counted a trade in a cancelled order's last millisecond that the venue did not

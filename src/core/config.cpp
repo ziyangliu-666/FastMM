@@ -621,6 +621,8 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "stale_funding_ms", a.stale_funding_ms);
     if (a.stale_funding_ms <= 0)
       fail_at(*t->get("stale_funding_ms"), "stale_funding_ms must be > 0");
+    get(*t, "stale_fx_ms", a.stale_fx_ms);
+    if (a.stale_fx_ms < 0) fail_at(*t->get("stale_fx_ms"), "stale_fx_ms must be >= 0");
     const auto valid_ccy = [](std::string_view c) {
       if (c.empty() || c.size() > Currency::kCapacity) return false;
       for (const char ch : c) {
@@ -878,7 +880,8 @@ std::string Config::redacted() const {
   const AccountingSpec kAccountingDefaults;
   const bool perp_keys = accounting.mark != kAccountingDefaults.mark ||
                          accounting.stale_mark_ms != kAccountingDefaults.stale_mark_ms ||
-                         accounting.stale_funding_ms != kAccountingDefaults.stale_funding_ms;
+                         accounting.stale_funding_ms != kAccountingDefaults.stale_funding_ms ||
+                         accounting.stale_fx_ms != kAccountingDefaults.stale_fx_ms;
   if (accounting.configured() || perp_keys) {
     out += "\n[accounting]\n";
     if (accounting.configured()) kq("reporting_currency", accounting.reporting_currency);
@@ -886,6 +889,7 @@ std::string Config::redacted() const {
       kq("mark", accounting.mark);
       kv("stale_mark_ms", accounting.stale_mark_ms);
       kv("stale_funding_ms", accounting.stale_funding_ms);
+      kv("stale_fx_ms", accounting.stale_fx_ms);
     }
     if (!accounting.fx.empty()) {
       out += "\n[accounting.fx]\n";
@@ -1101,7 +1105,8 @@ std::string Config::effective_toml() const {
   const AccountingSpec kAccountingDefaults;
   const bool perp_keys = accounting.mark != kAccountingDefaults.mark ||
                          accounting.stale_mark_ms != kAccountingDefaults.stale_mark_ms ||
-                         accounting.stale_funding_ms != kAccountingDefaults.stale_funding_ms;
+                         accounting.stale_funding_ms != kAccountingDefaults.stale_funding_ms ||
+                         accounting.stale_fx_ms != kAccountingDefaults.stale_fx_ms;
   if (accounting.configured() || perp_keys) {
     toml::table a;
     if (accounting.configured()) {
@@ -1114,6 +1119,7 @@ std::string Config::effective_toml() const {
       a.insert("mark", accounting.mark);
       a.insert("stale_mark_ms", static_cast<std::int64_t>(accounting.stale_mark_ms));
       a.insert("stale_funding_ms", static_cast<std::int64_t>(accounting.stale_funding_ms));
+      a.insert("stale_fx_ms", static_cast<std::int64_t>(accounting.stale_fx_ms));
     }
     root.insert("accounting", std::move(a));
   }

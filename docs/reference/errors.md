@@ -60,7 +60,7 @@ Checked in the order listed, which is not numeric order; the first failure decid
 | 10 | `MaxOrderQty` | `[risk] max_order_qty` | the order is smaller |
 | 11 | `MaxOrderNotional` | `[risk] max_order_notional` | the order is smaller |
 | 12 | `MaxPosition` | `[risk] max_position` | the position or the same-side open orders shrink |
-| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book no older than `stale_md_ms`; an order that reduces its instrument's position is not refused |
+| 19 | `FxRateUnknown` | `[accounting]` | the source of the order's settlement currency has a valid book that updated within `[accounting] stale_fx_ms`; an order that reduces its instrument's position is not refused |
 | 17 | `MaxGrossNotional` | `[risk] max_gross_notional` | the portfolio's \|position\| shrinks, or the order reduces its instrument's position |
 | 18 | `MaxNetNotional` | `[risk] max_net_notional` | the signed sum moves back, or the order reduces its instrument's position |
 | 22 | `UnderlyingMarkUnknown` | `[risk.underlying]` | every inverse contract of the underlying with a position or open orders (and the order's own, if inverse) has a valid book no older than `stale_md_ms` |
@@ -98,7 +98,7 @@ A strategy attached to `fastmm-gateway` gets these back from the gateway's accou
 | 51 | `GatewayAccountKilled` | `[gateway] max_loss` tripped the account's kill switch |
 | 52 | `GatewayGrossNotional` | `[gateway] max_gross_notional`: the account's positions at the marks plus this order; an order that reduces its instrument's position passes |
 | 53 | `GatewayNetNotional` | `[gateway] max_net_notional`: the same for the signed sum |
-| 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
+| 54 | `GatewayFxRateUnknown` | `[accounting]`: the order adds to exposure in a currency whose source has no valid book in the gateway, or none that updated within `[accounting] stale_fx_ms` |
 | 55 | `GatewayUnderlyingNet` | `[gateway.underlying.<BASE>] max_net`: the account's net position in the base asset over every venue, with the orders working on the order's side and this one, would move further past the limit |
 | 56 | `GatewayUnderlyingMarkUnknown` | `[gateway.underlying]`: an inverse contract of the underlying with a position or working orders has no valid book in the gateway, or none newer than `[risk] stale_md_ms` |
 | 57 | `GatewaySelfTrade` | `[gateway.shared]`: the order would trade with a resting order of another attached strategy on the same instrument |

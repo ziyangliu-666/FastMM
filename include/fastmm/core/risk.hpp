@@ -207,11 +207,13 @@ class RiskEngine {
   // ---- accounting across settlement currencies ([accounting], core/fx.hpp) ------------------
   // With an active plan an order's notional is converted to the reporting currency for the
   // exposure caps, at the mid of its currency's FX source. The rate is usable while the source's
-  // book is valid (on_fx_book) and, with stale_md set, no older than stale_md. Without a usable
+  // book is valid (on_fx_book) and, with the plan's `stale` ([accounting] stale_fx_ms, not
+  // [risk] stale_md_ms: a quiet FX book updates seldom) set, no older than that. Without a usable
   // rate an order that adds to exposure in that currency is refused (FxRateUnknown) while
   // max_loss or an exposure cap is set; one that reduces it passes.
   void set_fx(const FxPlan& plan) noexcept {
     fx_on_ = plan.active();
+    fx_stale_ = plan.stale;
     update_flags();
     for (std::size_t i = 0; i < kMaxInstruments; ++i) fx_ccy_[i] = plan.ccy[i];
     for (std::size_t c = 0; c < kMaxCurrencies; ++c) {
@@ -315,8 +317,7 @@ class RiskEngine {
     if (c == 0) return FxRate::identity();
     if (c >= kMaxCurrencies || !fx_valid_[c] || !fx_src_[c].instrument.valid()) return {};
     const MdState& md = md_[fx_src_[c].instrument.value];
-    if (limits_.stale_md.ns > 0 && (!md.book_ts.valid() || now - md.book_ts > limits_.stale_md))
-      return {};
+    if (fx_stale_.ns > 0 && (!md.book_ts.valid() || now - md.book_ts > fx_stale_)) return {};
     return FxRate::from_mid(md.mid, fx_src_[c].invert);
   }
 
@@ -578,6 +579,7 @@ class RiskEngine {
   bool portfolio_ = false;  // an exposure cap or fx_gate_: the portfolio block runs
   bool fx_gate_ = false;    // fx_on_ and a limit that reads the totals
   bool fx_on_ = false;
+  Duration fx_stale_{};  // [accounting] stale_fx_ms
   bool und_on_ = false;  // [risk.underlying]: some underlying has a limit
   std::array<bool, kMaxCurrencies> fx_valid_{};
   std::array<FxSource, kMaxCurrencies> fx_src_{};

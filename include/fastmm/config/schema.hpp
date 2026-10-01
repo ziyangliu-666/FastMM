@@ -536,6 +536,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "a venue's funding rate older than this is stale (ctx.funding flags it), ms (default "
      "180000)"},
+    {"accounting",
+     "stale_fx_ms",
+     KeyType::Int,
+     false,
+     "an [accounting.fx] rate whose source's book has not updated for this long is not current: "
+     "an order that adds exposure in that currency is refused; ms (default 60000; 0: a valid "
+     "book is enough). Not [risk] stale_md_ms: a quiet FX book can go seconds without a change"},
     // [logging]
     {"logging",
      "level",

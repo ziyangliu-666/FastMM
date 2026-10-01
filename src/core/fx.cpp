@@ -37,6 +37,7 @@ Result<FxPlan, std::string> build_fx_plan(const InstrumentTable& table,
                             Currency::kCapacity));
   p.names[0] = Currency(rep);
   p.count = 1;
+  p.stale = milliseconds(spec.stale_fx_ms);
 
   std::vector<Resolved> sources;
   for (const auto& [ccy, where] : spec.fx) {

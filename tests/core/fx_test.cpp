@@ -271,11 +271,20 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
   big.qty = qt("40");
   CHECK(risk.check_new(big, inv, in) == RejectReason::MaxGrossNotional);
 
-  // Stale: the source's book is older than stale_md (the instrument's own is fresh).
-  const Timestamp later = now + milliseconds(600);
+  // A quiet source: its book is older than stale_md (the instrument's own is fresh) but younger
+  // than [accounting] stale_fx_ms (60 s by default). The rate is current.
+  const Timestamp quiet = now + milliseconds(600);
+  risk.on_book(kInverse, px("50000"), quiet);
+  in.now = quiet;
+  CHECK(risk.fx_rate(1, quiet).price() == px("50000"));
+  CHECK(risk.check_new(buy, inv, in) == RejectReason::None);
+
+  // Stale: the source's book is older than stale_fx_ms.
+  const Timestamp later = now + seconds(61);
   risk.on_book(kInverse, px("50000"), later);
   in.now = later;
   reducing.now = later;
+  CHECK_FALSE(risk.fx_rate(1, later).known());
   CHECK(risk.check_new(buy, inv, in) == RejectReason::FxRateUnknown);
   CHECK(risk.check_new(sell, inv, reducing) == RejectReason::None);
   risk.on_book(kSource, px("50000"), later);
@@ -285,6 +294,25 @@ TEST_CASE("core.fx: an unknown or stale rate refuses exposure in its currency, n
   risk.on_fx_book(1, false);
   CHECK(risk.check_new(buy, inv, in) == RejectReason::FxRateUnknown);
   CHECK(risk.check_new(sell, inv, reducing) == RejectReason::None);
+
+  // stale_fx_ms = 0: any valid book prices, however old; an invalid one still does not.
+  AccountingSpec spec = usdt_spec();
+  spec.stale_fx_ms = 0;
+  const auto unaged = build_fx_plan(t, spec, kVenues);
+  REQUIRE(unaged.has_value());
+  CHECK(unaged->stale.ns == 0);
+  risk.set_fx(*unaged);
+  risk.on_fx_book(1, true);
+  const Timestamp hour = later + seconds(3600);
+  risk.on_book(kInverse, px("50000"), hour);
+  in.now = hour;
+  reducing.now = hour;
+  CHECK(risk.check_new(buy, inv, in) == RejectReason::None);
+  risk.on_fx_book(1, false);
+  CHECK(risk.check_new(buy, inv, in) == RejectReason::FxRateUnknown);
+  CHECK(risk.check_new(sell, inv, reducing) == RejectReason::None);
+  in.now = later;
+  reducing.now = later;
 
   // Nothing reads the totals: the rate does not matter.
   RiskLimits none;
@@ -437,8 +465,12 @@ TEST_CASE("core.fx: the engine's orders, PnL totals and max_loss use converted v
   r.book(kSource, "49999.99", "50000.01");
   CHECK(r.order(kInverse, Side::Buy, "49000", "1") == RejectReason::None);
 
-  // Stale: BTCUSD's own book stays fresh, BTCUSDT's does not.
+  // A quiet BTCUSDT: older than [risk] stale_md_ms, within [accounting] stale_fx_ms (60 s).
   r.clock.advance(seconds(6));
+  r.book(kInverse, "49999.5", "50000.5");
+  CHECK(r.order(kInverse, Side::Buy, "49000", "1") == RejectReason::None);
+  // Stale: BTCUSD's own book stays fresh, BTCUSDT's does not.
+  r.clock.advance(seconds(55));
   r.book(kInverse, "49999.5", "50000.5");
   CHECK(r.order(kInverse, Side::Buy, "49000", "1") == RejectReason::FxRateUnknown);
   CHECK(r.order(kInverse, Side::Sell, "51000", "1") == RejectReason::None);
