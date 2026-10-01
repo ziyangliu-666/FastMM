@@ -986,12 +986,14 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
     return q ? *q : Qty{};
   };
   const IdText order_id(r.order_id);
+  // The response's updateTime: the venue's time of the placement, cancel or modify.
+  const Timestamp venue_ts = ts_from_ms(r.transact_time_ms);
   switch (kind) {
     case RequestKind::New:
       if (!r.is_error) {
         remember_order_id(r.order_id, id);
         if (cfg_.emit_ack_from_response) {
-          emit_order_ack(*order_sink_, id_, inst, id, order_id.view());
+          emit_order_ack(*order_sink_, id_, inst, id, order_id.view(), 0, venue_ts);
           ++stats_.order_events;
         }
         return;
@@ -1006,7 +1008,8 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
       return;
     case RequestKind::Cancel:
       if (!r.is_error) {
-        emit_cancel_ack(*order_sink_, id_, inst, id, order_id.view(), engine_cum(id, venue_cum()));
+        emit_cancel_ack(
+            *order_sink_, id_, inst, id, order_id.view(), engine_cum(id, venue_cum()), venue_ts);
         ++stats_.order_events;
         forget_order(id);
         return;
@@ -1034,8 +1037,13 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
         // rejected.
         const bool post_only = shadow != nullptr && shadow->type == OrderType::PostOnly;
         if (orig.valid()) {
-          emit_cancel_ack(
-              *order_sink_, id_, inst, orig, order_id.view(), engine_cum(orig, venue_cum()));
+          emit_cancel_ack(*order_sink_,
+                          id_,
+                          inst,
+                          orig,
+                          order_id.view(),
+                          engine_cum(orig, venue_cum()),
+                          venue_ts);
           forget_order(orig);
         }
         emit_order_reject(*order_sink_,
@@ -1059,7 +1067,7 @@ void BinanceUsdmVenue::handle_order_response(RequestKind kind,
       }
       if (orig.valid() && orig != id) shadows_.erase(orig);
       remember_order_id(r.order_id, id);
-      emit_order_ack(*order_sink_, id_, inst, id, order_id.view());
+      emit_order_ack(*order_sink_, id_, inst, id, order_id.view(), 0, venue_ts);
       ++stats_.order_events;
       return;
     }

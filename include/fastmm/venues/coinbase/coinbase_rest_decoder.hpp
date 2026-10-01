@@ -53,6 +53,9 @@ struct OrderRow {
   Price price{};
   Qty size{};
   Qty filled_size{};
+  // created_at (Unix ns; 0: absent): when the venue took the order, the time its user channel's
+  // `received` carries. Stamped on the ack POST /orders produces.
+  std::int64_t created_ns = 0;
 };
 
 struct FillRow {

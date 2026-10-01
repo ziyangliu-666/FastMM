@@ -148,6 +148,7 @@ TEST_CASE("deribit.private_parser: order, auth, subscribe and error responses") 
 
   r = decode(p, "deribit/buy_ok.json", s);
   CHECK(r.rpc.id_text == "nfm000100000001");
+  CHECK(r.rpc.us_out == 1789345400000150);  // stamped on the ack (balance estimate)
   REQUIRE(r.order.present);
   CHECK(r.order.order_id == "42710123456");
   CHECK(r.order.order_state == "open");

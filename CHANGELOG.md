@@ -254,6 +254,10 @@ All notable changes are recorded here (Keep a Changelog format).
   balance first: if the old order filled instead of cancelling and the balance no longer covers
   it, it is withheld (`QuoteStats::kept_balance`) rather than refused, and the strategy's next
   quotes decide.
+- The same unstamped response acks elsewhere: OKX (the order's `ts`), Bybit (`Timenow`, REST
+  `time`), Deribit (`usOut`, rounded up to the ms), Coinbase Exchange (`created_at`) and Binance
+  USDⓈ-M (`updateTime`) now stamp the acks and cancel acks they take from order responses. Coinbase
+  Advanced Trade's responses carry no time.
 - Binance USDⓈ-M (and Spot) books resynced on many starts ("book resync (sequence gap)" within
   half a second of connecting, the book back 2 s later). The depth snapshot was requested as the
   stream opened and could come back before the stream's first event and older than it; with

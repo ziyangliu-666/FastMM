@@ -253,7 +253,7 @@ struct Harness {
       if (op != "order.create" && op != "order.amend" && op != "order.cancel") return;
       s.send_text(
           R"({"reqId":")" + req + R"(","retCode":0,"retMsg":"OK","op":")" + op +
-          R"(","data":{"orderId":"2012345678901234567","orderLinkId":"fm000100000001"},"retExtInfo":{},"header":{"X-Bapi-Limit":"20","X-Bapi-Limit-Status":"19","X-Bapi-Limit-Reset-Timestamp":"1789299700208"},"connId":"t1"})");
+          R"(","data":{"orderId":"2012345678901234567","orderLinkId":"fm000100000001"},"retExtInfo":{},"header":{"X-Bapi-Limit":"20","X-Bapi-Limit-Status":"19","X-Bapi-Limit-Reset-Timestamp":"1789299700208","Timenow":"1789299700209"},"connId":"t1"})");
       if (private_session == nullptr) return;
       if (op == "order.create") {
         private_session->send_text(private_order("fm000100000001", "New", "0"));
@@ -388,6 +388,11 @@ TEST_CASE("bybit.venue: scripted fake exchange end to end") {
     CHECK(oc.last<OrderAckMsg>(EventType::OrderAck)->cl_ord_id == n.cl_ord_id);
     CHECK(oc.last<OrderAckMsg>(EventType::OrderAck)->venue_order_id.view() ==
           "2012345678901234567");
+    // The response's ack carries its Timenow: the balance estimate tells from it whether a wallet
+    // push that came first already had the order.
+    CHECK(oc.first_if<OrderAckMsg>(EventType::OrderAck, [](const OrderAckMsg& a) {
+      return a.hdr.exch_ts.ns == 1789299700209LL * 1'000'000;
+    }) != nullptr);
 
     // Amend in place: ack for the new id; later events for the old orderLinkId map to it.
     OutReplaceMsg rp{};

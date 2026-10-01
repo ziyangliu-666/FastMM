@@ -270,12 +270,14 @@ TEST_CASE("okx.decoder: order-operation replies, events and REST replies") {
   CHECK(r.op == "order");
   CHECK(r.ord_id == "12345689");
   CHECK(r.cl_ord_id == "fm000100000001");
+  CHECK(r.ts_ms == 1695190491421);  // stamped on the ack (balance estimate)
   r = decode(
       d,
       R"({"id":"nfm000100000001","op":"order","data":[{"clOrdId":"fm000100000001","ordId":"","tag":"","ts":"","sCode":"51008","sMsg":"Order failed. Insufficient USDT margin in account","subCode":"51008_1000"}],"code":"1","msg":"","inTime":"1","outTime":"2"})");
   CHECK_FALSE(r.ok());
   CHECK(r.reason_code() == 51008);
   CHECK(r.reason_msg() == "Order failed. Insufficient USDT margin in account");
+  CHECK(r.ts_ms == 0);  // "ts":"" on a refusal
   // A request-level failure has no order: its code is the order's.
   r = decode(
       d,

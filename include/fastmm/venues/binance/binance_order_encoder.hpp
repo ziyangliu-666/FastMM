@@ -239,8 +239,8 @@ struct WsApiResponse {
   std::int64_t order_id = 0;
   std::string_view order_status;
   std::string_view executed_qty;
-  // transactTime (Unix ms; 0: absent): the venue's time of the placement or cancel, the T its
-  // executionReport carries. Stamped on the ack the response produces.
+  // transactTime (USDⓈ-M: updateTime; Unix ms, 0: absent): the venue's time of the placement or
+  // cancel, the T its execution report carries. Stamped on the ack the response produces.
   std::int64_t transact_time_ms = 0;
   // order.amend.keepPriority: the fields above come from result.amendedOrder.
   bool amended = false;

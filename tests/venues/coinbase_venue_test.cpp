@@ -574,6 +574,11 @@ TEST_CASE("coinbase.venue: order round trip over REST with events from the user 
       CHECK(a->cl_ord_id == n.cl_ord_id);
       CHECK(a->venue_order_id.view() == order_id(1));
     }
+    // The POST /orders reply's ack carries its created_at: the balance estimate tells from it
+    // whether a balance push that came first already had the order.
+    CHECK(l.oc.first_if<OrderAckMsg>(EventType::OrderAck, [](const OrderAckMsg& a) {
+      return a.hdr.exch_ts.ns == 1790732510500LL * 1'000'000;
+    }) != nullptr);
     const auto* f = l.oc.last<OrderFillMsg>(EventType::OrderFill);
     CHECK(f->cl_ord_id == n.cl_ord_id);
     CHECK(f->exec_id.view() == "5001");

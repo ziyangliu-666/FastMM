@@ -310,7 +310,8 @@ namespace {
       std::string_view key;
       std::string_view v;
       if (field.unescaped_key().get(key) != sj::SUCCESS) return false;
-      if (key != "ordId" && key != "clOrdId" && key != "reqId" && key != "sCode" && key != "sMsg")
+      if (key != "ordId" && key != "clOrdId" && key != "reqId" && key != "sCode" && key != "sMsg" &&
+          key != "ts")
         continue;
       if (field.value().get_string().get(v) != sj::SUCCESS) return false;
       if (key == "ordId") r.ord_id = v;
@@ -318,6 +319,10 @@ namespace {
       if (key == "reqId") r.req_id = v;
       if (key == "sCode") r.s_code = parse_code(v);
       if (key == "sMsg") r.s_msg = v;
+      if (key == "ts") {
+        const auto ms = parse_int64(v);
+        r.ts_ms = ms ? *ms : 0;
+      }
     }
     break;  // one order per request
   }

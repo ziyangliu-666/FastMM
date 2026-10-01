@@ -204,6 +204,9 @@ struct TradeResponse {
   std::string_view req_id;
   int s_code = -1;  // data[0].sCode; the top-level code when data is empty
   std::string_view s_msg;
+  // data[0].ts (Unix ms; 0: absent): when the venue finished processing the request, so no earlier
+  // than the order's effect on the balance. Stamped on the ack the response produces.
+  std::int64_t ts_ms = 0;
   [[nodiscard]] bool ok() const noexcept { return code == 0 && s_code == 0; }
   // The code that says why: the order's own, else the request's.
   [[nodiscard]] int reason_code() const noexcept { return s_code > 0 ? s_code : code; }

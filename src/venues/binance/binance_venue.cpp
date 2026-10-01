@@ -1261,7 +1261,7 @@ void BinanceVenue::emit_ack(InstrumentId inst,
                  id,
                  IdText(order_id).view(),
                  amended_in_place ? OrderAckMsg::kAmendedInPlace : 0,
-                 venue_ms);
+                 ts_from_ms(venue_ms));
   ++stats_.order_events;
 }
 
@@ -1272,7 +1272,7 @@ void BinanceVenue::emit_cancel_ack(InstrumentId inst,
                                    std::int64_t venue_ms) {
   const auto q = parse_qty(executed_qty);
   venues::emit_cancel_ack(
-      *order_sink_, id_, inst, id, IdText(order_id).view(), q ? *q : Qty{}, venue_ms);
+      *order_sink_, id_, inst, id, IdText(order_id).view(), q ? *q : Qty{}, ts_from_ms(venue_ms));
   ++stats_.order_events;
 }
 

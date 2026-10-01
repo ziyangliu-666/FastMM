@@ -716,7 +716,8 @@ void CoinbaseExchangeVenue::handle_new_reply(ClientOrderId id, const net::HttpRe
         static_cast<void>(
             private_parser_->learn(o.id, id, inst, shadow->side, shadow->qty, o.filled_size));
       remember_order(o.id, id);
-      if (cfg_.emit_ack_from_response) emit_order_ack(*order_sink_, id_, inst, id, o.id);
+      if (cfg_.emit_ack_from_response)
+        emit_order_ack(*order_sink_, id_, inst, id, o.id, 0, Timestamp{o.created_ns});
     }
     ++stats_.order_events;
     return;

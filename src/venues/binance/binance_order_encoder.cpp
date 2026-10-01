@@ -438,7 +438,10 @@ namespace {
   if (o["origClientOrderId"].get_string().get(s) == sj::SUCCESS) r.orig_client_order_id = s;
   if (o["status"].get_string().get(s) == sj::SUCCESS) r.order_status = s;
   if (o["executedQty"].get_string().get(s) == sj::SUCCESS) r.executed_qty = s;
-  if (o["transactTime"].get_int64().get(i) == sj::SUCCESS) r.transact_time_ms = i;
+  // USDⓈ-M names it updateTime.
+  if (o["transactTime"].get_int64().get(i) == sj::SUCCESS ||
+      o["updateTime"].get_int64().get(i) == sj::SUCCESS)
+    r.transact_time_ms = i;
 }
 
 // cancelReplace's cancelResponse, in a result or in error.data.

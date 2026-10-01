@@ -5,6 +5,7 @@
 
 #include <simdjson.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace fastmm::venues::coinbase {
@@ -55,6 +56,8 @@ std::string order_of(const dom::element& e, OrderRow& o) {
   static_cast<void>(fixed(e, "price", o.price));
   static_cast<void>(fixed(e, "size", o.size));
   static_cast<void>(fixed(e, "filled_size", o.filled_size));
+  const std::string created = text(e, "created_at");
+  o.created_ns = created.empty() ? 0 : std::max<std::int64_t>(parse_time_ns(created), 0);
   return {};
 }
 

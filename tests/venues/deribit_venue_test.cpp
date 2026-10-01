@@ -442,6 +442,11 @@ TEST_CASE("deribit.venue: scripted fake exchange end to end") {
     }));
     CHECK(oc.last<OrderAckMsg>(EventType::OrderAck)->cl_ord_id == n.cl_ord_id);
     CHECK(oc.last<OrderAckMsg>(EventType::OrderAck)->venue_order_id.view() == "42710123456");
+    // The response's ack carries its usOut, rounded up to the ms: the balance estimate tells from
+    // it whether a portfolio report that came first already had the order.
+    CHECK(oc.first_if<OrderAckMsg>(EventType::OrderAck, [](const OrderAckMsg& a) {
+      return a.hdr.exch_ts.ns == 1789345400001LL * 1'000'000;
+    }) != nullptr);
     const std::string buy = find_frame(h.srv, kPrivatePath, "private/buy");
     CHECK(buy.find(R"("label":"fm000100000001")") != std::string::npos);
     CHECK(buy.find(R"("contracts":1,)") != std::string::npos);

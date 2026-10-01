@@ -228,6 +228,7 @@ TEST_CASE("coinbase.rest: recorded products and time, orders, fills, ids and err
   CHECK(orders[0].client_oid == "666d0000-0000-4000-8000-000100000007");
   CHECK(orders[0].filled_size == Qty::from_decimal("0.25").value());
   CHECK(orders[0].status == "open");
+  CHECK(orders[0].created_ns == 1583959726622LL * 1'000'000);  // stamped on the ack
   OrderRow rejected;
   REQUIRE(
       decode_order(
@@ -235,6 +236,7 @@ TEST_CASE("coinbase.rest: recorded products and time, orders, fills, ids and err
           rejected)
           .empty());
   CHECK(rejected.reject_reason == "post only");
+  CHECK(rejected.created_ns == 0);  // none given
   CHECK(decode_order(R"({"message":"Insufficient funds"})", rejected) ==
         "order: Insufficient funds");
 

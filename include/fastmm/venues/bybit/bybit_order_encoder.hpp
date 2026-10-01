@@ -177,6 +177,9 @@ struct TradeResponse {
   std::int64_t limit = -1;         // header X-Bapi-Limit
   std::int64_t limit_status = -1;  // header X-Bapi-Limit-Status (remaining)
   std::int64_t limit_reset_ms = -1;
+  // header Timenow (REST: the body's `time`; Unix ms, 0: absent): the venue's clock as it answered,
+  // no earlier than the order's effect on the balance. Stamped on the ack the response produces.
+  std::int64_t time_ms = 0;
   bool is_op_ack = false;  // {"success":..,"op":..} style (auth/ping/subscribe)
   bool success = false;
 };

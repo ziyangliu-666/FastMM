@@ -942,7 +942,8 @@ void OkxVenue::handle_order_response(RequestKind kind, ClientOrderId id, const T
   switch (kind) {
     case RequestKind::New:
       if (r.ok()) {
-        if (cfg_.emit_ack_from_response) emit_order_ack(*order_sink_, id_, inst, id, r.ord_id);
+        if (cfg_.emit_ack_from_response)
+          emit_order_ack(*order_sink_, id_, inst, id, r.ord_id, 0, ts_from_ms(r.ts_ms));
       } else {
         emit_order_reject(*order_sink_, id_, inst, id, m.reason, code, msg);
         forget_order(id);
@@ -955,7 +956,7 @@ void OkxVenue::handle_order_response(RequestKind kind, ClientOrderId id, const T
         // "sCode 0 only means accepted": the orders channel reports the cancel with accFillSz.
         // Without it the response is all we will get.
         if (!private_conn_.is_live()) {
-          emit_cancel_ack(*order_sink_, id_, inst, id, r.ord_id, Qty{});
+          emit_cancel_ack(*order_sink_, id_, inst, id, r.ord_id, Qty{}, ts_from_ms(r.ts_ms));
           forget_order(id);
           ++stats_.order_events;
         }
@@ -975,7 +976,13 @@ void OkxVenue::handle_order_response(RequestKind kind, ClientOrderId id, const T
           ack.cl_ord_id = id;
           ack.flags = OrderAckMsg::kAmendedInPlace;
           on_amend_result(ack);
-          emit_order_ack(*order_sink_, id_, inst, id, r.ord_id, OrderAckMsg::kAmendedInPlace);
+          emit_order_ack(*order_sink_,
+                         id_,
+                         inst,
+                         id,
+                         r.ord_id,
+                         OrderAckMsg::kAmendedInPlace,
+                         ts_from_ms(r.ts_ms));
           ++stats_.order_events;
         }
       } else {

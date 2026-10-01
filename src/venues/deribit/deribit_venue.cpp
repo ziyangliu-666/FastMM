@@ -803,6 +803,8 @@ void DeribitVenue::handle_order_response(RequestKind kind,
   const InstrumentId inst = shadow != nullptr ? shadow->instrument : InstrumentId::invalid();
   const int code = static_cast<int>(r.rpc.error_code);
   const ErrorMapping m = map_error(code, r.rpc.error_message);
+  // Rounded up, as the balance snapshot's usOut: the response left after the order took effect.
+  const Timestamp venue_ts = ts_from_ms(r.rpc.us_out > 0 ? (r.rpc.us_out + 999) / 1000 : 0);
   if (r.rpc.is_error) {
     if (needs_reauth(code) && !auth_in_flight_) send_auth(kIdReauth);
     if (m.action == VenueAction::RateLimit) matching_credits_.drain(now_ns());
@@ -812,7 +814,7 @@ void DeribitVenue::handle_order_response(RequestKind kind,
       if (!r.rpc.is_error) {
         if (shadow != nullptr && r.order.present) shadow->venue_order_id.assign(r.order.order_id);
         if (cfg_.emit_ack_from_response)
-          emit_order_ack(*order_sink_, id_, inst, id, r.order.order_id);
+          emit_order_ack(*order_sink_, id_, inst, id, r.order.order_id, 0, venue_ts);
       } else {
         emit_order_reject(*order_sink_, id_, inst, id, m.reason, code, r.rpc.error_message);
         forget_order(id);
@@ -835,7 +837,7 @@ void DeribitVenue::handle_order_response(RequestKind kind,
         } else if (!user_channels_ok_) {
           // Without the user.orders channel the response is all we will get.
           const Qty cum = shadow != nullptr ? shadow->filled : Qty{};
-          emit_cancel_ack(*order_sink_, id_, inst, id, r.order.order_id, cum);
+          emit_cancel_ack(*order_sink_, id_, inst, id, r.order.order_id, cum, venue_ts);
           forget_order(id);
           ++stats_.order_events;
         }
@@ -855,7 +857,7 @@ void DeribitVenue::handle_order_response(RequestKind kind,
           if (label.valid() && label != id) aliases_.assign(label, id);
           if (orig.valid() && orig != id) shadows_.erase(orig);
         }
-        emit_order_ack(*order_sink_, id_, inst, id, r.order.order_id);
+        emit_order_ack(*order_sink_, id_, inst, id, r.order.order_id, 0, venue_ts);
       } else {
         emit_order_reject(*order_sink_, id_, inst, id, m.reason, code, r.rpc.error_message);
         shadows_.erase(id);

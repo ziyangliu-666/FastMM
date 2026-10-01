@@ -344,6 +344,8 @@ namespace {
       r.limit_status = int_text(header, "X-Bapi-Limit-Status");
       header.reset();
       r.limit_reset_ms = int_text(header, "X-Bapi-Limit-Reset-Timestamp");
+      header.reset();
+      r.time_ms = std::max<std::int64_t>(int_text(header, "Timenow"), 0);
     }
   }
 }

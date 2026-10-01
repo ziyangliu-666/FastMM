@@ -693,6 +693,11 @@ TEST_CASE("okx.venue: order round trip over the WebSocket, then the blocking can
         l.oc.first_if<OrderAckMsg>(EventType::OrderAck, [](const OrderAckMsg&) { return true; });
     CHECK(ack->cl_ord_id == n.cl_ord_id);
     CHECK(ack->venue_order_id.view() == "312");
+    // The response's ack carries its ts (the orders channel's, the order's uTime): the balance
+    // estimate tells from it whether an account push that came first already had the order.
+    CHECK(l.oc.first_if<OrderAckMsg>(EventType::OrderAck, [](const OrderAckMsg& a) {
+      return a.hdr.exch_ts.ns == 1789299700444LL * 1'000'000;
+    }) != nullptr);
     const auto* f = l.oc.last<OrderFillMsg>(EventType::OrderFill);
     CHECK(f->cl_ord_id == n.cl_ord_id);
     CHECK(f->exec_id.view() == "4463701411");

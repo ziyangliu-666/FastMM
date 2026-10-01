@@ -164,6 +164,7 @@ TEST_CASE("bybit.decoder: trade responses, REST envelopes, open orders, referenc
   CHECK(r.limit == 20);
   CHECK(r.limit_status == 19);
   CHECK(r.limit_reset_ms == 1789299700208);
+  CHECK(r.time_ms == 1789299700209);  // header Timenow, stamped on the ack
   j = padded_fixture("bybit/trade_create_reject.json");
   REQUIRE(d.decode_ws(j.view(), r) == ParseStatus::Ok);
   CHECK_FALSE(r.success);

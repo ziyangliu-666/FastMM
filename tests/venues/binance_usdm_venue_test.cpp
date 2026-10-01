@@ -340,7 +340,7 @@ struct Harness {
             id,
             R"({"orderId":4293153,"symbol":"BTCUSDT","status":"NEW","clientOrderId":")" +
                 json_str(t, "newClientOrderId") +
-                R"(","price":"70000.00","origQty":"0.001","executedQty":"0","timeInForce":"GTX","type":"LIMIT","side":"BUY"})"));
+                R"(","price":"70000.00","origQty":"0.001","executedQty":"0","timeInForce":"GTX","type":"LIMIT","side":"BUY","updateTime":1789469100123})"));
       } else if (method == "order.modify") {
         s.send_text(ws_result(
             id,
@@ -483,6 +483,11 @@ TEST_CASE("binance_usdm.venue: scripted fake exchange end to end") {
       oc.take(orders);
       return oc.count(EventType::OrderAck) >= 1;
     }));
+    // The response's ack carries its updateTime: the balance estimate tells from it whether a
+    // report that came first already had the order.
+    CHECK(oc.first_if<OrderAckMsg>(EventType::OrderAck, [](const OrderAckMsg&) {
+              return true;
+            })->hdr.exch_ts.ns == 1789469100123LL * 1'000'000);
     h.srv.send_to(kPrivatePath, order_update("fm000100000001", "NEW", "0.001", "0", "0", 0));
     h.srv.send_to(kPrivatePath,
                   order_update("fm000100000001", "TRADE", "0.001", "0.0004", "0.0004", 777));

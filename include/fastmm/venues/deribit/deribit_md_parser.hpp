@@ -97,6 +97,9 @@ struct RpcHeader {
   std::int64_t error_code = 0;
   std::string_view error_message;
   std::string_view error_reason;  // error.data.reason
+  // usOut (Unix microseconds, "when response was sent"; 0: absent): private responses only, no
+  // earlier than the order's effect on the balance. Stamped on the ack the response produces.
+  std::int64_t us_out = 0;
 };
 
 struct MdDecodeResult : DecodeResult {

@@ -846,7 +846,8 @@ void BybitVenue::handle_order_response(RequestKind kind, ClientOrderId id, const
   switch (kind) {
     case RequestKind::New:
       if (r.success) {
-        if (cfg_.emit_ack_from_response) emit_order_ack(*order_sink_, id_, inst, id, r.order_id);
+        if (cfg_.emit_ack_from_response)
+          emit_order_ack(*order_sink_, id_, inst, id, r.order_id, 0, ts_from_ms(r.time_ms));
       } else {
         emit_order_reject(*order_sink_, id_, inst, id, m.reason, r.ret_code, r.ret_msg);
         forget_order(id);
@@ -859,7 +860,7 @@ void BybitVenue::handle_order_response(RequestKind kind, ClientOrderId id, const
         // With the private stream up the `order` topic reports the cancel with cumExecQty;
         // otherwise the response is all we will get.
         if (!private_conn_.is_live()) {
-          emit_cancel_ack(*order_sink_, id_, inst, id, r.order_id, Qty{});
+          emit_cancel_ack(*order_sink_, id_, inst, id, r.order_id, Qty{}, ts_from_ms(r.time_ms));
           forget_order(id);
           ++stats_.order_events;
         }
@@ -877,7 +878,7 @@ void BybitVenue::handle_order_response(RequestKind kind, ClientOrderId id, const
           if (link.valid() && link != id) aliases_.assign(link, id);
           if (orig.valid() && orig != id) shadows_.erase(orig);
         }
-        emit_order_ack(*order_sink_, id_, inst, id, r.order_id);
+        emit_order_ack(*order_sink_, id_, inst, id, r.order_id, 0, ts_from_ms(r.time_ms));
       } else {
         emit_order_reject(*order_sink_, id_, inst, id, m.reason, r.ret_code, r.ret_msg);
         shadows_.erase(id);
@@ -1150,6 +1151,7 @@ void BybitVenue::handle_rest_order_response(const OrderCommand& cmd, const net::
   tr.limit = header_int(r, "X-Bapi-Limit");
   tr.limit_status = header_int(r, "X-Bapi-Limit-Status");
   tr.limit_reset_ms = header_int(r, "X-Bapi-Limit-Reset-Timestamp");
+  tr.time_ms = rest.time_ms;
   handle_order_response(kind, cmd.cl_ord_id, tr);
 }
 

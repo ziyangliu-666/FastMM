@@ -422,6 +422,8 @@ struct ItemIds {
   r.frame = FrameKind::Response;
   ++stats.responses;
   root.reset();
+  if (root["usOut"].get_int64().get(r.rpc.us_out) != sj::SUCCESS) r.rpc.us_out = 0;
+  root.reset();
   {
     od::object err;
     if (root["error"].get_object().get(err) == sj::SUCCESS) {
