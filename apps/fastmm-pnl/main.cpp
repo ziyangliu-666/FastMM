@@ -31,6 +31,7 @@ using fastmm::store::Rows;
 constexpr int kOk = 0;
 constexpr int kUsage = 2;
 constexpr int kNotFound = 3;
+constexpr int kDuplicates = 4;  // `duplicates` found some
 
 // "today" and "yesterday" resolve against the host's UTC clock.
 std::string resolve_day(std::string_view text) {
@@ -128,6 +129,7 @@ static int run(int argc, char** argv) {
       {"pnl", "realised (and the funding in it), fees and net by UTC day and instrument"},
       {"funding", "one row per perpetual funding payment"},
       {"positions", "the last position snapshot of each session and instrument"},
+      {"duplicates", "executions and funding payments stored more than once (booked twice)"},
       {"recover", "what the newest session left behind"},
   };
   for (const auto& [name, description] : commands)
@@ -218,6 +220,19 @@ static int run(int argc, char** argv) {
     if (!s.journal_complete) fmt::print("  journal   incomplete: the writer did not close it\n");
     for (const std::string& j : s.journals) fmt::print("  journal   {}\n", j);
     for (const std::string& p : s.positions) fmt::print("  position  {}\n", p);
+    for (const auto& d : s.duplicates)
+      fmt::print("  twice     {} {} {} {} {} {} stored {} times (sessions {})\n",
+                 d.funding ? "funding" : "execution",
+                 d.id,
+                 d.venue,
+                 d.symbol,
+                 d.side,
+                 d.qty,
+                 d.copies,
+                 d.sessions);
+    if (s.duplicate_count != 0)
+      fmt::print("  twice     {} stored more than once: positions and PnL count them twice\n",
+                 s.duplicate_count);
     if (s.open_orders.empty()) {
       fmt::print("  orders    none open at the last record\n");
     } else {
@@ -239,6 +254,8 @@ static int run(int argc, char** argv) {
     rows = reader->funding(f);
   } else if (command == "positions") {
     rows = reader->positions(f);
+  } else if (command == "duplicates") {
+    rows = reader->duplicates(f);
   } else {
     return bad_usage("unknown command '" + command + "' (see --help)");
   }
@@ -248,6 +265,15 @@ static int run(int argc, char** argv) {
   } else {
     print_table(*rows);
   }
+  // Every other answer is computed from rows that may hold an execution twice: say so. The rows
+  // are left as they are.
+  if (command == "duplicates") return rows->empty() ? kOk : kDuplicates;
+  if (auto dup = reader->duplicates(f); dup && !dup->empty())
+    std::fprintf(stderr,
+                 "fastmm-pnl: warning: %zu execution(s) are stored more than once (a restart "
+                 "booked them twice); positions, fees and PnL count them twice. List them with "
+                 "`fastmm-pnl duplicates`\n",
+                 dup->rows.size());
   return kOk;
 }
 

@@ -289,6 +289,8 @@ SUBCOMMANDS:
                               instrument
   funding                     one row per perpetual funding payment
   positions                   the last position snapshot of each session and instrument
+  duplicates                  executions and funding payments stored more than once (booked
+                              twice)
   recover                     what the newest session left behind
 ```
 <!-- END cli-help -->
@@ -298,6 +300,7 @@ SUBCOMMANDS:
 | 0 | the query ran |
 | 2 | bad command line, unknown backend, or a store that cannot be opened or read |
 | 3 | `recover` found no session |
+| 4 | `duplicates` found executions stored more than once |
 
 [Query what you traded](../how-to/operations/query-trading-records.md) works through the questions.
 

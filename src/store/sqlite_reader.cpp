@@ -7,6 +7,9 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <iterator>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -145,6 +148,53 @@ class SqliteReader final : public Reader {
     return query(sql + w.text() + " ORDER BY ts_ns" + limit(f), w);
   }
 
+  // A venue is its name in the session that wrote the row (its id is its place in that session's
+  // configuration), so the same execution stored by two sessions groups together whatever their
+  // venue order. Within a session the unique indexes keep an id once; every copy is another
+  // session's.
+  [[nodiscard]] Result<Rows, std::string> duplicates(const QueryFilter& f) override {
+    const auto part = [&](std::string_view kind,
+                          std::string_view table,
+                          std::string_view id,
+                          std::string_view side,
+                          std::string_view qty) {
+      std::string q = "SELECT '";
+      q += kind;
+      q += "' AS kind, s.engine AS engine, ";
+      q += version_ >= 3 ? "COALESCE(v.name, '#' || r.venue_id)" : "'#' || r.venue_id";
+      q += " AS venue, r.symbol AS symbol, r.";
+      q += id;
+      q += " AS id, r.session_id AS session_id, s.started_ns AS started_ns, r.ts_ns AS ts_ns, ";
+      q += side;
+      q += " AS side, r.";
+      q += qty;
+      q += " AS qty_raw FROM ";
+      q += table;
+      q += " r JOIN sessions s ON s.session_id = r.session_id";
+      if (version_ >= 3)
+        q += " LEFT JOIN session_venues v ON v.session_id = r.session_id AND"
+             " v.venue_id = r.venue_id";
+      q += " WHERE r.";
+      q += id;
+      q += " <> ''";
+      return q;
+    };
+    std::string rows = part("fill", "fills", "exec_id", "r.side", "qty_raw");
+    if (version_ >= 4)
+      rows += " UNION ALL " + part("funding", "funding", "funding_id", "''", "amount_raw");
+    Where w;
+    w.engine(f);
+    w.symbol(f);
+    return query(
+        "SELECT kind, engine, venue, symbol, id, COUNT(*) AS copies, MIN(side) AS side,"
+        " MIN(qty_raw) AS qty_raw, MIN(ts_ns) AS ts_ns, GROUP_CONCAT(session_id, ' ') AS sessions"
+        " FROM (SELECT * FROM (" +
+            rows + ") ORDER BY started_ns)" + w.text() +
+            " GROUP BY kind, engine, venue, symbol, id HAVING COUNT(*) > 1 ORDER BY MIN(ts_ns)" +
+            limit(f),
+        w);
+  }
+
   [[nodiscard]] Result<Rows, std::string> positions(const QueryFilter& f) override {
     std::string sql =
         "SELECT p.ts_ns, p.symbol, p.qty_raw, p.avg_px_raw, p.realized_raw, " +
@@ -259,11 +309,32 @@ class SqliteReader final : public Reader {
     }
     if (rec.past_orders.size() > Recovery::kMaxPastOrders)
       rec.past_orders.resize(Recovery::kMaxPastOrders);
-    resume_points(rec, chain);
+    resume_points(rec, chain, engine, started_ns);
+    QueryFilter mine;
+    mine.engine = engine;
+    if (auto dup = duplicates(mine); dup) {
+      rec.duplicate_count = dup->rows.size();
+      for (const std::vector<std::string>& row : dup->rows) {
+        if (rec.duplicates.size() == Recovery::kMaxDuplicates) break;
+        Recovery::Duplicate d;
+        d.funding = row[0] == "funding";
+        d.venue = row[2];
+        d.symbol = row[3];
+        d.id = row[4];
+        d.copies = static_cast<std::uint32_t>(std::strtoul(row[5].c_str(), nullptr, 10));
+        d.side = row[6];
+        d.qty = row[7];
+        d.sessions = row[9];
+        rec.duplicates.push_back(std::move(d));
+      }
+    }
     return rec;
   }
 
  private:
+  // How far a session's engine clock may be off the one before it (a host clock step).
+  static constexpr std::int64_t kClockSlackNs = 60'000'000'000;
+
   // A stored fill: its time (venue ms, or engine ns for the fallback) and trade id.
   struct Stamped {
     std::int64_t t = 0;
@@ -396,15 +467,97 @@ class SqliteReader final : public Reader {
     return out;
   }
 
-  // Recovery::venue_resume, last_trade_ids and the engine-clock fallbacks over `chain`. Each venue
-  // resumes from the newest session that stored a fill of it with the venue's time: a later
-  // session that stored none of its fills booked nothing there.
-  void resume_points(Recovery& rec, const std::vector<ChainSession>& chain) {
+  // Whether `session` placed an order on its venue `venue`: one that went out, not one the
+  // engine's own checks refused.
+  bool placed_order(std::uint64_t session, std::int64_t venue) {
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_,
+                           "SELECT 1 FROM orders WHERE session_id = ?1 AND venue_id = ?2 AND NOT"
+                           " (state = 'Rejected' AND venue_order_id = '') LIMIT 1",
+                           -1,
+                           &st,
+                           nullptr) != SQLITE_OK)
+      return false;
+    sqlite3_bind_int64(st, 1, static_cast<std::int64_t>(session));
+    sqlite3_bind_int64(st, 2, venue);
+    const bool any = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return any;
+  }
+
+  // The trade ids and funding ids (kFundingIdPrefix + id) every session of `engine` up to
+  // `started_ns` stored for the venue named `venue`, at or after `since_ms` in the venue's clock:
+  // newest first, each id once, one more than Recovery::kMaxKnownExecIds at most (see fit()). The
+  // venue is matched by its name, session by session: its id is its place in a session's
+  // configuration.
+  std::vector<Stamped> stored_ids(const std::string& engine,
+                                  std::int64_t started_ns,
+                                  const std::string& venue,
+                                  std::int64_t since_ms) {
+    const auto rows_of = [](std::string_view table, std::string_view id) {
+      std::string q = "SELECT r.exch_ns AS ns, ";
+      q += id;
+      q += " AS id FROM sessions s JOIN session_venues v ON v.session_id = s.session_id AND"
+           " v.name = ?3 JOIN ";
+      q += table;
+      q += " r ON r.session_id = s.session_id AND r.venue_id = v.venue_id AND r.exch_ns >= ?4 *"
+           " 1000000 WHERE s.engine = ?1 AND s.started_ns <= ?2";
+      return q;
+    };
+    std::string sql = "SELECT MAX(ns) / 1000000 AS ms, id FROM (";
+    sql += rows_of("fills", "r.exec_id") + " AND r.exec_id <> ''";
+    if (version_ >= 4) {
+      sql += " UNION ALL ";
+      sql += rows_of("funding", "'" + std::string(kFundingIdPrefix) + "' || r.funding_id") +
+             " AND r.funding_id <> ''";
+    }
+    sql += ") GROUP BY id ORDER BY ms DESC LIMIT " + std::to_string(Recovery::kMaxKnownExecIds + 1);
+    std::vector<Stamped> out;
+    sqlite3_stmt* st = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK) return out;
+    sqlite3_bind_text(st, 1, engine.data(), static_cast<int>(engine.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, started_ns);
+    sqlite3_bind_text(st, 3, venue.data(), static_cast<int>(venue.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 4, since_ms);
+    while (sqlite3_step(st) == SQLITE_ROW)
+      out.push_back(Stamped{sqlite3_column_int64(st, 0), text(st, 1)});
+    sqlite3_finalize(st);
+    return out;
+  }
+
+  // `rows` of several sessions as one list for fit(): newest first, each id once.
+  static void merge(std::vector<Stamped>& rows) {
+    std::stable_sort(
+        rows.begin(), rows.end(), [](const Stamped& a, const Stamped& b) { return a.t > b.t; });
+    std::set<std::string> seen;
+    std::erase_if(rows, [&](const Stamped& r) { return !seen.insert(r.id).second; });
+    if (rows.size() > Recovery::kMaxKnownExecIds + 1) rows.resize(Recovery::kMaxKnownExecIds + 1);
+  }
+
+  // Recovery::venue_resume, last_trade_ids and the engine-clock fallbacks over `chain`, the
+  // sessions of `engine` up to `started_ns`.
+  //
+  // The ids a replay skips are the ones any of those sessions stored, not the newest one's alone:
+  // a session that died seconds after it started holds only what its own replay booked, while
+  // the next replay's window still reaches the executions of the sessions before it.
+  void resume_points(Recovery& rec,
+                     const std::vector<ChainSession>& chain,
+                     const std::string& engine,
+                     std::int64_t started_ns) {
     const std::string limit = " LIMIT " + std::to_string(Recovery::kMaxKnownExecIds + 1);
-    std::set<std::string> resumed;
-    std::set<std::pair<std::string, std::string>> marked;
-    for (const ChainSession& c : chain) {
-      const std::uint64_t session = c.id;
+    // A session's last stored fill or funding payment of one venue, venue time.
+    struct Last {
+      std::size_t session = 0;  // index in `chain`
+      std::int64_t venue = 0;   // the venue's id in that session
+      std::int64_t ms = 0;
+    };
+    // Per venue (venue_key), newest session first; `order` keeps the venues as first met.
+    std::map<std::string, std::vector<Last>> lasts;
+    std::vector<std::string> order;
+    std::map<std::pair<std::string, std::string>, std::size_t> marked;
+    std::size_t fallback_session = chain.size();
+    for (std::size_t k = 0; k < chain.size(); ++k) {
+      const std::uint64_t session = chain[k].id;
       const std::vector<std::string> names = venue_names(session);
       const auto name_of = [&](std::int64_t v) {
         return v >= 0 && static_cast<std::size_t>(v) < names.size()
@@ -412,50 +565,30 @@ class SqliteReader final : public Reader {
                    : std::string();
       };
       if (version_ >= 3) {
-        struct Last {
-          std::int64_t venue = 0;
-          std::int64_t ms = 0;
-        };
         // Schema 4: funding payments are venue events too, and their ids are known like trade
         // ids.
-        const bool funding = version_ >= 4;
-        std::vector<Last> lasts;
-        collect(lasts,
-                funding ? "SELECT venue_id, MAX(ns) / 1000000 FROM (SELECT venue_id, exch_ns AS ns"
-                          " FROM fills WHERE session_id = ?1 AND exch_ns > 0 UNION ALL SELECT"
-                          " venue_id, exch_ns FROM funding WHERE session_id = ?1 AND exch_ns > 0)"
-                          " GROUP BY venue_id ORDER BY venue_id"
-                        : "SELECT venue_id, MAX(exch_ns) / 1000000 FROM fills WHERE session_id = ?"
-                          " AND exch_ns > 0 GROUP BY venue_id ORDER BY venue_id",
+        std::vector<Last> found;
+        collect(found,
+                version_ >= 4
+                    ? "SELECT venue_id, MAX(ns) / 1000000 FROM (SELECT venue_id, exch_ns AS ns"
+                      " FROM fills WHERE session_id = ?1 AND exch_ns > 0 UNION ALL SELECT"
+                      " venue_id, exch_ns FROM funding WHERE session_id = ?1 AND exch_ns > 0)"
+                      " GROUP BY venue_id ORDER BY venue_id"
+                    : "SELECT venue_id, MAX(exch_ns) / 1000000 FROM fills WHERE session_id = ?"
+                      " AND exch_ns > 0 GROUP BY venue_id ORDER BY venue_id",
                 session,
-                [](sqlite3_stmt* s) {
-                  return Last{sqlite3_column_int64(s, 0), sqlite3_column_int64(s, 1)};
+                [k](sqlite3_stmt* s) {
+                  return Last{k, sqlite3_column_int64(s, 0), sqlite3_column_int64(s, 1)};
                 });
-        for (const Last& l : lasts) {
-          Recovery::VenueResume v;
-          v.venue_id = static_cast<std::uint8_t>(l.venue);
-          v.venue = name_of(l.venue);
-          if (!resumed.insert(venue_key(v.venue, l.venue)).second) continue;
-          v.last_fill_ms = l.ms;
-          const std::int64_t want = l.ms - Recovery::kResumeOverlapMs;
-          const std::string fills_sql =
-              "SELECT exch_ns AS ns, exec_id AS id FROM fills WHERE session_id = ?1"
-              " AND venue_id = ?3 AND exch_ns >= ?2 * 1000000 AND exec_id <> ''";
-          const std::string funding_sql =
-              " UNION ALL SELECT exch_ns, '" + std::string(kFundingIdPrefix) +
-              "' || funding_id FROM funding WHERE session_id = ?1 AND venue_id = ?3"
-              " AND exch_ns >= ?2 * 1000000 AND funding_id <> ''";
-          std::string sql = "SELECT ns / 1000000, id FROM (";
-          sql += fills_sql;
-          if (funding) sql += funding_sql;
-          sql += ") ORDER BY ns DESC";
-          sql += limit;
-          std::vector<Stamped> rows = newest(sql, session, want, static_cast<int>(l.venue));
-          v.since_ms = fit(rows, want, v.known_exec_ids);
-          v.shrunk = v.since_ms != want;
-          rec.venue_resume.push_back(std::move(v));
+        for (const Last& l : found) {
+          const std::string key = venue_key(name_of(l.venue), l.venue);
+          std::vector<Last>& of = lasts[key];
+          if (of.empty()) order.push_back(key);
+          of.push_back(l);
         }
       }
+      // Trade ids increase per symbol where they are numbers at all (Binance), so the highest one
+      // any session stored is the last one booked.
       struct Mark {
         std::int64_t venue = 0;
         std::string symbol;
@@ -471,9 +604,16 @@ class SqliteReader final : public Reader {
                 return Mark{sqlite3_column_int64(s, 0), text(s, 1), sqlite3_column_int64(s, 2)};
               });
       for (Mark& m : marks) {
-        if (!marked.insert({venue_key(name_of(m.venue), m.venue), m.symbol}).second) continue;
-        rec.last_trade_ids.push_back(Recovery::TradeIdMark{
-            static_cast<std::uint8_t>(m.venue), name_of(m.venue), std::move(m.symbol), m.id});
+        std::string name = name_of(m.venue);
+        const auto [it, fresh] =
+            marked.try_emplace({venue_key(name, m.venue), m.symbol}, rec.last_trade_ids.size());
+        if (fresh) {
+          rec.last_trade_ids.push_back(Recovery::TradeIdMark{
+              static_cast<std::uint8_t>(m.venue), std::move(name), std::move(m.symbol), m.id});
+        } else {
+          Recovery::TradeIdMark& have = rec.last_trade_ids[it->second];
+          have.last_id = std::max(have.last_id, m.id);
+        }
       }
 
       if (rec.last_fill_ns != 0) continue;
@@ -483,19 +623,75 @@ class SqliteReader final : public Reader {
               session,
               [](sqlite3_stmt* s) { return sqlite3_column_int64(s, 0); });
       rec.last_fill_ns = last.empty() ? 0 : last.front();
-      if (rec.last_fill_ns > 0) {
-        std::vector<Stamped> rows = newest(
+      if (rec.last_fill_ns > 0) fallback_session = k;
+    }
+
+    for (const std::string& key : order) {
+      const std::vector<Last>& of = lasts[key];
+      Recovery::VenueResume v;
+      v.venue_id = static_cast<std::uint8_t>(of.front().venue);
+      if (key.front() != '#') v.venue = key;
+      // The store's record of the venue ends at the last fill of the newest session that stored
+      // one - when that session got past its own replay. One that may have died before (it placed
+      // no order there, which a session does only once the venue has reconciled, and recorded no
+      // shutdown) can hold a fill newer than one its replay had not reached: the start goes back
+      // to the earliest of the last fills, up to the first session that did get past it.
+      v.last_fill_ms = of.front().ms;
+      for (std::size_t i = 0; i < of.size() && i < Recovery::kMaxSessionEpochs; ++i) {
+        v.last_fill_ms = std::min(v.last_fill_ms, of[i].ms);
+        if (chain[of[i].session].clean || placed_order(chain[of[i].session].id, of[i].venue)) break;
+      }
+      const std::int64_t want = v.last_fill_ms - Recovery::kResumeOverlapMs;
+      std::vector<Stamped> rows;
+      if (!v.venue.empty()) {
+        rows = stored_ids(engine, started_ns, v.venue, want);
+      } else {
+        // Sessions that recorded no venue names: the venue is its id in each of them.
+        std::string sql =
+            "SELECT ns / 1000000, id FROM (SELECT exch_ns AS ns, exec_id AS id FROM fills WHERE"
+            " session_id = ?1 AND venue_id = ?3 AND exch_ns >= ?2 * 1000000 AND exec_id <> ''";
+        if (version_ >= 4) {
+          sql += " UNION ALL SELECT exch_ns, '" + std::string(kFundingIdPrefix) +
+                 "' || funding_id FROM funding WHERE session_id = ?1 AND venue_id = ?3"
+                 " AND exch_ns >= ?2 * 1000000 AND funding_id <> ''";
+        }
+        sql += ") ORDER BY ns DESC" + limit;
+        for (const Last& l : of) {
+          std::vector<Stamped> part =
+              newest(sql, chain[l.session].id, want, static_cast<int>(l.venue));
+          rows.insert(rows.end(),
+                      std::make_move_iterator(part.begin()),
+                      std::make_move_iterator(part.end()));
+        }
+        merge(rows);
+      }
+      v.since_ms = fit(rows, want, v.known_exec_ids);
+      v.shrunk = v.since_ms != want;
+      rec.venue_resume.push_back(std::move(v));
+    }
+
+    if (fallback_session < chain.size()) {
+      // The engine clock's ids, from every session that can hold a fill that late: one that had
+      // ended (the next one had started) before the ids begin holds none.
+      const std::int64_t from = rec.last_fill_ns - Recovery::kFallbackIdsNs;
+      std::vector<Stamped> rows;
+      for (std::size_t k = fallback_session; k < chain.size(); ++k) {
+        if (k > fallback_session && chain[k - 1].started_ns < from - kClockSlackNs) break;
+        std::vector<Stamped> part = newest(
             "SELECT ts_ns, exec_id FROM fills WHERE session_id = ?1 AND ts_ns >= ?2"
             " AND exec_id <> '' ORDER BY ts_ns DESC" +
                 limit,
-            session,
-            rec.last_fill_ns - Recovery::kFallbackIdsNs,
+            chain[k].id,
+            from,
             -1);
-        // The ids reach further back than the start; only a cut inside the start's window moves
-        // it.
-        const std::int64_t want = rec.last_fill_ns - Recovery::kFallbackOverlapNs;
-        rec.fallback_since_ms = std::max(want, fit(rows, want, rec.fallback_exec_ids)) / 1'000'000;
+        rows.insert(
+            rows.end(), std::make_move_iterator(part.begin()), std::make_move_iterator(part.end()));
       }
+      merge(rows);
+      // The ids reach further back than the start; only a cut inside the start's window moves
+      // it.
+      const std::int64_t want = rec.last_fill_ns - Recovery::kFallbackOverlapNs;
+      rec.fallback_since_ms = std::max(want, fit(rows, want, rec.fallback_exec_ids)) / 1'000'000;
     }
     // A venue with no stored fill in any of these sessions: whatever it executed since the newest
     // session that shut down cleanly (its replay at connect saw everything before) is unbooked;

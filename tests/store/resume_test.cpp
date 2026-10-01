@@ -98,6 +98,17 @@ struct Writer {
     r.position_qty = Qty::from_raw(position_raw);
     backend->fill(r);
   }
+  // An order of instrument `inst`: the session got past its start-up replay on that venue.
+  void order(std::uint32_t inst) {
+    ++seq;
+    OrderRecord r = fastmm::test::store_order(
+        session, seq, kDay1Ns, static_cast<std::uint32_t>(seq), OrderState::Live);
+    r.hdr.instrument = InstrumentId{inst};
+    r.hdr.venue = VenueId{static_cast<std::uint8_t>(inst)};
+    r.order.instrument = InstrumentId{inst};
+    r.order.venue = VenueId{static_cast<std::uint8_t>(inst)};
+    backend->order(r);
+  }
   // The session records its shutdown (without it, it crashed).
   void close_cleanly() {
     backend->commit();
@@ -397,6 +408,242 @@ TEST_CASE("store.resume: what the newest session did not record comes from the o
   CHECK(r.last_fill_ns == kT0 * kMs - kEngineBehindNs);
   // Neither shut down cleanly: a venue with no stored fill replays from the oldest start.
   CHECK(r.unbooked_since_ms == (start5 - Recovery::kFallbackOverlapNs) / kMs);
+}
+
+// The crash sequence of a live test: a session trades and is killed, the next one's replay books
+// the one fill it missed and is killed seconds later, and so on. Each restart's window reaches the
+// executions of the sessions before the newest, so every one of them has to be known.
+TEST_CASE("store.resume: the ids of every earlier session inside the window are known") {
+  const std::string path = fresh("resume_all_sessions.db");
+  const std::int64_t minute = 60'000 * kMs;
+  {
+    Writer w(path, 5, kDay1Ns);
+    w.order(1);
+    w.fill(1, kT1 - 30'000, "2966124001");  // long before: outside every window
+    w.fill(1, kT1, "2966124872");
+    w.fill(1, kT1, "2966124873");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + minute);
+    w.fill(1, kT1 + 60, "2966124877");  // what session 5 missed, replayed, then killed
+  }
+  {
+    const Recovery r = recover(path);
+    const Recovery::VenueResume* y = venue(r, "bybit");
+    REQUIRE(y != nullptr);
+    // Session 6 placed no order: it may have died inside its replay, so the start is session 5's.
+    CHECK(y->last_fill_ms == kT1);
+    CHECK(y->since_ms == kT1 - Recovery::kResumeOverlapMs);
+    CHECK(sorted(y->known_exec_ids) ==
+          std::vector<std::string>{"2966124872", "2966124873", "2966124877"});
+    CHECK(r.duplicate_count == 0);
+  }
+  // A third session that found nothing new and was killed, then a fourth: the same answer.
+  {
+    Writer w(path, 7, kDay1Ns + 2 * minute);
+    w.position(1, 100'000);
+  }
+  {
+    const Recovery r = recover(path);
+    CHECK(r.session_id == 7);
+    const Recovery::VenueResume* y = venue(r, "bybit");
+    REQUIRE(y != nullptr);
+    CHECK(sorted(y->known_exec_ids) ==
+          std::vector<std::string>{"2966124872", "2966124873", "2966124877"});
+  }
+  // A session that got past its replay (it placed an order) and stored a later fill: the start
+  // moves to that fill, and the ids inside its overlap are still those of every session.
+  {
+    Writer w(path, 8, kDay1Ns + 3 * minute);
+    w.order(1);
+    w.fill(1, kT1 + 500, "2966124900");
+  }
+  const Recovery r = recover(path);
+  const Recovery::VenueResume* y = venue(r, "bybit");
+  REQUIRE(y != nullptr);
+  CHECK(y->last_fill_ms == kT1 + 500);
+  CHECK(y->since_ms == kT1 + 500 - Recovery::kResumeOverlapMs);
+  CHECK(sorted(y->known_exec_ids) ==
+        std::vector<std::string>{"2966124872", "2966124873", "2966124877", "2966124900"});
+}
+
+// A session killed inside its start-up replay can hold a fill newer than one the replay had not
+// reached (an order left resting filled meanwhile). Its last fill is not where the record ends.
+TEST_CASE("store.resume: a session that died inside its replay does not move the start") {
+  const std::string path = fresh("resume_mid_replay.db");
+  const std::int64_t minute = 60'000 * kMs;
+  {
+    Writer w(path, 5, kDay1Ns);
+    w.order(0);
+    w.fill(0, kT0 - 200, "E1");
+    w.fill(0, kT0, "E2");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + minute);
+    w.fill(0, kT0 + 9'000, "E9");  // live, before the replay had read kT0 .. kT0 + 9 s
+  }
+  {
+    Writer w(path, 7, kDay1Ns + 2 * minute);
+    w.fill(0, kT0 + 4'000, "E5");  // replayed; killed before the rest
+  }
+  const Recovery r = recover(path);
+  const Recovery::VenueResume* b = venue(r, "binance");
+  REQUIRE(b != nullptr);
+  CHECK(b->last_fill_ms == kT0);
+  CHECK(b->since_ms == kT0 - Recovery::kResumeOverlapMs);
+  CHECK_FALSE(b->shrunk);
+  CHECK(sorted(b->known_exec_ids) == std::vector<std::string>{"E1", "E2", "E5", "E9"});
+
+  SUBCASE("a clean shutdown ends the walk as an order does") {
+    {
+      Writer w(path, 8, kDay1Ns + 3 * minute);
+      w.fill(0, kT0 + 20'000, "E20");
+      w.close_cleanly();
+    }
+    {
+      Writer w(path, 9, kDay1Ns + 4 * minute);
+      w.fill(0, kT0 + 20'400, "E21");
+    }
+    const Recovery r2 = recover(path);
+    const Recovery::VenueResume* b2 = venue(r2, "binance");
+    REQUIRE(b2 != nullptr);
+    CHECK(b2->last_fill_ms == kT0 + 20'000);
+    CHECK(sorted(b2->known_exec_ids) == std::vector<std::string>{"E20", "E21"});
+  }
+}
+
+// A venue is its name: its id is its place in one session's configuration.
+TEST_CASE("store.resume: the ids of a venue that had another id in an earlier session are known") {
+  const std::string path = fresh("resume_venue_moved.db");
+  {
+    Writer w(path, 5);  // binance = 0, bybit = 1
+    w.order(1);
+    w.fill(1, kT1, "a-1");
+    w.fill(0, kT1, "771");
+  }
+  {
+    // bybit = 0 now, and a venue the first session did not have.
+    InstrumentTable t;
+    Instrument i{};
+    i.symbol = "ETHUSDT";
+    i.base = "ETH";
+    i.quote = "USDT";
+    i.asset_class = AssetClass::Spot;
+    i.tick = Price::from_decimal("0.01").value();
+    i.lot = Qty::from_decimal("0.001").value();
+    i.flags = Instrument::kEnabled;
+    i.venue = VenueId{0};
+    REQUIRE(t.add(i));
+    i.symbol = "BTC-USDT";
+    i.base = "BTC";
+    i.venue = VenueId{1};
+    REQUIRE(t.add(i));
+    Writer w(path, 6, kDay1Ns + 60'000 * kMs, t, {"bybit", "okx"});
+    w.fill(0, kT1 + 100, "a-2");
+  }
+  const Recovery r = recover(path);
+  const Recovery::VenueResume* y = venue(r, "bybit");
+  REQUIRE(y != nullptr);
+  CHECK(y->venue_id == 0);  // in the newest session
+  CHECK(sorted(y->known_exec_ids) == std::vector<std::string>{"a-1", "a-2"});
+  // binance's fill of the same millisecond is not bybit's.
+  const Recovery::VenueResume* b = venue(r, "binance");
+  REQUIRE(b != nullptr);
+  CHECK(b->known_exec_ids == std::vector<std::string>{"771"});
+}
+
+// Binance resumes at the trade id after the highest one stored, whichever session stored it.
+TEST_CASE("store.resume: the last trade id is the highest of every session") {
+  const std::string path = fresh("resume_marks.db");
+  {
+    Writer w(path, 5);
+    w.fill(0, kT0, "210");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + 60'000 * kMs);
+    w.fill(0, kT0 - 300, "207");  // an older trade, found by this session's replay
+  }
+  const Recovery r = recover(path);
+  REQUIRE(r.last_trade_ids.size() == 1);
+  CHECK(r.last_trade_ids[0].last_id == 210);
+}
+
+// A store an earlier build wrote can hold an execution in two sessions. It is reported; the rows
+// stay as they are.
+TEST_CASE("store.resume: an execution stored by two sessions is reported as a duplicate") {
+  const std::string path = fresh("resume_duplicates.db");
+  const std::int64_t minute = 60'000 * kMs;
+  {
+    Writer w(path, 5, kDay1Ns);
+    w.fill(1, kT1, "2966124872");
+    w.fill(1, kT1, "2966124873");
+  }
+  {
+    Writer w(path, 6, kDay1Ns + minute);
+    w.fill(0, kT0, "2966124872");  // another venue's id that happens to be the same: not a copy
+    w.fill(1, kT1 + 60, "2966124877");
+  }
+  {
+    Writer w(path, 7, kDay1Ns + 2 * minute);
+    w.fill(1, kT1, "2966124872");
+    w.fill(1, kT1, "2966124873");
+  }
+  {
+    Writer w(path, 8, kDay1Ns + 3 * minute);
+    w.fill(1, kT1 + 60, "2966124877");
+    w.fill(1, kT1, "2966124872");
+  }
+  const std::int64_t rows = scalar(path, "SELECT COUNT(*) FROM fills");
+  const Recovery r = recover(path);
+  CHECK(r.duplicate_count == 3);
+  REQUIRE(r.duplicates.size() == 3);
+  const auto of = [&](std::string_view id) -> const Recovery::Duplicate* {
+    for (const Recovery::Duplicate& d : r.duplicates) {
+      if (d.id == id) return &d;
+    }
+    return nullptr;
+  };
+  REQUIRE(of("2966124872") != nullptr);
+  CHECK(of("2966124872")->venue == "bybit");
+  CHECK(of("2966124872")->symbol == "ETHUSDT");
+  CHECK(of("2966124872")->copies == 3);
+  CHECK(of("2966124872")->sessions == "5 7 8");
+  CHECK(of("2966124872")->side == "Buy");
+  CHECK_FALSE(of("2966124872")->funding);
+  REQUIRE(of("2966124873") != nullptr);
+  CHECK(of("2966124873")->copies == 2);
+  REQUIRE(of("2966124877") != nullptr);
+  CHECK(of("2966124877")->sessions == "6 8");
+  // Reading changed nothing.
+  CHECK(scalar(path, "SELECT COUNT(*) FROM fills") == rows);
+  // And each id is listed once for the next replay.
+  const Recovery::VenueResume* y = venue(r, "bybit");
+  REQUIRE(y != nullptr);
+  CHECK(sorted(y->known_exec_ids) ==
+        std::vector<std::string>{"2966124872", "2966124873", "2966124877"});
+
+  // The query fastmm-pnl prints, filtered by instrument.
+  GenericSection section;
+  section.values["path"] = path;
+  BackendOptions o;
+  o.config = &section;
+  o.read_only = true;
+  auto reader = make_sqlite_reader();
+  REQUIRE(reader->open(o));
+  QueryFilter f;
+  f.engine = "test";
+  auto all = reader->duplicates(f);
+  REQUIRE(all);
+  CHECK(all->rows.size() == 3);
+  f.instrument = "BTCUSDT";
+  auto none = reader->duplicates(f);
+  REQUIRE(none);
+  CHECK(none->empty());
+  f.instrument.clear();
+  f.engine = "another";
+  auto other = reader->duplicates(f);
+  REQUIRE(other);
+  CHECK(other->empty());
 }
 
 TEST_CASE("store.resume: a venue with no stored fill replays from the newest clean shutdown") {

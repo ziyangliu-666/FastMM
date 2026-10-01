@@ -435,7 +435,139 @@ TEST_CASE("xmm restart: the restarted process keeps [risk.underlying] max_net wh
   CHECK(s.hedge == hv.server.stats().position);
 }
 
+namespace {
+
+// How many fills the engine's store holds, every session; 0 while it cannot be read (a predicate
+// of wait_until calls this while the session writes).
+std::size_t fills_in_store(const SessionFiles& f) {
+  store::register_builtin_backends();
+  auto reader = store::StoreRegistry::instance().make_reader("sqlite");
+  if (reader == nullptr) return 0;
+  store::BackendOptions opts;
+  opts.engine_name = engine_name(f);
+  opts.default_dir = f.journal_dir;
+  opts.read_only = true;
+  if (!reader->open(opts).has_value()) return 0;
+  store::QueryFilter qf;
+  qf.engine = engine_name(f);
+  auto rows = reader->fills(qf);
+  return rows.has_value() ? rows->rows.size() : 0;
+}
+
+// A log for an INFO: read without an assertion, which doctest cannot run while it reports one.
+std::string text_of(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  return ss.str();
+}
+
+// 5. Three kills in a row, each within seconds of the start, the way a supervisor restarts a
+// process that keeps dying. The first session stores a hedged round and, within the same second,
+// misses a second hedge (the hedge venue carries it out and holds its reply). The second session's
+// replay books the missed hedge and nothing else, and is killed; so are the third and the fourth
+// start. Every restart's replay window (one second before the venue's last stored execution)
+// reaches executions that a session before the newest one stored: none may be booked again. An
+// execution booked twice moves the engine's hedge position off the venue's, and xmm hedges the
+// phantom difference - one order too many at the hedge venue.
+//
+// `spawn` starts the strategy process (fastmm-live with its own venues, or attached to a gateway,
+// where the replay is the gateway's and it is filtered by the strategy's store).
+template <class Spawn>
+void three_kills(ServerFixture& qv, ServerFixture& hv, const SessionFiles& f, Spawn&& spawn) {
+  Child first(spawn());
+  const std::uint16_t e1 = wait_quoting(qv, hv, f);
+  REQUIRE(fill_resting(qv, e1).is_positive());
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        return hv.server.stats().orders_accepted == 1 &&
+                               net_position(qv, hv).is_zero() && fills_in_store(f) >= 2;
+                      },
+                      10000),
+                  "the first round was not hedged and stored: " << log_of(f));
+  hv.server.set_ack_delay_ms(600'000);  // the next hedge executes; the process hears nothing
+  REQUIRE(fill_resting(qv, e1).is_positive());
+  REQUIRE_MESSAGE(wait_until([&] { return hv.server.stats().orders_accepted == 2; }, 10000),
+                  "no second hedge: " << log_of(f));
+  crash(first);
+  hv.server.set_ack_delay_ms(0);
+  REQUIRE(net_position(qv, hv).is_zero());
+  const std::uint64_t venue_fills = qv.server.stats().fills + hv.server.stats().fills;
+
+  // The second start: its replay books what the first session missed. Killed once that is stored.
+  Child second(spawn());
+  const std::uint16_t e2 = wait_quoting(qv, hv, f, e1);
+  REQUIRE_MESSAGE(wait_until([&] { return fills_in_store(f) >= venue_fills; }, 10000),
+                  "the missed hedge was not booked: " << log_of(f));
+  crash(second);
+
+  // The third: nothing happened at the venues since, so nothing is left to book.
+  Child third(spawn());
+  const std::uint16_t e3 = wait_quoting(qv, hv, f, e2);
+  crash(third);
+
+  Child fourth(spawn());
+  const std::uint16_t e4 = wait_quoting(qv, hv, f, e3);
+  observe_quiet_period();
+  INFO("sessions: " << text_of(f.config + ".log"));
+  CHECK(hv.server.stats().orders_accepted == 2);  // no hedge of a position that is not there
+  CHECK(net_position(qv, hv).is_zero());
+  CHECK(fills_in_store(f) == venue_fills);
+
+  one_more_round(qv, hv, e4);
+  stop(fourth);
+  // Every execution of either venue is in the store exactly once, and the store's last positions
+  // are the venues'.
+  CHECK(booked_twice(f, engine_name(f)).empty());
+  CHECK(fills_in_store(f) == qv.server.stats().fills + hv.server.stats().fills);
+  const StoredPositions s = stored_positions(f);
+  CHECK(s.quote == qv.server.stats().position);
+  CHECK(s.hedge == hv.server.stats().position);
+  CHECK(qv.server.stats().duplicate_client_order_ids == 0);
+  CHECK(hv.server.stats().duplicate_client_order_ids == 0);
+}
+
+}  // namespace
+
+TEST_CASE("xmm restart: three kills in a row book every execution once") {
+  ServerFixture qv(quiet(7));
+  ServerFixture hv(quiet(11));
+  const SessionFiles f = session_files("xmm-three-kills");
+  write_xmm_config(f, qv, hv);
+  three_kills(qv, hv, f, [&] { return spawn_live(f, 300); });
+}
+
 #ifdef FASTMM_GATEWAY_EXE
+
+// The same behind fastmm-gateway, which outlives every kill: the replays are the gateway's, started
+// where the attaching strategy's store says and filtered by the ids that store holds.
+TEST_CASE("xmm restart: behind fastmm-gateway, three kills in a row book every execution once") {
+  ServerFixture qv(quiet(7));
+  ServerFixture hv(quiet(11));
+  const SessionFiles fg = session_files("xmm-gw3-gateway");
+  const SessionFiles f = session_files("xmm-gw3-strategy");
+  write_xmm_config(fg, qv, hv);
+  write_xmm_config(f, qv, hv);
+  GatewayProcess g;
+  g.socket = "/tmp/fastmm-xmm-gw3-" + std::to_string(::getpid()) + ".sock";
+  g.log = fg.config + ".gw.log";
+  remove_all_of({g.socket, g.log});
+  g.pid = spawn_process(FASTMM_GATEWAY_EXE,
+                        {"--config", fg.config, "--socket", g.socket, "--log", g.log});
+  Child gw(g.pid);  // killed at the end: the hedge reply the venue still holds never arrives
+  REQUIRE_MESSAGE(wait_until(
+                      [&] {
+                        const auto q = qv.server.stats();
+                        const auto h = hv.server.stats();
+                        return std::filesystem::exists(g.socket) && q.user_subscriptions >= 1 &&
+                               h.user_subscriptions >= 1 && q.md_sessions >= 1 &&
+                               h.md_sessions >= 1;
+                      },
+                      30000),
+                  "the gateway did not come up: " << fastmm::test::read_file(g.log));
+  INFO("gateway: " << text_of(g.log));
+  three_kills(qv, hv, f, [&] { return spawn_strategy(f, g, 300); });
+}
 
 // 3. The same crash behind fastmm-gateway: the strategy process is killed while its hedge is out
 // and unanswered; the gateway (and its venue connections) live on. The detach cancels the dead

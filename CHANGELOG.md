@@ -239,6 +239,19 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- A restart booked executions twice after consecutive crashes. The start-up execution replay
+  skipped only the trade ids stored by the newest session that held a fill of the venue, while its
+  window (one second before that session's last fill) still reached executions stored by the
+  sessions before it: after a `kill -9` seconds after a restart, the next start booked the first
+  session's fills again, and the one after that the second's (wrong stored positions and PnL, and
+  a hedge of a position that was not there until the venue reported its own). The ids are now
+  those of every session of the engine (venue by name), for the venue-time resume, the
+  engine-clock fallback and behind `fastmm-gateway`; Binance's per-symbol trade-id start is the
+  highest id of every session. A session that may have died inside its own replay (no order
+  placed on the venue, no shutdown recorded) no longer moves the replay's start past executions
+  that replay had not reached. A store that already holds an execution in two sessions is
+  reported, not rewritten: an error per execution in the start-up summary, a warning from every
+  `fastmm-pnl` command, and `fastmm-pnl duplicates` (exit code 4) lists them.
 - OKX: a bill whose `balChg` has more than 8 decimals (a funding payment, `-0.0008785476995335`) is
   rounded and booked; it failed the whole bills request before, so the funding was never booked and
   the request was repeated.

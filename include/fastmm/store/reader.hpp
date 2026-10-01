@@ -90,6 +90,17 @@ struct Recovery {
   // session ran is booked by the next one. Both ends are the venue's clock, so the engine's clock
   // (which follows the host's and may be seconds off, a WSL2 clock step) does not enter.
   //
+  // The ids are those of every session of the engine, not of the session the start comes from: a
+  // session killed seconds after it started stores only what its own replay booked, and the next
+  // replay's window still reaches the executions the sessions before it stored. An execution the
+  // store holds, in whichever session, is never handed to a replay as new.
+  //
+  // The start goes back further when the newest sessions may have died inside their own replay
+  // (no order placed on the venue - a session sends none before the venue has reconciled - and no
+  // shutdown recorded): such a session can hold a fill newer than one its replay had not reached.
+  // It is then the earliest of the last fills of those sessions and of the first one before them
+  // that got past its replay.
+  //
   // The overlap covers one thing: the order in which a venue publishes executions against their
   // trade times. Executions of different symbols (and a Bybit batch, a Deribit per-instrument
   // channel) can reach the store out of trade-time order; a restart must not skip one that traded
@@ -102,17 +113,20 @@ struct Recovery {
   // VenueResume::shrunk says so: dropping an id instead would book that execution twice.
   static constexpr std::size_t kMaxKnownExecIds = 128;
   struct VenueResume {
-    std::uint8_t venue_id = 0;      // the session's VenueId
-    std::string venue;              // its [venues.<name>]; empty when the store predates schema 3
-    std::int64_t last_fill_ms = 0;  // venue time of the last stored fill or funding payment
-    std::int64_t since_ms = 0;      // the replay's start, venue time, inclusive
-    std::vector<std::string> known_exec_ids;  // stored fills and funding at or after since_ms
+    std::uint8_t venue_id = 0;  // the session's VenueId
+    std::string venue;          // its [venues.<name>]; empty when the store predates schema 3
+    // Venue time of the stored fill or funding payment the start is taken from (see above).
+    std::int64_t last_fill_ms = 0;
+    std::int64_t since_ms = 0;  // the replay's start, venue time, inclusive
+    // Stored fills and funding at or after since_ms, of every session of the engine.
+    std::vector<std::string> known_exec_ids;
     bool shrunk = false;  // since_ms moved later than last_fill_ms - kResumeOverlapMs
   };
   // One entry per venue that recorded a fill with a venue time.
   std::vector<VenueResume> venue_resume;
-  // The highest numeric trade id the store holds per (venue, symbol). Binance trade ids increase
-  // per symbol, so its replay can resume at the next one exactly (Venue::resume_trade_ids).
+  // The highest numeric trade id the store holds per (venue, symbol), over every session of the
+  // engine. Binance trade ids increase per symbol, so its replay can resume at the next one
+  // exactly (Venue::resume_trade_ids).
   struct TradeIdMark {
     std::uint8_t venue_id = 0;
     std::string venue;  // empty when the store predates schema 3
@@ -130,7 +144,7 @@ struct Recovery {
   static constexpr std::int64_t kFallbackIdsNs = 2 * kFallbackOverlapNs;
   std::int64_t last_fill_ns = 0;       // engine time of the newest session's last fill (0: none)
   std::int64_t fallback_since_ms = 0;  // 0: no replay
-  std::vector<std::string> fallback_exec_ids;
+  std::vector<std::string> fallback_exec_ids;  // of every session that ran inside kFallbackIdsNs
 
   // Where the replay of a venue with no stored fill starts (no venue_resume entry, in a store
   // whose fills carry the venue's time or that holds none): the start of the newest session that
@@ -138,6 +152,24 @@ struct Recovery {
   // the venue executed since is unbooked: a fill of a session that crashed before storing it, or
   // one made while nothing ran.
   std::int64_t unbooked_since_ms = 0;
+
+  // Executions and funding payments the engine's store holds more than once (Reader::duplicates):
+  // a restart booked them a second time, so the positions and the PnL of the sessions holding the
+  // copies count them twice. Reported, never repaired: the rows stay as they were written. At most
+  // kMaxDuplicates are listed; duplicate_count is how many there are.
+  struct Duplicate {
+    std::string venue;  // its [venues.<name>]; "#<id>" when the store predates schema 3
+    std::string symbol;
+    std::string id;        // the venue's trade id or funding id
+    std::string qty;       // decimal: the execution's quantity, the funding payment's amount
+    std::string side;      // empty for a funding payment
+    std::string sessions;  // the sessions holding it, oldest first, space separated
+    std::uint32_t copies = 0;
+    bool funding = false;
+  };
+  static constexpr std::size_t kMaxDuplicates = 32;
+  std::vector<Duplicate> duplicates;
+  std::uint64_t duplicate_count = 0;
 };
 
 class Reader {
@@ -158,6 +190,12 @@ class Reader {
   [[nodiscard]] virtual Result<Rows, std::string> pnl(const QueryFilter& f) = 0;
   // One row per funding payment. The default has none (a backend without the table).
   [[nodiscard]] virtual Result<Rows, std::string> funding(const QueryFilter& /*f*/) {
+    return Rows{};
+  }
+  // One row per venue execution or funding payment stored more than once (by venue, symbol and
+  // the venue's id of it, within an engine): what a restart booked a second time. Empty in a
+  // sound store; the default has none. Filtered by engine and instrument.
+  [[nodiscard]] virtual Result<Rows, std::string> duplicates(const QueryFilter& /*f*/) {
     return Rows{};
   }
   // The last position snapshot per session and instrument.

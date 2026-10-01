@@ -283,6 +283,27 @@ std::optional<store::Recovery> log_previous_session(const std::string& backend_n
         "the previous session still had order {} open at its last record; the venue may still "
         "hold it",
         std::string_view(line));
+  // Executions an earlier restart booked twice. The rows stay as they are; the position restored
+  // below may count them, until the venue's own position report replaces it.
+  for (const store::Recovery::Duplicate& d : p.duplicates)
+    FASTMM_LOG_ERROR(
+        "the store holds {} {} of {} {} ({} {}) {} times, in sessions {}: it was booked more than "
+        "once",
+        d.funding ? "funding payment" : "execution",
+        d.id,
+        d.venue,
+        d.symbol,
+        d.side,
+        d.qty,
+        d.copies,
+        d.sessions);
+  if (p.duplicate_count != 0)
+    FASTMM_LOG_ERROR(
+        "the store holds {} execution(s) more than once: the stored positions and PnL of those "
+        "sessions count them twice, and a position restored from them is wrong until the venue "
+        "reports its own (fastmm-pnl duplicates --engine {})",
+        p.duplicate_count,
+        cfg.engine.name);
   FASTMM_LOG_INFO("previous session: fastmm-pnl recover --engine {}", cfg.engine.name);
   return *rec;
 }
@@ -319,7 +340,7 @@ ResumePlan resume_plan(const store::Recovery& prev,
     p.known = r->known_exec_ids;
     if (r->shrunk)
       FASTMM_LOG_WARN(
-          "{}: more than {} stored executions in the {} ms before the previous session's last "
+          "{}: more than {} stored executions in the {} ms before the previous sessions' last "
           "fill; its execution replay starts {} ms after that fill rather than {} ms before",
           venue,
           store::Recovery::kMaxKnownExecIds,

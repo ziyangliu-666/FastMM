@@ -80,7 +80,17 @@ session 1709510400123456789 (basic_mm)
   open      fm000300000a1c BTCUSDT Sell 0.002 (filled 0) @ 61260.5 Live
 ```
 
+A `twice` line names an execution the store holds in more than one session ([below](#executions-stored-twice)).
+
 `fastmm-live` logs the same summary when it starts. The open orders are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since, and nothing that happened while the process was down is in here. The next `fastmm-live` start restores the position from the store, books what the venue executed in between and cancels the orders left open ([Recovery at start-up](../../reference/storage.md#recovery-at-start-up)).
+
+## Executions stored twice
+
+```bash
+build/release/bin/fastmm-pnl duplicates --engine mm1
+```
+
+One row per venue execution or funding payment that more than one session stored (same venue, symbol and venue id): a restart booked it again. The columns are the kind (`fill` or `funding`), engine, venue, symbol, id, the number of copies, side, quantity (the amount of a funding payment), the time of the first copy and the sessions holding it, oldest first. Exit code 0 with no row, 4 with some. Every other command prints a warning on stderr when the rows it read from hold one: the positions, fees and PnL of those sessions count it twice. Nothing is rewritten; correct the figures from the listed rows.
 
 ## From Python
 
