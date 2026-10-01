@@ -90,7 +90,7 @@ A `twice` line names an execution the store holds in more than one session ([bel
 build/release/bin/fastmm-pnl duplicates --engine mm1
 ```
 
-One row per venue execution or funding payment that more than one session stored (same venue, symbol and venue id): a restart booked it again. The columns are the kind (`fill` or `funding`), engine, venue, symbol, id, the number of copies, side, quantity (the amount of a funding payment), the time of the first copy and the sessions holding it, oldest first. Exit code 0 with no row, 4 with some. Every other command prints a warning on stderr when the rows it read from hold one: the positions, fees and PnL of those sessions count it twice. Nothing is rewritten; correct the figures from the listed rows.
+One row per venue execution or funding payment that more than one session stored (same venue, symbol and venue id): a restart booked it again. The columns are the kind (`fill` or `funding`), engine, venue, symbol, id, the number of copies, side, quantity (the amount of a funding payment), the time of the first copy and the sessions holding it, oldest first. Exit code 0 with no row, 4 with some. Every other command prints a warning on stderr when the rows it read from hold one: the positions, fees and PnL of those sessions count it twice. Nothing is rewritten; correct the figures from the listed rows. `store.duplicates()` returns the same rows in Python.
 
 ## From Python
 

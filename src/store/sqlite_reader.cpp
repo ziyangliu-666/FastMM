@@ -153,12 +153,19 @@ class SqliteReader final : public Reader {
   // in the session that wrote the row (its id is its place in that session's configuration), so the
   // same execution stored by two sessions groups together whatever their venue order. Within a
   // session the unique indexes keep it once; every copy is another session's.
+  //
+  //
+  // Two steps. The ids that occur more than once on a symbol and side come from the id indexes of
+  // schema 7 alone, in index order (no row is read and nothing is sorted). Their rows - none, in
+  // a sound store - are then looked up by id and grouped by engine and venue name. A store not yet
+  // migrated to schema 7 has no such index: every row is grouped, as before.
   [[nodiscard]] Result<Rows, std::string> duplicates(const QueryFilter& f) override {
     const auto part = [&](std::string_view kind,
                           std::string_view table,
                           std::string_view id,
                           std::string_view side,
                           std::string_view qty) {
+      const bool fill = kind == "fill";
       std::string q = "SELECT '";
       q += kind;
       q += "' AS kind, s.engine AS engine, ";
@@ -170,14 +177,42 @@ class SqliteReader final : public Reader {
       q += " AS side, r.";
       q += qty;
       q += " AS qty_raw FROM ";
-      q += table;
-      q += " r JOIN sessions s ON s.session_id = r.session_id";
+      if (version_ >= 7) {
+        // The repeated ids first (CROSS JOIN keeps that order), then their rows by id.
+        q += "(SELECT ";
+        q += id;
+        q += " AS id, symbol";
+        if (fill) q += ", side";
+        q += " FROM ";
+        q += table;
+        q += " WHERE ";
+        q += id;
+        q += " <> '' GROUP BY ";
+        q += id;
+        q += ", symbol";
+        if (fill) q += ", side";
+        q += " HAVING COUNT(*) > 1) c CROSS JOIN ";
+        q += table;
+        q += " r ON r.";
+        q += id;
+        q += " = c.id AND r.symbol = c.symbol";
+        if (fill) q += " AND r.side = c.side";
+        q += " AND r.";
+        q += id;
+        q += " <> ''";
+      } else {
+        q += table;
+        q += " r";
+      }
+      q += " JOIN sessions s ON s.session_id = r.session_id";
       if (version_ >= 3)
         q += " LEFT JOIN session_venues v ON v.session_id = r.session_id AND"
              " v.venue_id = r.venue_id";
-      q += " WHERE r.";
-      q += id;
-      q += " <> ''";
+      if (version_ < 7) {
+        q += " WHERE r.";
+        q += id;
+        q += " <> ''";
+      }
       return q;
     };
     std::string rows = part("fill", "fills", "exec_id", "r.side", "qty_raw");
@@ -191,8 +226,8 @@ class SqliteReader final : public Reader {
         " MIN(qty_raw) AS qty_raw, MIN(ts_ns) AS ts_ns, GROUP_CONCAT(session_id, ' ') AS sessions"
         " FROM (SELECT * FROM (" +
             rows + ") ORDER BY started_ns)" + w.text() +
-            " GROUP BY kind, engine, venue, symbol, side, id HAVING COUNT(*) > 1 ORDER BY "
-            "MIN(ts_ns)" +
+            " GROUP BY kind, engine, venue, symbol, side, id HAVING COUNT(*) > 1"
+            " ORDER BY MIN(ts_ns)" +
             limit(f),
         w);
   }

@@ -729,6 +729,47 @@ TEST_CASE("store.resume: an execution stored by two sessions is reported as a du
   auto other = reader->duplicates(f);
   REQUIRE(other);
   CHECK(other->empty());
+
+  // A store not yet migrated to schema 7 has no id index: the same answer, by grouping every row.
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    REQUIRE(sqlite::exec(db, "DROP INDEX fills_exec_any"));
+    REQUIRE(sqlite::exec(db, "DROP INDEX funding_id_any"));
+    REQUIRE(sqlite::exec(db, "UPDATE schema_version SET version = 6"));
+    sqlite3_close_v2(db);
+  }
+  auto old_reader = make_sqlite_reader();
+  REQUIRE(old_reader->open(o));
+  f.engine = "test";
+  auto before = old_reader->duplicates(f);
+  REQUIRE(before);
+  CHECK(before->rows == all->rows);
+}
+
+// The check runs at every start: on a schema 7 store it reads the id indexes and no table row.
+TEST_CASE("store.resume: the duplicate check walks the id indexes") {
+  const std::string path = fresh("resume_duplicates_plan.db");
+  {
+    Writer w(path, 5);
+    w.fill(0, kT0, "1");
+  }
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+  sqlite3_stmt* st = nullptr;
+  REQUIRE(sqlite3_prepare_v2(db,
+                             "EXPLAIN QUERY PLAN SELECT exec_id, symbol, side FROM fills WHERE"
+                             " exec_id <> '' GROUP BY exec_id, symbol, side HAVING COUNT(*) > 1",
+                             -1,
+                             &st,
+                             nullptr) == SQLITE_OK);
+  std::string plan;
+  while (sqlite3_step(st) == SQLITE_ROW)
+    plan += reinterpret_cast<const char*>(sqlite3_column_text(st, 3));
+  sqlite3_finalize(st);
+  sqlite3_close_v2(db);
+  CHECK(plan.find("COVERING INDEX fills_exec_any") != std::string::npos);
+  CHECK(plan.find("TEMP B-TREE") == std::string::npos);
 }
 
 // OKX and Binance both number their trades: one session can meet the same id on both.

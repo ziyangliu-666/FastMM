@@ -76,7 +76,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 6 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 7 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -207,7 +207,7 @@ With `[engine] restore_position` the session also carries the last position per 
 
 Until every venue that replays executions has finished its first reconciliation (the replay, then the open-order snapshot), the engine sends no order and quoting stays off: the positions are not complete before that, and an order sized, hedged or risk-checked on them could double a hedge or pass a limit. New orders are refused with `NotReconciled`; the log says `every venue has reconciled its orders and executions since the start` when it ends.
 
-A store that holds a venue execution or funding payment in more than one session (by venue, symbol and the venue's id) was written by a restart that booked it twice. The start-up summary logs each one as an error (the first 32) with their count, and `fastmm-pnl duplicates` lists them; the rows are not changed. The positions and PnL stored by the sessions holding the copies count them twice, and a position restored from such a session is wrong until the venue reports its own.
+A store that holds a venue execution or funding payment in more than one session (by venue, symbol, side and the venue's id) was written by a restart that booked it twice. The check reads two indexes on the ids (`fills_exec_any`, `funding_id_any`, version 7) in id order and touches no table row unless an id repeats (0.14 s for a million fills; a store not yet migrated is grouped whole, 1.7 s). The start-up summary logs each one as an error (the first 32) with their count, and `fastmm-pnl duplicates` lists them; the rows are not changed. The positions and PnL stored by the sessions holding the copies count them twice, and a position restored from such a session is wrong until the venue reports its own.
 
 The open orders the recovery lists are the ones FastMM last saw open; the venue may have cancelled, filled or expired them since. The position is FastMM's view at the last record; the venue's view arrives with the reconciliation.
 

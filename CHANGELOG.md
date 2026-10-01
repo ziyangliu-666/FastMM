@@ -187,6 +187,11 @@ All notable changes are recorded here (Keep a Changelog format).
   `own_in_feed(venue)`.
 
 ### Changed
+- The check for executions stored by more than one session (run at every `fastmm-live` start and
+  by every `fastmm-pnl` command) no longer groups the whole `fills` table: schema version 7 adds
+  indexes on the venue ids (`fills_exec_any`, `funding_id_any`) and the check walks them in id
+  order, reading table rows only for an id that repeats (0.14 s instead of 1.7 s for a million
+  fills). `fastmm.open_store(...).duplicates()` returns the rows of `fastmm-pnl duplicates`.
 - `xmm` sends no hedge to a hedge venue whose kill switch is on, whose feed-lag gate holds it or
   whose book is older than `stale_ms` (before, the hedge went out priced from that book, or was
   refused by risk and counted towards a halt); its quotes come off while the hedge venue's kill

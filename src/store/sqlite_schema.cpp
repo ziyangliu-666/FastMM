@@ -351,12 +351,21 @@ constexpr std::string_view kV6 = R"SQL(
 ALTER TABLE session_venues ADD COLUMN replayed_seq INTEGER;
 )SQL";
 
-constexpr std::array<Migration, 6> kMigrations{Migration{1, kV1},
+// Version 7: the venue's ids in id order, so the check for an execution or a funding payment
+// stored by more than one session (Reader::duplicates, run at every start) walks these two indexes
+// instead of grouping the tables: the ids that occur once are passed over without touching a row.
+constexpr std::string_view kV7 = R"SQL(
+CREATE INDEX fills_exec_any ON fills(exec_id, symbol, side) WHERE exec_id <> '';
+CREATE INDEX funding_id_any ON funding(funding_id, symbol) WHERE funding_id <> '';
+)SQL";
+
+constexpr std::array<Migration, 7> kMigrations{Migration{1, kV1},
                                                Migration{2, kV2},
                                                Migration{3, kV3},
                                                Migration{4, kV4},
                                                Migration{5, kV5},
-                                               Migration{6, kV6}};
+                                               Migration{6, kV6},
+                                               Migration{7, kV7}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

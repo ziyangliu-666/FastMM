@@ -1,3 +1,4 @@
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -164,6 +165,56 @@ def test_funding_frame_and_pnl(store_path):
     # Funding is realized PnL; the day's row says how much of it.
     assert pnl["funding"].iloc[1] == pytest.approx(-0.25)
     assert pnl["realized"].iloc[1] == pytest.approx(0.75)
+
+
+def test_duplicates(store_path, tmp_path):
+    with fastmm.open_store(store_path) as store:
+        assert store.duplicates().empty
+    # A second session that stored the first one's execution again: a restart booked it twice.
+    path = tmp_path / "dup.db"
+    shutil.copy(store_path, path)
+    db = sqlite3.connect(path)
+    day1 = 1_709_510_400_000_000_000
+    db.executescript(
+        f"""
+        INSERT INTO sessions (session_id, engine, strategy, session_epoch, started_ns,
+            started_day, version, build, config_hash, dry_run, pnl_carry_raw)
+          VALUES (2, 'mm1', 'basic_mm', 4, {day1 + 10}, '2024-03-04', '0.1.0', 'b', '0', 0, 0);
+        INSERT INTO fills SELECT 2, seq, ts_ns + 5, day, instrument_id, venue_id, symbol,
+            cl_ord_id, venue_order_id, exec_id, side, liquidity, price_raw, qty_raw,
+            booked_qty_raw, cum_qty_raw, leaves_qty_raw, fee_raw, fee_amount_raw, fee_asset,
+            position_qty_raw, position_avg_px_raw, position_realized_raw, position_fees_raw,
+            synthetic, late, exch_ns FROM fills WHERE exec_id = 'E1';
+        """
+    )
+    db.commit()
+    db.close()
+    with fastmm.open_store(path) as store:
+        df = store.duplicates()
+        assert list(df["id"]) == ["E1"]
+        assert df["kind"][0] == "fill"
+        assert df["symbol"][0] == "BTCUSDT"
+        assert df["copies"][0] == 2
+        assert df["side"][0] == "Buy"
+        assert df["qty"][0] == pytest.approx(1.0)
+        assert df["sessions"][0] == "1 2"
+        assert store.duplicates(engine="other").empty
+        assert store.duplicates(instrument="ETHUSDT").empty
+        assert len(store.duplicates(engine="mm1", instrument="BTCUSDT")) == 1
+        before = store.duplicates()
+    # The same store once a session has migrated it: the check reads the id indexes of version 7.
+    text = SCHEMA.read_text()
+    db = sqlite3.connect(path)
+    for v in (5, 6, 7):
+        db.executescript(
+            _sql_between(text, f'constexpr std::string_view kV{v} = R"SQL(', ')SQL";')
+        )
+    db.execute("UPDATE schema_version SET version = 7")
+    db.commit()
+    db.close()
+    with fastmm.open_store(path) as store:
+        assert store.schema_version == 7
+        assert store.duplicates().equals(before)
 
 
 def test_orders_positions_kills_and_journals(store_path):

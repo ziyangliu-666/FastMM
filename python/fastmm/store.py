@@ -23,7 +23,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 FIXED_SCALE = 1e-8
 """Scale of the raw int64 fixed-point columns (`price_raw`, `qty_raw`, `realized_raw`, ...)."""
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 """Schema version this module reads; a newer store is refused."""
 
 _NS_COLUMNS = frozenset(
@@ -254,6 +254,71 @@ class Store:
             " position_qty_raw, position_funding_raw, replayed FROM funding"
             + _where(clauses)
             + " ORDER BY ts_ns",
+            params,
+        )
+
+    def duplicates(
+        self, engine: Optional[str] = None, instrument: Optional[str] = None
+    ) -> "pd.DataFrame":
+        """One row per venue execution or funding payment that more than one session stored.
+
+        A restart booked it a second time: the positions, fees and PnL of the sessions holding
+        the copies count it twice. An execution is the venue's id of it on one venue, symbol and
+        side. Empty in a sound store. The columns are those of `fastmm-pnl duplicates`: kind
+        (`fill` or `funding`), engine, venue, symbol, id, copies, side, qty (the amount of a
+        funding payment), ts (of the first copy) and sessions (oldest first, space separated).
+        """
+        venue = (
+            "COALESCE(v.name, '#' || r.venue_id)"
+            if self.schema_version >= 3
+            else "'#' || r.venue_id"
+        )
+        names = (
+            " LEFT JOIN session_venues v ON v.session_id = r.session_id"
+            " AND v.venue_id = r.venue_id"
+            if self.schema_version >= 3
+            else ""
+        )
+
+        def part(kind: str, table: str, ident: str, side: str, qty: str) -> str:
+            key = "symbol, side" if kind == "fill" else "symbol"
+            on_side = " AND r.side = c.side" if kind == "fill" else ""
+            select = (
+                f"SELECT '{kind}' AS kind, s.engine AS engine, {venue} AS venue,"
+                f" r.symbol AS symbol, r.{ident} AS id, r.session_id AS session_id,"
+                f" s.started_ns AS started_ns, r.ts_ns AS ts_ns, {side} AS side,"
+                f" r.{qty} AS qty_raw FROM "
+            )
+            sessions = f" JOIN sessions s ON s.session_id = r.session_id{names}"
+            if self.schema_version < 7:  # no id index: every row is grouped
+                return select + f"{table} r" + sessions + f" WHERE r.{ident} <> ''"
+            # The repeated ids first, from the id index of schema 7, then their rows by id.
+            return (
+                select
+                + f"(SELECT {ident} AS id, {key} FROM {table} WHERE {ident} <> ''"
+                f" GROUP BY {ident}, {key} HAVING COUNT(*) > 1) c"
+                f" CROSS JOIN {table} r ON r.{ident} = c.id AND r.symbol = c.symbol{on_side}"
+                f" AND r.{ident} <> ''" + sessions
+            )
+
+        rows = part("fill", "fills", "exec_id", "r.side", "qty_raw")
+        if self.schema_version >= 4:
+            rows += " UNION ALL " + part("funding", "funding", "funding_id", "''", "amount_raw")
+        clauses, params = [], []
+        if engine:
+            clauses.append("engine = ?")
+            params.append(engine)
+        if instrument:
+            clauses.append("symbol = ?")
+            params.append(instrument)
+        return self.query(
+            "SELECT kind, engine, venue, symbol, id, COUNT(*) AS copies, MIN(side) AS side,"
+            " MIN(qty_raw) AS qty_raw, MIN(ts_ns) AS ts_ns,"
+            " GROUP_CONCAT(session_id, ' ') AS sessions"
+            f" FROM (SELECT * FROM ({rows}) ORDER BY started_ns)"
+            + _where(clauses)
+            + " GROUP BY kind, engine, venue, symbol, side, id HAVING COUNT(*) > 1"
+            " ORDER BY MIN(ts_ns)",
             params,
         )
 
