@@ -239,6 +239,13 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- The store dropped a fill whose venue execution id another fill of the session already carried:
+  the unique index was `(session_id, exec_id)`, so the same number on a second venue (OKX and
+  Binance both count their trades), on a second symbol of a venue with per-symbol ids (Binance),
+  or on the other side of a self-trade was ignored as a repeat. Schema version 5 keys the index
+  `(session_id, instrument_id, side, exec_id)`, the OMS's own key; existing stores are migrated at
+  open, and `fastmm-pnl` and `fastmm.open_store` still read a store that has not been.
+  `fastmm-pnl duplicates` groups by side as well.
 - `HedgeExecutor` (and `xmm`) sent a hedge larger than a `[risk]` per-order limit whole, so the
   engine refused it every time (`risk reject MaxOrderNotional`) and the position stayed unhedged
   until the executor halted. Each hedge and de-risk order is now cut to what `ctx.risk_headroom`

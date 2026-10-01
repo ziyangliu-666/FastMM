@@ -17,8 +17,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <map>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -197,8 +195,9 @@ inline void outside_trade(const ServerFixture& fx,
   FAIL("the outside market order never filled: " << body);
 }
 
-// The venue execution ids the store of `engine` holds in more than one session: each is an
-// execution a restart booked a second time.
+// The venue executions the store of `engine` holds in more than one session ("venue symbol id"):
+// each is one a restart booked a second time. An execution is its id on one venue, symbol and
+// side (Reader::duplicates): two venues may use the same number.
 inline std::vector<std::string> booked_twice(const SessionFiles& f, const std::string& engine) {
   store::register_builtin_backends();
   auto reader = store::StoreRegistry::instance().make_reader("sqlite");
@@ -210,23 +209,20 @@ inline std::vector<std::string> booked_twice(const SessionFiles& f, const std::s
   REQUIRE(reader->open(opts).has_value());
   store::QueryFilter qf;
   qf.engine = engine;
-  auto rows = reader->fills(qf);
+  auto rows = reader->duplicates(qf);
   REQUIRE(rows.has_value());
-  std::size_t exec = rows->columns.size();
-  std::size_t session = rows->columns.size();
+  std::size_t venue = rows->columns.size();
+  std::size_t symbol = rows->columns.size();
+  std::size_t id = rows->columns.size();
   for (std::size_t i = 0; i < rows->columns.size(); ++i) {
-    if (rows->columns[i] == "exec_id") exec = i;
-    if (rows->columns[i] == "session_id") session = i;
-  }
-  REQUIRE(exec < rows->columns.size());
-  REQUIRE(session < rows->columns.size());
-  std::map<std::string, std::set<std::string>> sessions_of;
-  for (const std::vector<std::string>& row : rows->rows) {
-    if (!row[exec].empty()) sessions_of[row[exec]].insert(row[session]);
+    if (rows->columns[i] == "venue") venue = i;
+    if (rows->columns[i] == "symbol") symbol = i;
+    if (rows->columns[i] == "id") id = i;
   }
   std::vector<std::string> twice;
-  for (const auto& [id, sessions] : sessions_of) {
-    if (sessions.size() > 1) twice.push_back(id);
+  for (const std::vector<std::string>& row : rows->rows) {
+    REQUIRE(id < row.size());
+    twice.push_back(row[venue] + " " + row[symbol] + " " + row[id]);
   }
   return twice;
 }

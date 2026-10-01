@@ -107,7 +107,7 @@ CREATE TABLE fills (
 CREATE INDEX fills_day ON fills(day, symbol);
 CREATE INDEX fills_order ON fills(session_id, cl_ord_id);
 -- A venue exec id identifies an execution, so re-ingesting one is a no-op. Synthetic fills have
--- no exec id and are excluded.
+-- no exec id and are excluded. (Version 5 keys it by instrument and side as well.)
 CREATE UNIQUE INDEX fills_exec ON fills(session_id, exec_id) WHERE exec_id <> '';
 
 CREATE TABLE orders (
@@ -331,8 +331,19 @@ CREATE VIEW pnl_by_currency AS
   GROUP BY day, settlement_ccy;
 )SQL";
 
-constexpr std::array<Migration, 4> kMigrations{
-    Migration{1, kV1}, Migration{2, kV2}, Migration{3, kV3}, Migration{4, kV4}};
+// Version 5: an execution is the venue's id of it on one instrument and side, as the OMS keys it.
+// The index was on (session_id, exec_id): two venues of a session that number their trades alike
+// (OKX and Binance both count), two symbols of a venue whose ids run per symbol (Binance), and the
+// two halves of a self-trade shared one row - the second was dropped as a repeat. Rows an older
+// store dropped that way are not in it; the journal has them.
+constexpr std::string_view kV5 = R"SQL(
+DROP INDEX fills_exec;
+CREATE UNIQUE INDEX fills_exec ON fills(session_id, instrument_id, side, exec_id)
+  WHERE exec_id <> '';
+)SQL";
+
+constexpr std::array<Migration, 5> kMigrations{
+    Migration{1, kV1}, Migration{2, kV2}, Migration{3, kV3}, Migration{4, kV4}, Migration{5, kV5}};
 
 // days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days).
 void civil_from_days(std::int64_t z, int& y, unsigned& m, unsigned& d) {

@@ -75,7 +75,7 @@ The SQLite backend opens the file with `journal_mode=WAL` and `synchronous=NORMA
 
 ## Schema
 
-Version 4 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
+Version 5 (`kSqliteSchemaVersion`). The SQL is `src/store/sqlite_schema.cpp`, one migration step per version; an existing store is migrated in place at open, and a store written by a newer FastMM is refused with the version it holds.
 
 ### sessions
 
@@ -112,7 +112,7 @@ One row per session, written at start and completed at shutdown.
 
 ### fills
 
-One row per execution, keyed `(session_id, seq)`, with a unique index on `(session_id, exec_id)` for the rows that have one.
+One row per execution, keyed `(session_id, seq)`, with a unique index on `(session_id, instrument_id, side, exec_id)` for the rows that have one: an execution is the venue's id of it on one instrument and side, as the OMS keys it. Before version 5 the index was `(session_id, exec_id)`, and a second venue or symbol using the same number, or the other half of a self-trade, lost its row; the migration replaces the index and cannot bring those rows back (the journal has them).
 
 | Column | Meaning |
 |---|---|

@@ -241,7 +241,7 @@ TEST_CASE("store.funding: a version 3 store gains the funding table, its old row
   }
   sqlite3* db = nullptr;
   REQUIRE(sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
-  CHECK(scalar(db, "SELECT version FROM schema_version") == 4);
+  CHECK(scalar(db, "SELECT version FROM schema_version") == kSqliteSchemaVersion);
   CHECK(has_table(db, "funding"));
   CHECK(scalar(db, "SELECT funding_raw FROM pnl_daily") == 0);
   CHECK(scalar(db, "SELECT funding_raw FROM positions") == 0);

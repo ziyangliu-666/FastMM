@@ -646,6 +646,26 @@ TEST_CASE("store.resume: an execution stored by two sessions is reported as a du
   CHECK(other->empty());
 }
 
+// OKX and Binance both number their trades: one session can meet the same id on both.
+TEST_CASE("store.resume: the same execution id on two venues of a session keeps both rows") {
+  const std::string path = fresh("resume_same_id.db");
+  {
+    Writer w(path, 5);
+    w.fill(0, kT0, "2966124872");
+    w.fill(1, kT1, "2966124872");
+    w.fill(1, kT1, "2966124872");  // a repeat of the second: one row
+  }
+  CHECK(scalar(path, "SELECT COUNT(*) FROM fills") == 2);
+  CHECK(scalar(path, "SELECT COUNT(DISTINCT venue_id) FROM fills") == 2);
+  const Recovery r = recover(path);
+  CHECK(r.duplicate_count == 0);
+  // Each venue knows its own.
+  REQUIRE(venue(r, "binance") != nullptr);
+  REQUIRE(venue(r, "bybit") != nullptr);
+  CHECK(venue(r, "binance")->known_exec_ids == std::vector<std::string>{"2966124872"});
+  CHECK(venue(r, "bybit")->known_exec_ids == std::vector<std::string>{"2966124872"});
+}
+
 TEST_CASE("store.resume: a venue with no stored fill replays from the newest clean shutdown") {
   const std::string path = fresh("resume_unbooked.db");
   const std::int64_t start4 = kDay1Ns;

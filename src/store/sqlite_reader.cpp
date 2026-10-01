@@ -148,10 +148,11 @@ class SqliteReader final : public Reader {
     return query(sql + w.text() + " ORDER BY ts_ns" + limit(f), w);
   }
 
-  // A venue is its name in the session that wrote the row (its id is its place in that session's
-  // configuration), so the same execution stored by two sessions groups together whatever their
-  // venue order. Within a session the unique indexes keep an id once; every copy is another
-  // session's.
+  // An execution is the venue's id of it on one symbol and side (the two halves of a self-trade
+  // share an id; two venues, and two symbols of one, can use the same number). A venue is its name
+  // in the session that wrote the row (its id is its place in that session's configuration), so the
+  // same execution stored by two sessions groups together whatever their venue order. Within a
+  // session the unique indexes keep it once; every copy is another session's.
   [[nodiscard]] Result<Rows, std::string> duplicates(const QueryFilter& f) override {
     const auto part = [&](std::string_view kind,
                           std::string_view table,
@@ -190,7 +191,8 @@ class SqliteReader final : public Reader {
         " MIN(qty_raw) AS qty_raw, MIN(ts_ns) AS ts_ns, GROUP_CONCAT(session_id, ' ') AS sessions"
         " FROM (SELECT * FROM (" +
             rows + ") ORDER BY started_ns)" + w.text() +
-            " GROUP BY kind, engine, venue, symbol, id HAVING COUNT(*) > 1 ORDER BY MIN(ts_ns)" +
+            " GROUP BY kind, engine, venue, symbol, side, id HAVING COUNT(*) > 1 ORDER BY "
+            "MIN(ts_ns)" +
             limit(f),
         w);
   }

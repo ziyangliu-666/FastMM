@@ -134,6 +134,68 @@ TEST_CASE("store.migration: a version 1 store gains the PnL roll-up and is backf
   sqlite3_finalize(st);
 }
 
+// Version 4 kept one fill per (session, exec id). A store written under it opens, is migrated in
+// place and then keeps the same id on another instrument and on the other side.
+TEST_CASE("store.migration: a version 4 store gains the execution key by instrument and side") {
+  const std::string path = fresh("migrate_v4.db");
+  const auto fill_sql = [](int seq, int instrument, int venue, const char* side) {
+    return "INSERT OR IGNORE INTO fills VALUES (7," + std::to_string(seq) + "," +
+           std::to_string(kDay1Ns + seq) + ",'2024-03-04'," + std::to_string(instrument) + "," +
+           std::to_string(venue) + ",'BTCUSDT','c','v','4711','" + side +
+           "','Maker',1,1,1,1,0,0,0,'quote',1,1,0,0,0,0," + std::to_string(kDay1Ns + seq) + ")";
+  };
+  {
+    Db d(path);
+    auto v = sqlite::migrate(d.db, 4);
+    REQUIRE(v);
+    CHECK(*v == 4);
+    REQUIRE(sqlite::exec(d.db,
+                         "INSERT INTO sessions (session_id, engine, strategy, session_epoch,"
+                         " started_ns, started_day, version, build, config_hash, dry_run,"
+                         " pnl_carry_raw) VALUES (7,'test','xmm',1,0,'2024-03-04','0.2.0',"
+                         "'b','0',0,0)"));
+    // The old index: the second venue's fill with the same id is dropped.
+    REQUIRE(sqlite::exec(d.db, fill_sql(1, 0, 0, "Buy").c_str()));
+    REQUIRE(sqlite::exec(d.db, fill_sql(2, 1, 1, "Sell").c_str()));
+    CHECK(scalar(d.db, "SELECT count(*) FROM fills") == 1);
+  }
+  // A reader takes the old store as it is.
+  {
+    GenericSection s;
+    s.values["path"] = path;
+    BackendOptions o;
+    o.config = &s;
+    o.read_only = true;
+    auto reader = make_sqlite_reader();
+    REQUIRE(reader->open(o));
+    QueryFilter f;
+    auto rows = reader->fills(f);
+    REQUIRE(rows);
+    CHECK(rows->rows.size() == 1);
+    auto dup = reader->duplicates(f);
+    REQUIRE(dup);
+    CHECK(dup->empty());
+  }
+  // A session's writer migrates it; the row it held stays.
+  {
+    GenericSection s;
+    s.values["path"] = path;
+    BackendOptions o;
+    o.config = &s;
+    auto backend = make_sqlite_backend();
+    REQUIRE(backend->open(o));
+    backend->close();
+  }
+  Db d(path);
+  CHECK(scalar(d.db, "SELECT version FROM schema_version") == kSqliteSchemaVersion);
+  CHECK(scalar(d.db, "SELECT count(*) FROM fills") == 1);
+  REQUIRE(sqlite::exec(d.db, fill_sql(2, 1, 1, "Sell").c_str()));  // another venue's instrument
+  REQUIRE(sqlite::exec(d.db, fill_sql(3, 0, 0, "Sell").c_str()));  // the other half of a self-trade
+  CHECK(scalar(d.db, "SELECT count(*) FROM fills") == 3);
+  REQUIRE(sqlite::exec(d.db, fill_sql(4, 0, 0, "Buy").c_str()));  // the first one again: a repeat
+  CHECK(scalar(d.db, "SELECT count(*) FROM fills") == 3);
+}
+
 TEST_CASE("store.migration: a store from a newer FastMM is refused") {
   const std::string path = fresh("migrate_future.db");
   {

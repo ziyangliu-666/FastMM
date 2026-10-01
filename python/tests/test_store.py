@@ -97,7 +97,9 @@ def store_path(tmp_path_factory):
 
 def test_open_store_reports_the_schema_version(store_path):
     with fastmm.open_store(store_path) as store:
-        assert store.schema_version == fastmm.store.SCHEMA_VERSION
+        # The fixture is a version 4 store: an older store reads as it is.
+        assert store.schema_version == 4
+        assert store.schema_version <= fastmm.store.SCHEMA_VERSION
 
 
 def test_open_store_refuses_a_file_that_is_not_a_store(tmp_path):
