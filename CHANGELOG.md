@@ -239,6 +239,14 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- `HedgeExecutor` (and `xmm`) sent a hedge larger than a `[risk]` per-order limit whole, so the
+  engine refused it every time (`risk reject MaxOrderNotional`) and the position stayed unhedged
+  until the executor halted. Each hedge and de-risk order is now cut to what `ctx.risk_headroom`
+  admits - `max_order_qty`, `max_order_notional` at the order's price, the `max_position` room and
+  the `[risk.underlying]` `max_net` room on its side - and the rest follows as the next orders, as
+  a hedge over the instrument's `max_qty` already did. When the limits leave no room the
+  instrument's minimums allow, the order still goes out whole and its refusal counts as a failure
+  (failover, then halt).
 - A restart booked executions twice after consecutive crashes. The start-up execution replay
   skipped only the trade ids stored by the newest session that held a fill of the venue, while its
   window (one second before that session's last fill) still reached executions stored by the

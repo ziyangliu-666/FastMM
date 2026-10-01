@@ -86,11 +86,14 @@ void quote(auto& ctx) noexcept {
 ```text
 residual = sum of source positions + sum of hedge positions - target     (base units: qty * contract_multiplier)
 hedge    = IOC limit on the first usable hedge instrument, -residual in its contracts,
-           rounded down to the lot, capped at max_qty, priced its tolerance through the touch
+           rounded down to the lot, capped at max_qty, priced its tolerance through the touch,
+           then cut to what [risk] admits for one order
 ```
 
 - Sizing comes from positions, never from fill counts: a restart, a replayed or duplicated fill and a fill booked late by reconciliation lead to the same hedge.
 - One order is in flight at a time, across every hedge instrument and the de-risk orders. Two orders sized from the same residual on two venues could both fill; a hedge still open on one venue blocks the next one on another until it ends. The residual over `max_qty` goes out in pieces, each after the previous one ends.
+- A hedge larger than a `[risk]` limit goes out in pieces too. Each order is cut to `ctx.risk_headroom` of its instrument: `max_order_qty`, `max_order_notional` at the order's price, and on its side the room of `max_position` and of `[risk.underlying]` `max_net`, rounded down to the lot. With `max_order_notional = "60"`, 0.1 contracts of 0.01 BTC at 83914.2 (83.91 USDT) go out as 0.07 and then 0.03. The log says so once per episode. De-risk orders are cut the same way.
+- When those limits admit nothing the instrument's minimums allow (the position room is used up, or the cap is under one lot or `min_notional`), the order goes out whole, the engine refuses it and that is a failure of the instrument: it fails over or halts as below. `max_gross_notional` and `max_net_notional` do not size a hedge; an order over them is refused and counts the same way.
 - A residual that rounds under the lot, `min_qty` or `min_notional` of the first usable instrument waits for more exposure. It is not sent to be refused, and it is not moved to another venue.
 - No order goes out while a venue reconciles (`ctx.reconciling()`).
 - An order the engine refuses, or that ends with nothing filled, is a failure of its instrument; the next waits `retry`.

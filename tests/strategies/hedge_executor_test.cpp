@@ -79,6 +79,8 @@ struct Ctx {
   std::array<bool, 3> gated{};   // per venue
   bool reconciling_now = false;
   std::array<std::array<Qty, 2>, 3> room{};
+  std::array<RiskHeadroom, 3> risk{};  // per instrument: what [risk] admits (unlimited)
+  std::vector<NewOrderRequest> risk_refused;
 
   Ctx() {
     REQUIRE(table.add(linear("BTCUSDT", 0, "1", "0.001")));
@@ -107,8 +109,18 @@ struct Ctx {
     h.gated = gated[v.value];
     return h;
   }
+  [[nodiscard]] RiskHeadroom risk_headroom(InstrumentId id) const { return risk[id.value]; }
   Result<ClientOrderId, RejectReason> send(const NewOrderRequest& r) {
     if (refuse[r.instrument.value]) return fail(RejectReason::MaxPosition);
+    // The engine's risk check: an order over what the limits admit is refused whole.
+    const RiskHeadroom& h = risk[r.instrument.value];
+    const Instrument& inst = table.get(r.instrument);
+    if (r.qty > HedgeExecutor::risk_room(h, inst, r.side, r.price)) {
+      risk_refused.push_back(r);
+      return fail(inst.notional(r.price, r.qty) > h.max_order_notional
+                      ? RejectReason::MaxOrderNotional
+                      : RejectReason::MaxPosition);
+    }
     const ClientOrderId id{0x0001'0000'0000ULL + sent.size() + 1};
     sent.push_back(Sent{r, id, true});
     return id;
@@ -294,6 +306,149 @@ TEST_CASE("strategies.hedge_executor: a residual over max_qty goes out in pieces
   filled(h, c, 2);
   CHECK(h.residual(c).is_zero());
   CHECK(h.stats().hedges_sent == 3);
+}
+
+// The live case: [risk] max_order_notional = 60, and 0.001 BTC to hedge on 0.01 BTC contracts is
+// 0.1 contracts, 99.95 USDT at the order's price. Whole, the engine refuses it every time.
+TEST_CASE("strategies.hedge_executor: a hedge over max_order_notional goes out in pieces") {
+  Ctx c;
+  c.risk[1].max_order_notional = Notional::from_int(60);
+  HedgeExecutor h = make(c, false);
+  source_fill(h, c, "0.001");
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.instrument == kB);
+  CHECK(c.sent[0].req.side == Side::Sell);
+  CHECK(c.sent[0].req.price == px("99950.0"));
+  CHECK(c.sent[0].req.qty == qt("0.06"));  // 59.97 USDT; 0.07 would be 69.965
+  CHECK(h.state() == HedgeExecutor::State::InFlight);
+  h.on_timer(c);
+  CHECK(c.sent.size() == 1);  // one at a time
+  filled(h, c, 0);
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.qty == qt("0.04"));
+  filled(h, c, 1);
+  CHECK(h.residual(c).is_zero());
+  CHECK(h.state() == HedgeExecutor::State::Flat);
+  CHECK(c.risk_refused.empty());
+  CHECK(h.stats().hedges_sent == 2);
+  CHECK(h.stats().hedge_failures == 0);
+  // A buy is priced through the ask: 100050.2 * 0.01 a contract, so 0.05 contracts (50.03 USDT).
+  source_fill(h, c, "-0.001");
+  REQUIRE(c.sent.size() == 3);
+  CHECK(c.sent[2].req.side == Side::Buy);
+  CHECK(c.sent[2].req.qty == qt("0.05"));
+}
+
+TEST_CASE("strategies.hedge_executor: max_order_qty and the position room cut a hedge too") {
+  Ctx c;
+  c.risk[1].max_order_qty = qt("0.4");
+  HedgeExecutor h = make(c, false);
+  source_fill(h, c, "0.01");  // 1 contract
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.qty == qt("0.4"));
+  filled(h, c, 0);
+  REQUIRE(c.sent.size() == 2);
+  CHECK(c.sent[1].req.qty == qt("0.4"));
+  // max_position leaves room for 0.15 more contracts short: rounded down to the lot.
+  c.risk[1].sell_qty = qt("0.155");
+  filled(h, c, 1);
+  REQUIRE(c.sent.size() == 3);
+  CHECK(c.sent[2].req.qty == qt("0.15"));
+  // [risk.underlying] max_net, when it is the tightest.
+  c.risk[1].sell_qty = Qty::max();
+  c.risk[1].underlying_sell_qty = qt("0.02");
+  filled(h, c, 2);
+  REQUIRE(c.sent.size() == 4);
+  CHECK(c.sent[3].req.qty == qt("0.02"));
+  CHECK(c.risk_refused.empty());
+  CHECK(h.stats().hedge_failures == 0);
+  // The other side's rooms do not enter.
+  CHECK(HedgeExecutor::risk_room(c.risk[1], c.table.get(kB), Side::Buy, px("100000")) == qt("0.4"));
+}
+
+// No room at all (the hedge instrument is at max_position), or less than the instrument's minimum:
+// the order goes out whole, the engine refuses it and the refusal is a failure - the hedge moves
+// to the next instrument, or hedging halts.
+TEST_CASE("strategies.hedge_executor: a hedge [risk] leaves no room for fails over or halts") {
+  SUBCASE("to the next instrument") {
+    Ctx c;
+    c.risk[1].sell_qty = Qty{};
+    HedgeExecutor h = make(c);
+    source_fill(h, c, "0.01");
+    CHECK(c.sent.empty());
+    REQUIRE(c.risk_refused.size() == 1);
+    CHECK(c.risk_refused[0].qty == qt("1"));  // whole
+    CHECK(h.stats().hedge_failures == 1);
+    for (int i = 0; i < 2; ++i) {
+      c.advance(milliseconds(100));
+      h.on_timer(c);
+    }
+    CHECK(h.stats().hedge_failures == 3);
+    CHECK(h.stats().benches == 1);
+    c.advance(milliseconds(100));
+    h.on_timer(c);
+    REQUIRE(c.sent.size() == 1);
+    CHECK(c.sent[0].req.instrument == kC);
+    CHECK(c.sent[0].req.qty == qt("0.01"));
+    CHECK(h.stats().failovers == 1);
+  }
+  SUBCASE("halts on the last one") {
+    Ctx c;
+    c.risk[1].max_order_notional = Notional::from_int(5);  // under one lot of 0.01 (9.995 USDT)
+    HedgeExecutor h = make(c, false);
+    source_fill(h, c, "0.01");
+    for (int i = 0; i < 5; ++i) {
+      c.advance(milliseconds(100));
+      h.on_timer(c);
+    }
+    CHECK(c.sent.empty());
+    CHECK(c.risk_refused.size() == 3);
+    CHECK(h.stats().hedge_failures == 3);
+    CHECK(h.halted());
+  }
+  SUBCASE("a cut under min_notional is not sent as a piece") {
+    Ctx c;
+    c.table.get(kB).min_notional = Notional::from_int(30);
+    c.risk[1].max_order_notional = Notional::from_int(25);  // 0.02 contracts: 19.99 USDT
+    HedgeExecutor h = make(c, false);
+    source_fill(h, c, "0.001");
+    CHECK(c.sent.empty());
+    REQUIRE(c.risk_refused.size() == 1);
+    CHECK(c.risk_refused[0].qty == qt("0.1"));
+    CHECK(h.stats().hedge_failures == 1);
+  }
+}
+
+TEST_CASE("strategies.hedge_executor: qty_within is the largest lot multiple under the notional") {
+  Ctx c;
+  const Instrument& b = c.table.get(kB);   // 0.01 BTC contracts, lot 0.01
+  const Instrument& sp = c.table.get(kC);  // BTC, lot 0.001
+  CHECK(HedgeExecutor::qty_within(b, px("83914.2"), Notional::from_int(60)) == qt("0.07"));
+  CHECK(b.notional(px("83914.2"), qt("0.07")) <= Notional::from_int(60));
+  CHECK(b.notional(px("83914.2"), qt("0.08")) > Notional::from_int(60));
+  CHECK(HedgeExecutor::qty_within(sp, px("100000"), Notional::from_int(1000)) == qt("0.01"));
+  CHECK(HedgeExecutor::qty_within(sp, px("100000"), Notional::from_int(99)).is_zero());
+  CHECK(HedgeExecutor::qty_within(sp, Price{}, Notional::from_int(99)).is_zero());
+  CHECK(HedgeExecutor::qty_within(sp, px("100000"), Notional{}).is_zero());
+}
+
+TEST_CASE("strategies.hedge_executor: a de-risk order is cut to the per-order limits as well") {
+  Ctx c;
+  HedgeExecutor::Config cfg = config();
+  cfg.derisk_after = milliseconds(500);
+  cfg.derisk_interval = milliseconds(200);
+  cfg.derisk_tolerance = bps(10);
+  c.risk[0].max_order_notional = Notional::from_int(300);  // 0.003 BTC at 99900
+  HedgeExecutor h = make(c, false, cfg);
+  c.killed[1] = true;
+  source_fill(h, c, "0.01");
+  c.advance(milliseconds(600));
+  h.on_timer(c);
+  REQUIRE(c.sent.size() == 1);
+  CHECK(c.sent[0].req.instrument == kSrc);
+  CHECK(c.sent[0].req.reduce_only);
+  CHECK(c.sent[0].req.qty == qt("0.003"));
+  CHECK(c.risk_refused.empty());
 }
 
 TEST_CASE("strategies.hedge_executor: a remainder under the minimum waits without failing") {
@@ -688,6 +843,31 @@ void control(StrategyHarness<Xmm>& h, ControlCommand cmd, VenueId v) {
 }
 
 }  // namespace
+
+// Through the engine's own risk check. [risk] max_order_qty = 1 admits A's quotes (0.03 BTC) and
+// one contract of B an order: the 3 contracts to hedge go out as three orders, and the risk engine
+// refuses none.
+TEST_CASE(
+    "strategies.hedge_executor: engine: a hedge over a [risk] order cap is split, not refused") {
+  const ParamMap p{{"quote_qty", "0.03"}, {"basis_halflife_s", "0"}, {"max_unhedged", "0.1"}};
+  HarnessOptions o = three_venues();
+  o.engine.risk.max_order_qty = qt("1");
+  StrategyHarness<Xmm> h(p, o);
+  const InstrumentId a{0};
+  h.book(px("99990"), px("100010"), Qty::from_int(1), a);
+  h.book(px("100000.0"), px("100000.2"), Qty::from_int(1), kB);
+  h.advance(milliseconds(1));
+  REQUIRE(h.working_orders(a).size() == 2);
+  rest(h, kB, "100000.0", "10");
+  REQUIRE(h.fill(Side::Buy, Qty{}, a));
+  h.advance(milliseconds(5));
+  CHECK(h.engine().position(kB).qty == qt("-3"));
+  CHECK(h.strategy().stats().hedges_sent == 3);
+  CHECK(h.strategy().stats().hedge_failures == 0);
+  const RiskStats& rs = h.engine().risk().stats();
+  CHECK(rs.rejects[static_cast<std::uint8_t>(RejectReason::MaxOrderQty)] == 0);
+  CHECK(rs.rejects[static_cast<std::uint8_t>(RejectReason::MaxOrderNotional)] == 0);
+}
 
 TEST_CASE("strategies.hedge_executor: engine: B killed, the hedge goes to C, then back to B") {
   const ParamMap p{{"quote_qty", "0.02"},

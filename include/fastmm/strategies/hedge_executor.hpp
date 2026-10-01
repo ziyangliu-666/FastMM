@@ -24,6 +24,14 @@
 // max_qty (the remainder follows when it ends). None goes out when that rounds under the lot,
 // min_qty or min_notional: the remainder waits for more exposure rather than being refused.
 //
+// The order is then cut to what [risk] admits now (StrategyContext::risk_headroom): max_order_qty,
+// max_order_notional at the order's price, and on its side the room of max_position and of
+// [risk.underlying] max_net. A hedge larger than one of them goes out in pieces, each after the
+// one before it ends, instead of being refused whole every time. When the limits admit nothing the
+// instrument's minimums allow (the position room is used up), the order goes out whole: the engine
+// refuses it and that is a failure of the instrument, as before. The exposure caps
+// (max_gross_notional, max_net_notional) do not size an order; they refuse it.
+//
 // A hedge instrument is usable when its venue's order channel is up, its venue is not killed, its
 // book is valid, not older than Config::stale and not held by the feed-lag gate, and it is not
 // benched. The first usable one takes the hedge; when its balance or margin cannot cover the order
@@ -56,10 +64,12 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/order.hpp"
+#include "fastmm/core/risk_limits.hpp"
 #include "fastmm/core/time.hpp"
 #include "fastmm/core/venue_health.hpp"
 #include "fastmm/strategies/hooks.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -298,6 +308,7 @@ class HedgeExecutor {
     }
     if (residual.is_zero()) {
       state_ = State::Flat;
+      split_ = false;
       unblock("flat");
       return;
     }
@@ -323,7 +334,8 @@ class HedgeExecutor {
     }
     // The first usable instrument decides the size; a hedge its balance cannot cover goes to the
     // next usable instrument that can take it.
-    const std::optional<NewOrderRequest> sized = order_on(ctx, first, residual);
+    bool cut = false;
+    const std::optional<NewOrderRequest> sized = order_on(ctx, first, residual, &cut);
     if (!sized) {
       state_ = State::Waiting;
       unblock("the residual is under the hedge minimum");
@@ -335,10 +347,12 @@ class HedgeExecutor {
       k = n_hedges_;
       for (std::size_t j = first + 1; j < n_hedges_; ++j) {
         if (why(ctx, j, now) != Reason::Usable) continue;
-        const std::optional<NewOrderRequest> r = order_on(ctx, j, residual);
+        bool cut_j = false;
+        const std::optional<NewOrderRequest> r = order_on(ctx, j, residual, &cut_j);
         if (r && covered(ctx, *r)) {
           req = *r;
           k = j;
+          cut = cut_j;
           break;
         }
       }
@@ -381,6 +395,17 @@ class HedgeExecutor {
     }
     ++stats_.hedges_sent;
     state_ = State::InFlight;
+    if (cut && !split_) {
+      split_ = true;
+      FASTMM_LOG_INFO(
+          "{}: [risk] admits {} {} @ {} of the {} to hedge on {}: it goes out in pieces",
+          cfg_.name,
+          req.side,
+          req.qty,
+          req.price,
+          residual,
+          ctx.instrument(req.instrument).symbol.view());
+    }
   }
 
   // ---- state -----------------------------------------------------------------------------------
@@ -510,6 +535,50 @@ class HedgeExecutor {
     return NewOrderRequest::limit(inst.id, side, px, qty).ioc().tag(tag);
   }
 
+  // The largest quantity of `inst` whose notional at `price` is at most `cap`, rounded down to the
+  // lot (zero when not even one lot fits, or `price` is not positive).
+  [[nodiscard]] static constexpr Qty qty_within(const Instrument& inst,
+                                                Price price,
+                                                Notional cap) noexcept {
+    const Notional one = inst.notional(price, Qty::from_int(1));
+    if (!one.is_positive() || !cap.is_positive()) return Qty{};
+    Qty q = inst.round_qty(Qty::from_raw(detail::mul_div(cap.raw, kFixedScale, one.raw)));
+    // The notional rounds at each step: never over the cap.
+    while (q.is_positive() && inst.notional(price, q) > cap) q = q - inst.lot;
+    return q;
+  }
+
+  // The largest order of `side` on `inst` at `price` that [risk] admits now: max_order_qty,
+  // max_order_notional at that price, and that side's room of max_position and of
+  // [risk.underlying] max_net. Qty::max() when none of them is set.
+  [[nodiscard]] static constexpr Qty risk_room(const RiskHeadroom& h,
+                                               const Instrument& inst,
+                                               Side side,
+                                               Price price) noexcept {
+    Qty room = h.max_order_qty;
+    room = std::min(room, side == Side::Buy ? h.buy_qty : h.sell_qty);
+    room = std::min(room, side == Side::Buy ? h.underlying_buy_qty : h.underlying_sell_qty);
+    if (h.max_order_notional != Notional::max())
+      room = std::min(room, qty_within(inst, price, h.max_order_notional));
+    return room;
+  }
+
+  // Cuts `r` to risk_room() when that is less and still an order the instrument takes (the lot,
+  // min_qty, min_notional). True when it was cut. An order the limits leave no such room for
+  // stays whole: the engine's refusal is then what the caller counts.
+  [[nodiscard]] static constexpr bool fit_risk(const RiskHeadroom& h,
+                                               const Instrument& inst,
+                                               NewOrderRequest& r) noexcept {
+    const Qty room = risk_room(h, inst, r.side, r.price);
+    if (room >= r.qty) return false;
+    const Qty q = inst.round_qty(room);
+    if (!q.is_positive() || q < inst.min_qty) return false;
+    if (inst.min_notional.is_positive() && inst.notional(r.price, q) < inst.min_notional)
+      return false;
+    r.qty = q;
+    return true;
+  }
+
   // A terminal update whose outcome the venue did not report: the ack timeout cancelled an order
   // the venue never acknowledged, reconciliation found it gone with quantity unaccounted for, or a
   // connector turned a request whose outcome it does not know into a generic reject.
@@ -604,21 +673,34 @@ class HedgeExecutor {
     derisk_id_ = ClientOrderId{};
     next_derisk_ns_ = 0;
     derisk_stuck_ = false;
+    split_ = false;
   }
 
-  // The hedge of `residual` on hedge instrument `i`, priced from its book.
+  // What [risk] admits on `id` now. A context without the risk engine (a test double) has no
+  // limit.
+  template <class Ctx>
+  [[nodiscard]] static RiskHeadroom headroom(const Ctx& ctx, InstrumentId id) noexcept {
+    if constexpr (requires { ctx.risk_headroom(id); }) {
+      return ctx.risk_headroom(id);
+    } else {
+      return RiskHeadroom{};
+    }
+  }
+
+  // The hedge of `residual` on hedge instrument `i`, priced from its book and cut to what [risk]
+  // admits (`cut` says whether it was).
   template <class Ctx>
   [[nodiscard]] std::optional<NewOrderRequest> order_on(const Ctx& ctx,
                                                         std::size_t i,
-                                                        Qty residual) const noexcept {
+                                                        Qty residual,
+                                                        bool* cut) const noexcept {
     const Leg& h = hedges_[i];
     const auto& b = ctx.book(h.id);
-    return hedge_order(ctx.instrument(h.id),
-                       residual,
-                       b.best_bid().price,
-                       b.best_ask().price,
-                       h.tolerance,
-                       cfg_.tag);
+    const Instrument& inst = ctx.instrument(h.id);
+    std::optional<NewOrderRequest> r =
+        hedge_order(inst, residual, b.best_bid().price, b.best_ask().price, h.tolerance, cfg_.tag);
+    if (r) *cut = fit_risk(headroom(ctx, h.id), inst, *r);
+    return r;
   }
   // The venue's balance or margin covers `r` (StrategyContext::balance_room).
   template <class Ctx>
@@ -780,6 +862,7 @@ class HedgeExecutor {
       if (!inst.is_derivative() && ctx.balance_room(s.id, r->side, r->price) < r->qty) continue;
       NewOrderRequest req = *r;
       req.reduce_only = true;
+      static_cast<void>(fit_risk(headroom(ctx, s.id), inst, req));
       next_derisk_ns_ = now + cfg_.derisk_interval.ns;
       const auto sent = ctx.send(req);
       if (!sent) {
@@ -822,6 +905,7 @@ class HedgeExecutor {
   bool halted_ = false;
   bool held_ = false;
   bool unavailable_ = false;  // logged once until a hedge instrument takes the residual again
+  bool split_ = false;        // a hedge cut to a [risk] limit was logged; cleared when flat
   // de-risking
   bool blocked_ = false;
   bool derisking_ = false;
