@@ -467,8 +467,10 @@ void CoinbaseExchangeVenue::on_user_state(net::ConnState s) {
   const ConnState prev = user_state_;
   user_state_ = mapped;
   if (mapped == ConnState::Live) {
-    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
-    FASTMM_LOG_INFO("{}: user channel -> Live", cfg_.name);
+    if (prev != ConnState::Stale) {
+      emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+      FASTMM_LOG_INFO("{}: user channel -> Live", cfg_.name);
+    }
     // The first time: sweep for orders a session that died left resting. After a reconnect:
     // reconcile (the replay first books what the channel missed). Not on a return from Stale.
     if (!user_was_live_) {

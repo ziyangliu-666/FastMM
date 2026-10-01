@@ -692,8 +692,11 @@ void OkxVenue::on_private_state(net::ConnState s) {
   const ConnState prev = private_state_;
   private_state_ = mapped;
   if (mapped == ConnState::Live) {
-    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
-    FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
+    // A return from Stale (a quiet channel, back on the next pong) is not a transition.
+    if (prev != ConnState::Stale) {
+      emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+      FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
+    }
     // Reconcile after a reconnect, not when a quiet channel returns from Stale. On the first
     // connect, sweep for orders a session that died left resting: their ids belong to an earlier
     // epoch, so the engine cancels them. The replay before the snapshot also books what happened
@@ -876,8 +879,12 @@ void OkxVenue::on_trade_state(net::ConnState s) {
     // reconnect (not the first connect, not a return from Stale).
     const bool reconnected = trade_was_live_ && prev != ConnState::Stale;
     trade_was_live_ = true;
-    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
-    FASTMM_LOG_INFO("{}: trade channel -> Live", cfg_.name);
+    // A quiet channel goes Stale after stale_ms and back on the pong of the next ping (every
+    // ping_interval_ms): not a transition, so neither reported nor logged.
+    if (prev != ConnState::Stale) {
+      emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+      FASTMM_LOG_INFO("{}: trade channel -> Live", cfg_.name);
+    }
     drain_outbound();
     if (reconnected && !cfg_.dry_run) request_open_orders();
     return;

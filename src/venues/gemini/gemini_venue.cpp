@@ -594,8 +594,10 @@ void GeminiVenue::on_order_state(net::ConnState s) {
   // hold the snapshot watermark back (the reconnect's snapshot settles them).
   if (mapped != ConnState::Live && mapped != ConnState::Stale) sent_.connection_lost();
   if (mapped == ConnState::Live) {
-    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
-    FASTMM_LOG_INFO("{}: order channel -> Live", cfg_.name);
+    if (prev != ConnState::Stale) {
+      emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+      FASTMM_LOG_INFO("{}: order channel -> Live", cfg_.name);
+    }
     // Reconcile after a reconnect, not when a quiet channel returns from Stale. On the first
     // connect, sweep for orders a session that died left resting.
     if (order_was_live_ && prev != ConnState::Stale) {

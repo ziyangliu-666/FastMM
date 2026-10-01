@@ -533,8 +533,10 @@ void DeribitVenue::on_private_state(net::ConnState s) {
     const bool first_connect = !private_was_live_;
     private_was_live_ = true;
     // Stale is not reported for this channel, so neither is the return from it.
-    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
-    FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
+    if (prev != ConnState::Stale) {
+      emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+      FASTMM_LOG_INFO("{}: private channel -> Live", cfg_.name);
+    }
     drain_outbound();
     // 6.7: reconcile after a reconnect (orders may have been cancelled meanwhile). On the first
     // connect, sweep for orders a session that died left resting (cancel-on-disconnect only

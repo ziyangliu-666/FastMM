@@ -239,6 +239,11 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- OKX logged "trade channel -> Live" and "private channel -> Live" every 20 s through a session
+  without a reconnect: a quiet private or trade channel goes Stale after `stale_ms` and back on
+  the pong of the next ping, and the return was logged as a transition (it was already not
+  reported to the engine). Only real transitions are logged now; Bybit, Deribit, Gemini and both
+  Coinbase connectors had the same line.
 - Binance spot with `[risk] check_balance`: a requote of a side the balance covers once (0.00059
   BTC, a resting ask of 0.0005) was refused `BalanceShort` after the cancel's ack, about 19 times
   an hour live, the ask missing until the next requote. The acks taken from WS API responses

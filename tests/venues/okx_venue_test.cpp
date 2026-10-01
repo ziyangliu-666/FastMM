@@ -8,10 +8,13 @@
 
 #include "fake_venue_util.hpp"
 
+#include "fastmm/core/log.hpp"
 #include "fastmm/net/crypto.hpp"
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -239,6 +242,11 @@ struct Harness {
         s.send_text(spot_push(kSnapshot));
     });
     srv.on_ws_text("/ws/v5/private", [this](net::WsSession& s, std::string_view t) {
+      if (t == "ping") {
+        srv.record("pings", "private");
+        s.send_text("pong");
+        return;
+      }
       const std::string op = json_str(t, "op");
       if (op == "login") {
         const bool ok = login_ok(t);
@@ -259,6 +267,11 @@ struct Harness {
       }
     });
     srv.on_ws_text("/ws/v5/trade", [this](net::WsSession& s, std::string_view t) {
+      if (t == "ping") {
+        srv.record("pings", "trade");
+        s.send_text("pong");
+        return;
+      }
       const std::string op = json_str(t, "op");
       if (op == "login") {
         s.send_text(
@@ -424,6 +437,23 @@ struct Live {
     return oc.all.size();
   }
 };
+
+std::string read_all(std::FILE* f) {
+  std::fflush(f);
+  std::fseek(f, 0, SEEK_SET);
+  std::string s;
+  char buf[4096];
+  std::size_t n = 0;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+  return s;
+}
+
+std::size_t occurrences(std::string_view text, std::string_view what) {
+  std::size_t n = 0;
+  for (std::size_t p = text.find(what); p != std::string_view::npos; p = text.find(what, p + 1))
+    ++n;
+  return n;
+}
 
 OutNewOrderMsg new_order() {
   OutNewOrderMsg n{};
@@ -1476,4 +1506,49 @@ TEST_CASE("okx.venue: in multi-currency margin mode the snapshot carries the acc
     CHECK(bal[1]->total == Notional::from_decimal("55837.43556135").value());
     CHECK(bal[1]->hdr.exch_ts.ns == 1705474164160LL * 1'000'000);
   }
+}
+
+// Found live: "trade channel -> Live" and "private channel -> Live" every 20 s through a session
+// without a reconnect. A quiet private or trade channel goes Stale after stale_ms and back on the
+// pong of the next ping; that is not a transition, and only real ones are reported or logged.
+TEST_CASE("okx.venue: a quiet channel's return from Stale is neither reported nor logged") {
+  Harness h;
+  VenueSection s = h.section();
+  s.extra["stale_ms"] = "100";
+  s.extra["ping_interval_ms"] = "1000";
+  std::FILE* f = std::tmpfile();
+  REQUIRE(f != nullptr);
+  Logger& lg = Logger::instance();
+  const LogLevel prev_level = lg.level();
+  lg.set_level(LogLevel::Info);
+  lg.start(f, LogLevel::Off);
+  lg.flush();
+  const std::size_t before = read_all(f).size();
+  {
+    Live l(s);
+    l.wait_for_sweep();
+    for (int i = 1; i <= 3; ++i) {
+      // Quiet for longer than stale_ms, then the pings and their pongs.
+      const auto quiet = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+      while (std::chrono::steady_clock::now() < quiet) l.reactor.run_once(5);
+      l.venue->on_timer(net::Reactor::now_ns() + i * 2'000'000'000LL);
+      REQUIRE(pump_until(l.reactor, [&] {
+        return h.srv.frames("pings").size() >= static_cast<std::size_t>(2 * i);
+      }));
+      l.pump();
+    }
+    std::size_t live = 0;
+    for (const ConnectionStateMsg* m : l.all<ConnectionStateMsg>(EventType::ConnectionState)) {
+      if (m->channel == 1 && m->state == ConnState::Live) ++live;
+    }
+    CHECK(live == 2);  // the private channel and the trade channel, once each
+  }
+  lg.flush();
+  const std::string out = read_all(f).substr(before);
+  lg.stop();
+  lg.set_level(prev_level);
+  std::fclose(f);
+  INFO(out);
+  CHECK(occurrences(out, "trade channel -> Live") == 1);
+  CHECK(occurrences(out, "private channel -> Live") == 1);
 }

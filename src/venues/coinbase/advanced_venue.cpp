@@ -432,8 +432,10 @@ void CoinbaseAdvancedVenue::on_user_state(net::ConnState s) {
   const ConnState prev = user_state_;
   user_state_ = mapped;
   if (mapped == ConnState::Live) {
-    if (prev != ConnState::Stale) emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
-    FASTMM_LOG_INFO("{}: user channel -> Live", cfg_.name);
+    if (prev != ConnState::Stale) {
+      emit_connection_state(*order_sink_, id_, 1, ConnState::Live);
+      FASTMM_LOG_INFO("{}: user channel -> Live", cfg_.name);
+    }
     if (!user_was_live_) {
       reconcile_.sweep();
     } else if (prev != ConnState::Stale) {
