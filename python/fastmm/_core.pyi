@@ -1920,4 +1920,4 @@ def walk_forward(config: BacktestConfig, grid: dict, folds: typing.SupportsInt |
     """
     Walk-forward sweep: the grid runs on `folds` consecutive time slices of `data`, and the best point of fold i-1 by `metric` (net_pnl, realized_pnl, sharpe_bar, spread_captured_bps) is scored on fold i. Returns a dict: metric, folds (start_ts, end_ts, best, chosen, in_sample, out_of_sample, hindsight, scores, points), mean_in_sample, mean_out_of_sample, mean_hindsight, choice_changes and table (the printable report). folds=1 runs exactly fastmm.sweep. The synthetic market needs fill_model='l2_queue' for folds > 1.
     """
-__version__: str = '0.2.0'
+__version__: str = '0.3.0'

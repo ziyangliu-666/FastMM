@@ -4,6 +4,8 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-03
+
 ### Added
 - `[strategy] state_file` / `state_interval_s`: a strategy with `std::string_view state()` and
   `bool restore(std::string_view)` (Python: `state(self)` and `restore(self, data)`) keeps its
