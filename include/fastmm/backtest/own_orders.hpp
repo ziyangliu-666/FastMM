@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -115,8 +116,11 @@ struct OwnOrderLog {
   std::unordered_map<std::uint64_t, std::size_t> index;
 };
 
-// Reads the whole journal (in recorded order) and resets it.
-[[nodiscard]] OwnOrderLog collect_own_orders(JournalReader& reader);
+// Reads the whole journal (every part, in recorded order) and resets it.
+[[nodiscard]] OwnOrderLog collect_own_orders(std::span<JournalReader> parts);
+[[nodiscard]] inline OwnOrderLog collect_own_orders(JournalReader& reader) {
+  return collect_own_orders(std::span<JournalReader>{&reader, 1});
+}
 
 class OwnOrderStripper {
  public:
@@ -127,8 +131,10 @@ class OwnOrderStripper {
     std::uint64_t tickers_dropped = 0;  // a side of the ticker was only ours
   };
 
-  // Reads the whole journal (in recorded order) and resets it.
-  explicit OwnOrderStripper(JournalReader& reader);
+  // Reads the whole journal (every part, in recorded order) and resets it.
+  explicit OwnOrderStripper(std::span<JournalReader> parts);
+  explicit OwnOrderStripper(JournalReader& reader)
+      : OwnOrderStripper(std::span<JournalReader>{&reader, 1}) {}
 
   // Our resting quantity at (instrument, side, price) at venue time t.
   [[nodiscard]] Qty own_at(InstrumentId inst, Side side, Price px, Timestamp t) const noexcept {

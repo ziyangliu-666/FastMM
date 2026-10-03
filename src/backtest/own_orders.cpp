@@ -261,22 +261,26 @@ class Collector {
 
 }  // namespace
 
-OwnOrderLog collect_own_orders(JournalReader& reader) {
-  Collector c(feed_shows_own(reader.header()));
-  reader.for_each([&](const EventHeader* h) { c.on_event(*h); });
-  reader.reset();
+OwnOrderLog collect_own_orders(std::span<JournalReader> parts) {
+  Collector c(feed_shows_own(parts.front().header()));
+  for (JournalReader& reader : parts) {
+    reader.for_each([&](const EventHeader* h) { c.on_event(*h); });
+    reader.reset();
+  }
   return c.finish();
 }
 
-OwnOrderStripper::OwnOrderStripper(JournalReader& reader) {
-  reader.for_each([&](const EventHeader* h) {
-    if ((h->flags & EventHeader::kOutbound) != 0) {
-      if ((h->flags & EventHeader::kDropped) == 0) own_.on_outbound(*h);
-    } else {
-      own_.on_inbound(*h);
-    }
-  });
-  reader.reset();
+OwnOrderStripper::OwnOrderStripper(std::span<JournalReader> parts) {
+  for (JournalReader& reader : parts) {
+    reader.for_each([&](const EventHeader* h) {
+      if ((h->flags & EventHeader::kOutbound) != 0) {
+        if ((h->flags & EventHeader::kDropped) == 0) own_.on_outbound(*h);
+      } else {
+        own_.on_inbound(*h);
+      }
+    });
+    reader.reset();
+  }
   own_.index();
 }
 
