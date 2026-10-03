@@ -245,7 +245,7 @@ The core reads `caps` instead of testing `kind`: `credentials = false` is why `f
 
 ### Configuration keys
 
-The central schema (`include/fastmm/config/schema.hpp`) knows only the generic keys (`kind`, the URLs, the credentials, `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`). Everything else in the section is kept verbatim in `VenueSection::extra`, with its line in `extra_lines`, and handed to the venue that owns it. `fastmm::venues::validate_venues()` then checks the section against `kFooKeys`: a key the venue does not own is a warning naming its line, a key of the wrong type or a missing required key stops the session. Values only the connector can judge (a URL, a range, a pair that must not cross) are `make_foo_config`'s job; throw `std::invalid_argument` with a message that starts `venues.<name>.<key>:`.
+The central schema (`include/fastmm/config/schema.hpp`) knows only the generic keys (`kind`, the URLs, the credentials, `testnet`, `supports_replace`, `insecure_tls`, `ca_file`, `recv_window_ms`, `fees`). Everything else in the section is kept verbatim in `VenueSection::extra`, with its line in `extra_lines`, and handed to the venue that owns it. `fastmm::venues::validate_venues()` then checks the section against `kFooKeys`: a key the venue does not own, a key of the wrong type or a missing required key stops the session, naming the line. Values only the connector can judge (a URL, a range, a pair that must not cross) are `make_foo_config`'s job; throw `std::invalid_argument` with a message that starts `venues.<name>.<key>:`.
 
 ### Documentation
 

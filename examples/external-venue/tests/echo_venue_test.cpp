@@ -7,7 +7,6 @@
 #include <fastmm/config/config.hpp>
 #include <fastmm/venues/registry.hpp>
 #include <string>
-#include <vector>
 
 using fastmm::Config;
 using fastmm::ConfigError;
@@ -30,13 +29,21 @@ constexpr const char* kConfig = R"(
 kind = "echo"
 bid = "99.5"
 ask = "100.5"
-typo = 1
 
 [[instruments]]
 venue = "e"
 symbol = "ECHO"
 tick = "0.5"
 lot = "1"
+)";
+
+// The same with a key the echo connector does not have, on line 6.
+constexpr const char* kTypoConfig = R"(
+[venues.e]
+kind = "echo"
+bid = "99.5"
+ask = "100.5"
+typo = 1
 )";
 
 }  // namespace
@@ -54,14 +61,18 @@ int main() {
   const Config cfg = Config::parse(kConfig);
   check(cfg.warnings.empty(), "the central schema has nothing to say about the connector's keys");
 
-  // The venue's own keys are validated by the registry: `typo` is not one of them.
-  std::vector<std::string> warnings;
-  validate_venues(cfg, warnings, registry);
-  check(warnings.size() == 1, "one unknown key");
-  check(!warnings.empty() && warnings[0].find("venues.e.typo") != std::string::npos,
-        "the warning names the key");
-  check(!warnings.empty() && warnings[0].find("line 6") != std::string::npos,
-        "the warning carries the line");
+  // The venue's own keys are validated by the registry: `typo` is not one of them, and an unknown
+  // key stops the session with its line.
+  std::string unknown;
+  int unknown_line = 0;
+  try {
+    validate_venues(Config::parse(kTypoConfig), registry);
+  } catch (const ConfigError& e) {
+    unknown = e.what();
+    unknown_line = e.line();
+  }
+  check(unknown.find("venues.e.typo") != std::string::npos, "the error names the key");
+  check(unknown_line == 6, "the error carries the line");
 
   const std::unique_ptr<Venue> v = make_venue(VenueId{0}, cfg.venues.at(0), {}, registry);
   check(v != nullptr && v->name() == "e", "make_venue builds the connector");
