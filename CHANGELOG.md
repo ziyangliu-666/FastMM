@@ -275,6 +275,18 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- Binance Spot and USDⓈ-M with many symbols: a start sent every depth snapshot (weight 20 to 50
+  each), `myTrades` / `userTrades` query and `symbolConfig` query within a second, past the
+  minute's weight; the 429 came, the execution replay's fixed 5 s retry fell inside the pause the
+  venue asked for, and the 418 ban followed. The snapshots, history queries and order lookups now
+  take half the weight at most (`RateLimiter::kBulkShare`) and wait for the housekeeping timer
+  otherwise; a replay query that cannot go out waits for a later tick instead of failing its
+  stream (`ReplayScheduler::Hooks::can_query`, 180 s at most); a second 429 within a minute of the
+  last pause waits 2, 4, 8 ... s on top of `Retry-After`, up to 120 s; the start's blocking
+  `symbolConfig` and `account/commission` queries wait for their weight. Spot's `myTrades` queries
+  and both connectors' order lookups now read a 429 and a 418 by their status, and Spot's did not
+  check the weight before sending. Without `depth_limit` the snapshot depth is 1000 with up to 10
+  subscribed symbols and 100 above (it was 1000 always).
 - A combined-stream URL of more than about fourteen symbols never connected: the request target
   was copied through a 1 kB buffer, came out empty, and the upgrade request was refused. The
   target is now sized by the URL.

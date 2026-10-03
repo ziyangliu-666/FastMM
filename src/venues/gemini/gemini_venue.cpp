@@ -84,7 +84,8 @@ GeminiVenue::GeminiVenue(VenueId id, GeminiVenueConfig cfg)
                       [this] { return venue_time_ms(); },
                       [this](const ReplayQuery& q) { return query_trades(q); },
                       [this](bool complete) { reconcile_.replay_done(complete); },
-                      {}},  // rows carry client_order_id: no lookup
+                      {},  // rows carry client_order_id: no lookup
+                      {}},
                      [this](std::size_t s, const TradeRow& t) { return emit_trade(s, t); });
   ReplayLimits funding;
   funding.settle_ms = kSettleMs;
@@ -95,6 +96,7 @@ GeminiVenue::GeminiVenue(VenueId id, GeminiVenueConfig cfg)
                          [this] { return venue_time_ms(); },
                          [this](const ReplayQuery& q) { return query_funding(q); },
                          [](bool) {},
+                         {},
                          {}},
                         [this](std::size_t, const FundingRow& f) { return emit_funding_row(f); });
   funding_replay_.set_streams(1);

@@ -32,6 +32,10 @@
 //   * a query not answered within kQueryTimeoutNs has failed (the housekeeping timer checks):
 //     the replay ends incomplete, so a reconciliation waiting for it goes ahead without
 //     kExecutionsExact, and the retry follows. A late answer is not this replay's any more.
+//   * a query the connector cannot send yet (Hooks::can_query: the weight budget is spent, the
+//     venue asked for a pause) waits, and goes out at a housekeeping tick once it can: a start
+//     with many streams sends what fits and the rest tick by tick, and a retry during a pause
+//     waits for its end instead of earning the ban. One that waited kDeferTimeoutNs fails.
 //   * close() (disconnect) and abort() (the transport the queries went out on is gone) move the
 //     generation on: a reply to an earlier query is ignored. After close() nothing runs until
 //     open(); after abort() the retry follows.
@@ -125,6 +129,8 @@ class ReplaySchedulerBase {
   // timeout (http_timeout_ms, 5 s by default), which fails a REST query first; what it bounds is
   // a query on a WebSocket that stays up (Deribit), where nothing else does.
   static constexpr std::int64_t kQueryTimeoutNs = 30'000'000'000;
+  // A query that could not be sent for this long (Hooks::can_query) fails its stream.
+  static constexpr std::int64_t kDeferTimeoutNs = 180'000'000'000;
   // An open-ended window this close to window_ms gets an end: the venue's clock is not ours.
   static constexpr std::int64_t kClockSlackMs = 60'000;
   // Rows sent naming no order that the next replays try to name, and how many times.
@@ -139,6 +145,10 @@ class ReplaySchedulerBase {
     // Optional: asks the venue for an order (ReplayLookup); false: could not (rate limit, no
     // channel), which counts as a failed lookup.
     std::function<bool(const ReplayLookup&)> lookup;
+    // Optional: a query may go out now. False defers it to a later housekeeping tick (the
+    // connector's rate limiter: its bulk share of the weight is spent, or the venue asked for a
+    // pause) instead of failing its stream.
+    std::function<bool()> can_query;
   };
 
   ReplaySchedulerBase(const ReplaySchedulerBase&) = delete;
@@ -189,8 +199,12 @@ class ReplaySchedulerBase {
   [[nodiscard]] bool active() const noexcept { return active_; }
   [[nodiscard]] bool retry_pending() const noexcept { return retry_at_ns_ != 0; }
   [[nodiscard]] std::uint64_t replays() const noexcept { return replays_; }
-  // Queries that got no answer within kQueryTimeoutNs.
+  // Queries that got no answer within kQueryTimeoutNs, or waited kDeferTimeoutNs to be sent.
   [[nodiscard]] std::uint64_t timeouts() const noexcept { return timeouts_; }
+  // Queries that waited for Hooks::can_query at least once.
+  [[nodiscard]] std::uint64_t deferrals() const noexcept { return deferrals_; }
+  // Streams whose next query waits for Hooks::can_query now.
+  [[nodiscard]] std::size_t deferred() const noexcept;
   // True while the emit callback runs for a row that goes out naming no order and that a later
   // replay will send again, naming it or, having given up, not (OrderFillMsg::kUnresolved).
   [[nodiscard]] bool emitting_unresolved() const noexcept { return unresolved_; }
@@ -231,10 +245,12 @@ class ReplaySchedulerBase {
     std::vector<std::int64_t> known_ids;                 // set_known_ids(), ascending
     // The replay in progress.
     bool running = false;
-    bool awaiting = false;       // a query is out
-    std::int64_t cursor_ms = 0;  // the next window's start
-    ReplayQuery q;               // the query out (or last sent)
-    std::int64_t sent_ns = 0;    // when it went out
+    bool awaiting = false;         // a query is out
+    bool deferred = false;         // the next query waits for Hooks::can_query
+    std::int64_t deferred_ns = 0;  // since when
+    std::int64_t cursor_ms = 0;    // the next window's start
+    ReplayQuery q;                 // the query out (or last sent)
+    std::int64_t sent_ns = 0;      // when it went out
     std::size_t pages = 0;
     std::size_t window_pages = 0;
     std::int64_t low_ms = 0;  // oldest row of the window so far (newest_first)
@@ -264,6 +280,7 @@ class ReplaySchedulerBase {
   void start();
   void begin_window(std::size_t i);
   void send(std::size_t i);
+  void send_deferred(std::int64_t now_ns);
   void close_window(std::size_t i, bool more);
   void emit_window(std::size_t i, bool more);
   bool ask_lookups(std::size_t i);
@@ -303,6 +320,7 @@ class ReplaySchedulerBase {
   std::int64_t due_at_ns_ = 0;      // 0: none
   std::uint64_t replays_ = 0;
   std::uint64_t timeouts_ = 0;
+  std::uint64_t deferrals_ = 0;
   std::size_t emitted_ = 0;
   // Order lookups (Hooks::lookup).
   std::unordered_map<std::string, Lookup> lookups_;  // lookup_key -> out

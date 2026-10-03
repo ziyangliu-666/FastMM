@@ -6,8 +6,10 @@
 //   * order-count buckets - Binance ORDERS per 10 s / per day (X-MBX-ORDER-COUNT-10S),
 //                       Bybit create/cancel per second per UID.
 // The venue's own headers are authoritative: on_headers() overwrites the local estimate.
-// A cooldown (429 Retry-After, -1003, 10006) blocks every send until it expires; a hard
-// stop (418 IP ban) blocks until explicitly cleared.
+// A cooldown (429 Retry-After, -1003, 10006) blocks every send until it expires, and a second one
+// soon after the first waits longer each time; a hard stop (418 IP ban) blocks until explicitly
+// cleared. Bulk requests (a start-up's depth snapshots and history queries, one per symbol) check
+// against kBulkShare of the weight, so the rest of the window stays with the orders.
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -40,6 +42,16 @@ struct RateBucket {
 class RateLimiter {
  public:
   static constexpr std::size_t kMaxBuckets = 4;
+  // The part of each weight window a bulk request may fill (can_send's `share`): with 170
+  // symbols' snapshots and history queries sent as fast as they fit, the other half of the window
+  // still takes a cancel or a REST order.
+  static constexpr double kBulkShare = 0.5;
+  // A pause asked (429) within this long after the last one ended is the same incident going on:
+  // each such pause waits kBackoffBaseNs << n on top of Retry-After, up to kBackoffMaxNs. The
+  // venue's Retry-After names a second; a client back at once earns the next 429, then the ban.
+  static constexpr std::int64_t kStreakWindowNs = 60'000'000'000;
+  static constexpr std::int64_t kBackoffBaseNs = 1'000'000'000;
+  static constexpr std::int64_t kBackoffMaxNs = 120'000'000'000;
 
   explicit RateLimiter(double threshold = 0.9) noexcept : threshold_(threshold) {}
 
@@ -53,15 +65,17 @@ class RateLimiter {
   void set_threshold(double t) noexcept { threshold_ = std::clamp(t, 0.0, 1.0); }
 
   // True if a request of `weight` (and one order if is_order) fits under threshold * limit
-  // in every bucket and no cooldown/hard stop is active.
+  // in every bucket and no cooldown/hard stop is active. `share` < 1 (kBulkShare) leaves that
+  // part of each weight window to other requests.
   [[nodiscard]] bool can_send(std::uint32_t weight,
                               std::int64_t now,
-                              bool is_order = false) noexcept {
+                              bool is_order = false,
+                              double share = 1.0) noexcept {
     if (hard_stopped_ || now < cooldown_until_) return false;
     for (RateBucket& b : weight_) {
       if (!b.active) continue;
       b.roll(now);
-      if (b.would_exceed(weight, threshold_)) return false;
+      if (b.would_exceed(weight, threshold_ * share)) return false;
     }
     if (is_order) {
       for (RateBucket& b : orders_) {
@@ -116,12 +130,21 @@ class RateLimiter {
     b.used = static_cast<std::uint32_t>(std::max<std::int64_t>(0, limit - remaining));
   }
 
-  // 429 / -1003 / 10006: block sends until now + retry_after.
+  // 429 / -1003 / 10006: block sends until now + retry_after, or longer when the last pause
+  // ended less than kStreakWindowNs ago (the streak). A pause asked while one is on only extends
+  // it: the answers to the requests already in flight are one incident.
   void cooldown(std::int64_t retry_after_ns, std::int64_t now) noexcept {
-    cooldown_until_ = std::max(cooldown_until_, now + retry_after_ns);
+    if (now >= cooldown_until_) {
+      streak_ = cooldowns_ > 0 && now - cooldown_until_ <= kStreakWindowNs ? streak_ + 1 : 0;
+    }
+    const std::int64_t backoff =
+        streak_ == 0 ? 0 : std::min(kBackoffMaxNs, kBackoffBaseNs << std::min(streak_, 20U));
+    cooldown_until_ = std::max(cooldown_until_, now + std::max(retry_after_ns, backoff));
     ++cooldowns_;
   }
   [[nodiscard]] std::int64_t cooldown_until() const noexcept { return cooldown_until_; }
+  // Pauses in the current streak after the first.
+  [[nodiscard]] std::uint32_t streak() const noexcept { return streak_; }
   [[nodiscard]] bool in_cooldown(std::int64_t now) const noexcept { return now < cooldown_until_; }
 
   // 418: the IP is banned; stop REST entirely until an operator clears it.
@@ -154,7 +177,26 @@ class RateLimiter {
   std::array<RateBucket, kMaxBuckets> orders_{};
   std::int64_t cooldown_until_ = 0;
   std::uint64_t cooldowns_ = 0;
+  std::uint32_t streak_ = 0;
   bool hard_stopped_ = false;
 };
+
+// A blocking start-up request (reference data, account settings, one per symbol) waits for its
+// weight to fit the bulk share instead of spending what the connections about to open will need;
+// at most `max_wait_ns`, since nothing trades yet and a window is a minute.
+template <class Sleep>
+void wait_for_weight(RateLimiter& r,
+                     std::uint32_t weight,
+                     std::int64_t now_ns,
+                     std::int64_t max_wait_ns,
+                     Sleep&& sleep_ns) noexcept {
+  const std::int64_t until = now_ns + max_wait_ns;
+  std::int64_t now = now_ns;
+  while (now < until && !r.can_send(weight, now, false, RateLimiter::kBulkShare)) {
+    constexpr std::int64_t kStep = 100'000'000;
+    sleep_ns(kStep);
+    now += kStep;
+  }
+}
 
 }  // namespace fastmm::venues

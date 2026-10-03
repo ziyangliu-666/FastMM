@@ -22,10 +22,17 @@ void ReplaySchedulerBase::reset_streams() noexcept {
     Stream& s = streams_[i];
     s.running = false;
     s.awaiting = false;
+    s.deferred = false;
     s.resolving = 0;
     s.rows.clear();
     drop_rows(i);
   }
+}
+
+std::size_t ReplaySchedulerBase::deferred() const noexcept {
+  std::size_t n = 0;
+  for (const Stream& s : streams_) n += s.deferred ? 1 : 0;
+  return n;
 }
 
 void ReplaySchedulerBase::drop_lookups() noexcept {
@@ -149,7 +156,8 @@ void ReplaySchedulerBase::on_timer(std::int64_t now_ns) {
   if (!open_) return;
   if (active_) {
     // A retry it schedules waits for a later tick: kRetryNs after the replay ended.
-    expire(now_ns);
+    send_deferred(now_ns);
+    if (active_) expire(now_ns);
     return;
   }
   const bool retry = retry_at_ns_ != 0 && now_ns >= retry_at_ns_;
@@ -238,6 +246,15 @@ void ReplaySchedulerBase::begin_window(std::size_t i) {
 
 void ReplaySchedulerBase::send(std::size_t i) {
   Stream& s = streams_[i];
+  if (hooks_.can_query && !hooks_.can_query()) {
+    if (!s.deferred) {
+      s.deferred = true;
+      s.deferred_ns = net::Reactor::now_ns();
+      ++deferrals_;
+    }
+    return;
+  }
+  s.deferred = false;
   ++s.pages;
   s.awaiting = true;
   s.sent_ns = net::Reactor::now_ns();
@@ -245,6 +262,28 @@ void ReplaySchedulerBase::send(std::size_t i) {
   if (!expects(s.q)) return;  // the hook moved the generation on
   s.awaiting = false;
   stream_done(i, false);
+}
+
+// The housekeeping tick: the queries that waited for Hooks::can_query, in stream order, as far
+// as the budget now goes.
+void ReplaySchedulerBase::send_deferred(std::int64_t now_ns) {
+  const std::uint64_t gen = generation_;
+  for (std::size_t i = 0; i < streams_.size(); ++i) {
+    Stream& s = streams_[i];
+    if (!s.deferred) continue;
+    if (now_ns - s.deferred_ns >= kDeferTimeoutNs) {
+      ++timeouts_;
+      FASTMM_LOG_WARN("{}: {} query could not be sent for {} s; the replay is incomplete",
+                      name_,
+                      what_,
+                      kDeferTimeoutNs / 1'000'000'000);
+      s.deferred = false;
+      stream_done(i, false);
+    } else {
+      send(i);
+    }
+    if (!active_ || generation_ != gen) return;
+  }
 }
 
 bool ReplaySchedulerBase::expects(const ReplayQuery& q) const noexcept {
@@ -562,6 +601,7 @@ void ReplaySchedulerBase::stream_done(std::size_t i, bool ok) {
     Stream& s = streams_[i];
     s.running = false;
     s.awaiting = false;
+    s.deferred = false;
     s.rows.clear();
     drop_rows(i);
   }

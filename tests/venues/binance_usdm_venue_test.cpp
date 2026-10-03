@@ -13,12 +13,14 @@
 #include "fastmm/venues/registry.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string>
+#include <thread>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -119,6 +121,8 @@ struct Harness {
   std::atomic<bool> mark_price{false};  // the market stream sends a recorded markPriceUpdate
   std::atomic<int> user_trades_queries{0};
   std::atomic<int> user_trades_failures{0};  // the next N userTrades queries answer 503
+  std::atomic<int> user_trades_limited{0};   // the next N userTrades queries answer 429
+  std::atomic<int> retry_after_s{1};         // ...with this Retry-After
   std::mutex trades_mu;
   std::string user_trades = "[]";  // GET /fapi/v1/userTrades answer (trades_mu)
 
@@ -232,6 +236,14 @@ struct Harness {
       if (user_trades_failures.load() > 0) {
         --user_trades_failures;
         return net::HttpServerResponse::text(503, "Service Unavailable");
+      }
+      if (user_trades_limited.load() > 0) {
+        --user_trades_limited;
+        auto limited = net::HttpServerResponse::json(
+            429,
+            R"({"code":-1003,"msg":"Too many requests; current limit is 2400 request weight per 1 MINUTE."})");
+        limited.headers.emplace_back("Retry-After", std::to_string(retry_after_s.load()));
+        return limited;
       }
       const std::lock_guard<std::mutex> lock(trades_mu);
       return net::HttpServerResponse::json(200, user_trades);
@@ -680,6 +692,60 @@ TEST_CASE("binance_usdm.venue: an exchangeInfo larger than the streaming client'
   h.srv.stop();
 }
 
+TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk share of the weight") {
+  // 170 symbols at a start used to send every snapshot and history query within a second, past
+  // the minute's weight, and the 429 then the 418 followed. Here: a 16-weight window of 3 s,
+  // snapshots of weight 5 at limit 100, two symbols; the bulk share (0.5 of 0.9) takes one.
+  Harness h;
+  const std::string minute =
+      R"("rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000)";
+  const std::size_t at = h.exchange_info.find(minute);
+  REQUIRE(at != std::string::npos);
+  h.exchange_info.replace(
+      at,
+      minute.size(),
+      R"("rateLimitType":"REQUEST_WEIGHT","interval":"SECOND","intervalNum":3,"limit":16)");
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  REQUIRE(instruments.add(make_instrument("ETHUSDT", 0, "ETH", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  BinanceUsdmVenueConfig cfg = h.config(true);
+  cfg.depth_limit = 100;
+  BinanceUsdmVenue venue(VenueId{0}, std::move(cfg));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
+  venue.subscribe(ids);
+  // The limiter's windows are aligned to the clock (RateBucket::roll): start just inside one, so
+  // the second snapshot (0.5 s after the first, its stream sends no delta) finds the share spent.
+  constexpr std::int64_t kWindowNs = 3'000'000'000;
+  const std::int64_t boundary = (net::Reactor::now_ns() / kWindowNs + 1) * kWindowNs;
+  std::this_thread::sleep_for(
+      std::chrono::nanoseconds(boundary + 50'000'000 - net::Reactor::now_ns()));
+  venue.connect(reactor);
+  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 1; }));
+  const auto first = std::chrono::steady_clock::now();
+  // The second does not fit the share of this window: it waits, it is not dropped.
+  idle(reactor, 1500);
+  CHECK(h.depth_requests.load() == 1);
+  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 2; }, 6000));
+  const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - first)
+                          .count();
+  CHECK(waited >= 2000);
+  CHECK(h.srv.frames("depth")[0].find("limit=100") != std::string::npos);
+  REQUIRE(pump_until(reactor, [&] { return venue.md_feed()->synced_count() >= 1; }));
+  CHECK(venue.status().rate_limit_cooldowns == 0);  // a deferral is not a cooldown
+  venue.disconnect();
+  reactor.run_once(0);
+  h.srv.stop();
+}
+
 TEST_CASE("binance_usdm.config: section mapping and factory registration") {
   VenueSection s;
   s.name = "usdm";
@@ -697,6 +763,12 @@ TEST_CASE("binance_usdm.config: section mapping and factory registration") {
   s.extra["stale_ms"] = "10000";
   const BinanceUsdmVenueConfig c = make_binance_usdm_config(s, false);
   CHECK(c.depth_limit == 500);  // the next valid limit
+  // Without the key the depth follows the number of subscribed symbols.
+  s.extra.erase("depth_limit");
+  CHECK(make_binance_usdm_config(s, false).depth_limit == 0);
+  CHECK(auto_depth_limit(1) == 1000);
+  CHECK(auto_depth_limit(kDeepBookSymbols) == 1000);
+  CHECK(auto_depth_limit(kDeepBookSymbols + 1) == 100);
   CHECK_FALSE(c.ws_order_api);
   CHECK_FALSE(c.position_from_account_update);
   CHECK(c.stale_ms == 10000);
@@ -1261,6 +1333,35 @@ TEST_CASE("binance_usdm.venue: a failed userTrades query is retried from the hou
   CHECK(st.execution_queries >= 3);
   CHECK(st.execution_query_errors == 1);
   CHECK(st.executions_fetched >= 1);
+}
+
+TEST_CASE("binance_usdm.venue: a 429 holds the execution replay for Retry-After, no retry inside") {
+  // The replay's fixed 5 s retry used to fall inside the pause the venue asked for, and the query
+  // sent then earned the 418 ban.
+  DmsFixture f(0);
+  REQUIRE(f.pump([&] { return live_states(f.oc) >= 2 && reconcile_ends(f.oc) == 1; }));
+  f.h.set_user_trades("[" + user_trade(907, "70000.00", "0.0004", "0.0112") + "]");
+  f.h.retry_after_s.store(7);
+  f.h.user_trades_limited.store(1);
+  const int queries = f.h.user_trades_queries.load();
+  const auto asked = std::chrono::steady_clock::now();
+  f.venue->request_open_orders();
+  REQUIRE(f.pump([&] { return f.h.user_trades_queries.load() == queries + 1; }));
+  REQUIRE(f.pump([&] { return reconcile_ends(f.oc) == 2; }));
+  CHECK_FALSE(begin_exact(f.oc, 1));
+  CHECK(f.venue->rate_limiter().in_cooldown(net::Reactor::now_ns()));
+  // Past the 5 s retry: still nothing, the pause holds it.
+  REQUIRE(f.pump([&] { return f.h.user_trades_queries.load() > queries + 1; }, 5500) == false);
+  CHECK(f.h.user_trades_queries.load() == queries + 1);
+  // Once the pause is over the deferred query goes out, and the fill with it.
+  REQUIRE(f.pump([&] { return f.h.user_trades_queries.load() == queries + 2; }, 6000));
+  const auto waited =
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - asked)
+          .count();
+  CHECK(waited >= 7);
+  REQUIRE(f.pump([&] { return index_of_fill(f.oc, "907") != SIZE_MAX; }));
+  REQUIRE(f.pump([&] { return f.venue->status().rate_limit_cooldowns >= 1; }));
+  CHECK(f.venue->status().execution_query_errors == 1);
 }
 
 TEST_CASE(

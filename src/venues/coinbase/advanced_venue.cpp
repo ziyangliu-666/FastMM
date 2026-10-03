@@ -67,7 +67,8 @@ CoinbaseAdvancedVenue::CoinbaseAdvancedVenue(VenueId id, AdvancedVenueConfig cfg
        [this] { return venue_time_ms(); },
        [this](const ReplayQuery& q) { return query_fills(q); },
        [this](bool complete) { reconcile_.replay_done(complete); },
-       [this](const ReplayLookup& l) { return lookup_order(l); }},
+       [this](const ReplayLookup& l) { return lookup_order(l); },
+       {}},
       [this](std::size_t, const AdvFillRow& f) { return emit_replayed(f); },
       [this](std::size_t, const AdvFillRow& f) {
         return !f.order_id.empty() && !name_of(f.order_id).valid() ? f.order_id : std::string{};

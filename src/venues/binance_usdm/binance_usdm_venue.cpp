@@ -14,8 +14,10 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 namespace fastmm::venues::binance_usdm {
 
@@ -35,6 +37,10 @@ constexpr int kUserTradesLimit = 1000;
 constexpr std::int64_t kUserTradesWindowMs = 7LL * 24 * 3600 * 1000;
 constexpr std::int64_t kUserTradesHistoryMs = 90LL * 24 * 3600 * 1000;
 constexpr std::size_t kUserTradesMaxPages = 10;  // per symbol and replay
+constexpr std::uint32_t kUserTradesWeight = 5;   // "Account Trade List"
+constexpr std::uint32_t kIncomeWeight = 30;      // "Get Income History"
+// How long a blocking start-up request waits for its weight (wait_for_weight): a window and some.
+constexpr std::int64_t kStartupWaitNs = 65'000'000'000;
 // "Get Income History": limit max 1000, a range of at most 7 days, the last 3 months.
 constexpr std::size_t kIncomeMaxPages = 20;
 constexpr std::int64_t kLogonRetryNs = 2 * kSecNs;
@@ -91,7 +97,10 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
        [this] { return venue_time_ms(); },
        [this](const ReplayQuery& q) { return query_executions(q); },
        [this](bool complete) { reconcile_.replay_done(complete); },
-       [this](const ReplayLookup& l) { return lookup_order(l); }},
+       [this](const ReplayLookup& l) { return lookup_order(l); },
+       [this] {
+         return rate_.can_send(kUserTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+       }},
       [this](std::size_t stream, const binance::MyTradeRow& t) {
         return emit_execution(stream, t);
       },
@@ -109,7 +118,8 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
        [this] { return venue_time_ms(); },
        [this](const ReplayQuery& q) { return query_funding(q); },
        [](bool) {},
-       {}},
+       {},
+       [this] { return rate_.can_send(kIncomeWeight, now_ns(), false, RateLimiter::kBulkShare); }},
       [this](std::size_t, const IncomeRecord& row) { return emit_funding_row(row); });
   funding_replay_.set_streams(1);
 }
@@ -347,7 +357,14 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
               signer_, cfg_.recv_window_ms, path, symbol, venue_time_ms(), weight, rr))
         return HttpReply{};
       const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
-      return http.request("GET", target, api_headers());
+      // Before the connections open, within the bulk share of the weight: symbolConfig is one per
+      // symbol, and the weight it spends is the snapshots' and replay's a moment later.
+      wait_for_weight(rate_, weight, now_ns(), kStartupWaitNs, [](std::int64_t ns) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+      });
+      HttpReply reply = http.request("GET", target, api_headers());
+      rate_.on_sent(weight, now_ns());
+      return reply;
     };
     // "Get Current Position Mode": IP weight 30.
     const HttpReply mode = signed_get("/fapi/v1/positionSide/dual", {}, 30);
@@ -465,6 +482,7 @@ void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
   }
   exec_replay_.set_streams(subscribed_.size());
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_) {
     // The stream lists live in the URLs: reopen the market-data connections.
@@ -687,14 +705,15 @@ void BinanceUsdmVenue::request_snapshot(InstrumentId id) {
     md_feed_->on_snapshot_failed(id, now_ns());
     return;
   }
-  const std::uint32_t weight = depth_weight(cfg_.depth_limit);
-  if (!rate_.can_send(weight, now_ns())) {
-    ++stats_.rate_limit_cooldowns;
+  // Within the bulk share of the weight: a start with many symbols sends what fits and the depth
+  // sync asks again from the housekeeping timer for the rest.
+  const std::uint32_t weight = depth_weight(depth_limit_);
+  if (!rate_.can_send(weight, now_ns(), false, RateLimiter::kBulkShare)) {
     md_feed_->on_snapshot_failed(id, now_ns());
     return;
   }
-  const std::string target = fmt::format(
-      "/fapi/v1/depth?symbol={}&limit={}", symbols_->venue_symbol(id), cfg_.depth_limit);
+  const std::string target =
+      fmt::format("/fapi/v1/depth?symbol={}&limit={}", symbols_->venue_symbol(id), depth_limit_);
   std::weak_ptr<int> alive = alive_;
   const bool queued =
       rest_->request("GET", target, {}, {}, [this, alive, id](const net::HttpResponse& r) {
@@ -1704,8 +1723,9 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
       !encoder_->encode_rest_user_trades(
           symbol, q.from_id, q.start_ms, q.end_ms, kUserTradesLimit, venue_time_ms(), rr))
     return false;
-  // Not while the venue asked for a pause or the minute's weight is spent: the replay asks again.
-  if (!rate_.can_send(rr.weight, now_ns())) return false;
+  // Not while the venue asked for a pause or the bulk share of the weight is spent: the replay
+  // asks again (Hooks::can_query keeps most queries from getting this far).
+  if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
@@ -1777,7 +1797,7 @@ bool BinanceUsdmVenue::lookup_order(const ReplayLookup& l) {
   RestRequest rr;
   if (symbol.empty() || !encoder_->encode_rest_query_order(symbol, order_id, venue_time_ms(), rr))
     return false;
-  if (!rate_.can_send(rr.weight, now_ns())) return false;
+  if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
@@ -1825,7 +1845,7 @@ bool BinanceUsdmVenue::query_funding(const ReplayQuery& q) {
   if (!encoder_->encode_rest_funding_income(
           q.start_ms, q.end_ms, kUserTradesLimit, venue_time_ms(), rr))
     return false;
-  if (!rate_.can_send(rr.weight, now_ns())) return false;
+  if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(

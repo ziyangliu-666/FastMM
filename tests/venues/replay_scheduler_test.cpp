@@ -27,6 +27,7 @@ struct Rig {
   std::vector<bool> finished;
   std::int64_t now_ms = kNow;
   bool can_send = true;
+  int budget = -1;  // queries Hooks::can_query admits before it says no; -1: every one
 
   explicit Rig(ReplayLimits limits = {}, std::size_t streams = 1) {
     ReplaySchedulerBase::Hooks h;
@@ -37,6 +38,12 @@ struct Rig {
       return can_send;
     };
     h.finished = [this](bool complete) { finished.push_back(complete); };
+    h.can_query = [this] {
+      if (budget < 0) return true;
+      if (budget == 0) return false;
+      --budget;
+      return true;
+    };
     sched.setup("fake", "row(s)", limits, h, [this](std::size_t, const std::string& r) {
       if (r.rfind("other:", 0) == 0) return false;  // not traded here
       emitted.push_back(r);
@@ -204,6 +211,55 @@ TEST_CASE("replay_scheduler: an incomplete replay is retried kRetryNs after it e
   CHECK(w.queries.size() == 1);
   w.sched.on_timer(net::Reactor::now_ns() + w.sched.limits().sweep_ns + 1);
   CHECK(w.queries.size() == 2);
+}
+
+TEST_CASE("replay_scheduler: a query the connector cannot send yet waits for a later tick") {
+  // 170 symbols' history queries at a start: the rate limiter admits what fits its bulk share,
+  // and the rest go out tick by tick instead of each failing its stream and the whole replay
+  // being retried kRetryNs later.
+  Rig r({}, 3);
+  r.budget = 1;
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 1);
+  CHECK(r.queries[0].stream == 0);
+  CHECK(r.sched.deferred() == 2);
+  CHECK(r.sched.deferrals() == 2);
+  r.answer({{kNow - kMin, "a"}});
+  CHECK(r.finished.empty());  // two streams still to read
+  const std::int64_t now = net::Reactor::now_ns();
+  r.sched.on_timer(now + 1'000'000'000);  // nothing fits yet
+  CHECK(r.queries.size() == 1);
+  r.budget = 1;
+  r.sched.on_timer(now + 2'000'000'000);
+  REQUIRE(r.queries.size() == 2);
+  CHECK(r.queries[1].stream == 1);
+  CHECK(r.sched.deferred() == 1);
+  r.budget = -1;
+  r.sched.on_timer(now + 3'000'000'000);
+  REQUIRE(r.queries.size() == 3);
+  CHECK(r.queries[2].stream == 2);
+  CHECK(r.sched.deferred() == 0);
+  r.answer({}, false, {}, &r.queries[1]);
+  r.answer({{kNow - 30'000, "c"}}, false, {}, &r.queries[2]);
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);  // deferred, not failed: the replay is complete
+  CHECK(r.emitted == std::vector<std::string>{"a", "c"});
+  CHECK(r.sched.deferrals() == 2);
+
+  // One that cannot go out for kDeferTimeoutNs fails its stream, and the replay is retried.
+  Rig t;
+  t.budget = 0;
+  REQUIRE(t.sched.run());
+  CHECK(t.queries.empty());
+  CHECK(t.sched.active());
+  t.sched.on_timer(net::Reactor::now_ns() + ReplaySchedulerBase::kDeferTimeoutNs / 2);
+  CHECK(t.sched.active());
+  t.sched.on_timer(net::Reactor::now_ns() + ReplaySchedulerBase::kDeferTimeoutNs + 1);
+  CHECK_FALSE(t.sched.active());
+  REQUIRE(t.finished.size() == 1);
+  CHECK_FALSE(t.finished[0]);
+  CHECK(t.sched.retry_pending());
+  CHECK(t.sched.timeouts() == 1);
 }
 
 TEST_CASE("replay_scheduler: a query never answered fails after kQueryTimeoutNs") {

@@ -42,7 +42,11 @@ constexpr VenueKeySpec kBinanceKeys[] = {
      false,
      "keepPriority amendments allowed on one order before falling back to cancelReplace "
      "(default 10, the venue's MAX_NUM_ORDER_AMENDS filter)"},
-    {"depth_limit", KeyType::Int, false, "REST snapshot depth, 5 to 5000"},
+    {"depth_limit",
+     KeyType::Int,
+     false,
+     "REST snapshot depth, 5 to 5000 (weight 5 up to 100, 25 up to 500, 50 up to 1000, 250 "
+     "above); default: 1000 with up to 10 subscribed symbols, else 100"},
     {"key_type", KeyType::String, false, "hmac (default) | ed25519"},
     {"private_key_file",
      KeyType::String,

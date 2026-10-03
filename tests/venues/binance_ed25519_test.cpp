@@ -184,6 +184,13 @@ TEST_CASE("binance.ed25519: config keys for key files, env, md_format and the SB
   CHECK(c.credentials.type == binance::KeyType::Ed25519);
   CHECK(binance::Signer(c.credentials).usable());
   CHECK(c.md_format == binance::MdFormat::Json);
+  // Without depth_limit the snapshot depth follows the number of subscribed symbols.
+  CHECK(c.depth_limit == 0);
+  CHECK(binance::auto_depth_limit(binance::kDeepBookSymbols) == 1000);
+  CHECK(binance::auto_depth_limit(binance::kDeepBookSymbols + 1) == 100);
+  extra["depth_limit"] = "7000";
+  CHECK(binance::make_binance_config(v, false).depth_limit == 5000);
+  extra.erase("depth_limit");
 
   // The PEM from an environment variable (wins over the file).
   ::setenv("FASTMM_TEST_ED25519_PEM", private_pem().c_str(), 1);

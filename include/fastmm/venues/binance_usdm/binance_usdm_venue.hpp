@@ -128,7 +128,9 @@ struct BinanceUsdmVenueConfig {
   // venue does not modify an RPI order, so use it with supports_replace = false.
   bool post_only_rpi = false;
   bool supports_replace = true;  // order.modify
-  int depth_limit = 1000;        // GET /fapi/v1/depth limit: 5, 10, 20, 50, 100, 500, 1000
+  // GET /fapi/v1/depth limit: 5, 10, 20, 50, 100, 500, 1000. 0: by the subscribed symbols
+  // (auto_depth_limit): 1000 (weight 20) up to kDeepBookSymbols of them, else 100 (weight 5).
+  int depth_limit = 0;
   std::uint32_t stale_ms = 2000;
   std::uint32_t dead_ms = 10'000;
   std::uint64_t max_lifetime_ms = 23ULL * 3600 * 1000;  // connections are cut at 24 h
@@ -139,6 +141,12 @@ struct BinanceUsdmVenueConfig {
   std::uint32_t http_timeout_ms = 5000;
   net::BackoffConfig backoff{};
 };
+
+// The depth a session of `symbols` snapshots with when depth_limit is 0 (BinanceUsdmVenueConfig).
+inline constexpr std::size_t kDeepBookSymbols = 10;
+[[nodiscard]] inline int auto_depth_limit(std::size_t symbols) noexcept {
+  return symbols <= kDeepBookSymbols ? 1000 : 100;
+}
 
 class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
  public:
@@ -362,6 +370,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
+
+  int depth_limit_ = 1000;  // the snapshot depth in use (cfg_.depth_limit or auto_depth_limit)
   // GET /fapi/v1/fundingInfo's interval of each listed instrument (load_reference_data()).
   std::vector<std::pair<InstrumentId, Duration>> funding_intervals_;
   CountdownDriver dms_;

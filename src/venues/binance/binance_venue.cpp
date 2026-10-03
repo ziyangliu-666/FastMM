@@ -12,10 +12,12 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 namespace fastmm::venues::binance {
 
@@ -32,6 +34,9 @@ constexpr std::int64_t kLogonRetryNs = 2'000'000'000;
 constexpr int kMyTradesLimit = 1000;
 constexpr std::int64_t kMyTradesWindowMs = 24LL * 3600 * 1000;
 constexpr std::size_t kMyTradesMaxPages = 10;  // per symbol and replay (weight 20 each)
+constexpr std::uint32_t kMyTradesWeight = 20;
+// How long a blocking start-up request waits for its weight (wait_for_weight): a window and some.
+constexpr std::int64_t kStartupWaitNs = 65'000'000'000;
 // rest-api.md "Order book" weight by limit: 1-100:5, 101-500:25, 501-1000:50, 1001-5000:250.
 std::uint32_t depth_weight(int limit) noexcept {
   if (limit <= 100) return 5;
@@ -62,7 +67,10 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
        [this] { return venue_time_ms(); },
        [this](const ReplayQuery& q) { return query_executions(q); },
        [this](bool complete) { reconcile_.replay_done(complete); },
-       [this](const ReplayLookup& l) { return lookup_order(l); }},
+       [this](const ReplayLookup& l) { return lookup_order(l); },
+       [this] {
+         return rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+       }},
       [this](std::size_t stream, const MyTradeRow& t) { return emit_execution(stream, t); },
       [this](std::size_t, const MyTradeRow& t) {
         return t.order_id > 0 && order_ids_.find(static_cast<std::uint64_t>(t.order_id)) == nullptr
@@ -242,8 +250,13 @@ Result<std::vector<VenueFee>, std::string> BinanceVenue::account_fees(
       if (!enc.encode_rest_commission(inst.symbol.view(), venue_time_ms(), rr))
         return fail(fmt::format(
             "{}: cannot sign account/commission for {}", cfg_.name, inst.symbol.view()));
+      // One per symbol, before the connections open: within the bulk share of the weight.
+      wait_for_weight(rate_, rr.weight, now_ns(), kStartupWaitNs, [](std::int64_t ns) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+      });
       const HttpReply reply = http.request(
           "GET", std::string(rr.path) + "?" + std::string(rr.query.view()), api_headers());
+      rate_.on_sent(rr.weight, now_ns());
       if (!reply.ok())
         return fail(fmt::format(
             "{}: account/commission for {} failed: {}",
@@ -302,6 +315,7 @@ void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
   }
   exec_replay_.set_streams(subscribed_.size());
   stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_ && md_conn_.opened()) {
     // Stream list lives in the URL: reopen the market-data connection.
@@ -520,14 +534,15 @@ void BinanceVenue::request_snapshot(InstrumentId id) {
     md_feed_->on_snapshot_failed(id, now_ns());
     return;
   }
-  const std::uint32_t weight = depth_weight(cfg_.depth_limit);
-  if (!rate_.can_send(weight, now_ns())) {
-    ++stats_.rate_limit_cooldowns;
+  // Within the bulk share of the weight: a start with many symbols sends what fits and the depth
+  // sync asks again from the housekeeping timer for the rest.
+  const std::uint32_t weight = depth_weight(depth_limit_);
+  if (!rate_.can_send(weight, now_ns(), false, RateLimiter::kBulkShare)) {
     md_feed_->on_snapshot_failed(id, now_ns());
     return;
   }
   const std::string target =
-      fmt::format("/api/v3/depth?symbol={}&limit={}", symbols_->venue_symbol(id), cfg_.depth_limit);
+      fmt::format("/api/v3/depth?symbol={}&limit={}", symbols_->venue_symbol(id), depth_limit_);
   std::weak_ptr<int> alive = alive_;
   const bool queued =
       rest_->request("GET", target, {}, {}, [this, alive, id](const net::HttpResponse& r) {
@@ -1459,6 +1474,29 @@ bool BinanceVenue::exec_ready() const noexcept {
          !rest_hard_stopped_ && !subscribed_.empty();
 }
 
+void BinanceVenue::replay_query_failed(std::string_view what, const net::HttpResponse& r) {
+  ++stats_.rest_errors;
+  int code = 0;
+  std::string msg;
+  if (r.error == net::NetError::None && (r.status == 429 || r.status == 418)) {
+    // The status says more than the body's -1003, which both carry: 429 waits Retry-After, 418
+    // is the ban a query sent during that wait earns, and stops REST.
+    apply_action(map_http_status(r.status).action,
+                 r.status,
+                 r.body.substr(0, 120),
+                 header_int(r, "Retry-After") * 1000);
+  } else if (r.error == net::NetError::None && decode_rest_error(r.body, code, msg)) {
+    const ErrorMapping m = map_error(code, msg);
+    if (m.action != VenueAction::Reconcile) apply_action(m.action, code, msg, -1);
+  }
+  FASTMM_LOG_ERROR("{}: GET {} failed: status={} err={} {}; asked again",
+                   cfg_.name,
+                   what,
+                   r.status,
+                   net::to_string(r.error),
+                   r.body.substr(0, 120));
+}
+
 bool BinanceVenue::query_executions(const ReplayQuery& q) {
   if (rest_ == nullptr || rest_hard_stopped_ || q.stream >= subscribed_.size()) return false;
   const std::string_view symbol =
@@ -1468,6 +1506,9 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
       !encoder_->encode_rest_my_trades(
           symbol, q.from_id, q.start_ms, q.end_ms, kMyTradesLimit, venue_time_ms(), rr))
     return false;
+  // Not while the venue asked for a pause or the bulk share of the weight is spent: the replay
+  // asks again (Hooks::can_query keeps most queries from getting this far).
+  if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
@@ -1477,14 +1518,8 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
-          ++stats_.rest_errors;
           ++stats_.execution_query_errors;
-          FASTMM_LOG_ERROR(
-              "{}: GET myTrades failed: status={} err={}; this reconciliation cannot book the "
-              "fills the private stream missed",
-              cfg_.name,
-              r.status,
-              net::to_string(r.error));
+          replay_query_failed("myTrades", r);
           exec_replay_.failed(q);
           return;
         }
@@ -1546,7 +1581,7 @@ bool BinanceVenue::lookup_order(const ReplayLookup& l) {
   RestRequest rr;
   if (symbol.empty() || !encoder_->encode_rest_query_order(symbol, order_id, venue_time_ms(), rr))
     return false;
-  if (!rate_.can_send(rr.weight, now_ns())) return false;
+  if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
@@ -1555,12 +1590,7 @@ bool BinanceVenue::lookup_order(const ReplayLookup& l) {
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
-          ++stats_.rest_errors;
-          FASTMM_LOG_WARN("{}: GET order {} failed: status={} err={}; its fill names no order yet",
-                          cfg_.name,
-                          order_id,
-                          r.status,
-                          net::to_string(r.error));
+          replay_query_failed("order", r);
           exec_replay_.looked_up(l, LookupResult::Failed);
           return;
         }
@@ -1887,8 +1917,8 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
   if (us == "listen_key") c.user_stream = UserStreamMode::ListenKey;
   if (us == "none") c.user_stream = UserStreamMode::None;
   if (extra("order_api") == "rest") c.ws_order_api = false;
-  c.depth_limit =
-      static_cast<int>(std::clamp<std::int64_t>(x.integer("depth_limit", c.depth_limit), 5, 5000));
+  if (const std::int64_t d = x.integer("depth_limit", 0); d > 0)
+    c.depth_limit = static_cast<int>(std::clamp<std::int64_t>(d, 5, 5000));
   c.stale_ms = static_cast<std::uint32_t>(x.integer("stale_ms", c.stale_ms));
   c.dead_ms = static_cast<std::uint32_t>(x.integer("dead_ms", c.dead_ms));
   check_liveness(v.name, x.integer("stale_ms", c.stale_ms), x.integer("dead_ms", c.dead_ms));

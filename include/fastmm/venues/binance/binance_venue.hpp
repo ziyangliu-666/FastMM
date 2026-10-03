@@ -24,7 +24,9 @@
 //
 // Rate limits: REQUEST_WEIGHT / ORDERS buckets from exchangeInfo.rateLimits; WS API
 // responses carry `rateLimits[]` and REST responses X-MBX-USED-WEIGHT-1M /
-// X-MBX-ORDER-COUNT-10S; 429 -> Retry-After cooldown; 418 -> REST hard stop.
+// X-MBX-ORDER-COUNT-10S; 429 -> Retry-After cooldown, longer for one soon after another; 418 ->
+// REST hard stop. The start's snapshots, history queries and order lookups, one per symbol, take
+// the rate limiter's bulk share of the weight (RateLimiter::kBulkShare) and wait for the rest.
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/containers/recent_map.hpp"
 #include "fastmm/core/log.hpp"
@@ -88,7 +90,9 @@ struct BinanceVenueConfig {
   // Amendments allowed on one order before falling back to cancelReplace; the venue's own
   // MAX_NUM_ORDER_AMENDS filter is 10 where it is published.
   std::uint16_t max_order_amends = kDefaultMaxOrderAmends;
-  int depth_limit = 1000;  // GET /api/v3/depth limit (weight 50)
+  // GET /api/v3/depth limit. 0: by the subscribed symbols (auto_depth_limit): 1000 (weight 50) up
+  // to kDeepBookSymbols of them, else 100 (weight 5), since every book is snapshotted at start.
+  int depth_limit = 0;
   std::uint32_t stale_ms = 2000;
   std::uint32_t dead_ms = 10'000;
   std::uint64_t max_lifetime_ms = 23ULL * 3600 * 1000;  // roll over before the 24 h cut
@@ -98,6 +102,12 @@ struct BinanceVenueConfig {
   std::uint32_t http_timeout_ms = 5000;
   net::BackoffConfig backoff{};
 };
+
+// The depth a session of `symbols` snapshots with when depth_limit is 0 (BinanceVenueConfig).
+inline constexpr std::size_t kDeepBookSymbols = 10;
+[[nodiscard]] inline int auto_depth_limit(std::size_t symbols) noexcept {
+  return symbols <= kDeepBookSymbols ? 1000 : 100;
+}
 
 class BinanceVenue final : public Venue, private ReconcileHooks {
  public:
@@ -253,6 +263,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   bool emit_execution(std::size_t stream, const MyTradeRow& t);
   // GET /api/v3/order?orderId= for a replayed execution whose order order_ids_ does not name.
   bool lookup_order(const ReplayLookup& l);
+  // A history or lookup query the venue refused: 429 and 418 by their status, else by the body.
+  void replay_query_failed(std::string_view what, const net::HttpResponse& r);
   void publish_status() noexcept;
   // An order the shadow table had no room for goes back as OrderTableFull.
   void refuse_untracked(const OrderCommand& cmd);
@@ -296,6 +308,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   RawRecorder raw_order_;
 
   std::vector<InstrumentId> subscribed_;
+
+  int depth_limit_ = 1000;  // the snapshot depth in use (cfg_.depth_limit or auto_depth_limit)
   // Venue order id -> the client order id this session gave it, so an execution the trade history
   // reports (which names only orderId) reaches the order it belongs to. A restarted process starts
   // empty: the execution replay asks the venue for an order it names that is not here

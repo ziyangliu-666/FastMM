@@ -129,7 +129,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
 | `amend_keep_priority` | boolean |  | reduce size with order.amend.keepPriority, which keeps the queue position, instead of order.cancelReplace (default true) |
 | `max_order_amends` | integer |  | keepPriority amendments allowed on one order before falling back to cancelReplace (default 10, the venue's MAX_NUM_ORDER_AMENDS filter) |
-| `depth_limit` | integer |  | REST snapshot depth, 5 to 5000 |
+| `depth_limit` | integer |  | REST snapshot depth, 5 to 5000 (weight 5 up to 100, 25 up to 500, 50 up to 1000, 250 above); default: 1000 with up to 10 subscribed symbols, else 100 |
 | `key_type` | string |  | hmac (default) \| ed25519 |
 | `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
 | `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
@@ -153,7 +153,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `post_only_rpi` | boolean |  | send post-only orders as RPI (matched only against app and web orders, hidden from the API depth) instead of GTX; needs supports_replace = false (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
-| `depth_limit` | integer |  | REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000 |
+| `depth_limit` | integer |  | REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000 (weight 2, 5, 10 or 20); default: 1000 with up to 10 subscribed symbols, else 100 |
 | `key_type` | string |  | hmac (default) \| ed25519 |
 | `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
 | `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |

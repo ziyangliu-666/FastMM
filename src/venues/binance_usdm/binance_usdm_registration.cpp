@@ -40,7 +40,11 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      KeyType::Bool,
      false,
      "acknowledge orders from the request response, not the event stream (default true)"},
-    {"depth_limit", KeyType::Int, false, "REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000"},
+    {"depth_limit",
+     KeyType::Int,
+     false,
+     "REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000 (weight 2, 5, 10 or 20); default: 1000 "
+     "with up to 10 subscribed symbols, else 100"},
     {"key_type", KeyType::String, false, "hmac (default) | ed25519"},
     {"private_key_file",
      KeyType::String,
