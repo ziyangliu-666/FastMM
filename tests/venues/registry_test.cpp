@@ -90,31 +90,36 @@ stale_ms = 10000
 order_api = "rest"
 not_a_real_key = 1
 )");
-  std::vector<std::string> warnings;
   const VenueRegistry r = builtins();
-  validate_venues(cfg, warnings, r);
-  REQUIRE(warnings.size() == 1);
-  CHECK(warnings[0] == "unknown key 'venues.b.not_a_real_key' ignored (line 6)");
+  // A key the connector does not have stops the session, with the line.
+  try {
+    validate_venues(cfg, r);
+    FAIL("an unknown venue key passed");
+  } catch (const ConfigError& e) {
+    CHECK(std::string(e.what()) ==
+          "unknown key 'venues.b.not_a_real_key' (the binance_spot connector does not have it) "
+          "(line 6:1)");
+    CHECK(e.line() == 6);
+  }
+  const Config fine = Config::parse(
+      "[venues.b]\nkind = \"binance_spot\"\nstale_ms = 10000\norder_api = \"rest\"\n");
+  CHECK_NOTHROW(validate_venues(fine, r));
 
   // A key of the wrong type stops the session, with the line, as the central schema does.
   const Config bad = Config::parse("[venues.b]\nkind = \"binance_spot\"\nstale_ms = \"soon\"\n");
-  std::vector<std::string> ignored;
   CHECK_THROWS_WITH_AS(
-      validate_venues(bad, ignored, r),
+      validate_venues(bad, r),
       doctest::Contains("'venues.b.stale_ms' has the wrong type (expected integer)"),
       ConfigError);
 
   // A key another connector owns is unknown here.
   const Config other = Config::parse("[venues.b]\nkind = \"bybit\"\nmd_format = \"sbe\"\n");
-  std::vector<std::string> bybit_warnings;
-  validate_venues(other, bybit_warnings, r);
-  REQUIRE(bybit_warnings.size() == 1);
-  CHECK(bybit_warnings[0].find("venues.b.md_format") != std::string::npos);
+  CHECK_THROWS_WITH_AS(
+      validate_venues(other, r), doctest::Contains("venues.b.md_format"), ConfigError);
 
   // An unknown kind names the ones that are registered.
   const Config unknown = Config::parse("[venues.b]\nkind = \"nope\"\n");
-  std::vector<std::string> unused;
-  CHECK_THROWS_WITH_AS(validate_venues(unknown, unused, r),
+  CHECK_THROWS_WITH_AS(validate_venues(unknown, r),
                        doctest::Contains("unsupported kind 'nope' (registered: binance_spot"),
                        std::invalid_argument);
 }
@@ -165,4 +170,33 @@ TEST_CASE("venues.registry: make_venue builds the connector its kind names") {
   CHECK(v->name() == "v");
   CHECK_THROWS_AS(static_cast<void>(make_venue(VenueId{0}, section("nope"), opts, r)),
                   std::invalid_argument);
+}
+
+TEST_CASE("venues.registry: stale_ms past dead_ms is refused when the connector is built") {
+  // The Connection would refuse it on the venue's thread, where nothing catches the exception.
+  const VenueRegistry r = builtins();
+  VenueFactoryOptions opts;
+  opts.dry_run = true;
+  for (const char* kind : {"binance_spot",
+                           "binance_usdm",
+                           "bybit",
+                           "coinbase_advanced",
+                           "coinbase_exchange",
+                           "deribit",
+                           "gemini",
+                           "okx"}) {
+    INFO(kind);
+    VenueSection s = section(kind);
+    s.ws_url = "wss://127.0.0.1:9080/stream";
+    s.rest_url = "https://127.0.0.1:9080";
+    s.extra["stale_ms"] = "60000";
+    s.extra["dead_ms"] = "10000";
+    CHECK_THROWS_WITH_AS(static_cast<void>(make_venue(VenueId{0}, s, opts, r)),
+                         doctest::Contains("require 0 < stale_ms <= dead_ms"),
+                         std::invalid_argument);
+    s.extra["stale_ms"] = "0";
+    CHECK_THROWS_WITH_AS(static_cast<void>(make_venue(VenueId{0}, s, opts, r)),
+                         doctest::Contains("require 0 < stale_ms <= dead_ms"),
+                         std::invalid_argument);
+  }
 }

@@ -13,12 +13,12 @@ class BacktestConfig:
     @staticmethod
     def from_toml(path: typing.Any) -> BacktestConfig:
         """
-        Load a FastMM TOML config (sections [engine] [[instruments]] [strategy] [risk] [venues.<x>.fees] [sim] [backtest]). Raises ConfigError; unknown keys issue a UserWarning each and are listed in warnings.
+        Load a FastMM TOML config (sections [engine] [[instruments]] [strategy] [risk] [venues.<x>.fees] [sim] [backtest]). Raises ConfigError, also for an unknown key or section; other warnings are listed in warnings.
         """
     @staticmethod
     def from_toml_string(text: str) -> BacktestConfig:
         """
-        Parse a TOML document held in a string. Raises ConfigError; unknown keys issue a UserWarning each.
+        Parse a TOML document held in a string. Raises ConfigError, also for an unknown key or section.
         """
     @staticmethod
     def single_instrument(symbol: str, tick: str, lot: str) -> BacktestConfig:

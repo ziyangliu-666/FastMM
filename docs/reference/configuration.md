@@ -7,7 +7,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 
 ## General rules
 
-- Unknown keys are ignored with a warning that names the key and its line.
+- An unknown key or section is an error that names the key and its line; so is a `[venues.<name>]` key the connector its `kind` names does not have, and a `[strategy.params]` key the strategy does not declare.
 - A key with the wrong type is an error, reported with its line and column.
 - Decimal keys (`tick`, `lot`, `max_order_qty`, `max_loss`, ...) accept `"0.01"` or `0.01`; both are parsed as decimal text into fixed point, not through a `double`.
 - `fastmm-live` and `fastmm-gateway` replace `${NAME}` tokens in `[venues.<name>]` values: `ws_url`, `ws_api_url`, `rest_url`, `ca_file`, `api_key`, `api_secret`, `api_passphrase` and every connector key. A variable that is not set is an error, except that `--dry-run` clears an unset `api_key`, `api_secret` or `api_passphrase`.

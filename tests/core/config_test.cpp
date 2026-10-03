@@ -154,7 +154,7 @@ TEST_CASE("core.config: api_passphrase is a credential: substituted, masked, not
                        ConfigError);
 }
 
-TEST_CASE("core.config: validation errors carry line numbers, unknown keys warn") {
+TEST_CASE("core.config: validation errors carry line numbers, unknown keys are errors") {
   auto line_of = [](const char* toml) {
     try {
       Config::parse(toml);
@@ -173,13 +173,17 @@ TEST_CASE("core.config: validation errors carry line numbers, unknown keys warn"
   CHECK(line_of("[logging]\nlevel = \"loud\"\n") == 0);     // semantic error without position
   CHECK_THROWS_AS(Config::parse("[logging]\nlevel = \"loud\"\n"), ConfigError);
   CHECK_THROWS_AS(Config::load("/nonexistent/file.toml"), ConfigError);
-  const Config w = Config::parse(
-      "[engine]\nbogus = 1\n[weird]\nx = 1\n[venues.v]\nkind = \"sim\"\nfoo = \"bar\"\n");
-  // Two warnings, not three: `venues.v.foo` belongs to the connector, which warns about it when
-  // it validates the section (fastmm::venues::validate_venues).
-  REQUIRE(w.warnings.size() == 2);
-  CHECK(w.warnings[0].find("[weird]") != std::string::npos);
-  CHECK(w.warnings[1].find("engine.bogus") != std::string::npos);
+  // An unknown key or section is an error with its line: a misspelled key would leave the real
+  // one at its default.
+  CHECK(line_of("[engine]\nbogus = 1\n") == 2);
+  CHECK(line_of("[weird]\nx = 1\n") == 1);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nbogus = 1\n"),
+                       doctest::Contains("unknown key 'engine.bogus'"),
+                       ConfigError);
+  // `venues.v.foo` belongs to the connector, which checks it when it validates the section
+  // (fastmm::venues::validate_venues).
+  const Config w = Config::parse("[venues.v]\nkind = \"sim\"\nfoo = \"bar\"\n");
+  CHECK(w.warnings.empty());
   CHECK(w.venues[0].extra.at("foo") == "bar");
   // instrument loader errors
   CHECK_THROWS_WITH_AS(
@@ -511,11 +515,9 @@ TEST_CASE("core.config: [risk.underlying] errors") {
   }
   CHECK(threw);
 
-  // An unknown key is a warning, as in every other section.
-  const Config cfg =
-      Config::parse(two_currencies("[risk.underlying.BTC]\nmax_net = 1\nmax_gross = 2\n"));
-  REQUIRE(cfg.warnings.size() == 1);
-  CHECK(cfg.warnings[0].find("unknown key 'risk.underlying.*.max_gross'") != std::string::npos);
+  // An unknown key is an error, as in every other section.
+  CHECK(err("[risk.underlying.BTC]\nmax_net = 1\nmax_gross = 2\n")
+            .find("unknown key 'risk.underlying.*.max_gross'") != std::string::npos);
 
   // A base asset no instrument has is refused once the table is known.
   const Config sol = Config::parse(two_currencies("[risk.underlying.SOL]\nmax_net = 1\n"));
@@ -556,8 +558,6 @@ TEST_CASE("core.config: [gateway.shared] parses, round-trips and names instrumen
         std::string::npos);
   CHECK(err("[gateway.shared.\"sim:BTCUSDT\"]\nprimary = 3\n").find("wrong type") !=
         std::string::npos);
-  const Config odd =
-      Config::parse(two_currencies("[gateway.shared.\"sim:BTCUSDT\"]\nowner = \"mm-a\"\n"));
-  REQUIRE(odd.warnings.size() == 1);
-  CHECK(odd.warnings[0].find("unknown key 'gateway.shared.*.owner'") != std::string::npos);
+  CHECK(err("[gateway.shared.\"sim:BTCUSDT\"]\nowner = \"mm-a\"\n")
+            .find("unknown key 'gateway.shared.*.owner'") != std::string::npos);
 }

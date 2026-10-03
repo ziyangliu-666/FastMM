@@ -109,12 +109,21 @@ const VenueEntry& entry_for(const VenueRegistry& r, const VenueSection& s) {
   return *e;
 }
 
-// The strict half of validate_venues(): everything that must stop the session. Unknown keys are
-// forward compatibility and only warn, so they are not checked here.
-void check_types(const VenueEntry& e, const VenueSection& s) {
+// Everything that must stop the session: a wrong type, a missing required key, and a key the
+// connector does not know (a misspelled one would leave the real setting at its default).
+void check_keys(const VenueEntry& e, const VenueSection& s) {
   for (const auto& [key, text] : s.extra) {
     const VenueKeySpec* spec = find_key(e, key);
-    if (spec == nullptr || text_matches(spec->type, text)) continue;
+    if (spec == nullptr) {
+      throw ConfigError(
+          fmt::format("unknown key 'venues.{}.{}' (the {} connector does not have it)",
+                      s.name,
+                      key,
+                      e.name),
+          line_of(s, key),
+          1);
+    }
+    if (text_matches(spec->type, text)) continue;
     throw ConfigError(
         fmt::format(
             "'venues.{}.{}' has the wrong type (expected {})", s.name, key, type_name(spec->type)),
@@ -187,22 +196,9 @@ void register_builtin_venues(VenueRegistry& r) {
   register_okx_venue(r);
 }
 
-void validate_venues(const Config& cfg,
-                     std::vector<std::string>& warnings,
-                     const VenueRegistry& r) {
+void validate_venues(const Config& cfg, const VenueRegistry& r) {
   if (&r == &VenueRegistry::instance()) register_builtin_venues();
-  for (const VenueSection& s : cfg.venues) {
-    const VenueEntry& e = entry_for(r, s);
-    check_types(e, s);
-    for (const auto& [key, text] : s.extra) {
-      if (find_key(e, key) != nullptr) continue;
-      const int line = line_of(s, key);
-      warnings.push_back(fmt::format("unknown key 'venues.{}.{}' ignored{}",
-                                     s.name,
-                                     key,
-                                     line > 0 ? fmt::format(" (line {})", line) : std::string()));
-    }
-  }
+  for (const VenueSection& s : cfg.venues) check_keys(entry_for(r, s), s);
 }
 
 std::unique_ptr<Venue> make_venue(VenueId id,
@@ -210,7 +206,7 @@ std::unique_ptr<Venue> make_venue(VenueId id,
                                   const VenueFactoryOptions& opts,
                                   const VenueRegistry& r) {
   const VenueEntry& e = entry_for(r, section);
-  check_types(e, section);
+  check_keys(e, section);
   return e.make(id, section, opts);
 }
 

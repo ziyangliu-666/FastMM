@@ -559,14 +559,14 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       custom != nullptr ? std::string_view(custom->name) : strategy->name;
   const ParamSchema* const param_schema = custom != nullptr ? custom->params : strategy->schema;
   // Parameter names are checked before any venue is contacted; values are checked when the engine
-  // is built. A LiveStrategy checks its own.
+  // is built. A LiveStrategy without a schema checks its own.
   for (const auto& [key, value] : cfg.strategy.params) {
-    if (custom == nullptr && strategy->schema->find(key) == nullptr) {
+    if (param_schema != nullptr && param_schema->find(key) == nullptr) {
       std::fprintf(stderr,
                    "%s: %.*s: unknown parameter '%s' (see --list-strategies)\n",
                    prog,
-                   static_cast<int>(strategy->name.size()),
-                   strategy->name.data(),
+                   static_cast<int>(strategy_name.size()),
+                   strategy_name.data(),
                    key.c_str());
       return kExitConfig;
     }

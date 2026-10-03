@@ -1816,6 +1816,7 @@ BybitVenueConfig make_bybit_config(const VenueSection& v, bool dry_run) {
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, extra_int("stale_ms", c.stale_ms)));
   c.dead_ms =
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, extra_int("dead_ms", c.dead_ms)));
+  check_liveness(v.name, c.stale_ms, c.dead_ms);
   c.ping_interval_ms = static_cast<std::uint32_t>(
       std::max<std::int64_t>(1000, extra_int("ping_interval_ms", c.ping_interval_ms)));
   c.orders_per_second = static_cast<std::uint32_t>(

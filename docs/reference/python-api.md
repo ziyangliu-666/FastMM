@@ -314,7 +314,7 @@ A class with hot hooks may also define `on_start(self, ctx)`, `on_stop(self, ctx
 | `@fastmm.every("1s")` | when the session starts, then once per period of session time; units `ns`, `us`, `ms`, `s`, `m`, `h` |
 | `on_stop` | once, after the engine stops |
 
-Defining the class raises `TypeError` when an `@fastmm.every` method has another signature or a hook's name, the class has `@fastmm.every` methods but no hot hooks, it has more than 32 parameters, or a parameter or `State` field is named `publish` or `inst`.
+Defining the class raises `TypeError` when an `@fastmm.every` method has another signature or a hook's name, the class has `@fastmm.every` methods but no hot hooks, it has more than 64 parameters, or a parameter or `State` field is named `publish` or `inst`.
 
 ### Slow ctx
 

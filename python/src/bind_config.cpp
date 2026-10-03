@@ -93,7 +93,7 @@ std::string param_value_string(py::handle value) {
                        std::string(py::str(py::type::handle_of(value).attr("__name__"))));
 }
 
-// Issues a UserWarning per unknown key or section, attributed to the caller's line.
+// Issues a UserWarning per configuration warning, attributed to the caller's line.
 void warn_config(const BacktestConfig& c, const std::string& source) {
   if (c.warnings.empty()) return;
   const py::object warn = py::module_::import("warnings").attr("warn");
@@ -123,8 +123,8 @@ void bind_config(py::module_& m) {
           },
           py::arg("path"),
           "Load a FastMM TOML config (sections [engine] [[instruments]] [strategy] [risk] "
-          "[venues.<x>.fees] [sim] [backtest]). Raises ConfigError; unknown keys issue a "
-          "UserWarning each and are listed in warnings.")
+          "[venues.<x>.fees] [sim] [backtest]). Raises ConfigError, also for an unknown key "
+          "or section; other warnings are listed in warnings.")
       .def_static(
           "from_toml_string",
           [](const std::string& text) {
@@ -133,8 +133,8 @@ void bind_config(py::module_& m) {
             return c;
           },
           py::arg("text"),
-          "Parse a TOML document held in a string. Raises ConfigError; unknown keys issue a "
-          "UserWarning each.")
+          "Parse a TOML document held in a string. Raises ConfigError, also for an unknown key "
+          "or section.")
       .def_static(
           "single_instrument",
           [](const std::string& symbol, const std::string& tick, const std::string& lot) {

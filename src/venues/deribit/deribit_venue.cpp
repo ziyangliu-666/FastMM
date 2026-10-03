@@ -1552,6 +1552,7 @@ DeribitVenueConfig make_deribit_config(const VenueSection& v, bool dry_run) {
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, extra_int("stale_ms", c.stale_ms)));
   c.dead_ms =
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, extra_int("dead_ms", c.dead_ms)));
+  check_liveness(v.name, c.stale_ms, c.dead_ms);
   c.reject_post_only = extra_bool("reject_post_only", c.reject_post_only);
   c.cancel_on_disconnect = extra_bool("cancel_on_disconnect", c.cancel_on_disconnect);
   c.cancel_on_order_channel_loss =

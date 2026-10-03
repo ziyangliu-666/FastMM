@@ -1463,6 +1463,7 @@ AdvancedVenueConfig make_coinbase_advanced_config(const VenueSection& v, bool dr
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, x.integer("stale_ms", c.stale_ms)));
   c.dead_ms =
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, x.integer("dead_ms", c.dead_ms)));
+  check_liveness(v.name, c.stale_ms, c.dead_ms);
   c.orders_per_second = static_cast<std::uint32_t>(
       std::max<std::int64_t>(0, x.integer("orders_per_second", c.orders_per_second)));
   c.cancel_batch = static_cast<std::uint32_t>(

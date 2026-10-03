@@ -2029,6 +2029,7 @@ OkxVenueConfig make_okx_config(const VenueSection& v, bool dry_run) {
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, x.integer("stale_ms", c.stale_ms)));
   c.dead_ms =
       static_cast<std::uint32_t>(std::max<std::int64_t>(0, x.integer("dead_ms", c.dead_ms)));
+  check_liveness(v.name, c.stale_ms, c.dead_ms);
   // OKX closes a connection after 30 s without data: the ping has to come sooner.
   c.ping_interval_ms = static_cast<std::uint32_t>(
       std::clamp<std::int64_t>(x.integer("ping_interval_ms", c.ping_interval_ms), 1000, 25'000));

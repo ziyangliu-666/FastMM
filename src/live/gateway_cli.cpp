@@ -94,7 +94,7 @@ int gateway(int argc, char** argv) {
     lo.allow_inline_secrets = allow_inline;
     lo.substitute_env = false;
     cfg = Config::load(config_path, lo);
-    venues::validate_venues(cfg, cfg.warnings);
+    venues::validate_venues(cfg);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s: %s\n", prog, e.what());
     return live::kExitConfig;

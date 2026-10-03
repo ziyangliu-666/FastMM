@@ -2196,6 +2196,7 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   }
   c.stale_ms = static_cast<std::uint32_t>(x.integer("stale_ms", c.stale_ms));
   c.dead_ms = static_cast<std::uint32_t>(x.integer("dead_ms", c.dead_ms));
+  check_liveness(v.name, x.integer("stale_ms", c.stale_ms), x.integer("dead_ms", c.dead_ms));
   c.position_from_account_update = x.flag("position_from_account_update", true);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);

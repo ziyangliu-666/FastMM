@@ -8,7 +8,7 @@ Versions are `0.MINOR.PATCH`. A minor release may change any surface in the tabl
 
 | Surface | Across a minor release | Version today |
 |---|---|---|
-| Configuration keys | keys are added, renamed and removed. An unknown key is a warning with its line number, not an error, so a renamed key leaves the new one at its default ([Configuration](configuration.md)) | no schema version |
+| Configuration keys | keys are added, renamed and removed. An unknown key is an error with its line number, so a renamed key stops the program instead of leaving the new one at its default ([Configuration](configuration.md)) | no schema version |
 | `.fmj` journal | the format version rises when the layout changes. A reader opens every version from 1 up to its own; a newer journal is refused ([Journal format](journal-format.md)) | 3, readers open 1 to 3 |
 | Status file | the version rises with every layout change, with no compatibility in either direction: `fastmm-top` refuses a file of another version (`--once` exits 3), so `fastmm-top`, `fastmm-live` and `fastmm-gateway` come from the same build ([Status file](status-file.md)) | 10 |
 | Store | each schema change is a migration; an older store is migrated when opened, a newer one is refused ([Storage](storage.md)) | 7 |
@@ -23,5 +23,5 @@ Versions are `0.MINOR.PATCH`. A minor release may change any surface in the tabl
 
 - `fastmm-engine` and `fastmm-engine-live` have to be the same version. `pip install "fastmm-engine[live]"` pins it, and `import fastmm_live` raises `ImportError` when the two disagree.
 - Upgrade `fastmm-top` and `fastmm-gateway` together with `fastmm-live`, from the same tarball or image.
-- Check the release's CHANGELOG section for renamed configuration keys before starting a session with an old config: unknown keys are reported, not refused.
+- Check the release's CHANGELOG section for renamed configuration keys before starting a session with an old config: an unknown key is refused.
 - A replay that has to match a recorded session needs the binary that wrote the journal, not only a compatible reader ([Determinism](../explanation/determinism.md)).

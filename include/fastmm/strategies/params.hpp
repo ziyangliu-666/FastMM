@@ -42,6 +42,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -94,7 +95,7 @@ struct ParamDesc {
   void (*set_raw)(void* obj, std::int64_t raw) noexcept;
 };
 
-inline constexpr std::size_t kMaxParams = 32;
+inline constexpr std::size_t kMaxParams = 64;
 
 class ParamSchema {
  public:
@@ -118,6 +119,7 @@ using ParamMap = std::map<std::string, std::string>;
 namespace detail {
 
 inline thread_local ParamSchema* t_param_collector = nullptr;
+inline thread_local bool t_param_overflow = false;  // a registration the schema had no room for
 
 // static_cast unless the types already match (keeps -Wuseless-cast quiet in macro expansions).
 template <class T, class U>
@@ -299,7 +301,7 @@ std::optional<std::string> assign_param(T& field, std::string_view value, T lo, 
 }
 
 inline void register_param(const ParamDesc& d) noexcept {
-  if (t_param_collector != nullptr) t_param_collector->add(d);
+  if (t_param_collector != nullptr && !t_param_collector->add(d)) t_param_overflow = true;
 }
 
 template <class Self>
@@ -307,9 +309,15 @@ ParamSchema collect_schema() {
   static_assert(std::is_default_constructible_v<Self>);
   ParamSchema s;
   t_param_collector = &s;
+  t_param_overflow = false;
   Self tmp{};
   static_cast<void>(tmp);
   t_param_collector = nullptr;
+  // A parameter past the table would be silently left at its default: refuse the strategy.
+  if (t_param_overflow) {
+    throw std::invalid_argument("fastmm: a strategy has at most " + std::to_string(kMaxParams) +
+                                " parameters");
+  }
   return s;
 }
 

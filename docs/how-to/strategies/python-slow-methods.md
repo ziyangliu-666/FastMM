@@ -105,7 +105,7 @@ python examples/python/strategies/hot_slow_mm.py
 
 | Error | Cause |
 |---|---|
-| `TypeError` when the class is defined | a slow method with another signature or a hook's name, `@fastmm.every` without hot hooks, or more than 32 parameters |
+| `TypeError` when the class is defined | a slow method with another signature or a hook's name, `@fastmm.every` without hot hooks, or more than 64 parameters |
 | `ValueError` from `ctx.publish` | an unknown or `State` name, a value of the wrong type or out of range, a failed `validate()`, or more than 32 names |
 | `StrategyError` with `slow_failure == "exception"` | a slow method raised; `hook` names it |
 | `StrategyError` with `slow_failure == "fills overflow"` | more fills arrived between two runs of the slow methods than `fills_capacity` |

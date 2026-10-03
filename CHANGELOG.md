@@ -191,6 +191,19 @@ All notable changes are recorded here (Keep a Changelog format).
   `own_in_feed(venue)`.
 
 ### Changed
+- An unknown configuration key or section is an error with its line, no longer a warning: a
+  misspelled or renamed key left the real one at its default. The same for a `[venues.<name>]`
+  key the connector its `kind` names does not have (`validate_venues`, now without a warnings
+  argument), a `[backtest]` key the backtest does not read, and a `[strategy.params]` key the
+  strategy does not declare (a `LiveStrategy` with a schema is checked like a registered one).
+  Python: `BacktestConfig.from_toml` raises `ConfigError` for them.
+- A strategy declares up to 64 parameters (`kMaxParams`, was 32; the journal's parameter table
+  grows with it, with no change to the file layout). The 33rd used to vanish from the schema
+  without a word; one past the limit now refuses the strategy. One `ParamUpdate` still carries
+  at most 32 values.
+- A venue's `stale_ms` above its `dead_ms` (or a `stale_ms` of 0) is refused when the connector
+  is built, as a configuration error with the venue's name. The Connection refused it on the
+  venue's thread, where nothing caught the exception and the process aborted.
 - `HedgeExecutor` also cuts a hedge to what `max_gross_notional` and `max_net_notional` leave:
   `RiskHeadroom` gains `exposure_buy_notional` / `exposure_sell_notional` (C++ and Python), the
   two caps as the notional of one order on the instrument in its settlement currency, converted

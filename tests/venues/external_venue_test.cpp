@@ -35,16 +35,18 @@ bid = "99.5"
 ask = "100.5"
 typo = 1
 )");
-  // The central schema knows none of them, so it says nothing either way.
+  // The central schema knows none of them, so it says nothing either way; the venue refuses the
+  // key it does not have.
   CHECK(cfg.warnings.empty());
   VenueRegistry r;
   echo::register_echo_venue(r);
-  std::vector<std::string> warnings;
-  validate_venues(cfg, warnings, r);
-  REQUIRE(warnings.size() == 1);
-  CHECK(warnings[0] == "unknown key 'venues.e.typo' ignored (line 6)");
+  CHECK_THROWS_WITH_AS(
+      validate_venues(cfg, r), doctest::Contains("unknown key 'venues.e.typo'"), ConfigError);
+  Config ok = cfg;
+  ok.venues.at(0).extra.erase("typo");
+  CHECK_NOTHROW(validate_venues(ok, r));
 
-  const std::unique_ptr<Venue> v = make_venue(VenueId{0}, cfg.venues.at(0), {}, r);
+  const std::unique_ptr<Venue> v = make_venue(VenueId{0}, ok.venues.at(0), {}, r);
   REQUIRE(v != nullptr);
   CHECK(v->name() == "e");
   CHECK_FALSE(v->caps().user_stream);

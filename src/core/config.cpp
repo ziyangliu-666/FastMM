@@ -88,19 +88,19 @@ const KeySpec* find_spec(std::string_view section, std::string_view key) noexcep
   return wildcard;
 }
 
-// Validates one table's keys against the schema section name; warns on unknown keys. With
-// `warn_unknown` false a key the schema does not know is left alone, because something else owns
+// Validates one table's keys against the schema section name. An unknown key is an error: a
+// renamed or misspelled key would otherwise leave the real one at its default. With
+// `check_unknown` false a key the schema does not know is left alone, because something else owns
 // it: the venue a [venues.<name>] section names validates its own keys (venues/registry.hpp).
-void validate_table(const toml::table& t,
-                    std::string_view section,
-                    std::vector<std::string>& warnings,
-                    bool warn_unknown = true) {
+void validate_table(const toml::table& t, std::string_view section, bool check_unknown = true) {
   for (const auto& [k, v] : t) {
     const KeySpec* spec = find_spec(section, k.str());
     if (spec == nullptr) {
-      if (warn_unknown)
-        warnings.push_back(
-            fmt::format("unknown key '{}.{}' ignored (line {})", section, k.str(), line_of(v)));
+      if (check_unknown) {
+        fail_at(v,
+                fmt::format(
+                    "unknown key '{}.{}' (see docs/reference/configuration.md)", section, k.str()));
+      }
       continue;
     }
     if (!type_matches(spec->type, v)) {
@@ -149,10 +149,7 @@ void get_decimal(const toml::table& t, std::string_view key, std::string& out) {
 }
 // [risk.underlying] / [gateway.underlying]: one table per base asset, each with max_net (base
 // units, a non-negative decimal).
-void get_underlying(const toml::table& parent,
-                    std::string_view section,
-                    std::vector<std::string>& warnings,
-                    UnderlyingSpec& out) {
+void get_underlying(const toml::table& parent, std::string_view section, UnderlyingSpec& out) {
   const toml::node* n = parent.get("underlying");
   if (n == nullptr) return;
   const auto* t = n->as_table();
@@ -184,7 +181,7 @@ void get_underlying(const toml::table& parent,
     const toml::node* m = u->get("max_net");
     if (m == nullptr)
       fail_at(v, fmt::format("[{}.underlying.{}] needs max_net (base units)", section, name));
-    validate_table(*u, sub, warnings);
+    validate_table(*u, sub);
     const std::string text = stringify(*m);
     const auto q = Qty::from_decimal(text);
     if (!q || q->raw < 0)
@@ -223,7 +220,7 @@ void get_shared(const toml::table& gateway, Config& cfg) {
                           "primary = \"<engine name>\"",
                           where,
                           where));
-    validate_table(*e, "gateway.shared.*", cfg.warnings);
+    validate_table(*e, "gateway.shared.*");
     const std::size_t colon = where.find(':');
     const std::string venue = colon == std::string::npos ? std::string{} : where.substr(0, colon);
     const std::string symbol = colon == std::string::npos ? std::string{} : where.substr(colon + 1);
@@ -362,14 +359,12 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
   for (const auto& [k, v] : doc) {
     bool known = false;
     for (auto s : kKnownSections) known = known || s == k.str();
-    if (!known)
-      cfg.warnings.push_back(
-          fmt::format("unknown section [{}] ignored (line {})", k.str(), line_of(v)));
+    if (!known) fail_at(v, fmt::format("unknown section [{}]", k.str()));
   }
 
   // [engine]
   if (const auto* t = doc["engine"].as_table()) {
-    validate_table(*t, "engine", cfg.warnings);
+    validate_table(*t, "engine");
     auto& e = cfg.engine;
     get(*t, "name", e.name);
     get(*t, "cpu", e.cpu);
@@ -452,7 +447,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     for (const auto& [name, node] : *venues) {
       const auto* t = node.as_table();
       if (t == nullptr) fail_at(node, fmt::format("[venues.{}] must be a table", name.str()));
-      validate_table(*t, "venues.*", cfg.warnings, /*warn_unknown=*/false);
+      validate_table(*t, "venues.*", /*check_unknown=*/false);
       VenueSection v;
       v.name = std::string(name.str());
       auto str = [&](std::string_view key, std::string& out) {
@@ -499,7 +494,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       get(*t, "insecure_tls", v.insecure_tls);
       get(*t, "recv_window_ms", v.recv_window_ms);
       if (const auto* fees = t->get_as<toml::table>("fees")) {
-        validate_table(*fees, "venues.*.fees", cfg.warnings);
+        validate_table(*fees, "venues.*.fees");
         get(*fees, "maker_bps", v.fees.maker_bps);
         get(*fees, "taker_bps", v.fees.taker_bps);
       }
@@ -525,7 +520,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     for (const auto& node : *arr) {
       const auto* t = node.as_table();
       if (t == nullptr) fail_at(node, "[[instruments]] entries must be tables");
-      validate_table(*t, "instruments[]", cfg.warnings);
+      validate_table(*t, "instruments[]");
       InstrumentSection i;
       get(*t, "venue", i.venue);
       get(*t, "symbol", i.symbol);
@@ -555,7 +550,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
 
   // [strategy]
   if (const auto* t = doc["strategy"].as_table()) {
-    validate_table(*t, "strategy", cfg.warnings);
+    validate_table(*t, "strategy");
     get(*t, "name", cfg.strategy.name);
     get(*t, "max_param_age_ms", cfg.strategy.max_param_age_ms);
     if (cfg.strategy.max_param_age_ms < 0)
@@ -573,7 +568,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
 
   // [risk]
   if (const auto* t = doc["risk"].as_table()) {
-    validate_table(*t, "risk", cfg.warnings);
+    validate_table(*t, "risk");
     auto& r = cfg.risk;
     get_decimal(*t, "max_order_qty", r.max_order_qty);
     get_decimal(*t, "max_order_notional", r.max_order_notional);
@@ -591,26 +586,26 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "max_feed_lag_ms", r.max_feed_lag_ms);
     if (r.max_feed_lag_ms < 0) throw ConfigError("risk.max_feed_lag_ms must be >= 0");
     get(*t, "check_balance", r.check_balance);
-    get_underlying(*t, "risk", cfg.warnings, r.underlying);
+    get_underlying(*t, "risk", r.underlying);
   }
 
   // [gateway]
   if (const auto* t = doc["gateway"].as_table()) {
-    validate_table(*t, "gateway", cfg.warnings);
+    validate_table(*t, "gateway");
     get(*t, "orders_per_sec", cfg.gateway.orders_per_sec);
     get(*t, "burst", cfg.gateway.burst);
     get_decimal(*t, "max_open_notional", cfg.gateway.max_open_notional);
     get_decimal(*t, "max_loss", cfg.gateway.max_loss);
     get_decimal(*t, "max_gross_notional", cfg.gateway.max_gross_notional);
     get_decimal(*t, "max_net_notional", cfg.gateway.max_net_notional);
-    get_underlying(*t, "gateway", cfg.warnings, cfg.gateway.underlying);
+    get_underlying(*t, "gateway", cfg.gateway.underlying);
     get_shared(*t, cfg);
     get(*t, "check_balance", cfg.gateway.check_balance);
   }
 
   // [accounting]: after [[instruments]], whose entries the FX sources must name.
   if (const auto* t = doc["accounting"].as_table()) {
-    validate_table(*t, "accounting", cfg.warnings);
+    validate_table(*t, "accounting");
     AccountingSpec& a = cfg.accounting;
     get(*t, "reporting_currency", a.reporting_currency);
     get(*t, "mark", a.mark);
@@ -683,7 +678,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
 
   // [logging]
   if (const auto* t = doc["logging"].as_table()) {
-    validate_table(*t, "logging", cfg.warnings);
+    validate_table(*t, "logging");
     get(*t, "level", cfg.logging.level);
     get(*t, "file", cfg.logging.file);
     get(*t, "mirror_level", cfg.logging.mirror_level);

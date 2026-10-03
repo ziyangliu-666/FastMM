@@ -1,7 +1,8 @@
 #pragma once
 // Declarative config schema (8.7): every known key with its section, type and whether it
 // is required. config.cpp validates the parsed TOML against this table and reports
-// errors with line numbers; unknown keys are warnings so configs stay forward compatible.
+// errors with line numbers; an unknown key is an error too, so a misspelled or renamed key never
+// leaves the real one at its default.
 // Sections "sim", "backtest" and "storage" are free-form (owned by the sim, backtest and store
 // libraries), and a [venues.<name>] key this table does not list belongs to the connector its
 // `kind` names: the venue declares, validates and documents it

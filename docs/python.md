@@ -47,7 +47,7 @@ r.stats()["net_pnl"], r.outbound_sha256
 frames = r.to_pandas()                  # {"fills", "equity", "orders", "markouts"} DataFrames
 ```
 
-`from_toml` issues a `UserWarning` for each unknown key or section, with its line, and lists them in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `markout_horizons_s`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `max_param_age_ms`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
+`from_toml` raises `ConfigError` for an unknown key or section, with its line, and issues a `UserWarning` for each other warning, listed in `cfg.warnings`. `BacktestConfig.single_instrument("BTCUSDT", tick="0.01", lot="0.00001")` builds a config by hand. Other fields: `strategy`, `params`, `engine_seed`, `start_ns`, `equity_bar_s`, `initial_capital`, `queue_conservatism`, `latency_fixed_us`, `latency_jitter_us`, `latency_md_us`, `latency_md_jitter_us`, `p_drop`, `maker_fee_bps`, `taker_fee_bps`, `markout_horizons_s`, `supports_replace`, `start_mid`, `limit_rate_per_s`, `market_rate_per_s`, `mid_step_rate_per_s`, `cancel_rate_per_order_s`, `max_param_age_ms`, `source`, `path`, `output_dir`, `journal_out`, `measure_wall_clock`.
 
 ### Data
 

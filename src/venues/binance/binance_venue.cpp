@@ -1888,6 +1888,7 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
       static_cast<int>(std::clamp<std::int64_t>(x.integer("depth_limit", c.depth_limit), 5, 5000));
   c.stale_ms = static_cast<std::uint32_t>(x.integer("stale_ms", c.stale_ms));
   c.dead_ms = static_cast<std::uint32_t>(x.integer("dead_ms", c.dead_ms));
+  check_liveness(v.name, x.integer("stale_ms", c.stale_ms), x.integer("dead_ms", c.dead_ms));
   c.position_from_balance = x.flag("position_from_balance", false);
   c.fetch_fees = x.flag("fetch_fees", false);
   c.allow_offline_reference_data = x.flag("allow_offline_reference_data", false);

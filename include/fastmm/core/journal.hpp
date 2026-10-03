@@ -61,7 +61,9 @@ inline constexpr std::uint8_t kHeaderReplacePerVenue = 1U << 1;
 // The session's venue feeds showed its own resting orders: a backtest with
 // [backtest] own_orders_in_feed (a live session's always do; it has a TSC calibration).
 inline constexpr std::uint8_t kHeaderOwnInFeed = 1U << 2;
-inline constexpr std::size_t kJournalMaxParams = 32;  // parameter table entries (kMaxParams)
+// Parameter table entries (kMaxParams). 64 since the table grew from 32: the format is unchanged
+// (the table is variable length), but a reader built with 32 refuses a file with more entries.
+inline constexpr std::size_t kJournalMaxParams = 64;
 
 class ParamSchema;
 

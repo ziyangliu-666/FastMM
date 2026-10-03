@@ -265,15 +265,14 @@ constexpr std::array<std::string_view, 22> kBacktestKeys = {"markout_horizons_s"
                                                             "own_orders_in_feed",
                                                             "reorder_window_ms"};
 
-void warn_unknown_backtest_keys(const GenericSection& bt, std::vector<std::string>& warnings) {
+void check_backtest_keys(const GenericSection& bt) {
   for (const auto& [key, value] : bt.values) {
     if (std::find(kBacktestKeys.begin(), kBacktestKeys.end(), key) != kBacktestKeys.end()) continue;
     if (key.starts_with(kVenuesPrefix)) continue;    // read_venues() checks those
     if (key.starts_with(kBalancesPrefix)) continue;  // read_accounts() checks those
     const auto line = bt.lines.find(key);
-    warnings.push_back(
-        "unknown key 'backtest." + key + "' ignored" +
-        (line == bt.lines.end() ? std::string() : " (line " + std::to_string(line->second) + ")"));
+    throw ConfigError(
+        "unknown key 'backtest." + key + "'", line == bt.lines.end() ? 0 : line->second, 0);
   }
 }
 }  // namespace
@@ -305,7 +304,7 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   const GenericSection& bt = cfg.backtest;
   const GenericSection& sm = cfg.sim;
   b.warnings = cfg.warnings;
-  warn_unknown_backtest_keys(bt, b.warnings);
+  check_backtest_keys(bt);
   b.engine.fx = b.fx_plan(b.instruments);
   b.underlying = cfg.risk.underlying;
   b.engine.underlying = b.underlying_plan(b.instruments);

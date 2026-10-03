@@ -122,13 +122,10 @@ class VenueRegistry {
 void register_builtin_venues(VenueRegistry& r = VenueRegistry::instance());
 
 // Checks every `[venues.<name>]` section against the key table of the venue its `kind` names, the
-// way the central schema checks the generic keys: a key the venue does not own is appended to
-// `warnings` with its line, a key of the wrong type or a missing required key throws ConfigError
-// with the line. An unknown `kind` throws too. Call it once after loading a configuration;
-// fastmm-live does, before it prints the warnings.
-void validate_venues(const Config& cfg,
-                     std::vector<std::string>& warnings,
-                     const VenueRegistry& r = VenueRegistry::instance());
+// way the central schema checks the generic keys: a key the venue does not own, a key of the wrong
+// type or a missing required key throws ConfigError with the line. An unknown `kind` throws too.
+// Call it once after loading a configuration; fastmm-live does.
+void validate_venues(const Config& cfg, const VenueRegistry& r = VenueRegistry::instance());
 
 // Builds the connector `section.kind` names. Throws std::invalid_argument for an unknown kind,
 // ConfigError for a key of the wrong type and whatever the connector throws for a bad value.

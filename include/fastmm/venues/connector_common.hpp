@@ -130,6 +130,17 @@ struct IdText {
   return true;
 }
 
+// A feed is stale before it is dead: the Connection refuses any other order, on the venue's
+// thread where nothing catches it, so every make_*_config() checks here first. The connectors
+// only ever raise dead_ms (to a ping or heartbeat multiple), so the raw values decide.
+inline void check_liveness(const std::string& venue, std::int64_t stale_ms, std::int64_t dead_ms) {
+  if (stale_ms <= 0 || dead_ms < stale_ms) {
+    throw std::invalid_argument(
+        "venue '" + venue + "': require 0 < stale_ms <= dead_ms (stale_ms = " +
+        std::to_string(stale_ms) + ", dead_ms = " + std::to_string(dead_ms) + ")");
+  }
+}
+
 // The free-form `extra` keys of a [venues.<name>] section, read the same way by every
 // make_*_config(). A missing key gives the default; a value that is not a number gives the
 // default too (the schema check reports the typo).
