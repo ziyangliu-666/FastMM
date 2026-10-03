@@ -126,6 +126,27 @@ HexSha384 hmac_sha384_hex(std::string_view key, std::string_view data) noexcept 
   return HexSha384(std::span<const std::uint8_t, kSha384Size>(mac));
 }
 
+HexSha512 hmac_sha512_hex(std::string_view key, std::string_view data) noexcept {
+  std::array<std::uint8_t, kSha512Size> mac{};
+  unsigned int len = 0;
+  if (HMAC(EVP_sha512(),
+           key.data(),
+           static_cast<int>(key.size()),
+           reinterpret_cast<const unsigned char*>(data.data()),
+           data.size(),
+           mac.data(),
+           &len) == nullptr ||
+      len != kSha512Size)
+    return HexSha512{};
+  return HexSha512(std::span<const std::uint8_t, kSha512Size>(mac));
+}
+
+HexSha512 sha512_hex(std::string_view data) noexcept {
+  std::array<std::uint8_t, kSha512Size> d{};
+  if (!digest(EVP_sha512(), data, d)) return HexSha512{};
+  return HexSha512(std::span<const std::uint8_t, kSha512Size>(d));
+}
+
 bool sha1(std::string_view data, std::span<std::uint8_t, kSha1Size> out) noexcept {
   return digest(EVP_sha1(), data, out);
 }

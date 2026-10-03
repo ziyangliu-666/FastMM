@@ -1,0 +1,19 @@
+{
+ "_source": "mixed",
+ "_recorded_from": "wss://fx-ws.gateio.ws/v4/ws/usdt (subscribe futures.obu ob.NVDA_USDT.50 / ob.BTC_USDT.50, futures.book_ticker, futures.trades, futures.tickers; futures.ping; upgrade header X-Gate-Size-Decimal: 1) from AWS Tokyo, and https://fx-api.gateio.ws/api/v4/futures/usdt/{contracts?limit=3, contracts/NVDA_USDT, order_book?contract=NVDA_USDT&limit=5&with_id=true, accounts, fee?contract=NVDA_USDT, orders/999999999999}",
+ "_recorded_at": "2026-10-03T06:45Z",
+ "files": {
+  "raw_md_stream.jsonl": "recorded, one frame per line as `<rx_ns>\\t<json>` (12 s session: the subscribe acks, the pong, two obu full snapshots, 620 increments, book tickers, trades, tickers)",
+  "obu_snapshot.json": "recorded (the NVDA_USDT full snapshot of raw_md_stream.jsonl)",
+  "obu_delta.json, obu_delta2.json": "recorded (the first two NVDA_USDT increments after the snapshot; the second carries no levels)",
+  "book_ticker.json": "recorded (BTC_USDT)",
+  "trades.json": "recorded (BTC_USDT)",
+  "tickers.json": "recorded (BTC_USDT; carries funding_interval and funding_next_apply)",
+  "subscribe_ok.json, pong.json": "recorded",
+  "rest_contracts.json, rest_contract_nvda.json, rest_order_book.json, rest_fee.json, rest_error_not_found.json": "recorded",
+  "rest_accounts.json": "recorded, the user id replaced by the docs' 110284739",
+  "private_order_open.json, private_order_cancelled.json, private_order_ioc.json, private_order_filled.json, private_usertrade.json, private_position.json, private_balance.json": "docs-example (https://www.gate.com/docs/developers/futures/ws/en/ Orders API, User trades API, Positions API, Balances API, read 2026-10-03) rewritten for NVDA_USDT / BTC_USDT with FastMM text ids (t-fm..); private_order_ioc.json keeps integer sizes (no X-Gate-Size-Decimal header); private_balance.json's fund entry text is an assumption (contract before the colon)",
+  "api_login_ok.json, api_login_error.json, api_order_place_ack.json, api_order_place_ok.json, api_order_place_error.json, api_rate_limited.json, api_order_cancel_ok.json": "docs-example (futures WS docs, Futures Account Trade) with FastMM request ids and NVDA_USDT",
+  "rest_order_created.json, rest_open_orders.json, rest_positions.json, rest_my_trades.json": "synthesised in the shape of the APIv4 FuturesOrder / Position / MyFuturesTrade models (gateapi-python docs, read 2026-10-03)"
+ }
+}

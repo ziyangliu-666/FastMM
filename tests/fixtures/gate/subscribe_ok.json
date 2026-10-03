@@ -1,0 +1,1 @@
+{"time":1791009973,"time_ms":1791009973158,"conn_id":"dbbba9bdbe10a968","trace_id":"6094f2e7033afbcf948d27c135ecf0e6","channel":"futures.obu","event":"subscribe","payload":["ob.NVDA_USDT.50", "ob.BTC_USDT.50"],"result":{"status":"success"}}

@@ -73,6 +73,10 @@ The shipped configs raise `stale_ms` for quiet feeds ([Venue connectors](../../r
 - Endpoints (from `configs/binance-testnet.toml`): streams `wss://stream.testnet.binance.vision/stream`, WebSocket API `wss://ws-api.testnet.binance.vision/ws-api/v3`, REST `https://testnet.binance.vision`.
 - Market data is the testnet's own book: thin and often silent for several seconds (`stale_ms = 10000`). Fills are rare and not representative.
 
+### Gate USDT perpetual futures
+
+`configs/gate-usdt.toml` points at production (`wss://fx-ws.gateio.ws/v4/ws/usdt`, `https://fx-api.gateio.ws`); Gate's futures TestNet is `wss://ws-testnet.gate.com/v4/ws/futures/usdt` and `https://fx-api-testnet.gateio.ws`, with keys from the "Futures TestNet APIKeys" tab (production keys are refused there). `FASTMM_GATE_API_KEY` / `FASTMM_GATE_API_SECRET`; the account must be in single position mode and hold USDT in its futures account ([Venue connectors](../../reference/venues.md#gate-usdt-perpetual-futures-gate_usdt)).
+
 ### Bybit v5 spot testnet
 
 - Keys: create a system-generated (HMAC) API key on the Bybit testnet site (testnet.bybit.com, API Management) with spot trading permission.

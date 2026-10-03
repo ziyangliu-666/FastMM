@@ -4,6 +4,19 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Added
+- Gate USDT perpetual futures connector, `kind = "gate_usdt"` (`include/fastmm/venues/gate/`):
+  market data from `futures.obu` (the in-stream snapshot and `U`/`u` increments, 50 levels every
+  20 ms or 400 every 100 ms), `futures.book_ticker`, `futures.trades` and `futures.tickers` (mark,
+  index, funding to `PerpStateMsg`); orders over the WebSocket API after `futures.login`
+  (`futures.order_place` / `order_cancel` / `order_amend`, 1.6 ms round trip from AWS Tokyo) with
+  the REST fallback; the `orders`, `usertrades`, `positions` and `balances` channels; the fill
+  replay from `my_trades_timerange`, the open-order and position reconciliation, the balance leg
+  from `/accounts`, `countdown_cancel_all` as the dead man's switch and `DELETE /orders?contract=`
+  as the kill switch. Quantities are contracts (`contract_multiplier` = `quanto_multiplier`).
+  `net::hmac_sha512_hex` and `net::sha512_hex` for the APIv4 signature. `configs/gate-usdt.toml`; recorded
+  fixtures in `tests/fixtures/gate/`.
+
 ## [0.3.0] - 2026-10-03
 
 ### Added

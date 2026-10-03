@@ -20,6 +20,7 @@ namespace fastmm::net {
 inline constexpr std::size_t kSha1Size = 20;
 inline constexpr std::size_t kSha256Size = 32;
 inline constexpr std::size_t kSha384Size = 48;
+inline constexpr std::size_t kSha512Size = 64;
 
 using Sha1Digest = std::array<std::uint8_t, kSha1Size>;
 using Sha256Digest = std::array<std::uint8_t, kSha256Size>;
@@ -53,6 +54,7 @@ class FixedHexString {
 
 using HexSha256 = FixedHexString<kSha256Size>;
 using HexSha384 = FixedHexString<kSha384Size>;
+using HexSha512 = FixedHexString<kSha512Size>;
 
 // HMAC-SHA256(key, data). `out` receives 32 bytes. Never throws; returns false on OpenSSL
 // failure (should not happen for valid inputs).
@@ -63,6 +65,11 @@ HexSha256 hmac_sha256_hex(std::string_view key, std::string_view data) noexcept;
 // HMAC-SHA384(key, data) as lowercase hex (Gemini signs its requests and the WebSocket upgrade
 // with it). Control path: the key schedule is not kept. Never fails for valid inputs.
 HexSha384 hmac_sha384_hex(std::string_view key, std::string_view data) noexcept;
+// HMAC-SHA512(key, data) as lowercase hex (Gate APIv4 signs REST requests and WebSocket logins with
+// it) and SHA-512(data) as lowercase hex (the body digest inside a Gate signature string). Control
+// path: no key schedule is kept. Never fail for valid inputs.
+HexSha512 hmac_sha512_hex(std::string_view key, std::string_view data) noexcept;
+HexSha512 sha512_hex(std::string_view data) noexcept;
 
 // HMAC-SHA256 with the key schedule precomputed (see the header comment). Copyable; a
 // default-constructed key signs with the empty key.

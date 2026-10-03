@@ -108,6 +108,7 @@ knows only the generic keys above. A project can register its own connector and 
 | `coinbase_advanced` |  | Coinbase Advanced Trade spot (production, CDP API key) | yes | yes | no | no |
 | `coinbase_exchange` |  | Coinbase Exchange spot (sandbox) | yes | yes | no | no |
 | `deribit` |  | Deribit options and futures (testnet) | yes | yes | yes | yes |
+| `gate_usdt` | `gate`, `gate_futures` | Gate APIv4 USDT-settled perpetual futures | yes | yes | yes | yes |
 | `gemini` |  | Gemini perpetuals and spot (sandbox) | yes | yes | no | yes |
 | `nasdaq_itch` |  | Nasdaq TotalView-ITCH market data, with OUCH order entry to fastmm-sim-itch | no | yes | yes | no |
 | `okx` |  | OKX v5 USDT-margined perpetual swaps and spot (demo trading) | yes | yes | yes | yes |
@@ -264,6 +265,30 @@ trading, and `region` the site the account is registered on
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge new orders from the request response, not the orders channel (default true) |
+<!-- END config-keys -->
+
+#### `gate_usdt`
+
+USDT-settled perpetual futures on Gate, quantities in contracts, single position mode; one
+WebSocket URL serves the public channels, the private channels and the order API
+([Venue connectors](venues.md#gate-usdt-perpetual-futures-gate_usdt)).
+
+<!-- BEGIN config-keys venue:gate_usdt -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `settle` | string |  | settlement currency of the futures: usdt (default) \| usd1 \| btc; ws_url and rest_url must match it when set |
+| `order_api` | string |  | order entry: ws (default, futures.order_place) \| rest |
+| `book_level` | integer |  | futures.obu depth: 50 (pushed every 20 ms, default) \| 400 (every 100 ms) |
+| `stale_ms` | integer |  | no traffic for this long marks the feed stale and pulls the venue's quotes, ms (default 2000) |
+| `dead_ms` | integer |  | no traffic for this long forces a reconnect, ms; raised to at least 2 x ping_interval_ms + 5000 |
+| `ping_interval_ms` | integer |  | futures.ping interval on every connection, ms, at least 1000 (default 15000) |
+| `orders_per_second` | integer |  | client-side cap on new orders and amends per second (default 50; the venue allows 100 per UID, 200 cancels) |
+| `emit_ack_from_response` | boolean |  | acknowledge orders from the order_place reply, not the orders channel (default true) |
+| `position_from_stream` | boolean |  | correct the engine position from the positions channel when it differs from the fills (default true) |
+| `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
+| `allow_offline_reference_data` | boolean |  | start without the contract table, using the configured tick, lot and multiplier (default false) |
+| `fetch_fees` | boolean |  | read the account's maker/taker rates from GET /futures/{settle}/fee at start (default false) |
+| `dead_mans_switch_s` | integer |  | POST /futures/{settle}/countdown_cancel_all window in seconds, refreshed at a third of it; the venue cancels every order of the account when no refresh arrives. 0 disables it (default 0) |
 <!-- END config-keys -->
 
 #### `gemini`

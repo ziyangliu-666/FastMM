@@ -31,6 +31,9 @@
 #include "fastmm/venues/deribit/deribit_md_parser.hpp"
 #include "fastmm/venues/deribit/deribit_order_encoder.hpp"
 #include "fastmm/venues/deribit/deribit_private_parser.hpp"
+#include "fastmm/venues/gate/gate_md_parser.hpp"
+#include "fastmm/venues/gate/gate_order_encoder.hpp"
+#include "fastmm/venues/gate/gate_private_parser.hpp"
 #include "fastmm/venues/okx/okx_md_feed.hpp"
 #include "fastmm/venues/okx/okx_md_parser.hpp"
 #include "fastmm/venues/okx/okx_order_encoder.hpp"
@@ -312,6 +315,56 @@ TEST_CASE("hotpath.noalloc: Bybit market-data parser, private parser and order e
                                   {}};
   check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
     return enc.encode_ws(c, &shadow, 1789299700000, out);
+  });
+}
+
+TEST_CASE("hotpath.noalloc: Gate market-data parser, private parser and order encoder") {
+  InstrumentTable instruments;
+  Instrument nvda = make_instrument("NVDA_USDT", 3, "NVDA", "USDT");
+  nvda.asset_class = AssetClass::Perpetual;
+  nvda.lot = qt("1");
+  nvda.contract_multiplier = qt("0.01");
+  Instrument btc = make_instrument("BTC_USDT", 3, "BTC", "USDT");
+  btc.asset_class = AssetClass::Perpetual;
+  btc.lot = qt("1");
+  REQUIRE(instruments.add(nvda));
+  REQUIRE(instruments.add(btc));
+  SymbolTable symbols;
+  REQUIRE(symbols.build(instruments));
+  {
+    gate::GateMdParser md(symbols, VenueId{3});
+    check_decoder_noalloc(md,
+                          frames({"gate/obu_snapshot.json",
+                                  "gate/obu_delta.json",
+                                  "gate/obu_delta2.json",
+                                  "gate/book_ticker.json",
+                                  "gate/trades.json",
+                                  "gate/tickers.json"}));
+  }
+  {
+    gate::GatePrivateParser priv(symbols, instruments, VenueId{3});
+    check_decoder_noalloc(priv,
+                          frames({"gate/private_order_open.json",
+                                  "gate/private_order_cancelled.json",
+                                  "gate/private_order_ioc.json",
+                                  "gate/private_usertrade.json",
+                                  "gate/private_position.json",
+                                  "gate/private_balance.json"}));
+  }
+  gate::Credentials creds;
+  creds.api_key = "test-key";
+  creds.secret.value = "test-secret";
+  const gate::Signer signer(creds);
+  const gate::GateOrderEncoder enc(signer, symbols);
+  const Commands cmds(InstrumentId{0}, VenueId{3}, "234.1", "3");
+  gate::OrderShadow shadow{};
+  shadow.instrument = InstrumentId{0};
+  shadow.side = Side::Buy;
+  shadow.type = OrderType::PostOnly;
+  shadow.link_id = cmds.new_order.cl_ord_id;
+  shadow.venue_id.assign("74046514");
+  check_encoder_noalloc(cmds.all(), [&](const OrderCommand& c, std::span<char> out) {
+    return enc.encode_ws(c, &shadow, 1791000000, out);
   });
 }
 

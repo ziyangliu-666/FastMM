@@ -48,6 +48,7 @@ class TouchMM(fastmm.Strategy):
 | Binance | spot, perpetual futures | Binance Demo |
 | OKX | spot, perpetual futures | OKX Demo |
 | Bybit | spot, perpetual futures | Bybit testnet |
+| Gate | USDT perpetual futures | Gate futures testnet |
 | Deribit | options, futures | Deribit testnet |
 | Gemini | spot, perpetual futures | Gemini sandbox |
 | Coinbase | spot | Coinbase Exchange sandbox |

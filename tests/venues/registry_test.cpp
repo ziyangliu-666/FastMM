@@ -32,13 +32,14 @@ VenueSection section(std::string kind) {
 
 TEST_CASE("venues.registry: every shipped connector resolves through its kind and aliases") {
   const VenueRegistry r = builtins();
-  CHECK(r.entries().size() == 9);
+  CHECK(r.entries().size() == 10);
   for (const char* kind : {"binance_spot",
                            "binance_usdm",
                            "bybit",
                            "coinbase_advanced",
                            "coinbase_exchange",
                            "deribit",
+                           "gate_usdt",
                            "gemini",
                            "nasdaq_itch",
                            "okx"})
@@ -47,6 +48,7 @@ TEST_CASE("venues.registry: every shipped connector resolves through its kind an
   CHECK(r.find("sim") == r.find("binance_spot"));
   CHECK(r.find("binance") == r.find("binance_spot"));
   CHECK(r.find("bybit_spot") == r.find("bybit"));
+  CHECK(r.find("gate") == r.find("gate_usdt"));
   CHECK(r.find("nope") == nullptr);
   CHECK(r.kinds().find("nasdaq_itch") != std::string::npos);
 }
