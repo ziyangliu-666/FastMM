@@ -79,6 +79,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `supports_replace` | boolean |  | the venue can amend an order in place (default false) |
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
 | `ca_file` | string |  | extra CA certificate, for example tests/fixtures/tls/cert.pem for the local simulator |
+| `public_only` | boolean |  | market data only: no keys, no private sessions, no orders on this venue (default false) |
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
 | `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
 <!-- END config-keys -->

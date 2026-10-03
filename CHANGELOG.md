@@ -5,6 +5,13 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `[venues.<name>] public_only = true`: a venue can be market data only. Its keys are not required,
+  its private sessions are not opened, nothing is sent to it and nothing is cancelled on it at stop;
+  for a venue a strategy only reads prices from.
+- The simulated fee is charged on the contract's notional, multiplier included (futures contracts
+  worth a fraction of the base coin were charged a hundred times the real fee).
+- `gate_usdt`: a base coin label longer than the instrument field is shortened with a warning
+  instead of refusing the contract.
 - Gate USDT perpetual futures connector, `kind = "gate_usdt"` (`include/fastmm/venues/gate/`):
   market data from `futures.obu` (the in-stream snapshot and `U`/`u` increments, 50 levels every
   20 ms or 400 every 100 ms), `futures.book_ticker`, `futures.trades` and `futures.tickers` (mark,
