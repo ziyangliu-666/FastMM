@@ -433,7 +433,7 @@ enum class Item : std::uint8_t { Next, Stop, Malformed };
   // No id from the venue: the settlement time and the contract identify the payment.
   char idb[64];
   const std::size_t n = format_int64(time_ms != 0 ? time_ms : c.time_ms, idb);
-  std::memcpy(idb + n, ":", 1);
+  idb[n] = ':';
   const std::size_t cn =
       contract.size() < sizeof idb - n - 1 ? contract.size() : sizeof idb - n - 1;
   std::memcpy(idb + n + 1, contract.data(), cn);

@@ -72,7 +72,6 @@ namespace fastmm::venues::gate {
     case 429:
       return {RejectReason::VenueRateLimit, VenueAction::RateLimit, true};
     case 401:
-      return {RejectReason::VenueReject, VenueAction::Fatal, true};
     case 403:
       return {RejectReason::VenueReject, VenueAction::Fatal, true};
     default:
