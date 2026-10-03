@@ -13,6 +13,7 @@
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/result.hpp"
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/strong_id.hpp"
@@ -280,12 +281,17 @@ class Venue {
   void set_tsc_calibration_source(const Seqlocked<TscCalibration>* src) noexcept {
     tsc_source_ = src;
   }
+  // The order budget the connector publishes from its rate limiter (core/order_budget.hpp): its
+  // reactor thread writes it with the status and after each response that reported the venue's
+  // counts; the engine reads it through LiveTransport (ctx.order_budget). Lives with the venue.
+  [[nodiscard]] const Seqlocked<OrderBudget>& budget_source() const noexcept { return budget_pub_; }
 
  protected:
   // Latest published calibration, or a calibration with use_tsc == false without a source.
   [[nodiscard]] TscCalibration tsc_calibration() const noexcept {
     return tsc_source_ != nullptr ? tsc_source_->load() : TscCalibration{};
   }
+  Seqlocked<OrderBudget> budget_pub_;
 
  private:
   const Seqlocked<TscCalibration>* tsc_source_ = nullptr;

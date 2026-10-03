@@ -127,6 +127,13 @@ struct HeadroomInfo {
 struct VenueHealthInfo {
   VenueHealthView v;
 };
+struct OrderBudgetInfo {
+  OrderBudget b;
+};
+// on_risk_reject's argument: a copy, so it may be kept.
+struct RiskRejectInfo {
+  RiskReject r;
+};
 struct BalanceInfo {
   Balance b;
 };
@@ -472,6 +479,20 @@ void py_on_perp_state(PyRun& r, InstrumentId id, const PerpStateMsg& m) noexcept
   r.perp_->id = id;
   PyObject* args[4] = {nullptr, r.ctx_.ptr(), r.inst_objs_[id.value].ptr(), r.perp_obj_.ptr()};
   r.call(Hook::PerpState, args, 3);
+}
+
+void py_on_risk_reject(PyRun& r, const RiskReject& reject) noexcept {
+  const PyRun::Scope scope(r);
+  // Rejects are rare and the hook keeps what it likes: a fresh object each time, no view.
+  py::object info;
+  try {
+    info = py::cast(RiskRejectInfo{reject});
+  } catch (...) {
+    r.fail_current("on_risk_reject");
+    return;
+  }
+  PyObject* args[3] = {nullptr, r.ctx_.ptr(), info.ptr()};
+  r.call(Hook::RiskReject, args, 2);
 }
 
 void py_on_driver_steps(PyRun& r) noexcept {
@@ -1436,6 +1457,75 @@ void bind_strategy_api(py::module_& m) {
                " ns, ack_rtt_smoothed " + std::to_string(x.v.ack_rtt_smoothed.ns) + " ns" +
                (x.v.gated ? ", gated>" : ">");
       });
+
+  py::class_<OrderBudgetInfo> budget_cls(
+      m,
+      "OrderBudget",
+      "What the [risk] rate limit and a venue's own limits still admit (a copy). The venue's "
+      "windows are (used, limit) or None where it declares none; a backtest knows no venue.",
+      py::is_final());
+  const auto rate_window = [](const RateWindow& w) -> py::object {
+    if (!w.known()) return py::none();
+    return py::make_tuple(w.used, w.limit);
+  };
+  budget_cls
+      .def_property_readonly(
+          "local_tokens",
+          [room_raw](const OrderBudgetInfo& x) { return room_raw(x.b.local_tokens); })
+      .def_property_readonly(
+          "orders_10s",
+          [rate_window](const OrderBudgetInfo& x) { return rate_window(x.b.orders_10s); })
+      .def_property_readonly(
+          "orders_1m",
+          [rate_window](const OrderBudgetInfo& x) { return rate_window(x.b.orders_1m); })
+      .def_property_readonly(
+          "orders_1d",
+          [rate_window](const OrderBudgetInfo& x) { return rate_window(x.b.orders_1d); })
+      .def_property_readonly(
+          "weight", [rate_window](const OrderBudgetInfo& x) { return rate_window(x.b.weight); })
+      .def_property_readonly("venue_paused",
+                             [](const OrderBudgetInfo& x) { return x.b.venue_paused; })
+      .def_property_readonly("venue_known",
+                             [](const OrderBudgetInfo& x) { return x.b.venue_known; })
+      .def_property_readonly(
+          "orders_remaining",
+          [room_raw](const OrderBudgetInfo& x) { return room_raw(x.b.orders_remaining()); })
+      .def("__repr__", [](const OrderBudgetInfo& x) {
+        return "<OrderBudget local_tokens " +
+               (x.b.local_tokens == OrderBudget::kUnlimited ? std::string("unlimited")
+                                                            : std::to_string(x.b.local_tokens)) +
+               (x.b.venue_known ? ", venue known" : ", venue unknown") +
+               (x.b.venue_paused ? ", paused>" : ">");
+      });
+
+  py::class_<RiskRejectInfo> reject_cls(
+      m,
+      "RiskReject",
+      "A new order or replace the engine's own risk check refused (on_risk_reject): nothing was "
+      "sent. A copy.",
+      py::is_final());
+  reject_cls
+      .def_property_readonly("inst", [](const RiskRejectInfo& x) { return x.r.instrument.value; })
+      .def_property_readonly("side",
+                             [](const RiskRejectInfo& x) { return static_cast<int>(x.r.side); })
+      .def_property_readonly(
+          "reason", [](const RiskRejectInfo& x) { return std::string(to_string(x.r.reason)); })
+      .def_property_readonly("replace", [](const RiskRejectInfo& x) { return x.r.replace; })
+      .def_property_readonly("order_id", [](const RiskRejectInfo& x) { return x.r.order.value; })
+      .def_property_readonly("tag", [](const RiskRejectInfo& x) { return x.r.user_tag; })
+      .def_property_readonly(
+          "post_only", [](const RiskRejectInfo& x) { return x.r.type == OrderType::PostOnly; })
+      .def_property_readonly("price", [](const RiskRejectInfo& x) { return x.r.price.to_double(); })
+      .def_property_readonly("price_raw", [](const RiskRejectInfo& x) { return x.r.price.raw; })
+      .def_property_readonly("qty", [](const RiskRejectInfo& x) { return x.r.qty.to_double(); })
+      .def_property_readonly("qty_raw", [](const RiskRejectInfo& x) { return x.r.qty.raw; })
+      .def_property_readonly("time_ns", [](const RiskRejectInfo& x) { return x.r.time.ns; })
+      .def("__repr__", [](const RiskRejectInfo& x) {
+        return "<RiskReject " + std::string(to_string(x.r.reason)) + " on " +
+               (x.r.replace ? "replace" : "new") + " " + std::string(to_string(x.r.side)) + " " +
+               std::to_string(x.r.qty.to_double()) + " @ " + std::to_string(x.r.price.to_double()) +
+               ">";
+      });
   py::class_<BalanceInfo> balance_cls(
       m,
       "Balance",
@@ -1543,6 +1633,15 @@ void bind_strategy_api(py::module_& m) {
           },
           py::arg("venue") = 0,
           "Feed lag, order round trip and the feed-lag gate of a venue.")
+      .def(
+          "order_budget",
+          [](const ContextHandle& c, std::uint32_t venue) {
+            PySimEngine& e = c.engine();
+            return OrderBudgetInfo{e.context().order_budget(venue_arg(venue))};
+          },
+          py::arg("venue") = 0,
+          "What the [risk] rate limit and the venue's own limits still admit now; a backtest "
+          "knows only the local token bucket.")
       .def(
           "mark",
           [](const ContextHandle& c, py::handle inst) {

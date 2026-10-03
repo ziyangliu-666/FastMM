@@ -141,6 +141,7 @@ class RiskEngine {
   [[nodiscard]] const RiskLimits& limits() const noexcept { return limits_; }
   [[nodiscard]] const RiskStats& stats() const noexcept { return stats_; }
   [[nodiscard]] TokenBucket& bucket() noexcept { return bucket_; }
+  [[nodiscard]] const TokenBucket& bucket() const noexcept { return bucket_; }
 
   // ---- kill switch (any thread) ---------------------------------------------------------
   void trip() noexcept {

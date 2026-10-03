@@ -51,6 +51,7 @@
 #include "fastmm/core/log.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/oms.hpp"
+#include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/own_quantity.hpp"
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/position.hpp"
@@ -93,7 +94,8 @@ struct EngineStats {
   std::uint64_t replaces_sent = 0;
   std::uint64_t fills = 0;
   std::uint64_t risk_rejects = 0;
-  std::uint64_t venue_rejects = 0;  // OrderReject messages that changed an order
+  std::uint64_t venue_rejects = 0;                // OrderReject messages that changed an order
+  std::uint64_t risk_reject_notices_dropped = 0;  // on_risk_reject calls lost to a full queue
   std::uint64_t journal_overflows = 0;
   std::uint64_t records_written = 0;  // records handed to the store ring (core/record_stream.hpp)
   std::uint64_t records_dropped = 0;  // ... and dropped because it was full
@@ -329,9 +331,9 @@ class Engine {
     FASTMM_LOG_INFO(
         "strategy {} hooks: {}", strategy_name(), implemented_hooks<Strategy, Context, Book>());
     if (cfg_.ack_timeout.ns > 0) ack_timer_ = timers_.add(now_, cfg_.ack_timeout, /*repeat=*/true);
-    [[maybe_unused]] const bool quoting_before = quoting_enabled();
+    const bool quoting_before = quoting_enabled();
     if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
-    if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
+    after_hooks(quoting_before);
     flush_out();
     unlatch_clock();
     in_engine_ = false;
@@ -470,6 +472,18 @@ class Engine {
   }
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return health_.view(v, now());
+  }
+  // ctx.order_budget: the [risk] bucket's whole tokens, and the venue's windows where the transport
+  // carries them (LiveTransport: the connector's publication; a backtest has none).
+  [[nodiscard]] OrderBudget order_budget(VenueId v) const noexcept {
+    OrderBudget b;
+    if constexpr (requires(const Transport& t, OrderBudget& o) {
+                    { t.venue_budget(v, o) } -> std::same_as<bool>;
+                  }) {
+      static_cast<void>(transport_.venue_budget(v, b));
+    }
+    b.local_tokens = risk_.bucket().available(now());
+    return b;
   }
 
   // ---- balances (core/balance_book.hpp) -------------------------------------------------------
@@ -688,6 +702,39 @@ class Engine {
       flush_out();
     }
   }
+  // Risk rejects the hook that just ran collected, then the quoting change it made, then the
+  // rejects on_quoting collected. A strategy that asks again from on_risk_reject and is refused
+  // again gets a few more rounds, not an endless one.
+  void after_hooks([[maybe_unused]] bool quoting_before) noexcept {
+    if constexpr (has_hook(Hook::RiskReject)) deliver_risk_rejects();
+    if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
+    if constexpr (has_hook(Hook::RiskReject)) deliver_risk_rejects();
+  }
+  FASTMM_NOINLINE void deliver_risk_rejects() noexcept {
+    for (int round = 0; round < kRiskRejectRounds && !risk_rejects_.empty(); ++round) {
+      const StaticVector<RiskReject, kMaxPendingRiskRejects> batch = risk_rejects_;
+      risk_rejects_.clear();
+      for (const RiskReject& r : batch) strategy_.on_risk_reject(ctx_, r);
+      flush_out();
+    }
+    risk_rejects_.clear();
+  }
+  FASTMM_NOINLINE void queue_risk_reject(RejectReason rr,
+                                         const Instrument& inst,
+                                         Side side,
+                                         OrderType type,
+                                         Price px,
+                                         Qty qty,
+                                         ClientOrderId order,
+                                         std::uint32_t user_tag,
+                                         bool replace) noexcept {
+    if (risk_rejects_.full()) {
+      ++stats_.risk_reject_notices_dropped;
+      return;
+    }
+    risk_rejects_.push_back(
+        RiskReject{inst.id, side, type, rr, replace, user_tag, px, qty, order, now_});
+  }
 
   // ---- event loop ---------------------------------------------------------------------------
 
@@ -737,15 +784,10 @@ class Engine {
     set_event_origin(h->t0_cycles, Cycles{h->t0_cycles.v + h->t1_delta});
     // The ParamUpdate that renews the parameters does not first expire them.
     const bool renews_params = h->type == EventType::ParamUpdate;
-    if constexpr (has_hook(Hook::Quoting)) {
-      const bool quoting_before = quoting_enabled();
-      if (!renews_params) check_param_age();
-      dispatch(h);
-      notify_quoting(quoting_before);
-    } else {
-      if (!renews_params) check_param_age();
-      dispatch(h);
-    }
+    const bool quoting_before = quoting_enabled();
+    if (!renews_params) check_param_age();
+    dispatch(h);
+    after_hooks(quoting_before);
     unlatch_clock();
   }
 
@@ -2005,9 +2047,9 @@ class Engine {
   void on_timer_fired(TimerId id, std::uint64_t user_data) noexcept {
     latch_clock();
     set_event_origin(Cycles{}, Cycles{});  // no inbound message: sends carry no T0
-    [[maybe_unused]] const bool quoting_before = quoting_enabled();
+    const bool quoting_before = quoting_enabled();
     fire_timer(id, user_data);
-    if constexpr (has_hook(Hook::Quoting)) notify_quoting(quoting_before);
+    after_hooks(quoting_before);
     unlatch_clock();
   }
   void fire_timer(TimerId id, std::uint64_t user_data) noexcept {
@@ -2146,6 +2188,10 @@ class Engine {
       ++stats_.risk_rejects;
       stats_.risk_rejects_by_reason.add(rr);
       log_risk_reject(rr, inst, req.side, req.price, req.qty, false);
+      if constexpr (has_hook(Hook::RiskReject)) {
+        queue_risk_reject(
+            rr, inst, req.side, req.type, req.price, req.qty, ClientOrderId{}, req.user_tag, false);
+      }
       return fail(rr);
     }
     const ClientOrderId id = oms_.next_cl_ord_id();
@@ -2233,6 +2279,8 @@ class Engine {
       ++stats_.risk_rejects;
       stats_.risk_rejects_by_reason.add(rr);
       log_risk_reject(rr, inst, o.side, px, qty, true);
+      if constexpr (has_hook(Hook::RiskReject))
+        queue_risk_reject(rr, inst, o.side, o.type, px, qty, o.cl_ord_id, o.user_tag, true);
       return fail(rr);
     }
     const ClientOrderId new_id = oms_.next_cl_ord_id();
@@ -2544,6 +2592,10 @@ class Engine {
   Xoshiro256ss rng_;
   SpinPolicy spin_;
   RejectLogLimiter reject_log_;
+  // Risk rejects waiting for on_risk_reject (after_hooks); empty for a strategy without the hook.
+  static constexpr std::size_t kMaxPendingRiskRejects = 64;
+  static constexpr int kRiskRejectRounds = 4;
+  StaticVector<RiskReject, kMaxPendingRiskRejects> risk_rejects_;
   EngineStats stats_{};
   Seqlocked<LatencySnapshot> latency_pub_;
   // Off the engine object: the publication is read by other threads once a second.

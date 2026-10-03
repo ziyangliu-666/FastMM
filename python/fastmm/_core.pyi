@@ -761,6 +761,10 @@ class Context:
         """
         Feed lag, order round trip and the feed-lag gate of a venue.
         """
+    def order_budget(self, venue: typing.SupportsInt | typing.SupportsIndex = 0) -> OrderBudget:
+        """
+        What the [risk] rate limit and the venue's own limits still admit now; a backtest knows only the local token bucket.
+        """
     def working_quote(self, inst: typing.Any, side: typing.SupportsInt | typing.SupportsIndex, level: typing.SupportsInt | typing.SupportsIndex = 0) -> typing.Any:
         """
         The open order in a quote slot, or None.
@@ -1186,6 +1190,36 @@ class Order:
         """
         The venue's accept time from the ack (exch_ts, ns; whole ms on Binance); 0 before the ack or when the venue gives none.
         """
+class OrderBudget:
+    """
+    What the [risk] rate limit and a venue's own limits still admit (a copy). The venue's windows are (used, limit) or None where it declares none; a backtest knows no venue.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def local_tokens(self) -> int | None:
+        ...
+    @property
+    def orders_10s(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def orders_1m(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def orders_1d(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def weight(self) -> tuple[int, int] | None:
+        ...
+    @property
+    def venue_paused(self) -> bool:
+        ...
+    @property
+    def venue_known(self) -> bool:
+        ...
+    @property
+    def orders_remaining(self) -> int | None:
+        ...
 class OrderBook:
     """
     Price-aggregated L2 book (up to 256 levels per side) for research. Prices and quantities are floats, stored in 1e-8 fixed point; best-first level order.
@@ -1580,6 +1614,48 @@ class RiskHeadroom:
         ...
     @property
     def underlying_sell_qty_raw(self) -> int | None:
+        ...
+class RiskReject:
+    """
+    A new order or replace the engine's own risk check refused (on_risk_reject): nothing was sent. A copy.
+    """
+    def __repr__(self) -> str:
+        ...
+    @property
+    def inst(self) -> int:
+        ...
+    @property
+    def side(self) -> int:
+        ...
+    @property
+    def reason(self) -> str:
+        ...
+    @property
+    def replace(self) -> bool:
+        ...
+    @property
+    def order_id(self) -> int:
+        ...
+    @property
+    def tag(self) -> int:
+        ...
+    @property
+    def post_only(self) -> bool:
+        ...
+    @property
+    def price(self) -> float:
+        ...
+    @property
+    def price_raw(self) -> int:
+        ...
+    @property
+    def qty(self) -> float:
+        ...
+    @property
+    def qty_raw(self) -> int:
+        ...
+    @property
+    def time_ns(self) -> int:
         ...
 class StaleViewError(RuntimeError):
     """

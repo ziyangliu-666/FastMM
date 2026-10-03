@@ -13,6 +13,8 @@
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
+#include "fastmm/core/order_budget.hpp"
+#include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/shm_ring.hpp"
 #include "fastmm/core/thread_utils.hpp"
 #include "fastmm/core/time.hpp"
@@ -228,6 +230,19 @@ class LiveTransport {
   }
   // A live venue's depth and tickers include our resting orders.
   [[nodiscard]] bool own_in_feed(VenueId v) const noexcept { return v.value < kMaxVenues; }
+  // The budget the venue's connector publishes (Venue::budget_source); none behind a gateway.
+  void set_budget_source(VenueId v, const Seqlocked<OrderBudget>* src) noexcept {
+    if (v.value < kMaxVenues) budgets_[v.value] = src;
+  }
+  // The venue's latest publication (ctx.order_budget); false when there is none, or the writer
+  // is in the middle of one.
+  [[nodiscard]] bool venue_budget(VenueId v, OrderBudget& out) const noexcept {
+    if (v.value >= kMaxVenues || budgets_[v.value] == nullptr) return false;
+    OrderBudget b;
+    if (!budgets_[v.value]->try_load(b) || !b.venue_known) return false;
+    out = b;
+    return true;
+  }
   [[nodiscard]] std::uint64_t sent() const noexcept { return sent_; }
   [[nodiscard]] std::uint64_t dropped_full() const noexcept { return full_; }
 
@@ -243,6 +258,7 @@ class LiveTransport {
   }
   RingRef rings_[kMaxVenues] = {};
   bool replace_[kMaxVenues] = {};
+  const Seqlocked<OrderBudget>* budgets_[kMaxVenues] = {};
   WakeFn wake_ = nullptr;
   void* wake_ctx_ = nullptr;
   DirectFn direct_ = nullptr;

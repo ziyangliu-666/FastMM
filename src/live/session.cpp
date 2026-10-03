@@ -924,6 +924,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     static_cast<void>(feed.add_ring(s.md_ring.get()));
     const bool replace = s.venue->caps().supports_replace && cfg.venues[i].supports_replace;
     transport.set_venue(vid, s.outbound.get(), replace);
+    transport.set_budget_source(vid, &s.venue->budget_source());
     if (replace) replace_venues |= std::uint64_t{1} << i;
     const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
     if (entry != nullptr && entry->caps.executions && !opts.dry_run) await_venues |= 1U << i;

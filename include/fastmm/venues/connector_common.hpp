@@ -11,6 +11,7 @@
 #include "fastmm/venues/decimal.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/order_events.hpp"
+#include "fastmm/venues/rate_limiter.hpp"
 #include "fastmm/venues/venue.hpp"
 
 #include <cstddef>
@@ -114,6 +115,41 @@ struct IdText {
     if (p.try_load(s)) return s;
   }
   return s;
+}
+
+// The rate limiter's buckets as the budget the venue publishes (Venue::budget_source): the order
+// windows by length, the request weight over the shortest window. A window that has run out is
+// read as empty, the way can_send would roll it.
+[[nodiscard]] inline OrderBudget budget_of(const RateLimiter& r, std::int64_t now) noexcept {
+  auto window = [now](const RateBucket& b) {
+    RateWindow w;
+    w.window_ms = b.window_ns / 1'000'000;
+    w.limit = b.limit;
+    w.used = b.window_ns > 0 && now - b.window_start >= b.window_ns ? 0 : b.used;
+    return w;
+  };
+  OrderBudget out;
+  out.venue_known = true;
+  out.venue_paused = r.hard_stopped() || r.in_cooldown(now);
+  for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
+    const RateBucket* b = r.order_bucket(i);
+    if (b == nullptr) continue;
+    const std::int64_t s = b->window_ns / 1'000'000'000;
+    if (s == 10) {
+      out.orders_10s = window(*b);
+    } else if (s == 60) {
+      out.orders_1m = window(*b);
+    } else if (s == 86'400) {
+      out.orders_1d = window(*b);
+    }
+  }
+  for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
+    const RateBucket* b = r.weight_bucket(i);
+    if (b == nullptr) continue;
+    if (!out.weight.known() || b->window_ns < out.weight.window_ms * 1'000'000)
+      out.weight = window(*b);
+  }
+  return out;
 }
 
 // First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled, new

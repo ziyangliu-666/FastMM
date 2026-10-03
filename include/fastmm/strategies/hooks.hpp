@@ -67,6 +67,22 @@ struct Fill {
   const OrderFillMsg* msg = nullptr;  // always set by the engine
 };
 
+// A new order or replace the engine's own risk check refused (RiskEngine, [risk]): nothing was
+// sent and no order exists for it. Delivered to on_risk_reject once the hook that asked (or
+// set_quotes from it) has returned, never from inside the call that was refused.
+struct RiskReject {
+  InstrumentId instrument;
+  Side side;
+  OrderType type;
+  RejectReason reason;
+  bool replace;            // a replace of `order`; else a new order and `order` is invalid
+  std::uint32_t user_tag;  // NewOrderRequest::user_tag; a quote's is QuoteManager::make_tag
+  Price price;
+  Qty qty;
+  ClientOrderId order;
+  Timestamp time;
+};
+
 // The hook table. X(Enum, name, word, (parameters), (arguments), "expected signature"). The
 // parameters name the engine's call; `Ctx` and `Book` are the engine's context and book types.
 #define FASTMM_STRATEGY_HOOKS(X)                                                   \
@@ -138,11 +154,19 @@ struct Fill {
     "perp_state",                                                                  \
     (Ctx & ctx, InstrumentId id, const PerpStateMsg& m),                           \
     (ctx, id, m),                                                                  \
-    "void on_perp_state(auto& ctx, InstrumentId id, const PerpStateMsg& m)")
+    "void on_perp_state(auto& ctx, InstrumentId id, const PerpStateMsg& m)")       \
+  X(RiskReject,                                                                    \
+    on_risk_reject,                                                                \
+    "risk_reject",                                                                 \
+    (Ctx & ctx, const RiskReject& r),                                              \
+    (ctx, r),                                                                      \
+    "void on_risk_reject(auto& ctx, const RiskReject& r)")
 
 // Y(misspelling, hook): names that produce a "did you mean" warning.
 #define FASTMM_STRATEGY_HOOK_NEAR_MISSES(Y) \
   Y(on_fills, on_fill)                      \
+  Y(on_reject, on_risk_reject)              \
+  Y(on_risk_rejected, on_risk_reject)       \
   Y(on_execution, on_fill)                  \
   Y(on_trades, on_trade)                    \
   Y(on_order_book, on_book)                 \

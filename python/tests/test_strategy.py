@@ -53,9 +53,10 @@ def test_every_hook_name_and_order_matches_the_cpp_table():
         def on_connection(self, ctx, msg): ...
         def on_balance(self, ctx, msg): ...
         def on_perp_state(self, ctx, inst, msg): ...
+        def on_risk_reject(self, ctx, reject): ...
 
     assert All.hooks() == tuple(fastmm.strategy.HOOKS)
-    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_perp_state"
+    assert All.hooks()[0] == "on_start" and All.hooks()[-1] == "on_risk_reject"
 
 
 def test_hook_signatures_and_near_misses_are_checked(example_config):
@@ -438,6 +439,41 @@ def test_fees_risk_headroom_and_venue_health(example_config):
     assert (gated, engagements, lag_ok, stamped) == (False, 0, True, True)
     with pytest.raises(fastmm.StrategyError, match="venue id out of range"):
         fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=_VenueOutOfRange())
+
+
+def test_on_risk_reject_and_order_budget(example_config):
+    class Probe(Strategy):
+        def on_start(self, ctx):
+            self.budget = ctx.order_budget()
+            self.rejects = []
+
+        def on_book(self, ctx, inst, book):
+            if hasattr(self, "sent") or not book.valid:
+                return
+            self.sent = True
+            # Over [risk] max_order_qty: refused by the engine, reported after on_book returns.
+            with pytest.raises(fastmm.OrderRejected, match="MaxOrderQty"):
+                ctx.send(inst, SELL, book.best_ask[0] + 5.0, 5.0, post_only=True, tag=9)
+            self.pending_inside = len(self.rejects)
+
+        def on_risk_reject(self, ctx, reject):
+            self.rejects.append(reject)
+
+    s = Probe()
+    fastmm.run_backtest(_cfg(example_config), data=FIXTURE_FMJ, strategy=s)
+    assert s.pending_inside == 0  # never from inside send
+    assert len(s.rejects) == 1
+    r = s.rejects[0]
+    assert (r.inst, r.side, r.reason, r.replace, r.tag, r.post_only) == (0, SELL, "MaxOrderQty",
+                                                                         False, 9, True)
+    assert r.qty == pytest.approx(5.0) and r.qty_raw == 500_000_000 and r.order_id == 0
+    assert r.time_ns > 0 and "MaxOrderQty" in repr(r)
+    b = s.budget
+    assert b.local_tokens is None  # orders_per_sec is not set
+    assert not b.venue_known and not b.venue_paused
+    assert b.orders_10s is None and b.orders_1m is None and b.weight is None
+    assert b.orders_remaining is None
+    assert "venue unknown" in repr(b)
 
 
 def test_on_balance_and_the_balance_estimate(example_config):

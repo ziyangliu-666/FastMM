@@ -5,6 +5,15 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `on_risk_reject(ctx, const RiskReject&)`: an optional hook that reports each new order or
+  replace the engine's own `[risk]` check refused (instrument, side, type, reason, price,
+  quantity, `user_tag`, the order a replace would have changed), after the hook that asked has
+  returned, as `on_quoting` is. A strategy without it pays nothing. `ctx.order_budget(venue)`
+  (`core/order_budget.hpp`): the orders the `[risk] orders_per_sec` bucket admits now and, live,
+  the venue's own counts by window (Binance orders per 10 s, minute and day, request weight per
+  minute) as its connector last published them from its rate limiter, plus whether the venue has
+  it paused (429, 418). Python: `on_risk_reject(self, ctx, reject)`, `ctx.order_budget()`,
+  `RiskReject` and `OrderBudget`.
 - Binance USDⓈ-M: `post_only_rpi = true` sends post-only orders with `timeInForce` `RPI` (retail
   price improvement: matched only against app and web orders, hidden from the API depth; the
   venue does not modify one, so pair it with `supports_replace = false`). `TRADIFI_PERPETUAL`

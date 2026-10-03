@@ -935,6 +935,7 @@ void BinanceUsdmVenue::on_order_text(std::string_view t, std::int64_t ts) {
 
 void BinanceUsdmVenue::handle_ws_api_response(const binance::WsApiResponse& r) {
   rate_.on_headers(r.rate.used_weight, r.rate.order_count, now_ns());
+  budget_pub_.store(budget_of(rate_, now_ns()));
   if (const auto req = parse_request_id(r.id)) {
     handle_order_response(req->first, req->second, r);
     return;
@@ -1334,6 +1335,7 @@ void BinanceUsdmVenue::note_rate_headers(const net::HttpResponse& r) {
   // X-MBX-ORDER-COUNT-10S (and -1M).
   rate_.on_headers(
       header_int(r, "X-MBX-USED-WEIGHT-1M"), header_int(r, "X-MBX-ORDER-COUNT-10S"), now_ns());
+  budget_pub_.store(budget_of(rate_, now_ns()));
 }
 
 // First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled,
@@ -2158,6 +2160,7 @@ void BinanceUsdmVenue::publish_status() noexcept {
   wire_.summarize(
       tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
+  budget_pub_.store(budget_of(rate_, now_ns()));
 }
 
 VenueStatus BinanceUsdmVenue::status() const noexcept {

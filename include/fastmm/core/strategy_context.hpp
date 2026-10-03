@@ -11,6 +11,7 @@
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/order.hpp"
+#include "fastmm/core/order_budget.hpp"
 #include "fastmm/core/perp_book.hpp"
 #include "fastmm/core/position.hpp"
 #include "fastmm/core/quote_manager.hpp"
@@ -187,6 +188,10 @@ class StrategyContext {
   [[nodiscard]] VenueHealthView venue_health(VenueId v) const noexcept {
     return e_->venue_health(v);
   }
+  // What the [risk] rate limit and the venue's own limits still admit (core/order_budget.hpp):
+  // the local token bucket, and the venue's order counts and request weight by window as its
+  // connector last published them (live only; venue_known is false elsewhere).
+  [[nodiscard]] OrderBudget order_budget(VenueId v) const noexcept { return e_->order_budget(v); }
 
   // ---- balances (core/balance_book.hpp) ---------------------------------------------------------
 

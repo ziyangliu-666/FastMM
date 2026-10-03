@@ -48,8 +48,13 @@ void on_option_ticker(auto& /*ctx*/, InstrumentId /*id*/, const OptionTickerMsg&
 }
 void on_fill(auto& /*ctx*/, const Fill& /*fill*/) noexcept { hit(kFill); }
 void on_order_update(auto& /*ctx*/, const OmsUpdate& /*u*/) noexcept { hit(kOrderUpdate); }
-void on_timer(auto& /*ctx*/, TimerId /*id*/, std::uint64_t tag) noexcept {
-  if (tag == 7) hit(kTimer);
+void on_timer(auto& ctx, TimerId /*id*/, std::uint64_t tag) noexcept {
+  if (tag != 7) return;
+  hit(kTimer);
+  // Once: a price off the tick is refused by the engine's own check (on_risk_reject).
+  if (count(kTimer) == 1)
+    static_cast<void>(ctx.send(NewOrderRequest::limit(
+        InstrumentId{0}, Side::Buy, Price::from_decimal("99.995").value(), params().quote_qty)));
 }
 void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hit(kConnection); }
 void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
@@ -57,6 +62,9 @@ void on_params(auto& /*ctx*/) noexcept { hit(kParams); }
 void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance); }
 void on_perp_state(auto& /*ctx*/, InstrumentId /*id*/, const PerpStateMsg& /*m*/) noexcept {
   hit(kPerpState);
+}
+void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
+  if (r.reason == RejectReason::InvalidTick && !r.replace) hit(kRiskReject);
 }
 ```
 
@@ -76,6 +84,7 @@ void on_perp_state(auto& /*ctx*/, InstrumentId /*id*/, const PerpStateMsg& /*m*/
 | `on_params(ctx)` | a parameter update was applied; `params()` holds the new values ([Parameter updates](#parameter-updates)) |
 | `on_balance(ctx, m)` | a venue reported one asset of the account ([Balances](#balances)); `ctx.balance` already holds it |
 | `on_perp_state(ctx, id, m)` | a venue's mark, index or funding of a derivative arrived ([Perpetuals](#perpetuals)); `ctx.mark` and `ctx.funding` already hold it |
+| `on_risk_reject(ctx, r)` | the engine's own risk check refused a new order or replace ([below](#on_risk_reject)); nothing was sent |
 
 Rules:
 
@@ -92,6 +101,15 @@ Rules:
 - It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the hook that made the call returns.
 - It does not fire for the initial state; `on_start` reads `ctx.quoting_enabled()`.
 - A lost connection does not change `quoting_enabled()`; `on_connection` reports it.
+
+### on_risk_reject
+
+A `send`, `replace` or `set_quotes` the `[risk]` limits refuse sends nothing: `send` and `replace` return the `RejectReason`, `set_quotes` returns true (the quote manager keeps the level for the next requote) and the engine counts and logs the reject. `on_risk_reject(ctx, const RiskReject& r)` reports each one to the strategy: `instrument`, `side`, `type`, `reason`, `price`, `qty`, `user_tag` (a quote's tag is the `QuoteManager`'s), `replace` with `order` (the id a replace would have changed; invalid for a new order), and `time`.
+
+- It is delivered after the hook that asked has returned, in the order the rejects happened, together with `on_quoting` ([above](#on_quoting)); never from inside the context call that was refused.
+- An order refused again from inside `on_risk_reject` is reported in a further round, a few rounds at most: the queue holds 64 rejects per event, and what does not fit is counted in `EngineStats::risk_reject_notices_dropped`.
+- A strategy without the hook pays nothing: the queue is compiled out with it.
+- Venue rejects are not risk rejects: an order the venue refused comes back through `on_order_update` with `OrderState::Rejected`.
 
 ### Signature checks
 
@@ -199,6 +217,7 @@ if (!id) return FASTMM_LOG_WARN("order refused: {}", id.error());  // e.g. Rejec
 static_assert(std::same_as<decltype(lvalue<Ctx>().fees(InstrumentId{})), const FeeRates&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{})), RiskHeadroom>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
 ```
 
 | Method | Returns |
@@ -206,8 +225,9 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), Venu
 | `fees(id)` | `FeeRates`: `maker_cbps`, `taker_cbps` (1 cbps = 0.01 bps; positive is a fee, negative a rebate), `maker_bps()`, `taker_bps()`, `fee(notional, liquidity)`. The instrument's `maker_bps` / `taker_bps`, else its venue's `[venues.<x>.fees]`; with `fetch_fees` the account's own rates ([Binance Spot](venues.md#fee-rates)). A backtest charges these rates; a live venue reports the commission of each fill itself |
 | `risk_headroom(id)` | `RiskHeadroom`: what each `[risk]` limit still admits on the instrument now, computed from the inputs the next check uses; an order of exactly a room passes that check and one lot more is refused. `order_tokens` (rate limiter), `open_orders`, `max_order_qty`, `max_order_notional`, `buy_qty` / `sell_qty` (`max_position`, open orders on that side counted, rounded down to the lot), `underlying_buy_qty` / `underlying_sell_qty` (`[risk.underlying]` max_net over the underlying's instruments, in this instrument's contracts; 0 while an inverse contract of it has no mark), `gross_notional`, `net_buy_notional` / `net_sell_notional` (exposure an order that does not reduce its position may add), `exposure_buy_notional` / `exposure_sell_notional` (those two caps as the notional of one buy / sell on this instrument in its settlement currency, converted at the rate the check uses: unlimited for the side that reduces the position, 0 while the currency's rate is unknown), `loss_budget` (`max_loss` plus net PnL; the kill switch trips at 0). A limit that is off reads `RiskHeadroom::kUnlimited` or the type's `max()`. Notionals are in the reporting currency with `[accounting]`. `fastmm-gateway`'s account guards are not included |
 | `venue_health(venue)` | `VenueHealthView`: `feed_lag` (`recv_ts - exch_ts` of the venue's latest market-data message with a venue time), `feed_lag_base` (its minimum over the last 8 s), `feed_lag_excess`, `ack_rtt` and `ack_rtt_smoothed` (engine time from sending a new order to consuming its first ack; smoothed as `srtt += (rtt - srtt) / 8`), `md_updated`, `ack_updated`, sample counts, `gate_engagements` and `gated` ([Feed-lag gate](../explanation/risk-model.md#feed-lag-gate)). Zero before the first sample |
+| `order_budget(venue)` | `OrderBudget` (`core/order_budget.hpp`): `local_tokens`, the orders the `[risk] orders_per_sec` bucket admits now (`kUnlimited` with the limit off); the venue's own counts as `RateWindow`s (`window_ms`, `used`, `limit`, `known()`, `remaining()`): `orders_10s`, `orders_1m`, `orders_1d` (Binance `ORDERS` per 10 s, minute and day, the count the venue last reported plus the orders sent since) and `weight` (request weight over the venue's shortest window: 6000 a minute on Binance Spot, 2400 on USDⓈ-M); `venue_paused` while the connector sends nothing (429 `Retry-After`, 418); `venue_known`; `orders_remaining()`, the least of them |
 
-The three are computed from journaled inputs, so replay returns the same values. `venue_health` costs one lookup; `risk_headroom` does the work of a risk check. While the feed-lag gate holds a venue, `set_quotes` on its instruments returns false.
+The first three are computed from journaled inputs, so replay returns the same values. `venue_health` costs one lookup; `risk_headroom` does the work of a risk check. While the feed-lag gate holds a venue, `set_quotes` on its instruments returns false. `order_budget`'s venue fields are the connector's latest publication from its own thread (its rate limiter, `venues/rate_limiter.hpp`, published with its status and after each response that carried the venue's counts), not journaled: a backtest, a replay and a strategy attached to `fastmm-gateway` see `venue_known == false` and every window unlimited; only `local_tokens` is deterministic.
 
 ### Balances
 

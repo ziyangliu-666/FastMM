@@ -705,6 +705,7 @@ void BinanceVenue::on_order_text(std::string_view t, std::int64_t ts) {
 
 void BinanceVenue::handle_ws_api_response(const WsApiResponse& r, std::string_view raw) {
   rate_.on_headers(r.rate.used_weight, r.rate.order_count, now_ns());
+  budget_pub_.store(budget_of(rate_, now_ns()));
   if (const auto req = parse_request_id(r.id)) {
     handle_order_response(req->first, req->second, r);
     return;
@@ -1165,6 +1166,7 @@ void BinanceVenue::note_rate_headers(const net::HttpResponse& r) {
   // rest-api.md "IP Limits" / "Unfilled Order Count" headers.
   rate_.on_headers(
       header_int(r, "X-MBX-USED-WEIGHT-1M"), header_int(r, "X-MBX-ORDER-COUNT-10S"), now_ns());
+  budget_pub_.store(budget_of(rate_, now_ns()));
 }
 
 // First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled,
@@ -1782,6 +1784,7 @@ void BinanceVenue::publish_status() noexcept {
   wire_.summarize(
       tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
+  budget_pub_.store(budget_of(rate_, now_ns()));
 }
 
 VenueStatus BinanceVenue::status() const noexcept {

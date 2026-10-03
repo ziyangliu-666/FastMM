@@ -47,6 +47,7 @@ void py_on_connection(PyRun& run, const ConnectionStateMsg& m) noexcept;
 void py_on_quoting(PyRun& run, bool enabled) noexcept;
 void py_on_balance(PyRun& run, const BalanceMsg& m) noexcept;
 void py_on_perp_state(PyRun& run, InstrumentId id, const PerpStateMsg& m) noexcept;
+void py_on_risk_reject(PyRun& run, const RiskReject& r) noexcept;
 // Called every kDriverStepsPerCheck driver steps: signal check and a brief GIL release, so Ctrl-C
 // also works for a strategy whose hooks rarely run.
 void py_on_driver_steps(PyRun& run) noexcept;
@@ -127,6 +128,10 @@ class PyStrategy {
   template <class Ctx>
   void on_perp_state(Ctx&, InstrumentId id, const PerpStateMsg& m) noexcept {
     if (on(Hook::PerpState)) py_on_perp_state(*run_, id, m);
+  }
+  template <class Ctx>
+  void on_risk_reject(Ctx&, const RiskReject& r) noexcept {
+    if (on(Hook::RiskReject)) py_on_risk_reject(*run_, r);
   }
 
   // SimDriver calls this through EngineHooks::stopped after every engine step.

@@ -1775,6 +1775,7 @@ void BybitVenue::publish_status() noexcept {
   wire_.summarize(
       tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
+  budget_pub_.store(budget_of(rate_, now_ns()));
 }
 
 VenueStatus BybitVenue::status() const noexcept {

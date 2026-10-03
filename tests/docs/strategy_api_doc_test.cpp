@@ -59,6 +59,7 @@ enum HookIndex : std::uint8_t {
   kParams,
   kBalance,
   kPerpState,
+  kRiskReject,
   kHookCount
 };
 
@@ -89,8 +90,13 @@ class AllHooks : public StrategyBase<AllHooksParams> {
   }
   void on_fill(auto& /*ctx*/, const Fill& /*fill*/) noexcept { hit(kFill); }
   void on_order_update(auto& /*ctx*/, const OmsUpdate& /*u*/) noexcept { hit(kOrderUpdate); }
-  void on_timer(auto& /*ctx*/, TimerId /*id*/, std::uint64_t tag) noexcept {
-    if (tag == 7) hit(kTimer);
+  void on_timer(auto& ctx, TimerId /*id*/, std::uint64_t tag) noexcept {
+    if (tag != 7) return;
+    hit(kTimer);
+    // Once: a price off the tick is refused by the engine's own check (on_risk_reject).
+    if (count(kTimer) == 1)
+      static_cast<void>(ctx.send(NewOrderRequest::limit(
+          InstrumentId{0}, Side::Buy, Price::from_decimal("99.995").value(), params().quote_qty)));
   }
   void on_connection(auto& /*ctx*/, const ConnectionStateMsg& /*m*/) noexcept { hit(kConnection); }
   void on_quoting(auto& /*ctx*/, bool /*enabled*/) noexcept { hit(kQuoting); }
@@ -98,6 +104,9 @@ class AllHooks : public StrategyBase<AllHooksParams> {
   void on_balance(auto& /*ctx*/, const BalanceMsg& /*m*/) noexcept { hit(kBalance); }
   void on_perp_state(auto& /*ctx*/, InstrumentId /*id*/, const PerpStateMsg& /*m*/) noexcept {
     hit(kPerpState);
+  }
+  void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
+    if (r.reason == RejectReason::InvalidTick && !r.replace) hit(kRiskReject);
   }
   // [end:hooks]
 
@@ -180,6 +189,7 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().rng()), Xoshiro256ss&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().fees(InstrumentId{})), const FeeRates&>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().risk_headroom(InstrumentId{})), RiskHeadroom>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().venue_health(VenueId{})), VenueHealthView>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().order_budget(VenueId{})), OrderBudget>);
 // [end:venue_state]
 
 // ---- balances ----------------------------------------------------------------------------------
@@ -379,6 +389,7 @@ TEST_CASE("docs.strategy_api: every documented hook fires in the harness") {
   CHECK(s.count(docs::kParams) == 1);
   CHECK(s.count(docs::kBalance) == 1);
   CHECK(s.count(docs::kPerpState) == 1);
+  CHECK(s.count(docs::kRiskReject) == 1);  // the timer's off-tick order
   CHECK(s.params().half_spread_bps == 7.5_bps);
   for (int i = 0; i < docs::kHookCount; ++i) {
     INFO("hook index " << i);
