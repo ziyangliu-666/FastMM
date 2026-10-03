@@ -43,7 +43,7 @@ runs/mm1-1709510400123456789.fmj      part 0
 runs/mm1-1709510400123456789.1.fmj    part 1
 ```
 
-Each part is a complete journal: it repeats the header, the instrument table, the configuration and the parameter table, and carries the same `session_id`. Sequence numbers continue across parts. `fastmm-replay` takes one part at a time; the [store](storage.md) records every part of a session in `session_journals`.
+Each part is a complete journal: it repeats the header, the instrument table, the configuration and the parameter table, and carries the same `session_id`. Sequence numbers continue across parts. The backtest's `journal:` source reads the parts of a session as one stream, given the first ([data sources](data-sources.md#journal)); `fastmm-replay` verifies a session journal one part at a time; the [store](storage.md) records every part of a session in `session_journals`.
 
 `[engine] journal_retention_days` deletes `*.fmj` files in `[engine] journal_dir` that were last written more than that many days ago, once, when a session starts; 0 (the default) keeps everything. Only the `.fmj` extension is removed, and a file it cannot remove is skipped with a warning.
 

@@ -235,3 +235,80 @@ TEST_CASE("backtest.journal_source: OptionTicker is market data and round-trips"
   CHECK(msg_cast<OptionTickerMsg>(h).mark_iv == doctest::Approx(0.312));
   CHECK(msg_cast<OptionTickerMsg>(h).underlying_price == px("76904.4"));
 }
+
+namespace {
+// One depth snapshot of `levels` bids and asks, larger than an EventBuf past 257 a side, as a
+// journal of a venue that sends 500 or 1000 levels yields them, then a trade.
+class BigSnapshotSource final : public MdSource {
+ public:
+  BigSnapshotSource(std::int64_t ts, std::uint32_t levels, std::uint32_t inst)
+      : snap_(BookDeltaMsg::size_for(levels, levels)) {
+    auto& d = *reinterpret_cast<BookDeltaMsg*>(snap_.data());
+    init_header(d,
+                EventType::BookSnapshot,
+                InstrumentId{inst},
+                VenueId{0},
+                static_cast<std::uint32_t>(snap_.size()));
+    d.hdr.flags |= EventHeader::kSnapshot;
+    d.hdr.exch_ts = d.hdr.recv_ts = Timestamp{ts};
+    d.bid_count = d.ask_count = levels;
+    for (std::uint32_t i = 0; i < 2 * levels; ++i)
+      d.levels()[i] = Level{Price::from_raw(1'000'000 + i), Qty::from_raw(i + 1)};
+    init_header(trade_, EventType::Trade, InstrumentId{inst}, VenueId{0});
+    trade_.hdr.exch_ts = trade_.hdr.recv_ts = Timestamp{ts + 10};
+    trade_.trade_id = static_cast<std::uint64_t>(ts);
+  }
+  const EventHeader* next() override {
+    switch (at_++) {
+      case 0:
+        return reinterpret_cast<const EventHeader*>(snap_.data());
+      case 1:
+        return &trade_.hdr;
+      default:
+        return nullptr;
+    }
+  }
+  void reset() override { at_ = 0; }
+
+ private:
+  std::vector<std::byte> snap_;
+  TradeMsg trade_{};
+  int at_ = 0;
+};
+}  // namespace
+
+TEST_CASE("backtest.merge: an event larger than an EventBuf comes through the merge whole") {
+  // The merge used to copy the event it yielded into an EventBuf, 8 KiB; a 538-level snapshot
+  // is 8704 bytes, and the copy ran past the end of the OwnedMergedSource (heap corruption).
+  BigSnapshotSource a(100, 600, 0);
+  BigSnapshotSource b(105, 600, 1);
+  REQUIRE(BookDeltaMsg::size_for(600, 600) > kMaxSourceEventBytes);
+  MergedSource m({&a, &b});
+  const EventHeader* h = m.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->type == EventType::BookSnapshot);
+  CHECK(h->instrument == InstrumentId{0});
+  CHECK(h->len == BookDeltaMsg::size_for(600, 600));
+  const auto& d = msg_cast<BookDeltaMsg>(h);
+  CHECK(d.bid_count == 600);
+  CHECK(d.asks()[599].price == Price::from_raw(1'000'000 + 1199));
+  CHECK(d.asks()[599].qty == Qty::from_raw(1200));
+  // The source that yielded it is not advanced until the next call: the pointer is still good.
+  h = m.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->instrument == InstrumentId{1});
+  CHECK(h->len == BookDeltaMsg::size_for(600, 600));
+  CHECK(msg_cast<BookDeltaMsg>(h).bid_count == 600);
+  h = m.next();
+  REQUIRE(h != nullptr);
+  CHECK(h->type == EventType::Trade);
+  CHECK(msg_cast<TradeMsg>(h).trade_id == 100);
+  h = m.next();
+  REQUIRE(h != nullptr);
+  CHECK(msg_cast<TradeMsg>(h).trade_id == 105);
+  CHECK(m.next() == nullptr);
+  m.reset();
+  CHECK(m.next()->instrument == InstrumentId{0});
+  CHECK(m.next()->instrument == InstrumentId{1});
+  CHECK(m.next()->type == EventType::Trade);
+}

@@ -152,9 +152,9 @@ std::unique_ptr<MdSource> open_synthetic(const DataSourceOptions& o) {
 }
 
 std::unique_ptr<MdSource> open_journal(const DataSourceOptions& o) {
-  o.reject_unknown({"path", "strip_own"});
-  return std::make_unique<JournalSource>(std::string(o.require("path")),
-                                         o.get_bool("strip_own", false));
+  o.reject_unknown({"path", "strip_own", "parts"});
+  return std::make_unique<JournalSource>(
+      std::string(o.require("path")), o.get_bool("strip_own", false), o.get_bool("parts", true));
 }
 
 std::unique_ptr<MdSource> open_csv(const DataSourceOptions& o) {
@@ -276,8 +276,8 @@ void register_builtin_data_sources() {
                       .clock = "simulated, nanoseconds"},
              .open = &open_synthetic});
   r.try_add({.name = "journal",
-             .summary = "the market data of a recorded .fmj session",
-             .options = "path=<file.fmj>  strip_own=<bool>",
+             .summary = "the market data of a recorded .fmj session (every part of it)",
+             .options = "path=<file.fmj>  strip_own=<bool>  parts=<bool>",
              .positional = {"path"},
              .caps = {.top_of_book = true,
                       .depth = true,

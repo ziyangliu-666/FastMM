@@ -202,6 +202,9 @@ class TimeSliceSource final : public MdSource {
 };
 
 // k-way merge of several sources by event time (stable: lower source index first on ties).
+// The event yielded is the input's own, not a copy: a journal's record can be larger than an
+// EventBuf (a depth snapshot of up to kMaxBookLevelsPerMsg a side), so the input it came from is
+// advanced on the next call, when the pointer may lapse, not before.
 class MergedSource final : public MdSource {
  public:
   explicit MergedSource(std::vector<MdSource*> sources) : sources_(std::move(sources)) {
@@ -209,26 +212,30 @@ class MergedSource final : public MdSource {
     for (std::size_t i = 0; i < sources_.size(); ++i) heads_[i] = sources_[i]->next();
   }
   const EventHeader* next() override {
-    std::size_t best = sources_.size();
+    if (last_ != kNone) {
+      heads_[last_] = sources_[last_]->next();
+      last_ = kNone;
+    }
+    std::size_t best = kNone;
     Timestamp best_ts = Timestamp::max();
     for (std::size_t i = 0; i < heads_.size(); ++i) {
       if (heads_[i] == nullptr) continue;
       const Timestamp ts = time_of(*heads_[i]);
-      if (best == sources_.size() || ts < best_ts) {
+      if (best == kNone || ts < best_ts) {
         best = i;
         best_ts = ts;
       }
     }
-    if (best == sources_.size()) return nullptr;
-    std::memcpy(buf_.bytes, heads_[best], heads_[best]->len);
-    heads_[best] = sources_[best]->next();
-    return &buf_.hdr();
+    if (best == kNone) return nullptr;
+    last_ = best;
+    return heads_[best];
   }
   void reset() override {
     for (std::size_t i = 0; i < sources_.size(); ++i) {
       sources_[i]->reset();
       heads_[i] = sources_[i]->next();
     }
+    last_ = kNone;
   }
   // Earliest start among the inputs (invalid if none reports one).
   [[nodiscard]] Timestamp start_ts() const override {
@@ -244,9 +251,10 @@ class MergedSource final : public MdSource {
   }
 
  private:
+  static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
   std::vector<MdSource*> sources_;
   std::vector<const EventHeader*> heads_;
-  EventBuf buf_{};
+  std::size_t last_ = kNone;  // the input whose head was yielded last
 };
 
 // MergedSource over sources it owns: open_data() of several specs ("a; b"), one per venue.

@@ -16,6 +16,22 @@ All notable changes are recorded here (Keep a Changelog format).
   as the kill switch. Quantities are contracts (`contract_multiplier` = `quanto_multiplier`).
   `net::hmac_sha512_hex` and `net::sha512_hex` for the APIv4 signature. `configs/gate-usdt.toml`; recorded
   fixtures in `tests/fixtures/gate/`.
+- `journal:x.fmj` reads the parts of a session recorded with `[engine] journal_max_bytes`
+  (`x.1.fmj`, `x.2.fmj`, ... until one is missing) after `x.fmj`, as one stream; the repeated
+  header, instrument table and configuration are not events, so nothing plays twice. A part whose
+  first sequence number does not follow the previous part's last (a part missing in between, or
+  the previous one cut short) is read with a warning in the log and in the run's report; a file
+  numbered like the next part but of another session is an error. `parts=0` reads the one file.
+  `strip_own` collects the session's orders from every part (`collect_own_orders` and
+  `OwnOrderStripper` take a span of readers). `fastmm-replay` over a market-data journal reads
+  the parts the same way; over a session journal it still verifies one part at a time.
+
+### Fixed
+- `--data "a;b"` (`MergedSource`) copied every event it yielded into an EventBuf, 8 KiB, the size
+  of a 256-level book: a journal's depth snapshot with more levels (Binance USDⓈ-M records up to
+  1000 a side) was written past the end of the source, which glibc reported as `corrupted
+  double-linked list` part-way through the run. The merge now yields the input's own event and
+  advances that input on the next call, so nothing is copied.
 
 ## [0.3.0] - 2026-10-03
 
