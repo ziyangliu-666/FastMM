@@ -1027,6 +1027,19 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.flatten_slippage_bps = cfg.engine.flatten_slippage_bps;
   deps.engine.queue_conservatism_bps = std::llround(cfg.engine.queue_conservatism * 10'000.0);
   deps.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
+  deps.engine.state_file = cfg.strategy.state_file;
+  deps.engine.state_interval = seconds(cfg.strategy.state_interval_s);
+  if (!cfg.strategy.state_file.empty()) {
+    // The strategy's state from the last session; no file is a first start. An unreadable one is
+    // a configuration error: trading on fresh state when the operator meant otherwise is not.
+    auto loaded = load_strategy_state(cfg.strategy.state_file, deps.engine.initial_state);
+    if (!loaded) {
+      std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
+      return kExitConfig;
+    }
+    if (!*loaded)
+      FASTMM_LOG_INFO("strategy state file {} does not exist yet", cfg.strategy.state_file);
+  }
   deps.engine.latency_publish_interval = milliseconds(cfg.engine.latency_publish_ms);
   deps.engine.cpu = cfg.engine.cpu;
   deps.engine.spin_mode = cfg.spin_mode();
@@ -1371,6 +1384,15 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   bool kill_write_failed = false;
   bool kill_written = false;
   KillState kill_last;
+  // The strategy's state the engine captured (every state_interval_s and at the end): written here,
+  // off the engine thread, atomically (write_file_atomic). A failed write is logged and tried again
+  // with the next capture.
+  std::string state_bytes;
+  auto save_strategy_state = [&] {
+    if (cfg.strategy.state_file.empty() || !runner->take_strategy_state(state_bytes)) return;
+    if (auto w = write_file_atomic(cfg.strategy.state_file, state_bytes); !w)
+      FASTMM_LOG_ERROR("strategy state: {}", w.error());
+  };
   const auto persist_kill = [&](const EngineLiveStats& live) {
     KillState st = kill_state;
     st.realized = kill_state.realized + Notional::from_raw(live.stats.realized_pnl_raw);
@@ -1612,6 +1634,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       next_status = now + 250'000'000;
       persist_kill(live);
       publish_status(StatusRunState::Running, live);
+      save_strategy_state();
     }
     if (recalibrate_ns > 0 && last_tsc.use_tsc && now >= next_recalibration) {
       recalibrate_tsc(tsc_calibrator, tsc_pub, last_tsc);
@@ -1670,6 +1693,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   sleep_for(milliseconds(200));
   runner->stop();
   engine_thread.join();
+  save_strategy_state();  // the state finish() captured, after on_stop
   if (custom != nullptr && custom->finished) custom->finished(*runner);
   if (gateway) {
     gateway->close();  // the detach: the gateway cancels what rests

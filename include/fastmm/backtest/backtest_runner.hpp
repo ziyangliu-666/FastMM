@@ -41,9 +41,10 @@ class BacktestSession {
   void set_param_schedule(sim::ParamSchedule* schedule) noexcept { params_ = schedule; }
   // Code run at simulated times during run() (sim::SimDriver::set_slow_hooks).
   void set_slow_hooks(const sim::SlowHooks& hooks) noexcept { slow_ = hooks; }
-  // Runs to the end of the data / horizon. `runner` (may be null) supplies engine stats.
+  // Runs to the end of the data / horizon. `runner` (may be null) supplies engine stats and, with
+  // [strategy] state_file, the strategy's state to write at the end.
   BacktestResult run(const sim::EngineHooks& hooks,
-                     const IEngineRunner* runner,
+                     IEngineRunner* runner,
                      std::string_view strategy_name);
 
  private:

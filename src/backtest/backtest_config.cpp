@@ -283,6 +283,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   b.engine.max_events_per_step = cfg.engine.max_events_per_step;
   b.engine.crossed_grace = milliseconds(cfg.engine.crossed_grace_ms);
   b.engine.max_param_age = milliseconds(cfg.strategy.max_param_age_ms);
+  b.engine.state_file = cfg.strategy.state_file;
+  b.engine.state_interval = seconds(cfg.strategy.state_interval_s);
   // A replay reruns the engine's own timers from the journal; they must find the settings the
   // recorded session ran with (the ack sweep's timeout, the flatten's period and deadline).
   b.engine.ack_timeout = milliseconds(cfg.engine.ack_timeout_ms);

@@ -17,6 +17,12 @@ namespace fastmm {
 [[nodiscard]] Result<void, std::string> write_file_atomic(const std::string& path,
                                                           std::string_view contents);
 
+// The strategy state file ([strategy] state_file, written by write_file_atomic): its bytes, true
+// when it exists, false when there is no such file (a first start); an error when it cannot be
+// read. The bytes are the strategy's own: whether they are its is for restore() to say.
+[[nodiscard]] Result<bool, std::string> load_strategy_state(const std::string& path,
+                                                            std::string& out);
+
 // The 16-bit session epoch is the high half of every ClientOrderId, so two sessions that share one
 // would let a venue's late message from the earlier session match an order of the later one.
 class SessionEpochStore {

@@ -154,6 +154,23 @@ TEST_CASE("core.config: api_passphrase is a credential: substituted, masked, not
                        ConfigError);
 }
 
+TEST_CASE("core.config: [strategy] state_file and state_interval_s round-trip") {
+  const Config plain = Config::parse("[strategy]\nname = \"basic_mm\"\n");
+  CHECK(plain.strategy.state_file.empty());
+  CHECK(plain.strategy.state_interval_s == 300);
+  CHECK(plain.effective_toml().find("state_") == std::string::npos);
+  const Config cfg = Config::parse(
+      "[strategy]\nname = \"basic_mm\"\nstate_file = \"runs/mm.state\"\nstate_interval_s = 60\n");
+  CHECK(cfg.strategy.state_file == "runs/mm.state");
+  CHECK(cfg.strategy.state_interval_s == 60);
+  const Config again = Config::parse(cfg.effective_toml());
+  CHECK(again.strategy.state_file == "runs/mm.state");
+  CHECK(again.strategy.state_interval_s == 60);
+  CHECK_THROWS_WITH_AS(Config::parse("[strategy]\nname = \"basic_mm\"\nstate_interval_s = 0\n"),
+                       doctest::Contains("state_interval_s must be > 0"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: validation errors carry line numbers, unknown keys are errors") {
   auto line_of = [](const char* toml) {
     try {

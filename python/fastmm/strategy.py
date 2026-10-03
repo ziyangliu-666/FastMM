@@ -322,7 +322,9 @@ class Strategy:
 
     Define any subset of the hooks (``on_start(self, ctx)``, ``on_book(self, ctx, inst, book)``,
     ``on_fill(self, ctx, fill)``, ... see ``HOOKS``); undefined hooks are never called. Declare
-    parameters with ``Param``; override ``validate()`` for cross-field checks.
+    parameters with ``Param``; override ``validate()`` for cross-field checks. With
+    ``BacktestConfig.state_file`` set, ``state(self) -> bytes | str`` is written there at the end
+    and ``restore(self, data: bytes) -> bool`` reads it at the start, after ``on_start``.
     """
 
     def __init__(self) -> None:

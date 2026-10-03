@@ -162,6 +162,19 @@ struct RiskReject {
     (ctx, r),                                                                      \
     "void on_risk_reject(auto& ctx, const RiskReject& r)")
 
+// Optional state the engine keeps across sessions ([strategy] state_file): `std::string_view
+// state()` returns the bytes to save (valid until the strategy's next hook; the engine copies them
+// at once) and `bool restore(std::string_view)` takes the bytes saved before, false when they are
+// not this strategy's (it then starts fresh). The engine calls restore once, after on_start and
+// before the first event, and state() every state_interval_s, at the end, and never from inside
+// another hook. The bytes are the strategy's own format; they are not journaled, so a replay of a
+// session that restored them does not see them.
+template <class S>
+concept KeepsState = requires(S& s, std::string_view bytes) {
+  { s.state() } -> std::convertible_to<std::string_view>;
+  { s.restore(bytes) } -> std::same_as<bool>;
+};
+
 // Y(misspelling, hook): names that produce a "did you mean" warning.
 #define FASTMM_STRATEGY_HOOK_NEAR_MISSES(Y) \
   Y(on_fills, on_fill)                      \
@@ -314,6 +327,13 @@ template <class S,
                     detail::hooks::declares_##name < S >> ::value);
   FASTMM_STRATEGY_HOOK_NEAR_MISSES(FASTMM_HOOK_WARN)
 #undef FASTMM_HOOK_WARN
+  constexpr bool has_state = requires(S& s) { s.state(); };
+  constexpr bool has_restore = requires(S& s, std::string_view b) { s.restore(b); };
+  static_assert(has_state == has_restore,
+                "fastmm: state() and restore() go together; expected std::string_view state() and "
+                "bool restore(std::string_view)");
+  static_assert(!has_state || KeepsState<S>,
+                "fastmm: expected std::string_view state() and bool restore(std::string_view)");
   return true;
 }
 

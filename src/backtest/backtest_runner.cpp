@@ -6,6 +6,7 @@
 #include "fastmm/backtest/pnl.hpp"
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/core/session_state.hpp"
 #include "fastmm/sim/venue_order.hpp"
 
 #include <algorithm>
@@ -190,6 +191,10 @@ BacktestSession::BacktestSession(const BacktestConfig& cfg,
                                  std::string_view strategy_meta)
     : cfg_(cfg), source_(source) {
   if (cfg_.instruments.size() == 0) throw std::invalid_argument("backtest: no instruments");
+  if (!cfg_.engine.state_file.empty()) {
+    auto loaded = load_strategy_state(cfg_.engine.state_file, cfg_.engine.initial_state);
+    if (!loaded) throw std::invalid_argument("backtest: " + loaded.error());
+  }
   if (cfg_.equity_bar.ns <= 0) throw std::invalid_argument("backtest: equity_bar must be > 0");
   if (source_ == nullptr) {  // synthetic market
     if (cfg_.transport.fill_model == sim::FillModel::Matching) {
@@ -274,7 +279,7 @@ BacktestSession::~BacktestSession() {
 }
 
 BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
-                                    const IEngineRunner* runner,
+                                    IEngineRunner* runner,
                                     std::string_view strategy_name) {
   if (!hooks.valid()) throw std::invalid_argument("backtest: engine hooks not bound");
   const auto wall0 = std::chrono::steady_clock::now();
@@ -321,6 +326,15 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
     }
   }
   driver.finish();
+  // The strategy's state at the end ([strategy] state_file): the next backtest, or a live session,
+  // starts from it. Captures during the run are superseded by this one.
+  if (runner != nullptr && !cfg_.engine.state_file.empty()) {
+    std::string bytes;
+    if (runner->take_strategy_state(bytes)) {
+      if (auto w = write_file_atomic(cfg_.engine.state_file, bytes); !w)
+        throw std::runtime_error("backtest: strategy state: " + w.error());
+    }
+  }
   if (impl_->journal_file) {
     impl_->journal_file->stop();
     impl_->journal_file.reset();

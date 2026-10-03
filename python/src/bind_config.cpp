@@ -231,6 +231,21 @@ void bind_config(py::module_& m) {
                      &BacktestConfig::journal_out,
                      "Record the session to this .fmj ('' = no journal).")
       .def_property(
+          "state_file",
+          [](const BacktestConfig& c) { return c.engine.state_file; },
+          [](BacktestConfig& c, std::string path) { c.engine.state_file = std::move(path); },
+          "[strategy] state_file: the strategy's restore() reads it at the start and its state() "
+          "is written to it at the end ('' = none).")
+      .def_property(
+          "state_interval_s",
+          [](const BacktestConfig& c) { return c.engine.state_interval.ns / 1'000'000'000; },
+          [](BacktestConfig& c, std::int64_t s) {
+            if (s <= 0) throw py::value_error("state_interval_s must be > 0");
+            c.engine.state_interval = seconds(s);
+          },
+          "[strategy] state_interval_s: how often the state is taken, seconds of engine time "
+          "(default 300).")
+      .def_property(
           "max_param_age_ms",
           [](const BacktestConfig& c) { return c.engine.max_param_age.ns / 1'000'000; },
           [](BacktestConfig& c, std::int64_t ms) {

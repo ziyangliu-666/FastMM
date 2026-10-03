@@ -346,6 +346,17 @@ inline constexpr KeySpec kConfigSchema[] = {
      "disable quoting before the first parameter update and while none was applied for this long, "
      "ms of engine time (default 0: off)"},
     {"strategy",
+     "state_file",
+     KeyType::String,
+     false,
+     "file the strategy's state() is written to every state_interval_s and at the end, and "
+     "restore() reads at the start (a strategy that keeps state; default: none)"},
+    {"strategy",
+     "state_interval_s",
+     KeyType::Int,
+     false,
+     "how often the state is written, seconds of engine time (default 300)"},
+    {"strategy",
      "params",
      KeyType::Table,
      false,

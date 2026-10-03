@@ -48,6 +48,10 @@ void py_on_quoting(PyRun& run, bool enabled) noexcept;
 void py_on_balance(PyRun& run, const BalanceMsg& m) noexcept;
 void py_on_perp_state(PyRun& run, InstrumentId id, const PerpStateMsg& m) noexcept;
 void py_on_risk_reject(PyRun& run, const RiskReject& r) noexcept;
+// The strategy's `state(self)` (bytes or str; None: nothing) and `restore(self, data)` -> bool,
+// when the class defines them; else empty and true.
+std::string_view py_state(PyRun& run) noexcept;
+bool py_restore(PyRun& run, std::string_view bytes) noexcept;
 // Called every kDriverStepsPerCheck driver steps: signal check and a brief GIL release, so Ctrl-C
 // also works for a strategy whose hooks rarely run.
 void py_on_driver_steps(PyRun& run) noexcept;
@@ -132,6 +136,13 @@ class PyStrategy {
   template <class Ctx>
   void on_risk_reject(Ctx&, const RiskReject& r) noexcept {
     if (on(Hook::RiskReject)) py_on_risk_reject(*run_, r);
+  }
+
+  // [strategy] state_file (strategies/hooks.hpp KeepsState): forwarded to the Python class's
+  // state()/restore() when it has them.
+  [[nodiscard]] std::string_view state() noexcept { return run_ != nullptr ? py_state(*run_) : ""; }
+  bool restore(std::string_view bytes) noexcept {
+    return run_ == nullptr || py_restore(*run_, bytes);
   }
 
   // SimDriver calls this through EngineHooks::stopped after every engine step.

@@ -476,6 +476,47 @@ def test_on_risk_reject_and_order_budget(example_config):
     assert "venue unknown" in repr(b)
 
 
+def test_state_is_written_at_the_end_and_restored_after_on_start(example_config, tmp_path):
+    class Counter(Strategy):
+        def on_start(self, ctx):
+            self.books = 0
+            self.restored = None
+
+        def on_book(self, ctx, inst, book):
+            self.books += 1
+
+        def state(self):
+            return f"books={self.books}".encode()
+
+        def restore(self, data):
+            self.restored = data
+            if not data.startswith(b"books="):
+                return False
+            self.books = int(data[6:])
+            return True
+
+    cfg = _cfg(example_config)
+    cfg.state_file = str(tmp_path / "counter.state")
+    assert cfg.state_interval_s == 300
+    first = Counter()
+    fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=first)
+    assert first.restored is None  # no file yet: a first start
+    saved = (tmp_path / "counter.state").read_bytes()
+    assert saved == f"books={first.books}".encode() and first.books > 0
+    second = Counter()
+    fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=second)
+    assert second.restored == saved  # after on_start reset the count
+    assert second.books == 2 * first.books
+    assert (tmp_path / "counter.state").read_bytes() == f"books={second.books}".encode()
+    # Bytes the strategy does not take: it starts fresh, the run goes on.
+    (tmp_path / "counter.state").write_bytes(b"garbage")
+    third = Counter()
+    fastmm.run_backtest(cfg, data=FIXTURE_FMJ, strategy=third)
+    assert third.restored == b"garbage" and third.books == first.books
+    with pytest.raises(ValueError, match="state_interval_s must be > 0"):
+        cfg.state_interval_s = 0
+
+
 def test_on_balance_and_the_balance_estimate(example_config):
     t0 = 1_700_000_000_000_000_000  # the fixture's first event
     snapshot, end = 1, 2  # BalanceMsg::kSnapshot, kSnapshotEnd

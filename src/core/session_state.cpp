@@ -73,6 +73,24 @@ Result<void, std::string> write_file_atomic(const std::string& path, std::string
 
 // ---- session epoch ----------------------------------------------------------------------------
 
+Result<bool, std::string> load_strategy_state(const std::string& path, std::string& out) {
+  out.clear();
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    if (ec) return fail("cannot stat strategy state file " + path + ": " + ec.message());
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(path, ec))
+    return fail("strategy state file " + path + " is not a regular file");
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return fail(why("cannot read strategy state file", path));
+  std::ostringstream buf;
+  buf << in.rdbuf();
+  if (in.bad()) return fail(why("cannot read strategy state file", path));
+  out = buf.str();
+  return true;
+}
+
 Result<std::uint16_t, std::string> SessionEpochStore::next_epoch(const std::string& path,
                                                                  bool* wrapped) {
   if (wrapped != nullptr) *wrapped = false;

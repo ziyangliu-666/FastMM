@@ -364,6 +364,8 @@ Live connectors replace `tick`, `lot` and the size bounds with the venue's refer
 |---|---|---|---|
 | `name` | string | yes | registered strategy name (see --list-strategies) |
 | `max_param_age_ms` | integer |  | disable quoting before the first parameter update and while none was applied for this long, ms of engine time (default 0: off) |
+| `state_file` | string |  | file the strategy's state() is written to every state_interval_s and at the end, and restore() reads at the start (a strategy that keeps state; default: none) |
+| `state_interval_s` | integer |  | how often the state is written, seconds of engine time (default 300) |
 | `params` | table |  | [strategy.params] table: the strategy's parameters |
 <!-- END config-keys -->
 

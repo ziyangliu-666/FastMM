@@ -178,6 +178,22 @@ class BacktestConfig:
     def max_param_age_ms(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
         ...
     @property
+    def state_file(self) -> str:
+        """
+        [strategy] state_file: the strategy's restore() reads it at the start and its state() is written to it at the end ('' = none).
+        """
+    @state_file.setter
+    def state_file(self, arg1: str) -> None:
+        ...
+    @property
+    def state_interval_s(self) -> int:
+        """
+        [strategy] state_interval_s: how often the state is taken, seconds of engine time (default 300).
+        """
+    @state_interval_s.setter
+    def state_interval_s(self, arg1: typing.SupportsInt | typing.SupportsIndex) -> None:
+        ...
+    @property
     def measure_wall_clock(self) -> bool:
         """
         Measure wall-clock tick-to-order per engine step.

@@ -67,6 +67,27 @@ TEST_CASE("core.session_state: the epoch cycles through 1..65535 and reports the
   CHECK(*e == 2);
 }
 
+TEST_CASE("core.session_state: the strategy state file round-trips, and none is a first start") {
+  const std::string path = (tmp_dir() / "strategy.state").string();
+  std::filesystem::remove(path);
+  std::string bytes = "stale";
+  auto loaded = load_strategy_state(path, bytes);
+  REQUIRE(loaded);
+  CHECK_FALSE(*loaded);
+  CHECK(bytes.empty());
+  const std::string blob("binary\0state\n", 13);
+  REQUIRE(write_file_atomic(path, blob));
+  loaded = load_strategy_state(path, bytes);
+  REQUIRE(loaded);
+  CHECK(*loaded);
+  CHECK(bytes == blob);
+  CHECK_FALSE(std::filesystem::exists(path + ".tmp"));
+  // A path that cannot be read is an error, not a first start.
+  const std::string dir = (tmp_dir() / "strategy.state.dir").string();
+  std::filesystem::create_directories(dir);
+  CHECK_FALSE(load_strategy_state(dir, bytes));
+}
+
 TEST_CASE("core.session_state: the kill state round-trips and a corrupt file fails closed") {
   const auto path = (tmp_dir() / "state.kill").string();
   std::filesystem::remove(path);

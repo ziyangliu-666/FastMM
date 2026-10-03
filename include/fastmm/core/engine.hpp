@@ -79,8 +79,10 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace fastmm {
@@ -156,6 +158,7 @@ class Engine {
   // TimerMsg::engine values for the engine's own timers (1 is the max_param_age one).
   static constexpr std::uint8_t kAckSweepTimer = 2;
   static constexpr std::uint8_t kFlattenTimer = 3;
+  static constexpr std::uint8_t kStateTimer = 4;
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -334,6 +337,11 @@ class Engine {
     const bool quoting_before = quoting_enabled();
     if constexpr (has_hook(Hook::Start)) strategy_.on_start(ctx_);
     after_hooks(quoting_before);
+    if constexpr (KeepsState<Strategy>) {
+      restore_state();
+      if (!cfg_.state_file.empty() && cfg_.state_interval.ns > 0)
+        state_timer_ = timers_.add(now_, cfg_.state_interval, /*repeat=*/true);
+    }
     flush_out();
     unlatch_clock();
     in_engine_ = false;
@@ -348,6 +356,9 @@ class Engine {
       ++stats_.journal_overflows;
     if constexpr (has_hook(Hook::Stop)) strategy_.on_stop(ctx_);
     flush_out();
+    if constexpr (KeepsState<Strategy>) {
+      if (!cfg_.state_file.empty()) capture_state();
+    }
     // The last word on every position, so a store holds the state the session ended in.
     if (records_.enabled()) {
       for (const Instrument& inst : instruments_) {
@@ -485,6 +496,25 @@ class Engine {
     b.local_tokens = risk_.bucket().available(now());
     return b;
   }
+
+  // ---- strategy state ([strategy] state_file) ------------------------------------------------
+
+  // The state captured since the last call (state_interval, finish), for the caller to write to
+  // EngineConfig::state_file. Any thread: the engine thread fills the buffer under the same lock,
+  // once per interval, so neither side waits on the other in practice.
+  bool take_strategy_state(std::string& out) {
+    if constexpr (!KeepsState<Strategy>) {
+      return false;
+    } else {
+      const std::lock_guard<std::mutex> lock(state_mu_);
+      if (!state_dirty_) return false;
+      out.swap(state_pending_);
+      state_dirty_ = false;
+      return true;
+    }
+  }
+  [[nodiscard]] std::uint64_t state_captures() const noexcept { return state_captures_; }
+  [[nodiscard]] bool state_restored() const noexcept { return state_restored_; }
 
   // ---- balances (core/balance_book.hpp) -------------------------------------------------------
 
@@ -842,6 +872,8 @@ class Engine {
           sweep_acks();  // replay of the engine's ack_timeout sweep
         } else if (t.engine == kFlattenTimer) {
           flatten_tick();  // replay of the engine's flatten sweep
+        } else if (t.engine == kStateTimer) {
+          if constexpr (KeepsState<Strategy>) capture_state();
         } else if (t.engine != 0) {
           check_param_age();  // replay of the engine's max_param_age timer
         } else {
@@ -2056,14 +2088,19 @@ class Engine {
     ++stats_.timers_fired;
     const bool ack_timer = ack_timer_.valid() && id == ack_timer_;
     const bool flatten_timer = flatten_timer_.valid() && id == flatten_timer_;
+    const bool state_timer = state_timer_.valid() && id == state_timer_;
     const bool engine_timer =
-        ack_timer || flatten_timer || (param_timer_.valid() && id == param_timer_);
+        ack_timer || flatten_timer || state_timer || (param_timer_.valid() && id == param_timer_);
     // Journal a synthetic TimerMsg so replay reproduces the strategy's timer calls.
     if (journal_.enabled()) {
       TimerMsg t{};
       init_header(t, EventType::Timer);
       t.timer_id = id;
-      t.engine = ack_timer ? kAckSweepTimer : flatten_timer ? kFlattenTimer : engine_timer ? 1 : 0;
+      t.engine = ack_timer       ? kAckSweepTimer
+                 : flatten_timer ? kFlattenTimer
+                 : state_timer   ? kStateTimer
+                 : engine_timer  ? 1
+                                 : 0;
       t.user_data = user_data;
       t.fire_ts = now_;
       t.hdr.flags |= EventHeader::kSynthetic;
@@ -2077,6 +2114,8 @@ class Engine {
       sweep_acks();
     } else if (flatten_timer) {
       flatten_tick();
+    } else if (state_timer) {
+      if constexpr (KeepsState<Strategy>) capture_state();
     } else if (engine_timer) {
       param_timer_ = TimerId{};  // a one-shot timer is freed once it has fired
       flush_out();
@@ -2299,6 +2338,38 @@ class Engine {
     queue_out(m.hdr);
     ++stats_.replaces_sent;
     return {};
+  }
+
+  // The strategy's state, copied for whoever writes EngineConfig::state_file (take_strategy_state).
+  // Once per state_interval and at the end: a copy and an uncontended lock.
+  FASTMM_NOINLINE void capture_state() noexcept {
+    if constexpr (KeepsState<Strategy>) {
+      const std::string_view bytes = strategy_.state();
+      const std::lock_guard<std::mutex> lock(state_mu_);
+      state_pending_.assign(bytes.data(), bytes.size());
+      state_dirty_ = true;
+      ++state_captures_;
+    }
+  }
+  // EngineConfig::initial_state, once, after on_start: bytes the strategy does not take leave it
+  // as it started.
+  FASTMM_NOINLINE void restore_state() noexcept {
+    if constexpr (KeepsState<Strategy>) {
+      if (cfg_.initial_state.empty()) return;
+      if (strategy_.restore(cfg_.initial_state)) {
+        state_restored_ = true;
+        FASTMM_LOG_INFO("strategy {} restored {} bytes of state from {}",
+                        strategy_name(),
+                        cfg_.initial_state.size(),
+                        cfg_.state_file);
+      } else {
+        FASTMM_LOG_ERROR("strategy {} did not take the {} bytes of state in {}; starting fresh",
+                         strategy_name(),
+                         cfg_.initial_state.size(),
+                         cfg_.state_file);
+      }
+      flush_out();
+    }
   }
 
   // Cold: the rate limiter and the log record stay out of the order path's inlined code. Only the
@@ -2634,6 +2705,13 @@ class Engine {
   TimerId param_timer_{};    // the engine's one-shot max_param_age timer
   TimerId ack_timer_{};      // the engine's repeating ack_timeout sweep
   TimerId flatten_timer_{};  // ... and its flatten sweep while one runs
+  TimerId state_timer_{};    // ... and the strategy state capture (state_interval)
+  // The strategy's state between capture_state (engine thread) and take_strategy_state (any).
+  std::mutex state_mu_;
+  std::string state_pending_;
+  bool state_dirty_ = false;
+  bool state_restored_ = false;
+  std::uint64_t state_captures_ = 0;
   FlattenState flatten_state_ = FlattenState::Off;
   InstrumentId flatten_scope_{};  // the flatten's instrument; invalid: every instrument
   std::int64_t flatten_bps_ = 0;

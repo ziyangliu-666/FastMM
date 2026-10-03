@@ -69,6 +69,8 @@ Hook names and argument order match the C++ hooks. Define any subset; a hook the
 
 `inst` is an `Instrument`; `book`, `msg`, `trade`, `fill` and `update` are views (below).
 
+A class may also define `state(self) -> bytes | str` and `restore(self, data: bytes) -> bool`. With `BacktestConfig.state_file` (or `[strategy] state_file`), `restore` gets the file's bytes once, after `on_start`, and `state` is written to the file every `state_interval_s` and at the end ([Strategy API](strategy-api.md#state-across-sessions)).
+
 ## Parameters
 
 `Param(default, min=None, max=None, doc="")` declares a typed parameter: the type comes from the default (`bool`, `int` or `float`; schema types `bool`, `int`, `double`). Read it as an attribute (`self.quote_qty`). Values from `config.params` (strings) and `params=` (Python scalars) are parsed like `FASTMM_PARAM` values in C++, and errors have the same text with the strategy name first:

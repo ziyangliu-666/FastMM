@@ -484,6 +484,12 @@ bool sent = pub.publish({{"half_spread_bps", "7.5"}, {"quote_qty", "0.02"}});
 - `[strategy] max_param_age_ms` (0, the default, is off) disables quoting before the first update and whenever none was applied for that long in engine time: the engine pulls the quotes, `set_quotes` returns false and `on_quoting(false)` fires. The next update fires `on_quoting(true)`.
 - Replay applies the journaled updates at the same events and matches their fields to the strategy's parameters by name ([Journal format](journal-format.md#parameter-updates)).
 
+## State across sessions
+
+A strategy that keeps something worth more than one session (an online model, learned sizes) gives the engine its bytes: `std::string_view state()` returns them (the engine copies them at once) and `bool restore(std::string_view)` takes bytes saved before, false when they are not its own. Both or neither; the signatures are checked at registration like the hooks. The format is the strategy's; a version prefix is worth having.
+
+With `[strategy] state_file` set, the engine calls `restore` once, after `on_start` and before the first event, with the file's contents (no file is a first start; an unreadable one is a configuration error), and takes `state()` every `state_interval_s` (300 by default) of engine time and at the end, never from inside another hook. The live session and the backtest write the bytes to the file atomically (a temporary file, then a rename) off the engine thread. A backtest's end state is what the next backtest, or a live session, starts from; a replay of a journal neither reads nor writes the file, so it sees the session as the journal recorded it.
+
 ## Fixed-point helpers
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#helpers -->

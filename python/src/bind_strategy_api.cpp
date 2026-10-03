@@ -224,6 +224,8 @@ class PyRun {
   std::vector<PositionView*> pos_views_;
   py::object trade_obj_, ticker_obj_, option_obj_, conn_obj_, balance_obj_, perp_obj_, fill_obj_,
       update_obj_;
+  py::object state_fn_, restore_fn_;  // the class's state() / restore(), when defined
+  std::string state_buf_;             // what state() last returned, for the engine's view
   TradeView* trade_ = nullptr;
   BookTickerView* ticker_ = nullptr;
   OptionTickerView* option_ = nullptr;
@@ -271,6 +273,8 @@ PyRun::PyRun(PySimEngine& engine,
       fns_[static_cast<std::size_t>(h.hook)] = instance.attr(std::string(h.name).c_str());
     }
   }
+  if (py::hasattr(instance, "state")) state_fn_ = instance.attr("state");
+  if (py::hasattr(instance, "restore")) restore_fn_ = instance.attr("restore");
   ctx_ = py::cast(ContextHandle{guard_, this});
   py::list insts;
   for (const Instrument& inst : engine.instruments()) {
@@ -493,6 +497,36 @@ void py_on_risk_reject(PyRun& r, const RiskReject& reject) noexcept {
   }
   PyObject* args[3] = {nullptr, r.ctx_.ptr(), info.ptr()};
   r.call(Hook::RiskReject, args, 2);
+}
+
+std::string_view py_state(PyRun& r) noexcept {
+  if (!r.state_fn_) return {};
+  const PyRun::Scope scope(r);
+  try {
+    const py::object v = r.state_fn_();
+    if (v.is_none()) {
+      r.state_buf_.clear();
+    } else if (py::isinstance<py::bytes>(v)) {
+      r.state_buf_ = v.cast<std::string>();
+    } else {
+      r.state_buf_ = py::str(v).cast<std::string>();
+    }
+  } catch (...) {
+    r.fail_current("state");
+    r.state_buf_.clear();
+  }
+  return r.state_buf_;
+}
+
+bool py_restore(PyRun& r, std::string_view bytes) noexcept {
+  if (!r.restore_fn_) return true;
+  const PyRun::Scope scope(r);
+  try {
+    return r.restore_fn_(py::bytes(bytes.data(), bytes.size())).cast<bool>();
+  } catch (...) {
+    r.fail_current("restore");
+    return false;
+  }
 }
 
 void py_on_driver_steps(PyRun& r) noexcept {

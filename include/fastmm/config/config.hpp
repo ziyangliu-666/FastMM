@@ -157,6 +157,8 @@ struct StrategySection {
   std::string name;
   ParamMap params;
   std::int64_t max_param_age_ms = 0;  // 0 = off
+  std::string state_file;             // the strategy's state across sessions; empty: none
+  std::int64_t state_interval_s = 300;
 };
 
 struct RiskSection {

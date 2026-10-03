@@ -166,6 +166,10 @@ class IEngineRunner {
   // Safe to call from any thread while run() is active (a seqlocked copy, up to a second old).
   [[nodiscard]] virtual EngineLiveStats live_stats() const { return {}; }
   [[nodiscard]] virtual std::string_view strategy_name() const = 0;
+  // The strategy's state taken since the last call (every EngineConfig::state_interval and at the
+  // end), to be written to EngineConfig::state_file; false: none, or the strategy keeps no state.
+  // Any thread while run() is active.
+  virtual bool take_strategy_state(std::string& /*out*/) { return false; }
 };
 
 // Owns a strategy + engine pair and exposes them through IEngineRunner.
@@ -185,6 +189,7 @@ class EngineRunner final : public IEngineRunner {
   [[nodiscard]] RunnerStats stats() const override { return engine_->runner_stats(); }
   [[nodiscard]] EngineLiveStats live_stats() const override { return engine_->live_stats(); }
   [[nodiscard]] std::string_view strategy_name() const override { return Strategy::name(); }
+  bool take_strategy_state(std::string& out) override { return engine_->take_strategy_state(out); }
   [[nodiscard]] Engine& engine() noexcept { return *engine_; }
   [[nodiscard]] Strategy& strategy() noexcept { return *strategy_; }
 

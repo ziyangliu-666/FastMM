@@ -488,8 +488,8 @@ def test_class_checks_for_slow_methods():
             inst = Param(1)
             on_book = fastmm.hot(_noop)
 
-    with pytest.raises(TypeError, match="at most 32"):
-        type("Many", (Strategy,), {**{f"p{i}": Param(1.0) for i in range(33)},
+    with pytest.raises(TypeError, match="at most 64"):
+        type("Many", (Strategy,), {**{f"p{i}": Param(1.0) for i in range(65)},
                                    "on_book": fastmm.hot(_noop)})
 
 

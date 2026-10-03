@@ -5,6 +5,13 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `[strategy] state_file` / `state_interval_s`: a strategy with `std::string_view state()` and
+  `bool restore(std::string_view)` (Python: `state(self)` and `restore(self, data)`) keeps its
+  bytes across sessions. The engine calls `restore` once after `on_start` with the file's
+  contents (no file: a first start; bytes it does not take: it starts fresh) and takes `state()`
+  every `state_interval_s` and at the end; the live session and the backtest write the file
+  atomically off the engine thread. A backtest's end state feeds the next run; a journal replay
+  leaves the file alone. `BacktestConfig.state_file` / `state_interval_s` in Python.
 - `on_risk_reject(ctx, const RiskReject&)`: an optional hook that reports each new order or
   replace the engine's own `[risk]` check refused (instrument, side, type, reason, price,
   quantity, `user_tag`, the order a replace would have changed), after the hook that asked has

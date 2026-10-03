@@ -136,6 +136,9 @@ BacktestConfig journal_config(const std::string& path) {
     cfg.measure_wall_clock = false;
     cfg.output_dir.clear();
     cfg.journal_out.clear();
+    // The state the session restored is not in the journal, and the file has moved on since: a
+    // replay neither reads nor writes it.
+    cfg.engine.state_file.clear();
     return cfg;
   } catch (const std::exception& e) {
     throw std::runtime_error("journal " + path + ": embedded configuration: " + e.what());

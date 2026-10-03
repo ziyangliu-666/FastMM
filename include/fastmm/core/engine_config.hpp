@@ -28,6 +28,13 @@ struct EngineConfig {
   // [strategy] max_param_age_ms: quoting is disabled before the first ParamUpdate and while none
   // was applied for this long (zero: off).
   Duration max_param_age{};
+  // [strategy] state_file / state_interval_s (strategies/hooks.hpp KeepsState): the engine takes
+  // the strategy's state() every state_interval and at the end for whoever runs it to write to
+  // state_file (Engine::take_strategy_state; empty: never), and hands initial_state to restore()
+  // once, after on_start (empty: nothing to restore). The loader reads the file, not the engine.
+  std::string state_file;
+  Duration state_interval = seconds(300);
+  std::string initial_state;
   // [engine] ack_timeout_ms: an order still waiting for its ack this long is force-cancelled, so a
   // lost request cannot hold a pool slot, a max_open_orders slot and max_position exposure for
   // good (zero: off).
