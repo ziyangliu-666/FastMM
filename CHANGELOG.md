@@ -4,6 +4,13 @@ All notable changes are recorded here (Keep a Changelog format).
 
 ## [Unreleased]
 
+### Fixed
+- `--data "a;b"` (`MergedSource`) copied every event it yielded into an EventBuf, 8 KiB, the size
+  of a 256-level book: a journal's depth snapshot with more levels (Binance USDⓈ-M records up to
+  1000 a side) was written past the end of the source, which glibc reported as `corrupted
+  double-linked list` part-way through the run. The merge now yields the input's own event and
+  advances that input on the next call, so nothing is copied.
+
 ## [0.3.0] - 2026-10-03
 
 ### Added

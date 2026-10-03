@@ -15,7 +15,9 @@ namespace fastmm::sim {
 
 struct SimAccountConfig;
 
-// Largest event a source may yield: a full L2Book<256> snapshot.
+// Largest event a source builds itself: a full L2Book<256> snapshot. A journal yields its records
+// as recorded, up to kMaxMsgBytes (kMaxBookLevelsPerMsg a side), so whatever copies an event it
+// was handed into an EventBuf checks hdr.len first.
 inline constexpr std::uint32_t kMaxSourceEventBytes = BookDeltaMsg::size_for(256, 256);
 
 struct alignas(64) EventBuf {
