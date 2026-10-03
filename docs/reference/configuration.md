@@ -150,6 +150,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `order_api` | string |  | order entry: ws (default) \| rest |
 | `allow_offline_reference_data` | boolean |  | start without REST reference data, using the configured tick and lot (default false) |
 | `dead_mans_switch_ms` | integer |  | venue-side countdownCancelAll window in ms; the venue cancels every open order of a symbol if the connector goes quiet for this long. 0 disables it (default 60000) |
+| `post_only_rpi` | boolean |  | send post-only orders as RPI (matched only against app and web orders, hidden from the API depth) instead of GTX; needs supports_replace = false (default false) |
 | `cancel_on_order_channel_loss` | boolean |  | cancel all orders over REST when order entry drops (default true) |
 | `emit_ack_from_response` | boolean |  | acknowledge orders from the request response, not the event stream (default true) |
 | `depth_limit` | integer |  | REST snapshot depth: 5, 10, 20, 50, 100, 500 or 1000 |

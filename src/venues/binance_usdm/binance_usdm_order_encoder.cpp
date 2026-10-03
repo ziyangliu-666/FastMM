@@ -31,7 +31,8 @@ void add_auth(ParamList& p, const Signer& signer, bool ws) noexcept {
                                       const OrderCommand& cmd,
                                       std::string_view symbol,
                                       std::int64_t timestamp_ms,
-                                      int recv_window_ms) noexcept {
+                                      int recv_window_ms,
+                                      bool rpi) noexcept {
   const bool market = cmd.type == OrderType::Market;
   p.add("newClientOrderId", encode_cl_ord_id(cmd.cl_ord_id).view());
   p.add("newOrderRespType", "ACK");
@@ -41,7 +42,12 @@ void add_auth(ParamList& p, const Signer& signer, bool ws) noexcept {
   if (cmd.reduce_only) p.add("reduceOnly", "true");
   p.add("side", BinanceUsdmOrderEncoder::side_text(cmd.side));
   p.add("symbol", symbol);
-  if (!market) p.add("timeInForce", BinanceUsdmOrderEncoder::tif_text(cmd.type, cmd.tif));
+  if (!market) {
+    p.add("timeInForce",
+          rpi && cmd.type == OrderType::PostOnly
+              ? std::string_view{"RPI"}
+              : BinanceUsdmOrderEncoder::tif_text(cmd.type, cmd.tif));
+  }
   p.add_int("timestamp", timestamp_ms);
   p.add("type", BinanceUsdmOrderEncoder::type_text(cmd.type));
 }
@@ -94,11 +100,12 @@ bool build_params(ParamList& p,
                   std::int64_t timestamp_ms,
                   int recv_window_ms,
                   const Signer& signer,
-                  bool ws) noexcept {
+                  bool ws,
+                  bool rpi) noexcept {
   add_auth(p, signer, ws);
   switch (cmd.kind) {
     case OrderCommandKind::New:
-      add_new_params(p, cmd, symbol, timestamp_ms, recv_window_ms);
+      add_new_params(p, cmd, symbol, timestamp_ms, recv_window_ms, rpi);
       return true;
     case OrderCommandKind::Cancel:
       add_cancel_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms);
@@ -143,7 +150,8 @@ std::size_t BinanceUsdmOrderEncoder::encode_ws(const OrderCommand& cmd,
   if (symbol.empty()) return 0;
   ParamList p;
   // A logged-on session sends no apiKey (the `ws` flag only controls it).
-  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, !session_auth_))
+  if (!build_params(
+          p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, !session_auth_, rpi_))
     return 0;
   std::string_view method;
   RequestKind kind = RequestKind::New;
@@ -172,7 +180,7 @@ bool BinanceUsdmOrderEncoder::encode_rest(const OrderCommand& cmd,
   const std::string_view symbol = symbols_.venue_symbol(cmd.instrument);
   if (symbol.empty()) return false;
   ParamList p;
-  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, false))
+  if (!build_params(p, cmd, shadow, symbol, timestamp_ms, recv_window_ms_, signer_, false, rpi_))
     return false;
   out.path = "/fapi/v1/order";
   switch (cmd.kind) {

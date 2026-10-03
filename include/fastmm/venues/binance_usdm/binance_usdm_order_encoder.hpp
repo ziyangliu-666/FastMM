@@ -72,6 +72,10 @@ class BinanceUsdmOrderEncoder {
   // Ed25519 sessions: after session.logon apiKey/signature are omitted per request.
   void set_session_authenticated(bool v) noexcept { session_auth_ = v; }
   [[nodiscard]] bool session_authenticated() const noexcept { return session_auth_; }
+  // Post-only orders go out as RPI (retail price improvement) instead of GTX: post-only, matched
+  // only against orders entered in the venue's app or web page, not shown in the API's depth, and
+  // behind every other order at their price. An RPI order cannot be modified.
+  void set_post_only_rpi(bool v) noexcept { rpi_ = v; }
 
   // session.logon {apiKey, recvWindow, timestamp, signature}, always signed.
   std::size_t encode_ws_logon(std::string_view request_id,
@@ -178,6 +182,7 @@ class BinanceUsdmOrderEncoder {
   const SymbolTable& symbols_;
   int recv_window_ms_;
   bool session_auth_ = false;
+  bool rpi_ = false;
 };
 
 }  // namespace fastmm::venues::binance_usdm

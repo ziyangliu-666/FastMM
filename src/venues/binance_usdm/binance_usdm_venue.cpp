@@ -181,7 +181,8 @@ Result<void, std::string> BinanceUsdmVenue::apply_exchange_info(
       return fail(fmt::format("{}: symbol {} not in exchangeInfo", cfg_.name, inst->symbol.view()));
     if (!f->tick.is_positive() || !f->step.is_positive())
       return fail(fmt::format("{}: {} has invalid tick/step", cfg_.name, inst->symbol.view()));
-    if (f->contract_type != "PERPETUAL")
+    // A TradFi perpetual (equity, commodity) has a perpetual's rules, streams and funding.
+    if (f->contract_type != "PERPETUAL" && f->contract_type != "TRADIFI_PERPETUAL")
       return fail(fmt::format("{}: {} is a {} contract; only PERPETUAL is supported",
                               cfg_.name,
                               inst->symbol.view(),
@@ -380,6 +381,8 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
                       multi.status);
     }
     for (const Instrument* inst : mine) {
+      // An instrument this session cannot trade (read for its market data) is not asked about.
+      if (!inst->enabled()) continue;
       // "Symbol Configuration": IP weight 5.
       const HttpReply sc = signed_get("/fapi/v1/symbolConfig", inst->symbol.view(), 5);
       std::vector<SymbolConfig> configs;
@@ -446,6 +449,7 @@ void BinanceUsdmVenue::attach(const SymbolTable& symbols,
   md_feed_->set_log_name(cfg_.name);
   user_parser_ = std::make_unique<BinanceUsdmUserParser>(symbols, instruments, id_);
   encoder_ = std::make_unique<BinanceUsdmOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
+  encoder_->set_post_only_rpi(cfg_.post_only_rpi);
   ws_api_decoder_ = std::make_unique<binance::BinanceWsApiDecoder>();
   reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
 }
@@ -1670,7 +1674,14 @@ void BinanceUsdmVenue::replay_query_failed(std::string_view what, const net::Htt
   ++stats_.rest_errors;
   int code = 0;
   std::string msg;
-  if (r.error == net::NetError::None && binance::decode_rest_error(r.body, code, msg)) {
+  if (r.error == net::NetError::None && (r.status == 429 || r.status == 418)) {
+    // The status says more than the body's -1003, which both carry: 429 waits Retry-After, 418
+    // is the ban a query sent during that wait earns, and stops REST.
+    apply_action(map_http_status(r.status).action,
+                 r.status,
+                 r.body.substr(0, 120),
+                 header_int(r, "Retry-After") * 1000);
+  } else if (r.error == net::NetError::None && binance::decode_rest_error(r.body, code, msg)) {
     const ErrorMapping m = map_error(code, msg);
     if (m.action != VenueAction::Reconcile) apply_action(m.action, code, msg, -1);
   }
@@ -1691,6 +1702,8 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
       !encoder_->encode_rest_user_trades(
           symbol, q.from_id, q.start_ms, q.end_ms, kUserTradesLimit, venue_time_ms(), rr))
     return false;
+  // Not while the venue asked for a pause or the minute's weight is spent: the replay asks again.
+  if (!rate_.can_send(rr.weight, now_ns())) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
@@ -1810,6 +1823,7 @@ bool BinanceUsdmVenue::query_funding(const ReplayQuery& q) {
   if (!encoder_->encode_rest_funding_income(
           q.start_ms, q.end_ms, kUserTradesLimit, venue_time_ms(), rr))
     return false;
+  if (!rate_.can_send(rr.weight, now_ns())) return false;
   const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
@@ -2054,6 +2068,7 @@ bool BinanceUsdmVenue::cancel_all() {
   if (cfg_.dry_run || !signer_.usable() || symbols_ == nullptr) return true;
   BlockingControl control(cfg_);
   BinanceUsdmOrderEncoder enc(signer_, *symbols_, cfg_.recv_window_ms);  // this thread's copy
+  enc.set_post_only_rpi(cfg_.post_only_rpi);
   return control.per_target(
       "kill-switch cancel-all",
       std::span<const InstrumentId>(subscribed_),
@@ -2186,6 +2201,7 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   c.cancel_on_order_channel_loss = x.flag("cancel_on_order_channel_loss", true);
   c.dead_mans_switch_ms =
       std::max<std::int64_t>(0, x.integer("dead_mans_switch_ms", c.dead_mans_switch_ms));
+  c.post_only_rpi = x.flag("post_only_rpi", false);
   c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
   if (c.ws_url.empty() || c.rest_url.empty())
     throw std::invalid_argument("venue '" + v.name + "': binance_usdm needs ws_url and rest_url");

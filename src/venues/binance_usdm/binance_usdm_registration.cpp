@@ -27,6 +27,11 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      false,
      "venue-side countdownCancelAll window in ms; the venue cancels every open order of a "
      "symbol if the connector goes quiet for this long. 0 disables it (default 60000)"},
+    {"post_only_rpi",
+     KeyType::Bool,
+     false,
+     "send post-only orders as RPI (matched only against app and web orders, hidden from the "
+     "API depth) instead of GTX; needs supports_replace = false (default false)"},
     {"cancel_on_order_channel_loss",
      KeyType::Bool,
      false,

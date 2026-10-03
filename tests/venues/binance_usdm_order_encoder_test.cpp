@@ -146,6 +146,36 @@ TEST_CASE("binance_usdm.encoder: order.cancel and order.modify by order id or ve
           hmac(payload) + R"("}})");
 }
 
+TEST_CASE("binance_usdm.encoder: post_only_rpi sends RPI for post-only orders, GTX otherwise") {
+  TestUniverse u;
+  const Signer s = signer();
+  BinanceUsdmOrderEncoder enc(s, u.symbols, 3000);
+  enc.set_post_only_rpi(true);
+  char buf[kMaxRequestBytes];
+  const NewOrder post_only(OrderType::PostOnly, TimeInForce::Gtc, "76980.1", "0.001", false);
+  const std::size_t n = enc.encode_ws(post_only.cmd(), nullptr, kTs, buf);
+  REQUIRE(n > 0);
+  const std::string payload =
+      "apiKey=test-key&newClientOrderId=fm000100000001&newOrderRespType=ACK&price=76980.1"
+      "&quantity=0.001&recvWindow=3000&side=BUY&symbol=BTCUSDT&timeInForce=RPI"
+      "&timestamp=1789467600000&type=LIMIT";
+  const std::string_view v(buf, n);
+  CHECK(v.find(R"("timeInForce":"RPI")") != std::string_view::npos);
+  CHECK(v.find(R"("signature":")" + hmac(payload) + R"("}})") != std::string_view::npos);
+  // A plain GTC limit order keeps its own time in force.
+  const NewOrder gtc(OrderType::Limit, TimeInForce::Gtc, "76980.1", "0.001", false);
+  const std::size_t n2 = enc.encode_ws(gtc.cmd(), nullptr, kTs, buf);
+  REQUIRE(n2 > 0);
+  CHECK(std::string_view(buf, n2).find(R"("timeInForce":"GTC")") != std::string_view::npos);
+  // REST takes the same flag.
+  RestRequest rr;
+  REQUIRE(enc.encode_rest(post_only.cmd(), nullptr, kTs, rr));
+  CHECK(rr.query.view().find("timeInForce=RPI") != std::string_view::npos);
+  enc.set_post_only_rpi(false);
+  REQUIRE(enc.encode_rest(post_only.cmd(), nullptr, kTs, rr));
+  CHECK(rr.query.view().find("timeInForce=GTX") != std::string_view::npos);
+}
+
 TEST_CASE("binance_usdm.encoder: REST requests sign the exact query sent") {
   TestUniverse u;
   const Signer s = signer();

@@ -282,8 +282,10 @@ The listenKey comes from `POST /fapi/v1/listenKey` and is kept alive with `PUT` 
 ### Orders
 
 * LIMIT maps `timeInForce` GTC, IOC and FOK directly; post-only is LIMIT with `GTX`; MARKET has no price and no `timeInForce`. `reduceOnly=true` is sent when the engine sets it; `positionSide` is omitted (BOTH). A crossing GTX order is rejected with -5022 or expires (`OrderExpired`).
+* `post_only_rpi = true` sends post-only orders with `timeInForce` `RPI` instead: a retail price improvement order rests post-only, is matched only against orders entered in Binance's app or web page, is hidden from the API depth, and queues behind every other order at its price. The venue does not modify an RPI order, so pair it with `supports_replace = false`.
+* `exchangeInfo` must list the symbol as a `PERPETUAL` or `TRADIFI_PERPETUAL` contract (the tokenised equity and commodity perpetuals); a delivery contract is refused at start.
 * `order.modify` keeps the venue's `clientOrderId` and takes the total quantity. The connector sends the new remaining quantity plus the filled quantity, reports later events for that order under the engine's new client id, and counts their fills from the modify. A modify answered with status `CANCELED` or `EXPIRED` becomes a cancel of the original and a reject of the replacement. A modified order loses its queue position, so `configs/binance-usdm-demo.toml` uses cancel and new (`supports_replace = false`).
-* Rate limits come from `exchangeInfo.rateLimits`, the WS API `rateLimits` and the REST headers `X-MBX-USED-WEIGHT-1M` and `X-MBX-ORDER-COUNT-10S`. Requests are charged what their endpoint charges, over the WS API as over REST: a place and a modify cost 0 IP weight and one against the 10 s and 1-minute order limits, a cancel costs 1 IP weight and no order.
+* Rate limits come from `exchangeInfo.rateLimits`, the WS API `rateLimits` and the REST headers `X-MBX-USED-WEIGHT-1M` and `X-MBX-ORDER-COUNT-10S`. Requests are charged what their endpoint charges, over the WS API as over REST: a place and a modify cost 0 IP weight and one against the 10 s and 1-minute order limits, a cancel costs 1 IP weight and no order. The `userTrades` and `income` replay queries wait while the minute's weight is spent or the venue asked for a pause; a 429 answer to one waits `Retry-After`, a 418 stops REST.
 
 ### Dead man's switch
 

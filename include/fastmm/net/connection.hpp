@@ -130,8 +130,10 @@ class Connection {
     }
     tls_ = tls;
     host_ = std::string(url_.host);
-    char target[1024];
-    target_ = std::string(target, url_.request_target(target));
+    // Sized by the URL: a combined-stream path of many symbols is several kilobytes, and a fixed
+    // buffer too small for it left the target empty and the connection never upgrading.
+    target_.resize(url_.path.size() + url_.query.size() + 1);
+    target_.resize(url_.request_target(target_));
   }
   ~Connection() { teardown(); }
   Connection(const Connection&) = delete;

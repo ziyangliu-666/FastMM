@@ -124,6 +124,9 @@ struct BinanceUsdmVenueConfig {
   // (60 s window, 4 symbols: 120 weight per minute, 5 %).
   std::int64_t dead_mans_switch_ms = 60'000;
   bool allow_offline_reference_data = false;
+  // Post-only orders are sent with timeInForce RPI instead of GTX (see the order encoder). The
+  // venue does not modify an RPI order, so use it with supports_replace = false.
+  bool post_only_rpi = false;
   bool supports_replace = true;  // order.modify
   int depth_limit = 1000;        // GET /fapi/v1/depth limit: 5, 10, 20, 50, 100, 500, 1000
   std::uint32_t stale_ms = 2000;

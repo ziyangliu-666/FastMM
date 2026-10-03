@@ -36,6 +36,10 @@ struct Events {
 // Server handler: acknowledges SUBSCRIBE, tracks concurrently open sessions.
 class VenueHandler final : public WsSessionHandler {
  public:
+  bool accept_upgrade(std::string_view, std::string_view query) override {
+    last_query = std::string(query);
+    return true;
+  }
   void on_open(WsSession& s) override {
     sessions.push_back(&s);
     ++opened;
@@ -53,6 +57,7 @@ class VenueHandler final : public WsSessionHandler {
 
   std::vector<WsSession*> sessions;
   std::vector<std::string> received;
+  std::string last_query;
   int opened = 0;
   int max_concurrent = 0;
   bool ack = true;
@@ -145,6 +150,30 @@ FASTMM_BACKEND_TEST("connection: connect reaches Live through every state and su
     manual.subscribe_done();
     CHECK(manual.state() == ConnState::Live);
   }
+}
+
+FASTMM_BACKEND_TEST("connection: a combined-stream target of many symbols is sent whole",
+                    test_connection_long_target) {
+  Reactor reactor(backend);
+  VenueHandler venue;
+  HttpServer<PlainStream> server(reactor, [](TcpSocket&& s) { return PlainStream(std::move(s)); });
+  server.set_ws_handler(&venue);
+  REQUIRE(server.listen(SockAddr::loopback_v4(0)));
+
+  // 200 symbols' depth and trade streams: ~6 kB, well past the 1 kB a fixed buffer held.
+  std::string query = "streams=";
+  for (int i = 0; i < 200; ++i)
+    query += "sym" + std::to_string(i) + "usdt@depth@100ms/sym" + std::to_string(i) + "usdt@trade/";
+  REQUIRE(query.size() > 4096);
+  Events ev;
+  Connection<PlainStream, Events> conn(
+      reactor,
+      fast_config("ws://127.0.0.1:" + std::to_string(server.port()) + "/stream?" + query),
+      ev);
+  conn.connect();
+  REQUIRE(run_until(reactor, [&] { return conn.state() == ConnState::Live; }));
+  CHECK(venue.last_query == query);
+  conn.close();
 }
 
 FASTMM_BACKEND_TEST("connection: stale detection with a silent server, then dead -> reconnect",

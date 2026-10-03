@@ -5,6 +5,10 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Binance USDⓈ-M: `post_only_rpi = true` sends post-only orders with `timeInForce` `RPI` (retail
+  price improvement: matched only against app and web orders, hidden from the API depth; the
+  venue does not modify one, so pair it with `supports_replace = false`). `TRADIFI_PERPETUAL`
+  contracts (the tokenised equity and commodity perpetuals) are accepted beside `PERPETUAL`.
 - `HedgeExecutor` (`strategies/hedge_executor.hpp`, in `fastmm/strategy.hpp`): a component a
   strategy owns to hedge the base position of source instruments on one or more hedge instruments
   in preference order. Sizing from positions, one order in flight across all of them, IOC limits
@@ -249,6 +253,13 @@ All notable changes are recorded here (Keep a Changelog format).
   build, the installed package config and the Docker images no longer need `zlib1g-dev`.
 
 ### Fixed
+- A combined-stream URL of more than about fourteen symbols never connected: the request target
+  was copied through a 1 kB buffer, came out empty, and the upgrade request was refused. The
+  target is now sized by the URL.
+- Binance USDⓈ-M: the `userTrades` and `income` replay queries wait while the minute's weight is
+  spent or the venue asked for a pause instead of being sent regardless; a 429 answer to one
+  waits `Retry-After` and a 418 stops REST (the body's -1003 used to be read as a plain rate
+  limit). `symbolConfig` is asked for the enabled instruments only.
 - A session killed inside its start-up execution replay could lose a fill for good. A fill that
   reached it live (an order left resting by the dead session) was stored before the replay had
   read the trades before it; the next start resumed after the newest stored trade - on Binance
