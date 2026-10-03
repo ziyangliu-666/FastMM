@@ -394,23 +394,23 @@ if(TARGET fastmm-backtest)
   fastmm_cli_test(apps.fastmm-backtest.unknown_strategy EXPECT_RC 3
     CMD $<TARGET_FILE:fastmm-backtest> --config ${PROJECT_SOURCE_DIR}/configs/backtest-example.toml --strategy nope
     EXPECT_REGEX "fastmm-backtest: unknown strategy 'nope'")
-  # configs/backtest-example.toml with a misspelt [risk] and [backtest] key: both programs warn with
-  # the key and its line, then run.
+  # configs/backtest-example.toml with a misspelt [risk] key: both programs stop with the key and
+  # its line (the [backtest] typo behind it is never reached).
   file(READ ${PROJECT_SOURCE_DIR}/configs/backtest-example.toml _bt_typos)
   string(REPLACE "[risk]\n" "[risk]\nmax_postion = \"0.05\"\n" _bt_typos "${_bt_typos}")
   string(REPLACE "[backtest]\n" "[backtest]\nduraton_s = 5\n" _bt_typos "${_bt_typos}")
   set(_bt_typos_file ${CMAKE_CURRENT_BINARY_DIR}/tmp/cli/backtest-typos.toml)
   file(CONFIGURE OUTPUT ${_bt_typos_file} CONTENT "${_bt_typos}" @ONLY)
-  set(_bt_typos_regex "warning: .*backtest-typos.toml: unknown key 'risk.max_postion' ignored \\(line [0-9]+\\).*backtest-typos.toml: unknown key 'backtest.duraton_s' ignored \\(line [0-9]+\\)")
+  set(_bt_typos_regex "unknown key 'risk.max_postion' .*\\(line [0-9]+:[0-9]+\\)")
   # A live config backtests as it is: ${FASTMM_BINANCE_API_KEY} is never resolved (CI has none).
   fastmm_cli_test(apps.fastmm-backtest.live_config_without_keys EXPECT_RC 0
     CMD $<TARGET_FILE:fastmm-backtest> --config ${PROJECT_SOURCE_DIR}/configs/binance-demo.toml --data synthetic --duration 1 --out -
     EXPECT_REGEX "net")
-  fastmm_cli_test(apps.fastmm-backtest.unknown_config_keys EXPECT_RC 0
+  fastmm_cli_test(apps.fastmm-backtest.unknown_config_keys EXPECT_RC 3
     CMD $<TARGET_FILE:fastmm-backtest> --config ${_bt_typos_file} --data synthetic --duration 1 --out -
     EXPECT_REGEX "${_bt_typos_regex}")
   if(TARGET fastmm-replay)
-    fastmm_cli_test(apps.fastmm-replay.unknown_config_keys EXPECT_RC 0
+    fastmm_cli_test(apps.fastmm-replay.unknown_config_keys EXPECT_RC 3
       CMD $<TARGET_FILE:fastmm-replay> --journal ${PROJECT_SOURCE_DIR}/tests/fixtures/journals/sample_1000.fmj --config ${_bt_typos_file}
       EXPECT_REGEX "${_bt_typos_regex}")
   endif()
