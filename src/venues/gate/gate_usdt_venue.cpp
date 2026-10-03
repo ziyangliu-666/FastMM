@@ -219,8 +219,17 @@ Result<void, std::string> GateUsdtVenue::load_reference_data(InstrumentTable& in
                         settle,
                         inst->quote.view(),
                         settle);
-      if (!inst->quote.assign(settle) || !inst->base.assign(base_of(f->name)))
+      if (!inst->quote.assign(settle))
         return fail(fmt::format("{}: {} coin names too long", cfg_.name, inst->symbol.view()));
+      if (const std::string_view base = base_of(f->name); !inst->base.assign(base)) {
+        // The base is a label here (a USDT-settled contract's PnL is in the quote): keep what
+        // fits rather than refuse a contract named like ANTHROPIC_USDT or SAMSUNGEM_USDT.
+        static_cast<void>(inst->base.assign(base.substr(0, inst->base.kCapacity)));
+        FASTMM_LOG_WARN("{}: {} base coin label shortened to {}",
+                        cfg_.name,
+                        inst->symbol.view(),
+                        inst->base.view());
+      }
       if (inst->id.value < kMaxInstruments) {
         funding_interval_[inst->id.value] = Duration{f->funding_interval_s * 1'000'000'000LL};
         funding_next_ms_[inst->id.value] = f->funding_next_apply_s * 1000;
