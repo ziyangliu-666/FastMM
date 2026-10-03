@@ -8,6 +8,7 @@
 #include "fastmm/sim/sim_transport.hpp"
 #include "fastmm/strategies/basic_mm.hpp"
 
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,7 +24,7 @@ Qty qt(const char* s) {
   return Qty::from_decimal(s).value();
 }
 
-InstrumentTable make_table() {
+InstrumentTable make_table(Qty contract_multiplier = Qty::from_int(1)) {
   InstrumentTable t;
   Instrument i{};
   i.symbol = "BTCUSDT";
@@ -32,7 +33,9 @@ InstrumentTable make_table() {
   i.tick = px("0.01");
   i.lot = qt("0.00001");
   i.min_qty = qt("0.00001");
-  i.min_notional = Notional::from_decimal("5").value();
+  // A multiplied contract keeps the quotes the same in contracts, so no notional floor there.
+  if (contract_multiplier == Qty::from_int(1)) i.min_notional = Notional::from_decimal("5").value();
+  i.contract_multiplier = contract_multiplier;
   REQUIRE(t.add(i));
   return t;
 }
@@ -64,12 +67,15 @@ EngineConfig engine_config() {
 struct FillCollector final : SimObserver {
   Qty bought{}, sold{};
   Notional fees{};
+  Notional fees_on_price_qty{};  // the fills' fees had the contract multiplier been 1
+  FeeModel rates = FeeModel::from_bps(1.0, 4.0);
   std::uint64_t fills = 0;
   std::uint64_t makers = 0;
   void on_fill(const OrderFillMsg& f, Timestamp, const FillContext&) override {
     ++fills;
     if (f.liquidity == Liquidity::Maker) ++makers;
     fees += f.fee;
+    fees_on_price_qty += rates.fee(f.price, f.qty, f.liquidity);
     (f.side == Side::Buy ? bought : sold) += f.qty;
   }
 };
@@ -80,6 +86,8 @@ struct RunResult {
   std::uint64_t fills = 0;
   std::int64_t realized = 0;
   std::int64_t position = 0;
+  std::int64_t fees = 0;               // what the venue charged
+  std::int64_t fees_on_price_qty = 0;  // the same fills charged on price x qty
 };
 
 // One coupled-generator run; returns the observable outcome.
@@ -230,8 +238,10 @@ struct VectorSource final : MdSource {
   void reset() override { i = 0; }
 };
 
-RunResult run_on_source(const std::vector<std::vector<std::byte>>& msgs, FillModel model) {
-  const InstrumentTable table = make_table();
+RunResult run_on_source(const std::vector<std::vector<std::byte>>& msgs,
+                        FillModel model,
+                        Qty contract_multiplier = Qty::from_int(1)) {
+  const InstrumentTable table = make_table(contract_multiplier);
   const Timestamp start{seconds(1'700'000'000).ns};
   SimClock clock(start);
   SimTransportConfig tc;
@@ -272,6 +282,8 @@ RunResult run_on_source(const std::vector<std::vector<std::byte>>& msgs, FillMod
   r.orders = engine->stats().orders_sent;
   r.fills = engine->stats().fills;
   r.position = engine->position(InstrumentId{0}).qty.raw;
+  r.fees = fills.fees.raw;
+  r.fees_on_price_qty = fills.fees_on_price_qty.raw;
   return r;
 }
 }  // namespace
@@ -288,4 +300,20 @@ TEST_CASE("sim.run: recorded market data through the L2 queue model and the mirr
   const RunResult m2 = run_on_source(msgs, FillModel::Matching);
   CHECK(m1.hash == m2.hash);
   CHECK(m1.orders > 0);
+}
+
+TEST_CASE("sim.run: a contract multiplier scales the simulated fee with the contract's notional") {
+  // Gate's NVDA_USDT is 0.01 NVDA a contract: a fill of 100 contracts at 234.50 is 234.50 USDT of
+  // notional, not 23,450, and the fee follows the notional.
+  const Timestamp start{seconds(1'700'000'000).ns};
+  const auto msgs = record_market(11, start, seconds(20));
+  const RunResult whole = run_on_source(msgs, FillModel::L2Queue);
+  const RunResult hundredth = run_on_source(msgs, FillModel::L2Queue, qt("0.01"));
+  REQUIRE(whole.fills > 0);
+  REQUIRE(hundredth.fills > 0);
+  CHECK(whole.fees == whole.fees_on_price_qty);
+  // Each fill's fee rounds down at 1e-8, so the two sums agree to within a few raw units a fill.
+  CHECK(std::abs(hundredth.fees * 100 - hundredth.fees_on_price_qty) <=
+        static_cast<std::int64_t>(hundredth.fills) * 100);
+  CHECK(hundredth.fees < hundredth.fees_on_price_qty);
 }

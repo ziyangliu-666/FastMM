@@ -795,7 +795,11 @@ void SimTransport::emit_fill(ClientOrderId id,
   m.qty = qty;
   m.cum_qty = cum;
   m.leaves_qty = leaves;
-  m.fee = cfg_.fees.fee(inst, px, qty, liq);
+  // The fee is on the contract's notional: a futures contract with a multiplier (Gate's
+  // NVDA_USDT is 0.01 NVDA) trades much less than price x qty.
+  m.fee = inst.value < instruments_.size()
+              ? cfg_.fees.schedule(inst).fee(instruments_[inst].notional(px, qty), liq)
+              : cfg_.fees.fee(inst, px, qty, liq);
   m.side = side;
   m.liquidity = liq;
   stats_.fees_charged += m.fee;
