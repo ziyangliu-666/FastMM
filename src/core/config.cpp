@@ -491,6 +491,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       str("ca_file", v.ca_file);
       get(*t, "testnet", v.testnet);
       get(*t, "supports_replace", v.supports_replace);
+      get(*t, "public_only", v.public_only);
       get(*t, "insecure_tls", v.insecure_tls);
       get(*t, "recv_window_ms", v.recv_window_ms);
       if (const auto* fees = t->get_as<toml::table>("fees")) {
@@ -807,6 +808,7 @@ std::string Config::redacted() const {
     if (!v.api_passphrase.empty()) kq("api_passphrase", "***");
     kv("testnet", v.testnet);
     kv("supports_replace", v.supports_replace);
+    kv("public_only", v.public_only);
     kv("insecure_tls", v.insecure_tls);
     if (!v.ca_file.empty()) kq("ca_file", v.ca_file);
     kv("recv_window_ms", v.recv_window_ms);
@@ -1005,6 +1007,7 @@ std::string Config::effective_toml() const {
       t.insert("rest_url", v.rest_url);
       t.insert("testnet", v.testnet);
       t.insert("supports_replace", v.supports_replace);
+      t.insert("public_only", v.public_only);
       t.insert("insecure_tls", v.insecure_tls);
       t.insert("ca_file", v.ca_file);
       t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));

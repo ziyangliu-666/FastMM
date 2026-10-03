@@ -503,7 +503,7 @@ bool resolve_venue_env(Config& cfg, bool dry_run, const char* prog) {
     // for one, takes market data without keys and logs OUCH in with ouch_username / ouch_password.
     const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(v.kind);
     const bool needs_keys = entry == nullptr || entry->caps.credentials;
-    if (dry_run) {
+    if (dry_run || v.public_only) {
       if (!sbe_md) v.api_key.clear();
       v.api_secret.clear();
       v.api_passphrase.clear();
@@ -927,7 +927,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     transport.set_budget_source(vid, &s.venue->budget_source());
     if (replace) replace_venues |= std::uint64_t{1} << i;
     const venues::VenueEntry* entry = venues::VenueRegistry::instance().find(cfg.venues[i].kind);
-    if (entry != nullptr && entry->caps.executions && !opts.dry_run) await_venues |= 1U << i;
+    if (entry != nullptr && entry->caps.executions && !opts.dry_run && !cfg.venues[i].public_only)
+      await_venues |= 1U << i;
   }
   if (via_gateway) {
     // An adaptive gateway's network threads block in their reactors: wake them after a push.
@@ -1687,7 +1688,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         "fastmm-live: no venue cancel_all here: the gateway cancels every open order when this "
         "attachment closes");
   } else if (!opts.dry_run) {
-    for (auto& s : slots) cancel_ok = s->venue->cancel_all() && cancel_ok;
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+      if (cfg.venues[i].public_only) continue;  // market data only: nothing to cancel
+      cancel_ok = slots[i]->venue->cancel_all() && cancel_ok;
+    }
   }
   // Let queued cancels reach the wire, then stop the engine and the net threads.
   sleep_for(milliseconds(200));

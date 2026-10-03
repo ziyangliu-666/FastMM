@@ -115,6 +115,9 @@ struct VenueSection {
   std::string api_passphrase;  // OKX: the passphrase chosen with the API key
   bool testnet = true;
   bool supports_replace = false;
+  // Market data only: no keys needed, no private sessions, no orders, not awaited at start, not
+  // cancelled at stop. For a venue that is only a price leader for a strategy on another venue.
+  bool public_only = false;
   bool insecure_tls = false;
   std::string ca_file;
   int recv_window_ms = 3000;

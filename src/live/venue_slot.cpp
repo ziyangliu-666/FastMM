@@ -53,7 +53,9 @@ int make_venue_slots(const Config& cfg,
   for (std::size_t i = 0; i < cfg.venues.size(); ++i) {
     auto slot = std::make_unique<VenueSlot>();
     try {
-      slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vopts);
+      venues::VenueFactoryOptions vo = vopts;
+      vo.dry_run = vopts.dry_run || cfg.venues[i].public_only;  // a price leader runs public-only
+      slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vo);
     } catch (const std::exception& e) {
       std::fprintf(stderr, "%s: %s\n", prog, e.what());
       return kExitConfig;
