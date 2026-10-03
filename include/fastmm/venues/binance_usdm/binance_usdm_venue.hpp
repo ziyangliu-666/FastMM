@@ -303,7 +303,11 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   bool query_funding(const ReplayQuery& q);
   bool emit_funding_row(const IncomeRecord& row);
   // A REST failure of a replay query: the error mapping's action, the log line.
-  void replay_query_failed(std::string_view what, const net::HttpResponse& r);
+  // `then`: what follows the failure, for the log: a query is asked again, an order lookup leaves
+  // its fill naming no order yet.
+  void replay_query_failed(std::string_view what,
+                           const net::HttpResponse& r,
+                           std::string_view then = "asked again");
   [[nodiscard]] std::size_t subscribed_slot(InstrumentId id) const noexcept;
   void remember_order_id(std::int64_t order_id, ClientOrderId id) noexcept;
   // Both replies in: decodes them into the driver's rows (false when one does not parse).

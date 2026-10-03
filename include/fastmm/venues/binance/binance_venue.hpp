@@ -264,7 +264,11 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // GET /api/v3/order?orderId= for a replayed execution whose order order_ids_ does not name.
   bool lookup_order(const ReplayLookup& l);
   // A history or lookup query the venue refused: 429 and 418 by their status, else by the body.
-  void replay_query_failed(std::string_view what, const net::HttpResponse& r);
+  // `then`: what follows the failure, for the log: a query is asked again, an order lookup leaves
+  // its fill naming no order yet.
+  void replay_query_failed(std::string_view what,
+                           const net::HttpResponse& r,
+                           std::string_view then = "asked again");
   void publish_status() noexcept;
   // An order the shadow table had no room for goes back as OrderTableFull.
   void refuse_untracked(const OrderCommand& cmd);

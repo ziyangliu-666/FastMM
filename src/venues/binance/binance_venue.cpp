@@ -1474,7 +1474,9 @@ bool BinanceVenue::exec_ready() const noexcept {
          !rest_hard_stopped_ && !subscribed_.empty();
 }
 
-void BinanceVenue::replay_query_failed(std::string_view what, const net::HttpResponse& r) {
+void BinanceVenue::replay_query_failed(std::string_view what,
+                                       const net::HttpResponse& r,
+                                       std::string_view then) {
   ++stats_.rest_errors;
   int code = 0;
   std::string msg;
@@ -1489,12 +1491,13 @@ void BinanceVenue::replay_query_failed(std::string_view what, const net::HttpRes
     const ErrorMapping m = map_error(code, msg);
     if (m.action != VenueAction::Reconcile) apply_action(m.action, code, msg, -1);
   }
-  FASTMM_LOG_ERROR("{}: GET {} failed: status={} err={} {}; asked again",
+  FASTMM_LOG_ERROR("{}: GET {} failed: status={} err={} {}; {}",
                    cfg_.name,
                    what,
                    r.status,
                    net::to_string(r.error),
-                   r.body.substr(0, 120));
+                   r.body.substr(0, 120),
+                   then);
 }
 
 bool BinanceVenue::query_executions(const ReplayQuery& q) {
@@ -1590,7 +1593,7 @@ bool BinanceVenue::lookup_order(const ReplayLookup& l) {
         ++stats_.rest_requests;
         note_rate_headers(r);
         if (!r.ok()) {
-          replay_query_failed("order", r);
+          replay_query_failed("order", r, "its fill names no order yet");
           exec_replay_.looked_up(l, LookupResult::Failed);
           return;
         }
