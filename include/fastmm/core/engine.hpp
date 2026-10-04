@@ -547,13 +547,26 @@ class Engine {
     const Instrument& inst = instruments_.get(id);
     if (FASTMM_LIKELY(!pools_on_) || !cfg_.pools.pooled(inst.venue))
       return balances_->room(id, inst, side, px);
+    // The largest order one account can hold is its room plus what its open orders on the side
+    // already hold (sent or resting: both are in its balance's holds and in open_qty); returned
+    // net of the pool's open quantity, so room + open_qty (fit_to_balance) is that order.
+    // Counting another account's orders on top would size a quote no account covers: it would be
+    // cancelled on the ack and placed again, for ever.
+    Qty open_on[PoolPlan::kVenues] = {};
+    oms_.for_each_open_order(id, [&](Handle<Order>, const Order& o) {
+      if (o.side == side && o.venue.value < PoolPlan::kVenues)
+        open_on[o.venue.value] += o.leaves_qty();
+    });
     Qty most{};
     for (const VenueId v : cfg_.pools.members(inst.venue)) {
       if (!account_usable(v)) continue;
       const Qty room = balances_->room(id, inst, side, px, v);
-      if (room > most) most = room;
+      if (room == Qty::max()) return room;
+      const Qty holds = room + open_on[v.value];
+      if (holds > most) most = holds;
     }
-    return most;
+    const Qty open = oms_.open_qty(id, side);
+    return most > open ? most - open : Qty{};
   }
   // ... on one account of the instrument's pool (the instrument's own venue when `account` is
   // not one of them).
@@ -2377,9 +2390,14 @@ class Engine {
     // The account it goes from: the instrument's venue, or one of its pool (an explicit account
     // outside the pool is refused; the automatic choice falls back to the primary).
     VenueId account = inst.venue;
+    bool window_full = false;
     if (FASTMM_UNLIKELY(pools_on_)) {
       account = choose_account(req, inst);
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
+      // The account's order window is full (the one named, or the fallback when no account with
+      // room covers the order): refused below as the venue would, without spending a request.
+      const OrderBudget b = order_budget(account);
+      window_full = b.orders_10s.remaining() == 0 || b.orders_1d.remaining() == 0;
     } else if (FASTMM_UNLIKELY(req.account.valid() && req.account != inst.venue)) {
       return fail(RejectReason::InvalidAccount);
     }
@@ -2409,6 +2427,7 @@ class Engine {
     if (FASTMM_UNLIKELY(rr == RejectReason::None && account != inst.venue) &&
         risk_.venue_killed(inst.venue))
       rr = RejectReason::VenueKilled;
+    if (FASTMM_UNLIKELY(window_full) && rr == RejectReason::None) rr = RejectReason::RateLimit;
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
       stats_.risk_rejects_by_reason.add(rr);
@@ -2486,6 +2505,7 @@ class Engine {
       if (b.venue_paused) continue;
       const std::int64_t left_10s = b.orders_10s.remaining();
       const std::int64_t left_1d = b.orders_1d.remaining();
+      if (left_10s == 0 || left_1d == 0) continue;  // the venue would refuse it: another account
       if (left_10s > best_10s || (left_10s == best_10s && left_1d > best_1d)) {
         best = v;
         best_10s = left_10s;

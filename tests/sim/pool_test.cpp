@@ -239,6 +239,7 @@ struct WindowProbe {
   std::vector<ClientOrderId> automatic;
   std::vector<RejectReason> refused;  // send() errors
   ClientOrderId later;
+  RejectReason later_refused = RejectReason::None;
   OrderBudget primary_budget, member_budget;
   std::map<std::uint64_t, std::vector<Seen>> updates;
 
@@ -271,7 +272,13 @@ struct WindowProbe {
   template <class Ctx>
   void on_timer(Ctx& ctx, TimerId, std::uint64_t) noexcept {
     const Price deep = ctx.book(kBtc).best_bid().price - ctx.instrument(kBtc).ticks(2000);
-    later = *ctx.send(NewOrderRequest::limit(kBtc, Side::Buy, deep, qt("0.01")).account(kPrimary));
+    const auto r =
+        ctx.send(NewOrderRequest::limit(kBtc, Side::Buy, deep, qt("0.01")).account(kPrimary));
+    if (r) {
+      later = *r;
+    } else {
+      later_refused = r.error();
+    }
   }
   template <class Ctx>
   void on_order_update(Ctx&, const OmsUpdate& u) noexcept {
@@ -279,35 +286,74 @@ struct WindowProbe {
   }
 };
 
-using WindowEngine = Engine<WindowProbe, SimClock, SimTransport, InlineFeed>;
+// Two sells from the primary by name (its 10 s window admits two), then one automatic sell.
+struct FullWindowProbe {
+  int step = 0;
+  std::vector<ClientOrderId> named;
+  ClientOrderId automatic;
+  RejectReason refused = RejectReason::None;
+  std::map<std::uint64_t, std::vector<Seen>> updates;
 
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book& b) noexcept {
+    if (step != 0 || !b.is_valid() || !ctx.balances_live()) return;
+    step = 1;
+    const Price deep = b.best_ask().price + ctx.instrument(id).ticks(2000);
+    for (int k = 0; k < 2; ++k)
+      named.push_back(
+          *ctx.send(NewOrderRequest::limit(id, Side::Sell, deep, qt("0.01")).account(kPrimary)));
+    const auto r = ctx.send(NewOrderRequest::limit(id, Side::Sell, deep, qt("0.01")));
+    if (r) {
+      automatic = *r;
+    } else {
+      refused = r.error();
+    }
+  }
+  template <class Ctx>
+  void on_order_update(Ctx&, const OmsUpdate& u) noexcept {
+    updates[u.order.cl_ord_id.value].push_back(Seen{u.order.venue, u.order.state});
+  }
+};
+
+struct WindowOptions {
+  std::int64_t primary_10s = 0;
+  std::int64_t member_10s = 0;
+  std::int64_t primary_1d = 0;
+  const char* primary_btc = "1";
+  const char* member_btc = "1";
+  bool engine_pools = true;  // false: the engine sees one account, the simulator still counts
+};
+
+template <class P>
 struct WindowRig {
+  using E = Engine<P, SimClock, SimTransport, InlineFeed>;
   InstrumentTable table = make_table();
   SimClock clock{Timestamp{seconds(1'700'000'000).ns}};
   SimTransportConfig tc;
   std::unique_ptr<SimTransport> transport;
   InlineFeed feed{1 << 22};
-  WindowProbe probe;
-  std::unique_ptr<WindowEngine> engine;
+  P probe;
+  std::unique_ptr<E> engine;
 
-  WindowRig(std::int64_t primary_10s, std::int64_t member_10s, std::int64_t primary_1d = 0) {
+  explicit WindowRig(const WindowOptions& o) {
     tc.seed = 7;
     tc.fees = FeeModel::from_bps(0.0, 0.0);
     REQUIRE(tc.pools.add(kMember, kPrimary));
-    tc.accounts = {account(kPrimary, "1", "100000"), account(kMember, "1", "100000")};
+    tc.accounts = {account(kPrimary, o.primary_btc, "100000"),
+                   account(kMember, o.member_btc, "100000")};
     SimVenueConfig p = tc.venue_config(kPrimary);
-    p.orders_10s = primary_10s;
-    p.orders_1d = primary_1d;
+    p.orders_10s = o.primary_10s;
+    p.orders_1d = o.primary_1d;
     SimVenueConfig m = tc.venue_config(kMember);
-    m.orders_10s = member_10s;
+    m.orders_10s = o.member_10s;
     tc.venues = {p, m};
     transport = std::make_unique<SimTransport>(clock, table, tc);
     EngineConfig cfg;
     cfg.risk.max_order_qty = qt("1");
     cfg.risk.max_position = qt("5");
     cfg.risk.max_open_orders = 32;
-    cfg.pools = tc.pools;
-    engine = std::make_unique<WindowEngine>(cfg, table, clock, *transport, feed, probe);
+    if (o.engine_pools) cfg.pools = tc.pools;
+    engine = std::make_unique<E>(cfg, table, clock, *transport, feed, probe);
   }
   void run(Duration horizon) {
     MarketGenerator gen(gen_params(), 7, kBtc, clock.now(), clock.now() + horizon);
@@ -321,7 +367,7 @@ struct WindowRig {
 }  // namespace
 
 TEST_CASE("sim.pool: the automatic routing takes the member with the most 10 s window left") {
-  WindowRig rig(100, 100);
+  WindowRig<WindowProbe> rig({.primary_10s = 100, .member_10s = 100});
   rig.run(seconds(1));
   const WindowProbe& p = rig.probe;
   REQUIRE(p.step == 1);
@@ -345,19 +391,22 @@ TEST_CASE("sim.pool: the automatic routing takes the member with the most 10 s w
   CHECK_FALSE(p.primary_budget.orders_1d.known());
 }
 
-TEST_CASE("sim.pool: an order past the venue's window is refused, and the window turns over") {
-  WindowRig rig(2, 0);  // the primary admits two per 10 s, the member has no limit
+TEST_CASE("sim.pool: an order past its account's window is refused here, then it turns over") {
+  WindowRig<WindowProbe> rig({.primary_10s = 2});  // the member has no limit
   rig.run(seconds(12));
   const WindowProbe& p = rig.probe;
   REQUIRE(p.step == 1);
-  REQUIRE(p.named.size() == 3);
+  // The third named order would pass the primary's window: refused without reaching the venue.
+  REQUIRE(p.named.size() == 2);
+  REQUIRE(p.refused.size() == 1);
+  CHECK(p.refused[0] == RejectReason::RateLimit);
+  CHECK(rig.engine->stats().risk_rejects_by_reason[RejectReason::RateLimit] == 1);
+  CHECK(rig.transport->stats().rejects_rate_limit == 0);
   const auto last_state = [&](ClientOrderId id) { return p.updates.at(id.value).back().state; };
   CHECK(last_state(p.named[0]) == OrderState::Live);
   CHECK(last_state(p.named[1]) == OrderState::Live);
-  CHECK(last_state(p.named[2]) == OrderState::Rejected);
-  CHECK(rig.transport->stats().rejects_rate_limit == 1);
-  CHECK(rig.engine->stats().venue_rejects_by_reason[RejectReason::VenueRateLimit] == 1);
   // The automatic orders all went to the member: unlimited counts as the most room.
+  REQUIRE(p.automatic.size() == 4);
   for (const ClientOrderId id : p.automatic) CHECK(p.updates.at(id.value).front().venue == kMember);
   CHECK(p.primary_budget.orders_10s.remaining() == 0);
   CHECK_FALSE(p.member_budget.venue_known);
@@ -368,22 +417,68 @@ TEST_CASE("sim.pool: an order past the venue's window is refused, and the window
 }
 
 TEST_CASE("sim.pool: the daily window refuses too") {
-  WindowRig rig(100, 0, /*primary_1d=*/1);
+  WindowRig<WindowProbe> rig({.primary_10s = 100, .primary_1d = 1});
   rig.run(seconds(12));
   const WindowProbe& p = rig.probe;
-  REQUIRE(p.named.size() == 3);
-  const auto last_state = [&](ClientOrderId id) { return p.updates.at(id.value).back().state; };
-  CHECK(last_state(p.named[0]) == OrderState::Live);
-  CHECK(last_state(p.named[1]) == OrderState::Rejected);
-  CHECK(last_state(p.named[2]) == OrderState::Rejected);
+  REQUIRE(p.named.size() == 1);
+  CHECK(p.updates.at(p.named[0].value).back().state == OrderState::Live);
+  REQUIRE(p.refused.size() == 2);
+  for (const RejectReason r : p.refused) CHECK(r == RejectReason::RateLimit);
   CHECK(p.primary_budget.orders_1d.limit == 1);
   CHECK(p.primary_budget.orders_1d.remaining() == 0);
   CHECK(p.primary_budget.orders_10s.remaining() == 99);
-  CHECK(last_state(p.later) == OrderState::Rejected);  // the day is not over
-  CHECK(rig.transport->stats().rejects_rate_limit == 3);
+  CHECK(p.later_refused == RejectReason::RateLimit);  // the day is not over
+  CHECK(rig.transport->stats().rejects_rate_limit == 0);
 }
 
-// ---- sizing against a pool: balance_room is the largest single holder ---------------------------
+TEST_CASE("sim.pool: without a pool in the engine the simulated venue refuses past its window") {
+  WindowRig<WindowProbe> rig({.primary_10s = 2, .engine_pools = false});
+  rig.run(seconds(12));
+  const WindowProbe& p = rig.probe;
+  REQUIRE(p.step == 1);
+  CHECK(p.refused.empty());
+  REQUIRE(p.named.size() == 3);
+  REQUIRE(p.automatic.size() == 4);
+  const auto last_state = [&](ClientOrderId id) { return p.updates.at(id.value).back().state; };
+  CHECK(last_state(p.named[0]) == OrderState::Live);
+  CHECK(last_state(p.named[1]) == OrderState::Live);
+  CHECK(last_state(p.named[2]) == OrderState::Rejected);
+  for (const ClientOrderId id : p.automatic) CHECK(last_state(id) == OrderState::Rejected);
+  CHECK(rig.transport->stats().rejects_rate_limit == 5);
+  CHECK(rig.engine->stats().venue_rejects_by_reason[RejectReason::VenueRateLimit] == 5);
+  REQUIRE(p.later.valid());
+  CHECK(last_state(p.later) == OrderState::Live);
+}
+
+TEST_CASE("sim.pool: a full-window account is passed over for one that covers the order") {
+  WindowRig<FullWindowProbe> rig({.primary_10s = 2, .member_10s = 100});
+  rig.run(seconds(1));
+  const FullWindowProbe& p = rig.probe;
+  REQUIRE(p.step == 1);
+  REQUIRE(p.named.size() == 2);
+  CHECK(p.refused == RejectReason::None);
+  REQUIRE(p.automatic.valid());
+  CHECK(p.updates.at(p.automatic.value).front().venue == kMember);
+  CHECK(p.updates.at(p.automatic.value).back().state == OrderState::Live);
+  CHECK(rig.transport->stats().rejects_rate_limit == 0);
+}
+
+TEST_CASE("sim.pool: only a full-window account covers the order: refused here, nothing sent") {
+  // The member holds no base: only the primary covers the sell, and its window is full.
+  WindowRig<FullWindowProbe> rig({.primary_10s = 2, .member_10s = 100, .member_btc = "0"});
+  rig.run(seconds(1));
+  const FullWindowProbe& p = rig.probe;
+  REQUIRE(p.step == 1);
+  REQUIRE(p.named.size() == 2);
+  CHECK_FALSE(p.automatic.valid());
+  CHECK(p.refused == RejectReason::RateLimit);
+  CHECK(rig.engine->stats().risk_rejects_by_reason[RejectReason::RateLimit] == 1);
+  CHECK(rig.engine->stats().orders_sent == 2);
+  CHECK(rig.transport->stats().orders_sent == 2);
+  CHECK(rig.transport->stats().rejects_rate_limit == 0);
+}
+
+// ---- sizing against a pool: balance_room is what one account can hold -------------------------
 
 namespace {
 
@@ -411,8 +506,9 @@ struct SizingProbe {
     fitted_before = q.asks[0].qty;
     too_big = ctx.send(NewOrderRequest::limit(id, Side::Sell, deep, qt("0.6"))).error();
     biggest = *ctx.send(NewOrderRequest::limit(id, Side::Sell, deep, qt("0.5")));
-    // With 0.5 held on the member, the primary's 0.3 is the most one order can be; the ladder may
-    // still total the room plus what rests (open_qty is over every account).
+    // With 0.5 held on the member, no account can hold more than the 0.5 already sent: no room
+    // beyond it, and the ladder stays at what rests (room plus open_qty, which is over every
+    // account), not 0.3 + 0.5, which no single account covers.
     room_after = ctx.balance_room(id, Side::Sell, deep);
     open_after = ctx.open_qty(id, Side::Sell);
     DesiredQuotes q2;
@@ -430,7 +526,7 @@ using SizingEngine = Engine<SizingProbe, SimClock, SimTransport, InlineFeed>;
 
 }  // namespace
 
-TEST_CASE("sim.pool: balance_room is the largest single member's room, open_qty the whole pool's") {
+TEST_CASE("sim.pool: balance_room is what one member can hold, net of the whole pool's open_qty") {
   const InstrumentTable table = make_table();
   SimClock clock{Timestamp{seconds(1'700'000'000).ns}};
   SimTransportConfig tc;
@@ -461,11 +557,79 @@ TEST_CASE("sim.pool: balance_room is the largest single member's room, open_qty 
   REQUIRE(probe.biggest.valid());
   CHECK(probe.updates.at(probe.biggest.value).front().venue == kMember);
   CHECK(probe.updates.at(probe.biggest.value).back().state == OrderState::Live);
-  CHECK(probe.room_after == qt("0.3"));
+  CHECK(probe.room_after.is_zero());
   CHECK(probe.open_after == qt("0.5"));
-  CHECK(probe.fitted_after == qt("0.8"));  // 0.3 of room plus the 0.5 resting
+  CHECK(probe.fitted_after == qt("0.5"));  // the member's 0.5, not the primary's 0.3 on top
   CHECK(engine.balance(kMember, "BTC").free.is_zero());
   CHECK(engine.balance(kPrimary, "BTC").free == nt("0.3"));
+}
+
+namespace {
+
+// Quotes one ask of 1 BTC at a fixed deep price on every book, cut by fit_to_balance.
+struct QuoteProbe {
+  Price ask_px;
+  std::vector<Qty> fitted;  // after the quote is live
+  bool live = false;
+  VenueId live_on;
+
+  template <class Ctx, class Book>
+  void on_book(Ctx& ctx, InstrumentId id, const Book& b) noexcept {
+    if (!b.is_valid() || !ctx.balances_live()) return;
+    const Instrument& inst = ctx.instrument(id);
+    if (ask_px.is_zero()) ask_px = b.best_ask().price + inst.ticks(2000);
+    DesiredQuotes q;
+    static_cast<void>(q.ask(ask_px, qt("1")));
+    fit_to_balance(ctx, id, inst, q);
+    if (live) fitted.push_back(q.asks.empty() ? Qty{} : q.asks[0].qty);
+    static_cast<void>(ctx.set_quotes(id, q));
+  }
+  template <class Ctx>
+  void on_order_update(Ctx&, const OmsUpdate& u) noexcept {
+    if (u.order.state == OrderState::Live && !live) {
+      live = true;
+      live_on = u.order.venue;
+    }
+  }
+};
+
+using QuoteEngine = Engine<QuoteProbe, SimClock, SimTransport, InlineFeed>;
+
+}  // namespace
+
+TEST_CASE("sim.pool: a quote fitted to the balance stays put once it rests on one account") {
+  const InstrumentTable table = make_table();
+  SimClock clock{Timestamp{seconds(1'700'000'000).ns}};
+  SimTransportConfig tc;
+  tc.seed = 7;
+  tc.fees = FeeModel::from_bps(0.0, 0.0);
+  REQUIRE(tc.pools.add(kMember, kPrimary));
+  tc.accounts = {account(kPrimary, "0.64", "100000"), account(kMember, "0.3", "100000")};
+  SimTransport transport(clock, table, tc);
+  InlineFeed feed{1 << 22};
+  QuoteProbe probe;
+  EngineConfig cfg;
+  cfg.risk.max_order_qty = qt("1");
+  cfg.risk.max_position = qt("5");
+  cfg.risk.max_open_orders = 16;
+  cfg.pools = tc.pools;
+  QuoteEngine engine(cfg, table, clock, transport, feed, probe);
+  MarketGenerator gen(gen_params(), 7, kBtc, clock.now(), clock.now() + seconds(2));
+  SimDriver driver(clock, transport, feed, EngineHooks::for_engine(engine));
+  driver.set_generator(&gen, 20);
+  driver.run_all();
+  driver.finish();
+
+  REQUIRE(probe.live);
+  CHECK(probe.live_on == kPrimary);  // the only account that covers 0.64
+  // Resting on the primary, the target is still the primary's 0.64, not the member's 0.3 on top:
+  // the quote is neither cancelled nor amended, step after step.
+  REQUIRE(probe.fitted.size() >= 10);
+  for (const Qty q : probe.fitted) CHECK(q == qt("0.64"));
+  CHECK(engine.stats().orders_sent == 1);
+  CHECK(engine.stats().cancels_sent == 0);
+  CHECK(engine.stats().replaces_sent == 0);
+  CHECK(transport.stats().orders_sent == 1);
 }
 
 TEST_CASE("sim.pool: each account's position report adds up to the instrument's position") {
