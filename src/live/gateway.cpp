@@ -3414,17 +3414,31 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
     }
   } else if (guarded) {
     if (const SettlementMix mix = instruments.settlement_mix(); mix.mixed()) {
+      const std::string a(mix.first->settlement_ccy());
+      const std::string b(mix.other->settlement_ccy());
       std::fprintf(stderr,
                    "%s: instruments settle in different currencies (%s in %s, %s in %s) and the "
-                   "[gateway] account limits are one number in one currency. Set [accounting] "
-                   "reporting_currency and an [accounting.fx] source per other currency, run one "
-                   "gateway per settlement currency, or unset max_loss, max_gross_notional and "
+                   "[gateway] account limits are one number in one currency. Add\n\n"
+                   "  [accounting]\n"
+                   "  reporting_currency = \"%s\"\n\n"
+                   "  [accounting.fx]\n"
+                   "  %s = \"<venue>:<symbol>\"\n\n"
+                   "where <symbol> is an [[instruments]] entry whose mid prices %s in %s (or %s in "
+                   "%s), one line per settlement currency other than %s; or run one gateway per "
+                   "settlement currency; or unset max_loss, max_gross_notional and "
                    "max_net_notional.\n",
                    prog,
                    std::string(mix.first->symbol.view()).c_str(),
-                   std::string(mix.first->settlement_ccy()).c_str(),
+                   a.c_str(),
                    std::string(mix.other->symbol.view()).c_str(),
-                   std::string(mix.other->settlement_ccy()).c_str());
+                   b.c_str(),
+                   a.c_str(),
+                   b.c_str(),
+                   b.c_str(),
+                   a.c_str(),
+                   a.c_str(),
+                   b.c_str(),
+                   a.c_str());
       return kExitConfig;
     }
   }

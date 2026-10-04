@@ -290,6 +290,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
     FASTMM_LOG_WARN("{}: server time failed: {}", cfg_.name, std::string_view(e.what()));
   }
   FASTMM_LOG_INFO("{}: reference data loaded for {} symbols", cfg_.name, mine.size());
+  refused_account_settings_ = false;
   if (!cfg_.dry_run && signer_.usable()) {
     if (std::string err = account_checks(mine); !err.empty()) return fail(std::move(err));
   }
@@ -343,8 +344,8 @@ Duration BinanceUsdmVenue::funding_interval_of(InstrumentId id) const noexcept {
   return BinanceUsdmMdParser::kDefaultFundingInterval;
 }
 
-// Read-only account settings: position mode (hedge mode is refused), leverage and margin type per
-// symbol, balances. Nothing is changed.
+// Account settings: position mode (hedge mode is refused), leverage and margin type per symbol,
+// balances. Nothing is changed unless one_way_mode or leverage asks for it.
 std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& mine) {
   BlockingHttpOptions opts;
   opts.ca_file = cfg_.ca_file;
@@ -352,37 +353,102 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
   opts.timeout_ms = cfg_.http_timeout_ms;
   try {
     BlockingHttp http(cfg_.rest_url, opts);
+    auto send = [&](const RestRequest& rr) {
+      const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+      // Before the connections open, within the bulk share of the weight: symbolConfig is one per
+      // symbol, and the weight it spends is the snapshots' and replay's a moment later.
+      wait_for_weight(rate_, rr.weight, now_ns(), kStartupWaitNs, [](std::int64_t ns) {
+        std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
+      });
+      HttpReply reply = http.request(rr.method, target, api_headers());
+      rate_.on_sent(rr.weight, now_ns());
+      return reply;
+    };
     auto signed_get = [&](std::string_view path, std::string_view symbol, std::uint32_t weight) {
       RestRequest rr;
       if (!BinanceUsdmOrderEncoder::encode_rest_signed_get(
               signer_, cfg_.recv_window_ms, path, symbol, venue_time_ms(), weight, rr))
         return HttpReply{};
-      const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
-      // Before the connections open, within the bulk share of the weight: symbolConfig is one per
-      // symbol, and the weight it spends is the snapshots' and replay's a moment later.
-      wait_for_weight(rate_, weight, now_ns(), kStartupWaitNs, [](std::int64_t ns) {
-        std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
-      });
-      HttpReply reply = http.request("GET", target, api_headers());
-      rate_.on_sent(weight, now_ns());
-      return reply;
+      return send(rr);
+    };
+    auto refused = [&](const HttpReply& r) {
+      int code = 0;
+      std::string msg;
+      if (!r.error.empty()) return r.error;
+      static_cast<void>(binance::decode_rest_error(r.body, code, msg));
+      return fmt::format("HTTP {} code {} {}", r.status, code, msg);
+    };
+    // A setting a retry does not fix: fastmm-live exits 3, not 4.
+    auto refuse = [&](std::string why) {
+      refused_account_settings_ = true;
+      return why;
+    };
+    // one_way_mode: only an account with nothing to lose by it. The venue refuses the change with
+    // a position or an open order anyway; asking first says which.
+    auto switch_to_one_way = [&]() -> std::string {
+      const std::string prefix = fmt::format("{}: the account is in hedge mode", cfg_.name);
+      // "Position Information V3": IP weight 5.
+      const HttpReply pr = signed_get("/fapi/v3/positionRisk", {}, 5);
+      std::vector<PositionRecord> positions;
+      if (!pr.ok() || !decode_position_risk(pr.body, positions).empty())
+        return fmt::format(
+            "{} and its positions could not be read ({}); not switched", prefix, refused(pr));
+      std::string held;
+      for (const PositionRecord& p : positions) {
+        if (p.qty.is_zero()) continue;
+        held += fmt::format("{}{} {} {}",
+                            held.empty() ? "" : ", ",
+                            p.symbol,
+                            p.position_side,
+                            DecimalText(p.qty).view());
+      }
+      if (!held.empty())
+        return fmt::format(
+            "{} with open positions ({}); one_way_mode switches only an account with no position "
+            "and no open order: close them first",
+            prefix,
+            held);
+      // "Current All Open Orders" without a symbol: IP weight 40.
+      const HttpReply oo = signed_get("/fapi/v1/openOrders", {}, 40);
+      std::size_t open_orders = 0;
+      if (!oo.ok() || !decode_open_order_count(oo.body, open_orders).empty())
+        return fmt::format(
+            "{} and its open orders could not be read ({}); not switched", prefix, refused(oo));
+      if (open_orders > 0)
+        return fmt::format(
+            "{} with {} open order(s); one_way_mode switches only an account with no position and "
+            "no open order: cancel them first",
+            prefix,
+            open_orders);
+      RestRequest rr;
+      if (!BinanceUsdmOrderEncoder::encode_rest_position_mode(
+              signer_, cfg_.recv_window_ms, false, venue_time_ms(), rr))
+        return prefix + "; the position mode request could not be encoded";
+      const HttpReply r = send(rr);
+      if (!r.ok())
+        return fmt::format("{}; switching to one-way mode failed: {}", prefix, refused(r));
+      FASTMM_LOG_WARN("{}: switched the account from hedge mode to one-way mode (one_way_mode)",
+                      cfg_.name);
+      return {};
     };
     // "Get Current Position Mode": IP weight 30.
     const HttpReply mode = signed_get("/fapi/v1/positionSide/dual", {}, 30);
     if (mode.ok()) {
       bool dual = false;
-      if (decode_position_mode(mode.body, dual).empty() && dual)
-        return fmt::format(
-            "{}: the account is in hedge mode (dualSidePosition=true); binance_usdm needs "
-            "one-way mode",
-            cfg_.name);
-      FASTMM_LOG_INFO("{}: position mode one-way", cfg_.name);
+      if (decode_position_mode(mode.body, dual).empty() && dual) {
+        if (!cfg_.one_way_mode)
+          return refuse(fmt::format(
+              "{}: the account is in hedge mode (dualSidePosition=true); binance_usdm needs "
+              "one-way mode. Switch it in the futures preferences (Position Mode: One-way), or set "
+              "one_way_mode = true in [venues.{}] to switch it at start",
+              cfg_.name,
+              cfg_.name));
+        if (std::string err = switch_to_one_way(); !err.empty()) return refuse(std::move(err));
+      } else {
+        FASTMM_LOG_INFO("{}: position mode one-way", cfg_.name);
+      }
     } else if (mode.status == 401 || mode.status == 400 || mode.status == 403) {
-      int code = 0;
-      std::string msg;
-      static_cast<void>(binance::decode_rest_error(mode.body, code, msg));
-      return fmt::format(
-          "{}: account check failed: HTTP {} code {} {}", cfg_.name, mode.status, code, msg);
+      return fmt::format("{}: account check failed: {}", cfg_.name, refused(mode));
     } else {
       FASTMM_LOG_WARN("{}: position mode unknown (HTTP {} {})",
                       cfg_.name,
@@ -404,7 +470,31 @@ std::string BinanceUsdmVenue::account_checks(const std::vector<Instrument*>& min
       // "Symbol Configuration": IP weight 5.
       const HttpReply sc = signed_get("/fapi/v1/symbolConfig", inst->symbol.view(), 5);
       std::vector<SymbolConfig> configs;
-      if (sc.ok() && decode_symbol_config(sc.body, configs).empty() && !configs.empty()) {
+      const bool known =
+          sc.ok() && decode_symbol_config(sc.body, configs).empty() && !configs.empty();
+      if (cfg_.leverage > 0 && (!known || configs.front().leverage != cfg_.leverage)) {
+        RestRequest rr;
+        if (!BinanceUsdmOrderEncoder::encode_rest_leverage(signer_,
+                                                           cfg_.recv_window_ms,
+                                                           inst->symbol.view(),
+                                                           cfg_.leverage,
+                                                           venue_time_ms(),
+                                                           rr))
+          return fmt::format(
+              "{}: {} leverage request could not be encoded", cfg_.name, inst->symbol.view());
+        const HttpReply r = send(rr);
+        if (!r.ok())
+          return refuse(fmt::format("{}: setting {} leverage to {}x failed: {}",
+                                    cfg_.name,
+                                    inst->symbol.view(),
+                                    cfg_.leverage,
+                                    refused(r)));
+        FASTMM_LOG_INFO("{}: {} leverage set to {}x{}",
+                        cfg_.name,
+                        inst->symbol.view(),
+                        cfg_.leverage,
+                        known ? fmt::format(" (was {}x)", configs.front().leverage) : "");
+      } else if (known) {
         FASTMM_LOG_INFO("{}: {} leverage {}x, margin {} (account settings, not changed)",
                         cfg_.name,
                         inst->symbol.view(),
@@ -2238,6 +2328,11 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
       std::max<std::int64_t>(0, x.integer("dead_mans_switch_ms", c.dead_mans_switch_ms));
   c.post_only_rpi = x.flag("post_only_rpi", false);
   c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
+  c.one_way_mode = x.flag("one_way_mode", false);
+  const std::int64_t leverage = x.integer("leverage", 0);
+  if (leverage < 0 || leverage > 125)
+    throw std::invalid_argument("venue '" + v.name + "': leverage must be 0 to 125");
+  c.leverage = static_cast<int>(leverage);
   if (c.ws_url.empty() || c.rest_url.empty())
     throw std::invalid_argument("venue '" + v.name + "': binance_usdm needs ws_url and rest_url");
   static_cast<void>(url_root(c.ws_url));  // throws on a bad URL

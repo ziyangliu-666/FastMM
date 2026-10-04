@@ -5,6 +5,9 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `binance_usdm`: `one_way_mode = true` switches an account in hedge mode to one-way mode at start
+  when it holds no position and no open order; `leverage = <n>` sets every enabled symbol's
+  leverage at start. Both are off by default; nothing on the account changes unless asked.
 - backtest: `journal:…,remap=1` maps a recording's instruments to the configuration's by symbol
   (and sets the events' venue to the configured instrument's), so recordings of different
   instrument sets merge; a symbol the configuration lacks is dropped and counted in the report.
@@ -81,6 +84,10 @@ All notable changes are recorded here (Keep a Changelog format).
   fields dropped. Every refusal now says which check failed (`HeaderCorrupt (the header is N
   bytes, M with this build's 128-byte instruments ...)`, `BadVersion (format version 4, this build
   reads 1 to 3 ...)`), in `fastmm-data`, `fastmm-replay` and the journal sources.
+- `binance_usdm`: an account in hedge mode exits 3 (a setting to fix), not 4, like Bybit and Gate,
+  and the message names the setting and `one_way_mode`. Instruments in several settlement
+  currencies with `max_loss` and no `[accounting]` print the `[accounting]` and `[accounting.fx]`
+  lines to add.
 - `--data "a;b"` (`MergedSource`) copied every event it yielded into an EventBuf, 8 KiB, the size
   of a 256-level book: a journal's depth snapshot with more levels (Binance USDⓈ-M records up to
   1000 a side) was written past the end of the source, which glibc reported as `corrupted

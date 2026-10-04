@@ -45,7 +45,7 @@ Messages are quoted as the code writes them; `<...>` stands for a value, and `<v
 | `<venue>: <symbol> status is <status> (not TRADING): disabled` (Binance), `(not Trading)` (Bybit), `<venue>: <symbol> is not open for trading (state <state>): disabled` (Deribit) | The symbol is halted, delisted or expired | Choose another symbol |
 | `<venue>: <symbol> not in reference data; keeping the configured values` (Deribit) | The instrument name does not exist, typically an expired option | Replace the `[[instruments]]` with live names ([Run on a testnet](run-on-testnet.md#deribit-testnet)) |
 | `<venue>: <symbol> does not allow LIMIT_MAKER (post-only)` (Binance) | Post-only orders on this symbol are rejected | Choose another symbol, or quote without `post_only` |
-| `<venue>: the account is in hedge mode (dualSidePosition=true); binance_usdm needs one-way mode` (stderr, exit 4), `<venue>: <symbol> is in hedge mode (positionIdx <n>); the bybit connector trades one-way mode only: ...` (stderr, exit 3) | The connectors trade one-way positions only | Switch the account or the symbol to one-way mode on the venue |
+| `<venue>: the account is in hedge mode (dualSidePosition=true); binance_usdm needs one-way mode. ...` (stderr, exit 3), `<venue>: <symbol> is in hedge mode (positionIdx <n>); the bybit connector trades one-way mode only: ...` (stderr, exit 3) | The connectors trade one-way positions only | Switch the account or the symbol to one-way mode on the venue; on Binance USDⓈ-M, `one_way_mode = true` in the venue section does it at start when the account holds no position and no open order |
 
 ## Clock
 

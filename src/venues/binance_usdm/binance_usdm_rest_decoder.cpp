@@ -151,6 +151,15 @@ std::string decode_position_mode(std::string_view json, bool& dual_side_position
   return {};
 }
 
+std::string decode_open_order_count(std::string_view json, std::size_t& count) {
+  dom::parser parser;
+  dom::array arr;
+  if (parser.parse(sj::padded_string(json)).get(arr) != sj::SUCCESS)
+    return "openOrders: expected an array";
+  count = arr.size();
+  return {};
+}
+
 std::string decode_symbol_config(std::string_view json, std::vector<SymbolConfig>& out) {
   dom::parser parser;
   dom::array arr;

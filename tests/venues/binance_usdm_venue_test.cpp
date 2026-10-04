@@ -21,6 +21,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 
 using namespace fastmm;
 using namespace fastmm::venues;
@@ -102,7 +103,7 @@ std::string ws_result(const std::string& id, const std::string& result) {
 struct Harness {
   FakeVenueServer srv;
   std::string exchange_info = fastmm::test::fixture("binance_usdm/exchange_info.json");
-  bool hedge_mode = false;  // set before start
+  std::atomic<bool> hedge_mode{false};  // POST /fapi/v1/positionSide/dual sets it
   std::atomic<int> depth_requests{0};
   std::atomic<std::uint64_t> depth_last_update_id{100};  // the snapshot's lastUpdateId
   std::atomic<int> listen_keys{0};
@@ -151,6 +152,13 @@ struct Harness {
     const std::lock_guard<std::mutex> lock(trades_mu);
     account = std::move(body);
   }
+  // GET /fapi/v3/positionRisk answer (trades_mu); the default holds BTCUSDT and ETHUSDT.
+  std::string position_risk =
+      R"([{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0.002","entryPrice":"70000.0","markPrice":"70000.1","marginAsset":"USDT"},{"symbol":"ETHUSDT","positionSide":"BOTH","positionAmt":"1.0","entryPrice":"2400.0"}])";
+  void set_position_risk(std::string body) {
+    const std::lock_guard<std::mutex> lock(trades_mu);
+    position_risk = std::move(body);
+  }
   std::string order_reply;  // GET /fapi/v1/order answer; empty: -2013 (trades_mu)
   void set_order_reply(std::string body) {
     const std::lock_guard<std::mutex> lock(trades_mu);
@@ -198,9 +206,28 @@ struct Harness {
         return net::HttpServerResponse::json(200, body);
       });
     };
-    signed_route("GET",
-                 "/fapi/v1/positionSide/dual",
-                 hedge_mode ? R"({"dualSidePosition":true})" : R"({"dualSidePosition":false})");
+    srv.route("GET", "/fapi/v1/positionSide/dual", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("/fapi/v1/positionSide/dual", std::string(r.query));
+      return net::HttpServerResponse::json(
+          200,
+          hedge_mode.load() ? R"({"dualSidePosition":true})" : R"({"dualSidePosition":false})");
+    });
+    srv.route("POST", "/fapi/v1/positionSide/dual", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("POST positionSide/dual", std::string(r.query));
+      hedge_mode = r.query.find("dualSidePosition=true") != std::string_view::npos;
+      return net::HttpServerResponse::json(200, R"({"code":200,"msg":"success"})");
+    });
+    srv.route("POST", "/fapi/v1/leverage", [this](const net::HttpRequest& r) {
+      if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
+      srv.record("POST leverage", std::string(r.query));
+      if (r.query.find("leverage=125") != std::string_view::npos)
+        return net::HttpServerResponse::json(400,
+                                             R"({"code":-4028,"msg":"Leverage 125 is not valid"})");
+      return net::HttpServerResponse::json(
+          200, R"({"leverage":5,"maxNotionalValue":"1000000","symbol":"BTCUSDT"})");
+    });
     signed_route(
         "GET",
         "/fapi/v1/symbolConfig",
@@ -276,9 +303,8 @@ struct Harness {
     srv.route("GET", "/fapi/v3/positionRisk", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey || !signed_ok(r.query)) ++unsigned_requests;
       ++reconcile_requests;
-      return net::HttpServerResponse::json(
-          200,
-          R"([{"symbol":"BTCUSDT","positionSide":"BOTH","positionAmt":"0.002","entryPrice":"70000.0","markPrice":"70000.1","marginAsset":"USDT"},{"symbol":"ETHUSDT","positionSide":"BOTH","positionAmt":"1.0","entryPrice":"2400.0"}])");
+      const std::lock_guard<std::mutex> lock(trades_mu);
+      return net::HttpServerResponse::json(200, position_risk);
     });
     srv.route("POST", "/fapi/v1/listenKey", [this](const net::HttpRequest& r) {
       if (r.header("X-MBX-APIKEY") != kKey) ++unsigned_requests;
@@ -676,6 +702,79 @@ TEST_CASE("binance_usdm.venue: dry run opens market data only, hedge mode refuse
     REQUIRE_FALSE(loaded);
     CHECK(loaded.error().find("hedge mode") != std::string::npos);
     h.srv.stop();
+  }
+}
+
+TEST_CASE("binance_usdm.venue: one_way_mode and leverage change the account only when asked") {
+  const std::string flat_hedge =
+      R"([{"symbol":"BTCUSDT","positionSide":"LONG","positionAmt":"0","entryPrice":"0.0"},{"symbol":"BTCUSDT","positionSide":"SHORT","positionAmt":"0","entryPrice":"0.0"}])";
+  const auto load = [](Harness& h, bool one_way, int leverage) {
+    InstrumentTable instruments;
+    REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+    BinanceUsdmVenueConfig cfg = h.config(false);
+    cfg.one_way_mode = one_way;
+    cfg.leverage = leverage;
+    BinanceUsdmVenue venue(VenueId{0}, std::move(cfg));
+    auto loaded = venue.load_reference_data(instruments);
+    return std::make_pair(loaded ? std::string{} : loaded.error(),
+                          venue.refused_account_settings());
+  };
+  SUBCASE("off: a one-way account is not changed, a hedge-mode one is refused as a setting") {
+    Harness h;
+    CHECK(load(h, false, 0).first.empty());
+    Harness hedge(/*hedge=*/true);
+    hedge.set_position_risk(flat_hedge);
+    const auto [err, refused] = load(hedge, false, 0);
+    CHECK(err.find("one_way_mode = true in [venues.fake-usdm]") != std::string::npos);
+    CHECK(refused);  // fastmm-live exits 3, not 4
+    for (Harness* x : {&h, &hedge}) {
+      CHECK(x->srv.frames("POST positionSide/dual").empty());
+      CHECK(x->srv.frames("POST leverage").empty());
+    }
+    CHECK(hedge.hedge_mode.load());
+  }
+  SUBCASE("one_way_mode switches a flat account with no open order") {
+    Harness h(/*hedge=*/true);
+    h.set_position_risk(flat_hedge);
+    const auto [err, refused] = load(h, true, 0);
+    CHECK_MESSAGE(err.empty(), err);
+    CHECK_FALSE(refused);
+    const auto posts = h.srv.frames("POST positionSide/dual");
+    REQUIRE(posts.size() == 1);
+    CHECK(posts[0].starts_with("dualSidePosition=false&recvWindow="));
+    CHECK_FALSE(h.hedge_mode.load());
+    CHECK(h.unsigned_requests.load() == 0);
+  }
+  SUBCASE("one_way_mode leaves an account with a position or an open order alone") {
+    Harness h(/*hedge=*/true);  // the default positionRisk holds BTCUSDT and ETHUSDT
+    const auto [err, refused] = load(h, true, 0);
+    CHECK(err.find("open positions (BTCUSDT BOTH 0.002, ETHUSDT BOTH 1)") != std::string::npos);
+    CHECK(refused);
+    Harness o(/*hedge=*/true);
+    o.set_position_risk(flat_hedge);
+    o.set_open_orders(R"([{"orderId":1,"symbol":"BTCUSDT"}])");
+    const auto [err2, refused2] = load(o, true, 0);
+    CHECK(err2.find("1 open order(s)") != std::string::npos);
+    CHECK(refused2);
+    for (Harness* x : {&h, &o}) {
+      CHECK(x->srv.frames("POST positionSide/dual").empty());
+      CHECK(x->hedge_mode.load());
+    }
+  }
+  SUBCASE("leverage is set on a symbol whose leverage differs, and a refusal stops the start") {
+    Harness h;  // symbolConfig answers leverage 20
+    CHECK(load(h, false, 20).first.empty());
+    CHECK(h.srv.frames("POST leverage").empty());
+    CHECK(load(h, false, 5).first.empty());
+    const auto posts = h.srv.frames("POST leverage");
+    REQUIRE(posts.size() == 1);
+    CHECK(posts[0].starts_with("leverage=5&recvWindow="));
+    CHECK(posts[0].find("&symbol=BTCUSDT&timestamp=") != std::string::npos);
+    const auto [err, refused] = load(h, false, 125);
+    CHECK(err.find("setting BTCUSDT leverage to 125x failed: HTTP 400 code -4028") !=
+          std::string::npos);
+    CHECK(refused);
+    CHECK(h.unsigned_requests.load() == 0);
   }
 }
 

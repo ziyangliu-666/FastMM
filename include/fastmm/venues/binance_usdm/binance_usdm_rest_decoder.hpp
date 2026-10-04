@@ -8,6 +8,7 @@
 //                                  LOT_SIZE.{stepSize,minQty,maxQty}, MIN_NOTIONAL.notional
 //   GET /fapi/v3/positionRisk      [{symbol,positionSide,positionAmt,entryPrice,...}]
 //   GET /fapi/v1/positionSide/dual {"dualSidePosition":bool}
+//   GET /fapi/v1/openOrders        [{...}] (counted only)
 //   GET /fapi/v1/symbolConfig      [{symbol,marginType,isAutoAddMargin,leverage,maxNotionalValue}]
 //   GET /fapi/v1/income            [{symbol,incomeType,income,asset,info,time,tranId,tradeId}]
 //   GET /fapi/v3/account           totals and assets[] ("Account Information V3")
@@ -17,6 +18,7 @@
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/venues/binance/binance_rest_decoder.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -60,6 +62,9 @@ struct PositionRecord {
 std::string decode_position_risk(std::string_view json, std::vector<PositionRecord>& out);
 
 std::string decode_position_mode(std::string_view json, bool& dual_side_position);
+
+// GET /fapi/v1/openOrders: only how many there are.
+std::string decode_open_order_count(std::string_view json, std::size_t& count);
 
 struct SymbolConfig {
   std::string symbol;

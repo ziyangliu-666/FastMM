@@ -822,16 +822,31 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     const std::string sa(mix.first->symbol.view());
     const std::string sb(mix.other->symbol.view());
     if (cfg.risk_limits().max_loss.is_positive()) {
+      const char* ca = a.empty() ? "?" : a.c_str();
+      const char* cb = b.empty() ? "?" : b.c_str();
       std::fprintf(stderr,
                    "%s: instruments settle in different currencies (%s in %s, %s in %s) and "
-                   "[risk] max_loss is one number in one currency. Set [accounting] "
-                   "reporting_currency and an [accounting.fx] source per other currency, split "
-                   "them into one session per settlement currency, or unset max_loss.\n",
+                   "[risk] max_loss is one number in one currency. Add\n\n"
+                   "  [accounting]\n"
+                   "  reporting_currency = \"%s\"\n\n"
+                   "  [accounting.fx]\n"
+                   "  %s = \"<venue>:<symbol>\"\n\n"
+                   "where <symbol> is an [[instruments]] entry whose mid prices %s in %s (or %s in "
+                   "%s; enabled = false if it is not traded), one line per settlement currency "
+                   "other than %s; or run one session per settlement currency; or unset [risk] "
+                   "max_loss.\n",
                    prog,
                    sa.c_str(),
-                   a.empty() ? "?" : a.c_str(),
+                   ca,
                    sb.c_str(),
-                   b.empty() ? "?" : b.c_str());
+                   cb,
+                   ca,
+                   cb,
+                   cb,
+                   ca,
+                   ca,
+                   cb,
+                   ca);
       return kExitConfig;
     }
     FASTMM_LOG_WARN(

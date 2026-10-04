@@ -46,8 +46,10 @@
 // 8 hours. During the session the parser follows the next funding time: the step it takes at a
 // funding is the interval in force (binance_usdm_md_parser.hpp).
 //
-// Leverage and margin mode are not managed: load_reference_data() logs the position mode,
-// leverage, margin type and balances, and refuses to start in hedge mode.
+// Margin mode is not managed: load_reference_data() logs the position mode, leverage, margin type
+// and balances, and refuses to start in hedge mode. Two opt-in keys change the account first:
+// one_way_mode (POST /fapi/v1/positionSide/dual, only with no position and no open order) and
+// leverage (POST /fapi/v1/leverage per enabled symbol).
 //
 // What this connector shares with Binance Spot, and what it does not. Shared, because Binance
 // documents one contract for both: request signing and the WS API frame
@@ -127,6 +129,12 @@ struct BinanceUsdmVenueConfig {
   // (60 s window, 4 symbols: 120 weight per minute, 5 %).
   std::int64_t dead_mans_switch_ms = 60'000;
   bool allow_offline_reference_data = false;
+  // Account settings load_reference_data() may change; by default it changes none. one_way_mode:
+  // an account in hedge mode is switched to one-way mode when it holds no position and no open
+  // order (otherwise the start still fails). leverage > 0: every enabled symbol whose leverage
+  // differs is set to it.
+  bool one_way_mode = false;
+  int leverage = 0;
   // Post-only orders are sent with timeInForce RPI instead of GTX (see the order encoder). The
   // venue does not modify an RPI order, so use it with supports_replace = false.
   bool post_only_rpi = false;
@@ -161,6 +169,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] std::string_view name() const noexcept override { return cfg_.name; }
   [[nodiscard]] VenueCaps caps() const noexcept override;
   Result<void, std::string> load_reference_data(InstrumentTable& instruments) override;
+  [[nodiscard]] bool refused_account_settings() const noexcept override {
+    return refused_account_settings_;
+  }
   void attach(const SymbolTable& symbols,
               const InstrumentTable& instruments,
               EventSink& md_sink,
@@ -419,6 +430,7 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   bool rest_hard_stopped_ = false;
   // Multi-Assets Mode: the margin is the account's, in USD (the kAccount balance row).
   bool multi_assets_ = false;
+  bool refused_account_settings_ = false;  // hedge mode, or a setting one_way_mode/leverage failed
   ConnState md_state_ = ConnState::Disconnected;
   ConnState trades_state_ = ConnState::Disconnected;
   ConnState user_state_ = ConnState::Disconnected;
@@ -438,8 +450,9 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
 
 // Builds a BinanceUsdmVenueConfig from a [venues.<name>] section. Extra keys: ws_private_url,
 // order_api ("ws" | "rest"), depth_limit, stale_ms, dead_ms, position_from_account_update,
-// allow_offline_reference_data, cancel_on_order_channel_loss, emit_ack_from_response. Throws
-// std::invalid_argument when key_type = "ed25519" has no parsable private key (live sessions).
+// allow_offline_reference_data, cancel_on_order_channel_loss, emit_ack_from_response,
+// one_way_mode, leverage. Throws std::invalid_argument when key_type = "ed25519" has no parsable
+// private key (live sessions) or leverage is outside 0 to 125.
 BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_run);
 
 }  // namespace fastmm::venues::binance_usdm

@@ -221,6 +221,34 @@ TEST_CASE("binance_usdm.encoder: REST requests sign the exact query sent") {
   CHECK(mod.query.view().starts_with("orderId=8886774&price=76990&quantity=0.001&"));
 }
 
+TEST_CASE("binance_usdm.encoder: position mode and leverage are signed POSTs") {
+  const Signer s = signer();
+  RestRequest pm;
+  REQUIRE(BinanceUsdmOrderEncoder::encode_rest_position_mode(s, 5000, false, kTs, pm));
+  CHECK(pm.method == "POST");
+  CHECK(pm.path == "/fapi/v1/positionSide/dual");
+  CHECK(pm.weight == 1);
+  const std::string pm_query = "dualSidePosition=false&recvWindow=5000&timestamp=1789467600000";
+  CHECK(pm.query.view() == pm_query + "&signature=" + hmac(pm_query));
+
+  RestRequest lv;
+  REQUIRE(BinanceUsdmOrderEncoder::encode_rest_leverage(s, 5000, "BTCUSDT", 5, kTs, lv));
+  CHECK(lv.method == "POST");
+  CHECK(lv.path == "/fapi/v1/leverage");
+  CHECK(lv.weight == 1);
+  const std::string lv_query = "leverage=5&recvWindow=5000&symbol=BTCUSDT&timestamp=1789467600000";
+  CHECK(lv.query.view() == lv_query + "&signature=" + hmac(lv_query));
+  CHECK_FALSE(BinanceUsdmOrderEncoder::encode_rest_leverage(s, 5000, "BTCUSDT", 0, kTs, lv));
+  CHECK_FALSE(BinanceUsdmOrderEncoder::encode_rest_leverage(s, 5000, {}, 5, kTs, lv));
+
+  std::size_t n = 9;
+  REQUIRE(decode_open_order_count("[]", n).empty());
+  CHECK(n == 0);
+  REQUIRE(decode_open_order_count(R"([{"orderId":1},{"orderId":2}])", n).empty());
+  CHECK(n == 2);
+  CHECK_FALSE(decode_open_order_count("{}", n).empty());
+}
+
 TEST_CASE("binance_usdm.error_map: documented codes map to reasons and actions") {
   struct Case {
     int code;

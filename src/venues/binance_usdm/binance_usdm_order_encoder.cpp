@@ -336,4 +336,39 @@ bool BinanceUsdmOrderEncoder::encode_rest_signed_get(const Signer& signer,
   return finish_rest(p, signer, out);
 }
 
+bool BinanceUsdmOrderEncoder::encode_rest_position_mode(const Signer& signer,
+                                                        int recv_window_ms,
+                                                        bool dual,
+                                                        std::int64_t timestamp_ms,
+                                                        RestRequest& out) {
+  ParamList p;  // sorted by name
+  p.add("dualSidePosition", dual ? "true" : "false");
+  p.add_int("recvWindow", recv_window_ms);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "POST";
+  out.path = "/fapi/v1/positionSide/dual";
+  out.weight = 1;
+  out.is_order = false;
+  return finish_rest(p, signer, out);
+}
+
+bool BinanceUsdmOrderEncoder::encode_rest_leverage(const Signer& signer,
+                                                   int recv_window_ms,
+                                                   std::string_view symbol,
+                                                   int leverage,
+                                                   std::int64_t timestamp_ms,
+                                                   RestRequest& out) {
+  if (symbol.empty() || leverage < 1) return false;
+  ParamList p;  // sorted by name
+  p.add_int("leverage", leverage);
+  p.add_int("recvWindow", recv_window_ms);
+  p.add("symbol", symbol);
+  p.add_int("timestamp", timestamp_ms);
+  out.method = "POST";
+  out.path = "/fapi/v1/leverage";
+  out.weight = 1;
+  out.is_order = false;
+  return finish_rest(p, signer, out);
+}
+
 }  // namespace fastmm::venues::binance_usdm

@@ -182,6 +182,8 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
 | `ws_private_url` | string |  | private WebSocket URL; empty = derived from ws_url |
 | `position_from_account_update` | boolean |  | correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
+| `one_way_mode` | boolean |  | at start, switch an account in hedge mode to one-way mode when it holds no position and no open order (default false: a hedge-mode account refuses to start) |
+| `leverage` | integer |  | at start, set this leverage (1 to 125) on every enabled symbol; 0 leaves the account's (default 0) |
 <!-- END config-keys -->
 
 #### `bybit`

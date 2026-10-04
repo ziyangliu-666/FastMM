@@ -63,6 +63,16 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      false,
      "correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default "
      "true)"},
+    {"one_way_mode",
+     KeyType::Bool,
+     false,
+     "at start, switch an account in hedge mode to one-way mode when it holds no position and no "
+     "open order (default false: a hedge-mode account refuses to start)"},
+    {"leverage",
+     KeyType::Int,
+     false,
+     "at start, set this leverage (1 to 125) on every enabled symbol; 0 leaves the account's "
+     "(default 0)"},
 };
 
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
