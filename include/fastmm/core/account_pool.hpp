@@ -12,6 +12,7 @@
 // sim::SimTransportConfig::pools; a configuration without pools leaves it inactive.
 #include "fastmm/core/strong_id.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -68,10 +69,7 @@ struct PoolPlan {
   [[nodiscard]] bool pooled(VenueId primary) const noexcept {
     if (!active || primary.value >= kVenues) return false;
     if (primary_of[primary.value].valid()) return true;
-    for (const VenueId p : primary_of) {
-      if (p == primary) return true;
-    }
-    return false;
+    return std::ranges::any_of(primary_of, [primary](VenueId p) { return p == primary; });
   }
   // The accounts of `primary`'s pool, `primary` first; just `primary` where it has none.
   [[nodiscard]] PoolMembers members(VenueId primary) const noexcept {

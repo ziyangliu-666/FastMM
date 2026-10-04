@@ -334,18 +334,18 @@ class SimTransport final : public MatchingSink {
           lat(c.order_out, c.ack_in, c.md_in, seed),
           md_wire(t.md_wire_bytes),
           order_wire(t.order_wire_bytes),
-          md_recorded_arrival(c.md_recorded_arrival),
           orders_10s{seconds(10).ns, c.orders_10s},
-          orders_1d{seconds(86'400).ns, c.orders_1d} {}
+          orders_1d{seconds(86'400).ns, c.orders_1d},
+          md_recorded_arrival(c.md_recorded_arrival) {}
     VenueId id;
     LatencyModel lat;
     MsgRing md_wire;
     MsgRing order_wire;
     Timestamp last_md_arrival{};
     Timestamp last_order_arrival{};
-    bool md_recorded_arrival;
     OrderWindow orders_10s;  // SimVenueConfig::orders_10s / orders_1d
     OrderWindow orders_1d;
+    bool md_recorded_arrival;
     [[nodiscard]] bool limited() const noexcept {
       return orders_10s.limit > 0 || orders_1d.limit > 0;
     }
