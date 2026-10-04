@@ -80,6 +80,7 @@ Qty non_negative(Qty q) noexcept {
 BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
     : id_(id),
       cfg_(std::move(cfg)),
+      md_venue_(cfg_.pool_of.valid() ? cfg_.pool_of : id),
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold),
       dms_(cfg_.dry_run ? 0 : cfg_.dead_mans_switch_ms) {
@@ -147,7 +148,7 @@ std::string BinanceUsdmVenue::api_headers() const {
 }
 
 InstrumentId BinanceUsdmVenue::instrument_of(std::string_view symbol) const noexcept {
-  return symbols_ != nullptr ? symbols_->find(id_, symbol) : InstrumentId::invalid();
+  return symbols_ != nullptr ? symbols_->find(md_venue_, symbol) : InstrumentId::invalid();
 }
 
 std::string BinanceUsdmVenue::stream_root() const {
@@ -242,7 +243,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
   std::vector<Instrument*> mine;
   std::vector<std::string> wanted;
   for (const Instrument& inst : instruments) {
-    if (inst.venue != id_) continue;
+    if (inst.venue != md_venue_) continue;  // a pool member: the primary's instruments
     mine.push_back(&instruments.get(inst.id));
     wanted.emplace_back(inst.symbol.view());
   }
@@ -465,23 +466,27 @@ void BinanceUsdmVenue::attach(const SymbolTable& symbols,
       cfg_.min_snapshot_interval_ns);
   md_feed_->set_log_name(cfg_.name);
   user_parser_ = std::make_unique<BinanceUsdmUserParser>(symbols, instruments, id_);
+  user_parser_->set_symbol_venue(md_venue_);
   encoder_ = std::make_unique<BinanceUsdmOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   encoder_->set_post_only_rpi(cfg_.post_only_rpi);
   ws_api_decoder_ = std::make_unique<binance::BinanceWsApiDecoder>();
-  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments, md_venue_);
 }
 
+// A pool member subscribes the primary's instruments for its order path and nothing for market
+// data: it has no books.
 void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
   for (InstrumentId id : instruments) {
-    if (symbols_ == nullptr || symbols_->venue_of(id) != id_) continue;
+    if (symbols_ == nullptr || symbols_->venue_of(id) != md_venue_) continue;
     if (std::find(subscribed_.begin(), subscribed_.end(), id) != subscribed_.end()) continue;
     subscribed_.push_back(id);
+    if (pool_member()) continue;
     if (md_feed_ && md_feed_->add_instrument(id) && instruments_ != nullptr &&
         instruments_->get(id).asset_class == AssetClass::Perpetual)
       md_feed_->add_perpetual(id, funding_interval_of(id));
   }
   exec_replay_.set_streams(subscribed_.size());
-  stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  stats_.books_total = pool_member() ? 0 : static_cast<std::uint32_t>(subscribed_.size());
   depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_) {
@@ -522,8 +527,10 @@ void BinanceUsdmVenue::connect(net::Reactor& reactor) {
   }
   open_rest();
   request_server_time();
-  open_md();
-  open_trades();
+  if (!pool_member()) {  // a member reads no market data: the primary has the books
+    open_md();
+    open_trades();
+  }
   if (!cfg_.dry_run) {
     if (cfg_.ws_order_api) open_order();
     if (signer_.usable()) request_listen_key();
@@ -534,11 +541,12 @@ void BinanceUsdmVenue::connect(net::Reactor& reactor) {
     housekeeping_timer_ = net::kInvalidTimer;
     on_timer(now_ns());
   });
-  FASTMM_LOG_INFO("{}: connecting (dry_run={}, ws_orders={}, user_stream={})",
+  FASTMM_LOG_INFO("{}: connecting (dry_run={}, ws_orders={}, user_stream={}, pool_member={})",
                   cfg_.name,
                   cfg_.dry_run,
                   cfg_.ws_order_api,
-                  !cfg_.dry_run && signer_.usable());
+                  !cfg_.dry_run && signer_.usable(),
+                  pool_member());
 }
 
 void BinanceUsdmVenue::disconnect() {

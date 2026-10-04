@@ -111,7 +111,10 @@ struct BinanceUsdmVenueConfig {
   int recv_window_ms = kDefaultRecvWindowMs;
   bool insecure_tls = false;
   std::string ca_file;
-  bool dry_run = false;      // public market data only: no user/order channels
+  bool dry_run = false;  // public market data only: no user/order channels
+  // A pool member ([venues.<x>] pool_of): the venue whose instruments this account trades; order,
+  // user and REST sessions only, no market data (binance/binance_venue.hpp has the whole of it).
+  VenueId pool_of{};
   bool ws_order_api = true;  // false: REST order entry only
   bool emit_ack_from_response = true;
   bool position_from_account_update = true;  // correct the engine position (see above)
@@ -326,6 +329,7 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
     static_cast<BinanceUsdmVenue*>(ctx)->request_snapshot(id);
   }
   [[nodiscard]] InstrumentId instrument_of(std::string_view symbol) const noexcept;
+  [[nodiscard]] bool pool_member() const noexcept { return cfg_.pool_of.valid(); }
   [[nodiscard]] std::string api_headers() const;
   [[nodiscard]] std::string stream_root() const;
   [[nodiscard]] std::string private_root() const;
@@ -341,6 +345,7 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
 
   VenueId id_;
   BinanceUsdmVenueConfig cfg_;
+  VenueId md_venue_;  // the instruments' venue: id_, or the pool's primary
   Signer signer_;
   const SymbolTable* symbols_ = nullptr;
   const InstrumentTable* instruments_ = nullptr;

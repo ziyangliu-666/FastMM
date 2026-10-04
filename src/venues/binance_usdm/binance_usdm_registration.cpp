@@ -68,6 +68,7 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
   binance_usdm::BinanceUsdmVenueConfig c = binance_usdm::make_binance_usdm_config(s, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.pool_of = opts.pool_of;
   return std::make_unique<binance_usdm::BinanceUsdmVenue>(id, std::move(c));
 }
 
@@ -83,7 +84,8 @@ void register_binance_usdm_venue(VenueRegistry& r) {
                                     .positions = true,
                                     .polls = false,
                                     // GET /fapi/v1/userTrades
-                                    .executions = true},
+                                    .executions = true,
+                                    .account_pools = true},
                            .make = &make}));
 }
 

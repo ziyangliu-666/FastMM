@@ -154,7 +154,7 @@ UserDecodeResult BinanceUserParser::decode(std::string_view json,
   if (type == "executionReport") {
     ExecReport x;
     if (!read_exec_report(ev, x)) return malformed();
-    const InstrumentId inst = symbols_.find(venue_, x.symbol);
+    const InstrumentId inst = symbols_.find(symbol_venue_, x.symbol);
     if (!inst.valid()) {
       ++stats_.unknown_symbol;
       r.status = ParseStatus::UnknownSymbol;

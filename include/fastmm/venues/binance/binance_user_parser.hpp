@@ -67,6 +67,9 @@ class BinanceUserParser {
   // The assets outboundAccountPosition reports as BalanceMsg (none while unset). Must outlive
   // the parser.
   void set_balance_assets(const VenueAssets* assets) noexcept { assets_ = assets; }
+  // The venue the symbols are looked up on: a pool member's primary (the events still carry the
+  // member's own id).
+  void set_symbol_venue(VenueId v) noexcept { symbol_venue_ = v; }
 
   [[nodiscard]] const UserParserStats& stats() const noexcept { return stats_; }
 
@@ -76,6 +79,7 @@ class BinanceUserParser {
   const SymbolTable& symbols_;
   const InstrumentTable& instruments_;
   VenueId venue_;
+  VenueId symbol_venue_ = venue_;
   const VenueAssets* assets_ = nullptr;
   UserParserStats stats_;
 };

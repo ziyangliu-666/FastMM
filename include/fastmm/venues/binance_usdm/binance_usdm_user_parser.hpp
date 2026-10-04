@@ -82,6 +82,9 @@ class BinanceUsdmUserParser {
                           std::span<std::byte> out) noexcept;
 
   [[nodiscard]] const UserParserStats& stats() const noexcept { return stats_; }
+  // The venue the symbols are looked up on: a pool member's primary (the events still carry the
+  // member's own id).
+  void set_symbol_venue(VenueId v) noexcept { symbol_venue_ = v; }
 
  private:
   struct Impl;
@@ -89,6 +92,7 @@ class BinanceUsdmUserParser {
   const SymbolTable& symbols_;
   const InstrumentTable& instruments_;
   VenueId venue_;
+  VenueId symbol_venue_ = venue_;
   UserParserStats stats_;
 };
 

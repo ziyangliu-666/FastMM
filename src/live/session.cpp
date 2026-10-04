@@ -1053,6 +1053,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   deps.engine.underlying = underlying_plan;
   deps.engine.quoting_enabled = !opts.dry_run;
   deps.engine.await_reconcile = await_venues;
+  deps.engine.pools = cfg.pool_plan();
+  for (const VenueSection& v : cfg.venues) {
+    if (!v.pool_of.empty())
+      FASTMM_LOG_INFO("venue {} is an account of pool {}: orders, no market data of its own",
+                      v.name,
+                      v.pool_of);
+  }
   deps.instruments = &instruments;
   deps.params = cfg.strategy.params;
 

@@ -27,11 +27,13 @@ ReconcileDriver::ReconcileDriver(ReconcileHooks& hooks, SentWatermark& sent)
 void ReconcileDriver::attach(std::string_view name,
                              VenueId venue,
                              EventSink* sink,
-                             const InstrumentTable* instruments) {
+                             const InstrumentTable* instruments,
+                             VenueId instruments_venue) {
   name_ = std::string(name);
   venue_ = venue;
   sink_ = sink;
-  if (instruments != nullptr) assets_.build(*instruments, venue);
+  if (instruments != nullptr)
+    assets_.build(*instruments, instruments_venue.valid() ? instruments_venue : venue);
 }
 
 void ReconcileDriver::open(bool enabled) noexcept {

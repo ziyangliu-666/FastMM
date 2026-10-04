@@ -50,7 +50,11 @@ std::uint32_t depth_weight(int limit) noexcept {
 // ---- construction ---------------------------------------------------------------------------
 
 BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
-    : id_(id), cfg_(std::move(cfg)), signer_(cfg_.credentials), rate_(cfg_.rate_threshold) {
+    : id_(id),
+      cfg_(std::move(cfg)),
+      md_venue_(cfg_.pool_of.valid() ? cfg_.pool_of : id),
+      signer_(cfg_.credentials),
+      rate_(cfg_.rate_threshold) {
   if (cfg_.user_stream == UserStreamMode::Auto)
     cfg_.user_stream = signer_.usable() ? UserStreamMode::WsApi : UserStreamMode::None;
   if (cfg_.dry_run) cfg_.user_stream = UserStreamMode::None;
@@ -102,7 +106,7 @@ std::string BinanceVenue::api_headers() const {
 }
 
 InstrumentId BinanceVenue::instrument_of(std::string_view symbol) const noexcept {
-  return symbols_ != nullptr ? symbols_->find(id_, symbol) : InstrumentId::invalid();
+  return symbols_ != nullptr ? symbols_->find(md_venue_, symbol) : InstrumentId::invalid();
 }
 
 net::ConnectionConfig BinanceVenue::ws_config(const std::string& url, bool manual_subscribe) const {
@@ -124,9 +128,11 @@ net::ConnectionConfig BinanceVenue::ws_config(const std::string& url, bool manua
 // ---- reference data (blocking, main thread) -------------------------------------------------
 
 Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& instruments) {
+  // A pool member loads the primary's symbols too: the same filters, and its own rate limits and
+  // clock offset come with them.
   std::vector<Instrument*> mine;
   for (const Instrument& inst : instruments) {
-    if (inst.venue == id_) mine.push_back(&instruments.get(inst.id));
+    if (inst.venue == md_venue_) mine.push_back(&instruments.get(inst.id));
   }
   if (mine.empty()) return {};
   // GET /api/v3/exchangeInfo?symbols=["BTCUSDT","ETHUSDT"] (rest-api.md "Exchange
@@ -300,21 +306,24 @@ void BinanceVenue::attach(const SymbolTable& symbols,
                                       cfg_.md_format);
   md_feed_->set_log_name(cfg_.name);
   user_parser_ = std::make_unique<BinanceUserParser>(symbols, instruments, id_);
+  user_parser_->set_symbol_venue(md_venue_);
   encoder_ = std::make_unique<BinanceOrderEncoder>(signer_, symbols, cfg_.recv_window_ms);
   ws_api_decoder_ = std::make_unique<BinanceWsApiDecoder>();
-  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments);
+  reconcile_.attach(cfg_.name, id_, order_sink_, &instruments, md_venue_);
   user_parser_->set_balance_assets(&reconcile_.assets());
 }
 
+// A pool member subscribes the primary's instruments for its order path (execution replay,
+// cancel-all, open orders) and nothing for market data: it has no books.
 void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
   for (InstrumentId id : instruments) {
-    if (symbols_ == nullptr || symbols_->venue_of(id) != id_) continue;
+    if (symbols_ == nullptr || symbols_->venue_of(id) != md_venue_) continue;
     if (std::find(subscribed_.begin(), subscribed_.end(), id) != subscribed_.end()) continue;
     subscribed_.push_back(id);
-    if (md_feed_) md_feed_->add_instrument(id);
+    if (md_feed_ && !pool_member()) md_feed_->add_instrument(id);
   }
   exec_replay_.set_streams(subscribed_.size());
-  stats_.books_total = static_cast<std::uint32_t>(subscribed_.size());
+  stats_.books_total = pool_member() ? 0 : static_cast<std::uint32_t>(subscribed_.size());
   depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
   if (connected_ && md_conn_.opened()) {
@@ -357,7 +366,7 @@ void BinanceVenue::connect(net::Reactor& reactor) {
   }
   open_rest();
   request_server_time();
-  open_md();
+  if (!pool_member()) open_md();  // a member reads no market data: the primary has the books
   if (!cfg_.dry_run) {
     if (cfg_.ws_order_api) open_order();
     if (cfg_.user_stream == UserStreamMode::WsApi) {
@@ -372,11 +381,12 @@ void BinanceVenue::connect(net::Reactor& reactor) {
     housekeeping_timer_ = net::kInvalidTimer;
     on_timer(now_ns());
   });
-  FASTMM_LOG_INFO("{}: connecting (dry_run={}, user_stream={}, ws_orders={})",
+  FASTMM_LOG_INFO("{}: connecting (dry_run={}, user_stream={}, ws_orders={}, pool_member={})",
                   cfg_.name,
                   cfg_.dry_run,
                   static_cast<int>(cfg_.user_stream),
-                  cfg_.ws_order_api);
+                  cfg_.ws_order_api,
+                  pool_member());
 }
 
 void BinanceVenue::disconnect() {

@@ -1597,9 +1597,48 @@ class Engine {
 
   void on_position_update(const PositionUpdateMsg& m) noexcept {
     if (!instruments_.contains(m.hdr.instrument)) return;
-    positions_.set(m.hdr.instrument, m.qty, m.avg_px, instruments_.get(m.hdr.instrument));
+    set_reported_position(m.hdr.instrument, m.hdr.venue, m.qty, m.avg_px);
     emit_position(m.hdr.instrument);
     if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
+  }
+
+  // A venue's report of an instrument's position. With a pool each account reports its own, and
+  // the instrument's position is their sum (the average price weighted by size); without one the
+  // report is the position.
+  void set_reported_position(InstrumentId id, VenueId account, Qty qty, Price avg_px) noexcept {
+    const Instrument& inst = instruments_.get(id);
+    if (FASTMM_LIKELY(!pools_on_) || !cfg_.pools.pooled(inst.venue)) {
+      positions_.set(id, qty, avg_px, inst);
+      return;
+    }
+    const PoolMembers members = cfg_.pools.members(inst.venue);
+    std::size_t k = members.size();
+    for (std::size_t i = 0; i < members.size(); ++i) {
+      if (members[i] == account) k = i;
+    }
+    if (k == members.size()) {
+      positions_.set(id, qty, avg_px, inst);  // not an account of the pool: as reported
+      return;
+    }
+    if (pool_pos_ == nullptr) pool_pos_ = std::make_unique<PoolPositions>();
+    PoolPosition& mine = (*pool_pos_)[id.value][k];
+    mine.qty = qty;
+    mine.avg_px = avg_px;
+    mine.reported = true;
+    std::int64_t sum = 0;
+    Int128 weighted = 0;
+    std::int64_t size = 0;
+    for (std::size_t i = 0; i < members.size(); ++i) {
+      const PoolPosition& p = (*pool_pos_)[id.value][i];
+      if (!p.reported) continue;
+      sum += p.qty.raw;
+      const std::int64_t abs = p.qty.raw < 0 ? -p.qty.raw : p.qty.raw;
+      weighted += static_cast<Int128>(p.avg_px.raw) * abs;
+      size += abs;
+    }
+    const Price avg =
+        size > 0 ? Price::from_raw(static_cast<std::int64_t>(weighted / size)) : Price{};
+    positions_.set(id, Qty::from_raw(sum), avg, inst);
   }
 
   // ---- balances -------------------------------------------------------------------------------
@@ -1882,8 +1921,7 @@ class Engine {
       }
       case ReconcileMsg::Kind::Position:
         if (instruments_.contains(m.hdr.instrument)) {
-          positions_.set(
-              m.hdr.instrument, m.position_qty, m.avg_px, instruments_.get(m.hdr.instrument));
+          set_reported_position(m.hdr.instrument, m.hdr.venue, m.position_qty, m.avg_px);
           emit_position(m.hdr.instrument);  // a session killed before it trades keeps it too
           if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
         }
@@ -2873,6 +2911,15 @@ class Engine {
     FundingStats stats;
   };
   std::unique_ptr<FundingState> funding_ = std::make_unique<FundingState>();
+  // With pools: each account's last reported position per instrument (set_reported_position), so
+  // the instrument's position is their sum. Allocated at the first report.
+  struct PoolPosition {
+    Qty qty{};
+    Price avg_px{};
+    bool reported = false;
+  };
+  using PoolPositions = std::array<std::array<PoolPosition, PoolMembers::kMax>, kMaxInstruments>;
+  std::unique_ptr<PoolPositions> pool_pos_;
   // Venues whose feed shows our orders (bit v), and our quantity there; null when there are none.
   std::uint32_t own_venues_ = 0;
   std::unique_ptr<OwnQuantity> own_;

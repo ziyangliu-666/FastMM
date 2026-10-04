@@ -146,7 +146,7 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
     ++stats_.order_updates;
     const ExecKind kind = exec_kind(x.exec_type);
     if (kind == ExecKind::Other) return ignored();
-    const InstrumentId inst = symbols_.find(venue_, x.symbol);
+    const InstrumentId inst = symbols_.find(symbol_venue_, x.symbol);
     if (!inst.valid()) {
       ++stats_.unknown_symbol;
       r.status = ParseStatus::UnknownSymbol;
@@ -303,7 +303,7 @@ UserDecodeResult BinanceUsdmUserParser::decode(std::string_view json,
         ++stats_.hedge_positions;
         continue;
       }
-      const InstrumentId inst = symbols_.find(venue_, sym);
+      const InstrumentId inst = symbols_.find(symbol_venue_, sym);
       if (!inst.valid()) continue;  // a position on another symbol of the account
       if (written + sizeof(PositionUpdateMsg) > out.size()) break;
       auto* m = reinterpret_cast<PositionUpdateMsg*>(out.data() + written);

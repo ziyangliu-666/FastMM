@@ -75,7 +75,12 @@ struct BinanceVenueConfig {
   bool insecure_tls = false;
   std::string ca_file;
   UserStreamMode user_stream = UserStreamMode::Auto;
-  bool dry_run = false;      // public market data only: no user/order channels
+  bool dry_run = false;  // public market data only: no user/order channels
+  // A pool member ([venues.<x>] pool_of): the venue whose instruments this account trades. The
+  // connector runs its order, user and REST sessions only, opens no market-data stream, looks
+  // symbols up on that venue's id and stamps its own id on every event. Invalid: a venue of its
+  // own.
+  VenueId pool_of{};
   bool ws_order_api = true;  // false: REST order entry only
   bool emit_ack_from_response = true;
   bool position_from_balance = false;  // forward outboundAccountPosition as PositionUpdate
@@ -280,9 +285,13 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] InstrumentId instrument_of(std::string_view symbol) const noexcept;
   [[nodiscard]] std::string api_headers() const;
   net::ConnectionConfig ws_config(const std::string& url, bool manual_subscribe) const;
+  // A pool member: no market data, the primary's instruments (cfg_.pool_of).
+  [[nodiscard]] bool pool_member() const noexcept { return cfg_.pool_of.valid(); }
 
   VenueId id_;
   BinanceVenueConfig cfg_;
+  // The venue the instruments and symbols belong to: id_, or the pool's primary.
+  VenueId md_venue_;
   Signer signer_;
   const SymbolTable* symbols_ = nullptr;
   const InstrumentTable* instruments_ = nullptr;

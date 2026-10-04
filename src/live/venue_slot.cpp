@@ -55,6 +55,7 @@ int make_venue_slots(const Config& cfg,
     try {
       venues::VenueFactoryOptions vo = vopts;
       vo.dry_run = vopts.dry_run || cfg.venues[i].public_only;  // a price leader runs public-only
+      vo.pool_of = cfg.venue_id(cfg.venues[i].pool_of);  // a member: orders for the primary's
       slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vo);
     } catch (const std::exception& e) {
       std::fprintf(stderr, "%s: %s\n", prog, e.what());
@@ -97,9 +98,12 @@ void wire_venue_slot(VenueSlot& s,
   s.order_sink.set_overflow_callback(&on_order_overflow, &s);
   s.venue->attach(symbols, instruments, s.md_sink, s.order_sink, s.outbound.get());
   s.venue->set_tsc_calibration_source(tsc);
+  // A pool member trades its primary's instruments (the connector takes them for its order path
+  // and opens no market data of its own).
+  const VenueId owner = cfg.pool_plan().primary(vid);
   std::vector<InstrumentId> mine;
   for (const Instrument& inst : instruments) {
-    if (inst.venue == vid) mine.push_back(inst.id);
+    if (inst.venue == owner) mine.push_back(inst.id);
   }
   s.venue->subscribe(mine);
 }

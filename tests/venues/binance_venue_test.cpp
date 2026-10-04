@@ -411,6 +411,106 @@ TEST_CASE("binance.venue: scripted fake exchange end to end") {
   h.srv.stop();
 }
 
+TEST_CASE(
+    "binance.venue: a pool member runs the order path for the primary's instruments and no "
+    "market data") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));  // the primary's
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenueConfig cfg = h.config(false);
+    cfg.name = "fake-binance-b";
+    cfg.pool_of = VenueId{0};
+    BinanceVenue venue(VenueId{1}, std::move(cfg));
+    // The primary's symbols are loaded (filters, rate limits, clock) though none is venue 1's.
+    REQUIRE(venue.load_reference_data(instruments));
+    CHECK(instruments.get(InstrumentId{0}).tick == Price::from_decimal("0.01").value());
+    CHECK(instruments.get(InstrumentId{0}).venue == VenueId{0});
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    auto live_channels = [&] {
+      std::size_t n = 0;
+      for (const auto& m : oc.all) {
+        if (RecordingSink::type_of(m) == EventType::ConnectionState &&
+            RecordingSink::as<ConnectionStateMsg>(m).state == ConnState::Live)
+          ++n;
+      }
+      return n;
+    };
+    // Order and user channels come up; no depth snapshot, no stream, no books.
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return live_channels() >= 2 && oc.count(EventType::Balance) >= 1;
+    }));
+    CHECK(h.depth_requests.load() == 0);
+    CHECK(md.drain().empty());
+    venue.on_timer(net::Reactor::now_ns());  // publishes the status
+    CHECK(venue.status().books_total == 0);
+    CHECK(venue.status().md == ChannelState::Down);
+    CHECK(venue.status().order == ChannelState::Live);
+    for (const auto& m : oc.all) {
+      const EventHeader& hdr = *reinterpret_cast<const EventHeader*>(m.data());
+      CHECK(hdr.venue == VenueId{1});  // every event carries the member's own id
+      if (hdr.type == EventType::ConnectionState)
+        CHECK(RecordingSink::as<ConnectionStateMsg>(m).channel == 1);
+    }
+    // The account snapshot named the primary's instrument's assets, on the member.
+    bool usdt = false;
+    for (const auto& m : oc.all) {
+      if (RecordingSink::type_of(m) == EventType::Balance &&
+          RecordingSink::as<BalanceMsg>(m).asset.view() == "USDT")
+        usdt = true;
+    }
+    CHECK(usdt);
+
+    // An order for the primary's instrument from the member: the ack and the user stream's fill
+    // name instrument 0 and venue 1.
+    OutNewOrderMsg n{};
+    init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{1});
+    n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+    n.side = Side::Buy;
+    n.type = OrderType::PostOnly;
+    n.price = Price::from_decimal("70000").value();
+    n.qty = Qty::from_decimal("0.001").value();
+    REQUIRE(outbound.try_push(&n, n.hdr.len));
+    venue.on_wake();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderAck) >= 2 && oc.count(EventType::OrderFill) == 1;
+    }));
+    const auto* ack = oc.last<OrderAckMsg>(EventType::OrderAck);
+    CHECK(ack->hdr.venue == VenueId{1});
+    CHECK(ack->hdr.instrument == InstrumentId{0});
+    const auto* fill = oc.last<OrderFillMsg>(EventType::OrderFill);
+    CHECK(fill->hdr.venue == VenueId{1});
+    CHECK(fill->hdr.instrument == InstrumentId{0});
+    CHECK(fill->qty == Qty::from_decimal("0.0004").value());
+    // The reconciliation and the kill switch cover the primary's symbols on this account.
+    const std::size_t reconciles = oc.count(EventType::Reconcile);
+    venue.request_open_orders();
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::Reconcile) == reconciles + 2;
+    }));
+    CHECK(oc.last<ReconcileMsg>(EventType::Reconcile)->hdr.venue == VenueId{1});
+    CHECK(venue.cancel_all());
+    CHECK(h.cancel_all_ok.load() == 1);
+    CHECK(h.depth_requests.load() == 0);
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
 TEST_CASE("binance.venue: an order still in flight is above the snapshot's watermark") {
   // Session A, 12:05:28 UTC: an order was sent, a cancel reject asked for the open orders, and
   // the venue's reply did not list the order (sent 1 ms before, not answered yet). With the last

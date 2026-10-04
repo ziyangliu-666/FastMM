@@ -116,11 +116,13 @@ class ReconcileDriver {
 
   ReconcileDriver(ReconcileHooks& hooks, SentWatermark& sent);
 
-  // `instruments`: the assets the balance leg forwards are their base and quote on `venue`.
+  // `instruments`: the assets the balance leg forwards are their base and quote on `venue`, or on
+  // `instruments_venue` where the account is a pool member of that venue.
   void attach(std::string_view name,
               VenueId venue,
               EventSink* sink,
-              const InstrumentTable* instruments = nullptr);
+              const InstrumentTable* instruments = nullptr,
+              VenueId instruments_venue = {});
   // connect(): requests are served from now on, when `enabled` (not a dry run, keys usable).
   void open(bool enabled) noexcept;
   // disconnect(): everything in progress is dropped and nothing is asked until open().

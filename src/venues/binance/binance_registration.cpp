@@ -89,6 +89,7 @@ std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactor
   v.extra = &s.extra;
   binance::BinanceVenueConfig c = binance::make_binance_config(v, opts.dry_run);
   c.record_raw_dir = opts.record_raw_dir;
+  c.pool_of = opts.pool_of;
   return std::make_unique<binance::BinanceVenue>(id, std::move(c));
 }
 
@@ -105,7 +106,8 @@ void register_binance_venue(VenueRegistry& r) {
                                     .replace = true,
                                     .positions = true,
                                     .polls = false,
-                                    .executions = true},
+                                    .executions = true,
+                                    .account_pools = true},
                            .make = &make}));
 }
 

@@ -467,3 +467,25 @@ TEST_CASE("sim.pool: balance_room is the largest single member's room, open_qty 
   CHECK(engine.balance(kMember, "BTC").free.is_zero());
   CHECK(engine.balance(kPrimary, "BTC").free == nt("0.3"));
 }
+
+TEST_CASE("sim.pool: each account's position report adds up to the instrument's position") {
+  Rig rig("1", "1");
+  rig.run(milliseconds(10));
+  const auto report = [&](VenueId v, const char* qty, const char* price) {
+    PositionUpdateMsg m{};
+    init_header(m, EventType::PositionUpdate, kBtc, v);
+    m.qty = qt(qty);
+    m.avg_px = px(price);
+    rig.engine->inject(&m.hdr);
+  };
+  report(kPrimary, "1", "100");
+  CHECK(rig.engine->position(kBtc).qty == qt("1"));
+  report(kMember, "2", "130");
+  CHECK(rig.engine->position(kBtc).qty == qt("3"));
+  CHECK(rig.engine->position(kBtc).avg_px == px("120"));
+  report(kPrimary, "0", "0");  // the primary is flat: the member's position remains
+  CHECK(rig.engine->position(kBtc).qty == qt("2"));
+  CHECK(rig.engine->position(kBtc).avg_px == px("130"));
+  report(kMember, "-2", "130");
+  CHECK(rig.engine->position(kBtc).qty == qt("-2"));
+}
