@@ -320,7 +320,7 @@ Whether a venue's feed shows our orders is a transport property (`own_in_feed(ve
 |---|---|
 | ack | the displayed quantity at the price less `own_qty`; at the touch of a newer book ticker, the touch's quantity less ours; 0 better than that touch; either less what the trades printed since took from the level |
 | depth delta at the price | a shrink from `old` to `new` takes `(old - new) * ahead / old * (1 - conservatism)`, where `old` is less what the trades since the last update took; a level that goes away leaves 0; a snapshot caps it at the level |
-| trade at the price | consumed first; a trade through the price leaves 0 (and fills the print's quantity: the aggressor would have taken that much from us before reaching the deeper level) |
+| trade at the price | consumed first; a trade through the price leaves 0 (and fills the print's quantity: the aggressor would have taken that much from us before reaching the deeper level). One print is shared by our orders on its side in price priority, best for the aggressor first: each gets what the better ones left, after our maker fills at the print's venue time (live, the print carries them) |
 | book ticker newer than the depth (venue update id when both carry one, else venue time) | 0 for an order priced better than its touch; at most the touch's quantity less ours for an order at the touch |
 | replace ack | kept at the same price and no more than the leaves; otherwise as for an ack |
 

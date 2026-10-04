@@ -11,6 +11,10 @@
 //   trade through (better than our price for the aggressor) fills us with its quantity: the
 //                aggressor would have taken that much from us before reaching the deeper level;
 //                a sweep's prints each add theirs
+//   our orders   a print is shared by our orders on its side in price priority (best for the
+//                aggressor first; at one price the shorter queue first): each takes its fill and
+//                its queue from what the better ones left (a print used up fills no deeper order,
+//                though one it printed through still has nothing ahead)
 //   touch        a BookTicker newer than the depth book (venue update id when both carry one,
 //                else venue time): an order priced better than the ticker's touch on its side has
 //                nothing ahead, one at the touch at most the touch's quantity
@@ -27,9 +31,9 @@
 //                order, and when it printed after the view the order's queue was taken from, it
 //                takes its quantity from the queue as the trade tape would have at placement
 //
-// Orders live in a Pool; iteration is in handle order for determinism. queue_after_level_change()
-// and queue_after_trade() are the two steps for one order; the engine's live estimate
-// (core/queue_tracker.hpp) calls the same functions.
+// Orders live in a Pool; iteration is in handle order for determinism (a print's in price
+// priority). queue_after_level_change() and queue_after_trade() are the two steps for one order;
+// the engine's live estimate (core/queue_tracker.hpp) calls the same functions.
 //
 // queue_apply_book() is how SimTransport (fill_model = "l2_queue") applies a book message to its
 // mirror of the historical levels and to the model; the fill check (backtest/fill_check.hpp) calls
@@ -44,9 +48,11 @@
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 namespace fastmm {
@@ -238,7 +244,8 @@ class QueuePositionModel {
   explicit QueuePositionModel(std::int64_t conservatism_bps = 10'000) noexcept
       : conservatism_bps_(conservatism_bps < 0        ? 0
                           : conservatism_bps > 10'000 ? 10'000
-                                                      : conservatism_bps) {}
+                                                      : conservatism_bps),
+        print_order_(std::make_unique<Handle32[]>(kMaxQueuedOrders)) {}
   QueuePositionModel(const QueuePositionModel&) = delete;
   QueuePositionModel& operator=(const QueuePositionModel&) = delete;
 
@@ -318,26 +325,45 @@ class QueuePositionModel {
   }
 
   // A trade printed at px with the given aggressor side at venue time `ts`. F(Handle32,
-  // QueuedOrder&, Qty fill, Qty ahead_before) is called for every order that executes; the order's
-  // cum_qty is already advanced and `ahead_before` is the displayed quantity that was still ahead
-  // of it (its queue position at the fill). Fully filled orders must be removed by the caller
-  // (after emitting the fill). An order placed after `ts` is not filled (see arrival above).
+  // QueuedOrder&, Qty fill, Qty ahead_before) is called for every order that executes, in price
+  // priority (see our orders above); the order's cum_qty is already advanced and `ahead_before` is
+  // the displayed quantity that was still ahead of it (its queue position at the fill). Fully
+  // filled orders must be removed by the caller (after emitting the fill). An order placed after
+  // `ts` is not filled (see arrival above).
   template <class F>
   void on_trade(
       InstrumentId inst, Price px, Qty qty, Side aggressor, Timestamp ts, F&& f) noexcept {
+    const Side maker = opposite(aggressor);
+    Handle32* const hs = print_order_.get();
+    std::size_t n = 0;
     pool_.for_each([&](Handle32 h, QueuedOrder& o) {
       if (o.instrument != inst) return;
       if (ts < o.placed) {
         if (ts > o.view) o.ahead = level_after_print(o.ahead, o.side, o.price, px, qty, aggressor);
         return;
       }
-      const Qty ahead_before = o.ahead;
-      const Qty fill = queue_after_trade(o.ahead, o.side, o.price, o.leaves(), px, qty, aggressor);
-      if (fill.is_positive()) {
-        o.cum_qty += fill;
-        f(h, o, fill, ahead_before);
-      }
+      if (o.side == maker) hs[n++] = h;
     });
+    if (n > 1) {
+      std::sort(hs, hs + n, [&](Handle32 a, Handle32 b) {
+        const QueuedOrder& x = pool_.get(a);
+        const QueuedOrder& y = pool_.get(b);
+        if (x.price != y.price) return better(maker, x.price, y.price);
+        if (x.ahead != y.ahead) return x.ahead < y.ahead;
+        return a.idx < b.idx;
+      });
+    }
+    Qty left = qty;
+    for (std::size_t i = 0; i < n; ++i) {
+      QueuedOrder& o = pool_.get(hs[i]);
+      const Qty ahead_before = o.ahead;
+      const Qty fill = queue_after_trade(o.ahead, o.side, o.price, o.leaves(), px, left, aggressor);
+      if (fill.is_positive()) {
+        left -= fill;
+        o.cum_qty += fill;
+        f(hs[i], o, fill, ahead_before);
+      }
+    }
   }
 
   // Ascending handle order. F(Handle32, const QueuedOrder&).
@@ -348,6 +374,7 @@ class QueuePositionModel {
 
  private:
   std::int64_t conservatism_bps_;
+  std::unique_ptr<Handle32[]> print_order_;  // on_trade's orders in price priority
   Pool<QueuedOrder, kMaxQueuedOrders> pool_;
   OpenHashMap<ClientOrderId, Handle32, kMaxQueuedOrders * 2> by_id_;
 };

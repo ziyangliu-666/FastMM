@@ -229,3 +229,23 @@ TEST_CASE("backtest.golden: OptionsMM outbound hash on a scripted options market
   check_golden(
       "options_mm/scripted", r, "bc9b046d97880a8d092c25c6e4f664741ecb90a17a42d4f34efc35b5ed5c6317");
 }
+
+TEST_CASE("backtest.golden: BasicMM outbound hash, L2 queue model, three levels a tick apart") {
+  // One print through several of our levels is shared by them in price priority (queue_model.hpp).
+  BacktestConfig cfg = synthetic_config(22, seconds(15));
+  cfg.transport.fill_model = sim::FillModel::L2Queue;
+  cfg.transport.queue_conservatism_bps = 5000;
+  cfg.params["levels"] = "3";
+  cfg.params["level_step_ticks"] = "1";
+  SyntheticSourceConfig sc;
+  sc.generator = cfg.generator;
+  sc.md = cfg.transport.md;
+  sc.seed = 22;
+  sc.duration = seconds(15);
+  SyntheticSource src(sc);
+  const BacktestResult r = run_backtest<BasicMM>(cfg, &src);
+  REQUIRE(r.metrics.fills > 0);
+  check_golden("basic_mm/l2_queue_levels",
+               r,
+               "2fcbc251025416ef2b30f332e1f54c6670bdce6d5bfa60ce49e400ceff976d8b");
+}

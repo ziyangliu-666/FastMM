@@ -12,10 +12,16 @@
 //                old and new displayed quantities less our own
 //   snapshot     ahead is capped at what the level now shows
 //   trade        queue_after_trade: consumed ahead first, a trade through our price empties it and
-//                fills the print's quantity;
+//                fills the print's quantity; our orders share a print in price priority (best for
+//                the aggressor first), each taking from what the better ones left;
 //                one newer than the depth book takes its quantity from the level as the next
 //                delta's old quantity, and from the depth book and the touch at placement
 //                (TradeTape)
+//   own fills    a print carries our maker fills at its venue time first: the venue's fill reaches
+//                us before or after the print, and either way only the rest of the print is
+//                others' queue. In the simulator a historical print is shared with orders the
+//                fill model already filled (and the OMS closed), so this is what keeps the
+//                estimate equal to the fill model's.
 //   ticker       a BookTicker newer than the depth book (update id, else venue time), less our
 //                own quantity at its venue time: queue_after_touch
 //   own quantity others_shown(): a level showing less than ours there predates our order
@@ -23,7 +29,8 @@
 // Off until enable() (the strategy's first queue_ahead). State is a side array by OMS slot, one
 // list and one trade tape per instrument. A trade newer than the depth book goes on the tape, and a
 // book update drops what it now shows; a delta also costs, for each of our orders on the
-// instrument, a price compare per level on its side, and a trade one step per order.
+// instrument, a price compare per level on its side, and a trade one step per order plus a sort
+// of those on its maker side.
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/fixed_point.hpp"
 #include "fastmm/core/instrument.hpp"
@@ -32,7 +39,9 @@
 #include "fastmm/core/order.hpp"
 #include "fastmm/core/queue_model.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -49,7 +58,9 @@ class QueueTracker {
                                          : conservatism_bps),
         slots_(std::make_unique<Slot[]>(kMaxOpenOrders)),
         touch_(std::make_unique<QueueTouch[]>(kMaxInstruments)),
-        tape_(std::make_unique<TradeTape[]>(kMaxInstruments)) {
+        tape_(std::make_unique<TradeTape[]>(kMaxInstruments)),
+        print_order_(std::make_unique<std::uint32_t[]>(kMaxOpenOrders)),
+        owed_(std::make_unique<Owed[]>(kMaxInstruments)) {
     head_.fill(kNone);
   }
 
@@ -162,13 +173,42 @@ class QueueTracker {
     const Timestamp ts = t.hdr.exch_ts.valid() ? t.hdr.exch_ts : t.hdr.recv_ts;
     const bool newer = ts > b.last_update();
     if (newer) tape_[id.value].add(t, ts);
+    const Side maker = opposite(t.aggressor);
+    Qty& owed = owed_at(id, ts).qty[maker == Side::Buy ? 0 : 1];
+    Qty left = t.qty;
+    if (owed.is_positive()) {
+      const Qty mine = min(owed, left);
+      owed -= mine;
+      left -= mine;
+    }
+    std::uint32_t* const order = print_order_.get();
+    std::size_t n = 0;
     for (std::uint32_t i = head_[id.value]; i != kNone; i = slots_[i].next) {
       Slot& s = slots_[i];
-      const Qty leaves = oms.get(Handle<Order>{i}).leaves_qty();
-      static_cast<void>(
-          queue_after_trade(s.ahead, s.side, s.px, leaves, t.price, t.qty, t.aggressor));
+      if (s.side == maker) order[n++] = i;
       if (newer) s.level = level_after_print(s.level, s.side, s.px, t.price, t.qty, t.aggressor);
     }
+    if (n > 1) {
+      std::sort(order, order + n, [&](std::uint32_t lhs, std::uint32_t rhs) {
+        const Slot& x = slots_[lhs];
+        const Slot& y = slots_[rhs];
+        if (x.px != y.px) return better(maker, x.px, y.px);
+        if (x.ahead != y.ahead) return x.ahead < y.ahead;
+        return lhs < rhs;
+      });
+    }
+    for (std::size_t k = 0; k < n; ++k) {
+      Slot& s = slots_[order[k]];
+      const Qty leaves = oms.get(Handle<Order>{order[k]}).leaves_qty();
+      const Qty fill = queue_after_trade(s.ahead, s.side, s.px, leaves, t.price, left, t.aggressor);
+      left -= fill;
+      owed -= fill;  // its fill, when it comes, was in this print
+    }
+  }
+
+  // One of our maker fills at venue time `ts`: the prints at that time carry its quantity.
+  void on_own_fill(InstrumentId id, Side side, Qty qty, Timestamp ts) noexcept {
+    owed_at(id, ts).qty[side == Side::Buy ? 0 : 1] += qty;
   }
 
  private:
@@ -182,6 +222,18 @@ class QueueTracker {
     std::uint32_t next = kNone;
     std::uint32_t prev = kNone;
   };
+
+  // Our maker fills at one venue time, per side, less the prints there already gave our orders:
+  // positive when the fill came first, negative when the print did.
+  struct Owed {
+    Timestamp ts;
+    std::array<Qty, 2> qty{};
+  };
+  Owed& owed_at(InstrumentId id, Timestamp ts) noexcept {
+    Owed& o = owed_[id.value];
+    if (o.ts != ts) o = Owed{ts, {}};
+    return o;
+  }
 
   void link(std::uint32_t idx, InstrumentId id) noexcept {
     Slot& s = slots_[idx];
@@ -198,6 +250,8 @@ class QueueTracker {
   std::unique_ptr<Slot[]> slots_;
   std::unique_ptr<QueueTouch[]> touch_;  // the latest BookTicker per instrument, as published
   std::unique_ptr<TradeTape[]> tape_;    // trades newer than the depth book, per instrument
+  std::unique_ptr<std::uint32_t[]> print_order_;  // on_trade's slots in price priority
+  std::unique_ptr<Owed[]> owed_;                  // per instrument
 };
 
 }  // namespace fastmm

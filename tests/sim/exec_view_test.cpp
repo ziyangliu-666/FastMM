@@ -447,6 +447,45 @@ TEST_CASE("exec_view.engine: the queue ahead follows the level, trades and conse
   CHECK_FALSE(r.ahead(id).has_value());
 }
 
+TEST_CASE("exec_view.engine: a print reaches our worse bid only with what the better one left") {
+  Rig r(false, true, 10'000);
+  r.book(at(0), {{px("100.00"), qt("5")}}, {{px("100.02"), qt("3")}}, true);
+  const ClientOrderId deep = r.buy("100.00", "1");
+  const ClientOrderId best = r.buy("100.01", "2");
+  r.in(ack(deep.value, at(1)));
+  r.in(ack(best.value, at(1)));
+  CHECK(*r.ahead(deep) == qt("5"));
+  CHECK(r.ahead(best)->is_zero());
+  // 4 sold at 100.00: 2 of them would have filled the 100.01 bid on the way.
+  r.trade(at(2), "100.00", "4", Side::Sell);
+  CHECK(*r.ahead(deep) == qt("3"));
+  // The venue's fill for those 2 comes after the print: it was in it, not in a later one.
+  OrderFillMsg f = fill(best.value, "2", "2", "0", at(2), "e1");
+  f.liquidity = Liquidity::Maker;
+  r.in(f);
+  r.trade(at(2), "100.00", "1", Side::Sell);
+  CHECK(*r.ahead(deep) == qt("2"));
+}
+
+TEST_CASE("exec_view.engine: a print first carries our maker fill at its venue time") {
+  Rig r(false, true, 10'000);
+  r.book(at(0), {{px("100.00"), qt("5")}}, {{px("100.02"), qt("3")}}, true);
+  const ClientOrderId deep = r.buy("100.00", "1");
+  const ClientOrderId best = r.buy("100.01", "2");
+  r.in(ack(deep.value, at(1)));
+  r.in(ack(best.value, at(1)));
+  // The fill reaches us first (as the simulator sends it): the order is gone when the print comes.
+  OrderFillMsg f = fill(best.value, "2", "2", "0", at(2), "e1");
+  f.liquidity = Liquidity::Maker;
+  r.in(f);
+  CHECK_FALSE(r.ahead(best).has_value());
+  r.trade(at(2), "100.00", "4", Side::Sell);
+  CHECK(*r.ahead(deep) == qt("3"));
+  // A print at another venue time owes nothing to it.
+  r.trade(at(3), "100.00", "1", Side::Sell);
+  CHECK(*r.ahead(deep) == qt("2"));
+}
+
 TEST_CASE("exec_view.engine: a level that goes away leaves nothing ahead") {
   Rig r(false, true, 10'000);
   r.book(at(0), {{px("100.00"), qt("10")}}, {{px("100.02"), qt("3")}}, true);

@@ -83,6 +83,13 @@ All notable changes are recorded here (Keep a Changelog format).
   `ReplaySchedulerBase::Hooks::active`, `skipped()`; `OrderActivity`.
 
 ### Fixed
+- `l2_queue` fill model: one trade print went in full to each of our resting orders on its side,
+  so a print through two levels of a ladder filled both with up to its whole quantity. It is now
+  shared in price priority (best for the aggressor first, at one price the shorter queue first),
+  each order taking its fill and its queue from what the better ones left; the fill check does
+  the same. `ctx.queue_ahead` follows: a print first carries our maker fills at its venue time,
+  whether the fill comes before or after it, so it matches the fill model again. One order per
+  side fills as before; a three-level `basic_mm` on the synthetic market fills 13 % fewer orders.
 - Account pools on Binance Spot and USDⓈ-M: the accounts count request weight in one window per
   IP, as Binance does, and a 429 or 418 answered to one pauses or stops them all. Each account
   counted only its own, so a pool starting together sent several times the 6000/minute and was

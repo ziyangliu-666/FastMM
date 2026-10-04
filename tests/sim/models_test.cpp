@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace fastmm;
@@ -245,6 +246,117 @@ TEST_CASE("sim.queue_model: a trade before the order's arrival does not fill it"
   CHECK(fills.size() == 1);
   q.on_trade(inst, px("100"), qt("0.1"), Side::Sell, Timestamp{300}, sink);
   CHECK(fills.size() == 2);
+}
+
+TEST_CASE("sim.queue_model: one print is shared by our orders in price priority") {
+  const InstrumentId inst{0};
+  std::vector<std::pair<std::uint64_t, Qty>> fills;
+  auto sink = [&](QueuePositionModel::Handle32, QueuedOrder& o, Qty f, Qty) {
+    fills.emplace_back(o.order_id, f);
+  };
+  SUBCASE("a print through both levels fills the better one first") {
+    QueuePositionModel q(10'000);
+    // Placed worse level first: the print's order, not the handles', decides.
+    auto lo = q.place(
+        ClientOrderId{2}, 99, inst, Side::Buy, px("99"), qt("3"), Qty{}, Timestamp{}, Timestamp{});
+    auto hi = q.place(ClientOrderId{1},
+                      100,
+                      inst,
+                      Side::Buy,
+                      px("100"),
+                      qt("3"),
+                      Qty{},
+                      Timestamp{},
+                      Timestamp{});
+    REQUIRE(lo.valid());
+    REQUIRE(hi.valid());
+    q.on_trade(inst, px("98"), qt("5"), Side::Sell, Timestamp{}, sink);
+    REQUIRE(fills.size() == 2);
+    CHECK(fills[0] == std::pair<std::uint64_t, Qty>{100, qt("3")});
+    CHECK(fills[1] == std::pair<std::uint64_t, Qty>{99, qt("2")});
+    CHECK(q.get(lo).leaves() == qt("1"));
+    // A print the better order uses up fills no deeper one; the level it went through is gone.
+    fills.clear();
+    q.remove(hi);
+    auto lo2 = q.place(ClientOrderId{3},
+                       97,
+                       inst,
+                       Side::Buy,
+                       px("97"),
+                       qt("4"),
+                       qt("6"),
+                       Timestamp{},
+                       Timestamp{});
+    q.on_trade(inst, px("96"), qt("1"), Side::Sell, Timestamp{}, sink);
+    REQUIRE(fills.size() == 1);
+    CHECK(fills[0] == std::pair<std::uint64_t, Qty>{99, qt("1")});
+    CHECK(q.get(lo2).ahead.is_zero());
+    CHECK(q.get(lo2).leaves() == qt("4"));
+  }
+  SUBCASE("a print at the worse level fills the better order before the queue there") {
+    QueuePositionModel q(10'000);
+    auto lo = q.place(ClientOrderId{2},
+                      99,
+                      inst,
+                      Side::Buy,
+                      px("99"),
+                      qt("5"),
+                      qt("4"),
+                      Timestamp{},
+                      Timestamp{});
+    auto hi = q.place(ClientOrderId{1},
+                      100,
+                      inst,
+                      Side::Buy,
+                      px("100"),
+                      qt("2"),
+                      Qty{},
+                      Timestamp{},
+                      Timestamp{});
+    REQUIRE(hi.valid());
+    q.on_trade(inst, px("99"), qt("7"), Side::Sell, Timestamp{}, sink);
+    // 2 to the 100 bid, the other 5 take the 4 ahead at 99 and fill 1 there.
+    REQUIRE(fills.size() == 2);
+    CHECK(fills[0] == std::pair<std::uint64_t, Qty>{100, qt("2")});
+    CHECK(fills[1] == std::pair<std::uint64_t, Qty>{99, qt("1")});
+    CHECK(q.get(lo).ahead.is_zero());
+  }
+  SUBCASE("the other side and orders placed after the print are untouched") {
+    QueuePositionModel q(10'000);
+    auto ask = q.place(ClientOrderId{1},
+                       1,
+                       inst,
+                       Side::Sell,
+                       px("101"),
+                       qt("2"),
+                       qt("3"),
+                       Timestamp{},
+                       Timestamp{});
+    auto bid = q.place(ClientOrderId{2},
+                       2,
+                       inst,
+                       Side::Buy,
+                       px("100"),
+                       qt("2"),
+                       qt("3"),
+                       Timestamp{},
+                       Timestamp{});
+    auto late = q.place(ClientOrderId{3},
+                        3,
+                        inst,
+                        Side::Buy,
+                        px("100"),
+                        qt("2"),
+                        qt("4"),
+                        Timestamp{200},
+                        Timestamp{100});
+    q.on_trade(inst, px("100"), qt("4"), Side::Sell, Timestamp{150}, sink);
+    REQUIRE(fills.size() == 1);
+    CHECK(fills[0] == std::pair<std::uint64_t, Qty>{2, qt("1")});
+    CHECK(q.get(ask).ahead == qt("3"));
+    CHECK(q.get(bid).ahead.is_zero());
+    CHECK(q.get(late).ahead.is_zero());  // the trade tape's rule: the full print took its queue
+  }
 }
 
 TEST_CASE("sim.sha256: FIPS test vectors and streaming equivalence") {

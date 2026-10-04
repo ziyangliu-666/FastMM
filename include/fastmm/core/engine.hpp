@@ -1469,6 +1469,9 @@ class Engine {
     const InstrumentId id = from_order ? u.order.instrument : f.hdr.instrument;
     const Side side = from_order ? u.order.side : f.side;
     const bool known_instrument = instruments_.contains(id);
+    if (FASTMM_UNLIKELY(queue_on_) && known_instrument && f.liquidity == Liquidity::Maker &&
+        (f.flags & OrderFillMsg::kReplayed) == 0)
+      queue_.on_own_fill(id, side, f.qty, f.hdr.exch_ts.valid() ? f.hdr.exch_ts : f.hdr.recv_ts);
     Qty booked = f.qty;
     Notional fee = f.fee;
     // A parser that leaves fee_asset unset would let a byte of its scratch buffer decide how the
