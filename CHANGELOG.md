@@ -5,6 +5,9 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- backtest: `journal:…,remap=1` maps a recording's instruments to the configuration's by symbol
+  (and sets the events' venue to the configured instrument's), so recordings of different
+  instrument sets merge; a symbol the configuration lacks is dropped and counted in the report.
 - sim: a trade through a resting order fills it with the print's quantity, not the whole order
   (the aggressor had a fixed size; what it printed at the deeper level is what it would have taken
   from us). `l2_queue`, `ctx.queue_ahead` and `fastmm-data fill-check` share the rule. The

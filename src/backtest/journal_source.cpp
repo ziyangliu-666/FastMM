@@ -4,6 +4,7 @@
 
 #include <fmt/format.h>
 
+#include <cstring>
 #include <filesystem>
 #include <span>
 #include <stdexcept>
@@ -20,8 +21,25 @@ void JournalSource::open_part(const std::string& path) {
   paths_.push_back(path);
 }
 
-JournalSource::JournalSource(const std::string& path, bool strip_own, bool parts) {
+JournalSource::JournalSource(const std::string& path,
+                             bool strip_own,
+                             bool parts,
+                             const InstrumentTable* remap)
+    : remap_(remap != nullptr) {
   open_part(path);
+  if (remap != nullptr) {
+    // Every part repeats the first's instrument table, so one map serves them all.
+    for (const Instrument& j : parts_.front().instruments()) {
+      const Instrument* c = remap->find(j.venue, j.symbol.view());
+      for (const Instrument* x = remap->begin(); c == nullptr && x != remap->end(); ++x) {
+        if (x->symbol.view() == j.symbol.view()) c = x;
+      }
+      if (c == nullptr) ++unmapped_;
+      map_.push_back(c == nullptr ? kUnmapped : c->id.value);
+      map_venue_.push_back(c == nullptr ? VenueId{} : c->venue);
+    }
+    rbuf_.resize((kMaxMsgBytes + 7) / 8);
+  }
   for (std::uint64_t n = 1; parts; ++n) {
     const std::string next_path = JournalFileWriter::part_path(path, n);
     if (!std::filesystem::exists(next_path)) break;
@@ -96,8 +114,24 @@ const EventHeader* JournalSource::next() {
       continue;
     }
     if (!is_market_data(h->type) || (h->flags & EventHeader::kOutbound) != 0) continue;
-    if (!stripper_) return h;
-    if (const EventHeader* s = stripper_->strip(*h, buf_)) return s;
+    if (stripper_) {
+      h = stripper_->strip(*h, buf_);
+      if (h == nullptr) continue;
+    }
+    if (!remap_) return h;
+    const std::uint32_t to =
+        h->instrument.value < map_.size() ? map_[h->instrument.value] : kUnmapped;
+    if (to == kUnmapped) {
+      ++dropped_;
+      continue;
+    }
+    // The configured id and venue, in a copy: the reader's record is read-only.
+    FASTMM_CHECK(h->len <= kMaxMsgBytes);
+    std::memcpy(rbuf_.data(), h, h->len);
+    auto* out = reinterpret_cast<EventHeader*>(rbuf_.data());
+    out->instrument = InstrumentId{to};
+    out->venue = map_venue_[h->instrument.value];
+    return out;
   }
   return nullptr;
 }
@@ -112,18 +146,27 @@ std::string JournalSource::note() const {
            (seq_gaps_ == 1 ? " time (" : " times (first: ") + gap_ + ")";
     }
   }
-  if (!stripper_) return s;
-  if (!s.empty()) s += '\n';
-  const OwnOrderStripper::Stats& st = stripper_->stats();
-  return s + "journal: own orders stripped (" + std::to_string(orders_) +
+  if (stripper_) {
+    if (!s.empty()) s += '\n';
+    const OwnOrderStripper::Stats& st = stripper_->stats();
+    s += "journal: own orders stripped (" + std::to_string(orders_) +
          " orders): " + std::to_string(st.levels_adjusted) + " levels reduced, " +
          std::to_string(st.levels_removed) + " removed; " + std::to_string(st.tickers_adjusted) +
          " tickers reduced, " + std::to_string(st.tickers_dropped) + " dropped";
+  }
+  if (remap_) {
+    if (!s.empty()) s += '\n';
+    s += "journal: remap: " + std::to_string(map_.size() - unmapped_) + " of " +
+         std::to_string(map_.size()) + " instruments in the configuration, " +
+         std::to_string(dropped_) + (dropped_ == 1 ? " event dropped" : " events dropped");
+  }
+  return s;
 }
 
 void JournalSource::reset() {
   for (JournalReader& r : parts_) r.reset();
   at_ = 0;
+  dropped_ = 0;
 }
 
 std::uint64_t write_md_journal(MdSource& source,

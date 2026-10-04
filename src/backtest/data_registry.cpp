@@ -152,9 +152,14 @@ std::unique_ptr<MdSource> open_synthetic(const DataSourceOptions& o) {
 }
 
 std::unique_ptr<MdSource> open_journal(const DataSourceOptions& o) {
-  o.reject_unknown({"path", "strip_own", "parts"});
-  return std::make_unique<JournalSource>(
-      std::string(o.require("path")), o.get_bool("strip_own", false), o.get_bool("parts", true));
+  o.reject_unknown({"path", "strip_own", "parts", "remap"});
+  const bool remap = o.get_bool("remap", false);
+  if (remap && o.instruments() == nullptr)
+    bad("journal: remap needs the configuration's instruments");
+  return std::make_unique<JournalSource>(std::string(o.require("path")),
+                                         o.get_bool("strip_own", false),
+                                         o.get_bool("parts", true),
+                                         remap ? o.instruments() : nullptr);
 }
 
 std::unique_ptr<MdSource> open_csv(const DataSourceOptions& o) {
@@ -277,7 +282,7 @@ void register_builtin_data_sources() {
              .open = &open_synthetic});
   r.try_add({.name = "journal",
              .summary = "the market data of a recorded .fmj session (every part of it)",
-             .options = "path=<file.fmj>  strip_own=<bool>  parts=<bool>",
+             .options = "path=<file.fmj>  strip_own=<bool>  parts=<bool>  remap=<bool>",
              .positional = {"path"},
              .caps = {.top_of_book = true,
                       .depth = true,

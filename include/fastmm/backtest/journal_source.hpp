@@ -17,6 +17,14 @@
 // ask was only ours is dropped. Public trades are kept, our own fills included: the aggressor
 // existed whether or not our order did, and without it would have traded with the next order at
 // that price, which is what a simulated order there stands for.
+//
+// remap: the journal numbers its instruments as the recording session did, so two recordings of
+// different instrument sets both count from 0 and, merged, overwrite each other's books. Given the
+// backtest configuration's table, every event's instrument id becomes that of the instrument with
+// the same symbol there (the recording's venue first, else any venue listing the symbol) and its
+// venue that instrument's; an event whose symbol the configuration lacks is dropped, and note()
+// counts them. The copy holds up to kMaxMsgBytes: a recorded snapshot can be deeper than an
+// EventBuf. Remap applies after strip_own.
 #include "fastmm/backtest/data_source.hpp"
 #include "fastmm/backtest/own_orders.hpp"
 #include "fastmm/core/instrument.hpp"
@@ -35,7 +43,11 @@ class JournalSource final : public MdSource {
  public:
   // Throws std::runtime_error if a file cannot be opened/validated. parts = false reads `path`
   // alone.
-  explicit JournalSource(const std::string& path, bool strip_own = false, bool parts = true);
+  // remap: the configuration's instrument table (see above); null leaves the ids as recorded.
+  explicit JournalSource(const std::string& path,
+                         bool strip_own = false,
+                         bool parts = true,
+                         const InstrumentTable* remap = nullptr);
   const EventHeader* next() override;
   void reset() override;
   [[nodiscard]] Timestamp start_ts() const override { return first_ts_; }
@@ -48,6 +60,8 @@ class JournalSource final : public MdSource {
   [[nodiscard]] std::size_t md_events() const noexcept { return md_events_; }
   // Null unless strip_own.
   [[nodiscard]] const OwnOrderStripper* stripper() const noexcept { return stripper_.get(); }
+  // remap: events dropped so far because the configuration lacks their symbol.
+  [[nodiscard]] std::size_t dropped() const noexcept { return dropped_; }
   [[nodiscard]] std::string note() const override;
   // The first balance snapshot the journal recorded for each venue (the BalanceMsg rows from its
   // first kSnapshot message to the kSnapshotEnd), each asset at its total; account rows
@@ -75,6 +89,14 @@ class JournalSource final : public MdSource {
   std::size_t orders_ = 0;
   EventBuf buf_;
   std::vector<sim::SimAccountConfig> balances_;
+  // remap: per journal instrument id, the configured id (kUnmapped: dropped) and its venue.
+  static constexpr std::uint32_t kUnmapped = 0xFFFF'FFFF;
+  bool remap_ = false;
+  std::vector<std::uint32_t> map_;
+  std::vector<VenueId> map_venue_;
+  std::size_t unmapped_ = 0;  // journal instruments the configuration lacks
+  std::size_t dropped_ = 0;
+  std::vector<std::uint64_t> rbuf_;  // the remapped event, a copy of up to kMaxMsgBytes
 };
 
 // Writes the events of `source` (all, or the first `max_events` when non-zero) to a fresh
