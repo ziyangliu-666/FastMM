@@ -8,7 +8,9 @@
 //                (conservatism 1 => cancels never help us; 0 => proportional share)
 //                a level that disappears entirely sets ahead = 0
 //   trade at px  consumes `ahead` first, the surplus fills us: min(trade - ahead, leaves)
-//   trade through (better than our price for the aggressor) fills us completely
+//   trade through (better than our price for the aggressor) fills us with its quantity: the
+//                aggressor would have taken that much from us before reaching the deeper level;
+//                a sweep's prints each add theirs
 //   touch        a BookTicker newer than the depth book (venue update id when both carry one,
 //                else venue time): an order priced better than the ticker's touch on its side has
 //                nothing ahead, one at the touch at most the touch's quantity
@@ -73,9 +75,11 @@ inline constexpr std::size_t kMaxQueuedOrders = 4096;
     Qty& ahead, Side side, Price price, Qty leaves, Price px, Qty qty, Side aggressor) noexcept {
   if (side != opposite(aggressor) || leaves.is_zero()) return Qty{};
   if (better(aggressor, px, price)) {
-    // trade-through: price moved past us, our whole level was consumed
+    // trade-through: the price moved past us, so our level was consumed; what printed at the
+    // deeper level is what the aggressor would have taken from us (a sweep's prints each add
+    // theirs)
     ahead = Qty{};
-    return leaves;
+    return min(qty, leaves);
   }
   if (px != price) return Qty{};
   if (qty > ahead) {

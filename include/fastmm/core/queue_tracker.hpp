@@ -11,7 +11,8 @@
 //   depth delta  each level at one of our prices: queue_after_level_change(ahead, old, new) with
 //                old and new displayed quantities less our own
 //   snapshot     ahead is capped at what the level now shows
-//   trade        queue_after_trade: consumed ahead first, a trade through our price empties it;
+//   trade        queue_after_trade: consumed ahead first, a trade through our price empties it and
+//                fills the print's quantity;
 //                one newer than the depth book takes its quantity from the level as the next
 //                delta's old quantity, and from the depth book and the touch at placement
 //                (TradeTape)

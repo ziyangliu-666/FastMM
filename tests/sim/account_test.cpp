@@ -420,7 +420,7 @@ TEST_CASE("sim.account: the venue marks a derivative at its mark price, else the
   book(v, at(0), "99.00", "101.00", kPerp);
   REQUIRE(v.send(new_order(1, Side::Buy, "99.00", "10", kPerp).hdr));
   static_cast<void>(drain(v, clock, feed, at(1000)));
-  trade(v, at(1000), "98.00", "1", Side::Sell, kPerp);  // through 99: long 10 at 99
+  trade(v, at(1000), "98.00", "10", Side::Sell, kPerp);  // through 99 with 10: long 10 at 99
   static_cast<void>(drain(v, clock, feed, at(2000)));
   REQUIRE(v.accounts()->position(kPerp) == qt("10"));
   book(v, at(2000), "89.00", "91.00", kPerp);

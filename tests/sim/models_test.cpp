@@ -132,14 +132,42 @@ TEST_CASE("sim.queue_model: ahead shrinks with trades, fills at the touch, trade
   CHECK(fills[0] == qt("1"));
   CHECK(ahead_at_fill[0] == qt("6"));  // queue position at the fill
   CHECK(q.get(h).leaves() == qt("1"));
-  // trade through (sell at 99.5): remainder fills entirely
-  q.on_trade(inst, px("99.5"), qt("0.001"), Side::Sell, Timestamp{}, sink);
+  // trade through (sell at 99.5): the print's quantity fills us, capped at the remainder
+  q.on_trade(inst, px("99.5"), qt("5"), Side::Sell, Timestamp{}, sink);
   REQUIRE(fills.size() == 2);
   CHECK(fills[1] == qt("1"));
   CHECK(q.get(h).leaves().is_zero());
   q.remove(h);
   CHECK(q.size() == 0);
   CHECK_FALSE(q.find(ClientOrderId{1}).valid());
+
+  SUBCASE("a trade through fills the print's quantity, not the whole order") {
+    QueuePositionModel p(10'000);
+    auto g = p.place(ClientOrderId{2},
+                     200,
+                     inst,
+                     Side::Buy,
+                     px("100"),
+                     qt("10"),
+                     qt("4"),
+                     Timestamp{},
+                     Timestamp{});
+    REQUIRE(g.valid());
+    fills.clear();
+    ahead_at_fill.clear();
+    // a sell printing 3 at 99.5 would have taken 3 from us on its way: the queue ahead is gone
+    p.on_trade(inst, px("99.5"), qt("3"), Side::Sell, Timestamp{}, sink);
+    REQUIRE(fills.size() == 1);
+    CHECK(fills[0] == qt("3"));
+    CHECK(ahead_at_fill[0] == qt("4"));
+    CHECK(p.get(g).ahead.is_zero());
+    CHECK(p.get(g).leaves() == qt("7"));
+    // the sweep's next print adds its own quantity
+    p.on_trade(inst, px("99"), qt("7"), Side::Sell, Timestamp{}, sink);
+    REQUIRE(fills.size() == 2);
+    CHECK(fills[1] == qt("7"));
+    CHECK(p.get(g).leaves().is_zero());
+  }
 
   SUBCASE("proportional cancels with conservatism 0 and level disappearing") {
     QueuePositionModel p(0);

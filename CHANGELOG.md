@@ -5,6 +5,11 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- sim: a trade through a resting order fills it with the print's quantity, not the whole order
+  (the aggressor had a fixed size; what it printed at the deeper level is what it would have taken
+  from us). `l2_queue`, `ctx.queue_ahead` and `fastmm-data fill-check` share the rule. The
+  `basic_mm/l2_queue` and `sample_1000` golden hashes are re-baselined (1143 -> 1418 fill
+  events: more of them partial).
 - `[venues.<name>] public_only = true`: a venue can be market data only. Its keys are not required,
   its private sessions are not opened, nothing is sent to it and nothing is cancelled on it at stop;
   for a venue a strategy only reads prices from.
