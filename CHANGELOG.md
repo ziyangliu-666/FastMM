@@ -8,6 +8,28 @@ All notable changes are recorded here (Keep a Changelog format).
 - backtest: `journal:…,remap=1` maps a recording's instruments to the configuration's by symbol
   (and sets the events' venue to the configured instrument's), so recordings of different
   instrument sets merge; a symbol the configuration lacks is dropped and counted in the report.
+- Account pools: `[venues.<member>] pool_of = "<primary>"` puts several accounts of one exchange
+  behind one venue, with one instrument table and one feed (Binance Spot counts orders per
+  account: 100 per 10 s, 200,000 a day). A member is of the primary's kind, lists no instruments
+  and is not `public_only`; a pool holds at most 8 accounts. The engine sends a new order to the
+  account `NewOrderRequest::account` (`.account(venue)`) names, else to the usable member whose
+  balance covers it with the most of the venue's 10 s order window left (then the daily one), and
+  the order keeps it: `Order::venue`, the `OmsUpdate` and `Fill` events and the store's rows carry
+  the member's id, cancels and replaces follow it, and `ctx.balance(member, asset)` and
+  `ctx.order_budget(member)` are per account. `ctx.pool(primary)`, `ctx.pool_primary(venue)`,
+  `ctx.account_usable(venue)`, `ctx.balance_room(id, side, px, account)`; on a pooled instrument
+  `balance_room(id, side, px)` is the largest single account's room, so `fit_to_balance` cuts a
+  ladder to what one order can be. A member whose order link is down or whose kill switch is
+  engaged is routed around; the primary's kill stops the pool. `RejectReason::InvalidAccount` (40)
+  for an account outside the pool. Live, Binance Spot and USDⓈ-M run as members
+  (`VenueCapabilities::account_pools`): order, user and REST sessions, reconciliation, balance
+  snapshot, execution replay and kill-switch cancel-all over the primary's instruments, no market
+  data; a member's position reports are summed into the instrument's position. In a backtest a
+  member is a simulated venue of its own over the primary's books, with its own
+  `[backtest.venues.<member>.balances]` account; `[backtest] orders_10s` / `orders_1d` (and per
+  venue) give the simulated venues Binance's order-count intervals, refused with `VenueRateLimit`
+  past them and reported through `ctx.order_budget`, so the routing by remaining window works in
+  backtests too (`rejects_rate_limit` in the sim stats).
 - sim: a trade through a resting order fills it with the print's quantity, not the whole order
   (the aggressor had a fixed size; what it printed at the deeper level is what it would have taken
   from us). `l2_queue`, `ctx.queue_ahead` and `fastmm-data fill-check` share the rule. The
