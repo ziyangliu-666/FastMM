@@ -1,6 +1,6 @@
-// tests/fixtures/configs/lead_mm_three_instruments.toml backtests a journal that holds all three instruments:
-// the disabled leader and fx books are kept and read, orders go to the target only, and the
-// quotes are pulled once the leader goes quiet.
+// tests/fixtures/configs/lead_mm_three_instruments.toml backtests a journal that holds all three
+// instruments: the disabled leader and fx books are kept and read, orders go to the target only,
+// and the quotes are pulled once the leader goes quiet.
 #include "test_support.hpp"
 
 #include "fastmm/backtest/backtest_config.hpp"
