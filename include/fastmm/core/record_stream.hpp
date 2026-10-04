@@ -63,7 +63,8 @@ enum class RecordType : std::uint8_t {
 struct RecordHeader {
   enum Flags : std::uint8_t {
     kSynthetic = 1U << 0,  // booked by the engine, not reported by the venue (a cum_qty jump)
-    kLate = 1U << 1,       // fill for an order that was already terminal
+    kLate = 1U << 1,       // fill for an order that was already terminal; on an order record,
+                           // that fill's update of the order (only cum_qty and state are valid)
     kUnknown = 1U << 2,    // fill for an order id the OMS does not know
     kTerminal = 1U << 3,   // the order reached a terminal state with this record
     kVenue = 1U << 4,      // kill record: one venue's switch, not the global one
@@ -122,7 +123,9 @@ static_assert(offsetof(FillRecord, venue_order_id) == 168 && offsetof(FillRecord
 // The OMS record after a transition. hdr.aux[0] is the previous OrderState, hdr.aux[1] the
 // OmsAction as an integer, and hdr.aux[2] is 1 when this closes the client order id a
 // cancel-replace superseded (order.cl_ord_id is that id; every other field belongs to the order
-// that carries on, so a store updates only the state).
+// that carries on, so a store updates only the state). With RecordHeader::kLate the order had
+// already ended and a fill that arrived after it changed its cum_qty, and its state when the fill
+// completed it (Filled instead of Canceled): a store updates those two.
 struct OrderRecord {
   RecordHeader hdr;
   Order order;

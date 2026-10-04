@@ -201,6 +201,57 @@ TEST_CASE("core.records: a fill produces a fill record and the position it left 
   CHECK(orr.hdr.aux[0] == static_cast<std::uint8_t>(OrderState::PendingNew));
 }
 
+TEST_CASE("core.records: a fill after the cancel ack updates the ended order, booked once") {
+  Fixture f;
+  f.push_book("100.00", "100.02", 1);
+  f.drain();
+  const ClientOrderId id = f.first_order();
+  REQUIRE(id.valid());
+  OrderAckMsg a{};
+  init_header(a, EventType::OrderAck, InstrumentId{0}, VenueId{0});
+  a.cl_ord_id = id;
+  f.push(a);
+  OrderCancelAckMsg c{};
+  init_header(c, EventType::OrderCancelAck, InstrumentId{0}, VenueId{0});
+  c.cl_ord_id = id;
+  f.push(c);
+  f.drain();
+  Records before;
+  before.drain(f.record_ring);
+
+  OrderFillMsg fill{};
+  init_header(fill, EventType::OrderFill, InstrumentId{0}, VenueId{0});
+  fill.cl_ord_id = id;
+  fill.side = Side::Buy;
+  fill.price = px("100.00");
+  fill.qty = qt("0.01");
+  fill.cum_qty = qt("0.01");
+  fill.exec_id = "E1";
+  f.push(fill);
+  // The venue's trade history repeats it.
+  OrderFillMsg replayed = fill;
+  replayed.cum_qty = Qty{};
+  replayed.flags = OrderFillMsg::kReplayed;
+  f.push(replayed);
+  f.drain();
+
+  Records r;
+  r.drain(f.record_ring);
+  CHECK(r.count(RecordType::Fill) == 1);
+  CHECK(f.engine->position(InstrumentId{0}).qty == qt("0.01"));
+  const OrderRecord* late = nullptr;
+  for (const auto& [type, bytes] : r.all) {
+    if (type != RecordType::Order) continue;
+    const auto* o = reinterpret_cast<const OrderRecord*>(bytes.data());
+    if (o->order.cl_ord_id == id) late = o;
+  }
+  REQUIRE(late != nullptr);
+  CHECK((late->hdr.flags & RecordHeader::kLate) != 0);
+  CHECK(late->hdr.aux[0] == static_cast<std::uint8_t>(OrderState::Canceled));
+  CHECK(late->order.state == OrderState::Filled);
+  CHECK(late->order.cum_qty == qt("0.01"));
+}
+
 TEST_CASE("core.records: a kill switch trip is recorded with the reason and the PnL") {
   Fixture f;
   f.push_book("100.00", "100.02", 1);

@@ -62,6 +62,14 @@ class RingBuffer {
     }
     return nullptr;
   }
+  template <class Pred>
+  [[nodiscard]] T* find_if(Pred&& p) noexcept {
+    for (std::size_t i = size(); i > 0; --i) {
+      T& e = (*this)[i - 1];
+      if (p(e)) return &e;
+    }
+    return nullptr;
+  }
 
  private:
   std::uint64_t head_ = 0;

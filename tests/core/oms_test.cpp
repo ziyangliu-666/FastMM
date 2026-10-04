@@ -813,3 +813,81 @@ TEST_CASE("core.oms: executions that arrive after the cum_qty covering them are 
     CHECK(oms.stats().corrected_fills == 0);
   }
 }
+
+// Binance answers a cancel at once on the WS API and reports the execution it raced on the user
+// stream a few milliseconds later, or (an order it already filled) rejects the cancel as unknown.
+// Whatever the order of the messages, the order's last update carries the fill.
+TEST_CASE("core.oms: an order's end agrees with its fills whichever message arrives first") {
+  Oms oms;
+  const auto open = [&](std::int64_t q) {
+    const ClientOrderId id = oms.next_cl_ord_id();
+    const Handle<Order> h = *oms.submit(req(Side::Sell, 100, q), id, Timestamp{1});
+    static_cast<void>(oms.on_ack(ack(id)));
+    REQUIRE(oms.request_cancel(h));
+    return id;
+  };
+  SUBCASE("cancel ack, then the fill that completed the order") {
+    const ClientOrderId id = open(2);
+    CHECK(oms.on_cancel_ack(cancel_ack(id)).order.state == OrderState::Canceled);
+    const OmsUpdate u = oms.on_fill(fill(id, 100, 2, 2, "e1"));
+    CHECK(u.action == OmsAction::LateFill);
+    CHECK(u.changed);
+    CHECK_FALSE(u.terminal);  // it ended with the cancel ack
+    CHECK(u.prev == OrderState::Canceled);
+    CHECK(u.order.state == OrderState::Filled);
+    CHECK(u.order.cum_qty == qt(2));
+    CHECK(u.order.qty == qt(2));
+    CHECK(u.order.price == px(100));
+    // The same execution again (the trade-history replay) changes nothing.
+    OrderFillMsg again = fill(id, 100, 2, 0, "e1");
+    again.flags = OrderFillMsg::kReplayed;
+    CHECK(oms.on_fill(again).action == OmsAction::Duplicate);
+  }
+  SUBCASE("cancel ack, then a partial fill: Canceled with the filled quantity") {
+    const ClientOrderId id = open(5);
+    static_cast<void>(oms.on_cancel_ack(cancel_ack(id)));
+    const OmsUpdate a = oms.on_fill(fill(id, 100, 2, 2, "e1"));
+    CHECK(a.changed);
+    CHECK(a.order.state == OrderState::Canceled);
+    CHECK(a.order.cum_qty == qt(2));
+    const OmsUpdate b = oms.on_fill(fill(id, 100, 1, 3, "e2"));
+    CHECK(b.order.state == OrderState::Canceled);
+    CHECK(b.order.cum_qty == qt(3));
+  }
+  SUBCASE("the fill, then the cancel ack") {
+    const ClientOrderId id = open(5);
+    const OmsUpdate f = oms.on_fill(fill(id, 100, 2, 2, "e1"));
+    CHECK(f.action == OmsAction::None);
+    CHECK(f.order.state == OrderState::PendingCancel);
+    const OmsUpdate c = oms.on_cancel_ack(cancel_ack(id, 2));
+    CHECK(c.terminal);
+    CHECK(c.order.state == OrderState::Canceled);
+    CHECK(c.order.cum_qty == qt(2));
+    CHECK(c.missed_qty.is_zero());
+    // A fill that completes the order first leaves nothing for the cancel ack.
+    const ClientOrderId full = open(1);
+    CHECK(oms.on_fill(fill(full, 100, 1, 1, "e2")).order.state == OrderState::Filled);
+    CHECK(oms.on_cancel_ack(cancel_ack(full, 1)).action == OmsAction::Ignored);
+  }
+  SUBCASE("cancel rejected as unknown, then the execution from the trade-history replay") {
+    const ClientOrderId id = open(3);
+    const OmsUpdate c = oms.on_cancel_reject(cancel_reject(id, RejectReason::VenueUnknownOrder));
+    CHECK(c.order.state == OrderState::Canceled);
+    OrderFillMsg replayed = fill(id, 100, 3, 0, "e1");
+    replayed.flags = OrderFillMsg::kReplayed;
+    const OmsUpdate u = oms.on_fill(replayed);
+    CHECK(u.action == OmsAction::LateFill);
+    CHECK(u.corrected_qty.is_zero());
+    CHECK(u.order.state == OrderState::Filled);
+    CHECK(u.order.cum_qty == qt(3));
+    // The live execution after the replay is the same one.
+    CHECK(oms.on_fill(fill(id, 100, 3, 3, "e1")).action == OmsAction::Duplicate);
+  }
+  SUBCASE("a cancel ack that reported the fill: the execution names the estimate, nothing moves") {
+    const ClientOrderId id = open(2);
+    CHECK(oms.on_cancel_ack(cancel_ack(id, 2)).order.state == OrderState::Filled);
+    const OmsUpdate u = oms.on_fill(fill(id, 99, 2, 2, "e1"));
+    CHECK(u.corrected_qty == qt(2));
+    CHECK_FALSE(u.changed);
+  }
+}

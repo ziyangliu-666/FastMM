@@ -149,6 +149,8 @@ One row per order, keyed `(session_id, cl_ord_id)`, updated in place: the row ho
 
 `Replaced` is the store's own state, not an `OrderState`: a cancel-replace to a new client order id renames the order in place, so the id it superseded never reports a terminal state of its own. Its row keeps the price and quantity it had and is closed when the replacement is acked. Without it every replaced quote would read as still open.
 
+A fill that arrives after its order ended (the cancel ack overtook the execution) updates the row's `cum_qty` and, when it completes the order, its state: `Canceled` becomes `Filled`.
+
 ### positions
 
 One row per position snapshot, keyed `(session_id, seq)`: `qty_raw`, `avg_px_raw`, `realized_raw`, `unrealized_raw`, `fees_raw`, `gross_traded_raw`, `fills`, the portfolio totals `total_realized_raw`, `total_unrealized_raw`, `total_fees_raw`, `pnl_carry_raw`, and (version 4) `funding_raw` and `total_funding_raw`.

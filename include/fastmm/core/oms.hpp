@@ -21,7 +21,9 @@
 // topics are not ordered on every venue). The execution then corrects the price and the fee
 // (OmsUpdate::corrected_qty) instead of the quantity being counted twice.
 // Races: fill after cancel ack -> LateFill (position still updated from the terminal record's
-// instrument and side); cancel-reject after fill -> ignored; ack for unknown id -> CancelUnknown
+// instrument and side; the record takes the fill's quantity, and a Canceled or Expired order the
+// fill completes becomes Filled, so the order's last update agrees with its fills); cancel-reject
+// after fill -> ignored; ack for unknown id -> CancelUnknown
 // (never leave an unknown live order); ack for an order reconciliation marked cancelled ->
 // CancelUnknown; duplicate exec_id -> Duplicate; duplicate ack -> Ignored (also for the original
 // id while a replace to a new id is pending: only the new id's ack completes the replace).
@@ -61,14 +63,16 @@ enum class OmsAction : std::uint8_t {
   Ignored,          // message did not apply (duplicate ack, late cancel-reject, ...)
   Duplicate,        // duplicate exec_id
   CancelUnknown,    // ack/fill for an id we do not know: engine must cancel it
-  LateFill,         // fill for a recently terminal order: update position only
+  LateFill,         // fill for a recently terminal order: position, and the terminal record's
+                    // cum_qty and state (changed = true when they moved)
   UnknownFill,      // fill for a completely unknown id: update position, alert
   ReconcileNeeded,  // too many cancel rejects
 };
 
 struct OmsUpdate {
   Order order{};  // snapshot after the transition; for a recently terminal id only the terminal
-                  // record's fields (id, instrument, side, state, cum_qty); empty if unknown
+                  // record's fields (id, instrument, venue, side, state, price, qty, cum_qty);
+                  // empty if unknown
   Handle<Order> handle{};  // invalid once terminal (slot freed) or unknown
   OrderState prev = OrderState::PendingNew;
   OmsAction action = OmsAction::None;
@@ -432,6 +436,7 @@ class Oms {
       if (u.known) {
         u.action = OmsAction::LateFill;
         ++stats_.late_fills;
+        late_fill(m, u);
       } else {
         u.action = OmsAction::UnknownFill;
         ++stats_.unknown_ids;
@@ -610,8 +615,11 @@ class Oms {
  private:
   struct TerminalRecord {
     ClientOrderId cl_ord_id;
+    Price price;
+    Qty qty;
     Qty cum_qty;
     InstrumentId instrument;
+    VenueId venue;
     OrderState state;
     Side side;
     bool by_reconcile;  // marked Canceled by reconcile_end(), not reported by the venue
@@ -688,6 +696,29 @@ class Oms {
     }
   }
 
+  // A fill for an order that already ended: a cancel ack (or a cancel reject for an order the venue
+  // no longer has) overtook the execution. The terminal record takes the quantity, so a later
+  // duplicate or replay of the order reads the right cum_qty, and an order the fill completes is
+  // Filled, not Canceled. u.changed tells the engine to write the corrected order.
+  void late_fill(const OrderFillMsg& m, OmsUpdate& u) noexcept {
+    TerminalRecord* r = recently_terminal_.find_if(
+        [&](const TerminalRecord& t) { return t.cl_ord_id == m.cl_ord_id; });
+    if (r == nullptr) return;
+    u.prev = r->state;
+    const Qty fresh = m.qty - u.corrected_qty;
+    Qty cum = m.cum_qty.is_positive() ? m.cum_qty : r->cum_qty + fresh;
+    if (cum > r->qty) cum = r->qty;
+    if (cum <= r->cum_qty) return;
+    r->cum_qty = cum;
+    if (cum >= r->qty && (r->state == OrderState::Canceled || r->state == OrderState::Expired)) {
+      r->state = OrderState::Filled;
+      ++stats_.filled;
+    }
+    u.order.cum_qty = r->cum_qty;
+    u.order.state = r->state;
+    u.changed = true;
+  }
+
   // Finds an open order; sets u.known if the id is open or recently terminal.
   Handle<Order> lookup(ClientOrderId id, OmsUpdate& u) noexcept {
     const Handle<Order>* p = by_id_.find(id);
@@ -703,8 +734,11 @@ class Oms {
       u.known = true;
       u.order.cl_ord_id = r->cl_ord_id;
       u.order.instrument = r->instrument;
+      u.order.venue = r->venue;
       u.order.side = r->side;
       u.order.state = r->state;
+      u.order.price = r->price;
+      u.order.qty = r->qty;
       u.order.cum_qty = r->cum_qty;
       if (r->by_reconcile) u.order.flags |= Order::kReconciled;
     }
@@ -770,8 +804,15 @@ class Oms {
     by_id_.erase(o.cl_ord_id);
     if (o.pending_cl_ord_id.valid() && o.pending_cl_ord_id != o.cl_ord_id)
       by_id_.erase(o.pending_cl_ord_id);
-    recently_terminal_.push(
-        TerminalRecord{o.cl_ord_id, o.cum_qty, o.instrument, final_state, o.side, by_reconcile});
+    recently_terminal_.push(TerminalRecord{o.cl_ord_id,
+                                           o.price,
+                                           o.qty,
+                                           o.cum_qty,
+                                           o.instrument,
+                                           o.venue,
+                                           final_state,
+                                           o.side,
+                                           by_reconcile});
     u.order = o;
     u.handle = Handle<Order>{};
     u.times = times_[h.idx].t;

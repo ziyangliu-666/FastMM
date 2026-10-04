@@ -264,6 +264,17 @@ class SqliteBackend final : public Backend {
       step(upd_replaced_.get(), "close a replaced order");
       return;
     }
+    // A fill after the order ended: the row keeps everything but the filled quantity and state.
+    if ((r.hdr.flags & RecordHeader::kLate) != 0) {
+      Bind b(upd_late_.get());
+      b.i(o.cum_qty.raw);
+      b.t(to_string(o.state));
+      b.i(r.hdr.engine_ts.ns);
+      b.u(r.hdr.session_id);
+      b.t(encode_cl_ord_id(o.cl_ord_id).view());
+      step(upd_late_.get(), "update an ended order");
+      return;
+    }
     Bind b(ins_order_.get());
     b.u(r.hdr.session_id);
     b.t(encode_cl_ord_id(o.cl_ord_id).view());
@@ -411,6 +422,7 @@ class SqliteBackend final : public Backend {
     ins_fill_.reset();
     ins_order_.reset();
     upd_replaced_.reset();
+    upd_late_.reset();
     ins_position_.reset();
     ins_kill_.reset();
     ins_funding_.reset();
@@ -532,6 +544,9 @@ class SqliteBackend final : public Backend {
         {&upd_replaced_,
          "UPDATE orders SET state='Replaced', terminal=1, updated_ns=?,"
          " updates=orders.updates+1 WHERE session_id=? AND cl_ord_id=?"},
+        {&upd_late_,
+         "UPDATE orders SET cum_qty_raw=?, state=?, terminal=1, updated_ns=?,"
+         " updates=orders.updates+1 WHERE session_id=? AND cl_ord_id=?"},
         {&ins_position_,
          "INSERT OR IGNORE INTO positions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
          "?,?,?)"},
@@ -574,6 +589,7 @@ class SqliteBackend final : public Backend {
   Stmt upd_replayed_;
   Stmt ins_order_;
   Stmt upd_replaced_;
+  Stmt upd_late_;
   Stmt ins_position_;
   Stmt ins_kill_;
   Stmt ins_funding_;

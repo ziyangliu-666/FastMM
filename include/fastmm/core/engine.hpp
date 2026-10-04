@@ -1140,6 +1140,9 @@ class Engine {
     OrderRecord r;
     records_.init(r, RecordType::Order, u.order.instrument, u.order.venue, now_, now_);
     if (u.terminal) r.hdr.flags |= RecordHeader::kTerminal;
+    // A late fill changed an order that had already ended: only its cum_qty and state are known.
+    if (u.action == OmsAction::LateFill)
+      r.hdr.flags |= RecordHeader::kLate | RecordHeader::kTerminal;
     r.hdr.aux[0] = static_cast<std::uint8_t>(u.prev);
     r.hdr.aux[1] = static_cast<std::uint8_t>(u.action);
     r.order = u.order;

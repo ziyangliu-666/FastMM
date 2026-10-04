@@ -64,6 +64,11 @@ All notable changes are recorded here (Keep a Changelog format).
   the parts the same way; over a session journal it still verifies one part at a time.
 
 ### Fixed
+- A fill that arrives after its order ended (Binance answers the cancel on the WS API before the
+  user stream reports the execution it raced, or rejects the cancel of an order it already filled)
+  was booked into the position but left the order `Canceled` with `cum_qty` 0. The OMS's terminal
+  record now takes the fill; an order it completes becomes `Filled`, and the store's `orders` row
+  is updated (`cum_qty`, `state`) to match its fills.
 - `--data "a;b"` (`MergedSource`) copied every event it yielded into an EventBuf, 8 KiB, the size
   of a 256-level book: a journal's depth snapshot with more levels (Binance USDⓈ-M records up to
   1000 a side) was written past the end of the source, which glibc reported as `corrupted

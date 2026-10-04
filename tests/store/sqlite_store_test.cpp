@@ -259,6 +259,36 @@ TEST_CASE("store.sqlite: a cancel-replace closes the client order id it supersed
   CHECK(rec->open_orders[0].find("Live") != std::string::npos);
 }
 
+TEST_CASE("store.sqlite: a fill after the order ended updates its filled quantity and state") {
+  const std::string path = fresh("late.db");
+  const InstrumentTable table = fastmm::test::store_table();
+  Store s(path);
+  REQUIRE(s.backend->session_open(fastmm::test::store_session(3, kDay1Ns)));
+  REQUIRE(s.backend->instruments(3, std::span<const Instrument>(table.data(), table.size())));
+  s.backend->begin();
+  s.backend->order(fastmm::test::store_order(3, 1, kDay1Ns, 1, OrderState::Live));
+  s.backend->order(fastmm::test::store_order(3, 2, kDay1Ns + 1000, 1, OrderState::Canceled));
+  // What the engine knows of an ended order: no price, no venue order id.
+  OrderRecord late = fastmm::test::store_order(3, 3, kDay1Ns + 2000, 1, OrderState::Filled);
+  late.hdr.flags |= RecordHeader::kLate;
+  late.order.price = Price{};
+  late.order.cum_qty = Qty::from_decimal("1").value();
+  s.backend->order(late);
+  s.backend->commit();
+  CHECK(s.backend->errors() == 0);
+  s.backend->close();
+
+  GenericSection section;
+  auto reader = open_reader(path, section);
+  auto all = reader->orders(QueryFilter{});
+  REQUIRE(all);
+  REQUIRE(all->rows.size() == 1);
+  CHECK(all->rows[0][column(*all, "state")] == "Filled");
+  CHECK(all->rows[0][column(*all, "cum_qty")] == "1");
+  CHECK(all->rows[0][column(*all, "price")] == "100");
+  CHECK(all->rows[0][column(*all, "updates")] == "3");
+}
+
 TEST_CASE("store.sqlite: the registry knows sqlite and refuses an unknown name") {
   StoreRegistry local;
   CHECK(local.find("sqlite") == nullptr);
