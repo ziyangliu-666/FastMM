@@ -167,6 +167,9 @@ enum class RejectReason : std::uint8_t {
   // The connector's table of the orders it has sent is full: it could not record this one (whose
   // fills, amends and replies it would then not map back), so it did not send it.
   OrderTableFull = 39,
+  // NewOrderRequest::account names a venue that is neither the instrument's nor a member of its
+  // pool (core/account_pool.hpp); refused locally.
+  InvalidAccount = 40,
   // fastmm-gateway's account guards ([gateway]), refused before the order reached the connector
   GatewayRateLimit = 48,      // the venue's order rate, shared by every attached strategy
   GatewayOpenNotional = 49,   // the notional working at the venue, over every attached strategy
@@ -252,6 +255,8 @@ enum class RejectReason : std::uint8_t {
       return "InvalidTag";
     case RejectReason::OrderTableFull:
       return "OrderTableFull";
+    case RejectReason::InvalidAccount:
+      return "InvalidAccount";
     case RejectReason::GatewayRateLimit:
       return "GatewayRateLimit";
     case RejectReason::GatewayOpenNotional:

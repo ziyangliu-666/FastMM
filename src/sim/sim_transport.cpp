@@ -58,6 +58,13 @@ SimTransport::SimTransport(const SimClock& clock,
     used[v.value] = true;
   }
   if (instruments.size() == 0) used[cfg.venue.value] = true;
+  // A pool member of a simulated venue is simulated too, with its own link.
+  if (cfg.pools.active) {
+    for (std::uint8_t v = 0; v < kMaxVenues; ++v) {
+      const VenueId primary = cfg.pools.primary(VenueId{v});
+      if (primary.value != v && primary.value < kMaxVenues && used[primary.value]) used[v] = true;
+    }
+  }
   for (const SimVenueConfig& c : cfg.venues) {
     if (!c.venue.valid() || c.venue.value >= kMaxVenues || !used[c.venue.value]) {
       throw std::invalid_argument("sim: settings for venue " + std::to_string(c.venue.value) +
@@ -74,7 +81,9 @@ SimTransport::SimTransport(const SimClock& clock,
     links_[n_links_++].emplace(VenueId{v}, vc, seed, cfg);
   }
   if (!cfg.accounts.empty())
-    accounts_ = std::make_unique<SimAccounts>(instruments, cfg.accounts, cfg.initial_margin);
+    accounts_ =
+        std::make_unique<SimAccounts>(instruments, cfg.accounts, cfg.initial_margin, &cfg.pools);
+  if (cfg.pools.active) order_venues_ = std::make_unique<OrderVenues>();
   if (cfg.own_orders_in_feed) {
     const std::size_t n = instruments.size() == 0 ? 1 : instruments.size();
     own_feed_ = std::make_unique<OwnFeed[]>(n);
@@ -130,7 +139,7 @@ bool SimTransport::send(const EventHeader& m) noexcept {
       return true;  // not an order message: accepted and ignored
   }
   if (cfg_.hash_outbound) hasher_.add(m);
-  const LatencySample s = link(m.instrument).lat.order_out();
+  const LatencySample s = link_for(m).lat.order_out();
   if (s.dropped) {
     ++stats_.dropped;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
@@ -182,10 +191,18 @@ void SimTransport::process_order_arrival() noexcept {
 }
 
 void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
+  note_order(m.cl_ord_id, link_for(m.hdr));
   if (accounts_ != nullptr) {
     const Price px =
         m.type == OrderType::Market ? venue_best(m.hdr.instrument, opposite(m.side)) : m.price;
-    if (!accounts_->admit(m.cl_ord_id, m.hdr.instrument, m.side, px, m.qty, m.reduce_only != 0)) {
+    if (!accounts_->admit(m.cl_ord_id,
+                          m.hdr.instrument,
+                          m.side,
+                          px,
+                          m.qty,
+                          m.reduce_only != 0,
+                          {},
+                          m.hdr.venue)) {
       accounts_->count_refused();
       emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::InsufficientBalance, now);
       return;
@@ -208,6 +225,9 @@ void SimTransport::venue_new(const OutNewOrderMsg& m, Timestamp now) noexcept {
 }
 
 void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
+  // A cancel of an order the venue does not hold is refused on the link it came in on.
+  if (order_venues_ != nullptr && !order_venues_->contains(m.cl_ord_id.value))
+    note_order(m.cl_ord_id, link_for(m.hdr));
   if (cfg_.fill_model == FillModel::L2Queue) {
     queue_cancel(m.cl_ord_id, m.hdr.instrument, now);
   } else {
@@ -216,6 +236,7 @@ void SimTransport::venue_cancel(const OutCancelMsg& m, Timestamp now) noexcept {
 }
 
 void SimTransport::venue_replace(const OutReplaceMsg& m, Timestamp now) noexcept {
+  note_order(m.cl_ord_id, order_link(m.orig_cl_ord_id, m.hdr.instrument));
   if (accounts_ != nullptr &&
       !accounts_->admit_replace(m.orig_cl_ord_id, m.cl_ord_id, m.price, m.qty)) {
     // The venue cancels the order and refuses its replacement (Binance cancelReplace).
@@ -680,7 +701,7 @@ void SimTransport::emit_ack(ClientOrderId id,
                             InstrumentId inst,
                             Timestamp ts) noexcept {
   ++stats_.acks;
-  Link& l = link(inst);
+  Link& l = order_link(id, inst);
   OrderAckMsg m{};
   init_header(m, EventType::OrderAck, inst, l.id);
   m.cl_ord_id = id;
@@ -715,7 +736,7 @@ void SimTransport::emit_reject(ClientOrderId id,
       ++stats_.rejects_other;
       break;
   }
-  Link& l = link(inst);
+  Link& l = order_link(id, inst);
   OrderRejectMsg m{};
   init_header(m, EventType::OrderReject, inst, l.id);
   m.cl_ord_id = id;
@@ -728,20 +749,24 @@ void SimTransport::emit_reject(ClientOrderId id,
     m.text = to_string(r);
   }
   // A duplicate id names another order, whose hold stays.
-  if (accounts_ != nullptr && r != RejectReason::DuplicateId) accounts_->close(id);
+  if (r != RejectReason::DuplicateId) {
+    if (accounts_ != nullptr) accounts_->close(id);
+    forget_order(id);
+  }
   push_order_wire(l, m.hdr, ts);
   publish_account(l, ts);
 }
 void SimTransport::emit_cancel_ack(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {
   ++stats_.cancel_acks;
-  Link& l = link(inst);
+  Link& l = order_link(id, inst);
   OrderCancelAckMsg m{};
   init_header(m, EventType::OrderCancelAck, inst, l.id);
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
   if (accounts_ != nullptr) accounts_->close(id);
+  forget_order(id);
   push_order_wire(l, m.hdr, ts);
   publish_account(l, ts);
 }
@@ -750,7 +775,8 @@ void SimTransport::emit_cancel_reject(ClientOrderId id,
                                       Timestamp ts,
                                       InstrumentId route) noexcept {
   ++stats_.cancel_rejects;
-  Link& l = link(inst.valid() ? inst : route);
+  Link& l = order_link(id, inst.valid() ? inst : route);
+  forget_order(id);  // the venue does not hold it
   OrderCancelRejectMsg m{};
   init_header(m, EventType::OrderCancelReject, inst, l.id);
   m.cl_ord_id = id;
@@ -761,13 +787,14 @@ void SimTransport::emit_cancel_reject(ClientOrderId id,
 }
 void SimTransport::emit_expired(
     ClientOrderId id, std::uint64_t order_id, InstrumentId inst, Qty cum, Timestamp ts) noexcept {
-  Link& l = link(inst);
+  Link& l = order_link(id, inst);
   OrderExpiredMsg m{};
   init_header(m, EventType::OrderExpired, inst, l.id);
   m.cl_ord_id = id;
   m.venue_order_id = decimal_id(order_id);
   m.cum_qty = cum;
   if (accounts_ != nullptr) accounts_->close(id);
+  forget_order(id);
   push_order_wire(l, m.hdr, ts);
   publish_account(l, ts);
 }
@@ -785,7 +812,7 @@ void SimTransport::emit_fill(ClientOrderId id,
                              Qty queue_ahead,
                              bool queue_known) noexcept {
   ++stats_.fills;
-  Link& l = link(inst);
+  Link& l = order_link(id, inst);
   OrderFillMsg m{};
   init_header(m, EventType::OrderFill, inst, l.id);
   m.cl_ord_id = id;
@@ -814,6 +841,7 @@ void SimTransport::emit_fill(ClientOrderId id,
     observer_->on_fill(m, ts, ctx);
   }
   if (accounts_ != nullptr) accounts_->fill(id, px, qty, leaves, m.fee);
+  if (!leaves.is_positive()) forget_order(id);
   push_order_wire(l, m.hdr, ts);
   publish_account(l, ts);
 }

@@ -24,6 +24,11 @@
 // Every change marks its rows; publish() hands each row whose amounts moved since it was last
 // published to a callback as a BalanceMsg (a Binance outboundAccountPosition), snapshot() every row
 // of a venue flagged as one snapshot. Nothing allocates after construction.
+//
+// Account pools (core/account_pool.hpp): a member venue's account holds the rows and the
+// per-instrument state (positions, holds) of its primary's instruments once more; the order calls
+// name the venue the order went to (`venue`, invalid: the instrument's own).
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fixed_point.hpp"
@@ -66,32 +71,37 @@ class SimAccounts {
   static constexpr std::size_t kMaxOrders = 1U << 14;  // open orders of the strategy, all venues
 
   // `initial_margin`: per instrument id, the derivative's margin rate (may be shorter than the
-  // table: missing rates are 0). Throws std::invalid_argument for an account on a venue no
-  // instrument trades or an asset named twice.
+  // table: missing rates are 0). `pools`: the account pools, whose members trade their primary's
+  // instruments. Throws std::invalid_argument for an account on a venue no instrument trades (nor
+  // its pool) or an asset named twice.
   SimAccounts(const InstrumentTable& instruments,
               std::span<const SimAccountConfig> accounts,
-              std::span<const Ratio> initial_margin);
+              std::span<const Ratio> initial_margin,
+              const PoolPlan* pools = nullptr);
   SimAccounts(const SimAccounts&) = delete;
   SimAccounts& operator=(const SimAccounts&) = delete;
 
   [[nodiscard]] bool enabled(VenueId v) const noexcept {
     return v.value < kMaxVenues && venue_on_[v.value];
   }
+  // The instrument's own venue has an account.
   [[nodiscard]] bool enabled(InstrumentId id) const noexcept {
-    return id.value < inst_.size() && inst_[id.value].on;
+    return id.value < n_inst_ && slot_for(instruments_.get(id).venue) != kNoSlot;
   }
 
   // The venue checks a new order (or the new leg of a replace of `replaces`) at `px` for `qty`; a
   // market order is held at the venue's opposite touch, which the caller passes as `px`. True: the
   // order is accepted and holds its amount under `id` until fill() takes its last quantity or
-  // close() ends it. An instrument without an account admits everything and records nothing.
+  // close() ends it. `venue`: the account it goes to (a pool member; invalid: the instrument's
+  // own venue). A venue without an account admits everything and records nothing.
   bool admit(ClientOrderId id,
              InstrumentId inst,
              Side side,
              Price px,
              Qty qty,
              bool reduce_only,
-             ClientOrderId replaces = {}) noexcept;
+             ClientOrderId replaces = {},
+             VenueId venue = {}) noexcept;
   // The new leg `id` of a replace of `orig` at `px` for `qty`: admit() with `orig`'s instrument and
   // side. True when the account does not know `orig` (the venue answers that itself).
   bool admit_replace(ClientOrderId orig, ClientOrderId id, Price px, Qty qty) noexcept;
@@ -101,16 +111,18 @@ class SimAccounts {
   // The order ended (cancel, expiry, reject): its hold goes back to free.
   void close(ClientOrderId id) noexcept;
   // A derivative's mark price: the venue's (`venue`: a mark price stream), or the book's mid, which
-  // is used only while the venue has sent none.
+  // is used only while the venue has sent none. Every account of the instrument's pool takes it.
   void mark(InstrumentId id, Price px, bool venue) noexcept {
     if (!enabled(id) || !px.is_positive()) return;
-    Inst& in = inst_[id.value];
-    if (!in.derivative || (in.venue_mark && !venue)) return;
-    in.mark = px;
-    in.venue_mark = in.venue_mark || venue;
+    for (std::size_t k = 0; k < n_slots_; ++k) {
+      Inst& in = at(k, id);
+      if (!in.on || !in.derivative || (in.venue_mark && !venue)) continue;
+      in.mark = px;
+      in.venue_mark = in.venue_mark || venue;
+    }
   }
   [[nodiscard]] bool derivative(InstrumentId id) const noexcept {
-    return enabled(id) && inst_[id.value].derivative;
+    return enabled(id) && at(slot_for(instruments_.get(id).venue), id).derivative;
   }
 
   // Each row of `venue` as one snapshot (kSnapshot, the last one also kSnapshotEnd), stamped `ts`.
@@ -151,7 +163,7 @@ class SimAccounts {
   [[nodiscard]] Notional total(VenueId venue, std::string_view asset) const noexcept;
   // The open positions' unrealised PnL at their marks, in the asset (zero for a spot asset).
   [[nodiscard]] Notional unrealized(VenueId venue, std::string_view asset) const noexcept;
-  // A derivative's position at the venue (contracts, signed).
+  // A derivative's position at the venue (contracts, signed), over every account of its pool.
   [[nodiscard]] Qty position(InstrumentId id) const noexcept;
   [[nodiscard]] std::size_t open_orders() const noexcept { return holds_.size(); }
   [[nodiscard]] const SimAccountStats& stats() const noexcept { return stats_; }
@@ -184,6 +196,8 @@ class SimAccounts {
   };
   struct Hold {
     InstrumentId inst{};
+    VenueId venue{};        // the account it is held in ...
+    std::uint8_t slot = 0;  // ... and its slot (slot_for)
     Side side = Side::Buy;
     Price price{};
     Qty leaves{};
@@ -206,9 +220,26 @@ class SimAccounts {
   std::uint16_t row_for(VenueId venue, std::string_view asset);
   [[nodiscard]] BalanceMsg message(const Row& r, Timestamp ts) const noexcept;
 
+  static constexpr std::uint8_t kNoSlot = 0xFF;
+  // The account of `venue`'s slot; kNoSlot without one.
+  [[nodiscard]] std::uint8_t slot_for(VenueId venue) const noexcept {
+    return venue.value < kMaxVenues ? slot_of_venue_[venue.value] : kNoSlot;
+  }
+  // The state of instrument `id` in account slot `k`.
+  [[nodiscard]] Inst& at(std::size_t k, InstrumentId id) noexcept {
+    return inst_[k * n_inst_ + id.value];
+  }
+  [[nodiscard]] const Inst& at(std::size_t k, InstrumentId id) const noexcept {
+    return inst_[k * n_inst_ + id.value];
+  }
+
   const InstrumentTable& instruments_;
   std::vector<Row> rows_;
+  // Per account slot, per instrument: inst_[slot * n_inst_ + id] (at()).
   std::vector<Inst> inst_;
+  std::size_t n_inst_ = 0;
+  std::size_t n_slots_ = 0;
+  std::array<std::uint8_t, kMaxVenues> slot_of_venue_{};
   std::array<bool, kMaxVenues> venue_on_{};
   std::array<bool, kMaxVenues> dirty_{};
   OpenHashMap<std::uint64_t, Hold, kMaxOrders> holds_;

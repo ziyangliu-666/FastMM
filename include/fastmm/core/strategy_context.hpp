@@ -2,6 +2,7 @@
 // StrategyContext: the API a strategy sees (ADR-0012, section 2). A thin, non-owning facade over
 // the Engine, so strategies never include engine.hpp and cannot reach into internals. Every
 // order-API call marks the strategy's decision time for the serialize latency interval.
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
@@ -212,6 +213,26 @@ class StrategyContext {
   [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price px) const noexcept {
     return e_->balance_room(id, side, px);
   }
+  // ... on one account of the instrument's pool (its own venue when `account` is not one).
+  [[nodiscard]] Qty balance_room(InstrumentId id,
+                                 Side side,
+                                 Price px,
+                                 VenueId account) const noexcept {
+    return e_->balance_room(id, side, px, account);
+  }
+
+  // ---- account pools (core/account_pool.hpp) ---------------------------------------------------
+
+  // The accounts that take orders for a venue's instruments ([venues.<x>] pool_of), the primary
+  // first; just the venue itself without a pool. Each has its own balance(), margin() and
+  // order_budget(); an order goes to the one NewOrderRequest::account names, else to the usable
+  // member whose balance covers it with the most order window left, and Order::venue keeps it.
+  [[nodiscard]] PoolMembers pool(VenueId primary) const noexcept { return e_->pool(primary); }
+  // The venue whose instruments `v` takes orders for: its primary, or `v` itself.
+  [[nodiscard]] VenueId pool_primary(VenueId v) const noexcept { return e_->pool_primary(v); }
+  // The automatic routing would send to `v` now: its order link is live and its kill switch is
+  // not engaged (its balance and window are the order's to decide).
+  [[nodiscard]] bool account_usable(VenueId v) const noexcept { return e_->account_usable(v); }
 
   // ---- perpetuals (core/perp_book.hpp)
   // -----------------------------------------------------------

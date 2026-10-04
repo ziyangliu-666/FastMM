@@ -85,6 +85,7 @@ Cancels skip every check, including the kill switch.
 | 37 | `NotReconciled` | never produced by the current code |
 | 38 | `InvalidTag` | `ctx.send` used a `user_tag` inside the quote manager's reserved range |
 | 39 | `OrderTableFull` | the connector's table of the orders it has sent (7168 working orders and replaces in flight, over every strategy behind a gateway) was full; the order was not sent |
+| 40 | `InvalidAccount` | `NewOrderRequest::account` named a venue that is neither the instrument's nor a member of its pool (`[venues.<x>] pool_of`); refused locally |
 
 ### Gateway
 

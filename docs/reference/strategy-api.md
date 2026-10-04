@@ -252,6 +252,32 @@ static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 
 `RiskHeadroom::balance_buy_qty` / `balance_sell_qty` are `balance_room` at the book's mid.
 
+### Account pools
+
+Several accounts of one exchange behind one venue (`[venues.<x>] pool_of`, [Account pools](configuration.md#account-pools)): the instruments, books, tickers and positions are the primary's; each member has its own `balance()`, `margin()` and `order_budget()` under its own venue id.
+
+<!-- snippet: tests/docs/strategy_api_doc_test.cpp#pool -->
+```cpp
+static_assert(std::same_as<decltype(lvalue<Ctx>().pool(VenueId{})), PoolMembers>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().pool_primary(VenueId{})), VenueId>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().account_usable(VenueId{})), bool>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().balance_room(
+                               InstrumentId{}, Side::Buy, Price{}, VenueId{})),
+                           Qty>);
+static_assert(std::same_as<decltype(lvalue<const PoolMembers>().size()), std::size_t>);
+static_assert(std::same_as<decltype(lvalue<const PoolMembers>()[0]), VenueId>);
+static_assert(std::same_as<decltype(NewOrderRequest::account), VenueId>);
+```
+
+| Method | Returns |
+|---|---|
+| `pool(primary)` | `PoolMembers`: the accounts that take orders for the venue's instruments, the primary first (`size()`, `operator[]`, `contains(venue)`, iterable); just the venue itself without a pool |
+| `pool_primary(venue)` | the venue whose instruments `venue` takes orders for: its primary, or itself |
+| `account_usable(venue)` | the automatic routing would send to it now: its order link is live and its kill switch is not engaged |
+| `balance_room(id, side, px, account)` | `balance_room` on one account of the pool; the three-argument form is the most any usable account covers, which is what one order can be |
+
+A new order goes to one account and stays there: `Order::venue`, the `OmsUpdate` and `Fill` events (their `msg->hdr.venue`) and the store's rows carry the member's id, and `cancel` / `replace` follow it. `NewOrderRequest::account` (`.account(venue)` on the builder) names the account; it must be the primary or one of its members, else `send` fails with `InvalidAccount`. Without one the engine picks: for a spot buy the usable members whose free quote covers the notional, for a spot sell those whose free base covers the quantity (every usable member for a derivative), and among them the one with the most of the venue's 10 s order window left (`order_budget(member).orders_10s`), then of the daily one; ties go in pool order, so a backtest without window limits sends everything the balances allow to the primary. When no member covers the order it goes to the primary, which refuses it as the venue does. A member whose order link is down, or whose kill switch is engaged, gets no new orders; a kill of the primary stops the pool. Quotes (`set_quotes`) are routed the same way, one order at a time.
+
 ### Perpetuals
 
 <!-- snippet: tests/docs/strategy_api_doc_test.cpp#perps -->
@@ -516,7 +542,8 @@ static_assert(
                               .post_only()
                               .reduce_only()
                               .ioc()
-                              .tag(7)),
+                              .tag(7)
+                              .account(VenueId{})),
                  LimitOrder>);
 static_assert(std::convertible_to<LimitOrder, NewOrderRequest>);
 ```

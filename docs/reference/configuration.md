@@ -111,7 +111,7 @@ api_key = "${K2}"
 api_secret = "${S2}"
 ```
 
-A member's `kind` is the primary's; a member is nobody's primary, lists no `[[instruments]]` of its own and is not `public_only`; a pool holds at most 8 accounts, the primary included; the connector must run as a pool member (Binance Spot and USDⓈ-M do). The engine routes each new order to one account and the order stays there; in a backtest, `[venues.<member>] kind = "sim"` with `[backtest.venues.<member>.balances]` gives the member its own simulated account ([`[backtest.venues.<name>]`](#backtestvenuesname)).
+A member's `kind` is the primary's; a member is nobody's primary, lists no `[[instruments]]` of its own and is not `public_only`; a pool holds at most 8 accounts, the primary included; the connector must run as a pool member (Binance Spot and USDⓈ-M do). The engine routes each new order to one account and the order stays there ([Account pools](strategy-api.md#account-pools)); in a backtest, `[venues.<member>] kind = "sim"` with `[backtest.venues.<member>.balances]` gives the member its own simulated account ([`[backtest.venues.<name>]`](#backtestvenues)).
 
 ### Connectors
 
@@ -592,7 +592,7 @@ Command-line flags of `fastmm-backtest` (`--data`, `--strategy`, `--param key=va
 
 ### `[backtest.venues.<name>]`
 
-One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument trades on. Every venue an instrument names is simulated separately: orders, acknowledgements, fills and market data of an instrument go through its venue's latency and its venue's two connections, so a slow venue never delays a fast one. A missing key takes the value above. An unknown name, a venue without instruments or an unknown key is an error.
+One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument trades on, or a member of such a venue's pool (`pool_of`). Every venue an instrument names is simulated separately, and so is each pool member: orders, acknowledgements, fills and market data of an instrument go through its venue's latency and its venue's two connections, so a slow venue never delays a fast one, and an order's events come back on the member it went to. A missing key takes the value above. An unknown name, a venue without instruments or an unknown key is an error.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|

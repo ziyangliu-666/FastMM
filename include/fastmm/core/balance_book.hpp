@@ -8,6 +8,11 @@
 // (BalanceMsg::kAccount). A report for
 // another asset is not kept (counted). Nothing here allocates after build().
 //
+// Account pools (core/account_pool.hpp): an instrument whose venue has members gets the same rows
+// and the same per-instrument state once more per member, and every order call names the account
+// the order went to (`account`, invalid: the instrument's own venue). A member's rows are reported
+// by the member's own BalanceMsg.
+//
 // The estimate. A venue report is the account as of its venue time (hdr.exch_ts). It counts the
 // orders the venue had acknowledged; an order still waiting for its ack keeps its hold on top of
 // the report, until its ack says whether the report had it (stamped at or before the report's
@@ -32,6 +37,7 @@
 // that is reduce-only or reduces its position passes; one on an instrument without an initial
 // margin rate passes while the available margin is positive. A row the venue has not reported
 // does not refuse anything.
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/config_macros.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
@@ -49,6 +55,7 @@
 #include <cstdint>
 #include <limits>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fastmm {
@@ -113,31 +120,28 @@ class BalanceBook {
   };
 
   // Builds the rows from the instruments. `fees`: the taker rate a spot buy holds on top of its
-  // notional. Allocates; call before the session runs.
+  // notional. `pools`: the account pools, whose members get the instrument's rows and state too.
+  // Allocates; call before the session runs.
   void build(const InstrumentTable& insts,
              const FeeTable& fees = {},
-             const BalanceConfig& cfg = {}) {
+             const BalanceConfig& cfg = {},
+             const PoolPlan* pools = nullptr) {
     rows_.clear();
     rows_.reserve(2 * insts.size() + 16);
     inst_.fill(Inst{});
+    members_.clear();
     for (VenueState& v : venues_) v = VenueState{};
     check_ = cfg.check;
     for (const Instrument& i : insts) {
       if (i.id.value >= kMaxInstruments) continue;
       Inst& in = inst_[i.id.value];
-      in.venue = i.venue;
-      in.derivative = i.is_derivative();
-      in.taker_cbps = std::max<std::int32_t>(fees.schedule(i.id).taker_cbps, 0);
-      in.im_raw = cfg.initial_margin[i.id.value].raw > 0 ? cfg.initial_margin[i.id.value].raw : 0;
-      if (!in.derivative) {
-        in.base = row_for(i.venue, i.base.view(), false);
-        in.quote = row_for(i.venue, i.quote.view(), false);
-      } else {
-        in.settle = row_for(i.venue, i.settlement_ccy(), false);
-        in.margin = in.settle;
-        VenueState& vs = venues_[i.venue.value];
-        if (vs.account_row == kNone) vs.account_row = add_row(i.venue, "", true);
-        if (vs.margin_default == kNone) vs.margin_default = in.settle;
+      place(in, i, i.venue, fees, cfg);
+      if (pools == nullptr || !pools->pooled(i.venue)) continue;
+      const PoolMembers m = pools->members(i.venue);
+      in.first_member = static_cast<std::uint16_t>(members_.size());
+      for (std::size_t k = 1; k < m.size(); ++k) {
+        place(members_.emplace_back(), i, m[k], fees, cfg);
+        ++in.n_members;
       }
     }
   }
@@ -192,9 +196,10 @@ class BalanceBook {
                                   Side side,
                                   Price px,
                                   Qty leaves,
-                                  bool reduce_only) const noexcept {
+                                  bool reduce_only,
+                                  VenueId account = {}) const noexcept {
     if (id.value >= kMaxInstruments || !leaves.is_positive()) return 0;
-    const Inst& in = inst_[id.value];
+    const Inst& in = slot(id, account);
     if (!in.derivative) {
       if (side == Side::Sell) return leaves.raw;
       return with_fee(inst.notional(px, leaves).raw, in.taker_cbps);
@@ -211,9 +216,10 @@ class BalanceBook {
                  std::int64_t before,
                  std::int64_t after,
                  Timestamp venue_ts,
-                 bool unacked) noexcept {
+                 bool unacked,
+                 VenueId account = {}) noexcept {
     if (id.value >= kMaxInstruments || before == after) return;
-    Inst& in = inst_[id.value];
+    Inst& in = slot(id, account);
     std::uint16_t r = kNone;
     std::int64_t delta = after - before;
     if (unacked) in.unacked[static_cast<std::size_t>(side)] += delta;
@@ -235,9 +241,13 @@ class BalanceBook {
   // The venue acknowledged an order holding `amount`, at venue time `venue_ts`. Its hold was kept
   // on top of the reports since it was sent; one stamped at or before the row's last report had it,
   // and the estimate gives the extra back.
-  void acknowledge(InstrumentId id, Side side, std::int64_t amount, Timestamp venue_ts) noexcept {
+  void acknowledge(InstrumentId id,
+                   Side side,
+                   std::int64_t amount,
+                   Timestamp venue_ts,
+                   VenueId account = {}) noexcept {
     if (id.value >= kMaxInstruments || amount == 0) return;
-    Inst& in = inst_[id.value];
+    Inst& in = slot(id, account);
     const std::uint16_t r = row_of(in, side);
     const std::int64_t before = r == kNone ? 0 : in_flight(in, side, r);
     in.unacked[static_cast<std::size_t>(side)] -= amount;
@@ -258,9 +268,10 @@ class BalanceBook {
                FeeAsset fee_asset,
                std::int64_t pos_before,
                std::int64_t pos_after,
-               Timestamp venue_ts) noexcept {
+               Timestamp venue_ts,
+               VenueId account = {}) noexcept {
     if (id.value >= kMaxInstruments) return;
-    const Inst& in = inst_[id.value];
+    const Inst& in = slot(id, account);
     if (!in.derivative) {
       std::int64_t base = side == Side::Buy ? qty.raw : -qty.raw;
       const std::int64_t n = inst.notional(px, qty).raw;
@@ -299,21 +310,23 @@ class BalanceBook {
                             Qty qty,
                             std::int64_t replaced_hold,
                             bool reduce_only,
-                            bool reduces) const noexcept {
+                            bool reduces,
+                            VenueId account = {}) const noexcept {
     if (id.value >= kMaxInstruments) return true;
-    const Inst& in = inst_[id.value];
+    const Inst& in = slot(id, account);
     const std::uint16_t r = in.derivative ? in.margin : side == Side::Buy ? in.quote : in.base;
     if (r == kNone || !rows_[r].reported) return true;
     if (in.derivative && (reduce_only || reduces)) return true;
     const std::int64_t free = rows_[r].free;
     if (!in.derivative) {
-      const std::int64_t need = hold(id, inst, side, px, qty, false) - replaced_hold;
+      const std::int64_t need = hold(id, inst, side, px, qty, false, account) - replaced_hold;
       return need <= 0 || need <= free;
     }
     if (in.im_raw == 0) return free > 0;
     // What the instrument's larger side would add.
     std::array<std::int64_t, 2> sides = in.side_hold;
-    sides[static_cast<std::size_t>(side)] += hold(id, inst, side, px, qty, false) - replaced_hold;
+    sides[static_cast<std::size_t>(side)] +=
+        hold(id, inst, side, px, qty, false, account) - replaced_hold;
     const std::int64_t need =
         std::max(sides[0], sides[1]) - std::max(in.side_hold[0], in.side_hold[1]);
     return need < 0 || (free >= 0 && need <= free);
@@ -324,9 +337,10 @@ class BalanceBook {
   [[nodiscard]] Qty room(InstrumentId id,
                          const Instrument& inst,
                          Side side,
-                         Price px) const noexcept {
+                         Price px,
+                         VenueId account = {}) const noexcept {
     if (id.value >= kMaxInstruments) return Qty::max();
-    const Inst& in = inst_[id.value];
+    const Inst& in = slot(id, account);
     const std::uint16_t r = in.derivative ? in.margin : side == Side::Buy ? in.quote : in.base;
     if (r == kNone || !rows_[r].reported) return Qty::max();
     const std::int64_t free = rows_[r].free;
@@ -357,7 +371,8 @@ class BalanceBook {
                            Qty::from_raw(q - (q % std::max<std::int64_t>(inst.lot.raw, 1))),
                            0,
                            false,
-                           false))
+                           false,
+                           account))
         q -= std::max<std::int64_t>(inst.lot.raw, 1);
     }
     if (inst.lot.is_positive()) q -= q % inst.lot.raw;
@@ -413,6 +428,10 @@ class BalanceBook {
     std::uint16_t margin = kNone;  // the settlement asset's row, or the account row once reported
     std::array<std::int64_t, 2> side_hold{};  // derivative: sum of its orders' holds per side
     std::array<std::int64_t, 2> unacked{};    // ... of the orders the venue has not acknowledged
+    // The instrument's state on the members of its venue's pool: members_[first_member ..
+    // first_member + n_members), in PoolPlan::members order after the primary.
+    std::uint16_t first_member = kNone;
+    std::uint8_t n_members = 0;
   };
   struct VenueState {
     std::uint16_t account_row = kNone;
@@ -422,6 +441,51 @@ class BalanceBook {
     bool account_reported = false;
   };
 
+  // The rows and rates of `i` on `venue` (the instrument's own, or a pool member's).
+  void place(Inst& in,
+             const Instrument& i,
+             VenueId venue,
+             const FeeTable& fees,
+             const BalanceConfig& cfg) {
+    in.venue = venue;
+    in.derivative = i.is_derivative();
+    in.taker_cbps = std::max<std::int32_t>(fees.schedule(i.id).taker_cbps, 0);
+    in.im_raw = cfg.initial_margin[i.id.value].raw > 0 ? cfg.initial_margin[i.id.value].raw : 0;
+    if (!in.derivative) {
+      in.base = row_for(venue, i.base.view(), false);
+      in.quote = row_for(venue, i.quote.view(), false);
+    } else {
+      in.settle = row_for(venue, i.settlement_ccy(), false);
+      in.margin = in.settle;
+      VenueState& vs = venues_[venue.value];
+      if (vs.account_row == kNone) vs.account_row = add_row(venue, "", true);
+      if (vs.margin_default == kNone) vs.margin_default = in.settle;
+    }
+  }
+  // The state of instrument `id` on `account`: its own venue's (also for an invalid or unknown
+  // account), else the member's.
+  [[nodiscard]] const Inst& slot(InstrumentId id, VenueId account) const noexcept {
+    const Inst& in = inst_[id.value];
+    if (FASTMM_LIKELY(in.n_members == 0) || !account.valid() || account == in.venue) return in;
+    for (std::size_t k = 0; k < in.n_members; ++k) {
+      const Inst& m = members_[in.first_member + k];
+      if (m.venue == account) return m;
+    }
+    return in;
+  }
+  [[nodiscard]] Inst& slot(InstrumentId id, VenueId account) noexcept {
+    return const_cast<Inst&>(std::as_const(*this).slot(id, account));
+  }
+  // Every instrument state on `venue`: the instruments' own and the pool members'.
+  template <class F>
+  void for_each_on(VenueId venue, F&& f) {
+    for (Inst& in : inst_) {
+      if (in.venue == venue) f(in);
+    }
+    for (Inst& in : members_) {
+      if (in.venue == venue) f(in);
+    }
+  }
   // The row an order of `in` on `side` holds from.
   [[nodiscard]] static std::uint16_t row_of(const Inst& in, Side side) noexcept {
     if (in.derivative) return in.margin;
@@ -438,14 +502,13 @@ class BalanceBook {
   // A report set row `r`: the orders the venue has not acknowledged hold on top of it.
   void add_in_flight(std::uint16_t r) noexcept {
     std::int64_t extra = 0;
-    for (const Inst& in : inst_) {
-      if (in.venue != rows_[r].venue) continue;
+    for_each_on(rows_[r].venue, [&](const Inst& in) {
       if (in.derivative) {
         extra += in_flight(in, Side::Buy, r);
       } else {
         extra += in_flight(in, Side::Buy, r) + in_flight(in, Side::Sell, r);
       }
-    }
+    });
     rows_[r].free -= extra;
     rows_[r].locked += extra;
   }
@@ -497,9 +560,9 @@ class BalanceBook {
   void use_account(VenueId venue, std::uint16_t r) noexcept {
     VenueState& vs = venues_[venue.value];
     vs.account_reported = true;
-    for (Inst& in : inst_) {
-      if (in.derivative && in.venue == venue) in.margin = r;
-    }
+    for_each_on(venue, [&](Inst& in) {
+      if (in.derivative) in.margin = r;
+    });
   }
   // Rows of the venue the snapshot did not name hold nothing. An account row that was never
   // reported stays unknown: the venue does not report one.
@@ -520,6 +583,7 @@ class BalanceBook {
 
   std::vector<Row> rows_;
   std::array<Inst, kMaxInstruments> inst_{};
+  std::vector<Inst> members_;  // pool members' copies of the instrument state (Inst::first_member)
   std::array<VenueState, kMaxVenueSlots> venues_{};
   BalanceStats stats_{};
   bool live_ = false;

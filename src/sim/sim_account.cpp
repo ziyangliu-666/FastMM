@@ -22,14 +22,17 @@ std::int64_t abs64(std::int64_t v) noexcept {
 
 SimAccounts::SimAccounts(const InstrumentTable& instruments,
                          std::span<const SimAccountConfig> accounts,
-                         std::span<const Ratio> initial_margin)
-    : instruments_(instruments), inst_(instruments.size()) {
+                         std::span<const Ratio> initial_margin,
+                         const PoolPlan* pools)
+    : instruments_(instruments), n_inst_(instruments.size()) {
+  slot_of_venue_.fill(kNoSlot);
   for (const SimAccountConfig& a : accounts) {
     if (!a.venue.valid() || a.venue.value >= kMaxVenues)
       throw std::invalid_argument("sim account: venue id out of range");
+    const VenueId primary = pools != nullptr ? pools->primary(a.venue) : a.venue;
     const bool traded = std::any_of(instruments.begin(),
                                     instruments.end(),
-                                    [&](const Instrument& i) { return i.venue == a.venue; });
+                                    [&](const Instrument& i) { return i.venue == primary; });
     if (!traded) {
       throw std::invalid_argument("sim account: no instrument trades on venue " +
                                   std::to_string(a.venue.value));
@@ -39,20 +42,28 @@ SimAccounts::SimAccounts(const InstrumentTable& instruments,
                                   " has two accounts");
     }
     venue_on_[a.venue.value] = true;
+    slot_of_venue_[a.venue.value] = static_cast<std::uint8_t>(n_slots_++);
   }
-  rows_.reserve(2 * instruments.size() + 16);
-  for (const Instrument& i : instruments) {
-    if (!i.venue.valid() || i.venue.value >= kMaxVenues || !venue_on_[i.venue.value]) continue;
-    Inst& in = inst_[i.id.value];
-    in.on = true;
-    in.derivative = i.is_derivative();
-    if (i.id.value < initial_margin.size() && initial_margin[i.id.value].raw > 0)
-      in.im_raw = initial_margin[i.id.value].raw;
-    if (in.derivative) {
-      in.settle = row_for(i.venue, i.settlement_ccy());
-    } else {
-      in.base = row_for(i.venue, i.base.view());
-      in.quote = row_for(i.venue, i.quote.view());
+  inst_.resize(std::max<std::size_t>(n_slots_, 1) * n_inst_);
+  rows_.reserve(2 * instruments.size() * std::max<std::size_t>(n_slots_, 1) + 16);
+  for (std::uint8_t v = 0; v < kMaxVenues; ++v) {
+    const std::uint8_t k = slot_of_venue_[v];
+    if (k == kNoSlot) continue;
+    const VenueId venue{v};
+    const VenueId primary = pools != nullptr ? pools->primary(venue) : venue;
+    for (const Instrument& i : instruments) {
+      if (i.venue != primary) continue;
+      Inst& in = at(k, i.id);
+      in.on = true;
+      in.derivative = i.is_derivative();
+      if (i.id.value < initial_margin.size() && initial_margin[i.id.value].raw > 0)
+        in.im_raw = initial_margin[i.id.value].raw;
+      if (in.derivative) {
+        in.settle = row_for(venue, i.settlement_ccy());
+      } else {
+        in.base = row_for(venue, i.base.view());
+        in.quote = row_for(venue, i.quote.view());
+      }
     }
   }
   for (const SimAccountConfig& a : accounts) {
@@ -108,10 +119,13 @@ bool SimAccounts::admit(ClientOrderId id,
                         Price px,
                         Qty qty,
                         bool reduce_only,
-                        ClientOrderId replaces) noexcept {
-  if (!enabled(inst)) return true;
-  Inst& in = inst_[inst.value];
+                        ClientOrderId replaces,
+                        VenueId venue) noexcept {
+  if (inst.value >= n_inst_) return true;
   const Instrument& i = instruments_.get(inst);
+  const std::uint8_t k = slot_for(venue.valid() ? venue : i.venue);
+  if (k == kNoSlot || !at(k, inst).on) return true;
+  Inst& in = at(k, inst);
   const Hold* old = replaces.valid() ? holds_.find(replaces.value) : nullptr;
   const std::int64_t old_amount = old != nullptr ? old->amount : 0;
   const Side old_side = old != nullptr ? old->side : side;
@@ -144,6 +158,8 @@ bool SimAccounts::admit(ClientOrderId id,
   if (old != nullptr) close(replaces);
   Hold h;
   h.inst = inst;
+  h.venue = venue.valid() ? venue : i.venue;
+  h.slot = k;
   h.side = side;
   h.price = px;
   h.leaves = qty;
@@ -167,14 +183,14 @@ bool SimAccounts::admit_replace(ClientOrderId orig, ClientOrderId id, Price px, 
   const Hold* o = holds_.find(orig.value);
   if (o == nullptr) return true;
   const Hold h = *o;
-  return admit(id, h.inst, h.side, px, qty, h.reduce_only, orig);
+  return admit(id, h.inst, h.side, px, qty, h.reduce_only, orig, h.venue);
 }
 
 void SimAccounts::fill(ClientOrderId id, Price px, Qty qty, Qty leaves, Notional fee) noexcept {
   Hold* hp = holds_.find(id.value);
   if (hp == nullptr) return;
   Hold& o = *hp;
-  Inst& in = inst_[o.inst.value];
+  Inst& in = at(o.slot, o.inst);
   const Instrument& i = instruments_.get(o.inst);
   const std::int64_t after =
       leaves.is_positive() ? hold_of(in, i, o.side, o.price, leaves, o.reduce_only) : 0;
@@ -242,7 +258,7 @@ void SimAccounts::close(ClientOrderId id) noexcept {
   const Hold o = *hp;
   holds_.erase(id.value);
   if (o.amount == 0) return;
-  Inst& in = inst_[o.inst.value];
+  Inst& in = at(o.slot, o.inst);
   if (!in.derivative) {
     const std::uint16_t r = o.side == Side::Buy ? in.quote : in.base;
     if (r == kNone) return;
@@ -257,8 +273,7 @@ void SimAccounts::close(ClientOrderId id) noexcept {
 void SimAccounts::relock(std::uint16_t row) noexcept {
   if (row == kNone) return;
   std::int64_t locked = 0;
-  for (const Instrument& i : instruments_) {
-    const Inst& in = inst_[i.id.value];
+  for (const Inst& in : inst_) {
     if (!in.on || !in.derivative || in.settle != row) continue;
     locked += in.position_margin + std::max(in.side_hold[0], in.side_hold[1]);
   }
@@ -268,10 +283,11 @@ void SimAccounts::relock(std::uint16_t row) noexcept {
 
 std::int64_t SimAccounts::upnl(std::uint16_t row) const noexcept {
   std::int64_t sum = 0;
-  for (const Instrument& i : instruments_) {
-    const Inst& in = inst_[i.id.value];
+  for (std::size_t x = 0; x < inst_.size(); ++x) {
+    const Inst& in = inst_[x];
     if (!in.on || !in.derivative || in.settle != row || in.position == 0 || !in.mark.is_positive())
       continue;
+    const Instrument& i = instruments_.get(InstrumentId{static_cast<std::uint32_t>(x % n_inst_)});
     // As realised on closing (fill()): long N(mark) - N(entry), inverse N(entry) - N(mark).
     const Qty size = Qty::from_raw(abs64(in.position));
     const std::int64_t at_mark = i.notional(in.mark, size).raw;
@@ -317,7 +333,10 @@ Notional SimAccounts::total(VenueId venue, std::string_view asset) const noexcep
   return r == kNone ? Notional{} : Notional::from_raw(rows_[r].total);
 }
 Qty SimAccounts::position(InstrumentId id) const noexcept {
-  return id.value < inst_.size() ? Qty::from_raw(inst_[id.value].position) : Qty{};
+  if (id.value >= n_inst_) return Qty{};
+  std::int64_t sum = 0;
+  for (std::size_t k = 0; k < n_slots_; ++k) sum += at(k, id).position;
+  return Qty::from_raw(sum);
 }
 
 }  // namespace fastmm::sim

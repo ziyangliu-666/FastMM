@@ -10,11 +10,13 @@
 //
 // Every venue an instrument names is simulated with its own latency model, its own pair of wires,
 // cancel-replace and STP (SimTransportConfig::venues). A message goes through the venue of its
-// instrument. The wires model each venue's two TCP streams: messages arrive in order, so arrivals
-// are clamped monotone per wire, and a slow venue never holds back a fast one. Books, the matching
-// engine and the queue model are shared: instruments never span venues. SimDriver decides when to
-// move a wire message into the engine's feed (when the virtual clock reaches its recv_ts); on a tie
-// order wires come before md wires, lower venue ids first.
+// instrument, or through the pool member its header names (SimTransportConfig::pools: a member is
+// a further link with its own account over the primary's books; an order's events come back on the
+// link it went out on). The wires model each venue's two TCP streams: messages arrive in order, so
+// arrivals are clamped monotone per wire, and a slow venue never holds back a fast one. Books, the
+// matching engine and the queue model are shared: instruments never span venues. SimDriver decides
+// when to move a wire message into the engine's feed (when the virtual clock reaches its recv_ts);
+// on a tie order wires come before md wires, lower venue ids first.
 //
 // Market data reaches the strategy in one of two ways:
 //   * coupled generator: a MarketGenerator drives the MatchingEngine and the MdAggregator
@@ -30,7 +32,9 @@
 //     venue's does: each depth level and book ticker carries our quantity at its price, the next
 //     depth update also carries our levels that changed since the last one, and a book ticker
 //     goes out when our orders move the top of book (data with book tickers only).
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/book/l2_book.hpp"
+#include "fastmm/core/containers/open_hash_map.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
@@ -102,6 +106,10 @@ struct SimTransportConfig {
   // Per instrument id, a derivative's initial margin rate ([[instruments]] initial_margin), for the
   // accounts.
   std::vector<Ratio> initial_margin;
+  // The account pools ([venues.<x>] pool_of): a member of a simulated venue is simulated too, as
+  // a link of its own (its latency from `venues`, its account from `accounts`) over the primary's
+  // books.
+  PoolPlan pools;
   // The venues' public feed shows the strategy's resting orders (see the top of this file), and
   // the engine follows our quantity in it (own_in_feed(), ctx.own_qty). The coupled generator's
   // book always holds them.
@@ -243,6 +251,13 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] const QueuePositionModel& queue() const noexcept { return queue_; }
   // The strategy's accounts; null when no venue has one.
   [[nodiscard]] const SimAccounts* accounts() const noexcept { return accounts_.get(); }
+  // The pool member an open order of the strategy went to; invalid for an order the venue does
+  // not hold (or without pools).
+  [[nodiscard]] VenueId order_venue(ClientOrderId id) const noexcept {
+    if (order_venues_ == nullptr) return VenueId{};
+    const std::uint8_t* v = order_venues_->find(id.value);
+    return v == nullptr ? VenueId{} : VenueId{*v};
+  }
   void set_observer(SimObserver* o) noexcept { observer_ = o; }
 
   // ---- MatchingSink (venue events for account 1 become engine messages) -------------------
@@ -358,6 +373,30 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] Link& link(InstrumentId id) noexcept {
     return id.value < kMaxInstruments ? *link_of_inst_[id.value] : at(0);
   }
+  // The link an outbound message takes: the pool member its header names, else its instrument's.
+  [[nodiscard]] Link& link_for(const EventHeader& m) noexcept {
+    if (order_venues_ != nullptr) {
+      if (Link* l = link_of_venue(m.venue); l != nullptr) return *l;
+    }
+    return link(m.instrument);
+  }
+  // The link an order's events go back on: the one it came in on (order_venues_), else its
+  // instrument's.
+  [[nodiscard]] Link& order_link(ClientOrderId id, InstrumentId inst) noexcept {
+    if (order_venues_ != nullptr) {
+      if (const std::uint8_t* v = order_venues_->find(id.value); v != nullptr) {
+        if (Link* l = link_of_venue(VenueId{*v}); l != nullptr) return *l;
+      }
+    }
+    return link(inst);
+  }
+  // An order arrived on `l` (pools only); forget_order() once it is over.
+  void note_order(ClientOrderId id, const Link& l) noexcept {
+    if (order_venues_ != nullptr) static_cast<void>(order_venues_->assign(id.value, l.id.value));
+  }
+  void forget_order(ClientOrderId id) noexcept {
+    if (order_venues_ != nullptr) static_cast<void>(order_venues_->erase(id.value));
+  }
   [[nodiscard]] Link* link_of_venue(VenueId v) noexcept {
     for (std::size_t k = 0; k < n_links_; ++k) {
       if (at(k).id == v) return &at(k);
@@ -394,6 +433,9 @@ class SimTransport final : public MatchingSink {
   std::unique_ptr<TradeTape[]> tape_;    // L2Queue: trades since the mirror's last update
   std::unique_ptr<MdAggregator> agg_;
   std::unique_ptr<SimAccounts> accounts_;
+  // With pools: the strategy's orders at the venue by client id -> the member link's venue id.
+  using OrderVenues = OpenHashMap<std::uint64_t, std::uint8_t, SimAccounts::kMaxOrders>;
+  std::unique_ptr<OrderVenues> order_venues_;
   // Per instrument, recorded data with own_orders_in_feed (null otherwise and in coupled mode).
   struct OwnFeed {
     std::vector<Level> levels[2];               // our resting quantity by price, per Side

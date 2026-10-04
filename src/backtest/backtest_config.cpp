@@ -100,6 +100,15 @@ sim::SimBalance read_balance(const GenericSection& bt,
   return b;
 }
 
+// An instrument trades on the venue, or on the primary of the pool it is a member of.
+bool traded_on(const Config& cfg, const std::string& name) {
+  const VenueSection* v = cfg.venue(name);
+  const std::string& primary = v != nullptr && !v->pool_of.empty() ? v->pool_of : name;
+  return std::any_of(cfg.instruments.begin(),
+                     cfg.instruments.end(),
+                     [&](const InstrumentSection& i) { return i.venue == primary; });
+}
+
 // [backtest.venues.<name>]: one venue's own latency, cancel-replace and STP, over the [backtest]
 // values. A name that is not in [venues] or a key that is not one of kVenueKeys is an error.
 std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
@@ -128,10 +137,7 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
                                     known.empty() ? "none configured" : "known: " + known,
                                     where));
     }
-    const bool traded = std::any_of(cfg.instruments.begin(),
-                                    cfg.instruments.end(),
-                                    [&](const InstrumentSection& i) { return i.venue == name; });
-    if (!traded) {
+    if (!traded_on(cfg, name)) {
       throw ConfigError(fmt::format(
           "backtest.venues.{0}: no [[instruments]] trade on venue '{0}'{1}", name, where));
     }
@@ -179,10 +185,7 @@ std::vector<sim::SimAccountConfig> read_accounts(const Config& cfg, const Generi
   std::vector<sim::SimAccountConfig> out;
   for (const VenueSection& venue : cfg.venues) {
     const std::string& name = venue.name;
-    const bool traded = std::any_of(cfg.instruments.begin(),
-                                    cfg.instruments.end(),
-                                    [&](const InstrumentSection& i) { return i.venue == name; });
-    if (!traded) continue;
+    if (!traded_on(cfg, name)) continue;
     const std::string prefix =
         std::string(kVenuesPrefix) + name + "." + std::string(kBalancesPrefix);
     sim::SimAccountConfig a;
@@ -344,6 +347,8 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   defaults.stp = t.stp;
   t.venues = read_venues(cfg, bt, defaults);
   t.accounts = read_accounts(cfg, bt);
+  t.pools = cfg.pool_plan();
+  b.engine.pools = t.pools;
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   const std::int64_t window = bt.get_int("reorder_window_ms", 1000);

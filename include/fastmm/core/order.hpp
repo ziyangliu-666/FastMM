@@ -64,6 +64,10 @@ struct LimitOrder;
 struct NewOrderRequest {
   InstrumentId instrument;
   VenueId venue;
+  // The account to send it from where the instrument's venue has a pool (core/account_pool.hpp):
+  // the primary or one of its members, else the order is refused (RejectReason::InvalidAccount).
+  // Invalid (the default): the engine picks the member by balance and remaining order window.
+  VenueId account;
   Side side;
   OrderType type = OrderType::Limit;
   TimeInForce tif = TimeInForce::Gtc;
@@ -106,6 +110,12 @@ struct LimitOrder {
   [[nodiscard]] constexpr LimitOrder tag(std::uint32_t user_tag) const noexcept {
     LimitOrder o = *this;
     o.request.user_tag = user_tag;
+    return o;
+  }
+  // The account of the instrument's pool to send from (NewOrderRequest::account).
+  [[nodiscard]] constexpr LimitOrder account(VenueId venue) const noexcept {
+    LimitOrder o = *this;
+    o.request.account = venue;
     return o;
   }
   // NOLINTNEXTLINE(google-explicit-constructor): passes straight to ctx.send().

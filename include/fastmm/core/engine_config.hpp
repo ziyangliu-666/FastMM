@@ -1,6 +1,7 @@
 #pragma once
 // EngineConfig: the per-session settings an Engine is constructed with. Separate from engine.hpp so
 // the strategy registry and registration files do not parse the Engine template.
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/fees.hpp"
 #include "fastmm/core/fx.hpp"
@@ -79,6 +80,10 @@ struct EngineConfig {
   // [accounting] mark, stale_mark_ms, stale_funding_ms: what a derivative's position is valued at
   // and when the venue's mark, index and funding are stale (core/perp_book.hpp).
   PerpConfig perp;
+  // [venues.<x>] pool_of: the accounts behind each venue (core/account_pool.hpp). A new order on
+  // an instrument whose venue has members goes to one of them (NewOrderRequest::account, else by
+  // balance and remaining order window), and the order keeps it.
+  PoolPlan pools;
 };
 
 }  // namespace fastmm

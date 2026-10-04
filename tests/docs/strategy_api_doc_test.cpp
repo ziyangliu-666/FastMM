@@ -205,6 +205,20 @@ static_assert(std::same_as<decltype(Margin::available), Notional>);
 static_assert(std::same_as<decltype(lvalue<Ctx>().balances_live()), bool>);
 // [end:balances]
 
+// ---- account pools -----------------------------------------------------------------------------
+
+// [start:pool]
+static_assert(std::same_as<decltype(lvalue<Ctx>().pool(VenueId{})), PoolMembers>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().pool_primary(VenueId{})), VenueId>);
+static_assert(std::same_as<decltype(lvalue<Ctx>().account_usable(VenueId{})), bool>);
+static_assert(std::same_as<
+              decltype(lvalue<Ctx>().balance_room(InstrumentId{}, Side::Buy, Price{}, VenueId{})),
+              Qty>);
+static_assert(std::same_as<decltype(lvalue<const PoolMembers>().size()), std::size_t>);
+static_assert(std::same_as<decltype(lvalue<const PoolMembers>()[0]), VenueId>);
+static_assert(std::same_as<decltype(NewOrderRequest::account), VenueId>);
+// [end:pool]
+
 // ---- perpetuals: the venue's mark, index and funding
 // ----------------------------------------------
 
@@ -323,7 +337,8 @@ static_assert(
                               .post_only()
                               .reduce_only()
                               .ioc()
-                              .tag(7)),
+                              .tag(7)
+                              .account(VenueId{})),
                  LimitOrder>);
 static_assert(std::convertible_to<LimitOrder, NewOrderRequest>);
 // [end:helpers]

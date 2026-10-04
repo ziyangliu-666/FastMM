@@ -33,11 +33,19 @@
 // With [accounting] mark = "venue" a position with a fresh venue mark is valued at it instead of
 // the book's mid, for the unrealized PnL, max_loss and the exposure limits.
 //
+// Account pools (core/account_pool.hpp, EngineConfig::pools): a venue's instruments, books and
+// positions are the primary's; a new order on one of them goes to the account the request names
+// (NewOrderRequest::account) or to the member whose balance covers it and whose order-count window
+// has the most room left, and keeps that member in Order::venue, so its cancels, replaces and
+// events carry the member's id. Balances are per member (ctx.balance(member, asset)); a member
+// whose order link is not live, or whose kill switch is engaged, is routed around.
+//
 // Parameters (ADR-0013): a ParamUpdate event assigns new parameter values to the strategy
 // (apply_param_update), then on_params runs. With EngineConfig::max_param_age, quoting is disabled
 // before the first ParamUpdate and whenever none was applied for that long; the engine checks the
 // deadline before each event and timer and with a one-shot timer of its own, all on the journaled
 // engine clock.
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/book/l2_book.hpp"
 #include "fastmm/core/config_macros.hpp"
@@ -86,6 +94,8 @@
 #include <string_view>
 
 namespace fastmm {
+
+static_assert(PoolPlan::kVenues >= kMaxVenues, "a pool plan covers every venue id a session has");
 
 struct EngineStats {
   std::uint64_t events = 0;
@@ -202,21 +212,26 @@ class Engine {
     quotes_.set_params(qp);
     positions_.set_accounting(cfg.fx);
     risk_.set_fx(cfg.fx);
-    // Our quantity in the feed is followed only for venues whose feed shows our orders.
+    // Our quantity in the feed is followed only for venues whose feed shows our orders (a pool
+    // member's orders show in its primary's feed).
     for (const Instrument& inst : instruments_) {
-      if (transport_own_in_feed(inst.venue)) own_venues_ |= venue_mask(inst.venue);
+      if (!transport_own_in_feed(inst.venue)) continue;
+      for (const VenueId v : cfg_.pools.members(inst.venue)) own_venues_ |= venue_mask(v);
     }
     if (own_venues_ != 0) {
       own_ = std::make_unique<OwnQuantity>();
       own_->prepare(instruments_.size());
     }
     risk_.set_underlying(cfg.underlying);
-    balances_->build(instruments_, cfg.fees, cfg.balance);
+    balances_->build(instruments_, cfg.fees, cfg.balance, &cfg_.pools);
     perp_.configure(cfg.perp);
-    // Venues whose positions wait for their first reconciliation: only those an instrument trades.
+    // Venues whose positions wait for their first reconciliation: only those an instrument trades,
+    // and the members of their pools.
     for (const Instrument& inst : instruments_) {
-      if (inst.venue.value < 32U && ((cfg.await_reconcile >> inst.venue.value) & 1U) != 0)
-        awaiting_ |= venue_mask(inst.venue);
+      for (const VenueId v : cfg_.pools.members(inst.venue)) {
+        if (v.value < 32U && ((cfg.await_reconcile >> v.value) & 1U) != 0)
+          awaiting_ |= venue_mask(v);
+      }
     }
   }
   Engine(const Engine&) = delete;
@@ -524,14 +539,48 @@ class Engine {
   }
   [[nodiscard]] Margin margin(VenueId v) const noexcept { return balances_->margin(v); }
   // Largest quantity of `id` on `side` at `px` the balance covers; Qty::max() while the venue has
-  // not reported the balance the side draws on.
+  // not reported the balance the side draws on. With a pool, the most any usable account of it
+  // covers: what one order can be, since an order goes to one account.
   [[nodiscard]] Qty balance_room(InstrumentId id, Side side, Price px) const noexcept {
     if (!balances_live_ || !instruments_.contains(id)) return Qty::max();
-    return balances_->room(id, instruments_.get(id), side, px);
+    const Instrument& inst = instruments_.get(id);
+    if (FASTMM_LIKELY(!pools_on_) || !cfg_.pools.pooled(inst.venue))
+      return balances_->room(id, inst, side, px);
+    Qty most{};
+    for (const VenueId v : cfg_.pools.members(inst.venue)) {
+      if (!account_usable(v)) continue;
+      const Qty room = balances_->room(id, inst, side, px, v);
+      if (room > most) most = room;
+    }
+    return most;
+  }
+  // ... on one account of the instrument's pool (the instrument's own venue when `account` is
+  // not one of them).
+  [[nodiscard]] Qty balance_room(InstrumentId id,
+                                 Side side,
+                                 Price px,
+                                 VenueId account) const noexcept {
+    if (!balances_live_ || !instruments_.contains(id)) return Qty::max();
+    return balances_->room(id, instruments_.get(id), side, px, account);
   }
   [[nodiscard]] const BalanceBook& balances() const noexcept { return *balances_; }
   // A venue has reported balances: the estimate and the check run from here on.
   [[nodiscard]] bool balances_live() const noexcept { return balances_live_; }
+
+  // ---- account pools (core/account_pool.hpp) ---------------------------------------------------
+
+  // The accounts that take orders for `primary`'s instruments, `primary` first; just `primary`
+  // where it has no pool.
+  [[nodiscard]] PoolMembers pool(VenueId primary) const noexcept {
+    return cfg_.pools.members(primary);
+  }
+  // The venue whose instruments `v` takes orders for: its primary, or `v` itself.
+  [[nodiscard]] VenueId pool_primary(VenueId v) const noexcept { return cfg_.pools.primary(v); }
+  // The pool members whose order link is live and whose kill switch is not engaged, as the
+  // automatic routing sees them now.
+  [[nodiscard]] bool account_usable(VenueId v) const noexcept {
+    return (order_link_down_ & venue_mask(v)) == 0 && !risk_.venue_killed(v);
+  }
 
   // ---- perpetuals (core/perp_book.hpp) ---------------------------------------------------------
 
@@ -1134,7 +1183,11 @@ class Engine {
                  const OrderFillMsg* msg) noexcept {
     if (!records_.enabled() || !instruments_.contains(id)) return;
     FillRecord r;
-    records_.init(r, RecordType::Fill, id, instruments_.get(id).venue, now_, now_);
+    // The account it filled on: a pool member's id where the order went to one.
+    const VenueId venue = msg != nullptr          ? msg->hdr.venue
+                          : u.order.venue.valid() ? u.order.venue
+                                                  : instruments_.get(id).venue;
+    records_.init(r, RecordType::Fill, id, venue, now_, now_);
     if (msg == nullptr) r.hdr.flags |= RecordHeader::kSynthetic;
     if (u.action == OmsAction::LateFill) r.hdr.flags |= RecordHeader::kLate;
     if (u.action == OmsAction::UnknownFill) r.hdr.flags |= RecordHeader::kUnknown;
@@ -1217,7 +1270,8 @@ class Engine {
                          FeeAsset::Quote,
                          pos_before,
                          positions_.get(u.order.instrument).qty.raw,
-                         Timestamp{});
+                         Timestamp{},
+                         u.order.venue);
     emit_fill(u.order.instrument,
               u.order.side,
               u.order.price,
@@ -1456,7 +1510,8 @@ class Engine {
                            fee_asset,
                            pos_before,
                            positions_.get(id).qty.raw,
-                           f.hdr.exch_ts);
+                           f.hdr.exch_ts,
+                           from_order ? u.order.venue : f.hdr.venue);
       emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {
@@ -1564,7 +1619,7 @@ class Engine {
       const std::int64_t amount = order_hold(o);
       holds_[h.idx] = amount;
       unacked_[h.idx] = !acknowledged(o);
-      balances_->move_hold(o.instrument, o.side, 0, amount, Timestamp{}, unacked_[h.idx]);
+      balances_->move_hold(o.instrument, o.side, 0, amount, Timestamp{}, unacked_[h.idx], o.venue);
     });
   }
   // The venue has taken the order (its ack, or a fill of it, came).
@@ -1584,7 +1639,8 @@ class Engine {
                            o.side,
                            hold_price(o.instrument, o.type, o.price),
                            o.leaves_qty(),
-                           o.has(Order::kReduceOnly));
+                           o.has(Order::kReduceOnly),
+                           o.venue);
   }
   // An order changed: its hold follows (zero once it is terminal), at the venue time of the event.
   // Its first ack (or fill) tells the balances the venue has it.
@@ -1594,17 +1650,19 @@ class Engine {
     std::int64_t& held = holds_[u.slot.idx];
     bool& unacked = unacked_[u.slot.idx];
     if (unacked && !u.terminal && acknowledged(u.order)) {
-      balances_->acknowledge(u.order.instrument, u.order.side, held, venue_ts);
+      balances_->acknowledge(u.order.instrument, u.order.side, held, venue_ts, u.order.venue);
       unacked = false;
     }
     if (now_hold != held)
-      balances_->move_hold(u.order.instrument, u.order.side, held, now_hold, venue_ts, unacked);
+      balances_->move_hold(
+          u.order.instrument, u.order.side, held, now_hold, venue_ts, unacked, u.order.venue);
     held = now_hold;
     if (u.terminal) unacked = false;
   }
   // [risk] check_balance for an order of `qty` at `px`; `replaced`: what the order it replaces
   // holds. False: the balance does not cover it.
   FASTMM_NOINLINE bool balance_covers(const Instrument& inst,
+                                      VenueId account,
                                       Side side,
                                       OrderType type,
                                       Price px,
@@ -1615,8 +1673,15 @@ class Engine {
     const std::int64_t q = positions_.get(inst.id).qty.raw;
     const bool reduces = q != 0 && (q > 0) != (side == Side::Buy) &&
                          open_same_side.raw + qty.raw <= (q < 0 ? -q : q);
-    return balances_->covers(
-        inst.id, inst, side, hold_price(inst.id, type, px), qty, replaced, reduce_only, reduces);
+    return balances_->covers(inst.id,
+                             inst,
+                             side,
+                             hold_price(inst.id, type, px),
+                             qty,
+                             replaced,
+                             reduce_only,
+                             reduces,
+                             account);
   }
 
   // ---- parameters -----------------------------------------------------------------------------
@@ -1760,6 +1825,15 @@ class Engine {
     const VenueId venue = m.hdr.venue;
     const InstrumentId only = m.hdr.instrument;
     const bool one = only.valid();
+    // The venue's order link, for the pool routing: a member whose link is not live gets no new
+    // orders until it is back.
+    if (m.channel == 1 && !one) {
+      if (m.state == ConnState::Live) {
+        order_link_down_ &= ~venue_mask(venue);
+      } else {
+        order_link_down_ |= venue_mask(venue);
+      }
+    }
     if (m.state != ConnState::Live) {
       for (const Instrument& inst : instruments_) {
         if (inst.venue != venue || (one && inst.id != only)) continue;
@@ -2171,6 +2245,7 @@ class Engine {
         // decided against is gone. Withheld, not refused; the strategy's next quotes decide.
         if (FASTMM_UNLIKELY(a.deferred && balances_live_) && balances_->check_enabled() &&
             !balance_covers(inst,
+                            pools_on_ ? choose_account(r, inst) : inst.venue,
                             r.side,
                             r.type,
                             r.price,
@@ -2208,7 +2283,16 @@ class Engine {
     if (FASTMM_UNLIKELY(awaiting_ != 0)) return fail(RejectReason::NotReconciled);
     const Instrument& inst = instruments_.get(req.instrument);
     const Timestamp now = now_;
-    OrderIntent oi{req.instrument, inst.venue, req.side, req.type, req.price, req.qty, req.tif};
+    // The account it goes from: the instrument's venue, or one of its pool (an explicit account
+    // outside the pool is refused; the automatic choice falls back to the primary).
+    VenueId account = inst.venue;
+    if (FASTMM_UNLIKELY(pools_on_)) {
+      account = choose_account(req, inst);
+      if (!account.valid()) return fail(RejectReason::InvalidAccount);
+    } else if (FASTMM_UNLIKELY(req.account.valid() && req.account != inst.venue)) {
+      return fail(RejectReason::InvalidAccount);
+    }
+    OrderIntent oi{req.instrument, account, req.side, req.type, req.price, req.qty, req.tif};
     RiskInputs in{now,
                   flatten ? nullptr : &positions_.get(req.instrument),
                   positions_.gross_exposure(),
@@ -2220,9 +2304,20 @@ class Engine {
     if (FASTMM_UNLIKELY(risk_.underlying_on()) && !flatten)
       in.underlying = underlying_inputs(req.instrument, req.side);
     if (FASTMM_UNLIKELY(balances_live_) && balances_->check_enabled())
-      in.balance_short = !balance_covers(
-          inst, req.side, req.type, req.price, req.qty, 0, req.reduce_only, in.open_same_side);
-    const RejectReason rr = risk_.check_new(oi, inst, in);
+      in.balance_short = !balance_covers(inst,
+                                         account,
+                                         req.side,
+                                         req.type,
+                                         req.price,
+                                         req.qty,
+                                         0,
+                                         req.reduce_only,
+                                         in.open_same_side);
+    RejectReason rr = risk_.check_new(oi, inst, in);
+    // A member of a killed primary trades nothing either: the primary's kill is the pool's.
+    if (FASTMM_UNLIKELY(rr == RejectReason::None && account != inst.venue) &&
+        risk_.venue_killed(inst.venue))
+      rr = RejectReason::VenueKilled;
     if (FASTMM_UNLIKELY(rr != RejectReason::None)) {
       ++stats_.risk_rejects;
       stats_.risk_rejects_by_reason.add(rr);
@@ -2236,17 +2331,18 @@ class Engine {
     const ClientOrderId id = oms_.next_cl_ord_id();
     if (FASTMM_UNLIKELY(!id.valid())) return fail(on_ids_exhausted());
     NewOrderRequest r = req;
-    r.venue = inst.venue;
+    r.venue = account;
+    r.account = account;
     auto h = oms_.submit(r, id, now);
     if (FASTMM_UNLIKELY(!h)) return fail(h.error());
     if (FASTMM_UNLIKELY(balances_live_)) {
       const std::int64_t amount = order_hold(oms_.get(*h));
       holds_[h->idx] = amount;
       unacked_[h->idx] = true;
-      balances_->move_hold(req.instrument, req.side, 0, amount, Timestamp{}, true);
+      balances_->move_hold(req.instrument, req.side, 0, amount, Timestamp{}, true, account);
     }
     OutNewOrderMsg m{};
-    init_header(m, EventType::OutNewOrder, req.instrument, inst.venue);
+    init_header(m, EventType::OutNewOrder, req.instrument, account);
     m.hdr.recv_ts = now;
     m.cl_ord_id = id;
     m.price = req.price;
@@ -2270,6 +2366,42 @@ class Engine {
         now_,
         [this](InstrumentId j) { return positions_.get(j).qty; },
         [this, side](InstrumentId j) { return oms_.open_qty(j, side); });
+  }
+
+  // The pool account a new order on `inst` goes from (EngineConfig::pools). The request's own
+  // account when it names one of the pool, invalid when it names another venue. Otherwise the
+  // usable members (order link live, no kill) whose balance covers the order (every member for a
+  // derivative), and of those the one with the most room in the venue's 10 s order window, then
+  // in its daily one (ctx.order_budget; a backtest without limits ties them all, and the first in
+  // pool order wins). None: the primary, which refuses with the venue's own balance error.
+  FASTMM_NOINLINE VenueId choose_account(const NewOrderRequest& req,
+                                         const Instrument& inst) const noexcept {
+    if (req.account.valid())
+      return cfg_.pools.admits(inst.venue, req.account) ? req.account : VenueId{};
+    const PoolMembers members = cfg_.pools.members(inst.venue);
+    if (members.size() == 1) return inst.venue;
+    const bool by_balance = balances_live_ && !inst.is_derivative();
+    const Qty open = oms_.open_qty(req.instrument, req.side);
+    VenueId best{};
+    std::int64_t best_10s = -1;
+    std::int64_t best_1d = -1;
+    for (const VenueId v : members) {
+      if (!account_usable(v)) continue;
+      if (by_balance &&
+          !balance_covers(
+              inst, v, req.side, req.type, req.price, req.qty, 0, req.reduce_only, open))
+        continue;
+      const OrderBudget b = order_budget(v);
+      if (b.venue_paused) continue;
+      const std::int64_t left_10s = b.orders_10s.remaining();
+      const std::int64_t left_1d = b.orders_1d.remaining();
+      if (left_10s > best_10s || (left_10s == best_10s && left_1d > best_1d)) {
+        best = v;
+        best_10s = left_10s;
+        best_1d = left_1d;
+      }
+    }
+    return best.valid() ? best : inst.venue;
   }
 
   Result<void, RejectReason> submit_cancel(Handle<Order> h) noexcept {
@@ -2306,6 +2438,7 @@ class Engine {
       in.underlying = underlying_inputs(o.instrument, o.side);
     if (FASTMM_UNLIKELY(balances_live_) && balances_->check_enabled())
       in.balance_short = !balance_covers(inst,
+                                         o.venue,
                                          o.side,
                                          o.type,
                                          px,
@@ -2682,7 +2815,8 @@ class Engine {
   Cycles event_t1_{};
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
-  bool fx_on_;  // cfg_.fx converts ([accounting])
+  bool fx_on_;                               // cfg_.fx converts ([accounting])
+  const bool pools_on_ = cfg_.pools.active;  // a venue has pool members: new orders are routed
   bool latched_ = false;
   bool in_engine_ = false;  // inside step(), drain(), start() or finish()
   bool quoting_enabled_;
@@ -2722,6 +2856,9 @@ class Engine {
   // The flatten slice each instrument has in flight (invalid: none).
   std::array<ClientOrderId, kMaxInstruments> flatten_order_{};
   std::uint32_t venue_pulled_ = 0;
+  // Bit per venue whose order link is not live (ConnectionStateMsg channel 1): the pool routing
+  // skips such a member.
+  std::uint32_t order_link_down_ = 0;
   KillReason kill_reason_ = KillReason::None;
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;
