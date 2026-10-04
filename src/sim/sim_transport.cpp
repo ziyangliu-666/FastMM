@@ -105,6 +105,20 @@ SimTransport::SimTransport(const SimClock& clock,
   }
 }
 
+bool SimTransport::venue_budget(VenueId v, OrderBudget& out) const noexcept {
+  for (std::size_t k = 0; k < n_links_; ++k) {
+    const Link& l = at(k);
+    if (l.id != v) continue;
+    if (!l.limited()) return false;
+    const Timestamp now = clock_.now();
+    out.orders_10s = RateWindow{10'000, l.orders_10s.used_at(now), l.orders_10s.limit};
+    out.orders_1d = RateWindow{86'400'000, l.orders_1d.used_at(now), l.orders_1d.limit};
+    out.venue_known = true;
+    return true;
+  }
+  return false;
+}
+
 LatencyModel& SimTransport::latency(VenueId v) noexcept {
   for (std::size_t k = 0; k < n_links_; ++k) {
     if (at(k).id == v) return at(k).lat;
@@ -139,7 +153,18 @@ bool SimTransport::send(const EventHeader& m) noexcept {
       return true;  // not an order message: accepted and ignored
   }
   if (cfg_.hash_outbound) hasher_.add(m);
-  const LatencySample s = link_for(m).lat.order_out();
+  Link& l = link_for(m);
+  // The venue's order count (new orders and replaces; a cancel is free), decided when the order
+  // is sent: the arrival refuses one that was past the window.
+  bool over_limit = false;
+  if (m.type != EventType::OutCancel && l.limited()) {
+    over_limit = l.orders_10s.full(now) || l.orders_1d.full(now);
+    if (!over_limit) {
+      l.orders_10s.add(now);
+      l.orders_1d.add(now);
+    }
+  }
+  const LatencySample s = l.lat.order_out();
   if (s.dropped) {
     ++stats_.dropped;
     if (observer_ != nullptr) observer_->on_order_sent(m, now, Timestamp{});
@@ -147,6 +172,7 @@ bool SimTransport::send(const EventHeader& m) noexcept {
   }
   OutSlot slot{};
   slot.len = m.len;
+  slot.over_limit = over_limit ? 1 : 0;
   std::memcpy(slot.bytes, &m, m.len);
   const Timestamp arrival = now + s.delay;
   if (!sched_.push(arrival, slot)) {
@@ -174,6 +200,20 @@ void SimTransport::process_order_arrival() noexcept {
   if (!sched_.pop(e)) return;
   const auto* h = reinterpret_cast<const EventHeader*>(e.payload.bytes);
   const Timestamp now = e.fire_ts;
+  if (e.payload.over_limit != 0) {
+    // Past the venue's order-count window: a new order is refused, a cancelReplace is refused
+    // whole and the original stays.
+    if (h->type == EventType::OutNewOrder) {
+      const auto& m = msg_cast<OutNewOrderMsg>(h);
+      note_order(m.cl_ord_id, link_for(m.hdr));
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::VenueRateLimit, now);
+    } else if (h->type == EventType::OutReplace) {
+      const auto& m = msg_cast<OutReplaceMsg>(h);
+      note_order(m.cl_ord_id, order_link(m.orig_cl_ord_id, m.hdr.instrument));
+      emit_reject(m.cl_ord_id, m.hdr.instrument, RejectReason::VenueRateLimit, now);
+    }
+    return;
+  }
   switch (h->type) {
     case EventType::OutNewOrder:
       venue_new(msg_cast<OutNewOrderMsg>(h), now);
@@ -731,6 +771,9 @@ void SimTransport::emit_reject(ClientOrderId id,
       break;
     case RejectReason::InsufficientBalance:
       ++stats_.rejects_balance;
+      break;
+    case RejectReason::VenueRateLimit:
+      ++stats_.rejects_rate_limit;
       break;
     default:
       ++stats_.rejects_other;

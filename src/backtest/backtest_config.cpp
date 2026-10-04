@@ -61,7 +61,7 @@ void read_latency(const GenericSection& bt, const std::string& prefix, sim::SimV
 }
 
 // Keys of [backtest.venues.<name>] (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 10> kVenueKeys = {"latency_fixed_us",
+constexpr std::array<std::string_view, 12> kVenueKeys = {"latency_fixed_us",
                                                          "latency_jitter_us",
                                                          "latency_ack_us",
                                                          "latency_ack_jitter_us",
@@ -70,7 +70,9 @@ constexpr std::array<std::string_view, 10> kVenueKeys = {"latency_fixed_us",
                                                          "md_arrival",
                                                          "p_drop",
                                                          "supports_replace",
-                                                         "stp"};
+                                                         "stp",
+                                                         "orders_10s",
+                                                         "orders_1d"};
 constexpr std::string_view kVenuesPrefix = "venues.";
 constexpr std::string_view kBalancesPrefix = "balances.";
 
@@ -149,7 +151,7 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
           fmt::format("backtest.{}: unknown key (latency_fixed_us, latency_jitter_us, "
                       "latency_ack_us, latency_ack_jitter_us, latency_md_us, "
                       "latency_md_jitter_us, md_arrival, p_drop, supports_replace, stp, "
-                      "balances.<ASSET>){}",
+                      "orders_10s, orders_1d, balances.<ASSET>){}",
                       key,
                       where));
     }
@@ -165,6 +167,8 @@ std::vector<sim::SimVenueConfig> read_venues(const Config& cfg,
     if (bt.has(prefix + "stp")) {
       v.stp = bt.get_bool(prefix + "stp", false) ? sim::StpMode::CancelTaker : sim::StpMode::None;
     }
+    v.orders_10s = non_negative(bt, prefix + "orders_10s", defaults.orders_10s);
+    v.orders_1d = non_negative(bt, prefix + "orders_1d", defaults.orders_1d);
     out.push_back(v);
   }
   std::sort(out.begin(), out.end(), [](const sim::SimVenueConfig& a, const sim::SimVenueConfig& b) {
@@ -245,7 +249,9 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 22> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 24> kBacktestKeys = {"markout_horizons_s",
+                                                            "orders_10s",
+                                                            "orders_1d",
                                                             "source",
                                                             "path",
                                                             "seed",
@@ -345,6 +351,10 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.stp = cfg.risk.stp ? sim::StpMode::CancelTaker : sim::StpMode::None;
   defaults.supports_replace = t.supports_replace;
   defaults.stp = t.stp;
+  t.orders_10s = non_negative(bt, "orders_10s", 0);
+  t.orders_1d = non_negative(bt, "orders_1d", 0);
+  defaults.orders_10s = t.orders_10s;
+  defaults.orders_1d = t.orders_1d;
   t.venues = read_venues(cfg, bt, defaults);
   t.accounts = read_accounts(cfg, bt);
   t.pools = cfg.pool_plan();

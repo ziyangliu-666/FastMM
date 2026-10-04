@@ -580,6 +580,8 @@ Read by `fastmm-backtest`, `fastmm-replay`, the tests and the Python module (`sr
 | `md_arrival` | string | `"venue"` | When recorded market data reaches the strategy: `venue` at its venue time plus `latency_md_us`, `recorded` at the `recv_ts` it was recorded with plus `latency_md_us`, which replays the feed lag of a live journal (`[risk] max_feed_lag_ms` reads it); a message keeps its place behind the one before it |
 | `reorder_window_ms` | int | `1000` | Recorded data reaches the simulated venues in venue-time order, assuming no event was received more than this long after its venue time; the strategy still gets it in recorded order. `0` keeps the recorded order ([Backtesting](../explanation/backtesting.md#venue-time)) |
 | `p_drop` | number | `0.0` | Probability, below 1, that an outbound order message is lost |
+| `orders_10s` | int | `0` | The simulated venue's order count per 10 s (new orders and replaces, as Binance's `ORDERS` 10 s interval): one past it is refused with `VenueRateLimit`, and `ctx.order_budget` reports the count; `0` is unlimited and leaves the budget unknown |
+| `orders_1d` | int | `0` | The same per day |
 | `equity_bar_s` | int | `1` | Bar length for the equity curve and the Sharpe ratio, s. The annualised Sharpe ratio is reported only for runs of at least 1 day (86,400 s); shorter runs report `n/a` (NaN in Python, `null` in `summary.json`) |
 | `initial_capital` | number | `0` | Starting capital, quote currency. The drawdown percentage is the largest fall from peak equity divided by this value; with `0` it is not reported (NaN in Python, `null` in `summary.json`) |
 | `markout_horizons_s` | string | `"1,10,60"` | Post-fill markout horizons in seconds, comma separated (`"0.5,5"` is allowed); `""` turns markouts off. The run stops the simulated clock at every fill time plus horizon to read the venue mid there, so the shortest horizon also bounds how often the run loop is entered ([Backtesting](../explanation/backtesting.md#markouts)) |
@@ -606,6 +608,8 @@ One venue's own settings; `<name>` is a `[venues.<name>]` that an instrument tra
 | `p_drop` | number | `[backtest]` | Probability that an outbound order message to this venue is lost |
 | `supports_replace` | bool | `[engine] supports_replace` | In-place replace on this venue: the engine replaces quotes on its instruments if `[engine] supports_replace` is true, cancel and new otherwise |
 | `stp` | bool | `[risk] stp` | Self-trade prevention (cancel the taker) on this venue |
+| `orders_10s` | int | `[backtest]` | This venue's order count per 10 s (`0`: unlimited); per pool member, so the engine's routing sees each account's window |
+| `orders_1d` | int | `[backtest]` | This venue's order count per day |
 
 ### `[backtest.balances]`
 

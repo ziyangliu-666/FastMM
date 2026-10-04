@@ -74,6 +74,11 @@ struct SimVenueConfig {
   bool md_recorded_arrival = false;
   bool supports_replace = false;
   StpMode stp = StpMode::None;
+  // The venue's order-count windows (Binance ORDERS per 10 s and per day, fixed intervals of the
+  // clock): a new order or replace past the limit is refused with VenueRateLimit, and
+  // ctx.order_budget reports the counts. 0: unlimited and not reported.
+  std::int64_t orders_10s = 0;
+  std::int64_t orders_1d = 0;
 };
 
 struct SimTransportConfig {
@@ -90,7 +95,10 @@ struct SimTransportConfig {
   FeeModel fees{};
   bool supports_replace = false;
   StpMode stp = StpMode::None;  // applied to the strategy account
-  MdAggregatorConfig md{};      // coupled-generator mode
+  std::int64_t orders_10s =
+      0;  // SimVenueConfig::orders_10s / orders_1d for venues without an entry
+  std::int64_t orders_1d = 0;
+  MdAggregatorConfig md{};  // coupled-generator mode
   // SHA-256 over every outbound message (outbound_hash()), used by the determinism and replay
   // checks. It costs about 70 ns per order, more than the engine work that produced it, so a
   // benchmark that times send() turns it off; backtests and tests leave it on.
@@ -120,7 +128,15 @@ struct SimTransportConfig {
     for (const SimVenueConfig& c : venues) {
       if (c.venue == v) return c;
     }
-    return SimVenueConfig{v, order_out, ack_in, md_in, md_recorded_arrival, supports_replace, stp};
+    return SimVenueConfig{v,
+                          order_out,
+                          ack_in,
+                          md_in,
+                          md_recorded_arrival,
+                          supports_replace,
+                          stp,
+                          orders_10s,
+                          orders_1d};
   }
   // Bit v set: venue v uses cancel-replace (the journal header's replace_venues).
   [[nodiscard]] std::uint64_t replace_mask() const noexcept {
@@ -143,12 +159,13 @@ struct SimTransportStats {
   std::uint64_t wire_full = 0;       // venue -> engine message dropped (should be 0)
   std::uint64_t acks = 0;
   std::uint64_t rejects = 0;
-  // Rejects broken down by cause; these six always sum to `rejects`.
+  // Rejects broken down by cause; these seven always sum to `rejects`.
   std::uint64_t rejects_post_only = 0;   // PostOnlyWouldCross: crossed the live book on arrival
   std::uint64_t rejects_level_full = 0;  // VenueReject: simulated price-level table full
   std::uint64_t rejects_invalid = 0;     // InvalidTick / InvalidLot / InstrumentDisabled
   std::uint64_t rejects_duplicate = 0;   // DuplicateId
   std::uint64_t rejects_balance = 0;     // InsufficientBalance: the account (sim_account.hpp)
+  std::uint64_t rejects_rate_limit = 0;  // VenueRateLimit: the venue's order-count window
   std::uint64_t rejects_other = 0;
   std::uint64_t fills = 0;
   std::uint64_t cancel_acks = 0;
@@ -202,6 +219,9 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] bool own_in_feed(VenueId v) const noexcept {
     return cfg_.own_orders_in_feed && v.value < kMaxVenues;
   }
+  // The venue's order-count windows as of the engine clock (ctx.order_budget): false for a venue
+  // without a limit (SimVenueConfig::orders_10s / orders_1d), whose budget stays unknown.
+  [[nodiscard]] bool venue_budget(VenueId v, OrderBudget& out) const noexcept;
 
   // ---- venue side (driven by SimDriver in virtual-time order) -------------------------------
   // Enables the coupled-generator market-data path (MdAggregator publishes the shared book).
@@ -274,7 +294,38 @@ class SimTransport final : public MatchingSink {
  private:
   struct OutSlot {
     std::uint32_t len;
+    std::uint8_t over_limit;  // past the venue's order-count window when sent: refused on arrival
     alignas(8) std::byte bytes[kOutSlotBytes];
+  };
+  // One fixed window of a venue's order count (Binance's intervalNum x interval): orders sent in
+  // the interval of the clock that holds `now`.
+  struct OrderWindow {
+    std::int64_t width_ns = 0;
+    std::int64_t limit = 0;  // 0: none
+    std::int64_t index = -1;
+    std::int64_t count = 0;
+    // The window holding `now` is full: an order sent now is refused (and not counted, as
+    // Binance's -1015 is not).
+    [[nodiscard]] bool full(Timestamp now) noexcept {
+      if (limit <= 0) return false;
+      roll(now);
+      return count >= limit;
+    }
+    void add(Timestamp now) noexcept {
+      if (limit <= 0) return;
+      roll(now);
+      ++count;
+    }
+    void roll(Timestamp now) noexcept {
+      const std::int64_t i = now.ns / width_ns;
+      if (i != index) {
+        index = i;
+        count = 0;
+      }
+    }
+    [[nodiscard]] std::int64_t used_at(Timestamp now) const noexcept {
+      return limit > 0 && now.ns / width_ns == index ? count : 0;
+    }
   };
   // One simulated venue: its latency model and its two wires to the engine.
   struct Link {
@@ -283,7 +334,9 @@ class SimTransport final : public MatchingSink {
           lat(c.order_out, c.ack_in, c.md_in, seed),
           md_wire(t.md_wire_bytes),
           order_wire(t.order_wire_bytes),
-          md_recorded_arrival(c.md_recorded_arrival) {}
+          md_recorded_arrival(c.md_recorded_arrival),
+          orders_10s{seconds(10).ns, c.orders_10s},
+          orders_1d{seconds(86'400).ns, c.orders_1d} {}
     VenueId id;
     LatencyModel lat;
     MsgRing md_wire;
@@ -291,6 +344,11 @@ class SimTransport final : public MatchingSink {
     Timestamp last_md_arrival{};
     Timestamp last_order_arrival{};
     bool md_recorded_arrival;
+    OrderWindow orders_10s;  // SimVenueConfig::orders_10s / orders_1d
+    OrderWindow orders_1d;
+    [[nodiscard]] bool limited() const noexcept {
+      return orders_10s.limit > 0 || orders_1d.limit > 0;
+    }
   };
   using Scheduler = EventScheduler<OutSlot, kSchedulerCapacity>;
 
