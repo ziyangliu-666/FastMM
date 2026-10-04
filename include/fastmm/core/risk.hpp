@@ -70,6 +70,20 @@ class TokenBucket {
     }
     return t / kScale;
   }
+  // Nanoseconds from `now` until try_take would find a whole token: 0 when it would now, or with
+  // the limit off.
+  [[nodiscard]] std::int64_t wait_ns(Timestamp now) const noexcept {
+    if (rate_ == 0) return 0;
+    std::int64_t t = tokens_;
+    if (now > last_)
+      t += static_cast<std::int64_t>(static_cast<Int128>((now - last_).ns) * rate_ * kScale /
+                                     1'000'000'000);
+    if (t >= kScale) return 0;
+    // Rounded up: the refill rounds down, so a token is whole no earlier than this.
+    const Int128 need = static_cast<Int128>(kScale - t) * 1'000'000'000;
+    const Int128 per = static_cast<Int128>(rate_) * kScale;
+    return static_cast<std::int64_t>((need + per - 1) / per);
+  }
   // Moves the refill reference to `now` without adding tokens (the engine's start time).
   void rebase(Timestamp now) noexcept { last_ = now; }
   [[nodiscard]] std::int64_t tokens() const noexcept { return tokens_ / kScale; }

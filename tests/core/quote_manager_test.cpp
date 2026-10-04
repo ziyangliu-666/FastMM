@@ -29,8 +29,16 @@ struct Harness {
   Oms oms;
   std::vector<QuoteAction> actions;
   bool reject_new = false;
+  int tokens = -1;  // New and Replace take one; -1 = unlimited
   bool operator()(QuoteAction& a) {
     actions.push_back(a);
+    if (a.kind != QuoteActionKind::Cancel && tokens >= 0) {
+      if (tokens == 0) {
+        a.rate_limited = true;
+        return false;
+      }
+      --tokens;
+    }
     switch (a.kind) {
       case QuoteActionKind::New: {
         if (reject_new) return false;
@@ -445,4 +453,45 @@ TEST_CASE("core.quote_manager: resume re-applies quotes paused with keep_desired
   qm.pull_quotes(inst, h.oms, h, /*keep_desired=*/true);
   CHECK_FALSE(qm.resumable(inst.id));
   CHECK(qm.resume(inst, h.oms, Timestamp{4}, h) == 0);
+}
+
+TEST_CASE("core.quote_manager: quotes short of a token wait, and are retried oldest first") {
+  Instrument a = make_inst();
+  Instrument b = make_inst();
+  b.id = InstrumentId{1};
+  QuoteParams p;
+  p.supports_replace = true;
+  QuoteManager qm(p);
+  Harness h;
+  h.tokens = 1;
+  const Timestamp now{seconds(1).ns};
+  CHECK(qm.reconcile(a, quotes("99.98", "100.02"), h.oms, now, h) == 1);
+  CHECK(qm.reconcile(b, quotes("49.98", "50.02"), h.oms, now, h) == 0);
+  CHECK(qm.stats().kept_rate_limit == 3);
+  CHECK(qm.stats().rejected == 0);
+  CHECK(qm.stats().reject_backoffs == 0);
+  REQUIRE(qm.starved_count() == 2);
+  // Starved again before it was served: queued once.
+  CHECK(qm.reconcile(a, quotes("99.98", "100.02"), h.oms, now, h) == 0);
+  CHECK(qm.starved_count() == 2);
+  h.tokens = 3;
+  InstrumentId id = qm.pop_starved();
+  CHECK(id == a.id);
+  CHECK(qm.retry(a, h.oms, now, h) == 1);  // the ask; the bid is pending
+  id = qm.pop_starved();
+  CHECK(id == b.id);
+  CHECK(qm.retry(b, h.oms, now, h) == 2);
+  CHECK_FALSE(qm.starved());
+  CHECK(h.oms.open_count() == 4);
+  CHECK(qm.stats().retries == 2);
+  // A pulled instrument is not re-quoted by a retry.
+  h.ack_all();
+  h.tokens = 0;
+  CHECK(qm.reconcile(a, quotes("99.90", "100.10"), h.oms, now + milliseconds(100), h) == 0);
+  REQUIRE(qm.starved());
+  static_cast<void>(qm.pull_quotes(a, h.oms, h));
+  h.tokens = 10;
+  CHECK(qm.pop_starved() == a.id);
+  CHECK(qm.retry(a, h.oms, now + milliseconds(200), h) == 0);
+  CHECK(qm.pulled(a.id));
 }

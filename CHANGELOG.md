@@ -62,6 +62,12 @@ All notable changes are recorded here (Keep a Changelog format).
   `strip_own` collects the session's orders from every part (`collect_own_orders` and
   `OwnOrderStripper` take a span of readers). `fastmm-replay` over a market-data journal reads
   the parts the same way; over a session journal it still verifies one part at a time.
+- Quotes and the `[risk] orders_per_sec` bucket: a quote short of an order token is held back
+  instead of refused (`QuoteStats::kept_rate_limit`, no `RateLimit` risk reject and no log line),
+  and the engine places the latest quotes of the instruments that ran out, in the order they ran
+  out, as the bucket refills. `[engine] quote_token_reserve` keeps that many tokens for orders the
+  strategy sends itself and for quotes that reduce the position (cancels never take one).
+  `OrderBudget::local_wait_ns`: the time until the bucket admits the next order.
 
 ### Fixed
 - A fill that arrives after its order ended (Binance answers the cancel on the WS API before the

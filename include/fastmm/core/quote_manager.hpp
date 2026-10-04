@@ -25,12 +25,18 @@
 //     replaced filled instead of cancelling -- is withheld (QuoteAction::withheld, kept_balance)
 //     rather than refused by risk: the target predates the fill, the strategy's next quotes decide;
 //   * pull_quotes(keep_desired) pauses an instrument (the engine during reconciliation): resume()
-//     re-applies the last desired quotes unless the instrument was pulled for good meanwhile.
+//     re-applies the last desired quotes unless the instrument was pulled for good meanwhile;
+//   * a New or Replace the placer holds back for want of an order token (QuoteAction::rate_limited)
+//     is neither a reject nor a backoff: the instrument joins a FIFO of starved instruments, and
+//     the engine re-applies their last desired quotes (retry()) in that order as tokens come back,
+//     so a burst of requotes on many instruments is served in turn instead of refused event by
+//     event.
 //
 // Actions are executed by the caller through a Placer callable so the QuoteManager stays
 // independent of risk/OMS/transport wiring:
 //   bool place(QuoteAction& a);   // New: sets a.handle on success; returns false on reject
 #include "fastmm/core/config_macros.hpp"
+#include "fastmm/core/containers/ring_buffer.hpp"
 #include "fastmm/core/containers/static_vector.hpp"
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
@@ -81,6 +87,10 @@ struct QuoteParams {
   bool post_only = true;
   Duration reject_backoff = milliseconds(1000);  // 0 = no backoff after venue rejects
   Duration reject_backoff_max = milliseconds(60000);
+  // Order tokens ([risk] orders_per_sec) a quote that does not reduce the position leaves for the
+  // orders a strategy sends itself (hedges, unwinds) and for quotes that do. Read by the engine's
+  // placer; 0 = quotes may take the last token.
+  std::int64_t token_reserve = 0;
 };
 
 enum class QuoteActionKind : std::uint8_t { New, Cancel, Replace };
@@ -99,6 +109,9 @@ struct QuoteAction {
   // ended (on_order_update), so it was decided against a balance that order may have changed.
   bool deferred;
   bool withheld;  // New output: not sent, the balance does not cover it (deferred only)
+  // New / Replace output: not sent, no order token for it now (QuoteParams::token_reserve); the
+  // instrument is retried when tokens come back.
+  bool rate_limited;
 };
 
 struct QuoteStats {
@@ -112,6 +125,8 @@ struct QuoteStats {
   std::uint64_t reject_backoffs = 0;  // venue rejects that started or extended a side backoff
   std::uint64_t kept_backoff = 0;     // News withheld because their side was backing off
   std::uint64_t kept_balance = 0;     // deferred News withheld: the balance no longer covers them
+  std::uint64_t kept_rate_limit = 0;  // News / Replaces held back for want of an order token
+  std::uint64_t retries = 0;          // retry() calls that re-applied a starved instrument's quotes
 };
 
 class QuoteManager {
@@ -209,6 +224,30 @@ class QuoteManager {
     return state_[id.value].resumable;
   }
 
+  // Instruments whose quotes were held back for want of an order token, oldest first.
+  [[nodiscard]] bool starved() const noexcept { return !starved_.empty(); }
+  [[nodiscard]] std::size_t starved_count() const noexcept { return starved_.size(); }
+  // Takes the oldest starved instrument off the queue (the caller checks starved() first).
+  [[nodiscard]] InstrumentId pop_starved() noexcept {
+    const InstrumentId id{starved_.front()};
+    starved_.pop();
+    state_[id.value].starved = false;
+    return id;
+  }
+  // Re-applies the last desired quotes of an instrument popped from the starved queue; one that was
+  // pulled meanwhile stays pulled. An action held back again queues it at the back.
+  template <class Placer>
+  std::uint32_t retry(const Instrument& inst,
+                      const Oms& oms,
+                      Timestamp now,
+                      Placer&& place) noexcept {
+    InstState& st = state_[inst.id.value];
+    if (st.pulled) return 0;
+    ++stats_.retries;
+    const DesiredQuotes desired = st.desired;
+    return reconcile(inst, desired, oms, now, place);
+  }
+
   // Feed every OmsUpdate here. A terminal update frees the slot it belonged to and, if a target
   // was recorded for it (cancel-then-new, or a requote that met the order pending), places the New
   // now. The ack of an order that was pending at a requote applies the recorded target. While the
@@ -286,6 +325,7 @@ class QuoteManager {
     bool replace = false;             // supports_replace && !venue_no_replace
     Duration backoff[2] = {};         // current backoff per side (0 = none)
     Timestamp blocked_until[2] = {};  // no News on the side before this
+    bool starved = false;             // queued in starved_
   };
 
   [[nodiscard]] static bool backing_off(const InstState& st, Side side, Timestamp now) noexcept {
@@ -351,9 +391,10 @@ class QuoteManager {
                       target.qty,
                       params_.post_only,
                       false,
+                      false,
                       false};
         if (!place(a)) {
-          ++stats_.rejected;
+          held_back(st, inst.id, a);
           return 0;
         }
         ++stats_.replaces;
@@ -402,6 +443,7 @@ class QuoteManager {
                   Qty{},
                   false,
                   false,
+                  false,
                   false};
     if (!place(a)) {
       ++stats_.rejected;
@@ -430,12 +472,13 @@ class QuoteManager {
                   target.qty,
                   params_.post_only,
                   deferred,
+                  false,
                   false};
     if (!place(a) || !a.handle.valid()) {
       if (a.withheld) {
         ++stats_.kept_balance;
       } else {
-        ++stats_.rejected;
+        held_back(state_[inst.id.value], inst.id, a);
       }
       return 0;
     }
@@ -447,6 +490,19 @@ class QuoteManager {
     return 1;
   }
 
+  // A failed New or Replace: a rate-limited one waits in the starved queue, anything else was
+  // refused.
+  void held_back(InstState& st, InstrumentId id, const QuoteAction& a) noexcept {
+    if (!a.rate_limited) {
+      ++stats_.rejected;
+      return;
+    }
+    ++stats_.kept_rate_limit;
+    if (st.starved) return;
+    st.starved = true;
+    static_cast<void>(starved_.try_push(static_cast<std::uint16_t>(id.value)));
+  }
+
   void resolve_replace() noexcept {
     for (InstState& st : state_) st.replace = params_.supports_replace && !st.venue_no_replace;
   }
@@ -454,6 +510,7 @@ class QuoteManager {
   QuoteParams params_;
   QuoteStats stats_{};
   InstState state_[kMaxInstruments] = {};
+  RingBuffer<std::uint16_t, kMaxInstruments> starved_;  // each instrument at most once
 };
 
 }  // namespace fastmm

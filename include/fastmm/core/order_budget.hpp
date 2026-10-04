@@ -29,6 +29,9 @@ struct OrderBudget {
   // Orders the [risk] orders_per_sec bucket admits now (RiskHeadroom::order_tokens); kUnlimited
   // with the limit off.
   std::int64_t local_tokens = kUnlimited;
+  // Nanoseconds until that bucket admits the next order: 0 while local_tokens > 0. A strategy whose
+  // order was refused RateLimit waits this long rather than resending on every event.
+  std::int64_t local_wait_ns = 0;
   // The venue's order counts by window: Binance ORDERS per 10 s, 1 minute and 1 day as
   // exchangeInfo lists them, each the count the venue last reported (X-MBX-ORDER-COUNT-*) plus
   // the orders sent since.

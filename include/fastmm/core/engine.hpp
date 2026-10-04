@@ -509,6 +509,7 @@ class Engine {
       static_cast<void>(transport_.venue_budget(v, b));
     }
     b.local_tokens = risk_.bucket().available(now());
+    b.local_wait_ns = risk_.bucket().wait_ns(now());
     return b;
   }
 
@@ -865,6 +866,9 @@ class Engine {
     const bool renews_params = h->type == EventType::ParamUpdate;
     const bool quoting_before = quoting_enabled();
     if (!renews_params) check_param_age();
+    // Quotes held back for want of an order token go first, oldest first, before this event's own
+    // requote can take the token.
+    if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     dispatch(h);
     after_hooks(quoting_before);
     unlatch_clock();
@@ -2225,6 +2229,8 @@ class Engine {
       }
     }
     check_param_age();
+    // As process() does for the journaled timer a replay reads back.
+    if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
     if (ack_timer) {
       sweep_acks();
     } else if (flatten_timer) {
@@ -2268,6 +2274,35 @@ class Engine {
 
   // ---- outbound -------------------------------------------------------------------------------
 
+  // Re-applies the quotes of instruments that ran out of order tokens, in the order they ran out,
+  // while the bucket has a token for a quote. One that cannot quote now leaves the queue: its next
+  // set_quotes starts it again.
+  FASTMM_NOINLINE void retry_starved() noexcept {
+    if (risk_.bucket().available(now_) <= quotes_.params().token_reserve) return;
+    Placer place{this};
+    for (std::size_t n = quotes_.starved_count(); n > 0 && quotes_.starved(); --n) {
+      if (risk_.bucket().available(now_) <= quotes_.params().token_reserve) break;
+      const InstrumentId id = quotes_.pop_starved();
+      if (!quoting_enabled(id)) continue;
+      quotes_.retry(instruments_.get(id), oms_, now_, place);
+    }
+    flush_out();
+  }
+
+  // Whether the [risk] bucket has a token for a quote that leaves `open_after` working on `side`:
+  // one that does not take the position towards zero leaves QuoteParams::token_reserve for the
+  // orders that do and for the strategy's own. Cancels never need one.
+  [[nodiscard]] bool quote_token(InstrumentId id, Side side, Qty open_after) const noexcept {
+    const TokenBucket& b = risk_.bucket();
+    if (FASTMM_LIKELY(!b.enabled())) return true;
+    const std::int64_t have = b.available(now_);
+    if (have > quotes_.params().token_reserve) return true;
+    if (have <= 0) return false;
+    const std::int64_t pos = positions_.get(id).qty.raw;
+    if (pos == 0 || (pos > 0) == (side == Side::Buy)) return false;
+    return open_after.raw <= (pos < 0 ? -pos : pos);
+  }
+
   bool place_quote(QuoteAction& a) noexcept {
     switch (a.kind) {
       case QuoteActionKind::New: {
@@ -2297,6 +2332,11 @@ class Engine {
           a.withheld = true;
           return false;
         }
+        if (FASTMM_UNLIKELY(
+                !quote_token(r.instrument, r.side, oms_.open_qty(r.instrument, r.side) + r.qty))) {
+          a.rate_limited = true;
+          return false;
+        }
         auto res = submit_new(r);
         if (!res) return false;
         a.cl_ord_id = *res;
@@ -2305,8 +2345,18 @@ class Engine {
       }
       case QuoteActionKind::Cancel:
         return submit_cancel(a.handle).has_value();
-      case QuoteActionKind::Replace:
+      case QuoteActionKind::Replace: {
+        if (!oms_.is_live(a.handle)) return false;
+        const Order& o = oms_.get(a.handle);
+        if (FASTMM_UNLIKELY(
+                !quote_token(o.instrument,
+                             o.side,
+                             oms_.open_qty(o.instrument, o.side) - o.leaves_qty() + a.qty))) {
+          a.rate_limited = true;
+          return false;
+        }
         return submit_replace(a.handle, a.price, a.qty).has_value();
+      }
     }
     return false;
   }

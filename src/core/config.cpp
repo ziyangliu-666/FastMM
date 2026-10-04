@@ -431,6 +431,9 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "min_qty_bps", e.min_qty_bps);
     get(*t, "reject_backoff_ms", e.reject_backoff_ms);
     get(*t, "reject_backoff_max_ms", e.reject_backoff_max_ms);
+    get(*t, "quote_token_reserve", e.quote_token_reserve);
+    if (e.quote_token_reserve < 0)
+      fail_at(*t->get("quote_token_reserve"), "quote_token_reserve must be >= 0");
     get(*t, "post_only", e.post_only);
     get(*t, "supports_replace", e.supports_replace);
     get(*t, "on_kill", e.on_kill);
@@ -813,6 +816,7 @@ QuoteParams Config::quote_params() const {
   q.supports_replace = engine.supports_replace;
   q.reject_backoff = milliseconds(engine.reject_backoff_ms);
   q.reject_backoff_max = milliseconds(engine.reject_backoff_max_ms);
+  q.token_reserve = engine.quote_token_reserve;
   return q;
 }
 
@@ -857,6 +861,7 @@ std::string Config::redacted() const {
   kv("min_qty_bps", engine.min_qty_bps);
   kv("reject_backoff_ms", engine.reject_backoff_ms);
   kv("reject_backoff_max_ms", engine.reject_backoff_max_ms);
+  kv("quote_token_reserve", engine.quote_token_reserve);
   kv("post_only", engine.post_only);
   kv("supports_replace", engine.supports_replace);
   kq("on_kill", engine.on_kill);
@@ -1058,6 +1063,7 @@ std::string Config::effective_toml() const {
   e.insert("supports_replace", engine.supports_replace);
   e.insert("reject_backoff_ms", static_cast<std::int64_t>(engine.reject_backoff_ms));
   e.insert("reject_backoff_max_ms", static_cast<std::int64_t>(engine.reject_backoff_max_ms));
+  e.insert("quote_token_reserve", static_cast<std::int64_t>(engine.quote_token_reserve));
   e.insert("on_kill", engine.on_kill);
   root.insert("engine", std::move(e));
 

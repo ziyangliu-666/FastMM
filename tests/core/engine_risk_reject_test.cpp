@@ -117,7 +117,7 @@ struct Fixture {
   S strategy;
   std::unique_ptr<EngineType> engine;
 
-  explicit Fixture(std::uint32_t orders_per_sec = 0) {
+  explicit Fixture(std::uint32_t orders_per_sec = 0, std::int64_t token_reserve = 0) {
     Instrument i{};
     i.symbol = "BTCUSDT";
     i.venue = kVenue;
@@ -131,6 +131,7 @@ struct Fixture {
     cfg.risk.price_collar_bps = 500;
     cfg.risk.orders_per_sec = orders_per_sec;
     cfg.quotes.min_requote_interval = Duration{};
+    cfg.quotes.token_reserve = token_reserve;
     engine = std::make_unique<EngineType>(cfg, table, clock, transport, feed, strategy, nullptr);
     engine->warm_up();
     engine->start();
@@ -164,6 +165,12 @@ struct Fixture {
     r.qty = qt(qty);
     r.user_tag = 77;
     return r;
+  }
+  [[nodiscard]] std::size_t sent(EventType t) const {
+    std::size_t n = 0;
+    for (const auto& b : transport.out)
+      n += reinterpret_cast<const EventHeader*>(b.data())->type == t ? 1U : 0U;
+    return n;
   }
   // A timer event: the hook runs, then the engine delivers what it collected.
   void tick() {
@@ -283,4 +290,80 @@ TEST_CASE("core.engine: a transport without a budget and a strategy without the 
   CHECK(b.orders_remaining() == OrderBudget::kUnlimited);
   CHECK(ctx.send(Fixture<Mute, PlainOutbox>::buy("50")).error() == RejectReason::PriceCollar);
   CHECK(f.engine->stats().risk_rejects == 1);
+}
+
+namespace {
+DesiredQuotes two_levels() {
+  DesiredQuotes q;
+  q.bid(px("99.90"), qt("0.01"));
+  q.bid(px("99.80"), qt("0.01"));
+  q.ask(px("100.10"), qt("0.01"));
+  q.ask(px("100.20"), qt("0.01"));
+  return q;
+}
+}  // namespace
+
+// A spike requotes every instrument at once: the quotes the bucket has no token for wait and are
+// placed as it refills, instead of being refused (and logged) on every event until one gets
+// through.
+TEST_CASE("core.engine: a quote short of an order token waits for one, it is not a risk reject") {
+  Fixture<Rejected, Outbox> f(/*orders_per_sec=*/2);
+  auto& ctx = f.engine->context();
+  REQUIRE(ctx.set_quotes(kBtc, two_levels()));
+  CHECK(f.sent(EventType::OutNewOrder) == 2);
+  CHECK(f.engine->quote_manager().stats().kept_rate_limit == 2);
+  CHECK(f.engine->quote_manager().stats().rejected == 0);
+  CHECK(f.engine->quote_manager().starved());
+  CHECK(f.engine->stats().risk_rejects == 0);
+  OrderBudget b = ctx.order_budget(kVenue);
+  CHECK(b.local_tokens == 0);
+  CHECK(b.local_wait_ns == milliseconds(500).ns);
+  // A cancel never needs a token.
+  const Order* bid = ctx.working_quote(kBtc, Side::Buy, 0);
+  REQUIRE(bid != nullptr);
+  OrderAckMsg a{};
+  init_header(a, EventType::OrderAck, kBtc, kVenue);
+  a.cl_ord_id = bid->cl_ord_id;
+  a.venue_order_id = "V1";
+  f.push(a);
+  REQUIRE(ctx.cancel(a.cl_ord_id));
+  CHECK(f.sent(EventType::OutCancel) == 1);
+  // Half a second later the bucket holds one token: the next event places one waiting quote.
+  f.clock.advance(milliseconds(500));
+  CHECK(ctx.order_budget(kVenue).local_wait_ns == 0);
+  f.tick();
+  CHECK(f.sent(EventType::OutNewOrder) == 3);
+  CHECK(f.engine->quote_manager().starved());
+  f.clock.advance(milliseconds(500));
+  f.tick();
+  CHECK(f.sent(EventType::OutNewOrder) == 4);
+  CHECK_FALSE(f.engine->quote_manager().starved());
+  CHECK(f.strategy.rejects.empty());
+  CHECK(f.engine->stats().risk_rejects == 0);
+}
+
+TEST_CASE("core.engine: quote_token_reserve keeps the last tokens for quotes that reduce") {
+  Fixture<Rejected, Outbox> f(/*orders_per_sec=*/2, /*token_reserve=*/1);
+  auto& ctx = f.engine->context();
+  PositionUpdateMsg pos{};
+  init_header(pos, EventType::PositionUpdate, kBtc, kVenue);
+  pos.qty = qt("0.05");
+  pos.avg_px = px("100");
+  f.push(pos);
+  REQUIRE(ctx.position(kBtc).qty == qt("0.05"));
+  DesiredQuotes q;
+  q.bid(px("99.90"), qt("0.01"));
+  q.ask(px("100.10"), qt("0.01"));
+  REQUIRE(ctx.set_quotes(kBtc, q));
+  // Two tokens: the bid takes the one above the reserve, the ask (it sells the long down) the last.
+  CHECK(f.sent(EventType::OutNewOrder) == 2);
+  q.bid(px("99.80"), qt("0.01"));
+  f.clock.advance(milliseconds(500));
+  REQUIRE(ctx.set_quotes(kBtc, q));
+  // One token, the reserve: the second bid adds to the position and waits.
+  CHECK(f.sent(EventType::OutNewOrder) == 2);
+  CHECK(f.engine->quote_manager().stats().kept_rate_limit == 1);
+  // A direct order may take the reserve.
+  CHECK(ctx.send(Fixture<Rejected, Outbox>::buy("99.00")));
+  CHECK(f.sent(EventType::OutNewOrder) == 3);
 }

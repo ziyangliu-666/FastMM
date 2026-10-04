@@ -222,6 +222,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "cap of the doubling reject backoff, ms (default 60000)"},
     {"engine",
+     "quote_token_reserve",
+     KeyType::Int,
+     false,
+     "order tokens of [risk] orders_per_sec a quote that does not reduce the position leaves for "
+     "the strategy's own orders and for quotes that do; quotes short of a token wait and are "
+     "placed in turn as tokens return, not refused (default 0)"},
+    {"engine",
      "on_kill",
      KeyType::String,
      false,
