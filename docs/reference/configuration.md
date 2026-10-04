@@ -80,6 +80,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `insecure_tls` | boolean |  | skip TLS certificate verification; local simulator only (default false) |
 | `ca_file` | string |  | extra CA certificate, for example tests/fixtures/tls/cert.pem for the local simulator |
 | `public_only` | boolean |  | market data only: no keys, no private sessions, no orders on this venue (default false) |
+| `pool_of` | string |  | name of another [venues.<name>] of the same kind whose instruments this account takes orders for, with its own keys, balances and order-count windows; no instruments or market data of its own (default none) |
 | `recv_window_ms` | integer |  | validity window of signed requests, ms (default 3000) |
 | `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
 <!-- END config-keys -->
@@ -92,6 +93,25 @@ One table per venue; `<name>` is how instruments refer to it.
 | `maker_bps` | number |  | maker fee, bps; negative = rebate (default 0) |
 | `taker_bps` | number |  | taker fee, bps (default 0) |
 <!-- END config-keys -->
+
+### Account pools
+
+An exchange counts orders per account (Binance Spot: 100 new orders per 10 s and 200,000 per day). `pool_of` puts several accounts behind one venue: the primary carries the instruments and the market data as any venue does, and each member is another account of the same `kind` that takes orders for the primary's instruments with its own keys, balances and order-count windows.
+
+```toml
+[venues.binance]            # the primary: market data and orders
+kind = "binance_spot"
+api_key = "${K1}"
+api_secret = "${S1}"
+
+[venues.binance_b]          # a member: orders only, its own key and balances
+kind = "binance_spot"
+pool_of = "binance"
+api_key = "${K2}"
+api_secret = "${S2}"
+```
+
+A member's `kind` is the primary's; a member is nobody's primary, lists no `[[instruments]]` of its own and is not `public_only`; a pool holds at most 8 accounts, the primary included; the connector must run as a pool member (Binance Spot and USDⓈ-M do). The engine routes each new order to one account and the order stays there; in a backtest, `[venues.<member>] kind = "sim"` with `[backtest.venues.<member>.balances]` gives the member its own simulated account ([`[backtest.venues.<name>]`](#backtestvenuesname)).
 
 ### Connectors
 

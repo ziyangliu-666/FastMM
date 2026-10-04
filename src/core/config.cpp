@@ -492,6 +492,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       get(*t, "testnet", v.testnet);
       get(*t, "supports_replace", v.supports_replace);
       get(*t, "public_only", v.public_only);
+      get(*t, "pool_of", v.pool_of);
       get(*t, "insecure_tls", v.insecure_tls);
       get(*t, "recv_window_ms", v.recv_window_ms);
       if (const auto* fees = t->get_as<toml::table>("fees")) {
@@ -546,6 +547,60 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
         fail_at(*t->get("venue"),
                 fmt::format("instrument '{}' references unknown venue '{}'", i.symbol, i.venue));
       cfg.instruments.push_back(std::move(i));
+    }
+  }
+
+  // Account pools ([venues.<x>] pool_of): the member and its primary are the same kind of venue,
+  // a member is nobody's primary, trades no instrument of its own and is not market data only.
+  {
+    PoolPlan plan;
+    for (const VenueSection& v : cfg.venues) {
+      if (v.pool_of.empty()) continue;
+      const toml::node* at = doc["venues"][v.name]["pool_of"].node();
+      const auto fail_pool = [&](const std::string& msg) {
+        if (at != nullptr) fail_at(*at, msg);
+        throw ConfigError(msg);
+      };
+      const VenueSection* primary = cfg.venue(v.pool_of);
+      if (primary == nullptr) {
+        fail_pool(fmt::format("venues.{}.pool_of: unknown venue '{}'", v.name, v.pool_of));
+        continue;
+      }
+      if (primary == &v) {
+        fail_pool(fmt::format("venues.{}.pool_of: a venue cannot be its own primary", v.name));
+      }
+      if (!primary->pool_of.empty()) {
+        fail_pool(
+            fmt::format("venues.{}.pool_of: '{}' is itself a member of pool '{}'; name the primary",
+                        v.name,
+                        v.pool_of,
+                        primary->pool_of));
+      }
+      if (primary->kind != v.kind) {
+        fail_pool(fmt::format("venues.{}.pool_of: kind '{}' differs from the primary's '{}'",
+                              v.name,
+                              v.kind,
+                              primary->kind));
+      }
+      if (v.public_only) {
+        fail_pool(fmt::format("venues.{}: a pool member takes orders; public_only cannot be set",
+                              v.name));
+      }
+      for (const InstrumentSection& i : cfg.instruments) {
+        if (i.venue != v.name) continue;
+        fail_pool(
+            fmt::format("venues.{}: a pool member has no instruments of its own; put {} on "
+                        "the primary '{}'",
+                        v.name,
+                        i.symbol,
+                        v.pool_of));
+      }
+      if (!plan.add(cfg.venue_id(v.name), cfg.venue_id(v.pool_of))) {
+        fail_pool(fmt::format("venues.{}.pool_of: pool '{}' has more than {} accounts",
+                              v.name,
+                              v.pool_of,
+                              PoolPlan::kMaxMembers));
+      }
     }
   }
 
@@ -712,6 +767,14 @@ VenueId Config::venue_id(std::string_view name) const noexcept {
   return VenueId{};
 }
 
+PoolPlan Config::pool_plan() const noexcept {
+  PoolPlan plan;
+  for (const VenueSection& v : venues) {
+    if (!v.pool_of.empty()) static_cast<void>(plan.add(venue_id(v.name), venue_id(v.pool_of)));
+  }
+  return plan;
+}
+
 namespace {
 template <class F>
 F parse_fixed(const std::string& s, const char* what) {
@@ -809,6 +872,7 @@ std::string Config::redacted() const {
     kv("testnet", v.testnet);
     kv("supports_replace", v.supports_replace);
     kv("public_only", v.public_only);
+    if (!v.pool_of.empty()) kq("pool_of", v.pool_of);
     kv("insecure_tls", v.insecure_tls);
     if (!v.ca_file.empty()) kq("ca_file", v.ca_file);
     kv("recv_window_ms", v.recv_window_ms);
@@ -1008,6 +1072,7 @@ std::string Config::effective_toml() const {
       t.insert("testnet", v.testnet);
       t.insert("supports_replace", v.supports_replace);
       t.insert("public_only", v.public_only);
+      if (!v.pool_of.empty()) t.insert("pool_of", v.pool_of);
       t.insert("insecure_tls", v.insecure_tls);
       t.insert("ca_file", v.ca_file);
       t.insert("recv_window_ms", static_cast<std::int64_t>(v.recv_window_ms));

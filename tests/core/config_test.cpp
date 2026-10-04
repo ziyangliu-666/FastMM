@@ -578,3 +578,111 @@ TEST_CASE("core.config: [gateway.shared] parses, round-trips and names instrumen
   CHECK(err("[gateway.shared.\"sim:BTCUSDT\"]\nowner = \"mm-a\"\n")
             .find("unknown key 'gateway.shared.*.owner'") != std::string::npos);
 }
+
+// ---- account pools ([venues.<x>] pool_of, core/account_pool.hpp) --------------------------------
+
+namespace {
+// A primary with one instrument and the member `tail` appended.
+std::string pool_toml(const char* tail) {
+  return std::string(R"(
+[venues.binance]
+kind = "sim"
+[venues.binance_b]
+kind = "sim"
+pool_of = "binance"
+[[instruments]]
+venue = "binance"
+symbol = "BTCUSDT"
+tick = "0.01"
+lot = "0.001"
+)") + tail;
+}
+}  // namespace
+
+TEST_CASE("core.config: a pool member names its primary and takes no instruments of its own") {
+  const Config cfg = Config::parse(pool_toml(""));
+  REQUIRE(cfg.venues.size() == 2);
+  CHECK(cfg.venues[1].pool_of == "binance");
+  const PoolPlan plan = cfg.pool_plan();
+  CHECK(plan.active);
+  CHECK(plan.primary(VenueId{1}) == VenueId{0});
+  CHECK(plan.primary(VenueId{0}) == VenueId{0});
+  CHECK(plan.is_member(VenueId{1}));
+  CHECK_FALSE(plan.is_member(VenueId{0}));
+  CHECK(plan.pooled(VenueId{0}));
+  CHECK(plan.pooled(VenueId{1}));
+  const PoolMembers m = plan.members(VenueId{0});
+  REQUIRE(m.size() == 2);
+  CHECK(m[0] == VenueId{0});
+  CHECK(m[1] == VenueId{1});
+  CHECK(plan.admits(VenueId{0}, VenueId{1}));
+  CHECK_FALSE(plan.admits(VenueId{1}, VenueId{0}));
+  CHECK(plan.members(VenueId{1}).size() == 1);
+  // The member stays a member through the effective configuration (journals, replay).
+  const Config back = Config::parse(cfg.effective_toml());
+  CHECK(back.venues[1].pool_of == "binance");
+  CHECK(back.effective_toml() == cfg.effective_toml());
+  CHECK(cfg.redacted().find("pool_of = \"binance\"") != std::string::npos);
+  // A configuration without pools has an inactive plan.
+  CHECK_FALSE(Config::parse(kMinimal).pool_plan().active);
+  // The instrument table is the primary's alone.
+  const InstrumentTable t = load_instruments(cfg);
+  REQUIRE(t.size() == 1);
+  CHECK(t.get(InstrumentId{0}).venue == VenueId{0});
+}
+
+TEST_CASE("core.config: pool members are checked against their primary") {
+  // An instrument on a member.
+  CHECK_THROWS_WITH_AS(Config::parse(pool_toml("[[instruments]]\nvenue = \"binance_b\"\n"
+                                               "symbol = \"ETHUSDT\"\ntick = \"0.01\"\n"
+                                               "lot = \"0.001\"\n")),
+                       doctest::Contains("venues.binance_b: a pool member has no instruments"),
+                       ConfigError);
+  // A member of a member.
+  CHECK_THROWS_WITH_AS(
+      Config::parse(pool_toml("[venues.binance_c]\nkind = \"sim\"\npool_of = \"binance_b\"\n")),
+      doctest::Contains("'binance_b' is itself a member of pool 'binance'"),
+      ConfigError);
+  // Another kind.
+  CHECK_THROWS_WITH_AS(
+      Config::parse(pool_toml("[venues.okx_b]\nkind = \"okx\"\npool_of = \"binance\"\n")),
+      doctest::Contains("kind 'okx' differs from the primary's 'sim'"),
+      ConfigError);
+  // Market data only.
+  CHECK_THROWS_WITH_AS(Config::parse(pool_toml("[venues.binance_c]\nkind = \"sim\"\npool_of = "
+                                               "\"binance\"\npublic_only = true\n")),
+                       doctest::Contains("venues.binance_c: a pool member takes orders"),
+                       ConfigError);
+  // Its own primary, and one that does not exist.
+  CHECK_THROWS_WITH_AS(
+      Config::parse(pool_toml("[venues.binance_c]\nkind = \"sim\"\npool_of = \"binance_c\"\n")),
+      doctest::Contains("a venue cannot be its own primary"),
+      ConfigError);
+  CHECK_THROWS_WITH_AS(
+      Config::parse(pool_toml("[venues.binance_c]\nkind = \"sim\"\npool_of = \"nowhere\"\n")),
+      doctest::Contains("venues.binance_c.pool_of: unknown venue 'nowhere'"),
+      ConfigError);
+  // The error carries the line of the key.
+  try {
+    static_cast<void>(
+        Config::parse(pool_toml("[venues.okx_b]\nkind = \"okx\"\npool_of = \"binance\"\n")));
+    FAIL("a member of another kind passed");
+  } catch (const ConfigError& e) {
+    CHECK(e.line() == 14);
+  }
+}
+
+TEST_CASE("core.pool_plan: at most eight accounts, each venue in one pool") {
+  PoolPlan plan;
+  CHECK_FALSE(plan.add(VenueId{0}, VenueId{0}));
+  CHECK_FALSE(plan.add(VenueId{1}, VenueId{9}));
+  for (std::uint8_t v = 1; v < 8; ++v) CHECK(plan.add(VenueId{v}, VenueId{0}));
+  CHECK(plan.members(VenueId{0}).size() == 8);
+  CHECK_FALSE(plan.add(VenueId{1}, VenueId{2}));  // already a member
+  CHECK_FALSE(plan.add(VenueId{0}, VenueId{3}));  // a primary cannot join another pool
+  PoolPlan small;
+  CHECK(small.add(VenueId{1}, VenueId{0}));
+  CHECK_FALSE(small.add(VenueId{2}, VenueId{1}));  // a member is nobody's primary
+  CHECK(small.members(VenueId{0}).contains(VenueId{1}));
+  CHECK_FALSE(small.members(VenueId{0}).contains(VenueId{2}));
+}

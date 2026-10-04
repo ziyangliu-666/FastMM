@@ -39,6 +39,10 @@ struct VenueFactoryOptions {
   bool dry_run = false;        // public market data only: no keys, no orders
   std::string record_raw_dir;  // non-empty: append raw frames to <dir>/<venue>-<channel>.jsonl
   bool busy_poll = false;      // [engine] spin_mode = "busy": Venue::poll() must make progress
+  // A pool member ([venues.<x>] pool_of): the venue whose instruments this account takes orders
+  // for. The connector opens its order and user sessions only, no market data, and resolves
+  // symbols on that venue's id (its own id goes on the events). Invalid: a venue of its own.
+  VenueId pool_of{};
 };
 
 // What a connector declares about itself before one exists. The session and the engine read these
@@ -55,6 +59,9 @@ struct VenueCapabilities {
   // that finished an order while the stream was down is not recoverable on this venue, and the
   // engine says so (EngineStats::estimated_reconciles) rather than assuming it did not happen.
   bool executions = false;
+  // Runs as a member of an account pool ([venues.<x>] pool_of, core/account_pool.hpp): the order
+  // path alone, for the primary's instruments, without market data of its own.
+  bool account_pools = false;
 };
 
 // One `[venues.<name>]` key a venue owns. `doc` is the Meaning column of the configuration

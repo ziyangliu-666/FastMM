@@ -276,6 +276,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "market data only: no keys, no private sessions, no orders on this venue (default false)"},
     {"venues.*",
+     "pool_of",
+     KeyType::String,
+     false,
+     "name of another [venues.<name>] of the same kind whose instruments this account takes orders "
+     "for, with its own keys, balances and order-count windows; no instruments or market data of "
+     "its own (default none)"},
+    {"venues.*",
      "recv_window_ms",
      KeyType::Int,
      false,

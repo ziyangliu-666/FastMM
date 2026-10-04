@@ -200,7 +200,18 @@ void register_builtin_venues(VenueRegistry& r) {
 
 void validate_venues(const Config& cfg, const VenueRegistry& r) {
   if (&r == &VenueRegistry::instance()) register_builtin_venues();
-  for (const VenueSection& s : cfg.venues) check_keys(entry_for(r, s), s);
+  for (const VenueSection& s : cfg.venues) {
+    const VenueEntry& e = entry_for(r, s);
+    check_keys(e, s);
+    if (!s.pool_of.empty() && !e.caps.account_pools) {
+      const auto line = s.extra_lines.find("pool_of");
+      throw ConfigError(fmt::format("venues.{}.pool_of: connector '{}' does not run as a pool "
+                                    "member (order path without market data)",
+                                    s.name,
+                                    e.name),
+                        line == s.extra_lines.end() ? 0 : line->second);
+    }
+  }
 }
 
 std::unique_ptr<Venue> make_venue(VenueId id,

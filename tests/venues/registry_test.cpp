@@ -126,6 +126,26 @@ not_a_real_key = 1
                        std::invalid_argument);
 }
 
+TEST_CASE("venues.registry: a pool member needs a connector that runs as one") {
+  VenueRegistry r;
+  const VenueEntry::Factory make = [](VenueId, const VenueSection&, const VenueFactoryOptions&) {
+    return std::unique_ptr<Venue>{};
+  };
+  VenueEntry pooled{.name = "pooled", .summary = "runs as a member", .make = make};
+  pooled.caps.account_pools = true;
+  REQUIRE(r.add(pooled) == AddResult::Added);
+  REQUIRE(r.add({.name = "alone", .summary = "does not", .make = make}) == AddResult::Added);
+  const Config ok = Config::parse(
+      "[venues.a]\nkind = \"pooled\"\n[venues.b]\nkind = \"pooled\"\npool_of = \"a\"\n");
+  CHECK_NOTHROW(validate_venues(ok, r));
+  const Config no = Config::parse(
+      "[venues.a]\nkind = \"alone\"\n[venues.b]\nkind = \"alone\"\npool_of = \"a\"\n");
+  CHECK_THROWS_WITH_AS(validate_venues(no, r),
+                       doctest::Contains("venues.b.pool_of: connector 'alone' does not run as a "
+                                         "pool member"),
+                       ConfigError);
+}
+
 TEST_CASE("venues.registry: adding an entry twice, and a name another entry claims") {
   VenueRegistry r;
   static constexpr VenueKeySpec kKeys[] = {{"greeting", KeyType::String, false, "a greeting"}};

@@ -10,6 +10,7 @@
 // Rules: ${VAR} is substituted only inside [venues.*] strings; a value that looks like an
 // inline secret (> 32 chars, no ${) is rejected unless allow_inline_secrets; redacted()
 // prints the config with secrets masked; validation errors carry line:col.
+#include "fastmm/core/account_pool.hpp"
 #include "fastmm/core/balance_book.hpp"
 #include "fastmm/core/enums.hpp"
 #include "fastmm/core/fees.hpp"
@@ -118,6 +119,10 @@ struct VenueSection {
   // Market data only: no keys needed, no private sessions, no orders, not awaited at start, not
   // cancelled at stop. For a venue that is only a price leader for a strategy on another venue.
   bool public_only = false;
+  // Another account of the venue named: this one takes orders for that venue's instruments with
+  // its own keys, balances and order-count windows, and has no instruments or market data of its
+  // own (core/account_pool.hpp). Empty: a venue of its own.
+  std::string pool_of;
   bool insecure_tls = false;
   std::string ca_file;
   int recv_window_ms = 3000;
@@ -262,6 +267,8 @@ class Config {
 
   [[nodiscard]] const VenueSection* venue(std::string_view name) const noexcept;
   [[nodiscard]] VenueId venue_id(std::string_view name) const noexcept;  // invalid if unknown
+  // The account pools ([venues.<x>] pool_of), by venue id; inactive without any.
+  [[nodiscard]] PoolPlan pool_plan() const noexcept;
 
   // Typed views used to wire the engine.
   [[nodiscard]] RiskLimits risk_limits() const;
