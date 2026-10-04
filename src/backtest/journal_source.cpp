@@ -14,8 +14,7 @@ namespace fastmm::bt {
 void JournalSource::open_part(const std::string& path) {
   JournalReader r;
   if (auto res = r.open(path); !res) {
-    throw std::runtime_error("JournalSource: cannot open " + path + ": " +
-                             std::string(to_string(res.error())));
+    throw std::runtime_error("JournalSource: cannot open " + path + ": " + r.describe(res.error()));
   }
   parts_.push_back(std::move(r));
   paths_.push_back(path);

@@ -80,7 +80,8 @@ class JournalFeed {
   void set_param_schema(const ParamSchema& schema) noexcept {
     const std::span<const JournalParam> table = reader_.params();
     param_table_size_ = table.size();
-    remap_params_ = false;
+    // Fields past what this build reads of the table (JournalReader::params_dropped) name nothing.
+    remap_params_ = reader_.params_dropped() > 0;
     for (std::size_t i = 0; i < table.size(); ++i) {
       std::int32_t to = -1;
       for (std::size_t j = 0; j < schema.size(); ++j) {

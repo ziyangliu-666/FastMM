@@ -18,8 +18,7 @@ namespace {
 
 void open_or_throw(JournalReader& reader, const std::string& path) {
   if (auto r = reader.open(path); !r) {
-    throw std::runtime_error("cannot open journal " + path + ": " +
-                             std::string(to_string(r.error())));
+    throw std::runtime_error("cannot open journal " + path + ": " + reader.describe(r.error()));
   }
 }
 

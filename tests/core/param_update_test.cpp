@@ -6,6 +6,7 @@
 #include "fastmm/core/crc32c.hpp"
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/journal.hpp"
+#include "fastmm/sim/journal_feed.hpp"
 #include "fastmm/strategies/param_publisher.hpp"
 #include "fastmm/strategies/strategy.hpp"
 
@@ -14,7 +15,9 @@
 
 #include <bit>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -423,4 +426,120 @@ TEST_CASE("core.journal v3: the parameter table round-trips and older files stil
   CHECK(v1.version() == 1);
   CHECK(v1.params().empty());
   CHECK(v1.message_count() == 1000);
+}
+
+namespace {
+
+ParamUpdateMsg update_msg() {
+  ParamUpdateMsg m{};
+  m.hdr.len = sizeof m;
+  m.hdr.type = EventType::ParamUpdate;
+  m.hdr.instrument = ParamUpdateMsg::kAllInstruments;
+  m.publish_seq = 1;
+  return m;
+}
+
+// A v3 journal written by hand: no instruments, the given parameter table, one block holding `m`.
+std::string hand_journal(const std::string& name,
+                         const std::string& params,
+                         std::uint32_t param_count,
+                         const ParamUpdateMsg& m,
+                         std::uint32_t version = 3,
+                         std::uint32_t header_bytes_delta = 0) {
+  const std::size_t padded = (params.size() + 63) / 64 * 64;
+  std::string file(sizeof(JournalFileHeader) + padded, '\0');
+  JournalFileHeader h{};
+  std::memcpy(h.magic, "FMJ1", 4);
+  h.version = version;
+  h.header_bytes = static_cast<std::uint32_t>(file.size()) + header_bytes_delta;
+  h.block_bytes = kJournalBlockBytes;
+  h.param_count = param_count;
+  h.param_table_bytes = static_cast<std::uint32_t>(params.size());
+  h.param_table_crc32c = crc32c(params.data(), params.size());
+  h.crc32c = crc32c(&h, offsetof(JournalFileHeader, crc32c));
+  std::memcpy(file.data(), &h, sizeof h);
+  std::memcpy(file.data() + sizeof h, params.data(), params.size());
+  JournalBlockHeader b{};
+  std::memcpy(b.magic, "FMJB", 4);
+  b.byte_len = sizeof m;
+  b.seq_first = b.seq_last = 1;
+  b.count = 1;
+  b.crc32c = crc32c(&m, sizeof m);
+  file.append(reinterpret_cast<const char*>(&b), sizeof b);
+  file.append(reinterpret_cast<const char*>(&m), sizeof m);
+  const auto path = (tmp_dir() / name).string();
+  std::ofstream(path, std::ios::binary | std::ios::trunc) << file;
+  return path;
+}
+
+}  // namespace
+
+TEST_CASE("core.journal v3: a parameter table longer than this build's limit still opens") {
+  // A newer writer's table: kJournalMaxParams + 6 entries, the first TestParams' "levels".
+  std::string params;
+  const auto n = static_cast<std::uint32_t>(kJournalMaxParams + 6);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    const std::string name = i == 0 ? std::string("levels") : "p" + std::to_string(i);
+    params.push_back(static_cast<char>(TestParams::schema().begin()->type));
+    params.push_back(static_cast<char>(name.size()));
+    params += name;
+  }
+  ParamUpdateMsg m = update_msg();
+  m.count = 2;
+  m.field[0] = 0;
+  m.value[0] = 3;
+  m.field[1] = kJournalMaxParams + 2;  // an entry this build does not read
+  m.value[1] = 7;
+  const std::string path = hand_journal("v3_long_table.fmj", params, n, m);
+
+  JournalReader r;
+  REQUIRE(r.open(path));
+  CHECK(r.params().size() == kJournalMaxParams);
+  CHECK(r.params_dropped() == 6);
+  CHECK(r.params()[0].name == "levels");
+  CHECK(r.error_detail().empty());
+  REQUIRE(r.message_count() == 1);
+
+  // The field past what was read is dropped; the one it read is kept.
+  sim::JournalFeed feed(r);
+  feed.set_param_updates(true);
+  feed.set_param_schema(TestParams::schema());
+  REQUIRE(feed.has_next());
+  feed.arm();
+  const auto& u = msg_cast<ParamUpdateMsg>(feed.next());
+  CHECK(u.count == 1);
+  CHECK(u.field[0] == 0);
+  CHECK(u.value[0] == 3);
+  feed.release();
+  CHECK(feed.dropped_param_fields() == 1);
+}
+
+TEST_CASE("core.journal: a file this build cannot read says why") {
+  std::string params;
+  params.push_back(static_cast<char>(ParamType::Int));
+  params.push_back(1);
+  params += "a";
+  const ParamUpdateMsg m = update_msg();
+
+  JournalReader newer;
+  const auto v = newer.open(hand_journal("v_next.fmj", params, 1, m, kJournalVersion + 1));
+  REQUIRE_FALSE(v);
+  CHECK(v.error() == JournalError::BadVersion);
+  CHECK(newer.describe(v.error()).starts_with("BadVersion (format version " +
+                                              std::to_string(kJournalVersion + 1)));
+
+  // header_bytes the checksum vouches for, which this build's Instrument size does not add up to.
+  JournalReader layout;
+  const auto l = layout.open(hand_journal("layout.fmj", params, 1, m, 3, 64));
+  REQUIRE_FALSE(l);
+  CHECK(l.error() == JournalError::HeaderCorrupt);
+  CHECK(layout.error_detail().find("another Instrument layout") != std::string_view::npos);
+
+  // A table that does not parse is damage.
+  JournalReader short_table;
+  const auto s = short_table.open(hand_journal("short_table.fmj", params, 2, m));
+  REQUIRE_FALSE(s);
+  CHECK(s.error() == JournalError::HeaderCorrupt);
+  CHECK(short_table.describe(s.error()) ==
+        "HeaderCorrupt (the parameter table ends inside entry 1 of 2)");
 }

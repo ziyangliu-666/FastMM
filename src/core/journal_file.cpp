@@ -2,6 +2,8 @@
 #include "fastmm/core/journal.hpp"
 #include "fastmm/strategies/params.hpp"
 
+#include <fmt/format.h>
+
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -15,6 +17,7 @@
 #include <mutex>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace fastmm {
@@ -392,8 +395,18 @@ JournalReader& JournalReader::operator=(JournalReader&& o) noexcept {
 }
 
 Result<void, JournalError> JournalReader::open(const std::string& path) noexcept {
+  detail_len_ = 0;
+  // Every refusal says which check failed and what it compared: "HeaderCorrupt" alone does not
+  // tell a damaged file from one written by a build whose format this one does not read.
+  const auto why = [&]<class... Args>(
+                       JournalError e, fmt::format_string<Args...> f, Args&&... args) noexcept {
+    detail_len_ =
+        std::min(fmt::format_to_n(detail_, sizeof detail_, f, std::forward<Args>(args)...).size,
+                 sizeof detail_);
+    return fail(e);
+  };
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) return fail(JournalError::OpenFailed);
+  if (fd < 0) return why(JournalError::OpenFailed, "{}", std::strerror(errno));
   struct stat st {};
   if (::fstat(fd, &st) != 0) {
     ::close(fd);
@@ -402,7 +415,10 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
   const auto len = static_cast<std::size_t>(st.st_size);
   if (len < sizeof(JournalFileHeader)) {
     ::close(fd);
-    return fail(JournalError::TooShort);
+    return why(JournalError::TooShort,
+               "{} bytes, shorter than the {}-byte file header",
+               len,
+               sizeof(JournalFileHeader));
   }
   void* p = ::mmap(nullptr, len, PROT_READ, MAP_PRIVATE, fd, 0);
   ::close(fd);
@@ -411,53 +427,89 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
   map_len_ = len;
   header_ = reinterpret_cast<const JournalFileHeader*>(map_);
   if (std::memcmp(header_->magic, kFileMagic, 4) != 0) return fail(JournalError::BadMagic);
-  if (header_->version < kJournalMinVersion || header_->version > kJournalVersion)
-    return fail(JournalError::BadVersion);
+  if (header_->version < kJournalMinVersion || header_->version > kJournalVersion) {
+    return why(JournalError::BadVersion,
+               "format version {}, this build reads {} to {}: read it with a build of the source "
+               "that recorded it",
+               header_->version,
+               kJournalMinVersion,
+               kJournalVersion);
+  }
   if (crc32c(header_, offsetof(JournalFileHeader, crc32c)) != header_->crc32c)
-    return fail(JournalError::HeaderCorrupt);
+    return why(JournalError::HeaderCorrupt, "the file header's checksum does not match");
   const std::size_t tables =
       sizeof(JournalFileHeader) + std::size_t{header_->instrument_count} * sizeof(Instrument);
   const std::size_t config_bytes = header_->version >= 2 ? header_->config_bytes : 0;
   const std::size_t param_bytes = header_->version >= 3 ? header_->param_table_bytes : 0;
   const std::size_t meta_bytes = header_->version >= 3 ? header_->meta_bytes : 0;
-  if (header_->header_bytes > len || header_->header_bytes < sizeof(JournalFileHeader) ||
-      header_->header_bytes !=
-          tables + pad64(config_bytes) + pad64(param_bytes) + pad64(meta_bytes)) {
-    return fail(JournalError::HeaderCorrupt);
+  const std::size_t expect = tables + pad64(config_bytes) + pad64(param_bytes) + pad64(meta_bytes);
+  if (header_->header_bytes > len) {
+    return why(JournalError::HeaderCorrupt,
+               "the header is {} bytes and the file {}",
+               header_->header_bytes,
+               len);
+  }
+  if (header_->header_bytes != expect) {
+    // The header's checksum held, so these sizes are what the writer meant: its instrument record
+    // is not this build's.
+    return why(JournalError::HeaderCorrupt,
+               "the header is {} bytes, {} with this build's {}-byte instruments: it was "
+               "recorded by a build with another Instrument layout",
+               header_->header_bytes,
+               expect,
+               sizeof(Instrument));
   }
   instruments_ = reinterpret_cast<const Instrument*>(map_ + sizeof(JournalFileHeader));
   config_ = {};
   if (config_bytes > 0) {
     const auto* text = reinterpret_cast<const char*>(map_ + tables);
     if (crc32c(text, config_bytes) != header_->config_crc32c)
-      return fail(JournalError::HeaderCorrupt);
+      return why(JournalError::HeaderCorrupt, "the configuration's checksum does not match");
     config_ = std::string_view(text, config_bytes);
   }
   param_count_ = 0;
+  params_dropped_ = 0;
   if (header_->version >= 3) {
     const auto* table = reinterpret_cast<const char*>(map_ + tables + pad64(config_bytes));
-    if (header_->param_count > kJournalMaxParams ||
-        crc32c(table, param_bytes) != header_->param_table_crc32c) {
-      return fail(JournalError::HeaderCorrupt);
-    }
+    if (crc32c(table, param_bytes) != header_->param_table_crc32c)
+      return why(JournalError::HeaderCorrupt, "the parameter table's checksum does not match");
+    // A table longer than this build's limit comes from a newer writer, not damage (the limit
+    // went from 32 to 64 without a format change): the entries past it are left out, and updates
+    // of those fields dropped.
     std::size_t off = 0;
     for (std::size_t i = 0; i < header_->param_count; ++i) {
-      if (off + 2 > param_bytes) return fail(JournalError::HeaderCorrupt);
+      if (off + 2 > param_bytes ||
+          off + 2 + static_cast<std::uint8_t>(table[off + 1]) > param_bytes) {
+        return why(JournalError::HeaderCorrupt,
+                   "the parameter table ends inside entry {} of {}",
+                   i,
+                   header_->param_count);
+      }
       const auto type = static_cast<std::uint8_t>(table[off]);
       const auto name_len = static_cast<std::uint8_t>(table[off + 1]);
       off += 2;
-      if (off + name_len > param_bytes) return fail(JournalError::HeaderCorrupt);
-      params_[i] = JournalParam{std::string_view(table + off, name_len), type};
+      if (i < kJournalMaxParams) {
+        params_[i] = JournalParam{std::string_view(table + off, name_len), type};
+      } else {
+        ++params_dropped_;
+      }
       off += name_len;
     }
-    if (off != param_bytes) return fail(JournalError::HeaderCorrupt);
-    param_count_ = header_->param_count;
+    if (off != param_bytes) {
+      return why(JournalError::HeaderCorrupt,
+                 "the parameter table's {} entries take {} of its {} bytes",
+                 header_->param_count,
+                 off,
+                 param_bytes);
+    }
+    param_count_ = header_->param_count - params_dropped_;
   }
   meta_ = {};
   if (meta_bytes > 0) {
     const auto* text =
         reinterpret_cast<const char*>(map_ + tables + pad64(config_bytes) + pad64(param_bytes));
-    if (crc32c(text, meta_bytes) != header_->meta_crc32c) return fail(JournalError::HeaderCorrupt);
+    if (crc32c(text, meta_bytes) != header_->meta_crc32c)
+      return why(JournalError::HeaderCorrupt, "the strategy metadata's checksum does not match");
     meta_ = std::string_view(text, meta_bytes);
   }
   first_block_ = header_->header_bytes;

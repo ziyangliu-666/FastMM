@@ -266,7 +266,7 @@ Calibration calibrate(std::span<const std::string> journals, std::span<const dou
     s.no_both = scores(fill_check(path, c.conservatism, {.touch = false, .tape = false}));
     JournalReader reader;
     if (auto r = reader.open(path); !r)
-      throw std::runtime_error(fmt::format("cannot open {}: {}", path, to_string(r.error())));
+      throw std::runtime_error(fmt::format("cannot open {}: {}", path, reader.describe(r.error())));
     s.latency = measure_latency(reader);
     c.sessions.push_back(std::move(s));
   }
@@ -789,7 +789,8 @@ std::vector<BacktestGap> compare_backtests(const Calibration& c,
     const SessionCalibration& s = c.sessions[i];
     JournalReader reader;
     if (auto r = reader.open(s.path); !r)
-      throw std::runtime_error(fmt::format("cannot open {}: {}", s.path, to_string(r.error())));
+      throw std::runtime_error(
+          fmt::format("cannot open {}: {}", s.path, reader.describe(r.error())));
     const std::string config =
         configs.empty() ? std::string() : configs[configs.size() == 1 ? 0 : i];
     const std::string text = config.empty() ? std::string(reader.config_text()) : read(config);

@@ -410,6 +410,15 @@ class JournalReader {
   JournalReader& operator=(JournalReader&& o) noexcept;
 
   [[nodiscard]] Result<void, JournalError> open(const std::string& path) noexcept;
+  // What open() found wrong, for a message: which check failed and the values it compared (empty
+  // after a successful open).
+  [[nodiscard]] std::string_view error_detail() const noexcept { return {detail_, detail_len_}; }
+  // `e` and error_detail(), for a message.
+  [[nodiscard]] std::string describe(JournalError e) const {
+    std::string s(to_string(e));
+    if (detail_len_ > 0) s.append(" (").append(error_detail()).append(")");
+    return s;
+  }
 
   [[nodiscard]] const JournalFileHeader& header() const noexcept { return *header_; }
   [[nodiscard]] std::uint32_t version() const noexcept { return header_->version; }
@@ -425,6 +434,9 @@ class JournalReader {
   [[nodiscard]] std::span<const JournalParam> params() const noexcept {
     return {params_.data(), param_count_};
   }
+  // Entries of the file's parameter table past this build's kJournalMaxParams: params() leaves
+  // them out, so a ParamUpdate field at such an index resolves to nothing.
+  [[nodiscard]] std::size_t params_dropped() const noexcept { return params_dropped_; }
   [[nodiscard]] std::span<const Instrument> instruments() const noexcept {
     return {instruments_, header_->instrument_count};
   }
@@ -468,6 +480,9 @@ class JournalReader {
   std::string_view meta_;
   std::array<JournalParam, kJournalMaxParams> params_{};
   std::size_t param_count_ = 0;
+  std::size_t params_dropped_ = 0;
+  char detail_[192] = {};
+  std::size_t detail_len_ = 0;
   std::size_t first_block_ = 0;
   std::size_t valid_end_ = 0;  // byte offset one past the last valid block
   std::size_t blocks_ = 0;

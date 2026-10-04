@@ -398,7 +398,7 @@ FillCheckResult fill_check(const std::string& path,
                            const FillCheckInputs& in) {
   JournalReader reader;
   if (auto r = reader.open(path); !r) {
-    throw std::runtime_error("cannot open " + path + ": " + std::string(to_string(r.error())));
+    throw std::runtime_error("cannot open " + path + ": " + reader.describe(r.error()));
   }
   return fill_check(reader, conservatism, in);
 }

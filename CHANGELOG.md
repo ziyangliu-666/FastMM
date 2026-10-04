@@ -75,6 +75,12 @@ All notable changes are recorded here (Keep a Changelog format).
   was booked into the position but left the order `Canceled` with `cum_qty` 0. The OMS's terminal
   record now takes the fill; an order it completes becomes `Filled`, and the store's `orders` row
   is updated (`cum_qty`, `state`) to match its fills.
+- A journal whose parameter table is longer than the reader's limit opens: a strategy with 33
+  parameters, recorded by a build with the 64-entry limit, was refused as `HeaderCorrupt` by a
+  `fastmm-data` built before it. The entries past the limit are left out and updates of those
+  fields dropped. Every refusal now says which check failed (`HeaderCorrupt (the header is N
+  bytes, M with this build's 128-byte instruments ...)`, `BadVersion (format version 4, this build
+  reads 1 to 3 ...)`), in `fastmm-data`, `fastmm-replay` and the journal sources.
 - `--data "a;b"` (`MergedSource`) copied every event it yielded into an EventBuf, 8 KiB, the size
   of a 256-level book: a journal's depth snapshot with more levels (Binance USDⓈ-M records up to
   1000 a side) was written past the end of the source, which glibc reported as `corrupted

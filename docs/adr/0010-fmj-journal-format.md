@@ -53,7 +53,7 @@ ADR-0013 makes a strategy's parameters a journaled input: a `ParamUpdate` record
 
 `kJournalVersion` is 3. Readers open versions 1, 2 and 3.
 
-- **Parameter table.** After the padded configuration the header carries `param_count`, `param_table_bytes` and `param_table_crc32c`, followed by one entry per schema index with the parameter's name and `ParamType` (`include/fastmm/core/journal.hpp`, up to `kJournalMaxParams` entries: 32 at first, 64 since 2026-10, with no change to the layout). Replay matches recorded `ParamUpdate` records to the running strategy's schema by name, not by index.
+- **Parameter table.** After the padded configuration the header carries `param_count`, `param_table_bytes` and `param_table_crc32c`, followed by one entry per schema index with the parameter's name and `ParamType` (`include/fastmm/core/journal.hpp`, up to `kJournalMaxParams` entries: 32 at first, 64 since 2026-10, with no change to the layout; a reader keeps the entries up to its own limit and drops updates of the rest). Replay matches recorded `ParamUpdate` records to the running strategy's schema by name, not by index.
 - **Strategy metadata.** `strategy_meta`, `key=value` lines describing the strategy, follows the same header region; it is empty when the strategy supplies none.
 
 ### Consequences
