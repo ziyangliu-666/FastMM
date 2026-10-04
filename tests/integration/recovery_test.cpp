@@ -8,7 +8,7 @@
 //   2 order channel    cut with orders resting, with an order in flight and with a cancel in
 //                      flight; reconciliation must leave the two sides holding the same orders
 //   3 fills in the dark  the simulator fills a resting order while the private stream is muted;
-//                      the cum_qty jump has to become a synthetic fill (no fee: see dev/NOTES.md)
+//                      the cum_qty jump has to become a synthetic fill (no fee)
 //   4 kill -9          a child fastmm-live is killed with orders resting and restarted
 //   5 uncertain        a lost response, a response after the engine gave up, a duplicated event,
 //                      a cancel that races a fill, a replace after the original filled

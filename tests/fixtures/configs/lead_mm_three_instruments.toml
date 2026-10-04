@@ -1,13 +1,8 @@
-# FastMM: lead_mm on SOLFDUSD, priced off SOLUSDT converted by FDUSDUSDT, backtested on a journal
-# recorded by fastmm-live.
-#
-#   ./build/release/bin/fastmm-backtest --config configs/research/lead-mm-solfdusd.toml \
-#       --data journal:runs/<session>.fmj
-#
-# A journal's events carry instrument ids, not symbols: the [[instruments]] below must be listed in
-# the order the recording session listed them (SOLFDUSD, SOLUSDT, FDUSDUSDT), and the strategy's
-# target / leader / fx are indices into that order. SOLUSDT and FDUSDUSDT are enabled = false:
-# their books are kept and read, and risk refuses any order on them.
+# lead_mm over a three-instrument journal (tests/config/lead_mm_journal_test.cpp): the target
+# SOLFDUSD priced off SOLUSDT converted by FDUSDUSDT. A journal's events carry instrument ids, so
+# the [[instruments]] are listed in the recording session's order and target / leader / fx index
+# into it; SOLUSDT and FDUSDUSDT are enabled = false: their books are kept and read, and risk
+# refuses any order on them.
 
 [engine]
 name = "lead-mm-solfdusd"
@@ -26,7 +21,6 @@ supports_replace = false
 kind = "sim"
 supports_replace = false
 
-# FDUSD pairs: 0 maker; taker 10 bps (never paid by a post-only quoter, kept for honesty).
 [venues.binance.fees]
 maker_bps = 0.0
 taker_bps = 10.0
@@ -69,7 +63,7 @@ enabled = false
 [strategy]
 name = "lead_mm"
 
-# fair = SOLUSDT mid / FDUSDUSDT mid, in FDUSD per SOL. 0.05 SOL is about 6-8 FDUSD per side.
+# fair = SOLUSDT mid / FDUSDUSDT mid, in FDUSD per SOL.
 [strategy.params]
 target = 0
 leader = 1
@@ -108,4 +102,4 @@ latency_md_us = 5000
 equity_bar_s = 60
 initial_capital = 1000
 markout_horizons_s = "1,10,60"
-output_dir = "runs/lead-mm-solfdusd"
+output_dir = "runs/lead-mm-test"

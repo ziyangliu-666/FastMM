@@ -24,9 +24,9 @@ endif()
 target_compile_options(fastmm_lowlatency INTERFACE
   -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fno-plt -fno-semantic-interposition)
 # Code alignment. With gcc's defaults (16 B), edits to code the benchmark never runs moved
-# BM_EngineStep_Sim by up to 8 %; with these, by 2 %, and the engine benchmarks got faster
-# (dev/NOTES.md, "Code alignment, 2026-09-26"). About 4 % more .text. gcc only: clang
-# warns that it ignores -falign-jumps, and it was not measured with clang.
+# BM_EngineStep_Sim by up to 8 %; with these, by 2 %, and the engine benchmarks got faster.
+# About 4 % more .text. gcc only: clang warns that it ignores -falign-jumps, and it was not
+# measured with clang.
 if(FASTMM_ALIGN_CODE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   target_compile_options(fastmm_lowlatency INTERFACE
     -falign-functions=64 -falign-loops=32 -falign-jumps=32)

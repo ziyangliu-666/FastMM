@@ -1,4 +1,4 @@
-// configs/research/lead-mm-solfdusd.toml backtests a journal that holds all three instruments:
+// tests/fixtures/configs/lead_mm_three_instruments.toml backtests a journal that holds all three instruments:
 // the disabled leader and fx books are kept and read, orders go to the target only, and the
 // quotes are pulled once the leader goes quiet.
 #include "test_support.hpp"
@@ -52,9 +52,10 @@ std::string tape(bool leader_ticker = false) {
   return t;
 }
 
-bt::BacktestConfig research_config() {
+bt::BacktestConfig lead_mm_config() {
   const Config cfg = Config::load(
-      (std::filesystem::path(FASTMM_CONFIGS_DIR) / "research" / "lead-mm-solfdusd.toml").string());
+      (std::filesystem::path(FASTMM_FIXTURES_DIR) / "configs" / "lead_mm_three_instruments.toml")
+          .string());
   bt::BacktestConfig b = bt::BacktestConfig::from_config(cfg);
   b.output_dir.clear();
   b.journal_out.clear();
@@ -64,8 +65,8 @@ bt::BacktestConfig research_config() {
 
 }  // namespace
 
-TEST_CASE("config.research: lead_mm backtests a three-instrument journal with one enabled") {
-  const bt::BacktestConfig b = research_config();
+TEST_CASE("config.lead_mm: lead_mm backtests a three-instrument journal with one enabled") {
+  const bt::BacktestConfig b = lead_mm_config();
   REQUIRE(b.instruments.size() == 3);
   CHECK(b.instruments.get(InstrumentId{0}).enabled());
   CHECK_FALSE(b.instruments.get(InstrumentId{1}).enabled());
@@ -109,8 +110,8 @@ TEST_CASE("config.research: lead_mm backtests a three-instrument journal with on
   CHECK(r.outbound_sha256 == "0de24e821579bad9c6b8dfeff4541931a44a589fff4505437ac6556998e2b909");
 }
 
-TEST_CASE("config.research: recorded BookTicker events reach lead_mm in a journal backtest") {
-  const bt::BacktestConfig b = research_config();
+TEST_CASE("config.lead_mm: recorded BookTicker events reach lead_mm in a journal backtest") {
+  const bt::BacktestConfig b = lead_mm_config();
   bt::CsvSource csv = bt::CsvSource::from_text(tape(true));
   const std::string path = (fastmm::test::tmp_dir() / "lead_mm_ticker.fmj").string();
   bt::write_md_journal(csv, path, b.instruments, 1);

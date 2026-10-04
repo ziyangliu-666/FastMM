@@ -55,8 +55,6 @@ The stale-market-data check (7) measures the time since the book last changed. D
 - The inputs are the journaled message headers and the engine clock, so a replay gates at the same events. A backtest over a live journal gates only with `[backtest] md_arrival = "recorded"`, which delivers each message at its recorded `recv_ts`.
 - Venue times of the WebSocket JSON streams are in milliseconds, so the lag has 1 ms steps there; SBE streams carry microseconds.
 
-Binance Spot BTCU (session of 2026-09-26, 3 h, SBE market data): the excess lag of each message rises from 0.2 ms to about 36 ms within 100 ms of a price burst and decays in about 300 ms; the ack latency of our orders regressed on it gives R² 0.41. A 2 ms limit held the gate for 1.4 % of the session, a 5 ms limit for 0.6 %. In backtests of that session (`configs/research/lead-mm-btcu-live-bt.toml`, `md_arrival = "recorded"`), 2 ms took the fills from 235 to 180 and 5 ms to 191, with 11 % and 2 % more orders; the 1 s markout moved from -0.08 bps to -0.05 and -0.04 bps, inside each other's 95 % intervals.
-
 ## Balance check
 
 Connectors report the account's balances as `BalanceMsg` events on the order ring: a snapshot after every reconciliation (and at start-up), and the private stream's updates where the venue has one ([Venues](../reference/venues.md#balances)); in a backtest the simulated venue sends them ([Backtesting](backtesting.md#balances)). The engine keeps one row per venue and asset: the base and quote of each spot instrument, the settlement asset of each derivative, and an account row for a venue that reports account-wide margin (`include/fastmm/core/balance_book.hpp`). The events are journaled; a replay rebuilds the same rows.

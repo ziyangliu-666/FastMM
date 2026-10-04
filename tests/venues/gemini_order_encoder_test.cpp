@@ -337,7 +337,7 @@ TEST_CASE("gemini.rest_decoder: balances and margin") {
   CHECK(m.initial == Notional::from_int(6000));
   CHECK(m.available == Notional::from_int(3800));
   CHECK(m.maintenance == Notional::from_int(5800));
-  // What the sandbox's exchange account answers (dev/NOTES.md, Gemini sandbox 2026-09-30).
+  // What the sandbox's exchange account answers (Gemini sandbox, 2026-09-30).
   const std::string not_derivatives =
       R"({"result":"error","reason":"AccountNotOfTypeRequired","message":"Account is not of required type: derivatives"})";
   CHECK(decode_margin(not_derivatives, m).find("AccountNotOfTypeRequired") != std::string::npos);
