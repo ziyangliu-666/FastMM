@@ -1,5 +1,5 @@
 #!/bin/sh
-# Entrypoint of the production image (docker/Dockerfile.production). The first argument is a
+# Entrypoint of the production image (deploy/docker/Dockerfile.production). The first argument is a
 # config path, a flag for fastmm-live, or another fastmm program:
 #   docker run ... fastmm:<version> /etc/fastmm/live.toml --duration 60s
 #   docker run ... fastmm:<version> fastmm-top --once

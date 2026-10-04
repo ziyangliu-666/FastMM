@@ -82,10 +82,10 @@ cmake --preset release -DFASTMM_CODEC_FIX=ON -DFASTMM_CODEC_MDP3=ON
 ## Docker
 
 ```bash
-docker compose up --build
+docker compose -f deploy/docker/compose.yml up --build
 ```
 
-This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image is the demo: it runs as root and carries test TLS certificates. The production image is `docker/Dockerfile.production`, non-root and without them ([Deploy a release](../how-to/operations/deploy.md#run-the-container)).
+This builds one image and starts two containers, `sim-exchange` and `engine`, which run `fastmm-sim-exchange` and `fastmm-live` trading `basic_mm` against it for 120 s (`configs/sim-docker.toml`). Journals go to `runs/`. The image is the demo: it runs as root and carries test TLS certificates. The production image is `deploy/docker/Dockerfile.production`, non-root and without them ([Deploy a release](../how-to/operations/deploy.md#run-the-container)).
 
 ## WSL2
 

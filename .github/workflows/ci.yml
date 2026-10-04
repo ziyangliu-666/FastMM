@@ -241,22 +241,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: build the image
-        run: docker compose build
+        run: docker compose -f deploy/docker/compose.yml build
       - name: smoke test (simulated exchange + engine, 20 s)
         run: |
-          docker compose up -d sim-exchange
-          docker compose run --rm engine --config /fastmm/configs/sim-docker.toml --duration 20s
+          docker compose -f deploy/docker/compose.yml up -d sim-exchange
+          docker compose -f deploy/docker/compose.yml run --rm engine --config /fastmm/configs/sim-docker.toml --duration 20s
       - name: the production image builds and runs as uid 10001
         run: |
-          docker build -f docker/Dockerfile.production -t fastmm-production:ci .
+          docker build -f deploy/docker/Dockerfile.production -t fastmm-production:ci .
           test "$(docker run --rm --entrypoint id fastmm-production:ci -u)" = 10001
           docker run --rm fastmm-production:ci fastmm-live --version
       - name: simulator log
         if: always()
-        run: docker compose logs sim-exchange | tail -40
+        run: docker compose -f deploy/docker/compose.yml logs sim-exchange | tail -40
       - name: stop
         if: always()
-        run: docker compose down
+        run: docker compose -f deploy/docker/compose.yml down
 
   python:
     needs: plan

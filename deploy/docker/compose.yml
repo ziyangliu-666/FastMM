@@ -1,7 +1,9 @@
+# The demo: fastmm-sim-exchange and fastmm-live trading basic_mm against it.
+#   docker compose -f deploy/docker/compose.yml up --build
 services:
   sim-exchange:
     image: fastmm:local  # both services share one image, built once
-    build: { context: ., dockerfile: docker/Dockerfile }
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile }
     entrypoint: ["fastmm-sim-exchange"]
     command: ["--config", "/fastmm/configs/sim.toml", "--bind", "0.0.0.0",
               "--tls-cert", "/fastmm/tls/cert.pem", "--tls-key", "/fastmm/tls/key.pem"]
@@ -12,10 +14,10 @@ services:
     healthcheck: { test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9080"], interval: 2s, retries: 10 }
   engine:
     image: fastmm:local
-    build: { context: ., dockerfile: docker/Dockerfile }
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile }
     depends_on: { sim-exchange: { condition: service_healthy } }
     command: ["--config", "/fastmm/configs/sim-docker.toml", "--duration", "120s"]
     environment:
       - FASTMM_SIM_API_KEY=${FASTMM_SIM_API_KEY:-sim-key}
       - FASTMM_SIM_API_SECRET=${FASTMM_SIM_API_SECRET:-sim-secret}
-    volumes: ["./runs:/fastmm/runs"]
+    volumes: ["../../runs:/fastmm/runs"]

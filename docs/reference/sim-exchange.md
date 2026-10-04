@@ -24,11 +24,11 @@ FASTMM_SIM_API_KEY=sim-key FASTMM_SIM_API_SECRET=sim-secret \
   ./build/release/bin/fastmm-live --config configs/sim-local.toml
 ```
 
-`configs/sim-local-tls.toml` connects over TLS instead. `scripts/run-sim.sh` runs both and prints a summary; `docker compose up --build` runs them in containers with `configs/sim-docker.toml`:
+`configs/sim-local-tls.toml` connects over TLS instead. `scripts/run-sim.sh` runs both and prints a summary; `docker compose -f deploy/docker/compose.yml up --build` runs them in containers with `configs/sim-docker.toml`:
 
 ```bash
 ./scripts/run-sim.sh --duration 30s [--tls] [--build-dir build/<dir>]
-docker compose up --build
+docker compose -f deploy/docker/compose.yml up --build
 ```
 
 Flags and exit codes: [Command lines](cli.md#fastmm-sim-exchange). Every `--stats-interval` the simulator prints a line with connections, orders, rejects, cancels, replaces, fills, open orders, public trades, depth diffs, tickers, snapshots, REST and WS API requests, rate-limited requests, authentication errors, the account position and the touch.

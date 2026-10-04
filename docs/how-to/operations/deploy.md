@@ -91,6 +91,6 @@ docker run --rm --name fastmm \
 
 Other programs run through the same entrypoint by name: `docker run --rm -v "$PWD/runs:/var/lib/fastmm/runs" ghcr.io/ziyangliu-666/fastmm:0.2.0 fastmm-replay --journal /var/lib/fastmm/runs/<file>.fmj --verify`.
 
-Build it from a checkout with `docker build -f docker/Dockerfile.production -t fastmm:local .`. `docker/Dockerfile` and `docker-compose.yml` are the demo instead: they run as root with test certificates and a simulated exchange ([Install](../../getting-started/install.md#docker)).
+Build it from a checkout with `docker build -f deploy/docker/Dockerfile.production -t fastmm:local .`. `deploy/docker/Dockerfile` and `deploy/docker/compose.yml` are the demo instead: they run as root with test certificates and a simulated exchange ([Install](../../getting-started/install.md#docker)).
 
 Next: [Run in production](running-in-production.md), then the [Go-live checklist](go-live-checklist.md).

@@ -1,7 +1,7 @@
 // fastmm-sim-exchange: a Binance Spot-compatible simulated exchange (plan 8.3, ADR-0008).
 //
 //   fastmm-sim-exchange --config configs/sim.toml                  # 127.0.0.1:9080 and :9443
-//   fastmm-sim-exchange --config configs/sim.toml --bind 0.0.0.0   # docker-compose
+//   fastmm-sim-exchange --config configs/sim.toml --bind 0.0.0.0   # deploy/docker/compose.yml
 //   fastmm-live --config configs/sim-local.toml                    # the engine against it
 //
 // Exit codes: 0 ok, 2 bad command line, 3 bad config, 4 cannot listen.

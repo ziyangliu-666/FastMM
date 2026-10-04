@@ -1,5 +1,5 @@
-# FastMM: BasicMM against fastmm-sim-exchange inside docker-compose (service "sim-exchange").
-#   docker compose up --build
+# FastMM: BasicMM against fastmm-sim-exchange inside deploy/docker/compose.yml (service "sim-exchange").
+#   docker compose -f deploy/docker/compose.yml up --build
 # Same as configs/sim-local.toml, with the simulator reached by its compose service name.
 
 [engine]

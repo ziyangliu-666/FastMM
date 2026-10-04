@@ -68,7 +68,7 @@ jobs:
       # GHCR repository names are lower case; ${{ github.repository }} is not.
       - name: build the production image
         run: |
-          docker build -f docker/Dockerfile.production --build-arg "VERSION=${TAG#v}" \
+          docker build -f deploy/docker/Dockerfile.production --build-arg "VERSION=${TAG#v}" \
             -t "ghcr.io/ziyangliu-666/fastmm:${TAG#v}" -t ghcr.io/ziyangliu-666/fastmm:latest .
       - name: the image runs as uid 10001 and starts
         run: |

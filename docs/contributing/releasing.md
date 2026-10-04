@@ -35,7 +35,7 @@ git push origin v<x.y.z>
 | `wheels.yml` | `sdist`, `wheels`, `live-wheels` | the sdist and the manylinux_2_28 wheels, each tested with its own test suite |
 | `wheels.yml` | `publish` | uploads them to PyPI with the repository secret `PYPI_API_TOKEN`, in the `pypi` environment, only after the three build jobs pass |
 | `release.yml` | `tarball` | `scripts/package-release.sh`, then a GitHub Release with the tarball, its `.sha256` and the CHANGELOG section |
-| `release.yml` | `image` | `docker/Dockerfile.production` pushed to `ghcr.io/ziyangliu-666/fastmm` as `<x.y.z>` and `latest` |
+| `release.yml` | `image` | `deploy/docker/Dockerfile.production` pushed to `ghcr.io/ziyangliu-666/fastmm` as `<x.y.z>` and `latest` |
 
 The `pypi` environment's deployment rules have to admit the tag ref, or `publish` stops before uploading. Both workflows also take a manual run (`workflow_dispatch`): `wheels.yml` with **publish** checked, `release.yml` with the tag name.
 

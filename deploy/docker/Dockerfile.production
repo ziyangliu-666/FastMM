@@ -1,8 +1,8 @@
 # Production image: fastmm-live, fastmm-gateway, fastmm-ctl, fastmm-top, fastmm-pnl and
 # fastmm-replay; no simulator, no test certificates,
-# non-root, tini as PID 1. The demo is docker/Dockerfile with docker-compose.yml.
+# non-root, tini as PID 1. The demo is deploy/docker/Dockerfile with compose.yml.
 #
-#   docker build -f docker/Dockerfile.production -t fastmm:0.2.0 .
+#   docker build -f deploy/docker/Dockerfile.production -t fastmm:0.2.0 .
 #   docker run --rm -v ./mm.toml:/etc/fastmm/live.toml:ro -v ./runs:/var/lib/fastmm/runs \
 #     -e FASTMM_API_KEY -e FASTMM_API_SECRET fastmm:0.2.0 /etc/fastmm/live.toml --duration 60s
 #
@@ -43,7 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /src/build/bin/fastmm-live /src/build/bin/fastmm-gateway \
      /src/build/bin/fastmm-ctl /src/build/bin/fastmm-top /src/build/bin/fastmm-pnl \
      /src/build/bin/fastmm-replay /usr/local/bin/
-COPY docker/entrypoint.sh /usr/local/bin/fastmm-entrypoint
+COPY deploy/docker/entrypoint.sh /usr/local/bin/fastmm-entrypoint
 COPY LICENSE /usr/share/doc/fastmm/LICENSE
 RUN chmod 0755 /usr/local/bin/fastmm-entrypoint
 USER 10001:10001
