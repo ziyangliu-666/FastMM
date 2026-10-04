@@ -43,6 +43,9 @@ struct VenueFactoryOptions {
   // for. The connector opens its order and user sessions only, no market data, and resolves
   // symbols on that venue's id (its own id goes on the events). Invalid: a venue of its own.
   VenueId pool_of{};
+  // The venue is a pool's primary or member: its account shares the IP's request weight with the
+  // pool's other accounts (connectors that count weight per IP).
+  bool pooled = false;
 };
 
 // What a connector declares about itself before one exists. The session and the engine read these

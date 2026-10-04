@@ -81,6 +81,8 @@ struct BinanceVenueConfig {
   // symbols up on that venue's id and stamps its own id on every event. Invalid: a venue of its
   // own.
   VenueId pool_of{};
+  // One of a pool's accounts: the IP's request weight is counted with the others' (share_ip).
+  bool share_ip_weight = false;
   bool ws_order_api = true;  // false: REST order entry only
   bool emit_ack_from_response = true;
   bool position_from_balance = false;  // forward outboundAccountPosition as PositionUpdate

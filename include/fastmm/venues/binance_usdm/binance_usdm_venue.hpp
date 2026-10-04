@@ -117,6 +117,8 @@ struct BinanceUsdmVenueConfig {
   // A pool member ([venues.<x>] pool_of): the venue whose instruments this account trades; order,
   // user and REST sessions only, no market data (binance/binance_venue.hpp has the whole of it).
   VenueId pool_of{};
+  // One of a pool's accounts: the IP's request weight is counted with the others' (share_ip).
+  bool share_ip_weight = false;
   bool ws_order_api = true;  // false: REST order entry only
   bool emit_ack_from_response = true;
   bool position_from_account_update = true;  // correct the engine position (see above)

@@ -114,6 +114,8 @@ api_secret = "${S2}"
 
 A member's `kind` is the primary's; a member is nobody's primary, lists no `[[instruments]]` of its own and is not `public_only`; a pool holds at most 8 accounts, the primary included; the connector must run as a pool member (Binance Spot and USDⓈ-M do). The engine routes each new order to one account and the order stays there ([Account pools](strategy-api.md#account-pools)); in a backtest, `[venues.<member>] kind = "sim"` with `[backtest.venues.<member>.balances]` gives the member its own simulated account ([`[backtest.venues.<name>]`](#backtestvenues)).
 
+Binance counts request weight per IP, so a pool's accounts share the IP's window (6000 a minute on Spot, 2400 on USDⓈ-M): each request of any account counts against it, and a 429 or 418 answered to one account pauses or stops them all. Order counts stay each account's.
+
 ### Connectors
 
 The connector `kind` names owns the rest of the section: it declares its keys, validates them and

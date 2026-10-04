@@ -55,6 +55,8 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
       md_venue_(cfg_.pool_of.valid() ? cfg_.pool_of : id),
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold) {
+  // Binance counts request weight per IP: the accounts of a pool spend one window.
+  if (cfg_.share_ip_weight) rate_.share_ip(shared_rate("binance_spot " + cfg_.rest_url));
   if (cfg_.user_stream == UserStreamMode::Auto)
     cfg_.user_stream = signer_.usable() ? UserStreamMode::WsApi : UserStreamMode::None;
   if (cfg_.dry_run) cfg_.user_stream = UserStreamMode::None;

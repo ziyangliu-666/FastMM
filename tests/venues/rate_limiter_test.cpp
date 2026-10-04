@@ -2,6 +2,11 @@
 
 #include "test_support.hpp"
 
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <thread>
+
 using namespace fastmm::venues;
 
 namespace {
@@ -38,6 +43,17 @@ TEST_CASE("venues.rate_limiter: venue headers overwrite the local estimate") {
   CHECK(rl.can_send(1, now, false));  // weight ok, only orders exhausted
   rl.on_headers(-1, -1, now);         // absent headers change nothing
   CHECK_FALSE(rl.can_send(1, now, true));
+}
+
+TEST_CASE("venues.rate_limiter: on a shared IP an older weight header does not lower it") {
+  RateLimiter rl(1.0);
+  rl.share_ip(shared_rate("test-host-older-header"));
+  REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
+  const std::int64_t now = kSec;
+  rl.on_sent(3000, now);        // a burst in flight
+  rl.on_headers(200, -1, now);  // the answer to its first request
+  CHECK_FALSE(rl.can_send(3001, now));
+  CHECK(rl.can_send(3000, now));
 }
 
 TEST_CASE("venues.rate_limiter: cooldown and hard stop") {
@@ -125,4 +141,66 @@ TEST_CASE("venues.rate_limiter: bybit remaining-style headers") {
   rl.on_remaining(20, 2, 0);
   CHECK(rl.can_send(2, 0));
   CHECK_FALSE(rl.can_send(3, 0));
+}
+
+TEST_CASE("venues.rate_limiter: accounts sharing an IP spend one weight window and one cooldown") {
+  const auto ip = shared_rate("test-host-shared-weight");
+  RateLimiter a(1.0);
+  RateLimiter b(1.0);
+  a.share_ip(ip);
+  b.share_ip(ip);
+  REQUIRE(a.add_weight_bucket(100, 60'000'000'000));
+  REQUIRE(b.add_weight_bucket(100, 60'000'000'000));  // the same bucket: not a second one
+  REQUIRE(a.add_order_bucket(10, 10'000'000'000));
+  REQUIRE(b.add_order_bucket(10, 10'000'000'000));
+  const std::int64_t t = 1'000'000'000;
+  a.on_sent(60, t);
+  CHECK(b.can_send(40, t));
+  CHECK_FALSE(b.can_send(41, t));  // a's 60 count against b
+  // Order counts stay each account's own.
+  for (int i = 0; i < 10; ++i) a.on_sent(0, t, true);
+  CHECK_FALSE(a.can_send(0, t, true));
+  CHECK(b.can_send(0, t, true));
+  // A 429 seen by one pauses both; a 418 stops both.
+  b.cooldown(5'000'000'000, t);
+  CHECK(a.in_cooldown(t + 1));
+  CHECK_FALSE(a.can_send(1, t + 1));
+  CHECK(a.can_send(1, t + 6'000'000'000));
+  a.hard_stop();
+  CHECK(b.hard_stopped());
+  b.clear_hard_stop();
+  CHECK_FALSE(a.hard_stopped());
+  // The header is the IP's count: either account's reply sets it for both.
+  a.on_headers(90, -1, t + 7'000'000'000);
+  CHECK_FALSE(b.can_send(11, t + 7'000'000'000));
+  REQUIRE(b.weight_bucket(0).has_value());
+  CHECK(b.weight_bucket(0)->used == 90);
+}
+
+TEST_CASE("venues.rate_limiter: accounts on their own threads spend one IP window") {
+  // Each venue sends from its network thread; the shared window is touched under its lock.
+  const auto ip = shared_rate("test-host-threads");
+  RateLimiter a(1.0);
+  RateLimiter b(1.0);
+  a.share_ip(ip);
+  b.share_ip(ip);
+  REQUIRE(a.add_weight_bucket(1000, 60 * kSec));
+  REQUIRE(b.add_weight_bucket(1000, 60 * kSec));
+  std::atomic<int> sent{0};
+  const auto spend = [&](RateLimiter& r) {
+    for (int i = 0; i < 2000; ++i) {
+      if (!r.can_send(1, kSec)) continue;
+      r.on_sent(1, kSec);
+      ++sent;
+      static_cast<void>(r.weight_bucket(0));  // a status report, read concurrently
+    }
+  };
+  std::thread ta(spend, std::ref(a));
+  std::thread tb(spend, std::ref(b));
+  ta.join();
+  tb.join();
+  // can_send and on_sent are two steps: each thread may pass the check once past the other's send.
+  CHECK(sent.load() >= 1000);
+  CHECK(sent.load() <= 1001);
+  CHECK(a.weight_bucket(0)->used == static_cast<std::uint32_t>(sent.load()));
 }

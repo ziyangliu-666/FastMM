@@ -84,6 +84,8 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
       signer_(cfg_.credentials),
       rate_(cfg_.rate_threshold),
       dms_(cfg_.dry_run ? 0 : cfg_.dead_mans_switch_ms) {
+  // Binance counts request weight per IP: the accounts of a pool spend one window.
+  if (cfg_.share_ip_weight) rate_.share_ip(shared_rate("binance_usdm " + cfg_.rest_url));
   std::memset(scratch_, 0, sizeof scratch_);
   ReplayLimits limits;
   limits.window_ms = kUserTradesWindowMs;

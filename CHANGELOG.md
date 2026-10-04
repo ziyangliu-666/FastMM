@@ -74,6 +74,11 @@ All notable changes are recorded here (Keep a Changelog format).
   `OrderBudget::local_wait_ns`: the time until the bucket admits the next order.
 
 ### Fixed
+- Account pools on Binance Spot and USDⓈ-M: the accounts count request weight in one window per
+  IP, as Binance does, and a 429 or 418 answered to one pauses or stops them all. Each account
+  counted only its own, so a pool starting together sent several times the 6000/minute and was
+  banned (418). A lone venue keeps its own limiter. `RateLimiter::share_ip`, `shared_rate`;
+  `weight_bucket` and `order_bucket` return a copy (`std::optional<RateBucket>`).
 - A fill that arrives after its order ended (Binance answers the cancel on the WS API before the
   user stream reports the execution it raced, or rejects the cancel of an order it already filled)
   was booked into the position but left the order `Canceled` with `cum_qty` 0. The OMS's terminal

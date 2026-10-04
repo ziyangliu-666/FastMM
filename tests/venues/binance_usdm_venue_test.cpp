@@ -18,6 +18,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -1240,9 +1241,9 @@ TEST_CASE("binance_usdm.venue: a quote is charged what the endpoint costs, not o
   DmsFixture f(0);
   REQUIRE(f.pump([&] { return live_states(f.oc) >= 2; }));
   const auto used = [&](bool order) {
-    const RateBucket* b =
+    const std::optional<RateBucket> b =
         order ? f.venue->rate_limiter().order_bucket(0) : f.venue->rate_limiter().weight_bucket(0);
-    REQUIRE(b != nullptr);
+    REQUIRE(b.has_value());
     return b->used;
   };
   const std::uint32_t weight0 = used(false);

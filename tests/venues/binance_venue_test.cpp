@@ -928,9 +928,11 @@ struct Resumed {
   std::unique_ptr<BinanceVenue> venue;
   Collected oc;
 
-  Resumed(Harness& h, std::int64_t since, const std::vector<std::string>& known) {
+  Resumed(Harness& h, std::int64_t since, const std::vector<std::string>& known)
+      : Resumed(h.config(false), since, known) {}
+  Resumed(BinanceVenueConfig cfg, std::int64_t since, const std::vector<std::string>& known) {
     REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
-    venue = std::make_unique<BinanceVenue>(VenueId{0}, h.config(false));
+    venue = std::make_unique<BinanceVenue>(VenueId{0}, std::move(cfg));
     REQUIRE(venue->load_reference_data(instruments));
     REQUIRE(symbols.build(instruments));
     venue->attach(symbols, instruments, md.sink, orders.sink, &outbound);
@@ -979,6 +981,35 @@ TEST_CASE("binance.venue: a full myTrades page is full by the rows returned, not
     REQUIRE(q.size() >= 2);
     CHECK(query_param(q[0], "startTime") == std::to_string(now - 60'000));
     CHECK(query_param(q[1], "fromId") == "6000");
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a 429 to one of a pool's accounts pauses the others on the IP") {
+  // Binance counts request weight per IP. A pool's accounts share it (share_ip_weight): the
+  // account the 429 went to is not the only one that must wait, or the others' next requests
+  // earn the 418 ban.
+  Harness h;
+  const long long now = wall_now().ns / 1'000'000;
+  {
+    const std::lock_guard lock(h.trades_mu);
+    h.trades_replies = {{429, R"({"code":-1003,"msg":"Too many requests."})"}};
+  }
+  BinanceVenueConfig pooled = h.config(false);
+  pooled.share_ip_weight = true;
+  BinanceVenueConfig other = pooled;
+  other.name = "fake-binance-2";
+  const BinanceVenue member(VenueId{1}, other);
+  BinanceVenueConfig lone_cfg = h.config(false);
+  lone_cfg.name = "fake-binance-3";
+  const BinanceVenue lone(VenueId{2}, lone_cfg);  // not in the pool: its own window
+  CHECK_FALSE(member.rate_limiter().in_cooldown(net::Reactor::now_ns()));
+  {
+    Resumed r(pooled, now - 60'000, {});
+    REQUIRE(pump_until(r.reactor, [&] { return r.venue->rate_limiter().cooldowns() >= 1; }));
+    CHECK(member.rate_limiter().in_cooldown(net::Reactor::now_ns()));
+    CHECK(member.rate_limiter().cooldowns() == 0);  // the count is the account's that was told
+    CHECK_FALSE(lone.rate_limiter().in_cooldown(net::Reactor::now_ns()));
   }
   h.srv.stop();
 }

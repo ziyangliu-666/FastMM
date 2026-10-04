@@ -56,6 +56,10 @@ int make_venue_slots(const Config& cfg,
       venues::VenueFactoryOptions vo = vopts;
       vo.dry_run = vopts.dry_run || cfg.venues[i].public_only;  // a price leader runs public-only
       vo.pool_of = cfg.venue_id(cfg.venues[i].pool_of);  // a member: orders for the primary's
+      vo.pooled = !cfg.venues[i].pool_of.empty() ||
+                  std::any_of(cfg.venues.begin(), cfg.venues.end(), [&](const auto& v) {
+                    return v.pool_of == cfg.venues[i].name;
+                  });
       slot->venue = venues::make_venue(VenueId{static_cast<std::uint8_t>(i)}, cfg.venues[i], vo);
     } catch (const std::exception& e) {
       std::fprintf(stderr, "%s: %s\n", prog, e.what());

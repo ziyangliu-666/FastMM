@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -132,8 +133,8 @@ struct IdText {
   out.venue_known = true;
   out.venue_paused = r.hard_stopped() || r.in_cooldown(now);
   for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
-    const RateBucket* b = r.order_bucket(i);
-    if (b == nullptr) continue;
+    const std::optional<RateBucket> b = r.order_bucket(i);
+    if (!b) continue;
     const std::int64_t s = b->window_ns / 1'000'000'000;
     if (s == 10) {
       out.orders_10s = window(*b);
@@ -144,8 +145,8 @@ struct IdText {
     }
   }
   for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
-    const RateBucket* b = r.weight_bucket(i);
-    if (b == nullptr) continue;
+    const std::optional<RateBucket> b = r.weight_bucket(i);
+    if (!b) continue;
     if (!out.weight.known() || b->window_ns < out.weight.window_ms * 1'000'000)
       out.weight = window(*b);
   }
