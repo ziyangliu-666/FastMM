@@ -21,8 +21,9 @@ All notable changes are recorded here (Keep a Changelog format).
   the member's id, cancels and replaces follow it, and `ctx.balance(member, asset)` and
   `ctx.order_budget(member)` are per account. `ctx.pool(primary)`, `ctx.pool_primary(venue)`,
   `ctx.account_usable(venue)`, `ctx.balance_room(id, side, px, account)`; on a pooled instrument
-  `balance_room(id, side, px)` is the largest single account's room, so `fit_to_balance` cuts a
-  ladder to what one order can be. A member whose order link is down or whose kill switch is
+  `balance_room(id, side, px)` is what one account can hold (its room plus its own open orders on
+  the side) net of the pool's open quantity, so `fit_to_balance` cuts a ladder to what one order
+  can be. A member whose order link is down or whose kill switch is
   engaged is routed around; the primary's kill stops the pool. `RejectReason::InvalidAccount` (40)
   for an account outside the pool. Live, Binance Spot and USDⓈ-M run as members
   (`VenueCapabilities::account_pools`): order, user and REST sessions, reconciliation, balance
@@ -88,6 +89,11 @@ All notable changes are recorded here (Keep a Changelog format).
   and the message names the setting and `one_way_mode`. Instruments in several settlement
   currencies with `max_loss` and no `[accounting]` print the `[accounting]` and `[accounting.fx]`
   lines to add.
+- Account pools: an account whose 10 s or daily order window is full gets no automatic orders, and
+  an order whose account's window is full is refused by `send` with `RateLimit` instead of by the
+  venue (a strategy's retries made a storm of `VenueRateLimit` refusals). A quote resting on one
+  account was sized to another account's room on top of it, so it was cancelled on its ack and
+  placed again without end; the pooled `balance_room` now counts one account only.
 - `--data "a;b"` (`MergedSource`) copied every event it yielded into an EventBuf, 8 KiB, the size
   of a 256-level book: a journal's depth snapshot with more levels (Binance USDⓈ-M records up to
   1000 a side) was written past the end of the source, which glibc reported as `corrupted
