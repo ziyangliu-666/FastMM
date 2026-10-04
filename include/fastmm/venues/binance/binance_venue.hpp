@@ -333,6 +333,8 @@ class BinanceVenue final : public Venue, private ReconcileHooks {
   // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
   // forwarded (fromId), else from the time watermark.
   ReplayScheduler<MyTradeRow> exec_replay_;
+  // Orders sent and order events heard per instrument: a sweep skips the quiet ones.
+  OrderActivity activity_;
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed
   // to exec_replay_ at connect(), once subscribed_ gives the instruments their streams.
   std::vector<std::pair<InstrumentId, std::int64_t>> resume_from_ids_;

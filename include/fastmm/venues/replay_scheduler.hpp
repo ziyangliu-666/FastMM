@@ -27,6 +27,13 @@
 //   * after an incomplete replay, again kRetryNs after it ended; while all is well, every
 //     sweep_ns; due_in(): once, a moment after a stream event (funding). A replay that starts
 //     serves them all.
+//   * a sweep (the sweep_ns replay alone: not run(), a retry, due_in() or a restart's) skips the
+//     streams Hooks::active says had no order activity since their watermark less settle_ms, once
+//     they have been read in full since open() or the last restart. A skipped stream's watermark
+//     moves as if it had been answered empty; one active later is read from there, which covers
+//     every row since the activity. A fill the private stream dropped on an order with no other
+//     activity is not looked for then: an id cursor (from_id) still reaches it at the stream's
+//     next read, a time watermark does not.
 //   * a restart (resume(), restart_from()) while one runs: that replay goes on from the restart's
 //     start at the first timer tick after it has ended, and ends (Hooks::finished) after that.
 //   * a query not answered within kQueryTimeoutNs has failed (the housekeeping timer checks):
@@ -51,7 +58,9 @@
 // must own their data.
 //
 // Reactor thread only; control path (std::function, strings), nothing per order or per market-data
-// message.
+// message but OrderActivity::note, one store.
+#include "fastmm/core/strong_id.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -149,6 +158,11 @@ class ReplaySchedulerBase {
     // connector's rate limiter: its bulk share of the weight is spent, or the venue asked for a
     // pause) instead of failing its stream.
     std::function<bool()> can_query;
+    // Optional: a sweep reads `stream` only when this says the account may have executions on
+    // it at or after `since_ms` (venue time): an order sent, an execution report received. A
+    // connector that cannot tell (since_ms before it started counting) says true. Absent: every
+    // stream, every sweep.
+    std::function<bool(std::size_t stream, std::int64_t since_ms)> active = {};
   };
 
   ReplaySchedulerBase(const ReplaySchedulerBase&) = delete;
@@ -201,6 +215,8 @@ class ReplaySchedulerBase {
   [[nodiscard]] std::uint64_t replays() const noexcept { return replays_; }
   // Queries that got no answer within kQueryTimeoutNs, or waited kDeferTimeoutNs to be sent.
   [[nodiscard]] std::uint64_t timeouts() const noexcept { return timeouts_; }
+  // Streams a sweep did not read (Hooks::active).
+  [[nodiscard]] std::uint64_t skipped() const noexcept { return skipped_; }
   // Queries that waited for Hooks::can_query at least once.
   [[nodiscard]] std::uint64_t deferrals() const noexcept { return deferrals_; }
   // Streams whose next query waits for Hooks::can_query now.
@@ -243,6 +259,7 @@ class ReplaySchedulerBase {
     std::unordered_map<std::string, std::int64_t> read;  // keys read at or after it -> time
     std::int64_t from_id = 0;                            // > 0: the next id to ask from
     std::vector<std::int64_t> known_ids;                 // set_known_ids(), ascending
+    bool read_once = false;  // read in full since open() or the last restart: a sweep may skip it
     // The replay in progress.
     bool running = false;
     bool awaiting = false;         // a query is out
@@ -277,7 +294,8 @@ class ReplaySchedulerBase {
   static constexpr std::size_t kHeldWaiter = static_cast<std::size_t>(-1);
   static constexpr std::size_t kMaxNotOurs = 4096;
 
-  void start();
+  // `sweep`: the periodic replay alone, which skips the quiet streams (Hooks::active).
+  void start(bool sweep = false);
   void begin_window(std::size_t i);
   void send(std::size_t i);
   void send_deferred(std::int64_t now_ns);
@@ -321,6 +339,7 @@ class ReplaySchedulerBase {
   std::uint64_t replays_ = 0;
   std::uint64_t timeouts_ = 0;
   std::uint64_t deferrals_ = 0;
+  std::uint64_t skipped_ = 0;
   std::size_t emitted_ = 0;
   // Order lookups (Hooks::lookup).
   std::unordered_map<std::string, Lookup> lookups_;  // lookup_key -> out
@@ -332,6 +351,39 @@ class ReplaySchedulerBase {
   bool unresolved_ = false;       // emit_window: the row being emitted will be sent again
   std::size_t not_held_ = 0;      // rows sent naming no order past kMaxHeld, in this replay
   std::uint64_t lookups_total_ = 0;
+};
+
+// Order activity per instrument, for Hooks::active: when the connector last sent an order on it
+// or heard of one (an ack, an execution report). note() is one store, on the order path; the
+// times are Reactor::now_ns(), compared in venue time at the sweep.
+class OrderActivity {
+ public:
+  // Instruments 0..n-1 are counted, from the first call's `now_ns` on.
+  void track(std::size_t n, std::int64_t now_ns) {
+    if (start_ns_ == 0) start_ns_ = now_ns;
+    if (n > last_ns_.size()) last_ns_.resize(n, 0);
+  }
+  void note(InstrumentId id, std::int64_t now_ns) noexcept {
+    if (id.value < last_ns_.size()) last_ns_[id.value] = now_ns;
+  }
+  // Activity on `id` at or after venue time `since_ms`, the venue's time being `venue_now_ms` at
+  // `now_ns`. True when the counting began after since_ms: nothing says it was quiet.
+  [[nodiscard]] bool since(InstrumentId id,
+                           std::int64_t since_ms,
+                           std::int64_t venue_now_ms,
+                           std::int64_t now_ns) const noexcept {
+    const auto venue_ms = [&](std::int64_t t_ns) {
+      return venue_now_ms - (now_ns - t_ns) / 1'000'000;
+    };
+    if (start_ns_ == 0 || venue_ms(start_ns_) > since_ms) return true;
+    if (id.value >= last_ns_.size()) return true;
+    const std::int64_t t = last_ns_[id.value];
+    return t != 0 && venue_ms(t) >= since_ms;
+  }
+
+ private:
+  std::int64_t start_ns_ = 0;
+  std::vector<std::int64_t> last_ns_;
 };
 
 template <class Row>

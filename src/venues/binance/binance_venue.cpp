@@ -74,8 +74,11 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
        [this](const ReplayQuery& q) { return query_executions(q); },
        [this](bool complete) { reconcile_.replay_done(complete); },
        [this](const ReplayLookup& l) { return lookup_order(l); },
-       [this] {
-         return rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+       [this] { return rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare); },
+       // A sweep reads the instruments with order activity since their watermark.
+       [this](std::size_t stream, std::int64_t since_ms) {
+         return stream >= subscribed_.size() ||
+                activity_.since(subscribed_[stream], since_ms, venue_time_ms(), now_ns());
        }},
       [this](std::size_t stream, const MyTradeRow& t) { return emit_execution(stream, t); },
       [this](std::size_t, const MyTradeRow& t) {
@@ -325,6 +328,9 @@ void BinanceVenue::subscribe(std::span<const InstrumentId> instruments) {
     if (md_feed_ && !pool_member()) md_feed_->add_instrument(id);
   }
   exec_replay_.set_streams(subscribed_.size());
+  std::size_t tracked = 0;
+  for (InstrumentId id : subscribed_) tracked = std::max<std::size_t>(tracked, id.value + 1U);
+  activity_.track(tracked, now_ns());
   stats_.books_total = pool_member() ? 0 : static_cast<std::uint32_t>(subscribed_.size());
   depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
@@ -625,12 +631,17 @@ void BinanceVenue::on_user_text(std::string_view t, std::int64_t ts) {
   const Cycles t0 = rdtscp();
   const UserDecodeResult r = user_parser_->decode(t, wall_now(), t0, scratch_);
   if (r.status == ParseStatus::Ok) {
+    const std::int64_t now = r.count > 0 ? now_ns() : 0;
     std::uint32_t off = 0;
     for (std::uint32_t i = 0; i < r.count; ++i) {
       auto* h = reinterpret_cast<EventHeader*>(scratch_ + off);
       h->t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
       off += h->len;
-      if (h->type == EventType::PositionUpdate && !cfg_.position_from_balance) continue;
+      if (h->type == EventType::PositionUpdate) {
+        if (!cfg_.position_from_balance) continue;
+      } else {
+        activity_.note(h->instrument, now);
+      }
       switch (h->type) {
         case EventType::OrderReject:
         case EventType::OrderCancelAck:
@@ -985,6 +996,7 @@ void BinanceVenue::send_now(std::span<const EventHeader* const> batch) {
 
 void BinanceVenue::send_command(const OrderCommand& cmd) {
   const std::int64_t now = now_ns();
+  activity_.note(cmd.instrument, now);
   if (cfg_.dry_run) {
     emit_reject(
         cmd.instrument, cmd.cl_ord_id, RejectReason::VenueKilled, 0, "dry-run: orders disabled");

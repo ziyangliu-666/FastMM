@@ -103,6 +103,11 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
        [this](const ReplayLookup& l) { return lookup_order(l); },
        [this] {
          return rate_.can_send(kUserTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+       },
+       // A sweep reads the instruments with order activity since their watermark.
+       [this](std::size_t stream, std::int64_t since_ms) {
+         return stream >= subscribed_.size() ||
+                activity_.since(subscribed_[stream], since_ms, venue_time_ms(), now_ns());
        }},
       [this](std::size_t stream, const binance::MyTradeRow& t) {
         return emit_execution(stream, t);
@@ -578,6 +583,9 @@ void BinanceUsdmVenue::subscribe(std::span<const InstrumentId> instruments) {
       md_feed_->add_perpetual(id, funding_interval_of(id));
   }
   exec_replay_.set_streams(subscribed_.size());
+  std::size_t tracked = 0;
+  for (InstrumentId id : subscribed_) tracked = std::max<std::size_t>(tracked, id.value + 1U);
+  activity_.track(tracked, now_ns());
   stats_.books_total = pool_member() ? 0 : static_cast<std::uint32_t>(subscribed_.size());
   depth_limit_ = cfg_.depth_limit > 0 ? cfg_.depth_limit : auto_depth_limit(subscribed_.size());
   if (rest_ != nullptr) rest_->set_max_queue(rest_queue_for(subscribed_.size()));
@@ -920,11 +928,13 @@ void BinanceUsdmVenue::on_user_text(std::string_view t, std::int64_t ts) {
       FASTMM_LOG_WARN("{}: malformed user-stream frame", cfg_.name);
     return;
   }
+  const std::int64_t now = r.count > 0 ? now_ns() : 0;
   std::uint32_t off = 0;
   for (std::uint32_t i = 0; i < r.count; ++i) {
     auto* h = reinterpret_cast<EventHeader*>(scratch_ + off);
     h->t1_delta = static_cast<std::uint32_t>(rdtscp() - t0);
     off += h->len;
+    if (h->type != EventType::PositionUpdate) activity_.note(h->instrument, now);
     switch (h->type) {
       case EventType::PositionUpdate:
         on_account_position(*reinterpret_cast<const PositionUpdateMsg*>(h));
@@ -1290,6 +1300,7 @@ void BinanceUsdmVenue::refuse_untracked(const OrderCommand& cmd) {
 
 void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
   const std::int64_t now = now_ns();
+  activity_.note(cmd.instrument, now);
   if (cfg_.dry_run) return refuse(cmd, RejectReason::VenueKilled, "dry-run: orders disabled");
   // A venue-fatal error and a REST hard stop stop new orders, never cancels: the kill path's
   // whole remedy is to cancel, so a cancel goes out on whatever transport is still usable.

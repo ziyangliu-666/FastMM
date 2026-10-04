@@ -73,6 +73,15 @@ All notable changes are recorded here (Keep a Changelog format).
   strategy sends itself and for quotes that reduce the position (cancels never take one).
   `OrderBudget::local_wait_ns`: the time until the bucket admits the next order.
 
+### Changed
+- The once-a-minute execution replay reads only the symbols with order activity (an order sent,
+  an order event received) since their watermark less the settle margin, on Binance Spot and
+  USDⓈ-M; a quiet symbol's watermark moves as if it had answered empty. 85 symbols' `myTrades`
+  cost 1700 weight a minute, and a pool of four accounts on one IP spent more than its bulk share
+  on them, so the queries waited 180 s and failed and depth resyncs starved. The replays before a
+  reconciliation, after a reconnect or a restart, and retries still read every symbol.
+  `ReplaySchedulerBase::Hooks::active`, `skipped()`; `OrderActivity`.
+
 ### Fixed
 - Account pools on Binance Spot and USDⓈ-M: the accounts count request weight in one window per
   IP, as Binance does, and a 429 or 418 answered to one pauses or stops them all. Each account

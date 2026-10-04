@@ -49,6 +49,7 @@ void ReplaySchedulerBase::close() noexcept {
   retry_at_ns_ = 0;
   due_at_ns_ = 0;
   reset_streams();
+  for (Stream& s : streams_) s.read_once = false;  // the next connection reads every stream
   drop_lookups();
 }
 
@@ -95,6 +96,7 @@ void ReplaySchedulerBase::restart_from(std::int64_t since_ms) {
     s.since_ms = since_ms;
     s.read.clear();
     s.from_id = 0;
+    s.read_once = false;
   }
 }
 
@@ -118,6 +120,7 @@ void ReplaySchedulerBase::take_again() noexcept {
     s.since_ms = s.since_ms > 0 ? std::min(s.since_ms, from) : from;
     s.read.clear();
     s.from_id = 0;
+    s.read_once = false;
   }
 }
 
@@ -167,10 +170,10 @@ void ReplaySchedulerBase::on_timer(std::int64_t now_ns) {
   if (!retry && !due && !sweep) return;
   if (!hooks_.ready || !hooks_.ready()) return;
   if (due) due_at_ns_ = 0;
-  start();
+  start(sweep && !retry && !due);
 }
 
-void ReplaySchedulerBase::start() {
+void ReplaySchedulerBase::start(bool sweep) {
   ++generation_;
   ++replays_;
   active_ = true;
@@ -188,6 +191,13 @@ void ReplaySchedulerBase::start() {
   for (std::size_t i = 0; i < streams_.size(); ++i) {
     Stream& s = streams_[i];
     if (s.since_ms <= 0) s.since_ms = default_since_ms_ > 0 ? default_since_ms_ : now_ms_;
+    if (sweep && s.read_once && hooks_.active &&
+        !hooks_.active(i, s.since_ms - limits_.settle_ms)) {
+      // Quiet: nothing to read, as if it had been answered empty.
+      ++skipped_;
+      commit(s, now_ms_);
+      continue;
+    }
     s.running = true;
     s.awaiting = false;
     s.cursor_ms = s.since_ms;
@@ -599,6 +609,7 @@ void ReplaySchedulerBase::commit(Stream& s, std::int64_t read_to) const {
 void ReplaySchedulerBase::stream_done(std::size_t i, bool ok) {
   if (i < streams_.size()) {
     Stream& s = streams_[i];
+    if (ok && s.running) s.read_once = true;
     s.running = false;
     s.awaiting = false;
     s.deferred = false;

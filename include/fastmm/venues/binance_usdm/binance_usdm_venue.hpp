@@ -410,6 +410,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // Execution replay, one stream per subscribed_ instrument: from the trade id after the last one
   // read (fromId), else from the time watermark.
   ReplayScheduler<binance::MyTradeRow> exec_replay_;
+  // Orders sent and order events heard per instrument: a sweep skips the quiet ones.
+  OrderActivity activity_;
   // Funding, one account-wide stream.
   ReplayScheduler<IncomeRecord> funding_replay_;
   // The first trade id per instrument an earlier session left off at (resume_trade_ids): handed

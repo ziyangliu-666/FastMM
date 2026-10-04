@@ -1,6 +1,7 @@
 // ReplayScheduler against a fake venue: paging with rows an earlier session booked, window
 // narrowing, the watermark after an empty window and near "now", retry timing, the generation
-// after a disconnect, id cursors, windows and the history floor, the due trigger, order lookups.
+// after a disconnect, id cursors, windows and the history floor, the due trigger, order lookups,
+// sweeps that skip the streams without order activity.
 #include "fastmm/venues/replay_scheduler.hpp"
 
 #include "test_support.hpp"
@@ -8,7 +9,9 @@
 #include "fastmm/net/reactor.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace fastmm;
@@ -28,6 +31,9 @@ struct Rig {
   std::int64_t now_ms = kNow;
   bool can_send = true;
   int budget = -1;  // queries Hooks::can_query admits before it says no; -1: every one
+  // Hooks::active: absent, every stream; `asked` has what it was asked (stream, since_ms).
+  std::function<bool(std::size_t, std::int64_t)> active;
+  std::vector<std::pair<std::size_t, std::int64_t>> asked;
 
   explicit Rig(ReplayLimits limits = {}, std::size_t streams = 1) {
     ReplaySchedulerBase::Hooks h;
@@ -38,6 +44,10 @@ struct Rig {
       return can_send;
     };
     h.finished = [this](bool complete) { finished.push_back(complete); };
+    h.active = [this](std::size_t stream, std::int64_t since) {
+      asked.emplace_back(stream, since);
+      return !active || active(stream, since);
+    };
     h.can_query = [this] {
       if (budget < 0) return true;
       if (budget == 0) return false;
@@ -700,4 +710,146 @@ TEST_CASE("replay_scheduler: a lookup never answered releases its window after k
   c.answer({"a@1"});  // named now: no lookup
   CHECK(c.lookups.size() == 1);
   CHECK(c.emitted == std::vector<std::string>{"a+"});
+}
+
+namespace {
+
+void sweep(Rig& r) {
+  r.sched.on_timer(net::Reactor::now_ns() + r.sched.limits().sweep_ns + 1);
+}
+
+}  // namespace
+
+TEST_CASE("replay_scheduler: a sweep reads only the streams with order activity") {
+  // 85 symbols' myTrades every minute cost 1700 weight; a pool of four accounts on one IP spent
+  // more than its bulk share on them. A sweep now asks for the streams that can have new rows.
+  Rig r({}, 3);
+  r.active = [](std::size_t stream, std::int64_t) { return stream == 1; };
+  REQUIRE(r.sched.run());  // a reconciliation's: every stream, whatever the hook says
+  REQUIRE(r.queries.size() == 3);
+  CHECK(r.asked.empty());
+  for (std::size_t i = 0; i < 3; ++i) r.answer({}, false, {}, &r.queries[i]);
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.sched.since_ms(0) == kNow - kMin);
+
+  r.now_ms = kNow + kMin;
+  sweep(r);
+  REQUIRE(r.queries.size() == 4);
+  CHECK(r.queries[3].stream == 1);
+  CHECK(r.queries[3].start_ms == kNow - kMin);
+  CHECK(r.sched.skipped() == 2);
+  REQUIRE(r.asked.size() == 3);
+  CHECK(r.asked[0].second == kNow - 2 * kMin);  // the watermark less settle_ms
+  r.answer({{kNow + 30'000, "a"}});
+  REQUIRE(r.finished.size() == 2);
+  CHECK(r.finished[1]);
+  CHECK(r.emitted == std::vector<std::string>{"a"});
+  // The quiet streams' watermarks moved as if they had been answered empty.
+  CHECK(r.sched.since_ms(0) == kNow);
+  CHECK(r.sched.since_ms(2) == kNow);
+  CHECK(r.sched.since_ms(1) == kNow);
+
+  // A reconciliation (run()) still reads every stream.
+  REQUIRE(r.sched.run());
+  CHECK(r.queries.size() == 7);
+  CHECK(r.sched.skipped() == 2);
+}
+
+TEST_CASE("replay_scheduler: the first sweep, a retry and a restart read every stream") {
+  Rig r({}, 3);
+  r.active = [](std::size_t, std::int64_t) { return false; };
+  sweep(r);  // the first replay of the connection: no stream was read yet
+  REQUIRE(r.queries.size() == 3);
+  for (std::size_t i = 0; i < 3; ++i) r.answer({}, false, {}, &r.queries[i]);
+  sweep(r);  // all quiet: nothing asked, and the replay is complete
+  CHECK(r.queries.size() == 3);
+  CHECK(r.sched.skipped() == 3);
+  REQUIRE(r.finished.size() == 2);
+  CHECK(r.finished[1]);
+  CHECK_FALSE(r.sched.active());
+
+  // A retry is not a sweep.
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 6);
+  r.sched.failed(r.queries[3]);
+  r.answer({}, false, {}, &r.queries[4]);
+  r.answer({}, false, {}, &r.queries[5]);
+  CHECK(r.sched.retry_pending());
+  r.sched.on_timer(net::Reactor::now_ns() + ReplaySchedulerBase::kRetryNs + 1'000'000);
+  REQUIRE(r.queries.size() == 9);
+  for (std::size_t i = 6; i < 9; ++i) r.answer({}, false, {}, &r.queries[i]);
+  CHECK(r.finished.back());
+
+  // A restart drops what was read: its first sweep reads every stream again.
+  r.sched.restart_from(kNow - 5 * kMin);
+  sweep(r);
+  REQUIRE(r.queries.size() == 12);
+  for (std::size_t i = 9; i < 12; ++i) r.answer({}, false, {}, &r.queries[i]);
+
+  // So does a new connection's.
+  r.sched.close();
+  r.sched.open(true);
+  sweep(r);
+  CHECK(r.queries.size() == 15);
+  CHECK(r.sched.skipped() == 3);
+}
+
+TEST_CASE("replay_scheduler: a stream active after a skipped sweep is read from its watermark") {
+  // The skipped sweep moved the watermark to its start less settle_ms. An order sent after it:
+  // the next sweep reads from that watermark, so a row from before the activity (one the venue
+  // indexed late, a fill at the moment of the order) is still read.
+  Rig r;
+  std::int64_t activity_ms = 0;  // venue time of the stream's last order activity; 0: none
+  r.active = [&activity_ms](std::size_t, std::int64_t since) { return activity_ms >= since; };
+  REQUIRE(r.sched.run());
+  r.answer({});
+  CHECK(r.sched.since_ms(0) == kNow - kMin);
+
+  r.now_ms = kNow + kMin;
+  sweep(r);  // quiet
+  CHECK(r.queries.size() == 1);
+  CHECK(r.asked.back().second == kNow - 2 * kMin);
+  CHECK(r.sched.since_ms(0) == kNow);
+
+  activity_ms = kNow + kMin + 30'000;  // an order 30 s after the skipped sweep
+  r.now_ms = kNow + 2 * kMin;
+  sweep(r);
+  REQUIRE(r.queries.size() == 2);
+  CHECK(r.asked.back().second == kNow - kMin);
+  CHECK(r.last().start_ms == kNow);  // before the skipped sweep: no gap
+  r.answer({{kNow + kMin - 20'000, "late"}, {kNow + kMin + 30'000, "fill"}});
+  CHECK(r.emitted == std::vector<std::string>{"late", "fill"});
+  CHECK(r.finished.back());
+
+  // The activity counts while it is within the watermark less the margin: two more sweeps.
+  for (int i = 3; i <= 4; ++i) {
+    r.now_ms = kNow + i * kMin;
+    sweep(r);
+    REQUIRE(r.queries.size() == static_cast<std::size_t>(i));
+    r.answer({});
+  }
+  r.now_ms = kNow + 5 * kMin;
+  sweep(r);
+  CHECK(r.queries.size() == 4);
+  CHECK(r.asked.back().second == kNow + 2 * kMin);
+  CHECK(r.sched.since_ms(0) == kNow + 4 * kMin);
+}
+
+TEST_CASE("replay_scheduler: OrderActivity in venue time") {
+  constexpr std::int64_t kSec = 1'000'000'000;
+  constexpr std::int64_t t0 = 1'000 * kSec;  // Reactor::now_ns() when counting began
+  const std::int64_t at = t0 + 100 * kSec;   // now; the venue says kNow
+  OrderActivity a;
+  a.track(2, t0);
+  // Before counting began nothing says the instrument was quiet.
+  CHECK(a.since(InstrumentId{0}, kNow - 200'000, kNow, at));
+  CHECK_FALSE(a.since(InstrumentId{0}, kNow - 50'000, kNow, at));
+  a.note(InstrumentId{1}, t0 + 80 * kSec);  // 20 s ago
+  CHECK(a.since(InstrumentId{1}, kNow - 20'000, kNow, at));
+  CHECK_FALSE(a.since(InstrumentId{1}, kNow - 19'000, kNow, at));
+  CHECK_FALSE(a.since(InstrumentId{0}, kNow - 50'000, kNow, at));
+  a.note(InstrumentId{}, at);                                // no instrument: ignored
+  CHECK(a.since(InstrumentId{7}, kNow - 50'000, kNow, at));  // not counted: active
+  a.track(8, at);                                            // counted from t0 still
+  CHECK_FALSE(a.since(InstrumentId{7}, kNow - 50'000, kNow, at));
 }
