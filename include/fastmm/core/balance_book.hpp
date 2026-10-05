@@ -27,7 +27,12 @@
 //   * a fill moves the assets: a spot buy adds the base (less a base-asset fee) and takes the
 //     notional (and a quote-asset fee) from the quote; a sell the reverse. A derivative fill moves
 //     the position's initial margin at the fill price into locked, and takes the fee.
-// The next report replaces the estimate. What it can miss: an event that reaches the engine after a
+// The next report replaces the estimate, and what the estimate moved for events the venue stamped
+// after the report's time moves it again: a report can reach the engine after such an event
+// (Binance answers an order on its WS API 1-5 ms before the user stream pushes the account as it
+// was before the order), and the report does not have the order's hold yet, or still has a
+// cancelled order's. Those moves are kept per row until a report stamped at or after them
+// (kMaxMoves, the oldest dropped first). What it can miss: an event that reaches the engine after a
 // report that already counted it and carries no venue time, and an ack without a venue time (its
 // hold stays counted twice until the next report).
 //
@@ -94,15 +99,17 @@ struct Margin {
 };
 
 struct BalanceStats {
-  std::uint64_t reports = 0;    // BalanceMsg applied
-  std::uint64_t untracked = 0;  // ... naming an asset no instrument of the venue uses
-  std::uint64_t snapshots = 0;  // snapshots ended (kSnapshotEnd)
+  std::uint64_t reports = 0;        // BalanceMsg applied
+  std::uint64_t untracked = 0;      // ... naming an asset no instrument of the venue uses
+  std::uint64_t snapshots = 0;      // snapshots ended (kSnapshotEnd)
+  std::uint64_t moves_dropped = 0;  // stamped moves dropped before a report covered them (full)
 };
 
 class BalanceBook {
  public:
   static constexpr std::uint16_t kNone = 0xFFFF;
   static constexpr std::size_t kMaxVenueSlots = 256;
+  static constexpr std::size_t kMaxMoves = 1024;  // stamped moves no report has covered yet
 
   // One row as the status file and the monitors read it.
   struct Row {
@@ -128,6 +135,8 @@ class BalanceBook {
              const PoolPlan* pools = nullptr) {
     rows_.clear();
     rows_.reserve(2 * insts.size() + 16);
+    moves_.clear();
+    moves_.reserve(kMaxMoves);
     inst_.fill(Inst{});
     members_.clear();
     for (VenueState& v : venues_) v = VenueState{};
@@ -182,7 +191,7 @@ class BalanceBook {
         row.asset = m.asset;
         if (!vs.account_reported) use_account(m.hdr.venue, r);
       }
-      add_in_flight(r);
+      rebase(r);
     } else if (!m.asset.empty()) {
       ++stats_.untracked;
     }
@@ -236,11 +245,13 @@ class BalanceBook {
     if (!unacked && counted(row, venue_ts)) return;
     row.free -= delta;
     row.locked += delta;
+    if (!unacked) note(r, venue_ts, -delta, delta, 0);
   }
 
   // The venue acknowledged an order holding `amount`, at venue time `venue_ts`. Its hold was kept
   // on top of the reports since it was sent; one stamped at or before the row's last report had it,
-  // and the estimate gives the extra back.
+  // and the estimate gives the extra back. One stamped after it is in the estimate already, and
+  // stays on top of the reports older than the ack.
   void acknowledge(InstrumentId id,
                    Side side,
                    std::int64_t amount,
@@ -251,8 +262,12 @@ class BalanceBook {
     const std::uint16_t r = row_of(in, side);
     const std::int64_t before = r == kNone ? 0 : in_flight(in, side, r);
     in.unacked[static_cast<std::size_t>(side)] -= amount;
-    if (r == kNone || !counted(rows_[r], venue_ts)) return;
+    if (r == kNone) return;
     const std::int64_t back = before - in_flight(in, side, r);
+    if (!counted(rows_[r], venue_ts)) {
+      note(r, venue_ts, -back, back, 0);
+      return;
+    }
     rows_[r].free += back;
     rows_[r].locked -= back;
   }
@@ -299,6 +314,7 @@ class BalanceBook {
     row.locked += im;
     row.total -= f;
     row.equity -= f;
+    note(in.margin, venue_ts, -(im + f), im, -f);
   }
 
   // An execution names `qty` that a synthetic fill (Engine::book_missed_fill) moved at `estimate`:
@@ -451,6 +467,14 @@ class BalanceBook {
     std::uint16_t first_member = kNone;
     std::uint8_t n_members = 0;
   };
+  // A move of a reported row for an event stamped after the row's report (note, rebase).
+  struct Move {
+    Timestamp venue_ts;
+    std::int64_t free = 0;
+    std::int64_t locked = 0;
+    std::int64_t total = 0;  // and equity
+    std::uint16_t row = kNone;
+  };
   struct VenueState {
     std::uint16_t account_row = kNone;
     std::uint16_t margin_default = kNone;  // the first derivative's settlement row
@@ -530,6 +554,38 @@ class BalanceBook {
     rows_[r].free -= extra;
     rows_[r].locked += extra;
   }
+  // A report set row `r`: the orders in flight hold on top of it, and the moves stamped after it
+  // move it again. The moves it covers are done.
+  void rebase(std::uint16_t r) noexcept {
+    add_in_flight(r);
+    Row& row = rows_[r];
+    std::size_t keep = 0;
+    for (const Move& m : moves_) {
+      if (m.row == r) {
+        if (!row.as_of.valid() || m.venue_ts <= row.as_of) continue;
+        row.free += m.free;
+        row.locked += m.locked;
+        row.total += m.total;
+        row.equity += m.total;
+      }
+      moves_[keep++] = m;
+    }
+    moves_.resize(keep);
+  }
+  // The estimate moved reported row `r` for an event stamped `venue_ts` after its report: a report
+  // older than the event (rebase) does not have it. `total` moves the equity too.
+  void note(std::uint16_t r,
+            Timestamp venue_ts,
+            std::int64_t free,
+            std::int64_t locked,
+            std::int64_t total) noexcept {
+    if (!venue_ts.valid() || !rows_[r].reported) return;
+    if (moves_.size() >= kMaxMoves) {
+      moves_.erase(moves_.begin());
+      ++stats_.moves_dropped;
+    }
+    moves_.push_back(Move{venue_ts, free, locked, total, r});
+  }
   // An event the report already counted: the venue stamped it at or before the report's time.
   [[nodiscard]] static bool counted(const Row& row, Timestamp venue_ts) noexcept {
     return row.reported && venue_ts.valid() && row.as_of.valid() && venue_ts <= row.as_of;
@@ -541,6 +597,7 @@ class BalanceBook {
     row.free += d;
     row.total += d;
     row.equity += d;
+    note(r, venue_ts, d, 0, d);
   }
   // notional * (1 + cbps / 1e6), the fee rounded up.
   [[nodiscard]] static std::int64_t with_fee(std::int64_t n, std::int32_t cbps) noexcept {
@@ -595,12 +652,13 @@ class BalanceBook {
       r.as_of = ts;
       r.reported = true;
       r.gen = vs.gen;
-      add_in_flight(static_cast<std::uint16_t>(&r - rows_.data()));
+      rebase(static_cast<std::uint16_t>(&r - rows_.data()));
     }
   }
 
   std::vector<Row> rows_;
   std::array<Inst, kMaxInstruments> inst_{};
+  std::vector<Move> moves_;    // kMaxMoves, reserved by build(); oldest first
   std::vector<Inst> members_;  // pool members' copies of the instrument state (Inst::first_member)
   std::array<VenueState, kMaxVenueSlots> venues_{};
   BalanceStats stats_{};

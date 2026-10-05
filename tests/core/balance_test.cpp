@@ -656,3 +656,117 @@ TEST_CASE("core.balance: an execution that names a synthetic fill moves the asse
   CHECK(usdt.total == nt("800.02"));  // 1000 - 199.96 - 0.02
   CHECK(usdt.free == nt("800.02"));
 }
+
+// Found live (Binance spot, account pool): the WS API acks an order 1-5 ms before the user stream
+// pushes the account, so a push the venue made before the order (after the cancel of the one it
+// replaces) can come after its ack. The push replaced the estimate and dropped the new order's
+// hold: the strategy saw the base free twice and its next sell was refused (-2010). The ack,
+// stamped after the push, keeps its hold on top of it until a push at or after the ack.
+TEST_CASE("core.balance: a report older than an order's ack does not drop its hold") {
+  Rig r;
+  r.balance(report(kSpotVenue, "BTC", "0.0049", "0", 100));
+  auto a = r.send(kSpot, Side::Sell, "51000", "0.0049");
+  REQUIRE(a.has_value());
+  r.ack(kSpot, *a, 101);
+  r.balance(report(kSpotVenue, "BTC", "0", "0.0049", 101));
+  REQUIRE(r.engine->cancel_order(*a).has_value());
+  r.cancel_ack(kSpot, *a, 110);
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.0049"));
+  auto b = r.send(kSpot, Side::Sell, "51100", "0.0049");
+  REQUIRE(b.has_value());
+  r.ack(kSpot, *b, 112);
+  // The push of the cancel (venue time 111), after B's ack.
+  r.balance(report(kSpotVenue, "BTC", "0.0049", "0", 111));
+  CHECK(r.bal(kSpotVenue, "BTC").free.is_zero());
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.0049"));
+  CHECK(r.engine->context().balance_room(kSpot, Side::Sell, px("51200")).is_zero());
+  // B's own push covers it: as reported, held once.
+  r.balance(report(kSpotVenue, "BTC", "0", "0.0049", 112));
+  CHECK(r.bal(kSpotVenue, "BTC").free.is_zero());
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.0049"));
+  r.balance(report(kSpotVenue, "BTC", "0", "0.0049", 113));
+  CHECK(r.bal(kSpotVenue, "BTC").locked == nt("0.0049"));
+}
+
+// The same race on a cancel: the venue's push from before the cancel still holds the order.
+TEST_CASE("core.balance: a report older than a cancel's ack does not hold the order again") {
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  auto a = r.send(kSpot, Side::Buy, "50000", "0.01");  // holds 500.5
+  REQUIRE(a.has_value());
+  r.ack(kSpot, *a, 101);
+  r.balance(report(kSpotVenue, "USDT", "499.5", "500.5", 101));
+  REQUIRE(r.engine->cancel_order(*a).has_value());
+  r.cancel_ack(kSpot, *a, 110);
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("1000"));
+  r.balance(report(kSpotVenue, "USDT", "499.5", "500.5", 105));  // made before the cancel
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("1000"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked.is_zero());
+  CHECK(r.bal(kSpotVenue, "USDT").total == nt("1000"));
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 110));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("1000"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked.is_zero());
+}
+
+// In order (each push after the event it reports), the pushes replace the estimate as before:
+// nothing is counted twice.
+TEST_CASE("core.balance: reports in order of the acks they follow replace the estimate") {
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  r.balance(report(kSpotVenue, "BTC", "0", "0", 100));
+  auto a = r.send(kSpot, Side::Buy, "50000", "0.01");
+  REQUIRE(a.has_value());
+  r.ack(kSpot, *a, 110);
+  r.balance(report(kSpotVenue, "USDT", "499.5", "500.5", 110));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("499.5"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked == nt("500.5"));
+  r.fill(kSpot, *a, Side::Buy, "50000", "0.004", "0.004", "0.006", "0.2", FeeAsset::Quote, 115);
+  r.balance(report(kSpotVenue, "BTC", "0.004", "0", 115));
+  r.balance(report(kSpotVenue, "USDT", "499.5", "300.3", 115));
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.004"));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("499.5"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked == nt("300.3"));
+  REQUIRE(r.engine->cancel_order(*a).has_value());
+  r.cancel_ack(kSpot, *a, 120, "0.004");
+  r.balance(report(kSpotVenue, "USDT", "799.8", "0", 120));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("799.8"));
+  CHECK(r.bal(kSpotVenue, "USDT").locked.is_zero());
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.004"));
+}
+
+// Each account of a pool has its own rows: a late report of one account brings back only that
+// account's stamped moves.
+TEST_CASE("core.balance: the accounts of a pool keep their late moves apart") {
+  const InstrumentTable t = make_table();
+  constexpr VenueId kMember{2};
+  PoolPlan plan;
+  REQUIRE(plan.add(kMember, kSpotVenue));
+  BalanceBook b;
+  b.build(t, FeeTable::from_bps(2, 10), {}, &plan);
+  const Instrument& inst = t.get(kSpot);
+  const std::int64_t h = b.hold(kSpot, inst, Side::Sell, px("51000"), qt("0.005"), false);
+  REQUIRE(h == qt("0.005").raw);
+  // Primary: an acknowledged sell, then its cancel (110). Member: a new sell acknowledged at 110.
+  b.on_report(report(kSpotVenue, "BTC", "0.005", "0.005", 100));
+  b.on_report(report(kMember, "BTC", "0.01", "0", 100));
+  b.move_hold(kSpot, Side::Sell, h, 0, Timestamp{110'000'000}, false, kSpotVenue);
+  b.move_hold(kSpot, Side::Sell, 0, h, Timestamp{}, true, kMember);
+  b.acknowledge(kSpot, Side::Sell, h, Timestamp{110'000'000}, kMember);
+  CHECK(b.balance(kSpotVenue, "BTC").free == nt("0.01"));
+  CHECK(b.balance(kMember, "BTC").free == nt("0.005"));
+  // Both accounts' pushes from 105 come late.
+  b.on_report(report(kSpotVenue, "BTC", "0.005", "0.005", 105));
+  b.on_report(report(kMember, "BTC", "0.01", "0", 105));
+  CHECK(b.balance(kSpotVenue, "BTC").free == nt("0.01"));
+  CHECK(b.balance(kSpotVenue, "BTC").locked.is_zero());
+  CHECK(b.balance(kMember, "BTC").free == nt("0.005"));
+  CHECK(b.balance(kMember, "BTC").locked == nt("0.005"));
+  // The member's push at 110 covers its ack; the primary's late move stays until its own.
+  b.on_report(report(kMember, "BTC", "0.005", "0.005", 110));
+  CHECK(b.balance(kMember, "BTC").free == nt("0.005"));
+  b.on_report(report(kSpotVenue, "BTC", "0.005", "0.005", 106));
+  CHECK(b.balance(kSpotVenue, "BTC").free == nt("0.01"));
+  b.on_report(report(kSpotVenue, "BTC", "0.01", "0", 110));
+  CHECK(b.balance(kSpotVenue, "BTC").free == nt("0.01"));
+  CHECK(b.balance(kSpotVenue, "BTC").locked.is_zero());
+}
