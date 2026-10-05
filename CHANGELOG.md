@@ -74,6 +74,9 @@ All notable changes are recorded here (Keep a Changelog format).
   `OrderBudget::local_wait_ns`: the time until the bucket admits the next order.
 
 ### Changed
+- A strategy declares up to 128 parameters (`kMaxParams` and the journal's parameter table, was
+  64; the file layout is unchanged). A reader built with 64 keeps a newer file's first 64 entries
+  and drops updates of the rest. Python hot strategies follow the same limit.
 - The once-a-minute execution replay reads only the symbols with order activity (an order sent,
   an order event received) since their watermark less the settle margin, on Binance Spot and
   USDⓈ-M; a quiet symbol's watermark moves as if it had answered empty. 85 symbols' `myTrades`

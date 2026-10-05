@@ -21,7 +21,7 @@ from .._install import FROM_SOURCE
 from . import abi
 
 EVENT_HOOKS: Tuple[str, ...] = ("on_book", "on_fill", "on_quoting", "on_connection", "on_params")
-MAX_PARAMS = 64  # the journal's parameter table (kMaxParams); one update carries abi.MAX_FIELDS
+MAX_PARAMS = 128  # the journal's parameter table (kMaxParams); one update carries abi.MAX_FIELDS
 # Names that Strategy.publish(inst=None, **values) needs for itself.
 RESERVED_NAMES = frozenset({"publish", "inst"})
 # Methods on Numba records (compiler.py). A record field with one of these names is unreachable.

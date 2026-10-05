@@ -474,8 +474,8 @@ Result<void, JournalError> JournalReader::open(const std::string& path) noexcept
     if (crc32c(table, param_bytes) != header_->param_table_crc32c)
       return why(JournalError::HeaderCorrupt, "the parameter table's checksum does not match");
     // A table longer than this build's limit comes from a newer writer, not damage (the limit
-    // went from 32 to 64 without a format change): the entries past it are left out, and updates
-    // of those fields dropped.
+    // went from 32 to 64 to 128 without a format change): the entries past it are left out, and
+    // updates of those fields dropped.
     std::size_t off = 0;
     for (std::size_t i = 0; i < header_->param_count; ++i) {
       if (off + 2 > param_bytes ||

@@ -95,7 +95,7 @@ struct ParamDesc {
   void (*set_raw)(void* obj, std::int64_t raw) noexcept;
 };
 
-inline constexpr std::size_t kMaxParams = 64;
+inline constexpr std::size_t kMaxParams = 128;
 
 class ParamSchema {
  public:

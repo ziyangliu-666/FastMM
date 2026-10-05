@@ -39,141 +39,30 @@ struct Validated {
 };
 class ValidatedStrategy : public StrategyBase<Validated> {};
 
-struct SixtyFour {
-  FASTMM_PARAMS(SixtyFour)
-  FASTMM_PARAM(int, p00, 0, 0, 100, "p0")
-  FASTMM_PARAM(int, p01, 0, 0, 100, "p1")
-  FASTMM_PARAM(int, p02, 0, 0, 100, "p2")
-  FASTMM_PARAM(int, p03, 0, 0, 100, "p3")
-  FASTMM_PARAM(int, p04, 0, 0, 100, "p4")
-  FASTMM_PARAM(int, p05, 0, 0, 100, "p5")
-  FASTMM_PARAM(int, p06, 0, 0, 100, "p6")
-  FASTMM_PARAM(int, p07, 0, 0, 100, "p7")
-  FASTMM_PARAM(int, p08, 0, 0, 100, "p8")
-  FASTMM_PARAM(int, p09, 0, 0, 100, "p9")
-  FASTMM_PARAM(int, p10, 0, 0, 100, "p10")
-  FASTMM_PARAM(int, p11, 0, 0, 100, "p11")
-  FASTMM_PARAM(int, p12, 0, 0, 100, "p12")
-  FASTMM_PARAM(int, p13, 0, 0, 100, "p13")
-  FASTMM_PARAM(int, p14, 0, 0, 100, "p14")
-  FASTMM_PARAM(int, p15, 0, 0, 100, "p15")
-  FASTMM_PARAM(int, p16, 0, 0, 100, "p16")
-  FASTMM_PARAM(int, p17, 0, 0, 100, "p17")
-  FASTMM_PARAM(int, p18, 0, 0, 100, "p18")
-  FASTMM_PARAM(int, p19, 0, 0, 100, "p19")
-  FASTMM_PARAM(int, p20, 0, 0, 100, "p20")
-  FASTMM_PARAM(int, p21, 0, 0, 100, "p21")
-  FASTMM_PARAM(int, p22, 0, 0, 100, "p22")
-  FASTMM_PARAM(int, p23, 0, 0, 100, "p23")
-  FASTMM_PARAM(int, p24, 0, 0, 100, "p24")
-  FASTMM_PARAM(int, p25, 0, 0, 100, "p25")
-  FASTMM_PARAM(int, p26, 0, 0, 100, "p26")
-  FASTMM_PARAM(int, p27, 0, 0, 100, "p27")
-  FASTMM_PARAM(int, p28, 0, 0, 100, "p28")
-  FASTMM_PARAM(int, p29, 0, 0, 100, "p29")
-  FASTMM_PARAM(int, p30, 0, 0, 100, "p30")
-  FASTMM_PARAM(int, p31, 0, 0, 100, "p31")
-  FASTMM_PARAM(int, p32, 0, 0, 100, "p32")
-  FASTMM_PARAM(int, p33, 0, 0, 100, "p33")
-  FASTMM_PARAM(int, p34, 0, 0, 100, "p34")
-  FASTMM_PARAM(int, p35, 0, 0, 100, "p35")
-  FASTMM_PARAM(int, p36, 0, 0, 100, "p36")
-  FASTMM_PARAM(int, p37, 0, 0, 100, "p37")
-  FASTMM_PARAM(int, p38, 0, 0, 100, "p38")
-  FASTMM_PARAM(int, p39, 0, 0, 100, "p39")
-  FASTMM_PARAM(int, p40, 0, 0, 100, "p40")
-  FASTMM_PARAM(int, p41, 0, 0, 100, "p41")
-  FASTMM_PARAM(int, p42, 0, 0, 100, "p42")
-  FASTMM_PARAM(int, p43, 0, 0, 100, "p43")
-  FASTMM_PARAM(int, p44, 0, 0, 100, "p44")
-  FASTMM_PARAM(int, p45, 0, 0, 100, "p45")
-  FASTMM_PARAM(int, p46, 0, 0, 100, "p46")
-  FASTMM_PARAM(int, p47, 0, 0, 100, "p47")
-  FASTMM_PARAM(int, p48, 0, 0, 100, "p48")
-  FASTMM_PARAM(int, p49, 0, 0, 100, "p49")
-  FASTMM_PARAM(int, p50, 0, 0, 100, "p50")
-  FASTMM_PARAM(int, p51, 0, 0, 100, "p51")
-  FASTMM_PARAM(int, p52, 0, 0, 100, "p52")
-  FASTMM_PARAM(int, p53, 0, 0, 100, "p53")
-  FASTMM_PARAM(int, p54, 0, 0, 100, "p54")
-  FASTMM_PARAM(int, p55, 0, 0, 100, "p55")
-  FASTMM_PARAM(int, p56, 0, 0, 100, "p56")
-  FASTMM_PARAM(int, p57, 0, 0, 100, "p57")
-  FASTMM_PARAM(int, p58, 0, 0, 100, "p58")
-  FASTMM_PARAM(int, p59, 0, 0, 100, "p59")
-  FASTMM_PARAM(int, p60, 0, 0, 100, "p60")
-  FASTMM_PARAM(int, p61, 0, 0, 100, "p61")
-  FASTMM_PARAM(int, p62, 0, 0, 100, "p62")
-  FASTMM_PARAM(int, p63, 0, 0, 100, "p63")
+// kMaxParams (128) parameters p<group>_<k>, then one more.
+// clang-format off
+#define FASTMM_TEST_P(n) FASTMM_PARAM(int, p##n, 0, 0, 100, "p")
+#define FASTMM_TEST_P8(g) \
+  FASTMM_TEST_P(g##_0) FASTMM_TEST_P(g##_1) FASTMM_TEST_P(g##_2) FASTMM_TEST_P(g##_3) \
+  FASTMM_TEST_P(g##_4) FASTMM_TEST_P(g##_5) FASTMM_TEST_P(g##_6) FASTMM_TEST_P(g##_7)
+#define FASTMM_TEST_P128 \
+  FASTMM_TEST_P8(a) FASTMM_TEST_P8(b) FASTMM_TEST_P8(c) FASTMM_TEST_P8(d) \
+  FASTMM_TEST_P8(e) FASTMM_TEST_P8(f) FASTMM_TEST_P8(g) FASTMM_TEST_P8(h) \
+  FASTMM_TEST_P8(i) FASTMM_TEST_P8(j) FASTMM_TEST_P8(k) FASTMM_TEST_P8(l) \
+  FASTMM_TEST_P8(m) FASTMM_TEST_P8(n) FASTMM_TEST_P8(o) FASTMM_TEST_P8(p)
+// clang-format on
+struct AtMax {
+  FASTMM_PARAMS(AtMax)
+  FASTMM_TEST_P128
 };
-struct SixtyFive {
-  FASTMM_PARAMS(SixtyFive)
-  FASTMM_PARAM(int, p00, 0, 0, 100, "p0")
-  FASTMM_PARAM(int, p01, 0, 0, 100, "p1")
-  FASTMM_PARAM(int, p02, 0, 0, 100, "p2")
-  FASTMM_PARAM(int, p03, 0, 0, 100, "p3")
-  FASTMM_PARAM(int, p04, 0, 0, 100, "p4")
-  FASTMM_PARAM(int, p05, 0, 0, 100, "p5")
-  FASTMM_PARAM(int, p06, 0, 0, 100, "p6")
-  FASTMM_PARAM(int, p07, 0, 0, 100, "p7")
-  FASTMM_PARAM(int, p08, 0, 0, 100, "p8")
-  FASTMM_PARAM(int, p09, 0, 0, 100, "p9")
-  FASTMM_PARAM(int, p10, 0, 0, 100, "p10")
-  FASTMM_PARAM(int, p11, 0, 0, 100, "p11")
-  FASTMM_PARAM(int, p12, 0, 0, 100, "p12")
-  FASTMM_PARAM(int, p13, 0, 0, 100, "p13")
-  FASTMM_PARAM(int, p14, 0, 0, 100, "p14")
-  FASTMM_PARAM(int, p15, 0, 0, 100, "p15")
-  FASTMM_PARAM(int, p16, 0, 0, 100, "p16")
-  FASTMM_PARAM(int, p17, 0, 0, 100, "p17")
-  FASTMM_PARAM(int, p18, 0, 0, 100, "p18")
-  FASTMM_PARAM(int, p19, 0, 0, 100, "p19")
-  FASTMM_PARAM(int, p20, 0, 0, 100, "p20")
-  FASTMM_PARAM(int, p21, 0, 0, 100, "p21")
-  FASTMM_PARAM(int, p22, 0, 0, 100, "p22")
-  FASTMM_PARAM(int, p23, 0, 0, 100, "p23")
-  FASTMM_PARAM(int, p24, 0, 0, 100, "p24")
-  FASTMM_PARAM(int, p25, 0, 0, 100, "p25")
-  FASTMM_PARAM(int, p26, 0, 0, 100, "p26")
-  FASTMM_PARAM(int, p27, 0, 0, 100, "p27")
-  FASTMM_PARAM(int, p28, 0, 0, 100, "p28")
-  FASTMM_PARAM(int, p29, 0, 0, 100, "p29")
-  FASTMM_PARAM(int, p30, 0, 0, 100, "p30")
-  FASTMM_PARAM(int, p31, 0, 0, 100, "p31")
-  FASTMM_PARAM(int, p32, 0, 0, 100, "p32")
-  FASTMM_PARAM(int, p33, 0, 0, 100, "p33")
-  FASTMM_PARAM(int, p34, 0, 0, 100, "p34")
-  FASTMM_PARAM(int, p35, 0, 0, 100, "p35")
-  FASTMM_PARAM(int, p36, 0, 0, 100, "p36")
-  FASTMM_PARAM(int, p37, 0, 0, 100, "p37")
-  FASTMM_PARAM(int, p38, 0, 0, 100, "p38")
-  FASTMM_PARAM(int, p39, 0, 0, 100, "p39")
-  FASTMM_PARAM(int, p40, 0, 0, 100, "p40")
-  FASTMM_PARAM(int, p41, 0, 0, 100, "p41")
-  FASTMM_PARAM(int, p42, 0, 0, 100, "p42")
-  FASTMM_PARAM(int, p43, 0, 0, 100, "p43")
-  FASTMM_PARAM(int, p44, 0, 0, 100, "p44")
-  FASTMM_PARAM(int, p45, 0, 0, 100, "p45")
-  FASTMM_PARAM(int, p46, 0, 0, 100, "p46")
-  FASTMM_PARAM(int, p47, 0, 0, 100, "p47")
-  FASTMM_PARAM(int, p48, 0, 0, 100, "p48")
-  FASTMM_PARAM(int, p49, 0, 0, 100, "p49")
-  FASTMM_PARAM(int, p50, 0, 0, 100, "p50")
-  FASTMM_PARAM(int, p51, 0, 0, 100, "p51")
-  FASTMM_PARAM(int, p52, 0, 0, 100, "p52")
-  FASTMM_PARAM(int, p53, 0, 0, 100, "p53")
-  FASTMM_PARAM(int, p54, 0, 0, 100, "p54")
-  FASTMM_PARAM(int, p55, 0, 0, 100, "p55")
-  FASTMM_PARAM(int, p56, 0, 0, 100, "p56")
-  FASTMM_PARAM(int, p57, 0, 0, 100, "p57")
-  FASTMM_PARAM(int, p58, 0, 0, 100, "p58")
-  FASTMM_PARAM(int, p59, 0, 0, 100, "p59")
-  FASTMM_PARAM(int, p60, 0, 0, 100, "p60")
-  FASTMM_PARAM(int, p61, 0, 0, 100, "p61")
-  FASTMM_PARAM(int, p62, 0, 0, 100, "p62")
-  FASTMM_PARAM(int, p63, 0, 0, 100, "p63")
-  FASTMM_PARAM(int, p64, 0, 0, 100, "p64")
+struct OneOver {
+  FASTMM_PARAMS(OneOver)
+  FASTMM_TEST_P128
+  FASTMM_TEST_P(extra)
 };
+#undef FASTMM_TEST_P128
+#undef FASTMM_TEST_P8
+#undef FASTMM_TEST_P
 
 ParamMap parse_describe(const std::string& s) {
   ParamMap m;
@@ -231,11 +120,12 @@ TEST_CASE("strategies.params: schema collection, apply, describe") {
 }
 
 TEST_CASE("strategies.params: kMaxParams fit the schema, one more is refused") {
-  CHECK(SixtyFour::schema().size() == kMaxParams);
-  CHECK(SixtyFour::schema().find("p63") != nullptr);
-  // The 65th would otherwise be dropped and stay at its default whatever the configuration says.
-  CHECK_THROWS_WITH_AS(static_cast<void>(SixtyFive::schema()),
-                       doctest::Contains("at most 64 parameters"),
+  static_assert(kMaxParams == 128);
+  CHECK(AtMax::schema().size() == kMaxParams);
+  CHECK(AtMax::schema().find("pp_7") != nullptr);
+  // The 129th would otherwise be dropped and stay at its default whatever the configuration says.
+  CHECK_THROWS_WITH_AS(static_cast<void>(OneOver::schema()),
+                       doctest::Contains("at most 128 parameters"),
                        std::invalid_argument);
 }
 
