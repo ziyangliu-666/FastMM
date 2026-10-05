@@ -133,19 +133,29 @@ bool net_cpu_shared(int engine_cpu, std::span<const int> net_cpus, std::size_t i
   return false;
 }
 
+bool net_never_blocks(SpinMode spin, int cpu, bool shared_cpu, bool spin_dedicated) noexcept {
+  return spin == SpinMode::Busy || (spin_dedicated && cpu >= 0 && !shared_cpu);
+}
+
 // Events pushed to the engine notify its feed, which wakes the engine only while it is blocked
 // (Engine::block_idle).
-void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu) {
+void net_loop(
+    VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu, bool spin_dedicated) {
   const std::string name = "fm-net-" + std::to_string(index);
   set_thread_name(name.c_str());
   pin_to_cpu(cpu);
   Logger::instance().attach_current_thread();
   s.venue->connect(*s.reactor);
   const bool busy = spin == SpinMode::Busy;
+  // Adaptive, alone on its core: polls like busy, and still notifies an adaptive engine.
+  const bool never_block = net_never_blocks(spin, cpu, shared_cpu, spin_dedicated);
   const std::int64_t spin_ns = shared_cpu ? 0 : kNetSpinNs;
   if (shared_cpu && !busy)
     FASTMM_LOG_INFO(
         "{}: CPU {} is shared with another pinned thread; blocks when idle, no spin", name, cpu);
+  else if (never_block && !busy)
+    FASTMM_LOG_INFO(
+        "{}: CPU {} is its own; polls without blocking (net_spin_dedicated)", name, cpu);
   std::uint64_t pushed = 0;
   std::int64_t idle_since = 0;  // 0 while active
   bool block = false;
@@ -178,7 +188,7 @@ void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shar
       if (consumer != nullptr) consumer->notify();
       active = true;
     }
-    if (busy) continue;
+    if (never_block) continue;
     block = false;
     if (active) {
       idle_since = 0;

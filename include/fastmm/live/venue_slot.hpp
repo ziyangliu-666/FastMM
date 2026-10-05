@@ -108,14 +108,29 @@ void wake_venue(void* ctx, VenueId v) noexcept;
 // runs elsewhere) or with another network thread. An unpinned thread (-1) shares nothing.
 [[nodiscard]] bool net_cpu_shared(int engine_cpu, std::span<const int> net_cpus, std::size_t index);
 
+// Whether a network thread polls without ever blocking: always with SpinMode::Busy; with Adaptive
+// when `spin_dedicated` ([engine] net_spin_dedicated) and the thread is pinned (`cpu` >= 0) to a
+// core it shares with nobody (`shared_cpu` false, net_cpu_shared). A blocked thread pays a
+// wake-up (microseconds) on the next packet or order.
+[[nodiscard]] bool net_never_blocks(SpinMode spin,
+                                    int cpu,
+                                    bool shared_cpu,
+                                    bool spin_dedicated) noexcept;
+
 // The network thread (fm-net-<index>). Busy: poll sockets and the engine's wake flag forever.
 // Adaptive: the same while active and for a short spin after, then block in the reactor until a
 // socket, timer, posted task or the engine (wake_venue) needs the thread. s.consumer, when set, is
 // notified after the sinks pushed events (it wakes an engine blocked while idle), in busy mode too.
 // `shared_cpu` (net_cpu_shared): an adaptive thread blocks as soon as it is idle, without the
 // spin, since a spinning thread keeps the CPU for a whole scheduler slice (milliseconds) from the
-// thread beside it that has an order to send.
-void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu = false);
+// thread beside it that has an order to send. `spin_dedicated`: an adaptive thread alone on its
+// pinned core never blocks (net_never_blocks).
+void net_loop(VenueSlot& s,
+              int cpu,
+              std::size_t index,
+              SpinMode spin,
+              bool shared_cpu = false,
+              bool spin_dedicated = false);
 
 // The once-a-second status line of a venue, and its latency and feed lines.
 void log_venue_status(const venues::Venue& v);

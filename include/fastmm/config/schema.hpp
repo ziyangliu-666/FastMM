@@ -164,6 +164,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      "interleaves the rings, so a burst of one account's order events does not hold up the "
      "market data behind it (default 64)"},
     {"engine",
+     "net_spin_dedicated",
+     KeyType::Bool,
+     false,
+     "with spin_mode = \"adaptive\": a network thread pinned to a core of its own (net_cpus, "
+     "shared with neither the engine nor another network thread) polls without ever blocking, as "
+     "with \"busy\"; threads on shared or unpinned cores still block when idle (default false)"},
+    {"engine",
      "crossed_grace_ms",
      KeyType::Int,
      false,

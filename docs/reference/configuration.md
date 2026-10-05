@@ -44,6 +44,7 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `journal_ring_bytes` | integer |  | engine-to-journal ring, bytes, a power of two (default 16777216) |
 | `max_events_per_step` | integer |  | events taken from each ring per engine iteration (default 64) |
 | `feed_budget_per_ring` | integer |  | fastmm-live: events the engine takes from one input ring before the next ring's turn; 1 interleaves the rings, so a burst of one account's order events does not hold up the market data behind it (default 64) |
+| `net_spin_dedicated` | boolean |  | with spin_mode = "adaptive": a network thread pinned to a core of its own (net_cpus, shared with neither the engine nor another network thread) polls without ever blocking, as with "busy"; threads on shared or unpinned cores still block when idle (default false) |
 | `crossed_grace_ms` | integer |  | tolerate a crossed book this long before pulling its quotes, ms (default 100) |
 | `latency_publish_ms` | integer |  | latency histogram publish interval, ms (default 1000) |
 | `tsc_recalibrate_s` | integer |  | fastmm-live: TSC recalibration period, s; 0 = off (default 10) |

@@ -416,3 +416,15 @@ TEST_CASE("live session: a network thread shares its CPU with the engine or anot
   CHECK_FALSE(live::net_cpu_shared(-1, cpus, 4));  // nor with an unpinned engine
   CHECK_FALSE(live::net_cpu_shared(1, cpus, 6));   // no entry: unpinned
 }
+
+TEST_CASE("live session: net_spin_dedicated keeps a network thread alone on its core polling") {
+  // Busy never blocks, whatever the core.
+  CHECK(live::net_never_blocks(SpinMode::Busy, -1, false, false));
+  CHECK(live::net_never_blocks(SpinMode::Busy, 2, true, false));
+  // Adaptive without the option: blocks when idle.
+  CHECK_FALSE(live::net_never_blocks(SpinMode::Adaptive, 2, false, false));
+  // With it: only a pinned thread on a core of its own polls without blocking.
+  CHECK(live::net_never_blocks(SpinMode::Adaptive, 2, false, true));
+  CHECK_FALSE(live::net_never_blocks(SpinMode::Adaptive, 2, true, true));    // shared core
+  CHECK_FALSE(live::net_never_blocks(SpinMode::Adaptive, -1, false, true));  // not pinned
+}

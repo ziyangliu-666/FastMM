@@ -1296,8 +1296,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
       if (cfg.spin_mode() == SpinMode::Adaptive) slots[i]->consumer = &feed.waker();
       const bool shared = net_cpu_shared(cfg.engine.cpu, cfg.engine.net_cpus, i);
-      slots[i]->thread =
-          std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode(), shared);
+      slots[i]->thread = std::thread(net_loop,
+                                     std::ref(*slots[i]),
+                                     cpu,
+                                     i,
+                                     cfg.spin_mode(),
+                                     shared,
+                                     cfg.engine.net_spin_dedicated);
     }
     engine_thread = std::thread([&] { runner->run(); });
   }

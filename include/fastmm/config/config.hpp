@@ -76,6 +76,8 @@ struct EngineSection {
   std::size_t journal_ring_bytes = 16U << 20;
   std::uint32_t max_events_per_step = 64;
   std::uint32_t feed_budget_per_ring = 64;  // RingFeed: events per ring before the next one's turn
+  // Adaptive: a network thread alone on its pinned core never blocks (net_never_blocks).
+  bool net_spin_dedicated = false;
   int crossed_grace_ms = 100;
   int ack_timeout_ms = 0;  // force-cancel an order without an ack after this long; 0 = off
   // Operator flatten (fastmm-ctl flatten): the sweep period, how long the engine keeps working the

@@ -84,6 +84,7 @@ TEST_CASE("core.config: minimal parse, float decimals stringified exactly, defau
   CHECK(cfg.strategy.params.at("levels") == "2");
   CHECK(cfg.engine.max_events_per_step == 64);
   CHECK(cfg.engine.feed_budget_per_ring == 64);
+  CHECK_FALSE(cfg.engine.net_spin_dedicated);
   CHECK(cfg.risk.max_open_orders == 4);
   CHECK(cfg.risk_limits().max_position == Qty::from_decimal("0.5").value());
   const InstrumentTable t = load_instruments(cfg);
@@ -91,11 +92,13 @@ TEST_CASE("core.config: minimal parse, float decimals stringified exactly, defau
   CHECK(t.get(InstrumentId{0}).min_qty == Qty::from_decimal("0.001").value());  // defaults to lot
 }
 
-TEST_CASE("core.config: feed_budget_per_ring") {
+TEST_CASE("core.config: feed_budget_per_ring and net_spin_dedicated") {
   const Config cfg =
-      Config::parse("[engine]\nfeed_budget_per_ring = 1\n");
+      Config::parse("[engine]\nfeed_budget_per_ring = 1\nnet_spin_dedicated = true\n");
   CHECK(cfg.engine.feed_budget_per_ring == 1);
+  CHECK(cfg.engine.net_spin_dedicated);
   CHECK(cfg.effective_toml().find("feed_budget_per_ring = 1") != std::string::npos);
+  CHECK(cfg.effective_toml().find("net_spin_dedicated = true") != std::string::npos);
   CHECK_THROWS_WITH_AS(Config::parse("[engine]\nfeed_budget_per_ring = 0\n"),
                        doctest::Contains("feed_budget_per_ring must be >= 1"),
                        ConfigError);

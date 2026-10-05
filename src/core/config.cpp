@@ -404,6 +404,7 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
     get(*t, "feed_budget_per_ring", e.feed_budget_per_ring);
     if (e.feed_budget_per_ring == 0)
       fail_at(*t->get("feed_budget_per_ring"), "feed_budget_per_ring must be >= 1");
+    get(*t, "net_spin_dedicated", e.net_spin_dedicated);
     get(*t, "crossed_grace_ms", e.crossed_grace_ms);
     get(*t, "ack_timeout_ms", e.ack_timeout_ms);
     if (e.ack_timeout_ms < 0)
@@ -854,6 +855,7 @@ std::string Config::redacted() const {
   kv("rng_seed", engine.rng_seed);
   kv("max_events_per_step", engine.max_events_per_step);
   kv("feed_budget_per_ring", engine.feed_budget_per_ring);
+  kv("net_spin_dedicated", engine.net_spin_dedicated);
   kv("crossed_grace_ms", engine.crossed_grace_ms);
   kv("ack_timeout_ms", engine.ack_timeout_ms);
   kv("flatten_interval_ms", engine.flatten_interval_ms);
@@ -1050,6 +1052,7 @@ std::string Config::effective_toml() const {
   e.insert("journal_ring_bytes", static_cast<std::int64_t>(engine.journal_ring_bytes));
   e.insert("max_events_per_step", static_cast<std::int64_t>(engine.max_events_per_step));
   e.insert("feed_budget_per_ring", static_cast<std::int64_t>(engine.feed_budget_per_ring));
+  e.insert("net_spin_dedicated", engine.net_spin_dedicated);
   e.insert("crossed_grace_ms", static_cast<std::int64_t>(engine.crossed_grace_ms));
   e.insert("ack_timeout_ms", static_cast<std::int64_t>(engine.ack_timeout_ms));
   e.insert("flatten_interval_ms", static_cast<std::int64_t>(engine.flatten_interval_ms));

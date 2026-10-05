@@ -12,6 +12,10 @@ All notable changes are recorded here (Keep a Changelog format).
 - `[engine] feed_budget_per_ring` (default 64, as before): events the engine takes from one input
   ring before the next ring's turn. 1 interleaves the rings, so a burst of one account's cancel
   acks and balances does not hold up the market data queued behind it.
+- `[engine] net_spin_dedicated` (default false): with `spin_mode = "adaptive"`, a network thread
+  pinned to a core of its own polls without ever blocking, as with `"busy"`; threads on shared or
+  unpinned cores still block when idle. An adaptive thread blocked and woke up to a thousand times
+  a second, a few microseconds each.
 - `binance_usdm`: `md_ticker_conns = <n>` (0 to 8) opens n more `/public/stream` connections
   carrying only the bookTicker streams. Binance hands each connection to a push server that lags
   now and then; the feed keeps the first copy of every update id per symbol and drops the rest
