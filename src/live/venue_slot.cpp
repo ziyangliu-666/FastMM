@@ -21,7 +21,7 @@ void on_order_overflow(void* ctx, const venues::EventSink&) noexcept {
 
 // Adaptive spin: after the last activity the network thread keeps polling for this long before it
 // blocks in the reactor (for at most kNetMaxBlockMs, the cadence of Venue::poll()), so the engine's
-// reaction to an event it just delivered finds the thread awake.
+// reaction to an event it just delivered finds the thread awake. Not on a shared CPU (net_loop).
 constexpr std::int64_t kNetSpinNs = 200'000;
 constexpr int kNetMaxBlockMs = 1;
 
@@ -123,15 +123,29 @@ void wake_venue(void* ctx, VenueId v) noexcept {
   if (!w->busy && s.net_blocked.take()) s.reactor->wake();
 }
 
+bool net_cpu_shared(int engine_cpu, std::span<const int> net_cpus, std::size_t index) {
+  if (index >= net_cpus.size() || net_cpus[index] < 0) return false;
+  const int cpu = net_cpus[index];
+  if (cpu == engine_cpu) return true;
+  for (std::size_t i = 0; i < net_cpus.size(); ++i) {
+    if (i != index && net_cpus[i] == cpu) return true;
+  }
+  return false;
+}
+
 // Events pushed to the engine notify its feed, which wakes the engine only while it is blocked
 // (Engine::block_idle).
-void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
+void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu) {
   const std::string name = "fm-net-" + std::to_string(index);
   set_thread_name(name.c_str());
   pin_to_cpu(cpu);
   Logger::instance().attach_current_thread();
   s.venue->connect(*s.reactor);
   const bool busy = spin == SpinMode::Busy;
+  const std::int64_t spin_ns = shared_cpu ? 0 : kNetSpinNs;
+  if (shared_cpu && !busy)
+    FASTMM_LOG_INFO(
+        "{}: CPU {} is shared with another pinned thread; blocks when idle, no spin", name, cpu);
   std::uint64_t pushed = 0;
   std::int64_t idle_since = 0;  // 0 while active
   bool block = false;
@@ -170,7 +184,7 @@ void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin) {
       idle_since = 0;
     } else if (idle_since == 0) {
       idle_since = net::Reactor::now_ns();
-    } else if (net::Reactor::now_ns() - idle_since >= kNetSpinNs) {
+    } else if (net::Reactor::now_ns() - idle_since >= spin_ns) {
       block = true;
     } else {
       _mm_pause();

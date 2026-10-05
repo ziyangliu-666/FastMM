@@ -2,7 +2,7 @@
 // strategies, against the in-process simulator: a HotStrategy with a hook written in C, its
 // parameter ring and journal metadata, a failing hook (exit code 6), the watchdog (exit code 7), a
 // slow channel fed by the engine and watched by slow_tier_watchdog, the restored signal handlers,
-// and confine_threads.
+// confine_threads and net_cpu_shared.
 #include "integration_util.hpp"
 
 #include "fastmm/backtest/replay.hpp"
@@ -13,6 +13,7 @@
 #include "fastmm/live/session.hpp"
 #include "fastmm/live/slow_watchdog.hpp"
 #include "fastmm/live/thread_affinity.hpp"
+#include "fastmm/live/venue_slot.hpp"
 #include "fastmm/strategies/hot_abi.h"
 #include "fastmm/strategies/hot_params.hpp"
 #include "fastmm/strategies/hot_strategy.hpp"
@@ -402,4 +403,16 @@ TEST_CASE("live session: confine_threads moves every thread off the reserved CPU
     const pid_t tid = std::stoi(e.path().filename().string());
     static_cast<void>(sched_setaffinity(tid, sizeof original, &original));
   }
+}
+
+TEST_CASE("live session: a network thread shares its CPU with the engine or another one") {
+  const std::vector<int> cpus{2, 0, 0, 3, -1, -1};
+  CHECK_FALSE(live::net_cpu_shared(1, cpus, 0));
+  CHECK(live::net_cpu_shared(1, cpus, 1));  // two network threads on CPU 0
+  CHECK(live::net_cpu_shared(1, cpus, 2));
+  CHECK_FALSE(live::net_cpu_shared(1, cpus, 3));
+  CHECK(live::net_cpu_shared(3, cpus, 3));         // the engine's CPU
+  CHECK_FALSE(live::net_cpu_shared(1, cpus, 4));   // unpinned threads share nothing
+  CHECK_FALSE(live::net_cpu_shared(-1, cpus, 4));  // nor with an unpinned engine
+  CHECK_FALSE(live::net_cpu_shared(1, cpus, 6));   // no entry: unpinned
 }

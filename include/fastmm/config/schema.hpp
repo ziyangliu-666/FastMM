@@ -43,7 +43,9 @@ inline constexpr KeySpec kConfigSchema[] = {
      "net_cpus",
      KeyType::IntArray,
      false,
-     "CPU cores of the network threads, one per venue in order (default [])"},
+     "CPU cores of the network threads, one per venue in order; with spin_mode = \"adaptive\" a "
+     "thread whose core it shares with the engine or another network thread blocks when idle "
+     "instead of spinning (default [])"},
     {"engine",
      "spin_mode",
      KeyType::String,

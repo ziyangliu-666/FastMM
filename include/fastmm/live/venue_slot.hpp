@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -103,11 +104,18 @@ struct Wake {
 // LiveTransport::WakeFn: the engine queued orders for venue `v`.
 void wake_venue(void* ctx, VenueId v) noexcept;
 
+// Whether network thread `index` shares its pinned CPU with the engine (`engine_cpu`, -1 when it
+// runs elsewhere) or with another network thread. An unpinned thread (-1) shares nothing.
+[[nodiscard]] bool net_cpu_shared(int engine_cpu, std::span<const int> net_cpus, std::size_t index);
+
 // The network thread (fm-net-<index>). Busy: poll sockets and the engine's wake flag forever.
 // Adaptive: the same while active and for a short spin after, then block in the reactor until a
 // socket, timer, posted task or the engine (wake_venue) needs the thread. s.consumer, when set, is
 // notified after the sinks pushed events (it wakes an engine blocked while idle), in busy mode too.
-void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin);
+// `shared_cpu` (net_cpu_shared): an adaptive thread blocks as soon as it is idle, without the
+// spin, since a spinning thread keeps the CPU for a whole scheduler slice (milliseconds) from the
+// thread beside it that has an order to send.
+void net_loop(VenueSlot& s, int cpu, std::size_t index, SpinMode spin, bool shared_cpu = false);
 
 // The once-a-second status line of a venue, and its latency and feed lines.
 void log_venue_status(const venues::Venue& v);

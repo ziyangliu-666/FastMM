@@ -3567,7 +3567,8 @@ int run_gateway(const Config& cfg, const GatewayOptions& opts) {
   const GatewaySignals signals;
   for (std::size_t i = 0; i < slots.size(); ++i) {
     const int cpu = i < cfg.engine.net_cpus.size() ? cfg.engine.net_cpus[i] : -1;
-    slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode());
+    const bool shared = net_cpu_shared(-1, cfg.engine.net_cpus, i);
+    slots[i]->thread = std::thread(net_loop, std::ref(*slots[i]), cpu, i, cfg.spin_mode(), shared);
   }
   FASTMM_LOG_INFO(
       "fastmm-gateway: {} venue(s), {} instrument(s), dry_run={}, net={}, orders_per_sec={}, "
