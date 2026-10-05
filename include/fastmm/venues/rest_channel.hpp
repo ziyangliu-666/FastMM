@@ -84,13 +84,29 @@ class RestChannel {
     if (!ensure_client()) return false;
     const std::string full = prefix_ + std::string(target);
     ++requests_;
-    auto wrapped = [this, cb = std::move(cb)](const net::HttpResponse& r) {
-      if (r.error != net::NetError::None) {
-        ++errors_;
-        schedule_reset();
-      }
-      if (cb) cb(r);
+    auto wrapped = wrap(std::move(cb));
+    const bool ok = plain_ ? plain_->request(method, full, extra_headers, body, wrapped)
+                           : tls_->request(method, full, extra_headers, body, wrapped);
+    if (!ok) ++errors_;
+    return ok;
+  }
+
+  // The same, with the target (without the base prefix) made when the request is written, not
+  // when it is queued: a signed query is stamped and signed then, however long it waited behind
+  // the requests ahead of it on the one connection (net::HttpClient). Empty: not sent, the
+  // callback gets NetError::Canceled.
+  bool request(std::string_view method,
+               net::HttpTargetMaker make_target,
+               std::string_view extra_headers,
+               std::string_view body,
+               Callback cb) {
+    if (!make_target || !ensure_client()) return false;
+    ++requests_;
+    net::HttpTargetMaker full = [prefix = prefix_, make = std::move(make_target)] {
+      std::string target = make();
+      return target.empty() ? target : prefix + target;
     };
+    auto wrapped = wrap(std::move(cb));
     const bool ok = plain_ ? plain_->request(method, full, extra_headers, body, wrapped)
                            : tls_->request(method, full, extra_headers, body, wrapped);
     if (!ok) ++errors_;
@@ -121,6 +137,11 @@ class RestChannel {
   }
 
   [[nodiscard]] bool connected() const noexcept { return plain_ || tls_; }
+  // Requests queued on the connection, the one in flight included.
+  [[nodiscard]] std::size_t queued() const noexcept {
+    if (plain_) return plain_->queued();
+    return tls_ ? tls_->queued() : 0;
+  }
   [[nodiscard]] std::size_t max_queue() const noexcept { return cfg_.max_queue; }
   [[nodiscard]] std::uint64_t requests() const noexcept { return requests_; }
   [[nodiscard]] std::uint64_t errors() const noexcept { return errors_; }
@@ -128,6 +149,17 @@ class RestChannel {
   [[nodiscard]] bool tls() const noexcept { return use_tls_; }
 
  private:
+  Callback wrap(Callback cb) {
+    return [this, cb = std::move(cb)](const net::HttpResponse& r) {
+      if (r.error != net::NetError::None) {
+        ++errors_;
+        // Canceled: the client closed already, or a withdrawn target that left it usable.
+        if (r.error != net::NetError::Canceled) schedule_reset();
+      }
+      if (cb) cb(r);
+    };
+  }
+
   bool ensure_client() {
     if (plain_ && plain_->state() == net::HttpClientState::Closed) plain_.reset();
     if (tls_ && tls_->state() == net::HttpClientState::Closed) tls_.reset();

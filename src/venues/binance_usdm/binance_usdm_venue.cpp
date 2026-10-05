@@ -102,7 +102,8 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
        [this](bool complete) { reconcile_.replay_done(complete); },
        [this](const ReplayLookup& l) { return lookup_order(l); },
        [this] {
-         return rate_.can_send(kUserTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+         return replay_room() &&
+                rate_.can_send(kUserTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
        },
        // A sweep reads the instruments with order activity since their watermark.
        [this](std::size_t stream, std::int64_t since_ms) {
@@ -127,7 +128,10 @@ BinanceUsdmVenue::BinanceUsdmVenue(VenueId id, BinanceUsdmVenueConfig cfg)
        [this](const ReplayQuery& q) { return query_funding(q); },
        [](bool) {},
        {},
-       [this] { return rate_.can_send(kIncomeWeight, now_ns(), false, RateLimiter::kBulkShare); }},
+       [this] {
+         return replay_room() &&
+                rate_.can_send(kIncomeWeight, now_ns(), false, RateLimiter::kBulkShare);
+       }},
       [this](std::size_t, const IncomeRecord& row) { return emit_funding_row(row); });
   funding_replay_.set_streams(1);
 }
@@ -1390,7 +1394,7 @@ void BinanceUsdmVenue::send_command_rest(const OrderCommand& cmd, const OrderSha
     ++stats_.order_send_failures;
     return;
   }
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   const std::string headers = api_headers();
   const Cycles after_encode = rdtscp();
   OrderCommand copy = cmd;
@@ -1567,15 +1571,12 @@ bool BinanceUsdmVenue::fetch_snapshot(std::uint64_t generation) {
   positions_body_.clear();
   std::weak_ptr<int> alive = alive_;
   const std::string headers = api_headers();
-  const bool q1 = rest_->request("GET",
-                                 std::string(oo.path) + "?" + std::string(oo.query.view()),
-                                 headers,
-                                 {},
-                                 [this, alive, generation](const net::HttpResponse& r) {
-                                   if (!alive.expired()) on_reconcile_reply(generation, true, r);
-                                 });
+  const bool q1 = rest_->request(
+      "GET", signed_target(oo), headers, {}, [this, alive, generation](const net::HttpResponse& r) {
+        if (!alive.expired()) on_reconcile_reply(generation, true, r);
+      });
   const bool q2 = q1 && rest_->request("GET",
-                                       std::string(pr.path) + "?" + std::string(pr.query.view()),
+                                       signed_target(pr),
                                        headers,
                                        {},
                                        [this, alive, generation](const net::HttpResponse& r) {
@@ -1627,7 +1628,7 @@ bool BinanceUsdmVenue::fetch_balances(std::uint64_t generation) {
   if (!encoder_->encode_rest_account(venue_time_ms(), rr)) return false;
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request("GET",
-                                     std::string(rr.path) + "?" + std::string(rr.query.view()),
+                                     signed_target(rr),
                                      api_headers(),
                                      {},
                                      [this, alive, generation](const net::HttpResponse& r) {
@@ -1841,7 +1842,7 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
   // Not while the venue asked for a pause or the bulk share of the weight is spent: the replay
   // asks again (Hooks::can_query keeps most queries from getting this far).
   if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, q](const net::HttpResponse& r) {
@@ -1852,6 +1853,7 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
           ++stats_.execution_query_errors;
           replay_query_failed("userTrades", r);
           exec_replay_.failed(q);
+          exec_replay_.send_waiting();
           return;
         }
         // The rows own their text: a window waits for its lookups past this reply.
@@ -1866,9 +1868,11 @@ bool BinanceUsdmVenue::query_executions(const ReplayQuery& q) {
           ++stats_.execution_query_errors;
           FASTMM_LOG_ERROR("{}: userTrades reply could not be parsed; asked again", cfg_.name);
           exec_replay_.failed(q);
+          exec_replay_.send_waiting();
           return;
         }
         exec_replay_.answer(q, std::move(page));
+        exec_replay_.send_waiting();
       });
   if (!queued) {
     ++stats_.execution_query_errors;
@@ -1913,7 +1917,7 @@ bool BinanceUsdmVenue::lookup_order(const ReplayLookup& l) {
   if (symbol.empty() || !encoder_->encode_rest_query_order(symbol, order_id, venue_time_ms(), rr))
     return false;
   if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, l, order_id](const net::HttpResponse& r) {
@@ -1961,7 +1965,7 @@ bool BinanceUsdmVenue::query_funding(const ReplayQuery& q) {
           q.start_ms, q.end_ms, kUserTradesLimit, venue_time_ms(), rr))
     return false;
   if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, q](const net::HttpResponse& r) {
@@ -1971,12 +1975,14 @@ bool BinanceUsdmVenue::query_funding(const ReplayQuery& q) {
         if (!r.ok()) {
           replay_query_failed("income", r);
           funding_replay_.failed(q);
+          funding_replay_.send_waiting();
           return;
         }
         std::vector<IncomeRecord> rows;
         if (const std::string err = decode_income(r.body, rows); !err.empty()) {
           FASTMM_LOG_ERROR("{}: {}; funding is asked again", cfg_.name, err);
           funding_replay_.failed(q);
+          funding_replay_.send_waiting();
           return;
         }
         std::stable_sort(
@@ -1991,6 +1997,7 @@ bool BinanceUsdmVenue::query_funding(const ReplayQuery& q) {
           page.rows.push_back({t, 0, std::move(key), std::move(row)});
         }
         funding_replay_.answer(q, std::move(page));
+        funding_replay_.send_waiting();
       });
   if (!queued) {
     FASTMM_LOG_ERROR("{}: no room to ask for the account's funding", cfg_.name);
@@ -2146,7 +2153,7 @@ void BinanceUsdmVenue::send_countdown_cancel_all(std::int64_t countdown_ms) {
     RestRequest rr;
     if (!encoder_->encode_rest_countdown_cancel_all(symbol, countdown_ms, venue_time_ms(), rr))
       continue;
-    const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+    const auto target = signed_target(rr);  // made when sent
     std::weak_ptr<int> alive = alive_;
     const bool queued = rest_->request(
         rr.method, target, api_headers(), {}, [this, alive, id, round](const net::HttpResponse& r) {
@@ -2182,7 +2189,7 @@ void BinanceUsdmVenue::cancel_all_async() {
     RestRequest rr;
     if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr))
       continue;
-    const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+    const auto target = signed_target(rr);  // made when sent
     std::weak_ptr<int> alive = alive_;
     rest_->request(
         "DELETE", target, api_headers(), {}, [this, alive, id](const net::HttpResponse& r) {

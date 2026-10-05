@@ -40,9 +40,10 @@
 //     the replay ends incomplete, so a reconciliation waiting for it goes ahead without
 //     kExecutionsExact, and the retry follows. A late answer is not this replay's any more.
 //   * a query the connector cannot send yet (Hooks::can_query: the weight budget is spent, the
-//     venue asked for a pause) waits, and goes out at a housekeeping tick once it can: a start
-//     with many streams sends what fits and the rest tick by tick, and a retry during a pause
-//     waits for its end instead of earning the ban. One that waited kDeferTimeoutNs fails.
+//     venue asked for a pause, its channel holds enough requests already) waits, and goes out at
+//     a housekeeping tick, or at send_waiting() (the connector's reply handler), once it can: a
+//     start with many streams sends what fits and the rest as room comes, and a retry during a
+//     pause waits for its end instead of earning the ban. One that waited kDeferTimeoutNs fails.
 //   * close() (disconnect) and abort() (the transport the queries went out on is gone) move the
 //     generation on: a reply to an earlier query is ignored. After close() nothing runs until
 //     open(); after abort() the retry follows.
@@ -181,6 +182,9 @@ class ReplaySchedulerBase {
   void due_in(std::int64_t delay_ns);
   // The housekeeping timer: queries past kQueryTimeoutNs, retry, due, sweep.
   void on_timer(std::int64_t now_ns);
+  // Room for the queries Hooks::can_query held back (a reply came in): they go now, as far as it
+  // lets them, rather than at the next housekeeping tick.
+  void send_waiting();
   // The query failed (transport, status, unreadable reply).
   void failed(const ReplayQuery& q);
   // The venue's answer to a lookup. One of an earlier replay only counts for NotOurs.

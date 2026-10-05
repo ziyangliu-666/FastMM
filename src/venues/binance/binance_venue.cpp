@@ -74,7 +74,10 @@ BinanceVenue::BinanceVenue(VenueId id, BinanceVenueConfig cfg)
        [this](const ReplayQuery& q) { return query_executions(q); },
        [this](bool complete) { reconcile_.replay_done(complete); },
        [this](const ReplayLookup& l) { return lookup_order(l); },
-       [this] { return rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare); },
+       [this] {
+         return replay_room() &&
+                rate_.can_send(kMyTradesWeight, now_ns(), false, RateLimiter::kBulkShare);
+       },
        // A sweep reads the instruments with order activity since their watermark.
        [this](std::size_t stream, std::int64_t since_ms) {
          return stream >= subscribed_.size() ||
@@ -1120,7 +1123,7 @@ void BinanceVenue::send_command_rest(const OrderCommand& cmd,
     emit_reject(cmd.instrument, cmd.cl_ord_id, RejectReason::VenueReject, 0, "encode failed");
     return;
   }
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   const std::string headers = api_headers();
   const Cycles after_encode = rdtscp();
   OrderCommand copy = cmd;
@@ -1386,7 +1389,7 @@ bool BinanceVenue::fetch_snapshot(std::uint64_t generation) {
   if (rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
   if (!encoder_->encode_rest_open_orders({}, venue_time_ms(), rr)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, generation](const net::HttpResponse& r) {
@@ -1423,7 +1426,7 @@ bool BinanceVenue::fetch_balances(std::uint64_t generation) {
   if (rest_ == nullptr || rest_hard_stopped_) return false;
   RestRequest rr;
   if (!encoder_->encode_rest_account(venue_time_ms(), rr)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, generation](const net::HttpResponse& r) {
@@ -1537,7 +1540,7 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
   // Not while the venue asked for a pause or the bulk share of the weight is spent: the replay
   // asks again (Hooks::can_query keeps most queries from getting this far).
   if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, q](const net::HttpResponse& r) {
@@ -1549,6 +1552,7 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
           ++stats_.execution_query_errors;
           replay_query_failed("myTrades", r);
           exec_replay_.failed(q);
+          exec_replay_.send_waiting();
           return;
         }
         // The rows own their text: a window waits for its lookups past this reply.
@@ -1563,9 +1567,11 @@ bool BinanceVenue::query_executions(const ReplayQuery& q) {
           ++stats_.execution_query_errors;
           FASTMM_LOG_ERROR("{}: myTrades reply could not be parsed; asked again", cfg_.name);
           exec_replay_.failed(q);
+          exec_replay_.send_waiting();
           return;
         }
         exec_replay_.answer(q, std::move(page));
+        exec_replay_.send_waiting();
       });
   if (!queued) {
     ++stats_.execution_query_errors;
@@ -1610,7 +1616,7 @@ bool BinanceVenue::lookup_order(const ReplayLookup& l) {
   if (symbol.empty() || !encoder_->encode_rest_query_order(symbol, order_id, venue_time_ms(), rr))
     return false;
   if (!rate_.can_send(rr.weight, now_ns(), false, RateLimiter::kBulkShare)) return false;
-  const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+  const auto target = signed_target(rr);  // made when sent
   std::weak_ptr<int> alive = alive_;
   const bool queued = rest_->request(
       "GET", target, api_headers(), {}, [this, alive, l, order_id](const net::HttpResponse& r) {
@@ -1745,7 +1751,7 @@ void BinanceVenue::cancel_all_async() {
     RestRequest rr;
     if (!encoder_->encode_rest_cancel_all(symbols_->venue_symbol(id), venue_time_ms(), rr))
       continue;
-    const std::string target = std::string(rr.path) + "?" + std::string(rr.query.view());
+    const auto target = signed_target(rr);  // made when sent
     std::weak_ptr<int> alive = alive_;
     rest_->request(
         "DELETE", target, api_headers(), {}, [this, alive, id](const net::HttpResponse& r) {

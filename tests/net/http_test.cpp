@@ -301,6 +301,36 @@ void client_scenario(Reactor& reactor, Server& server, MakeStream make_stream) {
     CHECK(client.stats().responses == 3);
     CHECK(client.is_ready());
   }
+  SUBCASE("a target maker runs when its request is written, behind the ones ahead") {
+    // A signed query waits in the FIFO; its timestamp is taken when it leaves (fake clock).
+    long long clock = 1;
+    int made = 0;
+    Captured first, made_late, withdrawn, after;
+    REQUIRE(client.request("GET", "/api/v3/time", "", "", [&](const HttpResponse& r) {
+      capture(first)(r);
+      clock = 42;  // the time it spent ahead
+    }));
+    REQUIRE(client.request("DELETE",
+                           HttpTargetMaker([&] {
+                             ++made;
+                             return "/api/v3/order?symbol=ETHUSDT&orderId=" + std::to_string(clock);
+                           }),
+                           "",
+                           "",
+                           capture(made_late)));
+    REQUIRE(client.request(
+        "GET", HttpTargetMaker([] { return std::string(); }), "", "", capture(withdrawn)));
+    REQUIRE(client.request("GET", "/api/v3/time", "", "", capture(after)));
+    CHECK(made == 0);
+    REQUIRE(run_until(reactor, [&] { return after.done; }));
+    CHECK(made == 1);
+    CHECK(made_late.status == 200);
+    CHECK(made_late.body == "{\"symbol\":\"ETHUSDT\",\"orderId\":42}");
+    CHECK(withdrawn.error == NetError::Canceled);  // not sent; the connection goes on
+    CHECK(after.status == 200);
+    CHECK(server.stats().requests == 3);
+    CHECK(client.is_ready());
+  }
   SUBCASE("keep-alive: 100 sequential requests reuse one socket") {
     int done = 0;
     std::function<void()> next = [&] {

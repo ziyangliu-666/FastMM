@@ -272,6 +272,32 @@ TEST_CASE("replay_scheduler: a query the connector cannot send yet waits for a l
   CHECK(t.sched.timeouts() == 1);
 }
 
+TEST_CASE("replay_scheduler: a reply makes room for the queries waiting, without a tick") {
+  // A connector caps the queries in its REST channel (Hooks::can_query) so that an order or a
+  // snapshot is not queued behind a whole replay; each reply lets the next one out at once.
+  Rig r({}, 3);
+  r.budget = 1;
+  REQUIRE(r.sched.run());
+  REQUIRE(r.queries.size() == 1);
+  CHECK(r.sched.deferred() == 2);
+  r.answer({{kNow - kMin, "a"}});
+  r.budget = 1;
+  r.sched.send_waiting();
+  REQUIRE(r.queries.size() == 2);
+  CHECK(r.queries[1].stream == 1);
+  CHECK(r.sched.deferred() == 1);
+  r.answer({}, false, {}, &r.queries[1]);
+  r.budget = 1;
+  r.sched.send_waiting();
+  REQUIRE(r.queries.size() == 3);
+  CHECK(r.queries[2].stream == 2);
+  r.answer({}, false, {}, &r.queries[2]);
+  REQUIRE(r.finished.size() == 1);
+  CHECK(r.finished[0]);
+  r.sched.send_waiting();  // none running: nothing
+  CHECK(r.queries.size() == 3);
+}
+
 TEST_CASE("replay_scheduler: a query never answered fails after kQueryTimeoutNs") {
   // Deribit asks on its WebSocket, which may stay up with the query lost: the replay, and the
   // reconciliation waiting for it, used to wait for the connection to drop.

@@ -144,6 +144,34 @@ TEST_CASE("binance.ed25519: REST queries carry a percent-encoded base64 signatur
   CHECK(pub.verify_base64(q.substr(0, at), decoded));
 }
 
+TEST_CASE("binance.ed25519: a REST query restamped at send verifies against the public key") {
+  TestUniverse u;
+  const binance::Signer s = ed_signer();
+  binance::BinanceOrderEncoder enc(s, u.symbols, 3000);
+  binance::RestRequest rr;
+  REQUIRE(enc.encode_rest_account(kTs, rr));
+  std::int64_t clock_ms = kTs;
+  const auto target = binance::signed_rest_target(s, rr, [&clock_ms] { return clock_ms; });
+  clock_ms += 10'000;
+  const std::string sent = target();
+  const std::string q = sent.substr(sent.find('?') + 1);
+  const std::size_t at = q.rfind("&signature=");
+  REQUIRE(at != std::string::npos);
+  CHECK(q.substr(0, at) == "omitZeroBalances=true&recvWindow=3000&timestamp=1789295209000");
+  const std::string sig = q.substr(at + 11);
+  std::string decoded;
+  for (std::size_t i = 0; i < sig.size(); ++i) {
+    if (sig[i] == '%' && i + 2 < sig.size()) {
+      decoded += static_cast<char>(std::stoi(sig.substr(i + 1, 2), nullptr, 16));
+      i += 2;
+    } else {
+      decoded += sig[i];
+    }
+  }
+  const auto pub = net::Ed25519Key::from_public_pem(public_pem());
+  CHECK(pub.verify_base64(q.substr(0, at), decoded));
+}
+
 TEST_CASE("binance.ed25519: USDⓈ-M session.logon and unsigned requests") {
   TestUniverse u;
   const binance::Signer s = ed_signer();

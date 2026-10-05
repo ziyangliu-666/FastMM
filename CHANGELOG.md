@@ -86,6 +86,12 @@ All notable changes are recorded here (Keep a Changelog format).
   `ReplaySchedulerBase::Hooks::active`, `skipped()`; `OrderActivity`.
 
 ### Fixed
+- Binance Spot and USDⓈ-M: a signed REST request was stamped and signed when queued. The REST
+  connection carries one request at a time, so one queued behind an execution sweep's `myTrades`
+  queries (a database read each at the venue) could reach it older than `recv_window_ms` and be
+  refused with -1021, and its retry queued the same way. Requests are now stamped and signed when
+  they are written, and a replay keeps at most 4 requests on the connection, sending the next as
+  each reply comes in, so an order or a snapshot sent meanwhile does not wait behind the sweep.
 - `l2_queue` fill model: one trade print went in full to each of our resting orders on its side,
   so a print through two levels of a ladder filled both with up to its whole quantity. It is now
   shared in price priority (best for the aggressor first, at one price the shorter queue first),

@@ -53,6 +53,13 @@ bool signed_ok(std::string_view query) {
   return query.substr(p + 11) == expected;
 }
 
+std::string query_param(const std::string& query, const std::string& key) {
+  const std::size_t p = query.find(key + "=");
+  if (p == std::string::npos) return {};
+  const std::size_t v = p + key.size() + 1;
+  return query.substr(v, query.find('&', v) - v);
+}
+
 struct Harness {
   FakeVenueServer srv;
   std::string exchange_info = fastmm::test::fixture("binance/exchange_info.json");
@@ -62,7 +69,11 @@ struct Harness {
   std::atomic<int> cancel_all_bad{0};
   std::atomic<bool> hold_place{false};   // order.place gets no answer (still in flight)
   std::atomic<bool> hold_trades{false};  // GET myTrades answers only once released (3 s at most)
-  std::atomic<int> my_trades{0};         // GET myTrades requests seen
+  // > 0: signed REST requests older than this by the fake's clock when they arrive are refused with
+  // -1021, as Binance does past recvWindow.
+  std::atomic<long long> recv_window_ms{0};
+  std::atomic<int> stale{0};      // requests refused so
+  std::atomic<int> my_trades{0};  // GET myTrades requests seen
   std::mutex trades_mu;
   // GET myTrades answers (status, body), served in order; "[]" once they run out (trades_mu).
   std::vector<std::pair<int, std::string>> trades_replies;
@@ -110,6 +121,7 @@ struct Harness {
     srv.route("GET", "/api/v3/myTrades", [this](const net::HttpRequest& r) {
       ++my_trades;
       srv.record("myTrades", std::string(r.query));
+      if (too_old(r.query)) return stale_reply();
       // Blocks the fake's thread: the reply is in flight for as long as the test says.
       for (int i = 0; i < 600 && hold_trades.load(); ++i)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -147,6 +159,7 @@ struct Harness {
       s.send_text(depth_frame(101, 101, "70000.00", "1.5"));
     });
     srv.route("POST", "/api/v3/order", [this](const net::HttpRequest& r) {
+      if (too_old(r.query)) return stale_reply();
       const std::string query(r.query);
       const std::size_t p = query.find("newClientOrderId=");
       const std::string id = p == std::string::npos
@@ -160,6 +173,20 @@ struct Harness {
     });
     serve_ws_api(srv);
     srv.start();
+  }
+
+  // The request's timestamp, by the fake's clock, is more than recv_window_ms old.
+  bool too_old(std::string_view query) {
+    const long long window = recv_window_ms.load();
+    if (window <= 0) return false;
+    const std::string ts = query_param(std::string(query), "timestamp");
+    const bool old = ts.empty() || wall_now().ns / 1'000'000 - std::stoll(ts) > window;
+    if (old) ++stale;
+    return old;
+  }
+  static net::HttpServerResponse stale_reply() {
+    return net::HttpServerResponse::json(
+        400, R"({"code":-1021,"msg":"Timestamp for this request is outside of the recvWindow."})");
   }
 
   // The WS API (order entry, the user stream, openOrders.status) on `server`.
@@ -910,13 +937,6 @@ std::vector<const OrderFillMsg*> replayed(const Collected& c, std::string_view e
   return out;
 }
 
-std::string query_param(const std::string& query, const std::string& key) {
-  const std::size_t p = query.find(key + "=");
-  if (p == std::string::npos) return {};
-  const std::size_t v = p + key.size() + 1;
-  return query.substr(v, query.find('&', v) - v);
-}
-
 // A connector on the harness, resumed from `since` with `known` booked, up to its start-up sweep.
 struct Resumed {
   InstrumentTable instruments;
@@ -1370,6 +1390,62 @@ TEST_CASE("binance.venue: a failed balance fetch does not hold up the order snap
     CHECK(snap[0].asset.view() == "BTC");
     CHECK(snap[0].free == Notional::from_decimal("4723846.89208129").value());
     CHECK(snap[0].flags == (BalanceMsg::kSnapshot | BalanceMsg::kSnapshotEnd));
+    venue.disconnect();
+    reactor.run_once(0);
+  }
+  h.srv.stop();
+}
+
+TEST_CASE("binance.venue: a REST order queued behind a slow replay past recvWindow is accepted") {
+  // REST requests share one connection, one at a time. An order sent while a replay's myTrades is
+  // still being answered waits behind it; it was signed when queued, and arrived older than
+  // recvWindow: -1021 (live, after a sweep's 85 myTrades on 4 accounts). It is signed when it goes
+  // out now.
+  Harness h;
+  h.recv_window_ms = 300;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  {
+    BinanceVenueConfig cfg = h.config(false);
+    cfg.ws_order_api = false;
+    cfg.recv_window_ms = 300;
+    BinanceVenue venue(VenueId{0}, cfg);
+    REQUIRE(venue.load_reference_data(instruments));
+    REQUIRE(symbols.build(instruments));
+    venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+    const InstrumentId ids[] = {InstrumentId{0}};
+    venue.subscribe(ids);
+    venue.connect(reactor);
+    Collected oc;
+    h.hold_trades = true;
+    venue.request_open_orders();  // the replay first
+    REQUIRE(pump_until(reactor, [&] { return h.my_trades.load() == 1; }));
+    OutNewOrderMsg n{};
+    init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+    n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+    n.side = Side::Buy;
+    n.type = OrderType::PostOnly;
+    n.price = Price::from_decimal("70000").value();
+    n.qty = Qty::from_decimal("0.001").value();
+    REQUIRE(outbound.try_push(&n, n.hdr.len));
+    venue.on_wake();
+    // Three recvWindows behind the replay's query.
+    static_cast<void>(pump_until(reactor, [] { return false; }, 900));
+    CHECK(h.srv.frames("rest_order").empty());
+    h.hold_trades = false;
+    REQUIRE(pump_until(reactor, [&] {
+      oc.take(orders);
+      return oc.count(EventType::OrderAck) + oc.count(EventType::OrderReject) >= 1;
+    }));
+    CHECK(oc.count(EventType::OrderAck) == 1);
+    CHECK(oc.count(EventType::OrderReject) == 0);
+    CHECK(h.srv.frames("rest_order") == std::vector<std::string>{"fm000100000001"});
+    CHECK(h.stale.load() == 0);
     venue.disconnect();
     reactor.run_once(0);
   }

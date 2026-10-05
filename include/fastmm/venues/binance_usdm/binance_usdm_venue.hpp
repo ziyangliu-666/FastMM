@@ -95,6 +95,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -344,6 +345,17 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] InstrumentId instrument_of(std::string_view symbol) const noexcept;
   [[nodiscard]] bool pool_member() const noexcept { return cfg_.pool_of.valid(); }
   [[nodiscard]] std::string api_headers() const;
+  // A signed request's target, stamped and signed when it is written (binance::signed_rest_target).
+  [[nodiscard]] std::function<std::string()> signed_target(const RestRequest& rr) const {
+    return binance::signed_rest_target(signer_, rr, [this] { return venue_time_ms(); });
+  }
+  // A replay's query goes out only while the REST connection holds fewer requests than this: the
+  // rest wait for a reply or a housekeeping tick, not in the connection's queue, where an order
+  // or a snapshot sent meanwhile would wait behind them all.
+  static constexpr std::size_t kReplayQueueDepth = 4;
+  [[nodiscard]] bool replay_room() const noexcept {
+    return rest_ == nullptr || rest_->queued() < kReplayQueueDepth;
+  }
   [[nodiscard]] std::string stream_root() const;
   [[nodiscard]] std::string private_root() const;
   [[nodiscard]] net::ConnectionConfig ws_config(const std::string& url,

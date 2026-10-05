@@ -17,12 +17,15 @@
 #include "fastmm/net/crypto.hpp"
 #include "fastmm/net/url.hpp"
 
+#include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace fastmm::venues::binance {
@@ -110,5 +113,39 @@ class Signer {
   net::HmacSha256Key hmac_{};
   std::shared_ptr<const net::Ed25519Key> ed_;
 };
+
+// A signed REST query (Signer::sign_query: "...&timestamp=<ms>...&signature=<sig>") stamped
+// `timestamp_ms` instead and signed again, into `out`. For a request that waited after it was
+// signed (queued behind others on one connection): the venue rejects a timestamp more than
+// recvWindow old (-1021). False, `out` cleared, when the query has no timestamp or signature, or
+// does not fit.
+template <std::size_t N>
+bool restamp_signed_query(const Signer& signer,
+                          std::string_view query,
+                          std::int64_t timestamp_ms,
+                          net::QueryBuilder<N>& out) {
+  out.clear();
+  constexpr std::string_view kSig = "&signature=";
+  const std::size_t sig = query.rfind(kSig);
+  if (sig == std::string_view::npos) return false;
+  const std::string_view payload = query.substr(0, sig);
+  constexpr std::string_view kTs = "timestamp=";
+  std::size_t ts = payload.starts_with(kTs) ? 0 : payload.find("&timestamp=");
+  if (ts == std::string_view::npos) return false;
+  if (ts > 0) ++ts;  // past the '&'
+  const std::size_t value = ts + kTs.size();
+  const std::size_t value_end = std::min(payload.find('&', value), payload.size());
+  char digits[24];
+  const auto [end, ec] = std::to_chars(digits, digits + sizeof digits, timestamp_ms);
+  if (ec != std::errc{}) return false;
+  out.append_raw(payload.substr(0, value))
+      .append_raw(std::string_view(digits, static_cast<std::size_t>(end - digits)))
+      .append_raw(payload.substr(value_end));
+  if (!signer.sign_query(out)) {
+    out.clear();
+    return false;
+  }
+  return true;
+}
 
 }  // namespace fastmm::venues::binance

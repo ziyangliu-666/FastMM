@@ -544,3 +544,52 @@ TEST_CASE("binance.decoder: order.amend.keepPriority response reads amendedOrder
   CHECK(e.code == -2038);
   CHECK_FALSE(e.amended);
 }
+
+TEST_CASE(
+    "binance.auth: a signed REST query that waited past recvWindow is signed again when sent") {
+  // The query is signed when the connector queues it; one connection carries one request at a
+  // time, so it can wait behind slow ones (a replay's myTrades) longer than recvWindow. The target
+  // is made again when the request is written: the venue's clock then, signed over the new bytes.
+  TestUniverse u;
+  const Signer s = hmac_signer();
+  constexpr int kRecvWindowMs = 3000;
+  BinanceOrderEncoder enc(s, u.symbols, kRecvWindowMs);
+  OutNewOrderMsg n{};
+  init_header(n, EventType::OutNewOrder, InstrumentId{0}, VenueId{0});
+  n.cl_ord_id = decode_cl_ord_id("fm000100000001").value();
+  n.side = Side::Sell;
+  n.type = OrderType::Limit;
+  n.tif = TimeInForce::Gtc;
+  n.price = Price::from_decimal("80000").value();
+  n.qty = Qty::from_decimal("0.001").value();
+  std::int64_t clock_ms = kTs;  // the fake venue clock
+  RestRequest rr;
+  REQUIRE(enc.encode_rest(*OrderCommand::from(n.hdr), nullptr, clock_ms, rr));
+  const auto target = signed_rest_target(s, rr, [&clock_ms] { return clock_ms; });
+  clock_ms += kRecvWindowMs + 2000;  // queued behind slower requests
+  const std::string sent = target();
+  REQUIRE(sent.starts_with("/api/v3/order?"));
+  const std::string q = sent.substr(sent.find('?') + 1);
+  const std::size_t at = q.rfind("&signature=");
+  REQUIRE(at != std::string::npos);
+  const std::string body = q.substr(0, at);
+  // timestamp sits between the other parameters (type sorts after it): only its value changed.
+  CHECK(body ==
+        "newClientOrderId=fm000100000001&newOrderRespType=ACK&price=80000&quantity=0.001&"
+        "recvWindow=3000&side=SELL&symbol=BTCUSDT&timeInForce=GTC&timestamp=1789295204000&"
+        "type=LIMIT");
+  CHECK(q.substr(at + 11) == std::string(s.sign_hmac(body).view()));
+  // What the venue checks: no older than recvWindow by its clock.
+  CHECK(clock_ms - 1789295204000 <= kRecvWindowMs);
+
+  // Leading timestamp; nothing to restamp without a timestamp or a signature.
+  net::QueryBuilder<256> out;
+  REQUIRE(restamp_signed_query(s, "timestamp=1&signature=00", 42, out));
+  CHECK(out.view() == "timestamp=42&signature=" + std::string(s.sign_hmac("timestamp=42").view()));
+  CHECK_FALSE(restamp_signed_query(s, "symbol=BTCUSDT&signature=00", 42, out));
+  CHECK(out.empty());
+  CHECK_FALSE(restamp_signed_query(s, "symbol=BTCUSDT&timestamp=1", 42, out));
+  // Not "&xtimestamp=": the parameter itself.
+  REQUIRE(restamp_signed_query(s, "a=1&timestamp=7&signature=00", 8, out));
+  CHECK(out.view().starts_with("a=1&timestamp=8&signature="));
+}

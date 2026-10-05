@@ -53,6 +53,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace fastmm::venues::binance {
 
@@ -93,6 +94,28 @@ struct RestRequest {
   std::uint32_t weight = 1;
   bool is_order = false;
 };
+
+// The target "<path>?<query>" of the signed request `rr`, made when the request is written
+// (RestChannel): stamped with `now_ms()` then and signed again. One connection carries one request
+// at a time, so a request queued behind others (a replay's queries, each a database read at the
+// venue) can wait past recvWindow after it was encoded, and the venue refuses it (-1021). The query
+// as encoded when it cannot be restamped.
+template <class Clock>
+[[nodiscard]] std::function<std::string()> signed_rest_target(const Signer& signer,
+                                                              const RestRequest& rr,
+                                                              Clock now_ms) {
+  return [&signer,
+          now_ms = std::move(now_ms),
+          path = std::string(rr.path),
+          query = std::string(rr.query.view())] {
+    net::QueryBuilder<kMaxRequestBytes> fresh;
+    std::string target = path;
+    target += '?';
+    target += restamp_signed_query(signer, query, now_ms(), fresh) ? fresh.view()
+                                                                   : std::string_view(query);
+    return target;
+  };
+}
 
 class BinanceOrderEncoder {
  public:

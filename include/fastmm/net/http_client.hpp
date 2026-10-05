@@ -6,7 +6,8 @@
 //
 // REST is the venue *control* path (exchangeInfo, listenKey, cancel-all fallback); order
 // flow goes over the WebSocket API. Requests are therefore serialised into a std::string at
-// enqueue time - simple and safe, not zero-allocation.
+// enqueue time - simple and safe, not zero-allocation - or, for a target that must be made when
+// the request goes on the wire (a signed query's timestamp), when it reaches the queue's head.
 #include "fastmm/net/byte_stream.hpp"
 #include "fastmm/net/http_message.hpp"
 #include "fastmm/net/reactor.hpp"
@@ -36,6 +37,9 @@ struct HttpResponse {
 };
 
 using HttpResponseCallback = std::function<void(const HttpResponse&)>;
+// Makes a request's target (path and query) when the request is written. Empty: the request is
+// not sent and fails with NetError::Canceled.
+using HttpTargetMaker = std::function<std::string()>;
 
 struct HttpClientConfig {
   std::size_t recv_capacity = std::size_t{1024} * 1024;
@@ -155,23 +159,31 @@ class HttpClient final : public IoHandler {
                std::string_view extra_headers,
                std::string_view body,
                HttpResponseCallback cb) {
-    if (state_ == HttpClientState::Closed || queue_.size() >= cfg_.max_queue) return false;
+    if (!has_room()) return false;
     Pending p;
     p.head_request = method == "HEAD";
     p.cb = std::move(cb);
-    p.bytes.reserve(method.size() + target.size() + host_.size() + extra_headers.size() +
-                    body.size() + 64);
-    p.bytes.append(method).append(" ").append(target).append(" HTTP/1.1\r\nHost: ").append(host_);
-    if (port_ != 0 && port_ != (tls_ ? 443 : 80)) p.bytes.append(":").append(std::to_string(port_));
-    p.bytes.append("\r\n").append(extra_headers);
-    if (!body.empty() || method == "POST" || method == "PUT" || method == "PATCH") {
-      p.bytes.append("Content-Length: ").append(std::to_string(body.size())).append("\r\n");
-    }
-    p.bytes.append("\r\n").append(body);
-    queue_.push_back(std::move(p));
-    ++stats_.requests;
-    if (state_ == HttpClientState::Ready) send_next();
-    return true;
+    format(p.bytes, method, target, extra_headers, body);
+    return enqueue(std::move(p));
+  }
+
+  // The same, with the target made by `make_target` when the request is written rather than now:
+  // a request waiting behind others (one in flight per connection) carries what is true when it
+  // leaves, such as a signed query's timestamp, which the venue checks against a window.
+  bool request(std::string_view method,
+               HttpTargetMaker make_target,
+               std::string_view extra_headers,
+               std::string_view body,
+               HttpResponseCallback cb) {
+    if (!has_room() || !make_target) return false;
+    Pending p;
+    p.head_request = method == "HEAD";
+    p.cb = std::move(cb);
+    p.make_target = std::move(make_target);
+    p.method = method;
+    p.headers = extra_headers;
+    p.body = body;
+    return enqueue(std::move(p));
   }
 
   // Tears the connection down; every queued/in-flight request gets NetError::Canceled.
@@ -207,8 +219,41 @@ class HttpClient final : public IoHandler {
   struct Pending {
     std::string bytes;
     HttpResponseCallback cb;
+    // Set: `bytes` is made from these when the request is written.
+    HttpTargetMaker make_target;
+    std::string method;
+    std::string headers;
+    std::string body;
     bool head_request = false;
   };
+
+  bool has_room() const noexcept {
+    return state_ != HttpClientState::Closed && queue_.size() < cfg_.max_queue;
+  }
+
+  bool enqueue(Pending&& p) {
+    queue_.push_back(std::move(p));
+    ++stats_.requests;
+    if (state_ == HttpClientState::Ready) send_next();
+    return true;
+  }
+
+  void format(std::string& out,
+              std::string_view method,
+              std::string_view target,
+              std::string_view extra_headers,
+              std::string_view body) const {
+    out.clear();
+    out.reserve(method.size() + target.size() + host_.size() + extra_headers.size() + body.size() +
+                64);
+    out.append(method).append(" ").append(target).append(" HTTP/1.1\r\nHost: ").append(host_);
+    if (port_ != 0 && port_ != (tls_ ? 443 : 80)) out.append(":").append(std::to_string(port_));
+    out.append("\r\n").append(extra_headers);
+    if (!body.empty() || method == "POST" || method == "PUT" || method == "PATCH") {
+      out.append("Content-Length: ").append(std::to_string(body.size())).append("\r\n");
+    }
+    out.append("\r\n").append(body);
+  }
 
   void drive_connect() {
     const IoResult r = stream_.handshake();
@@ -225,6 +270,21 @@ class HttpClient final : public IoHandler {
   void send_next() {
     if (in_flight_ || queue_.empty() || state_ != HttpClientState::Ready) return;
     Pending& p = queue_.front();
+    if (p.make_target) {
+      const std::string target = p.make_target();
+      p.make_target = nullptr;
+      if (target.empty()) {
+        Pending failed = std::move(queue_.front());
+        queue_.pop_front();
+        deliver_error(failed, NetError::Canceled, "request target withdrawn");
+        send_next();
+        return;
+      }
+      format(p.bytes, p.method, target, p.headers, p.body);
+      p.method.clear();
+      p.headers.clear();
+      p.body.clear();
+    }
     if (!tx_.append(p.bytes)) {
       // Larger than the whole send buffer: fail just this request.
       Pending failed = std::move(queue_.front());

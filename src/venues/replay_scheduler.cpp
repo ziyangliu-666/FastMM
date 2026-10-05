@@ -274,6 +274,10 @@ void ReplaySchedulerBase::send(std::size_t i) {
   stream_done(i, false);
 }
 
+void ReplaySchedulerBase::send_waiting() {
+  if (open_ && active_) send_deferred(net::Reactor::now_ns());
+}
+
 // The housekeeping tick: the queries that waited for Hooks::can_query, in stream order, as far
 // as the budget now goes.
 void ReplaySchedulerBase::send_deferred(std::int64_t now_ns) {

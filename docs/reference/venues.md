@@ -201,7 +201,7 @@ Depth sync follows "How to manage a local order book correctly": buffer deltas, 
 
 #### REST
 
-Parameters go in the query string. Signed requests carry `timestamp`, `recvWindow`, `signature` = lowercase hex HMAC-SHA256(secret, query without `&signature=...`) and the `X-MBX-APIKEY` header.
+Parameters go in the query string. Signed requests carry `timestamp`, `recvWindow`, `signature` = lowercase hex HMAC-SHA256(secret, query without `&signature=...`) and the `X-MBX-APIKEY` header. The REST connection carries one request at a time; a signed request is stamped and signed when it is written, not when it is queued, so a wait behind other requests does not count against `recvWindow`. An execution replay keeps at most 4 requests on the connection.
 
 | method + path | request | response the connector reads |
 |---|---|---|
