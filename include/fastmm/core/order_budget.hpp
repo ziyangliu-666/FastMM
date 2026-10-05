@@ -34,7 +34,7 @@ struct OrderBudget {
   std::int64_t local_wait_ns = 0;
   // The venue's order counts by window: Binance ORDERS per 10 s, 1 minute and 1 day as
   // exchangeInfo lists them, each the count the venue last reported (X-MBX-ORDER-COUNT-*) plus
-  // the orders sent since.
+  // the orders sent since, the ones still on their way to the connector included.
   RateWindow orders_10s;
   RateWindow orders_1m;
   RateWindow orders_1d;
@@ -47,6 +47,11 @@ struct OrderBudget {
   // A connector published its budget. False in a backtest, a replay and behind a gateway: every
   // venue field is then unknown and reads as unlimited.
   bool venue_known = false;
+  // New orders and replaces the connector (or the simulated venue) had taken from the engine when
+  // it published: the windows above count those. The engine adds the ones it has sent the account
+  // since (ctx.order_budget), so the orders of one burst see each other before the connector has
+  // published again.
+  std::uint64_t orders_taken = 0;
 
   // Orders every known limit admits now.
   [[nodiscard]] std::int64_t orders_remaining() const noexcept {

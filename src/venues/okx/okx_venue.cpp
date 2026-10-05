@@ -1080,6 +1080,7 @@ void OkxVenue::refuse_untracked(const OrderCommand& cmd) {
 }
 
 void OkxVenue::send_command(const OrderCommand& cmd) {
+  note_taken(cmd);
   const std::int64_t now = now_ns();
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
   auto refuse = [&](RejectReason reason, std::string_view why) {
@@ -1964,7 +1965,7 @@ void OkxVenue::publish_status() noexcept {
   wire_.summarize(
       tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
-  budget_pub_.store(budget_of(rate_, now_ns()));
+  budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
 }
 
 VenueStatus OkxVenue::status() const noexcept {

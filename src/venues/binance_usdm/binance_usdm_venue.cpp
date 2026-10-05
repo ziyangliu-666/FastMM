@@ -1064,7 +1064,7 @@ void BinanceUsdmVenue::on_order_text(std::string_view t, std::int64_t ts) {
 
 void BinanceUsdmVenue::handle_ws_api_response(const binance::WsApiResponse& r) {
   rate_.on_headers(r.rate.used_weight, r.rate.order_count, now_ns());
-  budget_pub_.store(budget_of(rate_, now_ns()));
+  budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
   if (const auto req = parse_request_id(r.id)) {
     handle_order_response(req->first, req->second, r);
     return;
@@ -1299,6 +1299,7 @@ void BinanceUsdmVenue::refuse_untracked(const OrderCommand& cmd) {
 }
 
 void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
+  note_taken(cmd);
   const std::int64_t now = now_ns();
   activity_.note(cmd.instrument, now);
   if (cfg_.dry_run) return refuse(cmd, RejectReason::VenueKilled, "dry-run: orders disabled");
@@ -1465,7 +1466,7 @@ void BinanceUsdmVenue::note_rate_headers(const net::HttpResponse& r) {
   // X-MBX-ORDER-COUNT-10S (and -1M).
   rate_.on_headers(
       header_int(r, "X-MBX-USED-WEIGHT-1M"), header_int(r, "X-MBX-ORDER-COUNT-10S"), now_ns());
-  budget_pub_.store(budget_of(rate_, now_ns()));
+  budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
 }
 
 // First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled,
@@ -2294,7 +2295,7 @@ void BinanceUsdmVenue::publish_status() noexcept {
   wire_.summarize(
       tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
-  budget_pub_.store(budget_of(rate_, now_ns()));
+  budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
 }
 
 VenueStatus BinanceUsdmVenue::status() const noexcept {

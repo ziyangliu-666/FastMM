@@ -114,6 +114,7 @@ bool SimTransport::venue_budget(VenueId v, OrderBudget& out) const noexcept {
     out.orders_10s = RateWindow{10'000, l.orders_10s.used_at(now), l.orders_10s.limit};
     out.orders_1d = RateWindow{86'400'000, l.orders_1d.used_at(now), l.orders_1d.limit};
     out.venue_known = true;
+    out.orders_taken = l.taken;
     return true;
   }
   return false;
@@ -157,6 +158,7 @@ bool SimTransport::send(const EventHeader& m) noexcept {
   // The venue's order count (new orders and replaces; a cancel is free), decided when the order
   // is sent: the arrival refuses one that was past the window.
   bool over_limit = false;
+  if (m.type != EventType::OutCancel) ++l.taken;
   if (m.type != EventType::OutCancel && l.limited()) {
     over_limit = l.orders_10s.full(now) || l.orders_1d.full(now);
     if (!over_limit) {

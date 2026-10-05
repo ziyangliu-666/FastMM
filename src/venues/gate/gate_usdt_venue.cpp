@@ -936,6 +936,7 @@ void GateUsdtVenue::refuse_untracked(const OrderCommand& cmd) {
 }
 
 void GateUsdtVenue::send_command(const OrderCommand& cmd) {
+  note_taken(cmd);
   const std::int64_t now = now_ns();
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
   auto refuse = [&](RejectReason reason, std::string_view why) {

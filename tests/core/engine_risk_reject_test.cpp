@@ -256,6 +256,12 @@ TEST_CASE("core.engine: order_budget reads the token bucket and the venue's publ
   v.orders_10s = RateWindow{10'000, 95, 100};
   v.orders_1d = RateWindow{86'400'000, 1000, 200'000};
   v.weight = RateWindow{60'000, 5500, 6000};
+  // A publication from before the two orders reached the connector: they count on top of it.
+  f.transport.budget.store(v);
+  CHECK(ctx.order_budget(kVenue).orders_10s.used == 97);
+  CHECK(ctx.order_budget(kVenue).orders_1d.used == 1002);
+  CHECK(ctx.order_budget(kVenue).weight.used == 5500);
+  v.orders_taken = 2;
   f.transport.budget.store(v);
   b = ctx.order_budget(kVenue);
   CHECK(b.venue_known);

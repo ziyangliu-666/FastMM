@@ -292,6 +292,12 @@ class Venue {
     return tsc_source_ != nullptr ? tsc_source_->load() : TscCalibration{};
   }
   Seqlocked<OrderBudget> budget_pub_;
+  // New orders and replaces taken off the engine's ring (send_command), sent or refused: published
+  // with the budget (OrderBudget::orders_taken). Reactor thread only.
+  std::uint64_t orders_taken_ = 0;
+  void note_taken(const OrderCommand& cmd) noexcept {
+    if (cmd.kind != OrderCommandKind::Cancel) ++orders_taken_;
+  }
 
  private:
   const Seqlocked<TscCalibration>* tsc_source_ = nullptr;

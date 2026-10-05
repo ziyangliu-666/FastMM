@@ -345,6 +345,7 @@ class SimTransport final : public MatchingSink {
     Timestamp last_order_arrival{};
     OrderWindow orders_10s;  // SimVenueConfig::orders_10s / orders_1d
     OrderWindow orders_1d;
+    std::uint64_t taken = 0;  // new orders and replaces sent (OrderBudget::orders_taken)
     bool md_recorded_arrival;
     [[nodiscard]] bool limited() const noexcept {
       return orders_10s.limit > 0 || orders_1d.limit > 0;

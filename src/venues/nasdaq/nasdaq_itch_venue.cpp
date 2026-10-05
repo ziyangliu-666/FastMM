@@ -957,6 +957,7 @@ void NasdaqItchVenue::refuse(const OrderCommand& cmd,
 }
 
 void NasdaqItchVenue::send_command(const OrderCommand& cmd) noexcept {
+  note_taken(cmd);
   if (cfg_.order_entry == OrderEntry::None)
     return refuse(cmd, RejectReason::VenueReject, "order_entry = none");
   if (!ouch_up_ || !ouch_session_) {

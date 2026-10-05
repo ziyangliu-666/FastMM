@@ -500,13 +500,22 @@ class Engine {
     return health_.view(v, now());
   }
   // ctx.order_budget: the [risk] bucket's whole tokens, and the venue's windows where the transport
-  // carries them (LiveTransport: the connector's publication; a backtest has none).
+  // carries them (LiveTransport: the connector's publication; a backtest has none). The windows
+  // count the new orders and replaces sent to the account that the publication had not seen yet
+  // (OrderBudget::orders_taken): the connector publishes after the venue answers, so without them
+  // every order of a burst would see the room the first one saw.
   [[nodiscard]] OrderBudget order_budget(VenueId v) const noexcept {
     OrderBudget b;
     if constexpr (requires(const Transport& t, OrderBudget& o) {
                     { t.venue_budget(v, o) } -> std::same_as<bool>;
                   }) {
-      static_cast<void>(transport_.venue_budget(v, b));
+      if (transport_.venue_budget(v, b) && v.value < kMaxVenues &&
+          sent_orders_[v.value] > b.orders_taken) {
+        const auto unseen = static_cast<std::int64_t>(sent_orders_[v.value] - b.orders_taken);
+        for (RateWindow* w : {&b.orders_10s, &b.orders_1m, &b.orders_1d}) {
+          if (w->known()) w->used += unseen;
+        }
+      }
     }
     b.local_tokens = risk_.bucket().available(now());
     b.local_wait_ns = risk_.bucket().wait_ns(now());
@@ -2401,6 +2410,7 @@ class Engine {
     // outside the pool is refused; the automatic choice falls back to the primary).
     VenueId account = inst.venue;
     bool window_full = false;
+    bool budget_known = false;
     if (FASTMM_UNLIKELY(pools_on_)) {
       account = choose_account(req, inst);
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
@@ -2408,6 +2418,7 @@ class Engine {
       // room covers the order): refused below as the venue would, without spending a request.
       const OrderBudget b = order_budget(account);
       window_full = b.orders_10s.remaining() == 0 || b.orders_1d.remaining() == 0;
+      budget_known = b.venue_known;
     } else if (FASTMM_UNLIKELY(req.account.valid() && req.account != inst.venue)) {
       return fail(RejectReason::InvalidAccount);
     }
@@ -2474,7 +2485,25 @@ class Engine {
     own_outbound(m.hdr);
     queue_out(m.hdr);
     ++stats_.orders_sent;
+    note_sent_order(account);
+    // The next automatic choice of the pool starts after this account: accounts with the same
+    // room take turns rather than the first in pool order taking them all.
+    if (FASTMM_UNLIKELY(pools_on_) && budget_known && !req.account.valid())
+      pool_turn_[inst.venue.value] = static_cast<std::uint8_t>(pool_index(inst.venue, account) + 1);
     return id;
+  }
+
+  // One more new order or replace on its way to `v`'s connector (order_budget).
+  FASTMM_FORCE_INLINE void note_sent_order(VenueId v) noexcept {
+    if (FASTMM_LIKELY(v.value < kMaxVenues)) ++sent_orders_[v.value];
+  }
+  // `account`'s place in the pool of `primary`.
+  [[nodiscard]] std::size_t pool_index(VenueId primary, VenueId account) const noexcept {
+    const PoolMembers members = cfg_.pools.members(primary);
+    for (std::size_t i = 0; i < members.size(); ++i) {
+      if (members[i] == account) return i;
+    }
+    return 0;
   }
 
   // [risk.underlying]: the position and same-side open orders of the order's underlying, over its
@@ -2492,8 +2521,10 @@ class Engine {
   // account when it names one of the pool, invalid when it names another venue. Otherwise the
   // usable members (order link live, no kill) whose balance covers the order (every member for a
   // derivative), and of those the one with the most room in the venue's 10 s order window, then
-  // in its daily one (ctx.order_budget; a backtest without limits ties them all, and the first in
-  // pool order wins). None: the primary, which refuses with the venue's own balance error.
+  // in its daily one (ctx.order_budget, which counts the orders sent since the venue's last
+  // publication). Ties go round the pool: the search starts after the account the last automatic
+  // choice with a known budget took, so a backtest without limits, which ties them all, keeps the
+  // first in pool order. None: the primary, which refuses with the venue's own balance error.
   FASTMM_NOINLINE VenueId choose_account(const NewOrderRequest& req,
                                          const Instrument& inst) const noexcept {
     if (req.account.valid())
@@ -2505,7 +2536,10 @@ class Engine {
     VenueId best{};
     std::int64_t best_10s = -1;
     std::int64_t best_1d = -1;
-    for (const VenueId v : members) {
+    const std::size_t n = members.size();
+    const std::size_t start = pool_turn_[inst.venue.value] % n;
+    for (std::size_t k = 0; k < n; ++k) {
+      const VenueId v = members[(start + k) % n];
       if (!account_usable(v)) continue;
       if (by_balance &&
           !balance_covers(
@@ -2591,6 +2625,7 @@ class Engine {
     own_outbound(m.hdr);
     queue_out(m.hdr);
     ++stats_.replaces_sent;
+    note_sent_order(o.venue);
     return {};
   }
 
@@ -2980,6 +3015,10 @@ class Engine {
   // Bit per venue whose order link is not live (ConnectionStateMsg channel 1): the pool routing
   // skips such a member.
   std::uint32_t order_link_down_ = 0;
+  // New orders and replaces sent per account, for order_budget against the connector's
+  // OrderBudget::orders_taken; and per pool primary, where the next automatic choice starts.
+  std::array<std::uint64_t, kMaxVenues> sent_orders_{};
+  std::array<std::uint8_t, kMaxVenues> pool_turn_{};
   KillReason kill_reason_ = KillReason::None;
   std::array<KillReason, kKillVenueSlots> venue_kill_reasons_{};
   bool started_ = false;

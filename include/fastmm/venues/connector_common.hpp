@@ -120,8 +120,11 @@ struct IdText {
 
 // The rate limiter's buckets as the budget the venue publishes (Venue::budget_source): the order
 // windows by length, the request weight over the shortest window. A window that has run out is
-// read as empty, the way can_send would roll it.
-[[nodiscard]] inline OrderBudget budget_of(const RateLimiter& r, std::int64_t now) noexcept {
+// read as empty, the way can_send would roll it. `taken`: the order commands (new orders and
+// replaces) the connector has taken off the engine's ring (Venue::orders_taken_).
+[[nodiscard]] inline OrderBudget budget_of(const RateLimiter& r,
+                                           std::int64_t now,
+                                           std::uint64_t taken) noexcept {
   auto window = [now](const RateBucket& b) {
     RateWindow w;
     w.window_ms = b.window_ns / 1'000'000;
@@ -131,6 +134,7 @@ struct IdText {
   };
   OrderBudget out;
   out.venue_known = true;
+  out.orders_taken = taken;
   out.venue_paused = r.hard_stopped() || r.in_cooldown(now);
   for (std::size_t i = 0; i < RateLimiter::kMaxBuckets; ++i) {
     const std::optional<RateBucket> b = r.order_bucket(i);

@@ -622,6 +622,7 @@ void CoinbaseExchangeVenue::refuse(const OrderCommand& cmd,
 }
 
 void CoinbaseExchangeVenue::send_command(const OrderCommand& cmd) {
+  note_taken(cmd);
   const std::int64_t now = now_ns();
   const bool is_cancel = cmd.kind == OrderCommandKind::Cancel;
   if (cfg_.dry_run) return refuse(cmd, RejectReason::VenueKilled, "dry-run: orders disabled");
@@ -1253,7 +1254,7 @@ void CoinbaseExchangeVenue::publish_status() noexcept {
   wire_.summarize(
       tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
   published_.store(stats_);
-  budget_pub_.store(budget_of(rate_, now_ns()));
+  budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
 }
 
 VenueStatus CoinbaseExchangeVenue::status() const noexcept {
