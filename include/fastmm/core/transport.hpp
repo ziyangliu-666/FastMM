@@ -29,7 +29,7 @@ namespace fastmm {
 
 inline constexpr std::size_t kMaxVenues = 8;
 inline constexpr std::size_t kMaxFeedRings = 16;
-inline constexpr std::uint32_t kFeedBudgetPerRing = 64;  // anti-starvation (5.1)
+inline constexpr std::uint32_t kFeedBudgetPerRing = 64;  // anti-starvation (5.1), the default
 
 template <class F>
 concept FeedLike = requires(F& f) {
@@ -70,9 +70,11 @@ struct RingRef {
   }
 };
 
-// Polls N inbound MsgRings round-robin, at most kFeedBudgetPerRing messages per ring per
-// visit so a chatty venue cannot starve the others. Consumption order is the canonical
-// order that the journal records.
+// Polls N inbound MsgRings round-robin, at most budget_per_ring() messages per ring per visit
+// (kFeedBudgetPerRing unless set_budget_per_ring) so a chatty venue cannot starve the others. A
+// small budget interleaves the rings closely: with 1, a burst in one ring (an account's order
+// events and balances) takes turns with the market data instead of going first. Consumption order
+// is the canonical order that the journal records.
 //
 // With SpinMode::Adaptive the live engine blocks on waker() once its spin budget is used up.
 // Producers call notify() after publishing into a ring; it costs a system call only while the
@@ -87,6 +89,13 @@ class RingFeed {
   // A ring a gateway process writes (the engine attached to fastmm-gateway).
   bool add_ring(ShmRing* ring) noexcept { return add(RingRef{nullptr, ring}); }
   [[nodiscard]] std::size_t ring_count() const noexcept { return count_; }
+  // Messages taken from a ring before the next one's turn; 0 is taken as 1. Set before the engine
+  // runs.
+  void set_budget_per_ring(std::uint32_t n) noexcept {
+    budget_per_ring_ = n == 0 ? 1 : n;
+    budget_ = budget_per_ring_;
+  }
+  [[nodiscard]] std::uint32_t budget_per_ring() const noexcept { return budget_per_ring_; }
 
   [[nodiscard]] const EventHeader* next() noexcept {
     if (count_ == 0) return nullptr;
@@ -121,11 +130,12 @@ class RingFeed {
   }
   void advance() noexcept {
     cur_ = (cur_ + 1) % count_;
-    budget_ = kFeedBudgetPerRing;
+    budget_ = budget_per_ring_;
   }
   RingRef rings_[kMaxFeedRings] = {};
   std::size_t count_ = 0;
   std::size_t cur_ = 0;
+  std::uint32_t budget_per_ring_ = kFeedBudgetPerRing;
   std::uint32_t budget_ = kFeedBudgetPerRing;
   Waker waker_;
 };

@@ -113,6 +113,7 @@ struct EngineStats {
   std::uint64_t records_dropped = 0;  // ... and dropped because it was full
   std::uint64_t transport_full = 0;
   std::uint64_t timers_fired = 0;
+  std::uint64_t batch_ends = 0;  // on_batch_end calls (ctx.request_batch_end)
   std::uint64_t crossed_pulls = 0;
   std::uint64_t unknown_order_cancels = 0;
   std::uint64_t kills = 0;        // global kill switch trips
@@ -169,6 +170,9 @@ class Engine {
   static constexpr std::uint8_t kAckSweepTimer = 2;
   static constexpr std::uint8_t kFlattenTimer = 3;
   static constexpr std::uint8_t kStateTimer = 4;
+  // Not a timer: the on_batch_end call a strategy asked for (ctx.request_batch_end), journaled as a
+  // TimerMsg so a replay calls it after the same event.
+  static constexpr std::uint8_t kBatchEndTimer = 5;
 
   Engine(const EngineConfig& cfg,
          const InstrumentTable& instruments,
@@ -276,9 +280,11 @@ class Engine {
       process(h);
       feed_.release();
     }
+    batch_end();
     refresh_clock();
     const Timestamp now = clock_.now();
     n += timers_.poll(now, [this](TimerId id, std::uint64_t ud) { on_timer_fired(id, ud); });
+    batch_end();
     if (now - last_publish_ >= cfg_.latency_publish_interval) publish_latency(now);
     in_engine_ = false;
     return n;
@@ -297,6 +303,7 @@ class Engine {
       process(h);
       feed_.release();
     }
+    batch_end();
     in_engine_ = false;
     return n;
   }
@@ -388,6 +395,15 @@ class Engine {
   void stop() noexcept {
     stop_.store(true, std::memory_order_release);
     if constexpr (kFeedWaits) feed_.notify();
+  }
+  // ctx.request_batch_end(): on_batch_end runs once the events waiting now are handled. Orders it
+  // sends carry the T0 of the event that asked last.
+  void request_batch_end() noexcept {
+    if constexpr (has_hook(Hook::BatchEnd)) {
+      batch_end_wanted_ = true;
+      batch_t0_ = event_t0_;
+      batch_t1_ = event_t1_;
+    }
   }
   [[nodiscard]] bool stopped() const noexcept { return stop_.load(std::memory_order_acquire); }
 
@@ -949,6 +965,8 @@ class Engine {
           flatten_tick();  // replay of the engine's flatten sweep
         } else if (t.engine == kStateTimer) {
           if constexpr (KeepsState<Strategy>) capture_state();
+        } else if (t.engine == kBatchEndTimer) {
+          call_batch_end();  // replay of a batch end
         } else if (t.engine != 0) {
           check_param_age();  // replay of the engine's max_param_age timer
         } else {
@@ -2224,6 +2242,48 @@ class Engine {
     }
   }
 
+  // ---- batch end ------------------------------------------------------------------------------
+
+  // A replay feed (JournalFeed) hands the engine one event per step: the batch ends a strategy
+  // asked for are the journal's, not the ones its steps would make.
+  static constexpr bool kFeedReplaysBatches = requires { requires Feed::kReplaysBatches; };
+
+  // After a step's events and after its timers: the on_batch_end the strategy asked for, journaled
+  // like a fired timer.
+  void batch_end() noexcept {
+    if constexpr (has_hook(Hook::BatchEnd) && !kFeedReplaysBatches) {
+      if (FASTMM_LIKELY(!batch_end_wanted_)) return;
+      latch_clock();
+      set_event_origin(batch_t0_, batch_t1_);
+      if (journal_.enabled()) {
+        TimerMsg t{};
+        init_header(t, EventType::Timer);
+        t.engine = kBatchEndTimer;
+        t.fire_ts = now_;
+        t.hdr.flags |= EventHeader::kSynthetic;
+        if (!journal_.record_at(t.hdr, now_)) {
+          ++stats_.journal_overflows;
+          on_journal_overflow();
+        }
+      }
+      // As process() does for the journaled marker a replay reads back.
+      const bool quoting_before = quoting_enabled();
+      check_param_age();
+      if (FASTMM_UNLIKELY(quotes_.starved())) retry_starved();
+      call_batch_end();
+      after_hooks(quoting_before);
+      unlatch_clock();
+    }
+  }
+  void call_batch_end() noexcept {
+    if constexpr (has_hook(Hook::BatchEnd)) {
+      batch_end_wanted_ = false;  // a request from inside the hook: the next batch_end()
+      ++stats_.batch_ends;
+      strategy_.on_batch_end(ctx_);
+      flush_out();
+    }
+  }
+
   // ---- timers ---------------------------------------------------------------------------------
 
   void on_timer_fired(TimerId id, std::uint64_t user_data) noexcept {
@@ -2980,6 +3040,9 @@ class Engine {
   Cycles event_t1_{};
   Cycles strategy_t3_{};
   bool sent_in_event_ = false;
+  bool batch_end_wanted_ = false;  // ctx.request_batch_end() since the last on_batch_end
+  Cycles batch_t0_{};              // the origin of the event that asked last
+  Cycles batch_t1_{};
   bool fx_on_;                               // cfg_.fx converts ([accounting])
   const bool pools_on_ = cfg_.pools.active;  // a venue has pool members: new orders are routed
   bool latched_ = false;

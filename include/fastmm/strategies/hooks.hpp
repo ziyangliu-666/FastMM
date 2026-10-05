@@ -7,6 +7,7 @@
 //   on_trade(ctx, id, m)  on_option_ticker(ctx, id, m)  on_fill(ctx, fill)
 //   on_order_update(ctx, u)  on_timer(ctx, timer_id, tag)  on_connection(ctx, m)
 //   on_quoting(ctx, enabled)  on_params(ctx)  on_balance(ctx, m)  on_perp_state(ctx, id, m)
+//   on_risk_reject(ctx, r)  on_batch_end(ctx)
 //
 // The engine checks every hook name when it is instantiated. If the strategy has a member with a
 // hook's name (function, template, data member, static, inherited or private) and the engine's
@@ -160,7 +161,8 @@ struct RiskReject {
     "risk_reject",                                                                 \
     (Ctx & ctx, const RiskReject& r),                                              \
     (ctx, r),                                                                      \
-    "void on_risk_reject(auto& ctx, const RiskReject& r)")
+    "void on_risk_reject(auto& ctx, const RiskReject& r)")                         \
+  X(BatchEnd, on_batch_end, "batch_end", (Ctx & ctx), (ctx), "void on_batch_end(auto& ctx)")
 
 // Optional state the engine keeps across sessions ([strategy] state_file): `std::string_view
 // state()` returns the bytes to save (valid until the strategy's next hook; the engine copies them

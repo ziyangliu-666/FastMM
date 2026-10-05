@@ -85,6 +85,7 @@ void on_risk_reject(auto& /*ctx*/, const RiskReject& r) noexcept {
 | `on_balance(ctx, m)` | a venue reported one asset of the account ([Balances](#balances)); `ctx.balance` already holds it |
 | `on_perp_state(ctx, id, m)` | a venue's mark, index or funding of a derivative arrived ([Perpetuals](#perpetuals)); `ctx.mark` and `ctx.funding` already hold it |
 | `on_risk_reject(ctx, r)` | the engine's own risk check refused a new order or replace ([below](#on_risk_reject)); nothing was sent |
+| `on_batch_end(ctx)` | once after the events that were waiting when the strategy called `ctx.request_batch_end()` ([below](#on_batch_end)) |
 
 Rules:
 
@@ -101,6 +102,14 @@ Rules:
 - It never fires from inside a context call: a kill switch tripped by `set_quotes` or `send` is reported after the hook that made the call returns.
 - It does not fire for the initial state; `on_start` reads `ctx.quoting_enabled()`.
 - A lost connection does not change `quoting_enabled()`; `on_connection` reports it.
+
+### on_batch_end
+
+`ctx.request_batch_end()` from any hook asks for one `on_batch_end(ctx)` call once the engine has handled the events waiting in its input rings: the rings are empty, or the step's `max_events_per_step` is used up. Requests before the call make one call. Work a burst would repeat for every event goes there: a strategy that requotes on each balance report marks the instruments in `on_balance` and requotes them once at the batch end. A request from inside `on_batch_end` makes one more call, after the step's timers or at the next step.
+
+- The engine journals each call, so a replay calls it after the same event.
+- Orders sent from it carry the receive time (T0) of the event that asked last.
+- `[engine] feed_budget_per_ring` sets how many events the engine takes from one input ring before the next ring's turn; 1 interleaves an account's order events with the market data.
 
 ### on_risk_reject
 

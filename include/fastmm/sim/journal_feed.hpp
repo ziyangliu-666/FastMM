@@ -22,6 +22,10 @@ namespace fastmm::sim {
 
 class JournalFeed {
  public:
+  // The batch ends a strategy asked for are journaled (TimerMsg kBatchEndTimer); the engine does
+  // not make its own after each replayed event.
+  static constexpr bool kReplaysBatches = true;
+
   explicit JournalFeed(JournalReader& reader) noexcept : reader_(reader) {
     reader_.reset();
     advance();

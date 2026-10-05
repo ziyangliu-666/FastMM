@@ -168,6 +168,11 @@ class StrategyContext {
   // One venue's kill switch: new orders to it are refused and set_quotes ignores its instruments.
   [[nodiscard]] bool venue_killed(VenueId v) const noexcept { return e_->risk().venue_killed(v); }
   void request_stop() noexcept { e_->stop(); }
+  // Asks for one on_batch_end call once the engine has handled every event that is waiting now
+  // (the feed is empty or the step's max_events_per_step is used up). Work a burst of events would
+  // each trigger (a requote after every balance report) is done once, after the burst. Repeated
+  // requests before the call make one call.
+  void request_batch_end() noexcept { e_->request_batch_end(); }
   // Trips the global kill switch: quoting stops, quotes are pulled and every working order is
   // cancelled. The adapter for Python hot hooks uses KillReason::StrategyError.
   void trip_kill(KillReason reason) noexcept { e_->trip_kill(reason); }

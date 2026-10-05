@@ -157,6 +157,13 @@ inline constexpr KeySpec kConfigSchema[] = {
      false,
      "events taken from each ring per engine iteration (default 64)"},
     {"engine",
+     "feed_budget_per_ring",
+     KeyType::Int,
+     false,
+     "fastmm-live: events the engine takes from one input ring before the next ring's turn; 1 "
+     "interleaves the rings, so a burst of one account's order events does not hold up the "
+     "market data behind it (default 64)"},
+    {"engine",
      "crossed_grace_ms",
      KeyType::Int,
      false,

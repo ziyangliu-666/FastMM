@@ -83,11 +83,22 @@ TEST_CASE("core.config: minimal parse, float decimals stringified exactly, defau
   CHECK(cfg.strategy.params.at("half_spread_bps") == "5");
   CHECK(cfg.strategy.params.at("levels") == "2");
   CHECK(cfg.engine.max_events_per_step == 64);
+  CHECK(cfg.engine.feed_budget_per_ring == 64);
   CHECK(cfg.risk.max_open_orders == 4);
   CHECK(cfg.risk_limits().max_position == Qty::from_decimal("0.5").value());
   const InstrumentTable t = load_instruments(cfg);
   CHECK(t.get(InstrumentId{0}).lot == Qty::from_decimal("0.001").value());
   CHECK(t.get(InstrumentId{0}).min_qty == Qty::from_decimal("0.001").value());  // defaults to lot
+}
+
+TEST_CASE("core.config: feed_budget_per_ring") {
+  const Config cfg =
+      Config::parse("[engine]\nfeed_budget_per_ring = 1\n");
+  CHECK(cfg.engine.feed_budget_per_ring == 1);
+  CHECK(cfg.effective_toml().find("feed_budget_per_ring = 1") != std::string::npos);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nfeed_budget_per_ring = 0\n"),
+                       doctest::Contains("feed_budget_per_ring must be >= 1"),
+                       ConfigError);
 }
 
 TEST_CASE("core.config: env substitution only in venues, missing var is an error") {

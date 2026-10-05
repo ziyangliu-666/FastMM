@@ -5,6 +5,13 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
+  once the engine has handled the events waiting in its input rings (or the step's
+  `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance
+  report) runs once after it. The call is journaled, so a replay makes it after the same event.
+- `[engine] feed_budget_per_ring` (default 64, as before): events the engine takes from one input
+  ring before the next ring's turn. 1 interleaves the rings, so a burst of one account's cancel
+  acks and balances does not hold up the market data queued behind it.
 - `binance_usdm`: `md_ticker_conns = <n>` (0 to 8) opens n more `/public/stream` connections
   carrying only the bookTicker streams. Binance hands each connection to a push server that lags
   now and then; the feed keeps the first copy of every update id per symbol and drops the rest

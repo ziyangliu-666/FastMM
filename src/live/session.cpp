@@ -905,6 +905,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   TscCalibration last_tsc = clock.calibration();  // main thread's copy of the latest publish
   LiveTransport transport;
   RingFeed feed;
+  feed.set_budget_per_ring(cfg.engine.feed_budget_per_ring);
   // Attached and adaptive: the engine sleeps on a futex in the gateway's wake page, which the
   // gateway's network threads and this process's producers all notify.
   if (gateway && cfg.spin_mode() == SpinMode::Adaptive) feed.waker().share(gateway->engine_flag());
