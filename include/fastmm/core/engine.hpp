@@ -2414,10 +2414,11 @@ class Engine {
     if (FASTMM_UNLIKELY(pools_on_)) {
       account = choose_account(req, inst);
       if (!account.valid()) return fail(RejectReason::InvalidAccount);
-      // The account's order window is full (the one named, or the fallback when no account with
-      // room covers the order): refused below as the venue would, without spending a request.
+      // The account's order window is full up to its connector's cap, or the connector is paused
+      // (the one named, or the fallback when no account with room covers the order): refused
+      // below with RateLimit, as the connector would refuse it, without reaching it.
       const OrderBudget b = order_budget(account);
-      window_full = b.orders_10s.remaining() == 0 || b.orders_1d.remaining() == 0;
+      window_full = no_order_room(b);
       budget_known = b.venue_known;
     } else if (FASTMM_UNLIKELY(req.account.valid() && req.account != inst.venue)) {
       return fail(RejectReason::InvalidAccount);
@@ -2493,6 +2494,14 @@ class Engine {
     return id;
   }
 
+  // The connector would refuse a new order now: paused, or one of its order windows at the cap
+  // its rate limiter refuses at (RateWindow::cap, below the venue's limit), which remaining()
+  // already counts against.
+  [[nodiscard]] static bool no_order_room(const OrderBudget& b) noexcept {
+    return b.venue_paused || b.orders_10s.remaining() == 0 || b.orders_1m.remaining() == 0 ||
+           b.orders_1d.remaining() == 0;
+  }
+
   // One more new order or replace on its way to `v`'s connector (order_budget).
   FASTMM_FORCE_INLINE void note_sent_order(VenueId v) noexcept {
     if (FASTMM_LIKELY(v.value < kMaxVenues)) ++sent_orders_[v.value];
@@ -2520,8 +2529,9 @@ class Engine {
   // The pool account a new order on `inst` goes from (EngineConfig::pools). The request's own
   // account when it names one of the pool, invalid when it names another venue. Otherwise the
   // usable members (order link live, no kill) whose balance covers the order (every member for a
-  // derivative), and of those the one with the most room in the venue's 10 s order window, then
-  // in its daily one (ctx.order_budget, which counts the orders sent since the venue's last
+  // derivative) whose connector would take an order now (no_order_room), and of those the one
+  // with the most room in the 10 s order window, then in the daily one, room counted up to the
+  // connector's cap (ctx.order_budget, which counts the orders sent since the venue's last
   // publication). Ties go round the pool: the search starts after the account the last automatic
   // choice with a known budget took, so a backtest without limits, which ties them all, keeps the
   // first in pool order. None: the primary, which refuses with the venue's own balance error.
@@ -2546,10 +2556,9 @@ class Engine {
               inst, v, req.side, req.type, req.price, req.qty, 0, req.reduce_only, open))
         continue;
       const OrderBudget b = order_budget(v);
-      if (b.venue_paused) continue;
+      if (no_order_room(b)) continue;  // its connector would refuse it: another account
       const std::int64_t left_10s = b.orders_10s.remaining();
       const std::int64_t left_1d = b.orders_1d.remaining();
-      if (left_10s == 0 || left_1d == 0) continue;  // the venue would refuse it: another account
       if (left_10s > best_10s || (left_10s == best_10s && left_1d > best_1d)) {
         best = v;
         best_10s = left_10s;

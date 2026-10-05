@@ -15,6 +15,7 @@
 // 429 seen by one account pauses them all; the order-count buckets stay the account's.
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -79,6 +80,13 @@ class RateLimiter {
     return add(orders_, limit, window_ns);
   }
   void set_threshold(double t) noexcept { threshold_ = std::clamp(t, 0.0, 1.0); }
+  // The share of each limit can_send fills before it refuses.
+  [[nodiscard]] double threshold() const noexcept { return threshold_; }
+  // The count a bucket of `limit` admits under that share: can_send refuses the order or request
+  // that would take `used` past it (RateBucket::would_exceed).
+  [[nodiscard]] std::int64_t cap_of(std::uint32_t limit) const noexcept {
+    return static_cast<std::int64_t>(std::floor(static_cast<double>(limit) * threshold_));
+  }
 
   // True if a request of `weight` (and one order if is_order) fits under threshold * limit
   // in every bucket and no cooldown/hard stop is active. `share` < 1 (kBulkShare) leaves that

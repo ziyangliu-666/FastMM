@@ -16,10 +16,19 @@ struct RateWindow {
   std::int64_t window_ms = 0;
   std::int64_t used = 0;
   std::int64_t limit = 0;
+  // The count at which the connector stops sending, below the venue's limit: its rate limiter
+  // refuses an order past threshold * limit (90 %) with VenueRateLimit without sending it.
+  // Negative: the limit itself (a simulated venue, which refuses only past it).
+  std::int64_t cap = -1;
   [[nodiscard]] bool known() const noexcept { return limit > 0; }
-  // What the window still admits; unlimited where the venue declares none.
+  // The count the window admits: the connector's cap, else the venue's limit.
+  [[nodiscard]] std::int64_t admits() const noexcept {
+    return cap >= 0 ? std::min(cap, limit) : limit;
+  }
+  // What the window still admits (up to the connector's cap); unlimited where the venue declares
+  // none.
   [[nodiscard]] std::int64_t remaining() const noexcept {
-    return known() ? std::max<std::int64_t>(0, limit - used)
+    return known() ? std::max<std::int64_t>(0, admits() - used)
                    : std::numeric_limits<std::int64_t>::max();
   }
 };
@@ -53,7 +62,7 @@ struct OrderBudget {
   // published again.
   std::uint64_t orders_taken = 0;
 
-  // Orders every known limit admits now.
+  // Orders every known limit admits now: the windows up to the connector's caps.
   [[nodiscard]] std::int64_t orders_remaining() const noexcept {
     if (venue_paused) return 0;
     return std::min(

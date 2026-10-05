@@ -2,6 +2,8 @@
 
 #include "test_support.hpp"
 
+#include "fastmm/venues/connector_common.hpp"
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -203,4 +205,33 @@ TEST_CASE("venues.rate_limiter: accounts on their own threads spend one IP windo
   CHECK(sent.load() >= 1000);
   CHECK(sent.load() <= 1001);
   CHECK(a.weight_bucket(0)->used == static_cast<std::uint32_t>(sent.load()));
+}
+
+TEST_CASE("venues.rate_limiter: the published budget stops where can_send does") {
+  // An account 88 into Binance's 100 per 10 s: the connector refuses past 90, so two are left.
+  RateLimiter rl(0.9);
+  REQUIRE(rl.add_order_bucket(100, 10 * kSec));
+  REQUIRE(rl.add_order_bucket(200'000, 86'400 * kSec));
+  const std::int64_t now = 5 * kSec;
+  rl.on_headers(-1, 88, now);
+  fastmm::OrderBudget b = budget_of(rl, now, 0);
+  CHECK(b.orders_10s.limit == 100);
+  CHECK(b.orders_10s.cap == 90);
+  CHECK(b.orders_10s.remaining() == 2);
+  CHECK(b.orders_1d.cap == 180'000);
+  // A cancel (is_order false) spends weight, not the order windows.
+  rl.on_sent(1, now, false);
+  CHECK(budget_of(rl, now, 0).orders_10s.used == 88);
+  // Any limit and threshold: the window has room exactly while can_send takes an order.
+  for (const double t : {0.9, 0.5, 0.33, 1.0}) {
+    for (const std::uint32_t limit : {1U, 7U, 10U, 50U, 100U, 1200U}) {
+      RateLimiter r(t);
+      REQUIRE(r.add_order_bucket(limit, 10 * kSec));
+      for (std::uint32_t used = 0; used <= limit; ++used) {
+        r.on_headers(-1, used, now);
+        b = budget_of(r, now, 0);
+        CHECK((b.orders_10s.remaining() > 0) == r.can_send(0, now, true));
+      }
+    }
+  }
 }
