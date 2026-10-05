@@ -2339,6 +2339,7 @@ class Engine {
         r.price = a.price;
         r.qty = a.qty;
         r.user_tag = QuoteManager::make_tag(a.side, a.level);
+        r.account = a.account;  // a level asked for on one pool account (DesiredQuotes::account)
         // A deferred New whose replaced order filled rather than cancelled: the balance it was
         // decided against is gone. Withheld, not refused; the strategy's next quotes decide.
         if (FASTMM_UNLIKELY(a.deferred && balances_live_) && balances_->check_enabled() &&

@@ -43,6 +43,7 @@
 #include "fastmm/core/oms.hpp"
 #include "fastmm/core/time.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -53,9 +54,18 @@ inline constexpr std::size_t kMaxQuoteLevels = 8;
 struct DesiredQuotes {
   StaticVector<Level, kMaxQuoteLevels> bids;  // index 0 = closest to mid
   StaticVector<Level, kMaxQuoteLevels> asks;
+  // The pool account a level's order goes from (NewOrderRequest::account); invalid = the engine's
+  // automatic routing. A resting order on another account is cancelled and placed again.
+  std::array<VenueId, kMaxQuoteLevels> bid_account{};
+  std::array<VenueId, kMaxQuoteLevels> ask_account{};
   void clear() noexcept {
     bids.clear();
     asks.clear();
+    bid_account = {};
+    ask_account = {};
+  }
+  [[nodiscard]] VenueId account(Side s, std::uint32_t lvl) const noexcept {
+    return lvl < kMaxQuoteLevels ? (s == Side::Buy ? bid_account : ask_account)[lvl] : VenueId{};
   }
   [[nodiscard]] const StaticVector<Level, kMaxQuoteLevels>& side(Side s) const noexcept {
     return s == Side::Buy ? bids : asks;
@@ -112,6 +122,7 @@ struct QuoteAction {
   // New / Replace output: not sent, no order token for it now (QuoteParams::token_reserve); the
   // instrument is retried when tokens come back.
   bool rate_limited;
+  VenueId account{};  // New: the pool account to send it from (invalid = automatic)
 };
 
 struct QuoteStats {
@@ -172,8 +183,16 @@ class QuoteManager {
       for (std::uint32_t lvl = 0; lvl < kMaxQuoteLevels; ++lvl) {
         Slot& slot = st.slots[static_cast<std::size_t>(side)][lvl];
         const bool has_want = lvl < want.size() && want[lvl].qty.is_positive();
-        actions += reconcile_slot(
-            inst, st, oms, side, lvl, slot, has_want ? want[lvl] : Level{}, now, place);
+        actions += reconcile_slot(inst,
+                                  st,
+                                  oms,
+                                  side,
+                                  lvl,
+                                  slot,
+                                  has_want ? want[lvl] : Level{},
+                                  st.desired.account(side, lvl),
+                                  now,
+                                  place);
       }
     }
     return actions;
@@ -277,7 +296,8 @@ class QuoteManager {
       if (slot.apply_want &&
           (u.prev == OrderState::PendingNew || u.prev == OrderState::PendingReplace)) {
         slot.apply_want = false;
-        static_cast<void>(reconcile_slot(inst, st, oms, side, lvl, slot, slot.want, now, place));
+        static_cast<void>(reconcile_slot(
+            inst, st, oms, side, lvl, slot, slot.want, slot.want_account, now, place));
       }
       return;
     }
@@ -297,7 +317,7 @@ class QuoteManager {
       ++stats_.kept_backoff;
       return;
     }
-    submit_new(inst, side, lvl, slot, slot.want, now, place, /*deferred=*/true);
+    submit_new(inst, side, lvl, slot, slot.want, slot.want_account, now, place, /*deferred=*/true);
   }
 
   [[nodiscard]] Handle<Order> slot_handle(InstrumentId id,
@@ -313,6 +333,7 @@ class QuoteManager {
     ClientOrderId cl_ord_id{};
     Timestamp last_requote{};
     Level want{};             // target to apply once the slot's pending order resolves
+    VenueId want_account{};   // ... and its account (DesiredQuotes::account)
     bool apply_want = false;  // `want` is pending (qty 0: no quote on this level)
     bool awaiting_terminal = false;
   };
@@ -355,6 +376,7 @@ class QuoteManager {
                                std::uint32_t lvl,
                                Slot& slot,
                                Level target,
+                               VenueId account,
                                Timestamp now,
                                Placer& place) noexcept {
     const bool has_want = target.qty.is_positive();
@@ -364,11 +386,19 @@ class QuoteManager {
         // Cannot touch it now; apply the target when its ack or terminal update arrives.
         ++stats_.skipped_pending;
         slot.want = target;
+        slot.want_account = account;
         slot.apply_want = true;
         return 0;
       }
       slot.apply_want = false;
       if (!has_want) return cancel(inst, side, lvl, slot, place);
+      // Asked for on another account: an order cannot move between accounts.
+      if (account.valid() && o.venue != account) {
+        slot.want = target;
+        slot.want_account = account;
+        slot.apply_want = true;
+        return cancel(inst, side, lvl, slot, place);
+      }
       const std::int64_t dpx = (target.price - o.price).abs().raw / inst.tick.raw;
       const bool qty_ok = static_cast<Int128>(o.leaves_qty().raw) * 10'000 >=
                           static_cast<Int128>(target.qty.raw) * params_.min_qty_bps;
@@ -402,6 +432,7 @@ class QuoteManager {
         return 1;
       }
       slot.want = target;
+      slot.want_account = account;
       slot.apply_want = true;
       return cancel(inst, side, lvl, slot, place);
     }
@@ -416,7 +447,7 @@ class QuoteManager {
       ++stats_.kept_backoff;
       return 0;
     }
-    return submit_new(inst, side, lvl, slot, target, now, place);
+    return submit_new(inst, side, lvl, slot, target, account, now, place);
   }
 
   // The slot's order is live and really the slot's: order slots are reused by later orders.
@@ -459,6 +490,7 @@ class QuoteManager {
                            std::uint32_t lvl,
                            Slot& slot,
                            Level target,
+                           VenueId account,
                            Timestamp now,
                            Placer& place,
                            bool deferred = false) noexcept {
@@ -473,7 +505,8 @@ class QuoteManager {
                   params_.post_only,
                   deferred,
                   false,
-                  false};
+                  false,
+                  account};
     if (!place(a) || !a.handle.valid()) {
       if (a.withheld) {
         ++stats_.kept_balance;

@@ -49,6 +49,7 @@ struct Harness {
         r.qty = a.qty;
         r.post_only = a.post_only;
         r.user_tag = QuoteManager::make_tag(a.side, a.level);
+        r.venue = a.account;  // the engine routes a level asked for on one account there
         const ClientOrderId id = oms.next_cl_ord_id();
         auto h = oms.submit(r, id, {});
         if (!h) return false;
@@ -494,4 +495,44 @@ TEST_CASE("core.quote_manager: quotes short of a token wait, and are retried old
   CHECK(qm.pop_starved() == a.id);
   CHECK(qm.retry(a, h.oms, now + milliseconds(200), h) == 0);
   CHECK(qm.pulled(a.id));
+}
+
+TEST_CASE(
+    "core.quote_manager: a level asked for on one pool account goes there and moves with it") {
+  const Instrument inst = make_inst();
+  QuoteParams p;
+  p.supports_replace = false;
+  QuoteManager qm(p);
+  Harness h;
+  const Timestamp now{seconds(1).ns};
+  DesiredQuotes d;
+  d.asks.push_back(Level{});  // levels 0 and 1 empty, the account levels behind them
+  d.asks.push_back(Level{});
+  d.asks.push_back({px("100.02"), qt("1")});
+  d.asks.push_back({px("100.02"), qt("2")});
+  d.ask_account[2] = VenueId{1};
+  d.ask_account[3] = VenueId{3};
+  CHECK(qm.reconcile(inst, d, h.oms, now, h) == 2);
+  REQUIRE(h.actions.size() == 2);
+  CHECK(h.actions[0].account == VenueId{1});
+  CHECK(h.actions[1].account == VenueId{3});
+  CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 3)).venue == VenueId{3});
+  h.ack_all();
+  // Same price and size: kept.
+  h.actions.clear();
+  CHECK(qm.reconcile(inst, d, h.oms, now, h) == 0);
+  // Level 3 now asked for on account 2: an order cannot move, so cancel, then new there.
+  d.ask_account[3] = VenueId{2};
+  CHECK(qm.reconcile(inst, d, h.oms, now, h) == 1);
+  CHECK(h.count(QuoteActionKind::Cancel) == 1);
+  const Order o = h.oms.get(qm.slot_handle(inst.id, Side::Sell, 3));
+  OrderCancelAckMsg m{};
+  init_header(m, EventType::OrderCancelAck);
+  m.cl_ord_id = o.cl_ord_id;
+  auto u = h.oms.on_cancel_ack(m);
+  qm.on_order_update(u, inst, h.oms, now, h);
+  REQUIRE(h.count(QuoteActionKind::New) == 1);
+  CHECK(h.actions.back().account == VenueId{2});
+  CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 3)).venue == VenueId{2});
+  CHECK(h.oms.get(qm.slot_handle(inst.id, Side::Sell, 3)).qty == qt("2"));
 }
