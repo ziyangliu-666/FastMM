@@ -182,6 +182,7 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `key_type` | string |  | hmac (default) \| ed25519 |
 | `private_key_file` | string |  | Ed25519 private key file (PKCS#8 PEM), with key_type = ed25519 |
 | `private_key_env` | string |  | environment variable holding the Ed25519 private key PEM (instead of private_key_file) |
+| `md_ticker_conns` | integer |  | extra connections carrying only the bookTicker streams; the first copy of each update is used, which takes the occasional slow push server out of the path (0 to 8, default 0) |
 | `ws_private_url` | string |  | private WebSocket URL; empty = derived from ws_url |
 | `position_from_account_update` | boolean |  | correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
 | `one_way_mode` | boolean |  | at start, switch an account in hedge mode to one-way mode when it holds no position and no open order (default false: a hedge-mode account refuses to start) |

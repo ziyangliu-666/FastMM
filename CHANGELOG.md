@@ -5,6 +5,11 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- `binance_usdm`: `md_ticker_conns = <n>` (0 to 8) opens n more `/public/stream` connections
+  carrying only the bookTicker streams. Binance hands each connection to a push server that lags
+  now and then; the feed keeps the first copy of every update id per symbol and drops the rest
+  (`stale_tickers`). The extra connections' state is logged only: the md connection still decides
+  whether the books are live.
 - `binance_usdm`: `one_way_mode = true` switches an account in hedge mode to one-way mode at start
   when it holds no position and no open order; `leverage = <n>` sets every enabled symbol's
   leverage at start. Both are off by default; nothing on the account changes unless asked.

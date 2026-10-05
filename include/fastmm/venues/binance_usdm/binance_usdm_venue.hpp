@@ -5,6 +5,8 @@
 //
 // Channels on one reactor thread:
 //   md      <ws_url>/public/stream?streams=<sym>@depth@100ms/<sym>@bookTicker   (BinanceUsdmMdFeed)
+//   ticker  <ws_url>/public/stream?streams=<sym>@bookTicker, md_ticker_conns copies (default 0):
+//           the same bookTickers on more connections, the first copy of each update id wins
 //   trades  <ws_url>/market/stream?streams=<sym>@aggTrade/<sym>@markPrice@1s   (the mark price
 //           stream for perpetuals: mark, index and funding as PerpStateMsg)
 //   user    <ws_private_url>/ws/<listenKey>   ORDER_TRADE_UPDATE, ACCOUNT_UPDATE, listenKeyExpired;
@@ -110,6 +112,11 @@ struct BinanceUsdmVenueConfig {
   std::string ws_api_url;      // wss://ws-fapi.binance.com/ws-fapi/v1
   std::string rest_url;        // https://fapi.binance.com (Demo: https://demo-fapi.binance.com)
   std::string ws_private_url;  // user data root; empty = <ws_url>/private
+  // Extra bookTicker-only connections next to the md one. Binance spreads WebSocket connections
+  // over push servers that each lag now and then; the earliest copy of every update is pushed
+  // (BasicBinanceMdFeed::set_ticker_dedup). Their state is logged, not reported: the md
+  // connection alone decides whether the books are live.
+  std::uint32_t md_ticker_conns = 0;
   binance::Credentials credentials;
   int recv_window_ms = kDefaultRecvWindowMs;
   bool insecure_tls = false;
@@ -158,6 +165,8 @@ struct BinanceUsdmVenueConfig {
 
 // The depth a session of `symbols` snapshots with when depth_limit is 0 (BinanceUsdmVenueConfig).
 inline constexpr std::size_t kDeepBookSymbols = 10;
+// The most md_ticker_conns a venue opens.
+inline constexpr std::size_t kMaxTickerConns = 8;
 [[nodiscard]] inline int auto_depth_limit(std::size_t symbols) noexcept {
   return symbols <= kDeepBookSymbols ? 1000 : 100;
 }
@@ -218,6 +227,13 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
     void on_binary(std::span<const std::byte>, std::int64_t) {}
     void on_connected_send_subscriptions() { v->on_md_open(); }
   };
+  struct TickerHandler {
+    BinanceUsdmVenue* v;
+    void on_state(net::ConnState s) { v->on_ticker_state(s); }
+    void on_text(std::string_view t, std::int64_t ts) { v->on_ticker_text(t, ts); }
+    void on_binary(std::span<const std::byte>, std::int64_t) {}
+    void on_connected_send_subscriptions() {}
+  };
   struct TradesHandler {
     BinanceUsdmVenue* v;
     void on_state(net::ConnState s) { v->on_trades_state(s); }
@@ -241,6 +257,7 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   };
   friend struct MdHandler;
   friend struct TradesHandler;
+  friend struct TickerHandler;
   friend struct UserHandler;
   friend struct OrderHandler;
 
@@ -258,6 +275,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   void on_md_text(std::string_view t, std::int64_t ts, Channel ch);
   void on_md_open();
   void on_trades_state(net::ConnState s);
+  void on_ticker_state(net::ConnState s);
+  void on_ticker_text(std::string_view t, std::int64_t ts);
   void on_user_state(net::ConnState s);
   void on_user_text(std::string_view t, std::int64_t ts);
   void on_order_state(net::ConnState s);
@@ -268,6 +287,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   // helpers
   void open_md();
   void open_trades();
+  void open_tickers();
+  void close_tickers();
   void open_user();
   void open_order();
   void open_rest();
@@ -386,10 +407,12 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   std::unique_ptr<RestChannel> rest_;
   MdHandler md_handler_{this};
   TradesHandler trades_handler_{this};
+  TickerHandler ticker_handler_{this};
   UserHandler user_handler_{this};
   OrderHandler order_handler_{this};
   ConnectionSlot<MdHandler> md_conn_;
   ConnectionSlot<TradesHandler> trades_conn_;
+  std::array<ConnectionSlot<TickerHandler>, kMaxTickerConns> ticker_conns_;
   ConnectionSlot<UserHandler> user_conn_;
   ConnectionSlot<OrderHandler> order_conn_;
   RateLimiter rate_;

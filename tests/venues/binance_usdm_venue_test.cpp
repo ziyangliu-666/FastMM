@@ -12,6 +12,7 @@
 #include "fastmm/net/crypto.hpp"
 #include "fastmm/venues/registry.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -348,9 +349,10 @@ struct Harness {
           200, R"({"code":200,"msg":"The operation of cancel all open order is done."})");
     });
     srv.on_ws_open("/public/stream", [](net::WsSession& s) {
-      s.send_text(depth_frame(90, 95, 80, "69990.00"));     // u < lastUpdateId: dropped
-      s.send_text(depth_frame(97, 104, 95, "69999.00"));    // brackets 100
-      s.send_text(depth_frame(110, 112, 104, "70000.00"));  // pu == previous u
+      if (s.query().find("@depth") == std::string_view::npos) return;  // a bookTicker-only copy
+      s.send_text(depth_frame(90, 95, 80, "69990.00"));                // u < lastUpdateId: dropped
+      s.send_text(depth_frame(97, 104, 95, "69999.00"));               // brackets 100
+      s.send_text(depth_frame(110, 112, 104, "70000.00"));             // pu == previous u
     });
     srv.on_ws_open("/market/stream", [this](net::WsSession& s) {
       s.send_text(
@@ -861,7 +863,12 @@ TEST_CASE("binance_usdm.config: section mapping and factory registration") {
   s.extra["order_api"] = "rest";
   s.extra["position_from_account_update"] = "false";
   s.extra["stale_ms"] = "10000";
+  s.extra["md_ticker_conns"] = "3";
   const BinanceUsdmVenueConfig c = make_binance_usdm_config(s, false);
+  CHECK(c.md_ticker_conns == 3);
+  VenueSection many = s;
+  many.extra["md_ticker_conns"] = "9";
+  CHECK_THROWS_AS(static_cast<void>(make_binance_usdm_config(many, false)), std::invalid_argument);
   CHECK(c.depth_limit == 500);  // the next valid limit
   // Without the key the depth follows the number of subscribed symbols.
   s.extra.erase("depth_limit");
@@ -1198,6 +1205,60 @@ TEST_CASE("binance_usdm.venue: markPrice on the market connection with fundingIn
   CHECK(m->hdr.instrument == InstrumentId{0});
   CHECK(m->fields == (PerpStateMsg::kMark | PerpStateMsg::kIndex | PerpStateMsg::kFunding));
   CHECK(m->funding_interval == hours(4));
+  venue.disconnect();
+  reactor.run_once(0);
+  h.srv.stop();
+}
+
+TEST_CASE("binance_usdm.venue: md_ticker_conns copies of the bookTickers, first copy wins") {
+  Harness h;
+  InstrumentTable instruments;
+  REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
+  RecordingSink md(8U << 20);
+  RecordingSink orders(1U << 20, SinkPolicy::Spin);
+  MsgRing outbound(1U << 16);
+  net::Reactor reactor;
+  SymbolTable symbols;
+  BinanceUsdmVenueConfig cfg = h.config(true);
+  cfg.md_ticker_conns = 2;
+  BinanceUsdmVenue venue(VenueId{0}, std::move(cfg));
+  REQUIRE(venue.load_reference_data(instruments));
+  REQUIRE(symbols.build(instruments));
+  venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
+  const InstrumentId ids[] = {InstrumentId{0}};
+  venue.subscribe(ids);
+  CHECK(venue.md_feed()->ticker_target() == "/public/stream?streams=btcusdt@bookTicker");
+  venue.connect(reactor);
+  REQUIRE(pump_until(reactor, [&] {
+    return venue.md_feed()->synced_count() == 1 && h.srv.open_count("/public/stream") == 3;
+  }));
+  const auto pub = h.srv.frames("upgrade:/public/stream");
+  REQUIRE(pub.size() == 3);
+  CHECK(std::count(pub.begin(), pub.end(), "streams=btcusdt@bookTicker") == 2);
+  CHECK(std::count(pub.begin(), pub.end(), "streams=btcusdt@depth@100ms/btcusdt@bookTicker") == 1);
+  auto ticker = [](int u, const char* bid) {
+    return std::string(R"({"stream":"btcusdt@bookTicker","data":{"e":"bookTicker","u":)") +
+           std::to_string(u) + R"(,"s":"BTCUSDT","b":")" + bid +
+           R"(","B":"1.000","a":"70010.00","A":"2.000","T":1789469121938,"E":1789469121940}})";
+  };
+  Collected mc;
+  auto tickers = [&] {
+    mc.take(md);
+    return mc.count(EventType::BookTicker);
+  };
+  // Every connection carries the update: the engine gets it once.
+  h.srv.send_to("/public/stream", ticker(500, "70000.00"));
+  REQUIRE(pump_until(reactor, [&] { return venue.md_feed()->stats().stale_tickers == 2; }));
+  CHECK(tickers() == 1);
+  // An older update after a newer one is dropped; a newer one passes.
+  h.srv.send_to("/public/stream", ticker(499, "69999.00"));
+  h.srv.send_to("/public/stream", ticker(501, "70001.00"));
+  REQUIRE(pump_until(reactor, [&] { return venue.md_feed()->stats().stale_tickers == 7; }));
+  CHECK(tickers() == 2);
+  const auto* last = mc.last<BookTickerMsg>(EventType::BookTicker);
+  REQUIRE(last != nullptr);
+  CHECK(last->hdr.venue_seq == 501);
+  CHECK(last->bid_px == Price::from_decimal("70001.00").value());
   venue.disconnect();
   reactor.run_once(0);
   h.srv.stop();

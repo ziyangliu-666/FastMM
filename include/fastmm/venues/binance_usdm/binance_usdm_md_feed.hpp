@@ -3,8 +3,9 @@
 // BasicBinanceMdFeed (binance/binance_md_feed_base.hpp) with the futures parser and pu depth
 // chaining, plus the second connection this venue alone has.
 //
-// Two combined-stream connections, following the 2026-03-05 URL split ("Important WebSocket Change
-// Notice"; legacy /ws and /stream URLs were decommissioned on 2026-04-23):
+// Two combined-stream connections (plus any bookTicker-only copies, md_ticker_conns), following the
+// 2026-03-05 URL split ("Important WebSocket Change Notice"; legacy /ws and /stream URLs were
+// decommissioned on 2026-04-23):
 //   <root>/public/stream?streams=<sym>@depth@100ms/<sym>@bookTicker/...
 //   <root>/market/stream?streams=<sym>@aggTrade/<perp>@markPrice@1s/...
 // Both feed on_message(); only the public connection starts and stops the book syncs. The mark
@@ -54,6 +55,12 @@ class BinanceUsdmMdFeed : public binance::BasicBinanceMdFeed<BinanceUsdmMdParser
   [[nodiscard]] std::string public_target() const {
     static constexpr std::array<const char*, 2> kPublic = {"@depth@100ms", "@bookTicker"};
     return stream_target_for("/public/stream", kPublic);
+  }
+  // "/public/stream?streams=btcusdt@bookTicker": the extra bookTicker-only connections
+  // (md_ticker_conns), without the depth stream whose 100 ms bursts the tickers queue behind.
+  [[nodiscard]] std::string ticker_target() const {
+    static constexpr std::array<const char*, 1> kTicker = {"@bookTicker"};
+    return stream_target_for("/public/stream", kTicker);
   }
   // "/market/stream?streams=btcusdt@aggTrade/btcusdt@markPrice@1s": aggTrade for every
   // instrument, markPrice for the perpetuals.

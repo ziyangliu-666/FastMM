@@ -54,6 +54,11 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      KeyType::String,
      false,
      "environment variable holding the Ed25519 private key PEM (instead of private_key_file)"},
+    {"md_ticker_conns",
+     KeyType::Int,
+     false,
+     "extra connections carrying only the bookTicker streams; the first copy of each update is "
+     "used, which takes the occasional slow push server out of the path (0 to 8, default 0)"},
     {"ws_private_url",
      KeyType::String,
      false,
