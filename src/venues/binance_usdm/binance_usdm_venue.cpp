@@ -292,6 +292,7 @@ Result<void, std::string> BinanceUsdmVenue::load_reference_data(InstrumentTable&
     if (t.ok() && binance::decode_server_time(t.body, server_ms).empty()) {
       clock_offset_ms_ = server_ms - wall_now().ns / kNsPerMs;
       clock_sync_ns_ = now_ns();
+      align_rate_windows();
       stats_.clock_offset_ms = clock_offset_ms_;
       publish_status();  // the offset is known before the venue connects (fastmm-gateway reads it)
       if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000)
@@ -1361,8 +1362,8 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
   const std::uint32_t weight = cmd.kind == OrderCommandKind::Cancel ? 1U : 0U;
   switch (cmd.kind) {
     case OrderCommandKind::New:
-      if (!rate_.can_send(weight, now, true)) {
-        ++stats_.rate_limit_cooldowns;
+      if (const RateCheck rc = rate_.check(weight, now, true); !rc.ok()) {
+        count_refusal(stats_, rc);
         return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
       }
       if (FASTMM_UNLIKELY(shadows_.assign(cmd.cl_ord_id,
@@ -1385,8 +1386,8 @@ void BinanceUsdmVenue::send_command(const OrderCommand& cmd) {
       const OrderShadow* orig = shadows_.find(cmd.orig_cl_ord_id);
       if (orig == nullptr)
         return refuse(cmd, RejectReason::UnknownOrder, "modify: original unknown");
-      if (!rate_.can_send(weight, now, true)) {
-        ++stats_.rate_limit_cooldowns;
+      if (const RateCheck rc = rate_.check(weight, now, true); !rc.ok()) {
+        count_refusal(stats_, rc);
         return refuse(cmd, RejectReason::VenueRateLimit, "local rate limit");
       }
       OrderShadow copy = *orig;
@@ -2078,6 +2079,7 @@ void BinanceUsdmVenue::request_server_time() {
         if (!binance::decode_server_time(r.body, server_ms).empty()) return;
         clock_offset_ms_ = server_ms - wall_now().ns / kNsPerMs;
         clock_sync_ns_ = now_ns();
+        align_rate_windows();
         clock_resync_wanted_ = false;
         stats_.clock_offset_ms = clock_offset_ms_;
         if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000)
@@ -2271,6 +2273,13 @@ bool BinanceUsdmVenue::cancel_all() {
 }
 
 // ---- housekeeping ---------------------------------------------------------------------------
+
+// The rate limiter's windows roll on the venue's clock (Binance resets its windows on the UTC
+// minute and 10 s), not at whatever point of the minute the local clock's multiples fall.
+void BinanceUsdmVenue::align_rate_windows() noexcept {
+  const std::int64_t now = now_ns();
+  rate_.set_clock_offset(venue_clock_offset_ns(venue_time_ms(), now), now);
+}
 
 void BinanceUsdmVenue::on_timer(std::int64_t now) {
   if (!connected_) return;

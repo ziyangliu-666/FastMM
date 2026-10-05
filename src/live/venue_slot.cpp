@@ -201,7 +201,7 @@ void log_venue_status(const venues::Venue& v) {
   FASTMM_LOG_INFO(
       "[{}] md={} user={} order={} books={}/{} md_msgs={} resyncs={} malformed={} dropped={} "
       "orders={} cancels={} order_events={} shadows={} swept={} refused={} rest={}/{}err "
-      "reconnects={} clock_offset_ms={}",
+      "reconnects={} clock_offset_ms={} rate_refused(weight/10s/1m/1d/paused)={}/{}/{}/{}/{}",
       v.name(),
       short_state(st.md),
       short_state(st.user),
@@ -221,7 +221,12 @@ void log_venue_status(const venues::Venue& v) {
       st.rest_requests,
       st.rest_errors,
       st.reconnects,
-      st.clock_offset_ms);
+      st.clock_offset_ms,
+      st.refused_weight,
+      st.refused_orders_10s,
+      st.refused_orders_1m,
+      st.refused_orders_1d,
+      st.refused_paused);
   log_wire_latency(v.name(), st, false);
   log_feed(v.name(), st.feed, false);
 }

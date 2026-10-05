@@ -312,6 +312,8 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   void refuse(const OrderCommand& cmd, RejectReason reason, std::string_view text);
   void request_snapshot(InstrumentId id);
   void request_server_time();
+  // The rate limiter's windows on the venue's clock (clock_offset_ms_), after each sync.
+  void align_rate_windows() noexcept;
   void request_listen_key();
   void keepalive_listen_key();
   void cancel_all_async();

@@ -136,7 +136,7 @@ Watch it from a second terminal (the name is `[engine] name`):
 A Demo session one second after connecting:
 
 ```text
-[binance] md=live user=live order=live books=1/1 md_msgs=4 resyncs=0 malformed=0 dropped=0 orders=2 cancels=0 order_events=4 rest=2/0err reconnects=0 clock_offset_ms=175
+[binance] md=live user=live order=live books=1/1 md_msgs=4 resyncs=0 malformed=0 dropped=0 orders=2 cancels=0 order_events=4 rest=2/0err reconnects=0 clock_offset_ms=175 rate_refused(weight/10s/1m/1d/paused)=0/0/0/0/0
 ```
 
 `clock_offset_ms` is the venue clock minus the local clock; signed requests fail as it nears `recv_window_ms` ([Troubleshooting](troubleshooting.md#clock)).

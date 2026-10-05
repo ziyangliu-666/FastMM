@@ -1132,6 +1132,16 @@ TEST_CASE("binance.venue: with the order table full an order or replace is refus
   // Before, the order went out untracked: its reply carried no instrument and a replace of it was
   // refused as unknown; a replace that found no room went out and left its new order untracked.
   Harness h;
+  // Thousands of orders within seconds: windows that hold them (the fake's replies report counts
+  // of 1 and 3, which the limiter takes only as low as what it sent in the last 2 s).
+  for (const auto& [from, to] :
+       {std::pair<std::string, std::string>{R"("intervalNum":10,"limit":50})",
+                                            R"("intervalNum":10,"limit":100000})"},
+        std::pair<std::string, std::string>{R"("intervalNum":1,"limit":6000})",
+                                            R"("intervalNum":1,"limit":100000})"}}) {
+    REQUIRE(h.exchange_info.find(from) != std::string::npos);
+    h.exchange_info.replace(h.exchange_info.find(from), from.size(), to);
+  }
   InstrumentTable instruments;
   REQUIRE(instruments.add(make_instrument("BTCUSDT", 0, "BTC", "USDT")));
   RecordingSink md(8U << 20);
@@ -1177,7 +1187,7 @@ TEST_CASE("binance.venue: with the order table full an order or replace is refus
           ++acked;
       }
     };
-    // In batches under the fixture's 50 orders per 10 s (each reply resets the count to 1).
+    // In batches, the replies keeping up.
     for (std::size_t k = 1; k <= kRoom; k += 40) {
       const std::size_t end = std::min(kRoom + 1, k + 40);
       for (std::size_t j = k; j < end; ++j) push_new(id_of(j));

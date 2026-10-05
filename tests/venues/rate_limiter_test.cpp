@@ -30,11 +30,11 @@ TEST_CASE("venues.rate_limiter: weight bucket refuses above threshold and rolls 
   CHECK(rl.weight_bucket(0)->used == 0);
 }
 
-TEST_CASE("venues.rate_limiter: venue headers overwrite the local estimate") {
+TEST_CASE("venues.rate_limiter: venue headers raise the local estimate") {
   RateLimiter rl(1.0);
   REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
   REQUIRE(rl.add_order_bucket(50, 10 * kSec));
-  const std::int64_t now = kSec;
+  const std::int64_t now = 5 * kSec;
   rl.on_sent(1, now, true);
   rl.on_headers(5990, 49, now);
   CHECK(rl.can_send(10, now, false));
@@ -51,11 +51,17 @@ TEST_CASE("venues.rate_limiter: on a shared IP an older weight header does not l
   RateLimiter rl(1.0);
   rl.share_ip(shared_rate("test-host-older-header"));
   REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
-  const std::int64_t now = kSec;
+  const std::int64_t now = 5 * kSec;
   rl.on_sent(3000, now);        // a burst in flight
   rl.on_headers(200, -1, now);  // the answer to its first request
   CHECK_FALSE(rl.can_send(3001, now));
   CHECK(rl.can_send(3000, now));
+  // Once the burst is older than the lag a count can have, the venue's count stands: the local
+  // estimate held requests the venue did not count.
+  const std::int64_t later = now + RateLimiter::kHeaderLagNs + kSec;
+  rl.on_sent(10, later);
+  rl.on_headers(200, -1, later);
+  CHECK(rl.weight_bucket(0)->used == 210);  // the count plus the 10 sent just before it
 }
 
 TEST_CASE("venues.rate_limiter: cooldown and hard stop") {
@@ -75,16 +81,21 @@ TEST_CASE("venues.rate_limiter: cooldown and hard stop") {
   CHECK(rl.can_send(1, now));
 }
 
-TEST_CASE("venues.rate_limiter: a bulk request fits its share of the window only") {
-  RateLimiter rl(0.9);
-  REQUIRE(rl.add_weight_bucket(100, 60 * kSec));
-  const std::int64_t now = kSec;
-  CHECK(rl.can_send(45, now, false, RateLimiter::kBulkShare));
-  CHECK_FALSE(rl.can_send(46, now, false, RateLimiter::kBulkShare));
-  rl.on_sent(45, now);
+TEST_CASE("venues.rate_limiter: a bulk request fits its share of the window, paced over it") {
+  RateLimiter rl(1.0);
+  REQUIRE(rl.add_weight_bucket(1000, 60 * kSec));
+  // At the window's start a fifth of the share (500), half of it half way, all of it at the end.
+  CHECK(rl.can_send(100, 0, false, RateLimiter::kBulkShare));
+  CHECK_FALSE(rl.can_send(101, 0, false, RateLimiter::kBulkShare));
+  CHECK(rl.can_send(250, 30 * kSec, false, RateLimiter::kBulkShare));
+  CHECK_FALSE(rl.can_send(251, 30 * kSec, false, RateLimiter::kBulkShare));
+  const std::int64_t now = 45 * kSec;
+  CHECK(rl.can_send(375, now, false, RateLimiter::kBulkShare));
+  rl.on_sent(375, now);
   CHECK_FALSE(rl.can_send(1, now, false, RateLimiter::kBulkShare));  // the snapshots wait
-  CHECK(rl.can_send(45, now));                                       // an order does not
-  CHECK(rl.can_send(1, now + 60 * kSec, false, RateLimiter::kBulkShare));
+  CHECK(rl.can_send(625, now));                                      // an order does not
+  CHECK(rl.check(626, now).refusal == RateRefusal::Weight);
+  CHECK(rl.can_send(100, 60 * kSec, false, RateLimiter::kBulkShare));
 }
 
 TEST_CASE("venues.rate_limiter: pauses asked in a row wait longer each time") {
@@ -173,7 +184,7 @@ TEST_CASE("venues.rate_limiter: accounts sharing an IP spend one weight window a
   b.clear_hard_stop();
   CHECK_FALSE(a.hard_stopped());
   // The header is the IP's count: either account's reply sets it for both.
-  a.on_headers(90, -1, t + 7'000'000'000);
+  a.on_headers(90, -1, t + 7'000'000'000);  // nothing sent in the last 2 s
   CHECK_FALSE(b.can_send(11, t + 7'000'000'000));
   REQUIRE(b.weight_bucket(0).has_value());
   CHECK(b.weight_bucket(0)->used == 90);
@@ -234,4 +245,73 @@ TEST_CASE("venues.rate_limiter: the published budget stops where can_send does")
       }
     }
   }
+}
+
+TEST_CASE("venues.rate_limiter: windows roll on the venue's clock") {
+  // The venue's clock is 23 s ahead of the local one: its minute ends at local 37 s, 97 s, ...
+  RateLimiter rl(1.0);
+  REQUIRE(rl.add_weight_bucket(100, 60 * kSec));
+  REQUIRE(rl.add_order_bucket(10, 10 * kSec));
+  rl.set_clock_offset(23 * kSec, kSec);
+  rl.on_sent(100, 30 * kSec, true);
+  CHECK_FALSE(rl.can_send(1, 36 * kSec));
+  CHECK(rl.can_send(100, 37 * kSec));  // the venue's minute rolled; the local one would at 60 s
+  // The 10 s order window: venue :x0 is local :x7.
+  for (int i = 0; i < 10; ++i) rl.on_sent(0, 37 * kSec, true);
+  CHECK(rl.check(0, 46 * kSec, true).refusal == RateRefusal::Orders);
+  CHECK(rl.check(0, 46 * kSec, true).window_ns == 10 * kSec);
+  CHECK(rl.can_send(0, 47 * kSec, true));
+  // A clock set after the first sends realigns the running window, keeping its count.
+  RateLimiter late(1.0);
+  REQUIRE(late.add_weight_bucket(100, 60 * kSec));
+  late.on_sent(90, 50 * kSec);
+  late.set_clock_offset(23 * kSec, 50 * kSec);
+  CHECK(late.weight_bucket(0)->used == 90);
+  CHECK(late.can_send(100, 97 * kSec));
+  // An offset that puts the venue behind the local clock aligns the same way.
+  RateLimiter behind(1.0);
+  REQUIRE(behind.add_order_bucket(10, 10 * kSec));
+  behind.set_clock_offset(-3 * kSec, 0);
+  for (int i = 0; i < 10; ++i) behind.on_sent(0, 4 * kSec, true);
+  CHECK_FALSE(behind.can_send(0, 12 * kSec, true));
+  CHECK(behind.can_send(0, 13 * kSec, true));
+}
+
+TEST_CASE("venues.rate_limiter: a count at the start of a window may be the last one's") {
+  RateLimiter rl(1.0);
+  REQUIRE(rl.add_weight_bucket(6000, 60 * kSec));
+  // An answer that arrives just after the venue's minute rolled carries the old minute's count.
+  rl.on_headers(5900, -1, 60 * kSec + kSec);
+  CHECK(rl.weight_bucket(0)->used == 0);
+  rl.on_headers(300, -1, 60 * kSec + 3 * kSec);
+  CHECK(rl.weight_bucket(0)->used == 300);
+}
+
+TEST_CASE("venues.rate_limiter: check says which limit refused") {
+  RateLimiter rl(0.9);
+  REQUIRE(rl.add_weight_bucket(100, 60 * kSec));
+  REQUIRE(rl.add_order_bucket(10, 10 * kSec));
+  REQUIRE(rl.add_order_bucket(100, 86'400 * kSec));
+  const std::int64_t now = 5 * kSec;
+  CHECK(rl.check(1, now, true).ok());
+  for (int i = 0; i < 9; ++i) rl.on_sent(1, now, true);
+  RateCheck c = rl.check(1, now, true);
+  CHECK(c.refusal == RateRefusal::Orders);
+  CHECK(c.window_ns == 10 * kSec);
+  CHECK(rl.check(1, now, false).ok());  // a cancel spends no order
+  rl.on_sent(81, now);
+  CHECK(rl.check(1, now, false).refusal == RateRefusal::Weight);
+  rl.cooldown(kSec, now);
+  CHECK(rl.check(0, now, false).refusal == RateRefusal::Paused);
+  fastmm::venues::VenueStatus st;
+  count_refusal(st, c);
+  count_refusal(st, RateCheck{RateRefusal::Orders, 86'400 * kSec});
+  count_refusal(st, RateCheck{RateRefusal::Weight, 0});
+  count_refusal(st, RateCheck{RateRefusal::Paused, 0});
+  count_refusal(st, RateCheck{});
+  CHECK(st.refused_orders_10s == 1);
+  CHECK(st.refused_orders_1m == 0);
+  CHECK(st.refused_orders_1d == 1);
+  CHECK(st.refused_weight == 1);
+  CHECK(st.refused_paused == 1);
 }

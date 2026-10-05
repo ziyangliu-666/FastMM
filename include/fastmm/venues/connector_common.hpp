@@ -160,6 +160,36 @@ struct IdText {
   return out;
 }
 
+// One order the rate limiter refused (RateLimiter::check), counted by the limit that refused it.
+inline void count_refusal(VenueStatus& st, const RateCheck& c) noexcept {
+  switch (c.refusal) {
+    case RateRefusal::None:
+      return;
+    case RateRefusal::Paused:
+      ++st.refused_paused;
+      return;
+    case RateRefusal::Weight:
+      ++st.refused_weight;
+      return;
+    case RateRefusal::Orders:
+      if (c.window_ns <= 10'000'000'000) {
+        ++st.refused_orders_10s;
+      } else if (c.window_ns <= 60'000'000'000) {
+        ++st.refused_orders_1m;
+      } else {
+        ++st.refused_orders_1d;
+      }
+      return;
+  }
+}
+
+// The venue's clock (`venue_ms`, epoch ms) as an offset from the reactor's, for the rate
+// limiter's windows (RateLimiter::set_clock_offset).
+[[nodiscard]] inline std::int64_t venue_clock_offset_ns(std::int64_t venue_ms,
+                                                        std::int64_t local_now_ns) noexcept {
+  return venue_ms * 1'000'000 - local_now_ns;
+}
+
 // First HardStop / Fatal error: the engine trips this venue's kill switch (quotes pulled, new
 // orders refused by risk); the other venues keep trading. Sent once per session, so `sent` is
 // the connector's own flag. Returns true when it sent, which is the connector's cue to log

@@ -224,6 +224,7 @@ Result<void, std::string> BinanceVenue::load_reference_data(InstrumentTable& ins
   if (info.server_time_ms != 0) {
     clock_offset_ms_ = info.server_time_ms - wall_now().ns / kNsPerMs;
     clock_sync_ns_ = now_ns();
+    align_rate_windows();
     stats_.clock_offset_ms = clock_offset_ms_;
     publish_status();  // the offset is known before the venue connects (fastmm-gateway reads it)
     if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000)
@@ -1020,8 +1021,8 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
   std::uint32_t weight = 1;
   bool is_order = cmd.kind != OrderCommandKind::Cancel;
   if (cmd.kind == OrderCommandKind::New) {
-    if (!rate_.can_send(weight, now, true)) {
-      ++stats_.rate_limit_cooldowns;
+    if (const RateCheck rc = rate_.check(weight, now, true); !rc.ok()) {
+      count_refusal(stats_, rc);
       emit_reject(
           cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
       return;
@@ -1052,8 +1053,8 @@ void BinanceVenue::send_command(const OrderCommand& cmd) {
       weight = kAmendWeight;
       is_order = false;
     }
-    if (!rate_.can_send(weight, now, is_order)) {
-      ++stats_.rate_limit_cooldowns;
+    if (const RateCheck rc = rate_.check(weight, now, is_order); !rc.ok()) {
+      count_refusal(stats_, rc);
       emit_reject(
           cmd.instrument, cmd.cl_ord_id, RejectReason::VenueRateLimit, 0, "local rate limit");
       return;
@@ -1672,6 +1673,7 @@ void BinanceVenue::request_server_time() {
         // handshake, which a send/receive midpoint would count as clock skew.
         clock_offset_ms_ = server_ms - local_recv_ms;
         clock_sync_ns_ = now_ns();
+        align_rate_windows();
         clock_resync_wanted_ = false;
         stats_.clock_offset_ms = clock_offset_ms_;
         if (clock_offset_ms_ > 1000 || clock_offset_ms_ < -1000)
@@ -1803,6 +1805,14 @@ bool BinanceVenue::cancel_all() {
 }
 
 // ---- housekeeping ---------------------------------------------------------------------------
+
+// The rate limiter's windows roll on the venue's clock: Binance resets REQUEST_WEIGHT on the UTC
+// minute and ORDERS on the 10 s, and a local window that rolled at another point of the minute
+// carried the last one's count into the venue's next one.
+void BinanceVenue::align_rate_windows() noexcept {
+  const std::int64_t now = now_ns();
+  rate_.set_clock_offset(venue_clock_offset_ns(venue_time_ms(), now), now);
+}
 
 void BinanceVenue::on_timer(std::int64_t now) {
   if (!connected_) return;

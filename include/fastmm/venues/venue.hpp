@@ -131,6 +131,14 @@ struct VenueStatus {
   std::uint64_t rest_requests = 0;
   std::uint64_t rest_errors = 0;
   std::uint64_t rate_limit_cooldowns = 0;
+  // Orders and replaces the connector's rate limiter refused (VenueRateLimit, never sent), by
+  // the limit that refused them (RateLimiter::check): the IP's request weight, the order-count
+  // windows of up to 10 s, up to a minute and longer (the day), and a pause (429, 418).
+  std::uint64_t refused_weight = 0;
+  std::uint64_t refused_orders_10s = 0;
+  std::uint64_t refused_orders_1m = 0;
+  std::uint64_t refused_orders_1d = 0;
+  std::uint64_t refused_paused = 0;
   std::int64_t clock_offset_ms = 0;  // venue - local
   std::uint64_t reconnects = 0;
   std::uint64_t executions_fetched = 0;  // trade-history rows replayed into the order sink

@@ -22,7 +22,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <thread>
 #include <utility>
 
 using namespace fastmm;
@@ -797,7 +796,8 @@ TEST_CASE("binance_usdm.venue: an exchangeInfo larger than the streaming client'
 TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk share of the weight") {
   // 170 symbols at a start used to send every snapshot and history query within a second, past
   // the minute's weight, and the 429 then the 418 followed. Here: a 16-weight window of 3 s,
-  // snapshots of weight 5 at limit 100, two symbols; the bulk share (0.5 of 0.9) takes one.
+  // snapshots of weight 5 at limit 100, two symbols; the bulk share (0.5 of 0.9) takes one a
+  // window.
   Harness h;
   const std::string minute =
       R"("rateLimitType":"REQUEST_WEIGHT","interval":"MINUTE","intervalNum":1,"limit":6000)";
@@ -823,14 +823,10 @@ TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk sha
   venue.attach(symbols, instruments, md.sink, orders.sink, &outbound);
   const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
   venue.subscribe(ids);
-  // The limiter's windows are aligned to the clock (RateBucket::roll): start just inside one, so
-  // the second snapshot (0.5 s after the first, its stream sends no delta) finds the share spent.
-  constexpr std::int64_t kWindowNs = 3'000'000'000;
-  const std::int64_t boundary = (net::Reactor::now_ns() / kWindowNs + 1) * kWindowNs;
-  std::this_thread::sleep_for(
-      std::chrono::nanoseconds(boundary + 50'000'000 - net::Reactor::now_ns()));
+  // The share is paced over the window (RateLimiter::kBulkPaceFloor): the first snapshot fits
+  // from 2.1 s into a window, and the second not before the next window's 2.1 s.
   venue.connect(reactor);
-  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 1; }));
+  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 1; }, 6000));
   const auto first = std::chrono::steady_clock::now();
   // The second does not fit the share of this window: it waits, it is not dropped.
   idle(reactor, 1500);
