@@ -186,10 +186,11 @@ struct Rig {
     if (venue_ms > 0) m.hdr.exch_ts = Timestamp{venue_ms * 1'000'000};
     push(m);
   }
-  void cancel_ack(InstrumentId id, ClientOrderId cl, std::int64_t venue_ms) {
+  void cancel_ack(InstrumentId id, ClientOrderId cl, std::int64_t venue_ms, const char* cum = "0") {
     OrderCancelAckMsg m{};
     init_header(m, EventType::OrderCancelAck, id, table.get(id).venue);
     m.cl_ord_id = cl;
+    m.cum_qty = qt(cum);
     m.hdr.exch_ts = Timestamp{venue_ms * 1'000'000};
     push(m);
   }
@@ -628,4 +629,30 @@ TEST_CASE("core.balance: a requote whose old order filled instead re-checks the 
     CHECK(r.engine->stats().risk_rejects_by_reason[RejectReason::BalanceShort] == 0);
     CHECK(r.bal(kSpotVenue, "BTC").free == (fits ? nt("0.001") : nt("0.00009")));
   }
+}
+
+// Binance answers a cancel with the order's cumulative quantity, and the trade that made it can
+// reach the engine just after (another connection): the cum_qty is booked as a synthetic fill
+// first, and the execution then names it. The assets move once, at the execution's price and fee,
+// like the position; counting the execution again over-stated the base until the next report.
+TEST_CASE("core.balance: an execution that names a synthetic fill moves the assets once") {
+  Rig r;
+  r.balance(report(kSpotVenue, "USDT", "1000", "0", 100));
+  r.balance(report(kSpotVenue, "BTC", "0", "0", 100));
+  auto b1 = r.send(kSpot, Side::Buy, "50000", "0.01");
+  REQUIRE(b1.has_value());
+  r.ack(kSpot, *b1, 110);
+  REQUIRE(r.engine->cancel_order(*b1).has_value());
+  r.cancel_ack(kSpot, *b1, 121, "0.004");
+  CHECK(r.engine->stats().synthetic_fills == 1);
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.004"));
+  CHECK(r.bal(kSpotVenue, "USDT").free == nt("800"));  // at the order's price, no fee
+  r.fill(kSpot, *b1, Side::Buy, "49990", "0.004", "0.004", "0", "0.02", FeeAsset::Quote, 120);
+  CHECK(r.engine->stats().corrected_fills == 1);
+  CHECK(r.engine->position(kSpot).qty == qt("0.004"));
+  CHECK(r.bal(kSpotVenue, "BTC").free == nt("0.004"));
+  const Balance usdt = r.bal(kSpotVenue, "USDT");
+  CHECK(usdt.locked.is_zero());
+  CHECK(usdt.total == nt("800.02"));  // 1000 - 199.96 - 0.02
+  CHECK(usdt.free == nt("800.02"));
 }

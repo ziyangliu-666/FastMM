@@ -1523,18 +1523,24 @@ class Engine {
       }
       const std::int64_t pos_before = positions_.get(id).qty.raw;
       if (booked.is_positive()) positions_.on_fill(id, side, f.price, booked, fee, inst);
-      if (FASTMM_UNLIKELY(balances_live_))
+      if (FASTMM_UNLIKELY(balances_live_)) {
+        // The same for the assets: the quantity the synthetic fill moved already is only repriced,
+        // the rest of the execution moves them (with the whole fee).
+        const VenueId account = from_order ? u.order.venue : f.hdr.venue;
+        balances_->correct_fill(
+            id, inst, side, u.synthetic_px, f.price, u.corrected_qty, f.hdr.exch_ts, account);
         balances_->on_fill(id,
                            inst,
                            side,
                            f.price,
-                           f.qty,
+                           f.qty - u.corrected_qty,
                            f.fee,
                            fee_asset,
                            pos_before,
                            positions_.get(id).qty.raw,
                            f.hdr.exch_ts,
-                           from_order ? u.order.venue : f.hdr.venue);
+                           account);
+      }
       emit_fill(id, side, f.price, f.qty, booked, exec_fee, fee_asset, u, &f);
       if (risk_.on_pnl(net_pnl())) on_kill(KillReason::MaxLoss);
     } else if (stats_.unknown_instrument_fills++ == 0) {

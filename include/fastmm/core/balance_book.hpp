@@ -301,6 +301,24 @@ class BalanceBook {
     row.equity -= f;
   }
 
+  // An execution names `qty` that a synthetic fill (Engine::book_missed_fill) moved at `estimate`:
+  // the base moved already, so only the quote's difference between the two prices moves. A
+  // derivative's margin is left as the estimate put it.
+  void correct_fill(InstrumentId id,
+                    const Instrument& inst,
+                    Side side,
+                    Price estimate,
+                    Price px,
+                    Qty qty,
+                    Timestamp venue_ts,
+                    VenueId account = {}) noexcept {
+    if (id.value >= kMaxInstruments || !qty.is_positive() || estimate == px) return;
+    const Inst& in = slot(id, account);
+    if (in.derivative) return;
+    const std::int64_t d = inst.notional(px, qty).raw - inst.notional(estimate, qty).raw;
+    move_asset(in.quote, side == Side::Buy ? -d : d, venue_ts);
+  }
+
   // Does the balance cover an order of `qty` at `px` on `side`? `replaced_hold`: what the order it
   // replaces holds (0 for a new order). `reduces`: it only takes the position towards zero.
   [[nodiscard]] bool covers(InstrumentId id,
