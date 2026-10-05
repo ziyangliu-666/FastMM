@@ -1503,8 +1503,13 @@ void DeribitVenue::publish_status() noexcept {
   stats_.resyncs = md_feed_ ? md_feed_->resync_count() : 0;
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;
   stats_.clock_offset_ms = clock_offset_ms_.load(std::memory_order_relaxed);
-  wire_.summarize(
-      tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
+  wire_.summarize(tsc_calibration(),
+                  now_ns(),
+                  stats_.wire_tick_to_trade,
+                  stats_.order_encode,
+                  stats_.order_send,
+                  stats_.wire_1m,
+                  stats_.wire_1h);
   published_.store(stats_);
 }
 

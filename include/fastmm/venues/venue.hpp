@@ -143,6 +143,8 @@ struct VenueStatus {
   WireLatencyStats wire_tick_to_trade;  // inbound receive (t0_cycles) -> send call returned
   WireLatencyStats order_encode;        // JSON encoding + signing
   WireLatencyStats order_send;          // WebSocket write / REST request call
+  WireLatencyWindow wire_1m;            // the same three over the last minute (60-70 s)
+  WireLatencyWindow wire_1h;            // and over the last hour (60-70 min)
   VenueFeedStatus feed;                 // multicast venues only
 };
 

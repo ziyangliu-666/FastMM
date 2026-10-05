@@ -9,7 +9,9 @@
 //                 of the inbound event that triggered the order (only when t0_cycles != 0)
 //
 // Histograms are in TSC cycles and owned by the network thread; summarize() converts to ns
-// with a calibration when the venue publishes its status. Recording never allocates.
+// with a calibration when the venue publishes its status, for the whole session and for the last
+// minute and the last hour (core RecentHistogram), so a recent tail shows under a long session's
+// totals. Recording never allocates.
 //
 // Coalesced sends (drain_outbound_coalesced): between begin_batch() and end_batch() record()
 // keeps the encode stamps of up to kMaxBatch orders and ignores its after-send stamp, since the
@@ -35,6 +37,13 @@ struct WireLatencyStats {
   std::uint64_t p99_ns = 0;
   std::uint64_t p999_ns = 0;
   std::uint64_t max_ns = 0;
+};
+
+// The three over one window (WireLatencyRecorder::summarize).
+struct WireLatencyWindow {
+  WireLatencyStats tick_to_trade;
+  WireLatencyStats encode;
+  WireLatencyStats send;
 };
 
 class WireLatencyRecorder {
@@ -69,19 +78,40 @@ class WireLatencyRecorder {
     batch_len_ = 0;
   }
 
-  [[nodiscard]] const LogLinearHistogram& encode() const noexcept { return encode_; }
-  [[nodiscard]] const LogLinearHistogram& send() const noexcept { return send_; }
-  [[nodiscard]] const LogLinearHistogram& tick_to_trade() const noexcept { return tick_to_trade_; }
+  // The session's samples.
+  [[nodiscard]] LogLinearHistogram encode() const noexcept { return encode_.total(); }
+  [[nodiscard]] LogLinearHistogram send() const noexcept { return send_.total(); }
+  [[nodiscard]] LogLinearHistogram tick_to_trade() const noexcept { return tick_to_trade_.total(); }
 
   // Percentiles in ns under `c`'s TSC rate (also set when only constant_tsc is present);
-  // without a rate only the counts are filled in.
+  // without a rate only the counts are filled in. The session's samples.
   void summarize(const TscCalibration& c,
                  WireLatencyStats& tick_to_trade,
                  WireLatencyStats& encode,
                  WireLatencyStats& send) const noexcept {
-    fill(tick_to_trade_, c, tick_to_trade);
-    fill(encode_, c, encode);
-    fill(send_, c, send);
+    fill(tick_to_trade_.total(), c, tick_to_trade);
+    fill(encode_.total(), c, encode);
+    fill(send_.total(), c, send);
+  }
+  // The same, after closing the slices `now_ns` (the venue's clock) has passed, and for the last
+  // minute and the last hour too.
+  void summarize(const TscCalibration& c,
+                 std::int64_t now_ns,
+                 WireLatencyStats& tick_to_trade,
+                 WireLatencyStats& encode,
+                 WireLatencyStats& send,
+                 WireLatencyWindow& last_minute,
+                 WireLatencyWindow& last_hour) noexcept {
+    tick_to_trade_.roll(now_ns);
+    encode_.roll(now_ns);
+    send_.roll(now_ns);
+    summarize(c, tick_to_trade, encode, send);
+    fill(tick_to_trade_.last_minute(), c, last_minute.tick_to_trade);
+    fill(encode_.last_minute(), c, last_minute.encode);
+    fill(send_.last_minute(), c, last_minute.send);
+    fill(tick_to_trade_.last_hour(), c, last_hour.tick_to_trade);
+    fill(encode_.last_hour(), c, last_hour.encode);
+    fill(send_.last_hour(), c, last_hour.send);
   }
 
   void reset() noexcept {
@@ -121,9 +151,9 @@ class WireLatencyRecorder {
     out.max_ns = to_ns(h.max(), c);
   }
 
-  LogLinearHistogram encode_;
-  LogLinearHistogram send_;
-  LogLinearHistogram tick_to_trade_;
+  RecentHistogram encode_;
+  RecentHistogram send_;
+  RecentHistogram tick_to_trade_;
   Staged batch_[kMaxBatch] = {};
   std::size_t batch_len_ = 0;
   bool batching_ = false;

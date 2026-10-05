@@ -3,6 +3,8 @@
 #include "test_support.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -82,4 +84,41 @@ TEST_CASE("core.latency: tracker snapshot and exporters") {
         std::string::npos);
   t.reset();
   CHECK(t.histogram(LatencyInterval::Decode).count() == 0);
+}
+
+TEST_CASE(
+    "core.latency: RecentHistogram keeps the last minute and the last hour beside the total") {
+  constexpr std::int64_t kS = 1'000'000'000;
+  auto h = std::make_unique<RecentHistogram>();
+  h->roll(0);
+  // A slow first minute, then fast samples only.
+  for (int i = 0; i < 100; ++i) h->record(1'000'000);
+  for (std::int64_t t = 1; t <= 70; ++t) {
+    h->roll(t * kS);
+    h->record(1'000);
+  }
+  // The slow ones closed with the first slice, 70 s ago: out of the minute, in the hour.
+  CHECK(h->total().count() == 170);
+  CHECK(h->last_hour().count() == 170);
+  CHECK(h->last_hour().percentile(0.99) >= 1'000'000);
+  const LogLinearHistogram m = h->last_minute();
+  CHECK(m.count() >= 60);
+  CHECK(m.count() <= 70);
+  CHECK(m.max() < 2'000);
+  CHECK(m.percentile(0.99) < 2'000);
+  // Seventy minutes on, the hour has let them go too; the total keeps them.
+  for (std::int64_t t = 71; t <= 71 * 60; t += 5) h->roll(t * kS);
+  CHECK(h->last_hour().count() == 0);
+  CHECK(h->last_minute().count() == 0);
+  CHECK(h->total().count() == 170);
+  // A sample, then a day without a roll: it went into the slice the day starts with, gone from
+  // both windows, kept in the total.
+  h->record(5);
+  CHECK(h->last_minute().count() == 1);
+  h->roll(86'400 * kS);
+  CHECK(h->last_minute().count() == 0);
+  CHECK(h->last_hour().count() == 0);
+  CHECK(h->total().count() == 171);
+  h->reset();
+  CHECK(h->total().count() == 0);
 }

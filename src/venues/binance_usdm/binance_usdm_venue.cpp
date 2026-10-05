@@ -2292,8 +2292,13 @@ void BinanceUsdmVenue::publish_status() noexcept {
   stats_.md_dropped = md_feed_ ? md_feed_->stats().dropped : 0;
   stats_.rate_limit_cooldowns = rate_.cooldowns();
   stats_.clock_offset_ms = clock_offset_ms_;
-  wire_.summarize(
-      tsc_calibration(), stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
+  wire_.summarize(tsc_calibration(),
+                  now_ns(),
+                  stats_.wire_tick_to_trade,
+                  stats_.order_encode,
+                  stats_.order_send,
+                  stats_.wire_1m,
+                  stats_.wire_1h);
   published_.store(stats_);
   budget_pub_.store(budget_of(rate_, now_ns(), orders_taken_));
 }

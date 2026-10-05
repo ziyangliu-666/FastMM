@@ -430,6 +430,21 @@ void venue_metrics(Exposition& e, const StatusSnapshot& s) {
         "fastmm_venue_tick_to_trade_quantile_seconds",
         fmt::format("venue=\"{}\"", label(name_of(s.venues[i].name, sizeof s.venues[i].name))),
         s.venues[i].wire_tick_to_trade);
+  e.family("fastmm_venue_tick_to_trade_recent_quantile_seconds",
+           "gauge",
+           "socket read to order write over the last minute (window=\"1m\") and hour (\"1h\")");
+  for (std::size_t i = 0; i < venues; ++i) {
+    const std::string venue =
+        fmt::format("venue=\"{}\"", label(name_of(s.venues[i].name, sizeof s.venues[i].name)));
+    latency_quantiles(e,
+                      "fastmm_venue_tick_to_trade_recent_quantile_seconds",
+                      venue + ",window=\"1m\"",
+                      s.venues[i].wire_tick_to_trade_1m);
+    latency_quantiles(e,
+                      "fastmm_venue_tick_to_trade_recent_quantile_seconds",
+                      venue + ",window=\"1h\"",
+                      s.venues[i].wire_tick_to_trade_1h);
+  }
 
   const bool multicast = std::any_of(
       s.venues, s.venues + venues, [](const StatusVenue& v) { return v.feed.state != 0; });

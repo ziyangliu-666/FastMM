@@ -214,9 +214,15 @@ void log_venue_status(const venues::Venue& v) {
 
 void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, bool final) {
   const std::string_view tag = final ? std::string_view("final ") : std::string_view();
+  // The session's percentiles, then the last minute's and the last hour's: a long session's
+  // totals hide a recent tail.
+  const venues::WireLatencyWindow& m = st.wire_1m;
+  const venues::WireLatencyWindow& h = st.wire_1h;
   if (st.wire_tick_to_trade.count != 0) {
     FASTMM_LOG_INFO(
-        "[{}] {}order latency: wire_t2t p50={}ns p99={}ns n={} encode p50={}ns send p50={}ns n={}",
+        "[{}] {}order latency: wire_t2t p50={}ns p99={}ns n={} encode p50={}ns send p50={}ns n={}; "
+        "last 1m: wire_t2t p50={}ns p99={}ns n={} send p99={}ns; "
+        "last 1h: wire_t2t p50={}ns p99={}ns n={} send p99={}ns",
         venue,
         tag,
         st.wire_tick_to_trade.p50_ns,
@@ -224,14 +230,30 @@ void log_wire_latency(std::string_view venue, const venues::VenueStatus& st, boo
         st.wire_tick_to_trade.count,
         st.order_encode.p50_ns,
         st.order_send.p50_ns,
-        st.order_send.count);
+        st.order_send.count,
+        m.tick_to_trade.p50_ns,
+        m.tick_to_trade.p99_ns,
+        m.tick_to_trade.count,
+        m.send.p99_ns,
+        h.tick_to_trade.p50_ns,
+        h.tick_to_trade.p99_ns,
+        h.tick_to_trade.count,
+        h.send.p99_ns);
   } else if (st.order_send.count != 0) {
-    FASTMM_LOG_INFO("[{}] {}order latency: encode p50={}ns send p50={}ns n={}",
-                    venue,
-                    tag,
-                    st.order_encode.p50_ns,
-                    st.order_send.p50_ns,
-                    st.order_send.count);
+    FASTMM_LOG_INFO(
+        "[{}] {}order latency: encode p50={}ns send p50={}ns n={}; last 1m: send p50={}ns "
+        "p99={}ns n={}; last 1h: send p50={}ns p99={}ns n={}",
+        venue,
+        tag,
+        st.order_encode.p50_ns,
+        st.order_send.p50_ns,
+        st.order_send.count,
+        m.send.p50_ns,
+        m.send.p99_ns,
+        m.send.count,
+        h.send.p50_ns,
+        h.send.p99_ns,
+        h.send.count);
   }
 }
 
@@ -310,6 +332,8 @@ void fill_status_venue(const venues::VenueStatus& st, StatusVenue& sv) noexcept 
   sv.rate_limit_cooldowns = st.rate_limit_cooldowns;
   sv.clock_offset_ms = st.clock_offset_ms;
   sv.wire_tick_to_trade = wire_status_latency(st.wire_tick_to_trade);
+  sv.wire_tick_to_trade_1m = wire_status_latency(st.wire_1m.tick_to_trade);
+  sv.wire_tick_to_trade_1h = wire_status_latency(st.wire_1h.tick_to_trade);
   copy_feed_status(st.feed, sv.feed);
 }
 

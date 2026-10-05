@@ -473,7 +473,7 @@ namespace {
 void append_venues(std::string& out, const StatusSnapshot& s, bool color) {
   fmt::format_to(std::back_inserter(out),
                  "\n{:<14} {:<10} {:<10} {:<10} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} "
-                 "{:>9} {:>10} {}\n",
+                 "{:>9} {:>10} {:>10} {:>10} {}\n",
                  "venue",
                  "md",
                  "user",
@@ -488,6 +488,8 @@ void append_venues(std::string& out, const StatusSnapshot& s, bool color) {
                  "rest_er",
                  "clock_ms",
                  "wire_t2t50",
+                 "t2t99_1m",
+                 "t2t99_1h",
                  "kill");
   const std::size_t n = std::min<std::size_t>(s.venue_count, kStatusMaxVenues);
   for (std::size_t i = 0; i < n; ++i) {
@@ -503,24 +505,27 @@ void append_venues(std::string& out, const StatusSnapshot& s, bool color) {
                                     to_string(static_cast<KillReason>(v.kill_reason)),
                                     reset(color))
                       : std::string("-");
-    fmt::format_to(
-        std::back_inserter(out),
-        "{:<14} {} {} {} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} {:>9} {:>10} {}\n",
-        name_of(v.name, sizeof v.name),
-        chan(v.md),
-        chan(v.user),
-        chan(v.order),
-        fmt::format("{}/{}", v.books_synced, v.books_total),
-        v.md_messages,
-        v.resyncs,
-        v.orders_sent,
-        v.cancels_sent,
-        v.order_events,
-        v.reconnects,
-        v.rest_errors,
-        v.clock_offset_ms,
-        fmt_ns(v.wire_tick_to_trade.p50_ns),
-        venue_kill);
+    fmt::format_to(std::back_inserter(out),
+                   "{:<14} {} {} {} {:>7} {:>9} {:>7} {:>8} {:>8} {:>9} {:>6} {:>7} {:>9} {:>10} "
+                   "{:>10} {:>10} "
+                   "{}\n",
+                   name_of(v.name, sizeof v.name),
+                   chan(v.md),
+                   chan(v.user),
+                   chan(v.order),
+                   fmt::format("{}/{}", v.books_synced, v.books_total),
+                   v.md_messages,
+                   v.resyncs,
+                   v.orders_sent,
+                   v.cancels_sent,
+                   v.order_events,
+                   v.reconnects,
+                   v.rest_errors,
+                   v.clock_offset_ms,
+                   fmt_ns(v.wire_tick_to_trade.p50_ns),
+                   fmt_ns(v.wire_tick_to_trade_1m.p99_ns),
+                   fmt_ns(v.wire_tick_to_trade_1h.p99_ns),
+                   venue_kill);
   }
   // Multicast feeds: one line per venue that has one.
   bool feed_header = false;
@@ -1009,6 +1014,10 @@ void json_venues(std::string& out, const StatusSnapshot& s) {
                    v.cancels_sent,
                    v.order_events);
     json_latency(out, "wire_tick_to_trade", v.wire_tick_to_trade);
+    out += ", ";
+    json_latency(out, "wire_tick_to_trade_1m", v.wire_tick_to_trade_1m);
+    out += ", ";
+    json_latency(out, "wire_tick_to_trade_1h", v.wire_tick_to_trade_1h);
     fmt::format_to(it,
                    ", \"feed\": {{\"state\": \"{}\", \"backend\": \"{}\", \"xdp_mode\": \"{}\", "
                    "\"packets\": {}, \"bytes\": {}, \"line_packets\": [{}, {}], "

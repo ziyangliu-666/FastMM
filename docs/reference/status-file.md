@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 14) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 16) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields
@@ -90,6 +90,7 @@ Index order of `latency`, each from the named stamps ([Architecture](../explanat
 | `reconnects`, `rest_errors`, `rate_limit_cooldowns` | u64 | connection health |
 | `clock_offset_ms` | i64 | venue clock minus local clock, ms |
 | `wire_tick_to_trade` | {count, p50_ns, p99_ns, p999_ns, max_ns} | socket read to order write on the network thread (the return of the write that carried the order; one write per drain of the outbound ring) |
+| `wire_tick_to_trade_1m`, `wire_tick_to_trade_1h` | {count, p50_ns, p99_ns, p999_ns, max_ns} | the same over the last minute (60 to 70 s) and the last hour (60 to 70 min) |
 | `feed` | feed entry | multicast venues only (below); `state` 0 for the others |
 
 ### Multicast feed

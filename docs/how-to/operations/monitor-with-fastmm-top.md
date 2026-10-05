@@ -61,7 +61,7 @@ scrape_configs:
 | `fastmm_kills_total`, `fastmm_venue_kills_total` | counter | kill switch trips |
 | `fastmm_flatten_state`, `fastmm_flatten_instruments_left`, `fastmm_flatten_orders_total` | gauge, gauge, counter | the operator flatten ([Operating a running session](operate-a-running-session.md#flatten)) |
 | `fastmm_latency_quantile_seconds{interval,quantile}`, `fastmm_latency_samples_total{interval}` | gauge, counter | the engine intervals above, per publishing window |
-| `fastmm_venue_*{venue}` | gauge, counter | channel states, synced books, market-data messages, order traffic, reconnects, REST errors, rate-limit cooldowns, clock offset, wire tick-to-trade quantiles |
+| `fastmm_venue_*{venue}` | gauge, counter | channel states, synced books, market-data messages, order traffic, reconnects, REST errors, rate-limit cooldowns, clock offset, wire tick-to-trade quantiles over the session and, in `fastmm_venue_tick_to_trade_recent_quantile_seconds{venue,window}` (`1m`, `1h`), over the last minute and hour |
 | `fastmm_feed_*{venue}` | gauge, counter | multicast venues only: feed state, packets, gaps, recovered and given-up sequences, per-line duplicates |
 
 The quantiles are the engine's (p50, p99, p99.9), not a histogram: they cannot be aggregated across instances.

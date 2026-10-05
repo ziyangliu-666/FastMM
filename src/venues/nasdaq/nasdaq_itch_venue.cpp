@@ -1094,7 +1094,13 @@ void NasdaqItchVenue::publish_status() noexcept {
   stats_.order = ouch_up_ ? ChannelState::Live : ChannelState::Down;
   stats_.user = stats_.order;
   stats_.resyncs = resyncs_;
-  wire_.summarize(cal, stats_.wire_tick_to_trade, stats_.order_encode, stats_.order_send);
+  wire_.summarize(cal,
+                  now_ns(),
+                  stats_.wire_tick_to_trade,
+                  stats_.order_encode,
+                  stats_.order_send,
+                  stats_.wire_1m,
+                  stats_.wire_1h);
   published_.store(stats_);
 }
 

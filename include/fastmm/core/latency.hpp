@@ -9,6 +9,7 @@
 //       WebSocket/REST send call and receive-to-wire) in venues::WireLatencyRecorder.
 #include "fastmm/core/config_macros.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -92,6 +93,82 @@ class LogLinearHistogram {
   std::uint64_t sum_ = 0;
   std::uint64_t max_ = 0;
   std::uint64_t min_ = UINT64_MAX;
+};
+
+// A LogLinearHistogram that also answers for the recent past: the last minute and the last hour,
+// at the granularity of their slices (10 s and 10 min), beside every sample since the start.
+// record() writes the open 10 s slice only; roll(now) closes slices as time passes. Its owner calls
+// it from the recording thread at its own pace (a venue's status, once a second): a slice spans
+// from one roll to the first roll 10 s or more later, and a longer gap leaves empty slices behind.
+// A window reads the closed slices it spans and the open one, so the last minute covers 60 to
+// 70 s and the last hour 60 to 70 min.
+class RecentHistogram {
+ public:
+  static constexpr std::int64_t kSliceNs = 10'000'000'000;
+  static constexpr std::size_t kMinuteSlices = 6;
+  static constexpr std::size_t kHourSlices = 6;
+  static constexpr std::size_t kSlicesPerHourSlice = 60;  // 10 min
+
+  FASTMM_FORCE_INLINE void record(std::uint64_t v) noexcept { open_.record(v); }
+
+  void roll(std::int64_t now_ns) noexcept {
+    if (!started_) {
+      started_ = true;
+      open_start_ = now_ns;
+      return;
+    }
+    if (now_ns - open_start_ < kSliceNs) return;
+    const std::int64_t elapsed = (now_ns - open_start_) / kSliceNs;
+    open_start_ += elapsed * kSliceNs;
+    // Past the hour every slice is empty: no more than the windows hold.
+    constexpr auto kKept = static_cast<std::int64_t>((kHourSlices + 1) * kSlicesPerHourSlice);
+    for (std::int64_t k = std::min(elapsed, kKept); k > 0; --k) close_slice();
+  }
+  void reset() noexcept { *this = RecentHistogram{}; }
+
+  // Every sample since the start (or the last reset).
+  [[nodiscard]] LogLinearHistogram total() const noexcept {
+    LogLinearHistogram h = total_;
+    h.merge(open_);
+    return h;
+  }
+  [[nodiscard]] LogLinearHistogram last_minute() const noexcept {
+    LogLinearHistogram h = open_;
+    for (const LogLinearHistogram& m : minute_) h.merge(m);
+    return h;
+  }
+  [[nodiscard]] LogLinearHistogram last_hour() const noexcept {
+    LogLinearHistogram h = open_;
+    h.merge(hour_open_);
+    for (const LogLinearHistogram& m : hour_) h.merge(m);
+    return h;
+  }
+
+ private:
+  void close_slice() noexcept {
+    total_.merge(open_);
+    hour_open_.merge(open_);
+    minute_[minute_next_] = open_;
+    minute_next_ = (minute_next_ + 1) % kMinuteSlices;
+    open_.reset();
+    if (++hour_open_slices_ == kSlicesPerHourSlice) {
+      hour_[hour_next_] = hour_open_;
+      hour_next_ = (hour_next_ + 1) % kHourSlices;
+      hour_open_.reset();
+      hour_open_slices_ = 0;
+    }
+  }
+
+  LogLinearHistogram open_;
+  LogLinearHistogram minute_[kMinuteSlices];
+  LogLinearHistogram hour_open_;  // the closed 10 s slices of the open 10 min one
+  LogLinearHistogram hour_[kHourSlices];
+  LogLinearHistogram total_;  // every closed slice
+  std::int64_t open_start_ = 0;
+  std::size_t minute_next_ = 0;
+  std::size_t hour_next_ = 0;
+  std::size_t hour_open_slices_ = 0;
+  bool started_ = false;
 };
 
 enum class LatencyHop : std::uint8_t {

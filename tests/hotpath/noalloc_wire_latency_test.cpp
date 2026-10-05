@@ -69,3 +69,32 @@ TEST_CASE("wire latency: a batch records every order with the stamp after the ba
   rec->end_batch(Cycles{40}, true);
   CHECK(rec->send().count() == venues::WireLatencyRecorder::kMaxBatch + 2);
 }
+
+TEST_CASE("wire latency: the last minute and the last hour beside the session") {
+  auto rec = std::make_unique<venues::WireLatencyRecorder>();
+  TscCalibration cal;  // no TSC rate: counts only
+  venues::WireLatencyStats t2t;
+  venues::WireLatencyStats encode;
+  venues::WireLatencyStats send;
+  venues::WireLatencyWindow m;
+  venues::WireLatencyWindow h;
+  constexpr std::int64_t kS = 1'000'000'000;
+  rec->summarize(cal, 0, t2t, encode, send, m, h);
+  rec->record(Cycles{1}, Cycles{10}, Cycles{20}, Cycles{30});
+  rec->record(Cycles{}, Cycles{10}, Cycles{20}, Cycles{30});
+  {
+    NoAllocScope guard(true);
+    rec->summarize(cal, 5 * kS, t2t, encode, send, m, h);
+  }
+  CHECK(t2t.count == 1);
+  CHECK(send.count == 2);
+  CHECK(m.tick_to_trade.count == 1);
+  CHECK(m.send.count == 2);
+  CHECK(h.encode.count == 2);
+  // Two minutes on, only the session and the hour still have them.
+  for (std::int64_t t = 10; t <= 120; t += 10) rec->summarize(cal, t * kS, t2t, encode, send, m, h);
+  CHECK(send.count == 2);
+  CHECK(m.send.count == 0);
+  CHECK(h.send.count == 2);
+  CHECK(h.tick_to_trade.count == 1);
+}

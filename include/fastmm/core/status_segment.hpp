@@ -37,7 +37,8 @@ inline constexpr std::uint64_t kStatusMagic = 0x315441545353464DULL;  // "MFSSTA
 // 13: balances per venue and asset; GatewayBalanceShort.
 // 14: the venues' mark, index and funding per derivative.
 // 15: balance_withheld.
-inline constexpr std::uint32_t kStatusVersion = 15;
+// 16: each venue's wire tick-to-trade over the last minute and the last hour.
+inline constexpr std::uint32_t kStatusVersion = 16;
 inline constexpr std::size_t kStatusMaxVenues = 8;
 inline constexpr std::size_t kStatusMaxRejectReasons = 6;  // per kind (risk, venue)
 inline constexpr std::size_t kStatusMaxUnderlyings = 8;    // kMaxUnderlyings
@@ -117,7 +118,9 @@ struct StatusVenue {
   std::uint64_t rest_errors = 0;
   std::uint64_t rate_limit_cooldowns = 0;
   std::int64_t clock_offset_ms = 0;
-  StatusLatency wire_tick_to_trade;
+  StatusLatency wire_tick_to_trade;     // the session's
+  StatusLatency wire_tick_to_trade_1m;  // the last minute's (60-70 s)
+  StatusLatency wire_tick_to_trade_1h;  // the last hour's (60-70 min)
   StatusFeed feed;
 };
 
