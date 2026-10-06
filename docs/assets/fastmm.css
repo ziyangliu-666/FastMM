@@ -5,13 +5,13 @@
   --md-code-font: "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* Ink header, teal accent. */
+/* The header takes the page's own background and carries the navy wordmark; teal accent. */
 [data-md-color-primary="custom"] {
-  --md-primary-fg-color: #13202e;
-  --md-primary-fg-color--light: #243447;
-  --md-primary-fg-color--dark: #0b141d;
-  --md-primary-bg-color: #f4f6f8;
-  --md-primary-bg-color--light: #f4f6f8b3;
+  --md-primary-fg-color: #ffffff;
+  --md-primary-fg-color--light: #f4f6f8;
+  --md-primary-fg-color--dark: #e6eaef;
+  --md-primary-bg-color: #0b1f44;
+  --md-primary-bg-color--light: #0b1f44a6;
   --md-typeset-a-color: #0b6e75;
 }
 
@@ -22,6 +22,11 @@
 
 [data-md-color-scheme="slate"][data-md-color-primary="custom"] {
   --md-default-bg-color: #12171d;
+  --md-primary-fg-color: #12171d;
+  --md-primary-fg-color--light: #1b222b;
+  --md-primary-fg-color--dark: #0d1116;
+  --md-primary-bg-color: #e8ebef;
+  --md-primary-bg-color--light: #e8ebefa6;
   --md-typeset-a-color: #5cc8c8;
 }
 
@@ -88,4 +93,172 @@
 /* The first paragraph of a page, under its title, is its lede. */
 .md-content__inner > h1:first-child + p {
   font-size: 0.86rem;
+}
+
+/* Header: no logo, the site name alone; a hairline under the tabs instead of a band of colour. */
+.md-header__button.md-logo,
+.md-nav__title .md-logo {
+  display: none;
+}
+
+.md-header__title {
+  font-weight: 650;
+}
+
+/* With no logo before it, the site name lines up with the tabs under it. */
+@media screen and (min-width: 76.25em) {
+  [dir="ltr"] .md-header__title {
+    margin-left: 0.6rem;
+  }
+}
+
+.md-header {
+  box-shadow: none;
+}
+
+.md-header--shadow,
+.md-tabs {
+  box-shadow: 0 1px 0 var(--md-default-fg-color--lightest);
+}
+
+.md-tabs__link {
+  font-weight: 500;
+}
+
+@media screen and (min-width: 60em) {
+  .md-search__form {
+    background-color: var(--md-default-fg-color--lightest);
+    border-radius: 0.2rem;
+  }
+}
+
+.md-search__input::placeholder,
+.md-search__icon {
+  color: var(--md-default-fg-color--light);
+}
+
+/* The drawer's title is the site name, without the room Material keeps for a logo. */
+.md-nav--primary > .md-nav__title[for="__drawer"] {
+  height: auto;
+  padding: 1rem 0.8rem;
+  line-height: 1.5;
+  box-shadow: 0 1px 0 var(--md-default-fg-color--lightest);
+}
+
+/* Home page: the logo's animation, two ways in, then the features. */
+.fastmm-hero {
+  padding: 1.2rem 0 0.4rem;
+  text-align: center;
+}
+
+.md-typeset .fastmm-hero h1 {
+  margin: 0 0 1.6rem;
+}
+
+.fastmm-hero img {
+  width: 100%;
+  max-width: 34rem;
+  height: auto;
+}
+
+.fastmm-hero--dark,
+[data-md-color-scheme="slate"] .fastmm-hero--light {
+  display: none !important;
+}
+
+[data-md-color-scheme="slate"] .fastmm-hero--dark {
+  display: inline !important;
+}
+
+.md-content__inner:has(.fastmm-hero) > .md-content__button {
+  display: none;
+}
+
+.md-typeset .fastmm-hero .md-button {
+  margin: 0 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 0.2rem;
+  color: var(--md-default-fg-color);
+  border-color: var(--md-default-fg-color--lighter);
+}
+
+.md-typeset .fastmm-hero .md-button--primary {
+  background-color: #0b1f44;
+  border-color: #0b1f44;
+  color: #ffffff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .fastmm-hero .md-button--primary {
+  background-color: #e8ebef;
+  border-color: #e8ebef;
+  color: #0b1f44;
+}
+
+.md-typeset .fastmm-hero .md-button:hover {
+  border-color: var(--md-accent-fg-color);
+}
+
+/* The features: a grid of links, each a title and one sentence. */
+.md-typeset ul.fastmm-features {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.4rem 1rem;
+  margin: 2rem -0.8rem 1rem;
+  padding: 0;
+  list-style: none;
+}
+
+@media screen and (min-width: 45em) {
+  .md-typeset ul.fastmm-features {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media screen and (min-width: 60em) {
+  .md-typeset ul.fastmm-features {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.md-typeset ul.fastmm-features li {
+  max-width: none;
+  margin: 0;
+}
+
+.md-typeset ul.fastmm-features a {
+  display: block;
+  height: 100%;
+  padding: 0.8rem;
+  border-radius: 0.3rem;
+  color: var(--md-default-fg-color--light);
+  transition: background-color 0.15s;
+}
+
+.md-typeset ul.fastmm-features a:hover {
+  background-color: var(--md-default-fg-color--lightest);
+}
+
+.md-typeset ul.fastmm-features strong {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--md-default-fg-color);
+  font-weight: 600;
+}
+
+.md-typeset ul.fastmm-features strong::after {
+  content: " →";
+  color: var(--md-default-fg-color--lighter);
+  transition: color 0.15s;
+}
+
+.md-typeset ul.fastmm-features a:hover strong::after {
+  color: var(--md-typeset-a-color);
+}
+
+.md-typeset ul.fastmm-features span {
+  display: block;
+}
+
+.md-typeset ul.fastmm-features code {
+  color: inherit;
 }

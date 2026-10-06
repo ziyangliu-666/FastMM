@@ -1,8 +1,11 @@
 """MkDocs hooks for the FastMM site (mkdocs.yml `hooks:`).
 
-Four jobs:
+Five jobs:
 
   * `on_page_markdown` hides the navigation sidebar on the home page;
+  * `on_page_content` turns the home page's title into its hero, the logo's animation and two
+    links, and lays out the feature list under it as a grid of links (docs/README.md stays plain Markdown
+    for GitHub);
   * `on_page_markdown` turns a relative link that leaves `docs/` (to a test, an example or
     `CONTRIBUTING.md`) into a link to the same file on GitHub, so the pages stay browsable on
     GitHub and `tools/docs_links.py --check` keeps passing while the site has no dead links;
@@ -63,8 +66,8 @@ def _rewrite_target(target: str, page_dir: Path, docs_dir: Path, repo_url: str) 
 
 def on_page_markdown(markdown: str, page, config, files) -> str:  # noqa: ANN001, ARG001
     if page.is_homepage:
-        # The home page is short: no navigation sidebar (front matter would show on GitHub).
-        page.meta.setdefault("hide", ["navigation"])
+        # The home page is short: no sidebars (front matter would show on GitHub).
+        page.meta.setdefault("hide", ["navigation", "toc"])
     repo_url = config.get("repo_url")
     if not repo_url:
         return markdown
@@ -214,6 +217,39 @@ def _check_page_links(html: Path) -> list[str]:
         if not (html / href.split("#")[0]).exists():
             missing.append(href)
     return missing
+
+
+HOME_TITLE = re.compile(r"<h1[^>]*>.*?</h1>\s*<ul>(.*?)</ul>", re.S)
+FEATURE = re.compile(r'<li><strong><a href="([^"]*)">(.*?)</a>\.</strong>\s*(.*?)</li>', re.S)
+
+
+def on_page_content(html: str, page, config, files) -> str:  # noqa: ANN001, ARG001
+    if not page.is_homepage:
+        return html
+    repo_url = config.get("repo_url") or ""
+
+    def hero(m: re.Match[str]) -> str:
+        # Each feature is one link to its page: the title, then the sentence.
+        features, n = FEATURE.subn(
+            r'<li><a href="\1"><strong>\2</strong><span>\3</span></a></li>', m.group(1)
+        )
+        if n == 0:
+            raise RuntimeError("home page: the features have no links")
+        return (
+            '<div class="fastmm-hero"><h1>'
+            '<img class="fastmm-hero--light" src="assets/brand/fastmm-intro.gif" alt="FastMM">'
+            '<img class="fastmm-hero--dark" src="assets/brand/fastmm-intro-dark.gif" alt="FastMM">'
+            "</h1>"
+            '<a class="md-button md-button--primary" href="getting-started/quickstart/">Get started</a>'
+            f'<a class="md-button" href="{repo_url}">GitHub</a>'
+            "</div>"
+            f'<ul class="fastmm-features">{features}</ul>'
+        )
+
+    out, n = HOME_TITLE.subn(hero, html, count=1)
+    if n != 1:
+        raise RuntimeError("home page: no title and feature list to turn into the hero")
+    return out
 
 
 def on_post_build(config) -> None:  # noqa: ANN001

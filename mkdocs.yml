@@ -18,7 +18,9 @@ hooks:
 
 theme:
   name: material
+  custom_dir: tools/mkdocs_theme
   language: en
+  favicon: assets/brand/favicon.ico
   icon:
     repo: fontawesome/brands/github
   palette:

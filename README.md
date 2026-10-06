@@ -1,11 +1,16 @@
-# FastMM
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://ziy.bio/FastMM/assets/brand/fastmm-logo-white.svg">
+    <img src="https://ziy.bio/FastMM/assets/brand/fastmm-logo.svg" alt="FastMM" height="52">
+  </picture>
+</h1>
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml)
 [![Docs](https://github.com/ziyangliu-666/FastMM/actions/workflows/docs.yml/badge.svg)](https://ziy.bio/FastMM/)
 [![PyPI](https://img.shields.io/pypi/v/fastmm-engine)](https://pypi.org/project/fastmm-engine/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-FastMM is a low-latency market-making engine.
+FastMM is a low-latency market-making engine. Read the [documentation](https://ziy.bio/FastMM/).
 
 > If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
 
@@ -55,20 +60,6 @@ class TouchMM(fastmm.Strategy):
 ## Exchanges
 
 Binance, OKX, Bybit, Gate, Deribit, Gemini and Coinbase. Nasdaq over TotalView-ITCH and OUCH 5.0.
-
-## Documentation
-
-- [Quickstart](docs/getting-started/quickstart.md)
-- [Quote on one exchange, hedge on another](docs/how-to/strategies/xmm.md)
-- [Account pools](docs/reference/venues.md#account-pools)
-- [Low-latency TCP](docs/how-to/operations/low-latency-tcp.md)
-- [Run on a testnet or demo account](docs/how-to/operations/run-on-testnet.md)
-- [Run in production](docs/how-to/operations/running-in-production.md)
-- [How FastMM works](docs/explanation/how-it-works.md)
-- [How fast it is](docs/explanation/how-fast.md)
-- [Benchmarks](docs/explanation/benchmarks.md)
-
-Full documentation: <https://ziy.bio/FastMM/>
 
 ## License
 
