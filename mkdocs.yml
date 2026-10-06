@@ -212,6 +212,7 @@ nav:
       - api/python.md
   - Explanation:
       - explanation/how-it-works.md
+      - explanation/how-fast.md
       - explanation/benchmarks.md
       - explanation/economics.md
       - explanation/backtesting.md

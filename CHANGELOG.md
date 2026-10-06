@@ -259,6 +259,12 @@ All notable changes are recorded here (Keep a Changelog format).
   double-linked list` part-way through the run. The merge now yields the input's own event and
   advances that input on the next call, so nothing is copied.
 
+### Documentation
+- README rewritten around the engine's features; a new page, How fast it is, with the latency and
+  load of a production session.
+- README rewritten around the engine's features; a new page, How fast it is, gives the latency and
+  load of a production session.
+
 ## [0.3.0] - 2026-10-03
 
 ### Added

@@ -5,7 +5,18 @@
 [![PyPI](https://img.shields.io/pypi/v/fastmm-engine)](https://pypi.org/project/fastmm-engine/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-FastMM is a low-latency market-making engine for crypto exchanges. You write the quoting logic in Python or C++; FastMM runs it in backtests and live, quotes on one exchange and hedges on another, and recovers from crashes without losing track of a trade.
+FastMM is a low-latency market-making engine.
+
+> If you are running FastMM on Binance, try [bndesk](https://github.com/ziyangliu-666/bndesk), a real-time dashboard for your accounts.
+
+## Features
+
+- **Strategies in C++ or Python.** Python hooks marked `@fastmm.hot` compile to machine code with Numba.
+- **One strategy file for backtest and live.** Replays are deterministic, and the simulated exchange models queue position.
+- **Account pools.** Several sub-accounts trade behind one venue, and orders spread across them.
+- **Gateway.** One `fastmm-gateway` holds the exchange connections; several strategy processes attach to it and can stop or restart without dropping them.
+- **Live control.** `fastmm-ctl` changes a running session's parameters without a restart.
+- **Low-latency tuning.** Host and network tuning built in, such as core pinning and kernel bypass.
 
 ## Quickstart
 
@@ -43,23 +54,18 @@ class TouchMM(fastmm.Strategy):
 
 ## Exchanges
 
-| Exchange | Markets | Test environment |
-|---|---|---|
-| Binance | spot, perpetual futures | Binance Demo |
-| OKX | spot, perpetual futures | OKX Demo |
-| Bybit | spot, perpetual futures | Bybit testnet |
-| Gate | USDT perpetual futures | Gate futures testnet |
-| Deribit | options, futures | Deribit testnet |
-| Gemini | spot, perpetual futures | Gemini sandbox |
-| Coinbase | spot | Coinbase Exchange sandbox |
+Binance, OKX, Bybit, Gate, Deribit, Gemini and Coinbase. Nasdaq over TotalView-ITCH and OUCH 5.0.
 
 ## Documentation
 
 - [Quickstart](docs/getting-started/quickstart.md)
 - [Quote on one exchange, hedge on another](docs/how-to/strategies/xmm.md)
+- [Account pools](docs/reference/venues.md#account-pools)
+- [Low-latency TCP](docs/how-to/operations/low-latency-tcp.md)
 - [Run on a testnet or demo account](docs/how-to/operations/run-on-testnet.md)
 - [Run in production](docs/how-to/operations/running-in-production.md)
 - [How FastMM works](docs/explanation/how-it-works.md)
+- [How fast it is](docs/explanation/how-fast.md)
 - [Benchmarks](docs/explanation/benchmarks.md)
 
 Full documentation: <https://ziy.bio/FastMM/>
