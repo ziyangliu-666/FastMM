@@ -45,6 +45,7 @@ updated_ns 1758600000000000000
 |---|---|---|---|---|
 | `fastmm-ctl kill` | Global, requested | `kill switch requested (flags=0x1); pulling quotes and cancelling all` | WARN | The session keeps running with quoting off; `fastmm-ctl unkill` clears it |
 | `fastmm-ctl stop` | Global, requested | `fastmm-live: shutting down (control socket: stop)`, then `kill switch requested` | WARN | [Shutdown sequence](#shutdown-sequence); exit code 0 |
+| `fastmm-ctl handoff`, or a `fastmm-live --takeover` ([Hand over a running session](hand-over-a-session.md)) | Global, requested | `fastmm-live: shutting down (control socket: handoff)`, then `kill switch requested` | WARN | Shutdown sequence, then `instance lock <path> released`; exit code 0 |
 | Ctrl-C (SIGINT) or SIGTERM | Global, requested | `fastmm-live: shutting down (signal)`, then `kill switch requested (flags=0x1); pulling quotes and cancelling all` | WARN | [Shutdown sequence](#shutdown-sequence); exit code 0 |
 | `--duration` elapsed | Global, requested | `fastmm-live: shutting down (duration elapsed)`, then the same `kill switch requested` line | WARN | Shutdown sequence; exit code 0 |
 | A venue's order-event ring overflowed | Global, requested | `order ring overflow on <venue>: tripping the kill switch`, then `fastmm-live: shutting down (order ring overflow)` | ERROR | Shutdown sequence; exit code 5 |
@@ -116,8 +117,9 @@ At shutdown the venue's REST cancel-all still runs. After a fatal key error it u
 4. It waits 200 ms so that the engine's queued cancels reach the wire, then stops the engine thread.
 5. Each network thread sends what is still queued, runs its reactor for up to 100 ms more and disconnects. The journal is flushed and closed with a trailer block.
 6. The summary lines are logged: engine counters (`fastmm-live: events=... risk_rejects=<n> venue_rejects=<n>`), the rejects per reason for each kind that had any (`fastmm-live: risk_rejects by reason: MaxPosition 12, RateLimit 5`), PnL (`fastmm-live: realized_pnl=... unrealized_pnl=... fees=...`, and `funding=` when any was booked), one `[<venue>] final:` line per venue, the clock statistics, after a kill that was not requested or any venue kill `fastmm-live: kill switch flags=<hex> reason=<reason> kills=<n> venue_kills=<n>` (ERROR), then `fastmm-live: shutdown took <n> ms (cancel_all ok)` or `(cancel_all FAILED)`.
-7. The status file is marked `stopped` and left in place.
-8. `fastmm-live: exit code <n>` is logged last.
+7. The status file is marked `stopped` and left in place. The store records the session's close.
+8. A session holding the instance lock releases it (`instance lock <path> released`): a process waiting with `--standby` or `--takeover` starts from here ([Hand over a running session](hand-over-a-session.md)).
+9. `fastmm-live: exit code <n>` is logged last.
 
 Two Binance Demo sessions (one venue, one symbol) shut down in 555 ms and 697 ms. The upper bound is about 5 s per REST request that times out, plus 300 ms.
 

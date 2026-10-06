@@ -19,6 +19,7 @@ Each program defines its own exit codes. `1` from `fastmm-live` means the proces
 | 5 | `cancel_all FAILED`, the journal cannot be opened or written (a full filesystem trips the kill switch), an order-event ring overflowed, the gateway closed the attachment, or an uncaught error | not certain | no: check the venue for open orders first |
 | 6 | the engine tripped the kill switch itself, `on_kill = "exit"`, `cancel_all ok`; or, at start, a `max_loss` trip is latched in `[engine] kill_file` (nothing started) | yes | no: find the kill reason in the log; a latched trip needs `--clear-kill` |
 | 7 | a Python strategy's slow tier failed, `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` never returns it) | yes | no: fix the slow method |
+| 8 | another process holds the instance lock (`[engine] instance_lock`), or `--takeover` failed: the holder refused or did not answer the handoff, or kept the lock past `handoff_timeout_ms` | nothing started | no: another session trades this engine ([Hand over a running session](../how-to/operations/hand-over-a-session.md)) |
 
 A restart after 5, 6 or 7 is a decision for a person; the systemd unit does not make it ([Deploy](../how-to/operations/deploy.md#run-under-systemd)). What a restarted session carries over: [Run in production](../how-to/operations/running-in-production.md#restarts).
 

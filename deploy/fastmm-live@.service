@@ -28,9 +28,10 @@ ExecStart=/opt/fastmm/bin/fastmm-live --config /etc/fastmm/%i.toml --gateway /va
 # A crash comes back: the gateway cancelled this strategy's orders when its socket closed, and the
 # new process restores its position from its store and the venue's executions. It exits 5 when the
 # gateway goes away and is not restarted for that; it restarts with the gateway (PartOf). 2 and 3
-# need a config fix; 6 and 7 need a human (docs/reference/errors.md).
+# need a config fix; 6 and 7 need a human (docs/reference/errors.md); 8: another process holds
+# the instance lock.
 Restart=on-failure
-RestartPreventExitStatus=2 3 5 6 7
+RestartPreventExitStatus=2 3 5 6 7 8
 RestartSec=2
 # SIGTERM pulls the quotes; the gateway cancels the orders when the socket closes.
 KillSignal=SIGTERM

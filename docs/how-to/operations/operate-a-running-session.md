@@ -8,7 +8,7 @@ fastmm-ctl --name sim-local pull --instrument BTCUSDT
 fastmm-ctl --name sim-local flatten --max-slippage-bps 30
 ```
 
-Every command except `param`, `status` and `stop` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too.
+Every command except `param`, `status`, `stop` and `handoff` becomes a message on the engine's control ring, so the journal records it and a replay reproduces the session exactly ([Determinism](../../explanation/determinism.md)). `param` is validated against the strategy's schema on the control thread and reaches the engine as a `ParamUpdate`, which the journal records too.
 
 ## The socket
 
@@ -38,6 +38,7 @@ The control thread reads the socket every 50 ms. A command reaches the engine at
 | `kill` | Trips the global kill switch: quoting off, every quote pulled, every working order cancelled. The position stays. |
 | `unkill` | Clears it and resumes quoting, as `SIGHUP` does, including a latched `max_loss` trip ([Kill switch and shutdown](kill-switch-and-shutdown.md#the-latched-loss-budget)). |
 | `stop` | Shuts the session down as `SIGTERM` does: kill switch, cancel-all on every venue, exit. |
+| `handoff` | `stop` for the process waiting on the instance lock (`fastmm-live --standby` or `--takeover`): the same shutdown, then the lock is released last. Refused by a session that holds no lock ([Hand over a running session](hand-over-a-session.md)). |
 | `status` | The `fastmm-top` frame plus the limits the session runs with. |
 | `help` | The command list. |
 

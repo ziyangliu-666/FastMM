@@ -396,6 +396,11 @@ Config Config::parse(std::string_view text, const LoadOptions& opts, std::string
       fail_at(*t->get("journal_retention_days"), "journal_retention_days must be >= 0 (0 keeps)");
     get(*t, "epoch_file", e.epoch_file);
     get(*t, "kill_file", e.kill_file);
+    get(*t, "instance_lock", e.instance_lock);
+    get(*t, "lock_file", e.lock_file);
+    get(*t, "handoff_timeout_ms", e.handoff_timeout_ms);
+    if (e.handoff_timeout_ms <= 0)
+      fail_at(*t->get("handoff_timeout_ms"), "handoff_timeout_ms must be > 0");
     get(*t, "rng_seed", e.rng_seed);
     get(*t, "md_ring_bytes", e.md_ring_bytes);
     get(*t, "order_ring_bytes", e.order_ring_bytes);
@@ -852,6 +857,9 @@ std::string Config::redacted() const {
   kq("journal_dir", engine.journal_dir);
   kq("epoch_file", engine.epoch_file);
   kq("kill_file", engine.kill_file);
+  kv("instance_lock", engine.instance_lock);
+  kq("lock_file", engine.lock_file);
+  kv("handoff_timeout_ms", engine.handoff_timeout_ms);
   kv("rng_seed", engine.rng_seed);
   kv("max_events_per_step", engine.max_events_per_step);
   kv("feed_budget_per_ring", engine.feed_budget_per_ring);
@@ -1046,6 +1054,9 @@ std::string Config::effective_toml() const {
   e.insert("journal_retention_days", static_cast<std::int64_t>(engine.journal_retention_days));
   e.insert("epoch_file", engine.epoch_file);
   e.insert("kill_file", engine.kill_file);
+  e.insert("instance_lock", engine.instance_lock);
+  e.insert("lock_file", engine.lock_file);
+  e.insert("handoff_timeout_ms", static_cast<std::int64_t>(engine.handoff_timeout_ms));
   e.insert("rng_seed", static_cast<std::int64_t>(engine.rng_seed));
   e.insert("md_ring_bytes", static_cast<std::int64_t>(engine.md_ring_bytes));
   e.insert("order_ring_bytes", static_cast<std::int64_t>(engine.order_ring_bytes));

@@ -14,10 +14,11 @@
 // it can already send the process a signal. It carries no secrets and answers no queries beyond
 // what the status file already publishes.
 //
-// Everything but `param`, `status` and `stop` becomes a message on the engine's control ring, so
-// the journal records it and a replay reproduces it (docs/explanation/determinism.md). `param` is
-// validated by ParamPublisher on this thread and reaches the engine as a ParamUpdate, which the
-// journal records too. `stop` is exactly what SIGTERM does.
+// Everything but `param`, `status`, `stop` and `handoff` becomes a message on the engine's control
+// ring, so the journal records it and a replay reproduces it (docs/explanation/determinism.md).
+// `param` is validated by ParamPublisher on this thread and reaches the engine as a ParamUpdate,
+// which the journal records too. `stop` is exactly what SIGTERM does; `handoff` is `stop` for a
+// successor waiting on the instance lock.
 #include "fastmm/core/instrument.hpp"
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/risk_limits.hpp"
@@ -46,6 +47,9 @@ struct ControlPlane {
   std::function<std::string()> status;
   // Runs the shutdown SIGTERM runs (kill switch, cancel-all on every venue, stop).
   std::function<void()> request_stop;
+  // `handoff`: the same shutdown, for a successor waiting on the instance lock, which this session
+  // releases once it is done (live/instance_lock.hpp). The reason it cannot, empty when accepted.
+  std::function<std::string()> handoff;
   // Clears the kill switch and the latched kill state, as SIGHUP does. False: the ring was full.
   std::function<bool()> clear_kill;
   // Venue name -> id, false when no venue has that name.
@@ -71,6 +75,15 @@ struct ControlPlane {
 // removed. The descriptor, or -1 with the reason in `error`. The gateway's socket is made the same
 // way (live/gateway.hpp).
 [[nodiscard]] int listen_seqpacket(const std::string& path, std::string* error);
+
+// The client side, what fastmm-ctl does: connect to `path`, send `request` as one datagram and
+// wait up to `timeout_ms` for the reply datagram. An empty request only connects (is a session
+// listening there?). Unreachable and NoReply leave the reason in `reply`.
+enum class ControlReply : std::uint8_t { Answered, Unreachable, NoReply };
+[[nodiscard]] ControlReply control_request(const std::string& path,
+                                           std::string_view request,
+                                           int timeout_ms,
+                                           std::string& reply);
 
 // The listener. open() creates the socket, poll() answers whatever has arrived since the last
 // call without ever blocking, and close() removes it.

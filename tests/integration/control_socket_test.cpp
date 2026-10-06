@@ -9,10 +9,13 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace fastmm;
@@ -286,4 +289,56 @@ TEST_CASE("integration.control: the socket answers one command per connection, m
     CHECK(std::filesystem::exists(file));
     std::filesystem::remove(file);
   }
+}
+
+TEST_CASE("integration.control: handoff is refused without a handler and passes its refusal on") {
+  Fake f;
+  CHECK(f.run("handoff").starts_with("error"));  // a plane that cannot hand over
+  std::string refusal = "this session holds no instance lock";
+  int calls = 0;
+  f.plane.handoff = [&] {
+    ++calls;
+    return refusal;
+  };
+  const std::string reply = f.run("handoff");
+  CHECK(reply.starts_with("error"));
+  CHECK(reply.find("no instance lock") != std::string::npos);
+  refusal.clear();
+  CHECK(f.run("handoff").starts_with("ok"));
+  CHECK(f.run("handoff now").starts_with("error"));
+  CHECK(calls == 2);
+  CHECK(f.sent.empty());  // nothing reaches the engine's ring: it is the session's shutdown
+  CHECK(f.run("help").find("handoff") != std::string::npos);
+}
+
+TEST_CASE("integration.control: control_request asks, probes and reports an absent session") {
+  Fake f;
+  const std::string path = (std::filesystem::temp_directory_path() /
+                            ("fastmm-ctlreq-" + std::to_string(::getpid()) + ".ctl"))
+                               .string();
+  std::filesystem::remove(path);
+  std::string reply;
+  CHECK(control_request(path, "status", 200, reply) == ControlReply::Unreachable);
+  CHECK(control_request(path, {}, 200, reply) == ControlReply::Unreachable);
+
+  ControlSocket socket;
+  std::string error;
+  REQUIRE_MESSAGE(socket.open(path, &error), error);
+  std::atomic<bool> done{false};
+  std::thread control([&] {
+    while (!done.load()) {
+      socket.poll(f.plane);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+  CHECK(control_request(path, "status", 2000, reply) == ControlReply::Answered);
+  CHECK(reply == "state      RUNNING\n");
+  CHECK(control_request(path, {}, 2000, reply) == ControlReply::Answered);  // the probe
+  CHECK(control_request(path, "stop", 2000, reply) == ControlReply::Answered);
+  CHECK(reply.starts_with("ok"));
+  done.store(true);
+  control.join();
+  CHECK(f.stopped);
+  socket.close();
+  CHECK(control_request(path, {}, 200, reply) == ControlReply::Unreachable);
 }

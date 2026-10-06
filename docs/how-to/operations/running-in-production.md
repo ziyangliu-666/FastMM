@@ -15,7 +15,7 @@ The shipped configs point at a testnet, Demo Mode or a local simulator; a main-n
 | Realised PnL of the session | starts at zero; the previous session's is logged at start and kept in the store |
 | A running flatten | abandoned ([Operating a running session](operate-a-running-session.md#a-restart-during-a-flatten)) |
 
-The shipped systemd unit therefore restarts after a crash ([Deploy](deploy.md#run-under-systemd)). Against `fastmm-sim-exchange`: `kill -9` while quoting, restart after 2 s, the one order that filled in between booked from the executions, the other cancelled as unknown, and engine and venue at the same position with no open orders.
+The shipped systemd unit therefore restarts after a crash ([Deploy](deploy.md#run-under-systemd)). To replace a running process with a new build or configuration, hand it over instead of stopping it first: the new process loads its reference data while the old one still trades, and `[engine] instance_lock` keeps the two from trading at once ([Hand over a running session](hand-over-a-session.md)). Against `fastmm-sim-exchange`: `kill -9` while quoting, restart after 2 s, the one order that filled in between booked from the executions, the other cancelled as unknown, and engine and venue at the same position with no open orders.
 
 ## Venue-side cancel switches
 

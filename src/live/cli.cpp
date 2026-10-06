@@ -10,7 +10,8 @@
 // 3 bad config / strategy / parameters (including a strategy name registered twice by different
 // code), 4 venue reference data failed, 5 runtime failure (cancel-all failed, journal, ring
 // overflow), 6 the engine tripped the kill switch itself and [engine] on_kill = "exit", 7 the slow
-// tier of a Python strategy failed (python -m fastmm run; fastmm-live never returns it).
+// tier of a Python strategy failed (python -m fastmm run; fastmm-live never returns it), 8 another
+// process holds the instance lock or a --takeover failed.
 #include "command_line.hpp"
 
 #include "fastmm/cli/live.hpp"
@@ -46,7 +47,9 @@ constexpr const char* kFooter =
     "the stop, exits at once with code 5 without waiting for cancel_all.\n"
     "SIGHUP clears the kill switch and resumes quoting (on_kill = \"stay\").\n"
     "fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,\n"
-    "kill, unkill, stop and status.\n"
+    "kill, unkill, stop, handoff and status.\n"
+    "With [engine] instance_lock = true (implied by --standby and --takeover) one process\n"
+    "of an engine name trades at a time; `handoff` stops the holder for the successor.\n"
     "A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue\n"
     "killed) does the same and exits with code 6, unless [engine] on_kill = \"stay\".\n"
     "A max_loss trip is latched in [engine] kill_file: the next start refuses to trade\n"
@@ -59,7 +62,8 @@ constexpr const char* kFooter =
     "  4  venue reference data failed to load\n"
     "  5  runtime failure: cancel_all failed, journal, ring overflow, forced exit, uncaught error\n"
     "  6  kill switch tripped by the engine (on_kill = \"exit\"), or a latched max_loss trip\n"
-    "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok";
+    "  7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok\n"
+    "  8  another process holds the instance lock, or --takeover failed; nothing traded";
 
 }  // namespace
 
@@ -121,6 +125,15 @@ int live(int argc, char** argv, std::span<const StrategyModule> modules) {
                opts.clear_kill,
                "clear a latched kill switch and the cumulative PnL before starting; arms the "
                "whole [risk] max_loss budget again");
+  app.add_flag("--standby",
+               opts.standby,
+               "while another process holds the instance lock, load the reference data, then wait "
+               "for the lock instead of exiting; trade once it is free");
+  app.add_flag("--takeover",
+               opts.takeover,
+               "--standby, and ask the process holding the lock to hand over (control socket "
+               "`handoff`); exit 8 if it refuses or keeps the lock past [engine] "
+               "handoff_timeout_ms");
   app.add_option("--log", log_path, "write the log to a file (warnings are mirrored to stderr)")
       ->option_text("<path>");
   app.add_flag(

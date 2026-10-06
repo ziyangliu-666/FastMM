@@ -123,6 +123,7 @@ def run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
              journal: Optional[str] = None, no_journal: bool = False,
              status: Optional[str] = None, no_status: bool = False, log: Optional[str] = None,
              record_raw: Optional[str] = None, allow_inline_secrets: bool = False,
+             standby: bool = False, takeover: bool = False,
              fills_capacity: Optional[int] = None, recent_rows: int = 4096,
              slow_tier_timeout_ms: int = SLOW_TIER_TIMEOUT_MS) -> int:
     """Run a strategy with ``@fastmm.hot`` methods against the venues in ``config`` until SIGINT,
@@ -132,9 +133,10 @@ def run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
     configuration's ``[strategy.params]`` when ``[strategy] name`` names the class (``py:Class``,
     ``module:Class`` or ``Class``), then from ``params``.
 
-    The keyword arguments up to ``allow_inline_secrets`` are the ``fastmm-live`` options:
+    The keyword arguments up to ``takeover`` are the ``fastmm-live`` options:
     ``duration`` in seconds or as ``"60s"``, ``journal``, ``status`` and ``log`` paths,
-    ``record_raw`` directory. ``fills_capacity`` and ``recent_rows`` size the slow methods' fills
+    ``record_raw`` directory, ``standby`` and ``takeover`` (wait for, or take over, the instance
+    lock of a running session of the same engine name). ``fills_capacity`` and ``recent_rows`` size the slow methods' fills
     ring and recent rows as in run_backtest. ``slow_tier_timeout_ms``: how long to wait for the slow
     thread after the session stops; run_live warns and returns if it has not returned by then.
 
@@ -145,7 +147,7 @@ def run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
     rc, _ = _run_live(strategy, config, params, duration=duration, dry_run=dry_run,
                       journal=journal, no_journal=no_journal, status=status, no_status=no_status,
                       log=log, record_raw=record_raw, allow_inline_secrets=allow_inline_secrets,
-                      fills_capacity=fills_capacity, recent_rows=recent_rows,
+                      standby=standby, takeover=takeover, fills_capacity=fills_capacity, recent_rows=recent_rows,
                       slow_tier_timeout_ms=slow_tier_timeout_ms)
     return rc
 
@@ -155,7 +157,8 @@ def _run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
               dry_run: bool, journal: Optional[str], no_journal: bool, status: Optional[str],
               no_status: bool, log: Optional[str], record_raw: Optional[str],
               allow_inline_secrets: bool, fills_capacity: Optional[int], recent_rows: int,
-              slow_tier_timeout_ms: int) -> Tuple[int, bool]:
+              slow_tier_timeout_ms: int, standby: bool = False,
+              takeover: bool = False) -> Tuple[int, bool]:
     """run_live; also returns whether the slow thread was still running when it returned."""
     global _session_publisher
     try:
@@ -255,7 +258,7 @@ def _run_live(strategy: Any, config: Union[str, "os.PathLike[str]"],
         "duration_ns": duration_ns, "dry_run": dry_run, "journal": journal,
         "no_journal": no_journal, "status": status, "no_status": no_status, "log": log,
         "record_raw": record_raw, "allow_inline_secrets": allow_inline_secrets,
-        "max_param_age_ms": age,
+        "max_param_age_ms": age, "standby": standby, "takeover": takeover,
     }
     metadata = replay.journal_meta(cls, param_values, age)
     sys.stdout.flush()

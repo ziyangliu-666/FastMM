@@ -104,6 +104,23 @@ TEST_CASE("core.config: feed_budget_per_ring and net_spin_dedicated") {
                        ConfigError);
 }
 
+TEST_CASE("core.config: instance_lock, lock_file and handoff_timeout_ms") {
+  const Config defaults = Config::parse("[engine]\n");
+  CHECK_FALSE(defaults.engine.instance_lock);
+  CHECK(defaults.engine.lock_file.empty());
+  CHECK(defaults.engine.handoff_timeout_ms == 75'000);
+  const Config cfg = Config::parse(
+      "[engine]\ninstance_lock = true\nlock_file = \"/run/mm.lock\"\nhandoff_timeout_ms = 5000\n");
+  CHECK(cfg.engine.instance_lock);
+  CHECK(cfg.engine.lock_file == "/run/mm.lock");
+  CHECK(cfg.engine.handoff_timeout_ms == 5000);
+  CHECK(cfg.effective_toml().find("instance_lock = true") != std::string::npos);
+  CHECK(cfg.effective_toml().find("handoff_timeout_ms = 5000") != std::string::npos);
+  CHECK_THROWS_WITH_AS(Config::parse("[engine]\nhandoff_timeout_ms = 0\n"),
+                       doctest::Contains("handoff_timeout_ms must be > 0"),
+                       ConfigError);
+}
+
 TEST_CASE("core.config: env substitution only in venues, missing var is an error") {
   setenv("FASTMM_T_URL", "wss://x", 1);
   unsetenv("FASTMM_MISSING");

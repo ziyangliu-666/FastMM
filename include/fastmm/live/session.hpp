@@ -87,6 +87,14 @@ struct LiveOptions {
   // Removes the durable kill state before starting: clears a latched max-loss trip and arms the
   // whole [risk] max_loss budget again ([engine] kill_file).
   bool clear_kill = false;
+  // Waits for the instance lock (live/instance_lock.hpp) instead of refusing to start while another
+  // process holds it; [engine] instance_lock is implied. The venues' reference data and account
+  // fees are loaded first (attached to a gateway: nothing); the kill state, the store, the epoch
+  // file, the strategy state and every venue connection wait for the lock.
+  bool standby = false;
+  // standby, and once ready send `handoff` to the control socket of the session holding the lock;
+  // give up after [engine] handoff_timeout_ms without the lock (kExitLocked).
+  bool takeover = false;
   std::string program = "fastmm-live";     // prefix of error messages (log lines keep fastmm-live:)
   const LiveStrategy* strategy = nullptr;  // nullptr: [strategy] name from the registry
   // Called by the control thread every 50 ms; must not block. A non-empty result stops the session
@@ -110,6 +118,8 @@ inline constexpr int kExitVenue = 4;    // venue reference data failed
 inline constexpr int kExitRuntime = 5;  // cancel_all failed, journal, ring overflow, uncaught error
 inline constexpr int kExitKilled = 6;   // engine-tripped kill switch with [engine] on_kill = "exit"
 inline constexpr int kExitSlowTier = 7;  // LiveOptions::watchdog (a Python slow tier failed)
+// Another process holds the instance lock, or a takeover failed; nothing was traded.
+inline constexpr int kExitLocked = 8;
 
 // How often a session that stays up after a kill ([engine] on_kill = "stay") repeats its ERROR.
 inline constexpr std::int64_t kKilledReminderNs = 10'000'000'000;

@@ -37,6 +37,12 @@ OPTIONS:
                               connecting to the venues (no API keys here)
   --clear-kill                clear a latched kill switch and the cumulative PnL before
                               starting; arms the whole [risk] max_loss budget again
+  --standby                   while another process holds the instance lock, load the
+                              reference data, then wait for the lock instead of exiting;
+                              trade once it is free
+  --takeover                  --standby, and ask the process holding the lock to hand over
+                              (control socket `handoff`); exit 8 if it refuses or keeps the
+                              lock past [engine] handoff_timeout_ms
   --log <path>                write the log to a file (warnings are mirrored to stderr)
   --allow-inline-secrets      accept literal API secrets in the config file
   --list-strategies           print the strategies this binary can run and exit
@@ -49,7 +55,9 @@ SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s aft
 the stop, exits at once with code 5 without waiting for cancel_all.
 SIGHUP clears the kill switch and resumes quoting (on_kill = "stay").
 fastmm-ctl talks to the control socket: pull, resume, param, limits, flatten,
-kill, unkill, stop and status.
+kill, unkill, stop, handoff and status.
+With [engine] instance_lock = true (implied by --standby and --takeover) one process
+of an engine name trades at a time; `handoff` stops the holder for the successor.
 A kill switch the engine trips itself ([risk] max_loss, a full ring, every venue
 killed) does the same and exits with code 6, unless [engine] on_kill = "stay".
 A max_loss trip is latched in [engine] kill_file: the next start refuses to trade
@@ -63,6 +71,7 @@ Exit codes:
   5  runtime failure: cancel_all failed, journal, ring overflow, forced exit, uncaught error
   6  kill switch tripped by the engine (on_kill = "exit"), or a latched max_loss trip
   7  a Python strategy's slow tier failed (python -m fastmm run), cancel_all ok
+  8  another process holds the instance lock, or --takeover failed; nothing traded
 ```
 <!-- END cli-help -->
 
@@ -77,6 +86,7 @@ Exit codes:
 | 5 | `cancel_all FAILED`, whatever stopped the session; the journal cannot be opened or written (a full filesystem trips the kill switch, [Journal format](journal-format.md#durability)); a venue's order-event ring overflowed; the gateway closed the attachment (`--gateway`); an uncaught error; a forced exit during shutdown: a second SIGINT/SIGTERM 5 s or more after the first, or a shutdown still running 60 s after the stop (`include/fastmm/live/shutdown_guard.hpp`), which does not wait for cancel_all |
 | 6 | the engine tripped the kill switch itself (`[risk] max_loss`, a full outbound or journal ring, every venue killed, a failing hot hook of a Python strategy) with `on_kill = "exit"`, and `cancel_all ok`; also a start refused because a `max_loss` trip is latched in `[engine] kill_file` ([Kill switch and shutdown](../how-to/operations/kill-switch-and-shutdown.md#the-latched-loss-budget)) |
 | 7 | a Python strategy's slow tier failed, and `cancel_all ok` (`python -m fastmm run` and `fastmm.run_live`; `fastmm-live` does not return it) |
+| 8 | another process holds the instance lock (`[engine] instance_lock`); `--takeover` whose handoff the holder refused or did not answer, or whose lock it kept past `[engine] handoff_timeout_ms`; a session answering on the control socket without the lock. Nothing was traded ([Hand over a running session](../how-to/operations/hand-over-a-session.md)) |
 
 - The journal records the configuration after `--strategy` and `--param`.
 - `python -m fastmm run` and `fastmm.run_live` run the same session for a Python strategy with these exit codes ([Live sessions](python-api.md#live-sessions)).
@@ -431,6 +441,8 @@ commands (one per datagram; the reply starts with ok or error)
                                            orders cancelled; the position stays)
   unkill                                   clear it and quote again (SIGHUP)
   stop                                     shut the session down (SIGTERM)
+  handoff                                  shut down for the process waiting on the
+                                           instance lock (fastmm-live --standby)
   status                                   one line per topic
   help                                     this text
 

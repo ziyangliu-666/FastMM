@@ -14,6 +14,7 @@
 #include "fastmm/core/transport.hpp"
 #include "fastmm/live/control_socket.hpp"
 #include "fastmm/live/gateway.hpp"
+#include "fastmm/live/instance_lock.hpp"
 #include "fastmm/live/live_backend.hpp"
 #include "fastmm/live/shutdown_guard.hpp"
 #include "fastmm/live/thread_affinity.hpp"
@@ -572,43 +573,164 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
 
+  // ---- instance lock ----------------------------------------------------------------------
+  // One process of this engine name trades at a time (live/instance_lock.hpp). Taken before the
+  // kill state, the store or the epoch file is read and before any venue hears from this process;
+  // released after the shutdown has cancelled, flushed and closed all of them. A standby process
+  // loads the venues' reference data and fees first, then waits here for it.
+  const bool standby = opts.standby || opts.takeover;
+  const bool want_lock = standby || cfg.engine.instance_lock;
+  const std::string lock_path =
+      instance_lock_path(cfg.engine.lock_file, cfg.engine.journal_dir, cfg.engine.name);
+  const std::string ctl_path = opts.control_path.empty()
+                                   ? cfg.engine.journal_dir + "/" + cfg.engine.name + ".ctl"
+                                   : opts.control_path;
+  InstanceLock instance_lock;
+  // Installed before the wait in standby (a signal ends the wait), else just before the threads.
+  std::optional<SignalGuard> signals;
+  const auto take_lock = [&]() -> int {
+    std::string err;
+    InstanceLock::Status st = instance_lock.try_acquire(lock_path, &err);
+    if (st == InstanceLock::Status::Error) {
+      std::fprintf(stderr, "%s: %s\n", prog, err.c_str());
+      return kExitConfig;
+    }
+    if (st == InstanceLock::Status::Held) {
+      const std::uint32_t holder = InstanceLock::holder_pid(lock_path);
+      if (!standby) {
+        std::fprintf(stderr,
+                     "%s: process %u holds the instance lock %s and trades this engine's account. "
+                     "Take it over with --takeover, wait for it with --standby, or stop it.\n",
+                     prog,
+                     holder,
+                     lock_path.c_str());
+        return kExitLocked;
+      }
+      signals.emplace();
+      std::int64_t deadline = 0;  // passive standby: until the lock comes free or a signal
+      if (opts.takeover) {
+        std::string reply;
+        const ControlReply r = control_request(ctl_path, "handoff", 5000, reply);
+        while (!reply.empty() && (reply.back() == '\n' || reply.back() == '\r')) reply.pop_back();
+        if (r != ControlReply::Answered || !reply.starts_with("ok")) {
+          std::fprintf(stderr,
+                       "%s: --takeover: process %u holds the instance lock %s and did not accept "
+                       "the handoff on %s: %s\n",
+                       prog,
+                       holder,
+                       lock_path.c_str(),
+                       ctl_path.c_str(),
+                       reply.c_str());
+          return kExitLocked;
+        }
+        deadline = monotonic_ns() + std::int64_t{cfg.engine.handoff_timeout_ms} * 1'000'000;
+        FASTMM_LOG_WARN(
+            "takeover: process {} accepted the handoff; waiting up to {} ms for it to cancel, "
+            "flush and release {}",
+            holder,
+            cfg.engine.handoff_timeout_ms,
+            lock_path);
+      } else {
+        FASTMM_LOG_WARN(
+            "standby: process {} holds {}; taking over when it exits (fastmm-ctl --path {} "
+            "handoff)",
+            holder,
+            lock_path,
+            ctl_path);
+      }
+      while (st == InstanceLock::Status::Held) {
+        if (g_signal != 0) {
+          FASTMM_LOG_WARN("standby: stopped by a signal before taking over; nothing was traded");
+          return kExitOk;
+        }
+        if (deadline != 0 && monotonic_ns() >= deadline) {
+          std::fprintf(stderr,
+                       "%s: --takeover: process %u still holds %s %d ms after accepting the "
+                       "handoff\n",
+                       prog,
+                       holder,
+                       lock_path.c_str(),
+                       cfg.engine.handoff_timeout_ms);
+          return kExitLocked;
+        }
+        sleep_for(milliseconds(10));
+        st = instance_lock.try_acquire(lock_path, &err);
+        if (st == InstanceLock::Status::Error) {
+          std::fprintf(stderr, "%s: %s\n", prog, err.c_str());
+          return kExitConfig;
+        }
+      }
+      FASTMM_LOG_WARN("{}: instance lock {} taken over from process {}",
+                      opts.takeover ? "takeover" : "standby",
+                      lock_path,
+                      holder);
+    }
+    // A session started without the lock may still be running on the same files.
+    std::string probe;
+    if (control_request(ctl_path, {}, 1000, probe) == ControlReply::Answered) {
+      std::fprintf(stderr,
+                   "%s: a session answers on %s without holding the instance lock %s; stop it "
+                   "first (fastmm-ctl --path %s stop)\n",
+                   prog,
+                   ctl_path.c_str(),
+                   lock_path.c_str(),
+                   ctl_path.c_str());
+      instance_lock.release();
+      return kExitLocked;
+    }
+    FASTMM_LOG_INFO("instance lock: {}", lock_path);
+    return 0;
+  };
+
   // Latched kill switch and the loss budget already spent, so a restart does not re-arm
   // [risk] max_loss (docs/how-to/operations/kill-switch-and-shutdown.md). Read before any venue or
-  // the gateway is contacted: a latched trip exits 6 even while they are unreachable.
+  // the gateway is contacted: a latched trip exits 6 even while they are unreachable. A standby
+  // process reads it once it holds the lock: the session before it writes it last on its way out.
   const std::string kill_path =
       cfg.engine.kill_file.empty()
           ? KillStateStore::default_path(cfg.engine.journal_dir, cfg.engine.name)
           : cfg.engine.kill_file;
-  if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
-    std::error_code ec;
-    std::filesystem::create_directories(kp.parent_path(), ec);
-  }
-  if (opts.clear_kill) {
-    if (auto r = KillStateStore::clear(kill_path); !r) {
-      std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
+  KillState kill_state;
+  const auto load_kill = [&]() -> int {
+    if (const std::filesystem::path kp(kill_path); kp.has_parent_path()) {
+      std::error_code ec;
+      std::filesystem::create_directories(kp.parent_path(), ec);
+    }
+    if (opts.clear_kill) {
+      if (auto r = KillStateStore::clear(kill_path); !r) {
+        std::fprintf(stderr, "%s: %s\n", prog, r.error().c_str());
+        return kExitConfig;
+      }
+      FASTMM_LOG_WARN("--clear-kill: {} removed; the whole [risk] max_loss budget is armed again",
+                      kill_path);
+    }
+    if (auto loaded = KillStateStore::load(kill_path)) {
+      kill_state = *loaded;
+    } else {
+      std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
       return kExitConfig;
     }
-    FASTMM_LOG_WARN("--clear-kill: {} removed; the whole [risk] max_loss budget is armed again",
-                    kill_path);
+    if (kill_state.latched) {
+      std::fprintf(stderr,
+                   "%s: a %s kill switch is latched in %s (net PnL %.8f over %llu session(s)). "
+                   "Check the positions, then clear it with --clear-kill or by removing the file; "
+                   "that arms the whole [risk] max_loss budget again.\n",
+                   prog,
+                   std::string(to_string(kill_state.reason)).c_str(),
+                   kill_path.c_str(),
+                   kill_state.carry().to_double(),
+                   static_cast<unsigned long long>(kill_state.sessions));
+      return kExitKilled;
+    }
+    return 0;
+  };
+  // Standby on the venues directly: the reference data and fees are loaded before the wait.
+  const bool lock_late = standby && !via_gateway;
+  if (want_lock && !lock_late) {
+    if (const int rc = take_lock(); rc != 0) return rc;
   }
-  KillState kill_state;
-  if (auto loaded = KillStateStore::load(kill_path)) {
-    kill_state = *loaded;
-  } else {
-    std::fprintf(stderr, "%s: %s\n", prog, loaded.error().c_str());
-    return kExitConfig;
-  }
-  if (kill_state.latched) {
-    std::fprintf(stderr,
-                 "%s: a %s kill switch is latched in %s (net PnL %.8f over %llu session(s)). "
-                 "Check the positions, then clear it with --clear-kill or by removing the file; "
-                 "that arms the whole [risk] max_loss budget again.\n",
-                 prog,
-                 std::string(to_string(kill_state.reason)).c_str(),
-                 kill_path.c_str(),
-                 kill_state.carry().to_double(),
-                 static_cast<unsigned long long>(kill_state.sessions));
-    return kExitKilled;
+  if (!lock_late) {
+    if (const int rc = load_kill(); rc != 0) return rc;
   }
 
   VenueSlots slots;
@@ -774,6 +896,10 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     }
   }
   const Config& recorded = fetched_fees ? *fetched_fees : cfg;
+  if (lock_late) {
+    if (const int rc = take_lock(); rc != 0) return rc;
+    if (const int rc = load_kill(); rc != 0) return rc;
+  }
 
   // [accounting] converts the PnL totals, [risk] max_loss and the exposure caps to one reporting
   // currency. Without it every total is one currency-less Notional. The venues' reference data has
@@ -1247,7 +1373,7 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
       FASTMM_LOG_INFO("lock_memory: all memory locked");
     }
   }
-  const SignalGuard signals;
+  if (!signals) signals.emplace();
   // A stop that does not finish in time ends the process anyway (shutdown_guard.hpp).
   ShutdownWatchdog shutdown_watchdog;
   struct WatchdogRegistration {
@@ -1463,7 +1589,8 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
         last_tsc.has_rate() ? "use the TSC (constant_tsc)" : "use clock_gettime");
   // 1 duration, 2 signal, 3 order ring overflow, 4 kill switch tripped by the engine, 5 watchdog,
   // 6 the runner cannot run inline (threading = "single"), 7 the journal cannot be written,
-  // 8 the control socket's `stop`, 9 the gateway closed the attachment
+  // 8 the control socket's `stop`, 9 the gateway closed the attachment, 10 the control socket's
+  // `handoff`
   int reason = 0;
   std::string watchdog_cause;
   std::int64_t next_status = start + 250'000'000;
@@ -1529,6 +1656,13 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   plane.request_stop = [&] {
     if (reason == 0) reason = 8;
   };
+  plane.handoff = [&]() -> std::string {
+    // Without the lock a successor cannot tell when this session is done with the account.
+    if (!instance_lock.held())
+      return "this session holds no instance lock ([engine] instance_lock = true or --standby)";
+    if (reason == 0) reason = 10;
+    return {};
+  };
   plane.clear_kill = [&] {
     FASTMM_LOG_WARN("control socket: clearing the kill switch and resuming quoting");
     return clear_kill();
@@ -1575,9 +1709,6 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
   }
   ControlSocket control_socket;
   if (!opts.no_control) {
-    const std::string ctl_path = opts.control_path.empty()
-                                     ? cfg.engine.journal_dir + "/" + cfg.engine.name + ".ctl"
-                                     : opts.control_path;
     std::string ctl_error;
     if (control_socket.open(ctl_path, &ctl_error)) {
       FASTMM_LOG_INFO("control socket: {} (fastmm-ctl --path {} status)", ctl_path, ctl_path);
@@ -1699,10 +1830,11 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     FASTMM_LOG_ERROR("fastmm-live: shutting down (the gateway went away)");
   } else {
     FASTMM_LOG_WARN("fastmm-live: shutting down ({})",
-                    reason == 1   ? std::string_view("duration elapsed")
-                    : reason == 2 ? std::string_view("signal")
-                    : reason == 8 ? std::string_view("control socket: stop")
-                                  : std::string_view("order ring overflow"));
+                    reason == 1    ? std::string_view("duration elapsed")
+                    : reason == 2  ? std::string_view("signal")
+                    : reason == 8  ? std::string_view("control socket: stop")
+                    : reason == 10 ? std::string_view("control socket: handoff")
+                                   : std::string_view("order ring overflow"));
   }
 
   // Kill switch: the engine pulls quotes and queues cancels (it already did when it tripped the
@@ -1852,6 +1984,12 @@ int run_live(const Config& cfg, const LiveOptions& opts) {
     if (store_backend.errors() != 0)
       FASTMM_LOG_ERROR("store: last error: {}", std::string_view(store_backend.last_error()));
     store_backend.close();
+  }
+  // Everything this session wrote is closed and the venues have its cancels: a successor waiting
+  // on the lock may start now.
+  if (instance_lock.held()) {
+    instance_lock.release();
+    FASTMM_LOG_INFO("instance lock {} released", lock_path);
   }
   shutdown_watchdog.done();
   FASTMM_LOG_INFO("fastmm-live: exit code {}", rc);

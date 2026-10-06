@@ -168,6 +168,8 @@ py::tuple run(const std::string& path,
   opts.no_journal = option<bool>(options, "no_journal", false);
   opts.status_path = option<std::string>(options, "status", "");
   opts.no_status = option<bool>(options, "no_status", false);
+  opts.standby = option<bool>(options, "standby", false);
+  opts.takeover = option<bool>(options, "takeover", false);
   const auto log_path = option<std::string>(options, "log", "");
   const bool allow_inline = option<bool>(options, "allow_inline_secrets", false);
   const auto max_param_age_ms = option<std::int64_t>(options, "max_param_age_ms", -1);

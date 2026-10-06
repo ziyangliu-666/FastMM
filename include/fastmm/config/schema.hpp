@@ -102,6 +102,24 @@ inline constexpr KeySpec kConfigSchema[] = {
      "latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts "
      "(default \"<journal_dir>/<name>.kill\")"},
     {"engine",
+     "instance_lock",
+     KeyType::Bool,
+     false,
+     "fastmm-live: take an exclusive lock on lock_file before touching the account and refuse to "
+     "start (exit code 8) while another process holds it; --standby and --takeover take it "
+     "whatever this says (default false)"},
+    {"engine",
+     "lock_file",
+     KeyType::String,
+     false,
+     "the instance lock's file (default \"<journal_dir>/<name>.lock\")"},
+    {"engine",
+     "handoff_timeout_ms",
+     KeyType::Int,
+     false,
+     "fastmm-live --takeover: how long to wait for the running session to release the instance "
+     "lock once it accepted the handoff, ms (default 75000)"},
+    {"engine",
      "ack_timeout_ms",
      KeyType::Int,
      false,

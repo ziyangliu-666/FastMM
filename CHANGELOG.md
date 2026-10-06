@@ -5,6 +5,18 @@ All notable changes are recorded here (Keep a Changelog format).
 ## [Unreleased]
 
 ### Added
+- Handing a running `fastmm-live` over to a new process. `[engine] instance_lock = true` (default
+  false) takes an exclusive `flock` on `[engine] lock_file` (default `<journal_dir>/<name>.lock`)
+  before the session reads its state or contacts a venue, and releases it after its shutdown;
+  a second start on the same engine name exits 8. `fastmm-live --takeover` loads its reference
+  data, sends `handoff` to the running session's control socket (cancel-all, flush, release) and
+  starts once it holds the lock, within `[engine] handoff_timeout_ms` (default 75000); `--standby`
+  waits for the lock without asking. `fastmm-ctl handoff` is the new control command. Python:
+  `python -m fastmm run --standby/--takeover`, `run_live(standby=, takeover=)`. The systemd units
+  do not restart on exit 8. [Hand over a running session](docs/how-to/operations/hand-over-a-session.md)
+  also designs a handoff that keeps the quotes.
+- `fastmm-sim-exchange`: `SimExchangeServer::accepted_client_order_ids()`, every accepted client
+  order id in acceptance order.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
   once the engine has handled the events waiting in its input rings (or the step's
   `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance

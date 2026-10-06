@@ -62,6 +62,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--log", metavar="path", help="write the log to a file")
     run.add_argument("--allow-inline-secrets", action="store_true",
                      help="accept literal API secrets in the config file")
+    run.add_argument("--standby", action="store_true",
+                     help="wait for the instance lock of a running session instead of exiting")
+    run.add_argument("--takeover", action="store_true",
+                     help="--standby, and ask the running session to hand over")
     run.add_argument("--slow-tier-timeout-ms", type=int, default=None, metavar="ms",
                      help="after the session stops, wait this long for the slow thread, then exit "
                           "(default 10000)")
@@ -146,7 +150,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     rc, stuck = _run_live(cls, args.config, params, duration=args.duration, dry_run=args.dry_run,
                           journal=args.journal, no_journal=args.no_journal, status=args.status,
                           no_status=args.no_status, log=args.log, record_raw=args.record_raw,
-                          allow_inline_secrets=args.allow_inline_secrets, fills_capacity=None,
+                          allow_inline_secrets=args.allow_inline_secrets, standby=args.standby,
+                          takeover=args.takeover, fills_capacity=None,
                           recent_rows=4096, slow_tier_timeout_ms=timeout_ms)
     if stuck:  # the slow thread still runs: do not wait for it at interpreter exit
         print(f"fastmm: exiting with code {rc} without waiting for the slow thread",

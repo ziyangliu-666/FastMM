@@ -32,6 +32,8 @@ constexpr std::string_view kUsage =
     "                                           orders cancelled; the position stays)\n"
     "  unkill                                   clear it and quote again (SIGHUP)\n"
     "  stop                                     shut the session down (SIGTERM)\n"
+    "  handoff                                  shut down for the process waiting on the\n"
+    "                                           instance lock (fastmm-live --standby)\n"
     "  status                                   one line per topic\n"
     "  help                                     this text\n";
 
@@ -346,6 +348,12 @@ std::string control_command(std::string_view request, ControlPlane& plane) {
     plane.request_stop();
     return ok("stopping (kill switch, cancel-all, shutdown)");
   }
+  if (verb == "handoff") {
+    if (!args.empty()) return error("handoff takes no arguments");
+    if (!plane.handoff) return error("this session cannot hand over");
+    if (const std::string why = plane.handoff(); !why.empty()) return error(why);
+    return ok("handing over (kill switch, cancel-all, shutdown; the instance lock goes last)");
+  }
   return error("unknown command '" + std::string(verb) + "'; `help` lists them");
 }
 
@@ -453,6 +461,56 @@ void ControlSocket::close() noexcept {
     std::filesystem::remove(path_, ec);
     path_.clear();
   }
+}
+
+// ---- the client ----------------------------------------------------------------------------
+
+ControlReply control_request(const std::string& path,
+                             std::string_view request,
+                             int timeout_ms,
+                             std::string& reply) {
+  reply.clear();
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  if (path.size() + 1 > sizeof addr.sun_path) {
+    reply = "socket path is too long";
+    return ControlReply::Unreachable;
+  }
+  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
+  const int fd = ::socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    reply = std::string("socket: ") + std::strerror(errno);
+    return ControlReply::Unreachable;
+  }
+  timeval tv{};
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = static_cast<suseconds_t>(timeout_ms % 1000) * 1000;
+  static_cast<void>(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv));
+  static_cast<void>(::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv));
+  if (::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0) {
+    reply = std::strerror(errno);
+    ::close(fd);
+    return ControlReply::Unreachable;
+  }
+  if (request.empty()) {  // a probe: something is listening
+    ::close(fd);
+    return ControlReply::Answered;
+  }
+  if (::send(fd, request.data(), request.size(), MSG_NOSIGNAL) < 0) {
+    reply = std::string("send: ") + std::strerror(errno);
+    ::close(fd);
+    return ControlReply::NoReply;
+  }
+  std::string buf(std::size_t{64} * 1024, '\0');
+  const ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);
+  ::close(fd);
+  if (n <= 0) {
+    reply = "no reply within " + std::to_string(timeout_ms) + " ms";
+    return ControlReply::NoReply;
+  }
+  buf.resize(static_cast<std::size_t>(n));
+  reply = std::move(buf);
+  return ControlReply::Answered;
 }
 
 }  // namespace fastmm::live

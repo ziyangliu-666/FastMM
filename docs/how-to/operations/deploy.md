@@ -22,7 +22,7 @@ sudo ln -sfn /opt/fastmm-0.2.0-x86_64 /opt/fastmm
 /opt/fastmm/bin/fastmm-live --version
 ```
 
-An upgrade is a second directory and a new symlink target. Stop the session before you move the link: `fastmm-top` refuses a status file written by another build.
+An upgrade is a second directory and a new symlink target. Stop the session before you move the link: `fastmm-top` refuses a status file written by another build. To keep the pause to one restart, run the new build with `--takeover` from its own directory ([Hand over a running session](hand-over-a-session.md)); the old unit exits 0 on the handoff and systemd does not restart it.
 
 `scripts/package-release.sh` builds the tarball from a checkout. Its default preset, `release-dpdk`, links in the DPDK receive backend ([Receive a multicast feed](multicast-feeds.md)); `--preset` picks another.
 
@@ -51,7 +51,7 @@ What the unit sets:
 
 | Directive | Why |
 |---|---|
-| `Restart=on-failure`, `RestartPreventExitStatus=2 3 5 6 7` | a crash (any signal, `kill -9` included) or exit 4 restarts after 2 s: the new session restores the position from the store and the venue's executions and cancels the orders the dead one left ([Run in production](running-in-production.md#restarts)). 2 and 3 need a config fix, and 5, 6 and 7 a human ([Errors and exit codes](../../reference/errors.md)); a latched kill switch exits 6 at every start. `StartLimitBurst=5` in ten minutes ends a crash loop |
+| `Restart=on-failure`, `RestartPreventExitStatus=2 3 5 6 7 8` | a crash (any signal, `kill -9` included) or exit 4 restarts after 2 s: the new session restores the position from the store and the venue's executions and cancels the orders the dead one left ([Run in production](running-in-production.md#restarts)). 2 and 3 need a config fix, 5, 6 and 7 a human ([Errors and exit codes](../../reference/errors.md)), and 8 means another process holds the instance lock; a latched kill switch exits 6 at every start. `StartLimitBurst=5` in ten minutes ends a crash loop |
 | `TimeoutStopSec=90` | SIGTERM pulls the quotes and cancels every order over REST before the process exits ([Kill switch and shutdown](kill-switch-and-shutdown.md)) |
 | `LimitMEMLOCK=infinity` | `[engine] lock_memory = true` calls `mlockall()`, which fails with a warning without it. Drop the line when `lock_memory` is off |
 | `CPUAffinity=2 3` | the cores the process may use, a superset of `[engine] cpu` and `net_cpus` and disjoint from everything else on the host. Pair it with `isolcpus`, `nohz_full` and `rcu_nocbs` (`scripts/host-setup.sh tune`), and delete the line on a shared host, where `cpu = -1` ([Go-live checklist](go-live-checklist.md)) |

@@ -33,6 +33,9 @@ Every FastMM program reads one TOML file passed with `--config <file.toml>`. Exa
 | `journal_retention_days` | integer |  | delete .fmj files in journal_dir last written more than this many days ago, at start; 0 = keep everything (default 0) |
 | `epoch_file` | string |  | session epoch file, keeps client order ids unique across restarts (default "runs/session_epoch") |
 | `kill_file` | string |  | latched kill switch and cumulative PnL, so [risk] max_loss is a budget across restarts (default "<journal_dir>/<name>.kill") |
+| `instance_lock` | boolean |  | fastmm-live: take an exclusive lock on lock_file before touching the account and refuse to start (exit code 8) while another process holds it; --standby and --takeover take it whatever this says (default false) |
+| `lock_file` | string |  | the instance lock's file (default "<journal_dir>/<name>.lock") |
+| `handoff_timeout_ms` | integer |  | fastmm-live --takeover: how long to wait for the running session to release the instance lock once it accepted the handoff, ms (default 75000) |
 | `ack_timeout_ms` | integer |  | force-cancel an order whose ack has not arrived within this long, ms; 0 = off (default 0) |
 | `queue_conservatism` | number |  | the queue position estimate ctx.queue_ahead, from 0 to 1: at 0 a level's shrink is shared between cancels ahead of and behind our order, at 1 cancels never move it up (default 1.0; a backtest uses [backtest] queue_conservatism when set) |
 | `flatten_interval_ms` | integer |  | how often an operator flatten looks at the position left and sends the next reduce-only slice, ms (default 500) |

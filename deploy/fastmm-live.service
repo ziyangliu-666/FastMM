@@ -22,9 +22,10 @@ ExecStart=/opt/fastmm/bin/fastmm-live --config ${FASTMM_CONFIG}
 # A crash or a transient failure (a signal, exit 4) comes back into service: the position is
 # restored from the store plus the venue's executions, orders the dead process left are swept and
 # cancelled, and the kill switch and the max-loss budget carry over. 2 and 3 need a config fix;
-# 5, 6 and 7 need a human (docs/reference/errors.md), and a latched kill exits 6 at every start.
+# 5, 6 and 7 need a human (docs/reference/errors.md), and a latched kill exits 6 at every start;
+# 8: another process holds the instance lock and trades this engine.
 Restart=on-failure
-RestartPreventExitStatus=2 3 5 6 7
+RestartPreventExitStatus=2 3 5 6 7 8
 RestartSec=2
 # SIGTERM cancels every order over REST before the process exits; give it room.
 KillSignal=SIGTERM
