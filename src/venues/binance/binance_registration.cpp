@@ -72,6 +72,25 @@ constexpr VenueKeySpec kBinanceKeys[] = {
      "fastmm-live: fetch the account's maker and taker rates per symbol at start-up (GET "
      "/api/v3/account/commission) and use them instead of the configured fees; start-up fails "
      "when the request does (default false)"},
+    {"transfer_api_key_env",
+     KeyType::String,
+     false,
+     "pool treasury: environment variable holding the master account's API key with internal "
+     "transfer enabled, used for transfers between the pool's accounts only (default none: no "
+     "transfers)"},
+    {"transfer_api_secret_env",
+     KeyType::String,
+     false,
+     "environment variable holding that key's HMAC secret"},
+    {"transfer_rest_url",
+     KeyType::String,
+     false,
+     "host of the transfer endpoint, /sapi/v1/sub-account/universalTransfer (default "
+     "https://api.binance.com)"},
+    {"sub_account_email",
+     KeyType::String,
+     false,
+     "this account's sub-account email in a transfer; empty: the master account (default empty)"},
 };
 
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
@@ -110,7 +129,9 @@ void register_binance_venue(VenueRegistry& r) {
                                     .polls = false,
                                     .executions = true,
                                     .account_pools = true,
-                                    .bind_source = true},
+                                    .bind_source = true,
+                                    // sub-account/universalTransfer with transfer_api_key_env
+                                    .internal_transfer = true},
                            .make = &make}));
 }
 

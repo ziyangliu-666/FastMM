@@ -78,6 +78,7 @@
 #include "fastmm/net/connection.hpp"
 #include "fastmm/venues/binance/binance_auth.hpp"
 #include "fastmm/venues/binance/binance_order_encoder.hpp"
+#include "fastmm/venues/binance/binance_transfer.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_error_map.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_md_feed.hpp"
 #include "fastmm/venues/binance_usdm/binance_usdm_order_encoder.hpp"
@@ -164,6 +165,9 @@ struct BinanceUsdmVenueConfig {
   std::string record_raw_dir;
   std::uint32_t http_timeout_ms = 5000;
   net::BackoffConfig backoff{};
+  // Internal transfers between the pool's accounts' USDⓈ-M wallets (Venue::transfer,
+  // binance/binance_transfer.hpp): the master key, this account's sub-account email.
+  binance::TransferSettings transfer;
 };
 
 // The depth a session of `symbols` snapshots with when depth_limit is 0 (BinanceUsdmVenueConfig).
@@ -213,6 +217,10 @@ class BinanceUsdmVenue final : public Venue, private ReconcileHooks {
   [[nodiscard]] bool can_audit_executions() const noexcept override { return true; }
   bool cancel_all() override;
   [[nodiscard]] VenueStatus status() const noexcept override;
+  TransferResult transfer(const TransferRequest& req) override;
+  TransferResult transfer_status(const TransferRequest& req) override;
+  [[nodiscard]] std::string transfer_account() const override { return cfg_.transfer.email; }
+  void request_balances() override { reconcile_.request_balances(); }
 
   // ---- introspection (tests / stats) --------------------------------------------------------
   [[nodiscard]] const BinanceUsdmMdFeed* md_feed() const noexcept { return md_feed_.get(); }

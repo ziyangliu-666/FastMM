@@ -74,6 +74,10 @@ struct VenueCapabilities {
   // Binds every outbound connection (WebSocket, REST, the blocking control requests) to the
   // section's source address ([venues.<x>] source_ip / source_interface, net/source_address.hpp).
   bool bind_source = false;
+  // Can move an asset between the accounts of a pool (Venue::transfer,
+  // VenueCaps::internal_transfer) once it is given the credentials: a pool treasury
+  // ([venues.<primary>.treasury]) needs it.
+  bool internal_transfer = false;
 };
 
 // One `[venues.<name>]` key a venue owns. `doc` is the Meaning column of the configuration

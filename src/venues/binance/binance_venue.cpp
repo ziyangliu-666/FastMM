@@ -119,7 +119,20 @@ VenueCaps BinanceVenue::caps() const noexcept {
   c.supports_post_only = true;
   c.ws_order_entry = cfg_.ws_order_api;
   c.user_stream = cfg_.user_stream != UserStreamMode::None;
+  c.internal_transfer = !cfg_.dry_run && cfg_.transfer.usable();
   return c;
+}
+
+TransferResult BinanceVenue::transfer(const TransferRequest& req) {
+  if (!caps().internal_transfer) return Venue::transfer(req);
+  TransferClient client(cfg_.transfer);  // per call: any thread
+  return client.transfer(req);
+}
+
+TransferResult BinanceVenue::transfer_status(const TransferRequest& req) {
+  if (!caps().internal_transfer) return Venue::transfer_status(req);
+  TransferClient client(cfg_.transfer);
+  return client.status(req);
 }
 
 std::int64_t BinanceVenue::venue_time_ms() const noexcept {
@@ -2055,6 +2068,11 @@ BinanceVenueConfig make_binance_config(const VenueSectionView& v, bool dry_run) 
   c.max_order_amends = static_cast<std::uint16_t>(
       std::clamp<std::int64_t>(x.integer("max_order_amends", c.max_order_amends), 0, 65535));
   c.emit_ack_from_response = x.flag("emit_ack_from_response", true);
+  if (v.extra != nullptr) {
+    c.transfer = read_transfer_settings(v.name, *v.extra, "SPOT", dry_run);
+    c.transfer.ca_file = v.ca_file;
+    c.transfer.insecure_tls = v.insecure_tls;
+  }
   return c;
 }
 

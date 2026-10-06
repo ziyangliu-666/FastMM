@@ -19,6 +19,7 @@
 #include "fastmm/core/seqlock.hpp"
 #include "fastmm/core/strong_id.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/transfer.hpp"
 #include "fastmm/net/reactor.hpp"
 #include "fastmm/venues/event_sink.hpp"
 #include "fastmm/venues/symbology.hpp"
@@ -39,6 +40,9 @@ struct VenueCaps {
   bool supports_post_only = true;  // LIMIT_MAKER / PostOnly
   bool ws_order_entry = true;      // orders over WebSocket (REST fallback otherwise)
   bool user_stream = true;         // private order/fill stream available (false in dry-run)
+  // Moves an asset between accounts of the same exchange (Venue::transfer): the connector has the
+  // credentials for it (Binance: a master-account key, transfer_api_key_env).
+  bool internal_transfer = false;
 };
 
 enum class ChannelState : std::uint8_t { Down = 0, Connecting = 1, Live = 2, Stale = 3 };
@@ -305,6 +309,28 @@ class Venue {
   }
   // Whether audit_executions() is implemented. Any thread.
   [[nodiscard]] virtual bool can_audit_executions() const noexcept { return false; }
+  // ---- internal transfers (VenueCaps::internal_transfer, core/transfer.hpp) --------------------
+  // Moves req.amount of req.asset from account req.from_account to req.to_account, both accounts
+  // of this exchange (the venues of one pool), under req.client_id. Blocking, over a REST
+  // connection of its own: callable from any thread but the venue's reactor thread (the pool
+  // treasury calls it from its own). Pending or Done: the venue took it; Failed: it refused,
+  // nothing moved; Unknown: no usable answer, ask transfer_status(). The default refuses (Failed).
+  virtual TransferResult transfer(const TransferRequest& /*req*/) {
+    return {TransferState::Failed, {}, "this connector has no internal transfers"};
+  }
+  // The state of the transfer named req.client_id (the same request transfer() was given). A
+  // transfer the connector carries out in several steps is finished from here when an earlier call
+  // left a step unsent. Blocking, like transfer().
+  virtual TransferResult transfer_status(const TransferRequest& /*req*/) {
+    return {TransferState::Unknown, {}, "this connector has no internal transfers"};
+  }
+  // This account's name in a transfer request (a Binance sub-account's email; empty for the
+  // exchange's master account).
+  [[nodiscard]] virtual std::string transfer_account() const { return {}; }
+  // Asks the venue for the account's balances now, emitted as a BalanceMsg snapshot on the order
+  // sink (the balance leg of the reconciliation). Reactor thread. The default does nothing.
+  virtual void request_balances() {}
+
   // Kill switch: cancel every open order on every subscribed symbol via an independent
   // REST connection. Blocking; safe from any thread. Returns false if the venue refused.
   virtual bool cancel_all() = 0;

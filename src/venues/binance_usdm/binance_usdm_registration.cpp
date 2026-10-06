@@ -78,6 +78,25 @@ constexpr VenueKeySpec kBinanceUsdmKeys[] = {
      false,
      "at start, set this leverage (1 to 125) on every enabled symbol; 0 leaves the account's "
      "(default 0)"},
+    {"transfer_api_key_env",
+     KeyType::String,
+     false,
+     "pool treasury: environment variable holding the master account's API key with internal "
+     "transfer enabled, used for transfers between the pool's accounts only (default none: no "
+     "transfers)"},
+    {"transfer_api_secret_env",
+     KeyType::String,
+     false,
+     "environment variable holding that key's HMAC secret"},
+    {"transfer_rest_url",
+     KeyType::String,
+     false,
+     "host of the transfer endpoint, /sapi/v1/sub-account/universalTransfer (default "
+     "https://api.binance.com)"},
+    {"sub_account_email",
+     KeyType::String,
+     false,
+     "this account's sub-account email in a transfer; empty: the master account (default empty)"},
 };
 
 std::unique_ptr<Venue> make(VenueId id, const VenueSection& s, const VenueFactoryOptions& opts) {
@@ -103,7 +122,9 @@ void register_binance_usdm_venue(VenueRegistry& r) {
                                     // GET /fapi/v1/userTrades
                                     .executions = true,
                                     .account_pools = true,
-                                    .bind_source = true},
+                                    .bind_source = true,
+                                    // sub-account/universalTransfer with transfer_api_key_env
+                                    .internal_transfer = true},
                            .make = &make}));
 }
 

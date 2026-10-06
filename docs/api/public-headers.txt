@@ -83,6 +83,7 @@ tier2 fastmm/config/env_subst.hpp
 
 # ---- tier 2: venue connectors -----------------------------------------------------------------------
 tier2 net fastmm/venues/venue.hpp
+tier2 fastmm/core/transfer.hpp
 tier2 net fastmm/venues/registry.hpp
 tier2 net fastmm/venues/feed.hpp
 tier2 net fastmm/venues/event_sink.hpp

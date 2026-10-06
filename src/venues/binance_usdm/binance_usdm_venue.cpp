@@ -168,7 +168,20 @@ VenueCaps BinanceUsdmVenue::caps() const noexcept {
   c.supports_post_only = true;
   c.ws_order_entry = cfg_.ws_order_api;
   c.user_stream = !cfg_.dry_run && signer_.usable();
+  c.internal_transfer = !cfg_.dry_run && cfg_.transfer.usable();
   return c;
+}
+
+TransferResult BinanceUsdmVenue::transfer(const TransferRequest& req) {
+  if (!caps().internal_transfer) return Venue::transfer(req);
+  binance::TransferClient client(cfg_.transfer);  // per call: any thread
+  return client.transfer(req);
+}
+
+TransferResult BinanceUsdmVenue::transfer_status(const TransferRequest& req) {
+  if (!caps().internal_transfer) return Venue::transfer_status(req);
+  binance::TransferClient client(cfg_.transfer);
+  return client.status(req);
 }
 
 std::int64_t BinanceUsdmVenue::venue_time_ms() const noexcept {
@@ -2452,6 +2465,9 @@ BinanceUsdmVenueConfig make_binance_usdm_config(const VenueSection& v, bool dry_
   if (c.ws_url.empty() || c.rest_url.empty())
     throw std::invalid_argument("venue '" + v.name + "': binance_usdm needs ws_url and rest_url");
   static_cast<void>(url_root(c.ws_url));  // throws on a bad URL
+  c.transfer = binance::read_transfer_settings(v.name, v.extra, "USDT_FUTURE", dry_run);
+  c.transfer.ca_file = v.ca_file;
+  c.transfer.insecure_tls = v.insecure_tls;
   return c;
 }
 
