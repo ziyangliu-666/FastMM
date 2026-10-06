@@ -1,9 +1,4 @@
-<h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://ziy.bio/FastMM/assets/brand/fastmm-logo-white.svg">
-    <img src="https://ziy.bio/FastMM/assets/brand/fastmm-logo.svg" alt="FastMM" height="52">
-  </picture>
-</h1>
+# FastMM
 
 [![CI](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml/badge.svg)](https://github.com/ziyangliu-666/FastMM/actions/workflows/ci.yml)
 [![Docs](https://github.com/ziyangliu-666/FastMM/actions/workflows/docs.yml/badge.svg)](https://ziy.bio/FastMM/)
