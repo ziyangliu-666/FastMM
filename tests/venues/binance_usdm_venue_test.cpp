@@ -824,14 +824,15 @@ TEST_CASE("binance_usdm.venue: the start's depth snapshots wait for the bulk sha
   const InstrumentId ids[] = {InstrumentId{0}, InstrumentId{1}};
   venue.subscribe(ids);
   // The share is paced over the window (RateLimiter::kBulkPaceFloor): the first snapshot fits
-  // from 2.1 s into a window, and the second not before the next window's 2.1 s.
+  // from 2.1 s into a window, and the second not before the next window's 2.1 s. The windows roll
+  // on the venue clock, so where the start falls in one sets how long the first waits.
   venue.connect(reactor);
-  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 1; }, 6000));
+  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 1; }, 12000));
   const auto first = std::chrono::steady_clock::now();
   // The second does not fit the share of this window: it waits, it is not dropped.
   idle(reactor, 1500);
   CHECK(h.depth_requests.load() == 1);
-  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 2; }, 6000));
+  REQUIRE(pump_until(reactor, [&] { return h.depth_requests.load() == 2; }, 12000));
   const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - first)
                           .count();
