@@ -2,7 +2,7 @@
 
 All notable changes are recorded here (Keep a Changelog format).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-06
 
 ### Added
 - `[venues.<name>] order_rate_threshold` (Binance Spot and USDⓈ-M, default 0.9): the share of the
