@@ -6,6 +6,7 @@
 #include "fastmm/backtest/metrics.hpp"
 #include "fastmm/core/engine_runner.hpp"
 #include "fastmm/sim/sim_transport.hpp"
+#include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/strategies/params.hpp"
 
 #include <cstdint>
@@ -92,6 +93,21 @@ struct SlowMethodTiming {
   std::uint64_t wall_max_ns = 0;
 };
 
+// The pool treasuries of a run ([venues.<primary>.treasury]), summed over the pools, and every
+// transfer the simulated venue carried out or refused.
+struct BacktestTreasury {
+  std::uint32_t pools = 0;
+  std::uint64_t sent = 0;
+  std::uint64_t done = 0;
+  std::uint64_t failed = 0;
+  std::uint64_t timed_out = 0;
+  std::uint64_t limited = 0;  // plans the limits held back
+  std::uint64_t dry_run_plans = 0;
+  std::vector<sim::SimTransferRecord> transfers;
+  // The amount the carried-out transfers moved in `asset` (raw).
+  [[nodiscard]] std::int64_t moved(std::string_view asset) const noexcept;
+};
+
 struct BacktestResult {
   std::string strategy;
   ParamMap params;
@@ -115,6 +131,8 @@ struct BacktestResult {
   double wall_seconds = 0.0;
   // Slow methods of a Python strategy (the Python package fills this in; empty otherwise).
   std::vector<SlowMethodTiming> slow_methods;
+  // The pool treasuries; `pools` is 0 without one.
+  BacktestTreasury treasury;
 
   [[nodiscard]] const Metrics& summary() const noexcept { return metrics; }
   // Human-readable table, one metric per line.
@@ -123,7 +141,10 @@ struct BacktestResult {
   [[nodiscard]] std::string equity_csv() const;
   [[nodiscard]] std::string fills_csv() const;
   [[nodiscard]] std::string orders_csv() const;
-  // Writes equity.csv, fills.csv, orders.csv and summary.json into `dir` (created if needed).
+  // One row per simulated transfer: ts_ns,from,to,asset,amount,state,client_id.
+  [[nodiscard]] std::string transfers_csv() const;
+  // Writes equity.csv, fills.csv, orders.csv and summary.json into `dir` (created if needed), and
+  // transfers.csv with a pool treasury.
   // Returns false on I/O failure.
   [[nodiscard]] bool write_all(const std::string& dir) const;
 };

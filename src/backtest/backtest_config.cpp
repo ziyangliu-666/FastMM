@@ -249,7 +249,7 @@ std::vector<Duration> parse_horizons(const std::string& text) {
 }
 
 // Every [backtest] key from_config reads (docs/reference/configuration.md#backtest).
-constexpr std::array<std::string_view, 24> kBacktestKeys = {"markout_horizons_s",
+constexpr std::array<std::string_view, 25> kBacktestKeys = {"markout_horizons_s",
                                                             "orders_10s",
                                                             "orders_1d",
                                                             "source",
@@ -272,7 +272,8 @@ constexpr std::array<std::string_view, 24> kBacktestKeys = {"markout_horizons_s"
                                                             "md_arrival",
                                                             "balances_from_journal",
                                                             "own_orders_in_feed",
-                                                            "reorder_window_ms"};
+                                                            "reorder_window_ms",
+                                                            "transfer_latency_ms"};
 
 void check_backtest_keys(const GenericSection& bt) {
   for (const auto& [key, value] : bt.values) {
@@ -359,6 +360,15 @@ BacktestConfig BacktestConfig::from_config(const Config& cfg) {
   t.accounts = read_accounts(cfg, bt);
   t.pools = cfg.pool_plan();
   b.engine.pools = t.pools;
+  for (const VenueSection& v : cfg.venues) {
+    if (!v.treasury.enabled) continue;
+    TreasuryConfig tc = cfg.treasury_config(v.name);
+    tc.state_file.clear();  // simulated time: nothing survives the run
+    b.treasuries.push_back(std::move(tc));
+  }
+  const std::int64_t transfer_ms = bt.get_int("transfer_latency_ms", 0);
+  if (transfer_ms < 0) throw ConfigError("backtest.transfer_latency_ms must be >= 0");
+  b.transfer_latency = milliseconds(transfer_ms);
   t.own_orders_in_feed = bt.get_bool("own_orders_in_feed", true);
   b.balances_from_journal = bt.get_bool("balances_from_journal", false);
   const std::int64_t window = bt.get_int("reorder_window_ms", 1000);

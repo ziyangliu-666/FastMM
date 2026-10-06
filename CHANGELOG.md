@@ -66,6 +66,11 @@ All notable changes are recorded here (Keep a Changelog format).
   balance snapshots; `BalanceBook::Row::transferable()` is the free estimate capped by it (free
   where a venue never says) and reaches `LiveBalance::transferable_raw`; the pool treasury gives
   no more than that.
+- backtest: an enabled `[venues.<primary>.treasury]` runs on simulated time against the pool's
+  simulated accounts, no strategy hook needed; `[backtest] transfer_latency_ms` (default 0) delays
+  each transfer. `BacktestResult::treasury` counts the transfers and lists them (`moved(asset)`),
+  `summary.json` and the summary table report them and `transfers.csv` is written; a run without a
+  treasury reports as before.
 - sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
   treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
   account's link.

@@ -14,7 +14,7 @@
 //   latency_ack_us, latency_ack_jitter_us,
 //   latency_md_us, latency_md_jitter_us, p_drop   volatile_mult, seed_levels
 //   md_arrival = "venue" | "recorded", reorder_window_ms = 1000
-//   balances_from_journal = false, own_orders_in_feed = true
+//   balances_from_journal = false, own_orders_in_feed = true, transfer_latency_ms = 0
 //   [backtest.balances] <ASSET> = "<amount>"  (and [backtest.venues.<name>.balances])
 //   equity_bar_s = 1, initial_capital = 0
 //   markout_horizons_s = "1,10,60"
@@ -22,6 +22,7 @@
 #include "fastmm/config/config.hpp"
 #include "fastmm/core/engine.hpp"
 #include "fastmm/core/instrument.hpp"
+#include "fastmm/core/treasury.hpp"
 #include "fastmm/sim/market_generator.hpp"
 #include "fastmm/sim/sim_transport.hpp"
 #include "fastmm/strategies/params.hpp"
@@ -71,6 +72,12 @@ struct BacktestConfig {
   // Start each venue's account (transport.accounts) from the first balance snapshot the journal
   // source recorded for it; a venue it has none for keeps the configured balances.
   bool balances_from_journal = false;
+  // The pool treasuries ([venues.<primary>.treasury] with enabled): each runs on simulated time
+  // against its pool's simulated accounts (sim/sim_treasury.hpp), without a ledger file. Empty:
+  // none, and the run is what it was without them.
+  std::vector<TreasuryConfig> treasuries;
+  // [backtest] transfer_latency_ms: a simulated transfer is carried out this long after it is sent.
+  Duration transfer_latency{};
   // Recorded data reaches the simulated venue in venue-time order (sim/venue_order.hpp), assuming
   // no event was received more than this after its venue time; zero keeps the recorded order.
   Duration reorder_window = milliseconds(1000);

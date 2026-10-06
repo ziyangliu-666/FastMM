@@ -7,11 +7,14 @@
 #include "fastmm/backtest/registrations.hpp"
 #include "fastmm/core/journal.hpp"
 #include "fastmm/core/session_state.hpp"
+#include "fastmm/sim/sim_treasury.hpp"
 #include "fastmm/sim/venue_order.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -21,6 +24,52 @@ namespace {
 constexpr std::size_t kReserveOrders = 1U << 15;
 constexpr std::size_t kReserveFills = 1U << 14;
 constexpr std::size_t kReserveBars = 1U << 12;
+
+// The pool treasuries of a run ([venues.<primary>.treasury]) as a slow tier of the driver: at each
+// look they read the pools' simulated accounts (the venue's free amounts) and step, and their
+// transfers are carried out by a SimTreasuryPort at simulated times. A slow tier the caller set
+// (a Python strategy's) runs from the same hook at its own times.
+struct TreasuryTier {
+  sim::SimTransport* transport = nullptr;
+  SimClock* clock = nullptr;
+  std::vector<std::unique_ptr<Treasury>> treasuries;
+  std::unique_ptr<sim::SimTreasuryPort> port;
+  Duration interval{};
+  Timestamp next_look{};
+  sim::SlowHooks user{};
+  Timestamp user_next = Timestamp::max();
+  std::vector<TreasuryBalance> rows;
+
+  void look(Timestamp now) {
+    const sim::SimAccounts* accounts = transport->accounts();
+    for (const std::unique_ptr<Treasury>& t : treasuries) {
+      const TreasuryConfig& c = t->config();
+      rows.clear();
+      for (const VenueId v : c.members) {
+        TreasuryBalance b;
+        b.venue = v;
+        b.asset.assign(c.asset);
+        b.known = accounts != nullptr && accounts->enabled(v);
+        if (b.known) b.free = accounts->free(v, c.asset);
+        b.as_of_ns = now.ns;
+        rows.push_back(b);
+      }
+      t->step(now.ns, rows, *port);
+    }
+  }
+
+  static Timestamp run(void* ctx, Timestamp now) {
+    auto& tier = *static_cast<TreasuryTier*>(ctx);
+    tier.port->settle(now);
+    if (tier.user.run != nullptr && now >= tier.user_next)
+      tier.user_next = tier.user.run(tier.user.ctx, now);
+    if (now >= tier.next_look) {
+      tier.look(now);
+      tier.next_look = now + tier.interval;
+    }
+    return std::min({tier.user_next, tier.next_look, tier.port->next_due()});
+  }
+};
 }  // namespace
 
 // Venue-side collector: records orders and fills as the simulated venue sees them and
@@ -297,7 +346,31 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
   }
   if (impl_->journal_file) driver.set_journal_writer(impl_->journal_file.get());
   driver.set_param_schedule(params_);
-  driver.set_slow_hooks(slow_);
+  std::unique_ptr<TreasuryTier> tier;
+  if (!cfg_.treasuries.empty()) {
+    tier = std::make_unique<TreasuryTier>();
+    tier->transport = &b.transport;
+    tier->clock = &b.clock;
+    tier->port = std::make_unique<sim::SimTreasuryPort>(
+        b.transport, [&b] { return b.clock.now(); }, cfg_.transfer_latency);
+    tier->interval = Duration{std::numeric_limits<std::int64_t>::max()};
+    for (const TreasuryConfig& c : cfg_.treasuries) {
+      auto t = std::make_unique<Treasury>(c);
+      if (auto r = t->open(); !r) throw std::runtime_error("backtest: treasury: " + r.error());
+      tier->interval = Duration{std::min(tier->interval.ns, c.interval_ns)};
+      tier->treasuries.push_back(std::move(t));
+    }
+    tier->next_look = b.clock.now();
+    tier->user = slow_;
+    tier->user_next = slow_.run != nullptr ? slow_.first : Timestamp::max();
+    sim::SlowHooks tier_hooks;
+    tier_hooks.ctx = tier.get();
+    tier_hooks.run = &TreasuryTier::run;
+    tier_hooks.first = std::min(tier->next_look, tier->user_next);
+    driver.set_slow_hooks(tier_hooks);
+  } else {
+    driver.set_slow_hooks(slow_);
+  }
   driver.start();
   const Timestamp start = b.clock.now();
   Timestamp bar_end = start + cfg_.equity_bar;
@@ -357,6 +430,19 @@ BacktestResult BacktestSession::run(const sim::EngineHooks& hooks,
     r.md_late = ordered->late();
   }
   r.engine_steps = driver.stats().engine_steps;
+  if (tier) {
+    r.treasury.pools = static_cast<std::uint32_t>(tier->treasuries.size());
+    for (const std::unique_ptr<Treasury>& t : tier->treasuries) {
+      const TreasuryStats& ts = t->stats();
+      r.treasury.sent += ts.sent;
+      r.treasury.done += ts.done;
+      r.treasury.failed += ts.failed;
+      r.treasury.timed_out += ts.timed_out;
+      r.treasury.limited += ts.limited;
+      r.treasury.dry_run_plans += ts.dry_run_plans;
+    }
+    r.treasury.transfers = tier->port->records();
+  }
   r.start_ts = start.ns;
   r.end_ts = b.clock.now().ns;
   MetricsInputs in;

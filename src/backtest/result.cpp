@@ -5,6 +5,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -86,6 +87,25 @@ void OrderRows::reserve(std::size_t n) {
   type.reserve(n);
 }
 
+std::int64_t BacktestTreasury::moved(std::string_view asset) const noexcept {
+  std::int64_t sum = 0;
+  for (const sim::SimTransferRecord& t : transfers) {
+    if (t.state == TransferState::Done && t.asset == asset) sum += t.amount.raw;
+  }
+  return sum;
+}
+
+namespace {
+// The assets the treasuries moved, each once, in the order first moved.
+std::vector<std::string> moved_assets(const BacktestTreasury& t) {
+  std::vector<std::string> out;
+  for (const sim::SimTransferRecord& r : t.transfers) {
+    if (std::find(out.begin(), out.end(), r.asset) == out.end()) out.push_back(r.asset);
+  }
+  return out;
+}
+}  // namespace
+
 std::string BacktestResult::summary_table() const {
   const Metrics& m = metrics;
   std::string s;
@@ -152,6 +172,17 @@ std::string BacktestResult::summary_table() const {
       fmt::format("{} / {} ns", m.wall_tick_to_order_p50_ns, m.wall_tick_to_order_p99_ns));
   if (md_reordered != 0 || md_late != 0)
     row("recorded events reordered / late", fmt::format("{} / {}", md_reordered, md_late));
+  if (treasury.pools != 0) {
+    std::string moved;
+    for (const std::string& a : moved_assets(treasury))
+      moved += fmt::format("{}{} {}", moved.empty() ? "" : ", ", dec(treasury.moved(a)), a);
+    row("treasury sent / done / failed",
+        fmt::format("{} / {} / {}{}",
+                    treasury.sent,
+                    treasury.done,
+                    treasury.failed,
+                    moved.empty() ? std::string() : " (moved " + moved + ")"));
+  }
   row("outbound messages / sha256", fmt::format("{} / {}", outbound_messages, outbound_sha256));
 
   const PnlDecomposition& d = m.decomposition;
@@ -387,6 +418,28 @@ std::string BacktestResult::summary_json() const {
     s += "]}";
   }
   s += m.markouts.empty() ? "],\n" : "\n  ],\n";
+  if (treasury.pools != 0) {
+    fmt::format_to(std::back_inserter(s),
+                   "  \"treasury\": {{\"pools\": {}, \"sent\": {}, \"done\": {}, \"failed\": {}, "
+                   "\"timed_out\": {}, \"limited\": {}, \"dry_run_plans\": {}, \"moved\": {{",
+                   treasury.pools,
+                   treasury.sent,
+                   treasury.done,
+                   treasury.failed,
+                   treasury.timed_out,
+                   treasury.limited,
+                   treasury.dry_run_plans);
+    bool first_asset = true;
+    for (const std::string& a : moved_assets(treasury)) {
+      fmt::format_to(std::back_inserter(s),
+                     "{}\"{}\": \"{}\"",
+                     first_asset ? "" : ", ",
+                     json_escape(a),
+                     dec(treasury.moved(a)));
+      first_asset = false;
+    }
+    s += "}},\n";
+  }
   u64("md_events", md_events);
   u64("md_reordered", md_reordered);
   u64("md_late", md_late);
@@ -486,6 +539,22 @@ std::string BacktestResult::orders_csv() const {
   return s;
 }
 
+std::string BacktestResult::transfers_csv() const {
+  std::string s = "ts_ns,from,to,asset,amount,state,client_id\n";
+  for (const sim::SimTransferRecord& t : treasury.transfers) {
+    fmt::format_to(std::back_inserter(s),
+                   "{},{},{},{},{},{},{}\n",
+                   t.ts.ns,
+                   static_cast<unsigned>(t.from.value),
+                   static_cast<unsigned>(t.to.value),
+                   t.asset,
+                   dec(t.amount.raw),
+                   to_string(t.state),
+                   t.client_id);
+  }
+  return s;
+}
+
 bool BacktestResult::write_all(const std::string& dir) const {
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
@@ -493,7 +562,8 @@ bool BacktestResult::write_all(const std::string& dir) const {
   const std::filesystem::path d(dir);
   return write_file(d / "equity.csv", equity_csv()) && write_file(d / "fills.csv", fills_csv()) &&
          write_file(d / "orders.csv", orders_csv()) &&
-         write_file(d / "summary.json", summary_json());
+         write_file(d / "summary.json", summary_json()) &&
+         (treasury.pools == 0 || write_file(d / "transfers.csv", transfers_csv()));
 }
 
 }  // namespace fastmm::bt
