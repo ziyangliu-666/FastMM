@@ -39,6 +39,7 @@
 #include "fastmm/core/messages.hpp"
 #include "fastmm/core/msg_ring.hpp"
 #include "fastmm/core/time.hpp"
+#include "fastmm/core/transfer.hpp"
 #include "fastmm/core/transport.hpp"
 #include "fastmm/sim/event_scheduler.hpp"
 #include "fastmm/sim/fee_model.hpp"
@@ -55,6 +56,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace fastmm::sim {
@@ -269,6 +271,12 @@ class SimTransport final : public MatchingSink {
   [[nodiscard]] LatencyModel& latency() noexcept { return at(0).lat; }
   [[nodiscard]] const OutboundHasher& outbound_hash() const noexcept { return hasher_; }
   [[nodiscard]] const QueuePositionModel& queue() const noexcept { return queue_; }
+  // An internal transfer between two simulated accounts of one pool, carried out at venue time
+  // `ts` (SimAccounts::transfer): each account's new balance goes to the engine on its own link as
+  // a BalanceMsg, as a venue's account stream reports one. Done, or Failed when the accounts
+  // refuse it.
+  TransferState transfer(
+      VenueId from, VenueId to, std::string_view asset, Notional amount, Timestamp ts) noexcept;
   // The strategy's accounts; null when no venue has one.
   [[nodiscard]] const SimAccounts* accounts() const noexcept { return accounts_.get(); }
   // The pool member an open order of the strategy went to; invalid for an order the venue does

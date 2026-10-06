@@ -905,6 +905,16 @@ void SimTransport::push_order_wire(Link& l, EventHeader& h, Timestamp venue_ts) 
   if (!l.order_wire.try_push(&h, h.len)) ++stats_.wire_full;
 }
 
+TransferState SimTransport::transfer(
+    VenueId from, VenueId to, std::string_view asset, Notional amount, Timestamp ts) noexcept {
+  if (accounts_ == nullptr || !accounts_->transfer(from, to, asset, amount))
+    return TransferState::Failed;
+  for (const VenueId v : {from, to}) {
+    if (Link* l = link_of_venue(v); l != nullptr) publish_account(*l, ts);
+  }
+  return TransferState::Done;
+}
+
 void SimTransport::publish_account(Link& l, Timestamp venue_ts) noexcept {
   if (accounts_ != nullptr)
     accounts_->publish(l.id, venue_ts, [&](BalanceMsg& m) { push_balance(l, m); });

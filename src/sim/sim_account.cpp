@@ -316,6 +316,22 @@ BalanceMsg SimAccounts::message(const Row& r, Timestamp ts) const noexcept {
   return m;
 }
 
+bool SimAccounts::transfer(VenueId from,
+                           VenueId to,
+                           std::string_view asset,
+                           Notional amount) noexcept {
+  if (from == to || amount.raw <= 0 || !enabled(from) || !enabled(to)) return false;
+  const std::uint16_t a = find(from, asset);
+  const std::uint16_t b = find(to, asset);
+  if (a == kNone || b == kNone) return false;
+  if (rows_[a].total + upnl(a) - rows_[a].locked < amount.raw) return false;
+  rows_[a].total -= amount.raw;
+  rows_[b].total += amount.raw;
+  touch(a);
+  touch(b);
+  return true;
+}
+
 Notional SimAccounts::free(VenueId venue, std::string_view asset) const noexcept {
   const std::uint16_t r = find(venue, asset);
   return r == kNone ? Notional{} : Notional::from_raw(rows_[r].total + upnl(r) - rows_[r].locked);

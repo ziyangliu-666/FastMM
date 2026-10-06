@@ -157,6 +157,12 @@ class SimAccounts {
     }
   }
 
+  // An internal transfer between two accounts of one pool (Venue::transfer): `amount` of `asset`
+  // leaves `from`'s total and joins `to`'s at once. False, nothing moved, when either venue has no
+  // account or no row of the asset, the amount is not positive, or it is more than `from` has free.
+  // The rows are published with the next publish() of each venue.
+  bool transfer(VenueId from, VenueId to, std::string_view asset, Notional amount) noexcept;
+
   // The venue's amounts (raw, in the asset); zero for a row it does not keep.
   [[nodiscard]] Notional free(VenueId venue, std::string_view asset) const noexcept;
   [[nodiscard]] Notional locked(VenueId venue, std::string_view asset) const noexcept;
