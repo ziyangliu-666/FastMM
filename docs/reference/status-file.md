@@ -12,7 +12,7 @@
 
 The file holds an 8-byte sequence counter followed by one `StatusSnapshot`. The writer makes the counter odd, writes the snapshot, then makes it even again. A reader copies the snapshot when the counter is even and unchanged across the copy, and retries otherwise; it never blocks the writer.
 
-- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 17) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
+- `magic` (`0x315441545353464D`, "MFSSTAT1" little-endian) and `version` (currently 18) sit at the same offsets in every version. A reader of another version refuses the file: `fastmm-top` reports `<file> was written by a different FastMM build (status segment version <n>, this fastmm-top reads version <m>)`.
 - The layout is internal ([Public API](public-api.md)); read it with `fastmm-top` from the same build.
 
 ## Snapshot fields

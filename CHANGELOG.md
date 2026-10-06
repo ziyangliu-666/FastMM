@@ -43,6 +43,27 @@ All notable changes are recorded here (Keep a Changelog format).
 - `fastmm-pnl audit --exchange <file>`: the store's fills against the venue's executions exported
   to a file (Binance `myTrades` / `userTrades` JSON as returned, or generic JSON or CSV); prints what
   differs and exits 5 when anything does.
+- Pool treasury: `[venues.<primary>.treasury]` (fastmm-live, off by default) keeps one asset
+  spread over the accounts of an account pool by internal transfers: targets from `weights`
+  (equal by default) and `min_free`, a `threshold` before anything moves, `min_amount`,
+  `max_amount` and `step`, one transfer at a time with `min_interval_s`, `max_per_hour`,
+  `cooldown_s` after a failure or a `timeout_s`, and `dry_run`. Each transfer has a client id and
+  is written to `state_file` before it is sent; a restart asks the venue for an unanswered one
+  before planning anew, and a failed one is never sent again. The steps are logged, journaled
+  (`ControlCommand::Transfer`, `ControlTransferMsg`; `tools/journal_dump.py`) and counted in the
+  status file and the `fastmm_treasury_*` metrics (status segment version 18). The plan, the
+  limits and the ledger are `core/treasury.hpp`; it runs on its own thread, `fm-treasury`.
+- `Venue::transfer`, `Venue::transfer_status`, `Venue::transfer_account` and
+  `Venue::request_balances` (`core/transfer.hpp`; `VenueCapabilities::internal_transfer`,
+  `VenueCaps::internal_transfer`): a connector can move an asset between two accounts of its
+  exchange, blocking and off the reactor thread. Binance Spot and USDⓈ-M do it with the master
+  account's `POST /sapi/v1/sub-account/universalTransfer` and its history by `clientTranId`, with
+  a master key of its own (`transfer_api_key_env`, `transfer_api_secret_env`, internal transfer
+  permission only), `transfer_rest_url` and each account's `sub_account_email`; a USDⓈ-M transfer
+  goes through the receiver's spot wallet in two steps.
+- sim: `SimAccounts::transfer`, `SimTransport::transfer` and `sim::SimTreasuryPort`: the same
+  treasury runs against a pool's simulated accounts, and the engine hears the new balances on each
+  account's link.
 - Strategy hook `on_batch_end(ctx)`: `ctx.request_batch_end()` from any hook asks for one call
   once the engine has handled the events waiting in its input rings (or the step's
   `max_events_per_step` is used up). Work a burst repeats per event (a requote after every balance

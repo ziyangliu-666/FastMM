@@ -94,6 +94,7 @@ One table per venue; `<name>` is how instruments refer to it.
 | `fill_audit_lag_s` | integer |  | a fill audit reads up to this long ago, s, so the execution replay has booked what it will (default 180) |
 | `fill_audit_mode` | string |  | "report" logs and counts what differs; "book" also books the executions the engine missed (default "report") |
 | `fees` | table |  | [venues.<name>.fees] table: maker_bps and taker_bps, used for PnL |
+| `treasury` | table |  | [venues.<primary>.treasury] table: transfers that keep one asset spread over the accounts of the pool this venue is the primary of (fastmm-live) |
 <!-- END config-keys -->
 
 ### `[venues.<name>.fees]`
@@ -159,6 +160,59 @@ Each audit reads the window from where the last one ended to `fill_audit_lag_s` 
 
 The audit needs the store (`[storage]`) and the venue in this process (not behind fastmm-gateway, where the key is ignored with a warning); a connector without it refuses to start. Binance Spot and USDⓈ-M have it. To audit after the fact, against a file the venue exported, use `fastmm-pnl audit` ([Query what you traded](../how-to/operations/query-trading-records.md#check-the-stored-fills-against-the-venue)).
 
+### `[venues.<primary>.treasury]`
+
+Each account of a pool has its own balance, so one can run short of the quote asset (or the margin) while another holds more than it needs. The pool treasury moves one asset between the pool's accounts by internal transfers, in fastmm-live, off by default.
+
+<!-- BEGIN config-keys venues.*.treasury -->
+| Key | Type | Required | Meaning |
+|---|---|---|---|
+| `enabled` | boolean |  | move the asset between the pool's accounts (default false) |
+| `dry_run` | boolean |  | log and journal the planned transfers without sending them; needs no transfer key (default false) |
+| `asset` | string |  | the asset kept spread, for example USDT; required when enabled |
+| `weights` | table |  | { <account> = <weight>, ... }: each account's share of the pool's free balance (default 1 each) |
+| `min_free` | table |  | { <account> = "<decimal>", ... }: free balance an account is topped up to and never gives below (default 0) |
+| `threshold` | number |  | an account is short below its target times (1 - threshold), 0 to 1 (default 0.2) |
+| `min_amount` | any |  | smallest transfer, decimal (default 0) |
+| `max_amount` | any |  | largest transfer, decimal; 0 = no cap (default 0) |
+| `step` | any |  | transfer amounts round down to a multiple of it, decimal (default 0.01) |
+| `interval_s` | integer |  | how often the balances are looked at and a transfer in flight is asked for, s (default 10) |
+| `min_interval_s` | integer |  | least time between two transfers sent, s (default 60) |
+| `max_per_hour` | integer |  | transfers sent in any hour; 0 = no limit (default 12) |
+| `cooldown_s` | integer |  | no transfer for this long after one failed or timed out, s (default 300) |
+| `timeout_s` | integer |  | a transfer unresolved this long times out (cooldown_s; still asked for), and one the venue has no record of fails, s (default 60) |
+| `settle_s` | integer |  | longest wait after a transfer for both accounts' balances to report it, s (default 30) |
+| `state_file` | string |  | the transfers in flight, the id counter and the limiter across restarts (default <journal_dir>/<engine name>.<primary>.treasury) |
+<!-- END config-keys -->
+
+```toml
+[venues.binance]
+kind = "binance_spot"
+transfer_api_key_env = "MASTER_TRANSFER_KEY"        # the master account's key, internal transfer only
+transfer_api_secret_env = "MASTER_TRANSFER_SECRET"
+sub_account_email = "${ACCOUNT_A_EMAIL}"
+
+[venues.binance_b]
+kind = "binance_spot"
+pool_of = "binance"
+sub_account_email = "${ACCOUNT_B_EMAIL}"
+
+[venues.binance.treasury]
+enabled = true
+asset = "USDT"
+weights = { binance = 2, binance_b = 1 }   # default: equal shares
+min_free = { binance_b = "200" }
+max_amount = "5000"
+```
+
+The plan, every `interval_s`: each account's target is the pool's free balance of `asset` shared by `weights`. An account is short below `max(target × (1 − threshold), min_free)` and asks for `max(target, min_free)` less what it has; an account gives what it holds above `max(target, min_free)`. The largest need is matched with the largest giver first (ties: the account listed first), each transfer at most `max_amount`, rounded down to `step`, none below `min_amount`. The free balance is the engine's estimate (the venue's report less what the engine's own orders have held since), so a transfer never takes what an order holds; an account whose balance has not been reported stops the plan.
+
+One transfer at a time per pool, and at most one per `min_interval_s` and `max_per_hour`. After a transfer is done, both accounts' balances are asked for again and nothing new is planned until both have reported after it (at most `settle_s`). A failure, or a transfer still unresolved after `timeout_s`, holds the pool for `cooldown_s`; a failed transfer is never sent again, the next one is planned from the balances then. `dry_run = true` logs and journals what would be sent, needs no transfer key, and repeats the same plan only after `min_interval_s`.
+
+Every transfer has a client id (`fm` + the primary's venue id + the time in base 36 + a counter) and is written to `state_file` before it is sent. A process that stops with a transfer unanswered asks the venue for it by that id when it starts again, before it plans anything; a transfer the venue has no record of after `timeout_s` failed. Each step (planned, sent, done, failed, timed out) is logged and reaches the engine as a `ControlCommand::Transfer` message (`ControlTransferMsg`), which the journal records; `tools/journal_dump.py` prints them. The status file and fastmm-top's Prometheus endpoint carry the counters (`fastmm_treasury_*`).
+
+The primary's connector carries the transfers out and must have internal transfers (`VenueCapabilities::internal_transfer`; Binance Spot and USDⓈ-M do, with `transfer_api_key_env`, see [Venues](venues.md#internal-transfers)); each account's connector names its account (`sub_account_email`). The treasury runs on a thread of its own (`fm-treasury`) and does not run in a dry run of the whole session or in a strategy attached to fastmm-gateway. In a backtest, `sim::SimTreasuryPort` (`include/fastmm/sim/sim_treasury.hpp`) runs the same `Treasury` against the simulated accounts.
+
 ### Connectors
 
 The connector `kind` names owns the rest of the section: it declares its keys, validates them and
@@ -206,6 +260,10 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `user_stream` | string |  | ws_api (default) \| listen_key \| none |
 | `position_from_balance` | boolean |  | derive positions from account balances |
 | `fetch_fees` | boolean |  | fastmm-live: fetch the account's maker and taker rates per symbol at start-up (GET /api/v3/account/commission) and use them instead of the configured fees; start-up fails when the request does (default false) |
+| `transfer_api_key_env` | string |  | pool treasury: environment variable holding the master account's API key with internal transfer enabled, used for transfers between the pool's accounts only (default none: no transfers) |
+| `transfer_api_secret_env` | string |  | environment variable holding that key's HMAC secret |
+| `transfer_rest_url` | string |  | host of the transfer endpoint, /sapi/v1/sub-account/universalTransfer (default https://api.binance.com) |
+| `sub_account_email` | string |  | this account's sub-account email in a transfer; empty: the master account (default empty) |
 <!-- END config-keys -->
 
 #### `binance_usdm`
@@ -230,6 +288,10 @@ configuration (a dry run, `order_entry = "none"`, missing credentials).
 | `position_from_account_update` | boolean |  | correct the engine position from ACCOUNT_UPDATE when it differs from the fills (default true) |
 | `one_way_mode` | boolean |  | at start, switch an account in hedge mode to one-way mode when it holds no position and no open order (default false: a hedge-mode account refuses to start) |
 | `leverage` | integer |  | at start, set this leverage (1 to 125) on every enabled symbol; 0 leaves the account's (default 0) |
+| `transfer_api_key_env` | string |  | pool treasury: environment variable holding the master account's API key with internal transfer enabled, used for transfers between the pool's accounts only (default none: no transfers) |
+| `transfer_api_secret_env` | string |  | environment variable holding that key's HMAC secret |
+| `transfer_rest_url` | string |  | host of the transfer endpoint, /sapi/v1/sub-account/universalTransfer (default https://api.binance.com) |
+| `sub_account_email` | string |  | this account's sub-account email in a transfer; empty: the master account (default empty) |
 <!-- END config-keys -->
 
 #### `bybit`
