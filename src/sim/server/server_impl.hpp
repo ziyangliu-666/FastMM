@@ -406,6 +406,7 @@ struct SimExchangeServer::Impl final : public net::WsSessionHandler, public Matc
   // Every clientOrderId the account has had accepted, so a repeat is visible long after the first
   // order was forgotten (SimServerStats::duplicate_client_order_ids).
   std::unordered_set<std::string> seen_client_ids_;
+  std::vector<std::string> accepted_client_ids_;  // the same ids in the order they were accepted
   SimServerStats stats_;
   std::vector<Level> level_buf_;
   std::string md_scratch_;

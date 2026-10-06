@@ -829,6 +829,10 @@ std::vector<std::string> SimExchangeServer::open_client_order_ids() const {
   Impl& impl = *impl_;
   return impl.call([&impl] { return impl.open_client_ids(); });
 }
+std::vector<std::string> SimExchangeServer::accepted_client_order_ids() const {
+  Impl& impl = *impl_;
+  return impl.call([&impl] { return impl.accepted_client_ids_; });
+}
 std::vector<SimExchangeServer::OpenOrder> SimExchangeServer::open_orders() const {
   Impl& impl = *impl_;
   return impl.call([&impl] {

@@ -728,6 +728,7 @@ OpResult Impl::submit_new_order(Account& a, const NewOrderSpec& spec, bool test_
   ++stats_.orders_accepted;
   ++stats_.orders_since_mark;
   if (!seen_client_ids_.insert(spec.client_order_id).second) ++stats_.duplicate_client_order_ids;
+  accepted_client_ids_.push_back(spec.client_order_id);
   stats_.max_order_qty = max(stats_.max_order_qty, spec.qty);
 
   std::string body;

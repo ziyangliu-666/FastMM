@@ -165,6 +165,9 @@ class SimExchangeServer {
   [[nodiscard]] Qty fill_open_order(std::string_view client_order_id, Qty qty = Qty{});
   // Client order ids the account holds open, ascending venue order id.
   [[nodiscard]] std::vector<std::string> open_client_order_ids() const;
+  // Every client order id the account accepted (new orders and the new legs of cancel-replaces),
+  // in the order it accepted them.
+  [[nodiscard]] std::vector<std::string> accepted_client_order_ids() const;
   // The same orders with their side, price and remaining quantity.
   struct OpenOrder {
     std::string client_order_id;
